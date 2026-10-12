@@ -20,9 +20,10 @@ solid (14 faces for the example below, not 20).
 ## Gotchas
 - Halves that only touch fuse into one solid; halves with a gap stay two solids in one `Part`
   (check `len(part.solids())`); overlapping halves fuse normally.
-- **A mirrored sketch has its normal flipped**: `Rectangle(10, 6).translate(10, 0).mirror(Plane.YZ)`
-  has normal (0, 0, -1), so `.extrude(5)` goes to z -5..0. Mirror the extruded part instead, or
-  extrude the mirrored sketch with a negative amount.
+- A mirrored sketch keeps facing the same way when the mirror plane is perpendicular to it:
+  `Rectangle(10, 6).translate(10, 0).mirror(Plane.YZ)` has normal (0, 0, 1) and extrudes up, like
+  the original. Mirroring a sketch and extruding it gives the same part as extruding and
+  mirroring. A sketch takes an axis in its plane too: `sketch.mirror(Y)`.
 - Features on the half (fillets, holes) are mirrored with it: build the half completely, then
   mirror and fuse.
 
@@ -40,7 +41,7 @@ print(pair.bbox().size.to_tuple())                      # (40.0, 10.0, 10.0)
 copy = mirror(half, Plane.YZ.offset(30))                # a copy about x = 30 (no fuse)
 
 sk = Rectangle(10, 6).translate(10, 0).mirror(Plane.YZ)
-print(sk.plane.z_dir.to_tuple())                        # (0, 0, -1): a mirrored sketch extrudes downwards
+print(sk.plane.z_dir.to_tuple())                        # (0.0, 0.0, 1.0): extrudes up like the original
 ```
 
 ## Related

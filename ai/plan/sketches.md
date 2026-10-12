@@ -18,4 +18,17 @@ Docs go to `src/smlibpy/skill/references/sketches/`. Work through the rows in or
 | 10 | `make_face.md` | make_face | from closed wires and curves, holes, errors with open wires | [x] make_face.md |
 | 11 | `offset.md` | Sketch.offset | inward and outward, corners (round or sharp), collapse | [x] offset.md |
 | 12 | `fillet.md` | Sketch.fillet | rounding 2D corners: which vertices, radius limits | [x] fillet.md |
-| 13 | `Text.md` | Text | size (cap height), alignment of the layout box, lines, spacing, kerning, fonts, holes and fill rules, text along a path, emboss and engrave (flat and curved faces), errors | [x] Text.md |
+| 13 | `Profile.md` | Profile | moves (to a point, by an offset, forward, until x/y), headings, tangent arcs, arcs through a point, corner fillets/chamfers, mirror of a half, close/wire, errors | [x] Profile.md |
+| 14 | `Triangle.md` | Triangle | base, height, apex, corner options | [x] Triangle.md |
+| 15 | `ArcSlot.md` | ArcSlot | radius, width, angle, rotation, limits | [x] ArcSlot.md |
+| 16 | `Stroke.md` | Stroke | paths of lines and arcs, ends, corners, closed and crossing paths | [x] Stroke.md |
+| 17 | `Hull.md` | Hull | points, circles, arcs, sketches; exact arcs | [x] Hull.md |
+| 18 | `chamfer.md` | Sketch.chamfer | corners chosen by geometry | [x] chamfer.md |
+| 19 | `mirror.md` | Sketch.mirror | axes in the plane, planes, normals, exact edges | [x] mirror.md |
+| 20 | shapes again | Rectangle, RoundedRectangle, Polygon, RegularPolygon, Trapezoid, Ellipse, Slot | fillet=/chamfer=/rotation= options, the slot variants | [x] updated |
+| 21 | `fillet.md`, `offset.md`, `generic.md` | Sketch.fillet, Sketch.offset, Sketch | corner selection, line-arc corners, corner styles, exact Booleans, perimeter | [x] updated |
+| 22 | `recipes/profiles.md` | all of the above | which tool for which outline | [x] recipes/profiles.md |
+
+| 23 | `Text.md` | Text | size (cap height), alignment of the layout box, lines, spacing, kerning, fonts, holes and fill rules, text along a path, emboss and engrave (flat and curved faces), errors | [x] Text.md |
+
+Session: `ai/training/2026-10-13_00-42-19_sketches-profiles` (design: `ai/plan/2d.md`).

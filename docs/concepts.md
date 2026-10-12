@@ -20,10 +20,10 @@ them.
 | Type | What it is | Made by |
 |---|---|---|
 | `Part` | A solid: one or more closed volumes | `Box`, `Cylinder`, `extrude`, `revolve`, ... |
-| `Sketch` | A planar region on a plane, possibly with holes | `Rectangle`, `Circle`, `Polygon`, `make_face`, ... |
+| `Sketch` | A planar region on a plane, possibly with holes | `Rectangle`, `Circle`, `Polygon`, `Profile(...).close()`, `make_face`, ... |
 | `Shell` | A surface: faces that do not enclose a volume | `surface`, `ruled`, extruding an open curve, ... |
 | `Face` | One face of a body | `part.faces()` |
-| `Wire` | A chain of edges, open or closed | `Polyline`, `Wire([...])`, `face.outer_wire()` |
+| `Wire` | A chain of edges, open or closed | `Polyline`, `Profile(...).wire()`, `Wire([...])`, `face.outer_wire()` |
 | `Edge` | One curve: line, arc, circle, ellipse, spline | `Line`, `CenterArc`, `Spline`, `part.edges()` |
 | `Vertex` | A point | `part.vertices()` |
 

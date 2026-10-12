@@ -32,6 +32,7 @@ Everything below is importable from `smlibpy` directly.
 
 ## Sketches
 
+::: smlibpy.profiles.Profile
 ::: smlibpy.sketches
 ::: smlibpy.text.Text
 

@@ -86,7 +86,14 @@ def CenterArc(
     """
     if radius <= 0:
         raise ValueError("radius must be positive")
-    c = _vec(center)
+    if arc_size == 0:
+        raise ValueError("CenterArc: arc_size must not be zero (360 is a full circle)")
+    return Edge._from_curve(_arc_curve(_vec(center), float(radius), float(start_angle), float(arc_size), plane))
+
+
+def _arc_curve(center: Vector, radius: float, start_angle: float, arc_size: float, plane: Plane) -> object:
+    """A new kernel circle, or arc of one, around ``center`` (in plane coordinates) from
+    ``start_angle`` over ``arc_size`` degrees. The caller owns the curve."""
     sweep = float(arc_size)
     end_angle = start_angle + sweep
     with kernel_call("CenterArc"):
@@ -109,8 +116,8 @@ def CenterArc(
             ext.delete_curve(whole)
         if sweep < 0:
             ext.reverse_curve(curve)
-    loc = plane.location * Location(c)
-    return Edge._from_curve(_transform_curve(curve, loc.matrix))
+    loc = plane.location * Location(center)
+    return _transform_curve(curve, loc.matrix)
 
 
 def ThreePointArc(start: VectorLike, through: VectorLike, end: VectorLike) -> Edge:

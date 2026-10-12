@@ -39,8 +39,9 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
   wires keep their two end points; only inner corners are rounded.
 - `vertices=[...]`: only the corners at these points (tuples or `Vertex`). A point that is
   not a corner is ignored without an error.
-- Corners next to an arc, a spline or a mirrored/scaled arc are skipped silently. Straight
-  `bspline` edges (mirrored or scaled lines) count as lines and their corners are rounded.
+- Corners next to an arc or a spline are skipped silently (`Sketch.fillet` and `Profile.fillet`
+  round line-arc corners too). Straight `bspline` edges count as lines and their corners are
+  rounded.
 - Limit: the two setbacks `r * tan(angle / 2)` on one edge may add up to its length. On a
   20 x 10 rectangle `fillet(5)` works (the short sides vanish, 6 edges), `fillet(5.001)`
   raises.
@@ -53,8 +54,8 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
   Check `is_closed`, `start` and `end`.
 - `to_sketch()` / `make_face()` choose the sketch normal themselves: +Z, or +X / +Y for
   vertical wires, not the plane the wire was drawn on. See `generic.md` for the workaround.
-- `mirror()` turns lines and arcs into `bspline` edges. Straight ones still fillet; former
-  arcs do not count as arcs.
+- `mirror()` keeps lines and arcs exact, so `half + half.mirror(Plane.XZ)` fillets every corner
+  of the whole outline.
 - `extrude(list_of_edges, h)` raises TypeError; wrap the list: `extrude(Wire(edges), h)`.
   `make_face(list_of_edges)` works.
 

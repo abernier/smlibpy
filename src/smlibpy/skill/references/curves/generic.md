@@ -87,10 +87,10 @@ pipe = sweep(Circle(3), path)    # valid, volume = pi * 3**2 * path.length
 
 ## Gotchas
 
-- `mirror()` and `scale()` turn lines and arcs into `bspline` edges. Straight ones still count
-  as lines: `direction`, `lines()`, `Wire.fillet` and `Sketch.fillet` treat them as straight.
-  Former arcs do not count as circles: `radius` raises and fillets skip corners next to them.
-  `rotate`, `translate` and `.on()` keep lines and circles.
+- `mirror()`, a uniform `scale()`, `rotate`, `translate` and `.on()` keep lines and circles.
+  A per-axis scale turns them into `bspline` edges (straight ones still count as lines).
+- For an outline of lines and arcs drawn one after the other, `Profile` (sketches) does the
+  bookkeeping of end points and tangents: `Profile((0, 0)).line_to(20, 0).arc(5, 90).wire()`.
 - `Wire([...])` does not check that the edges connect. Edges with a gap or a branch are kept
   in the given order, and the wire is just "open". A sweep along such a path raises
   `ValueError: the sweep path is not connected: a gap of ...`. Check `wire.is_closed` for

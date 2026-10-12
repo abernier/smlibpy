@@ -316,14 +316,36 @@ def _is_planar_path(edges: list[Edge]) -> bool:
     return bool(s[-1] <= 1e-7 * max(1.0, s[0]))
 
 
-def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part:
-    """Round edges of the part they belong to (see :meth:`Part.fillet`)."""
+def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part | Sketch:
+    """Round edges of the part they belong to (see :meth:`Part.fillet`), or corners of the
+    sketch they belong to: ``fillet(s.vertices().concave(), 2)`` (see :meth:`Sketch.fillet`)."""
+    sk = _owner_sketch(edges)
+    if sk is not None:
+        return sk.fillet(radius, edges)  # type: ignore[arg-type]
     return _owner_part(edges).fillet(edges, radius, **kwargs)
 
 
-def chamfer(edges: Any, length: float) -> Part:
-    """Bevel edges of the part they belong to (see :meth:`Part.chamfer`)."""
+def chamfer(edges: Any, length: float) -> Part | Sketch:
+    """Bevel edges of the part they belong to (see :meth:`Part.chamfer`), or corners of the
+    sketch they belong to (see :meth:`Sketch.chamfer`)."""
+    sk = _owner_sketch(edges)
+    if sk is not None:
+        return sk.chamfer(length, edges)
     return _owner_part(edges).chamfer(edges, length)
+
+
+def _owner_sketch(items: Any) -> Sketch | None:
+    """The sketch that vertices belong to (None if the items are not vertices)."""
+    from .shapes import Vertex
+
+    flat = [items] if isinstance(items, Vertex) else list(items) if isinstance(items, (list, tuple)) else None
+    if not flat or not all(isinstance(v, Vertex) for v in flat):
+        return None
+    owner = flat[0]._owner
+    if not isinstance(owner, Sketch) or any(v._owner is not owner for v in flat):
+        raise ValueError("these vertices do not all belong to one sketch; call sketch.fillet(radius, vertices) "
+                         "or sketch.chamfer(length, vertices)")
+    return owner
 
 
 def _owner_part(items: Any) -> Part:
@@ -340,7 +362,8 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
 
 
 def offset(shape: Part | Sketch, distance: float, **kwargs: Any) -> Any:
-    """Grow or shrink a part or a sketch by ``distance``."""
+    """Grow or shrink a part or a sketch by ``distance`` (for a sketch also
+    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`)."""
     return shape.offset(distance, **kwargs)
 
 
