@@ -22,6 +22,8 @@
 
 ### 1. `Shape.mirror` / `Shape.scale`: lines and arcs become B-splines, wire and sketch fillets then skip corners silently
 - **Fixed:** lines()/parallel_to/direction and wire fillets treat straight B-spline edges as straight, so mirrored outlines fillet all corners (geom_type still reports bspline).
+- **Fixed (2026-10-13):** mirrors and uniform scales rebuild lines and circles exactly (`geom_type` `line` / `circle`,
+  `radius` works); sketches are mirrored segment by segment.
 - **Session:** `2026-10-12_21-25-59_curves-lines-wires`, script `03-mirror-geomtype.py`
 - **What happens:** `Line(...).mirror(Plane.XZ).geom_type` and `.scale(2).geom_type` are
   `"bspline"` (same for `CenterArc`). `direction` and `radius` then raise. The pattern from
@@ -90,6 +92,7 @@
 - **Workaround:** give the world start point.
 
 ### 11. `CenterArc`: `arc_size=0` returns a full circle
+- **Fixed:** `ValueError: CenterArc: arc_size must not be zero (360 is a full circle)`.
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, script `01-centerarc.py`
 - **What happens:** `CenterArc((0, 0), 10, 0, 0)` is a closed circle of length 62.83 (the trim
   parameter falls on the range start and is replaced by the range end).
