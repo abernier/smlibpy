@@ -29,8 +29,10 @@ edges are picked by their geometry, for example `part.faces().top()` or
 - Modeling: primitives, holes and patterns, Booleans, extrude (also tapered), revolve, loft,
   sweep (also along helices), shell, offset, draft, mirror, split, thicken
 - Fillets: circular, variable-radius and curvature-continuous (G2/G3); chamfers
-- Sketches and curves: rectangles, circles, ellipses, polygons, slots, trapezoids; lines, arcs,
-  splines, Béziers, helices; 2D fillet and offset; text with exact font outlines
+- Sketches and curves: a profile builder with tangent arcs and inline fillets; rectangles,
+  circles, ellipses, polygons, triangles, slots, hulls, bands along paths; exact 2D Booleans,
+  offsets, corner fillets and chamfers; lines, arcs, splines, Béziers, helices; text with exact
+  font outlines
 - Surfaces: freeform surfaces from point grids, ruled surfaces, stitching into solids
 - Selection by geometry: `top()`, `parallel_to()`, `concave()`, `circles()`, `largest()`,
   filters, sorting and grouping
