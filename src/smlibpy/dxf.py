@@ -947,9 +947,11 @@ def _drawable(shapes: Any) -> list[_Item]:
 
 
 def _layer_name(name: str | None) -> str:
+    """A layer name DXF readers of every version take: ASCII letters, digits, ``-_$`` and spaces
+    (an AC1015 file is read as code page text, so other characters become ``_``)."""
     if not name:
         return "0"
-    clean = "".join(c if c.isalnum() or c in "-_$ " else "_" for c in str(name)).strip()
+    clean = "".join(c if c.isascii() and (c.isalnum() or c in "-_$ ") else "_" for c in str(name)).strip()
     return clean or "0"
 
 

@@ -30,7 +30,8 @@ on one circle prove it is that circle), joins the arcs of one circle, and writes
 CIRCLE: the section of a filleted block with two holes is 4 LINE, 4 ARC, 2 CIRCLE.
 
 A shape's `name` is its layer (`Text(...).named("engrave")` goes to layer `engrave`); unnamed
-shapes go to layer `0`.
+shapes go to layer `0`. Layer names keep ASCII letters, digits, `-`, `_`, `$` and spaces; other
+characters become `_` (`"Bügel/2"` is layer `B_gel_2`), so the file is plain ASCII.
 
 ## The drawing plane
 | Shapes | Written in |

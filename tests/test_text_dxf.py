@@ -543,6 +543,8 @@ def test_dxf_units_and_planes_on_export(tmp_path):
     text = Text("Text 8", 5).named("engrave")
     text.export(tmp_path / "text.dxf")
     assert "\nengrave\n" in (tmp_path / "text.dxf").read_text()
+    export_dxf(Circle(1).named("Bügel/2"), tmp_path / "ascii.dxf")
+    assert "\nB_gel_2\n" in (tmp_path / "ascii.dxf").read_bytes().decode("ascii")
     assert exact_area(import_dxf(tmp_path / "text.dxf")) == pytest.approx(exact_area(text), rel=1e-10)
 
 
