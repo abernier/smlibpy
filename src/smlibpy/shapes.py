@@ -2189,6 +2189,38 @@ class Part(_Body):
         raise NotImplementedError("face drafts are not available in the open-source kernel yet; "
                                   "use Sketch.extrude(taper=...) for drafted extrusions")
 
+    # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
+    def bend(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
+             partial: bool = False) -> Part:
+        """Fold this sheet along a line on its top or bottom face (see :func:`smlibpy.bend`)."""
+        from .sheetmetal import bend
+
+        return bend(self, line, angle, radius=radius, k_factor=k_factor, fixed=fixed, partial=partial)
+
+    def flange(self, edge: Any, length: float, *, angle: float = 90.0, radius: float, k_factor: float = 0.44) -> Part:
+        """Add a flange along a straight outer edge of this sheet (see :func:`smlibpy.flange`)."""
+        from .sheetmetal import flange
+
+        return flange(self, edge, length, angle=angle, radius=radius, k_factor=k_factor)
+
+    def bends(self, *, k_factor: float = 0.44) -> list[Any]:
+        """The bends of this sheet metal part (see :func:`smlibpy.sheetmetal.bends`)."""
+        from .sheetmetal import bends
+
+        return bends(self, k_factor=k_factor)
+
+    def unfold(self, *, k_factor: float = 0.44, fixed: Face | None = None) -> Part:
+        """This sheet metal part unfolded flat (see :func:`smlibpy.unfold`)."""
+        from .sheetmetal import unfold
+
+        return unfold(self, k_factor=k_factor, fixed=fixed)
+
+    def flat_pattern(self, *, k_factor: float = 0.44, fixed: Face | None = None) -> Any:
+        """The flat pattern of this sheet metal part on XY (see :func:`smlibpy.flat_pattern`)."""
+        from .sheetmetal import flat_pattern
+
+        return flat_pattern(self, k_factor=k_factor, fixed=fixed)
+
     def __repr__(self) -> str:
         try:
             vol = f"volume={self._props(accuracy=1e-5)['volume']:.6g}"

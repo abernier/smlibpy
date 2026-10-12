@@ -37,6 +37,7 @@ from .step_import import import_step
 from .render import render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
+from .sheetmetal import Bend, FlatPattern, bend, bend_allowance, bend_deduction, developed_length, flange, flat_pattern, unfold
 
 __version__ = "0.1.2"
 
@@ -59,6 +60,9 @@ __all__ = [
     "thicken", "tessellate",
     # surfaces
     "surface", "ruled", "stitch",
+    # sheet metal
+    "bend", "flange", "unfold", "flat_pattern", "bend_allowance", "bend_deduction", "developed_length", "Bend",
+    "FlatPattern",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
     "show", "render",

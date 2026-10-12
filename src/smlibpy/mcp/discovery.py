@@ -15,7 +15,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent / "skill"
 
 #: Classes whose public methods are listed next to the functions of ``smlibpy.__all__``.
 CLASSES = ("Part", "Sketch", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis", "Plane",
-           "Location", "BoundBox", "Mesh", "MassProperties")
+           "Location", "BoundBox", "Mesh", "MassProperties", "FlatPattern", "Bend")
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
@@ -47,6 +47,17 @@ SYNONYMS = {
     "hexagon": ["RegularPolygon"], "slot": ["Slot"], "text": [], "gear": ["Polygon", "PolarLocations"],
 }
 
+# Sheet metal.
+SYNONYMS.update({
+    "sheet": ["bend", "flange", "flat_pattern", "unfold"], "metal": ["bend", "flange", "flat_pattern"],
+    "bend": ["bend", "flange", "bends"], "bending": ["bend"], "bent": ["bend", "bends"], "fold": ["bend", "flange"],
+    "folded": ["bend", "unfold"], "flange": ["flange"], "hem": ["bend"], "brake": ["bend"], "tab": ["bend"],
+    "relief": ["bend"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"], "flatten": ["unfold", "flat_pattern"],
+    "flat": ["flat_pattern", "unfold"], "development": ["flat_pattern", "developed_length"],
+    "developed": ["developed_length"], "blank": ["flat_pattern", "developed_length"], "laser": ["flat_pattern"],
+    "cutter": ["flat_pattern"], "nesting": ["flat_pattern"], "allowance": ["bend_allowance"],
+    "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance"],
+})
 
 _CONSTANTS = {
     "X": "the world X axis (an Axis); also a direction in selections such as parallel_to(X)",
