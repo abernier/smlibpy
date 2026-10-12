@@ -1,0 +1,14 @@
+smlibpy
+Copyright (c) 2026 AWV Informatik AG. Licensed under the MIT License (see LICENSE).
+
+This software includes and links the SMLib solid modeling kernel, its SM_API wrapper
+and its Python bindings (SmPyLib) from USD BRep:
+
+  USD BRep
+  Copyright (c) 2020-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+  Licensed under the Apache License, Version 2.0.
+  https://github.com/NVIDIA-Omniverse/usd-brep
+
+The Apache License 2.0 text is in third_party/usd-brep/LICENSE; third-party notices
+of USD BRep are in third_party/usd-brep/THIRD_PARTY_NOTICES.md. Binary distributions
+of smlibpy contain compiled USD BRep code and are subject to that license as well.

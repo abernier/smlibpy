@@ -1,0 +1,1904 @@
+"""Shapes: vertices, edges, wires, faces, sketches, shells and parts.
+
+Every shape is an immutable value. Operations never modify a shape; they return a
+new one. Faces, edges and vertices taken from a body (``part.faces()``) stay valid
+for as long as you hold them and can be passed back to operations on that body
+(``part.fillet(part.edges().parallel_to(Z), 2)``).
+"""
+
+from __future__ import annotations
+
+import math
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union, overload
+
+import numpy as np
+
+from ._kernel import BrepHandle, CurveHandle, KernelError, ext, k, kernel_call
+from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _vec
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .mesh import Mesh
+
+__all__ = [
+    "Shape",
+    "ShapeList",
+    "Vertex",
+    "Edge",
+    "Wire",
+    "Face",
+    "Shell",
+    "Sketch",
+    "Part",
+    "MassProperties",
+]
+
+#: Relative accuracy of exact integration (areas, volumes, centroids, inertia).
+ACCURACY = 1e-8
+
+S = TypeVar("S", bound="Shape")
+
+
+def _t(p: Sequence[float]) -> tuple[float, float, float]:
+    return (float(p[0]), float(p[1]), float(p[2]))
+
+
+# =============================================================================
+# Shape
+# =============================================================================
+class Shape:
+    """Base class of all shapes."""
+
+    __slots__ = ()
+
+    # -- topology -------------------------------------------------------------
+    def vertices(self) -> ShapeList[Vertex]:
+        """All vertices of this shape."""
+        raise NotImplementedError
+
+    def edges(self) -> ShapeList[Edge]:
+        """All edges of this shape."""
+        raise NotImplementedError
+
+    def wires(self) -> ShapeList[Wire]:
+        """All wires (closed edge loops of faces, or the shape itself if it is a wire)."""
+        return ShapeList()
+
+    def faces(self) -> ShapeList[Face]:
+        """All faces of this shape."""
+        return ShapeList()
+
+    # -- placement ------------------------------------------------------------
+    def _transformed(self: S, m: np.ndarray) -> S:
+        raise NotImplementedError
+
+    def moved(self: S, location: Location) -> S:
+        """A copy of this shape moved by a location (``location * shape``)."""
+        return self._transformed(location.matrix)
+
+    def translate(self: S, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> S:
+        """A copy moved by ``(x, y, z)``."""
+        v = _vec(x) if not isinstance(x, (int, float)) else Vector(x, y, z)
+        m = np.eye(4)
+        m[:3, 3] = v.to_tuple()
+        return self._transformed(m)
+
+    def rotate(self: S, axis: Axis = Z, angle: float = 0.0) -> S:
+        """A copy rotated by ``angle`` degrees about ``axis``."""
+        return self._transformed(Location.about(axis, angle).matrix)
+
+    def mirror(self: S, plane: Plane = Plane.YZ) -> S:
+        """A mirrored copy (reflection in ``plane``)."""
+        n = np.array(plane.z_dir.to_tuple())
+        o = np.array(plane.origin.to_tuple())
+        m = np.eye(4)
+        m[:3, :3] -= 2.0 * np.outer(n, n)
+        m[:3, 3] = 2.0 * n * o.dot(n)
+        return self._transformed(m)
+
+    def scale(self: S, factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> S:
+        """A scaled copy. ``factor`` is a number or per-axis factors ``(sx, sy, sz)``."""
+        f = (factor, factor, factor) if isinstance(factor, (int, float)) else tuple(_vec(factor))
+        c = np.array(_vec(center).to_tuple())
+        m = np.eye(4)
+        m[:3, :3] = np.diag(f)
+        m[:3, 3] = c - np.diag(f) @ c
+        return self._transformed(m)
+
+    def on(self: S, target: Plane | Face | Location | ShapeList | Sequence[Any]) -> S:
+        """Place this shape, designed around the world XY plane, onto a plane or face.
+
+        The shape's origin goes to the plane origin (a face's center), its X axis to the
+        plane's X direction and its Z axis to the plane normal. ``sketch.on(face)``
+        is the usual way to draw on a face.
+        """
+        return self.moved(_as_plane(target).location)
+
+    def __rmul__(self, other: Any) -> Any:
+        if isinstance(other, (Location, Plane)):
+            return other * self
+        return NotImplemented
+
+    # -- measurement ----------------------------------------------------------
+    def bbox(self) -> BoundBox:
+        """Tight axis-aligned bounding box."""
+        raise NotImplementedError
+
+    def center(self) -> Vector:
+        """Center of mass (centroid) of the shape."""
+        raise NotImplementedError
+
+    # -- output ---------------------------------------------------------------
+    def mesh(self, tolerance: float | None = None, angle: float = 15.0) -> "Mesh":
+        """Triangulate the shape (see :func:`smlibpy.mesh.tessellate`)."""
+        from .mesh import tessellate
+
+        return tessellate(self, tolerance=tolerance, angle=angle)
+
+    def show(self, **kwargs: Any) -> Any:
+        """Show the shape in the browser viewer (see :func:`smlibpy.show`)."""
+        from .viewer import show
+
+        return show(self, **kwargs)
+
+    def _repr_html_(self) -> str:
+        from .viewer import notebook_html
+
+        return notebook_html(self)
+
+    def export(self, path: str, **kwargs: Any) -> None:
+        """Write the shape to a file; the format follows the extension (step, stl, glb, ...)."""
+        from .exporters import export
+
+        export(self, path, **kwargs)
+
+
+def _as_plane(target: Any) -> Plane:
+    if isinstance(target, Plane):
+        return target
+    if isinstance(target, Location):
+        return target.plane
+    if isinstance(target, ShapeList):
+        return _as_plane(target.one())
+    if isinstance(target, Face):
+        return target.plane
+    if isinstance(target, Sketch):
+        return target.plane
+    raise TypeError(f"cannot use {type(target).__name__} as a plane")
+
+
+# =============================================================================
+# ShapeList: selection
+# =============================================================================
+T = TypeVar("T", bound=Shape)
+
+SortKey = Union[Axis, str, Callable[[Any], float]]
+
+
+def _key_fn(key: SortKey) -> Callable[[Any], float]:
+    if isinstance(key, Axis):
+        ax = key
+        return lambda s: ax.position_along(s.center())
+    if callable(key):
+        return key  # type: ignore[return-value]
+    if isinstance(key, str):
+        name = key.lower()
+        if name in ("length", "area", "volume", "radius"):
+            return lambda s: getattr(s, name)
+        if name in ("x", "y", "z"):
+            ax = {"x": X, "y": Y, "z": Z}[name]
+            return lambda s: ax.position_along(s.center())
+        if name in ("size", "measure"):
+            return _measure
+        if name == "distance":
+            raise ValueError("use .sort_by_distance(point)")
+    raise TypeError(f"cannot sort by {key!r}")
+
+
+def _measure(s: Any) -> float:
+    for name in ("volume", "area", "length"):
+        v = getattr(s, name, None)
+        if v is not None:
+            try:
+                return float(v)
+            except KernelError:
+                continue
+    return 0.0
+
+
+class ShapeList(list[T]):
+    """A list of shapes with selection helpers.
+
+    Every selector returns a new :class:`ShapeList`, so selectors chain::
+
+        part.edges().parallel_to(Z).max_by(X)
+        part.faces().planar().facing(-Z)
+
+    A one-element list can be used wherever a single shape is expected
+    (``sketch.on(part.faces().top())``). Use :meth:`one` to require exactly one.
+    """
+
+    # -- picking --------------------------------------------------------------
+    def one(self) -> T:
+        """The only element; raises if the list does not hold exactly one shape."""
+        if len(self) != 1:
+            raise ValueError(f"expected exactly one shape, got {len(self)}"
+                             + (" - narrow the selection or use [0]" if self else ""))
+        return self[0]
+
+    @property
+    def first(self) -> T:
+        if not self:
+            raise IndexError("empty selection")
+        return self[0]
+
+    @property
+    def last(self) -> T:
+        if not self:
+            raise IndexError("empty selection")
+        return self[-1]
+
+    # -- ordering -------------------------------------------------------------
+    def sort_by(self, key: SortKey = Z, reverse: bool = False) -> ShapeList[T]:
+        """Sort by position along an axis, by ``"length"``/``"area"``/``"volume"``/``"radius"``,
+        or by any function of a shape."""
+        f = _key_fn(key)
+        return ShapeList(sorted(self, key=f, reverse=reverse))
+
+    def sort_by_distance(self, point: VectorLike, reverse: bool = False) -> ShapeList[T]:
+        p = _vec(point)
+        return ShapeList(sorted(self, key=lambda s: s.center().distance_to(p), reverse=reverse))
+
+    def group_by(self, key: SortKey = Z, tol: float = 1e-4) -> list[ShapeList[T]]:
+        """Group shapes with equal key (within ``tol``), groups in ascending key order."""
+        f = _key_fn(key)
+        pairs = sorted(((f(s), s) for s in self), key=lambda p: p[0])
+        groups: list[ShapeList[T]] = []
+        last = None
+        for v, s in pairs:
+            if last is None or abs(v - last) > tol:
+                groups.append(ShapeList())
+                last = v
+            groups[-1].append(s)
+        return groups
+
+    def max_by(self, key: SortKey = Z, tol: float = 1e-4) -> ShapeList[T]:
+        """The shapes with the largest key (all of them, if several tie)."""
+        groups = self.group_by(key, tol)
+        return groups[-1] if groups else ShapeList()
+
+    def min_by(self, key: SortKey = Z, tol: float = 1e-4) -> ShapeList[T]:
+        """The shapes with the smallest key (all of them, if several tie)."""
+        groups = self.group_by(key, tol)
+        return groups[0] if groups else ShapeList()
+
+    def top(self) -> ShapeList[T]:
+        """Highest shapes (largest Z)."""
+        return self.max_by(Z)
+
+    def bottom(self) -> ShapeList[T]:
+        """Lowest shapes (smallest Z)."""
+        return self.min_by(Z)
+
+    def right(self) -> ShapeList[T]:
+        """Shapes furthest along +X."""
+        return self.max_by(X)
+
+    def left(self) -> ShapeList[T]:
+        """Shapes furthest along -X."""
+        return self.min_by(X)
+
+    def back(self) -> ShapeList[T]:
+        """Shapes furthest along +Y."""
+        return self.max_by(Y)
+
+    def front(self) -> ShapeList[T]:
+        """Shapes furthest along -Y."""
+        return self.min_by(Y)
+
+    def largest(self) -> T:
+        """The biggest shape by volume, area or length."""
+        if not self:
+            raise IndexError("empty selection")
+        return max(self, key=_measure)
+
+    def smallest(self) -> T:
+        """The smallest shape by volume, area or length."""
+        if not self:
+            raise IndexError("empty selection")
+        return min(self, key=_measure)
+
+    def nearest(self, point: VectorLike) -> T:
+        """The shape whose center is closest to ``point``."""
+        return self.sort_by_distance(point)[0]
+
+    # -- filtering ------------------------------------------------------------
+    def filter(self, predicate: Callable[[T], bool]) -> ShapeList[T]:
+        """Keep the shapes for which ``predicate(shape)`` is true."""
+        return ShapeList(s for s in self if predicate(s))
+
+    def of_type(self, *geom_types: str) -> ShapeList[T]:
+        """Keep shapes of the given geometry types, e.g. ``"line"``, ``"circle"``,
+        ``"plane"``, ``"cylinder"``, ``"bspline"``."""
+        wanted = {g.lower() for g in geom_types}
+        return ShapeList(s for s in self if getattr(s, "geom_type", None) in wanted)
+
+    def lines(self) -> ShapeList[T]:
+        """Straight edges."""
+        return self.of_type("line")
+
+    def circles(self) -> ShapeList[T]:
+        """Circular edges (full circles and arcs)."""
+        return self.of_type("circle")
+
+    def planar(self) -> ShapeList[T]:
+        """Planar faces."""
+        return self.of_type("plane")
+
+    def cylinders(self) -> ShapeList[T]:
+        """Cylindrical faces."""
+        return self.of_type("cylinder")
+
+    def parallel_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
+        """Straight edges along ``axis``, or planar faces whose normal is along ``axis``."""
+        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_parallel(d))
+
+    def perpendicular_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
+        """Straight edges perpendicular to ``axis``, or planar faces containing it."""
+        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_perpendicular(d))
+
+    def facing(self, direction: Axis | VectorLike, max_angle: float = 1e-3) -> ShapeList[T]:
+        """Faces whose outward normal points along ``direction`` (within ``max_angle`` degrees).
+
+        Curved faces are judged at their center.
+        """
+        d = direction.direction if isinstance(direction, Axis) else _vec(direction).normalized()
+        out = ShapeList()
+        for s in self:
+            if isinstance(s, Face):
+                try:
+                    if s.normal_at().angle_to(d) <= max_angle:
+                        out.append(s)
+                except (KernelError, ValueError):
+                    pass
+        return out
+
+    def within(self, box: BoundBox) -> ShapeList[T]:
+        """Shapes whose bounding box lies inside ``box``."""
+        return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
+
+    def at(self, point: VectorLike, tol: float = 1e-4) -> ShapeList[T]:
+        """Shapes passing through ``point`` (vertices at, edges/faces touching it)."""
+        p = _vec(point)
+        return ShapeList(s for s in self if s.distance_to(p) <= tol)  # type: ignore[attr-defined]
+
+    # -- set operations and expansion ----------------------------------------
+    def __or__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
+        out = ShapeList(self)
+        for s in other:
+            if s not in out:
+                out.append(s)
+        return out
+
+    def __sub__(self, other: Iterable[T]) -> ShapeList[T]:
+        o = list(other)
+        return ShapeList(s for s in self if s not in o)
+
+    def __and__(self, other: Iterable[T]) -> ShapeList[T]:
+        o = list(other)
+        return ShapeList(s for s in self if s in o)
+
+    def __getitem__(self, i):  # type: ignore[override]
+        r = super().__getitem__(i)
+        return ShapeList(r) if isinstance(i, slice) else r
+
+    def vertices(self) -> ShapeList[Vertex]:
+        return _unique(v for s in self for v in s.vertices())
+
+    def edges(self) -> ShapeList[Edge]:
+        return _unique(e for s in self for e in s.edges())
+
+    def faces(self) -> ShapeList[Face]:
+        return _unique(f for s in self for f in s.faces())
+
+    def wires(self) -> ShapeList[Wire]:
+        return ShapeList(w for s in self for w in s.wires())
+
+    def center(self) -> Vector:
+        """Average of the members' centers."""
+        if not self:
+            raise IndexError("empty selection")
+        c = Vector()
+        for s in self:
+            c = c + s.center()
+        return c / len(self)
+
+    def bbox(self) -> BoundBox:
+        if not self:
+            raise IndexError("empty selection")
+        b = self[0].bbox()
+        for s in self[1:]:
+            b = b.union(s.bbox())
+        return b
+
+    # -- placement of the whole list -------------------------------------------
+    def moved(self, location: Location) -> ShapeList[T]:
+        return ShapeList(s.moved(location) for s in self)
+
+    def __rmul__(self, other: Any) -> Any:
+        if isinstance(other, (Location, Plane)):
+            return ShapeList(other * s for s in self)
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        if len(self) > 6:
+            return f"ShapeList([{', '.join(map(repr, self[:3]))}, ... {len(self)} shapes])"
+        return f"ShapeList({list.__repr__(self)})"
+
+
+def _unique(items: Iterable[T]) -> ShapeList[T]:
+    out: ShapeList[T] = ShapeList()
+    seen: set[Any] = set()
+    for s in items:
+        key = s._identity() if hasattr(s, "_identity") else id(s)
+        if key not in seen:
+            seen.add(key)
+            out.append(s)
+    return out
+
+
+def _direction_of(s: Any) -> Vector | None:
+    if isinstance(s, Edge):
+        return s.direction if s.geom_type == "line" else None
+    if isinstance(s, Face):
+        return s.normal_at() if s.geom_type == "plane" else None
+    if isinstance(s, (Sketch,)):
+        return s.plane.z_dir
+    return None
+
+
+# =============================================================================
+# Vertex
+# =============================================================================
+class Vertex(Shape):
+    """A point. Vertices of bodies come from ``.vertices()``; ``Vertex(x, y, z)`` makes one."""
+
+    __slots__ = ("_owner", "_v", "_p")
+
+    def __init__(self, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0):
+        self._owner = None
+        self._v = None
+        self._p = _vec(x) if not isinstance(x, (int, float)) else Vector(x, y, z)
+
+    @classmethod
+    def _of(cls, owner: Any, kvertex: Any) -> Vertex:
+        v = cls.__new__(cls)
+        v._owner, v._v, v._p = owner, kvertex, Vector(kvertex.point())
+        return v
+
+    @property
+    def point(self) -> Vector:
+        return self._p
+
+    @property
+    def x(self) -> float:
+        return self._p.x
+
+    @property
+    def y(self) -> float:
+        return self._p.y
+
+    @property
+    def z(self) -> float:
+        return self._p.z
+
+    def center(self) -> Vector:
+        return self._p
+
+    def bbox(self) -> BoundBox:
+        return BoundBox(self._p, self._p)
+
+    def vertices(self) -> ShapeList[Vertex]:
+        return ShapeList([self])
+
+    def edges(self) -> ShapeList[Edge]:
+        if self._v is None:
+            return ShapeList()
+        return ShapeList(Edge._of(self._owner, e) for e in self._v.edges())
+
+    def faces(self) -> ShapeList[Face]:
+        if self._v is None:
+            return ShapeList()
+        return ShapeList(Face(self._owner, f) for f in self._v.faces())
+
+    def distance_to(self, other: VectorLike | Shape) -> float:
+        if isinstance(other, Shape):
+            return other.distance_to(self._p)  # type: ignore[attr-defined]
+        return self._p.distance_to(other)
+
+    def _transformed(self, m: np.ndarray) -> Vertex:
+        return Vertex(Vector((m @ np.array((*self._p.to_tuple(), 1.0)))[:3]))
+
+    def _identity(self) -> Any:
+        return ("v", id(self._v)) if self._v is not None else ("p", self._p.to_tuple())
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Vertex):
+            return NotImplemented
+        if self._v is not None and other._v is not None:
+            return self._v is other._v
+        return self._p.is_close(other._p)
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def __iter__(self) -> Iterator[float]:
+        return iter(self._p)
+
+    def __repr__(self) -> str:
+        return f"Vertex({self._p.x:.6g}, {self._p.y:.6g}, {self._p.z:.6g})"
+
+
+# =============================================================================
+# Edge
+# =============================================================================
+class Edge(Shape):
+    """A bounded curve: a line segment, an arc, a circle, an ellipse or a NURBS curve.
+
+    Edges come from bodies (``part.edges()``) or from curve constructors such as
+    :func:`~smlibpy.Line`, :func:`~smlibpy.Arc` and :func:`~smlibpy.Spline`.
+    Parameters along an edge (``point_at(t)``) run from 0 at the start to 1 at the end,
+    proportional to arc length.
+    """
+
+    __slots__ = ("_owner", "_e", "_c", "_rev", "_cache")
+
+    def __init__(self) -> None:  # use the constructors
+        raise TypeError("create edges with Line(), Arc(), Spline(), ... or take them from a shape")
+
+    @classmethod
+    def _of(cls, owner: Any, kedge: Any, reversed: bool = False) -> Edge:
+        e = cls.__new__(cls)
+        e._owner, e._e, e._c, e._rev, e._cache = owner, kedge, None, reversed, None
+        return e
+
+    @classmethod
+    def _from_curve(cls, curve: Any) -> Edge:
+        """Wrap a new standalone kernel curve (takes ownership)."""
+        e = cls.__new__(cls)
+        e._owner, e._e, e._c, e._rev, e._cache = None, None, CurveHandle(curve), False, None
+        return e
+
+    # -- kernel access --------------------------------------------------------
+    def _curve(self) -> Any:
+        return self._e.curve() if self._e is not None else self._c.curve  # type: ignore[union-attr]
+
+    def _range(self) -> tuple[float, float]:
+        if self._cache is None:
+            if self._e is not None:
+                t0, t1 = self._e.parameter_range()
+            else:
+                t0, t1 = self._curve().parameter_range()
+            self._cache = (float(t0), float(t1))
+        return self._cache
+
+    def _copy_curve(self) -> Any:
+        """A new standalone kernel curve with this edge's extent and direction."""
+        c = ext.edge_curve(self._e) if self._e is not None else ext.copy_curve(self._c.curve)  # type: ignore[union-attr]
+        if self._rev:
+            ext.reverse_curve(c)
+        return c
+
+    def _param(self, t: float) -> float:
+        """Kernel parameter at fraction ``t`` of the arc length (in edge direction)."""
+        t0, t1 = self._range()
+        if self._rev:
+            t = 1.0 - t
+        if t <= 0.0:
+            return t0
+        if t >= 1.0:
+            return t1
+        if self.geom_type == "line":
+            return t0 + (t1 - t0) * t
+        s = t * ext.curve_length(self._curve(), t0, t1)
+        u, _ = ext.curve_parameter_at_length(self._curve(), t0, s)
+        return float(min(max(u, t0), t1))
+
+    # -- properties -----------------------------------------------------------
+    @property
+    def geom_type(self) -> str:
+        """``"line"``, ``"circle"`` (also arcs), ``"ellipse"``, ``"bspline"`` or ``"other"``."""
+        return ext.curve_kind(self._curve())
+
+    @property
+    def length(self) -> float:
+        t0, t1 = self._range()
+        return float(ext.curve_length(self._curve(), t0, t1))
+
+    @property
+    def start(self) -> Vector:
+        t0, t1 = self._range()
+        return Vector(self._curve().evaluate(t1 if self._rev else t0))
+
+    @property
+    def end(self) -> Vector:
+        t0, t1 = self._range()
+        return Vector(self._curve().evaluate(t0 if self._rev else t1))
+
+    @property
+    def is_closed(self) -> bool:
+        return self.start.is_close(self.end, 1e-7)
+
+    @property
+    def is_seam(self) -> bool:
+        """True for the seam of a closed surface (an edge used twice by one face)."""
+        if self._e is None:
+            return False
+        fs = self._e.faces()
+        if len(fs) != 1:
+            return False
+        return sum(1 for loop in fs[0].boundary_loops() for e, _ in loop if e is self._e) > 1
+
+    @property
+    def direction(self) -> Vector:
+        """Unit direction of a straight edge (start to end)."""
+        if self.geom_type != "line":
+            raise ValueError(f"direction is only defined for straight edges, this is a {self.geom_type}")
+        return (self.end - self.start).normalized()
+
+    def _circle(self) -> dict[str, Any]:
+        if self.geom_type != "circle":
+            raise ValueError(f"not a circular edge but a {self.geom_type}")
+        return ext.curve_data(self._curve())
+
+    @property
+    def radius(self) -> float:
+        """Radius of a circular edge."""
+        return float(self._circle()["radius"])
+
+    @property
+    def arc_center(self) -> Vector:
+        """Center of a circular edge."""
+        return Vector(self._circle()["placement"]["origin"])
+
+    @property
+    def normal(self) -> Vector:
+        """Axis direction of a circular edge."""
+        return Vector(self._circle()["placement"]["z_dir"])
+
+    def point_at(self, t: float = 0.5) -> Vector:
+        """Point at fraction ``t`` of the edge length (0 = start, 1 = end)."""
+        return Vector(self._curve().evaluate(self._param(t)))
+
+    def tangent_at(self, t: float = 0.5) -> Vector:
+        """Unit tangent at fraction ``t`` of the edge length, pointing along the edge."""
+        d = Vector(ext.curve_eval(self._curve(), self._param(t), 1)[1])
+        d = d.normalized()
+        return -d if self._rev else d
+
+    def center(self) -> Vector:
+        """The point halfway along the edge (use :attr:`arc_center` for a circle's center)."""
+        return self.point_at(0.5)
+
+    def bbox(self) -> BoundBox:
+        if self._e is not None:
+            lo, hi = self._e.bounding_box(True)
+            return BoundBox(lo, hi)
+        pts = [self.point_at(i / 32) for i in range(33)]
+        if self.geom_type == "line":
+            pts = [self.start, self.end]
+        return BoundBox.of_points(pts)
+
+    def distance_to(self, point: VectorLike) -> float:
+        p = _vec(point)
+        if self._e is not None:
+            _, _, d = self._e.closest_point(p.to_tuple())
+            return float(d)
+        _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
+        return float(d)
+
+    # -- topology -------------------------------------------------------------
+    def vertices(self) -> ShapeList[Vertex]:
+        if self._e is not None:
+            a, b = self._e.vertices()
+            vs = [Vertex._of(self._owner, a), Vertex._of(self._owner, b)]
+            if self._rev:
+                vs.reverse()
+            return _unique(vs)
+        return _unique([Vertex(self.start), Vertex(self.end)])
+
+    def edges(self) -> ShapeList[Edge]:
+        return ShapeList([self])
+
+    def faces(self) -> ShapeList[Face]:
+        if self._e is None:
+            return ShapeList()
+        return ShapeList(Face(self._owner, f) for f in self._e.faces())
+
+    # -- derived edges --------------------------------------------------------
+    def reversed(self) -> Edge:
+        """The same edge traversed the other way."""
+        e = Edge.__new__(Edge)
+        e._owner, e._e, e._c, e._rev, e._cache = self._owner, self._e, self._c, not self._rev, self._cache
+        return e
+
+    def _transformed(self, m: np.ndarray) -> Edge:
+        return Edge._from_curve(_transform_curve(self._copy_curve(), m))
+
+    def __add__(self, other: Edge | Wire) -> Wire:
+        return Wire([self, other])
+
+    def _identity(self) -> Any:
+        return ("e", id(self._e)) if self._e is not None else ("c", id(self._c))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Edge):
+            return NotImplemented
+        return self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def __repr__(self) -> str:
+        s, e = self.start, self.end
+        return (f"Edge({self.geom_type}, ({s.x:.4g}, {s.y:.4g}, {s.z:.4g}) -> "
+                f"({e.x:.4g}, {e.y:.4g}, {e.z:.4g}))")
+
+
+def _is_rigid(m: np.ndarray) -> bool:
+    r = m[:3, :3]
+    return bool(np.allclose(r @ r.T, np.eye(3), atol=1e-12) and np.linalg.det(r) > 0)
+
+
+def _transform_curve(curve: Any, m: np.ndarray) -> Any:
+    """Apply a 4x4 matrix to a standalone kernel curve (consumes ``curve``)."""
+    if _is_rigid(m):
+        placement = k.Axis2Placement(_t(m[:3, 3]), _t(m[:3, 0]), _t(m[:3, 1]))
+        k.transform(curve, placement)
+        return curve
+    # Scaling and mirroring: NURBS are invariant under affine maps of their poles.
+    d = ext.curve_data(curve)
+    ext.delete_curve(curve)
+    poles = np.array(d["poles"]) @ m[:3, :3].T + m[:3, 3]
+    return _canonical_curve(poles, d["knots"], d["degree"], d["weights"])
+
+
+def _canonical_curve(poles: np.ndarray, knots: Sequence[float], degree: int, weights: Sequence[float] | None) -> Any:
+    uniq: list[float] = []
+    mult: list[int] = []
+    for kv in knots:
+        if uniq and abs(kv - uniq[-1]) <= 1e-14 * max(1.0, abs(kv)):
+            mult[-1] += 1
+        else:
+            uniq.append(float(kv))
+            mult.append(1)
+    return k.create_canonical_curve([_t(p) for p in poles], uniq, mult,
+                                    None if weights is None else [float(w) for w in weights], int(degree))
+
+
+# =============================================================================
+# Wire
+# =============================================================================
+class Wire(Shape):
+    """A chain of edges, open or closed. ``Wire([edge, edge, ...])`` orders and orients the edges."""
+
+    __slots__ = ("_edges",)
+
+    def __init__(self, edges: Iterable[Edge | Wire] | Edge | Wire, *, sort: bool = True):
+        flat: list[Edge] = []
+        items = [edges] if isinstance(edges, (Edge, Wire)) else list(edges)
+        for it in items:
+            if isinstance(it, Wire):
+                flat.extend(it._edges)
+            elif isinstance(it, Edge):
+                flat.append(it)
+            elif isinstance(it, ShapeList) or isinstance(it, (list, tuple)):
+                flat.extend(Wire(it, sort=False)._edges)
+            else:
+                raise TypeError(f"a wire is made of edges, got {type(it).__name__}")
+        if not flat:
+            raise ValueError("a wire needs at least one edge")
+        self._edges = tuple(_chain(flat) if sort else flat)
+
+    @classmethod
+    def _raw(cls, edges: Sequence[Edge]) -> Wire:
+        w = cls.__new__(cls)
+        w._edges = tuple(edges)
+        return w
+
+    def edges(self) -> ShapeList[Edge]:
+        return ShapeList(self._edges)
+
+    def vertices(self) -> ShapeList[Vertex]:
+        return _unique(v for e in self._edges for v in e.vertices())
+
+    def wires(self) -> ShapeList[Wire]:
+        return ShapeList([self])
+
+    @property
+    def is_closed(self) -> bool:
+        return self.start.is_close(self.end, 1e-6)
+
+    @property
+    def start(self) -> Vector:
+        return self._edges[0].start
+
+    @property
+    def end(self) -> Vector:
+        return self._edges[-1].end
+
+    @property
+    def length(self) -> float:
+        return sum(e.length for e in self._edges)
+
+    def center(self) -> Vector:
+        """Length-weighted average of the edge midpoints."""
+        total = 0.0
+        c = Vector()
+        for e in self._edges:
+            L = e.length
+            c = c + e.center() * L
+            total += L
+        return c / total if total else self._edges[0].start
+
+    def bbox(self) -> BoundBox:
+        b = self._edges[0].bbox()
+        for e in self._edges[1:]:
+            b = b.union(e.bbox())
+        return b
+
+    def point_at(self, t: float = 0.5) -> Vector:
+        """Point at fraction ``t`` of the total length."""
+        lengths = [e.length for e in self._edges]
+        s = max(0.0, min(1.0, t)) * sum(lengths)
+        for e, L in zip(self._edges, lengths):
+            if s <= L or e is self._edges[-1]:
+                return e.point_at(s / L if L else 0.0)
+            s -= L
+        return self.end
+
+    def tangent_at(self, t: float = 0.5) -> Vector:
+        lengths = [e.length for e in self._edges]
+        s = max(0.0, min(1.0, t)) * sum(lengths)
+        for e, L in zip(self._edges, lengths):
+            if s <= L or e is self._edges[-1]:
+                return e.tangent_at(s / L if L else 0.0)
+            s -= L
+        return self._edges[-1].tangent_at(1.0)
+
+    def distance_to(self, point: VectorLike) -> float:
+        return min(e.distance_to(point) for e in self._edges)
+
+    def close(self) -> Wire:
+        """This wire closed with a straight line from its end to its start."""
+        if self.is_closed:
+            return self
+        from .curves import Line
+
+        return Wire._raw((*self._edges, Line(self.end, self.start)))
+
+    def reversed(self) -> Wire:
+        return Wire._raw(tuple(e.reversed() for e in reversed(self._edges)))
+
+    def _transformed(self, m: np.ndarray) -> Wire:
+        return Wire._raw(tuple(e._transformed(m) for e in self._edges))
+
+    def _copy_curves(self) -> list[Any]:
+        return [e._copy_curve() for e in self._edges]
+
+    def __add__(self, other: Edge | Wire) -> Wire:
+        return Wire([self, other])
+
+    def plane(self) -> Plane:
+        """The plane of a planar wire (normal by the right-hand rule along the wire)."""
+        pts = [self.point_at(i / 64) for i in range(64)]
+        return _fit_plane(pts, closed=self.is_closed)
+
+    def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Wire:
+        """Round the corners between straight edges with tangent arcs (planar wires)."""
+        from .curves import _fillet_wire
+
+        return _fillet_wire(self, radius, vertices)
+
+    def to_sketch(self) -> Sketch:
+        """The planar region bounded by this closed wire."""
+        return Sketch._from_wires([self])
+
+    def __repr__(self) -> str:
+        kind = "closed" if self.is_closed else "open"
+        return f"Wire({len(self._edges)} edges, {kind}, length={self.length:.6g})"
+
+
+def _chain(edges: list[Edge], tol: float = 1e-6) -> list[Edge]:
+    """Order edges head to tail, reversing where needed. Leaves them alone if they don't chain."""
+    if len(edges) < 2:
+        return edges
+    rest = list(edges)
+    chain = [rest.pop(0)]
+    while rest:
+        end = chain[-1].end
+        start = chain[0].start
+        for i, e in enumerate(rest):
+            if e.start.is_close(end, tol):
+                chain.append(rest.pop(i))
+                break
+            if e.end.is_close(end, tol):
+                chain.append(rest.pop(i).reversed())
+                break
+            if e.end.is_close(start, tol):
+                chain.insert(0, rest.pop(i))
+                break
+            if e.start.is_close(start, tol):
+                chain.insert(0, rest.pop(i).reversed())
+                break
+        else:
+            return edges  # not a single chain; keep the given order
+    return chain
+
+
+def _loop_area(wire: Wire, samples: int = 24) -> float:
+    """Approximate enclosed area of a closed planar wire (sampled polygon)."""
+    pts = []
+    for e in wire.edges():
+        n = 1 if e.geom_type == "line" else samples
+        pts.extend(e.point_at(i / n) for i in range(n))
+    a = np.array([p.to_tuple() for p in pts])
+    c = a.mean(axis=0)
+    s = np.zeros(3)
+    for i in range(len(a)):
+        s += np.cross(a[i] - c, a[(i + 1) % len(a)] - c)
+    return 0.5 * float(np.linalg.norm(s))
+
+
+def _fit_plane(points: Sequence[Vector], closed: bool = True) -> Plane:
+    pts = np.array([p.to_tuple() for p in points])
+    c = pts.mean(axis=0)
+    # Newell normal for closed polygons: orientation follows the traversal.
+    n = np.zeros(3)
+    if closed:
+        for i in range(len(pts)):
+            a, b = pts[i] - c, pts[(i + 1) % len(pts)] - c
+            n += np.cross(a, b)
+    if np.linalg.norm(n) < 1e-12:
+        _, _, vt = np.linalg.svd(pts - c)
+        n = vt[2]
+    return Plane(Vector(c), z_dir=Vector(n).normalized())
+
+
+# =============================================================================
+# Face
+# =============================================================================
+class Face(Shape):
+    """A bounded piece of a surface, belonging to a body (a part, shell or sketch)."""
+
+    __slots__ = ("_owner", "_f", "_info")
+
+    def __init__(self, owner: Any, kface: Any):
+        self._owner = owner
+        self._f = kface
+        self._info: dict[str, Any] | None = None
+
+    @property
+    def owner(self) -> _Body:
+        """The body this face belongs to."""
+        return self._owner
+
+    # -- geometry -------------------------------------------------------------
+    def _surface_info(self) -> dict[str, Any]:
+        if self._info is None:
+            self._info = ext.surface_data(self._f.surface(), False)
+        return self._info
+
+    @property
+    def geom_type(self) -> str:
+        """``"plane"``, ``"cylinder"``, ``"cone"``, ``"sphere"``, ``"torus"``, ``"revolution"``,
+        ``"extrusion"``, ``"bspline"``, ``"offset"`` or ``"other"``."""
+        info = self._surface_info()
+        kind = info["kind"]
+        if kind == "cone" and abs(info.get("semi_angle_deg", 1.0)) < 1e-12:
+            return "cylinder"
+        return kind
+
+    @property
+    def area(self) -> float:
+        return float(ext.face_properties(self._f, ACCURACY)["area"])
+
+    def center(self) -> Vector:
+        """Area centroid. For curved faces it may lie off the face; see :meth:`interior_point`."""
+        p = ext.face_properties(self._f, ACCURACY)
+        o, m, a = p["origin"], p["first_moments"], p["signed_area"]
+        if abs(a) < 1e-300:
+            return Vector(self._f.interior_point())
+        return Vector(o) + Vector(m) / a
+
+    def interior_point(self) -> Vector:
+        """A point guaranteed to lie on the face."""
+        return Vector(self._f.interior_point())
+
+    def normal_at(self, point: VectorLike | None = None) -> Vector:
+        """Outward unit normal at the face point closest to ``point`` (default: the center)."""
+        if point is None and self.geom_type == "plane":
+            pl = self._surface_info()["placement"]
+            n = Vector(pl["z_dir"])
+            return n if self._natural_is_outward() else -n
+        p = _vec(point) if point is not None else self.center()
+        _, uvs, _ = k.surface_closest_point(self._f.surface(), p.to_tuple())
+        uv = uvs[0]
+        return Vector(self._f.outward_normal_at_uv(uv.x, uv.y))
+
+    def _natural_is_outward(self) -> bool:
+        (u0, v0), (u1, v1) = self._f.uv_domain()
+        u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+        n0 = Vector(self._f.normal_at_uv(u, v))
+        n1 = Vector(self._f.outward_normal_at_uv(u, v))
+        return n0.dot(n1) > 0
+
+    @property
+    def is_planar(self) -> bool:
+        return self.geom_type == "plane" or bool(self._f.surface().is_planar(1e-7))
+
+    @property
+    def plane(self) -> Plane:
+        """The face's plane: origin at its centroid, normal pointing out of the body."""
+        return self._plane_of_face()
+
+    def _plane_of_face(self) -> Plane:
+        if not self.is_planar:
+            raise ValueError(f"a {self.geom_type} face has no plane; use normal_at() or a planar face")
+        n = self.normal_at()
+        if self._owner is not None and isinstance(self._owner, Sketch):
+            sp = self._owner.plane
+            if sp.z_dir.is_parallel(n):
+                return Plane(self.center(), sp.x_dir, sp.z_dir)
+        return Plane(self.center(), z_dir=n)
+
+    @property
+    def radius(self) -> float:
+        """Radius of a cylinder, sphere or cone (at its base), minor radius of a torus."""
+        info = self._surface_info()
+        if "minor_radius" in info:
+            return float(info["minor_radius"])
+        if "radius" in info:
+            return float(info["radius"])
+        raise ValueError(f"a {self.geom_type} face has no radius")
+
+    @property
+    def axis(self) -> Axis:
+        """Axis of a cylinder, cone, sphere, torus or surface of revolution."""
+        info = self._surface_info()
+        pl = info.get("placement")
+        if pl is None or self.geom_type == "plane":
+            raise ValueError(f"a {self.geom_type} face has no axis")
+        return Axis(pl["origin"], pl["z_dir"])
+
+    def bbox(self) -> BoundBox:
+        lo, hi = self._f.bounding_box(True)
+        return BoundBox(lo, hi)
+
+    def distance_to(self, point: VectorLike) -> float:
+        _, d = self._f.closest_point(_vec(point).to_tuple())
+        return float(d)
+
+    # -- topology -------------------------------------------------------------
+    def _loops(self) -> list[Wire]:
+        loops = self._f.boundary_loops()
+        out = []
+        for loop in loops:
+            out.append(Wire._raw([Edge._of(self._owner, e, reversed=not fwd) for e, fwd in loop]))
+        return out
+
+    def outer_wire(self) -> Wire:
+        return self._loops()[0]
+
+    def inner_wires(self) -> ShapeList[Wire]:
+        return ShapeList(self._loops()[1:])
+
+    def wires(self) -> ShapeList[Wire]:
+        return ShapeList(self._loops())
+
+    def edges(self, seams: bool = False) -> ShapeList[Edge]:
+        """The face's edges (seam edges only with ``seams=True``)."""
+        out = ShapeList()
+        counts: dict[int, int] = {}
+        loops = self._f.boundary_loops()
+        for loop in loops:
+            for e, _ in loop:
+                counts[id(e)] = counts.get(id(e), 0) + 1
+        seen: set[int] = set()
+        for loop in loops:
+            for e, _ in loop:
+                if id(e) in seen or (counts[id(e)] > 1 and not seams):
+                    continue
+                seen.add(id(e))
+                out.append(Edge._of(self._owner, e))
+        return out
+
+    def vertices(self) -> ShapeList[Vertex]:
+        return ShapeList(Vertex._of(self._owner, v) for v in self._f.vertices())
+
+    def faces(self) -> ShapeList[Face]:
+        return ShapeList([self])
+
+    def neighbors(self) -> ShapeList[Face]:
+        """Faces sharing an edge with this one."""
+        out = _unique(f for e in self.edges() for f in e.faces())
+        return ShapeList(f for f in out if f != self)
+
+    # -- conversion -----------------------------------------------------------
+    def to_sketch(self) -> Sketch:
+        """A sketch holding a copy of this (planar) face."""
+        plane = self.plane
+        with kernel_call("copy face"):
+            b = ext.copy_faces(self._owner._brep, [self._f])
+        return Sketch._wrap(b, plane)
+
+    def to_shell(self) -> Shell:
+        """A sheet body holding a copy of this face."""
+        with kernel_call("copy face"):
+            b = ext.copy_faces(self._owner._brep, [self._f])
+        return Shell._wrap(b)
+
+    def extrude(self, amount: float, **kwargs: Any) -> Part:
+        """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
+        return self.to_sketch().extrude(amount, **kwargs)
+
+    def _transformed(self, m: np.ndarray) -> Face:
+        moved = self.to_shell()._transformed(m)
+        return moved.faces()[0]
+
+    def _identity(self) -> Any:
+        return ("f", id(self._f))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Face):
+            return NotImplemented
+        return self._f is other._f
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def __repr__(self) -> str:
+        c = self.center()
+        return f"Face({self.geom_type}, area={self.area:.6g}, center=({c.x:.4g}, {c.y:.4g}, {c.z:.4g}))"
+
+
+# =============================================================================
+# Bodies: Part, Shell, Sketch
+# =============================================================================
+class _Body(Shape):
+    """A shape backed by one kernel Brep."""
+
+    __slots__ = ("_h", "name", "color")
+
+    def __init__(self) -> None:
+        raise TypeError(f"create a {type(self).__name__} with the constructors (Box(), Rectangle(), ...)")
+
+    @classmethod
+    def _wrap(cls, brep: Any, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        b = cls.__new__(cls)
+        b._h = BrepHandle(brep)
+        b.name = kwargs.pop("name", None)
+        b.color = kwargs.pop("color", None)
+        return b
+
+    @property
+    def _brep(self) -> Any:
+        return self._h.brep
+
+    def _copy_brep(self) -> Any:
+        return self._brep.copy()
+
+    def _like(self, brep: Any) -> Any:
+        """A body of the same type and metadata around ``brep``."""
+        return type(self)._wrap(brep, name=self.name, color=self.color)
+
+    # -- metadata (returns copies; shapes are immutable) ----------------------
+    def named(self, name: str) -> Any:
+        """The same body with a name (used by exporters and the viewer)."""
+        b = self._like(self._copy_brep())
+        b.name = name
+        return b
+
+    def colored(self, color: str | Sequence[float]) -> Any:
+        """The same body with a display color (``"steelblue"``, ``"#4682b4"`` or ``(r, g, b)``)."""
+        b = self._like(self._copy_brep())
+        b.color = color
+        return b
+
+    # -- topology -------------------------------------------------------------
+    def faces(self) -> ShapeList[Face]:
+        return ShapeList(Face(self, f) for f in self._brep.faces())
+
+    def edges(self, seams: bool = False) -> ShapeList[Edge]:
+        """All edges. Seam edges (where a closed surface such as a cylinder meets itself)
+        are left out unless ``seams`` is true."""
+        all_edges = self._brep.edges()
+        if seams:
+            return ShapeList(Edge._of(self, e) for e in all_edges)
+        skip = set(ext.seam_edges(self._brep))
+        return ShapeList(Edge._of(self, e) for i, e in enumerate(all_edges) if i not in skip)
+
+    def vertices(self) -> ShapeList[Vertex]:
+        return ShapeList(Vertex._of(self, v) for v in self._brep.vertices())
+
+    def wires(self) -> ShapeList[Wire]:
+        return ShapeList(w for f in self.faces() for w in f.wires())
+
+    # -- geometry -------------------------------------------------------------
+    def bbox(self) -> BoundBox:
+        lo, hi = self._brep.bounding_box(True)
+        return BoundBox(lo, hi)
+
+    def distance_to(self, other: VectorLike | Shape) -> float:
+        """Minimum distance to a point or to another body."""
+        if isinstance(other, _Body):
+            return float(k.brep_distance(self._brep, other._brep))
+        _, d = k.brep_closest_point(self._brep, _vec(other).to_tuple())  # type: ignore[arg-type]
+        return float(d)
+
+    def closest_point(self, point: VectorLike) -> Vector:
+        p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
+        return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
+
+    def _transformed(self, m: np.ndarray) -> Any:
+        b = self._copy_brep()
+        with kernel_call("transform"):
+            ext.transform_brep(b, list(m.T.ravel()))
+        return self._like(b)
+
+    # -- body conversions -----------------------------------------------------
+    def to_nurbs(self) -> Any:
+        """A copy whose faces and edges are all NURBS (analytic types converted)."""
+        b = self._copy_brep()
+        with kernel_call("to_nurbs"):
+            k.turn_to_nurbs(b)
+        return self._like(b)
+
+    def heal(self) -> Any:
+        """Repair gaps, tolerances and topology (mostly needed for imported data)."""
+        b = self._copy_brep()
+        with kernel_call("heal"):
+            k.heal_brep(b)
+        return self._like(b)
+
+    def _identity(self) -> Any:
+        return ("b", id(self._h))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _Body):
+            return NotImplemented
+        return self._h is other._h
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def info(self) -> dict[str, Any]:
+        """Counts and measures in one dictionary."""
+        b = self.bbox()
+        return {
+            "type": type(self).__name__,
+            "faces": self._brep.face_count(),
+            "edges": self._brep.edge_count(),
+            "vertices": self._brep.vertex_count(),
+            "bbox": (b.min.to_tuple(), b.max.to_tuple()),
+        }
+
+
+def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
+    return any(a.max[i] < b.min[i] - tol or b.max[i] < a.min[i] - tol for i in range(3))
+
+
+def _bodies(items: Any) -> list[_Body]:
+    if isinstance(items, _Body):
+        return [items]
+    if isinstance(items, Face):
+        return [items.to_shell()]
+    out: list[_Body] = []
+    for it in items:
+        out.extend(_bodies(it))
+    return out
+
+
+class MassProperties:
+    """Mass properties of a part.
+
+    ``inertia`` is the inertia tensor about the center of mass (axes parallel to the
+    world axes); ``principal_moments`` and ``principal_axes`` are its eigen-decomposition.
+    """
+
+    __slots__ = ("mass", "volume", "area", "center", "inertia", "density")
+
+    def __init__(self, mass: float, volume: float, area: float, center: Vector, inertia: np.ndarray, density: float):
+        self.mass = mass
+        self.volume = volume
+        self.area = area
+        self.center = center
+        self.inertia = inertia
+        self.density = density
+
+    @property
+    def principal_moments(self) -> tuple[float, float, float]:
+        w, _ = np.linalg.eigh(self.inertia)
+        return (float(w[0]), float(w[1]), float(w[2]))
+
+    @property
+    def principal_axes(self) -> tuple[Vector, Vector, Vector]:
+        _, v = np.linalg.eigh(self.inertia)
+        return (Vector(v[:, 0]), Vector(v[:, 1]), Vector(v[:, 2]))
+
+    def __repr__(self) -> str:
+        c = self.center
+        return (f"MassProperties(mass={self.mass:.6g}, volume={self.volume:.6g}, area={self.area:.6g}, "
+                f"center=({c.x:.6g}, {c.y:.6g}, {c.z:.6g}))")
+
+
+class Part(_Body):
+    """A solid: one or more closed volumes.
+
+    Combine parts with ``+`` (union), ``-`` (difference) and ``&`` (intersection).
+    The right-hand side may be a single part or any iterable of parts.
+    """
+
+    __slots__ = ()
+
+    # -- measures -------------------------------------------------------------
+    def _props(self, density: float = 1.0) -> dict[str, Any]:
+        with kernel_call("mass properties", "is the part a closed solid?"):
+            return ext.brep_properties(self._brep, ACCURACY, density)
+
+    @property
+    def volume(self) -> float:
+        return float(self._props()["volume"])
+
+    @property
+    def area(self) -> float:
+        """Total surface area."""
+        return float(self._props()["area"])
+
+    def center(self) -> Vector:
+        """Center of mass (uniform density)."""
+        p = self._props()
+        return Vector(p["origin"]) + Vector(p["moments"][4]) / p["mass"]
+
+    def mass_properties(self, density: float = 1.0) -> MassProperties:
+        """Mass, center of mass and inertia tensor for a uniform ``density``."""
+        p = self._props(density)
+        o = Vector(p["origin"])
+        mass = float(p["mass"])
+        d = Vector(p["moments"][4]) / mass  # centroid relative to the origin of integration
+        ixx, iyy, izz = p["moments"][7]
+        iyz, izx, ixy = p["moments"][6]
+        i_o = np.array([[ixx, -ixy, -izx], [-ixy, iyy, -iyz], [-izx, -iyz, izz]], dtype=float)
+        dv = np.array(d.to_tuple())
+        i_c = i_o - mass * (dv.dot(dv) * np.eye(3) - np.outer(dv, dv))
+        return MassProperties(mass, float(p["volume"]), float(p["area"]), o + d, i_c, density)
+
+    def is_valid(self) -> bool:
+        """True if the part is a closed, manifold solid."""
+        return bool(self._brep.is_manifold_solid())
+
+    def solids(self) -> ShapeList[Part]:
+        """The separate bodies of this part."""
+        with kernel_call("solids"):
+            parts = ext.separate_bodies(self._brep)
+        return ShapeList(Part._wrap(b, name=self.name, color=self.color) for b in parts)
+
+    # -- booleans -------------------------------------------------------------
+    def _boolean(self, others: Any, op: Any, name: str) -> Part:
+        tools = _bodies(others)
+        result = self._copy_brep()
+        for t in tools:
+            if not isinstance(t, (Part, Shell)):
+                raise TypeError(f"cannot {name} a {type(t).__name__} with a Part")
+            with kernel_call(name, "the operands may only touch in a degenerate way; try moving one slightly"):
+                result = k.boolean(result, t._copy_brep(), operation=op)
+        return self._like(result)
+
+    def fuse(self, *others: Part | Iterable[Part]) -> Part:
+        """Union with other parts."""
+        return self._boolean(others, k.BooleanOp.UNION, "fuse")
+
+    def cut(self, *others: Part | Iterable[Part]) -> Part:
+        """Subtract other parts."""
+        return self._boolean(others, k.BooleanOp.DIFFERENCE, "cut")
+
+    def intersect(self, *others: Part | Iterable[Part]) -> Part:
+        """Keep only the volume shared with the other parts."""
+        return self._boolean(others, k.BooleanOp.INTERSECTION, "intersect")
+
+    def __add__(self, other: Any) -> Part:
+        return self.fuse(other)
+
+    def __radd__(self, other: Any) -> Part:
+        if other == 0:  # sum([...])
+            return self
+        return self.fuse(other)
+
+    def __sub__(self, other: Any) -> Part:
+        return self.cut(other)
+
+    def __and__(self, other: Any) -> Part:
+        return self.intersect(other)
+
+    # -- topology selection on this part --------------------------------------
+    def _own_edges(self, edges: Any) -> list[Any]:
+        """Kernel edges of this part for the given edge selection."""
+        sel = _flatten_edges(edges)
+        out = []
+        candidates: list[tuple[Any, Vector, Vector, Vector]] | None = None
+        tol = 1e-6 * max(1.0, self.bbox().diagonal)
+        for e in sel:
+            if e._e is not None and e._owner is not None and e._owner._h is self._h:
+                out.append(e._e)
+                continue
+            # An edge of another body (e.g. an earlier version of this part): match by geometry.
+            if candidates is None:
+                candidates = []
+                for ke in self._brep.edges():
+                    own = Edge._of(self, ke)
+                    candidates.append((ke, own.start, own.end, own.center()))
+            s, t, m = e.start, e.end, e.center()
+            for ke, a, b, c in candidates:
+                if c.is_close(m, tol) and ((a.is_close(s, tol) and b.is_close(t, tol)) or (a.is_close(t, tol) and b.is_close(s, tol))):
+                    out.append(ke)
+                    break
+            else:
+                raise ValueError(f"{e!r} is not an edge of this part")
+        if not out:
+            raise ValueError("no edges selected")
+        return out
+
+    def _own_faces(self, faces: Any) -> list[Any]:
+        sel = _flatten_faces(faces)
+        out = []
+        tol = 1e-6 * max(1.0, self.bbox().diagonal)
+        own_faces: list[Face] | None = None
+        for f in sel:
+            if f._owner is not None and f._owner._h is self._h:
+                out.append(f._f)
+                continue
+            # A face of another body: the face of ours that contains its interior point and
+            # has the same area.
+            if own_faces is None:
+                own_faces = list(self.faces())
+            p = f.interior_point()
+            area = f.area
+            for g in own_faces:
+                if g.distance_to(p) <= tol and abs(g.area - area) <= 1e-6 * max(1.0, area):
+                    out.append(g._f)
+                    break
+            else:
+                raise ValueError(f"{f!r} is not a face of this part")
+        return out
+
+    def _with_edges(self, edges: Any) -> tuple[BrepHandle, list[Any]]:
+        own = self._own_edges(edges)
+        copy, _, mapped, _ = ext.copy_with_map(self._brep, [], own, [])
+        return BrepHandle(copy), list(mapped)
+
+    def _with_faces(self, faces: Any) -> tuple[BrepHandle, list[Any]]:
+        own = self._own_faces(faces)
+        copy, mapped, _, _ = ext.copy_with_map(self._brep, own, [], [])
+        return BrepHandle(copy), list(mapped)
+
+    # -- features ---------------------------------------------------------------
+    def fillet(
+        self,
+        edges: Any,
+        radius: float | tuple[float, float] | Sequence[float],
+        *,
+        continuity: int | str | None = None,
+        fullness: float = 1.0,
+    ) -> Part:
+        """Round edges.
+
+        Args:
+            edges: Edges of this part (a selection, a single edge, or faces whose edges
+                to round).
+            radius: Fillet radius. A ``(start, end)`` tuple varies the radius linearly
+                along each edge. A list with one radius per edge rounds edges differently.
+            continuity: ``None`` for a circular fillet. ``"G2"`` or ``"G3"`` make a
+                curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
+                arc: no visible highlight seam, as used for consumer and Class-A surfaces.
+            fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
+        """
+        h, kedges = self._with_edges(edges)
+        cont = _continuity(continuity)
+        with kernel_call("fillet", "the radius may be too large for the selected edges"):
+            if isinstance(radius, tuple) and len(radius) == 2:
+                k.variable_radius_fillet(h.brep, kedges, start_radius=float(radius[0]), end_radius=float(radius[1]),
+                                         xsect_type=1 if cont is None else 2, continuity=cont or 1)
+            elif isinstance(radius, (list, np.ndarray)):
+                radii = [float(r) for r in radius]
+                if len(radii) != len(kedges):
+                    raise ValueError(f"{len(radii)} radii for {len(kedges)} edges")
+                xs = [k.FilletXSect.BLEND if cont else k.FilletXSect.CIRCULAR] * len(kedges)
+                k.fillet_edges_per_edge(h.brep, kedges, radii, xs, continuity=cont or 1, thumbweight=fullness)
+            elif cont is None:
+                k.fillet_edges(h.brep, kedges, radius=float(radius))
+            else:
+                k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
+        return self._like(_take(h))
+
+    def chamfer(self, edges: Any, length: float) -> Part:
+        """Bevel edges. ``length`` is the setback measured along both adjacent faces."""
+        sel = _flatten_edges(edges)
+        radii = []
+        for e in sel:
+            fs = e.faces()
+            if len(fs) == 2:
+                p = e.center()
+                theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
+                radii.append(length / math.tan(theta / 2) if theta > 1e-6 else length)
+            else:
+                radii.append(length)
+        h, kedges = self._with_edges(sel)
+        with kernel_call("chamfer", "the length may be too large for the selected edges"):
+            xs = [k.FilletXSect.CIRCULAR] * len(kedges)
+            if all(abs(r - radii[0]) < 1e-12 for r in radii):
+                k.fillet_edges(h.brep, kedges, radius=radii[0], xsect_type=0)
+            else:
+                # per-edge radii with a linear cross-section
+                for ke, r in zip(kedges, radii):
+                    k.fillet_edges(h.brep, [ke], radius=r, xsect_type=0)
+        del xs
+        return self._like(_take(h))
+
+    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
+        """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
+
+        The walls grow inward (the outside keeps its size) unless ``outward`` is true.
+        """
+        faces = self._own_faces(openings) if openings is not None else []
+        d = abs(thickness) if outward else -abs(thickness)
+        with kernel_call("shell", "the wall may be thicker than the part allows"):
+            b = k.shell_brep(self._brep, d, faces_to_shell=faces)
+        return self._like(b)
+
+    def offset(self, distance: float) -> Part:
+        """Grow (positive) or shrink (negative) the part by ``distance`` everywhere."""
+        with kernel_call("offset"):
+            b = k.offset_brep(self._brep, float(distance))
+        return self._like(b)
+
+    def split(self, plane: Plane | Face, keep: str = "above") -> Any:
+        """Cut the part with a plane.
+
+        ``keep="above"`` keeps the side the plane normal points to, ``"below"`` the other
+        side, ``"both"`` returns ``(above, below)``.
+        """
+        pl = _as_plane(plane)
+        if keep == "both":
+            return self.split(pl, "above"), self.split(pl, "below")
+        if keep not in ("above", "below"):
+            raise ValueError('keep must be "above", "below" or "both"')
+        # Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut
+        # leaves the body open).
+        from .parts import Box
+
+        bb = self.bbox()
+        size = 4.0 * (bb.diagonal + bb.center.distance_to(pl.origin)) + 1.0
+        side = pl if keep == "above" else pl.flipped()
+        halfspace = Box(size, size, size).translate(0, 0, size / 2).moved(Plane(pl.project(bb.center), side.x_dir, side.z_dir).location)
+        with kernel_call("split"):
+            return self & halfspace
+
+    def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
+        """The cross-section of the part in a plane, as a sketch."""
+        pl = _as_plane(plane)
+        with kernel_call("section"):
+            curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
+        if not curves:
+            raise ValueError("the plane does not cut the part")
+        with kernel_call("section"):
+            b = k.create_planar_faces(list(curves))
+        return Sketch._wrap(b, pl)
+
+    def draft(self, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:  # pragma: no cover - planned
+        raise NotImplementedError("face drafts are not available in the open-source kernel yet; "
+                                  "use Sketch.extrude(taper=...) for drafted extrusions")
+
+    def __repr__(self) -> str:
+        try:
+            vol = f"volume={self.volume:.6g}"
+        except KernelError:
+            vol = "not a closed solid"
+        n = self._brep.face_count()
+        label = f"{self.name!r}, " if self.name else ""
+        return f"Part({label}{n} faces, {vol})"
+
+
+def _take(h: BrepHandle) -> Any:
+    """Release a handle's Brep to a new owner."""
+    b, h.brep = h.brep, None
+    return b
+
+
+def _continuity(c: int | str | None) -> int | None:
+    if c is None:
+        return None
+    if isinstance(c, str):
+        c = int(c.upper().lstrip("G"))
+    if c not in (1, 2, 3):
+        raise ValueError("continuity must be G1, G2 or G3")
+    return c
+
+
+def _flatten_edges(items: Any) -> list[Edge]:
+    if isinstance(items, Edge):
+        return [items]
+    if isinstance(items, (Face, Wire)):
+        return list(items.edges())
+    out: list[Edge] = []
+    for it in items:
+        out.extend(_flatten_edges(it))
+    return out
+
+
+def _flatten_faces(items: Any) -> list[Face]:
+    if isinstance(items, Face):
+        return [items]
+    out: list[Face] = []
+    for it in items:
+        out.extend(_flatten_faces(it))
+    return out
+
+
+class Shell(_Body):
+    """A sheet body: one or more faces that do not enclose a volume (surfaces)."""
+
+    __slots__ = ()
+
+    @property
+    def area(self) -> float:
+        return sum(f.area for f in self.faces())
+
+    def center(self) -> Vector:
+        total = 0.0
+        c = Vector()
+        for f in self.faces():
+            a = f.area
+            c = c + f.center() * a
+            total += a
+        return c / total
+
+    def thicken(self, thickness: float, *, both: bool = False) -> Part:
+        """Turn the sheet into a solid of ``thickness`` (along the face normals)."""
+        d = float(thickness)
+        with kernel_call("thicken"):
+            b = k.shell_brep(self._brep, d, create_solid=True)
+        return Part._wrap(b, name=self.name, color=self.color)
+
+    def __add__(self, other: Any) -> Shell:
+        b = self._copy_brep()
+        for t in _bodies(other):
+            with kernel_call("fuse"):
+                b = k.boolean(b, t._copy_brep(), operation=k.BooleanOp.UNION)
+        return self._like(b)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._brep.face_count()} faces, area={self.area:.6g})"
+
+
+class Sketch(Shell):
+    """A planar region (with holes, possibly several pieces) on a plane.
+
+    Sketch constructors build in the world XY plane around the origin; place a sketch
+    with ``.on(plane_or_face)``, ``Plane * sketch`` or ``Pos(...) * sketch``. Combine
+    sketches with ``+``, ``-`` and ``&``, then turn them into parts with
+    :meth:`extrude`, :meth:`revolve`, :meth:`sweep` or :func:`~smlibpy.loft`.
+    """
+
+    __slots__ = ("_plane",)
+
+    @classmethod
+    def _wrap(cls, brep: Any, plane: Plane | None = None, **kwargs: Any) -> Sketch:  # type: ignore[override]
+        s = super()._wrap(brep, **kwargs)
+        s._plane = plane if plane is not None else Plane.XY
+        return s
+
+    def _like(self, brep: Any) -> Sketch:
+        return Sketch._wrap(brep, self._plane, name=self.name, color=self.color)
+
+    @classmethod
+    def _from_wires(cls, wires: Sequence[Wire], plane: Plane | None = None) -> Sketch:
+        curves = []
+        for w in wires:
+            if not w.is_closed:
+                raise ValueError("a sketch region needs closed wires; use wire.close()")
+            curves.extend(w._copy_curves())
+        if plane is None:
+            plane = wires[0].plane()
+            if plane.z_dir.dot(Z.direction) < -1e-9 or (abs(plane.z_dir.z) < 1e-9 and plane.z_dir.dot((1, 1, 0)) < 0):
+                plane = plane.flipped()
+        with kernel_call("make face", "the wire must be planar and must not cross itself"):
+            b = k.create_planar_faces(curves)
+        return cls._wrap(b, plane)
+
+    @property
+    def plane(self) -> Plane:
+        """The sketch plane; extrusions follow its normal."""
+        return self._plane
+
+    def _transformed(self, m: np.ndarray) -> Sketch:
+        s = super()._transformed(m)
+        loc = Location(m)
+        p = self._plane
+        origin = loc * p.origin
+        x = Vector(m[:3, :3] @ np.array(p.x_dir.to_tuple()))
+        y = Vector(m[:3, :3] @ np.array(p.y_dir.to_tuple()))
+        z = x.cross(y)
+        s._plane = Plane(origin, x, z)
+        return s
+
+    # -- 2D booleans ----------------------------------------------------------
+    def _boolean2d(self, other: Any, op: Any, name: str) -> Sketch:
+        result: Sketch = self
+        for t in _bodies(other):
+            if not isinstance(t, Sketch):
+                raise TypeError(f"cannot {name} a {type(t).__name__} with a Sketch")
+            if not result.plane.is_coplanar(t.plane, 1e-6 * max(1.0, result.bbox().diagonal)):
+                raise ValueError(f"cannot {name} sketches in different planes")
+            if _disjoint(result.bbox(), t.bbox()):
+                # The kernel's 2D Booleans need overlapping regions; disjoint ones are cheap.
+                if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.EXCLUSIVE_OR:
+                    with kernel_call(name):
+                        result = result._like(ext.combine([result._brep, t._brep]))
+                    continue
+                if op == k.BooleanOp2D.DIFFERENCE:
+                    continue
+                raise ValueError("the sketches do not overlap; their intersection is empty")
+            with kernel_call(name, "the regions may only touch at a point or along an edge"):
+                b = k.boolean_2d(result._copy_brep(), t._copy_brep(), operation=op)
+            result = result._like(b)
+        return result
+
+    def __add__(self, other: Any) -> Sketch:
+        return self._boolean2d(other, k.BooleanOp2D.UNION, "fuse")
+
+    def __radd__(self, other: Any) -> Sketch:
+        if other == 0:
+            return self
+        return self + other
+
+    def __sub__(self, other: Any) -> Sketch:
+        return self._boolean2d(other, k.BooleanOp2D.DIFFERENCE, "cut")
+
+    def __and__(self, other: Any) -> Sketch:
+        return self._boolean2d(other, k.BooleanOp2D.INTERSECTION, "intersect")
+
+    def __xor__(self, other: Any) -> Sketch:
+        return self._boolean2d(other, k.BooleanOp2D.EXCLUSIVE_OR, "xor")
+
+    # -- measures -------------------------------------------------------------
+    def center(self) -> Vector:
+        return super().center()
+
+    # -- 2D operations --------------------------------------------------------
+    def offset(self, distance: float, *, round: bool = True) -> Sketch:
+        """Grow (positive) or shrink (negative) the region; corners are rounded or sharp."""
+        if distance == 0:
+            return self
+        result: Sketch | None = None
+        for f in self.faces():
+            loops = f.wires()
+            # The outer loop moves outward to grow; holes move inward (they shrink).
+            region = self._offset_loop(loops[0], abs(distance), grow=distance > 0, round=round)
+            for w in loops[1:]:
+                hole = self._offset_loop(w, abs(distance), grow=distance < 0, round=round)
+                if hole is not None:
+                    region = region - hole if region is not None else None
+            if region is not None:
+                result = region if result is None else result + region
+        if result is None:
+            raise ValueError("the offset removes the whole sketch")
+        return result
+
+    def _offset_loop(self, wire: Wire, distance: float, *, grow: bool, round: bool) -> Sketch | None:
+        """Region bounded by a loop moved ``distance`` outward (grow) or inward."""
+        reference = abs(_loop_area(wire))
+        for side in (k.OffsetType.LEFT, k.OffsetType.RIGHT):
+            try:
+                with kernel_call("offset", "the offset may collapse the region"):
+                    b = k.create_offset_profile(wire._copy_curves(), distance, offset_type=side, round_corners=round)
+            except KernelError:
+                if not grow:
+                    continue
+                raise
+            piece = Sketch._wrap(b, self._plane)
+            if (piece.area > reference) == grow:
+                return piece
+        return None
+
+    def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Sketch:
+        """Round the corners of the region (between straight edges)."""
+        out = None
+        for f in self.faces():
+            wires = [w.fillet(radius, vertices) for w in f.wires()]
+            piece = Sketch._from_wires(wires[:1], self._plane)
+            for inner in wires[1:]:
+                piece = piece - Sketch._from_wires([inner], self._plane)
+            out = piece if out is None else out + piece
+        assert out is not None
+        return out
+
+    # -- to 3D ----------------------------------------------------------------
+    def extrude(
+        self,
+        amount: float,
+        *,
+        both: bool = False,
+        taper: float = 0.0,
+        direction: VectorLike | None = None,
+    ) -> Part:
+        """Extrude the region into a solid.
+
+        Args:
+            amount: Distance along the sketch normal (negative goes the other way).
+            both: Extrude ``amount`` to both sides of the sketch.
+            taper: Draft angle in degrees; positive narrows the solid away from the sketch.
+            direction: Extrude along this direction instead of the normal.
+        """
+        if amount == 0:
+            raise ValueError("extrude amount must not be zero")
+        d = _vec(direction).normalized() if direction is not None else self._plane.z_dir
+        if taper:
+            return self._extrude_taper(amount, taper, both)
+        src = self
+        dist = float(amount)
+        if both:
+            src = self.translate(-d * abs(dist))
+            dist = 2 * abs(dist)
+        sign = 1.0 if dist > 0 else -1.0
+        b = src._copy_brep()
+        h = BrepHandle(b)
+        with kernel_call("extrude"):
+            k.non_manifold_linear_sweep(h.brep, (d * sign).to_tuple(), abs(dist))
+        return Part._wrap(_take(h), name=self.name, color=self.color)
+
+    def _extrude_taper(self, amount: float, taper: float, both: bool) -> Part:
+        parts = []
+        for f in self.faces():
+            loops = f.wires()
+            curves = loops[0]._copy_curves()
+            with kernel_call("extrude", "the taper may close the profile before the end"):
+                outer = k.draft_sweep(curves, float(amount), float(taper))
+            part = Part._wrap(outer)
+            for w in loops[1:]:
+                with kernel_call("extrude"):
+                    hole = Part._wrap(k.draft_sweep(w._copy_curves(), float(amount), -float(taper)))
+                part = part - hole
+            parts.append(part)
+        result = parts[0]
+        for p in parts[1:]:
+            result = result + p
+        if both:
+            result = result + self._extrude_taper(-amount, taper, False)
+        return result
+
+    def revolve(self, axis: Axis | None = None, angle: float = 360.0) -> Part:
+        """Revolve the region about an axis in its plane (default: the sketch's local Y axis)."""
+        ax = axis if axis is not None else Axis(self._plane.origin, self._plane.y_dir)
+        o, d = ax.origin.to_tuple(), ax.direction.to_tuple()
+        result: Part | None = None
+        with kernel_call("revolve", "the axis must not cross the region"):
+            for f in self.faces():
+                loops = f.wires()
+                piece = Part._wrap(k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True))
+                for w in loops[1:]:
+                    piece = piece - Part._wrap(k.rotational_sweep(w._copy_curves(), o, d, float(angle), cap_ends=True))
+                result = piece if result is None else result + piece
+        if result is None:
+            raise ValueError("empty sketch")
+        result.name, result.color = self.name, self.color
+        return result
+
+    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None) -> Part:
+        """Sweep the region along a path. The sketch should sit at the start of the path."""
+        from .operations import sweep
+
+        return sweep(self, path, sharp_corners=sharp_corners)
+
+    def __repr__(self) -> str:
+        return f"Sketch({self._brep.face_count()} faces, area={self.area:.6g})"

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "smlibpy"
+version = "0.1.0"
+description = "Python CAD modeling on SMLib, the open-source NURBS solid modeling kernel"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT AND Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "third_party/usd-brep/LICENSE"]
+authors = [{ name = "AWV Informatik AG" }]
+keywords = ["cad", "brep", "nurbs", "solid modeling", "step", "3d", "smlib"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Manufacturing",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
+
+[project.urls]
+Homepage = "https://github.com/awv-informatik/smlibpy"
+Kernel = "https://github.com/NVIDIA-Omniverse/usd-brep"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+cmake.build-type = "Release"
+wheel.packages = ["src/smlibpy"]
+sdist.include = ["third_party/usd-brep/source/SMLib", "third_party/usd-brep/source/SM_API", "third_party/usd-brep/source/SmPyLib/src", "third_party/usd-brep/LICENSE", "third_party/usd-brep/THIRD_PARTY_NOTICES.md"]
+sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests", "third_party/usd-brep/tools", "third_party/usd-brep/Examples", "out", "build", ".venv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120

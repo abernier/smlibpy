@@ -1,0 +1,83 @@
+cmake_minimum_required(VERSION 3.20)
+project(smlibpy LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+# NVIDIA's open-source SMLib distribution (Apache-2.0), pulled in as a submodule.
+set(USD_BREP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/usd-brep" CACHE PATH "usd-brep checkout")
+if(NOT EXISTS "${USD_BREP_DIR}/source/SMLib/src/SmBrep.cpp")
+  message(FATAL_ERROR "usd-brep sources not found in ${USD_BREP_DIR}. Run: git submodule update --init")
+endif()
+
+# The kernel is single threaded unless TBB is found. TBB parallelises tessellation and
+# Boolean pre-processing only, so it is optional.
+option(SMLIBPY_USE_TBB "Use oneTBB for the parallel parts of the kernel" OFF)
+
+# ---------------------------------------------------------------------------
+# Kernel (SMLib) and its C-style wrapper (SM_API), both static so the Python
+# extension is a single self-contained module.
+# ---------------------------------------------------------------------------
+file(GLOB SMLIB_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SMLib/src/*.cpp")
+add_library(smlib STATIC ${SMLIB_SOURCES})
+target_include_directories(smlib PUBLIC "${USD_BREP_DIR}/source/SMLib/inc")
+# Same defines as the upstream release configuration (premake5.lua).
+target_compile_definitions(smlib PUBLIC NOMINMAX SM_GRAPHICS_CALLBACKS=1 $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:NDEBUG>)
+
+if(SMLIBPY_USE_TBB)
+  find_package(TBB REQUIRED)
+  target_compile_definitions(smlib PUBLIC SM_USE_TBB TBB_SUPPRESS_DEPRECATED_MESSAGES)
+  target_link_libraries(smlib PUBLIC TBB::tbb)
+endif()
+
+file(GLOB SM_API_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SM_API/src/*.cpp")
+add_library(sm_api STATIC ${SM_API_SOURCES})
+target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
+target_compile_definitions(sm_api PRIVATE SM_API_EXPORTS)
+target_link_libraries(sm_api PUBLIC smlib)
+
+if(MSVC)
+  foreach(t smlib sm_api)
+    target_compile_options(${t} PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267 /W1)
+  endforeach()
+else()
+  foreach(t smlib sm_api)
+    # Vendor code: keep the build quiet, upstream enforces its own warning policy.
+    target_compile_options(${t} PRIVATE -w)
+  endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# Python extension: upstream pybind11 bindings (without USD) + our additions.
+# ---------------------------------------------------------------------------
+find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(pybind11 CONFIG REQUIRED)
+
+file(GLOB SMPY_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SmPyLib/src/*.cpp")
+# SmPyMain.cpp declares the module `_omni_solid`; we provide our own spine (src/cpp/module.cpp)
+# with the same binder calls. SmPyUsd.cpp needs OpenUSD, which we do not depend on.
+list(FILTER SMPY_SOURCES EXCLUDE REGEX ".*/SmPy(Main|Usd)\\.cpp$")
+file(GLOB SMLIBPY_CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/*.cpp")
+
+pybind11_add_module(_core MODULE ${SMPY_SOURCES} ${SMLIBPY_CPP_SOURCES})
+target_include_directories(_core PRIVATE
+  "${USD_BREP_DIR}/source/SmPyLib/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp")
+target_link_libraries(_core PRIVATE sm_api smlib)
+if(NOT MSVC)
+  target_compile_options(_core PRIVATE -Wno-deprecated-declarations)
+endif()
+
+install(TARGETS _core LIBRARY DESTINATION smlibpy RUNTIME DESTINATION smlibpy)
+
+# Development layout: without scikit-build, put the module next to the Python sources so that
+# `src/` on sys.path imports the freshly built package.
+if(NOT SKBUILD)
+  set_target_properties(_core PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/smlibpy")
+endif()
