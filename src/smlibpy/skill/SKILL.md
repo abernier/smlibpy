@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, measurements, STEP/STL/glTF export and STEP import. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, sheet metal (exact bends with radius and K-factor, flanges, flat patterns), measurements, STEP/STL/glTF export and STEP import. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -70,6 +70,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity |
 | files | `files/*` | STEP in and out, STL, glTF, OBJ, the native format, render, show, meshes |
+| sheetmetal | `sheetmetal/*` | bend, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API
 (`features/fillet`, `parts/Box`, `selection/filter_by`).
@@ -79,3 +80,5 @@ Each domain has a `generic.md` with the concepts; the other docs are named after
 - `recipes/verification`: what to check after each step, and how.
 - `recipes/modeling`: the patterns that work (plates, holes, bosses, revolved parts, shells,
   sweeps along helices) and the order of operations.
+- `recipes/sheet-metal`: brackets from a flat blank, boxes with flanges, flat patterns for a
+  laser cutter, choosing radius and K-factor.

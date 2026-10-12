@@ -186,6 +186,10 @@ def test_hole_in_a_flange_and_across_a_bend():
     assert flat.bbox().max.to_tuple() == pytest.approx((50, 20, T), abs=1e-9)
     assert len([f for f in flat.faces() if f.geom_type == "cylinder"]) == 1
     assert flat.volume == pytest.approx(holed.volume, rel=1e-7)
+    contour = flat_pattern(part).outline        # exact lines and the circle, collinear pieces joined
+    assert sorted(e.geom_type for e in contour.edges()) == ["circle", "line", "line", "line", "line"]
+    (hole,) = contour.edges().circles()
+    assert hole.radius == pytest.approx(5, abs=1e-9) and hole.arc_center.to_tuple() == pytest.approx((85, 20, 0))
     # a hole across the bend zone: its walls in the zone become NURBS (within 1e-4)
     across = plate() - Cylinder(5, 10).translate(20, 0, 0)
     part = bend(across, Axis((20, 0, T), ALONG_Y), 90, radius=R)
@@ -305,6 +309,7 @@ def test_box_from_a_relieved_cross_blank():
     assert pattern.part.volume == pytest.approx(blank.volume, rel=1e-12)
     assert pattern.size.to_tuple() == pytest.approx((100, 80, T), abs=1e-9)
     assert pattern.outline.area == pytest.approx(blank.volume / T, rel=1e-9)
+    assert [e.geom_type for e in pattern.outline.edges()] == ["line"] * 12   # the cross with notched corners
     lines = sorted((round(b.line.center().x, 9), round(b.line.center().y, 9)) for b in pattern.bends)
     assert lines == pytest.approx([(20, 40), (50, 20), (50, 60), (80, 40)], abs=1e-9)
 
@@ -373,7 +378,11 @@ def test_bend_and_unfold_through_the_mcp_session():
         assert not bad["ok"] and "ModelingError" in bad["error"]
     finally:
         s.close()
-    found = [e.key for _, e in discovery.search("sheet metal flat pattern for the laser", 8)]
-    assert "flat_pattern" in found
-    assert "bend_allowance" in [e.key for _, e in discovery.search("k-factor bend allowance", 5)]
-    assert "flange" in [e.key.split("/")[-1] for _, e in discovery.search("fold up an edge", 8)]
+    def names(query, n):  # API names and guide names (sheetmetal/flange -> flange)
+        return [e.key.split("/")[-1] for _, e in discovery.search(query, n)]
+
+    assert "flat_pattern" in names("sheet metal flat pattern for the laser", 5)
+    assert "generic" in names("sheet metal", 6)
+    assert "bend_allowance" in names("k-factor bend allowance", 3)
+    assert "flange" in names("fold up an edge", 5)
+    assert discovery.guide("sheetmetal/generic") is not None and discovery.guide("recipes/sheet-metal") is not None

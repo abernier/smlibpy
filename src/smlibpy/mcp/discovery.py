@@ -49,7 +49,7 @@ SYNONYMS = {
 
 # Sheet metal.
 SYNONYMS.update({
-    "sheet": ["bend", "flange", "flat_pattern", "unfold"], "metal": ["bend", "flange", "flat_pattern"],
+    "sheet": ["sheetmetal", "bend", "flange", "flat_pattern", "unfold"], "metal": ["sheetmetal", "bend", "flange"],
     "bend": ["bend", "flange", "bends"], "bending": ["bend"], "bent": ["bend", "bends"], "fold": ["bend", "flange"],
     "folded": ["bend", "unfold"], "flange": ["flange"], "hem": ["bend"], "brake": ["bend"], "tab": ["bend"],
     "relief": ["bend"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"], "flatten": ["unfold", "flat_pattern"],

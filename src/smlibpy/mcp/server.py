@@ -83,6 +83,8 @@ every Part and Shell variable of the session is shown, tools and intermediate bo
 - Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.
 - A script that fails changes nothing: the session keeps the state before it. checkpoint() before \
 a risky step and restore() to go back.
+- Sheet metal: start from a plate (or sketch.extrude(thickness)), add flange() and bend() with \
+radius= and k_factor=; flat_pattern(part) gives the blank, its outline and bend lines (guide sheetmetal/generic).
 
 DOCS
 list_methods(search="fillet the top edges") finds names in the API and the guides. \

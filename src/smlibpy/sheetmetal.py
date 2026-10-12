@@ -633,7 +633,13 @@ def bends(part: Part, *, k_factor: float = K_FACTOR) -> list[Bend]:
     if not isinstance(part, Part):
         raise TypeError(f"bends: expected a Part, got {type(part).__name__}")
     found, _ = _find_bends(part)
-    return [Bend(g.angle, g.radius, g.thickness, float(k_factor), g.length, Axis(g.origin, g.axis)) for g in found]
+    return [Bend(_r(g.angle), _r(g.radius), _r(g.thickness), float(k_factor), _r(g.length), Axis(g.origin, g.axis))
+            for g in found]
+
+
+def _r(value: float) -> float:
+    """A measured value without the noise far below the modeling tolerance (90.00000000000051)."""
+    return round(value, 9)
 
 
 # =============================================================================
@@ -896,5 +902,6 @@ def flat_pattern(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None =
         p1 = place * (start + direction * g.length)
         up = place.rotate_vector(inside).z > 0
         line = Line(Vector(p0.x, p0.y, 0.0), Vector(p1.x, p1.y, 0.0))
-        pattern_bends.append(Bend(g.angle, g.radius, t, u.k_factor, g.length, None, line, "up" if up else "down"))
-    return FlatPattern(laid, outline, pattern_bends, t, u.k_factor)
+        pattern_bends.append(Bend(_r(g.angle), _r(g.radius), _r(t), u.k_factor, _r(g.length), None, line,
+                                  "up" if up else "down"))
+    return FlatPattern(laid, outline, pattern_bends, _r(t), u.k_factor)
