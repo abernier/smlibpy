@@ -38,7 +38,7 @@ from .render import render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     # geometry
