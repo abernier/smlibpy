@@ -42,7 +42,7 @@ edges are picked by their geometry, for example `part.faces().top()` or
   SMLib's own format
 - Pictures: a software renderer, no GPU or browser needed: shaded views, technical drawings
   (ISO E and A) with hidden lines and center lines, sections, x-ray, highlights, markers,
-  image diffs
+  zebra stripes, curvature maps, image diffs
 - Agents: an MCP server with a live viewer, snapshots and a tested guide for every function,
   and a Claude Code plugin
 
@@ -63,6 +63,33 @@ git clone --recursive https://github.com/awv-informatik/smlibpy
 cd smlibpy
 pip install .
 ```
+
+## For agents
+
+The MCP server lets Claude and other agents model with smlibpy. In Claude Code:
+
+```bash
+claude plugin marketplace add awv-informatik/smlibpy
+claude plugin install smlibpy@smlibpy
+```
+
+Other hosts start `uvx --from "smlibpy[mcp]" smlibpy-mcp`; see [AI agents](docs/mcp.md). The
+agent works in four steps:
+
+1. A skill tested on the real kernel: every function has a guide, written by agents that ran
+   each call and wrote down what they found. The server hands the guides out, and its search
+   knows CAD synonyms.
+2. One script per step: the agent writes a whole step as a Python script and runs it. The
+   session keeps the model between scripts; a kernel crash costs a restart, and the session is
+   rebuilt from the scripts that made it.
+3. A renderer to look with: `snapshot` draws the model in software, as technical drawings with
+   hidden lines, sections, x-ray, highlighted selections, markers, zebra stripes or curvature
+   maps.
+4. Loops until it is right: after every step the agent checks numbers and pictures, fixes what
+   is off, compares before and after on a pinned frame, and goes back to a checkpoint when a
+   step fails.
+
+<p align="center"><img src="docs/readme/renderer.png" width="100%" alt="What the snapshot tool draws: an iso view, technical drawings in first- and third-angle projection, hidden lines, a hatched section and section views, a before and after difference, a four-view sheet, highlights and markers, a sketch over a part, size annotations, x-ray, one color per body, a mirrored pair of views, zebra stripes and curvature maps of a circular fillet against a curvature-continuous blend."></p>
 
 ## A short tour
 
