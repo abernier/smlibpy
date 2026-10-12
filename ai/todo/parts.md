@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `Cone(0, r, h)` exported to STEP comes back with twice the volume
+- **Fixed:** the STEP writer takes another point of the cone face where interior_point() is the apex; the round trip keeps the volume.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `08-cone.py`, `09-cone-step-roundtrip.py`, `10-inverted-cone-step-in-part.py`
 - **What happens:** exporting a cone with its apex at the bottom prints
   `RuntimeWarning: invalid value encountered in divide` (step.py:310, `radial /= np.linalg.norm(radial)`).
@@ -21,6 +22,7 @@
   round-trips correctly.
 
 ### 17. Segmentation fault: fillet on the invalid result of a tangent fuse
+- **Fixed:** fillet, chamfer, shell and offset refuse an invalid part with ModelingError; the tangent fuse itself now raises too.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `06-failures.py`, `10-fillet-invalid-segfault.py`
 - **What happens:** the Python process dies with exit code 139 (reproduced twice).
 - **Expected:** a `ModelingError` (the part is not valid; smlibpy could refuse to fillet an invalid part).
@@ -32,6 +34,7 @@
 - **Workaround:** never continue on a part with `is_valid()` False.
 
 ### 18. Overlapping parallel through cuts: empty part or KernelError
+- **Fixed:** several tools that fail one after the other are combined and applied at once (the hole pattern now gives 23125.2); a single tool overlapping an earlier cut raises KernelError with the hint to combine the tools.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `11-many-tools.py`, `12-overlapping-tools.py`,
   `13-overlap-scope.py`, `14-overlap-workaround.py`, `17-overlapping-holes.py`, `18-overlap-empty-repro.py`, `19-overlap-variants.py`
 - **What happens:** cutting a second parallel cylinder that overlaps an existing through hole:
@@ -54,6 +57,7 @@
 ## MEDIUM
 
 ### 3. `Wedge`: the width comes out doubled
+- **Fixed:** Wedge extrudes width/2 to each side: Wedge(20, 10, 8) is 10 wide, volume 800.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `13-wedge.py`, `14-wedge-edge-cases.py`
 - **What happens:** `Wedge(20, 10, 8)` has bbox y −10..10 (width 20) and volume 1600; with
   `top_length=5` volume 2000. The code extrudes the profile with `extrude(width, both=True)`,
@@ -63,6 +67,7 @@
 - **Workaround:** pass half the width: `Wedge(20, 5, 8)`.
 
 ### 6. `Part.is_valid()` is True for a self-intersecting body with negative volume
+- **Fixed:** is_valid() also requires a positive volume (coarse integration); the revolve raises before that anyway.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, script `16-part-metadata-validity.py`
 - **What happens:** `Rectangle(10, 10).on(Plane.front).revolve()` (profile crosses the axis)
   gives `Part(6 faces, volume=-785.404)` and `is_valid()` → True.
@@ -72,6 +77,7 @@
 - **Workaround:** check `part.volume > 0` too.
 
 ### 7. Fuse with a face tangent to a cylinder returns an invalid part without an error
+- **Fixed:** Booleans between valid parts check the result and raise ModelingError with a hint about degenerate contact.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `17-realistic-block.py`, `18-tangent-rib.py`
 - **What happens:** `Cylinder(10, 20) + Box(10, 4, 20, align=(Align.MAX, Align.CENTER, Align.CENTER)).translate(-10, 0, 0)`
   → `Part(11 faces, ...)`, `is_valid()` False, no exception.
@@ -101,6 +107,7 @@
   or place on a fixed plane (`Plane.XY.offset(5)`).
 
 ### 19. `part - sketch` (forgotten `.extrude`) returns an invalid part without an error
+- **Fixed:** TypeError "cannot cut a Sketch with a Part; extrude it first".
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `01-forms.py`, `02-sketch-operand.py`
 - **What happens:** `Sketch` is a subclass of `Shell`, which `_boolean` accepts. `plate - Circle(3).on(top)`
   → `Part(7 faces, volume=24000)`, `is_valid()` False. `plate & sketch` → 1 face, invalid. Same with a `Face`.
@@ -118,6 +125,7 @@
 - **Reproduce:** `print(len(((Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)).solids()))  # 1`
 
 ### 4. `Wedge` docstring: the ramp does not rise "at the back (+Y)"
+- **Fixed:** the docstring describes the real orientation (high side at x = -length/2, slope towards +X).
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, script `13-wedge.py`
 - **What happens:** the profile lies in XZ and is extruded along Y. The high side is the
   vertical face at x = −length/2; the slope goes down towards +X. `top_length` is measured
@@ -126,6 +134,7 @@
 - **Reproduce:** `[v.point for v in Wedge(20, 10, 8).vertices()]` → the top vertices are at x = −10.
 
 ### 5. `Wedge` does not validate its inputs
+- **Fixed:** ValueError for non-positive sizes and top_length outside 0..length.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `13-wedge.py`, `14-wedge-edge-cases.py`, `15-wedge-negative.py`
 - **What happens:** negative length mirrors the ramp, negative height turns it upside down,
   negative width and negative top_length are accepted; `top_length >= length` gives a box or
@@ -189,6 +198,7 @@
 - **Reproduce:** `[e.geom_type for e in CounterSinkHole(2, 4, 10).edges()]` → `['circle', 'bspline', 'circle']`.
 
 ### 20. Wrong Boolean operands: RecursionError and unhelpful TypeErrors
+- **Fixed:** TypeError "cannot cut a body with a str value; use parts (or a list of parts)" for strings, numbers, edges and vertices.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `01-forms.py`, `20-typeerror.py`
 - **What happens:** `_bodies` iterates a string forever (each character is a string) →
   `RecursionError`. `part - 5` → `TypeError: 'int' object is not iterable`; `part - edge` →
@@ -198,6 +208,7 @@
 - **Reproduce:** `Box(1, 1, 1) - "x"`.
 
 ### 21. Booleans with an empty result return an empty Part silently
+- **Fixed:** empty results stay where they are right (tool encloses the part, identical bodies, disjoint intersections); a wrong empty result (overlapping tools) is retried or raises.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `03-contact-cases.py`, `07-empty-part-crash.py`
 - **What happens:** `a - Box(big)`, `a & disjoint`, `a & [t1, t2]` with disjoint tools: `Part(0 faces,
   volume=0)`, `is_valid()` False, `solids()` empty. `export_step` then raises `ValueError: nothing to write`.
@@ -205,6 +216,7 @@
   always a mistake (for example `&` with a list, which intersects with all tools).
 
 ### 22. The Boolean hint blames touching operands also when an operand is broken
+- **Fixed:** the hint names degenerate contact, overlapping earlier cuts (combine the tools) and broken operands; broken operands get their own message.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, script `09-crash-candidate-1.py`
 - **What happens:** `Box(10, 10, 10) + Rectangle(10, 10).on(Plane.front).revolve()` (negative volume,
   see #6) → `fuse failed (SM_ERR): the operands may only touch in a degenerate way; try moving one slightly`.

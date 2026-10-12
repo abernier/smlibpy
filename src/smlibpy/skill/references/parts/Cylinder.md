@@ -31,8 +31,8 @@ direction +Z).
   `Cylinder(10, 20) & Box(20, 20, 20, align=(Align.CENTER, Align.MIN, Align.CENTER))` is the half
   with y ≥ 0; `Rectangle(10, 20, align=(Align.MIN, Align.CENTER)).on(Plane.front).revolve(Z, 90)`
   is the quarter from +X to +Y.
-- A flat box face that only touches the side of a cylinder (tangent) makes an invalid fuse; let
-  the bodies overlap. See `booleans`.
+- A flat box face that only touches the side of a cylinder (tangent) makes the fuse raise
+  `ModelingError`; let the bodies overlap. See `booleans`.
 
 ## Errors
 

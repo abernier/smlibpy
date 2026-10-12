@@ -27,6 +27,8 @@ _UNITS = {
     "um": "(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MICRO.,.METRE.))",
 }
 _INCH = 25.4
+#: millimeters per declared unit
+_MM_PER_UNIT = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "um": 0.001, "inch": _INCH, "in": _INCH}
 
 
 def _r(v: float) -> str:
@@ -292,11 +294,21 @@ class _BodyWriter:
         if normal_fn is None:  # exported with the kernel's own parameterisation
             return bool(use["same"])
         kf = self.kfaces[idx]
+        kind = normal_fn[0]
         p = np.array(kf.interior_point())
         _, uvs, _ = k.surface_closest_point(kf.surface(), tuple(p))
-        n_kernel = np.array(kf.normal_at_uv(uvs[0].x, uvs[0].y))
+        u, v = uvs[0].x, uvs[0].y
+        if kind in ("cone", "torus"):
+            o, z = normal_fn[1], normal_fn[2]
+            d = p - o
+            if np.linalg.norm(d - z * d.dot(z)) < 1e-9 * max(1.0, np.linalg.norm(d)):
+                # The point is on the axis (the apex of a cone): no radial direction there.
+                # The sense is a property of the whole surface, so any other point will do.
+                (u0, v0), (u1, v1) = kf.uv_domain()
+                u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+                p = np.array(kf.point_at_uv(u, v))
+        n_kernel = np.array(kf.normal_at_uv(u, v))
         n_face = n_kernel if use["same"] else -n_kernel
-        kind = normal_fn[0]
         if kind == "plane":
             n_step = normal_fn[1]
         elif kind == "cylinder":
@@ -364,9 +376,18 @@ class _NeedsNurbs(Exception):
 
 def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str | None = None,
                author: str = "", organization: str = "") -> None:
-    """Write bodies (parts and sheets) to a STEP file."""
+    """Write bodies (parts and sheets) to a STEP file.
+
+    The model is in millimeters; with another ``unit`` the coordinates are converted to
+    it, so the file holds the same part measured in that unit.
+    """
     from .shapes import Part, Shell, _Body
 
+    if unit not in _MM_PER_UNIT:
+        raise ValueError(f"unknown unit {unit!r}; use mm, cm, m, um or inch")
+    if _MM_PER_UNIT[unit] != 1.0:
+        f = 1.0 / _MM_PER_UNIT[unit]
+        bodies = [b.scale(f) if isinstance(b, _Body) else b for b in bodies]
     w = _Writer()
     product = name or _product_name(path)
     app = w.add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')")

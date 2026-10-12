@@ -34,16 +34,16 @@ Use `.smb` to cache an intermediate result between scripts. Use STEP to deliver 
 - `.smb` stores no name and no color. `load` returns `name None`, `color None`. Set them
   again with `.named()` and `.colored()`.
 - A list of two parts raises. Fuse them, or save each to its own file.
-- `load("x.glb")` or `load("x.obj")` does not say "unknown format". These files are handed to
-  the native reader and fail with `KernelError: load failed`. smlibpy cannot read glTF or OBJ.
-- A missing `.smb` file also gives `KernelError: load failed`, not `FileNotFoundError`.
-  A missing `.step` file gives `FileNotFoundError`.
+- smlibpy cannot read glTF or OBJ: `load("x.glb")` raises `ValueError: unknown file type
+  '.glb'; load reads .step, .stp, .stl and .smb`.
 - A `Sketch` comes back as a `Shell`: its plane is lost.
 
 ## Errors
 - `ValueError: an .smb file holds one body; fuse the parts or save them separately`.
 - `AttributeError: 'Mesh' object has no attribute '_brep'`: you passed a mesh to `save`.
-- `KernelError: load failed`: a missing file, or a file that is not `.smb`.
+- `FileNotFoundError` for a missing file.
+- `ValueError: unknown file type '.glb'; load reads .step, .stp, .stl and .smb`.
+- `KernelError: load failed`: an `.smb` file the native reader cannot read.
 
 ## Example
 ```python

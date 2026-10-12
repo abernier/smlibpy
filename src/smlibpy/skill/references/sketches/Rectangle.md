@@ -19,8 +19,9 @@ One value for both axes or one per axis (`Align`, `"min"`/`"center"`/`"max"`, or
 ## Gotchas
 - To turn it, rotate the result: `Rectangle(40, 20).rotate(Z, 30)` or `Rot(z=30) * Rectangle(40, 20)`.
   `align` is applied before you rotate.
-- `align` also moves `sketch.plane.origin` (to the rectangle's center). It matters for
-  `revolve()` without an axis; pass the axis.
+- `align` also moves `sketch.plane.origin` (to the rectangle's center). `revolve()` without
+  an axis turns about the local Y axis through that origin, which crosses the rectangle and
+  raises; pass the axis.
 
 ## Errors
 - `ValueError: rectangle sides must be positive`: a side is zero or negative.

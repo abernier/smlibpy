@@ -1,9 +1,9 @@
 # AI agents (MCP)
 
 smlibpy comes with an MCP server. An agent such as Claude writes Python scripts with smlibpy,
-the server runs them, shows the model in a live 3D viewer and renders pictures the agent uses
-to check its work. Ask for "a flange with six M8 holes on a 90 mm circle" and you get the part,
-a picture and a STEP file.
+and the server runs them, shows the model in a live 3D viewer and renders pictures, so the
+agent can check its work. If you ask for "a flange with six M8 holes on a 90 mm circle", the
+agent builds the part, looks at it and saves a STEP file.
 
 ## Install
 

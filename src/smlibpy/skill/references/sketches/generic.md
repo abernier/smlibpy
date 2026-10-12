@@ -55,13 +55,14 @@ into the part (subtract it), `extrude(+d)` grows out of it (add it).
 - `sketch.plane.origin` moves with the sketch, also with `align` and `translate`. It is the
   constructor's center for the primitives, the world origin for `Polygon`, and the centroid of
   the outline for `make_face` and `wire.to_sketch()`. `revolve()` without an axis turns about
-  the local Y axis through that origin, which crosses most profiles and returns a part with
-  volume 0 and no error. Always pass the axis: `s.revolve(Axis((0, 0, 0), (0, 1, 0)))`.
+  the local Y axis through that origin, which crosses most profiles and raises
+  `ModelingError: revolve: the axis crosses the region; ...`. Always pass the axis:
+  `s.revolve(Axis((0, 0, 0), (0, 1, 0)))`.
 - `mirror()` flips the normal: `Rectangle(20, 10).mirror(Plane.XZ).extrude(5)` goes to z = -5.
   `a + a.mirror(...)` keeps `a`'s normal; `a.mirror(...) + a` has the flipped one.
-- A Part combined with a Sketch is not an error: `Box(5, 5, 5) + Rectangle(10, 10)` and
-  `part - Circle(3)` return an **invalid** Part with the volume unchanged. Extrude first.
-  (`Sketch + Part` raises `TypeError`.)
+- A Part combined with a Sketch raises: `part - Circle(3)` gives `TypeError: cannot cut a
+  Sketch with a Part; extrude it first` (also for `+` and `&`, and `Sketch + Part`).
+  Extrude first.
 - Cutting away everything, or intersecting regions whose boxes overlap but that do not
   touch, returns an empty `Sketch(0 faces, area=0)` with no error. Its `extrude` is an empty
   Part, its `center()` raises `ZeroDivisionError`. Check `len(s.faces())` after cuts.
@@ -75,7 +76,8 @@ into the part (subtract it), `extrude(+d)` grows out of it (add it).
 - `ValueError: the sketches do not overlap; their intersection is empty`: `&` of sketches whose
   bounding boxes do not touch.
 - `TypeError: cannot fuse a Part with a Sketch`: `sketch + part`.
-- `TypeError: 'Edge' object is not iterable`: `sketch + edge`. Make a region first.
+- `TypeError: cannot combine a body with a Edge value; use parts (or a list of parts)`:
+  `sketch + edge`. Make a region first.
 - `ValueError: expected exactly one shape, got 2 - narrow the selection or use [0]`: `on()`
   with a selection of several faces.
 - `ValueError: a cylinder face has no plane; ...`: `on()` a curved face.

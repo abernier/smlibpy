@@ -19,7 +19,7 @@ Every operation returns a new Part; the input is unchanged. Reassigning is the n
 | `volume`, `area` | float | exact integration, relative accuracy about 1e-7 |
 | `center()` | Vector | center of mass, not the bbox center |
 | `bbox()` | BoundBox | tight; `.min`, `.max`, `.size` |
-| `is_valid()` | bool | closed manifold solid; see the gotchas |
+| `is_valid()` | bool | closed manifold solid with a positive volume; see the gotchas |
 | `solids()` | ShapeList[Part] | the separate bodies, each with the part's name and color |
 | `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox` |
 | `faces()`, `edges()`, `vertices()` | ShapeList | see `selection/*` |
@@ -48,12 +48,12 @@ part that should be one piece, check `len(part.solids()) == 1`.
 - `info()["edges"]` counts seam edges; `len(part.edges())` does not (a cylinder: 3 vs 2).
 - `repr` computes the volume with accuracy 1e-5 and prints six digits, so the last digit can
   be off (`Torus(20, 4)`: repr 6316.8, `.volume` 6316.548). Use `.volume` for numbers.
-- `is_valid()` can be True for a broken body: a revolve whose profile crosses the axis gives
-  volume −785 and `is_valid()` True. Check `volume > 0` as well.
-- A fuse where a face only touches a curved face (tangent contact) gives `is_valid()` False
-  without an error. See `booleans`. Do not continue on an invalid part: a fillet on one can
-  crash the Python process.
-- A Boolean can return an empty Part (0 faces, volume 0, `is_valid()` False) without an error.
+- `is_valid()` can be True for a wrong body: a sweep whose profile overlaps itself counts the
+  overlap twice. Compare the volume with a formula as well.
+- A fuse where a face only touches a curved face (tangent contact) raises `ModelingError`.
+  See `booleans`. Fillet, chamfer, shell and offset refuse an invalid part.
+- A cut or intersection can return an empty Part (0 faces, volume 0, `is_valid()` False)
+  without an error.
 - `solids()` does not separate a body that floats inside a cavity of another body: it reports
   one solid.
 - `colored()` accepts any value; an unknown color name fails only at export

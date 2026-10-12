@@ -39,23 +39,24 @@ takes 0.02 s.
   6.6° with 8 segments per ring, 2.5° with 12, 0.34° with 24, 0.03° with 48. Control mode with
   12 segments: 30°.
 - A row of identical points (a pole) works: rings shrinking to a point give a dome.
-- **Do not thicken closed grid surfaces or surfaces with a pole.** A closed tube thickens to a
-  volume-0 Part that `is_valid()` accepts (or fails at random); a dome thickens to volume 0.
-  For exact closed shapes use `revolve`, `loft` or `extrude` of curves, or build two open halves.
+- **Do not thicken closed grid surfaces or surfaces with a pole.** A dome raises; a closed
+  tube mostly raises (`ModelingError` or `KernelError`), but some tubes (8 or 12 points per
+  ring) still return a Part of volume about 0 that `is_valid()` accepts. For exact closed
+  shapes use `revolve`, `loft` or `extrude` of curves, or build two open halves.
 
 ## Gotchas
-- At least **4 x 4 points**. 2x2, 3x3 and 4x3 raise `KernelError: surface failed (SM_ERR)`
-  (`SM_ERR_INVALID_INPUT` with `interpolate=False`), although the docstring says 2 x 2. For a
-  four-sided bilinear patch use `ruled` between two lines.
-- No input checks beyond the grid shape. Two equal rows make the surface overshoot wildly
-  (area 11289 instead of 1621); a NaN gives an empty face (area 0); folded rows give a
-  self-overlapping face. All without an error.
+- At least **4 x 4 points** (bicubic), in both modes. For a four-sided bilinear patch use
+  `ruled` between two lines.
+- NaN and inf coordinates raise `ValueError`. Otherwise no checks beyond the grid shape: two
+  equal rows make the surface overshoot wildly (area 11289 instead of 1621); folded rows give
+  a self-overlapping face. Both without an error.
 - The interpolating surface can bulge past the points between them; the bbox is that of the
   surface, not of the points.
 
 ## Errors
-- `KernelError: surface failed (SM_ERR)`: fewer than 4 points in a direction.
-- `ValueError: expected a grid of at least 2 x 2 points`: not a grid (1 row, 1 column).
+- `ValueError: surface needs a grid of at least 4 x 4 points (bicubic), got 3x3; for a
+  four-sided patch use ruled() between two lines`: fewer than 4 points in a direction.
+- `ValueError: surface: the points must be finite numbers`: a NaN or inf coordinate.
 - `ValueError: setting an array element with a sequence ... inhomogeneous shape`: rows of
   different length.
 - `TypeError: 'int' object is not iterable`: a flat list of points instead of rows.

@@ -1,7 +1,7 @@
 # is_valid, info
 
-`part.is_valid()` tells whether a `Part` is a closed, manifold solid. `body.info()` returns its
-counts and bounding box in one dictionary.
+`part.is_valid()` tells whether a `Part` is a closed, manifold solid with a positive volume.
+`body.info()` returns its counts and bounding box in one dictionary.
 
 ## Signature
 
@@ -19,25 +19,29 @@ counts and bounding box in one dictionary.
 
 ## What valid means
 
-Topology only: every edge has exactly two faces and the faces close up. It does **not**
-check the geometry.
+Every edge has exactly two faces, the faces close up, the bounding box is finite, and the
+enclosed volume (integrated coarsely) is positive. Inside-out bodies and bodies without
+volume are not valid. It does **not** check the geometry beyond that.
 
 | Body | `is_valid()` | Volume |
 |---|---|---|
 | primitives, Booleans, fillets, shells | True | right |
 | two disjoint boxes in one `Part` | True | sum; `len(part.solids()) == 2` |
-| two boxes touching along an edge, fused | **False** | 2000 |
 | two boxes touching at a corner, fused | True | 2000 |
+| empty Part (a cut that removes everything) | **False** | 0 |
 | spring whose profile overlaps the next turn | **True** | overlap counted twice |
-| rectangle revolved about an axis through it | **True** | about 0 |
+
+Booleans, revolve, sweep, loft, extrude with taper and thicken check their result and raise
+`ModelingError` instead of returning an inside-out or volume-less body; fillet, chamfer,
+shell and offset refuse an invalid input part. A fuse of two boxes touching along an edge
+raises.
 
 So `is_valid()` is necessary but not enough. Also check:
 
-- `volume > 0` and close to a formula: catches self-overlapping sweeps and revolves across the
-  axis. No Boolean repairs a self-overlapping body (fuse, cut and intersect keep the doubled
-  volume and stay "valid").
+- `volume` close to a formula: catches self-overlapping sweeps. No Boolean repairs a
+  self-overlapping body (fuse, cut and intersect keep the doubled volume and stay "valid").
 - `len(part.solids()) == 1` when you meant one body.
-- the picture (`snapshot(view="sheet")`): a body with volume 0 still looks like a cylinder.
+- the picture (`snapshot(view="sheet")`).
 
 ## Gotchas
 
@@ -48,20 +52,21 @@ So `is_valid()` is necessary but not enough. Also check:
 
 ```python
 def check(part, expected_volume, rel=1e-5):
-    assert part.is_valid(), "not a closed manifold solid"
+    assert part.is_valid(), "not a valid solid"
     assert len(part.solids()) == 1, f"{len(part.solids())} solids"
     v = part.volume
-    assert v > 0 and abs(v - expected_volume) <= rel * expected_volume, f"volume {v}"
+    assert abs(v - expected_volume) <= rel * expected_volume, f"volume {v}"
     return part.info()
 
 print(check(Box(10, 20, 30), 6000))
 # {'type': 'Part', 'faces': 6, 'edges': 12, 'vertices': 8, 'bbox': ((-5.0, -10.0, -15.0), (5.0, 10.0, 15.0))}
 
-bad = Rectangle(10, 10).revolve(Axis((0, 0, 0), (0, 1, 0)))   # profile crosses the axis
-print(bad.is_valid(), bad.volume)                              # True, about 0: is_valid misses it
+empty = Box(10, 10, 10) - Box(20, 20, 20)                      # the tool encloses the part
+print(empty.is_valid(), len(empty.faces()))                    # False 0
 
-edge_touch = Box(10, 10, 10) + Box(10, 10, 10).translate(10, 10, 0)
-print(edge_touch.is_valid())                                   # False: the boxes share only an edge
+corner = Box(10, 10, 10) + Box(10, 10, 10).translate(10, 10, 10)
+print(corner.is_valid(), corner.volume)                        # True 2000.0: touching at a corner
+# Box(10, 10, 10) + Box(10, 10, 10).translate(10, 10, 0) raises ModelingError (only an edge shared)
 ```
 
 ## Related

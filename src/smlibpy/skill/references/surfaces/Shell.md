@@ -43,21 +43,23 @@ Missing on purpose: `volume`, `is_valid`, `solids`, `mass_properties`, `fillet`,
   `stitch` makes normals outward only when it closes into a Part (an open stitched Shell keeps
   the input normals); `mirror` flips them.
 - All faces of a multi-face Shell must agree: a floor (normal +Z) and a wall whose normal points
-  away from the floor thicken to volume 0 with `is_valid()` False, without an error.
+  away from the floor raise `ModelingError: thicken: the kernel returned a body that is not a
+  closed, manifold solid; ...`.
 - Exact on smooth sheets: a revolved half tube R 10 thickened by 1, 5, 9.9, 10, 12 outward and
   by -5, -9.9 inward matches the formula to 1e-3.
 - Inward thickness must stay below the smallest radius of curvature: R 10 inward by 10 raises
-  `KernelError: thicken failed (SM_ERR)`.
+  `KernelError: thicken failed (SM_ERR): the kernel cannot offset this sheet ...`.
 - A stitched open shell with consistent normals (an open box made from a Box's faces) thickens
   with mitred corners: 20 mm cup, `thicken(-1)` gives 1844 = 20³ − 18²·19.
 - Separate faces in one Shell give separate plates in one Part.
-- `thicken(0)`: `KernelError ... (SM_ERR_INVALID_INPUT)`.
-- `both=True` is accepted but **ignored**: the result is the same as without it.
+- `thicken(0)`: `ValueError: thicken: the thickness must not be zero`.
+- `both=True`: the total thickness centered on the sheet (`t/2` to each side).
 
-**Always check the result**: `p.is_valid() and p.volume > 0`. Closed grid surfaces (a tube from
-`surface`) and surfaces with a pole (a dome from `surface`) thicken into Parts of volume 0,
-sometimes with `is_valid()` True, sometimes not; repeated calls may instead raise. Close such
-shapes with caps (`stitch(tube, caps)`) or build them with `revolve`/`loft`.
+**Check the result**: `p.volume` against area · t. The result is checked and inside-out or
+broken bodies raise `ModelingError`. Surfaces with a pole (a dome from `surface`) raise; closed
+grid surfaces (a tube from `surface`) mostly raise, but some still return a Part of volume
+about 0 that `is_valid()` accepts. Close such shapes with caps (`stitch(tube, caps)`) or build
+them with `revolve`/`loft`.
 
 ## Part and Shell Booleans
 `part & shell`, `part - shell` and `part + shell` do not raise; they return invalid "Parts"

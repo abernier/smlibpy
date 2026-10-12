@@ -39,23 +39,22 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
   wires keep their two end points; only inner corners are rounded.
 - `vertices=[...]`: only the corners at these points (tuples or `Vertex`). A point that is
   not a corner is ignored without an error.
-- Corners next to an arc, a spline or a mirrored/scaled edge (those are `bspline`) are
-  skipped silently.
+- Corners next to an arc, a spline or a mirrored/scaled arc are skipped silently. Straight
+  `bspline` edges (mirrored or scaled lines) count as lines and their corners are rounded.
 - Limit: the two setbacks `r * tan(angle / 2)` on one edge may add up to its length. On a
   20 x 10 rectangle `fillet(5)` works (the short sides vanish, 6 edges), `fillet(5.001)`
   raises.
-- `radius=0` raises `ValueError: cannot normalize a zero-length vector`. A negative radius
-  returns a broken wire without an error. Pass a positive radius only.
+- `radius <= 0` raises `ValueError: fillet: the radius must be positive`.
 
 ## Gotchas
 - **No connectivity check.** Edges with a gap or a T branch are accepted; they keep the
   given order and the wire is "open". `make_face` then complains about an open wire, and a
-  sweep along such a path returns an invalid part (`is_valid()` False, volume 0) without an
-  error. Check `is_closed`, `start` and `end`.
+  sweep along such a path raises `ValueError: the sweep path is not connected: a gap of ...`.
+  Check `is_closed`, `start` and `end`.
 - `to_sketch()` / `make_face()` choose the sketch normal themselves: +Z, or +X / +Y for
   vertical wires, not the plane the wire was drawn on. See `generic.md` for the workaround.
-- `mirror()` turns lines and arcs into `bspline` edges, so `fillet` stops working on them.
-  Fillet before mirroring, or build the full outline from points.
+- `mirror()` turns lines and arcs into `bspline` edges. Straight ones still fillet; former
+  arcs do not count as arcs.
 - `extrude(list_of_edges, h)` raises TypeError; wrap the list: `extrude(Wire(edges), h)`.
   `make_face(list_of_edges)` works.
 
@@ -63,6 +62,7 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 - `ValueError: a wire needs at least one edge` for `Wire([])`.
 - `TypeError: a wire is made of edges, got int` when a point tuple is in the list.
 - `ValueError: fillet radius 5.001 is too large for the edge Edge(line, ...)`.
+- `ValueError: fillet: the radius must be positive`.
 - `ValueError: a sketch region needs closed wires; use wire.close()` from `to_sketch()` on
   an open wire.
 

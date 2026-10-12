@@ -23,10 +23,7 @@ Volume matches π·h·(R² + R·r + r²)/3 (2450.442 for 10/4/15).
 - The center of mass is not at the origin: `Cone(10, 4, 15).center().z` is −2.02.
 - To stand it on XY use `align=(Align.CENTER, Align.CENTER, Align.MIN)`; then the apex of
   `Cone(10, 0, 15)` is at (0, 0, 15).
-- **Apex down and exported alone: build it as `Cone(10, 0, 15).rotate(X, 180)`, not
-  `Cone(0, 10, 15)`.** The second exports a STEP file that reads back with twice the volume (and
-  prints `RuntimeWarning: invalid value encountered in divide`). The geometry is the same. A part
-  with such a cone cut into it (`Box(30, 30, 30) - Cone(0, 5, 10)`) exports correctly.
+- Apex down: `Cone(0, 10, 15)` (or `Cone(10, 0, 15).rotate(X, 180)`, the same geometry).
 - A tiny radius (1e-6) is treated as 0: the cap face disappears.
 
 ## Errors

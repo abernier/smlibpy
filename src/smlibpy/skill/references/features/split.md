@@ -21,14 +21,15 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
 ## Which side
 - `Plane.XY` normal is +Z: "above" keeps z > 0. `Plane.bottom` has normal -Z: "above" keeps
   z < 0. `Plane.XZ`/`Plane.front` normal is -Y.
-- A face of the part itself: its normal points outward, so "above" is outside (empty) and
-  "below" keeps the material. A face of another body uses that body's outward normal.
+- A face of the part itself: its normal points outward, so "above" is outside (raises, see
+  below) and "below" keeps the material. A face of another body uses that body's outward normal.
 - For a tilted cut, build the plane with `Plane(origin=..., z_dir=...)` and point `z_dir` into
   the side you keep.
 
 ## Gotchas
-- **A plane that misses the part, or a side with no material, returns an empty `Part`
-  without an error** (`is_valid()` False, 0 faces, bbox ±1e20). Check `len(result.faces())`.
+- A side with no material raises `ModelingError: split: nothing of the part lies above the
+  plane` (or `below`); `keep="both"` raises if either side is empty. A plane that misses the
+  part with the whole part on the kept side returns a copy of the part.
 - There is no face draft in smlibpy; a split with a tilted plane through a bottom edge makes
   one drafted wall (example).
 
@@ -40,8 +41,10 @@ lower = part.split(Plane.XY, keep="below")              # z -10..0
 right, left = part.split(Plane.YZ, keep="both")         # (above, below) = (x > 0, x < 0)
 low5 = part.split(Plane.XY.offset(5), keep="below")     # everything under z = 5
 
-empty = part.split(Plane.XY.offset(50))                 # nothing above: an empty Part, no error
-print(empty.is_valid(), len(empty.faces()))             # False 0
+try:
+    part.split(Plane.XY.offset(50))                     # nothing above the plane
+except ModelingError as e:
+    print(e)                                            # split: nothing of the part lies above the plane
 
 # drafted wall: cut with a plane through the bottom edge, normal tilted 5 degrees, pointing into the part
 wall = Box(40, 30, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))

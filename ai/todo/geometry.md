@@ -5,6 +5,7 @@
 ## MEDIUM
 
 ### 1. `Locations.on(face)` returns a plain list; multiplying it with a shape fails
+- **Fixed:** Location * Locations returns Locations, so Locations.on(face) * shape works.
 - **Session:** `2026-10-12_21-38-45_geometry-patterns`, script `01-locations.py`
 - **What happens:** `GridLocations(10, 10, 2, 2).on(face)` returns a `list` (via
   `Location.__mul__`, which turns any list into a plain list), so
@@ -20,6 +21,7 @@
 - **Workaround:** `(GridLocations(...) * Circle(1)).on(top)`.
 
 ### 2. `Location * Locations`, `Plane * Locations`, `Location * ShapeList` lose their type
+- **Fixed:** Location/Plane * Locations returns Locations and Location * ShapeList a ShapeList.
 - **Session:** `2026-10-12_21-38-45_geometry-patterns`, script `01-locations.py`
 - **What happens:** `Location.__mul__` and `Plane.__mul__` check `isinstance(other, list)`
   before `Locations.__rmul__`/`ShapeList` can act, and return a plain `list`. So
@@ -45,6 +47,7 @@
 - **Workaround:** build the final size directly instead of scaling per axis.
 
 ### 4. `scale(0)` / a zero per-axis factor gives a degenerate body that reports valid
+- **Fixed:** scale raises ValueError for a zero (or NaN, infinite) factor; is_valid() is False for a body whose bounding box is not finite or has zero size.
 - **Session:** `2026-10-12_21-32-20_geometry-placement`, script `07-scale.py`
 - **What happens:** `Box(10, 10, 10).scale(0)`: bbox NaN, volume 0, `is_valid()` True.
   `scale((1, 1, 0))`: flat body, `is_valid()` True. No error.
@@ -98,6 +101,7 @@
 - **Reproduce:** `print(RegularPolygon(10, 3, align=Align.CENTER).bbox(), RegularPolygon(10, 3, align=(Align.CENTER, Align.CENTER)).bbox())`
 
 ### 9. `Shape.mirror(axis)` / `mirror(face)`: AttributeError instead of a clear message
+- **Fixed:** mirror accepts planar faces; an Axis raises TypeError "cannot use Axis as a plane".
 - **Session:** `2026-10-12_21-27-02_geometry-values`, script `03-axis.py`; placement `08-mirror.py`
 - **What happens:** `part.mirror(X)` -> `AttributeError: 'Axis' object has no attribute
   'z_dir'`; `part.mirror(face)` -> `AttributeError: 'Face' object has no attribute 'z_dir'`.
@@ -155,6 +159,7 @@
 ## Outside this domain (seen in passing)
 
 ### 17. `Wedge(length, width, height)` is twice as wide as asked (parts)
+- **Fixed:** see parts #3: Wedge has the asked width.
 - **Session:** `2026-10-12_21-32-20_geometry-placement`, scripts `03-align.py`, `04-wedge-check.py`
 - **What happens:** `Wedge(10, 20, 30)` has bbox size (10, 40, 30) and volume 6000 (expected
   3000): `profile.extrude(width, both=True)` extrudes `width` to each side. The docstring

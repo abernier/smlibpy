@@ -5,6 +5,7 @@
 ## MEDIUM
 
 ### 1. `chamfer` (and loft, ruled, to_nurbs): straight edges come out as `bspline`, so line selectors miss them
+- **Fixed:** lines(), parallel_to and perpendicular_to recognise straight B-spline edges (control points on a line).
 - **Session:** `2026-10-12_21-26-09_selection-shapelist`, scripts `07-types.py`, `08-chamfer-edge-types.py`
 - **What happens:** after `Box(20, 20, 10).chamfer(box.edges().parallel_to(Z), 2)` 16 of the 24 edges
   are straight (length = chord) but have `geom_type == "bspline"`. `edges().parallel_to(Z)` returns 0
@@ -21,6 +22,7 @@
   `c.edges().filter(lambda e: abs(e.length - e.start.distance_to(e.end)) < 1e-9 and (e.end - e.start).normalized().is_parallel((0, 0, 1)))`.
 
 ### 2. `Face.is_planar` is False for exactly flat bspline faces
+- **Fixed:** is_planar is True when all control points lie in one plane.
 - **Session:** `2026-10-12_21-32-59_selection-face-edge-vertex`, script `03-is-planar-bspline.py`
 - **What happens:** a flat `surface()` (all points at z=0), a flat `ruled()` of two lines and the top
   face of `Box(10, 10, 10).to_nurbs()` (bbox z 5..5) all report `is_planar == False`. As a consequence

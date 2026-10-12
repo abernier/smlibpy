@@ -32,13 +32,18 @@ def surface(points: Sequence[Sequence[VectorLike]] | np.ndarray, *, interpolate:
     """A freeform NURBS surface from a grid of points.
 
     Args:
-        points: Rows of points, ``points[i][j]`` (all rows the same length, at least 2 x 2).
+        points: Rows of points, ``points[i][j]`` (all rows the same length, at least 4 x 4:
+            the surface is bicubic).
         interpolate: Pass through the points (default). ``False`` uses them as control
             points, which gives a smoother surface that only approaches them.
     """
     grid = np.asarray([[tuple(_vec(p)) for p in row] for row in points], dtype=float)
-    if grid.ndim != 3 or grid.shape[0] < 2 or grid.shape[1] < 2:
-        raise ValueError("expected a grid of at least 2 x 2 points")
+    if grid.ndim != 3 or grid.shape[0] < 4 or grid.shape[1] < 4:
+        shape = "x".join(str(n) for n in grid.shape[:2]) if grid.ndim == 3 else "not a grid"
+        raise ValueError(f"surface needs a grid of at least 4 x 4 points (bicubic), got {shape}; "
+                         f"for a four-sided patch use ruled() between two lines")
+    if not np.all(np.isfinite(grid)):
+        raise ValueError("surface: the points must be finite numbers")
     rows, cols = grid.shape[:2]
     flat = [_t(p) for p in grid.reshape(-1, 3)]
     with kernel_call("surface"):

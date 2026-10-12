@@ -10,7 +10,7 @@ Turns a sketch about an axis into a solid of revolution. An open curve gives a s
 - `axis`: an `Axis` (`X`, `Y`, `Z`, or `Axis(origin, direction)`). It must lie in the sketch
   plane. **Always pass it.**
 - `angle`: degrees, counter-clockwise about the axis direction (right-hand rule). About `Z`,
-  90 sweeps from +X towards +Y.
+  90 sweeps from +X towards +Y; -90 sweeps from +X towards -Y. Not zero, at most 360 in size.
 
 ## Returns
 A `Part`. For a full revolution the volume is `area * 2*pi * (distance of the region's centroid
@@ -23,23 +23,30 @@ revolve about `Z`. On `Plane.front` local x is world X and local y is world Z.
 ## Gotchas
 - **The default axis is not the world axis.** It is the sketch's local Y axis through the
   sketch's plane origin, and that origin moves with the sketch: `translate`, `Pos(...) *` and
-  `align=` move it too. `Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve()` revolves
-  about x = 15, through the middle of the region. Only a sketch built without `align`,
-  `translate` or `Pos` keeps its plane origin at the world origin.
-- **A region that crosses the axis gives no error with angle 360.** The result reports
-  `is_valid() == True` with a zero or negative volume. Partial angles raise
-  `SM_ERR_AXIS_INSIDE_FACE`. Check `volume > 0` and compare with Pappus.
-- An edge on the axis is fine (solid without a bore), and so is a single vertex touching it.
-- **Negative angles do not reverse the direction**: `-90` revolves 270 degrees the positive
-  way. To go the other way, flip the axis: `Axis((0, 0, 0), (0, 0, -1))` with a positive angle.
-  `angle=0` and `-360` return invalid bodies. Angles above 360 are a full revolution.
-- An axis perpendicular to the sketch plane (`Circle(3).translate(10, 0).revolve(Z)` on XY)
-  returns a flat, zero-volume body without an error.
+  `align=` move it too. Centered constructors (`Rectangle`, `Circle`, ...) and `make_face` put
+  it in the middle of the region, so their default axis crosses the region and raises:
+  `Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve()` raises `ModelingError:
+  revolve: the axis crosses the region; the default axis is the sketch's local Y axis through
+  its plane origin (15, 0, 0), pass axis=...`. `Polygon` keeps its plane origin at the world
+  origin: `Polygon((10, 0), (20, 0), (20, 20), (10, 20)).revolve()` is a tube (18849.56).
+- **The axis must not cross the region**, for any angle: `ModelingError: revolve: the axis
+  crosses the region`. An edge on the axis is fine (solid without a bore), and so is a single
+  vertex touching it.
+- An axis that does not lie in the sketch plane (`Circle(3).translate(10, 0).revolve(Z)` on
+  XY) raises `ValueError: revolve: the axis must lie in the sketch plane (it is not parallel to
+  it)`.
+- A negative angle turns the other way: `revolve(Z, -90)` is the quarter from +X towards -Y,
+  the same as `Axis((0, 0, 0), (0, 0, -1))` with 90. `-360` is a full revolution.
+- The result is checked: an inside-out or volume-less body from the kernel raises
+  `ModelingError`.
 - Regions with holes and several separate regions work, with an explicit axis.
 
 ## Errors
-- `KernelError: revolve failed (SM_ERR_AXIS_INSIDE_FACE): the axis must not cross the region`
-  for a partial revolution of a region that crosses the axis.
+- `ModelingError: revolve: the axis crosses the region` (with the default axis the message
+  names its origin).
+- `ValueError: revolve: the axis must lie in the sketch plane (it is not parallel to it)`
+- `ValueError: revolve: the angle must not be zero`; `ValueError: revolve: the angle is at
+  most 360 degrees`.
 
 ## Example
 ```python
@@ -48,7 +55,7 @@ pulley = profile.on(Plane.front).revolve(Z)             # x = radius, y = height
 print(pulley.is_valid(), round(pulley.volume, 3))       # True 39006.014
 
 quarter = profile.on(Plane.front).revolve(Z, 90)        # from +X towards +Y
-other = profile.on(Plane.front).revolve(Axis((0, 0, 0), (0, 0, -1)), 90)  # from +X towards -Y
+other = profile.on(Plane.front).revolve(Z, -90)        # from +X towards -Y
 
 tube = Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve(Z)
 print(round(tube.volume, 3))                            # 18849.557 = pi*(20^2-10^2)*20
@@ -56,8 +63,10 @@ print(round(tube.volume, 3))                            # 18849.557 = pi*(20^2-1
 donut = (Circle(5) - Circle(2)).translate(20, 0).on(Plane.front).revolve(Z)
 print(round(donut.volume, 3))                           # 8290.468
 
-wrong = Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve()   # default axis: through the sketch origin (15, 0)!
-print(wrong.is_valid(), round(wrong.volume, 3))         # True, but the volume is nonsense
+try:
+    Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve()   # default axis: x = 15, through the region
+except ModelingError as e:
+    print(e)   # revolve: the axis crosses the region; the default axis is the sketch's local Y axis through its plane origin (15, 0, 0), pass axis=... (for example Axis((0, 0, 0), (0, 1, 0)))
 
 dome = revolve(CenterArc((0, 0), 10, -90, 180, plane=Plane.front), Z)  # open curve -> Shell
 ```

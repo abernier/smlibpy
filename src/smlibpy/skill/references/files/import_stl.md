@@ -24,8 +24,8 @@ starts with `solid` is read correctly.
 - `name` and `color` do not exist on a `Mesh`.
 
 ## Gotchas
-- **No error for garbage.** A truncated binary file or a text file returns
-  `Mesh(0 vertices, 0 triangles)`. Check `len(m) > 0`.
+- A file that is not an STL, or a truncated one, raises `ValueError: not an STL file, or a
+  truncated one: ...`.
 - Several parts in one STL come back as one mesh. Where parts touch, their corners are welded
   together, and the mesh becomes non-manifold (two touching boxes: 5 edges used by more than
   two triangles). `volume` is still the sum.

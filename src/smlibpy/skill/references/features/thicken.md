@@ -6,10 +6,10 @@ Turns a surface (a `Shell`, a `Sketch`, or one face) into a solid of constant th
 `shell.thicken(thickness, *, both=False)` (also on a `Sketch`, which is a sheet)
 `thicken(surface, thickness)` (a `Shell`, `Sketch` or `Face`; a part's face is copied first)
 
-- `thickness`: along the face normal; negative goes to the other side.
-- `both`: **ignored** — `Rectangle(20, 10).thicken(2, both=True)` is 2 thick, not 4. For a
-  symmetric slab thicken a copy moved by `-t/2` along the normal, or use `extrude(..., both=True)`
-  for planar sheets.
+- `thickness`: along the face normal; negative goes to the other side. Not zero.
+- `both=True` (method only): the total thickness centered on the sheet:
+  `Rectangle(20, 10).thicken(2, both=True)` spans z -1..1 (volume 400). The `thicken()`
+  function has no `both`.
 
 ## Returns
 A `Part`. Planar: exact `area * t`. Curved: exact offset volume (a half-cylinder sheet r10,
@@ -29,15 +29,21 @@ The side is the face normal, so check it before you thicken:
 ## Gotchas
 - Multi-face sheets thicken with sharp corners: an L-shaped sheet (two faces) thickened 1 to
   the outside gains the corner block (310 for 300 of area), to the inside 290.
-- Thickening to the concave side by more than the radius returns `is_valid() == False`,
-  volume 0, without an error. Check `is_valid()`.
-- A `Part` has no `thicken`: `thicken(part, 1)` raises `AttributeError`. Use `offset` or `shell`.
-- `thickness=0`: `KernelError: thicken failed (SM_ERR_INVALID_INPUT)`.
+- The result is checked. Thickening to the concave side by more than the radius, closed grid
+  tubes from `surface()` and domes with a pole raise `ModelingError: thicken: the kernel
+  returned a body that is ...; the kernel cannot offset this sheet (closed grid surfaces and
+  surfaces with a pole fail; build closed shapes with revolve, loft or extrude, or thicken less
+  than the smallest concave radius)`.
+- A `Part` has no `thicken`: `thicken(part, 1)` raises `TypeError: thicken takes a face or a
+  sheet (Shell, Sketch), not a Part; use shell() or offset() for parts`.
+- `thickness=0`: `ValueError: thicken: the thickness must not be zero`.
 
 ## Example
 ```python
 panel = Rectangle(20, 10).thicken(2)                    # along the sketch normal: z 0..2
 under = Rectangle(20, 10).thicken(-2)                   # z -2..0
+mid = Rectangle(20, 10).thicken(2, both=True)           # z -1..1
+print(mid.bbox().min.z, mid.bbox().max.z, round(mid.volume, 3))   # -1.0 1.0 400.0
 box = Box(40, 30, 20)
 skin = thicken(box.faces().top()[0], 3)                 # face normal points out: z 10..13
 

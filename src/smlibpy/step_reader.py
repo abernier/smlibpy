@@ -590,6 +590,7 @@ def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
     transforms, in_product = _representation_transforms(it)
     bodies: list[tuple[BodyData, np.ndarray]] = []
     owner = _owning_representations(sf)
+    product_names = _representation_product_names(sf)
     for eid, (t, a) in sf.entities.items():
         if t not in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS", "SHELL_BASED_SURFACE_MODEL"):
             continue
@@ -597,12 +598,15 @@ def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
         # properties, for example) list bodies too; they do not place another copy.
         reps = [r for r in owner.get(eid, []) if r in in_product] or owner.get(eid, [])
         it.use_units(reps[0] if reps else None)
+        # Many exporters leave the body unnamed and name the product instead.
+        label = a[0] if isinstance(a[0], str) and a[0].strip() else next(
+            (product_names[r] for r in reps if r in product_names), "")
         if t == "MANIFOLD_SOLID_BREP":
-            body = it.body([(a[1], False)], "solid", a[0] or "")
+            body = it.body([(a[1], False)], "solid", label)
         elif t == "BREP_WITH_VOIDS":
-            body = it.body([(a[1], False)] + [(v, False) for v in a[2]], "solid", a[0] or "")
+            body = it.body([(a[1], False)] + [(v, False) for v in a[2]], "solid", label)
         else:
-            body = it.body([(s, False) for s in a[1]], "sheet", a[0] or "")
+            body = it.body([(s, False) for s in a[1]], "sheet", label)
         body.color = it.colors.get(eid)
         # A body listed by several representations (some exporters put it in two that
         # are related to each other) is the same body where both put it at the same
@@ -616,6 +620,43 @@ def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
         for m in mats or [np.eye(4)]:
             bodies.append((body, m))
     return bodies
+
+
+def _representation_product_names(sf: StepFile) -> dict[int, str]:
+    """The name of the product each shape representation belongs to, also for the
+    representations linked to a product's shape without a placement (a part's B-rep
+    representation next to its main shape representation)."""
+    names: dict[int, str] = {}
+    for eid, (t, a) in sf.entities.items():
+        if t != "SHAPE_DEFINITION_REPRESENTATION":
+            continue
+        try:
+            _, pds = sf.get(a[0])
+            pdt, pd = sf.get(pds[2])
+            if "PRODUCT_DEFINITION" not in pdt or "SHAPE" in pdt:
+                continue
+            _, pdf = sf.get(pd[2])
+            _, prod = sf.get(pdf[2])
+            name = next((x for x in (prod[1], prod[0]) if isinstance(x, str) and x.strip()), "")
+            if name:
+                names[int(a[1])] = name
+        except Exception:
+            continue
+    for _ in range(4):  # follow chains of plain representation relationships
+        grew = False
+        for eid, (t, a) in sf.entities.items():
+            if t in ("SHAPE_REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP") and len(a) >= 4:
+                try:
+                    r1, r2 = int(a[2]), int(a[3])
+                except (TypeError, ValueError):
+                    continue
+                for x, y in ((r1, r2), (r2, r1)):
+                    if x not in names and y in names:
+                        names[x] = names[y]
+                        grew = True
+        if not grew:
+            break
+    return names
 
 
 def _owning_representations(sf: StepFile) -> dict[int, list[int]]:
@@ -749,8 +790,13 @@ def _item_transform(it: _Interp, ref: Any, child: int, parent: int, items: dict[
     try:
         i1, i2 = int(a[2]), int(a[3])
         # item 2 lies in the parent's representation and item 1 in the child's (CAx-IF),
-        # unless the representations' item lists say otherwise
-        if i1 in items.get(parent, set()) or i2 in items.get(child, set()):
+        # unless the representations' item lists say otherwise. A placement can be listed
+        # in both representations (AutoCAD lists the identity placement in the root and
+        # in every part), so the CAx-IF reading wins whenever the lists allow it.
+        p_items, c_items = items.get(parent, set()), items.get(child, set())
+        if i2 in p_items and i1 in c_items:
+            parent_item, child_item = i2, i1
+        elif i1 in p_items or i2 in c_items:
             parent_item, child_item = i1, i2
         else:
             parent_item, child_item = i2, i1

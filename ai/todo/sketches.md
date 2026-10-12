@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `Sketch.revolve()` default axis: silent zero-volume part for most sketches
+- **Fixed:** revolve raises ModelingError when the (default) axis crosses the region and names the default axis.
 - **Session:** `2026-10-12_21-26-11_sketches-generic`, scripts `07-plane-tracking.py`, `08-plane-origin-revolve.py`
 - **What happens:** `revolve()` without an axis turns about the local Y axis through `sketch.plane.origin`.
   That origin is the center of every centered constructor, and for `make_face` / `Wire.to_sketch()` it is
@@ -23,6 +24,7 @@
 ## MEDIUM
 
 ### 2. `Part + Sketch` / `Part - Sketch`: silent invalid part
+- **Fixed:** Part + Sketch / Part - Sketch raise TypeError "extrude it first".
 - **Session:** `2026-10-12_21-26-11_sketches-generic`, scripts `03-errors.py`, `04-part-plus-sketch.py`
 - **What happens:** `Box(5, 5, 5) + Rectangle(10, 10)` returns `Part(11 faces, volume=125)` with
   `is_valid() == False`. `Box(20, 20, 5) - Circle(3)` returns `Part(7 faces, volume=2000)`, invalid.
@@ -36,6 +38,7 @@
 - **Workaround:** extrude the sketch before combining.
 
 ### 3. `Sketch.fillet` silently does nothing after `Sketch.offset`
+- **Fixed:** wire and sketch fillets treat straight B-spline edges as lines; offset(-2).fillet(3) rounds the corners.
 - **Session:** `2026-10-12_21-34-48_sketches-2dops`, scripts `04-offset-details.py`, `06-fillet-negative-and-offset.py`
 - **What happens:** `offset()` returns every edge as a `bspline` (straight ones and arcs too). `Sketch.fillet`
   only rounds corners between edges whose `geom_type == "line"`, so `Rectangle(40, 20).offset(-2).fillet(3)`
@@ -51,6 +54,7 @@
 - **Workaround:** fillet first, then offset (`Rectangle(40, 20).fillet(5).offset(-2)` = `Rectangle(36, 16).fillet(3)`).
 
 ### 4. `Sketch.fillet` with a negative radius makes a self-overlapping region
+- **Fixed:** fillet raises ValueError for a radius <= 0 (unmatched vertex points are still ignored).
 - **Session:** `2026-10-12_21-34-48_sketches-2dops`, scripts `05-fillet.py`, `06-fillet-negative-and-offset.py`
 - **What happens:** `Rectangle(40, 20).fillet(-2)` returns a sketch with bbox ±24 x ±14, area 746.3, whose
   outline crosses itself (circles at the corners, slanted sides, see `files/06-fillet-negative-and-offset-neg.png`);

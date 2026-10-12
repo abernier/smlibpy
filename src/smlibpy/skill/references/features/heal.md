@@ -13,14 +13,8 @@ close real gaps, refit curves or rebuild faces.
 ## When to call it
 - On data from outside: an imported STEP whose `is_valid()` is False, or that fails in a later
   Boolean or fillet. Try `heal()`, then check `is_valid()` and the volume again.
-- Not as a fix for a failed feature. A healed bad result is still bad: none of these were
-  repaired —
-  - a revolve across its axis (negative volume stays negative),
-  - a sweep along a 360° arc (two solids become one, but the volume stays negative),
-  - a sweep along a disconnected wire (still invalid),
-  - the r 4.99 all-edge cube fillet (volume 11.19 stays),
-  - an extrusion with `taper=90` (still invalid).
-  Fix the input of the feature instead.
+- Not as a fix for a failed feature: a healed bad result is still bad. Fix the input of the
+  feature instead.
 - On clean parts it changes nothing measurable (same faces, volume to 1e-6) and costs a few
   milliseconds; there is no need to call it after normal modeling.
 

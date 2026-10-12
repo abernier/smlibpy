@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `Part.distance_to(body)`: wrong when the nearest points form a line (parallel cylinders)
+- **Fixed:** distance_to between bodies is computed by smlibpy: mesh vertices nearest to the other body seed alternating exact closest-point projections; parallel cylinders give 12.0.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `05-distance-cylinders.py`, `06-distance-survey.py`, `07-distance-workaround.py`
 - **What happens:** two parallel cylinders give a distance that is too small by 1.7 to 3.6 mm,
   silently, at the origin. A cylinder beside a box face parallel to its axis: 7.22 instead of
@@ -19,6 +20,7 @@
   documented in `distance_to.md`.
 
 ### 2. `Part.distance_to(body)`: wrong far from the origin
+- **Fixed:** same computation (closest points only), exact far from the origin.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `03-distance-far.py`, `04-distance-far-threshold.py`
 - **What happens:** the same sphere pair gives 13.9129 near the origin and up to
   (7e3, -1.4e4, 2.1e4), but 15.5610 at (1e4, -2e4, 3e4) and at (1e5, 0, 0) or (1e6, 0, 0). The
@@ -37,6 +39,7 @@
 ## MEDIUM
 
 ### 3. `Part.is_valid()`: True for a body with zero volume and for a self-overlapping sweep
+- **Fixed:** is_valid() requires a positive volume and revolve raises for an axis through the region; self-overlapping sweeps are still not detected.
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, scripts `13-is-valid-info.py`, `14-validity-detection.py`
 - **What happens:** a rectangle revolved about an axis through its middle returns a Part with
   `is_valid() == True` and volume -1.8e-21 (it looks like a cylinder). A circle r4 swept along
@@ -56,6 +59,7 @@
 - **Workaround:** check `volume > 0` and against a formula; documented in `is_valid.md`.
 
 ### 4. `mass_properties(density=...)`: density 0 or negative silently becomes 1
+- **Fixed:** ValueError for density <= 0.
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, scripts `05-inertia-formulas.py`, `06-mp-special.py`
 - **What happens:** `Box(10, 10, 10).mass_properties(density=0).mass` is 1000.0, the same for
   `density=-1`; the inertia is that of density 1. `MassProperties.density` reports the value
@@ -104,6 +108,7 @@
 ## LOW
 
 ### 7. `mass_properties(accuracy=...)`: misleading error and unchecked values
+- **Fixed:** ValueError for accuracy outside 1e-10..1e-2.
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, script `02-accuracy-param.py`
 - **What happens:** `accuracy=1e-12` on a sphere, `1e-14` on anything and `-1` raise
   `KernelError: mass properties failed (SM_ERR): is the part a closed solid?`; the part is
@@ -125,6 +130,7 @@
 - **Workaround:** sample `point_at` densely, or measure a body made from the curve.
 
 ### 9. `distance_to` argument types: confusing errors; no `closest_point` on Face and Edge
+- **Fixed:** distance_to raises TypeError "takes a point or a body" for edges, faces and wires (no closest_point on Face/Edge yet).
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `01-distance-basic.py`, `02-distance-curved.py`
 - **What happens:** `part.distance_to(edge)` -> `TypeError: 'Edge' object is not iterable`;
   `edge.distance_to(part)` / `face.distance_to(part)` -> `TypeError: 'Part' object is not

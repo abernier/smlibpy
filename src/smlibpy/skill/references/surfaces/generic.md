@@ -36,7 +36,7 @@ The Part's normals are made outward whatever the input. Hollow it afterwards wit
 
 **C. Stitch an open set, then thicken** (a cover with walls, open at the bottom). An open stitch
 result keeps each face's input normal: orient every piece the same way first, or the thicken
-returns volume 0. With oriented pieces, B + `shell` and C give the same body (volumes within 0.001).
+raises `ModelingError`. With oriented pieces, B + `shell` and C give the same body (volumes within 0.001).
 
 Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet inside.
 
@@ -46,18 +46,17 @@ Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet
 |---|---|
 | a face | `shell.area` plausible, `len(shell.faces())`, `normal_at` points where you want |
 | stitch | `isinstance(r, Part)`; if a Shell: `free = [e for e in r.edges() if len(e.faces()) == 1]`, print `e.center()` of each |
-| thicken | `p.is_valid() and p.volume > 0`, volume ≈ area · t on gently curved sheets, `bbox()` on the side you meant |
+| thicken | volume ≈ area · t on gently curved sheets, `bbox()` on the side you meant |
 | closed solid | volume against an estimate (an integral, a bounding shape); `bbox()` against the face positions |
 
 ## Silent failures (no exception)
-- `thicken` of a closed `surface` grid, a `surface` dome with a pole, or a Shell with mixed
-  normals: a Part of volume 0, sometimes with `is_valid()` True.
+- `thicken` of a closed `surface` grid: mostly an error, but some tubes give a Part of volume
+  about 0 that `is_valid()` accepts. (A dome with a pole and a Shell with mixed normals raise.)
 - `stitch` that does not close: a Shell. With a large `tolerance`: a "valid" Part whose faces
   stand off their edges (volume and bbox disagree).
 - `part & sheet`, `part - sheet`, `part + sheet`: invalid "Parts". Only `stitch(part & sheet)` is
   useful.
-- `surface` with repeated rows overshoots wildly; with a NaN gives an empty face.
-- `thicken(..., both=True)`: `both` is ignored.
+- `surface` with repeated rows overshoots wildly.
 
 ## Example: closed block and open cover from one freeform skin
 ```python

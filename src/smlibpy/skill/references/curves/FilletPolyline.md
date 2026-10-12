@@ -32,8 +32,7 @@ neighbouring segment (r for a 90° corner).
   The bend radius must be larger than the profile radius: radius 2 with `Circle(3)` raises
   `KernelError: sweep failed (SM_ERR): the profile may be too large for the path's corners`.
 - Collinear points and a 180° reversal are left as they are (no arc).
-- `radius=0` raises `cannot normalize a zero-length vector`; a negative radius returns a
-  broken wire without an error.
+- `radius <= 0` raises `ValueError: fillet: the radius must be positive`.
 - Pass points as separate arguments (see `Polyline`).
 
 ## Example

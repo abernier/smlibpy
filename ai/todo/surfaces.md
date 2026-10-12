@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `Shell.thicken`: a closed grid surface gives a zero-volume Part that `is_valid()` accepts
+- **Fixed:** thicken checks its result and raises ModelingError with a hint.
 - **Session:** `2026-10-12_21-26-58_surfaces-surface`, scripts `07-thicken-check.py`, `08-closed-thicken.py`, `10-repro.py`
 - **What happens:** `surface()` of rings (first point == last point) is a closed tube. `thicken(±1)`
   returns a Part with volume ~0 (faces: the original face plus three faces of area 0.0) and
@@ -24,6 +25,7 @@
 ## MEDIUM
 
 ### 2. `Shell.thicken`: a failed offset comes back as an invalid zero-volume Part without an error
+- **Fixed:** same check: ModelingError instead of a volume-0 part.
 - **Session:** `2026-10-12_21-26-58_surfaces-surface`, scripts `06-dome-thicken.py`, `10-repro.py`
 - **What happens:** a dome from `surface()` with a pole (last row all the same point) thickened
   outward returns a Part with volume 0.0 and `is_valid()` False; no exception. Inward it raises
@@ -39,6 +41,7 @@
 - **Workaround:** check `p.is_valid() and p.volume > 0` after `thicken`.
 
 ### 3. `surface`: needs at least 4 x 4 points; the docstring says 2 x 2 and the error has no hint
+- **Fixed:** the docstring says 4 x 4, smaller grids raise ValueError with a hint to use ruled().
 - **Session:** `2026-10-12_21-26-09_surfaces-workflow`, script `03-surface-probe.py`
 - **What happens:** 2x2, 3x3 and 4x3 grids (flat or curved) raise `KernelError: surface failed (SM_ERR)`;
   with `interpolate=False` `SM_ERR_INVALID_INPUT`. 4x4 works. The surface is always bicubic.
@@ -115,6 +118,7 @@
 ## LOW
 
 ### 4. `Shell.thicken`: the `both` argument is ignored
+- **Fixed:** both=True thickens by half to each side (total thickness centered).
 - **Session:** `2026-10-12_21-26-09_surfaces-workflow`, script `02-thicken-direction.py`; `10-repro.py`
 - **What happens:** `thicken(2, both=True)` gives the same body as `thicken(2)` (z -2..0, not -1..1
   or -2..2). The signature accepts `both`, the docstring does not mention it, the code never reads it.
@@ -124,6 +128,7 @@
   both ways and fuse.
 
 ### 5. `surface`: a NaN coordinate is accepted and gives an empty face
+- **Fixed:** NaN or infinite coordinates raise ValueError.
 - **Session:** `2026-10-12_21-26-58_surfaces-surface`, script `09-bad-input.py`; `10-repro.py`
 - **What happens:** one NaN z in a 4x4 grid → Shell with area 0.0, no error.
 - **Expected:** `ValueError`.
@@ -136,6 +141,7 @@
 - **Expected:** "expected rows of points of equal length".
 
 ### 7. `Face.is_planar`: flat freeform faces (from `ruled`/`surface`) are not planar
+- **Fixed:** faces whose control points lie in one plane are planar (is_planar, planar(), plane, to_sketch).
 - **Session:** `2026-10-12_21-30-48_surfaces-ruled`, script `06-is-planar.py`
 - **What happens:** `ruled(Line((0,0,0),(20,0,0)), Line((0,10,0),(20,10,0)))` lies exactly in z = 0,
   but `faces()[0].is_planar` is False (kernel `is_planar(1e-7)` False, `is_planar(1e-3)` True), so

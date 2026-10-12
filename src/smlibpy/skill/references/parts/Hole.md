@@ -51,10 +51,10 @@ flat (no drill point).
 - `.on()` needs exactly one planar face. Two faces: `ValueError: expected exactly one shape, got 2 -
   narrow the selection or use [0]`. A cylinder face: `ValueError: a cylinder face has no plane`.
 - A tilted planar face works: the hole follows the face normal.
-- Overlapping holes: keep `depth` exactly the thickness for through holes, or fuse the tools
-  first. `(Locations((0, 0), (5, 0)) * Hole(4, 12)).on(top)` on a 10 mm plate (both stick out of
-  the bottom) returns an **empty part** without an error; with `Hole(4, 10)` it is fine. See
-  `booleans`.
+- Overlapping holes: cut them in one call. `part - (Locations((0, 0), (5, 0)) *
+  Hole(4, 12)).on(top)` on a 60×40×10 plate gives the right part (volume 23125.2). A single
+  hole that overlaps an earlier parallel hole, cut on its own, raises `KernelError`: cut both
+  at once (`part - [h1, h2]`). See `booleans`.
 - Tools that miss the part cut nothing and raise nothing. Check the face count or the volume
   after the cut: each through hole adds 1 face, a blind hole 2.
 - Measure hole positions with the cylinder face's `axis`: `axis.origin` is the bottom of the

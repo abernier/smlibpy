@@ -2,7 +2,8 @@
 
 ![Parts modeled with smlibpy](images/hero.png)
 
-**Python CAD on SMLib, the NURBS solid modeling kernel NVIDIA released as open source.**
+A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep).
+It comes with an MCP server, so your agent can build parts too.
 
 ```python
 from smlibpy import *
@@ -16,14 +17,11 @@ plate.export("plate.step")
 show(plate)
 ```
 
-smlibpy models solids and surfaces with exact geometry, in a style that keeps scripts
-short and readable:
-
-- **Shapes are values.** `+`, `-` and `&` combine them; features return new shapes.
-- **Selections read like sentences.** `part.edges().parallel_to(Z).concave()`.
-- **The full kernel.** Circular, variable and G2/G3 fillets, shells, lofts, sweeps,
-  freeform surfaces, stitching, intersections, mass properties.
-- **Exact files.** STEP in and out with the exact geometry; meshes go to glTF and STL.
+Parts are B-reps with exact surfaces. You combine shapes with `+`, `-` and `&`, and every
+feature returns a new part. Faces and edges are picked by their geometry, for example
+`part.edges().parallel_to(Z).concave()`. Fillets can be circular, variable or G2/G3, and there
+are shells, lofts, sweeps, freeform surfaces, stitching, intersections and mass properties.
+STEP files are read and written with the exact geometry; meshes go to glTF and STL.
 
 <div class="grid cards" markdown>
 

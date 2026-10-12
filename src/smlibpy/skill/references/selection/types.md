@@ -4,8 +4,9 @@ Keep faces or edges by the kind of their underlying surface or curve (`geom_type
 
 ## Signature
 - `sl.of_type(*names)`: one or more names, case-insensitive: `of_type("plane", "cylinder")`.
-- Shortcuts: `planar()` = `of_type("plane")`, `cylinders()` = `of_type("cylinder")`,
-  `lines()` = `of_type("line")`, `circles()` = `of_type("circle")`.
+- Shortcuts: `cylinders()` = `of_type("cylinder")`, `circles()` = `of_type("circle")`.
+  `planar()` keeps faces with `is_planar` (planes and flat `bspline` faces); `lines()` keeps
+  straight edges (lines and straight `bspline` edges).
 - `smooth()` is not a type filter; see `convexity`.
 
 ## Names
@@ -43,9 +44,11 @@ A ShapeList in the original order. Shapes without `geom_type` (vertices, parts) 
 - `circles()` returns arcs too. Fillet arcs and hole rims look alike: filter full circles with
   `e.is_closed`, or by `e.radius`.
 - `cylinders()` returns fillet faces and holes alike; filter by `f.radius` or position.
-- A straight edge is not always `"line"`: chamfer borders, `ruled(Line, Line)` and edges of
-  `to_nurbs()` bodies are `"bspline"`. A flat face is not always `"plane"`: `to_nurbs()` and
-  `surface()` faces are `"bspline"` even when flat.
+- A straight edge is not always `"line"`: chamfer borders, mirrored or scaled lines, offset
+  sketches, `ruled(Line, Line)` and edges of `to_nurbs()` bodies are `"bspline"`. `lines()`
+  finds them, `of_type("line")` does not. A flat face is not always `"plane"`: `to_nurbs()` and
+  `surface()` faces are `"bspline"` even when flat. `planar()` and `Face.is_planar` find them
+  (all control points in one plane), `of_type("plane")` does not.
 - `Cone(5, 5, 10)` (equal radii) has a `"cylinder"` face.
 - `lines()` on faces and `planar()` on edges return empty lists, no error.
 

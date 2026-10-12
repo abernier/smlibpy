@@ -18,10 +18,11 @@ Circles, ellipses, slots and splines offset as expected (an ellipse 15 x 8 grown
 bbox of ±17 x ±10).
 
 ## Gotchas
-- **Every edge of the result is a B-spline**, also the straight ones and the arcs.
-  `s.edges().lines()` and `.circles()` find nothing, and `s.fillet(r)` afterwards silently does
-  nothing. Fillet first and offset after (arcs grow or shrink with the offset), or build the
-  smaller shape from a constructor. Extruded, the faces are still planes and cylinders.
+- **Every edge of the result is a B-spline** (`geom_type == "bspline"`), also the straight ones
+  and the arcs. Straight ones still count as lines: `s.edges().lines()` finds them and
+  `s.fillet(r)` rounds their corners (`Rectangle(40, 20).offset(-2).fillet(3)` works).
+  `.circles()` and `of_type("line")` find nothing. Extruded, the faces are still planes and
+  cylinders.
 - With `round=False` each grown corner keeps two short extra edges (12 edges for a grown
   rectangle instead of 4); the shape is right.
 - Several pieces grow into each other and fuse (two circles 2 apart grown by 2 become one

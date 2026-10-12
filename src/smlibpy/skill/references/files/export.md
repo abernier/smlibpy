@@ -11,7 +11,7 @@ the format functions.
 |---|---|---|
 | `.step`, `.stp` | `export_step` | `unit`, `name` |
 | `.stl` | `export_stl` | `tolerance`, `angle`, `ascii` |
-| `.glb` | `export_glb` | `tolerance`, `angle`, `edges` |
+| `.glb` | `export_glb` | `tolerance`, `angle`, `edges`, `edge_color` |
 | `.gltf` | `export_gltf` | `tolerance`, `angle`, `edges`, `edge_color` |
 | `.obj` | `export_obj` | `tolerance`, `angle` |
 | `.smb` | `save` | `ascii` |
@@ -26,7 +26,7 @@ the format functions.
 ## Gotchas
 - STEP and `.smb` are exact. STL, glTF and OBJ are triangle meshes. Deliver STEP for CAD, and a
   mesh format for printing or viewing.
-- `.stp` with `unit="inch"` only declares inches. The coordinates are not scaled (see
+- `.stp` with `unit="inch"` writes the coordinates in inches (converted from mm, see
   `export_step`).
 - `.smb` holds one body. `export([a, b], "x.smb")` raises.
 - `Mesh.export` works for `.stl`, `.obj`, `.glb` and `.gltf`. For `.step` it raises `TypeError`,

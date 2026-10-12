@@ -26,13 +26,11 @@ backs on one edge must fit in it:
 - Acute corners need much more room: a 50 x 5 right triangle takes radius 1, not 3.
 
 ## Gotchas
-- After `offset()` the edges are B-splines, so `fillet` finds no corners and returns the sketch
-  unchanged, without an error. Fillet before offsetting.
+- After `offset()` the edges are B-splines; straight ones still count as lines, so
+  `Rectangle(40, 20).offset(-2).fillet(3)` rounds the corners.
 - A point that is not a corner is ignored silently. Check the edge count or area afterwards.
 - On a placed sketch the points are world points: on `Plane.XZ`, the corner of
   `Rectangle(20, 10)` is `(10, 0, 5)`, not `(10, 5)`.
-- A negative radius is not rejected and produces a self-overlapping region (it even
-  extrudes). `radius=0` raises an unhelpful error.
 - Hole corners are rounded too. To round only the outline:
   `s.fillet(r, s.faces()[0].outer_wire().vertices())`.
 - 3D parts have `Part.fillet(edges, radius)` with the arguments the other way round.
@@ -40,7 +38,7 @@ backs on one edge must fit in it:
 ## Errors
 - `ValueError: fillet radius 10.0001 is too large for the edge Edge(line, ...)`: the cut backs do
   not fit on that edge.
-- `ValueError: cannot normalize a zero-length vector`: `radius=0`.
+- `ValueError: fillet: the radius must be positive`: `radius <= 0`.
 - `TypeError: 'int' object is not iterable`: `vertices=(20, 10)` instead of `[(20, 10)]`.
 
 ## Example

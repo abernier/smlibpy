@@ -5,16 +5,17 @@ Everything else is a triangle mesh.
 
 | Format | Write | Read | Geometry | Bodies | Names | Colors | Units in file |
 |---|---|---|---|---|---|---|---|
-| STEP `.step` `.stp` | `export_step` | `import_step` | exact (analytic + B-spline) | many | yes (solid label) | yes | declared (`unit=`), converted to mm on import |
+| STEP `.step` `.stp` | `export_step` | `import_step` | exact (analytic + B-spline) | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
 | SMLib `.smb` | `save` | `load` | exact, binary bit-identical | **one** | no | no | none (mm) |
 | STL `.stl` | `export_stl` | `import_stl` → `Mesh` | triangles, float32 | merged into one mesh | no | no | none |
-| glTF `.glb` `.gltf` | `export_glb`, `export_gltf` | no | triangles + edge lines | one node per shape | yes | yes | written in mm, but glTF means meters |
+| glTF `.glb` `.gltf` | `export_glb`, `export_gltf` | no | triangles + edge lines | one node per shape | yes | yes | meters (a root node scales the mm by 0.001) |
 | OBJ `.obj` | `export_obj` | no | triangles, no normals | one object per shape | yes | no | none |
 | PNG | `render` | | a picture | | | yes | |
 | HTML | `show` | | an interactive viewer | | | yes | |
 
 `export(shapes, path)` and `shape.export(path)` choose the writer by extension. `load(path)`
-chooses the reader (`.step`/`.stp`/`.p21`, `.stl`; everything else is read as `.smb`).
+chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`; any other extension raises
+`ValueError: unknown file type ...`).
 
 ## Which format
 - **Deliver a CAD model: STEP.** Every CAD system reads it. Names, colors and exact surfaces
@@ -27,21 +28,20 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.stl`; everything else is read as `.
 - **Check it yourself: `render(..., view="sheet")`**, then read the PNG.
 
 ## Units
-- All modeling is in mm. No writer scales the coordinates.
-- `export_step(unit="inch")` only writes "inch" into the header. Scale the model first:
-  `export_step(part.scale(1 / 25.4), path, unit="inch")`. Otherwise the file is 25.4 times too
-  large.
-- `import_step` converts any file unit to mm: a file that declares inch with a 60 x 40 x 8 box
-  reads back as 1524 x 1016 x 203.2.
-- glTF viewers that respect units (Blender, AR) show mm values as meters. Export
-  `[s.scale(0.001) for s in shapes]` for them.
+- All modeling is in mm.
+- `export_step(unit="inch")` converts the coordinates to inches: a 60 x 40 x 8 box is written as
+  2.362 x 1.575 x 0.315 and declared in inches. Do not scale the model yourself.
+- `import_step` converts any file unit to mm, so the inch file above reads back as 60 x 40 x 8.
+- glTF is defined in meters: `export_glb`/`export_gltf` write the mm positions under a root node
+  that scales them by 0.001, so Blender and AR viewers show a 60 mm part as 0.06 m.
+- STL and OBJ have no units; they hold the mm values.
 
 ## Assemblies
 - `export_step([a, b, c], path)` writes one product with several named solids, not an
   assembly tree. Each solid is placed where it is in the model.
 - `import_step` applies assembly placements and returns a `ShapeList` with one `Part` per
-  instance. Check foreign assemblies with a picture: in the AutoCAD AS1 file every part was
-  placed at the inverse of its placement, with no error.
+  instance. The CAx-IF AS1 assemblies of AutoCAD, OpenCASCADE and others are placed correctly;
+  still check foreign assemblies with a picture.
 
 ## Shape kinds
 | Shape | STEP | `.smb` | STL / OBJ / glTF | render, show |

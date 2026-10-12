@@ -35,13 +35,18 @@ spheres, tori, lines, circles and ellipses as analytic entities, everything else
 and colors are kept. The output is checked in the test suite by reading it back with
 OpenCASCADE.
 
-`unit` declares the unit of the model: `"mm"` (default), `"cm"`, `"m"`, `"um"` or `"inch"`.
-Coordinates are written as they are.
+`unit` is the unit of the file: `"mm"` (default), `"cm"`, `"m"`, `"um"` or `"inch"`. The
+model (in mm) is converted to it, so `bracket_inch.step` above holds a 2.362 x 1.575 x 0.315
+inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm.
 
 ### Meshes
 
 `tolerance` is the largest distance between mesh and true surface (default: 0.1 % of the
 part's size); `angle` limits the angle between neighbouring triangles on curved faces.
+
+glTF is defined in meters: `export_glb` and `export_gltf` keep the positions in millimeters
+and scale the scene's root node by 0.001, so viewers that respect units show the part at its
+real size. STL and OBJ have no units and hold the millimeter values.
 
 ## Reading files
 
@@ -64,7 +69,8 @@ STEP and SMLib's own `.smb` files give exact parts; an STL file gives a `Mesh`
 `import_step(path)` reads the solids and surfaces of AP203, AP214 and AP242 files. A file
 with one body returns a `Part`, or a `Shell` if it is a surface model. A file with several
 returns a `ShapeList` with every body at its place in the assembly. Names and colors come
-along, and lengths are converted to millimeters whatever unit the file uses.
+along (an unnamed solid takes the name of its product), and lengths are converted to
+millimeters whatever unit the file uses.
 
 Each face is rebuilt on the exact surface from the file and each edge on its exact curve:
 a cylinder stays a cylinder, and a NURBS surface keeps its control points and knots. Faces

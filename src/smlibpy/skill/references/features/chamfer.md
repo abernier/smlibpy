@@ -20,9 +20,13 @@ countersink-like bevel.
 
 ## Limits
 Same rules as `fillet` with the setback = `length`: two chamfered edges `d` apart on one face
-allow `length <= d/2` (exactly `d/2` raises `KernelError`), one chamfered edge `length <= d`
-(exactly `d` removes the whole face: one edge of a 10 cube with 10 leaves a prism of 500).
-`length <= 0` raises `KernelError`.
+allow `length <= d/2` (at exactly `d/2` the kernel may fail: all edges of a 10 cube with 5
+raise `KernelError`), one chamfered edge `length <= d` (exactly `d` removes the whole face: one
+edge of a 10 cube with 10 leaves a prism of 500). `length <= 0` raises `ValueError`. The
+result is checked like a fillet's: a valid solid whose volume changed by no more than the
+bevels can remove or add (not bounded where an edge runs on into an edge that is not
+chamfered: the kernel extends the bevel past the end). An invalid input part raises
+`ModelingError`.
 
 ## Gotchas
 - Seam and smooth edges in the selection are skipped, like for `fillet`.
@@ -32,6 +36,8 @@ allow `length <= d/2` (exactly `d/2` raises `KernelError`), one chamfered edge `
 ## Errors
 - `ModelingError: chamfer: the length is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
 - `KernelError: chamfer failed (SM_ERR): the length may be too large for the selected edges`
+- `ValueError: chamfer: the length must be positive`
+- `ModelingError: chamfer: the part is not a valid solid (...); check is_valid() after each step and fix the step that broke it`
 
 ## Example
 ```python

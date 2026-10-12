@@ -80,22 +80,21 @@ pipe = sweep(Circle(3), path)    # valid, volume = pi * 3**2 * path.length
 
 - `sweep` centers the profile's bounding box on `path.start` and turns it to face along the
   path; draw the profile in XY around the origin.
-- **Closed paths made of one edge are broken**: a full `CenterArc` gives an inside-out body,
-  a closed `Spline` a body of volume 0, both with `is_valid()` True. Split the loop into two
-  edges (`Wire([CenterArc(c, r, 0, 180), CenterArc(c, r, 180, 180)])`) or use `revolve`.
+- A closed path made of one edge (a full `CenterArc`, a closed `Spline`) is split into two
+  halves automatically: `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` is one ring.
 - An `EllipticalArc` cannot be a path (TypeError); see `EllipticalArc.md`.
 - `Helix` is limited to about 26 to 58 turns, depending on the radius; chain helices.
 
 ## Gotchas
 
-- `mirror()` and `scale()` turn lines and arcs into `bspline` edges. After that `direction`
-  and `radius` raise, and `Wire.fillet` and `Sketch.fillet` silently skip every corner next to
-  such an edge. Build symmetric outlines from points instead of mirroring them when the
-  corners must be rounded. `rotate`, `translate` and `.on()` keep lines and circles.
+- `mirror()` and `scale()` turn lines and arcs into `bspline` edges. Straight ones still count
+  as lines: `direction`, `lines()`, `Wire.fillet` and `Sketch.fillet` treat them as straight.
+  Former arcs do not count as circles: `radius` raises and fillets skip corners next to them.
+  `rotate`, `translate` and `.on()` keep lines and circles.
 - `Wire([...])` does not check that the edges connect. Edges with a gap or a branch are kept
-  in the given order, and the wire is just "open". A sweep along such a path returns an
-  invalid part without an error. Check `wire.is_closed` for outlines and compare
-  `wire.start` / `wire.end` with what you expect for paths.
+  in the given order, and the wire is just "open". A sweep along such a path raises
+  `ValueError: the sweep path is not connected: a gap of ...`. Check `wire.is_closed` for
+  outlines and compare `wire.start` / `wire.end` with what you expect for paths.
 - Two separately built but identical edges are not `==` (equality is identity).
 - `bbox()` of a constructed curve (not one taken from a body) samples 33 points and can miss
   the extremes of splines: sample `point_at(i / n)` densely when extents matter.

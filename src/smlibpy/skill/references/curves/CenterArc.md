@@ -33,9 +33,8 @@ An `Edge` with `geom_type == "circle"` (`radius`, `arc_center`, `normal` work).
   for a negative one.
 - A full circle is one closed edge: `make_face(CenterArc(c, r, 0, 360))` and
   `Wire([CenterArc(...)])` both work as outline or hole.
-- **A full circle as a sweep path gives an inside-out solid** (`is_valid()` True, negative
-  volume). Use `revolve` for rings, or a path of two half circles:
-  `Wire([CenterArc(c, r, 0, 180), CenterArc(c, r, 180, 180)])`.
+- A full circle as a sweep path is split into two halves automatically:
+  `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` is one ring of volume 1579.14.
 - `point_at(t)` on arcs is accurate to about 1e-8 mm.
 - `mirror()` or `scale()` turn the arc into a `bspline`; `radius` then raises.
 

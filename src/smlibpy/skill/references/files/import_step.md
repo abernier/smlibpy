@@ -28,8 +28,8 @@ types, so a cylinder stays a cylinder and a B-spline keeps its control points. A
 
 ## Names and colors
 - `p.name` is the label of the solid in the file. Many CAD systems leave that label empty and
-  name only the product. Files written by OpenCASCADE, for example, come back with
-  `name = None`. Product and assembly instance names are not read.
+  name only the product (OpenCASCADE, for example); then `p.name` is the name of the product
+  the solid belongs to. Assembly instance names are not read.
 - `p.color` is a tuple `(r, g, b)` in 0..1, or `None`. Predefined STEP colors come back as
   ints (`(1, 0, 0)`), RGB colors as floats.
 
@@ -37,9 +37,11 @@ types, so a cylinder stays a cylinder and a B-spline keeps its control points. A
 - **Always check `is_valid()` on what you import.** A broken body does not raise. A solid with
   a missing face came back as a `Part` with `is_valid() == False` and a meaningless volume (8000
   for an open 20 mm cube), with `heal=True` as well.
-- **Check foreign assemblies with a picture.** In the AutoCAD AS1 assembly every part was placed
-  at the inverse of its placement, with no error (bolts 18 mm away from their nuts). Render
-  with `view="sheet"`, or measure `distance_to` between parts that should touch.
+- **Check foreign assemblies with a picture.** Exporters disagree on which side of a placement
+  belongs to the assembly; smlibpy follows the CAx-IF rules and the product structure, which
+  places the CAx-IF AS1 and DM1 assemblies of AutoCAD, OpenCASCADE, Pro/E and others correctly.
+  For a file from an exporter not seen before, render with `view="sheet"`, or measure
+  `distance_to` between parts that should touch.
 - One `Part` written with two disjoint solids comes back as a `ShapeList` of two parts.
 - A `Sketch` written to STEP comes back as a `Shell`.
 - A single-body file gives a bare `Part`, so `len(r)` and `for p in r` fail on it. Use the

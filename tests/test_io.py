@@ -4,7 +4,7 @@ import struct
 import pytest
 
 from smlibpy import *
-from smlibpy.exporters import export_glb, export_step, export_stl, import_stl, load, save
+from smlibpy.exporters import export_glb, export_gltf, export_step, export_stl, import_stl, load, save
 
 
 @pytest.fixture
@@ -35,6 +35,32 @@ def test_glb_header(tmp_path, plate):
     data = path.read_bytes()
     magic, version, length = struct.unpack("<4sII", data[:12])
     assert magic == b"glTF" and version == 2 and length == len(data)
+
+
+@pytest.mark.parametrize("fmt", ["glb", "gltf"])
+def test_gltf_is_in_meters(tmp_path, fmt):
+    import json
+
+    path = tmp_path / f"box.{fmt}"
+    (export_glb if fmt == "glb" else export_gltf)(Box(60, 40, 8), path, edge_color="red")
+    if fmt == "glb":
+        data = path.read_bytes()
+        n = struct.unpack("<I", data[12:16])[0]
+        doc = json.loads(data[20:20 + n])
+    else:
+        doc = json.loads(path.read_text())
+    root = doc["nodes"][doc["scenes"][0]["nodes"][0]]
+    assert root["scale"] == [0.001, 0.001, 0.001]
+    mesh_node = doc["nodes"][root["children"][0]]
+    pos = doc["accessors"][doc["meshes"][mesh_node["mesh"]]["primitives"][0]["attributes"]["POSITION"]]
+    assert pos["max"] == pytest.approx([30, 20, 4])  # millimeters below the root: 60 mm = 0.06 m
+
+
+@pytest.mark.parametrize("cone", [Cone(0, 10, 15), Cone(0, 10, 15).translate(5, -3, 2), Cone(10, 0, 15)])
+def test_step_cone_with_apex_keeps_its_volume(tmp_path, cone):
+    path = tmp_path / "cone.step"
+    export_step(cone, path)
+    assert load(path).volume == pytest.approx(cone.volume, rel=1e-6)
 
 
 def test_step_structure(tmp_path, plate):

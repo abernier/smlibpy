@@ -4,26 +4,21 @@ Features make solids from profiles (`extrude`, `revolve`, `loft`, `sweep`, `thic
 solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). Each returns a new shape.
 
 ## `is_valid()` is not enough
-Several features return a body that reports `is_valid() == True` but is wrong. Check the
-volume against a formula after every feature, and `len(part.solids())`:
+Features check their result: revolve, sweep, loft, extrude with taper and thicken raise
+`ModelingError` instead of returning an inside-out or volume-less body; fillet and chamfer
+check the volume change; shell checks that the walls fit. A few wrong results still pass
+`is_valid()`. Check the volume against a formula after every feature, and
+`len(part.solids())`:
 
 | Input | Result |
 |---|---|
-| `revolve` of a region crossing the axis (angle 360) | zero or negative volume |
-| `revolve` with the default axis on a moved sketch | revolves about the sketch's own origin |
-| `revolve(axis, -90)` | 270° the positive way |
-| `extrude(taper=...)` of a profile with holes | the holes are gone |
-| `extrude(taper=...)` that closes the profile | shorter than `amount` |
-| `loft` of a section with holes | the holes are gone |
 | `loft` of sections that start in different places | twisted, pinched |
 | `sweep` of a non-round profile along a helix | the profile rolls ~30° per turn |
-| `sweep` along a single 360° arc | 2 solids, negative volume |
 | `sweep` with a profile larger than the bend / pitch | self-overlapping, volume too large |
-| `fillet` right at the size limit (cube 10, r 4.99) | volume 11 instead of 525 |
-| closed `shell` thicker than half the part | wrong volume |
-| `split` with nothing on the kept side | empty Part (0 faces) |
 
-Each feature doc says how to avoid its case.
+Each feature doc says how to avoid its case. Fillet, chamfer, shell and offset refuse an
+input part that is not valid (`ModelingError: fillet: the part is not a valid solid ...`):
+check `is_valid()` after each step and fix the step that broke it.
 
 ## Directions
 - Sketch normal: `sketch.plane.z_dir`. `Plane.XY` +Z, `Plane.front`/`Plane.XZ` **-Y**,
@@ -37,14 +32,14 @@ Each feature doc says how to avoid its case.
 - Rounds and chamfers: two treated edges `d` apart allow a setback of `d/2`, one of `d`.
 - Shell and offset: wall below half the thinnest part of the solid; a round's radius limits
   offsets across it.
-- Stay a few percent away from every exact limit: right at the limit the kernel fails, crashes
-  (shell with a wall equal to the depth) or returns garbage.
+- Stay a few percent away from every exact limit: right at the limit the kernel fails or
+  returns a wrong body, which smlibpy refuses with a `ModelingError`.
 
 ## Errors
 `ModelingError` means smlibpy rejected the input or the result (it names the limit where it
 can). `KernelError` (a `ModelingError`) carries the kernel status (`SM_ERR`, `SM_ERR_INVALID_INPUT`,
-`SM_ERR_AXIS_INSIDE_FACE`) and a hint; the hint is a guess (zero radius reports "the radius may be
-too large"). `ValueError`/`TypeError` mean a wrong argument.
+`SM_ERR_AXIS_INSIDE_FACE`) and a hint; the hint is a guess. `ValueError`/`TypeError` mean a
+wrong argument (a radius or length that is not positive, a zero thickness or angle).
 
 ## Order
 Main body → additions → subtractions → fillets and chamfers → shell (or shell earlier when

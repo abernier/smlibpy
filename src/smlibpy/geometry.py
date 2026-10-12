@@ -408,6 +408,15 @@ class Location:
             return other.moved(self)
         if isinstance(other, Plane):
             return other.moved(self)
+        if isinstance(other, list):
+            # keep the type of a pattern (Locations) or a selection (ShapeList)
+            from .locations import Locations
+            from .shapes import ShapeList
+
+            if isinstance(other, Locations):
+                return Locations(*(self * o for o in other))
+            if isinstance(other, ShapeList):
+                return ShapeList(self * o for o in other)
         if isinstance(other, (list, tuple)):
             return [self * o for o in other]
         moved = getattr(other, "moved", None)
@@ -605,7 +614,7 @@ class Plane:
         if isinstance(other, Location):
             return self.location * other
         if isinstance(other, (list, tuple)):
-            return [self * o for o in other]
+            return self.location * other
         return self.location * other
 
     def __eq__(self, other: object) -> bool:

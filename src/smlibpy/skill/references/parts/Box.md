@@ -36,7 +36,8 @@ A `Part` with 6 planar faces, 12 edges, 8 vertices. Centered on the origin by de
 - Faces of a fresh box: top at z = +height/2 with normal +Z, front at y = −width/2 with normal −Y.
   Select them with `box.faces().top()`, `.front()`, ... rather than by index.
 - No rotation parameter. Turn it afterwards: `Box(...).rotate(Z, 30)`.
-- A size below the kernel tolerance (1e-7) is not refused: the part is "valid" with volume 0.
+- A size below the kernel tolerance (1e-7) is not refused: you get a part of almost no
+  volume that `is_valid()` rejects.
 
 ## Errors
 

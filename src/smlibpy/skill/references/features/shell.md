@@ -21,16 +21,17 @@ A `Part`. Prismatic parts are exact: `Box(80, 50, 30).shell(2.5, top)` has volum
 bosses work too.
 
 ## Limits
-- Closed shell: thickness below half the smallest inner dimension. **Above it the result can
-  be a valid-looking wrong body**: `Box(40, 30, 10).shell(6)` returns `is_valid() == True`,
-  volume 10992 (the box has 12000; a 6 mm wall cannot fit in a 10 mm height). At exactly half
-  it raises.
-- Open shell: thickness below the depth to the opening. At exactly the depth it raises
-  `ModelingError` — and **sometimes crashes the Python process** (segmentation fault, 7 of
-  20 runs for `Box(40, 30, 10).shell(10, top)`). Never call shell with a wall equal to a
-  part dimension.
+- smlibpy checks inward walls on the bounding box, along each world axis: the part must be
+  thicker than two walls, or than one wall where a planar opening face lies on that side of
+  the bounding box. `Box(40, 30, 10).shell(6)` raises `ModelingError: shell: two walls of 6 do
+  not fit into the part, which is 10 thick along Z; use a thinner wall`;
+  `Box(40, 30, 10).shell(10, top)` raises `ModelingError: shell: a wall of 10 does not fit
+  into the part, which is 10 deep along Z from the opening; use a thinner wall`.
+- The check sees only the bounding box: a part with thin regions can still fail in the kernel
+  (`KernelError` or `ModelingError`). Keep the wall below half the thinnest region.
 - Opening every face: `ModelingError: shell: the kernel could not build a valid result; try a smaller value`.
-- `thickness=0`: `KernelError: shell failed (SM_ERR_INVALID_INPUT): ...`.
+- `thickness=0`: `ValueError: shell: the thickness must not be zero`.
+- An invalid input part: `ModelingError: shell: the part is not a valid solid (...)`.
 
 ## With fillets
 - Fillet first, then shell, when the inside should follow the rounds. The inner rounds get
@@ -51,6 +52,7 @@ bosses work too.
 ## Errors
 - `KernelError: shell failed (SM_ERR): the wall may be thicker than the part allows`
 - `ModelingError: shell: the kernel could not build a valid result; try a smaller value`
+- `ModelingError: shell: two walls of 6 do not fit into the part, which is 10 thick along Z; use a thinner wall`
 
 ## Example
 ```python

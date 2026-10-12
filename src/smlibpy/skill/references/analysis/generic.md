@@ -29,8 +29,8 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
   of a transformed body to agree with the original to 1e-7 relative, not better.
 - Curve constructions are fits: `Helix` is a NURBS approximation 2e-6 shorter than the
   formula, and bodies swept along it inherit that.
-- `mass_properties(accuracy=1e-10)` brings curved bodies to 1e-10. It costs 5 to 200 times
-  more time (a 20-turn spring: 0.14 s -> 3.4 s; a bent pipe at 1e-11: 27 s).
+- `mass_properties(accuracy=1e-10)` (the tightest allowed) brings curved bodies to 1e-10. It
+  costs 5 to 200 times more time (a 20-turn spring: 0.14 s -> 3.4 s).
 
 Compare against formulas with a relative tolerance: `1e-6` for analytic bodies, `1e-4` for
 sweeps and lofts. Never compare floats with `==`.
@@ -50,10 +50,10 @@ print(plate.bbox().size)                               # Vector(80, 60, 10)
 print(plate.info()["faces"])                           # 14
 ```
 
-1. `is_valid()` is `True`. It checks topology only (closed, manifold); see `is_valid`.
+1. `is_valid()` is `True`: closed, manifold and a positive volume; see `is_valid`.
 2. `len(part.solids()) == 1` unless you meant several bodies. Disjoint pieces stay one `Part`.
-3. `volume > 0` and close to a formula. This catches what `is_valid()` misses: a self-overlapping
-   sweep counts the overlap twice, a revolve across its axis has volume 0.
+3. `volume` close to a formula. This catches what `is_valid()` misses: a self-overlapping
+   sweep counts the overlap twice.
 4. `bbox().size` equals the planned outer size; `bbox().min`/`max` show which side a feature
    went to.
 5. The face count changed by the expected amount (`info()["faces"]`).

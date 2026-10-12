@@ -6,8 +6,9 @@ Mass, volume, area, center of mass and inertia tensor of a `Part`, in one integr
 
 `part.mass_properties(density=1.0, accuracy=None) -> MassProperties`
 
-- `density`: mass per mm³, uniform. `7.85e-3` (steel, g/mm³) gives grams and g·mm².
-- `accuracy`: relative accuracy of the integration. `None` (and `0`) mean the default 1e-7.
+- `density`: mass per mm³, uniform, positive. `7.85e-3` (steel, g/mm³) gives grams and g·mm².
+- `accuracy`: relative accuracy of the integration, 1e-10 to 1e-2. `None` means the default
+  1e-7.
 
 ## Returns
 
@@ -47,12 +48,6 @@ Swept bodies are slower and worse: a 20-turn spring takes 0.14 s at the default 
 
 ## Gotchas
 
-- `density <= 0` is silently replaced by 1: `mass_properties(density=0).mass` equals the
-  volume. Pass a positive density.
-- Too tight an accuracy fails: 1e-12 on a sphere and 1e-14 on anything raise
-  `KernelError: mass properties failed (SM_ERR): is the part a closed solid?`. The hint is
-  misleading; the part is fine, the accuracy is too small. Stay at 1e-10 or above.
-- `accuracy=1` or `0.5` is accepted and returns a volume 2 % off.
 - A part made of several disjoint solids gives the properties of all of them together.
 - Only `Part` has it. For a `Shell` or `Sketch` use `area` and `center()`.
 - `part.volume`, `part.area` and `part.center()` each run the full integration again at the
@@ -60,8 +55,9 @@ Swept bodies are slower and worse: a 20-turn spring takes 0.14 s at the default 
 
 ## Errors
 
-- `KernelError: mass properties failed (SM_ERR): is the part a closed solid?` for an accuracy
-  below about 1e-11 or a negative one. Use 1e-10.
+- `ValueError: mass_properties: the density must be positive` for `density <= 0`.
+- `ValueError: mass_properties: accuracy must be between 1e-10 and 1e-2` for any other
+  accuracy (`0` included).
 
 ## Example
 

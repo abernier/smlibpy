@@ -1,6 +1,6 @@
 # Concepts
 
-smlibpy has a small set of ideas. Learn these and the rest of the API follows.
+These are the ideas the rest of the API builds on.
 
 ## Shapes are values
 
@@ -14,8 +14,8 @@ rounded = box.fillet(box.edges(), 2)   # box is unchanged
 print(box.volume, rounded.volume)
 ```
 
-That makes models easy to reason about: you can keep intermediate results, branch off
-variants and reuse parts without copying.
+So you can keep intermediate results, branch off variants and reuse parts without copying
+them.
 
 | Type | What it is | Made by |
 |---|---|---|

@@ -12,7 +12,7 @@ there is no public constructor.
 | `interior_point()` | a point that lies on the face |
 | `normal_at(point=None)` | outward unit normal at the face point closest to `point` |
 | `plane` | `Plane` at the centroid, normal outward (planar faces only) |
-| `is_planar` | True for `"plane"` faces |
+| `is_planar` | True for `"plane"` faces and flat `"bspline"` faces (all control points in one plane) |
 | `radius` | cylinder, sphere radius; cone: bottom radius; torus: minor radius |
 | `axis` | `Axis` of a cylinder, cone, sphere, torus, revolution face |
 | `outer_wire()`, `inner_wires()`, `wires()`, `edges(seams=False)`, `vertices()`, `neighbors()`, `owner` | topology, see `topology` |
@@ -43,7 +43,7 @@ there is no public constructor.
 - `plane`, `to_sketch()` and `extrude()` raise `ValueError: a cylinder face has no plane; use
   normal_at() or a planar face` on curved faces.
 - Flat faces of type `"bspline"` (`to_nurbs()`, `surface()`, many STEP imports) have
-  `is_planar == False` and no `plane`. Workaround: `Plane(face.center(), z_dir=face.normal_at())`.
+  `is_planar == True` and a `plane`; `geom_type` stays `"bspline"`.
 - `radius` and `axis` raise `ValueError: a plane face has no radius` / `... no axis` on planes.
   Narrow with `cylinders()` first.
 - `center()` and `area` are computed by integration: expect noise of about 1e-6 in coordinates.

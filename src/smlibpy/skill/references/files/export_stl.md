@@ -37,13 +37,13 @@ the surface (see `Mesh.md`). For 3D printing, `tolerance=0.01` is plenty.
 - Coordinates are float32 (about 7 digits). Far from the origin the resolution drops, to about
   0.01 mm at 100 m. ASCII is no more precise: it writes 7 digits too.
 - A `Sketch` or face becomes 2 triangles per planar face: an open mesh, useless for printing.
-- `tolerance=0`, negative values and `angle=0` are accepted without an error and give the
-  default mesh.
-- Mesh Booleans give wrong results. Do Booleans on the exact parts before you export.
+- Mesh Booleans mostly fail (`ModelingError`). Do Booleans on the exact parts before you export.
 
 ## Errors
 - `ValueError: need at least one array to concatenate`: the list was empty.
 - `TypeError: cannot tessellate a Edge`: edges and wires have no triangles.
+- `ValueError: tessellate: tolerance and angle must be positive`: `tolerance <= 0` or
+  `angle <= 0`.
 
 ## Example
 ```python

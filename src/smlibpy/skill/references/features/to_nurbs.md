@@ -15,6 +15,8 @@ edges report `geom_type == "bspline"`. A sketch keeps its plane.
 - Selectors and properties that need analytic geometry find nothing: `edges().circles()`,
   `faces().cylinders()` return empty lists; `face.radius` raises
   `ValueError: a bspline face has no radius`. Select before converting, or by position.
+  Flat faces and straight edges still count: `planar()`, `lines()`, `parallel_to` and
+  `face.plane` work.
 - STEP files get larger (11.8 kB → 18.1 kB for a box with a hole and four rounds); they read
   back with the same volume.
 

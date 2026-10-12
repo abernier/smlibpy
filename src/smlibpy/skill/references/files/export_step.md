@@ -8,8 +8,9 @@ a CAD model in.
 
 - `shapes`: a `Part`, `Shell`, `Sketch`, `Face`, or a list of them (nested lists are flattened).
 - `path`: `str` or `pathlib.Path`. The extension is not checked.
-- `unit`: `"mm"` (default), `"cm"`, `"m"`, `"um"`, `"inch"` (or `"in"`). It **only declares** the
-  unit. The coordinates are written unchanged (see Gotchas).
+- `unit`: `"mm"` (default), `"cm"`, `"m"`, `"um"`, `"inch"` (or `"in"`). The unit of the file:
+  the model (always mm) is converted to it, so a 60 mm box is written as 2.3622 with
+  `unit="inch"` and reads back as 60 mm.
 - `name`: the STEP product name. Default: the file name without its extension.
 
 ## Returns
@@ -29,10 +30,8 @@ Everything else is written as B-splines with the kernel's control points.
 - Order: bodies come back in the order you wrote them, at their places.
 
 ## Gotchas
-- **`unit` does not scale.** If you write a mm model with `unit="inch"`, it reads back 25.4 times
-  larger: a 60 mm box becomes 1524 mm. For an inch file, scale first:
-  `export_step(part.scale(1 / 25.4), path, unit="inch")`. Likewise, `"cm"` gives 10x and
-  `"m"` gives 1000x.
+- `unit` converts: do not scale the model yourself. `export_step(part.scale(1 / 25.4), path,
+  unit="inch")` writes a part 25.4 times too small.
 - A list of parts is not written as an assembly tree. You get one product with several solids,
   and each solid carries its own name.
 - A `Part` with two disjoint solids (from a fuse of parts that do not touch) is written as two
@@ -63,8 +62,8 @@ back = import_step("assembly.step")
 print([p.name for p in back], round(back[0].volume, 3), round(bracket.volume, 3))
 # ['bracket', 'cover'] 18797.876 18797.876
 
-# an inch file: scale the model first, then declare the unit
-export_step(bracket.scale(1 / 25.4), "bracket_inch.step", unit="inch")
+# an inch file: the coordinates are converted to inches
+export_step(bracket, "bracket_inch.step", unit="inch")
 print(import_step("bracket_inch.step").bbox().size)   # Vector(60, 40, 8)
 ```
 

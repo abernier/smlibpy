@@ -10,8 +10,8 @@ Build drafted walls into the shape instead.
 ## All side walls: tapered extrusion
 `sketch.extrude(amount, taper=deg)`: positive `taper` narrows away from the sketch. Exact:
 a `RoundedRectangle(60, 40, 5)` with `taper=3` over 20 is 57.904 wide at the top
-(60 − 2·20·tan 3°). Rounded corners stay rounded. See `extrude` for the limits; **holes in the
-profile are lost with taper**, cut them as their own tapered extrusions.
+(60 − 2·20·tan 3°). Rounded corners stay rounded. See `extrude` for the limits. Holes in the
+profile are kept and drafted the other way (they widen where the outline narrows).
 
 ## Pockets and bosses with draft
 A tapered tool from a face: `Rectangle(30, 20).on(top).extrude(-10, taper=5)` is 30 x 20 at the

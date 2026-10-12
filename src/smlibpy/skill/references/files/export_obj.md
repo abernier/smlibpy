@@ -24,7 +24,8 @@ Unnamed shapes are called `part_<i>` (meshes too), counted from 1 over the list.
 - Vertices are shared within an object, not between objects.
 - An empty list writes a file with only `# smlibpy`, without an error.
 - Edges and wires cannot be written (`TypeError: 'Edge' object is not iterable`).
-- smlibpy cannot read OBJ back (`load("x.obj")` fails with `KernelError: load failed`).
+- smlibpy cannot read OBJ back (`load("x.obj")` raises `ValueError: unknown file type
+  '.obj'; ...`).
 
 ## Example
 ```python

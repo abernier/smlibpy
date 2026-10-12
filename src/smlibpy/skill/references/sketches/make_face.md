@@ -24,8 +24,8 @@ The plane comes from the outline:
 
 ## Gotchas
 - `revolve()` without an axis turns about the local Y axis through the centroid, which
-  crosses the profile: volume 0, no error. Always pass the axis:
-  `profile.revolve(Axis((0, 0, 0), (0, 0, 1)))`.
+  crosses the profile and raises `ModelingError: revolve: the axis crosses the region; ...`.
+  Always pass the axis: `profile.revolve(Axis((0, 0, 0), (0, 0, 1)))`.
 - Holes are simply subtracted, without checks: a hole outside the outline is ignored, a hole
   crossing the outline cuts a notch, a hole larger than the outline leaves an empty sketch,
   overlapping holes merge, a hole in another plane is ignored. Check

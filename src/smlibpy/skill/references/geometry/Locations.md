@@ -20,19 +20,17 @@ positions as Vectors. Repr: `Locations(3 locations)`.
 | `locs * Pos(...)` / `locs * Rot(...)` | `Locations`: the extra move is applied in each copy's local frame |
 | `locs * other_locs` | `Locations`, all combinations |
 | `part - locs * tool`, `part + locs * tool` | cut or fuse all copies at once |
-| `(locs * shape).on(face)` | the copies placed onto a face |
+| `(locs * shape).on(face)`, `locs.on(face) * shape` | the copies placed onto a face |
+| `Pos(...) * locs`, `plane * locs` | `Locations`, each placement moved |
 
 ## Gotchas
-- **Put the pattern on a face after multiplying**: `(GridLocations(...) * Hole(2, 5)).on(face)`.
-  `locs.on(face)` returns a plain `list` of Locations, and `locs.on(face) * shape` raises
-  `TypeError: can't multiply sequence by non-int of type 'Sketch'`.
-- **A Location or Plane on the left breaks the chain**: `Pos(0, 0, 10) * GridLocations(...)`
-  and `Plane.XY.offset(10) * GridLocations(...)` return plain lists, so
-  `Pos(0, 0, 10) * GridLocations(...) * Box(...)` raises `TypeError: can't multiply sequence by
-  non-int of type 'Part'`. Write `(GridLocations(...) * Box(...)).translate(0, 0, 10)` or
-  `GridLocations(...) * Pos(0, 0, 10) * Box(...)` (the Pos then acts in each copy's frame).
-- `Pos(...) * (locs * shape)` returns a plain `list`, not a ShapeList (no `.bbox()`,
-  `.on()`); use `.translate(...)` or `.moved(...)` on the ShapeList instead.
+- A pattern goes onto a face either way: `(GridLocations(...) * Hole(2, 5)).on(face)` or
+  `GridLocations(...).on(face) * Hole(2, 5)` (`locs.on(face)` returns `Locations`).
+- A Location or Plane on the left keeps the chain:
+  `Pos(0, 0, 10) * GridLocations(...) * Box(...)` moves every copy up by 10 (world frame),
+  while `GridLocations(...) * Pos(0, 0, 10) * Box(...)` applies the Pos in each copy's frame.
+  `Pos(...) * (locs * shape)` returns a `ShapeList`. Only a plain Python list stays a plain
+  list.
 - Faces in `Locations(face, ...)` give the face plane: a copy's +Z follows the face normal
   (studs on side faces stand out sideways).
 - `part.vertices()` includes seam vertices of holes and cylinders; filter before using them

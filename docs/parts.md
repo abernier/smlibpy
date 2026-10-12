@@ -40,13 +40,18 @@ part -= Rectangle(30, 20).on(part.faces().top()).extrude(-5)
 
 ## Revolve
 
-Revolve a sketch about an axis in its plane. By default the axis is the sketch's own Y
-axis, which for a profile on `Plane.front` is the world Z axis, the usual lathe setup:
+Revolve a sketch about an axis in its plane. By default the axis is the sketch's local Y
+axis through its plane origin. A `Polygon` keeps its plane origin at the world origin, so on
+`Plane.front` the default axis is the world Z axis, the usual lathe setup. Centered
+constructors (`Rectangle`, `Circle`, ...) and `make_face` put the plane origin in the middle
+of the region: for `Rectangle(10, 20).translate(15, 0).on(Plane.front)` the default axis is
+the line x = 15, which crosses the region, so `revolve()` raises. Pass the axis:
 
 ```python
 section = Polygon((10, 0), (30, 0), (30, 5), (15, 5), (15, 20), (10, 20))
 spool = section.on(Plane.front).revolve()
 quarter = section.on(Plane.front).revolve(Z, 90)
+tube = Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve(Z)
 ```
 
 ## Loft

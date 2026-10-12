@@ -1,4 +1,5 @@
 import math
+import re
 
 import pytest
 
@@ -44,10 +45,15 @@ def test_step_keeps_names_colors_and_parts(tmp_path, plate):
     assert back[1].bbox().min.z == pytest.approx(11)  # boxes are centered
 
 
-def test_step_converts_units(tmp_path):
-    path = tmp_path / "inch.step"
-    export_step(Box(1, 2, 3), path, unit="inch")
-    assert import_step(path).volume == pytest.approx(6 * 25.4**3, rel=1e-9)
+@pytest.mark.parametrize("unit,mm", [("inch", 25.4), ("cm", 10.0), ("m", 1000.0), ("um", 0.001)])
+def test_step_writes_coordinates_in_the_declared_unit(tmp_path, unit, mm):
+    path = tmp_path / f"{unit}.step"
+    export_step(Box(1, 2, 3).translate(25.4, 0, 0), path, unit=unit)
+    xs = [float(m) for m in re.findall(r"CARTESIAN_POINT\('',\(([^,]+),", path.read_text())]
+    assert max(xs) == pytest.approx(25.9 / mm, rel=1e-12)  # the corner at x = 25.9 mm
+    back = import_step(path)  # converted back to mm
+    assert back.volume == pytest.approx(6, rel=1e-9)
+    assert back.bbox().max.x == pytest.approx(25.9, rel=1e-12)
 
 
 def _step(entities: list[str]) -> str:
@@ -179,3 +185,72 @@ def test_step_from_opencascade(tmp_path, name):
     part = import_step(path)
     assert part.is_valid()
     assert part.volume == pytest.approx(props.Mass(), rel=1e-6)
+
+
+def _assembly_like_autocad(tmp_path) -> str:
+    """Two instances of one part in an assembly built the way AutoCAD writes it: the
+    identity placement is listed in the root's representation and in the part's, and
+    every ITEM_DEFINED_TRANSFORMATION names it first (CAx-IF: item 1 in the child)."""
+    part = tmp_path / "part.step"
+    export_step(Box(20, 10, 4).named("plate"), part)
+    lines = part.read_text().split("DATA;\n")[1].split("ENDSEC;")[0].splitlines()
+    drop = ("APPLICATION_", "PRODUCT", "SHAPE_DEFINITION_REPRESENTATION")
+    geometry = [ln for ln in lines if not any(d in ln.split("=", 1)[1][:40] for d in drop)]
+    absr = next(ln.split("=")[0] for ln in lines if "ADVANCED_BREP_SHAPE_REPRESENTATION" in ln)
+    ctx = next(ln.split("=")[0] for ln in lines if "GEOMETRIC_REPRESENTATION_CONTEXT" in ln)
+
+    def placement(n: int, origin: str, x_dir: str) -> list[str]:
+        return [f"#{n}=CARTESIAN_POINT('',({origin}));", f"#{n + 1}=DIRECTION('',(0.,0.,1.));",
+                f"#{n + 2}=DIRECTION('',({x_dir}));", f"#{n + 3}=AXIS2_PLACEMENT_3D('',#{n},#{n + 1},#{n + 2});"]
+
+    def product(n: int, name: str, rep_items: str) -> list[str]:
+        return [f"#{n}=PRODUCT('{name}','{name}','',(#1001));", f"#{n + 1}=PRODUCT_DEFINITION_FORMATION('','',#{n});",
+                f"#{n + 2}=PRODUCT_DEFINITION('','',#{n + 1},#1002);",
+                f"#{n + 3}=SHAPE_REPRESENTATION('',({rep_items}),{ctx});",
+                f"#{n + 4}=PRODUCT_DEFINITION_SHAPE('','',#{n + 2});",
+                f"#{n + 5}=SHAPE_DEFINITION_REPRESENTATION(#{n + 4},#{n + 3});"]
+
+    def instance(n: int, at: int) -> list[str]:
+        return [f"#{n}=ITEM_DEFINED_TRANSFORMATION('','',#1006,#{at});",
+                f"#{n + 1}=(REPRESENTATION_RELATIONSHIP(' ',$,#1023,#1013)"
+                f"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{n})SHAPE_REPRESENTATION_RELATIONSHIP());",
+                f"#{n + 2}=NEXT_ASSEMBLY_USAGE_OCCURRENCE('','','',#1012,#1022,$);",
+                f"#{n + 3}=PRODUCT_DEFINITION_SHAPE('','',#{n + 2});",
+                f"#{n + 4}=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{n + 1},#{n + 3});"]
+
+    e = geometry + [
+        "#1000=APPLICATION_CONTEXT('automotive design');", "#1001=PRODUCT_CONTEXT('',#1000,'mechanical');",
+        "#1002=PRODUCT_DEFINITION_CONTEXT('part definition',#1000,'design');",
+        *placement(1003, "0.,0.,0.", "1.,0.,0."),                                   # #1006: identity
+        *product(1010, "ASM", "#1006,#1033,#1043"), *product(1020, "PLATE", "#1006"),
+        f"#1026=SHAPE_REPRESENTATION_RELATIONSHIP('','',{absr},#1023);",
+        *placement(1030, "90.,75.,10.", "1.,0.,0."), *placement(1040, "-50.,20.,0.", "0.,1.,0."),
+        *instance(1050, 1033), *instance(1060, 1043),
+    ]
+    head = ("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\n"
+            "FILE_NAME('asm','2026-01-01T00:00:00',(''),(''),'','','');\n"
+            "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n")
+    return head + "\n".join(e) + "\nENDSEC;\nEND-ISO-10303-21;\n"
+
+
+def test_step_assembly_placement_listed_in_both_representations(tmp_path):
+    path = tmp_path / "asm.step"
+    path.write_text(_assembly_like_autocad(tmp_path))
+    parts = sorted(import_step(path), key=lambda p: p.bbox().min.x)
+    assert len(parts) == 2
+    a, b = parts[0].bbox(), parts[1].bbox()
+    # the second instance is turned 90 degrees about Z and sits at (-50, 20, 0)
+    assert a.min.to_tuple() == pytest.approx((-55, 10, -2), abs=1e-6)
+    assert a.max.to_tuple() == pytest.approx((-45, 30, 2), abs=1e-6)
+    assert b.min.to_tuple() == pytest.approx((80, 70, 8), abs=1e-6)
+    assert b.max.to_tuple() == pytest.approx((100, 80, 12), abs=1e-6)
+
+
+def test_step_unnamed_solid_takes_the_product_name(tmp_path):
+    path = tmp_path / "widget.step"
+    export_step(Box(5, 5, 5), path)
+    text = path.read_text()
+    assert "MANIFOLD_SOLID_BREP('widget'" in text and "PRODUCT('widget','widget'" in text
+    path.write_text(text.replace("MANIFOLD_SOLID_BREP('widget'", "MANIFOLD_SOLID_BREP(''")
+                    .replace("PRODUCT('widget','widget'", "PRODUCT('W-1','Widget'"))
+    assert import_step(path).name == "Widget"

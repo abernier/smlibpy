@@ -11,7 +11,7 @@ part.volume              # 24000 - pi * 36 * 20
 part.area                # total surface area
 part.center()            # center of mass
 part.bbox()              # BoundBox: .min, .max, .size, .center
-part.is_valid()          # a closed, manifold solid?
+part.is_valid()          # a closed, manifold solid with a positive volume?
 part.info()              # counts and bounding box in one dict
 
 face = part.faces().top().one()
@@ -72,9 +72,12 @@ mesh.vertices, mesh.triangles          # numpy arrays
 mesh.volume, mesh.area, len(mesh)
 ```
 
-Meshes support Booleans of their own, which is handy for scanned or STL data:
+Meshes made by `tessellate` also take `+`, `-` and `&`, but the kernel's mesh Booleans only
+work where no face of the result gets a hole. The result is checked (closed, a volume the
+operation can give) and a wrong one raises `ModelingError`. Do Booleans on the exact parts
+and mesh the result:
 
 ```python
-a, b = Box(10, 10, 10).mesh(), Sphere(6).mesh()
-blob = a - b
+blob = (Box(10, 10, 10) - Sphere(6)).mesh()
+print(blob.is_closed(), round(blob.volume, 1))
 ```

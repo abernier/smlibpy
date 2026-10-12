@@ -30,10 +30,9 @@ Without `tangents`, each end tangent comes from the parabola through the three e
   through (1, 1). Sample `point_at` densely when you need extents.
 - To continue another edge smoothly, pass its end tangent:
   `tangents=(line.tangent_at(1), None)`.
-- A closed spline as a **sweep path** returns a body with volume 0 (`is_valid()` True). Split
-  it into two open splines with matching end tangents and sweep along `Wire([a, b])`:
-  `Spline((20, 0), (0, 20), (-20, 0), tangents=((0, 1), (0, -1)))` plus
-  `Spline((-20, 0), (0, -20), (20, 0), tangents=((0, -1), (0, 1)))` gives a valid ring.
+- A closed spline as a **sweep path** is split into two halves automatically and gives one
+  ring (`sweep(Circle(1), Spline((10, 0), (0, 10), (-10, 0), (0, -10), closed=True))`:
+  volume = π · 1² · path length).
 
 ## Errors
 - `ValueError: a spline needs at least two points`.

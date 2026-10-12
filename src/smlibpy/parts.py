@@ -69,15 +69,20 @@ def Torus(major_radius: float, minor_radius: float, *, align: AlignLike = Align.
 
 
 def Wedge(length: float, width: float, height: float, top_length: float = 0.0, *, align: AlignLike = Align.CENTER) -> Part:
-    """A ramp: a ``length`` by ``width`` base rising to a top edge (or face of ``top_length``)
-    at the back (+Y)."""
+    """A ramp: a ``length`` (X) by ``width`` (Y) base whose high side, ``height`` tall, is the
+    face at x = -length/2; the slope runs down towards +X. ``top_length`` gives a flat top of
+    that length, measured from the -X end."""
     from .sketches import Polygon
     from .geometry import Plane
 
+    if not (length > 0 and width > 0 and height > 0):
+        raise ValueError("wedge length, width and height must be positive")
+    if not 0 <= top_length < length:
+        raise ValueError("wedge top_length must be at least 0 and less than the length")
     pts = [(-length / 2, 0), (length / 2, 0), (-length / 2 + top_length, height), (-length / 2, height)] \
         if top_length > 0 else [(-length / 2, 0), (length / 2, 0), (-length / 2, height)]
     profile = Polygon(*pts).on(Plane.XZ)
-    part = profile.extrude(width, both=True).translate(0, 0, -height / 2)
+    part = profile.extrude(width / 2, both=True).translate(0, 0, -height / 2)
     return _aligned(part, align)
 
 

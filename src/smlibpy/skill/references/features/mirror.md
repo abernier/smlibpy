@@ -6,10 +6,10 @@ Makes a mirrored copy of a shape. It does not fuse: add the copy to the original
 `shape.mirror(plane=Plane.XZ)`
 `mirror(shape, plane=Plane.XZ)`
 
-- `plane`: a `Plane`. **The default is `Plane.XZ`, which flips Y**, not X. Pass the plane
-  explicitly: `Plane.YZ` flips X, `Plane.XY` flips Z, `Plane.YZ.offset(30)` mirrors about x = 30.
-- A face is not accepted directly (`AttributeError: 'Face' object has no attribute 'z_dir'`);
-  pass `face.plane`.
+- `plane`: a `Plane`, or a planar face (or a one-face selection) whose plane is used.
+  **The default is `Plane.XZ`, which flips Y**, not X. Pass the plane explicitly: `Plane.YZ`
+  flips X, `Plane.XY` flips Z, `Plane.YZ.offset(30)` mirrors about x = 30,
+  `part.mirror(part.faces().right())` about the part's right face.
 - Works on parts, sketches, faces, edges and wires.
 
 ## Returns
@@ -34,7 +34,7 @@ whole = half + half.mirror(Plane.YZ)                    # mirror about x = 0, th
 print(len(whole.solids()), len(whole.faces()), round(whole.volume, 3))   # 1 14 3937.463
 
 right = Box(20, 10, 10)
-pair = right + right.mirror(right.faces().right()[0].plane)  # about the part's own face: x = 10
+pair = right + right.mirror(right.faces().right())     # about the part's own face: x = 10
 print(pair.bbox().size.to_tuple())                      # (40.0, 10.0, 10.0)
 
 copy = mirror(half, Plane.YZ.offset(30))                # a copy about x = 30 (no fuse)

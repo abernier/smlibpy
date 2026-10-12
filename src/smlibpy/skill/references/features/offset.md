@@ -26,6 +26,8 @@ cylinder r6 h12. Holes shrink when the part grows and grow when it shrinks. Sphe
 - `offset` is not `shell(outward=True)`: the shell's outer edges come out rounded, the offset's
   stay sharp. A sharp-edged outer skin is `part.offset(t) - part`.
 - smlibpy retries and checks validity, bbox and volume; a failure ends in the `ModelingError` above.
+- The input part must be valid: otherwise `ModelingError: offset: the part is not a valid
+  solid (...)`.
 
 ## Example
 ```python

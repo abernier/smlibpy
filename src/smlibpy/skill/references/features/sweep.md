@@ -9,7 +9,9 @@ makes a surface (`Shell`).
 
 - `profile`: a sketch (holes allowed), a planar face or a closed wire. Draw it anywhere,
   usually at the origin in XY.
-- `path`: an `Edge` or a connected `Wire` (`Polyline`, `FilletPolyline`, `Wire([...])`).
+- `path`: an `Edge` or a connected `Wire` (`Polyline`, `FilletPolyline`, `Wire([...])`). A
+  closed single-edge path (a full `CenterArc`, a closed `Spline`) is split into two halves
+  automatically.
 - `orient=True`: turn the profile to stand perpendicular to the path at its start. Leave it on.
 - `translational=True`: keep the profile's orientation fixed (it does not turn with the path).
   The profile then cuts the path at a slant; on an arc the volume is area × rise, not area ×
@@ -32,14 +34,14 @@ makes a surface (`Shell`).
   the path by roughly 30° per turn (sections measure 2.11×1.25, then 1.59×2.22, ...). Circles
   do not care; thread and spring-band profiles do. Workaround: loft through copies of the
   profile placed along the helix with `x_dir` radial (example) — exact to 0.01%.
-- **A single closed 360° arc as path gives two solids and a negative volume**
-  (`sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))`). Use two half arcs or `revolve`.
 - Nothing checks self-intersection: a profile bigger than the path's bend radius, or a spring
   wire thicker than the pitch, returns `is_valid() == True` with a volume of area × length
-  (too large). Keep profile radius < bend radius and wire diameter < pitch.
+  (too large). Keep profile radius < bend radius and wire diameter < pitch. Inside-out and
+  volume-less results raise `ModelingError`.
 - Non-planar polylines are swept piece by piece: the corners are notched (3D path of three
   40 mm legs: 3320.9 instead of 3392.9). Round the corners with `FilletPolyline` instead.
-- A `Wire` of disconnected edges returns an invalid body without an error.
+- A `Wire` whose edges do not connect raises `ValueError: the sweep path is not connected: a
+  gap of 1 between Edge(...) and Edge(...)`.
 - `orient=False` with a path that is not along the profile normal raises
   `KernelError: sweep failed (SM_ERR): the profile may be too large for the path's curvature`
   (the message is misleading).
@@ -54,6 +56,9 @@ Volume = profile area × path length for a perpendicular sweep that does not sel
 - `TypeError: a sweep path is an edge or a wire, got Part`
 - `TypeError: expected a sketch, face or closed wire, got Part`
 - `ValueError: sharp-cornered sweeps need a planar path`
+- `ValueError: the sweep path is not connected: a gap of ...`
+- `ModelingError: sweep: the kernel returned a body that is ...` (inside out, without volume,
+  or not closed)
 
 ## Example
 ```python
@@ -68,8 +73,8 @@ print(round(frame.volume, 1))                           # 1920.0
 
 bent = sweep(Circle(3), FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), radius=8))  # rounded corner
 
-ring = sweep(Circle(2), Wire([CenterArc((0, 0), 20, 0, 180), CenterArc((0, 0), 20, 180, 180)]))
-print(len(ring.solids()), round(ring.volume, 2))        # 1 1579.14 (a single 360-degree arc gives 2 solids and a negative volume)
+ring = sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))  # closed path: split into two halves
+print(len(ring.solids()), round(ring.volume, 2))        # 1 1579.14
 
 # a square thread profile that does not roll: loft through placed copies (8 per turn)
 h = Helix(pitch=5, height=10, radius=10)

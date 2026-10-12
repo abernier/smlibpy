@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 10. `sweep` along a closed single-edge path: inside-out or empty body reported as valid
+- **Fixed:** a closed single-edge path is split into two halves before sweeping; arc and spline paths give valid rings.
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, scripts `10-arc-path.py`, `11-closed-path.py`
 - **What happens:** `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` returns a Part with
   `is_valid() == True`, volume -1579.13 (inside out, 3 faces, the picture shows a flat disk).
@@ -20,6 +21,7 @@
 ## MEDIUM
 
 ### 1. `Shape.mirror` / `Shape.scale`: lines and arcs become B-splines, wire and sketch fillets then skip corners silently
+- **Fixed:** lines()/parallel_to/direction and wire fillets treat straight B-spline edges as straight, so mirrored outlines fillet all corners (geom_type still reports bspline).
 - **Session:** `2026-10-12_21-25-59_curves-lines-wires`, script `03-mirror-geomtype.py`
 - **What happens:** `Line(...).mirror(Plane.XZ).geom_type` and `.scale(2).geom_type` are
   `"bspline"` (same for `CenterArc`). `direction` and `radius` then raise. The pattern from
@@ -54,6 +56,7 @@
 - **Workaround:** `make_face(wire_drawn_on_xy).on(plane)`.
 
 ### 3. `Wire`: edges that do not connect are accepted silently; sweep along them returns an invalid part
+- **Fixed:** sweep raises ValueError for a path whose edges do not connect (Wire itself still accepts them).
 - **Session:** `2026-10-12_21-25-59_curves-lines-wires`, scripts `06-wire-ordering.py`, `11-wire-paths.py`
 - **What happens:** `Wire([Line((0,0),(10,0)), Line((20,0),(30,0))])` and a T branch are
   accepted ("open" wire, edges in the given order). `sweep(Circle(1), gap_path)` returns a
@@ -68,6 +71,7 @@
 - **Workaround:** check `wire.start`, `wire.end`, `is_closed` before using a wire.
 
 ### 4. `Wire.fillet`: negative radius gives a broken wire silently
+- **Fixed:** ValueError "the radius must be positive".
 - **Session:** `2026-10-12_21-25-59_curves-lines-wires`, script `08-wire-fillet.py`
 - **What happens:** `Polyline(...20x10 rectangle..., close=True).fillet(-1)` returns an 8-edge
   wire of length 86.85 (the original is 60). `fillet(0)` raises

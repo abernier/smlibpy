@@ -372,6 +372,8 @@ def FilletPolyline(*points: VectorLike, radius: float, close: bool = False) -> W
 # Corner rounding for wires
 # -----------------------------------------------------------------------------
 def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vertex] | None) -> Wire:
+    if not radius > 0:
+        raise ValueError("fillet: the radius must be positive")
     edges = list(wire.edges())
     n = len(edges)
     closed = wire.is_closed
@@ -383,7 +385,7 @@ def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vert
     for i in range(n if closed else n - 1):
         j = (i + 1) % n
         a, b = edges[i], edges[j]
-        if a.geom_type != "line" or b.geom_type != "line":
+        if not a._is_straight() or not b._is_straight():
             continue
         corner = a.end
         if targets is not None and not any(corner.is_close(t, 1e-6) for t in targets):

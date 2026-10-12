@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `Sketch.extrude(taper=...)`: holes of the profile are lost
+- **Fixed:** the holes of a tapered extrusion are swept like the outline (turned round) and widen where it narrows; ring volume 1943.94.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, scripts `02-taper.py`, `06-taper-holes.py`
 - **What happens:** a profile with holes extruded with a taper returns the outer frustum
   without the holes, valid, no error. `_extrude_taper` sweeps each inner loop with
@@ -17,6 +18,7 @@
 - **Workaround:** `Circle(10).extrude(10, taper=5) - Circle(5).extrude(10, taper=-5)`.
 
 ### 2. `Sketch.revolve`: a region crossing the axis gives a "valid" body with zero or negative volume
+- **Fixed:** revolve raises ModelingError "the axis crosses the region" for every angle (checked before the kernel call; the result is checked too).
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, scripts `08-revolve-axis.py`, `10-revolve-plane-origin.py`
 - **What happens:** with angle 360 the kernel returns a body, `is_valid()` is True, volume is
   -1570.8 or 0. With angle 90 the same input raises `SM_ERR_AXIS_INSIDE_FACE`.
@@ -29,6 +31,7 @@
 - **Workaround:** check `volume > 0`; keep the region on one side of the axis.
 
 ### 9. `loft`: holes in sections are dropped silently
+- **Fixed:** sections with holes make a hollow loft (holes matched to the nearest hole of the next section); different hole counts raise ValueError.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, script `03-loft-odd.py`
 - **What happens:** `_section_curves` passes only `outer_wire()` to the kernel, so a ring
   section lofts as a full disc. Valid, no error. (`create_skin_primitive` says "Planar profiles
@@ -52,6 +55,7 @@
 - **Workaround:** loft through profile copies placed with `Plane(origin=h.point_at(t), x_dir=radial, z_dir=h.tangent_at(t))`, 8 per turn (exact, script 15).
 
 ### 11. `sweep` along a single 360° arc: two solids and a negative volume
+- **Fixed:** a closed single-edge path is split into two halves before sweeping: one torus, volume 1579.14.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, scripts `13-sweep-multiedge.py`, `16-sweep-edge-cases.py`
 - **What happens:** `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` → `is_valid()` True,
   volume -1579.13, `len(solids()) == 2`.
@@ -59,6 +63,7 @@
 - **Workaround:** a path of two half arcs, or `revolve`.
 
 ### 20. `fillet`: radius just below the limit returns a broken body that passes all checks
+- **Fixed:** fillet/chamfer results must be valid and change the volume by no more than rounds of that size can (not bounded where a rounded edge runs on into one that is not rounded, tangentially or at a kink: the kernel extends the round there); r4.99 on the 10 mm cube raises ModelingError.
 - **Session:** `2026-10-12_21-37-11_features-fillet-chamfer`, scripts `04-fillet-limits.py`, `05-fillet-r499.py`
 - **What happens:** `Box(10,10,10).fillet(all edges, 4.99)` → `is_valid()` True, volume 11.19
   (exact 525.17), 14 faces instead of 26, rendering fails with `KernelError: tessellate failed`.
@@ -73,6 +78,7 @@
 - **Workaround:** stay a few percent below the limit; compare the volume with a formula.
 
 ### 24. `shell`: segmentation fault when the wall equals the depth to the opening
+- **Fixed:** shell refuses walls that do not fit along an axis of the bounding box before calling the kernel; ModelingError every time.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, scripts `02-shell-limits.py`, `04-shell-crash-repro.py`
 - **What happens:** the Python process dies with exit code 139 (SIGSEGV) in 7 of 20 runs; the
   other runs raise `ModelingError: shell: the kernel could not build a valid result`. The
@@ -86,6 +92,7 @@
   smallest bbox dimension before calling the kernel.
 
 ### 25. `shell`: a closed shell thicker than half the part returns a wrong "valid" body
+- **Fixed:** same check: two walls of 6 in a 10 mm part raise ModelingError.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, script `02-shell-limits.py`
 - **What happens:** `Box(40, 30, 10).shell(6)` → valid, volume 10992; `shell(10)` → valid,
   volume 10000, 10 faces. No 6 or 10 mm wall fits in a 10 mm part. `_checked` accepts it because
@@ -96,6 +103,7 @@
 ## MEDIUM
 
 ### 3. `revolve`: negative angle revolves 360+angle in the positive sense
+- **Fixed:** a negative angle turns the other way (axis flipped); 0 and |angle| > 360 raise ValueError.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `10-revolve-plane-origin.py`
 - **What happens:** `revolve(Z, -90)` makes a 270° body (vol 7068.58 of 9424.78 for the full
   ring) instead of 90° the other way. `angle=0` and `-360` return invalid bodies without error.
@@ -104,6 +112,7 @@
 - **Workaround:** flip the axis: `revolve(Axis((0,0,0),(0,0,-1)), 90)`.
 
 ### 4. `Sketch.revolve`: default axis follows the moved sketch origin
+- **Fixed:** the default axis is unchanged, but an axis through the region now raises and the message names the default axis and its point; docstring and docs say to pass axis.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `10-revolve-plane-origin.py`
 - **What happens:** the default axis is the local Y axis through `sketch.plane.origin`, and
   `translate`, `Pos * sketch` and `align=` move that origin (Rectangle(10,20, align=(MIN,MIN))
@@ -116,6 +125,7 @@
 - **Workaround:** always pass `axis`.
 
 ### 5. `extrude(taper=...)`: closing tapers silently shorten the solid; 90° gives an empty invalid body
+- **Fixed:** a taper that closes the profile before the end raises ModelingError; |taper| >= 90 raises ValueError.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `03-taper-limits.py`
 - **What happens:** `Rectangle(20, 20).extrude(10, taper=56)` ends at z 6.745 (a pyramid), no
   error. `taper=90` → `is_valid()` False, volume 0, no error. `taper=100` behaves like 80.
@@ -125,6 +135,7 @@
 - **Reproduce:** `print(Rectangle(20, 20).extrude(10, taper=56).bbox().max.z)  # 6.745`
 
 ### 6. `revolve`: axis perpendicular to the sketch plane returns a flat zero-volume body
+- **Fixed:** ValueError "the axis must lie in the sketch plane".
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `08-revolve-axis.py`
 - **What happens:** `Circle(3).translate(10, 0).revolve(Z)` (sketch in XY) → valid=True, vol 0,
   bbox flat in x. No error.
@@ -149,6 +160,7 @@
 - **Expected:** `ModelingError` (profile larger than the bend radius / pitch).
 
 ### 14. `sweep`: a Wire of disconnected edges returns an invalid body without an error
+- **Fixed:** sweep raises ValueError "the sweep path is not connected".
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, script `16-sweep-edge-cases.py`
 - **Reproduce:** `sweep(Circle(1), Wire([Line((0,0,0),(0,0,10)), Line((5,0,20),(5,0,30))])).is_valid()  # False`
 - **Expected:** `ValueError: the path is not connected`.
@@ -160,6 +172,7 @@
   failed (SM_ERR)`; `shell(2, bottom)` and closed `shell(2)` work.
 
 ### 26. `Shell.thicken(both=True)` is ignored
+- **Fixed:** Shell.thicken(both=True) is thickness in total, centered on the sheet (two halves fused).
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, script `06-thicken.py`
 - **What happens:** `Rectangle(20, 10).thicken(2, both=True)` → 2 thick, z 0..2, volume 400.
   The parameter is never used in `Shell.thicken`; the `thicken()` function does not offer it.
@@ -167,11 +180,13 @@
 - **Workaround:** `sheet.translate(-n * t/2).thicken(t)`.
 
 ### 27. `thicken` beyond a concave radius returns an invalid body without an error
+- **Fixed:** thicken checks its result (valid, positive volume) and raises ModelingError.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, script `06-thicken.py`
 - **Reproduce:** `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12).is_valid()  # False, volume 0`
 - **Expected:** `ModelingError` (as `shell`/`offset` do through `_checked`).
 
 ### 30. `split`: an empty side returns an empty Part without an error
+- **Fixed:** split raises ModelingError "nothing of the part lies above/below the plane".
 - **Session:** `2026-10-12_21-44-19_features-mirror-split-section-misc`, script `02-split.py`
 - **What happens:** `part.split(Plane.XY.offset(50))` (plane above the part) and
   `part.split(part.faces().top())` return a `Part` with 0 faces, `is_valid()` False, bbox ±1e20.
@@ -198,6 +213,7 @@
   valid, volume exact. Face counts used as checks are off.
 
 ### 16. `loft(smooth=...)` has no effect with three sections
+- **Fixed:** docstring says cubic only with four or more sections.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, script `01-loft-basic.py`
 - **What happens:** degree = `min(3 if smooth else 2, len(sections) - 1)` is 2 either way for
   three sections; the docstring says "With more than two sections". Volumes identical.
@@ -220,6 +236,7 @@
   same way as parts.
 
 ### 21. `fillet`/`chamfer`: zero or negative size gives a misleading message
+- **Fixed:** ValueError "the radius must be positive" / "the length must be positive".
 - **Session:** `2026-10-12_21-37-11_features-fillet-chamfer`, scripts `04`, `08`
 - **What happens:** `r=0`, `r=-1`, `length=0` → `KernelError: fillet failed (SM_ERR): the radius may be too large for the selected edges`.
 - **Expected:** `ValueError: radius must be positive`.
@@ -242,10 +259,12 @@
 - **Expected:** consistent behaviour, or the docstring says it.
 
 ### 29. `thicken(part, t)` raises `AttributeError`
+- **Fixed:** thicken(part) raises TypeError naming the accepted types.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, script `06-thicken.py`
 - **What happens:** `'Part' object has no attribute 'thicken'`. A `TypeError` naming the accepted types would help.
 
 ### 32. `mirror(plane=...)` defaults to `Plane.XZ` and rejects faces
+- **Fixed:** mirror accepts planar faces (through _as_plane); other types raise TypeError. The default stays Plane.XZ.
 - **Session:** `2026-10-12_21-44-19_features-mirror-split-section-misc`, script `01-mirror.py`
 - **What happens:** the default flips Y, which is easy to miss; `part.mirror(face)` raises
   `AttributeError: 'Face' object has no attribute 'z_dir'` while `split`/`section` accept faces

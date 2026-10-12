@@ -22,7 +22,8 @@ is `(x, y, z)` angles in degrees, applied about the world X, then Y, then Z axis
 |---|---|
 | `a * b` (two Locations) | Location: `b` is applied first, then `a` |
 | `loc * shape` | moved copy, same as `shape.moved(loc)` |
-| `loc * [s1, s2]` | list of moved copies |
+| `loc * [s1, s2]` | list of moved copies (a `ShapeList` for a `ShapeList`) |
+| `loc * locs` (a pattern) | `Locations`, each placement moved |
 | `loc * Vector` or `loc * (x, y)` / `(x, y, z)` | moved point (translation included) |
 | `loc * axis`, `loc * plane` | moved Axis / Plane |
 
@@ -36,8 +37,8 @@ origin to (0, 10, 0).
   `Location.about(Axis(center, dir), angle)`, or `Pos(p) * Rot(...) * Pos(-p)`.
 - `loc * vector` moves a point; use `rotate_vector` for directions.
 - `Location` equality uses a tolerance of 1e-6 on the matrix entries.
-- `Location * Locations` (a pattern) returns a plain `list`, not `Locations`; see
-  `Locations` for the consequences.
+- `Location * Locations` returns `Locations` and `Location * ShapeList` a `ShapeList`; only a
+  plain Python list gives a plain list.
 
 ## Example
 ```python

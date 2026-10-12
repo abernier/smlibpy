@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ._kernel import PolyHandle, ext, k, kernel_call
+from ._kernel import ModelingError, PolyHandle, ext, k, kernel_call
 from .geometry import BoundBox, Vector
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -72,7 +72,45 @@ class Mesh:
             a = self._poly_brep().copy()
             b = other._poly_brep().copy()
             r = k.poly_boolean(a, b, op)
-        return Mesh._from_poly(r)
+        result = Mesh._from_poly(r)
+        # The kernel's mesh Booleans often return open or wrong meshes (faces that should get
+        # a hole stay whole). Check what can be checked: closed, and a volume the operation
+        # can give.
+        va, vb, v = self.volume, other.volume, result.volume
+        if op == k.PolyBooleanOp.UNION:
+            lo, hi = max(va, vb), va + vb
+        elif op == k.PolyBooleanOp.DIFFERENCE:
+            lo, hi = max(0.0, va - vb), va
+        else:
+            lo, hi = 0.0, min(va, vb)
+        slack = 1e-6 * (abs(va) + abs(vb))
+        problem = None
+        if not self.is_closed() or not other.is_closed():
+            problem = None  # open operands: nothing to compare with
+        elif not result.is_closed():
+            problem = f"an open mesh ({result._open_edge_count()} open edges)"
+        elif not lo - slack <= v <= hi + slack:
+            problem = f"a volume of {v:.6g}, where {lo:.6g} to {hi:.6g} is possible"
+        if problem is not None:
+            sym = {"union": "+", "difference": "-"}.get(name, "&")
+            raise ModelingError(f"mesh {name}: the kernel's mesh Boolean returned {problem}; do the Boolean "
+                                f"on the exact parts and tessellate the result: (part_a {sym} part_b).mesh()")
+        return result
+
+    def _open_edge_count(self) -> int:
+        if len(self.triangles) == 0:
+            return 0
+        size = float(np.abs(self.vertices).max()) if len(self.vertices) else 1.0
+        _, ids = np.unique(np.round(self.vertices / max(size, 1e-300), 9), axis=0, return_inverse=True)
+        t = ids.reshape(-1)[self.triangles]
+        e = np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1)
+        e = e[e[:, 0] != e[:, 1]]
+        _, counts = np.unique(e, axis=0, return_counts=True)
+        return int((counts != 2).sum())
+
+    def is_closed(self) -> bool:
+        """True if every edge of the mesh is shared by exactly two triangles (a watertight mesh)."""
+        return self._open_edge_count() == 0
 
     def __add__(self, other: Mesh) -> Mesh:
         return self._bool(other, k.PolyBooleanOp.UNION, "union")
@@ -150,6 +188,8 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
         raise TypeError(f"cannot tessellate a {type(shape).__name__}")
     if tolerance is None:
         tolerance = max(shape.bbox().diagonal * 1e-3, 1e-6)
+    if not tolerance > 0 or not angle > 0:
+        raise ValueError("tessellate: tolerance and angle must be positive")
     with kernel_call("tessellate"):
         poly = k.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
                             curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))

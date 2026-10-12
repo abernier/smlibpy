@@ -12,6 +12,7 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
   mesh. A plain Python `list`, an `Edge` or a `Wire` raises `TypeError`.
 - `tolerance`: the largest mesh-to-surface distance in mm. Default: 0.1 % of the bbox diagonal.
 - `angle`: the largest angle in degrees between neighbouring triangles on curved faces.
+- Both must be positive: `ValueError: tessellate: tolerance and angle must be positive`.
 
 ## Fields
 | Field | Type | Meaning |
@@ -23,6 +24,7 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 | `len(m)` | int | number of triangles |
 | `area`, `volume` | float | from the triangles |
 | `bbox()`, `center()` | | `center()` is the **bbox center**, not the centroid |
+| `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
 
 ## Tolerance and triangle count
 | Shape | tolerance / angle | triangles | volume error |
@@ -38,9 +40,10 @@ The stricter of the two limits wins. A mesh of a closed part is closed and outwa
 is positive.
 
 ## Gotchas
-- **Mesh Booleans (`m1 + m2`, `m1 - m2`, `m1 & m2`) give wrong results without an error.** Box
-  minus sphere came out at +171 % volume with 336 open edges, and other cases gave negative
-  volumes. They only work where no face of the result gets a hole. Always do the Boolean on
+- **Mesh Booleans (`m1 + m2`, `m1 - m2`, `m1 & m2`) mostly fail.** The kernel's mesh Booleans
+  only work where no face of the result gets a hole (box minus an offset box). smlibpy checks
+  the result (closed, a volume the operation can give) and raises `ModelingError: mesh
+  difference: the kernel's mesh Boolean returned an open mesh ...` otherwise. Do the Boolean on
   the exact parts and mesh the result.
 - Mesh Booleans also need meshes of one body made by `tessellate`. Meshes from `import_stl`,
   `Mesh(...)` or `tessellate(ShapeList)` raise `TypeError: mesh Booleans need meshes produced

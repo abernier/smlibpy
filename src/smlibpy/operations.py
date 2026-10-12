@@ -12,7 +12,8 @@ from typing import Any, Sequence
 
 from ._kernel import BrepHandle, KernelError, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _vec
-from .shapes import Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _as_plane, _flatten_edges, _flatten_faces
+from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _as_plane, _flatten_edges, _flatten_faces,
+                     _require_solid, _revolve_axis_angle)
 
 __all__ = [
     "extrude",
@@ -98,7 +99,7 @@ def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = None, angl
     """
     w = _open_curve(profile)
     if w is not None:
-        ax = axis if axis is not None else Z
+        ax, angle = _revolve_axis_angle(axis if axis is not None else Z, angle)
         with kernel_call("revolve", "the axis must not cross the curve"):
             b = k.rotational_sweep(w._copy_curves(), ax.origin.to_tuple(), ax.direction.to_tuple(), float(angle),
                                    cap_ends=False)
@@ -106,25 +107,36 @@ def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = None, angl
     return _as_sketch(profile).revolve(axis, angle)
 
 
-def _section_curves(section: Any) -> tuple[list[Any], int]:
-    """Outer-loop curves of a loft section and their count."""
+def _section_loops(section: Any) -> tuple[Wire, list[Wire]]:
+    """Outer loop and holes of a loft section."""
     if isinstance(section, ShapeList):
         section = section.one()
     if isinstance(section, Sketch):
         faces = section.faces()
         if len(faces) != 1:
             raise ValueError("a loft section must be a single region")
-        w = faces[0].outer_wire()
-    elif isinstance(section, Face):
-        w = section.outer_wire()
-    elif isinstance(section, Wire):
-        w = section
-    elif isinstance(section, Edge):
-        w = Wire([section])
-    else:
-        raise TypeError(f"cannot loft through a {type(section).__name__}")
-    curves = w._copy_curves()
-    return curves, len(curves)
+        section = faces[0]
+    if isinstance(section, Face):
+        loops = section.wires()
+        return loops[0], [w.reversed() for w in loops[1:]]  # holes turned like the outline
+    if isinstance(section, Wire):
+        return section, []
+    if isinstance(section, Edge):
+        return Wire([section]), []
+    raise TypeError(f"cannot loft through a {type(section).__name__}")
+
+
+def _loft_solid(loops: Sequence[Wire], degree: int) -> Part:
+    counts: list[int] = []
+    curves: list[Any] = []
+    for w in loops:
+        c = w._copy_curves()
+        curves.extend(c)
+        counts.append(len(c))
+    hint = "sections should be closed, ordered and not intersect each other"
+    with kernel_call("loft", hint):
+        b = k.create_skin_primitive(counts, curves, degree, True)
+    return _require_solid(Part._wrap(b), "loft", hint)
 
 
 def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False, smooth: bool = True) -> Part | Shell:
@@ -132,10 +144,11 @@ def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False
 
     Args:
         sections: Two or more sections in order: sketches, planar faces or closed wires
-            for a solid; open edges or wires for a surface (a :class:`Shell`).
+            for a solid; open edges or wires for a surface (a :class:`Shell`). Sections
+            with holes make a hollow solid; every section needs the same number of holes.
         ruled: Straight transitions between neighbouring sections.
-        smooth: With more than two sections, pass through them with a cubic surface
-            (``False``: quadratic).
+        smooth: With four or more sections, pass through them with a cubic surface
+            (``False``: quadratic). Three sections always give a quadratic one.
     """
     if len(sections) < 2:
         raise ValueError("loft needs at least two sections")
@@ -159,29 +172,37 @@ def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False
             return Shell._wrap(k.create_skin_primitive(counts, curves, degree, False))
     if any(w is not None for w in opened):
         raise ValueError("loft sections must be all closed (solid) or all open (surface)")
-    counts: list[int] = []
-    curves: list[Any] = []
-    for s in sections:
-        c, n = _section_curves(s)
-        curves.extend(c)
-        counts.append(n)
-    if ruled:
-        degree = 1
-    else:
-        degree = min(3 if smooth else 2, len(sections) - 1)
-    with kernel_call("loft", "sections should be closed, ordered and not intersect each other"):
-        b = k.create_skin_primitive(counts, curves, degree, True)
-    return Part._wrap(b)
+    loops = [_section_loops(s) for s in sections]
+    degree = 1 if ruled else min(3 if smooth else 2, len(sections) - 1)
+    result = _loft_solid([outer for outer, _ in loops], degree)
+    holes = [h for _, h in loops]
+    if any(holes):
+        if len({len(h) for h in holes}) != 1:
+            raise ValueError("loft: every section needs the same number of holes (a hole runs through the "
+                             "whole loft)")
+        for first in holes[0]:
+            chain = [first]
+            for hs in holes[1:]:  # the hole of the next section nearest to this one
+                c = chain[-1].center()
+                chain.append(min(hs, key=lambda w: w.center().distance_to(c)))
+            result = result - _loft_solid(chain, degree)
+    return result
 
 
 def _path_edges(path: Any) -> list[Edge]:
     if isinstance(path, Edge):
         return [path]
     if isinstance(path, Wire):
-        return list(path.edges())
-    if isinstance(path, ShapeList):
-        return Wire(list(path))._edges  # type: ignore[return-value]
-    raise TypeError(f"a sweep path is an edge or a wire, got {type(path).__name__}")
+        edges = list(path.edges())
+    elif isinstance(path, ShapeList):
+        edges = list(Wire(list(path))._edges)
+    else:
+        raise TypeError(f"a sweep path is an edge or a wire, got {type(path).__name__}")
+    for a, b in zip(edges, edges[1:]):
+        if not a.end.is_close(b.start, 1e-6 * max(1.0, a.length, b.length)):
+            raise ValueError(f"the sweep path is not connected: a gap of {a.end.distance_to(b.start):.4g} "
+                             f"between {a!r} and {b!r}")
+    return edges
 
 
 def _oriented_to(sk: Sketch, tangent: Vector) -> Sketch:
@@ -216,6 +237,10 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
             (default for planar paths); ``False`` sweeps each edge on its own and joins the pieces.
     """
     edges = _path_edges(path)
+    if len(edges) == 1 and edges[0].is_closed and _open_curve(profile) is None:
+        # The kernel sweeps a profile along a closed single-edge path inside out; along the
+        # same path in two halves it works.
+        edges = _halves(edges[0])
     w = _open_curve(profile)
     if w is not None:
         # an open profile sweeps into a surface
@@ -238,12 +263,13 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
     try:
         if len(edges) == 1:
             path_curve = edges[0]._copy_curve()
+            hint = "the profile may be too large for the path's curvature"
             try:
-                with kernel_call("sweep", "the profile may be too large for the path's curvature"):
+                with kernel_call("sweep", hint):
                     b = ext.curve_sweep(curves, path_curve, True, True, False, translational, None, None)
             finally:
                 ext.delete_curve(path_curve)
-            return Part._wrap(b)
+            return _require_solid(Part._wrap(b), "sweep", hint)
         planar = _is_planar_path(edges)
         if sharp_corners is None:
             sharp_corners = planar
@@ -252,9 +278,10 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
                 raise ValueError("sharp-cornered sweeps need a planar path")
             moved = [c for c in curves]
             path_curves = [e._copy_curve() for e in edges]
-            with kernel_call("sweep", "the profile may be too large for the path's corners"):
+            hint = "the profile may be too large for the path's corners"
+            with kernel_call("sweep", hint):
                 b = k.sweep_along_planar_path(moved, path_curves, move_profile=True)
-            return Part._wrap(b)
+            return _require_solid(Part._wrap(b), "sweep", hint)
     finally:
         for c in curves:
             ext.delete_curve(c)
@@ -265,6 +292,18 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
     for p in pieces[1:]:
         out = out + p
     return out
+
+
+def _halves(edge: Edge) -> list[Edge]:
+    """A closed edge as two edges, split halfway along it."""
+    c = edge._copy_curve()
+    try:
+        t0, t1 = c.parameter_range()
+        u, _ = ext.curve_parameter_at_length(c, t0, 0.5 * ext.curve_length(c, t0, t1))
+        tm = float(u)
+        return [Edge._from_curve(ext.trimmed_curve(c, t0, tm)), Edge._from_curve(ext.trimmed_curve(c, tm, t1))]
+    finally:
+        ext.delete_curve(c)
 
 
 def _is_planar_path(edges: list[Edge]) -> bool:
@@ -322,5 +361,8 @@ def section(part: Part, plane: Plane | Face = Plane.XY) -> Sketch:
 
 def thicken(surface: Shell | Face, thickness: float) -> Part:
     """Turn a face or sheet into a solid of ``thickness``."""
+    if isinstance(surface, Part) or not isinstance(surface, (Shell, Face)):
+        raise TypeError(f"thicken takes a face or a sheet (Shell, Sketch), not a {type(surface).__name__}; "
+                        f"use shell() or offset() for parts")
     sh = surface.to_shell() if isinstance(surface, Face) else surface
     return sh.thicken(thickness)

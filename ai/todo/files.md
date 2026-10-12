@@ -3,6 +3,7 @@
 ## HIGH
 
 ### 1. `import_step`: assembly parts placed at the inverse of their placement (AS1 from AutoCAD)
+- **Fixed:** step_reader._item_transform takes the CAx-IF reading whenever both item lists allow it; AS1 from AutoCAD (and the AS1/DM1 files from OpenCASCADE) assemble right, the rest of the corpus is unchanged.
 - **Session:** `2026-10-12_21-26-31_files-exact`, scripts `06-step-foreign-assembly.py`, `07-step-as1-placement-check.py`
 - **What happens:** `import_step("../models/as1_ac_214.stp")` (the CAx-IF AS1 assembly written by
   AutoCAD 2000) returns all 18 parts, valid, with names and colors, but scattered: the bolts sit
@@ -26,6 +27,7 @@
 - **Workaround:** none in the API. Check foreign assemblies with a picture before using them.
 
 ### 2. `Mesh` Booleans (`+`, `-`, `&`): wrong, open results without error
+- **Fixed:** mesh Booleans check the result (closed, volume the operation can give) and raise ModelingError pointing to the exact Boolean.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, scripts `05`, `06`, `07`, `08-mesh-boolean-cases.py`
 - **What happens:** `Box(20,20,20).mesh() - Sphere(12).mesh()` has volume 4376.95 (exact
   Boolean then mesh: 1630.9; exact 1616.3), 336 open edges, and the box faces stay whole
@@ -57,6 +59,7 @@
 - **Workaround:** pass `angle=5` together with a small tolerance.
 
 ### 4. `export_step(unit=...)`: declares the unit but does not scale; the user doc example misleads
+- **Fixed:** export_step converts the coordinates to the declared unit; the round trip gives the same size in mm.
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `02-step-unit.py`
 - **What happens:** a 60 x 40 x 8 mm box written with `unit="inch"` reads back as 1524 x 1016 x
   203.2 mm (in smlibpy, and in any CAD system). `cm` gives 10x, `m` 1000x. `docs/files.md` shows
@@ -67,6 +70,7 @@
 - **Workaround:** `export_step(part.scale(1 / 25.4), path, unit="inch")`, which reads back at 60 x 40 x 8.
 
 ### 5. glTF export writes millimeters; glTF defines meters
+- **Fixed:** export_glb/export_gltf scale the root node by 0.001 (meters); the viewer page is unchanged.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `11-gltf.py`
 - **What happens:** the positions are the model's mm values (bracket -30..30), with no scale node.
   Viewers that respect glTF units (Blender, AR viewers) show a 60 m bracket.
@@ -74,6 +78,7 @@
 - **Workaround:** `export_glb([s.scale(0.001) for s in shapes], path)`.
 
 ### 6. `import_step`: names come only from the solid label; product names are ignored
+- **Fixed:** an unnamed solid takes the name of its product (also through plain representation relationships).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `05-step-foreign-occt.py`
 - **What happens:** all 13 OpenCASCADE files import with `name = None`. They name the
   `PRODUCT` ('COMPOUND') and leave `MANIFOLD_SOLID_BREP('')` empty. Many CAD systems name parts
@@ -84,6 +89,7 @@
 ## LOW
 
 ### 7. `load`: unknown extensions and missing `.smb` files give `KernelError: load failed`
+- **Fixed:** load raises ValueError for unknown extensions and FileNotFoundError for a missing .smb.
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `10-export-dispatch.py`
 - **What happens:** `load("x.glb")`, `load("x.obj")`, and `load("missing.smb")` all raise
   `KernelError: load failed`. Every extension other than STEP and STL goes to the native reader.
@@ -109,18 +115,21 @@
 - **Expected:** validate in `colored()`.
 
 ### 10. `export_stl` / `tessellate`: invalid tolerance and angle accepted silently
+- **Fixed:** tessellate (and so export_stl, mesh) raises ValueError for tolerance or angle <= 0.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `09-stl-export.py`
 - **What happens:** `tolerance=0`, `tolerance=-1`, and `angle=0` give the same 144 triangles as
   the default, with no error.
 - **Expected:** `ValueError` for values <= 0.
 
 ### 11. `import_stl`: garbage gives an empty mesh
+- **Fixed:** import_stl raises ValueError "not an STL file, or a truncated one".
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `10-stl-import.py`
 - **What happens:** a truncated binary STL and a text file `hello world` both return
   `Mesh(0 vertices, 0 triangles)`.
 - **Expected:** `ValueError: not an STL file` or "truncated".
 
 ### 12. `export_glb` has no `edge_color`; `export_gltf` has one
+- **Fixed:** export_glb takes edge_color.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `11-gltf.py`
 - **What happens:** `export_gltf(p, "x.gltf", edge_color="red")` works.
   `export_glb(p, "x.glb", edge_color="red")` raises `TypeError: export_glb() got an unexpected

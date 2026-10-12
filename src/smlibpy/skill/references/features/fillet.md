@@ -19,7 +19,9 @@ Rounds edges of a part.
 
 ## Returns
 A new `Part`. One face per rounded edge plus corner patches. Removed volume per straight
-convex 90° edge: `(r² − π r²/4) * length`.
+convex 90° edge: `(r² − π r²/4) * length`. Where an edge runs on into an edge that is not
+rounded (tangentially, as into the arc of a rounded corner, or at a kink, as around a polygon),
+the kernel extends the round past the end until it leaves the material, so more is removed.
 
 ## What can be rounded
 - Seam edges and smooth (tangent) edges in the selection are skipped. A selection with only
@@ -31,13 +33,17 @@ convex 90° edge: `(r² − π r²/4) * length`.
 - smlibpy checks edges that run alongside each other on a face: two rounded edges `d` apart
   allow `r <= d/2`; one rounded edge next to an unrounded one allows `r <= d`. A larger radius
   raises a `ModelingError` that names the largest setback.
-- **Right at the limit the kernel can return garbage that passes every check.** A 10 mm cube
-  with all edges r 4.99 gives `is_valid() == True`, volume 11.19 (should be 525.17), and fails
-  to render; r 4.97 and r 4.999 are right; r 5 raises. Stay 2% or more below the limit, and
-  compare the volume with a formula.
+- **Right at the limit the kernel can return a wrong body.** smlibpy checks that the result
+  is a valid solid and that its volume changed by no more than rounds of that size can remove
+  or add (edges that are neither lines nor circles, and edges that run on into an edge that is
+  not rounded, are not bounded). A 10 mm cube with all
+  edges r 4.99 raises `ModelingError`; r 4.97 and r 4.999 are right; r 5 raises. Stay 2% or
+  more below the limit, and compare the volume with a formula.
 - A single edge can take a radius up to the full face width (one edge of a 10 cube with r 10
   gives the exact quarter cylinder).
-- `r <= 0` raises `KernelError: fillet failed (SM_ERR): the radius may be too large ...`.
+- `r <= 0` raises `ValueError: fillet: the radius must be positive`.
+- The part must be valid: an invalid input raises `ModelingError: fillet: the part is not a
+  valid solid (...); check is_valid() after each step and fix the step that broke it`.
 
 ## Order
 - Where rounds of different radii meet at a corner, give them in one call with a radius list,
@@ -52,6 +58,8 @@ convex 90° edge: `(r² − π r²/4) * length`.
 - `KernelError: fillet failed (SM_ERR): the radius may be too large for the selected edges`
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
+- `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`
+- `ValueError: fillet: the radius must be positive`
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
 - `ValueError: Edge(...) is not an edge of this part`; with the function form and edges of no
   part: `ValueError: these edges do not belong to a part; call part.fillet(edges, ...) instead`.

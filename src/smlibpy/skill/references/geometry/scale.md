@@ -15,11 +15,11 @@ factor); areas of sketches by `sx * sy`.
   new radius, and its edges are still circles.
 - Per-axis scaling converts **every** face and edge to NURBS (`bspline`), flat ones too: a
   `Cylinder(5, 10).scale((2, 1, 1))` is a valid elliptic cylinder, and even
-  `Box(10, 10, 10).scale((2, 1, 1))` has only bspline faces. Afterwards `.planar()`,
-  `.cylinders()`, `.circles()` find nothing, `face.radius` raises, and `.on(face)` raises
-  `ValueError: a bspline face has no plane`. Booleans on the result work. Build the final
-  size directly (a `Box(20, 10, 10)`, an `Ellipse` extruded) when you need to keep working on
-  the faces.
+  `Box(10, 10, 10).scale((2, 1, 1))` has only bspline faces. Flat faces and straight edges
+  still count (`.planar()`, `.lines()`, `parallel_to`, `.on(face)` work), but `.cylinders()`
+  and `.circles()` find nothing and `face.radius` raises. Booleans on the result work. Build
+  the final size directly (a `Box(20, 10, 10)`, an `Ellipse` extruded) when you need to keep
+  working on curved faces.
 - A sketch scales together with its plane origin: a sketch at z = 10 scaled by 2 about the
   origin ends up at z = 20.
 - Not available on `ShapeList`; scale each member.
@@ -27,8 +27,8 @@ factor); areas of sketches by `sx * sy`.
 ## Gotchas
 - `scale(2)` on a part away from the origin also moves it. Pass `center=part.center()` (or a
   corner) to keep it in place.
-- `scale(0)` or a zero per-axis factor raises nothing: the result has volume 0 or a NaN
-  bbox and still reports `is_valid() == True`. Never scale by 0.
+- `scale(0)`, a zero per-axis factor (`(1, 0, 1)`) and a NaN or infinite factor raise
+  `ValueError`: they would flatten the shape.
 - `scale(-1)` is a point reflection (valid, positive volume). Use `mirror` for a reflection
   in a plane.
 

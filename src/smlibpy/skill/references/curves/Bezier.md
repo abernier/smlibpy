@@ -25,7 +25,8 @@ control points are **not** on the curve: `Bezier((0, 0), (10, 20), (20, 0))` pea
 - Coincident control points are accepted and can give a zero-length edge
   (`Bezier((0, 0), (0, 0))`). Check `length`.
 - `point_at(t)` is by arc length, not the Bézier parameter.
-- Two control points give a straight `bspline`, not a `line`: `direction` raises. Use `Line`.
+- Two control points give a straight `bspline`, not a `line` (`geom_type`); `direction` and
+  `lines()` treat it as straight. Use `Line` for a real line edge.
 
 ## Errors
 - `ValueError: a Bézier curve needs at least two control points`.

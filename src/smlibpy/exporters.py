@@ -127,6 +127,8 @@ def import_stl(path: str | os.PathLike[str]) -> Mesh:
         parts = line.split()
         if parts and parts[0] == "vertex":
             verts.append([float(x) for x in parts[1:4]])
+    if not verts or len(verts) % 3:
+        raise ValueError(f"not an STL file, or a truncated one: {p}")
     return _weld(np.array(verts, dtype=np.float64))
 
 
@@ -325,14 +327,15 @@ def gltf_document(shapes: Any, **kwargs: Any) -> tuple[dict[str, Any], bytes]:
 
 
 def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
-               edges: bool = True) -> None:
+               edges: bool = True, edge_color: Any = "#1f2328") -> None:
     """Binary glTF export with colors, names and (optionally) the B-rep edges as lines.
 
-    glTF is Y-up; the model is written Z-up as modeled, with a root rotation so that it
-    stands upright in glTF viewers.
+    glTF is Y-up and measured in meters; the model is written Z-up in millimeters as
+    modeled, under a root node that turns it upright and scales it by 0.001, so viewers
+    show it at its real size.
     """
-    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges)
-    _z_up(doc)
+    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color)
+    _z_up(doc, meters=True)
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * (-len(js) % 4)
     bin_ = buf + b"\0" * (-len(buf) % 4)
@@ -344,19 +347,23 @@ def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | 
 
 
 def export_gltf(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
-    """glTF export with the buffer embedded as a data URI."""
+    """glTF export with the buffer embedded as a data URI (in meters, like :func:`export_glb`)."""
     doc, buf = gltf_document(shapes, **kwargs)
-    _z_up(doc)
+    _z_up(doc, meters=True)
     doc["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(buf).decode()
     with open(os.fspath(path), "w") as fh:
         json.dump(doc, fh)
 
 
-def _z_up(doc: dict[str, Any]) -> None:
+def _z_up(doc: dict[str, Any], meters: bool = False) -> None:
     n = len(doc["nodes"])
-    # rotate -90 degrees about X: Z-up model -> Y-up glTF
-    doc["nodes"].append({"name": "z-up", "rotation": [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
-                         "children": list(range(n))})
+    # rotate -90 degrees about X: Z-up model -> Y-up glTF; glTF units are meters
+    root: dict[str, Any] = {"name": "z-up", "rotation": [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
+                            "children": list(range(n))}
+    if meters:
+        root["name"] = "z-up, mm"
+        root["scale"] = [0.001, 0.001, 0.001]
+    doc["nodes"].append(root)
     doc["scenes"][0]["nodes"] = [n]
 
 
@@ -388,6 +395,10 @@ def load(path: str | os.PathLike[str]) -> Any:
         return import_step(path)
     if ext_ == ".stl":
         return import_stl(path)
+    if ext_ != ".smb":
+        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl and .smb")
+    if not os.path.exists(os.fspath(path)):
+        raise FileNotFoundError(os.fspath(path))
     with kernel_call("load"):
         b = k.read_brep_from_file(os.fspath(path), None, False)
     part = Part._wrap(b)

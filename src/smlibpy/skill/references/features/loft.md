@@ -6,7 +6,8 @@ A solid through a series of cross sections (closed sections), or a surface throu
 `loft(sections, *, ruled=False, smooth=True)`
 
 - `sections`: two or more, in order. Closed: sketches, planar faces, closed wires (`Polyline(..., close=True)`).
-  Open: edges or open wires (result is a `Shell`). Do not mix closed and open.
+  Open: edges or open wires (result is a `Shell`). Do not mix closed and open. Closed sections
+  may have holes; every section needs the same number of them.
 - `ruled=True`: straight transitions between neighbouring sections (degree 1).
 - `smooth`: only matters with **four or more** sections (cubic instead of quadratic). With three
   sections the loft is quadratic either way; with two it is always straight.
@@ -32,9 +33,10 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
   end areas, and look at a snapshot.
 
 ## Gotchas
-- **Holes in a section are dropped silently.** A ring section `Circle(10) - Circle(5)` lofted
-  to a `Circle(10)` 20 above gives the full cylinder (6283.19). Loft the outside, then subtract
-  a loft of the inside.
+- Sections with holes make a hollow solid: each hole is joined to the nearest hole of the next
+  section and runs through the whole loft. `loft([Circle(10) - Circle(5), (Circle(8) -
+  Circle(3)).translate(0, 0, 20)])` is a hollow frustum (4 faces, 4084.071). A different
+  number of holes raises `ValueError`.
 - A section with two separate regions raises `ValueError: a loft section must be a single region`.
 - Smooth lofts overshoot between sections: a 15/25/10 vase reaches radius 25.047 at the bulge.
   Use `ruled=True` when a section must stay the widest.
@@ -48,6 +50,8 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
 - `ValueError: loft needs at least two sections`
 - `ValueError: loft sections must be all closed (solid) or all open (surface)`
 - `ValueError: a loft section must be a single region`
+- `ValueError: loft: every section needs the same number of holes (a hole runs through the whole loft)`
+- `ModelingError` when the kernel returns an inside-out or volume-less body.
 
 ## Example
 ```python

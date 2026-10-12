@@ -48,8 +48,9 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 - Two free edges built from the same points are not `==` (identity); compare `start`/`end`.
 - A moved edge (`translate`, `rotate`) is a free edge: `faces()` is empty and features of the part
   reject it.
-- Straight edges can be `"bspline"` (after `chamfer`, `loft`, `ruled`, `to_nurbs`): `direction`
-  then raises. `e.end - e.start` still gives the direction.
+- Straight edges can be `"bspline"` (after `chamfer`, `loft`, `ruled`, `to_nurbs`, `mirror`):
+  `direction`, `lines()` and `parallel_to` treat them as straight; `geom_type` stays
+  `"bspline"`.
 
 ## Example
 ```python

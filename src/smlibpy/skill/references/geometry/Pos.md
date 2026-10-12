@@ -11,7 +11,8 @@ A `Location` with no rotation; it prints as `Pos(10, 0, 5)`.
 
 ## Usage
 - `Pos(...) * shape`: moved copy of any shape (Part, Sketch, Face, Edge, Wire, Vertex).
-- `Pos(...) * [a, b]`: list of moved copies.
+- `Pos(...) * [a, b]`: list of moved copies; `Pos(...) * shapelist` a `ShapeList`,
+  `Pos(...) * GridLocations(...)` a moved `Locations`.
 - `Pos(...) * Rot(...) * shape`: turn the shape about the origin first, then move it there.
   This is the usual way to place a rotated copy.
 - `Pos(...) * Vector` gives a moved point.

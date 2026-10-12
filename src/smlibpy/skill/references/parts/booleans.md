@@ -16,7 +16,13 @@ Combine parts: union (`+`, `fuse`), difference (`-`, `cut`), intersection (`&`, 
 ## Returns
 
 A new `Part`; the operands are unchanged. It keeps the **left** operand's name and color.
-The tools are applied **one after the other**: `a - [t1, t2]` is `(a - t1) - t2`.
+The tools are applied **one after the other**: `a - [t1, t2]` is `(a - t1) - t2`. If that fails
+or gives a broken or empty result, the tools are combined first and applied in one Boolean.
+
+The result between parts is checked: a result that is not a closed, manifold solid, or is
+inside out, raises `ModelingError`; a kernel failure raises `KernelError`. Both carry the same
+hint (see Errors). A broken operand raises `ModelingError: cut: a tool is not a valid solid
+(...)` (or `the part is not a valid solid`).
 
 ## What to expect
 
@@ -26,49 +32,53 @@ Measured on 10 mm boxes unless noted:
 |---|---|
 | fuse, face to face | one solid, coplanar faces merged (6 faces), valid |
 | fuse, a small box standing on a face | one solid, valid |
-| fuse, touching along an edge only | one "solid", **`is_valid()` False** |
+| fuse, touching along an edge only | **raises `ModelingError`** |
 | fuse, touching in a point | one solid, valid (STEP export splits it into two) |
 | fuse of disjoint parts | one Part, several `solids()` |
 | cut that splits the part | one Part, several `solids()` |
 | cut with a tool that misses, or only touches from outside | the part unchanged |
-| cut that removes everything; `&` of disjoint parts | **empty Part**: 0 faces, volume 0, `is_valid()` False, no error |
+| cut by a tool that encloses the part or by an identical body; `&` of disjoint parts | **empty Part**: 0 faces, volume 0, `is_valid()` False, no error |
+| fuse | never an empty Part |
 | tool flush with a face (`Hole(...).on(face)`) | fine; coplanar faces are handled |
 | tool fully inside | a closed cavity (12 faces), one solid |
 | gaps or overlaps below about 1e-6 | treated as contact |
-| face or cylinder **tangent** to a cylinder (line contact) in a fuse, or a cylinder tangent inside a hole in a cut | **`is_valid()` False, no error** |
+| face or cylinder **tangent** to a cylinder (line contact) in a fuse | **raises `ModelingError`** |
 | sphere or cylinder tangent to a flat face, coaxial cylinders, crossed cylinders | valid |
 
 ## Gotchas
 
-- **Check after every Boolean**: `is_valid()`, `volume` (> 0, changed as expected) and
-  `len(solids())`. Several bad results come back without an exception.
-- **Never keep working on an invalid part.** A fillet on the invalid result of a tangent fuse
-  crashes the Python process (segmentation fault). Go back and change the operands.
-- **Overlapping parallel through cuts fail.** Cutting a cylinder that overlaps an existing
-  parallel through hole (keyholes, slots made of holes, overlapping hole patterns) gives
-  `KernelError: cut failed (SM_ERR): the operands may only touch in a degenerate way` when the tool
-  sticks out on both sides, and **an empty Part** when it is flush on one side and sticks out on
-  the other. A list is cut one tool at a time, so `part - [c1, c2]` fails the same way.
-  **Fuse the tools first and cut once**: `part - (c1 + c2)`. Tools exactly as long as the plate
-  is thick and blind holes work. Fusing two overlapping parallel bosses that stick out of a part
-  fails the same way; fuse the bosses first.
+- **Check after every Boolean**: `volume` (changed as expected) and `len(solids())`. An empty
+  result (0 faces) comes back without an exception.
+- **Overlapping parallel through cuts**: a single tool that overlaps an earlier parallel hole
+  (keyholes, slots made of holes) fails: `Box(40, 40, 10) - Cylinder(6, 30) -
+  Cylinder(3, 30).translate(8, 0, 0)` raises `KernelError` with the hint. **Apply both tools
+  at once**: `part - [c1, c2]` or `part - (c1 + c2)`. Overlapping holes from one pattern
+  (`part - (Locations((0, 0), (5, 0)) * Hole(4, 12)).on(part.faces().top())`) are one call
+  and work. Fusing a boss that overlaps an earlier parallel boss fails the same way; fuse
+  both at once.
 - **Avoid line tangency.** A rib whose face only touches a cylinder, or two cylinders side by
-  side, makes an invalid part. Let the bodies overlap by a little (0.5 to 1 mm).
+  side, raises. Let the bodies overlap by a little (0.5 to 1 mm).
 - **`&` with a list intersects with all of them**: `a & [t1, t2]` is `a ∩ t1 ∩ t2`, empty when t1
   and t2 do not overlap. To keep the overlap with each, fuse first: `a & (t1 + t2)`.
-- **A Sketch is not a tool.** `plate - Circle(3).on(top)` (no `.extrude`) is accepted and returns
-  an invalid part. Extrude first: `plate - Circle(3).on(top).extrude(-4)`.
-- A string operand ends in `RecursionError`; a number in `TypeError`.
-- The KernelError hint ("try moving one slightly") is generic. If moving does not help: check
-  each operand's `is_valid()` and `volume`, and fuse the tools before cutting.
+- **A Sketch is not a tool.** `plate - Circle(3).on(top)` raises `TypeError: cannot cut a
+  Sketch with a Part; extrude it first`. Extrude first: `plate - Circle(3).on(top).extrude(-4)`.
+- A `Shell` (a sheet, e.g. from `surface()`) is accepted and not checked: `stitch(part & shell)`
+  trims a part with a sheet. A `Face` operand is turned into a sheet.
+- If moving an operand does not help: check each operand's `is_valid()` and `volume`, and
+  combine the tools before applying them.
 - Speed is not an issue for ordinary parts: 225 holes as one list cut in under 1 s.
 
 ## Errors
 
-- `KernelError` (a `ModelingError`): `cut failed (SM_ERR): the operands may only touch in a
-  degenerate way; try moving one slightly`. Its `status` is `SM_ERR`.
-- Wrong operand types give unhelpful `TypeError`s: `'Edge' object is not iterable` for an edge,
-  `'float' object is not iterable` for a vertex, `'int' object is not iterable` for a number.
+- `ModelingError: fuse: the kernel returned a result that is not a closed, manifold solid;
+  the operands may touch only along an edge, at a point or tangentially (move one so they
+  overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools
+  first and apply them at once: part - (tool1 + tool2))`.
+- `KernelError` (a `ModelingError`): `cut failed (SM_ERR): ` and the same hint. Its `status`
+  is `SM_ERR`.
+- `TypeError: cannot cut a Sketch with a Part; extrude it first` (also for `+` and `&`).
+- `TypeError: cannot cut a body with a str value; use parts (or a list of parts)` for
+  strings, numbers, edges and vertices.
 - `export_step` of an empty result: `ValueError: nothing to write`.
 
 ## Example
@@ -80,14 +90,18 @@ part = base + [b.translate(0, 0, 10) for b in bosses]       # standing on the to
 part -= GridLocations(60, 30, 2, 2) * Cylinder(3, 30)        # four through holes in one call
 print(part.is_valid(), len(part.solids()), round(part.volume, 2), part.bbox())
 
-# Overlapping parallel through cuts: fuse the tools first, then cut once
-keyhole = Cylinder(6, 30) + Cylinder(3, 30).translate(8, 0, 0)
-plate = Box(40, 40, 10) - keyhole
-print(plate.is_valid(), len(plate.faces()))
+# Overlapping parallel through cuts: apply the tools at once
+plate = Box(40, 40, 10) - [Cylinder(6, 30), Cylinder(3, 30).translate(8, 0, 0)]
+print(plate.is_valid(), len(plate.faces()))                  # True 9
 try:
     Box(40, 40, 10) - Cylinder(6, 30) - Cylinder(3, 30).translate(8, 0, 0)   # one after the other
 except KernelError as e:
-    print(e)
+    print(e.status)                                          # SM_ERR
+
+try:
+    Cylinder(5, 10) + Cylinder(5, 10).translate(10, 0, 0)    # side by side: tangent along a line
+except ModelingError as e:
+    print(type(e).__name__)                                  # ModelingError
 
 # & with a list intersects with ALL of them; fuse first to keep each overlap
 a = Box(20, 20, 20)

@@ -19,7 +19,7 @@ valid solid, otherwise a `Shell`.
 - `Shell` otherwise. **A failed close is not an error.** Always check
   `isinstance(result, Part)`.
 - An open `Shell` result keeps **each face's input normal**; nothing is unified. A Shell with
-  mixed normals thickens to a volume-0 Part (or `KernelError`). Orient the pieces before
+  mixed normals does not thicken (`ModelingError` or `KernelError`). Orient the pieces before
   stitching when the result stays open and will be thickened (see `generic`).
 
 ## Finding what did not close

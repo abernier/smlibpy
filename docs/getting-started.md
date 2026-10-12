@@ -59,7 +59,7 @@ press `F` to frame the model.
 print(plate.volume)          # 43040.0
 print(plate.area)
 print(plate.bbox().size)     # Vector(80, 60, 10)
-print(plate.is_valid())      # a closed, manifold solid
+print(plate.is_valid())      # a closed, manifold solid with a positive volume
 ```
 
 Volumes, areas and centers come from exact integration over the NURBS geometry, not from a

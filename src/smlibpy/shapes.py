@@ -87,8 +87,10 @@ class Shape:
         """A copy rotated by ``angle`` degrees about ``axis``."""
         return self._transformed(Location.about(axis, angle).matrix)
 
-    def mirror(self: S, plane: Plane = Plane.XZ) -> S:
-        """A mirrored copy (reflection in ``plane``, by default the XZ plane)."""
+    def mirror(self: S, plane: Plane | Face = Plane.XZ) -> S:
+        """A mirrored copy (reflection in ``plane``, a plane or a planar face; by default the
+        XZ plane, which flips Y)."""
+        plane = _as_plane(plane)
         n = np.array(plane.z_dir.to_tuple())
         o = np.array(plane.origin.to_tuple())
         m = np.eye(4)
@@ -97,8 +99,11 @@ class Shape:
         return self._transformed(m)
 
     def scale(self: S, factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> S:
-        """A scaled copy. ``factor`` is a number or per-axis factors ``(sx, sy, sz)``."""
+        """A scaled copy. ``factor`` is a number or per-axis factors ``(sx, sy, sz)``, none of
+        them zero (``ValueError``: that would flatten the shape)."""
         f = (factor, factor, factor) if isinstance(factor, (int, float)) else tuple(_vec(factor))
+        if not all(math.isfinite(x) and x != 0 for x in f):
+            raise ValueError(f"scale: every factor must be finite and not zero (got {factor!r})")
         c = np.array(_vec(center).to_tuple())
         m = np.eye(4)
         m[:3, :3] = np.diag(f)
@@ -346,16 +351,16 @@ class ShapeList(list[T]):
         return ShapeList(s for s in self if getattr(s, "geom_type", None) in wanted)
 
     def lines(self) -> ShapeList[T]:
-        """Straight edges."""
-        return self.of_type("line")
+        """Straight edges (also straight B-spline edges, such as the edges of a chamfer)."""
+        return ShapeList(s for s in self if isinstance(s, Edge) and s._is_straight())
 
     def circles(self) -> ShapeList[T]:
         """Circular edges (full circles and arcs)."""
         return self.of_type("circle")
 
     def planar(self) -> ShapeList[T]:
-        """Planar faces."""
-        return self.of_type("plane")
+        """Planar faces (also flat B-spline faces)."""
+        return ShapeList(s for s in self if isinstance(s, Face) and s.is_planar)
 
     def cylinders(self) -> ShapeList[T]:
         """Cylindrical faces."""
@@ -499,9 +504,9 @@ def _unique(items: Iterable[T]) -> ShapeList[T]:
 
 def _direction_of(s: Any) -> Vector | None:
     if isinstance(s, Edge):
-        return s.direction if s.geom_type == "line" else None
+        return s.direction if s._is_straight() else None
     if isinstance(s, Face):
-        return s.normal_at() if s.geom_type == "plane" else None
+        return s.normal_at() if s.is_planar else None
     if isinstance(s, (Sketch,)):
         return s.plane.z_dir
     return None
@@ -719,9 +724,20 @@ class Edge(Shape):
     @property
     def direction(self) -> Vector:
         """Unit direction of a straight edge (start to end)."""
-        if self.geom_type != "line":
+        if not self._is_straight():
             raise ValueError(f"direction is only defined for straight edges, this is a {self.geom_type}")
         return (self.end - self.start).normalized()
+
+    def _is_straight(self) -> bool:
+        """A line, or a B-spline whose control points lie on a line (chamfers, mirrored
+        lines and the like make those)."""
+        kind = self.geom_type
+        if kind == "line":
+            return True
+        if kind != "bspline":
+            return False
+        poles = np.array(ext.curve_data(self._curve())["poles"], dtype=float)
+        return _collinear(poles)
 
     def _circle(self) -> dict[str, Any]:
         if self.geom_type != "circle":
@@ -831,6 +847,18 @@ class Edge(Shape):
         s, e = self.start, self.end
         return (f"Edge({self.geom_type}, ({s.x:.4g}, {s.y:.4g}, {s.z:.4g}) -> "
                 f"({e.x:.4g}, {e.y:.4g}, {e.z:.4g}))")
+
+
+def _collinear(points: np.ndarray) -> bool:
+    a = points - points.mean(axis=0)
+    sv = np.linalg.svd(a, compute_uv=False)
+    return bool(len(sv) > 0 and sv[0] > 0 and sv[1] <= 1e-10 * sv[0])
+
+
+def _coplanar(points: np.ndarray) -> bool:
+    a = points - points.mean(axis=0)
+    sv = np.linalg.svd(a, compute_uv=False)
+    return bool(len(sv) > 2 and sv[0] > 0 and sv[2] <= 1e-10 * sv[0])
 
 
 def _is_rigid(m: np.ndarray) -> bool:
@@ -1146,7 +1174,15 @@ class Face(Shape):
 
     @property
     def is_planar(self) -> bool:
-        return self.geom_type == "plane" or bool(self._f.surface().is_planar(1e-7))
+        """True for planes and for flat B-spline faces (control points in one plane)."""
+        kind = self.geom_type
+        if kind == "plane":
+            return True
+        if kind == "bspline":
+            poles = np.array(ext.surface_data(self._f.surface(), True)["poles"], dtype=float)
+            if _coplanar(poles):
+                return True
+        return bool(self._f.surface().is_planar(1e-7))
 
     @property
     def plane(self) -> Plane:
@@ -1341,9 +1377,15 @@ class _Body(Shape):
         return BoundBox(lo, hi)
 
     def distance_to(self, other: VectorLike | Shape) -> float:
-        """Minimum distance to a point or to another body."""
+        """Minimum distance to a point or to another body.
+
+        For a point inside a part, and for a body nested in another, it is the distance to
+        the surface (the wall clearance). Bodies that touch or overlap are 0 apart.
+        """
         if isinstance(other, _Body):
-            return float(k.brep_distance(self._brep, other._brep))
+            return _body_distance(self, other)
+        if isinstance(other, Shape) and not isinstance(other, Vertex):
+            raise TypeError(f"distance_to takes a point or a body (Part, Shell, Sketch), not a {type(other).__name__}")
         _, d = k.brep_closest_point(self._brep, _vec(other).to_tuple())  # type: ignore[arg-type]
         return float(d)
 
@@ -1432,14 +1474,82 @@ def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
     return any(a.max[i] < b.min[i] - tol or b.max[i] < a.min[i] - tol for i in range(3))
 
 
-def _bodies(items: Any) -> list[_Body]:
+def _closest(body: _Body, p: np.ndarray) -> np.ndarray:
+    q, _ = k.brep_closest_point(body._brep, (float(p[0]), float(p[1]), float(p[2])))
+    return np.array((q.x, q.y, q.z)) if hasattr(q, "x") else np.array(q, dtype=float)
+
+
+def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> float:
+    """Distance between the surfaces of two bodies (0 where they touch or overlap).
+
+    The kernel's own body distance is wrong where the nearest points form a line (parallel
+    cylinders) and far from the origin. Here: the mesh vertices of each body nearest to the
+    other give starting points; from the best ones, closest points are taken in turn on
+    either body until the pair settles (alternating projections), which ends in a pair of
+    exact surface points.
+    """
+    from .mesh import tessellate
+
+    if a._brep.face_count() == 0 or b._brep.face_count() == 0:
+        raise ValueError("distance_to: an empty body has no distance")
+    starts: list[tuple[float, _Body, _Body, np.ndarray]] = []
+    ab, bb = a.bbox(), b.bbox()  # each once: the tight box costs as much as the rest
+    for x, xb, y, yb in ((a, ab, b, bb), (b, bb, a, ab)):
+        lo, hi = np.array(yb.min.to_tuple()), np.array(yb.max.to_tuple())
+        corners = np.array([v.point.to_tuple() for v in x.vertices()], dtype=float).reshape(-1, 3)
+        mesh = tessellate(x, max(xb.diagonal * 1e-3, 1e-6))  # tessellate's default tolerance
+        pts = np.vstack([mesh.vertices, corners])
+        gap = np.linalg.norm(np.maximum(0.0, np.maximum(lo - pts, pts - hi)), axis=1)
+        pts = pts[np.argsort(gap, kind="stable")[:sample]]
+        found = sorted(((float(np.linalg.norm(_closest(y, p) - p)), i) for i, p in enumerate(pts)))
+        taken: list[np.ndarray] = []
+        spacing = 1e-3 * max(xb.diagonal, 1e-9)
+        for d, i in found:
+            if len(taken) >= seeds:
+                break
+            if all(np.linalg.norm(pts[i] - t) > spacing for t in taken):
+                taken.append(pts[i])
+                starts.append((d, x, y, pts[i]))
+    best = math.inf
+    for _, x, y, p in sorted(starts, key=lambda t: t[0])[:2 * seeds]:
+        p = _closest(x, p)
+        q = _closest(y, p)
+        d = float(np.linalg.norm(p - q))
+        for _ in range(500):
+            p2 = _closest(x, q)
+            q2 = _closest(y, p2)
+            d2 = float(np.linalg.norm(p2 - q2))
+            if d2 >= d * (1 - 1e-14) - 1e-300:
+                break
+            moved = float(np.linalg.norm(p2 - p) + np.linalg.norm(q2 - q))
+            p, q, d = p2, q2, d2
+            if moved <= 1e-13 * max(1.0, float(np.abs(p).max())):
+                break
+        best = min(best, d)
+    scale = max(ab.diagonal, bb.diagonal, 1.0)
+    return 0.0 if best <= 1e-12 * scale else best
+
+
+def _relationship(a: _Body, b: _Body) -> str | None:
+    """``"separate"``, ``"touching"``, ``"interpenetrating"``, ``"a_contains_b"`` or
+    ``"b_contains_a"`` (None if the kernel cannot tell)."""
+    try:
+        return str(k.brep_relationship(a._brep, b._brep)["relationship"])
+    except RuntimeError:
+        return None
+
+
+def _bodies(items: Any, name: str = "combine") -> list[_Body]:
     if isinstance(items, _Body):
         return [items]
     if isinstance(items, Face):
         return [items.to_shell()]
+    if isinstance(items, (str, bytes, Shape)) or not isinstance(items, Iterable):
+        kind = type(items).__name__
+        raise TypeError(f"cannot {name} a body with a {kind} value; use parts (or a list of parts)")
     out: list[_Body] = []
     for it in items:
-        out.extend(_bodies(it))
+        out.extend(_bodies(it, name))
     return out
 
 
@@ -1507,8 +1617,13 @@ class Part(_Body):
     def mass_properties(self, density: float = 1.0, accuracy: float | None = None) -> MassProperties:
         """Mass, center of mass and inertia tensor for a uniform ``density``.
 
-        ``accuracy`` is the relative accuracy of the integration (default ``ACCURACY``, 1e-7).
+        ``accuracy`` is the relative accuracy of the integration (default ``ACCURACY``, 1e-7;
+        usable from 1e-10 to 1e-2).
         """
+        if not density > 0:
+            raise ValueError("mass_properties: the density must be positive")
+        if accuracy is not None and not 1e-10 <= accuracy <= 1e-2:
+            raise ValueError("mass_properties: accuracy must be between 1e-10 and 1e-2")
         p = self._props(density, accuracy)
         o = Vector(p["origin"])
         mass = float(p["mass"])
@@ -1521,8 +1636,59 @@ class Part(_Body):
         return MassProperties(mass, float(p["volume"]), float(p["area"]), o + d, i_c, density)
 
     def is_valid(self) -> bool:
-        """True if the part is a closed, manifold solid."""
-        return bool(self._brep.is_manifold_solid())
+        """True if the part is a closed, manifold solid that encloses a positive volume.
+
+        (A body whose faces point inward, or that encloses no volume, such as a profile
+        revolved about an axis through it, is not valid.)
+        """
+        return self._solid_problem() is None
+
+    def _solid_problem(self, volume: float | None = None) -> str | None:
+        """Why this is not a sound solid (``"empty"``, ``"inside out (negative volume)"``,
+        ...), or None. The volume is integrated coarsely (or ``volume``, which the caller
+        integrated anyway, is used): this catches broken bodies, not small errors. A body
+        found sound is not checked again."""
+        if self._h.sound:
+            return None
+        problem = self._shape_problem()
+        if problem is None:
+            if volume is None:
+                try:
+                    volume = float(self._props(accuracy=1e-3)["volume"])
+                except KernelError:
+                    return "a body whose volume cannot be integrated"
+            tiny = 1e-9 * self._extent() ** 3
+            if volume < -tiny:
+                problem = "inside out (negative volume)"
+            elif not volume > tiny:  # also a NaN volume
+                problem = "without volume"
+        self._h.sound = problem is None
+        return problem
+
+    def _shape_problem(self) -> str | None:
+        """The checks of ``_solid_problem`` that need no volume integration."""
+        b = self._brep
+        if b.face_count() == 0:
+            return "empty"
+        if not b.is_manifold_solid():
+            return "not a closed, manifold solid"
+        size = self._extent()
+        if not (math.isfinite(size) and size > 0):  # a body scaled by 0 has a NaN box
+            return "degenerate (its bounding box is not finite or has zero size)"
+        return None
+
+    def _extent(self) -> float:
+        """Diagonal of the kernel's loose bounding box (the tight ``bbox()`` can cost more
+        than a volume integration)."""
+        lo, hi = self._brep.bounding_box(False)
+        return math.dist(lo, hi)
+
+    def _require_valid(self, what: str) -> None:
+        """Refuse to run a feature on a broken body (the kernel may crash on one)."""
+        problem = self._solid_problem()
+        if problem is not None:
+            raise ModelingError(f"{what}: the part is not a valid solid ({problem}); check is_valid() "
+                                f"after each step and fix the step that broke it")
 
     def solids(self) -> ShapeList[Part]:
         """The separate bodies of this part."""
@@ -1532,14 +1698,92 @@ class Part(_Body):
 
     # -- booleans -------------------------------------------------------------
     def _boolean(self, others: Any, op: Any, name: str) -> Part:
-        tools = _bodies(others)
+        tools = _bodies(others, name)
+        for t in tools:
+            if isinstance(t, Sketch) or not isinstance(t, (Part, Shell)):
+                kind = type(t).__name__
+                extra = "; extrude it first" if isinstance(t, Sketch) else ""
+                raise TypeError(f"cannot {name} a {kind} with a Part{extra}")
+        if not all(isinstance(t, Part) for t in tools):  # sheets: imprint or trim, unchecked
+            return self._like(self._run_boolean(tools, op, name))
+        try:
+            result: Part | None = self._like(self._run_boolean(tools, op, name))
+            failure: KernelError | None = None
+            problem = self._boolean_problem(result, tools, op)
+        except KernelError as e:
+            result, failure, problem = None, e, None
+        if result is not None and problem is None:
+            return result
+        if len(tools) > 1:
+            # Tools that overlap each other (two holes side by side) can fail one after the
+            # other where the combined tool works: combine them first.
+            try:
+                combine = k.BooleanOp.INTERSECTION if op == k.BooleanOp.INTERSECTION else k.BooleanOp.UNION
+                combined = tools[0]._like(tools[0]._run_boolean(tools[1:], combine, name))
+                if combined._brep.face_count() == 0 and op == k.BooleanOp.INTERSECTION:
+                    return self._like(combined._copy_brep())  # the tools have nothing in common
+                if combined._solid_problem() is None:
+                    retry = self._like(self._run_boolean([combined], op, name))
+                    if self._boolean_problem(retry, [combined], op) is None:
+                        return retry
+            except KernelError:
+                pass
+        broken = [x for x in (self, *tools) if x._solid_problem() is not None]
+        if broken:
+            which = "the part" if broken[0] is self else "a tool"
+            raise ModelingError(f"{name}: {which} is not a valid solid ({broken[0]._solid_problem()}); check "
+                                f"is_valid() of the operands and fix the step that broke them")
+        hint = ("the operands may touch only along an edge, at a point or tangentially (move one so they "
+                "overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools "
+                "first and apply them at once: part - (tool1 + tool2))")
+        if failure is not None:
+            raise KernelError(failure.operation, failure.detail, failure.status, hint) from failure
+        raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
+
+    def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
         result = self._copy_brep()
         for t in tools:
-            if not isinstance(t, (Part, Shell)):
-                raise TypeError(f"cannot {name} a {type(t).__name__} with a Part")
-            with kernel_call(name, "the operands may only touch in a degenerate way; try moving one slightly"):
+            with kernel_call(name, "the operands may touch only in a degenerate way, or an operand is broken"):
                 result = k.boolean(result, t._copy_brep(), operation=op)
-        return self._like(result)
+        return result
+
+    def _boolean_problem(self, result: Part, tools: Sequence[Part], op: Any) -> str | None:
+        """What is wrong with a Boolean result, or None. An empty result is right where the
+        operands say so (a cut by a tool that encloses the part, an intersection of bodies
+        apart from each other)."""
+        if result._brep.face_count() != 0:
+            problem = result._shape_problem()
+            if problem is None and all(x._solid_problem() is None for x in (self, *tools)):
+                # Closed and manifold, from sound operands: the kernel does not turn such a
+                # result inside out (touching operands give empty or non-manifold results),
+                # so its volume, which costs far more than the Boolean, is not integrated.
+                result._h.sound = True
+                return None
+            return problem or result._solid_problem()
+        if op == k.BooleanOp.UNION:
+            return "empty"
+        if op == k.BooleanOp.INTERSECTION:
+            if len(tools) > 1:
+                return None  # the common volume of several tools may well be empty
+            rel = _relationship(self, tools[0])
+            return None if rel in ("separate", "touching") else "empty"
+        try:
+            whole = self._props(accuracy=1e-6)["volume"]
+        except KernelError:
+            return "empty"
+        for t in tools:
+            if _relationship(t, self) == "separate":
+                continue
+            # right only if the tool covers the whole part
+            try:
+                with kernel_call("cut"):
+                    common = Part._wrap(k.boolean(self._copy_brep(), t._copy_brep(),
+                                                  operation=k.BooleanOp.INTERSECTION))
+                if common._props(accuracy=1e-6)["volume"] >= whole * (1 - 1e-5):
+                    return None
+            except KernelError:
+                pass
+        return "empty"
 
     def fuse(self, *others: Part | Iterable[Part]) -> Part:
         """Union with other parts."""
@@ -1670,19 +1914,43 @@ class Part(_Body):
         theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
         return radius * math.tan(theta / 2) if theta > 1e-6 else radius
 
-    def _check_volume_change(self, result: Part, edges: list[Edge], what: str) -> None:
+    def _check_volume_change(self, result: Part, edges: list[Edge], what: str, sizes: list[float],
+                             shape: str) -> None:
+        """Check a fillet or chamfer result: a valid solid whose volume changed in the right
+        direction and by no more than the rounds can take away or add.
+
+        ``sizes`` are the radii (``shape`` "circular" or "blend") or the setbacks
+        (``shape`` "chamfer"). Near the size limit the kernel can return a valid-looking
+        body with whole regions missing.
+        """
+        size = sizes[0] if len(set(sizes)) == 1 else max(sizes)
+        bound = _round_volume_bound(edges, sizes, shape)
+        accuracy = 1e-6 if bound is not None else 1e-4  # the bound needs the change accurately
+        before = after = None
+        problem = result._shape_problem()
+        if problem is None:
+            try:
+                before = self._props(accuracy=accuracy)["volume"]
+                after = result._props(accuracy=accuracy)["volume"]
+            except KernelError:
+                pass
+            problem = result._solid_problem(after)  # integrates once more only if that failed
+        if problem is not None:
+            raise KernelError(what, f"kernel result is {problem}", None,
+                              f"the {'radius' if shape != 'chamfer' else 'length'} may be too large for the "
+                              f"selected edges (it is {size:.4g})")
+        if before is None or after is None:
+            return
         convex = [e.convexity == "convex" for e in edges]
-        if not (all(convex) or not any(convex)):
-            return
-        try:
-            before = self._props(accuracy=1e-4)["volume"]
-            after = result._props(accuracy=1e-4)["volume"]
-        except KernelError:
-            return
         grows = after > before * (1 + 1e-3)
         if all(convex) and grows or not any(convex) and after < before * (1 - 1e-3):
             raise KernelError(what, "kernel result failed the volume check", None,
                               "the size is too large for the selected edges")
+        if bound is not None and abs(after - before) > bound + 1e-5 * abs(before):
+            size_name = "length" if shape == "chamfer" else "radius"
+            raise ModelingError(f"{what}: the kernel returned a wrong body (the volume changed by "
+                                f"{abs(after - before):.6g}, at most {bound:.6g} is possible); the {size_name} "
+                                f"{size:.4g} is too close to the largest the selected edges allow, use a smaller one")
 
     def _with_edges(self, edges: Any) -> tuple[BrepHandle, list[Any]]:
         own = self._own_edges(edges)
@@ -1715,6 +1983,10 @@ class Part(_Body):
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
         """
+        self._require_valid("fillet")
+        given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
+        if any(not r > 0 for r in given):
+            raise ValueError("fillet: the radius must be positive")
         sel = self._sharp_edges(edges, "fillet")
         if isinstance(radius, tuple) and len(radius) == 2:
             radii = [max(float(radius[0]), float(radius[1]))] * len(sel)
@@ -1741,11 +2013,20 @@ class Part(_Body):
             else:
                 k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
         result = self._like(_take(h))
-        self._check_volume_change(result, sel, "fillet")
+        if isinstance(radius, tuple) and len(radius) == 2:
+            sizes = [max(float(radius[0]), float(radius[1]))] * len(sel)
+        elif isinstance(radius, (list, np.ndarray)):
+            sizes = [float(r) for r in radius]
+        else:
+            sizes = [float(radius)] * len(sel)
+        self._check_volume_change(result, sel, "fillet", sizes, "circular" if cont is None else "blend")
         return result
 
     def chamfer(self, edges: Any, length: float) -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces."""
+        self._require_valid("chamfer")
+        if not float(length) > 0:
+            raise ValueError("chamfer: the length must be positive")
         sel = self._sharp_edges(edges, "chamfer")
         self._check_round_sizes(sel, [float(length)] * len(sel), "chamfer", "length")
         radii = []
@@ -1768,7 +2049,7 @@ class Part(_Body):
                     k.fillet_edges(h.brep, [ke], radius=r, xsect_type=0)
         del xs
         result = self._like(_take(h))
-        self._check_volume_change(result, sel, "chamfer")
+        self._check_volume_change(result, sel, "chamfer", [float(length)] * len(sel), "chamfer")
         return result
 
     def shell(self, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
@@ -1776,7 +2057,12 @@ class Part(_Body):
 
         The walls grow inward (the outside keeps its size) unless ``outward`` is true.
         """
+        self._require_valid("shell")
+        if not abs(float(thickness)) > 0:
+            raise ValueError("shell: the thickness must not be zero")
         faces = self._own_faces(openings) if openings is not None else []
+        if not outward:
+            self._check_wall_fits(abs(float(thickness)), faces)
         d = abs(thickness) if outward else -abs(thickness)
 
         tries = iter([False, False] + [True] * 6)
@@ -1791,8 +2077,37 @@ class Part(_Body):
         grow = abs(thickness) if outward else 0.0
         return self._checked("shell", attempt, grow=grow, smaller=True)  # a wall has less volume
 
+    def _check_wall_fits(self, t: float, openings: list[Any]) -> None:
+        """Refuse inward walls that cannot fit: along each axis the part must be thicker than
+        its walls (two, or one where an opening faces that way). The kernel returns wrong
+        bodies there, or crashes."""
+        box = self.bbox()
+        tol = 1e-6 * max(box.diagonal, 1.0)
+        open_sides: set[tuple[int, int]] = set()
+        for kf in openings:
+            f = Face(self, kf)
+            if not f.is_planar:
+                continue
+            n = f.normal_at()
+            for i in range(3):
+                if abs(abs(n[i]) - 1.0) < 1e-9:
+                    side = 1 if n[i] > 0 else -1
+                    level = (box.max if side > 0 else box.min)[i]
+                    if abs(f.center()[i] - level) <= tol:
+                        open_sides.add((i, side))
+        for i, axis in enumerate("XYZ"):
+            walls = 2 - ((i, 1) in open_sides) - ((i, -1) in open_sides)
+            size = box.max[i] - box.min[i]
+            if walls and walls * t >= size - tol:
+                if walls == 2:
+                    raise ModelingError(f"shell: two walls of {t:.4g} do not fit into the part, which is {size:.4g} "
+                                        f"thick along {axis}; use a thinner wall")
+                raise ModelingError(f"shell: a wall of {t:.4g} does not fit into the part, which is {size:.4g} deep "
+                                    f"along {axis} from the opening; use a thinner wall")
+
     def offset(self, distance: float) -> Part:
         """Grow (positive) or shrink (negative) the part by ``distance`` everywhere."""
+        self._require_valid("offset")
 
         def attempt() -> Part:
             with kernel_call("offset"):
@@ -1854,7 +2169,10 @@ class Part(_Body):
         side = pl if keep == "above" else pl.flipped()
         halfspace = Box(size, size, size).translate(0, 0, size / 2).moved(Plane(pl.project(bb.center), side.x_dir, side.z_dir).location)
         with kernel_call("split"):
-            return self & halfspace
+            kept = self & halfspace
+        if kept._brep.face_count() == 0:
+            raise ModelingError(f"split: nothing of the part lies {keep} the plane")
+        return kept
 
     def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
         """The cross-section of the part in a plane, as a sketch."""
@@ -1879,6 +2197,100 @@ class Part(_Body):
         n = self._brep.face_count()
         label = f"{self.name!r}, " if self.name else ""
         return f"Part({label}{n} faces, {vol})"
+
+
+def _fmt_point(p: Vector) -> str:
+    return f"({p.x:.6g}, {p.y:.6g}, {p.z:.6g})"
+
+
+def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
+    """The axis and the positive angle of a revolve (a negative angle turns the other way)."""
+    angle = float(angle)
+    if angle == 0 or not math.isfinite(angle):
+        raise ValueError("revolve: the angle must not be zero")
+    if abs(angle) > 360 + 1e-9:
+        raise ValueError("revolve: the angle is at most 360 degrees")
+    if angle < 0:
+        ax, angle = Axis(ax.origin, -ax.direction), -angle
+    return ax, min(angle, 360.0)
+
+
+def _require_solid(part: Part, what: str, hint: str) -> Part:
+    """Raise if a feature returned a broken solid (inside out, without volume, open)."""
+    problem = part._solid_problem()
+    if problem is not None:
+        raise ModelingError(f"{what}: the kernel returned a body that is {problem}; {hint}")
+    return part
+
+
+def _round_volume_bound(edges: list[Edge], sizes: list[float], shape: str) -> float | None:
+    """The most volume rounds of the given sizes can remove (convex edges) or add (concave
+    edges): each edge's round cross-section swept along it, plus a little at the corners
+    where rounds meet. None where an edge is neither straight nor circular, and where an
+    edge runs on into one that is not rounded (see ``_runs_on``)."""
+    total = 0.0
+    corner: dict[Any, float] = {}
+    count: dict[Any, int] = {}
+    rounded = {e._identity() for e in edges}
+    for e, r in zip(edges, sizes):
+        kind = e.geom_type
+        if kind not in ("line", "circle"):
+            return None
+        fs = e.faces()
+        if len(fs) != 2:
+            return None
+        if _runs_on(e, rounded):
+            return None
+        p = e.center()
+        try:
+            theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
+        except (KernelError, ValueError):
+            return None
+        theta = min(max(theta, 1e-6), math.pi - 1e-6)
+        if shape == "chamfer":
+            setback = r
+            area = 0.5 * setback ** 2 * math.sin(theta)
+        else:
+            setback = r * math.tan(theta / 2)
+            if shape == "circular":
+                area = r * r * (math.tan(theta / 2) - theta / 2)
+            else:  # a blend stays inside the triangle between its setback lines
+                area = 0.5 * setback ** 2 * math.sin(theta)
+        length = e.length
+        if kind == "circle":
+            length *= 1.0 + setback / e.radius  # the round's centroid runs at most this far out
+        total += area * length
+        for v in e.vertices():
+            key = v.point.to_tuple()  # not v._identity(): a dropped vertex wrapper's id is reused
+            corner[key] = max(corner.get(key, 0.0), setback)
+            count[key] = count.get(key, 0) + 1
+    extra = sum(0.1 * corner[key] ** 3 for key in corner if count[key] > 1)
+    return 1.1 * total + extra
+
+
+def _runs_on(e: Edge, rounded: set[Any]) -> bool:
+    """True if ``e`` runs on past one of its ends into an edge that is not rounded: one that
+    leaves the shared vertex less than 90 degrees away from the direction in which ``e``
+    arrives (tangentially, as around a rounded corner, or at a kink, as around a polygon).
+    The kernel extends the round there until it leaves the material, which can take away
+    much more than the edge's own share."""
+    for v in e.vertices():
+        own = _leaving(e, v.point)
+        for g in v.edges():
+            if g._identity() in rounded:
+                continue
+            if any(a.dot(b) < -1e-6 for a in own for b in _leaving(g, v.point)):
+                return True
+    return False
+
+
+def _leaving(e: Edge, p: Vector) -> list[Vector]:
+    """The directions in which an edge leaves its end at ``p`` (both ends of a closed edge)."""
+    if e.is_closed:
+        return [e.tangent_at(0.0), -e.tangent_at(1.0)]
+    if e.start.distance_to(p) <= e.end.distance_to(p):
+        return [e.tangent_at(0.0)]
+    return [-e.tangent_at(1.0)]
 
 
 def _distance_to_edge(e: Edge, p: Vector) -> float:
@@ -1946,11 +2358,21 @@ class Shell(_Body):
         return c / total
 
     def thicken(self, thickness: float, *, both: bool = False) -> Part:
-        """Turn the sheet into a solid of ``thickness`` (along the face normals)."""
+        """Turn the sheet into a solid of ``thickness`` (along the face normals; a negative
+        thickness grows against them). With ``both`` the solid is ``thickness`` thick in
+        total, half of it to each side of the sheet."""
         d = float(thickness)
-        with kernel_call("thicken"):
+        if d == 0:
+            raise ValueError("thicken: the thickness must not be zero")
+        hint = ("the kernel cannot offset this sheet (closed grid surfaces and surfaces with a pole fail; "
+                "build closed shapes with revolve, loft or extrude, or thicken less than the smallest "
+                "concave radius)")
+        if both:
+            # one side, then the other, fused: the two halves share the sheet
+            return self.thicken(d / 2) + self.thicken(-d / 2)
+        with kernel_call("thicken", hint):
             b = k.shell_brep(self._brep, d, create_solid=True)
-        return Part._wrap(b, name=self.name, color=self.color)
+        return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
 
     def __add__(self, other: Any) -> Shell:
         b = self._copy_brep()
@@ -2046,12 +2468,14 @@ class Sketch(Shell):
         thickness = max(self.bbox().union(other.bbox()).diagonal * 0.05, 1e-3)
         a = self.extrude(thickness, direction=n)
         b = other.extrude(thickness, direction=n)
+        # The slabs' Booleans run unchecked: pieces of the result may touch along an edge
+        # (the two halves of an exclusive or), which is fine for the faces taken from it.
         if op == k.BooleanOp2D.UNION:
-            solid = a + b
+            solid = a._like(a._run_boolean([b], k.BooleanOp.UNION, name))
         elif op == k.BooleanOp2D.DIFFERENCE:
-            solid = a - b
+            solid = a._like(a._run_boolean([b], k.BooleanOp.DIFFERENCE, name))
         elif op == k.BooleanOp2D.INTERSECTION:
-            solid = a & b
+            solid = a._like(a._run_boolean([b], k.BooleanOp.INTERSECTION, name))
         else:  # exclusive or
             return self._slab_boolean(other, k.BooleanOp2D.UNION, name)._slab_boolean(
                 self._slab_boolean(other, k.BooleanOp2D.INTERSECTION, name), k.BooleanOp2D.DIFFERENCE, name)
@@ -2168,17 +2592,29 @@ class Sketch(Shell):
         return Part._wrap(_take(h), name=self.name, color=self.color)
 
     def _extrude_taper(self, amount: float, taper: float, both: bool) -> Part:
+        if not abs(taper) < 90:
+            raise ValueError("extrude: the taper must be between -90 and 90 degrees")
+        hint = "the taper may close the profile before the end"
         parts = []
         for f in self.faces():
             loops = f.wires()
             curves = loops[0]._copy_curves()
-            with kernel_call("extrude", "the taper may close the profile before the end"):
+            with kernel_call("extrude", hint):
                 outer = k.draft_sweep(curves, float(amount), float(taper))
-            part = Part._wrap(outer)
+            part = _require_solid(Part._wrap(outer), "extrude", hint)
+            n = self._plane.z_dir * (1.0 if amount > 0 else -1.0)
+            o = self._plane.origin
+            reach = max((v.point - o).dot(n) for v in part.vertices())
+            if reach < abs(amount) - 1e-6 * max(1.0, abs(amount)):
+                raise ModelingError(f"extrude: the taper of {taper:g} degrees closes the profile after "
+                                    f"{reach:.6g} of {abs(amount):g}; use a smaller taper or a shorter extrusion")
             for w in loops[1:]:
-                with kernel_call("extrude"):
-                    hole = Part._wrap(k.draft_sweep(w._copy_curves(), float(amount), -float(taper)))
-                part = part - hole
+                # A hole runs the other way round than the outline; the kernel sweeps a loop
+                # along the side its orientation gives, so turn it like the outline. The
+                # hole widens where the outline narrows.
+                with kernel_call("extrude", hint):
+                    hole = Part._wrap(k.draft_sweep(w.reversed()._copy_curves(), float(amount), -float(taper)))
+                part = part - _require_solid(hole, "extrude", hint)
             parts.append(part)
         result = parts[0]
         for p in parts[1:]:
@@ -2188,11 +2624,26 @@ class Sketch(Shell):
         return result
 
     def revolve(self, axis: Axis | None = None, angle: float = 360.0) -> Part:
-        """Revolve the region about an axis in its plane (default: the sketch's local Y axis)."""
+        """Revolve the region about an axis in its plane.
+
+        The default axis is the sketch's local Y axis through its plane origin. For the
+        centered constructors (``Rectangle``, ``Circle``, ...) and for ``make_face`` that
+        origin is the middle of the region, so pass ``axis`` unless the sketch was drawn
+        beside its origin (``Polygon((10, 0), (20, 0), ...)``). A negative ``angle``
+        turns the other way. The axis must not cross the region (``ModelingError``).
+        """
         ax = axis if axis is not None else Axis(self._plane.origin, self._plane.y_dir)
+        ax, angle = _revolve_axis_angle(ax, angle)
+        n = self._plane.z_dir
+        if not ax.direction.is_perpendicular(n):
+            raise ValueError("revolve: the axis must lie in the sketch plane (it is not parallel to it)")
+        self._check_axis_beside(ax, axis is None)
         o, d = ax.origin.to_tuple(), ax.direction.to_tuple()
+        hint = "the axis must not cross the region" + (
+            f" (the default axis is the sketch's Y axis through {_fmt_point(ax.origin)}; pass axis=...)"
+            if axis is None else "")
         result: Part | None = None
-        with kernel_call("revolve", "the axis must not cross the region"):
+        with kernel_call("revolve", hint):
             for f in self.faces():
                 loops = f.wires()
                 piece = Part._wrap(k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True))
@@ -2201,8 +2652,28 @@ class Sketch(Shell):
                 result = piece if result is None else result + piece
         if result is None:
             raise ValueError("empty sketch")
+        _require_solid(result, "revolve", hint)
         result.name, result.color = self.name, self.color
         return result
+
+    def _check_axis_beside(self, ax: Axis, default: bool) -> None:
+        """Raise if the axis runs through the region (the kernel then returns a body without
+        volume, or an inside-out one, for a full turn)."""
+        n = self._plane.z_dir
+        side = ax.direction.cross(n)  # in the plane, across the axis
+        o = ax.origin
+        lo, hi = math.inf, -math.inf
+        for f in self.faces():
+            for e in f.outer_wire().edges():
+                count = 1 if e.geom_type == "line" else 32
+                for i in range(count + 1):
+                    v = (e.point_at(i / count) - o).dot(side)
+                    lo, hi = min(lo, v), max(hi, v)
+        tol = 1e-7 * max(1.0, self.bbox().diagonal)
+        if lo < -tol and hi > tol:
+            where = (f"; the default axis is the sketch's local Y axis through its plane origin "
+                     f"{_fmt_point(o)}, pass axis=... (for example Axis((0, 0, 0), (0, 1, 0)))") if default else ""
+            raise ModelingError(f"revolve: the axis crosses the region{where}")
 
     def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None) -> Part:
         """Sweep the region along a path. The sketch should sit at the start of the path."""

@@ -38,8 +38,8 @@ Circle → circle above it, both counterclockwise: normal points outward.
 - A wire of several edges raises `ValueError: expected a single curve; join the wire's edges
   into one spline first`. Use one `Spline` through the corner points, or make one `ruled` per
   edge and `stitch` them.
-- A flat ruled face is not reported as planar (`face.is_planar` False, `faces().planar()`
-  skips it, `to_sketch()` fails). For flat regions use `make_face` / sketches.
+- A flat ruled face counts as planar (`face.is_planar` True, `faces().planar()` finds it,
+  `to_sketch()` works), although its `geom_type` is `"bspline"`.
 - Thickening closed ruled bands works (unlike closed `surface` grids); still check
   `volume > 0` and `is_valid()` after `thicken`.
 
