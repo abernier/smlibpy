@@ -93,7 +93,7 @@ from smlibpy import *
 
 part = Box(40, 30, 10) - Cylinder(6, 20)
 render(part, path="part.png")                                 # isometric view
-render(part, path="views.png", view="sheet", size=(1000, 760))  # front, top, right, iso
+render(part, path="views.png", view="sheet", size=(1000, 760))  # ISO method E: front, left, top, iso
 ```
 
 `view` takes a name (`"iso"`, `"front"`, `"back"`, `"left"`, `"right"`, `"top"`,

@@ -202,8 +202,8 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def snapshot(
-        view: Annotated[str, Field(description="iso, front, back, left, right, top, bottom, sheet (front, top, right "
-                                   "and iso in one image at one scale), or a direction 'x,y,z' from the model "
+        view: Annotated[str, Field(description="iso, front, back, left, right, top, bottom, sheet (front, left, top "
+                                   "and iso at one scale, arranged as in ISO projection method E), or a direction 'x,y,z' from the model "
                                    "towards the camera.")] = "iso",
         names: Annotated[list[str] | None, Field(description="Variables to render instead of what is shown.")] = None,
         width: Annotated[int, Field(ge=64, le=3000)] = 1000,

@@ -28,7 +28,9 @@ VIEWS: dict[str, tuple[float, float, float]] = {
     "bottom": (0.0, 0.0, -1.0),
 }
 
-_SHEET = ("front", "top", "right", "iso")
+# The sheet follows ISO projection method E (first angle): the view from the left stands to
+# the right of the front view, the top view below it, the iso view in the free corner.
+_SHEET = (("front", 0, 0), ("left", 0, 1), ("top", 1, 0), ("iso", 1, 1))
 _SS = 2  # supersampling factor
 _EDGE = np.array([0.12, 0.14, 0.16])
 
@@ -43,7 +45,9 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
         path: Also write the PNG to this file.
         view: ``"iso"`` (default), ``"front"``, ``"back"``, ``"left"``, ``"right"``,
             ``"top"``, ``"bottom"``, a direction from the model towards the camera, or
-            ``"sheet"`` for front, top, right and iso views side by side at one scale.
+            ``"sheet"`` for a drawing sheet in ISO projection method E (first angle): front
+            view, the view from the left to its right, the top view below it, and the iso view,
+            all at one scale.
         size: Width and height in pixels.
         edges: Draw the edges of faces (hidden edges stay hidden).
         background: Background color.
@@ -59,13 +63,13 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
     bg = np.array(to_rgb(background), dtype=np.float64)
     if isinstance(view, str) and view == "sheet":
         cw, ch = w // 2, h // 2
-        cams = [_Camera(VIEWS[v]) for v in _SHEET]
+        cams = [_Camera(VIEWS[v]) for v, _, _ in _SHEET]
         scale = min(c.fit_scale(scene, cw, ch) for c in cams)
         img = np.empty((h, w, 3))
         img[:] = bg
-        for i, (name, cam) in enumerate(zip(_SHEET, cams)):
+        for (name, row, col), cam in zip(_SHEET, cams):
             tile = _draw(scene, cam, cw, ch, bg, edges, scale)
-            y0, x0 = (i // 2) * ch, (i % 2) * cw
+            y0, x0 = row * ch, col * cw
             img[y0:y0 + ch, x0:x0 + cw] = tile
             _label(img, name.upper(), x0 + 8, y0 + 8)
         img[ch - 1:ch + 1, :] = img[ch - 1:ch + 1, :] * 0.6 + 0.4 * 0.75

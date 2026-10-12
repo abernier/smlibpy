@@ -23,7 +23,9 @@ print(part.is_valid(), round(part.volume, 3), part.bbox().size, len(part.faces()
 
 ## Look
 
-`snapshot(view="sheet")` shows front, top, right and iso at one scale. Use it for shape,
+`snapshot(view="sheet")` shows front, left, top and iso at one scale, arranged as in ISO
+projection method E: the view from the left stands to the right of the front view, the top
+view below it. Use it for shape,
 topology and placement; use numbers for sizes, because pictures are scaled to fit. A feature
 on a hidden side shows in the sheet, not always in the iso view.
 
