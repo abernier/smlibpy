@@ -10,3 +10,4 @@ __pycache__/
 site/
 *.log
 out/
+ai/training/*/files/

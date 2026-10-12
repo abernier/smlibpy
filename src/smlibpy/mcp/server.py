@@ -1,0 +1,379 @@
+"""The smlibpy MCP server: CAD modeling for agents, by running Python scripts on SMLib.
+
+Run it with ``smlibpy-mcp`` (or ``python -m smlibpy.mcp``); it speaks MCP over stdio.
+
+Environment:
+    SMLIBPY_VIEWER        how the live viewer reaches the user: ``host`` (the agent opens the
+                          link in its own browser pane; the default in the Claude desktop
+                          app), ``browser`` (the user's default browser; the default
+                          elsewhere) or ``off`` (only the link is handed over)
+    SMLIBPY_SNAPSHOT_DIR  where snapshots are kept (default: a folder in the temp directory)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import time
+import webbrowser
+from typing import Annotated, Any
+
+import anyio
+from pydantic import Field
+
+try:  # MCP SDK 2.x
+    from mcp.server.mcpserver import Image, MCPServer
+except ImportError:  # 1.x
+    from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[no-redef]
+    from mcp.server.fastmcp import Image  # type: ignore[no-redef]
+
+from . import discovery
+from .live import LiveViewer
+from .session import DEFAULT_TIMEOUT, Session
+
+DOCS_BUDGET = 48_000
+
+
+def _mode() -> str:
+    mode = os.environ.get("SMLIBPY_VIEWER", "").strip().lower()
+    if mode in ("host", "browser", "off"):
+        return mode
+    return "host" if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop" else "browser"
+
+
+_VIEWER_NOTE = {
+    "host": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\". Open that link in your own "
+             "browser pane right then (in the Claude desktop app: preview_start with url set to the link), once; "
+             "the page follows every later script by itself. Tell the user in a few words that the model is in "
+             "the browser pane. view() gives the link again."),
+    "browser": ("VIEWER: the first script that makes a model opens a live 3D viewer in the user's browser and "
+                "returns \"Viewer: <link>\". The page follows every later script by itself; do not open it again. "
+                "view() gives the link again."),
+    "off": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\", a live 3D view that follows "
+            "every later script. Hand the link to the user once."),
+}
+
+_GUIDE = """\
+smlibpy: CAD modeling in Python on SMLib, the NURBS solid modeling kernel. You build exact solids by \
+writing Python scripts; this server runs them, shows the result in a live 3D viewer and renders \
+pictures for you to check.
+
+WORKFLOW
+1. Plan the part: its dimensions, its features, the order you build them in. Read the guides for \
+the operations you will use (docs) before you write the script.
+2. Build with run_script. `from smlibpy import *`, math and numpy (as np) are already imported. \
+Variables persist between calls: build in steps, one feature or a few at a time.
+3. Verify after every step: print numbers (part.volume, part.bbox(), part.is_valid(), \
+len(part.faces())) and look with snapshot(view="sheet"). A picture alone can mislead (it is scaled \
+to fit); a number alone can too. Fix what is wrong before going on.
+4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png). \
+Tell the user where the file is.
+
+CONVENTIONS
+- Millimeters and degrees, Z up. Primitives are centered on the origin unless align= says otherwise.
+- Shapes are values: operations return new shapes and never change their input. `a + b` fuses, \
+`a - b` cuts, `a & b` intersects. Place with .translate(), .rotate(), .moved(Location) or a \
+pattern (`GridLocations(...) * Cylinder(...)`).
+- Select faces and edges by geometry, not by index: part.faces().top(), \
+part.edges().parallel_to(Z), part.faces().cylinders().largest(). Indices change when the model changes.
+- Sketches are planar regions: build them in 2D, then .on(plane or face) and extrude or revolve.
+- show(a, b) at the end of a script chooses what the viewer and snapshots display. Without it, \
+every Part and Shell variable of the session is shown, tools and intermediate bodies included.
+- Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.
+- A script that fails changes nothing: the session keeps the state before it. checkpoint() before \
+a risky step and restore() to go back.
+
+DOCS
+list_methods(search="fillet the top edges") finds names in the API and the guides. \
+describe_method("Part.fillet") gives the signature, the docstring and the notes written for it. \
+docs(["SKILL", "recipes/verification"]) returns guides by key (the index is below).
+
+{viewer}
+
+BUERLIGONS
+If the ClassCAD MCP (server "classcad") is installed too, you can hand a result to the ClassCAD \
+app Buerligons, as a solid: save(format="step", path=...) here, then call its load tool with \
+format STP and that path.
+
+METHOD INDEX
+{methods}
+
+GUIDES
+{guides}
+"""
+
+
+def instructions() -> str:
+    return _GUIDE.format(viewer=_VIEWER_NOTE[_mode()], methods=discovery.method_index(),
+                         guides=discovery.guide_index() or "(none yet)")
+
+
+def _snapshot_dir() -> str:
+    d = os.environ.get("SMLIBPY_SNAPSHOT_DIR") or os.path.join(tempfile.gettempdir(), "smlibpy-snapshots")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _fmt_scene(scene: list[dict[str, Any]], explicit: bool) -> str:
+    if not scene:
+        return "Shown: nothing yet."
+    rows = []
+    for item in scene:
+        bits = [item["type"]]
+        if "volume" in item:
+            bits.append(f"volume {item['volume']}")
+        if "faces" in item:
+            bits.append(f"{item['faces']} faces")
+        if item.get("valid") is False:
+            bits.append("NOT VALID")
+        if "bbox" in item:
+            lo, hi = item["bbox"]["min"], item["bbox"]["max"]
+            bits.append("size " + " × ".join(f"{h - l:.6g}" for l, h in zip(lo, hi)))
+        if "problem" in item:
+            bits.append(item["problem"])
+        rows.append(f"- {item['name']}: " + ", ".join(bits))
+    head = "Shown (chosen with show):" if explicit else "Shown (every part and shell):"
+    return head + "\n" + "\n".join(rows)
+
+
+def build_server(session: Session | None = None) -> Any:
+    import smlibpy
+
+    session = session or Session()
+    viewer = LiveViewer(session)
+    mode = _mode()
+    server = MCPServer(name="smlibpy", instructions=instructions())
+
+    def tool() -> Any:
+        """Tools answer with plain content: structured output would repeat every text and
+        cannot carry images."""
+        try:
+            return server.tool(structured_output=False)
+        except TypeError:  # older SDKs
+            return server.tool()
+
+    async def call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
+
+    def viewer_note(scene: list[dict[str, Any]]) -> str | None:
+        if viewer.opened or not scene or mode == "none":
+            return None
+        viewer.opened = True
+        link = viewer.url
+        if mode == "browser":
+            try:
+                webbrowser.open(link)
+                return f"Viewer: {link}\nThe live viewer is open in the user's browser; it follows every script."
+            except Exception:
+                return f"Viewer: {link}\nGive the user this link: a live 3D view that follows every script."
+        if mode == "host":
+            return (f"Viewer: {link}\nOpen it now in your browser pane (preview_start with this url), once; it "
+                    "follows every script by itself.")
+        return f"Viewer: {link}\nHand this link to the user once: a live 3D view that follows every script."
+
+    @tool()
+    async def run_script(
+        script: Annotated[str, Field(description="Python code. `from smlibpy import *`, math and numpy (np) are "
+                                     "imported; variables persist between calls. The value of a last bare "
+                                     "expression is returned.")],
+        label: Annotated[str | None, Field(description="A short name for the step, for your own record.")] = None,
+        timeout_s: Annotated[float, Field(description="Seconds before the script is stopped (1 to 900).")] = DEFAULT_TIMEOUT,
+    ) -> str:
+        """Run a Python script in the modeling session and report what it printed, its value and what is shown."""
+        res = await call(session.run, script, label, timeout_s)
+        if not res.get("ok"):
+            text = "Script failed:\n" + res.get("error", "")
+            if res.get("output"):
+                text += "\n\nOutput before the error:\n" + res["output"]
+            return text + "\n\nThe session is as it was before this script."
+        parts = []
+        if res.get("output"):
+            parts.append("Output:\n" + res["output"].rstrip())
+        if res.get("value") is not None:
+            parts.append("Value: " + res["value"])
+        scene = res.get("scene", [])
+        scene_answer = await call(session.call, "scene")
+        parts.append(_fmt_scene(scene, bool(scene_answer.get("explicit"))))
+        note = viewer_note(scene)
+        if note:
+            parts.append(note)
+        return "\n\n".join(parts)
+
+    @tool()
+    async def snapshot(
+        view: Annotated[str, Field(description="iso, front, back, left, right, top, bottom, sheet (front, top, right "
+                                   "and iso in one image at one scale), or a direction 'x,y,z' from the model "
+                                   "towards the camera.")] = "iso",
+        names: Annotated[list[str] | None, Field(description="Variables to render instead of what is shown.")] = None,
+        width: Annotated[int, Field(ge=64, le=3000)] = 1000,
+        height: Annotated[int, Field(ge=64, le=3000)] = 750,
+        edges: Annotated[bool, Field(description="Draw the edges of faces (hidden ones stay hidden).")] = True,
+        path: Annotated[str | None, Field(description="Where to keep the PNG (absolute path). Default: the "
+                                          "snapshot folder.")] = None,
+    ) -> list[Any]:
+        """Render a picture of the model (Z up, orthographic, scaled to fit) to look at what you built."""
+        v: Any = view
+        if "," in view:
+            v = tuple(float(c) for c in view.split(","))
+        target = path or os.path.join(_snapshot_dir(), f"{time.strftime('%H%M%S')}-{view.replace(',', '_')}.png")
+        res = await call(session.call, "snapshot", 300.0, view=v, size=(width, height), names=names, edges=edges,
+                         path=target)
+        if not res.get("ok"):
+            return [f"Snapshot failed: {res.get('error')}"]
+        return [Image(data=res["png"], format="png"),
+                f"Saved: {target}\nShown: {', '.join(res.get('shown', []))}. Pictures are scaled to fit: compare "
+                "sizes with numbers, not by eye. Send the file to the user when they should see it."]
+
+    @tool()
+    async def scene() -> str:
+        """What the viewer and snapshots show, and every shape variable of the session."""
+        shown = await call(session.call, "scene")
+        allv = await call(session.call, "vars")
+        text = _fmt_scene(shown.get("scene", []), bool(shown.get("explicit")))
+        rows = [f"- {v['name']}: {v['type']}" + (f", volume {v['volume']}" if "volume" in v else "")
+                + (f", {v['count']} items" if "count" in v else "") for v in allv.get("vars", [])]
+        return text + "\n\nVariables:\n" + ("\n".join(rows) if rows else "(none)") + \
+            f"\n\nScripts in this session: {len(session.history)}; checkpoints: " + \
+            (", ".join(k for k, _ in session.checkpoints) or "none")
+
+    @tool()
+    async def inspect(
+        name: Annotated[str, Field(description="A variable, or an expression such as part.faces().top().")],
+        faces: Annotated[bool, Field(description="List the faces: type, area, center, normal or radius.")] = False,
+        edges: Annotated[bool, Field(description="List the edges: type, length, center, radius.")] = False,
+    ) -> str:
+        """Measurements of a shape: type, validity, volume, area, size, faces and edges."""
+        res = await call(session.call, "inspect", name=name, faces=faces, edges=edges)
+        if not res.get("ok"):
+            return res.get("error", "failed")
+        return json.dumps(res["info"], indent=1)
+
+    @tool()
+    async def list_methods(
+        search: Annotated[str | list[str] | None, Field(description="Words for what you want to do, e.g. 'round "
+                                                        "the top edges' or ['hole', 'pattern'].")] = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 30,
+    ) -> str:
+        """Find functions, methods and guides of the API. Without search: the whole index."""
+        if not search:
+            return discovery.method_index() + "\n\nGUIDES\n" + (discovery.guide_index() or "(none yet)")
+        hits = discovery.search(search, limit)
+        if not hits:
+            return "Nothing matches. list_methods() without search lists everything."
+        return "\n".join(f"{e.key} [{e.kind}]: {e.line if e.kind not in ('guide',) else e.line}"
+                         + (f" | {e.summary}" if e.summary and e.kind != "guide" else "") for _, e in hits)
+
+    @tool()
+    async def describe_method(
+        method: Annotated[str, Field(description="A name such as 'fillet', 'Part.fillet' or 'GridLocations'.")],
+    ) -> str:
+        """Signature, docstring and the notes written for one function or method."""
+        e = discovery.find_method(method)
+        if e is None:
+            hits = discovery.search(method, 8)
+            return f"No method {method!r}. Close: " + ", ".join(h.key for _, h in hits)
+        text = f"{e.line}\n\n{e.text or e.summary or '(no docstring)'}"
+        g = discovery.guide_for(e)
+        if g is not None:
+            text += f"\n\n--- guide {g.key} ---\n{g.text}"
+        return text
+
+    @tool()
+    async def docs(
+        keys: Annotated[list[str], Field(description="Guide keys from the index, e.g. ['SKILL', "
+                                         "'recipes/verification', 'features/fillet'].", min_length=1, max_length=24)],
+    ) -> str:
+        """Read guides of the smlibpy skill."""
+        out, used = [], 0
+        for k in keys:
+            g = discovery.guide(k)
+            if g is None:
+                hits = discovery.search(k, 5)
+                out.append(f"--- {k}: not found. Close: {', '.join(h.key for _, h in hits)}")
+                continue
+            piece = f"--- {g.key} ---\n{g.text}"
+            if used + len(piece) > DOCS_BUDGET:
+                out.append(f"--- {g.key}: left out (the answer is full); ask for it again on its own.")
+                continue
+            used += len(piece)
+            out.append(piece)
+        return "\n\n".join(out)
+
+    @tool()
+    async def save(
+        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, smb (native, one body) or png.")] = "step",
+        path: Annotated[str | None, Field(description="Absolute file path. Default: a file in the temp folder.")] = None,
+        names: Annotated[list[str] | None, Field(description="Variables to write instead of what is shown.")] = None,
+    ) -> str:
+        """Write the shown shapes (or the named ones) to a file."""
+        res = await call(session.call, "save", 600.0, format=format, path=path, names=names)
+        if not res.get("ok"):
+            return f"Save failed: {res.get('error')}"
+        return f"Wrote {res['path']} ({res['bytes']} bytes): {', '.join(res['shapes'])}."
+
+    @tool()
+    async def load(
+        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), SMLib (.smb) or STL file.")],
+        name: Annotated[str | None, Field(description="Variable to hold it. Default: from the file name.")] = None,
+    ) -> str:
+        """Read a file into a session variable (a Part, a Shell, a list of them, or a Mesh for STL)."""
+        res = await call(session.load, path, name)
+        if not res.get("ok"):
+            return f"Load failed: {res.get('error')}"
+        text = f"Loaded {path} as `{res['name']}`: {res.get('type')}"
+        if "volume" in res:
+            text += f", volume {res['volume']}"
+        shown = await call(session.call, "scene")
+        note = viewer_note(shown.get("scene", []))
+        return text + (f"\n\n{note}" if note else "")
+
+    @tool()
+    async def checkpoint(label: Annotated[str | None, Field(description="A name to restore it by.")] = None) -> str:
+        """Remember the current state of the session, to go back to it with restore."""
+        name = await call(session.checkpoint, label)
+        return f"Checkpoint {name!r} after {len(session.history)} scripts."
+
+    @tool()
+    async def restore(label: Annotated[str | None, Field(description="Checkpoint name; default: the last.")] = None) -> str:
+        """Go back to a checkpoint: the session is rebuilt from the scripts that led to it."""
+        try:
+            return await call(session.restore, label)
+        except KeyError as e:
+            return str(e.args[0])
+
+    @tool()
+    async def clear() -> str:
+        """Start over: an empty session (checkpoints are dropped too)."""
+        await call(session.clear)
+        return "The session is empty."
+
+    @tool()
+    async def view(open: Annotated[bool, Field(description="Also open it in the user's default browser.")] = False) -> str:
+        """The link of the live 3D viewer."""
+        link = viewer.url
+        viewer.opened = True
+        if open:
+            try:
+                webbrowser.open(link)
+            except Exception:
+                pass
+        return f"Viewer: {link}"
+
+    server._smlibpy_session = session  # type: ignore[attr-defined]
+    server._smlibpy_viewer = viewer  # type: ignore[attr-defined]
+    _ = smlibpy
+    return server
+
+
+def main() -> None:
+    server = build_server()
+    try:
+        server.run("stdio")
+    finally:
+        server._smlibpy_viewer.close()
+        server._smlibpy_session.close()
+
+
+if __name__ == "__main__":
+    main()
