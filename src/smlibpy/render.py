@@ -1222,10 +1222,14 @@ def _center_lines(cv: _Canvas, scene: _Scene, cut: _Cut | None) -> None:
                 m = a + (b - a) * (da / (da - db))
                 a, b = (m, b) if da > 0 else (a, m)
         along = float(d @ cv.cam.back)
-        if abs(along) > 1 - 1e-6:  # seen along the axis: a cross
-            x, y, _ = cv.screen(a[None])
-            cx, cy, arm = float(x[0]), float(y[0]), r * cv.s + over
-            lines += [(cx - arm, cy, cx + arm, cy, cx, cy), (cx, cy - arm, cx, cy + arm, cx, cy)]
+        if abs(along) > 1 - 1e-6:  # seen along the axis: a cross, its arms cut like the part
+            reach = r + over / cv.s
+            ends = [a + v * reach for v in (cv.cam.right, -cv.cam.right, cv.cam.up, -cv.cam.up)]
+            if cut is not None:
+                ends = [_clip_segments(np.array([[a, e]]), cut) for e in ends]
+                ends = [e[0, 1] for e in ends if len(e)]
+            x, y, _ = cv.screen(np.stack([a, *ends]))
+            lines += [(x[0], y[0], x[i], y[i], x[0], y[0]) for i in range(1, len(x))]
         elif abs(along) < 1e-6 and t1 > t0:  # seen from the side: the axis
             x, y, _ = cv.screen(np.stack([a, b]))
             length = math.hypot(x[1] - x[0], y[1] - y[0])

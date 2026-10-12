@@ -133,6 +133,12 @@ def test_center_lines_in_line_style(bored):
     col = _drawn(front.pixels[:, cx - 1:cx + 2]).any(axis=1)
     assert col[y_top - 9:y_top - 1].sum() >= 2 and col[y_bottom + 2:y_bottom + 10].sum() >= 2
     assert not col[y_top - 30:y_top - 11].any() and not col[y_bottom + 12:y_bottom + 30].any()
+    # a section cuts the cross like the part: the half towards -Y is gone
+    half = render(bored, view="top", lines=True, size=(400, 300), section=Plane.XZ)
+    assert half.frame == top.frame
+    cx, cy = _pixel(half, (1, 0, 0), (0, 1, 0), (0, 0, 0))
+    col = _drawn(half.pixels[:, cx - 1:cx + 2]).any(axis=1)
+    assert col[cy - r - 9:cy - r - 1].sum() >= 2 and not col[cy + 3:cy + r + 30].any()
     # not in shaded views, not on quarter-round fillets
     shaded = render(bored, view="top", size=(400, 300)).pixels
     assert not (_gray(shaded[cy - 1:cy + 2, cx + r + 2:cx + r + 9]) & _drawn(shaded[cy - 1:cy + 2, cx + r + 2:cx + r + 9])).any()
