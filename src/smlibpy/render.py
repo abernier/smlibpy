@@ -48,7 +48,6 @@ def _towards_camera(az: float, el: float) -> tuple[float, float, float]:
 VIEWS: dict[str, tuple[float, float, float]] = {name: _towards_camera(*ae) for name, ae in _TURNTABLE.items()}
 
 _ORTHO = ("front", "back", "left", "right", "top", "bottom")
-_PALETTE = ("#7c93b5", "#d9925a", "#79ad73", "#c97878", "#9d87c7", "#d4b45a", "#6bb3b3", "#b08e6c")
 _EDGE = np.array([0.12, 0.14, 0.16])
 _INK = np.array([20, 20, 20]) / 255
 _HIDDEN_INK = np.array([95, 95, 95]) / 255
@@ -344,6 +343,8 @@ def _section(section: Any, cap: bool) -> _Cut | None:
             raise TypeError(f"section takes one planar face, got {len(section)} shapes")
         section = section[0]
     if isinstance(section, dict):
+        if "origin" not in section or "normal" not in section:
+            raise ValueError(f"section: a dict needs origin and normal, got {section!r}")
         origin, normal = section["origin"], section["normal"]
         cap = bool(section.get("cap", cap))
     elif isinstance(section, Plane):
@@ -529,7 +530,7 @@ class _Scene:
 
     def __init__(self, shapes: Any, tolerance: float | None, colors: str):
         from .colors import to_rgb
-        from .exporters import _curve_points, _edge_polylines, _flatten_all
+        from .exporters import _DEFAULT_COLORS, _curve_points, _edge_polylines, _flatten_all
         from .mesh import Mesh, tessellate
         from .shapes import Edge, Face, Part, Sketch, Wire, _Body as Solidish
 
@@ -544,7 +545,7 @@ class _Scene:
         items = _flatten_all(shapes)
         solids = any(isinstance(it, (Mesh, Face)) or (isinstance(it, Solidish) and not isinstance(it, Sketch))
                      for it in items)
-        palette = [np.array(to_rgb(c)) for c in _PALETTE]
+        palette = [np.array(to_rgb(c)) for c in _DEFAULT_COLORS]
         for i, item in enumerate(items):
             own = getattr(item, "color", None)
             native = np.array(to_rgb(own)) if own is not None else palette[i % len(palette)]
