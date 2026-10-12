@@ -36,7 +36,8 @@ An `Edge` with `geom_type == "circle"` (`radius`, `arc_center`, `normal` work).
 - A full circle as a sweep path is split into two halves automatically:
   `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` is one ring of volume 1579.14.
 - `point_at(t)` on arcs is accurate to about 1e-8 mm.
-- `mirror()` or `scale()` turn the arc into a `bspline`; `radius` then raises.
+- `mirror()` and a uniform `scale()` keep the arc a `circle` (radius and center follow); a
+  per-axis `scale((2, 1, 1))` turns it into a `bspline` (an ellipse), and `radius` then raises.
 
 ## Errors
 - `ValueError: radius must be positive` for radius <= 0.

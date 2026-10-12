@@ -15,7 +15,7 @@ import math
 from typing import Any, Sequence
 
 from ._kernel import k, kernel_call
-from ._planar import Arc2, Corner, GeometryError, Line2, Seg, assemble, cis, fmt, signed_area, simplify
+from ._planar import Arc2, Corner, GeometryError, Line2, Seg, assemble, cis, describe, fmt, signed_area, simplify
 from .align import Align, AlignLike, alignment_offset
 from .curves import CenterArc, Line, Polyline
 from .geometry import Location, Plane, Vector, VectorLike, Z, _vec
@@ -93,7 +93,7 @@ def _polygon_sketch(what: str, pts: Sequence[complex], *, fillet: float = 0.0, c
     if corner is not None:
         corners = {i: corner for i in range(len(segs))}
         try:
-            segs, _ = assemble(segs, [""] * len(segs), corners, True, tol)
+            segs, _ = assemble(segs, [""] * len(segs), corners, True, tol, what=lambda i, s=segs: describe(s[i]))
         except GeometryError as e:
             raise ValueError(f"{what}: {e}") from None
         segs, _ = simplify(segs, [""] * len(segs), True, tol)

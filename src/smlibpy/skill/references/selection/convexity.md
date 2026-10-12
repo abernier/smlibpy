@@ -1,10 +1,13 @@
-# convex, concave, smooth, Edge.convexity, Edge.is_convex
+# convex, concave, smooth, Edge.convexity, Vertex.convexity, Edge.is_convex
 
-Classify edges by the corner the two faces make there.
+Classify edges of a part by the corner the two faces make there, and corners (vertices) of a
+sketch by the angle of the region there.
 
 ## Signature
-- `sl.convex()`, `sl.concave()`, `sl.smooth()`: keep edges of that kind; other shapes are dropped.
+- `sl.convex()`, `sl.concave()`, `sl.smooth()`: keep edges (and sketch vertices) of that kind;
+  other shapes are dropped.
 - `edge.convexity`: property, `"convex"`, `"concave"` or `"smooth"`.
+- `vertex.convexity`: the same for a vertex of a sketch (`ValueError` for a vertex of a part).
 - `edge.is_convex()`: a method (call it), `edge.convexity == "convex"`.
 
 ## Meaning
@@ -29,6 +32,14 @@ The test is made at the edge midpoint only.
 | plate + cylindrical boss | 13 | 1 (base circle) | 0 |
 | block, 4 vertical edges filleted | 16 | 0 | 8 |
 | block shelled, top open | 16 | 8 | 0 |
+
+## Corners of sketches
+For a vertex of a `Sketch`: `convex` where the region's angle is below 180° (an outside
+corner), `concave` above (an inside corner, and every corner of a square hole), `smooth` where
+two edges meet tangentially (the joints of a slot, the borders of a 2D fillet).
+`Polygon((0, 0), (40, 0), (40, 8), (8, 8), (8, 30), (0, 30))` (an L) has 5 convex vertices and 1
+concave one; `Rectangle(60, 40) - Rectangle(20, 10)` has 4 of each. This is how
+`sketch.fillet(r, sketch.vertices().concave())` picks corners (see `sketches/fillet`).
 
 ## Use for fillets
 - `part.fillet(part.edges().concave(), r)` rounds inside corners and adds material.

@@ -509,7 +509,8 @@ def simplify(segs: list[Seg], labels: list[str], closed: bool, tol: float) -> tu
 
 
 def first_crossing(segs: Sequence[Seg], closed: bool, tol: float) -> tuple[int, int, complex] | None:
-    """The first pair of segments that cross, touch or double back: ``(i, j, point)``."""
+    """The first pair of segments that cross, touch or run over each other: ``(i, j, point)``
+    (see :func:`runs_back` to tell the last case)."""
     n = len(segs)
     for i in range(n):
         for j in range(i + 1, n):
@@ -527,6 +528,11 @@ def first_crossing(segs: Sequence[Seg], closed: bool, tol: float) -> tuple[int, 
             if pts:
                 return i, j, pts[0]
     return None
+
+
+def runs_back(segs: Sequence[Seg], i: int, j: int, tol: float) -> bool:
+    """True if segments ``i`` and ``j`` share a stretch (the outline runs back over itself)."""
+    return overlap(segs[i], segs[j], tol) > tol
 
 
 # -----------------------------------------------------------------------------
@@ -885,8 +891,8 @@ def hull_sites(segs: Sequence[Seg]) -> list[_Site]:
                 sites += [_Site(s.start, 0.0), _Site(s.end, 0.0)]
             sites.append(_Site(s.c, s.r, ccw.a0 % TAU, min(abs(s.sweep), TAU)))
         else:
-            raise GeometryError("hull works on points, lines and circular arcs; a curve that is neither "
-                                f"was given ({describe(s)})")
+            raise GeometryError(f"{describe(s)} is neither a line nor a circular arc; Hull works on points, lines "
+                                f"and arcs (for a convex outline of other curves, hull points along them)")
     return sites
 
 

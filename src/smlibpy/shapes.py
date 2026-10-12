@@ -1441,6 +1441,12 @@ class _Body(Shape):
         lo, hi = self._brep.bounding_box(True)
         return BoundBox(lo, hi)
 
+    def _loose_box(self) -> BoundBox:
+        """A box around the body that may be slightly too large; far cheaper than :meth:`bbox`
+        (for overlap tests and size scales)."""
+        lo, hi = self._brep.bounding_box(False)
+        return BoundBox(lo, hi)
+
     def distance_to(self, other: VectorLike | Shape) -> float:
         """Minimum distance to a point or to another body.
 
@@ -1542,7 +1548,11 @@ def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
 def _disjoint_batches(tools: Sequence[Any]) -> list[list[Any]]:
     """The tools in groups whose members' boxes do not overlap (so that each group can go
     into one Boolean); empty tools are left out."""
-    items = [(t, np.array([*t.bbox().min, *t.bbox().max])) for t in tools if t._brep.face_count()]
+    items = []
+    for t in tools:
+        if t._brep.face_count():
+            lo, hi = t._brep.bounding_box(False)
+            items.append((t, np.array([*lo, *hi], dtype=float)))
     batches: list[tuple[list[Any], list[np.ndarray]]] = []
     for t, b in items:
         for members, boxes in batches:
@@ -2533,7 +2543,7 @@ class Sketch(Shell):
         for t in tools:
             if not isinstance(t, Sketch):
                 raise TypeError(f"cannot {name} a {type(t).__name__} with a Sketch")
-            if not self.plane.is_coplanar(t.plane, 1e-6 * max(1.0, self.bbox().union(t.bbox()).diagonal)):
+            if not self.plane.is_coplanar(t.plane, 1e-6 * max(1.0, self._loose_box().union(t._loose_box()).diagonal)):
                 raise ValueError(f"cannot {name} sketches in different planes; place both on the same plane first")
         result: Sketch = self
         if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.DIFFERENCE:
@@ -2558,10 +2568,10 @@ class Sketch(Shell):
                 with kernel_call(name):
                     return self._like(ext.combine([t._brep for t in tools]))
             return self
-        box = tools[0].bbox()
+        box = tools[0]._loose_box()
         for t in tools[1:]:
-            box = box.union(t.bbox())
-        if _disjoint(self.bbox(), box):
+            box = box.union(t._loose_box())
+        if _disjoint(self._loose_box(), box):
             if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.EXCLUSIVE_OR:
                 with kernel_call(name):
                     return self._like(ext.combine([self._brep, *(t._brep for t in tools)]))
@@ -2628,7 +2638,7 @@ class Sketch(Shell):
 
     def _slab_boolean(self, other: Sketch, op: Any, name: str) -> Sketch:
         n = self._plane.z_dir
-        thickness = max(self.bbox().union(other.bbox()).diagonal * 0.05, 1e-3)
+        thickness = max(self._loose_box().union(other._loose_box()).diagonal * 0.05, 1e-3)
         a = self.extrude(thickness, direction=n)
         b = other.extrude(thickness, direction=n)
         # The slabs' Booleans run unchecked: pieces of the result may touch along an edge,

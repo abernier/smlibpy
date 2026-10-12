@@ -1,7 +1,7 @@
 # Slot
 
 An obround (stadium): two half circles joined by straight sides, centered on the origin and
-lying along X.
+lying along X. For the other slots see the table.
 
 ## Signature
 `Slot(length, width, *, rotation=0.0, align=Align.CENTER)`
@@ -12,17 +12,20 @@ lying along X.
 
 ## Returns
 A `Sketch` with 4 edges (line, arc, line, arc). The arc centers are at x = ±(length - width)/2.
-Area `(length - width)*width + pi*width**2/4`.
+Area `(length - width)*width + pi*width**2/4` (`Slot(30, 8)`: 226.2655).
 
-## Variants
-smlibpy has only this one slot. Build the others from it:
-- Center-to-center distance `c`: `Slot(c + w, w)`.
-- From point `p` to point `q`: `Pos((p + q) / 2) * Slot((q - p).length + w, w, rotation=angle)`,
-  `angle = math.degrees(math.atan2(dy, dx))`.
-- Arc slot: `make_face` of a wire of four `CenterArc`s (example below).
+## Which slot
+| slot | call |
+|---|---|
+| straight, overall length, centered | `Slot(length, width)` |
+| center-to-center distance `c` | `Slot(c + width, width)` |
+| between two centers `a` and `b` (anywhere) | `Stroke(Line(a, b), width)` |
+| along an arc around the origin | `ArcSlot(radius, width, angle, rotation=start)` |
+| along any path of lines and arcs | `Stroke(path, width)` |
 
 ## Gotchas
 - `length <= width` (or a negative length) silently gives a `Circle` of diameter `width`.
+- `Rectangle(length, width, fillet=width / 2)` is the same region with 4 edges too.
 
 ## Errors
 - `ValueError: radius must be positive`: `width` is zero or negative.
@@ -32,20 +35,10 @@ smlibpy has only this one slot. Build the others from it:
 ```python
 plate = Box(60, 40, 8)
 cut = plate - Slot(30, 8, rotation=90).on(plate.faces().top()).extrude(-8)   # vertical through slot
-
-c2c = Slot(20 + 6, 6)                       # arc centers at x = -10 and 10
-
-R, w = 30, 6                                # arc slot: centerline radius 30, 0..90 degrees
-ri, ro = R - w / 2, R + w / 2
-outline = Wire([
-    CenterArc((0, 0), ro, 0, 90),
-    CenterArc((0, R), w / 2, 90, 180),
-    CenterArc((0, 0), ri, 90, -90),
-    CenterArc((R, 0), w / 2, 180, 180),
-])
-arc_slot = make_face(outline)
+c2c = Slot(20 + 6, 6)                                   # arc centers at x = -10 and 10
+between = Stroke(Line((10, 5), (40, 20)), 6)            # centers (10, 5) and (40, 20), area 229.5205
 ```
 
 ## Related
-`RoundedRectangle` (`radius = width/2` is the same region, 6 edges), `Circle`, `make_face`,
-`CenterArc` (curves).
+`ArcSlot`, `Stroke`, `Rectangle` (`fillet=width/2`), `Circle`, `Hull` (tapered slots between
+circles of different sizes).

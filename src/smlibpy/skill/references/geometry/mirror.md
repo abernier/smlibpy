@@ -25,15 +25,15 @@ a 6-face box.
 
 ## Gotchas
 - The default plane is `Plane.XZ` (mirrors y), not YZ. Always pass the plane.
-- `mirror(X)` raises `TypeError: cannot use Axis as a plane`; a curved face raises
+- On a part, `mirror(X)` raises `TypeError: cannot use Axis as a plane`; a sketch takes an
+  axis in its own plane (`sketch.mirror(Y)`, see `sketches/mirror`). A curved face raises
   `ValueError: a cylinder face has no plane ...`; a selection of several faces raises
   `ValueError: expected exactly one shape, got 2 ...`.
-- **Mirrored sketches flip their normal** when the mirror plane is perpendicular to the
-  sketch: `Polygon(...).mirror(Plane.YZ)` gets normal -Z and `extrude(5)` goes to z -5..0.
-  `half + half.mirror(Plane.YZ)` keeps the plane of `half` (left operand) and extrudes up;
-  `half.mirror(Plane.YZ) + half` extrudes down. Put the unmirrored sketch first, or mirror
-  the extruded part instead.
-- Standalone edges (`CenterArc`, `Line`) become `bspline` edges when mirrored.
+- Sketches keep facing the same way when mirrored in a plane perpendicular to them:
+  `Polygon(...).mirror(Plane.YZ)` keeps normal +Z, so mirror and extrude commute
+  (`half.extrude(5).mirror(Plane.YZ)` equals `half.mirror(Plane.YZ).extrude(5)`).
+- Lines and circles stay lines and circles: mirrored edges, wires and sketches keep `line`
+  and `circle` types (and so `radius`, `arc_center`, fillets of their corners).
 - Not available on `ShapeList`; mirror each member.
 
 ## Example

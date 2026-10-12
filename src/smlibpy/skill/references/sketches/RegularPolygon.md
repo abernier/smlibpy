@@ -3,12 +3,14 @@
 A regular polygon with `sides` corners, centered on the origin.
 
 ## Signature
-`RegularPolygon(radius, sides, *, inscribed=False, rotation=0.0, align=Align.CENTER)`
+`RegularPolygon(radius, sides, *, inscribed=False, fillet=0, chamfer=0, rotation=0.0, align=Align.CENTER)`
 - `radius`: distance from the center to the corners (circumscribed circle).
 - `inscribed=True`: `radius` is the distance to the middle of the sides instead. For a hexagon
   measured across flats: `RegularPolygon(flats / 2, 6, inscribed=True)`.
 - `sides`: an `int` (3 or more).
 - `rotation`: degrees counter-clockwise about the center.
+- `fillet` / `chamfer`: round or bevel every corner (`RegularPolygon(10, 6, fillet=1)`: 12 edges,
+  area 259.4851).
 
 ## Returns
 A `Sketch`. The first corner is on +X at `rotation=0`.
@@ -35,6 +37,7 @@ A `Sketch`. The first corner is on +X at `rotation=0`.
 nut = RegularPolygon(6.5, 6, inscribed=True) - Circle(3.4)   # M6 nut: 13 across flats
 hex_up = RegularPolygon(10, 6, rotation=30)                  # corners at (0, ±10)
 square = RegularPolygon(10, 4, inscribed=True, rotation=45)  # 20 x 20, axis aligned
+soft_nut = RegularPolygon(6.5, 6, inscribed=True, chamfer=0.5)  # area 145.7088
 ```
 
 ## Related

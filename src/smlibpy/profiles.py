@@ -15,7 +15,7 @@ from typing import Any
 
 from ._kernel import ModelingError
 from ._planar import (TAU, Arc2, Corner, GeometryError, Line2, Seg, assemble, cis, cross, dot, extent, first_crossing,
-                      fmt, fmt_pt, reflect, signed_area, simplify, unit)
+                      fmt, fmt_pt, reflect, runs_back, signed_area, simplify, unit)
 from .align import AlignLike, alignment_offset
 from .geometry import Axis, Plane, Vector, VectorLike, _vec
 from .shapes import Sketch, Wire
@@ -340,6 +340,12 @@ class Profile:
             hit = first_crossing(out, True, tol)
             if hit is not None:
                 i, j, p = hit
+                if len(out) == 2 and runs_back(out, i, j, tol):
+                    raise ModelingError("Profile: the outline encloses no area (it runs straight back to the start); "
+                                        "draw at least two sides before close()")
+                if runs_back(out, i, j, tol):
+                    raise ModelingError(f"Profile: the outline runs back over itself at {fmt_pt(p)}: {labs[i]} and "
+                                        f"{labs[j]} overlap; change the moves so that the outline does not double back")
                 raise ModelingError(f"Profile: the outline crosses or touches itself at {fmt_pt(p)}: {labs[i]} meets "
                                     f"{labs[j]}; change the moves so that the outline does not cross itself")
             area = signed_area(out)

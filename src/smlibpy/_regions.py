@@ -136,7 +136,7 @@ def sketch_loops(sk: Sketch) -> tuple[Frame, Loops]:
         return cached
     fr = Frame(sk.plane)
     faces: Loops = []
-    size = max(1.0, sk.bbox().diagonal) if sk.faces() else 1.0
+    size = max(1.0, sk._loose_box().diagonal) if sk.faces() else 1.0
     for f in sk.faces():
         loops = [[seg_of_edge(e, fr) for e in w.edges()] for w in f.wires()]
         loops = [lp for lp in loops if lp]
@@ -220,8 +220,9 @@ def _corner_points(items: Any, fr: Frame, what: str) -> list[complex]:
         if isinstance(it, Vertex):
             p = it.point
         elif isinstance(it, (Edge, Face, Wire)) or isinstance(it, Shape):
-            raise TypeError(f"{what}: the corners are given as vertices or points, not as a {type(it).__name__} "
-                            f"(use sketch.vertices() and its selectors)")
+            name = type(it).__name__
+            raise TypeError(f"{what}: the corners are given as vertices or points, not as {'an' if name[0] in 'AEIOU' else 'a'} "
+                            f"{name} (use sketch.vertices() and its selectors)")
         else:
             p = _vec(it)
         out.append(fr.local(p))
@@ -433,7 +434,7 @@ def _mirror_plane(sk: Sketch, about: Any) -> Plane:
         if not d.is_perpendicular(n, 1e-6):
             raise ValueError("mirror: the axis must lie in the sketch plane (its direction is not parallel to the plane); "
                              "pass a Plane to mirror in 3D")
-        if abs(sk.plane.distance_to(about.origin)) > 1e-6 * max(1.0, sk.bbox().diagonal):
+        if abs(sk.plane.distance_to(about.origin)) > 1e-6 * max(1.0, sk._loose_box().diagonal):
             raise ValueError(f"mirror: the axis does not lie in the sketch plane (its origin is "
                              f"{fmt(sk.plane.distance_to(about.origin))} away from it)")
         return Plane(about.origin, d, d.cross(n).normalized())
@@ -598,6 +599,13 @@ def _flatten(items: Iterable[Any]) -> list[Any]:
 
 
 def hull(items: Sequence[Any]) -> Sketch:
+    try:
+        return _hull(items)
+    except GeometryError as e:
+        raise ModelingError(f"Hull: {e}") from None
+
+
+def _hull(items: Sequence[Any]) -> Sketch:
     flat = _flatten(items)
     if not flat:
         raise ValueError("Hull: nothing given; pass points, edges, wires or sketches")
@@ -609,7 +617,7 @@ def hull(items: Sequence[Any]) -> Sketch:
         if isinstance(it, Part):
             raise TypeError("Hull: a Part has no outline in a plane; use part.section(plane) or a face")
         if isinstance(it, Sketch):
-            if not it.plane.is_coplanar(fr.plane, 1e-6 * max(1.0, it.bbox().diagonal)):
+            if not it.plane.is_coplanar(fr.plane, 1e-6 * max(1.0, it._loose_box().diagonal)):
                 raise ValueError("Hull: the sketches lie in different planes")
             f2, faces = sketch_loops(it)
             for outer, _ in faces:
@@ -627,10 +635,7 @@ def hull(items: Sequence[Any]) -> Sketch:
                 raise ValueError(f"Hull: the point ({fmt(p.x)}, {fmt(p.y)}, {fmt(p.z)}) is not in the plane of the hull")
             sites.append(_Site(fr.local(p), 0.0))
     size = max([1.0] + [abs(s.c) + s.r for s in sites])
-    try:
-        loop = convex_hull(sites, 1e-9 * size)
-    except GeometryError as e:
-        raise ModelingError(f"Hull: {e}") from None
+    loop = convex_hull(sites, 1e-9 * size)
     return build([(loop, [])], fr, name="Hull")
 
 
