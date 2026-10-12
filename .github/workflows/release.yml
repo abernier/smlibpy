@@ -65,7 +65,22 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
+      # With the Visual Studio generator MSBuild compiled the kernel one file after another,
+      # 80 minutes for each wheel. Ninja uses every core, and ccache keeps the kernel for the
+      # next Python. Ninja needs the compiler's environment, which vcvars64.bat sets up.
+      - name: The compiler's environment, and ccache
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          choco install -y --no-progress ccache
       - uses: pypa/cibuildwheel@v4.2.1
+        env:
+          CIBW_ENVIRONMENT_WINDOWS: CMAKE_GENERATOR=Ninja CXX=cl CMAKE_CXX_COMPILER_LAUNCHER=ccache CCACHE_MAXSIZE=4G
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: windows-wheels
