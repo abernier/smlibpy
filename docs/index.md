@@ -1,7 +1,5 @@
 # smlibpy
 
-![Parts modeled with smlibpy](images/hero.png)
-
 A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep).
 It comes with an MCP server, so your agent can build parts too.
 
