@@ -40,6 +40,8 @@ SYNONYMS = {
     "check": ["is_valid", "heal"], "repair": ["heal"], "fix": ["heal"], "export": ["export", "export_step", "save"],
     "import": ["load", "import_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
+    "drawing": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
+    "diff": ["diff_images"], "before": ["diff_images"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],

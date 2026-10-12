@@ -53,7 +53,7 @@ or `.vscode/mcp.json` (VS Code, where the key is `servers` and each entry has
 | Tool | What it does |
 |---|---|
 | `run_script` | Runs Python with `from smlibpy import *`; variables stay between calls |
-| `snapshot` | A PNG of the model: one view, or a sheet of front, left, top and iso view (ISO method E) |
+| `snapshot` | A PNG of the model: a view, a technical drawing (front, side and top view with hidden edges dashed, ISO method E or A), sheets of views, sections, highlighted selections, markers, x-ray, and before/after comparisons |
 | `scene`, `inspect` | What is shown, the variables, measurements of a shape, its faces and edges |
 | `list_methods`, `describe_method`, `docs` | The API index, signatures and the guides of the skill |
 | `save`, `load` | STEP, STL, glTF, OBJ, the native format, PNG; STEP and STL in |
@@ -64,9 +64,16 @@ or `.vscode/mcp.json` (VS Code, where the key is `servers` and each entry has
 part and shell of the session is shown.
 
 The server's instructions tell the agent how to work: plan, build in steps, check volume,
-bounding box and validity after every step, look at the sheet of views, then deliver a STEP
-file. The skill holds a guide for every API, written by agents that tested each call against
-the kernel.
+bounding box and validity after every step, look at the drawing of the model, then deliver a
+STEP file. The skill holds a guide for every API, written by agents that tested each call
+against the kernel.
+
+`snapshot` takes the options of `render` (see [Files](files.md#pictures)). Two work with the
+session: `highlight` takes Python expressions such as `"part.edges().concave()"`, so an agent
+can see what a selection picks before it fillets or cuts with it, and `section` takes an
+expression such as `"Plane.XZ"` besides origin and normal. Every single view reports its frame;
+a later snapshot with that `frame` and `compare=<path of the earlier picture>` reports the
+pixels that changed and shows them in red.
 
 ## How it runs
 

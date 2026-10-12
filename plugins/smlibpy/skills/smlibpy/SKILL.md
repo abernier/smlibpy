@@ -13,7 +13,8 @@ shows them in a live 3D viewer.
 2. Plan the dimensions, features and order. Build with `run_script`, a step at a time; the
    variables stay between calls.
 3. After every step check the numbers the script prints (volume, bbox, `is_valid()`) and look
-   with `snapshot(view="sheet")`. Fix before going on. `checkpoint()` before risky steps.
+   with `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Fix before going
+   on. `checkpoint()` before risky steps.
 4. Deliver with `save(format="step", path=...)` (or stl, glb) and tell the user where the file
    is. Send them a snapshot when a picture helps.
 

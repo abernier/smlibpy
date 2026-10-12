@@ -10,7 +10,7 @@ Everything else is a triangle mesh.
 | STL `.stl` | `export_stl` | `import_stl` → `Mesh` | triangles, float32 | merged into one mesh | no | no | none |
 | glTF `.glb` `.gltf` | `export_glb`, `export_gltf` | no | triangles + edge lines | one node per shape | yes | yes | meters (a root node scales the mm by 0.001) |
 | OBJ `.obj` | `export_obj` | no | triangles, no normals | one object per shape | yes | no | none |
-| PNG | `render` | | a picture | | | yes | |
+| PNG | `render` | `diff_images` compares two | a picture | | | yes | |
 | HTML | `show` | | an interactive viewer | | | yes | |
 
 `export(shapes, path)` and `shape.export(path)` choose the writer by extension. `load(path)`
@@ -25,7 +25,7 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`; any other extension r
 - **3D printing: STL** with `tolerance=0.01`.
 - **Show it to people: `.glb`** (colors, names, edges), or `show(..., path=..., open_browser=False)`
   for a page to open.
-- **Check it yourself: `render(..., view="sheet")`**, then read the PNG.
+- **Check it yourself: `render(..., view="sheet")`**, a technical drawing, then read the PNG.
 
 ## Units
 - All modeling is in mm.
@@ -54,4 +54,4 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`; any other extension r
 
 ## Related
 `export.md`, `export_step.md`, `import_step.md`, `save_load.md`, `export_stl.md`,
-`import_stl.md`, `export_glb.md`, `export_obj.md`, `render.md`, `show.md`, `Mesh.md`.
+`import_stl.md`, `export_glb.md`, `export_obj.md`, `render.md`, `diff_images.md`, `show.md`, `Mesh.md`.

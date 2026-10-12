@@ -86,20 +86,49 @@ assembly placements that mirror a part.
 ## Pictures
 
 `render` draws shapes into a PNG without a browser or a graphics card, which suits
-scripts, CI jobs and documentation:
+scripts, CI jobs, documentation, and agents that check what they built:
 
 ```python
 from smlibpy import *
 
 part = Box(40, 30, 10) - Cylinder(6, 20)
-render(part, path="part.png")                                 # isometric view
-render(part, path="views.png", view="sheet", size=(1000, 760))  # ISO method E: front, left, top, iso
+render(part, path="part.png")                                      # isometric view
+render(part, path="drawing.png", drawing=True, size=(1000, 750))   # technical drawing
 ```
 
-`view` takes a name (`"iso"`, `"front"`, `"back"`, `"left"`, `"right"`, `"top"`,
-`"bottom"`), a direction from the model towards the camera, or `"sheet"`. Hidden edges stay
-hidden, and the seams of round faces are left out. The function returns the PNG bytes, so in
-a notebook `IPython.display.Image(render(part))` shows it inline.
+The views are orthographic with Z up. `view` takes a name (`"iso"`, `"front"`, `"back"`,
+`"left"`, `"right"`, `"top"`, `"bottom"`), turntable angles (`{"azimuth": 30, "elevation":
+20}`, azimuth 0 from the front, 90 from +X), the direction a camera looks in (`{"direction":
+(0, 1, 0)}`), or a direction from the model towards the camera (`(1, -1, -1)`). `"iso"` is a
+true isometric view from (1, -1, 1). `zoom` and `look_at` frame a detail.
+
+`drawing=True` is a technical drawing in ISO projection method E (first angle): the front
+view, the view from the left to its right, the top view below it, in line style with hidden
+edges dashed and center lines through holes, at one scale, and a shaded iso view.
+`drawing="third-angle"` places them by method A (top view above, view from the right).
+`view="sheet"` gives the method E drawing as well. `lines=True` draws a single view in line
+style; `sheet=True` shows four shaded views at once.
+
+Further options show what a shaded picture hides:
+
+```python
+render(part, path="cut.png", section=Plane.XZ)                      # the front half cut away, hatched
+render(part, path="top.png", highlight=part.faces().top(), markers=[((0, 0, 5), "bore")])
+render(part, path="size.png", annotate=True)                        # size, axes and a scale bar
+render(part, path="inside.png", xray=True)                          # translucent
+```
+
+The result is the PNG file as `bytes` (a notebook shows it with
+`IPython.display.Image(render(part))`), with `.pixels` and `.frame`. The frame pins scale and
+middle for a later picture of a changed model, and `diff_images` counts what changed:
+
+```python
+before = render(part)
+after = render(part - Cylinder(3, 20).translate(12, 0, 0), frame=before)
+change = diff_images(before, after)
+print(change.changed, change.bbox)       # pixels that differ, and where
+change.save("change.png")                # the change in red
+```
 
 ## Viewer
 

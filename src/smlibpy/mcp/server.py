@@ -67,8 +67,11 @@ the operations you will use (docs) before you write the script.
 2. Build with run_script. `from smlibpy import *`, math and numpy (as np) are already imported. \
 Variables persist between calls: build in steps, one feature or a few at a time.
 3. Verify after every step: print numbers (part.volume, part.bbox(), part.is_valid(), \
-len(part.faces())) and look with snapshot(view="sheet"). A picture alone can mislead (it is scaled \
-to fit); a number alone can too. Fix what is wrong before going on.
+len(part.faces())) and look with snapshot(view="sheet"): a technical drawing (front view, the view \
+from the left, top view; hidden edges dashed) with a shaded iso view. A picture alone can mislead \
+(it is scaled to fit); a number alone can too. Fix what is wrong before going on. snapshot also \
+cuts sections (section=), shows what a selection picks (highlight="part.edges().concave()"), marks \
+points (markers=) and compares before and after (frame= and compare=); see recipes/verification.
 4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png). \
 Tell the user where the file is.
 

@@ -26,7 +26,8 @@ export_step(plate, "plate.step")
    every API you will use (`docs`, `describe_method`) before writing the script.
 2. **Build in steps.** One feature or a few per script; in the MCP session variables persist.
 3. **Verify every step** with numbers and a picture: `volume`, `bbox()`, `is_valid()`, face
-   counts; `snapshot(view="sheet")`. See `recipes/verification`.
+   counts; `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Sections,
+   highlighted selections and before/after comparisons: see `recipes/verification`.
 4. **Deliver** a STEP file (exact), STL or glTF (meshes), and say where it is.
 
 ## Conventions
