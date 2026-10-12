@@ -43,7 +43,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Fillets larger than the geometry allows can come back as a "valid" solid | checks the radius against neighbouring edges and the volume change |
 | Sweeps anchor the profile at the start point of its first curve | centers the profile on the path and orients it |
 | A full 360 degree non-manifold revolve returns an empty body | revolves each loop and subtracts the holes |
-| Shell and offset results depend on memory layout; some contain a face the kernel cannot integrate or mesh | checks every result and retries (results can differ in the 6th digit between runs) |
+| The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode |
 | Arcs from the API are plain B-splines | arcs are trimmed kernel circles, so they keep radius and center |
 
 ## Known kernel limitations
@@ -54,8 +54,8 @@ From usd-brep's own list of known issues, the ones that can matter here:
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
-- `shell` and `offset` are not deterministic and can take a few attempts on complex parts,
-  each as long as the operation itself.
+- `shell` cannot remove a face that is bordered by fillets; shell first, then round the rim.
+- `offset` can take a few attempts on complex parts, each as long as the operation itself.
 
 ## Building the kernel
 

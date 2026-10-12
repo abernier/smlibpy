@@ -1779,9 +1779,14 @@ class Part(_Body):
         faces = self._own_faces(openings) if openings is not None else []
         d = abs(thickness) if outward else -abs(thickness)
 
+        tries = iter([False, False] + [True] * 6)
+
         def attempt() -> Part:
+            # The kernel's "extended" offset mode is not deterministic; the plain mode is,
+            # and handles most parts. Fall back to the extended mode when needed.
+            extended = next(tries, True)
             with kernel_call("shell", "the wall may be thicker than the part allows"):
-                return self._like(k.shell_brep(self._brep, d, faces_to_shell=faces))
+                return self._like(k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces))
 
         grow = abs(thickness) if outward else 0.0
         return self._checked("shell", attempt, grow=grow, smaller=True)  # a wall has less volume

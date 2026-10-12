@@ -84,6 +84,9 @@ perpendicular.
 
 `shell` hollows a part to walls of a given thickness, leaving the chosen faces open:
 
+Shell before rounding the rim: removing a face that is surrounded by fillets is a case
+the kernel cannot do.
+
 ```python
 cup = Cylinder(20, 30).shell(2, Cylinder(20, 30).faces().top())
 case = Box(80, 50, 30).shell(2.5)                # closed, hollow inside
