@@ -39,7 +39,9 @@ endif()
 file(GLOB SM_API_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SM_API/src/*.cpp")
 add_library(sm_api STATIC ${SM_API_SOURCES})
 target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
-target_compile_definitions(sm_api PRIVATE SM_API_EXPORTS)
+# PUBLIC: everything is linked statically into one module, so consumers must not see
+# __declspec(dllimport) declarations on Windows.
+target_compile_definitions(sm_api PUBLIC SM_API_EXPORTS)
 target_link_libraries(sm_api PUBLIC smlib)
 
 if(MSVC)
@@ -70,7 +72,9 @@ target_include_directories(_core PRIVATE
   "${USD_BREP_DIR}/source/SmPyLib/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp")
 target_link_libraries(_core PRIVATE sm_api smlib)
-if(NOT MSVC)
+if(MSVC)
+  target_compile_options(_core PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267)
+else()
   target_compile_options(_core PRIVATE -Wno-deprecated-declarations)
 endif()
 

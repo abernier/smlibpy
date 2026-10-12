@@ -37,6 +37,10 @@ PYBIND11_MODULE(_core, m)
     SmApiCreateContext();
     install_sm_error_callback();
 
+    // The upstream bindings look themselves up by their own module name (for example to
+    // raise TessellationError), so make that name resolve to this module.
+    py::module_::import("sys").attr("modules")["_omni_solid"] = m;
+
     bind_enums(m);
     bind_types(m);
     bind_polybrep(m);

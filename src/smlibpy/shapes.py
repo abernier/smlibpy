@@ -1778,15 +1778,56 @@ class Part(_Body):
         """
         faces = self._own_faces(openings) if openings is not None else []
         d = abs(thickness) if outward else -abs(thickness)
-        with kernel_call("shell", "the wall may be thicker than the part allows"):
-            b = k.shell_brep(self._brep, d, faces_to_shell=faces)
-        return self._like(b)
+
+        def attempt() -> Part:
+            with kernel_call("shell", "the wall may be thicker than the part allows"):
+                return self._like(k.shell_brep(self._brep, d, faces_to_shell=faces))
+
+        grow = abs(thickness) if outward else 0.0
+        return self._checked("shell", attempt, grow=grow, smaller=True)  # a wall has less volume
 
     def offset(self, distance: float) -> Part:
         """Grow (positive) or shrink (negative) the part by ``distance`` everywhere."""
-        with kernel_call("offset"):
-            b = k.offset_brep(self._brep, float(distance))
-        return self._like(b)
+
+        def attempt() -> Part:
+            with kernel_call("offset"):
+                return self._like(k.offset_brep(self._brep, float(distance)))
+
+        return self._checked("offset", attempt, grow=max(float(distance), 0.0), smaller=distance < 0)
+
+    def _checked(self, name: str, attempt: Callable[[], Part], *, grow: float, smaller: bool,
+                 attempts: int = 8) -> Part:
+        """Run a kernel operation whose result the kernel does not always get right, check the
+        result and retry. (SMLib's offset machinery depends on memory order and occasionally
+        returns a solid with misplaced faces.)"""
+        box = self.bbox()
+        tol = 1e-6 * max(box.diagonal, 1.0) + grow
+        try:
+            before = self._props(accuracy=1e-4)["volume"]
+        except KernelError:
+            before = None
+        last: Exception | None = None
+        for _ in range(attempts):
+            try:
+                result = attempt()
+            except KernelError as e:
+                last = e
+                continue
+            if not result.is_valid():
+                continue
+            rb = result.bbox()
+            if any(rb.min[i] < box.min[i] - tol or rb.max[i] > box.max[i] + tol for i in range(3)):
+                continue
+            try:
+                # a misbuilt face shows up as a failing integration at this accuracy
+                after = result._props(accuracy=1e-6)["volume"]
+            except KernelError:
+                continue
+            if before is not None and after > 0 and ((after < before) == smaller or abs(after - before) < 1e-9 * before):
+                return result
+        if last is not None:
+            raise last
+        raise ModelingError(f"{name}: the kernel could not build a valid result; try a smaller value")
 
     def split(self, plane: Plane | Face, keep: str = "above") -> Any:
         """Cut the part with a plane.
