@@ -15,7 +15,7 @@ def model() -> Part:
     base = bracket.faces().facing(Z).bottom()  # the base flange's top face at z = t
     upright = bracket.faces().facing(-X).one()
     bracket -= (GridLocations(24, 20, 1, 2) * Pos(8) * Hole(3.2, t)).on(base)
-    bracket -= (GridLocations(20, 1, 2, 1) * Pos(0, 8) * CounterSinkHole(3.2, t, 6)).on(upright)
+    bracket -= (GridLocations(20, 1, 2, 1) * Pos(0, 8) * CounterSinkHole(3.2, 6, t)).on(upright)
     return bracket.named("bracket").colored("#7c93b5")
 
 

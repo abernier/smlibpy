@@ -64,7 +64,7 @@ def RoundedRectangle(width: float, height: float, radius: float, *, align: Align
     for (a, b), (c, ang) in zip(pts, corners):
         if Vector(a).distance_to(b) > 1e-12:
             edges.append(Line(a, b))
-        edges.append(CenterArc(c, r, ang, ang + 90))
+        edges.append(CenterArc(c, r, ang, 90))
     return _from_curves(Wire._raw(edges)._copy_curves(), align)
 
 
@@ -115,7 +115,7 @@ def Slot(length: float, width: float, *, rotation: float = 0.0, align: AlignLike
         return Circle(width / 2, align=align)
     r = width / 2
     a = length / 2 - r
-    edges = [Line((-a, -r), (a, -r)), CenterArc((a, 0), r, -90, 90), Line((a, r), (-a, r)), CenterArc((-a, 0), r, 90, 270)]
+    edges = [Line((-a, -r), (a, -r)), CenterArc((a, 0), r, -90, 180), Line((a, r), (-a, r)), CenterArc((-a, 0), r, 90, 180)]
     s = _from_curves(Wire._raw(edges)._copy_curves(), Align.CENTER)
     if rotation:
         from .geometry import Z

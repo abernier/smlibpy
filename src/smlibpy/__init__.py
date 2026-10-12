@@ -34,6 +34,7 @@ from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, Round
 from ._kernel import KernelError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
 from .viewer import show
+from .surfaces import ruled, stitch, surface
 
 __version__ = "0.1.0"
 
@@ -54,6 +55,8 @@ __all__ = [
     # operations
     "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section",
     "thicken", "tessellate",
+    # surfaces
+    "surface", "ruled", "stitch",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl",
     "show",

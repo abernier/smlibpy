@@ -7,7 +7,7 @@ def model() -> Part:
     r = 30  # bend radius
     path = Wire([
         Line((0, 0, 0), (0, 0, 60)),
-        CenterArc((r, 60), r, 180, 90, plane=Plane.front),
+        CenterArc((r, 60), r, 180, -90, plane=Plane.front),
         Line((r, 0, 60 + r), (r + 80, 0, 60 + r)),
     ])
     pipe = sweep(Circle(10) - Circle(8), path)

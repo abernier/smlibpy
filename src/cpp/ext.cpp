@@ -576,6 +576,23 @@ void bind_smlibpy_ext(py::module_ m)
     }, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
        "Copy faces of a Brep into a new Brep (no merge, no stitching).");
 
+    m.def("face_from_surface", [](const SmSurface* surface) {
+        SmSurface* copy = nullptr;
+        check(surface->Copy(ctx(), copy), "SmSurface::Copy");
+        SmBrep* out = new (ctx()) SmBrep();
+        SmFace* face = nullptr;
+        SmStatus st = out->CreateFaceFromSurface(copy, copy->GetNaturalUVDomain(), face);
+        if (st != SM_SUCCESS)
+        {
+            if (copy->GetOwner() == nullptr)
+                delete copy;
+            delete out;
+            check(st, "SmBrep::CreateFaceFromSurface");
+        }
+        return out;
+    }, py::arg("surface"), py::return_value_policy::take_ownership,
+       "A sheet Brep with one face covering the whole (copied) surface.");
+
     m.def("combine", [](const std::vector<SmBrep*>& breps) {
         SmBrep* out = new (ctx()) SmBrep();
         for (SmBrep* b : breps)

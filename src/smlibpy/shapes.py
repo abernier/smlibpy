@@ -86,8 +86,8 @@ class Shape:
         """A copy rotated by ``angle`` degrees about ``axis``."""
         return self._transformed(Location.about(axis, angle).matrix)
 
-    def mirror(self: S, plane: Plane = Plane.YZ) -> S:
-        """A mirrored copy (reflection in ``plane``)."""
+    def mirror(self: S, plane: Plane = Plane.XZ) -> S:
+        """A mirrored copy (reflection in ``plane``, by default the XZ plane)."""
         n = np.array(plane.z_dir.to_tuple())
         o = np.array(plane.origin.to_tuple())
         m = np.eye(4)
@@ -243,6 +243,28 @@ class ShapeList(list[T]):
         or by any function of a shape."""
         f = _key_fn(key)
         return ShapeList(sorted(self, key=f, reverse=reverse))
+
+    def filter_by(self, criterion: Axis | str | Callable[[T], bool]) -> ShapeList[T]:
+        """``parallel_to(axis)``, ``of_type(name)`` or ``filter(predicate)``, depending on the
+        argument (as in build123d)."""
+        if isinstance(criterion, Axis):
+            return self.parallel_to(criterion)
+        if isinstance(criterion, str):
+            return self.of_type(criterion)
+        return self.filter(criterion)
+
+    # build123d-style operators: > sort ascending, < sort descending, >> top group, << bottom group
+    def __gt__(self, key: SortKey) -> ShapeList[T]:  # type: ignore[override]
+        return self.sort_by(key)
+
+    def __lt__(self, key: SortKey) -> ShapeList[T]:  # type: ignore[override]
+        return self.sort_by(key, reverse=True)
+
+    def __rshift__(self, key: SortKey) -> ShapeList[T]:
+        return self.max_by(key)
+
+    def __lshift__(self, key: SortKey) -> ShapeList[T]:
+        return self.min_by(key)
 
     def sort_by_distance(self, point: VectorLike, reverse: bool = False) -> ShapeList[T]:
         p = _vec(point)
@@ -739,6 +761,17 @@ class Edge(Shape):
             return float(d)
         _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
         return float(d)
+
+    def intersections(self, other: Edge) -> list[Vector]:
+        """Points where this edge crosses another edge."""
+        with kernel_call("edge intersections"):
+            pts, ta, tb = k.intersect_curves(self._curve(), other._curve())
+        (a0, a1), (b0, b1) = self._range(), other._range()
+        out = []
+        for p, u, v in zip(pts, ta, tb):
+            if a0 - 1e-9 <= u <= a1 + 1e-9 and b0 - 1e-9 <= v <= b1 + 1e-9:
+                out.append(Vector(p))
+        return out
 
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
@@ -1305,6 +1338,39 @@ class _Body(Shape):
     def closest_point(self, point: VectorLike) -> Vector:
         p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
         return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
+
+    # -- geometric queries ----------------------------------------------------
+    def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
+        """The curves where this body's surface meets another body's surface."""
+        with kernel_call("intersection curves"):
+            curves, _ = k.intersect_breps(self._brep, other._brep)
+        return ShapeList(Edge._from_curve(c) for c in curves)
+
+    def silhouette(self, direction: VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
+        """Silhouette curves on the body as seen along ``direction``."""
+        d = _vec(direction)
+        with kernel_call("silhouette"):
+            curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
+        return ShapeList(Edge._from_curve(c) for c in curves)
+
+    def project(self, curve: Edge | Wire, direction: VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
+        """Project a curve onto the body along ``direction``; returns the curves on its faces."""
+        out = ShapeList()
+        for e in curve.edges():
+            c = e._copy_curve()
+            try:
+                with kernel_call("project"):
+                    res = k.project_curve(self._brep, c, _vec(direction).to_tuple())
+            finally:
+                ext.delete_curve(c)
+            out.extend(Edge._from_curve(r) for r in res)
+        return out
+
+    def outline(self, plane: Plane = Plane.XY) -> ShapeList[Edge]:
+        """The body's edges projected onto a plane (a 2D drawing view)."""
+        with kernel_call("outline"):
+            curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
+        return ShapeList(Edge._from_curve(c) for c in curves)
 
     def _transformed(self, m: np.ndarray) -> Any:
         b = self._copy_brep()

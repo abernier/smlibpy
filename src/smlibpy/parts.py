@@ -86,12 +86,12 @@ def Hole(radius: float, depth: float) -> Part:
     return Cylinder(radius, depth, align=(Align.CENTER, Align.CENTER, Align.MAX))
 
 
-def CounterBoreHole(radius: float, depth: float, counter_bore_radius: float, counter_bore_depth: float) -> Part:
+def CounterBoreHole(radius: float, counter_bore_radius: float, counter_bore_depth: float, depth: float) -> Part:
     """A drilling tool with a counterbore at the top."""
     return Hole(radius, depth) + Hole(counter_bore_radius, counter_bore_depth)
 
 
-def CounterSinkHole(radius: float, depth: float, counter_sink_radius: float, angle: float = 82.0) -> Part:
+def CounterSinkHole(radius: float, counter_sink_radius: float, depth: float, angle: float = 82.0) -> Part:
     """A drilling tool with a conical countersink of included ``angle`` at the top."""
     h = (counter_sink_radius - radius) / math.tan(math.radians(angle / 2))
     sink = Cone(radius, counter_sink_radius, h, align=(Align.CENTER, Align.CENTER, Align.MAX))

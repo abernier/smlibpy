@@ -149,7 +149,7 @@ def test_loft_and_sweep():
     assert sweep(Circle(3) - Circle(1.5), path).volume == approx(math.pi * 6.75 * path.length, rel=1e-6)
     bent = sweep(Rectangle(4, 4), Polyline((0, 0, 0), (0, 0, 30), (30, 0, 30)))
     assert bent.volume == approx(4 * 4 * 60)
-    elbow = Wire([Line((0, 0, 0), (0, 0, 20)), CenterArc((10, 20), 10, 180, 90, plane=Plane.XZ)])
+    elbow = Wire([Line((0, 0, 0), (0, 0, 20)), CenterArc((10, 20), 10, 180, -90, plane=Plane.XZ)])
     assert sweep(Circle(2), elbow).volume == approx(math.pi * 4 * elbow.length, rel=1e-6)
     helix = Helix(pitch=10, height=40, radius=20)
     assert sweep(Rectangle(4, 2), helix).volume == approx(8 * helix.length, rel=1e-5)

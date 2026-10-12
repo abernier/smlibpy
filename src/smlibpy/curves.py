@@ -75,18 +75,20 @@ def CenterArc(
     center: VectorLike,
     radius: float,
     start_angle: float,
-    end_angle: float,
+    arc_size: float,
     plane: Plane = Plane.XY,
 ) -> Edge:
-    """An arc around ``center`` from ``start_angle`` to ``end_angle`` (degrees, counterclockwise
-    from the plane's X axis). ``CenterArc(c, r, 0, 360)`` is a full circle.
+    """An arc around ``center`` starting at ``start_angle`` and spanning ``arc_size`` degrees
+    (angles counterclockwise from the plane's X axis; a negative ``arc_size`` runs
+    clockwise). ``CenterArc(c, r, 0, 360)`` is a full circle.
 
     ``center`` is given in plane coordinates.
     """
     if radius <= 0:
         raise ValueError("radius must be positive")
     c = _vec(center)
-    sweep = end_angle - start_angle
+    sweep = float(arc_size)
+    end_angle = start_angle + sweep
     with kernel_call("CenterArc"):
         # A true circle (exact radius/center queries, CIRCLE in STEP), started at the start
         # angle and trimmed at the parameter of the end point. (The parameter of a rational

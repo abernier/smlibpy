@@ -43,14 +43,66 @@ def _as_sketch(profile: Any) -> Sketch:
     raise TypeError(f"expected a sketch, face or closed wire, got {type(profile).__name__}")
 
 
-def extrude(profile: Sketch | Face | Wire, amount: float, *, both: bool = False, taper: float = 0.0,
-            direction: VectorLike | None = None) -> Part:
-    """Extrude a sketch, a planar face or a closed wire (see :meth:`Sketch.extrude`)."""
+def _open_curve(profile: Any) -> Wire | None:
+    """The profile as a wire if it is an open curve (which makes surfaces, not solids)."""
+    if isinstance(profile, ShapeList) and profile and all(isinstance(e, Edge) for e in profile):
+        profile = Wire(list(profile))
+    if isinstance(profile, Edge):
+        return None if profile.is_closed else Wire([profile])
+    if isinstance(profile, Wire):
+        return None if profile.is_closed else profile
+    return None
+
+
+def _curve_direction(w: Wire) -> Vector:
+    pts = [w.point_at(i / 16) for i in range(17)]
+    import numpy as np
+
+    a = np.array([p.to_tuple() for p in pts])
+    a = a - a.mean(axis=0)
+    _, sv, vt = np.linalg.svd(a)
+    if sv[1] > 1e-9 * max(1.0, sv[0]):
+        n = Vector(vt[2])
+        return n if n.z >= 0 else -n
+    return Vector(0, 0, 1)
+
+
+def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = False, taper: float = 0.0,
+            direction: VectorLike | None = None) -> Part | Shell:
+    """Extrude a sketch, a planar face or a closed wire into a solid (see :meth:`Sketch.extrude`).
+
+    An open curve extrudes into a surface (a :class:`Shell`), along ``direction`` or the
+    normal of the curve's plane.
+    """
+    w = _open_curve(profile)
+    if w is not None:
+        d = _vec(direction).normalized() if direction is not None else _curve_direction(w)
+        curves = w._copy_curves()
+        start = 0.0
+        if both:
+            w = w.translate(-d * abs(amount))
+            curves = w._copy_curves()
+            amount = 2 * abs(amount)
+        sign = 1.0 if amount > 0 else -1.0
+        with kernel_call("extrude"):
+            b = k.linear_sweep(curves, (d * sign).to_tuple(), abs(float(amount)), cap_ends=False)
+        del start
+        return Shell._wrap(b)
     return _as_sketch(profile).extrude(amount, both=both, taper=taper, direction=direction)
 
 
-def revolve(profile: Sketch | Face | Wire, axis: Axis | None = None, angle: float = 360.0) -> Part:
-    """Revolve a sketch about an axis (see :meth:`Sketch.revolve`)."""
+def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = None, angle: float = 360.0) -> Part | Shell:
+    """Revolve a sketch about an axis into a solid (see :meth:`Sketch.revolve`).
+
+    An open curve revolves into a surface of revolution (a :class:`Shell`).
+    """
+    w = _open_curve(profile)
+    if w is not None:
+        ax = axis if axis is not None else Z
+        with kernel_call("revolve", "the axis must not cross the curve"):
+            b = k.rotational_sweep(w._copy_curves(), ax.origin.to_tuple(), ax.direction.to_tuple(), float(angle),
+                                   cap_ends=False)
+        return Shell._wrap(b)
     return _as_sketch(profile).revolve(axis, angle)
 
 
@@ -75,17 +127,38 @@ def _section_curves(section: Any) -> tuple[list[Any], int]:
     return curves, len(curves)
 
 
-def loft(sections: Sequence[Sketch | Face | Wire], *, ruled: bool = False, smooth: bool = True) -> Part:
-    """A solid through a sequence of cross sections.
+def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False, smooth: bool = True) -> Part | Shell:
+    """A solid through a sequence of cross sections, or a surface through open curves.
 
     Args:
-        sections: Two or more sections (sketches, planar faces or closed wires), in order.
+        sections: Two or more sections in order: sketches, planar faces or closed wires
+            for a solid; open edges or wires for a surface (a :class:`Shell`).
         ruled: Straight transitions between neighbouring sections.
         smooth: With more than two sections, pass through them with a cubic surface
             (``False``: quadratic).
     """
     if len(sections) < 2:
         raise ValueError("loft needs at least two sections")
+    opened = [_open_curve(s) for s in sections]
+    if all(w is not None for w in opened):
+        if all(len(w.edges()) == 1 for w in opened):  # type: ignore[union-attr]
+            curves = [w.edges()[0]._copy_curve() for w in opened]  # type: ignore[union-attr]
+            try:
+                with kernel_call("loft", "curves should run in the same direction"):
+                    srf = k.create_skin_surface(curves)
+            finally:
+                for c in curves:
+                    ext.delete_curve(c)
+            from .surfaces import _shell_of_surface
+
+            return _shell_of_surface(srf)
+        counts = [len(w.edges()) for w in opened]  # type: ignore[union-attr]
+        curves = [c for w in opened for c in w._copy_curves()]  # type: ignore[union-attr]
+        degree = 1 if ruled else min(3 if smooth else 2, len(sections) - 1)
+        with kernel_call("loft"):
+            return Shell._wrap(k.create_skin_primitive(counts, curves, degree, False))
+    if any(w is not None for w in opened):
+        raise ValueError("loft sections must be all closed (solid) or all open (surface)")
     counts: list[int] = []
     curves: list[Any] = []
     for s in sections:
@@ -142,8 +215,23 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
         sharp_corners: For paths of several edges: miter the corners of a planar path
             (default for planar paths); ``False`` sweeps each edge on its own and joins the pieces.
     """
-    sk = _as_sketch(profile)
     edges = _path_edges(path)
+    w = _open_curve(profile)
+    if w is not None:
+        # an open profile sweeps into a surface
+        pc = edges[0]._copy_curve()
+        curves = w._copy_curves()
+        if len(edges) != 1:
+            raise ValueError("surface sweeps need a single-edge path")
+        try:
+            with kernel_call("sweep"):
+                b = ext.curve_sweep(curves, pc, False, True, orient, translational, None, None)
+        finally:
+            ext.delete_curve(pc)
+            for c in curves:
+                ext.delete_curve(c)
+        return Shell._wrap(b)  # type: ignore[return-value]
+    sk = _as_sketch(profile)
     if orient and not translational:
         sk = _oriented_to(sk, edges[0].tangent_at(0.0))
     curves = [c for f in sk.faces() for w in f.wires() for c in w._copy_curves()]
@@ -217,7 +305,7 @@ def offset(shape: Part | Sketch, distance: float, **kwargs: Any) -> Any:
     return shape.offset(distance, **kwargs)
 
 
-def mirror(shape: Shape, plane: Plane = Plane.YZ) -> Any:
+def mirror(shape: Shape, plane: Plane = Plane.XZ) -> Any:
     """A mirrored copy of a shape."""
     return shape.mirror(plane)
 
