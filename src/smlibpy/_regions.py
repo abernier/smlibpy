@@ -17,11 +17,11 @@ from typing import Any, Iterable, Sequence
 
 from ._kernel import KernelError, ModelingError, ext, k, kernel_call
 from ._planar import (SMOOTH, TAU, Arc2, Corner, Curve2, GeometryError, Line2, NeedBooleans, Piece, Seg, _Site, assemble,
-                      band_piece, convex_hull, corner_piece, cross, describe, disk, distance, dot, extent, first_crossing,
-                      fmt, hull_sites, is_smooth, offset_chain, orient_ccw, overlap, reflect, segment_intersections, signed_area,
+                      band_piece, convex_hull, corner_piece, cross, describe, disk, distance, extent, first_crossing, fmt,
+                      hull_sites, is_smooth, offset_chain, orient_ccw, overlap, segment_intersections, signed_area,
                       simplify, sweep_piece, turn, unit)
 from .geometry import Axis, Location, Plane, Vector, _vec
-from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _as_plane, _bodies
+from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _as_plane
 
 Loops = list[tuple[list[Seg], list[list[Seg]]]]  # per face: outer loop, holes
 
@@ -136,28 +136,15 @@ def sketch_loops(sk: Sketch) -> tuple[Frame, Loops]:
         return cached
     fr = Frame(sk.plane)
     faces: Loops = []
-    size = max(1.0, sk._loose_box().diagonal) if sk.faces() else 1.0
+    size = max(1.0, sk._loose_box().diagonal)
     for f in sk.faces():
-        loops = [[seg_of_edge(e, fr) for e in w.edges()] for w in f.wires()]
-        loops = [lp for lp in loops if lp]
-        if not loops:
-            continue
-        for lp in loops:
-            for s in lp:
-                for p in (s.start, s.end):
-                    if abs(fr.height(fr.world(p))) > 1e-6 * size:  # pragma: no cover - guarded below
-                        raise GeometryError("the sketch does not lie in its plane")
-        faces.append((_oriented(loops[0], 1.0), [_oriented(h, -1.0) for h in loops[1:]]))
-    for f in sk.faces():
-        for v in f.vertices():
-            if abs(fr.height(v.point)) > 1e-6 * size:
-                raise ModelingError("the sketch's faces do not lie in its plane (a Polygon of 3D points?); draw it "
-                                    "with 2D points and place it with .on(plane)")
-        break
-    try:
-        sk._loops = (fr, faces)
-    except AttributeError:  # pragma: no cover
-        pass
+        if any(abs(fr.height(v.point)) > 1e-6 * size for v in f.vertices()):
+            raise ModelingError("the sketch's faces do not lie in its plane (a Polygon of 3D points?); draw it "
+                                "with 2D points and place it with .on(plane)")
+        loops = [lp for lp in ([seg_of_edge(e, fr) for e in w.edges()] for w in f.wires()) if lp]
+        if loops:
+            faces.append((_oriented(loops[0], 1.0), [_oriented(h, -1.0) for h in loops[1:]]))
+    sk._loops = (fr, faces)
     return fr, faces
 
 
@@ -177,11 +164,10 @@ def build(faces: Loops, fr: Frame, like: Sketch | None = None, name: str = "sket
                     ext.delete_curve(c)
                 raise
         if not breps:
-            empty = like if like is not None else None
-            if empty is not None:
-                with kernel_call(name):
-                    return empty._like(ext.copy_faces(empty._brep, []))
-            raise ModelingError(f"{name}: the result is empty")
+            if like is None:
+                raise ModelingError(f"{name}: the result is empty")
+            with kernel_call(name):
+                return like._like(ext.copy_faces(like._brep, []))
         if len(breps) == 1:
             brep = breps.pop()
         else:
@@ -370,8 +356,8 @@ def offset_region(sk: Sketch, distance: float, corners: str) -> Sketch | None:
         result = build(new_faces, fr, like=sk, name="offset")
         if _offset_valid(result, sk, faces, d, corners):
             return result
-    except NeedBooleans:
-        pass
+    except (NeedBooleans, KernelError):
+        pass  # built from pieces below
     pieces: list[Piece] = []
     for outer, holes in faces:
         for lp in [outer, *holes]:
@@ -572,8 +558,8 @@ def stroke(path: Any, width: float, ends: str, corners: str) -> Sketch:
             raise NeedBooleans("the band crosses itself")
         loop, _ = simplify(loop, [""] * len(loop), True, tol)
         return build([(loop, [])], fr, name="Stroke")
-    except NeedBooleans:
-        pass
+    except (NeedBooleans, KernelError):
+        pass  # built from pieces below
     pieces: list[Piece] = []
     for i, s in enumerate(segs):
         if i:

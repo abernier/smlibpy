@@ -512,6 +512,7 @@ def first_crossing(segs: Sequence[Seg], closed: bool, tol: float) -> tuple[int, 
     """The first pair of segments that cross, touch or run over each other: ``(i, j, point)``
     (see :func:`runs_back` to tell the last case)."""
     n = len(segs)
+    near = max(tol * 1e3, 1e-7 * extent(segs))  # how close to a shared end point still counts as the joint
     for i in range(n):
         for j in range(i + 1, n):
             adjacent = j == i + 1 or (closed and i == 0 and j == n - 1 and n > 2)
@@ -521,10 +522,9 @@ def first_crossing(segs: Sequence[Seg], closed: bool, tol: float) -> tuple[int, 
             pts = segment_intersections(segs[i], segs[j], tol)
             if adjacent:
                 joint = segs[i].end if j == i + 1 else segs[i].start
-                pts = [p for p in pts if abs(p - joint) > max(tol * 1e3, 1e-7 * extent(segs))]
+                pts = [p for p in pts if abs(p - joint) > near]
                 if n == 2:  # the two segments of a two-segment loop meet at both ends
-                    other = segs[i].start
-                    pts = [p for p in pts if abs(p - other) > max(tol * 1e3, 1e-7 * extent(segs))]
+                    pts = [p for p in pts if abs(p - segs[i].start) > near]
             if pts:
                 return i, j, pts[0]
     return None
@@ -648,7 +648,7 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
         seg = segs[j]
         if cut_start[j] + cut_end[j] > seg.length + tol:
             a, b = owner_start[j], owner_end[j]
-            raise GeometryError(f"{a.label if a else ''} at {fp(seg.start)} and {b.label if b else ''} at "  # pragma: no branch
+            raise GeometryError(f"{a.label if a else ''} at {fp(seg.start)} and {b.label if b else ''} at "
                                 f"{fp(seg.end)} overlap on {name(j)}: they need {fmt(cut_start[j])} + "
                                 f"{fmt(cut_end[j])} of its {fmt(seg.length)}; use smaller corners")
         if j in inserts:
@@ -663,7 +663,6 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
         else:
             out.append(seg)
             labs.append(labels[j])
-    # pieces must chain exactly: snap tiny gaps from the trims
     return out, labs
 
 
@@ -693,8 +692,6 @@ def offset_chain(segs: Sequence[Seg], e: float, corners: str, closed: bool, tol:
         if o is None:
             raise NeedBooleans("an arc collapses")
         moved.append(o)
-    ends = [m.end for m in moved]
-    starts = [m.start for m in moved]
     joins: dict[int, list[Seg]] = {}
     pairs = range(n) if closed else range(1, n)
     for i in pairs:
@@ -761,7 +758,6 @@ def offset_chain(segs: Sequence[Seg], e: float, corners: str, closed: bool, tol:
             if abs(m.sweep) <= 1e-12 or (m.sweep > 0) != (segs[i].sweep > 0):  # type: ignore[attr-defined]
                 raise NeedBooleans("an arc vanishes")
         out.append(m)
-    del ends, starts
     return out
 
 
@@ -961,6 +957,8 @@ def convex_hull(sites: list[_Site], tol: float) -> list[Seg]:
         if nxt is None:  # the arc's span ends; its end point (or another site) goes on
             nxt = best(at + 1e-9)
         cur, phi = nxt, at
+    else:  # pragma: no cover - every site is passed at most a few times
+        raise GeometryError("the hull could not be traced around (please report the input)")
     out: list[Seg] = []
     for k, (i, a, b) in enumerate(walk):
         s = sites[i]

@@ -118,21 +118,31 @@ class Profile:
         return self._new(segs=self._segs + (seg,), labels=self._labels + (label,), heading=cmath.phase(seg.t1))
 
     # -- lines ------------------------------------------------------------------
-    def line_to(self, x: float | VectorLike | None = None, y: float | None = None) -> Profile:
+    def line_to(self, *point: float | VectorLike, x: float | None = None, y: float | None = None) -> Profile:
         """A straight line to a point: ``line_to(30, 5)`` or ``line_to((30, 5))``; or to a
         coordinate, keeping the other one: ``line_to(x=30)`` (horizontal), ``line_to(y=5)``
         (vertical)."""
         cur = self._cur
-        if x is not None and y is None and not _num(x):
-            target = _pt2(x, "line_to")
+        if point:
+            if x is not None or y is not None:
+                raise TypeError("line_to: give a point, or x= and/or y=, not both")
+            target = self._point(point, "line_to")
             call = f"line_to({fmt(target.real)}, {fmt(target.imag)})"
         else:
             if x is None and y is None:
                 raise TypeError("line_to: give a point, line_to(x, y), or one coordinate, line_to(x=...) or line_to(y=...)")
-            target = complex(cur.real if x is None else float(x), cur.imag if y is None else float(y))  # type: ignore[arg-type]
-            call = ("line_to(" + ", ".join(f"{n}={fmt(v)}" for n, v in (("x", x), ("y", y)) if v is not None) + ")"
-                    if x is None or y is None else f"line_to({fmt(float(x))}, {fmt(float(y))})")  # type: ignore[arg-type]
+            target = complex(cur.real if x is None else float(x), cur.imag if y is None else float(y))
+            call = "line_to(" + ", ".join(f"{n}={fmt(v)}" for n, v in (("x", x), ("y", y)) if v is not None) + ")"
         return self._add(Line2(cur, target), call)
+
+    @staticmethod
+    def _point(args: tuple, what: str) -> complex:
+        if len(args) == 2 and all(_num(a) for a in args):
+            return complex(float(args[0]), float(args[1]))
+        if len(args) == 1 and not _num(args[0]):
+            return _pt2(args[0], what)
+        raise TypeError(f"{what}: give the point as {what}(x, y) or {what}((x, y))"
+                        + (f"; for a line to one coordinate use {what}(x=...) or {what}(y=...)" if what == "line_to" else ""))
 
     def line_by(self, dx: float | VectorLike = 0.0, dy: float = 0.0) -> Profile:
         """A straight line by an offset from the pen: ``line_by(10, -5)`` or ``line_by((10, -5))``."""
@@ -185,10 +195,10 @@ class Profile:
         c = cur + 1j * t * side * float(radius)
         return self._add(Arc2(c, float(radius), cmath.phase(cur - c), math.radians(float(angle))), call)
 
-    def arc_to(self, x: float | VectorLike, y: float | None = None, *, through: VectorLike | None = None) -> Profile:
+    def arc_to(self, *point: float | VectorLike, through: VectorLike | None = None) -> Profile:
         """An arc to an end point: tangent to the heading (``arc_to(20, 10)``), or through a
         point (``arc_to(20, 10, through=(15, 12))``, which need not be tangent)."""
-        end = _pt2(x, "arc_to") if y is None and not _num(x) else complex(float(x), float(y))  # type: ignore[arg-type]
+        end = self._point(point, "arc_to")
         cur = self._cur
         if through is None:
             call = f"arc_to({fmt(end.real)}, {fmt(end.imag)})"

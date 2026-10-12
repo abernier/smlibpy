@@ -10,7 +10,6 @@ as combinations of shapes are drawn with :class:`~smlibpy.Profile`.
 
 from __future__ import annotations
 
-import cmath
 import math
 from typing import Any, Sequence
 
@@ -18,7 +17,7 @@ from ._kernel import k, kernel_call
 from ._planar import Arc2, Corner, GeometryError, Line2, Seg, assemble, cis, describe, fmt, signed_area, simplify
 from .align import Align, AlignLike, alignment_offset
 from .curves import CenterArc, Line, Polyline
-from .geometry import Location, Plane, Vector, VectorLike, Z, _vec
+from .geometry import Location, Plane, VectorLike, Z, _vec
 from .shapes import Edge, Sketch, Wire, _transform_curve
 
 __all__ = [

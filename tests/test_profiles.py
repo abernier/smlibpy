@@ -124,6 +124,7 @@ def test_profile_close_align():
     (lambda: Profile().line_to(10, 0).arc_to(0, 0), ModelingError, "straight behind"),
     (lambda: Profile().arc_to(10, 0, through=(5, 0)), ModelingError, "lie on one line"),
     (lambda: Profile().line_to(10, 0).line_to(10, 0), ValueError, "has no length"),
+    (lambda: Profile().line_to(30), TypeError, r"line_to\(x=...\)"),
     (lambda: Profile().arc(-5, 90), ValueError, "radius must be positive"),
     (lambda: Profile().line_to(10, 0).fillet(2).wire(), ModelingError, "end of an open path is not a corner"),
     (lambda: Profile().line_to(10, 0).line_to(10, 10).line_to(0, 10).line_to(0, 5).mirror(Y), ModelingError,

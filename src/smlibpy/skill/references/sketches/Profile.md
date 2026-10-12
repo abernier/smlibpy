@@ -57,6 +57,7 @@ After a line the heading is the line's direction, after an arc its end tangent. 
 ## Gotchas
 - The pen draws in XY. Place the result: `section.close().on(Plane.XZ)`.
 - `line_to(x=30)` keeps y; `forward(x=30)` follows the heading (same only for heading 0/180).
+  A single number, `line_to(30)`, is an error: write `line_to(x=30)`.
 - `turn` changes only the heading for `forward`, `arc` and `arc_to(x, y)`; `line_to`
   ignores it.
 - `close()` checks the outline: a crossing, a touching, or a doubling back raises and names
