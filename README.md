@@ -26,9 +26,27 @@ are. You combine shapes with `+`, `-` and `&`, and every feature returns a new p
 edges are picked by their geometry, for example `part.faces().top()` or
 `part.edges().parallel_to(Z).concave()`. The plate above builds in about 40 ms.
 
-The kernel does circular, variable-radius and curvature-continuous (G2/G3) fillets, drafted
-extrusions, lofts, sweeps, shells, freeform surfaces, stitching, intersections and mass
-properties.
+## Features
+
+- Modeling: primitives, holes and patterns, Booleans, extrude (also tapered), revolve, loft,
+  sweep (also along helices), shell, offset, draft, mirror, split, thicken
+- Fillets: circular, variable-radius and curvature-continuous (G2/G3); chamfers
+- Sketches and curves: rectangles, circles, ellipses, polygons, slots, trapezoids; lines, arcs,
+  splines, Béziers, helices; 2D fillet and offset
+- Surfaces: freeform surfaces from point grids, ruled surfaces, stitching into solids
+- Selection by geometry: `top()`, `parallel_to()`, `concave()`, `circles()`, `largest()`,
+  filters, sorting and grouping
+- Measuring: volume, area, center and inertia from the exact surfaces, exact distances,
+  intersections, validity
+- Checks: every kernel result is checked; a fillet or shell that cannot work raises an error
+  that says what fits
+- Files: STEP in and out (exact geometry, assemblies, units, names, colors), STL, glTF/GLB, OBJ,
+  SMLib's own format
+- Pictures: a software renderer, no GPU or browser needed: shaded views, technical drawings
+  (ISO E and A) with hidden lines and center lines, sections, x-ray, highlights, markers,
+  image diffs
+- Agents: an MCP server with a live viewer, snapshots and a tested guide for every function,
+  and a Claude Code plugin
 
 ## Install
 
@@ -37,7 +55,7 @@ pip install smlibpy
 ```
 
 There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for Python
-3.10 to 3.14, with the kernel compiled in. For agents, `pip install "smlibpy[mcp]"` adds the
+3.10 to 3.14, with the kernel compiled in. They are 5 to 7 MB. For agents, `pip install "smlibpy[mcp]"` adds the
 MCP server; see [AI agents](docs/mcp.md).
 
 To build from source you need CMake and a C++17 compiler (about a minute on a laptop):
@@ -121,7 +139,7 @@ export_glb(flange, "flange.glb")
 ## Status
 
 smlibpy is new (version 0.1). It covers solid and surface modeling, and reads and writes STEP
-with the exact geometry. Assemblies with product structure, 2D drawings and text are not there
+with the exact geometry. Assemblies with product structure, dimensioned 2D drawings and text are not there
 yet.
 
 ## License
