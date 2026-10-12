@@ -4,7 +4,8 @@ usage: python tools/render_gallery.py
 
 Built from the example models: the bracket (asymmetric, so the two projection methods and the
 mirrored views differ), the flange (round: sections, center lines) and the enclosure (two
-bodies). Captions use the renderer's own 5 x 7 font.
+bodies); the surface-quality tiles use a boss on a plate, its base rounded once with a circular
+fillet and once with a G2 blend. Captions use the renderer's own 5 x 7 font.
 """
 
 import importlib.util
@@ -17,7 +18,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from smlibpy import Cylinder, Plane, Rectangle, X, Z, diff_images, render  # noqa: E402
+from smlibpy import Align, Box, Cylinder, Plane, Rectangle, X, Z, diff_images, render  # noqa: E402
 
 R = sys.modules["smlibpy.render"]  # the module (the package exports the function as smlibpy.render)
 
@@ -45,6 +46,12 @@ def tile(**kw):
 def main() -> None:
     bracket, flange, enclosure = load("bracket"), load("flange"), load("enclosure")
     base = bracket.faces().facing(Z).bottom()  # the top face of the bracket's base
+    boss = Box(60, 60, 10, align=(Align.CENTER, Align.CENTER, Align.MAX)) + \
+        Cylinder(10, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    round_g1 = boss.fillet(boss.edges().concave(), 6)
+    round_g2 = boss.fillet(boss.edges().concave(), 6, continuity="G2")
+    close = {"view": {"azimuth": 0, "elevation": 20}, "zoom": 1.7, "look_at": (0, 0, 9)}
+    tilted = {"view": {"azimuth": 20, "elevation": 25}, "zoom": 1.3, "look_at": (0, 0, 8)}
     t0 = time.perf_counter()
     before = render(flange, size=(TW, TH))
     after = render(flange - Cylinder(4, 80).rotate(X, 90).translate(0, 0, 26), size=(TW, TH), frame=before)
@@ -67,6 +74,10 @@ def main() -> None:
                                                       colors="distinct", view={"azimuth": 30, "elevation": 25})),
         ("sheet=[a, b]: a view and its mirror", tile(shapes=[bracket], sheet=[{"azimuth": 30, "elevation": 30},
                                                                               {"azimuth": -30, "elevation": 30}])),
+        ("zebra: circular fillet, stripes kink", tile(shapes=[round_g1], zebra=True, **close)),
+        ("zebra: g2 blend, stripes bend smoothly", tile(shapes=[round_g2], zebra=True, **close)),
+        ("curvature='min': circular, one color", tile(shapes=[round_g1], curvature="min", **tilted)),
+        ("curvature='min': g2 blend, a ramp", tile(shapes=[round_g2], curvature="min", **tilted)),
     ]
     elapsed = time.perf_counter() - t0
     rows = (len(tiles) + 1 + COLS - 1) // COLS
@@ -85,7 +96,8 @@ def main() -> None:
              ("views  iso front back top", 2, (215, 220, 229), 200), ("       bottom left right", 2, (215, 220, 229), 222),
              ("       azimuth / elevation", 2, (215, 220, 229), 244), ("drawing first / third angle", 2, (215, 220, 229), 280),
              ("styles shaded lines xray", 2, (215, 220, 229), 316),
-             (f"{len(tiles)} tiles in {elapsed:.1f} s", 2, (170, 178, 192), 360)]
+             ("       zebra curvature", 2, (215, 220, 229), 338),
+             (f"{len(tiles)} tiles in {elapsed:.1f} s", 2, (170, 178, 192), 372)]
     for text, scale, color, dy in lines:
         R._text(img, x + 36, y + dy, text, np.array(color) / 255, scale)
     for c in range(1, COLS):

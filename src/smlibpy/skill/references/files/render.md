@@ -152,7 +152,7 @@ front, a shaded picture of this hole is the same as before (`lines=True` would s
 - The smallest radius sets the curvature scale: a 1 mm fillet makes everything else look
   white. Pass a `range` to look at gentler surfaces.
 - Speed: a sphere at 800 x 600 takes 0.11 s, at 1600 x 1200 0.39 s. The flange example at
-  1200 x 900: shaded 0.29 s, drawing 0.2 s, x-ray 0.56 s.
+  1200 x 900: shaded 0.3 s, drawing 0.2 s, zebra 0.47 s, curvature 0.42 s, x-ray 0.56 s.
 
 ## Errors
 - `ValueError: nothing to render`: no shapes, or only vertices.
