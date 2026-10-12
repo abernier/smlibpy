@@ -24,40 +24,54 @@ option(SMLIBPY_USE_TBB "Use oneTBB for the parallel parts of the kernel" OFF)
 # Kernel (SMLib) and its C-style wrapper (SM_API), both static so the Python
 # extension is a single self-contained module.
 # ---------------------------------------------------------------------------
-file(GLOB SMLIB_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SMLib/src/*.cpp")
-add_library(smlib STATIC ${SMLIB_SOURCES})
-target_include_directories(smlib PUBLIC "${USD_BREP_DIR}/source/SMLib/inc")
-# Same defines as the upstream release configuration (premake5.lua).
-target_compile_definitions(smlib PUBLIC NOMINMAX SM_GRAPHICS_CALLBACKS=1 $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:NDEBUG>)
+# The kernel does not depend on the Python version. Release builds compile it once per
+# platform (SMLIBPY_KERNEL_ONLY) and link every wheel against that build (SMLIBPY_KERNEL_DIR,
+# usually from the environment); see .github/workflows/release.yml.
+option(SMLIBPY_KERNEL_ONLY "Compile only the kernel libraries smlib and sm_api" OFF)
+set(SMLIBPY_KERNEL_DIR "$ENV{SMLIBPY_KERNEL_DIR}" CACHE PATH "Build directory of a kernel compiled with SMLIBPY_KERNEL_ONLY")
 
-if(SMLIBPY_USE_TBB)
-  find_package(TBB REQUIRED)
-  target_compile_definitions(smlib PUBLIC SM_USE_TBB TBB_SUPPRESS_DEPRECATED_MESSAGES)
-  target_link_libraries(smlib PUBLIC TBB::tbb)
-endif()
-
-file(GLOB SM_API_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SM_API/src/*.cpp")
-add_library(sm_api STATIC ${SM_API_SOURCES})
-target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
-# PUBLIC: everything is linked statically into one module, so consumers must not see
-# __declspec(dllimport) declarations on Windows.
-target_compile_definitions(sm_api PUBLIC SM_API_EXPORTS)
-target_link_libraries(sm_api PUBLIC smlib)
-
-if(MSVC)
-  foreach(t smlib sm_api)
-    target_compile_options(${t} PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267 /W1)
-    # The Visual Studio generator compiles the files of a target one after another
-    # unless told otherwise; the kernel alone has more than 200 large sources.
-    if(CMAKE_GENERATOR MATCHES "Visual Studio")
-      target_compile_options(${t} PRIVATE /MP)
-    endif()
-  endforeach()
+if(SMLIBPY_KERNEL_DIR AND NOT SMLIBPY_KERNEL_ONLY)
+  include("${SMLIBPY_KERNEL_DIR}/smlibpy-kernel.cmake")
 else()
-  foreach(t smlib sm_api)
-    # Vendor code: keep the build quiet, upstream enforces its own warning policy.
-    target_compile_options(${t} PRIVATE -w)
-  endforeach()
+  file(GLOB SMLIB_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SMLib/src/*.cpp")
+  add_library(smlib STATIC ${SMLIB_SOURCES})
+  target_include_directories(smlib PUBLIC "${USD_BREP_DIR}/source/SMLib/inc")
+  # Same defines as the upstream release configuration (premake5.lua).
+  target_compile_definitions(smlib PUBLIC NOMINMAX SM_GRAPHICS_CALLBACKS=1 $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:NDEBUG>)
+
+  if(SMLIBPY_USE_TBB)
+    find_package(TBB REQUIRED)
+    target_compile_definitions(smlib PUBLIC SM_USE_TBB TBB_SUPPRESS_DEPRECATED_MESSAGES)
+    target_link_libraries(smlib PUBLIC TBB::tbb)
+  endif()
+
+  file(GLOB SM_API_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SM_API/src/*.cpp")
+  add_library(sm_api STATIC ${SM_API_SOURCES})
+  target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
+  # PUBLIC: everything is linked statically into one module, so consumers must not see
+  # __declspec(dllimport) declarations on Windows.
+  target_compile_definitions(sm_api PUBLIC SM_API_EXPORTS)
+  target_link_libraries(sm_api PUBLIC smlib)
+
+  if(MSVC)
+    foreach(t smlib sm_api)
+      target_compile_options(${t} PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267 /W1)
+      # The Visual Studio generator compiles the files of a target one after another
+      # unless told otherwise; the kernel alone has more than 200 large sources.
+      if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        target_compile_options(${t} PRIVATE /MP)
+      endif()
+    endforeach()
+  else()
+    foreach(t smlib sm_api)
+      # Vendor code: keep the build quiet, upstream enforces its own warning policy.
+      target_compile_options(${t} PRIVATE -w)
+    endforeach()
+  endif()
+  if(SMLIBPY_KERNEL_ONLY)
+    export(TARGETS smlib sm_api FILE "${CMAKE_BINARY_DIR}/smlibpy-kernel.cmake")
+    return()
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
