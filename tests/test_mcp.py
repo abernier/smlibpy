@@ -60,6 +60,31 @@ def test_show_snapshot_save_inspect(session, tmp_path):
     assert info["ok"] and len(info["info"]["faces"]) == 6 and info["info"]["valid"]
 
 
+def test_snapshot_options_frame_and_compare(session, tmp_path):
+    session.clear()
+    session.run("part = Box(40, 30, 10) - Cylinder(5, 20)")
+    shot = session.call("snapshot", size=(300, 200), path=str(tmp_path / "a.png"), highlight=["part.faces().top()"],
+                        section="Plane.XZ", markers=[{"position": [0, 0, 5], "label": "bore"}], lines=True)
+    assert shot["ok"] and shot["frame"]["scale"] > 0
+    drawing = session.call("snapshot", size=(400, 300), drawing="third-angle", section={"origin": [0, 0, 0],
+                                                                                         "normal": [0, -1, 0]})
+    assert drawing["ok"] and drawing["frame"] is None
+    opened = session.call("snapshot", size=(400, 300), drawing=True, section="Plane.XZ", cap=False)
+    capped = session.call("snapshot", size=(400, 300), drawing=True, section="Plane.XZ")
+    assert opened["ok"] and opened["png"] != capped["png"]
+    bad = session.call("snapshot", highlight="nothing_here")
+    assert not bad["ok"] and "highlight 'nothing_here'" in bad["error"]
+    before = session.call("snapshot", size=(300, 200), path=str(tmp_path / "before.png"))
+    session.run("part = part - Cylinder(3, 20).translate(12, 0, 0)")
+    after = session.call("snapshot", size=(300, 200), path=str(tmp_path / "after.png"), frame=before["frame"],
+                         compare=str(tmp_path / "before.png"))
+    assert after["ok"] and after["frame"] == before["frame"]
+    diff = after["diff"]
+    assert diff["changed"] > 50 and diff["fraction"] < 0.05 and os.path.exists(diff["path"])
+    same = session.call("snapshot", size=(300, 200), frame=before["frame"], compare=str(tmp_path / "after.png"))
+    assert same["diff"]["changed"] == 0
+
+
 def test_discovery_finds_api_and_guides():
     keys = {e.key for e in discovery.methods()}
     assert {"Box", "Part.fillet", "ShapeList.top", "import_step"} <= keys
@@ -114,5 +139,12 @@ def test_stdio_server_round_trip():
                 shot = await s.call_tool("snapshot", {"width": 200, "height": 150})
                 image = [c for c in shot.content if c.type == "image"][0]
                 assert base64.b64decode(image.data)[:4] == b"\x89PNG"
+                note = [c for c in shot.content if c.type == "text"][0].text
+                assert "frame: {" in note
+                drawing = await s.call_tool("snapshot", {"width": 400, "height": 300, "drawing": True,
+                                                         "highlight": "part.faces().top()",
+                                                         "view": {"azimuth": 30, "elevation": 20}})
+                assert [c.type for c in drawing.content] == ["image", "text"]
+                assert "frame:" not in drawing.content[1].text
 
     asyncio.run(go())
