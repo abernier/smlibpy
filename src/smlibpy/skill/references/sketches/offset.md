@@ -1,7 +1,8 @@
 # Sketch.offset
 
-Grows or shrinks a sketch region by a distance: every boundary moves outward (positive) or
-inward (negative); holes move the other way. Lines stay lines and arcs stay arcs.
+Grows or shrinks a sketch region by a distance (an offset outline: walls, gaskets, frames,
+clearances): every boundary moves outward (positive) or inward (negative); holes move the
+other way. Lines stay lines and arcs stay arcs.
 
 ## Signature
 `sketch.offset(distance, *, corners="round")` (also `offset(sketch, distance, corners=...)`)

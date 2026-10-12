@@ -1,7 +1,8 @@
 # make_face
 
 Turns a closed outline of curves into a `Sketch`, minus the regions inside further outlines
-(holes). Use it for profiles with arcs, splines or any shape the constructors do not make.
+(holes). Use it for curves you already have (splines, edges taken from a part). To draw an
+outline of lines and arcs segment by segment, `Profile` is shorter and checks the outline.
 
 ## Signature
 `make_face(outer, *holes)`
@@ -59,5 +60,5 @@ pulley = profile.revolve(Axis((0, 0, 0), (0, 0, 1)))                # turn about
 ```
 
 ## Related
-`Polygon` (straight outlines), `Wire.to_sketch()` (same as `make_face(wire)`), `Polyline`,
+`Profile` (draw an outline), `Polygon` (straight outlines), `Wire.to_sketch()` (same as `make_face(wire)`), `Polyline`,
 `CenterArc`, `Spline`, `FilletPolyline` (curves), `generic`.

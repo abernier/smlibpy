@@ -35,9 +35,21 @@ part = base + boss
 
 ## Revolved parts
 
-Draw the half profile in the XZ plane (or draw on XY and place it on `Plane.XZ`), with the
-axis on one edge of the profile, and revolve about that axis. A profile that crosses the axis
-makes an invalid body.
+Draw the half section beside the axis with `Profile` (on XY, then place it on `Plane.XZ` if
+the part should stand along Z), starting and ending on the axis, and revolve about that axis.
+Rounded corners go into the profile (`.fillet(r)` while drawing). A profile that crosses the
+axis raises. See `recipes/profiles` for the patterns:
+
+```python
+section = Profile((0, 0)).line_to(12, 0).line_to(y=4).fillet(1.5).line_to(x=6).line_to(y=20).line_to(x=0).close()
+bushing = section.revolve(Axis((0, 0, 0), (0, 1, 0)))
+```
+
+## Outlines
+
+Standard outlines are shapes (`Rectangle(80, 50, fillet=6)`, `Slot`, `Triangle`), cutouts are
+Booleans, outlines with tangent arcs are drawn with `Profile`, symmetric ones as a half plus
+`.mirror(axis)`, walls and gaskets with `offset`. `recipes/profiles` has the table.
 
 ## Shells
 

@@ -77,7 +77,9 @@ CONVENTIONS
 pattern (`GridLocations(...) * Cylinder(...)`).
 - Select faces and edges by geometry, not by index: part.faces().top(), \
 part.edges().parallel_to(Z), part.faces().cylinders().largest(). Indices change when the model changes.
-- Sketches are planar regions: build them in 2D, then .on(plane or face) and extrude or revolve.
+- Sketches are planar regions drawn on XY: shapes (Rectangle(w, h, fillet=r), Circle, Slot, ...) combined \
+with + - &, or Profile(...) for outlines with tangent arcs, rounded corners or symmetry (recipes/profiles); \
+then .on(plane or face) and extrude or revolve.
 - show(a, b) at the end of a script chooses what the viewer and snapshots display. Without it, \
 every Part and Shell variable of the session is shown, tools and intermediate bodies included.
 - Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.

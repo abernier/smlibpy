@@ -38,7 +38,8 @@ export_step(plate, "plate.step")
 - Select by geometry (`part.faces().top()`, `part.edges().parallel_to(Z).concave()`), never by
   index: indices change whenever the model changes.
 - Sketches are drawn on the XY plane around the origin, then placed with `.on(plane_or_face)`.
-  A negative extrusion from a face cuts into the part when subtracted.
+  A negative extrusion from a face cuts into the part when subtracted. Outlines with tangent
+  arcs or rounded inner corners are drawn with `Profile` (see `recipes/profiles`).
 - Errors are `ModelingError` (the input cannot work, with a hint) or `KernelError` (the kernel
   failed). Read the hint before changing the code.
 
@@ -64,7 +65,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | geometry | `geometry/*` | Vector, Axis, Plane, Location, Pos, Rot, BoundBox, Align, placement methods, patterns |
 | selection | `selection/*` | ShapeList and its selectors, topology (faces, edges, vertices), Face, Edge, Vertex |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
-| sketches | `sketches/*` | Sketch, 2D shapes (Rectangle, Circle, Polygon, Slot, ...), make_face, 2D offset and fillet |
+| sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire |
 | features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft, heal |
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
@@ -79,3 +80,5 @@ Each domain has a `generic.md` with the concepts; the other docs are named after
 - `recipes/verification`: what to check after each step, and how.
 - `recipes/modeling`: the patterns that work (plates, holes, bosses, revolved parts, shells,
   sweeps along helices) and the order of operations.
+- `recipes/profiles`: which 2D tool for which outline: shapes, `Profile` for tangent arcs and
+  revolve sections, half outline plus `mirror`, `Hull`, `Stroke`, `offset` for walls.

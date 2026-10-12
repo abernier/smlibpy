@@ -14,16 +14,24 @@ from typing import Any
 SKILL_DIR = Path(__file__).resolve().parent.parent / "skill"
 
 #: Classes whose public methods are listed next to the functions of ``smlibpy.__all__``.
-CLASSES = ("Part", "Sketch", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis", "Plane",
-           "Location", "BoundBox", "Mesh", "MassProperties")
+CLASSES = ("Part", "Sketch", "Profile", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis",
+           "Plane", "Location", "BoundBox", "Mesh", "MassProperties")
+
+#: The guide folder that documents a class's methods first (``Sketch.fillet`` -> sketches/fillet,
+#: not features/fillet). A class in ``CLASS_GUIDES`` has all its methods in its own guide.
+CLASS_DOMAINS = {"Part": "features", "Sketch": "sketches", "Profile": "sketches", "Shell": "surfaces",
+                 "Face": "selection", "Edge": "curves", "Wire": "curves", "Vertex": "selection",
+                 "ShapeList": "selection", "Vector": "geometry", "Axis": "geometry", "Plane": "geometry",
+                 "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis"}
+CLASS_GUIDES = ("Profile",)
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
-    "round": ["fillet"], "rounded": ["fillet", "RoundedRectangle"], "radius": ["fillet", "radius"],
-    "bevel": ["chamfer"], "hollow": ["shell"], "wall": ["shell", "thicken"], "thickness": ["shell", "thicken"],
+    "round": ["fillet"], "rounded": ["fillet", "Rectangle", "RoundedRectangle"], "radius": ["fillet", "radius"],
+    "bevel": ["chamfer"], "hollow": ["shell"], "wall": ["shell", "thicken", "offset"], "thickness": ["shell", "thicken"],
     "union": ["fuse"], "join": ["fuse"], "combine": ["fuse"], "add": ["fuse"], "subtract": ["cut"],
     "difference": ["cut"], "remove": ["cut"], "boolean": ["fuse", "cut", "intersect"], "common": ["intersect"],
-    "pad": ["extrude"], "pocket": ["extrude", "cut"], "prism": ["extrude"], "lathe": ["revolve"],
+    "pad": ["extrude"], "pocket": ["extrude", "cut"], "prism": ["extrude"], "lathe": ["revolve", "Profile"],
     "turn": ["revolve"], "pipe": ["sweep"], "path": ["sweep"], "blend": ["loft"], "transition": ["loft"],
     "pattern": ["Locations", "GridLocations", "PolarLocations"], "array": ["GridLocations", "PolarLocations"],
     "circular": ["PolarLocations"], "copy": ["Locations", "moved"], "move": ["translate", "moved"],
@@ -43,8 +51,18 @@ SYNONYMS = {
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],
-    "profile": ["Sketch", "Rectangle", "Circle"], "2d": ["Sketch"], "polygon": ["Polygon", "RegularPolygon"],
-    "hexagon": ["RegularPolygon"], "slot": ["Slot"], "text": [], "gear": ["Polygon", "PolarLocations"],
+    "profile": ["Profile", "Sketch"], "2d": ["Sketch", "Profile"], "polygon": ["Polygon", "RegularPolygon"],
+    "hexagon": ["RegularPolygon"], "slot": ["Slot", "ArcSlot", "Stroke"], "text": [], "gear": ["Polygon", "PolarLocations"],
+    # 2D outlines
+    "tangent": ["Profile", "arc_to", "TangentArc"], "pen": ["Profile"], "draw": ["Profile", "line_to"],
+    "outline": ["Profile", "offset", "make_face"], "contour": ["Profile", "make_face"], "turtle": ["Profile"],
+    "symmetric": ["mirror", "Profile"], "half": ["mirror", "Profile"], "shaft": ["Profile", "revolve"],
+    "bushing": ["Profile", "revolve"], "corner": ["fillet", "chamfer", "vertices", "convex", "concave"],
+    "corners": ["fillet", "chamfer", "vertices", "convex", "concave"], "hull": ["Hull"], "convex": ["Hull", "convex"],
+    "lever": ["Hull"], "link": ["Hull"], "cam": ["Hull", "Profile"], "gasket": ["offset"], "frame": ["offset"],
+    "clearance": ["offset"], "band": ["Stroke", "offset"], "trace": ["Stroke"], "track": ["Stroke"],
+    "rib": ["Stroke", "Triangle"], "web": ["Stroke"], "triangle": ["Triangle"], "gusset": ["Triangle"],
+    "obround": ["Slot"], "stadium": ["Slot"], "keyhole": ["Profile"], "perimeter": ["perimeter"],
 }
 
 
@@ -228,12 +246,25 @@ def find_method(name: str) -> Entry | None:
 
 
 def guide_for(entry: Entry) -> Entry | None:
-    """The guide written for a method, if there is one (references/<domain>/<name>.md)."""
+    """The guide written for a method, if there is one (references/<domain>/<name>.md): the one
+    in the domain of the method's class first (``Sketch.fillet`` -> sketches/fillet), then any
+    of that name, then the guide of the class itself (``Wire.fillet`` -> curves/Wire)."""
     names = {entry.key.lower(), entry.key.split(".")[-1].lower(), entry.key.replace(".", "-").lower()}
-    for g in guides():
-        if g.key.split("/")[-1].lower() in names:
+    matches = [g for g in guides() if g.key.split("/")[-1].lower() in names]
+    cls = entry.key.split(".", 1)[0] if "." in entry.key else None
+    own = [g for g in guides() if cls and g.key.split("/")[-1] == cls]
+    if cls in CLASS_GUIDES and own:
+        return own[0]
+    domain = CLASS_DOMAINS.get(cls or "")
+    for g in matches:
+        if domain and g.key.startswith(domain + "/"):
             return g
-    return None
+    for g in own:
+        if domain and g.key.startswith(domain + "/"):
+            return g
+    if matches:
+        return matches[0]
+    return own[0] if own else None
 
 
 def method_index() -> str:
