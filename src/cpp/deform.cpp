@@ -21,8 +21,10 @@
 //     makes the composition polynomial) with the smallest degrees that reproduce it, on the
 //     knots of the original;
 //   * elsewhere (twist and bend are not polynomial) the directions in which the composition is
-//     still polynomial of the original's degree stay exact, and the others get quintic C4
-//     splines whose spans are halved until they are within the tolerance.
+//     still polynomial of the original's degree stay exact, and the others get quintic splines
+//     (at the original's knots as smooth as the original, C4 elsewhere) whose spans are halved
+//     until they are within the tolerance. Exact faces that would get more than
+//     `max_exact_points` control points are approximated the same way.
 
 #include "ext.h"
 
