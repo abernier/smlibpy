@@ -3,23 +3,26 @@
 // Space deformations of whole Breps (smlibpy.deform): twist, taper, bend and free-form
 // deformation with a control lattice, registered as `_core.deform`.
 //
-// The kernel describes a space deformation as an SmVolume, a map of 3D space onto itself:
-// SmTwistVolume, SmBendVolume, SmBSplineVolume (a lattice) and SmTransform (affine maps). It
-// sends a Brep through such a map the way SmSpaceBend::BendTopology does for sheet metal:
-// vertices are mapped, edge curves become SmCrvInVolume and face surfaces SmSrfInVolume, the
-// exact but procedural composition of the original geometry with the map. The kernel's own
-// conversion of those to B-splines (SmBrep::ApproximateWithBSplines) misses its tolerance,
-// rebuilds the trim curves by projection and broke a bent bar in our tests, so it is not used.
+// The kernel describes a space deformation as an SmVolume, a map of 3D space onto itself
+// (SmTwistVolume, SmBendVolume, SmTransform; SmBSplineVolume is compiled out of this kernel
+// build, so lattices are evaluated here). It sends a Brep through such a map the way
+// SmSpaceBend::BendTopology does for sheet metal: vertices are mapped, edge curves become
+// SmCrvInVolume and face surfaces SmSrfInVolume, the exact but procedural composition of the
+// original geometry with the map (`composite_brep` below builds that). The kernel's own
+// conversion of those to B-splines (SmBrep::ApproximateWithBSplines) missed its tolerance,
+// rebuilt the trim curves by projection and broke a bent bar, so it is not used.
 //
-// Instead every face and edge is fitted here directly, keeping the parameterization of the
-// original surface or curve, so the UV trim curves of the Brep stay valid and are kept:
-//   * where the composition is polynomial, the result is exact: lattices and tapers are
-//     polynomial maps (SmBSplineVolume), affine maps keep any geometry polynomial, and a twist
-//     or bend is polynomial on some surfaces (a plane across the twist axis is only rotated).
-//     The composition is interpolated per Bezier patch of the original with the degree it has,
-//     in homogeneous coordinates for rational geometry (denominator power searched);
-//   * elsewhere (twist and bend are not polynomial maps) patches of the original's degree or
-//     cubic patches are refined until they are within the tolerance.
+// Instead every face and edge is fitted here, keeping the parameterization of the original
+// surface or curve, so the UV trim curves of the Brep stay valid and are kept:
+//   * where the composition is polynomial it is reproduced exactly: lattices and tapers are
+//     polynomial maps, affine maps keep any geometry polynomial, and a twist or bend is
+//     polynomial on some faces (a plane across the twist axis is only turned). The fit
+//     interpolates in homogeneous coordinates (the original's denominator to the power that
+//     makes the composition polynomial) with the smallest degrees that reproduce it, on the
+//     knots of the original;
+//   * elsewhere (twist and bend are not polynomial) the directions in which the composition is
+//     still polynomial of the original's degree stay exact, and the others get quintic C4
+//     splines whose spans are halved until they are within the tolerance.
 
 #include "ext.h"
 
@@ -38,7 +41,6 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -1466,21 +1468,6 @@ SmBrep* composite_brep(const SmBrep* brep, const py::dict& spec)
     return out;
 }
 
-// Largest edge gap of a Brep (edge curve to face surfaces, vertex to edge), as the kernel measures it.
-double max_gap(const SmBrep* brep)
-{
-    SmTArray<SmEdge*> edges;
-    brep->GetEdges(edges);
-    double gap = 0.0;
-    for (ULONG i = 0; i < edges.GetSize(); ++i)
-    {
-        const SmGap* g = edges[i]->GetMaxGap3d();
-        if (g && g->m_dGap3d < 0.5 * SM_UNDEF_DOUBLE)
-            gap = std::max(gap, g->m_dGap3d);
-    }
-    return gap;
-}
-
 // Largest distance between the deformed Brep and the exact deformation of the original, compared
 // at the same surface and curve parameters (the parameterization is kept), on an n x n grid per
 // face, n points per edge and at the vertices.
@@ -1561,9 +1548,6 @@ void bind_deform(py::module_& parent)
     m.def("composite_brep", &composite_brep, py::arg("brep"), py::arg("spec"), py::return_value_policy::take_ownership,
           "The kernel's exact procedural composition (SmSrfInVolume faces, SmCrvInVolume edges) of a "
           "copy of a Brep with the deformation, for checks.");
-
-    m.def("max_gap", &max_gap, py::arg("brep"),
-          "Largest edge gap (edge curve to face surfaces, vertex to edge) of a Brep, as the kernel measures it.");
 
     m.def("deviation", &deviation, py::arg("source"), py::arg("result"), py::arg("spec"), py::arg("samples") = 9,
           "Largest distance between a deformed Brep and the exact deformation of its source at the same "
