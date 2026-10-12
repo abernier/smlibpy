@@ -91,10 +91,19 @@ docs(["SKILL", "recipes/verification"]) returns guides by key (the index is belo
 
 {viewer}
 
-BUERLIGONS
-If the ClassCAD MCP (server "classcad") is installed too, you can hand a result to the ClassCAD \
-app Buerligons, as a solid: save(format="step", path=...) here, then call its load tool with \
-format STP and that path.
+SMLIBPY OR CLASSCAD
+smlibpy is for results a script produces once: a part or a few parts, written to STEP, STL or \
+glTF, variants from parameters, batch jobs, checks. The script is the model; to change the part \
+you change the script and run it again. Nothing else is kept: no feature history, no constraints, \
+no references between features, no assemblies with mates.
+When the user wants a model that stays editable and regenerates, use the ClassCAD MCP (server \
+"classcad") instead: sketches with constraints and dimensions, features built on faces and edges \
+of earlier features, parts driven by expressions, assemblies with mates, or an app built around \
+such models (with buerli or Buerligons). Tell the user that smlibpy is the wrong tool for that and \
+point them to the ClassCAD MCP: https://classcad.ai. The install steps for agents, for every host, are in https://classcad.ai/llms.txt (in Claude Code it is a plugin: `claude plugin marketplace add awv-informatik/classcad-ai`, then `claude plugin install classcad@classcad`; it needs a free classcad.ch account). If it is installed already, build \
+those models there.
+Both meet at STEP: a part from here opens in ClassCAD as a solid. To hand one to Buerligons, \
+save(format="step", path=...) here, then call the classcad load tool with format STP and that path.
 
 METHOD INDEX
 {methods}

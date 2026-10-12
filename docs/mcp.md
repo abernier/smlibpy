@@ -84,7 +84,17 @@ Everything runs on your machine; the page loads three.js from a CDN.
 | `SMLIBPY_VIEWER` | `host` (the agent opens the link), `browser` (your browser) or `off` |
 | `SMLIBPY_SNAPSHOT_DIR` | Where pictures are kept (default: a folder in the temp directory) |
 
-## With ClassCAD
+## smlibpy or ClassCAD
 
-If the ClassCAD MCP is installed as well, the agent can hand a part to the ClassCAD app
+smlibpy suits results that a script produces once: parts written to STEP, STL or glTF,
+variants from parameters, batch jobs and checks. The script is the model, and nothing else is
+kept.
+
+For models that have to stay editable and regenerate, the [ClassCAD MCP](https://classcad.ai)
+is the right tool: sketches with constraints and dimensions, features that build on earlier
+faces and edges, parts driven by expressions, assemblies with mates, and apps built around such
+models with buerli or Buerligons. The smlibpy server tells the agent this, so it points you
+there when you ask for that kind of model.
+
+The two meet at STEP. If both MCPs are installed, the agent can hand a part to the ClassCAD app
 Buerligons: it saves a STEP file here and loads it there, where the part arrives as a solid.
