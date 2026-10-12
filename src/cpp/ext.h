@@ -13,3 +13,5 @@ void bind_step_build(py::module_& m);
 void bind_surface_eval(py::module_ m);
 // Sheet metal: exact bending and unbending (sheetmetal.cpp), registered as `_core.sheetmetal`.
 void bind_sheetmetal(py::module_ m);
+// Space deformations: twist, taper, bend, lattice (deform.cpp).
+void bind_deform(py::module_& m);

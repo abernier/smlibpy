@@ -15,7 +15,8 @@ SKILL_DIR = Path(__file__).resolve().parent.parent / "skill"
 
 #: Classes whose public methods are listed next to the functions of ``smlibpy.__all__``.
 CLASSES = ("Part", "Sketch", "Profile", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis",
-           "Plane", "Location", "BoundBox", "Mesh", "MassProperties", "FlatPattern", "Bend")
+           "Plane", "Location", "BoundBox", "Mesh", "MassProperties", "FlatPattern", "Bend",
+           "Lattice")
 
 #: The guide folder that documents a class's methods first (``Sketch.fillet`` -> sketches/fillet,
 #: not features/fillet). A class in ``CLASS_GUIDES`` has all its methods in its own guide.
@@ -23,7 +24,7 @@ CLASS_DOMAINS = {"Part": "features", "Sketch": "sketches", "Profile": "sketches"
                  "Face": "selection", "Edge": "curves", "Wire": "curves", "Vertex": "selection",
                  "ShapeList": "selection", "Vector": "geometry", "Axis": "geometry", "Plane": "geometry",
                  "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis",
-                 "FlatPattern": "sheetmetal", "Bend": "sheetmetal"}
+                 "FlatPattern": "sheetmetal", "Bend": "sheetmetal", "Lattice": "deform"}
 CLASS_GUIDES = ("Profile",)
 
 #: Words people use for a thing, and the words the API uses.
@@ -40,7 +41,7 @@ SYNONYMS = {
     "align": ["Align"], "mirror": ["mirror"], "drill": ["Hole"], "bore": ["CounterBoreHole"],
     "countersink": ["CounterSinkHole"], "thread": ["Helix"], "spring": ["Helix", "sweep"],
     "curve": ["Spline", "Line", "CenterArc"], "arc": ["CenterArc", "ThreePointArc", "RadiusArc", "TangentArc"],
-    "spline": ["Spline", "Bezier"], "freeform": ["surface", "Spline"], "patch": ["surface", "ruled"],
+    "spline": ["Spline", "Bezier"], "freeform": ["surface", "Spline", "Lattice"], "patch": ["surface", "ruled"],
     "select": ["ShapeList", "filter_by", "faces", "edges"], "pick": ["ShapeList", "filter_by"],
     "find": ["filter_by", "nearest"], "top": ["top"], "highest": ["top", "max_by"], "biggest": ["largest"],
     "measure": ["mass_properties", "volume", "area", "distance_to"], "weight": ["mass_properties"],
@@ -58,7 +59,7 @@ SYNONYMS = {
     "blend": ["loft", "fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
-    "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],
+    "cross": ["section"], "draft": ["draft"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
     "profile": ["Profile", "Sketch", "Rectangle", "Circle"], "2d": ["Sketch", "Profile"],
     "polygon": ["Polygon", "RegularPolygon"], "hexagon": ["RegularPolygon"], "slot": ["Slot", "ArcSlot", "Stroke"],
     "gear": ["Polygon", "PolarLocations"],
@@ -81,12 +82,16 @@ SYNONYMS = {
     "clearance": ["offset"], "band": ["Stroke", "offset"], "trace": ["Stroke"], "track": ["Stroke"],
     "rib": ["Stroke", "Triangle"], "web": ["Stroke"], "triangle": ["Triangle"], "gusset": ["Triangle"],
     "obround": ["Slot"], "stadium": ["Slot"], "keyhole": ["Profile"], "perimeter": ["perimeter"],
+    "deform": ["twist", "taper", "bend", "Lattice"], "deformation": ["twist", "taper", "bend", "Lattice"],
+    "twist": ["twist"], "twisted": ["twist"], "tapered": ["taper"],
+    "curl": ["bend"], "wrap": ["bend"], "warp": ["Lattice", "bend", "twist"], "free": ["Lattice"],
+    "lattice": ["Lattice"], "morph": ["Lattice"], "cage": ["Lattice"], "ffd": ["Lattice"], "sculpt": ["Lattice"],
 }
 
 # Sheet metal.
 SYNONYMS.update({
     "sheet": ["sheetmetal", "fold", "flange", "flat_pattern", "unfold"], "metal": ["sheetmetal", "fold", "flange"],
-    "bend": ["fold", "flange", "bends"], "bending": ["fold"], "bent": ["fold", "bends"], "fold": ["fold", "flange"],
+    "bend": ["bend", "fold", "flange", "bends"], "bending": ["bend", "fold"], "bent": ["bend", "fold", "bends"], "fold": ["fold", "flange"],
     "folded": ["fold", "unfold"], "flange": ["flange"], "hem": ["fold"], "brake": ["fold"], "tab": ["fold"],
     "relief": ["fold"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"],
     "flatten": ["unfold", "flat_pattern"],

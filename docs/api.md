@@ -48,6 +48,10 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.operations
 
+## Deformations
+
+::: smlibpy.deform
+
 ## Surfaces
 
 ::: smlibpy.surfaces

@@ -85,4 +85,5 @@ PYBIND11_MODULE(_core, m)
     bind_smlibpy_ext(m.def_submodule("ext", "smlibpy extensions: exact geometry access, transforms."));
     bind_surface_eval(m.attr("ext").cast<py::module_>());
     bind_sheetmetal(m.def_submodule("sheetmetal", "Sheet metal: exact bending and unbending."));
+    bind_deform(m);
 }
