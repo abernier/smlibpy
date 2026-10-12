@@ -60,6 +60,15 @@ flange = profile.on(Plane.front).revolve(Z)
 flange -= PolarLocations(47.5, 8) * Cylinder(5, 30)
 ```
 
+### Text
+
+Lettering is a sketch with the exact outlines of a font; `size` is the height of the capitals.
+
+```python
+tag = Box(60, 20, 3)
+tag -= Text("SMLIB 01", 8).on(tag.faces().top()).extrude(-0.5)
+```
+
 ### Selecting edges and faces
 
 Selectors chain and always return lists. A list with one element works wherever a single shape
@@ -100,11 +109,12 @@ mp.mass, mp.center, mp.inertia
 
 ### Files
 
-STEP, STL, glTF/GLB, OBJ and SMLib's own exact format.
+STEP, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")
 export_glb(flange, "flange.glb")
+export_dxf(flange.section(Plane.XZ), "flange-profile.dxf")
 ```
 
 ## Documentation
@@ -119,9 +129,9 @@ export_glb(flange, "flange.glb")
 
 ## Status
 
-smlibpy is new (version 0.1). It covers solid and surface modeling, and reads and writes STEP
-with the exact geometry. Assemblies with product structure, 2D drawings and text are not there
-yet.
+smlibpy is new (version 0.1). It covers solid and surface modeling, text, and reads and writes
+STEP and DXF with the exact geometry. Assemblies with product structure and dimensioned 2D
+drawings are not there yet.
 
 ## License
 

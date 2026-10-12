@@ -2,7 +2,7 @@
 
 Adds the smlibpy MCP server and a skill to Claude Code. Claude models parts by writing Python
 with [smlibpy](https://github.com/awv-informatik/smlibpy), checks them with numbers and
-pictures, shows them in a live 3D viewer on your machine and saves STEP, STL or glTF files.
+pictures, shows them in a live 3D viewer on your machine and saves STEP, STL, glTF or DXF files.
 
 ```bash
 claude plugin marketplace add awv-informatik/smlibpy
