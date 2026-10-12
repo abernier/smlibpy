@@ -1111,7 +1111,9 @@ def _zebra(n: np.ndarray, tri: _Triangles, t: np.ndarray, spec: dict[str, Any]) 
     e2 = e2 / np.linalg.norm(e2)
     e1 = np.cross(d, e2)
     angle = np.arctan2(r @ e1, r @ e2)
-    dark = ((angle / (2 * np.pi) * spec["stripes"]) % 1.0) < spec["width"]
+    # a black stripe is centred on the angle 0 (and on 180 degrees): the reflection straight back,
+    # common on surfaces that curve along the lines only, stays clear of stripe borders
+    dark = ((angle / (2 * np.pi) * spec["stripes"] + spec["width"] / 2) % 1.0) < spec["width"]
     light = np.where((t >= tri.n_body)[:, None], _ORANGE, _ZEBRA_LIGHT)  # highlighted faces: orange and black
     color = np.where(dark[:, None], _ZEBRA_DARK, light)
     # towards the direction of the lines the stripes crowd together and have no angle: gray

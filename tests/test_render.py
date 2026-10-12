@@ -658,10 +658,10 @@ def test_curvature_map_shows_the_ramp_of_a_g2_blend():
 
 def test_zebra_and_curvature_in_sheets_with_highlights_and_markers(bosses):
     part = bosses[1]
-    top = part.faces().top()
-    zebra = render(part, sheet=True, zebra=True, highlight=top, markers=[((0, 0, 30), "top")], size=(600, 450))
+    side = part.faces().cylinders()  # highlighted faces keep their stripes, in orange and black
+    zebra = render(part, sheet=True, zebra=True, highlight=side, markers=[((0, 0, 30), "top")], size=(600, 450))
     assert _orange(zebra.pixels).sum() > 200 and _red(zebra.pixels).sum() > 20
-    assert bytes(zebra) == bytes(render(part, sheet=True, zebra=True, highlight=top,
+    assert bytes(zebra) == bytes(render(part, sheet=True, zebra=True, highlight=side,
                                         markers=[((0, 0, 30), "top")], size=(600, 450)))
     curv = render(part, sheet=True, curvature="min", size=(600, 450))
     blue = lambda q: ((q[..., 2] > q[..., 0] + 60)).sum()  # noqa: E731
