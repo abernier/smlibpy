@@ -18,7 +18,7 @@ import math
 import os
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -62,6 +62,12 @@ _WHITE = np.ones(3)
 _FIT = 0.88  # share of the picture the shapes fill
 _MAX_CANVAS = 1 << 24  # subpixels of a supersampled picture; larger pictures get a lower factor
 _CAPTION = 34  # pixels kept free under the iso view of a drawing, for the projection method
+_CURVATURES = ("gaussian", "mean", "max", "min")
+# blue (concave) - white (flat) - red (convex), positions 0 to 1 with 0.5 = zero curvature
+_CURVATURE_MAP = (np.array([0.0, 0.25, 0.5, 0.75, 1.0]),
+                  np.array([[59, 76, 192], [141, 176, 254], [236, 236, 236], [244, 154, 123], [180, 4, 38]]) / 255)
+_ZEBRA_DARK, _ZEBRA_LIGHT = np.array([0.08, 0.08, 0.09]), np.array([0.97, 0.97, 0.97])
+_ZEBRA_EDGE = np.array([0.5, 0.5, 0.5])
 
 
 # -----------------------------------------------------------------------------
@@ -141,7 +147,7 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
            supersample: int = 2, colors: str = "native", lines: bool = False, drawing: Any = False,
            sheet: Any = False, section: Any = None, cap: bool = True, highlight: Any = None,
            highlight_at: Any = None, markers: Any = None, annotate: bool = False, xray: bool = False,
-           xray_alpha: float = 0.42) -> Picture:
+           xray_alpha: float = 0.42, zebra: Any = False, curvature: Any = None) -> Picture:
     """Render shapes to a PNG image.
 
     The options combine: a sectioned drawing with highlights and markers is fine.
@@ -205,6 +211,19 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
             scale bar of a round length.
         xray: Translucent bodies: hidden faces shine through, edges stay opaque.
         xray_alpha: Opacity of each face in the x-ray view (0 to 1).
+        zebra: Zebra stripes: the reflection of parallel light lines on the shaded surfaces,
+            from the exact surface normals. Stripes break where surfaces meet with a gap or an
+            edge (G0), kink where they meet tangentially (G1, a circular fillet) and run
+            smoothly across curvature-continuous joints (G2). ``True``, or ``{"stripes": 16,
+            "width": 0.5, "direction": "vertical"}``: the number of black stripes around the
+            light, the black share of each, and the direction of the light lines
+            (``"vertical"`` or ``"horizontal"`` on the screen, or a world direction).
+            Surfaces that curve along the light lines show none; turn the direction for them.
+        curvature: A curvature map of the exact surfaces: ``"mean"``, ``"gaussian"``,
+            ``"max"`` or ``"min"`` (the principal curvatures). Blue is concave, white flat,
+            red convex (a sphere of radius R has 1/R everywhere); a legend gives the range in
+            1/mm (1/mm^2 for Gaussian). ``{"kind": "mean", "range": 0.2}`` (or ``(lo, hi)``)
+            fixes the range; by default it spans the values on the shapes.
 
     Returns:
         A :class:`Picture`: the PNG file contents as ``bytes``, with ``.pixels`` and ``.frame``.
@@ -224,11 +243,14 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
         raise ValueError(f"xray_alpha must be between 0 and 1, got {xray_alpha!r}")
     if isinstance(view, str) and view.strip().lower() == "sheet":
         drawing = drawing or True
+    stripes, curv = _zebra_spec(zebra), _curvature_spec(curvature)
     opts = _Options(k=k, bg=np.array(to_rgb(background), dtype=np.float64), edges=bool(edges), lines=bool(lines),
                     xray=bool(xray) and not lines, alpha=float(xray_alpha), section=_section(section, cap),
-                    markers=_markers(markers), annotate=bool(annotate))
-    scene = _Scene(shapes, tolerance, colors)
+                    markers=_markers(markers), annotate=bool(annotate), zebra=stripes)
+    scene = _Scene(shapes, tolerance, colors, fine=bool(stripes or curv))
     scene.add_highlights(highlight, highlight_at)
+    if curv is not None:
+        opts.curvature = (curv[0], *scene.curvature_range(*curv))
 
     used = None
     if drawing is not None and drawing is not False:
@@ -315,10 +337,56 @@ class _Options:
     section: _Cut | None
     markers: list[tuple[np.ndarray, str, np.ndarray]]
     annotate: bool
+    zebra: dict[str, Any] | None = None
+    curvature: tuple[str, float, float] | None = None  # kind and the range of the color map
+    legend: bool = True  # draw the legend of the curvature map
 
-    def panel(self, lines: bool) -> _Options:
-        return _Options(self.k, self.bg, self.edges, lines, self.xray and not lines, self.alpha, self.section,
-                        self.markers, self.annotate)
+    def panel(self, lines: bool, legend: bool = True) -> _Options:
+        return replace(self, lines=lines, xray=self.xray and not lines, legend=legend)
+
+
+def _zebra_spec(zebra: Any) -> dict[str, Any] | None:
+    if zebra is None or zebra is False:
+        return None
+    spec = dict(zebra) if isinstance(zebra, dict) else {}
+    unknown = set(spec) - {"stripes", "width", "direction"}
+    if unknown or not (zebra is True or isinstance(zebra, dict)):
+        raise ValueError(f"zebra takes True or a dict of stripes, width and direction, got {zebra!r}")
+    stripes = int(spec.get("stripes", 16))
+    width = float(spec.get("width", 0.5))
+    direction = spec.get("direction", "vertical")
+    if stripes < 1:
+        raise ValueError(f"zebra: stripes must be at least 1, got {stripes}")
+    if not 0 < width < 1:
+        raise ValueError(f"zebra: width is the black share of a stripe, between 0 and 1, got {width}")
+    if isinstance(direction, str):
+        if direction not in ("vertical", "horizontal"):
+            raise ValueError(f"zebra: direction is 'vertical', 'horizontal' or a vector, got {direction!r}")
+    else:
+        direction = _vec3(direction)
+        if np.linalg.norm(direction) < 1e-12:
+            raise ValueError("zebra: the direction has no length")
+    return {"stripes": stripes, "width": width, "direction": direction}
+
+
+def _curvature_spec(curvature: Any) -> tuple[str, Any] | None:
+    if curvature is None or curvature is False:
+        return None
+    if isinstance(curvature, str):
+        kind, span = curvature, None
+    elif isinstance(curvature, dict):
+        kind, span = curvature.get("kind", "mean"), curvature.get("range")
+    else:
+        raise ValueError(f"curvature takes 'mean', 'gaussian', 'max', 'min' or a dict, got {curvature!r}")
+    kind = str(kind).lower()
+    if kind not in _CURVATURES:
+        raise ValueError(f"curvature: the kinds are {', '.join(_CURVATURES)}, got {kind!r}")
+    if span is not None:
+        lo, hi = (-abs(float(span)), abs(float(span))) if _is_number(span) else (float(span[0]), float(span[1]))
+        if not hi > lo:
+            raise ValueError(f"curvature: the range must be (low, high), got {span!r}")
+        span = (lo, hi)
+    return kind, span
 
 
 def _vec3(p: Any) -> np.ndarray:
@@ -496,9 +564,20 @@ def _fit(scene: _Scene, cam: _Camera, w: int, h: int, zoom: float = 1.0, look_at
 class _Body:
     """The triangles of one body (corner normals, one color) and its edges, in world space."""
 
-    def __init__(self, tris: np.ndarray, norms: np.ndarray, rgb: np.ndarray, closed: bool, segs: np.ndarray):
+    def __init__(self, tris: np.ndarray, norms: np.ndarray, rgb: np.ndarray, closed: bool, segs: np.ndarray,
+                 mesh: Any = None, source: Any = None):
         self.tris, self.norms, self.rgb, self.closed, self.segs = tris, norms, rgb, closed, segs
+        self.mesh, self.source = mesh, source  # the source keeps the Brep alive that the mesh points into
         self._adjacent: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._principal: tuple[np.ndarray, np.ndarray] | None = None
+
+    def curvature(self, kind: str) -> np.ndarray:
+        """Curvature of the exact surface at every triangle corner, (n, 3); NaN where there is
+        no exact surface (a mesh)."""
+        if self._principal is None:
+            self._principal = _corner_curvatures(self.mesh, self.source, len(self.tris))
+        k1, k2 = self._principal
+        return {"gaussian": k1 * k2, "mean": (k1 + k2) / 2, "max": k1, "min": k2}[kind]
 
     def adjacency(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Mesh edges shared by exactly two triangles: the two triangles and the end points."""
@@ -528,7 +607,7 @@ class _Body:
 class _Scene:
     """Bodies, curves drawn on top, highlights, and the points that count for the fit."""
 
-    def __init__(self, shapes: Any, tolerance: float | None, colors: str):
+    def __init__(self, shapes: Any, tolerance: float | None, colors: str, fine: bool = False):
         from .colors import to_rgb
         from .exporters import _DEFAULT_COLORS, _curve_points, _edge_polylines, _flatten_all
         from .mesh import Mesh, tessellate
@@ -568,7 +647,9 @@ class _Scene:
             self.items.append(item)
             for piece in pieces:
                 rgb = palette[len(self.bodies) % len(palette)] if colors == "distinct" else native
-                mesh = piece if isinstance(piece, Mesh) else tessellate(piece, tolerance)
+                # zebra stripes and curvature maps follow the normals closely: finer triangles
+                source = piece.to_shell() if isinstance(piece, Face) and fine else piece
+                mesh = piece if isinstance(piece, Mesh) else tessellate(source, tolerance, 5.0 if fine else 15.0)
                 if isinstance(piece, Mesh):
                     segs = np.zeros((0, 2, 3))
                 elif isinstance(piece, Face):
@@ -581,7 +662,8 @@ class _Scene:
                     continue
                 v = mesh.vertices[mesh.triangles]
                 n = mesh.normals if mesh.normals is not None else np.repeat(mesh.triangle_normals[:, None], 3, axis=1)
-                self.bodies.append(_Body(v, np.asarray(n, dtype=np.float64), rgb, closed, segs))
+                self.bodies.append(_Body(v, np.asarray(n, dtype=np.float64), rgb, closed, segs, mesh,
+                                         None if isinstance(piece, Mesh) else source))
         pts = [b.tris.reshape(-1, 3) for b in self.bodies] + [b.segs.reshape(-1, 3) for b in self.bodies]
         pts += [s.reshape(-1, 3) for s, _ in self.overlays]
         allp = np.concatenate(pts) if pts else np.zeros((0, 3))
@@ -591,6 +673,18 @@ class _Scene:
         tri_pts = np.concatenate([b.tris.reshape(-1, 3) for b in self.bodies]) if self.bodies else allp
         self.lo, self.hi = tri_pts.min(axis=0), tri_pts.max(axis=0)
         self.diagonal = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))) or 1.0
+
+    def curvature_range(self, kind: str, span: tuple[float, float] | None) -> tuple[float, float]:
+        """The range of a curvature map: the given one, or the values on the bodies; it always
+        holds zero, the white of the map."""
+        if span is None:
+            values = np.concatenate([b.curvature(kind).reshape(-1) for b in self.bodies]) if self.bodies else np.zeros(0)
+            values = values[np.isfinite(values)]
+            span = (float(values.min()), float(values.max())) if len(values) else (0.0, 0.0)
+            # a side under a thousandth of the other is noise (a plane, the end of a blend): zero
+            noise = 1e-3 * max(abs(span[0]), abs(span[1]))
+            span = (span[0] if span[0] < -noise else 0.0, span[1] if span[1] > noise else 0.0)
+        return min(span[0], 0.0), max(span[1], 0.0)
 
     def axes(self) -> list[tuple[np.ndarray, np.ndarray, float, float, float]]:
         """The axes of round features, for center lines: from the circles and arcs of at least
@@ -687,6 +781,25 @@ def _circle_of(edge: Any) -> tuple[np.ndarray, np.ndarray, float] | None:
     return c, d, r
 
 
+def _corner_curvatures(mesh: Any, source: Any, count: int) -> tuple[np.ndarray, np.ndarray]:
+    """Principal curvatures (k1 >= k2) at the triangle corners of a tessellation, from the exact
+    surfaces (the kernel evaluates their fundamental forms). NaN where there is none."""
+    from ._kernel import ext
+    from .mesh import _triangulate
+
+    missing = np.full((count, 3), np.nan)
+    poly = getattr(getattr(mesh, "_poly", None), "poly", None)
+    if poly is None or source is None:
+        return missing, missing
+    r = ext.poly_curvatures(poly)
+    faces = np.asarray(poly.to_numpy_arrays(face_varying_normals=True)["faces"], dtype=np.int64)
+    tris, corner = _triangulate(faces)
+    k1, k2 = np.asarray(r["k1"]), np.asarray(r["k2"])
+    if len(tris) != count or len(k1) != corner.max(initial=-1) + 1:
+        return missing, missing  # not the corner order of the mesh: leave it out rather than guess
+    return k1[corner], k2[corner]
+
+
 def _segments(polylines: list[np.ndarray]) -> np.ndarray:
     segs = [np.stack([pl[:-1], pl[1:]], axis=1) for pl in polylines if len(pl) >= 2]
     return np.concatenate(segs) if segs else np.zeros((0, 2, 3))
@@ -746,6 +859,8 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
     outlines: list[np.ndarray] = []
     for bi, body in enumerate(scene.bodies):
         tris, norms = body.tris, body.norms
+        if o.curvature is not None:  # the curvature rides along with the normals, through the clipping
+            norms = np.concatenate([norms, body.curvature(o.curvature[0])[..., None]], axis=2)
         if cut is not None:
             if body.closed:
                 outline = _crossings(tris, cut)
@@ -766,6 +881,8 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         parts.append((tris, norms, np.repeat(body.rgb[None], len(tris), axis=0), factor))
     n_body = sum(len(p[0]) for p in parts)
     for tris, norms in scene.hl_tris:
+        if o.curvature is not None:
+            norms = np.concatenate([norms, np.full(norms.shape[:2] + (1,), np.nan)], axis=2)
         if cut is not None:
             tris, norms = _clip(tris, norms, cut)
         if len(tris) and cut is None:
@@ -779,11 +896,12 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         rgb = np.concatenate([p[2] for p in parts])
         factor = np.concatenate([p[3] for p in parts])
     else:
-        tris, norms, rgb, factor = np.zeros((0, 3, 3)), np.zeros((0, 3, 3)), np.zeros((0, 3)), np.zeros(0)
+        columns = 4 if o.curvature is not None else 3
+        tris, norms, rgb, factor = np.zeros((0, 3, 3)), np.zeros((0, 3, columns)), np.zeros((0, 3)), np.zeros(0)
     sx, sy, sz = cv.screen(tris.reshape(-1, 3))
     sx, sy, sz = sx.reshape(-1, 3), sy.reshape(-1, 3), sz.reshape(-1, 3).copy()
     sz[n_body:] += 3 * eps  # highlighted faces win over the body they lie on
-    tri = _Triangles(sx, sy, sz, norms, rgb, factor, cam)
+    tri = _Triangles(sx, sy, sz, norms, rgb, factor, cam, n_body)
 
     if o.xray:
         _xray(cv, tri, o)
@@ -795,7 +913,7 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         _shade(cv, tbuf, tri, o, n_body, [(c[1], c[2]) for c in caps])
 
     # lines: B-rep edges, silhouettes (line style), the outlines of the cut
-    ink = _INK if o.lines else _EDGE
+    ink = _INK if o.lines else _ZEBRA_EDGE if o.zebra else _EDGE
     segs: list[np.ndarray] = []
     if o.edges or o.lines:
         segs += [b.segs if cut is None else _clip_segments(b.segs, cut) for b in scene.bodies]
@@ -829,6 +947,8 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         _marker(cv, pos, label, color)
     if o.annotate:
         _annotate(cv, scene)
+    if o.curvature is not None and o.legend and not o.lines:
+        _legend(cv, *o.curvature)
     return cv.finish()
 
 
@@ -842,7 +962,7 @@ class _Triangles:
     to barycentric coordinates and depth, normals in camera coordinates, colors."""
 
     def __init__(self, sx: np.ndarray, sy: np.ndarray, sz: np.ndarray, norms: np.ndarray, rgb: np.ndarray,
-                 factor: np.ndarray, cam: _Camera):
+                 factor: np.ndarray, cam: _Camera, n_body: int = -1):
         x0, x1, x2 = sx[:, 0], sx[:, 1], sx[:, 2]
         y0, y1, y2 = sy[:, 0], sy[:, 1], sy[:, 2]
         area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
@@ -855,11 +975,18 @@ class _Triangles:
         self.sx, self.sy = sx, sy
         self.zx, self.zy, self.z0 = (self.bx * sz).sum(1), (self.by * sz).sum(1), (self.b0 * sz).sum(1)
         # the normal (camera coordinates) at a pixel: nx * x + ny * y + n0
-        ncam = norms @ np.stack([cam.right, cam.up, cam.back], axis=1)
+        ncam = norms[..., :3] @ np.stack([cam.right, cam.up, cam.back], axis=1)
         self.nx = np.einsum("ti,tij->tj", self.bx, ncam)
         self.ny = np.einsum("ti,tij->tj", self.by, ncam)
         self.n0 = np.einsum("ti,tij->tj", self.b0, ncam)
+        # a value per corner (the curvature), the same way: vx * x + vy * y + v0
+        self.has_value = norms.shape[-1] > 3
+        if self.has_value:
+            value = norms[..., 3]
+            self.vx, self.vy, self.v0 = (self.bx * value).sum(1), (self.by * value).sum(1), (self.b0 * value).sum(1)
         self.rgb, self.factor = rgb, factor
+        self.n_body = len(rgb) if n_body < 0 else n_body  # triangles from here on are highlights
+        self.cam = cam
 
     def depth(self, t: np.ndarray, xc: np.ndarray, yc: np.ndarray) -> np.ndarray:
         return self.zx[t] * xc + self.zy[t] * yc + self.z0[t]
@@ -947,11 +1074,106 @@ def _lighting(n: np.ndarray, rgb: np.ndarray, factor: np.ndarray) -> np.ndarray:
     return (rgb * light[:, None] + 0.10 * spec[:, None]) * factor[:, None]
 
 
-def _shade_pixels(tri: _Triangles, t: np.ndarray, pix: np.ndarray, W: int) -> np.ndarray:
-    """Per pixel: the normal interpolated over the triangle, then lit."""
+def _shade_pixels(tri: _Triangles, t: np.ndarray, pix: np.ndarray, W: int, o: _Options) -> np.ndarray:
+    """Per pixel: the normal interpolated over the triangle (from the exact normals at its
+    corners), then lit, striped (zebra) or colored by curvature."""
     xc, yc = _centers(pix, W)
     n = tri.nx[t] * xc[:, None] + tri.ny[t] * yc[:, None] + tri.n0[t]
+    if o.zebra and not o.lines:
+        return _zebra(n, tri, t, o.zebra)
+    if o.curvature is not None and not o.lines:
+        value = tri.vx[t] * xc + tri.vy[t] * yc + tri.v0[t]
+        colors = _curvature_colors(n, value, o.curvature[1], o.curvature[2], tri.factor[t])
+        hl = t >= tri.n_body  # highlighted faces stay orange
+        if hl.any():
+            colors[hl] = _lighting(n[hl], tri.rgb[t[hl]], tri.factor[t[hl]])
+        return colors
     return _lighting(n, tri.rgb[t], tri.factor[t])
+
+
+def _zebra(n: np.ndarray, tri: _Triangles, t: np.ndarray, spec: dict[str, Any]) -> np.ndarray:
+    """Stripes: the reflection of parallel light lines at infinity. The view ray, reflected at
+    the surface, points to one of the lines or between two; which, depends on its angle
+    around the direction of the lines."""
+    n = n / np.maximum(np.sqrt((n * n).sum(axis=1, keepdims=True)), 1e-12)
+    n *= np.where(n[:, 2:3] < 0, -1.0, 1.0)
+    r = 2 * n[:, 2:3] * n - np.array([0.0, 0.0, 1.0])  # the view ray (towards -z), reflected
+    direction = spec["direction"]
+    if isinstance(direction, str):
+        d = np.array([0.0, 1.0, 0.0]) if direction == "vertical" else np.array([1.0, 0.0, 0.0])
+    else:
+        cam = tri.cam
+        d = np.array([direction @ cam.right, direction @ cam.up, direction @ cam.back])
+    d = d / np.linalg.norm(d)
+    e2 = np.array([0.0, 0.0, 1.0]) - d * d[2]  # the view direction, square to the light lines
+    if np.linalg.norm(e2) < 1e-6:
+        e2 = np.cross(d, [1.0, 0.0, 0.0]) if abs(d[0]) < 0.9 else np.cross(d, [0.0, 1.0, 0.0])
+    e2 = e2 / np.linalg.norm(e2)
+    e1 = np.cross(d, e2)
+    angle = np.arctan2(r @ e1, r @ e2)
+    dark = ((angle / (2 * np.pi) * spec["stripes"]) % 1.0) < spec["width"]
+    light = np.where((t >= tri.n_body)[:, None], _ORANGE, _ZEBRA_LIGHT)  # highlighted faces: orange and black
+    color = np.where(dark[:, None], _ZEBRA_DARK, light)
+    # towards the direction of the lines the stripes crowd together and have no angle: gray
+    pole = np.clip((np.abs(r @ d) - 0.95) / 0.04, 0, 1)[:, None]
+    color = color * (1 - pole) + 0.5 * pole
+    return color * tri.factor[t][:, None]
+
+
+def _curvature_colors(n: np.ndarray, value: np.ndarray, lo: float, hi: float, factor: np.ndarray) -> np.ndarray:
+    """The color map at the values, lightly shaded so that the shape still reads; gray where a
+    value is missing."""
+    rgb = _curvature_map(_curvature_position(value, lo, hi))
+    rgb[~np.isfinite(value)] = 0.6
+    n = n / np.maximum(np.sqrt((n * n).sum(axis=1, keepdims=True)), 1e-12)
+    n *= np.where(n[:, 2:3] < 0, -1.0, 1.0)
+    diff = np.clip(n @ _unit(np.array([-0.45, 0.65, 0.9])), 0, 1)
+    return rgb * (0.62 + 0.38 * diff)[:, None] * factor[:, None]
+
+
+def _curvature_position(value: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Where a value lies on the map: 0.5 is zero, 1 the top of the range, 0 the bottom."""
+    v = np.nan_to_num(np.asarray(value, dtype=np.float64))
+    up = np.clip(v / hi, 0, 1) if hi > 0 else np.zeros_like(v)
+    down = np.clip(v / lo, 0, 1) if lo < 0 else np.zeros_like(v)
+    return 0.5 + 0.5 * np.where(v >= 0, up, -down)
+
+
+def _curvature_map(position: np.ndarray) -> np.ndarray:
+    stops, colors = _CURVATURE_MAP
+    return np.stack([np.interp(position, stops, colors[:, c]) for c in range(3)], axis=-1)
+
+
+def _legend(cv: _Canvas, kind: str, lo: float, hi: float) -> None:
+    """The scale of a curvature map at the right edge: a color bar from the lowest to the
+    highest value, with zero, the unit and the kind."""
+    k, u, w, h = cv.k, cv.u, cv.w, cv.h
+    x1 = w - 14 * u
+    x0 = x1 - 12 * u
+    y0 = 40 * u
+    y1 = y0 + min(int(0.42 * h), 220 * u)
+    rows = np.arange(y0 * k, y1 * k)
+    top, bottom = (1.0 if hi > 0 else 0.5), (0.0 if lo < 0 else 0.5)  # the part of the map in use
+    colors = _curvature_map(top - (top - bottom) * (rows - y0 * k + 0.5) / ((y1 - y0) * k))
+    img = cv.img.reshape(cv.H, cv.W, 3)
+    img[y0 * k:y1 * k, x0 * k:x1 * k] = colors[:, None, :]
+    frame = [(x0 * k, y0 * k, x1 * k, y0 * k), (x1 * k, y0 * k, x1 * k, y1 * k), (x1 * k, y1 * k, x0 * k, y1 * k),
+             (x0 * k, y1 * k, x0 * k, y0 * k)]
+    _screen_lines(cv, frame, _LABEL, 0.5 * k)
+    unit = "1/MM²" if kind == "gaussian" else "1/MM"
+    cv.text(x1, y0 - 12 * u - 7 * u, f"{kind.upper()} {unit}", _LABEL, u, "end", halo=_WHITE)
+    ticks = [(hi, y0), (lo, y1)] if hi > lo else [(0.0, (y0 + y1) / 2)]
+    if lo < 0 < hi:
+        ticks.append((0.0, (y0 + y1) / 2))
+    for value, y in ticks:
+        cv.text(x0 - 5 * u, y - 3.5 * u, _value_text(value), _LABEL, u, "end", halo=_WHITE)
+        _screen_lines(cv, [((x0 - 3 * u) * k, y * k, x0 * k, y * k)], _LABEL, 0.5 * k)
+
+
+def _value_text(v: float) -> str:
+    if v == 0:
+        return "0"
+    return f"{v:.3g}".replace("e-0", "e-").replace("e+0", "e")
 
 
 def _shade(cv: _Canvas, tbuf: np.ndarray, tri: _Triangles, o: _Options, n_body: int,
@@ -963,7 +1185,7 @@ def _shade(cv: _Canvas, tbuf: np.ndarray, tri: _Triangles, o: _Options, n_body: 
     step = 1 << 19
     for c0 in range(0, len(pix), step):
         p = pix[c0:c0 + step]
-        cv.img[p] = _shade_pixels(tri, tbuf[p], p, cv.W)
+        cv.img[p] = _shade_pixels(tri, tbuf[p], p, cv.W, o)
     # cut faces: a light fill, hatched at 45 degrees in a dark tone of the body
     period = 7 * cv.k
     for ci, (base, bi) in enumerate(caps):
@@ -1000,7 +1222,7 @@ def _xray(cv: _Canvas, tri: _Triangles, o: _Options) -> None:
     a = o.alpha
     weight = a * (1 - a) ** rank
     step = 1 << 19
-    color = np.concatenate([_shade_pixels(tri, t[i:i + step], pix[i:i + step], cv.W)
+    color = np.concatenate([_shade_pixels(tri, t[i:i + step], pix[i:i + step], cv.W, o)
                             for i in range(0, len(pix), step)])
     count = np.bincount(pix, minlength=cv.W * cv.H)
     hit = count > 0
@@ -1375,10 +1597,12 @@ def _sheet(scene: _Scene, views: list[Any], w: int, h: int, o: _Options, lines: 
             fits[i] = {**fits[i], "scale": common}  # type: ignore[dict-item]
     img = np.empty((h, w, 3))
     img[:] = o.bg
+    shaded = [i for i, c in enumerate(cams) if c is not None and not (o.lines if lines is None else lines[i])]
     for i, (cam, fr) in enumerate(zip(cams, fits)):
         if cam is None or fr is None:
             continue
-        tile = _view(scene, cam, qw, qh, o.panel(o.lines if lines is None else lines[i]), fr)
+        legend = bool(shaded) and i == shaded[-1]  # one legend for the sheet, in the last shaded panel
+        tile = _view(scene, cam, qw, qh, o.panel(o.lines if lines is None else lines[i], legend), fr)
         y0, x0 = (i // 2) * qh, (i % 2) * qw
         img[y0:y0 + qh, x0:x0 + qw] = tile
         _text(img, x0 + 8, y0 + 8, labels[i] if labels else cam.label or chr(65 + i), _LABEL, 2)
@@ -1412,7 +1636,7 @@ def _drawing(scene: _Scene, w: int, h: int, o: _Options, drawing: Any) -> np.nda
     if spec.get("iso", True):
         views[free] = "iso"
     names = {"front": "FRONT", "top": "TOP", "left": "FROM LEFT", "right": "FROM RIGHT", "iso": "ISO"}
-    plain = _Options(o.k, o.bg, o.edges, o.lines, False, o.alpha, o.section, o.markers, o.annotate)
+    plain = replace(o, xray=False)
     img = _sheet(scene, views, w, h, plain, [v != "iso" for v in views], [names.get(v, "") for v in views], free)
     text = "THIRD-ANGLE PROJECTION - ISO A" if third else "FIRST-ANGLE PROJECTION - ISO E"
     qw, qh = w // 2, h // 2
@@ -1490,6 +1714,7 @@ _GLYPHS = {
     "|": ("  #  ",) * 7,
     "~": ("     ", "     ", " #   ", "# # #", "   # ", "     ", "     "),
     "°": (" ##  ", "#  # ", "#  # ", " ##  ", "     ", "     ", "     "),
+    "²": (" ##  ", "   # ", "  #  ", " ### ", "     ", "     ", "     "),
     "Ø": (" ####", "#  ##", "# # #", "# # #", "# # #", "##  #", "#### "),
     "×": ("     ", "#   #", " # # ", "  #  ", " # # ", "#   #", "     "),
     "±": ("  #  ", "  #  ", "#####", "  #  ", "  #  ", "     ", "#####"),
