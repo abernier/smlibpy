@@ -37,7 +37,8 @@ from .step_import import import_step
 from .render import render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
-from .sheetmetal import Bend, FlatPattern, bend, bend_allowance, bend_deduction, developed_length, flange, flat_pattern, unfold
+from .sheetmetal import (Bend, FlatPattern, bend, bend_allowance, bend_deduction, developed_length, flange,
+                         flat_pattern, unfold)
 
 __version__ = "0.1.2"
 

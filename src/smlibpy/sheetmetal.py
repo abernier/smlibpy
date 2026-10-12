@@ -303,8 +303,8 @@ def _zone_material(part: Part, p_in: Vector, across: Vector, along: Vector, n_in
     tol = _tol(part)
     depth = common.moved(Plane(center, x_dir=across, z_dir=n_in).location.inverse()).bbox().size.z
     if depth > thickness + tol:
-        raise ModelingError(f"{what}: the bend zone holds more than the sheet ({depth:.6g} deep across it, the sheet is "
-                            f"{thickness:.6g} thick): a rib, flange or other bend stands in it; move the line")
+        raise ModelingError(f"{what}: the bend zone holds more than the sheet ({depth:.6g} deep across it, the sheet "
+                            f"is {thickness:.6g} thick): a rib, flange or other bend stands in it; move the line")
     for f in common.faces():
         kind = f.geom_type
         if kind == "plane":
@@ -430,8 +430,8 @@ def _check_bend_result(result: Part, before: Part, what: str, strip: float, radi
     if problem is not None:
         raise ModelingError(f"{what}: the result is not a valid solid ({problem}); {hint}.{relief}")
     tol = _tol(result)
-    on_axis = [f for f in result.faces() if f.geom_type == "cylinder" and f.axis.direction.is_parallel(axis.direction, 1e-6)
-               and axis.distance_to(f.axis.origin) <= tol]
+    on_axis = [f for f in result.faces() if f.geom_type == "cylinder"
+               and f.axis.direction.is_parallel(axis.direction, 1e-6) and axis.distance_to(f.axis.origin) <= tol]
     inner = [f for f in on_axis if abs(f.radius - radius) <= tol]
     outer = [f for f in on_axis if abs(f.radius - radius - t) <= tol]
     if not inner or not outer:
@@ -477,7 +477,8 @@ def flange(part: Part, edge: Edge | ShapeList[Edge], length: float, *, angle: fl
         raise ValueError(f"flange: the edge must be straight, not a {e.geom_type}")
     a = float(angle)
     if a == 0 or not abs(a) < 180.0:
-        raise ValueError(f"flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got {angle!r})")
+        raise ValueError(f"flange: the angle must be between -180 and 180 degrees (exclusive) and not zero "
+                         f"(got {angle!r})")
     tol = _tol(part)
     planes = _planar_faces(part)
     faces = [f for f in e.faces() if f.geom_type == "plane"]
@@ -757,14 +758,15 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
         raise ModelingError(f"{what}: the unfolded part is not a valid solid ({problem}); {hint}")
     base_face = Face(work, anchor)
     if thickness is None:
-        thickness = _thickness_behind(_planar_faces(work), base_face.interior_point(), base_face.normal_at(), _tol(work))
+        thickness = _thickness_behind(_planar_faces(work), base_face.interior_point(), base_face.normal_at(),
+                                      _tol(work))
     if thickness is not None:
         pl = base_face.plane
         depth = work.moved(Plane(pl.origin, z_dir=pl.z_dir).location.inverse()).bbox().size.z
         if abs(depth - thickness) > _tol(work):
             raise ModelingError(f"{what}: the unfolded part is {depth:.6g} deep across the fixed face, the sheet is "
-                                f"{thickness:.6g} thick: some of it is not a bend (only pairs of coaxial cylinder faces "
-                                f"one thickness apart unfold); {hint}")
+                                f"{thickness:.6g} thick: some of it is not a bend (only pairs of coaxial cylinder "
+                                f"faces one thickness apart unfold); {hint}")
     if not _volume_agrees(work, expected, volume):
         raise ModelingError(f"{what}: the unfolded part has the volume {work.volume:.9g}, expected {expected:.9g}; "
                             f"{hint}")
