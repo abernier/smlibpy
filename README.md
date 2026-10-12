@@ -32,8 +32,15 @@ show(plate)
 
 ## Install
 
-smlibpy builds the kernel from source, which needs CMake and a C++17 compiler (about a
-minute on a laptop):
+```bash
+pip install smlibpy
+```
+
+Wheels are there for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows on Python
+3.10 to 3.14, with the kernel compiled in. For agents, `pip install "smlibpy[mcp]"` adds the
+MCP server; see [AI agents](docs/mcp.md).
+
+To build from source you need CMake and a C++17 compiler (about a minute on a laptop):
 
 ```bash
 git clone --recursive https://github.com/awv-informatik/smlibpy
@@ -97,7 +104,7 @@ export_glb(flange, "flange.glb")
 - [Concepts](docs/concepts.md): shapes, planes, locations, selections
 - [Sketches](docs/sketches.md), [parts](docs/parts.md), [features](docs/features.md), [surfaces](docs/surfaces.md)
 - [Measuring and analysis](docs/analysis.md), [files and viewer](docs/files.md)
-- [Examples](docs/examples.md) and [coming from build123d](docs/build123d.md)
+- [Examples](docs/examples.md)
 - [The kernel](docs/kernel.md): how smlibpy uses SMLib, accuracy, limitations
 - [AI agents](docs/mcp.md): the MCP server, so Claude and other agents can model with smlibpy
 

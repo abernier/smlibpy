@@ -1,0 +1,69 @@
+# Mesh / tessellate
+
+`tessellate` turns an exact shape into an indexed triangle mesh. `Mesh` is that mesh: plain
+NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
+
+## Signatures
+`tessellate(shape, tolerance=None, angle=15.0)`
+`shape.mesh(tolerance=None, angle=15.0)`: the same thing as a method.
+`Mesh(vertices, triangles, normals=None)`: build a mesh by hand.
+
+- `shape`: a `Part`, `Shell`, `Sketch`, `Face` or `ShapeList`. A `ShapeList` is merged into one
+  mesh. A plain Python `list`, an `Edge` or a `Wire` raises `TypeError`.
+- `tolerance`: the largest mesh-to-surface distance in mm. Default: 0.1 % of the bbox diagonal.
+- `angle`: the largest angle in degrees between neighbouring triangles on curved faces.
+
+## Fields
+| Field | Type | Meaning |
+|---|---|---|
+| `vertices` | `(n, 3)` float64 | positions, shared between triangles of one body |
+| `triangles` | `(m, 3)` int64 | vertex indices, counterclockwise seen from outside |
+| `normals` | `(m, 3, 3)` float32 or `None` | unit corner normals of the exact surface. `None` for `import_stl` and hand-built meshes |
+| `triangle_normals` | `(m, 3)` | computed from the winding |
+| `len(m)` | int | number of triangles |
+| `area`, `volume` | float | from the triangles |
+| `bbox()`, `center()` | | `center()` is the **bbox center**, not the centroid |
+
+## Tolerance and triangle count
+| Shape | tolerance / angle | triangles | volume error |
+|---|---|---|---|
+| Cylinder(10, 20) | default (0.035) / 15 | 252 (64 segments) | -0.16 % |
+| Cylinder(10, 20) | 0.001 / 15 | 1640 (411 segments) | |
+| Sphere(10) | default / 15 | 3584 | -0.41 % |
+| Sphere(10) | 0.01 / 5 | 16128 | -0.10 % |
+| Sphere(10) | 0.001 / 15 | 133984 | -0.013 % |
+| Box | anything | 12 | 0 |
+
+The stricter of the two limits wins. A mesh of a closed part is closed and outward, so `volume`
+is positive.
+
+## Gotchas
+- **Mesh Booleans (`m1 + m2`, `m1 - m2`, `m1 & m2`) give wrong results without an error.** Box
+  minus sphere came out at +171 % volume with 336 open edges, and other cases gave negative
+  volumes. They only work where no face of the result gets a hole. Always do the Boolean on
+  the exact parts and mesh the result.
+- Mesh Booleans also need meshes of one body made by `tessellate`. Meshes from `import_stl`,
+  `Mesh(...)` or `tessellate(ShapeList)` raise `TypeError: mesh Booleans need meshes produced
+  by tessellate()`.
+- The tolerance is not a hard limit near the poles of spheres. `Sphere(10)` with
+  `tolerance=0.01` had sliver triangles 0.68 mm off the surface. Add `angle=5`: the largest
+  deviation then drops to 0.006.
+- `volume` only means something for closed meshes. For an open mesh it changes when you move
+  the mesh, and reversed winding makes it negative.
+- Unlike shapes, a `Mesh` is mutable: `m.vertices += [10, 0, 0]` moves it in place. It has no
+  `name` or `color`.
+- Use the exact shape for measurements (`part.volume`, `part.area`). Mesh values are off by
+  the tolerance.
+
+## Example
+```python
+solid = Box(20, 20, 20) - Sphere(12)       # Boolean on exact parts first
+m = solid.mesh(tolerance=0.01)             # then mesh
+print(m, m.vertices.shape, m.triangles.shape, m.normals.shape)
+print(round(m.volume, 2), round(solid.volume, 2), round(m.area, 2), round(solid.area, 2))
+# Mesh(3816 vertices, 7648 triangles) (3816, 3) (7648, 3) (7648, 3, 3)
+# 1620.01 1616.28 2475.65 2475.4
+```
+
+## Related
+`export_stl`, `import_stl`, `export_glb`, `export_obj`, `render`.

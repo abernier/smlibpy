@@ -1,0 +1,10 @@
+b = Box(60, 40, 10)
+for name in ["back", "left"]:
+    f = getattr(b.faces(), name)().one()
+    p = b - (Pos(10, 2) * Hole(1, 3)).on(f)
+    c = p.faces().cylinders().one()
+    print("[13]", name, "plane:", f.plane, "Pos(10,2) -> axis origin", c.axis.origin, "dir", c.axis.direction)
+part = Box(60, 40, 10)
+part -= (Pos(20, 0) * Hole(5, 10)).on(part.faces().top())
+part -= (Pos(-20, 0) * Hole(2, 10)).on(part.faces().top())
+print("[13] repro todo 13:", sorted(round(f.axis.origin.x, 3) for f in part.faces().cylinders()))

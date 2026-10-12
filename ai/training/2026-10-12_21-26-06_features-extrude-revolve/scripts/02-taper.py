@@ -1,0 +1,40 @@
+def rep(tag, p):
+    b = p.bbox()
+    print(f"[{tag}] valid={p.is_valid()} vol={p.volume:.4f} min={tuple(round(v,4) for v in b.min.to_tuple())} max={tuple(round(v,4) for v in b.max.to_tuple())} faces={len(p.faces())}")
+
+def frustum(a0, a1, h):
+    return h/3*(a0+a1+math.sqrt(a0*a1))
+
+t = Rectangle(30, 30).extrude(10, taper=8)
+rep("taper8", t)
+top = 30 - 2*10*math.tan(math.radians(8))
+print("expected top side", top, "vol", frustum(900, top**2, 10))
+t2 = Rectangle(30, 30).extrude(10, taper=-8)
+rep("taper-8", t2)
+top2 = 30 + 2*10*math.tan(math.radians(8))
+print("expected top side", top2, "vol", frustum(900, top2**2, 10))
+t3 = Rectangle(30, 30).extrude(-10, taper=8)
+rep("neg-amount taper8", t3)
+t4 = Rectangle(30, 30).extrude(10, taper=8, both=True)
+rep("both taper8", t4)
+c = Circle(10).extrude(10, taper=5)
+rep("circle taper5", c)
+r1 = 10 - 10*math.tan(math.radians(5))
+print("expected cone vol", math.pi*10/3*(100+r1*r1+10*r1))
+# holes in the profile
+ring = (Circle(10) - Circle(5)).extrude(10, taper=5)
+rep("ring taper5", ring)
+r2 = 5 + 10*math.tan(math.radians(5))
+print("expected ring vol", math.pi*10/3*(100+r1*r1+10*r1) - math.pi*10/3*(25+r2*r2+5*r2))
+# rounded rectangle (doc example)
+core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)
+rep("rrect taper3", core)
+# on a side plane: does the taper follow the sketch normal?
+s = Rectangle(20, 20).on(Plane.front).extrude(10, taper=5)
+rep("front taper", s)
+s2 = Rectangle(20, 20).on(Plane.XY.offset(30)).extrude(10, taper=5)
+rep("offset-plane taper", s2)
+# direction is ignored?
+s3 = Rectangle(20, 20).extrude(10, taper=5, direction=(1, 0, 1))
+rep("taper+direction", s3)
+snapshot("sheet", t, ring, s, view="sheet")

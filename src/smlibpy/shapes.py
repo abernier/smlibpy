@@ -247,14 +247,14 @@ class ShapeList(list[T]):
 
     def filter_by(self, criterion: Axis | str | Callable[[T], bool]) -> ShapeList[T]:
         """``parallel_to(axis)``, ``of_type(name)`` or ``filter(predicate)``, depending on the
-        argument (as in build123d)."""
+        argument."""
         if isinstance(criterion, Axis):
             return self.parallel_to(criterion)
         if isinstance(criterion, str):
             return self.of_type(criterion)
         return self.filter(criterion)
 
-    # build123d-style operators: > sort ascending, < sort descending, >> top group, << bottom group
+    # operators: > sort ascending, < sort descending, >> top group, << bottom group
     def __gt__(self, key: SortKey) -> ShapeList[T]:  # type: ignore[override]
         return self.sort_by(key)
 

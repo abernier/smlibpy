@@ -2,20 +2,21 @@
 
 ## Install
 
-smlibpy compiles the SMLib kernel when it is installed. You need Python 3.10 or newer,
-CMake 3.20 or newer and a C++17 compiler (Xcode command line tools on macOS,
-`build-essential` on Linux, Visual Studio on Windows).
+```bash
+pip install smlibpy
+```
+
+There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for
+Python 3.10 to 3.14. Elsewhere pip builds the kernel from source, which needs CMake 3.20 or
+newer and a C++17 compiler (Xcode command line tools on macOS, `build-essential` on Linux,
+Visual Studio on Windows) and takes about a minute.
+
+To work on smlibpy itself, clone it with its submodule, build in place and put `src` on the
+Python path:
 
 ```bash
 git clone --recursive https://github.com/awv-informatik/smlibpy
 cd smlibpy
-pip install .
-```
-
-The build takes about a minute. To work on smlibpy itself, build in place and put `src` on
-the Python path:
-
-```bash
 cmake -S . -B build -G Ninja && cmake --build build
 export PYTHONPATH=$PWD/src
 ```

@@ -91,9 +91,9 @@ faces meeting at an edge. Single shapes offer the same: `face.edges()`, `edge.ve
 Closed surfaces such as cylinders have a seam where the surface meets itself. Seams are
 not real edges and are left out of `edges()`; `edges(seams=True)` includes them.
 
-## Coming from build123d
+## Operators
 
-`filter_by`, `sort_by` and `group_by` accept the same arguments as in build123d, and the
+`filter_by`, `sort_by` and `group_by` take an axis, a type name or a function, and the
 operators `>`, `<`, `>>` and `<<` sort, reverse-sort and take the top and bottom groups:
 
 ```python

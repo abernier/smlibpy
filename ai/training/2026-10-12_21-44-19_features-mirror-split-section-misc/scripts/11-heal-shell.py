@@ -1,0 +1,8 @@
+sh = extrude(CenterArc((0, 0), 10, 0, 180), 20)
+h = sh.heal()
+print("[shell heal]", type(h).__name__, round(h.area, 4), round(sh.area, 4))
+sk = Circle(5).heal()
+print("[sketch heal]", type(sk).__name__, round(sk.area, 4), sk.plane.z_dir.to_tuple())
+part = Box(40, 30, 20) - Cylinder(8, 30)
+n = part.to_nurbs()
+print("[to_nurbs bbox]", part.bbox().size.to_tuple(), n.bbox().size.to_tuple(), len(part.faces()), len(n.faces()))

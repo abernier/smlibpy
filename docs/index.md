@@ -35,6 +35,6 @@ short and readable:
 - **[Surfaces](surfaces.md)**: freeform modeling and stitching.
 - **[Measuring](analysis.md)** and **[files](files.md)**: mass properties, STEP, glTF.
 - **[Examples](examples.md)**: brackets, flanges, gears, a bottle.
-- **[Coming from build123d](build123d.md)** and **[the kernel](kernel.md)**.
+- **[The kernel](kernel.md)**: how smlibpy uses SMLib, accuracy and limits.
 
 </div>

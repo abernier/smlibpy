@@ -1,0 +1,5 @@
+# Wedge size seen in 03-align (parts domain, side finding)
+w = Wedge(10, 20, 30)
+print("[04] Wedge(10,20,30) bbox size:", w.bbox().size, "volume:", round(w.volume, 3), "expected 10*20*30/2 =", 3000)
+print("[04] vertices:", sorted({(round(v.x, 3), round(v.y, 3), round(v.z, 3)) for v in w.vertices()}))
+snapshot("wedge", w, view="sheet")

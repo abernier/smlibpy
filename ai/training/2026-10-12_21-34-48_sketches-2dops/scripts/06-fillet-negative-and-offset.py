@@ -1,0 +1,15 @@
+# Sketch.fillet with a negative radius, and fillet after offset (B-spline edges)
+neg = Rectangle(40, 20).fillet(-2)
+print("[06] fillet(-2):", repr(neg), "bbox:", neg.bbox().min, neg.bbox().max, "valid extrude:", neg.extrude(1).is_valid())
+off = Rectangle(40, 20).offset(-2)
+print("[06] offset edges:", [e.geom_type for e in off.edges()])
+print("[06] offset then fillet(3): area", round(off.fillet(3).area, 4), "(unchanged 576 means no fillet)")
+# workaround 1: fillet first, then offset
+a = Rectangle(40, 20).fillet(5).offset(-2)
+print("[06] fillet(5).offset(-2): area", round(a.area, 4), "formula 36*16 - (4-pi)*9:", round(576 - (4 - math.pi) * 9, 4))
+# workaround 2: rebuild the shrunk shape from a constructor
+b = Rectangle(36, 16).fillet(3)
+print("[06] Rectangle(36,16).fillet(3): area", round(b.area, 4))
+# offset of a filleted region: arcs follow (radius 5 -> 3)
+print("[06] equal:", round(a.area, 6) == round(b.area, 6))
+snapshot("neg", neg, Rectangle(40, 20).translate(0, 0, 0.01), view="top")

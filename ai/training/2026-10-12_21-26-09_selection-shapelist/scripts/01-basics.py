@@ -1,0 +1,31 @@
+# What a ShapeList is; counts; identity across calls; set operators
+part = Box(40, 30, 20) - Cylinder(6, 30)
+f = part.faces()
+e = part.edges()
+v = part.vertices()
+print("[01] types:", type(f).__name__, type(e).__name__, type(v).__name__, isinstance(f, list))
+print("[01] counts f/e/v/w:", len(f), len(e), len(v), len(part.wires()))
+print("[01] edges seams:", len(part.edges(seams=True)))
+print("[01] info:", part.info())
+# identity across calls
+e1 = part.edges(); e2 = part.edges()
+print("[01] e1[0]==e2[0]:", e1[0] == e2[0], " in:", e1[0] in e2)
+f1 = part.faces(); f2 = part.faces()
+print("[01] f1[0]==f2[0]:", f1[0] == f2[0])
+v1 = part.vertices(); v2 = part.vertices()
+print("[01] v1[0]==v2[0]:", v1[0] == v2[0])
+# order stable?
+print("[01] order stable edges:", [a == b for a, b in zip(e1, e2)].count(True), "/", len(e1))
+# set ops across calls
+a = part.edges().top()
+b = part.edges().parallel_to(Z)
+print("[01] top:", len(a), " parZ:", len(b))
+print("[01] a|b:", len(a | b), " a&b:", len(a & b), " a-b:", len(a - b), " a+b:", len(a + b))
+c = part.edges().top() | part.edges().bottom()
+print("[01] top|bottom:", len(c))
+print("[01] repr e:", repr(e))
+print("[01] repr top:", repr(a))
+print("[01] slice type:", type(e[0:3]).__name__, " index type:", type(e[0]).__name__)
+# chaining
+print("[01] chain:", len(part.edges().circles().top()), part.edges().circles().top())
+print("[01] cylinder radius:", part.faces().cylinders().one().radius)

@@ -1,0 +1,26 @@
+import os
+OUT = "ai/training/2026-10-12_21-26-31_files-exact/files"
+
+part = (Box(60, 40, 8) - Cylinder(4, 10)).named("bracket").colored("steelblue")
+part = part.fillet(part.edges().parallel_to(Z), 5)
+path = os.path.join(OUT, "01-bracket.step")
+export_step(part, path)
+back = import_step(path)
+print("[01] type:", type(back).__name__)
+print("[01] volume:", round(part.volume, 6), round(back.volume, 6), "diff", part.volume - back.volume)
+print("[01] faces:", len(part.faces()), len(back.faces()))
+print("[01] edges:", len(part.edges()), len(back.edges()))
+print("[01] bbox:", part.bbox(), back.bbox())
+print("[01] name:", part.name, back.name)
+print("[01] color:", part.color, back.color)
+print("[01] valid:", back.is_valid())
+print("[01] face types orig:", sorted(f.geom_type for f in part.faces()))
+print("[01] face types back:", sorted(f.geom_type for f in back.faces()))
+txt = open(path).read()
+for ent in ["MANIFOLD_SOLID_BREP", "CYLINDRICAL_SURFACE", "PLANE", "B_SPLINE", "COLOUR_RGB", "PRODUCT("]:
+    print("[01]", ent, txt.count(ent))
+print("[01] product line:", [l for l in txt.splitlines() if "PRODUCT(" in l][0])
+print("[01] solid line:", [l for l in txt.splitlines() if "MANIFOLD_SOLID_BREP" in l][0])
+print("[01] colour line:", [l for l in txt.splitlines() if "COLOUR_RGB" in l][0])
+print("[01] size bytes:", os.path.getsize(path))
+snapshot("back", back)

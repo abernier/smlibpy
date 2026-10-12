@@ -60,7 +60,7 @@ occ = pytest.importorskip  # alias for readability below
     ("loft", loft([Rectangle(20, 20), Circle(8).translate(0, 0, 20)])),
 ])
 def test_step_reads_back_in_opencascade(tmp_path, plate, name, shape):
-    """Optional cross-check with an independent kernel (needs OCP, e.g. from build123d)."""
+    """Optional cross-check with an independent kernel (needs OCP, e.g. cadquery-ocp-novtk)."""
     STEPControl = pytest.importorskip("OCP.STEPControl")
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp

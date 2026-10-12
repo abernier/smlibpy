@@ -1,0 +1,35 @@
+b = Box(20, 10, 4)
+print("[01] type:", type(b).__name__)
+print("[01] repr:", repr(b))
+print("[01] str:", str(b))
+print("[01] info:", b.info())
+print("[01] is_valid:", b.is_valid())
+print("[01] volume:", round(b.volume, 6), "area:", round(b.area, 6))
+print("[01] center:", b.center())
+print("[01] bbox:", b.bbox())
+print("[01] solids:", len(b.solids()))
+print("[01] name/color default:", b.name, b.color)
+n = b.named("plate")
+print("[01] named repr:", repr(n), "orig name:", b.name)
+c = n.colored("steelblue")
+print("[01] colored:", c.name, c.color, "| n.color:", n.color)
+c2 = b.colored((1.0, 0.0, 0.0))
+print("[01] rgb color:", c2.color)
+c3 = b.colored("#ff8800")
+print("[01] hex color:", c3.color)
+print("[01] equal self:", b == b, "copy equal:", b == b.named("x"))
+moved = n.translate(5, 0, 0)
+print("[01] moved keeps name/color:", moved.name, moved.color)
+cut = c - Cylinder(2, 10)
+print("[01] after cut name/color:", cut.name, cut.color)
+fused = Cylinder(2, 10).colored("red") + c
+print("[01] fuse left wins:", fused.name, fused.color)
+try:
+    Part()
+except Exception as e:
+    print("[01] Part():", type(e).__name__, e)
+try:
+    b.name = "direct"
+    print("[01] direct assign name works:", b.name)
+except Exception as e:
+    print("[01] direct assign:", type(e).__name__, e)

@@ -1,0 +1,21 @@
+def bb(p):
+    b = p.bbox()
+    return tuple(round(v, 6) for v in b.min.to_tuple()), tuple(round(v, 6) for v in b.max.to_tuple())
+
+w = Wedge(20, 10, 8)
+print("[13] wedge:", w, "bbox:", bb(w), "valid:", w.is_valid())
+print("[13] volume:", round(w.volume, 4), "expected l*w*h/2:", 20 * 10 * 8 / 2)
+print("[13] info:", w.info())
+print("[13] vertices:", sorted(tuple(round(c, 3) for c in v.point.to_tuple()) for v in w.vertices()))
+for f in w.faces():
+    print("[13] face", tuple(round(c, 3) for c in f.center().to_tuple()), "n:", tuple(round(c, 3) for c in f.normal_at().to_tuple()), "area:", round(f.area, 3))
+w2 = Wedge(20, 10, 8, 5)
+print("[13] top_length=5:", w2, "bbox:", bb(w2), "valid:", w2.is_valid())
+print("[13] volume:", round(w2.volume, 4), "expected (20+5)/2*8*10:", (20 + 5) / 2 * 8 * 10)
+print("[13] vertices:", sorted(tuple(round(c, 3) for c in v.point.to_tuple()) for v in w2.vertices()))
+w3 = Wedge(20, 10, 8, 20)
+print("[13] top_length=length:", w3, "bbox:", bb(w3), "volume:", round(w3.volume, 4))
+w4 = Wedge(20, 10, 8, 30)
+print("[13] top_length>length:", w4, "bbox:", bb(w4), "volume:", round(w4.volume, 4), "valid:", w4.is_valid())
+snapshot("wedge", w, view="sheet")
+snapshot("wedge2", w2, view="sheet")
