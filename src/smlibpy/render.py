@@ -61,6 +61,7 @@ _OVERLAY = np.array([0, 90, 220]) / 255  # sketches drawn over solids
 _DIVIDER = np.array([190, 190, 190]) / 255
 _WHITE = np.ones(3)
 _FIT = 0.88  # share of the picture the shapes fill
+_MAX_CANVAS = 1 << 24  # subpixels of a supersampled picture; larger pictures get a lower factor
 _CAPTION = 34  # pixels kept free under the iso view of a drawing, for the projection method
 
 
@@ -175,7 +176,7 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
             pictures of a changed model compare pixel by pixel (:func:`diff_images`).
             Overrides ``zoom`` and ``look_at``.
         supersample: Render at this many times the size and average down (1 to 4); 2 gives
-            smooth edges.
+            smooth edges. Very large pictures get a lower factor (16 million subpixels at most).
         colors: ``"native"``: each shape's own color, or a palette color by its position;
             ``"distinct"``: a palette color per body, also per solid of a part.
         lines: Line style instead of shading: no fill, visible edges and silhouettes solid,
@@ -217,6 +218,7 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
     k = int(supersample)
     if not 1 <= k <= 4:
         raise ValueError(f"supersample must be 1 to 4, got {supersample!r}")
+    k = max(1, min(k, int(math.sqrt(_MAX_CANVAS / (w * h)))))
     if colors not in ("native", "distinct"):
         raise ValueError(f"colors must be 'native' or 'distinct', got {colors!r}")
     if not 0 < float(xray_alpha) < 1:
@@ -701,7 +703,7 @@ class _Canvas:
         self.cam = cam
         self.s = frame["scale"] * k
         self.mx, self.my = frame["mid_x"], frame["mid_y"]
-        self.img = np.empty((self.W * self.H, 3))
+        self.img = np.empty((self.W * self.H, 3), dtype=np.float32)
         self.img[:] = bg
         self.zbuf = np.full(self.W * self.H, -np.inf)
         self.u = max(1, round(min(w, h) / 600))  # overlays grow with large pictures
@@ -920,7 +922,7 @@ def _centers(pix: np.ndarray, W: int) -> tuple[np.ndarray, np.ndarray]:
 
 def _depth_fill(cv: _Canvas, tri: _Triangles) -> np.ndarray:
     """The depth test: per pixel the nearest triangle (-1: none)."""
-    tbuf = np.full(cv.W * cv.H, -1, dtype=np.int64)
+    tbuf = np.full(cv.W * cv.H, -1, dtype=np.int32)
     for t, pix in _fragments(tri, cv.W, cv.H):
         xc, yc = _centers(pix, cv.W)
         z = tri.depth(t, xc, yc)
