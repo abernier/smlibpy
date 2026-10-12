@@ -32,6 +32,9 @@
 namespace
 {
 
+// M_PI is not standard C++; MSVC only defines it with _USE_MATH_DEFINES
+constexpr double kPi = 3.14159265358979323846;
+
 const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 
 void check(SmStatus status, const char* what)
@@ -135,7 +138,7 @@ SmCurve* make_edge_curve(const py::dict& e)
         SmVector3d y = z * x;
         auto angle = [&](const SmVector3d& p) {
             SmVector3d d = p - o;
-            double deg = std::atan2(d.Dot(y) / r2, d.Dot(x) / r1) * 180.0 / M_PI;
+            double deg = std::atan2(d.Dot(y) / r2, d.Dot(x) / r1) * 180.0 / kPi;
             return std::fmod(deg + 360.0, 360.0);
         };
         bool forward = py::cast<bool>(e["forward"]);

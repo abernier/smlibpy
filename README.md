@@ -4,7 +4,8 @@
 
 # smlibpy
 
-**Python CAD on SMLib, the NURBS solid modeling kernel NVIDIA released as open source.**
+A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep).
+It comes with an MCP server, so your agent can build parts too.
 
 ```python
 from smlibpy import *
@@ -18,17 +19,15 @@ plate.export("plate.step")
 show(plate)
 ```
 
-- **Exact.** Parts are boundary representations of NURBS and analytic surfaces. Volumes, areas and
-  inertia come from integration over that exact geometry (relative error below 1e-6), and STEP files
-  carry it too, with planes, cylinders and cones written as such.
-- **One way to model.** Shapes are values. `+`, `-` and `&` combine them; features are methods that
-  return new shapes. There are no builder contexts and no hidden state.
-- **Selections that read like English.** `part.faces().top()`,
-  `part.edges().parallel_to(Z).concave()`, `part.faces().cylinders().largest()`.
-- **The whole kernel.** Circular, variable-radius and curvature-continuous (G2/G3) blend fillets,
-  drafted extrusions, lofts, sweeps, shells, freeform surfaces, stitching, intersections,
-  silhouettes, mesh Booleans and mass properties.
-- **Fast.** The plate above builds in about 40 ms.
+Parts are B-reps with exact surfaces: planes, cylinders, cones, spheres, tori and NURBS.
+Volumes, areas and inertia are integrated over those surfaces, and STEP files keep them as they
+are. You combine shapes with `+`, `-` and `&`, and every feature returns a new part. Faces and
+edges are picked by their geometry, for example `part.faces().top()` or
+`part.edges().parallel_to(Z).concave()`. The plate above builds in about 40 ms.
+
+The kernel does circular, variable-radius and curvature-continuous (G2/G3) fillets, drafted
+extrusions, lofts, sweeps, shells, freeform surfaces, stitching, intersections and mass
+properties.
 
 ## Install
 
@@ -36,7 +35,7 @@ show(plate)
 pip install smlibpy
 ```
 
-Wheels are there for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows on Python
+There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for Python
 3.10 to 3.14, with the kernel compiled in. For agents, `pip install "smlibpy[mcp]"` adds the
 MCP server; see [AI agents](docs/mcp.md).
 
@@ -50,8 +49,10 @@ pip install .
 
 ## A short tour
 
-**Sketch, then build.** Sketches are 2D regions; place them on any plane or face, then extrude,
-revolve, loft or sweep them.
+### Sketches
+
+Sketches are 2D regions. Place them on a plane or a face, then extrude, revolve, loft or sweep
+them.
 
 ```python
 profile = Polygon((25, 0), (60, 0), (60, 12), (35, 12), (35, 40), (25, 40))
@@ -59,15 +60,19 @@ flange = profile.on(Plane.front).revolve(Z)
 flange -= PolarLocations(47.5, 8) * Cylinder(5, 30)
 ```
 
-**Select and finish.** Selectors chain and always return lists; a one-element list works wherever
-a single shape is expected.
+### Selecting edges and faces
+
+Selectors chain and always return lists. A list with one element works wherever a single shape
+is expected.
 
 ```python
 flange = flange.fillet(flange.edges().concave(), 4)
 flange = flange.chamfer(flange.faces().top().edges().circles(), 1)
 ```
 
-**Smooth blends.** Fillets can be circular, vary in radius, or be curvature continuous.
+### Fillets
+
+Fillets can be circular, vary in radius, or be curvature continuous.
 
 ```python
 box = Box(30, 20, 10)
@@ -75,7 +80,9 @@ soft = box.fillet(box.edges(), 3, continuity="G2")
 ramp = box.fillet(box.edges().parallel_to(Z).first, (1, 4))
 ```
 
-**Surfaces.** Open curves make surfaces; stitch them, thicken them, or start from a point grid.
+### Surfaces
+
+Open curves make surfaces. You can stitch them, thicken them, or start from a grid of points.
 
 ```python
 import math
@@ -84,14 +91,16 @@ grid = [[(x, y, 4 * math.sin(x / 15) * math.cos(y / 15)) for x in range(0, 60, 1
 panel = surface(grid).thicken(2)
 ```
 
-**Measure.**
+### Measuring
 
 ```python
 mp = flange.mass_properties(density=7.85e-3)   # steel, g/mm³
 mp.mass, mp.center, mp.inertia
 ```
 
-**Exchange.** STEP, STL, glTF/GLB, OBJ and SMLib's exact native format.
+### Files
+
+STEP, STL, glTF/GLB, OBJ and SMLib's own exact format.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")
@@ -110,8 +119,9 @@ export_glb(flange, "flange.glb")
 
 ## Status
 
-smlibpy is young. It covers solid and surface modeling, and reads and writes STEP with
-the exact geometry. Assemblies with product structure, 2D drawings and text are next.
+smlibpy is new (version 0.1). It covers solid and surface modeling, and reads and writes STEP
+with the exact geometry. Assemblies with product structure, 2D drawings and text are not there
+yet.
 
 ## License
 
