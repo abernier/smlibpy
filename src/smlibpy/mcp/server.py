@@ -67,8 +67,8 @@ Variables persist between calls: build in steps, one feature or a few at a time.
 3. Verify after every step: print numbers (part.volume, part.bbox(), part.is_valid(), \
 len(part.faces())) and look with snapshot(view="sheet"). A picture alone can mislead (it is scaled \
 to fit); a number alone can too. Fix what is wrong before going on.
-4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png). \
-Tell the user where the file is.
+4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png, and dxf \
+for sketches and sections). Tell the user where the file is.
 
 CONVENTIONS
 - Millimeters and degrees, Z up. Primitives are centered on the origin unless align= says otherwise.
@@ -311,7 +311,8 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def save(
-        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, smb (native, one body) or png.")] = "step",
+        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, smb (native, one body), png, or dxf "
+                                     "(2D: sketches, sections, wires; parts are left out).")] = "step",
         path: Annotated[str | None, Field(description="Absolute file path. Default: a file in the temp folder.")] = None,
         names: Annotated[list[str] | None, Field(description="Variables to write instead of what is shown.")] = None,
     ) -> str:
@@ -323,10 +324,11 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def load(
-        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), SMLib (.smb) or STL file.")],
+        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), SMLib (.smb), STL or DXF "
+                                   "(.dxf, read as a sketch) file.")],
         name: Annotated[str | None, Field(description="Variable to hold it. Default: from the file name.")] = None,
     ) -> str:
-        """Read a file into a session variable (a Part, a Shell, a list of them, or a Mesh for STL)."""
+        """Read a file into a session variable (a Part, a Shell, a list of them, a Mesh for STL, a Sketch for DXF)."""
         res = await call(session.load, path, name)
         if not res.get("ok"):
             return f"Load failed: {res.get('error')}"
