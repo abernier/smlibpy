@@ -215,6 +215,29 @@ def test_lattice_on_curved_parts_is_exact_up_to_max_degree():
     assert blob.is_valid() and deviation(lat4._plan(sph, 1e-6), blob) < 1e-6
 
 
+def test_dense_free_form_faces_stay_within_the_tolerance():
+    """An offset of a free-form surface has thousands of knots: exact images would be huge, so
+    the lattice approximates that face; twist and lattice must stay within the tolerance.
+    (Volumes are not compared here: the kernel integrates such dense bodies only to about 1e-6,
+    and slowly; its own exact composition of the twist measures like the result.)"""
+    from smlibpy import surface
+
+    n = 10
+    pts = [[(x, y, 3 * math.sin(x / 7) * math.cos(y / 9)) for y in np.linspace(0, 100, n)] for x in np.linspace(0, 100, n)]
+    slab = surface(pts).thicken(5)
+    lat = Lattice(slab, 3)
+    lat.move((1, 1, -1), (0, 0, 5))
+    plan = lat._plan(slab, 1e-6)
+    out = lat.apply(slab)
+    spec = dict(plan.spec, max_degree=D.MAX_DEGREE)
+    assert out.is_valid() and max(k.deform.deviation(slab._brep, out._brep, spec, 40).values()) < 1e-6
+    axis = Axis(tuple(slab.bbox().center), (0, 0, 1))
+    plan = D._plan_twist(slab, 30.0, axis, None, None, 1e-6)
+    tw = slab.twist(30, axis=axis)
+    spec = dict(plan.spec, max_degree=D.MAX_DEGREE)
+    assert tw.is_valid() and max(k.deform.deviation(plan.shape._brep, tw._brep, spec, 40).values()) < 1e-6
+
+
 def test_lattice_editing_helpers():
     lat = Lattice(Box(10, 10, 10), (2, 3, 4))
     assert lat.points.shape == (2, 3, 4, 3) and lat.counts == (2, 3, 4)

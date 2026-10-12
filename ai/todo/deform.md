@@ -38,6 +38,10 @@
   bodies integrate to 1e-9 at 1e-10. Known kernel limitation (usd-brep KNOWN_ISSUES,
   "Area, volume and mass properties ...").
 - **Workaround:** `mass_properties(accuracy=1e-10)` (documented in the deform guides).
+- **Dense bodies:** a free-form surface thickened by 5 (an offset face with 11025 poles)
+  integrates to 51677.2654 at 1e-10, its exact twist (the kernel's own `SmSrfInVolume`
+  composition, 51677.3253 at 1e-8) and our NURBS twist (51677.3259) agree with each other but
+  not with the original (1.2e-6, a twist keeps the volume). 1e-10 takes 12 to 18 s there.
 
 ### 3. `offset()` fails outward on most deformed parts
 - **Session:** same, script `14-downstream.py`

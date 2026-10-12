@@ -1,9 +1,9 @@
 diff --git a/src/smlibpy/skill/references/deform/generic.md b/src/smlibpy/skill/references/deform/generic.md
 new file mode 100644
-index 0000000..e32f862
+index 0000000..6e28806
 --- /dev/null
 +++ b/src/smlibpy/skill/references/deform/generic.md
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,88 @@
 +# Deformations: what they share
 +
 +`twist`, `taper`, `bend` and `Lattice` deform an existing part: every point of space moves,
@@ -23,8 +23,9 @@ index 0000000..e32f862
 +Twist and bend use sines and cosines, which no NURBS reproduces. Where the image is still
 +polynomial it stays exact: the ends of a twisted bar are only turned, the straight rulings
 +of its sides stay straight (degree 1 across), a bent bar's end faces are planes. A face whose
-+exact lattice image needs more than degree 12 (a sphere in a 4 x 4 x 4 lattice needs 18) is
-+fitted within the tolerance instead. Every face keeps its parameterization, so its trim
++exact lattice image needs more than degree 12 (a sphere in a 4 x 4 x 4 lattice needs 18) or
++more than 40000 control points (the offset face of a thickened free-form surface, 11025
++poles, would get 514794) is fitted within the tolerance instead. Every face keeps its parameterization, so its trim
 +curves are the original ones. All faces come back as `geom_type == "bspline"`, even the
 +planes (selectors such as `.planar()` still find the flat ones).
 +

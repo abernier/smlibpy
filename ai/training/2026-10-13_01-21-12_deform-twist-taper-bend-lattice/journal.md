@@ -124,6 +124,14 @@ Questions:
   valid; numbers in recipes/deform.md.
 ![recipe](files/23-recipe-recipe.png)
 
+### 25-dense.py
+- A free-form surface thickened by 5: the offset face has 11025 poles. Lattice: valid in
+  1.18 s; that face is fitted within the tolerance (104313 poles; the exact image would be
+  degree 9 with 514794 poles), the other faces are exact. Twist: valid in 1.54 s.
+- The kernel integrates the original to 51677.2654 (1e-10, 12 s) but its own exact
+  composition of the twist and our result to 51677.325: the integration of such dense bodies
+  is good to about 1e-6. **📌 doc:** dense faces. TODO 2.
+
 ## Coverage
 - [x] every API ran; every parameter tried (angle sign, axis, start/end, tolerance, scale,
   radius, plane, counts, margin, move/scale/rotate/layer/map/copy/reset)

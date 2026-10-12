@@ -213,9 +213,10 @@ std::vector<double> lobatto(int d)
 
 // A scheme on the given breaks. `bezier`: every interior break has multiplicity d (piecewise
 // polynomial, any continuity) and the sites are Lobatto nodes in every span (well conditioned for
-// high degrees; used for exact fits). Otherwise breaks marked hard get multiplicity d, the others
-// 1 (C2 for cubics), and the sites are the Greville abscissae.
-Scheme make_scheme(int d, const std::vector<double>& breaks, const std::vector<char>& hard, bool bezier)
+// high degrees; used for exact fits). Otherwise a break gets the multiplicity that allows the
+// continuity of the composition there (d - continuity, at least 1) and the sites are the
+// Greville abscissae.
+Scheme make_scheme(int d, const std::vector<double>& breaks, const std::vector<int>& cont, bool bezier)
 {
     if (d < 1 || d > kMaxDegree)
         throw std::invalid_argument("deform: unsupported degree");
@@ -225,7 +226,7 @@ Scheme make_scheme(int d, const std::vector<double>& breaks, const std::vector<c
     const size_t nb = breaks.size();
     for (size_t k = 0; k < nb; ++k)
     {
-        const int m = (k == 0 || k + 1 == nb) ? d + 1 : ((bezier || hard[k]) ? d : 1);
+        const int m = (k == 0 || k + 1 == nb) ? d + 1 : (bezier ? d : std::clamp(d - cont[k], 1, d));
         s.mults.push_back(m);
         for (int r = 0; r < m; ++r)
             s.U.push_back(breaks[k]);
@@ -351,6 +352,7 @@ struct Deformation
     double tolerance = 1e-6;
     int max_degree = 12;
     int approx_degree = 5;  // degree of approximated directions (quintic: few knots)
+    size_t max_exact_points = 40000;  // larger exact faces (dense originals, high degrees) are approximated
     double exact_tol = 1e-9;  // set from the model size
 
     int piece_at(const SmPoint3d& p) const
@@ -478,6 +480,8 @@ std::unique_ptr<Deformation> make_deformation(const py::dict& spec, double size)
         def->tolerance = py::cast<double>(spec["tolerance"]);
     if (spec.contains("max_degree"))
         def->max_degree = std::clamp(py::cast<int>(spec["max_degree"]), 1, 17);
+    if (spec.contains("max_exact_points"))
+        def->max_exact_points = py::cast<size_t>(spec["max_exact_points"]);
     if (spec.contains("approx_degree"))
         def->approx_degree = std::clamp(py::cast<int>(spec["approx_degree"]), 2, 9);
     if (!(def->tolerance > 0.0))
@@ -498,11 +502,14 @@ using CurveFn = std::function<H4(double)>;
 constexpr double kTest[] = {0.1371, 0.3, 0.5, 0.7, 0.8629};
 constexpr double kMixed[] = {0.2213, 0.6487, 0.9123};
 
-// Breaks with flags: hard breaks (from the original's knots) keep full multiplicity.
+// Breaks and the continuity of the composition at each: the original's knots carry the
+// original's continuity there (degree - multiplicity), breaks added by refinement are smooth.
+constexpr int kSmooth = 1 << 20;
+
 struct Breaks
 {
     std::vector<double> at;
-    std::vector<char> hard;
+    std::vector<int> cont;
 };
 
 Breaks split_marked(const Breaks& b, const std::vector<char>& mark)
@@ -511,15 +518,15 @@ Breaks split_marked(const Breaks& b, const std::vector<char>& mark)
     for (size_t i = 0; i + 1 < b.at.size(); ++i)
     {
         out.at.push_back(b.at[i]);
-        out.hard.push_back(b.hard[i]);
+        out.cont.push_back(b.cont[i]);
         if (mark[i])
         {
             out.at.push_back(0.5 * (b.at[i] + b.at[i + 1]));
-            out.hard.push_back(0);
+            out.cont.push_back(kSmooth);
         }
     }
     out.at.push_back(b.at.back());
-    out.hard.push_back(b.hard.back());
+    out.cont.push_back(b.cont.back());
     return out;
 }
 
@@ -609,40 +616,86 @@ double surface_error(const SurfFn& f, const SurfFit& fit)
 
 // Exact fit of a composition that is piecewise polynomial on the original's patches: the
 // smallest degrees that reproduce it (bisection; exactness is monotone in the degree).
-// Returns false when it is not polynomial up to the caps.
+// Returns false when it is not polynomial up to the caps. Every patch is fitted on its own
+// (full multiplicity at the breaks), so the degrees are searched on a few patches of a large
+// surface first and then checked on all.
 bool fit_exact_surface(const SurfFn& f, SurfFit& fit, const Breaks& ub, const Breaks& vb, int cu, int cv,
-                       double exact_tol)
+                       double exact_tol, size_t max_points)
 {
-    auto exact_at = [&](int du, int dv) {
-        fit.su = make_scheme(du, ub.at, ub.hard, true);
-        fit.sv = make_scheme(dv, vb.at, vb.hard, true);
+    auto search = [&](const std::function<bool(int, int)>& exact_at) -> std::pair<int, int> {
+        if (!exact_at(cu, cv))
+            return {0, 0};
+        int lo = 1, hi = cu;
+        while (lo < hi)
+        {
+            const int mid = (lo + hi) / 2;
+            if (exact_at(mid, cv))
+                hi = mid;
+            else
+                lo = mid + 1;
+        }
+        const int du = lo;
+        lo = 1;
+        hi = cv;
+        while (lo < hi)
+        {
+            const int mid = (lo + hi) / 2;
+            if (exact_at(du, mid))
+                hi = mid;
+            else
+                lo = mid + 1;
+        }
+        return {du, lo};
+    };
+    auto exact_full = [&](int du, int dv) {
+        fit.su = make_scheme(du, ub.at, ub.cont, true);
+        fit.sv = make_scheme(dv, vb.at, vb.cont, true);
         fit_net(f, fit);
         fit.err = surface_error(f, fit);
         return fit.err <= exact_tol;
     };
-    if (!exact_at(cu, cv))
+    const size_t nu = ub.at.size() - 1, nv = vb.at.size() - 1;
+    if (nu * nv > 9)
+    {
+        // probe patches: the first, middle and last span in each direction
+        auto spans = [](const Breaks& b) {
+            const size_t n = b.at.size() - 1;
+            std::vector<Breaks> out;
+            for (size_t i : {size_t(0), n / 2, n - 1})
+            {
+                if (!out.empty() && out.back().at[0] == b.at[i])
+                    continue;
+                out.push_back(Breaks{{b.at[i], b.at[i + 1]}, {0, 0}});
+            }
+            return out;
+        };
+        const std::vector<Breaks> pu = spans(ub), pv = spans(vb);
+        auto exact_probes = [&](int du, int dv) {
+            for (const Breaks& bu : pu)
+                for (const Breaks& bv : pv)
+                {
+                    SurfFit t;
+                    t.su = make_scheme(du, bu.at, bu.cont, true);
+                    t.sv = make_scheme(dv, bv.at, bv.cont, true);
+                    fit_net(f, t);
+                    if (surface_error(f, t) > exact_tol)
+                        return false;
+                }
+            return true;
+        };
+        const auto [du, dv] = search(exact_probes);
+        if (du == 0 || (nu * du + 1) * (nv * dv + 1) > max_points)
+            return false;
+        if (exact_full(du, dv))
+        {
+            fit.exact = true;
+            return true;
+        }
+    }
+    const auto [du, dv] = search(exact_full);
+    if (du == 0)
         return false;
-    int lo = 1, hi = cu;
-    while (lo < hi)
-    {
-        const int mid = (lo + hi) / 2;
-        if (exact_at(mid, cv))
-            hi = mid;
-        else
-            lo = mid + 1;
-    }
-    const int du = lo;
-    lo = 1;
-    hi = cv;
-    while (lo < hi)
-    {
-        const int mid = (lo + hi) / 2;
-        if (exact_at(du, mid))
-            hi = mid;
-        else
-            lo = mid + 1;
-    }
-    exact_at(du, lo);
+    exact_full(du, dv);
     fit.exact = true;
     return true;
 }
@@ -655,8 +708,8 @@ void fit_approx_surface(const SurfFn& f, SurfFit& fit, Breaks ub, Breaks vb, int
 {
     p = std::max(p, 1);
     q = std::max(q, 1);
-    fit.su = make_scheme(p, ub.at, ub.hard, true);
-    fit.sv = make_scheme(q, vb.at, vb.hard, true);
+    fit.su = make_scheme(p, ub.at, ub.cont, true);
+    fit.sv = make_scheme(q, vb.at, vb.cont, true);
     fit_net(f, fit);
     double eu = 0.0, ev = 0.0;
     for (size_t i = 0; i < fit.nu(); ++i)
@@ -672,8 +725,8 @@ void fit_approx_surface(const SurfFn& f, SurfFit& fit, Breaks ub, Breaks vb, int
     const size_t max_spans = 1024, max_points = 200000;
     for (int iter = 0; iter < 60; ++iter)
     {
-        fit.su = make_scheme(du, ub.at, ub.hard, exact_u);
-        fit.sv = make_scheme(dv, vb.at, vb.hard, exact_v);
+        fit.su = make_scheme(du, ub.at, ub.cont, exact_u);
+        fit.sv = make_scheme(dv, vb.at, vb.cont, exact_v);
         fit_net(f, fit);
         std::vector<char> mu(fit.nu(), 0), mv(fit.nv(), 0);
         std::vector<CellErr> errs(fit.nu() * fit.nv());
@@ -770,7 +823,7 @@ double curve_error(const CurveFn& f, const CurveFit& fit)
 bool fit_exact_curve(const CurveFn& f, CurveFit& fit, const Breaks& b, int cap, double exact_tol)
 {
     auto exact_at = [&](int d) {
-        fit.s = make_scheme(d, b.at, b.hard, true);
+        fit.s = make_scheme(d, b.at, b.cont, true);
         fit_points(f, fit);
         fit.err = curve_error(f, fit);
         return fit.err <= exact_tol;
@@ -794,13 +847,13 @@ bool fit_exact_curve(const CurveFn& f, CurveFit& fit, const Breaks& b, int cap, 
 void fit_approx_curve(const CurveFn& f, CurveFit& fit, Breaks b, int p, double tol, double exact_tol, int approx_degree)
 {
     p = std::max(p, 1);
-    fit.s = make_scheme(p, b.at, b.hard, true);
+    fit.s = make_scheme(p, b.at, b.cont, true);
     fit_points(f, fit);
     const bool exact = curve_error(f, fit) <= exact_tol;
     const int d = exact ? p : std::max(p, approx_degree);
     for (int iter = 0; iter < 60; ++iter)
     {
-        fit.s = make_scheme(d, b.at, b.hard, exact);
+        fit.s = make_scheme(d, b.at, b.cont, exact);
         fit_points(f, fit);
         std::vector<char> mark(b.at.size() - 1, 0);
         double err = 0.0;
@@ -911,6 +964,7 @@ struct SurfaceInfo
     bool rational = false;
     int p = 3, q = 3;
     std::vector<double> uk, vk;  // unique knots
+    std::vector<int> um, vm;     // their multiplicities
     std::unique_ptr<SmBSplineSurface> weight;  // x = denominator
 };
 
@@ -932,9 +986,15 @@ SurfaceInfo surface_info(const SmSurface* s)
     info.p = static_cast<int>(ud);
     info.q = static_cast<int>(vd);
     for (ULONG i = 0; i < uk.GetSize(); ++i)
+    {
         info.uk.push_back(uk[i]);
+        info.um.push_back(static_cast<int>(um[i]));
+    }
     for (ULONG i = 0; i < vk.GetSize(); ++i)
+    {
         info.vk.push_back(vk[i]);
+        info.vm.push_back(static_cast<int>(vm[i]));
+    }
     if (w.GetSize())
     {
         bool varies = false;
@@ -962,6 +1022,7 @@ struct CurveInfo
     bool rational = false;
     int p = 3;
     std::vector<double> k;
+    std::vector<int> m;
     std::unique_ptr<SmBSplineCurve> weight;
 };
 
@@ -982,7 +1043,10 @@ CurveInfo curve_info(const SmCurve* c)
     info.nurbs = true;
     info.p = static_cast<int>(deg);
     for (ULONG i = 0; i < knots.GetSize(); ++i)
+    {
         info.k.push_back(knots[i]);
+        info.m.push_back(static_cast<int>(mults[i]));
+    }
     if (w.GetSize())
     {
         bool varies = false;
@@ -1004,16 +1068,21 @@ CurveInfo curve_info(const SmCurve* c)
     return info;
 }
 
-Breaks breaks_in(const std::vector<double>& knots, double a, double b)
+// The knots of the original inside [a, b] as breaks, with the original's continuity at each.
+Breaks breaks_in(const std::vector<double>& knots, const std::vector<int>& mults, int degree, double a, double b)
 {
     Breaks out;
     out.at.push_back(a);
+    out.cont.push_back(0);
     const double eps = 1e-12 * std::max(1.0, std::abs(b - a));
-    for (double k : knots)
-        if (k > a + eps && k < b - eps)
-            out.at.push_back(k);
+    for (size_t i = 0; i < knots.size(); ++i)
+        if (knots[i] > a + eps && knots[i] < b - eps)
+        {
+            out.at.push_back(knots[i]);
+            out.cont.push_back(i < mults.size() ? std::max(0, degree - mults[i]) : 0);
+        }
     out.at.push_back(b);
-    out.hard.assign(out.at.size(), 1);
+    out.cont.push_back(0);
     return out;
 }
 
@@ -1080,8 +1149,8 @@ SmSurface* map_surface(SmFace* face, const Piece& piece, const Deformation& def,
     SurfaceInfo info = surface_info(s);
     SmExtent2d box = face_box(face);
     SurfFit fit;
-    const Breaks ub = breaks_in(info.uk, box.GetUMin(), box.GetUMax());
-    const Breaks vb = breaks_in(info.vk, box.GetVMin(), box.GetVMax());
+    const Breaks ub = breaks_in(info.uk, info.um, info.p, box.GetUMin(), box.GetUMax());
+    const Breaks vb = breaks_in(info.vk, info.vm, info.q, box.GetVMin(), box.GetVMax());
     const SmSurface* wsurf = info.weight.get();
     auto fn = [&](int e) -> SurfFn {
         return [s, wsurf, e, &piece](double u, double v) {
@@ -1104,7 +1173,7 @@ SmSurface* map_surface(SmFace* face, const Piece& piece, const Deformation& def,
         const int cu = std::min(piece.degree * info.p, def.max_degree);
         const int cv = std::min(piece.degree * info.q, def.max_degree);
         for (int e = info.rational ? 1 : 0; e <= (info.rational ? piece.degree : 0) && !done; ++e)
-            done = fit_exact_surface(fn(e), fit, ub, vb, cu, cv, def.exact_tol);
+            done = fit_exact_surface(fn(e), fit, ub, vb, cu, cv, def.exact_tol, def.max_exact_points);
     }
     if (!done)
     {
@@ -1145,7 +1214,7 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
     CurveInfo info = curve_info(c);
     SmExtent1d ivl = edge->GetInterval();
     CurveFit fit;
-    const Breaks tb = breaks_in(info.k, ivl.GetMin(), ivl.GetMax());
+    const Breaks tb = breaks_in(info.k, info.m, info.p, ivl.GetMin(), ivl.GetMax());
     const SmCurve* wcurve = info.weight.get();
     auto fn = [&](int e) -> CurveFn {
         return [c, wcurve, e, &piece](double t) {
@@ -1171,8 +1240,8 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
     }
     if (!done)
     {
-        fit_approx_curve(fn(info.rational ? 1 : 0), fit, tb, info.nurbs ? info.p : 3, 0.5 * def.tolerance, def.exact_tol,
-                         def.approx_degree);
+        fit_approx_curve(fn(info.rational ? 1 : 0), fit, tb, info.nurbs ? info.p : 3, 0.5 * def.tolerance,
+                         def.exact_tol, def.approx_degree);
         fit.exact = fit.err <= def.exact_tol;
     }
     SmBSplineCurve* out = build_curve(fit, fit.exact ? def.exact_tol : 0.25 * def.tolerance);
