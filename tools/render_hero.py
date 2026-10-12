@@ -23,7 +23,7 @@ def load(name):
     return list(m) if isinstance(m, list) else [m]
 
 
-def main(width: int = 1600, height: int = 560) -> None:
+def main(width: int = 1600, height: int = 430) -> None:
     placed = []
     x = 0.0
     for name in ORDER:
@@ -39,7 +39,7 @@ def main(width: int = 1600, height: int = 560) -> None:
         dz = -bb.min.z
         placed += [s.translate(dx, dy, dz) for s in shapes]
         x += bb.size.x + 25
-    page = html_page(*placed, title="smlibpy", angle=8.0, view=(0.18, -1.0, 0.42), margin=1.02)
+    page = html_page(*placed, title="smlibpy", angle=8.0, view=(0.18, -1.0, 0.36), margin=0.98)
     out = os.path.join(ROOT, "docs", "images", "hero.png")
     with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as fh:
         fh.write(page)

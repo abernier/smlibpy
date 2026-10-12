@@ -190,3 +190,21 @@ def test_selectors():
     assert part.faces().sort_by("area")[-1].area == pytest.approx(2 * math.pi * 2 * 10)
     assert part.faces().sort_by("area")[0].area == pytest.approx(100 - math.pi * 4)
     assert part.faces().top().one().plane.origin.z == pytest.approx(5)
+
+
+def test_sketch_booleans_of_overlapping_circles():
+    a, b = Circle(10).translate(-5, 0), Circle(10).translate(5, 0)
+    lens = 2 * 100 * math.acos(0.5) - 5 * math.sqrt(300)
+    assert (a & b).area == approx(lens)
+    assert (a + b).area == approx(2 * math.pi * 100 - lens)
+    assert (a - b).area == approx(math.pi * 100 - lens)
+    assert (a ^ b).area == approx(2 * (math.pi * 100 - lens))
+
+
+def test_oversized_rounds_are_rejected():
+    cube = Box(10, 10, 10)
+    with pytest.raises(ModelingError):
+        cube.fillet(cube.edges(), 6)
+    with pytest.raises(ModelingError):
+        cube.chamfer(cube.edges(), 6)
+    assert cube.fillet(cube.edges(), 4).is_valid()

@@ -57,7 +57,8 @@ try {
   let ready = false;
   for (let i = 0; i < 300 && !ready; i++) {
     await sleep(100);
-    const r = await send("Runtime.evaluate", { expression: "window.__ready === true", returnByValue: true });
+    const expr = process.env.READY === "load" ? "document.readyState === 'complete'" : "window.__ready === true";
+    const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true });
     ready = r.result.value === true;
   }
   if (!ready) throw new Error("page did not signal readiness");

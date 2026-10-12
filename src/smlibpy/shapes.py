@@ -389,11 +389,15 @@ class ShapeList(list[T]):
 
     def convex(self) -> ShapeList[T]:
         """Edges on outside corners (material angle below 180 degrees)."""
-        return ShapeList(s for s in self if isinstance(s, Edge) and s.is_convex())
+        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "convex")
 
     def concave(self) -> ShapeList[T]:
         """Edges on inside corners (material angle above 180 degrees)."""
-        return ShapeList(s for s in self if isinstance(s, Edge) and not s.is_convex())
+        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "concave")
+
+    def smooth(self) -> ShapeList[T]:
+        """Edges where two faces meet tangentially, such as the borders of a fillet."""
+        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "smooth")
 
     def within(self, box: BoundBox) -> ShapeList[T]:
         """Shapes whose bounding box lies inside ``box``."""
@@ -685,25 +689,32 @@ class Edge(Shape):
             return False
         return sum(1 for loop in fs[0].boundary_loops() for e, _ in loop if e is self._e) > 1
 
-    def is_convex(self) -> bool:
-        """True if the material angle at this edge is less than 180 degrees (an outside
-        corner), false for an inside corner. Edges of a single face count as convex."""
+    @property
+    def convexity(self) -> str:
+        """``"convex"`` for an outside corner (material angle below 180 degrees), ``"concave"``
+        for an inside corner, ``"smooth"`` where the faces meet tangentially. Edges with a
+        single face count as convex."""
         if self._e is None:
-            return True
+            return "convex"
         fs = self._e.faces()
         if len(fs) != 2:
-            return True
+            return "convex"
         f1, f2 = Face(self._owner, fs[0]), Face(self._owner, fs[1])
         p = self.center()
-        t = self.tangent_at(0.5)
         n1, n2 = f1.normal_at(p), f2.normal_at(p)
-        size = max(self.length, 1e-9)
-        eps = 1e-4 * size
+        if n1.angle_to(n2) < 0.5:
+            return "smooth"
+        t = self.tangent_at(0.5)
+        eps = 1e-4 * max(self.length, 1e-9)
         into = n1.cross(t)
         # pick the in-face direction of face 1 that stays on the face
         if f1.distance_to(p + into * eps) > f1.distance_to(p - into * eps):
             into = -into
-        return n2.dot(into) < 0
+        return "convex" if n2.dot(into) < 0 else "concave"
+
+    def is_convex(self) -> bool:
+        """True on an outside corner (see :attr:`convexity`)."""
+        return self.convexity == "convex"
 
     @property
     def direction(self) -> Vector:
@@ -1660,7 +1671,7 @@ class Part(_Body):
         return radius * math.tan(theta / 2) if theta > 1e-6 else radius
 
     def _check_volume_change(self, result: Part, edges: list[Edge], what: str) -> None:
-        convex = [e.is_convex() for e in edges]
+        convex = [e.convexity == "convex" for e in edges]
         if not (all(convex) or not any(convex)):
             return
         try:
@@ -1974,10 +1985,38 @@ class Sketch(Shell):
                 if op == k.BooleanOp2D.DIFFERENCE:
                     continue
                 raise ValueError("the sketches do not overlap; their intersection is empty")
-            with kernel_call(name, "the regions may only touch at a point or along an edge"):
-                b = k.boolean_2d(result._copy_brep(), t._copy_brep(), operation=op)
-            result = result._like(b)
+            try:
+                with kernel_call(name):
+                    b = k.boolean_2d(result._copy_brep(), t._copy_brep(), operation=op)
+                result = result._like(b)
+            except KernelError:
+                # The 2D Booleans reject some configurations (overlapping circles, for one).
+                # Thin slabs through the 3D Booleans are slower but robust.
+                result = result._slab_boolean(t, op, name)
         return result
+
+    def _slab_boolean(self, other: Sketch, op: Any, name: str) -> Sketch:
+        n = self._plane.z_dir
+        thickness = max(self.bbox().union(other.bbox()).diagonal * 0.05, 1e-3)
+        a = self.extrude(thickness, direction=n)
+        b = other.extrude(thickness, direction=n)
+        if op == k.BooleanOp2D.UNION:
+            solid = a + b
+        elif op == k.BooleanOp2D.DIFFERENCE:
+            solid = a - b
+        elif op == k.BooleanOp2D.INTERSECTION:
+            solid = a & b
+        else:  # exclusive or
+            return self._slab_boolean(other, k.BooleanOp2D.UNION, name)._slab_boolean(
+                self._slab_boolean(other, k.BooleanOp2D.INTERSECTION, name), k.BooleanOp2D.DIFFERENCE, name)
+        base = [f for f in solid.faces()
+                if f.is_planar and abs(self._plane.distance_to(f.interior_point())) <= 1e-9 * max(1.0, thickness)
+                and f.normal_at().dot(n) < 0]
+        if not base:
+            raise ModelingError(f"{name}: the result is empty")
+        with kernel_call(name):
+            b2 = ext.copy_faces(solid._brep, [f._f for f in base])
+        return self._like(b2)
 
     def __add__(self, other: Any) -> Sketch:
         return self._boolean2d(other, k.BooleanOp2D.UNION, "fuse")
