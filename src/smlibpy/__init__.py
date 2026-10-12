@@ -29,8 +29,10 @@ from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, tessellate
 from .operations import chamfer, extrude, fillet, loft, mirror, offset, revolve, section, shell, split, sweep, thicken
 from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
+from .profiles import Profile
 from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
-from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot, Trapezoid, make_face
+from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot,
+                       Stroke, Trapezoid, Triangle, make_face)
 from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
 from .step_import import import_step
@@ -49,7 +51,8 @@ __all__ = [
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
     "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline",
     # sketches
-    "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Slot", "Trapezoid", "make_face",
+    "Profile", "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Triangle", "Trapezoid",
+    "Slot", "ArcSlot", "Stroke", "Hull", "make_face",
     # parts
     "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "Hole", "CounterBoreHole", "CounterSinkHole",
     # patterns

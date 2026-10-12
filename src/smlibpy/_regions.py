@@ -296,7 +296,7 @@ def round_corners(sk: Sketch, size: float, vertices: Any, kind: str) -> Sketch:
                 new, labels = assemble(lp, [""] * n, corners, True, tol, what=lambda j, lp=lp: describe(lp[j], fr.fp),
                                        fp=fr.fp)
             except GeometryError as e:
-                raise ModelingError(f"{what}: {e}; use a smaller {unit_name}") from None
+                raise ModelingError(f"{what}: {e}") from None
             new, _ = simplify(new, labels, True, tol)
             loops.append(new)
         new_faces.append((loops[0], loops[1:]))

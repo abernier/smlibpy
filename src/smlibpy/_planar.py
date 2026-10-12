@@ -616,18 +616,20 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
         if not closed and (i <= 0 or i >= n):
             raise GeometryError(f"{cn.label}: the {'start' if i <= 0 else 'end'} of an open path is not a corner")
         s1, s2 = segs[i - 1], segs[i % n]
+        smaller = "use a smaller radius" if cn.kind == "fillet" else "use a shorter length"
         try:
             if cn.kind == "fillet":
                 back, ahead, piece = fillet_corner(s1, s2, cn.size)
             else:
                 back, ahead, piece = chamfer_corner(s1, s2, cn.size)
         except GeometryError as e:
-            raise GeometryError(f"{cn.label} at {fp(s1.end)}: {e}") from None
+            hint = f"; leave the {cn.kind} out" if "no corner" in str(e) or "turns back" in str(e) else f"; {smaller}"
+            raise GeometryError(f"{cn.label} at {fp(s1.end)}: {e}{hint}") from None
         for amount, seg_i, side in ((back, i - 1, "end"), (ahead, i % n, "start")):
-            seg = segs[seg_i]
+            seg = segs[seg_i % n]
             if amount < -tol or amount > seg.length + tol:
                 raise GeometryError(f"{cn.label} at {fp(s1.end)} does not fit: it needs {fmt(max(amount, 0.0))} "
-                                    f"along {name(seg_i)}, which is {fmt(seg.length)} long")
+                                    f"along {name(seg_i % n)}, which is {fmt(seg.length)} long; {smaller}")
         cut_end[(i - 1) % n] = max(back, 0.0)
         owner_end[(i - 1) % n] = cn
         cut_start[i % n] = max(ahead, 0.0)
@@ -642,7 +644,7 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
             a, b = owner_start[j], owner_end[j]
             raise GeometryError(f"{a.label if a else ''} at {fp(seg.start)} and {b.label if b else ''} at "  # pragma: no branch
                                 f"{fp(seg.end)} overlap on {name(j)}: they need {fmt(cut_start[j])} + "
-                                f"{fmt(cut_end[j])}, it is {fmt(seg.length)} long")
+                                f"{fmt(cut_end[j])} of its {fmt(seg.length)}; use smaller corners")
         if j in inserts:
             out.append(inserts[j])
             labs.append(insert_labels[j])
@@ -853,7 +855,9 @@ def hull_sites(segs: Sequence[Seg]) -> list[_Site]:
             sites += [_Site(s.a, 0.0), _Site(s.b, 0.0)]
         elif isinstance(s, Arc2):
             ccw = s if s.sweep > 0 else s.reversed()
-            sites += [_Site(s.start, 0.0), _Site(s.end, 0.0), _Site(s.c, s.r, ccw.a0 % TAU, abs(s.sweep))]
+            if not s.closed:  # the seam point of a full circle adds nothing
+                sites += [_Site(s.start, 0.0), _Site(s.end, 0.0)]
+            sites.append(_Site(s.c, s.r, ccw.a0 % TAU, min(abs(s.sweep), TAU)))
         else:
             raise GeometryError("hull works on points, lines and circular arcs; a curve that is neither "
                                 f"was given ({describe(s)})")
@@ -865,10 +869,14 @@ def _transition(a: _Site, b: _Site, phi: float) -> float | None:
     the support of the hull from site ``a``, going counterclockwise; None if it never does."""
     d = b.c - a.c
     dist = abs(d)
-    dr = a.r - b.r
-    if dist < 1e-14 or abs(dr) > dist:
-        return None  # one contains the other
-    t = cmath.phase(d) - math.acos(max(-1.0, min(1.0, dr / dist)))
+    if dist < 1e-14:
+        return None
+    ratio = (a.r - b.r) / dist
+    if ratio >= 1.0 - 1e-12:
+        return None  # b lies inside a (or touches it from inside): it never rises above a
+    if ratio < -1.0 - 1e-9:
+        return None  # b contains a: it takes over where its span starts, through its end point
+    t = cmath.phase(d) - math.acos(max(-1.0, min(1.0, ratio)))
     delta = (t - phi) % TAU
     if delta < 1e-12:
         delta = TAU
