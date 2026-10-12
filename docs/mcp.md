@@ -53,7 +53,7 @@ or `.vscode/mcp.json` (VS Code, where the key is `servers` and each entry has
 | Tool | What it does |
 |---|---|
 | `run_script` | Runs Python with `from smlibpy import *`; variables stay between calls |
-| `snapshot` | A PNG of the model: a view, a technical drawing (front, side and top view with hidden edges dashed, ISO method E or A), sheets of views, sections, highlighted selections, markers, x-ray, and before/after comparisons |
+| `snapshot` | A PNG of the model: a view, a technical drawing (front, side and top view with hidden edges dashed, ISO method E or A), sheets of views, sections, highlighted selections, markers, x-ray, zebra stripes and curvature maps, and before/after comparisons |
 | `scene`, `inspect` | What is shown, the variables, measurements of a shape, its faces and edges |
 | `list_methods`, `describe_method`, `docs` | The API index, signatures and the guides of the skill |
 | `save`, `load` | STEP, STL, glTF, OBJ, the native format, PNG; STEP and STL in |
