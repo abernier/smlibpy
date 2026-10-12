@@ -62,6 +62,7 @@ Everything below is importable from `smlibpy` directly.
 ## Viewer
 
 ::: smlibpy.viewer.show
+::: smlibpy.render.render
 ::: smlibpy.viewer.html_page
 
 ## Errors

@@ -32,7 +32,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/from-sdist"
           "$RUNNER_TEMP/from-sdist/bin/pip" install dist/*.tar.gz
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/from-sdist/bin/python" -c "import smlibpy as s; v = (s.Box(10, 10, 10) - s.Cylinder(2, 20)).volume; print(v); assert abs(v - (1000 - 40 * 3.141592653589793)) < 1e-6"
+          "$RUNNER_TEMP/from-sdist/bin/python" -c "import math, smlibpy as s; v = (s.Box(10, 10, 10) - s.Cylinder(2, 20)).volume; print(v); assert abs(v / (1000 - 40 * math.pi) - 1) < 1e-6"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-sdist

@@ -21,10 +21,10 @@ jobs:
           - os: ubuntu-latest
             python: "3.13"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python }}
       - name: Build and install
@@ -39,8 +39,8 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
       - run: pip install "mkdocs-material>=9.5" "mkdocstrings[python]>=0.26"

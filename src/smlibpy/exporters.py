@@ -21,7 +21,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from ._kernel import k, kernel_call
+from ._kernel import ext, k, kernel_call
 from .colors import to_rgb
 from .mesh import Mesh, tessellate
 
@@ -155,16 +155,19 @@ _DEFAULT_COLORS = ["#7c93b5", "#d9925a", "#79ad73", "#c97878", "#9d87c7", "#d4b4
 
 
 def _edge_polylines(item: Any, angle: float = 5.0) -> list[np.ndarray]:
+    """Polylines of the body's edges, without the seams of periodic faces (they are not
+    edges a designer drew)."""
     from .shapes import _Body
 
     if not isinstance(item, _Body):
         return []
     with kernel_call("edge tessellation"):
         flat, counts, _ = k.tessellate_boundaries(item._brep, angle_tolerance_deg=angle)
+        seams = set(ext.seam_edges(item._brep))
     pts = np.asarray(flat, dtype=np.float64).reshape(-1, 3)
     out, i = [], 0
-    for c in counts:
-        if c >= 2:
+    for n, c in enumerate(counts):
+        if c >= 2 and n not in seams:
             out.append(pts[i:i + c])
         i += c
     return out

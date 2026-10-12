@@ -77,6 +77,24 @@ Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF tes
 among them. Not read yet: wireframe geometry, references to other files, PMI, and
 assembly placements that mirror a part.
 
+## Pictures
+
+`render` draws shapes into a PNG without a browser or a graphics card, which suits
+scripts, CI jobs and documentation:
+
+```python
+from smlibpy import *
+
+part = Box(40, 30, 10) - Cylinder(6, 20)
+render(part, path="part.png")                                 # isometric view
+render(part, path="views.png", view="sheet", size=(1000, 760))  # front, top, right, iso
+```
+
+`view` takes a name (`"iso"`, `"front"`, `"back"`, `"left"`, `"right"`, `"top"`,
+`"bottom"`), a direction from the model towards the camera, or `"sheet"`. Hidden edges stay
+hidden, and the seams of round faces are left out. The function returns the PNG bytes, so in
+a notebook `IPython.display.Image(render(part))` shows it inline.
+
 ## Viewer
 
 ```python

@@ -77,3 +77,12 @@ def test_step_reads_back_in_opencascade(tmp_path, plate, name, shape):
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(s, props, 1e-9, False, False)
     assert props.Mass() == pytest.approx(shape.volume, rel=1e-6)
+
+
+def test_render_png(tmp_path, plate):
+    data = render(plate, path=tmp_path / "plate.png", size=(320, 240))
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", data[16:24]) == (320, 240)
+    assert (tmp_path / "plate.png").read_bytes() == data
+    sheet = render(plate, Spline((0, 0, 20), (30, 20, 30)), view="sheet", size=(400, 300))
+    assert struct.unpack(">II", sheet[16:24]) == (400, 300)
