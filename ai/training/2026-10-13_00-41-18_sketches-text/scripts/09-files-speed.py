@@ -1,0 +1,15 @@
+# text in files, and how long it takes
+import time, os
+t0 = time.time()
+long = Text("The quick brown fox jumps over the lazy dog 0123456789 " * 4, 3)
+print(f"[09] {len(long.faces())} faces in {time.time() - t0:.3f} s")
+t0 = time.time()
+again = Text("The quick brown fox jumps over the lazy dog 0123456789 " * 4, 3)
+print(f"[09] again (glyphs cached): {time.time() - t0:.3f} s")
+label = Text("A1", 5).named("label")
+export_step(label, "label.step")
+back = import_step("label.step")
+print("[09] STEP round trip:", type(back).__name__, round(back.area, 6), round(label.area, 6))
+export_dxf(label, "label.dxf")
+print("[09] DXF:", open("label.dxf").read().count("\nSPLINE\n"), "SPLINE,", open("label.dxf").read().count("\nLINE\n"), "LINE")
+os.remove("label.step"); os.remove("label.dxf")

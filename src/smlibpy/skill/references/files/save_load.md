@@ -1,6 +1,6 @@
 # save / load
 
-`save` writes one body to SMLib's native `.smb` format. `load` reads `.smb`, STEP and STL,
+`save` writes one body to SMLib's native `.smb` format. `load` reads `.smb`, STEP, STL and DXF,
 and picks the format from the extension.
 
 ## Signatures
@@ -14,7 +14,8 @@ and picks the format from the extension.
 - `load` decides by the extension, in any letter case:
   - `.step`, `.stp`, `.p21`: same as `import_step`.
   - `.stl`: same as `import_stl`, gives a `Mesh`.
-  - anything else: read as `.smb`.
+  - `.dxf`: same as `import_dxf`, gives a `Sketch`.
+  - `.smb`: the native format; any other extension raises `ValueError`.
 
 ## Returns
 `load` of an `.smb` gives a `Part`. A body that does not enclose a volume (a sketch, face or
@@ -35,14 +36,14 @@ Use `.smb` to cache an intermediate result between scripts. Use STEP to deliver 
   again with `.named()` and `.colored()`.
 - A list of two parts raises. Fuse them, or save each to its own file.
 - smlibpy cannot read glTF or OBJ: `load("x.glb")` raises `ValueError: unknown file type
-  '.glb'; load reads .step, .stp, .stl and .smb`.
+  '.glb'; load reads .step, .stp, .stl, .smb and .dxf`.
 - A `Sketch` comes back as a `Shell`: its plane is lost.
 
 ## Errors
 - `ValueError: an .smb file holds one body; fuse the parts or save them separately`.
 - `AttributeError: 'Mesh' object has no attribute '_brep'`: you passed a mesh to `save`.
 - `FileNotFoundError` for a missing file.
-- `ValueError: unknown file type '.glb'; load reads .step, .stp, .stl and .smb`.
+- `ValueError: unknown file type '.glb'; load reads .step, .stp, .stl, .smb and .dxf`.
 - `KernelError: load failed`: an `.smb` file the native reader cannot read.
 
 ## Example

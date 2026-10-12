@@ -10,6 +10,9 @@ It is the profile you extrude, revolve, sweep or loft. `Sketch` is a subclass of
 - From curves: `make_face(outer_wire, *hole_wires)`, `wire.to_sketch()`.
 - From a part: `face.to_sketch()` (copy of a planar face, holes kept, normal pointing out of the
   part), `part.section(plane)`.
+- Lettering: `Text("SMLIB 42", 8)`, the exact outlines of a font, `size` = cap height. See `Text`.
+- From a drawing: `import_dxf(path)` (files): the closed outlines of a DXF as a sketch in mm, at
+  the drawing's coordinates.
 
 ## Measuring
 
@@ -104,5 +107,6 @@ grown = box + box.faces().facing(X).one().to_sketch().extrude(5)   # bbox x up t
 
 ## Related
 
-`Rectangle`, `Circle`, `Polygon`, `make_face`, `offset`, `fillet` (this folder);
+`Rectangle`, `Circle`, `Polygon`, `make_face`, `offset`, `fillet`, `Text` (this folder); `import_dxf`,
+`export_dxf` (files);
 `Sketch.extrude`, `revolve`, `sweep`, `loft` (features); `Plane`, `Location`, patterns (geometry).

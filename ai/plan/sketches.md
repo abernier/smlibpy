@@ -18,3 +18,4 @@ Docs go to `src/smlibpy/skill/references/sketches/`. Work through the rows in or
 | 10 | `make_face.md` | make_face | from closed wires and curves, holes, errors with open wires | [x] make_face.md |
 | 11 | `offset.md` | Sketch.offset | inward and outward, corners (round or sharp), collapse | [x] offset.md |
 | 12 | `fillet.md` | Sketch.fillet | rounding 2D corners: which vertices, radius limits | [x] fillet.md |
+| 13 | `Text.md` | Text | size (cap height), alignment of the layout box, lines, spacing, kerning, fonts, holes and fill rules, text along a path, emboss and engrave (flat and curved faces), errors | [x] Text.md |
