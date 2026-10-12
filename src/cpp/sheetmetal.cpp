@@ -325,21 +325,39 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
     if (result != SM_SUCCESS)
         return result;
 
-    // SmFace/SmEdge::ApproximateWithBSpline report success also when they replace nothing, and a
-    // degenerate exact curve (an arc of no length) has no NURBS data: the kernel crashes on both
-    // later (when it builds trim curves). Refuse them here.
+    // SmEdge::ApproximateWithBSpline reports success also when its constrained approximation fails
+    // and it replaces nothing (the bent arc of a hole that crosses the bend): approximate such a
+    // curve keeping its parameterization (as the STEP export does). The exact lines, arcs and
+    // planes build their NURBS data only when asked, and SmPlane::DropCurve copies such a curve and
+    // reads the missing data: build it now.
+    for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
+    {
+        SmEdge* edge = p.in_edges[i];
+        SmCurve* curve = edge->GetCurve();
+        if (curve && !curve->IsKindOf(SmBSplineCurve_TYPE))
+        {
+            SmTArray<double> breaks;
+            SmExtent1d ivl = curve->GetNaturalInterval();
+            breaks.Add(ivl.GetMin());
+            breaks.Add(ivl.GetMax());
+            double gap = 0.0;
+            SmBSplineCurve* approx = nullptr;
+            if (curve->ApproximateCurve(*brep.GetContext(), breaks, tolerance / 2.0, gap, approx, FALSE, TRUE) ==
+                    SM_SUCCESS && approx && gap <= tolerance)
+                brep.ReplaceCurve(edge, approx);
+            else
+                delete approx;
+            curve = edge->GetCurve();
+        }
+        if (curve && curve->IsKindOf(SmBSplineCurve_TYPE) &&
+            !static_cast<SmBSplineCurve*>(curve)->GetOrCreateGwNurbPointer())
+            return SM_ERR_NOT_WITHIN_TOLERANCE;
+    }
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
     {
         SmSurface* surface = p.in_faces[i]->GetSurface();
-        if (!surface || !surface->IsKindOf(SmBSplineSurface_TYPE) ||
+        if (surface && surface->IsKindOf(SmBSplineSurface_TYPE) &&
             !static_cast<SmBSplineSurface*>(surface)->GetOrCreateGwNurbPointer())
-            return SM_ERR_NOT_WITHIN_TOLERANCE;
-    }
-    for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
-    {
-        SmCurve* curve = p.in_edges[i]->GetCurve();
-        if (!curve || !curve->IsKindOf(SmBSplineCurve_TYPE) ||
-            !static_cast<SmBSplineCurve*>(curve)->GetOrCreateGwNurbPointer())
             return SM_ERR_NOT_WITHIN_TOLERANCE;
     }
     return SM_SUCCESS;
@@ -348,8 +366,8 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
 void check_mapped(SmStatus status, const char* what)
 {
     if (status == SM_ERR_NOT_WITHIN_TOLERANCE)
-        fail(status, std::string(what) + ": the bend region came out degenerate (a curve or surface without exact "
-                                         "or NURBS geometry)");
+        fail(status, std::string(what) + ": the bend region came out degenerate (a curve or surface without "
+                                         "NURBS data)");
     check(status, what);
 }
 
