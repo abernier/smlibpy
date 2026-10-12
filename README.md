@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/images/hero.png" alt="Parts modeled with smlibpy" width="100%">
-</p>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/frontispiece.dark.svg"><img width="100%" src="docs/readme/frontispiece.light.svg" alt="Frontispiece and title page. Left: an engineering drawing of the pipe flange of examples/flange.py — a 120 mm plate with a 70 mm neck, bored 50 mm through, eight 10 mm bolt holes on a 95 mm circle — in section A–A, the view from the left and the plan in first-angle projection, dimensioned, with a title block that gives the volume smlibpy measures. Right: smlib·py, or, the Art of Modelling in Python — wherein the SMLib kernel is given to Python: to build exact parts from short scripts, to draw what it has built, and to prove the work in numbers. In four parts: the library, the renderer, the MCP server, the skill. MMXXVI."></picture>
 
 # smlibpy
 
