@@ -762,34 +762,39 @@ def offset_chain(segs: Sequence[Seg], e: float, corners: str, closed: bool, tol:
 # -----------------------------------------------------------------------------
 # pieces for the Boolean constructions
 # -----------------------------------------------------------------------------
-def sweep_piece(s: Seg, e: float) -> list[Seg]:
-    """The region a segment covers when it moves ``e`` to its left (negative: right), as a
-    counterclockwise loop. An arc that would pass its center stops at the center."""
+Piece = tuple[list[Seg], list[list[Seg]]]  # a region: outer loop (counterclockwise) and holes
+
+
+def sweep_piece(s: Seg, e: float) -> list[Piece]:
+    """The region a segment covers when it moves ``e`` to its left (negative: right). An arc
+    that would pass its center stops there (a pie slice); a full circle gives a ring."""
     if isinstance(s, Line2):
         m = s.offset(e)
-        loop: list[Seg] = [s, Line2(s.b, m.b), m.reversed(), Line2(m.a, s.a)]
-    elif isinstance(s, Arc2):
-        m = s.offset(e)
-        if m is None:  # the arc sweeps to its center: a pie slice
-            loop = [s, Line2(s.end, s.c), Line2(s.c, s.start)]
-        else:
-            loop = [s, Line2(s.end, m.end), m.reversed(), Line2(m.start, s.start)]
-    else:
+        return [(orient_ccw([s, Line2(s.b, m.b), m.reversed(), Line2(m.a, s.a)]), [])]
+    if not isinstance(s, Arc2):
         raise GeometryError("only lines and arcs")
-    return orient_ccw(loop)
+    m = s.offset(e)
+    if s.closed:
+        if m is None:
+            return [(disk(s.c, s.r), [])]
+        lo, hi = sorted((s.r, m.r))
+        return [([Arc2(s.c, hi, 0.0, TAU)], [[Arc2(s.c, lo, 0.0, -TAU)]])]
+    if m is None:
+        return [(orient_ccw([s, Line2(s.end, s.c), Line2(s.c, s.start)]), [])]
+    return [(orient_ccw([s, Line2(s.end, m.end), m.reversed(), Line2(m.start, s.start)]), [])]
 
 
-def band_piece(s: Seg, half: float) -> list[list[Seg]]:
-    """The region within ``half`` of a segment on both sides, ends cut square, as loops."""
+def band_piece(s: Seg, half: float) -> list[Piece]:
+    """The region within ``half`` of a segment on both sides, ends cut square."""
     if isinstance(s, Line2):
         lo, hi = s.offset(-half), s.offset(half)
-        return [orient_ccw([lo, Line2(lo.b, hi.b), hi.reversed(), Line2(hi.a, lo.a)])]
+        return [(orient_ccw([lo, Line2(lo.b, hi.b), hi.reversed(), Line2(hi.a, lo.a)]), [])]
     assert isinstance(s, Arc2)
     outer = Arc2(s.c, s.r + half, s.a0, s.sweep)
     if s.r - half > 1e-12 * max(1.0, s.r):
         inner = Arc2(s.c, s.r - half, s.a0, s.sweep)
-        return [orient_ccw([inner, Line2(inner.end, outer.end), outer.reversed(), Line2(outer.start, inner.start)])]
-    return [orient_ccw([Line2(s.c, outer.start), outer, Line2(outer.end, s.c)])]
+        return [(orient_ccw([inner, Line2(inner.end, outer.end), outer.reversed(), Line2(outer.start, inner.start)]), [])]
+    return [(orient_ccw([Line2(s.c, outer.start), outer, Line2(outer.end, s.c)]), [])]
 
 
 def disk(c: complex, r: float) -> list[Seg]:
@@ -800,26 +805,47 @@ def polygon(*pts: complex) -> list[Seg]:
     return orient_ccw([Line2(a, b) for a, b in zip(pts, pts[1:] + pts[:1]) if abs(b - a) > 0])
 
 
-def corner_piece(s1: Seg, s2: Seg, e: float, corners: str) -> list[Seg] | None:
-    """The gap between the offsets of two segments at an opening corner (offset ``e`` to the
-    left), or None when the corner does not open on that side."""
+def corner_piece(s1: Seg, s2: Seg, e: float, corners: str) -> list[Piece]:
+    """The gap between the offsets of two segments at a corner that the offset ``e`` (to the
+    left) pulls apart; nothing where the corner does not open on that side. The piece
+    shares its straight sides with the pieces of the two segments, so the Booleans meet
+    edges, not tangencies."""
     sn, cs = turn(s1, s2)
     if abs(sn) < SMOOTH and cs > 0:
-        return None
+        return []
     if sn * e >= 0 and abs(sn) >= SMOOTH:
-        return None
+        return []
     v = s1.end
     p, q = s1.offset(e), s2.offset(e)
-    pe = p.end if p is not None else v
-    qs = q.start if q is not None else v
-    if corners == "round" or abs(sn) < SMOOTH:
-        return disk(v, abs(e))
+    if p is None or q is None or abs(sn) < SMOOTH:
+        return [(disk(v, abs(e)), [])]
+    pe, qs = p.end, q.start
     if corners == "chamfer":
-        return polygon(v, pe, qs)
-    hits = _line_line(pe, s1.t1, qs, s2.t0)
-    if not hits:
-        return disk(v, abs(e))
-    return polygon(v, pe, hits[0], qs)
+        return [(polygon(v, pe, qs), [])]
+    if corners == "sharp":
+        hits = _line_line(pe, s1.t1, qs, s2.t0)
+        if hits:
+            return [(polygon(v, pe, hits[0], qs), [])]
+        return [(disk(v, abs(e)), [])]
+    d1, d2 = pe - v, qs - v
+    sweep = cmath.phase(d2 / d1)
+    if sn > 0 and sweep < 0:
+        sweep += TAU
+    if sn < 0 and sweep > 0:
+        sweep -= TAU
+    return [(orient_ccw([Line2(v, pe), Arc2(v, abs(e), cmath.phase(d1), sweep), Line2(qs, v)]), [])]
+
+
+def distance(s: Seg, p: complex) -> float:
+    """Distance from a point to a line or arc segment."""
+    if isinstance(s, Line2):
+        pos = s.position(p)
+        return abs(p - s.at(min(max(pos, 0.0), s.length)))
+    if isinstance(s, Arc2):
+        if p != s.c and 0.0 <= s.position(p) <= s.length:
+            return abs(abs(p - s.c) - s.r)
+        return min(abs(p - s.start), abs(p - s.end))
+    return min(abs(p - q) for q in s.sample(64))
 
 
 def orient_ccw(loop: list[Seg]) -> list[Seg]:

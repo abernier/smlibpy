@@ -16,10 +16,10 @@ import math
 from typing import Any, Iterable, Sequence
 
 from ._kernel import KernelError, ModelingError, ext, k, kernel_call
-from ._planar import (TAU, Arc2, Corner, Curve2, GeometryError, Line2, NeedBooleans, Seg, _Site, assemble, band_piece,
-                      convex_hull, corner_piece, cross, describe, disk, dot, extent, first_crossing, fmt, hull_sites,
-                      is_smooth, offset_chain, orient_ccw, reflect, segment_intersections, signed_area, simplify,
-                      sweep_piece, turn, unit)
+from ._planar import (SMOOTH, TAU, Arc2, Corner, Curve2, GeometryError, Line2, NeedBooleans, Piece, Seg, _Site, assemble,
+                      band_piece, convex_hull, corner_piece, cross, describe, disk, distance, dot, extent, first_crossing,
+                      fmt, hull_sites, is_smooth, offset_chain, orient_ccw, overlap, reflect, segment_intersections, signed_area,
+                      simplify, sweep_piece, turn, unit)
 from .geometry import Axis, Location, Plane, Vector, _vec
 from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _as_plane, _bodies
 
@@ -326,7 +326,7 @@ def _loops_cross(faces: Loops, tol: float) -> bool:
         for j in range(i + 1, len(loops)):
             for a in loops[i]:
                 for b in loops[j]:
-                    if segment_intersections(a, b, tol):
+                    if segment_intersections(a, b, tol) or overlap(a, b, tol) > tol:
                         return True
     return False
 
@@ -340,7 +340,13 @@ def union_all(sketches: list[Sketch]) -> Sketch:
 
 def offset_region(sk: Sketch, distance: float, corners: str) -> Sketch | None:
     """The sketch grown (``distance`` > 0) or shrunk, with exact lines and arcs; None when
-    the sketch has curves that are neither (the caller offsets those with the kernel)."""
+    the sketch has curves that are neither (the caller offsets those with the kernel).
+
+    The offset is built directly from the moved segments where every loop stays a simple
+    loop of its own; otherwise (a part grows into another, a neck closes, an arc collapses)
+    from Booleans of the strips the boundary sweeps. Either result is checked: every edge
+    must lie at the offset distance from the original boundary, on the right side.
+    """
     fr, faces = sketch_loops(sk)
     if not faces:
         raise ModelingError("offset: the sketch is empty")
@@ -355,27 +361,66 @@ def offset_region(sk: Sketch, distance: float, corners: str) -> Sketch | None:
             hs = [offset_chain(h, -d, corners, True, tol) for h in holes]
             if signed_area(o) <= 0 or any(signed_area(h) >= 0 for h in hs):
                 raise NeedBooleans("a loop turns inside out")
+            if signed_area(o) + sum(signed_area(h) for h in hs) <= tol * extent(o):
+                raise NeedBooleans("a face vanishes")
             new_faces.append((o, hs))
         if _loops_cross(new_faces, tol):
             raise NeedBooleans("loops cross")
-        return build(new_faces, fr, like=sk, name="offset")
+        result = build(new_faces, fr, like=sk, name="offset")
+        if _offset_valid(result, sk, faces, d, corners):
+            return result
     except NeedBooleans:
         pass
-    pieces: list[Sketch] = []
+    pieces: list[Piece] = []
     for outer, holes in faces:
         for lp in [outer, *holes]:
-            for s in lp:
-                pieces.append(region(sweep_piece(s, -d), fr))
-            for i in range(len(lp)):
-                cp = corner_piece(lp[i - 1], lp[i], -d, corners)
-                if cp is not None:
-                    pieces.append(region(cp, fr))
-    tool = union_all(pieces)
+            for i, s in enumerate(lp):
+                pieces += corner_piece(lp[i - 1], s, -d, corners)
+                pieces += sweep_piece(s, -d)
+    tool = union_all([build([pc], fr, name="offset") for pc in pieces])
     result = sk + tool if d > 0 else sk - tool
     result = Sketch._wrap(result._copy_brep(), sk.plane, name=sk.name, color=sk.color)
     if not result.faces():
         raise ModelingError(f"offset: shrinking by {fmt(-d)} removes the whole region; use a smaller distance")
+    if not _offset_valid(result, sk, faces, d, corners):
+        raise ModelingError(f"offset: the kernel could not build a reliable offset by {fmt(d)} of this sketch (an edge "
+                            f"of the result is not at that distance from the outline); try a slightly different "
+                            f"distance or corners='round'")
     return result
+
+
+def _offset_valid(result: Sketch, original: Sketch, faces: Loops, d: float, corners: str) -> bool:
+    """Every edge of an offset lies at the distance from the original boundary that its
+    corner style allows, on the side the offset moves to."""
+    rfr, rfaces = sketch_loops(result)
+    segs = [s for outer, holes in faces for lp in [outer, *holes] for s in lp]
+    a = abs(d)
+    size = extent(segs) + a
+    tol = 1e-6 * max(1.0, size)
+    low = a - tol
+    if corners == "chamfer":
+        widest = 0.0
+        for outer, holes in faces:
+            for lp in [outer, *holes]:
+                for i, s in enumerate(lp):
+                    sn, cs = turn(lp[i - 1], s)
+                    if sn * -d < 0 and abs(sn) >= SMOOTH:
+                        widest = max(widest, abs(cmath.phase(complex(cs, sn))))
+        low = a * math.cos(widest / 2) - tol
+    if not rfaces:
+        return False
+    for outer, holes in rfaces:
+        for lp in [outer, *holes]:
+            for rs in lp:
+                for f in (0.25, 0.5, 0.75):
+                    q = rs.at(rs.length * f)
+                    dist = min(distance(s, q) for s in segs)
+                    if dist < low or (corners != "sharp" and dist > a + tol):
+                        return False
+                    inside = original.distance_to(rfr.world(q)) <= tol
+                    if inside != (d < 0):
+                        return False
+    return True
 
 
 # -----------------------------------------------------------------------------
@@ -528,18 +573,15 @@ def stroke(path: Any, width: float, ends: str, corners: str) -> Sketch:
         return build([(loop, [])], fr, name="Stroke")
     except NeedBooleans:
         pass
-    pieces: list[Sketch] = []
-    for s in segs:
-        for lp in band_piece(s, h):
-            pieces.append(region(lp, fr))
-    for i in range(1, len(segs)):
-        for e in (h, -h):
-            cp = corner_piece(segs[i - 1], segs[i], e, corners)
-            if cp is not None:
-                pieces.append(region(cp, fr))
+    pieces: list[Piece] = []
+    for i, s in enumerate(segs):
+        if i:
+            for e in (h, -h):
+                pieces += corner_piece(segs[i - 1], s, e, corners)
+        pieces += band_piece(s, h)
     if ends == "round":
-        pieces += [region(disk(segs[0].start, h), fr), region(disk(segs[-1].end, h), fr)]
-    return union_all(pieces)
+        pieces += [(disk(segs[0].start, h), []), (disk(segs[-1].end, h), [])]
+    return union_all([build([pc], fr, name="Stroke") for pc in pieces])
 
 
 # -----------------------------------------------------------------------------
