@@ -406,6 +406,12 @@ def test_dxf_blocks(tmp_path):
     assert import_dxf(path, layers="PARTS").area == pytest.approx(500 - 4 * math.pi, rel=1e-6)
 
 
+def test_dxf_degenerate_entities_are_skipped(tmp_path):
+    ents = _circle((0, 0), 5) + _circle((20, 0), 0) + _line((30, 0), (30, 0)) + "0\nARC\n8\n0\n10\n0\n20\n0\n30\n0\n40\n0\n50\n0\n51\n90\n"
+    s = import_dxf(_dxf(tmp_path, ents))
+    assert len(s.faces()) == 1 and s.area == pytest.approx(math.pi * 25, rel=1e-6)
+
+
 def test_dxf_nested_loops_and_islands(tmp_path):
     ents = _lw([(-20, -20), (20, -20), (20, 20), (-20, 20)]) + _circle((0, 0), 15) + _lw([(-5, -5), (5, -5), (5, 5), (-5, 5)])
     s = import_dxf(_dxf(tmp_path, ents))
@@ -568,6 +574,31 @@ def test_dxf_read_by_ezdxf(tmp_path):
                   for e in shapes[2].edges() if e.geom_type == "bspline")
     theirs = sorted(tuple(np.round(np.array(s.control_points)[:, :2].ravel(), 9)) for s in msp.query("SPLINE"))
     assert ours == theirs
+
+
+def test_dxf_written_by_ezdxf(tmp_path):
+    """A full R2018 drawing written by an independent writer: inch units, a polyline with bulges,
+    a periodic closed spline, an ellipse and a scaled, turned block."""
+    ezdxf = pytest.importorskip("ezdxf")
+    from ezdxf.math import closed_uniform_bspline
+
+    doc = ezdxf.new("R2018", units=1)  # inches
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(-15, -5, 0), (15, -5, 1), (15, 5, 0), (-15, 5, 1)], format="xyb", close=True)
+    msp.add_circle((40, 0), 3)
+    msp.add_ellipse(center=(60, 0), major_axis=(8, 0), ratio=0.5)
+    ctrl = [(80, -5), (90, -6), (95, 0), (90, 6), (80, 5), (76, 0)]
+    msp.add_spline(dxfattribs={"flags": 1 | 2 | 8}).apply_construction_tool(closed_uniform_bspline(ctrl, order=4))
+    doc.blocks.new("HOLE", base_point=(0, 0)).add_circle((0, 0), 1)
+    msp.add_blockref("HOLE", (40, 0), dxfattribs={"xscale": 2, "yscale": 1, "rotation": 30})
+    doc.saveas(tmp_path / "ezdxf.dxf")
+    s = import_dxf(tmp_path / "ezdxf.dxf")
+    pts = np.array([_cyclic_point(ctrl, u) for u in np.linspace(0, len(ctrl), 20001)[:-1]])
+    spline = 0.5 * abs(np.dot(pts[:, 0], np.roll(pts[:, 1], -1)) - np.dot(np.roll(pts[:, 0], -1), pts[:, 1]))
+    expected = sorted([300 + math.pi * 25, spline, math.pi * 32, math.pi * 9 - math.pi * 2])  # in square inches
+    areas = sorted(ext.face_properties(f._f, 1e-11)["area"] / 25.4 ** 2 for f in s.faces())
+    assert areas == pytest.approx(expected, rel=1e-7)
+    assert holes(s) == [0, 0, 0, 1]
 
 
 # =============================================================================

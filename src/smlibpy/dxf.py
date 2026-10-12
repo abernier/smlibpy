@@ -462,10 +462,13 @@ def _curves_of(e: _Entity, layer: str) -> list[_Curve] | None:
     if k == "LINE":
         a, b = e.point(10), e.point(11)
         return [] if np.allclose(a, b, rtol=0, atol=1e-12) else [_Curve("line", (a, b), layer)]
-    if k == "CIRCLE":
-        return [_arc_curve(e.point(10), e.num(40), 0.0, _TWO_PI, e.extrusion, layer, full=True)]
-    if k == "ARC":
-        return [_arc_curve(e.point(10), e.num(40), math.radians(e.num(50)), math.radians(e.num(51)), e.extrusion, layer)]
+    if k in ("CIRCLE", "ARC"):
+        r = e.num(40)
+        if not r > 0:  # a circle without size draws nothing
+            return []
+        if k == "CIRCLE":
+            return [_arc_curve(e.point(10), r, 0.0, _TWO_PI, e.extrusion, layer, full=True)]
+        return [_arc_curve(e.point(10), r, math.radians(e.num(50)), math.radians(e.num(51)), e.extrusion, layer)]
     if k == "ELLIPSE":
         c, major, n = e.point(10), e.point(11), e.extrusion
         ratio = e.num(40, 1.0)
