@@ -31,9 +31,11 @@ from .operations import chamfer, extrude, fillet, loft, mirror, offset, revolve,
 from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
 from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
 from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot, Trapezoid, make_face
+from .text import Text
 from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
 from .step_import import import_step
+from .dxf import export_dxf, import_dxf, import_dxf_wires
 from .render import render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
@@ -50,6 +52,7 @@ __all__ = [
     "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline",
     # sketches
     "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Slot", "Trapezoid", "make_face",
+    "Text",
     # parts
     "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "Hole", "CounterBoreHole", "CounterSinkHole",
     # patterns
@@ -61,6 +64,7 @@ __all__ = [
     "surface", "ruled", "stitch",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
+    "export_dxf", "import_dxf", "import_dxf_wires",
     "show", "render",
     # errors
     "ModelingError", "KernelError",
