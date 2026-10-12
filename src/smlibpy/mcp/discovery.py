@@ -48,7 +48,7 @@ SYNONYMS = {
     "check": ["is_valid", "heal"], "repair": ["heal"], "fix": ["heal"], "export": ["export", "export_step", "save"],
     "import": ["load", "import_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
-    "drawing": ["render", "import_dxf", "export_dxf"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
+    "drawing": ["render"], "technical": ["render"], "projection": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
     "diff": ["diff_images"], "before": ["diff_images"],
     "zebra": ["render", "verification"], "reflection": ["render", "zebra"], "stripes": ["render", "zebra"],
     "curvature": ["render", "verification"], "continuity": ["fillet", "verification", "zebra"],
@@ -71,7 +71,7 @@ SYNONYMS = {
     "dwg": ["import_dxf", "export_dxf"], "laser": ["export_dxf", "section"],
     # 2D outlines
     "tangent": ["Profile", "arc_to", "TangentArc"], "pen": ["Profile"], "draw": ["Profile", "line_to"],
-    "outline": ["Profile", "offset", "make_face", "import_dxf", "outline"], "contour": ["Profile", "make_face"],
+    "outline": ["Profile", "offset", "make_face", "outline"], "contour": ["Profile", "make_face"],
     "turtle": ["Profile"],
     "symmetric": ["mirror", "Profile"], "half": ["mirror", "Profile"], "shaft": ["Profile", "revolve"],
     "bushing": ["Profile", "revolve"], "corner": ["fillet", "chamfer", "vertices", "convex", "concave"],
