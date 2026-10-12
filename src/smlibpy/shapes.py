@@ -32,9 +32,17 @@ __all__ = [
     "MassProperties",
 ]
 
-#: Relative accuracy of exact integration (areas, volumes, centroids, inertia). The error
-#: of the results is usually far below it; ``mass_properties(accuracy=...)`` takes another.
+#: Relative accuracy of areas, volumes, centers and inertia: volumes and areas to
+#: ``ACCURACY`` of their value, centers to ``ACCURACY`` times the size of the body (its
+#: bounding box diagonal), inertia to ``ACCURACY`` times its largest principal moment.
+#: ``mass_properties(accuracy=...)`` takes another.
 ACCURACY = 1e-7
+
+# The integration (src/cpp/measure.cpp) estimates its error and refines until the estimate
+# is below accuracy * _MARGIN. The estimates are pessimistic for smooth integrands; with the
+# margin, the errors measured against closed forms and converged references are 100 to
+# 10^6 times below the accuracy asked for.
+_MARGIN = 0.1
 
 S = TypeVar("S", bound="Shape")
 
@@ -1110,12 +1118,13 @@ def _fit_plane(points: Sequence[Vector], closed: bool = True) -> Plane:
 class Face(Shape):
     """A bounded piece of a surface, belonging to a body (a part, shell or sketch)."""
 
-    __slots__ = ("_owner", "_f", "_info")
+    __slots__ = ("_owner", "_f", "_info", "_m")
 
     def __init__(self, owner: Any, kface: Any):
         self._owner = owner
         self._f = kface
         self._info: dict[str, Any] | None = None
+        self._m: dict[str, Any] | None = None
 
     @property
     def owner(self) -> _Body:
@@ -1138,13 +1147,20 @@ class Face(Shape):
             return "cylinder"
         return kind
 
+    def _measure(self) -> dict[str, Any]:
+        """Area and first moments, integrated to ``ACCURACY`` (see :meth:`Part.mass_properties`)."""
+        if self._m is None:
+            with kernel_call("face area"):
+                self._m = ext.face_measure(self._f, ACCURACY * _MARGIN)
+        return self._m
+
     @property
     def area(self) -> float:
-        return float(ext.face_properties(self._f, ACCURACY)["area"])
+        return float(self._measure()["area"])
 
     def center(self) -> Vector:
         """Area centroid. For curved faces it may lie off the face; see :meth:`interior_point`."""
-        p = ext.face_properties(self._f, ACCURACY)
+        p = self._measure()
         o, m, a = p["origin"], p["first_moments"], p["signed_area"]
         if abs(a) < 1e-300:
             return Vector(self._f.interior_point())
@@ -1596,9 +1612,32 @@ class Part(_Body):
     __slots__ = ()
 
     # -- measures -------------------------------------------------------------
-    def _props(self, density: float = 1.0, accuracy: float | None = None) -> dict[str, Any]:
+    def _props(self, accuracy: float | None = None) -> dict[str, Any]:
+        """Area, volume and moments (density 1) to the relative ``accuracy`` (default
+        ``ACCURACY``), integrated by smlibpy with an error estimate (src/cpp/measure.cpp).
+        Kept with the body, which does not change: the next query costs nothing."""
+        accuracy = ACCURACY if accuracy is None else accuracy
+        cached = self._h.props
+        if cached is not None and cached["accuracy"] <= accuracy:
+            return cached
         with kernel_call("mass properties", "is the part a closed solid?"):
-            return ext.brep_properties(self._brep, accuracy or ACCURACY, density)
+            p = ext.brep_measure(self._brep, accuracy * _MARGIN)
+        if not p["converged"] and p["relative_error"] > accuracy:
+            import warnings
+
+            warnings.warn(f"mass properties: the integration reached a relative accuracy of "
+                          f"{p['relative_error']:.1e}, not {accuracy:.0e}", RuntimeWarning, stacklevel=3)
+        p["accuracy"] = accuracy
+        self._h.props = p
+        return p
+
+    def _kernel_props(self, accuracy: float) -> dict[str, Any]:
+        """The kernel's own integration (SmBrep::ComputePreciseProperties) at a coarse
+        accuracy, for the quick checks of operations (the sign of a volume, a rough change).
+        Cheap, but its error is not bounded by ``accuracy``: the volume can be 300 times worse.
+        A body whose faces are misbuilt can fail it."""
+        with kernel_call("mass properties", "is the part a closed solid?"):
+            return ext.brep_properties(self._brep, accuracy, 1.0)
 
     @property
     def volume(self) -> float:
@@ -1612,28 +1651,29 @@ class Part(_Body):
     def center(self) -> Vector:
         """Center of mass (uniform density)."""
         p = self._props()
-        return Vector(p["origin"]) + Vector(p["moments"][4]) / p["mass"]
+        return Vector(p["origin"]) + Vector(p["first_moments"]) / p["volume"]
 
     def mass_properties(self, density: float = 1.0, accuracy: float | None = None) -> MassProperties:
         """Mass, center of mass and inertia tensor for a uniform ``density``.
 
-        ``accuracy`` is the relative accuracy of the integration (default ``ACCURACY``, 1e-7;
-        usable from 1e-10 to 1e-2).
+        ``accuracy`` is the relative accuracy of the results (default ``ACCURACY``, 1e-7;
+        from 1e-10 to 1e-2): volume, mass and area to ``accuracy`` of their value, the center
+        to ``accuracy`` times the size of the part (its bounding box diagonal), the inertia
+        to ``accuracy`` times its largest principal moment.
         """
         if not density > 0:
             raise ValueError("mass_properties: the density must be positive")
         if accuracy is not None and not 1e-10 <= accuracy <= 1e-2:
             raise ValueError("mass_properties: accuracy must be between 1e-10 and 1e-2")
-        p = self._props(density, accuracy)
-        o = Vector(p["origin"])
-        mass = float(p["mass"])
-        d = Vector(p["moments"][4]) / mass  # centroid relative to the origin of integration
-        ixx, iyy, izz = p["moments"][7]
-        iyz, izx, ixy = p["moments"][6]
-        i_o = np.array([[ixx, -ixy, -izx], [-ixy, iyy, -iyz], [-izx, -iyz, izz]], dtype=float)
+        p = self._props(accuracy)
+        volume = float(p["volume"])
+        d = Vector(p["first_moments"]) / volume  # centroid relative to the origin of integration
+        xx, yy, zz, yz, zx, xy = p["second_moments"]
+        i_o = np.array([[yy + zz, -xy, -zx], [-xy, xx + zz, -yz], [-zx, -yz, xx + yy]], dtype=float)
         dv = np.array(d.to_tuple())
-        i_c = i_o - mass * (dv.dot(dv) * np.eye(3) - np.outer(dv, dv))
-        return MassProperties(mass, float(p["volume"]), float(p["area"]), o + d, i_c, density)
+        i_c = i_o - volume * (dv.dot(dv) * np.eye(3) - np.outer(dv, dv))
+        return MassProperties(density * volume, volume, float(p["area"]), Vector(p["origin"]) + d,
+                              density * i_c, density)
 
     def is_valid(self) -> bool:
         """True if the part is a closed, manifold solid that encloses a positive volume.
@@ -1652,9 +1692,11 @@ class Part(_Body):
             return None
         problem = self._shape_problem()
         if problem is None:
+            if volume is None and self._h.props is not None:
+                volume = float(self._h.props["volume"])  # measured already
             if volume is None:
                 try:
-                    volume = float(self._props(accuracy=1e-3)["volume"])
+                    volume = float(self._kernel_props(1e-3)["volume"])
                 except KernelError:
                     return "a body whose volume cannot be integrated"
             tiny = 1e-9 * self._extent() ** 3
@@ -1768,7 +1810,7 @@ class Part(_Body):
             rel = _relationship(self, tools[0])
             return None if rel in ("separate", "touching") else "empty"
         try:
-            whole = self._props(accuracy=1e-6)["volume"]
+            whole = self._kernel_props(1e-6)["volume"]
         except KernelError:
             return "empty"
         for t in tools:
@@ -1779,7 +1821,7 @@ class Part(_Body):
                 with kernel_call("cut"):
                     common = Part._wrap(k.boolean(self._copy_brep(), t._copy_brep(),
                                                   operation=k.BooleanOp.INTERSECTION))
-                if common._props(accuracy=1e-6)["volume"] >= whole * (1 - 1e-5):
+                if common._kernel_props(1e-6)["volume"] >= whole * (1 - 1e-5):
                     return None
             except KernelError:
                 pass
@@ -1930,8 +1972,8 @@ class Part(_Body):
         problem = result._shape_problem()
         if problem is None:
             try:
-                before = self._props(accuracy=accuracy)["volume"]
-                after = result._props(accuracy=accuracy)["volume"]
+                before = self._kernel_props(accuracy)["volume"]
+                after = result._kernel_props(accuracy)["volume"]
             except KernelError:
                 pass
             problem = result._solid_problem(after)  # integrates once more only if that failed
@@ -2123,7 +2165,7 @@ class Part(_Body):
         box = self.bbox()
         tol = 1e-6 * max(box.diagonal, 1.0) + grow
         try:
-            before = self._props(accuracy=1e-4)["volume"]
+            before = self._kernel_props(1e-4)["volume"]
         except KernelError:
             before = None
         last: Exception | None = None
@@ -2140,7 +2182,7 @@ class Part(_Body):
                 continue
             try:
                 # a misbuilt face shows up as a failing integration at this accuracy
-                after = result._props(accuracy=1e-6)["volume"]
+                after = result._kernel_props(1e-6)["volume"]
             except KernelError:
                 continue
             if before is not None and after > 0 and ((after < before) == smaller or abs(after - before) < 1e-9 * before):
@@ -2191,7 +2233,8 @@ class Part(_Body):
 
     def __repr__(self) -> str:
         try:
-            vol = f"volume={self._props(accuracy=1e-5)['volume']:.6g}"
+            # the volume to the default accuracy: kept with the part for the next query
+            vol = f"volume={self._props()['volume']:.6g}"
         except KernelError:
             vol = "not a closed solid"
         n = self._brep.face_count()

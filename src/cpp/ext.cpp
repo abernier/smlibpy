@@ -747,19 +747,8 @@ void bind_smlibpy_ext(py::module_ m)
     }, py::arg("brep"), py::arg("accuracy") = 1e-8, py::arg("density") = 1.0,
        "Area, volume, mass and moments (about the bounding box centre, see 'origin').");
 
-    m.def("curve_length", [](const SmCurve* curve, double t0, double t1, double accuracy) {
-        double length = 0.0;
-        check(curve->Length(SmExtent1d(std::min(t0, t1), std::max(t0, t1)), accuracy, length), "SmCurve::Length");
-        return length;
-    }, py::arg("curve"), py::arg("t0"), py::arg("t1"), py::arg("accuracy") = 1e-9);
-
-    m.def("curve_parameter_at_length", [](const SmCurve* curve, double t_start, double length) {
-        double t = 0.0;
-        SmBoolean past_end = FALSE;
-        check(curve->FindParameterAtArcLength(t_start, length, t, &past_end), "SmCurve::FindParameterAtArcLength");
-        return py::make_tuple(t, static_cast<bool>(past_end));
-    }, py::arg("curve"), py::arg("t_start"), py::arg("length"),
-       "Parameter at signed arc length `length` from `t_start`; returns (t, past_end).");
+    // curve_length and curve_parameter_at_length: measure.cpp (SmCurve::Length counts a span
+    // whose curve starts with a zero tangent as 0).
 
     m.def("curve_eval", [](const SmCurve* curve, double t, int derivatives) {
         if (derivatives < 0 || derivatives > 3)

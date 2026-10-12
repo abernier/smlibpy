@@ -11,3 +11,6 @@ void bind_step_build(py::module_& m);
 
 // Exact surface derivatives and curvatures (surface_eval.cpp).
 void bind_surface_eval(py::module_ m);
+
+// Areas, volumes, moments and curve lengths with an error bound (measure.cpp).
+void bind_measure(py::module_ m);
