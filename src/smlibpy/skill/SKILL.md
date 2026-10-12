@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, measurements, STEP/STL/glTF export and STEP import. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, twist/taper/bend/lattice deformations, measurements, STEP/STL/glTF export and STEP import. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -67,6 +67,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | sketches | `sketches/*` | Sketch, 2D shapes (Rectangle, Circle, Polygon, Slot, ...), make_face, 2D offset and fillet |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire |
 | features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft, heal |
+| deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity |
 | files | `files/*` | STEP in and out, STL, glTF, OBJ, the native format, render, show, meshes |
@@ -79,3 +80,5 @@ Each domain has a `generic.md` with the concepts; the other docs are named after
 - `recipes/verification`: what to check after each step, and how.
 - `recipes/modeling`: the patterns that work (plates, holes, bosses, revolved parts, shells,
   sweeps along helices) and the order of operations.
+- `recipes/deform`: when to twist, taper, bend or lattice-deform a part instead of modeling
+  the shape directly (twisted vases and blades, bent tubes and handles, tapered grips).

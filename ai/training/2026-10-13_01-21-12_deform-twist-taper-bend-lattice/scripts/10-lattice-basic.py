@@ -1,0 +1,26 @@
+# lattice: identity, one point, layers, exactness and degrees per counts
+from smlibpy._kernel import ext
+block = Box(60, 40, 20)
+lat = Lattice(block, 3)
+print("[10]", lat, "points", lat.points.shape, "counts", lat.counts)
+print("[10] point [1,1,-1] at", lat.points[1, 1, -1], "rest", lat.rest[1, 1, -1])
+same = lat.apply(block)
+print("[10] unchanged lattice: volume", round(same.mass_properties(accuracy=1e-10).volume, 9))
+lat.move((1, 1, -1), (0, 0, 8))
+print("[10] map (0,0,10) ->", lat.map((0, 0, 10)), "map (30,20,10) ->", lat.map((30, 20, 10)))
+p = lat.apply(block)
+top = p.faces().sort_by(Z)[-1]
+print("[10] pillow: valid", p.is_valid(), "faces", len(p.faces()), "volume", round(p.mass_properties(accuracy=1e-10).volume, 6))
+print("[10] top degrees", [(d["u_degree"], d["v_degree"]) for d in [ext.surface_data(top._f.surface(), True)]])
+print("[10] top point over the center z", round(top.distance_to((0, 0, 12)), 12), "(0 = on the face)")
+for counts in (2, 3, 4, 5):
+    L = Lattice(block, counts)
+    L.move(L.layer(Z, -1), (0, 0, 5))
+    L.scale(L.layer(Z, -1), 1.3)
+    q = L.apply(block)
+    degs = sorted({(d["u_degree"], d["v_degree"]) for d in (ext.surface_data(f._f.surface(), True) for f in q.faces())})
+    print(f"[10] counts {counts}: valid {q.is_valid()} volume {q.mass_properties(accuracy=1e-10).volume:.4f} degrees {degs}")
+L = Lattice(block, (3, 2, 2))
+L.move(L.layer(X, 1), (0, 0, 10))
+print("[10] (3,2,2) lift the middle layer across X: bbox", L.apply(block).bbox())
+snapshot("lattice", p, view="iso")

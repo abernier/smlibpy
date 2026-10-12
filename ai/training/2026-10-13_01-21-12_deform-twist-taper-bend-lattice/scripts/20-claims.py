@@ -1,0 +1,13 @@
+# claims for the docs: face types and selectors on deformed parts
+bar = Box(20, 20, 100).twist(90)
+print("[20] geom types", sorted(set(f.geom_type for f in bar.faces())))
+print("[20] planar faces", len(bar.faces().planar()), "top normal", bar.faces().sort_by(Z)[-1].normal_at())
+cone = Cylinder(10, 50).taper(0.5)
+print("[20] cone planar", len(cone.faces().planar()), "cylinders", len(cone.faces().cylinders()))
+b = Box(16, 16, 200).twist(360, start=-50, end=50)
+print("[20] baluster geom types", sorted(f.geom_type for f in b.faces()))
+hole = bar - Cylinder(4, 40).rotate(X, 90)
+print("[20] hole drilled after the twist: face types", sorted(f.geom_type for f in hole.faces()))
+twisted_hole = (Box(20, 20, 100) - Cylinder(4, 40).rotate(X, 90)).twist(90)
+print("[20] hole drilled before the twist: face types", sorted(f.geom_type for f in twisted_hole.faces()))
+print("[20] Part.deform == Lattice.apply:", round(Box(10, 10, 10).deform(Lattice(Box(10, 10, 10), 2)).volume, 6))

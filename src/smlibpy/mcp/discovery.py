@@ -15,7 +15,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent / "skill"
 
 #: Classes whose public methods are listed next to the functions of ``smlibpy.__all__``.
 CLASSES = ("Part", "Sketch", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis", "Plane",
-           "Location", "BoundBox", "Mesh", "MassProperties")
+           "Location", "BoundBox", "Mesh", "MassProperties", "Lattice")
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
@@ -31,7 +31,7 @@ SYNONYMS = {
     "align": ["Align"], "mirror": ["mirror"], "drill": ["Hole"], "bore": ["CounterBoreHole"],
     "countersink": ["CounterSinkHole"], "thread": ["Helix"], "spring": ["Helix", "sweep"],
     "curve": ["Spline", "Line", "CenterArc"], "arc": ["CenterArc", "ThreePointArc", "RadiusArc", "TangentArc"],
-    "spline": ["Spline", "Bezier"], "freeform": ["surface", "Spline"], "patch": ["surface", "ruled"],
+    "spline": ["Spline", "Bezier"], "freeform": ["surface", "Spline", "Lattice"], "patch": ["surface", "ruled"],
     "select": ["ShapeList", "filter_by", "faces", "edges"], "pick": ["ShapeList", "filter_by"],
     "find": ["filter_by", "nearest"], "top": ["top"], "highest": ["top", "max_by"], "biggest": ["largest"],
     "measure": ["mass_properties", "volume", "area", "distance_to"], "weight": ["mass_properties"],
@@ -42,9 +42,13 @@ SYNONYMS = {
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
-    "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],
+    "cross": ["section"], "draft": ["draft"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
     "profile": ["Sketch", "Rectangle", "Circle"], "2d": ["Sketch"], "polygon": ["Polygon", "RegularPolygon"],
     "hexagon": ["RegularPolygon"], "slot": ["Slot"], "text": [], "gear": ["Polygon", "PolarLocations"],
+    "deform": ["twist", "taper", "bend", "Lattice"], "deformation": ["twist", "taper", "bend", "Lattice"],
+    "twist": ["twist"], "twisted": ["twist"], "tapered": ["taper"], "bend": ["bend"], "bent": ["bend"],
+    "curl": ["bend"], "wrap": ["bend"], "warp": ["Lattice", "bend", "twist"], "free": ["Lattice"],
+    "lattice": ["Lattice"], "morph": ["Lattice"], "cage": ["Lattice"], "ffd": ["Lattice"], "sculpt": ["Lattice"],
 }
 
 
