@@ -393,16 +393,19 @@ class ShapeList(list[T]):
         return out
 
     def convex(self) -> ShapeList[T]:
-        """Edges on outside corners (material angle below 180 degrees)."""
-        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "convex")
+        """Edges on outside corners (material angle below 180 degrees), and the outside
+        corners of a sketch (vertices where the region's angle is below 180 degrees)."""
+        return ShapeList(s for s in self if _convexity(s) == "convex")
 
     def concave(self) -> ShapeList[T]:
-        """Edges on inside corners (material angle above 180 degrees)."""
-        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "concave")
+        """Edges on inside corners (material angle above 180 degrees), and the inside
+        corners of a sketch."""
+        return ShapeList(s for s in self if _convexity(s) == "concave")
 
     def smooth(self) -> ShapeList[T]:
-        """Edges where two faces meet tangentially, such as the borders of a fillet."""
-        return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "smooth")
+        """Edges where two faces meet tangentially, such as the borders of a fillet, and the
+        vertices of a sketch where two edges meet tangentially."""
+        return ShapeList(s for s in self if _convexity(s) == "smooth")
 
     def within(self, box: BoundBox) -> ShapeList[T]:
         """Shapes whose bounding box lies inside ``box``."""
@@ -491,6 +494,14 @@ class ShapeList(list[T]):
         return f"ShapeList({list.__repr__(self)})"
 
 
+def _convexity(s: Any) -> str | None:
+    if isinstance(s, Edge):
+        return s.convexity
+    if isinstance(s, Vertex) and isinstance(s._owner, Sketch):
+        return s.convexity
+    return None
+
+
 def _unique(items: Iterable[T]) -> ShapeList[T]:
     out: ShapeList[T] = ShapeList()
     seen: set[Any] = set()
@@ -570,6 +581,18 @@ class Vertex(Shape):
         if isinstance(other, Shape):
             return other.distance_to(self._p)  # type: ignore[attr-defined]
         return self._p.distance_to(other)
+
+    @property
+    def convexity(self) -> str:
+        """For a corner of a sketch: ``"convex"`` where the region's angle is below 180
+        degrees (an outside corner), ``"concave"`` above (an inside corner, also every corner
+        of a square hole), ``"smooth"`` where the two edges meet tangentially."""
+        if not isinstance(self._owner, Sketch):
+            raise ValueError("convexity is defined for the corners of a sketch; for a part, select its edges "
+                             "(part.edges().convex())")
+        from ._regions import corner_kind
+
+        return corner_kind(self._owner, self._p)
 
     def _transformed(self, m: np.ndarray) -> Vertex:
         return Vertex(Vector((m @ np.array((*self._p.to_tuple(), 1.0)))[:3]))
@@ -866,13 +889,55 @@ def _is_rigid(m: np.ndarray) -> bool:
     return bool(np.allclose(r @ r.T, np.eye(3), atol=1e-12) and np.linalg.det(r) > 0)
 
 
+def _similarity(m: np.ndarray) -> bool:
+    """True for a rotation, reflection or uniform scale (with any translation): the maps that
+    take lines to lines and circles to circles."""
+    r = m[:3, :3]
+    g = r @ r.T
+    s2 = float(np.trace(g)) / 3.0
+    return s2 > 0 and bool(np.allclose(g, s2 * np.eye(3), atol=1e-12 * max(1.0, s2)))
+
+
+def _exact_image(curve: Any, m: np.ndarray) -> Any | None:
+    """The image of a line or circle under a similarity as an exact line or circle (a new
+    curve), or None for other curves."""
+    kind = ext.curve_kind(curve)
+    if kind not in ("line", "circle"):
+        return None
+    t0, t1 = (float(t) for t in curve.parameter_range())
+
+    def image(t: float) -> Vector:
+        p = np.array(Vector(curve.evaluate(t)).to_tuple())
+        return Vector(m[:3, :3] @ p + m[:3, 3])
+
+    a, e = image(t0), image(t1)
+    if kind == "line":
+        with kernel_call("transform"):
+            return k.create_line_segment(a.to_tuple(), e.to_tuple())
+    from .curves import ThreePointArc, _arc_curve
+
+    if a.distance_to(e) > 1e-9 * max(1.0, a.length):
+        return ThreePointArc(a, image(0.5 * (t0 + t1)), e)._copy_curve()
+    b, c = image(t0 + (t1 - t0) / 3.0), image(t0 + 2.0 * (t1 - t0) / 3.0)
+    ab, ac = b - a, c - a
+    n = ab.cross(ac)
+    center = a + (ab.cross(n) * ac.dot(ac) - ac.cross(n) * ab.dot(ab)) / (2.0 * n.dot(n)) * -1.0
+    return _arc_curve(Vector(0, 0, 0), center.distance_to(a), 0.0, 360.0, Plane(center, a - center, n.normalized()))
+
+
 def _transform_curve(curve: Any, m: np.ndarray) -> Any:
     """Apply a 4x4 matrix to a standalone kernel curve (consumes ``curve``)."""
     if _is_rigid(m):
         placement = k.Axis2Placement(_t(m[:3, 3]), _t(m[:3, 0]), _t(m[:3, 1]))
         k.transform(curve, placement)
         return curve
-    # Scaling and mirroring: NURBS are invariant under affine maps of their poles.
+    if _similarity(m):
+        # Mirrored and uniformly scaled lines and circles stay lines and circles.
+        exact = _exact_image(curve, m)
+        if exact is not None:
+            ext.delete_curve(curve)
+            return exact
+    # Other maps: NURBS are invariant under affine maps of their poles.
     d = ext.curve_data(curve)
     ext.delete_curve(curve)
     poles = np.array(d["poles"]) @ m[:3, :3].T + m[:3, 3]
@@ -1472,6 +1537,24 @@ class _Body(Shape):
 
 def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
     return any(a.max[i] < b.min[i] - tol or b.max[i] < a.min[i] - tol for i in range(3))
+
+
+def _disjoint_batches(tools: Sequence[Any]) -> list[list[Any]]:
+    """The tools in groups whose members' boxes do not overlap (so that each group can go
+    into one Boolean); empty tools are left out."""
+    items = [(t, np.array([*t.bbox().min, *t.bbox().max])) for t in tools if t._brep.face_count()]
+    batches: list[tuple[list[Any], list[np.ndarray]]] = []
+    for t, b in items:
+        for members, boxes in batches:
+            arr = np.array(boxes)
+            apart = (arr[:, 3:] < b[:3] - 1e-9) | (b[3:] < arr[:, :3] - 1e-9)
+            if apart.any(axis=1).all():
+                members.append(t)
+                boxes.append(b)
+                break
+        else:
+            batches.append(([t], [b]))
+    return [members for members, _ in batches]
 
 
 def _closest(body: _Body, p: np.ndarray) -> np.ndarray:
@@ -2390,16 +2473,19 @@ class Sketch(Shell):
 
     Sketch constructors build in the world XY plane around the origin; place a sketch
     with ``.on(plane_or_face)``, ``Plane * sketch`` or ``Pos(...) * sketch``. Combine
-    sketches with ``+``, ``-`` and ``&``, then turn them into parts with
-    :meth:`extrude`, :meth:`revolve`, :meth:`sweep` or :func:`~smlibpy.loft`.
+    sketches with ``+``, ``-``, ``&`` and ``^``, change them with :meth:`offset`,
+    :meth:`fillet`, :meth:`chamfer` and :meth:`mirror`, then turn them into parts with
+    :meth:`extrude`, :meth:`revolve`, :meth:`sweep` or :func:`~smlibpy.loft`. Outlines that
+    are awkward as combinations of shapes are drawn with :class:`~smlibpy.Profile`.
     """
 
-    __slots__ = ("_plane",)
+    __slots__ = ("_plane", "_loops")
 
     @classmethod
     def _wrap(cls, brep: Any, plane: Plane | None = None, **kwargs: Any) -> Sketch:  # type: ignore[override]
         s = super()._wrap(brep, **kwargs)
         s._plane = plane if plane is not None else Plane.XY
+        s._loops = None
         return s
 
     def _like(self, brep: Any) -> Sketch:
@@ -2438,47 +2524,121 @@ class Sketch(Shell):
 
     # -- 2D booleans ----------------------------------------------------------
     def _boolean2d(self, other: Any, op: Any, name: str) -> Sketch:
-        result: Sketch = self
-        for t in _bodies(other):
+        try:
+            tools = _bodies(other, name)
+        except TypeError:
+            raise TypeError(f"cannot {name} a {type(other).__name__} with a Sketch: both sides must be sketches (or a "
+                            f"list of sketches). Make a region from curves with make_face(...) or Profile(...).close()"
+                            ) from None
+        for t in tools:
             if not isinstance(t, Sketch):
                 raise TypeError(f"cannot {name} a {type(t).__name__} with a Sketch")
-            if not result.plane.is_coplanar(t.plane, 1e-6 * max(1.0, result.bbox().diagonal)):
-                raise ValueError(f"cannot {name} sketches in different planes")
-            if _disjoint(result.bbox(), t.bbox()):
-                # The kernel's 2D Booleans need overlapping regions; disjoint ones are cheap.
-                if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.EXCLUSIVE_OR:
-                    with kernel_call(name):
-                        result = result._like(ext.combine([result._brep, t._brep]))
-                    continue
-                if op == k.BooleanOp2D.DIFFERENCE:
-                    continue
-                raise ValueError("the sketches do not overlap; their intersection is empty")
+            if not self.plane.is_coplanar(t.plane, 1e-6 * max(1.0, self.bbox().union(t.bbox()).diagonal)):
+                raise ValueError(f"cannot {name} sketches in different planes; place both on the same plane first")
+        result: Sketch = self
+        if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.DIFFERENCE:
+            # Tools that do not overlap each other go into one kernel call.
+            for batch in _disjoint_batches(tools):
+                result = result._boolean2d_with(batch, op, name)
+        else:
+            for t in tools:
+                result = result._boolean2d_with([t], op, name)
+        return result
+
+    def _boolean2d_with(self, tools: list[Sketch], op: Any, name: str) -> Sketch:
+        from ._regions import rebuilt_brep
+
+        if not tools:
+            return self
+        empty_self = not self._brep.face_count()
+        if empty_self or not any(t._brep.face_count() for t in tools):
+            if op == k.BooleanOp2D.INTERSECTION:
+                return self._empty()
+            if empty_self and op != k.BooleanOp2D.DIFFERENCE:
+                with kernel_call(name):
+                    return self._like(ext.combine([t._brep for t in tools]))
+            return self
+        box = tools[0].bbox()
+        for t in tools[1:]:
+            box = box.union(t.bbox())
+        if _disjoint(self.bbox(), box):
+            if op == k.BooleanOp2D.UNION or op == k.BooleanOp2D.EXCLUSIVE_OR:
+                with kernel_call(name):
+                    return self._like(ext.combine([self._brep, *(t._brep for t in tools)]))
+            if op == k.BooleanOp2D.DIFFERENCE:
+                return self
+            return self._empty()
+        # The kernel's planar Boolean is exact and fast on bodies built from their curves.
+        # On bodies that were moved it can fail, or return a wrong union without an error,
+        # so both operands are rebuilt first (see ai/plan/2d.md).
+        a = rebuilt_brep(self)
+        pieces = [rebuilt_brep(t) for t in tools]
+        if a is not None and all(x is not None for x in pieces):
+            if len(pieces) > 1:
+                with kernel_call(name):
+                    b = ext.combine(pieces)
+                for x in pieces:
+                    ext.delete_brep(x)
+            else:
+                b = pieces[0]
             try:
                 with kernel_call(name):
-                    b = k.boolean_2d(result._copy_brep(), t._copy_brep(), operation=op)
-                result = result._like(b)
+                    result = self._like(k.boolean_2d(a, b, operation=op))  # consumes a and b
+                if self._boolean2d_plausible(tools, result, op):
+                    return result
             except KernelError:
-                # The 2D Booleans reject some configurations (overlapping circles, for one).
-                # Thin slabs through the 3D Booleans are slower but robust.
-                result = result._slab_boolean(t, op, name)
-        return result
+                pass
+        else:
+            for x in [a, *pieces]:
+                if x is not None:
+                    ext.delete_brep(x)
+        # The kernel refused: Booleans of thin slabs in 3D (slower, but robust).
+        tool = tools[0]
+        if len(tools) > 1:
+            with kernel_call(name):
+                tool = tool._like(ext.combine([t._brep for t in tools]))
+        if op == k.BooleanOp2D.EXCLUSIVE_OR:
+            return self._slab_or_empty(tool, k.BooleanOp2D.DIFFERENCE, name)._boolean2d(
+                tool._slab_or_empty(self, k.BooleanOp2D.DIFFERENCE, name), k.BooleanOp2D.UNION, name)
+        return self._slab_or_empty(tool, op, name)
+
+    def _empty(self) -> Sketch:
+        return self._like(ext.copy_faces(self._brep, []))
+
+    def _slab_or_empty(self, other: Sketch, op: Any, name: str) -> Sketch:
+        try:
+            return self._slab_boolean(other, op, name)
+        except ModelingError as e:
+            if "empty" in str(e):
+                return self._empty()
+            raise
+
+    def _boolean2d_plausible(self, tools: list[Sketch], result: Sketch, op: Any) -> bool:
+        """A cheap check of a union or exclusive or: its area is at least the larger operand's
+        (minus the overlap for xor). Skipped for large sketches, where areas are slow."""
+        if op != k.BooleanOp2D.UNION:
+            return True
+        if self._brep.edge_count() + sum(t._brep.edge_count() for t in tools) > 64:
+            return True
+        a = self.area
+        b = sum(t.area for t in tools)
+        r = result.area
+        tol = 1e-6 * max(1.0, a, b)
+        return max(a, b) - tol <= r <= a + b + tol
 
     def _slab_boolean(self, other: Sketch, op: Any, name: str) -> Sketch:
         n = self._plane.z_dir
         thickness = max(self.bbox().union(other.bbox()).diagonal * 0.05, 1e-3)
         a = self.extrude(thickness, direction=n)
         b = other.extrude(thickness, direction=n)
-        # The slabs' Booleans run unchecked: pieces of the result may touch along an edge
-        # (the two halves of an exclusive or), which is fine for the faces taken from it.
+        # The slabs' Booleans run unchecked: pieces of the result may touch along an edge,
+        # which is fine for the faces taken from it.
         if op == k.BooleanOp2D.UNION:
             solid = a._like(a._run_boolean([b], k.BooleanOp.UNION, name))
         elif op == k.BooleanOp2D.DIFFERENCE:
             solid = a._like(a._run_boolean([b], k.BooleanOp.DIFFERENCE, name))
-        elif op == k.BooleanOp2D.INTERSECTION:
+        else:
             solid = a._like(a._run_boolean([b], k.BooleanOp.INTERSECTION, name))
-        else:  # exclusive or
-            return self._slab_boolean(other, k.BooleanOp2D.UNION, name)._slab_boolean(
-                self._slab_boolean(other, k.BooleanOp2D.INTERSECTION, name), k.BooleanOp2D.DIFFERENCE, name)
         base = [f for f in solid.faces()
                 if f.is_planar and abs(self._plane.distance_to(f.interior_point())) <= 1e-9 * max(1.0, thickness)
                 and f.normal_at().dot(n) < 0]
@@ -2507,13 +2667,45 @@ class Sketch(Shell):
 
     # -- measures -------------------------------------------------------------
     def center(self) -> Vector:
+        """Area centroid of the region."""
+        if not self.faces():
+            raise ValueError("the sketch is empty; it has no center")
         return super().center()
 
+    @property
+    def perimeter(self) -> float:
+        """Total length of the boundary: outlines and holes."""
+        return sum(e.length for f in self.faces() for w in f.wires() for e in w.edges())
+
     # -- 2D operations --------------------------------------------------------
-    def offset(self, distance: float, *, round: bool = True) -> Sketch:
-        """Grow (positive) or shrink (negative) the region; corners are rounded or sharp."""
+    def offset(self, distance: float, *, corners: str = "round", round: bool | None = None) -> Sketch:
+        """Grow (positive ``distance``) or shrink (negative) the region; holes move the other way.
+
+        ``corners`` shapes the corners that the offset pulls apart (convex ones when growing,
+        concave ones when shrinking): ``"round"`` (arcs of radius ``|distance|``), ``"sharp"``
+        (the sides extended until they meet) or ``"chamfer"`` (a straight cut across).
+        Lines stay lines and arcs stay arcs. Parts that grow into each other merge, parts that
+        get too thin vanish; shrinking away the whole region raises :class:`ModelingError`.
+        ``round=False`` is the older spelling of ``corners="sharp"``.
+        """
+        from ._regions import CORNER_STYLES, offset_region
+
+        if round is not None:
+            corners = "round" if round else "sharp"
+        if corners not in CORNER_STYLES:
+            raise ValueError(f"offset: corners is 'round', 'sharp' or 'chamfer', not {corners!r}")
         if distance == 0:
             return self
+        result = offset_region(self, distance, corners)
+        if result is not None:
+            return result
+        if corners == "chamfer":
+            raise ModelingError("offset: chamfered corners need outlines of lines and arcs; this sketch has a spline "
+                                "or an ellipse edge (use corners='round' or 'sharp')")
+        return self._kernel_offset(distance, corners == "round")
+
+    def _kernel_offset(self, distance: float, round: bool) -> Sketch:
+        """The kernel's offset, for outlines with splines and ellipses."""
         result: Sketch | None = None
         for f in self.faces():
             loops = f.wires()
@@ -2523,10 +2715,10 @@ class Sketch(Shell):
                 hole = self._offset_loop(w, abs(distance), grow=distance < 0, round=round)
                 if hole is not None:
                     region = region - hole if region is not None else None
-            if region is not None:
+            if region is not None and region.faces():
                 result = region if result is None else result + region
         if result is None:
-            raise ValueError("the offset removes the whole sketch")
+            raise ModelingError(f"offset: shrinking by {abs(distance):g} removes the whole region; use a smaller distance")
         return result
 
     def _offset_loop(self, wire: Wire, distance: float, *, grow: bool, round: bool) -> Sketch | None:
@@ -2546,16 +2738,41 @@ class Sketch(Shell):
         return None
 
     def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Sketch:
-        """Round the corners of the region (between straight edges)."""
-        out = None
-        for f in self.faces():
-            wires = [w.fillet(radius, vertices) for w in f.wires()]
-            piece = Sketch._from_wires(wires[:1], self._plane)
-            for inner in wires[1:]:
-                piece = piece - Sketch._from_wires([inner], self._plane)
-            out = piece if out is None else out + piece
-        assert out is not None
-        return out
+        """Round corners of the region with tangent arcs of ``radius``.
+
+        ``vertices``: the corners to round, as vertices of this sketch (a selection such as
+        ``s.vertices().concave()``) or points; ``None`` rounds every sharp corner. Corners
+        between lines and arcs are rounded exactly; a corner that does not fit, a point that
+        is not a corner, or a smooth corner raises :class:`ModelingError`.
+        """
+        from ._regions import round_corners
+
+        if not radius > 0:
+            raise ValueError("fillet: the radius must be positive")
+        return round_corners(self, float(radius), vertices, "fillet")
+
+    def chamfer(self, length: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Sketch:
+        """Bevel corners of the region: cut back ``length`` along both edges of each corner
+        (measured along the edge) and join the two points with a line.
+
+        ``vertices`` as for :meth:`fillet`; ``None`` bevels every sharp corner.
+        """
+        from ._regions import round_corners
+
+        if not length > 0:
+            raise ValueError("chamfer: the length must be positive")
+        return round_corners(self, float(length), vertices, "chamfer")
+
+    def mirror(self, plane: Plane | Face | Axis = Plane.XZ) -> Sketch:  # type: ignore[override]
+        """A mirrored copy: about an ``Axis`` in the sketch plane (``s.mirror(Y)``), or in a
+        plane or planar face (by default the XZ plane, which flips Y).
+
+        Lines stay lines and arcs stay arcs. The sketch keeps facing the same way when the
+        mirror is an axis in its own plane, so the mirrored profile extrudes to the same side.
+        """
+        from ._regions import mirror_sketch
+
+        return mirror_sketch(self, plane)
 
     # -- to 3D ----------------------------------------------------------------
     def extrude(
@@ -2576,6 +2793,7 @@ class Sketch(Shell):
         """
         if amount == 0:
             raise ValueError("extrude amount must not be zero")
+        self._require_region("extrude")
         d = _vec(direction).normalized() if direction is not None else self._plane.z_dir
         if taper:
             return self._extrude_taper(amount, taper, both)
@@ -2632,6 +2850,7 @@ class Sketch(Shell):
         beside its origin (``Polygon((10, 0), (20, 0), ...)``). A negative ``angle``
         turns the other way. The axis must not cross the region (``ModelingError``).
         """
+        self._require_region("revolve")
         ax = axis if axis is not None else Axis(self._plane.origin, self._plane.y_dir)
         ax, angle = _revolve_axis_angle(ax, angle)
         n = self._plane.z_dir
@@ -2655,6 +2874,11 @@ class Sketch(Shell):
         _require_solid(result, "revolve", hint)
         result.name, result.color = self.name, self.color
         return result
+
+    def _require_region(self, what: str) -> None:
+        if not self._brep.face_count():
+            raise ModelingError(f"{what}: the sketch is empty (0 faces); the Boolean or offset that made it removed "
+                                f"everything")
 
     def _check_axis_beside(self, ax: Axis, default: bool) -> None:
         """Raise if the axis runs through the region (the kernel then returns a body without
