@@ -102,8 +102,8 @@ export_glb(flange, "flange.glb")
 
 ## Status
 
-smlibpy is young. It already covers solid and surface modeling with exact STEP export.
-STEP import, assemblies with product structure, 2D drawings and text are next.
+smlibpy is young. It covers solid and surface modeling, and reads and writes STEP with
+the exact geometry. Assemblies with product structure, 2D drawings and text are next.
 
 ## License
 

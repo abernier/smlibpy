@@ -370,9 +370,21 @@ def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> No
 
 
 def load(path: str | os.PathLike[str]) -> Any:
-    """Read a native SMLib ``.smb`` file as a part (or a shell if it encloses no volume)."""
+    """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``) and
+    SMLib (``.smb``) give exact parts, STL a :class:`Mesh`.
+
+    A STEP file with one body gives that part, one with several a :class:`ShapeList`. A
+    native file that encloses no volume comes back as a :class:`Shell`.
+    """
     from .shapes import Part, Shell
 
+    ext_ = os.path.splitext(os.fspath(path))[1].lower()
+    if ext_ in (".step", ".stp", ".p21"):
+        from .step_import import import_step
+
+        return import_step(path)
+    if ext_ == ".stl":
+        return import_stl(path)
     with kernel_call("load"):
         b = k.read_brep_from_file(os.fspath(path), None, False)
     part = Part._wrap(b)

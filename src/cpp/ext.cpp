@@ -500,6 +500,8 @@ void transform_brep(SmBrep* brep, const std::vector<double>& m)
 
 void bind_smlibpy_ext(py::module_ m)
 {
+    bind_step_build(m);
+
     m.def("curve_data", &curve_data, py::arg("curve"), py::arg("nurbs") = true,
           "Exact definition of a curve: kind, NURBS data (degree, poles, knots, weights) and analytic "
           "parameters for lines, circles and ellipses.");

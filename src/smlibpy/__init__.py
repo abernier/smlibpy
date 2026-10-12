@@ -33,6 +33,7 @@ from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, S
 from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot, Trapezoid, make_face
 from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
+from .step_import import import_step
 from .viewer import show
 from .surfaces import ruled, stitch, surface
 
@@ -58,7 +59,7 @@ __all__ = [
     # surfaces
     "surface", "ruled", "stitch",
     # files and viewer
-    "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl",
+    "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
     "show",
     # errors
     "ModelingError", "KernelError",

@@ -31,6 +31,8 @@ modified; where smlibpy needs more than the published bindings offer, its own C+
   kernel's integration directly to get past that limit.
 - **STEP export** writes the kernel's exact curves and surfaces. The test suite reads the
   files back with OpenCASCADE and checks validity and volume.
+- **STEP import** rebuilds every face on its exact surface and keeps the file's topology,
+  so faces share edges instead of being stitched by tolerance.
 
 ## Robustness work in smlibpy
 
@@ -43,6 +45,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Fillets larger than the geometry allows can come back as a "valid" solid | checks the radius against neighbouring edges and the volume change |
 | Sweeps anchor the profile at the start point of its first curve | centers the profile on the path and orients it |
 | A full 360 degree non-manifold revolve returns an empty body | revolves each loop and subtracts the holes |
+| Faces on cylinders, cones, spheres and tori need a seam edge, but NX and others write them without one | adds the seam along the surface when importing STEP |
+| The seam has to lie where the surface's angle parameter starts | turns the surface frame to the seam edge of the file |
 | The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode |
 | Arcs from the API are plain B-splines | arcs are trimmed kernel circles, so they keep radius and center |
 

@@ -23,7 +23,7 @@ short and readable:
 - **Selections read like sentences.** `part.edges().parallel_to(Z).concave()`.
 - **The full kernel.** Circular, variable and G2/G3 fillets, shells, lofts, sweeps,
   freeform surfaces, stitching, intersections, mass properties.
-- **Exact output.** STEP files carry the kernel's exact geometry; meshes go to glTF and STL.
+- **Exact files.** STEP in and out with the exact geometry; meshes go to glTF and STL.
 
 <div class="grid cards" markdown>
 

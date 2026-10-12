@@ -221,6 +221,13 @@ class BodyData:
     color: tuple[float, float, float] | None = None
 
 
+_MM_PER_METRE_PREFIXED: dict[Any, float] = {
+    None: 1000.0, "EXA": 1e21, "PETA": 1e18, "TERA": 1e15, "GIGA": 1e12, "MEGA": 1e9, "KILO": 1e6,
+    "HECTO": 1e5, "DECA": 1e4, "DECI": 100.0, "CENTI": 10.0, "MILLI": 1.0, "MICRO": 1e-3, "NANO": 1e-6,
+    "PICO": 1e-9, "FEMTO": 1e-12, "ATTO": 1e-15,
+}
+
+
 class _Interp:
     def __init__(self, sf: StepFile):
         self.sf = sf
@@ -231,42 +238,63 @@ class _Interp:
 
     # -- units ------------------------------------------------------------------
     def _find_units(self) -> None:
+        """Length and angle unit of every representation context. A file can define more
+        units than it uses for geometry (density units in metres, for example), so only
+        the units a context assigns count."""
         sf = self.sf
+        self.context_units: dict[int, tuple[float, float]] = {}
         for eid, parts in sf.complex.items():
-            if "LENGTH_UNIT" in parts:
-                if "SI_UNIT" in parts:
-                    prefix, _ = parts["SI_UNIT"]
-                    self.scale = {None: 1000.0, "MILLI": 1.0, "CENTI": 10.0, "DECI": 100.0, "KILO": 1e6,
-                                  "MICRO": 1e-3, "NANO": 1e-6}.get(prefix if prefix is None else str(prefix), 1.0)
-                elif "CONVERSION_BASED_UNIT" in parts:
-                    _, measure = parts["CONVERSION_BASED_UNIT"]
-                    self.scale = self._measure_in_mm(measure)
-            if "PLANE_ANGLE_UNIT" in parts and "CONVERSION_BASED_UNIT" in parts:
-                name, measure = parts["CONVERSION_BASED_UNIT"]
-                if str(name).upper().startswith("DEG"):
-                    self.angle_scale = math.pi / 180.0
-                else:
-                    try:
-                        t, a = sf.get(measure)
-                        val = a[0].args[0] if isinstance(a[0], Typed) else float(a[0])
-                        self.angle_scale = float(val)
-                    except Exception:
-                        pass
-        # a context in use decides when files define several unit sets; keep the last
-        # LENGTH_UNIT seen otherwise.
+            assigned = parts.get("GLOBAL_UNIT_ASSIGNED_CONTEXT")
+            if not assigned:
+                continue
+            length, angle = 1.0, 1.0
+            for u in assigned[0]:
+                kinds = sf.complex.get(int(u), {})
+                if "LENGTH_UNIT" in kinds:
+                    length = self._unit_value(int(u), _MM_PER_METRE_PREFIXED)
+                elif "PLANE_ANGLE_UNIT" in kinds:
+                    angle = self._unit_value(int(u), {None: 1.0})
+            self.context_units[eid] = (length, angle)
+        units = list(self.context_units.values())
+        if units:  # where a representation has no context of its own, the most common one counts
+            self.scale, self.angle_scale = max(set(units), key=units.count)
+        self.default_units = (self.scale, self.angle_scale)
+        self.rep_context: dict[int, int] = {}
+        for eid, (t, a) in sf.entities.items():
+            if t.endswith("REPRESENTATION") and len(a) >= 3 and isinstance(a[2], Ref):
+                self.rep_context[eid] = int(a[2])
+        for eid, parts in sf.complex.items():
+            for k, a in parts.items():
+                if k.endswith("REPRESENTATION") and len(a) >= 3 and isinstance(a[2], Ref):
+                    self.rep_context[eid] = int(a[2])
 
-    def _measure_in_mm(self, ref: Any) -> float:
-        try:
-            t, a = self.sf.get(ref)
-            value = a[0].args[0] if isinstance(a[0], Typed) else float(a[0])
-            unit = self.sf.complex.get(int(a[1]), {})
-            base = 1.0
-            if "SI_UNIT" in unit:
-                prefix = unit["SI_UNIT"][0]
-                base = {None: 1000.0, "MILLI": 1.0, "CENTI": 10.0}.get(prefix if prefix is None else str(prefix), 1.0)
-            return float(value) * base
-        except Exception:
-            return 25.4 if True else 1.0
+    def _unit_value(self, ref: int, si: dict[Any, float], depth: int = 0) -> float:
+        """Size of a unit: an SI unit with its prefix, or a conversion-based unit (inch,
+        degree) followed to the unit it is defined in."""
+        kinds = self.sf.complex.get(ref, {})
+        if "SI_UNIT" in kinds:
+            prefix = kinds["SI_UNIT"][0]
+            if si.keys() == {None}:  # angles: radians, no prefixes in practice
+                return 1.0
+            return si.get(None if prefix is None else str(prefix).upper(), 1.0)
+        if "CONVERSION_BASED_UNIT" in kinds and depth < 8:
+            name, measure = kinds["CONVERSION_BASED_UNIT"]
+            try:
+                _, a = self.sf.get(measure)
+                value = a[0].args[0] if isinstance(a[0], Typed) else a[0]
+                return float(value) * self._unit_value(int(a[1]), si, depth + 1)
+            except Exception:
+                n = str(name).upper()
+                return math.pi / 180.0 if n.startswith("DEG") else 25.4 if n.startswith("INCH") else 1.0
+        return 1.0
+
+    def units_of(self, rep: int | None) -> tuple[float, float]:
+        """(mm per length unit, radians per angle unit) of a representation."""
+        return self.context_units.get(self.rep_context.get(rep, -1), self.default_units) if rep is not None \
+            else self.default_units
+
+    def use_units(self, rep: int | None) -> None:
+        self.scale, self.angle_scale = self.units_of(rep)
 
     # -- colors -----------------------------------------------------------------
     def _find_colors(self) -> dict[int, tuple[float, float, float]]:
@@ -367,6 +395,17 @@ class _Interp:
             degree, pts = int(a[1]), [self.point(p) for p in a[2]]
             knots = _expand(a[7], a[6])
             return {"kind": "bspline", "degree": degree, "poles": np.array(pts), "knots": knots, "weights": None}
+        if t in _KNOT_FORMS:  # BEZIER_CURVE, UNIFORM_CURVE, QUASI_UNIFORM_CURVE: knots implied
+            degree, pts = int(a[1]), [self.point(p) for p in a[2]]
+            return {"kind": "bspline", "degree": degree, "poles": np.array(pts),
+                    "knots": _default_knots(len(pts), degree, _KNOT_FORMS[t]), "weights": None}
+        if t == "HYPERBOLA":
+            o, z, x = self.axis2(a[1])
+            return {"kind": "hyperbola", "origin": o, "z": z, "x": x, "a": float(a[2]) * self.scale,
+                    "b": float(a[3]) * self.scale}
+        if t == "PARABOLA":
+            o, z, x = self.axis2(a[1])
+            return {"kind": "parabola", "origin": o, "z": z, "x": x, "focal": float(a[2]) * self.scale}
         if t.startswith("COMPLEX:"):
             parts = sf.complex[int(ref)]
             if "B_SPLINE_CURVE" in parts:
@@ -375,8 +414,9 @@ class _Interp:
                 if "B_SPLINE_CURVE_WITH_KNOTS" in parts:
                     kk = parts["B_SPLINE_CURVE_WITH_KNOTS"]
                     knots = _expand(kk[1], kk[0])
-                else:  # Bezier / uniform
-                    knots = _default_knots(len(pts), degree, bezier="BEZIER_CURVE" in parts)
+                else:  # Bezier / uniform / quasi-uniform
+                    form = next((f for k, f in _KNOT_FORMS.items() if k in parts), "quasi")
+                    knots = _default_knots(len(pts), degree, form)
                 w = parts.get("RATIONAL_B_SPLINE_CURVE")
                 return {"kind": "bspline", "degree": degree, "poles": np.array(pts), "knots": knots,
                         "weights": [float(x) for x in w[0]] if w else None}
@@ -412,6 +452,10 @@ class _Interp:
                     "minor": float(a[3]) * self.scale}
         if t == "B_SPLINE_SURFACE_WITH_KNOTS":
             return self._bspline_surface(int(a[1]), int(a[2]), a[3], _expand(a[10], a[8]), _expand(a[11], a[9]), None)
+        if t in _KNOT_FORMS:  # BEZIER_SURFACE, UNIFORM_SURFACE, QUASI_UNIFORM_SURFACE: knots implied
+            ud, vd, grid = int(a[1]), int(a[2]), a[3]
+            return self._bspline_surface(ud, vd, grid, _default_knots(len(grid), ud, _KNOT_FORMS[t]),
+                                         _default_knots(len(grid[0]), vd, _KNOT_FORMS[t]), None)
         if t == "SURFACE_OF_LINEAR_EXTRUSION":
             return {"kind": "extrusion", "curve": self.curve(a[1]), "vector": self.vector(a[2])}
         if t == "SURFACE_OF_REVOLUTION":
@@ -431,9 +475,9 @@ class _Interp:
                     kk = parts["B_SPLINE_SURFACE_WITH_KNOTS"]
                     uk, vk = _expand(kk[2], kk[0]), _expand(kk[3], kk[1])
                 else:
-                    bez = "BEZIER_SURFACE" in parts
-                    uk = _default_knots(len(grid), ud, bezier=bez)
-                    vk = _default_knots(len(grid[0]), vd, bezier=bez)
+                    form = next((f for k, f in _KNOT_FORMS.items() if k in parts), "quasi")
+                    uk = _default_knots(len(grid), ud, form)
+                    vk = _default_knots(len(grid[0]), vd, form)
                 w = parts.get("RATIONAL_B_SPLINE_SURFACE")
                 return self._bspline_surface(ud, vd, grid, uk, vk, w[0] if w else None)
         raise NotImplementedError(f"surface type {t}")
@@ -522,65 +566,152 @@ def _expand(knots: list[float], mults: list[int]) -> list[float]:
     return out
 
 
-def _default_knots(n: int, degree: int, bezier: bool) -> list[float]:
-    if bezier or n == degree + 1:
-        return [0.0] * (degree + 1) + [1.0] * (degree + 1)
-    inner = n - degree - 1
-    return [0.0] * (degree + 1) + [float(i) for i in range(1, inner + 1)] + [float(inner + 1)] * (degree + 1)
+_KNOT_FORMS = {
+    "BEZIER_CURVE": "bezier", "UNIFORM_CURVE": "uniform", "QUASI_UNIFORM_CURVE": "quasi",
+    "BEZIER_SURFACE": "bezier", "UNIFORM_SURFACE": "uniform", "QUASI_UNIFORM_SURFACE": "quasi",
+}
+
+
+def _default_knots(n: int, degree: int, form: str) -> list[float]:
+    """Knot vector of a B-spline whose knots the file leaves implicit (ISO 10303-42)."""
+    if form == "uniform":
+        return [float(i) for i in range(-degree, n + 1)]
+    if form == "bezier":  # piecewise Bezier: segments meet with multiplicity ``degree``
+        segments = max(1, (n - 1) // degree)
+        inner = [float(i) for i in range(1, segments) for _ in range(degree)]
+        return [0.0] * (degree + 1) + inner + [float(segments)] * (degree + 1)
+    inner_n = n - degree - 1
+    return [0.0] * (degree + 1) + [float(i) for i in range(1, inner_n + 1)] + [float(inner_n + 1)] * (degree + 1)
 
 
 def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
     """All bodies of the file with their world placement (4x4, mm)."""
     it = _Interp(sf)
-    transforms = _representation_transforms(it)
+    transforms, in_product = _representation_transforms(it)
     bodies: list[tuple[BodyData, np.ndarray]] = []
     owner = _owning_representations(sf)
     for eid, (t, a) in sf.entities.items():
+        if t not in ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS", "SHELL_BASED_SURFACE_MODEL"):
+            continue
+        # Representations outside the product structure (the shape for validation
+        # properties, for example) list bodies too; they do not place another copy.
+        reps = [r for r in owner.get(eid, []) if r in in_product] or owner.get(eid, [])
+        it.use_units(reps[0] if reps else None)
         if t == "MANIFOLD_SOLID_BREP":
             body = it.body([(a[1], False)], "solid", a[0] or "")
         elif t == "BREP_WITH_VOIDS":
             body = it.body([(a[1], False)] + [(v, False) for v in a[2]], "solid", a[0] or "")
-        elif t == "SHELL_BASED_SURFACE_MODEL":
-            body = it.body([(s, False) for s in a[1]], "sheet", a[0] or "")
         else:
-            continue
+            body = it.body([(s, False) for s in a[1]], "sheet", a[0] or "")
         body.color = it.colors.get(eid)
-        mats = [transforms.get(r, [np.eye(4)]) for r in owner.get(eid, [])] or [[np.eye(4)]]
-        for group in mats:
-            for m in group:
-                bodies.append((body, m))
+        # A body listed by several representations (some exporters put it in two that
+        # are related to each other) is the same body where both put it at the same
+        # place. Instances of one representation stay, even where they coincide.
+        mats: list[np.ndarray] = []
+        for r in reps:
+            seen = list(mats)
+            for m in transforms.get(r, [np.eye(4)]):
+                if not any(np.allclose(m, q, rtol=0.0, atol=1e-9 * max(1.0, float(np.abs(m).max()))) for q in seen):
+                    mats.append(m)
+        for m in mats or [np.eye(4)]:
+            bodies.append((body, m))
     return bodies
 
 
 def _owning_representations(sf: StepFile) -> dict[int, list[int]]:
     owner: dict[int, list[int]] = {}
     for eid, (t, a) in sf.entities.items():
-        if t.endswith("SHAPE_REPRESENTATION") and len(a) >= 2 and isinstance(a[1], list):
+        if t.endswith("REPRESENTATION") and len(a) >= 2 and isinstance(a[1], list):
             for item in a[1]:
                 if isinstance(item, Ref):
                     owner.setdefault(int(item), []).append(eid)
     return owner
 
 
-def _representation_transforms(it: _Interp) -> dict[int, list[np.ndarray]]:
-    """World transforms of each shape representation, following assembly relationships."""
+def _rep_items(sf: StepFile) -> dict[int, set[int]]:
+    items: dict[int, set[int]] = {}
+    for eid, (t, a) in sf.entities.items():
+        if t.endswith("REPRESENTATION") and len(a) >= 2 and isinstance(a[1], list):
+            items[eid] = {int(x) for x in a[1] if isinstance(x, Ref)}
+    for eid, parts in sf.complex.items():
+        for k, a in parts.items():
+            if k.endswith("REPRESENTATION") and len(a) >= 2 and isinstance(a[1], list):
+                items[eid] = {int(x) for x in a[1] if isinstance(x, Ref)}
+    return items
+
+
+def _representation_transforms(it: _Interp) -> tuple[dict[int, list[np.ndarray]], set[int]]:
+    """World transforms of each representation, following the assembly structure, and the
+    representations that belong to the product structure (a product's shape, or linked to
+    one).
+
+    Exporters disagree on which side of a representation relationship is the parent, so
+    the product structure (NEXT_ASSEMBLY_USAGE_OCCURRENCE) decides where it can.
+    """
     sf = it.sf
+    items = _rep_items(sf)
+    # product definition -> its shape representation
+    pd_rep: dict[int, int] = {}
+    for eid, (t, a) in sf.entities.items():
+        if t == "SHAPE_DEFINITION_REPRESENTATION":
+            try:
+                dt, da = sf.get(a[0])
+                if dt == "PRODUCT_DEFINITION_SHAPE" and "PRODUCT_DEFINITION" in sf.type_of(da[2]):
+                    pd_rep[int(da[2])] = int(a[1])
+            except Exception:
+                continue
+    # relationship -> (parent product definition, child product definition)
+    rel_products: dict[int, tuple[int, int]] = {}
+    for eid, (t, a) in sf.entities.items():
+        if t == "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION":
+            try:
+                pt, pa = sf.get(a[1])
+                nt, na = sf.get(pa[2])
+                if "ASSEMBLY_USAGE_OCCURRENCE" in nt or nt == "PRODUCT_DEFINITION_USAGE":
+                    rel_products[int(a[0])] = (int(na[3]), int(na[4]))
+            except Exception:
+                continue
+
     parent_of: dict[int, list[tuple[int, np.ndarray]]] = {}
+
+    def link(child: int, parent: int, m: np.ndarray) -> None:
+        parent_of.setdefault(child, []).append((parent, m))
+
     for eid, parts in sf.complex.items():
         if "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION" in parts and "REPRESENTATION_RELATIONSHIP" in parts:
             rr = parts["REPRESENTATION_RELATIONSHIP"]
+            r1, r2 = int(rr[2]), int(rr[3])
             tr = parts["REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"][0]
-            child, parent = int(rr[2]), int(rr[3])
-            m = _item_transform(it, tr)
+            child, parent = r1, r2  # CAx-IF convention
+            if eid in rel_products:
+                ppd, cpd = rel_products[eid]
+                if pd_rep.get(ppd) == r1 or pd_rep.get(cpd) == r2:
+                    child, parent = r2, r1
+            m = _item_transform(it, tr, child, parent, items)
             if m is not None:
-                parent_of.setdefault(child, []).append((parent, m))
-    # shape_representation_relationship without transform links representations 1:1
+                link(child, parent, m)
     for eid, (t, a) in sf.entities.items():
-        if t == "SHAPE_REPRESENTATION_RELATIONSHIP" and len(a) >= 4:
-            a1, a2 = int(a[2]), int(a[3])
-            for child, parent in ((a2, a1),):
-                if child not in parent_of:
-                    parent_of.setdefault(child, []).append((parent, np.eye(4)))
+        if t in ("SHAPE_REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP") and len(a) >= 4:
+            r1, r2 = int(a[2]), int(a[3])
+            # the representation that is a product's main shape is the parent
+            prod_reps = set(pd_rep.values())
+            if r1 in prod_reps and r2 not in prod_reps:
+                link(r2, r1, np.eye(4))
+            elif r2 in prod_reps and r1 not in prod_reps:
+                link(r1, r2, np.eye(4))
+            else:
+                link(r2, r1, np.eye(4))
+        elif t == "MAPPED_ITEM":
+            try:
+                mt, ma = sf.get(a[1])  # REPRESENTATION_MAP(origin, mapped representation)
+                it.use_units(int(ma[1]))
+                origin = it.placement_matrix(ma[0])
+                for rep, its in items.items():
+                    if eid in its:
+                        it.use_units(rep)
+                        link(int(ma[1]), rep, it.placement_matrix(a[2]) @ np.linalg.inv(origin))
+            except Exception:
+                continue
 
     cache: dict[int, list[np.ndarray]] = {}
 
@@ -588,27 +719,47 @@ def _representation_transforms(it: _Interp) -> dict[int, list[np.ndarray]]:
         if rep in cache:
             return cache[rep]
         if depth > 32 or rep not in parent_of:
-            cache[rep] = [np.eye(4)]
-            return cache[rep]
-        out = []
+            return [np.eye(4)]
+        out: list[np.ndarray] = []
         for parent, m in parent_of[rep]:
             for pm in world(parent, depth + 1):
                 out.append(pm @ m)
         cache[rep] = out or [np.eye(4)]
         return cache[rep]
 
-    reps = [eid for eid, (t, a) in sf.entities.items() if t.endswith("SHAPE_REPRESENTATION")]
-    return {r: world(r) for r in reps}
+    product_reps = set(pd_rep.values())
+    linked: dict[int, bool] = {}
+
+    def in_product(rep: int, depth: int = 0) -> bool:
+        if rep not in linked:
+            linked[rep] = False  # guards against cycles
+            linked[rep] = rep in product_reps or (depth < 32 and any(
+                in_product(parent, depth + 1) for parent, _ in parent_of.get(rep, [])))
+        return linked[rep]
+
+    return {r: world(r) for r in items}, {r for r in items if in_product(r)}
 
 
-def _item_transform(it: _Interp, ref: Any) -> np.ndarray | None:
+def _item_transform(it: _Interp, ref: Any, child: int, parent: int, items: dict[int, set[int]]) -> np.ndarray | None:
+    """Placement of the child representation in the parent's coordinates."""
     sf = it.sf
     t, a = sf.get(ref)
-    if t == "ITEM_DEFINED_TRANSFORMATION":
-        try:
-            m1 = it.placement_matrix(a[2])
-            m2 = it.placement_matrix(a[3])
-            return m2 @ np.linalg.inv(m1)
-        except Exception:
-            return None
-    return None
+    if t != "ITEM_DEFINED_TRANSFORMATION":
+        return None
+    try:
+        i1, i2 = int(a[2]), int(a[3])
+        # item 2 lies in the parent's representation and item 1 in the child's (CAx-IF),
+        # unless the representations' item lists say otherwise
+        if i1 in items.get(parent, set()) or i2 in items.get(child, set()):
+            parent_item, child_item = i1, i2
+        else:
+            parent_item, child_item = i2, i1
+        it.use_units(parent)
+        m1 = it.placement_matrix(parent_item)
+        it.use_units(child)
+        m2 = it.placement_matrix(child_item)
+        return m1 @ np.linalg.inv(m2)
+    except Exception:
+        return None
+    finally:
+        it.use_units(None)

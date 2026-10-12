@@ -94,4 +94,4 @@ and whether a feature adds or removes material (`+`, `-`).
 
 ## What is missing (for now)
 
-STEP import, text, assemblies with joints, 2D drawings.
+Text, assemblies with joints, 2D drawings.

@@ -57,6 +57,7 @@ Everything below is importable from `smlibpy` directly.
 ## Files
 
 ::: smlibpy.exporters
+::: smlibpy.step_import.import_step
 
 ## Viewer
 

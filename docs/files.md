@@ -45,12 +45,37 @@ part's size); `angle` limits the angle between neighbouring triangles on curved 
 
 ## Reading files
 
+`load` picks the format from the extension, the same way `export` does:
+
 ```python
-part = load("bracket.smb")       # exact
-mesh = import_stl("bracket.stl")  # a Mesh
+from smlibpy import *
+
+Box(60, 40, 8).named("bracket").export("bracket.step")
+
+bracket = load("bracket.step")   # exact, from any CAD system
+print(bracket.name, bracket.volume)
 ```
 
-STEP import is on the roadmap.
+STEP and SMLib's own `.smb` files give exact parts; an STL file gives a `Mesh`
+(`import_stl`).
+
+### STEP
+
+`import_step(path)` reads the solids and surfaces of AP203, AP214 and AP242 files. A file
+with one body returns a `Part`, or a `Shell` if it is a surface model. A file with several
+returns a `ShapeList` with every body at its place in the assembly. Names and colors come
+along, and lengths are converted to millimeters whatever unit the file uses.
+
+Each face is rebuilt on the exact surface from the file and each edge on its exact curve:
+a cylinder stays a cylinder, and a NURBS surface keeps its control points and knots. Faces
+share their edges as they do in the file, so nothing is stitched together by tolerance.
+A body that still comes out invalid goes through the kernel's healer; valid bodies are
+left alone, and `heal=False` skips healing.
+
+The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
+Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
+among them. Not read yet: wireframe geometry, references to other files, PMI, and
+assembly placements that mirror a part.
 
 ## Viewer
 
