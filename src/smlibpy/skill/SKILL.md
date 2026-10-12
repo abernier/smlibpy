@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, measurements, STEP/STL/glTF export, STEP import, DXF drawings in and out. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, sheet metal (exact bends with radius and K-factor, flanges, flat patterns), measurements, STEP/STL/glTF export, STEP import, DXF drawings in and out. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -72,6 +72,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity |
 | files | `files/*` | STEP in and out, DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes |
+| sheetmetal | `sheetmetal/*` | bend, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API
 (`features/fillet`, `parts/Box`, `selection/filter_by`).
@@ -83,3 +84,5 @@ Each domain has a `generic.md` with the concepts; the other docs are named after
   sweeps along helices) and the order of operations.
 - `recipes/profiles`: which 2D tool for which outline: shapes, `Profile` for tangent arcs and
   revolve sections, half outline plus `mirror`, `Hull`, `Stroke`, `offset` for walls.
+- `recipes/sheet-metal`: brackets from a flat blank, boxes with flanges, flat patterns for a
+  laser cutter, choosing radius and K-factor.

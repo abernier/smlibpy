@@ -52,6 +52,10 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.surfaces
 
+## Sheet metal
+
+::: smlibpy.sheetmetal
+
 ## Meshes
 
 ::: smlibpy.mesh

@@ -15,14 +15,15 @@ SKILL_DIR = Path(__file__).resolve().parent.parent / "skill"
 
 #: Classes whose public methods are listed next to the functions of ``smlibpy.__all__``.
 CLASSES = ("Part", "Sketch", "Profile", "Shell", "Face", "Edge", "Wire", "Vertex", "ShapeList", "Vector", "Axis",
-           "Plane", "Location", "BoundBox", "Mesh", "MassProperties")
+           "Plane", "Location", "BoundBox", "Mesh", "MassProperties", "FlatPattern", "Bend")
 
 #: The guide folder that documents a class's methods first (``Sketch.fillet`` -> sketches/fillet,
 #: not features/fillet). A class in ``CLASS_GUIDES`` has all its methods in its own guide.
 CLASS_DOMAINS = {"Part": "features", "Sketch": "sketches", "Profile": "sketches", "Shell": "surfaces",
                  "Face": "selection", "Edge": "curves", "Wire": "curves", "Vertex": "selection",
                  "ShapeList": "selection", "Vector": "geometry", "Axis": "geometry", "Plane": "geometry",
-                 "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis"}
+                 "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis",
+                 "FlatPattern": "sheetmetal", "Bend": "sheetmetal"}
 CLASS_GUIDES = ("Profile",)
 
 #: Words people use for a thing, and the words the API uses.
@@ -82,6 +83,18 @@ SYNONYMS = {
     "obround": ["Slot"], "stadium": ["Slot"], "keyhole": ["Profile"], "perimeter": ["perimeter"],
 }
 
+# Sheet metal.
+SYNONYMS.update({
+    "sheet": ["sheetmetal", "bend", "flange", "flat_pattern", "unfold"], "metal": ["sheetmetal", "bend", "flange"],
+    "bend": ["bend", "flange", "bends"], "bending": ["bend"], "bent": ["bend", "bends"], "fold": ["bend", "flange"],
+    "folded": ["bend", "unfold"], "flange": ["flange"], "hem": ["bend"], "brake": ["bend"], "tab": ["bend"],
+    "relief": ["bend"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"],
+    "flatten": ["unfold", "flat_pattern"],
+    "flat": ["flat_pattern", "unfold"], "development": ["flat_pattern", "developed_length"],
+    "developed": ["developed_length"], "blank": ["flat_pattern", "developed_length"], "laser": ["flat_pattern"],
+    "cutter": ["flat_pattern"], "nesting": ["flat_pattern"], "allowance": ["bend_allowance"],
+    "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance"],
+})
 
 _CONSTANTS = {
     "X": "the world X axis (an Axis); also a direction in selections such as parallel_to(X)",

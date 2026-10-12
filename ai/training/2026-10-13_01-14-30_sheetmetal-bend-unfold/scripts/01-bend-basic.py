@@ -1,0 +1,15 @@
+# bend(): a plate folded along a line on its top face
+blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+bracket = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)
+print("[01] valid:", bracket.is_valid(), "volume:", round(bracket.volume, 6))
+print("[01] bbox:", bracket.bbox())
+for b in bracket.bends():
+    print("[01] bend:", b, "axis:", b.axis)
+kinds = sorted((f.geom_type, round(f.radius, 6)) for f in bracket.faces() if f.geom_type == "cylinder")
+print("[01] cylinders:", kinds)
+print("[01] edges:", sorted({e.geom_type for e in bracket.edges()}))
+ba = bend_allowance(90, radius=2, thickness=2)
+print("[01] BA:", round(ba, 6), "expected volume:", round(8000 + ba * 40 * 4 * (0.5 - 0.44) / 2.88, 6))
+print("[01] fine volume:", round(bracket.mass_properties(accuracy=1e-10).volume, 9))
+snapshot("bracket", bracket, view="iso")
+snapshot("sheet", bracket, view="sheet")
