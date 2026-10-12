@@ -18,9 +18,12 @@
 //   * SmBendVolume::MakeExactBSpline1stOutSurface builds the cylinder of a bent face at the bend
 //     axis point instead of at the face (it computes the right origin but does not pass it);
 //   * the unbend region starts at the axis point and ignores the start of the interval, and an
-//     unbounded interval (SmExtent1d::Init) evaluates to SM_BIG_DOUBLE.
-// The bindings therefore always place the axis point at the start of the region and pass the
-// interval [0, length].
+//     unbounded interval (SmExtent1d::Init) evaluates to SM_BIG_DOUBLE;
+//   * the exact lines, arcs and planes made for the region build their NURBS data only when
+//     asked, and SmPlane::DropCurve copies such a curve and reads the missing data (a crash when
+//     trim curves are built later, seen for small radii and overlapping bends).
+// The bindings therefore always place the axis point at the start of the region, pass the
+// interval [0, length] and build the NURBS data of every new curve and surface at once.
 
 #include "ext.h"
 #include "SmPyError.h"
@@ -319,7 +322,35 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
         if (p.in_edges[i]->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
             result = SM_ERR;
     }
-    return result;
+    if (result != SM_SUCCESS)
+        return result;
+
+    // SmFace/SmEdge::ApproximateWithBSpline report success also when they replace nothing, and a
+    // degenerate exact curve (an arc of no length) has no NURBS data: the kernel crashes on both
+    // later (when it builds trim curves). Refuse them here.
+    for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
+    {
+        SmSurface* surface = p.in_faces[i]->GetSurface();
+        if (!surface || !surface->IsKindOf(SmBSplineSurface_TYPE) ||
+            !static_cast<SmBSplineSurface*>(surface)->GetOrCreateGwNurbPointer())
+            return SM_ERR_NOT_WITHIN_TOLERANCE;
+    }
+    for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
+    {
+        SmCurve* curve = p.in_edges[i]->GetCurve();
+        if (!curve || !curve->IsKindOf(SmBSplineCurve_TYPE) ||
+            !static_cast<SmBSplineCurve*>(curve)->GetOrCreateGwNurbPointer())
+            return SM_ERR_NOT_WITHIN_TOLERANCE;
+    }
+    return SM_SUCCESS;
+}
+
+void check_mapped(SmStatus status, const char* what)
+{
+    if (status == SM_ERR_NOT_WITHIN_TOLERANCE)
+        fail(status, std::string(what) + ": the bend region came out degenerate (a curve or surface without exact "
+                                         "or NURBS geometry)");
+    check(status, what);
 }
 
 void check_bend_input(double angle, double radius, double k_factor, double thickness, double length)
@@ -370,7 +401,7 @@ void bind_sheetmetal(py::module_ m)
         };
         auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
                         const SmTArray<SmVertex*>& v) { return bend->TransformTopology(m, *brep, f, e, v); };
-        check(map_and_move(*brep, p, t, map_region, move, bend->GetApproxTol()), "sheet metal bend");
+        check_mapped(map_and_move(*brep, p, t, map_region, move, bend->GetApproxTol()), "sheet metal bend");
         return py::make_tuple(p.in_faces.GetSize(), p.before_faces.GetSize(), p.after_faces.GetSize());
     }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"),
@@ -413,7 +444,7 @@ void bind_sheetmetal(py::module_ m)
         };
         auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
                         const SmTArray<SmVertex*>& v) { return unbend->TransformTopology(m, *brep, f, e, v); };
-        check(map_and_move(*brep, p, t, map_region, move, unbend->GetApproxTol()), "sheet metal unbend");
+        check_mapped(map_and_move(*brep, p, t, map_region, move, unbend->GetApproxTol()), "sheet metal unbend");
         return fixed;
     }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"), py::arg("anchor") = nullptr,

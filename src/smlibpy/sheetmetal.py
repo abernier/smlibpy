@@ -61,18 +61,15 @@ def _check_values(what: str, angle: float, radius: float, thickness: float, k_fa
         raise ValueError(f"{what}: the K-factor must be between 0 and 1 (got {k_factor!r})")
 
 
-def _min_radius(thickness: float) -> float:
-    """Smallest inside radius the kernel can unfold: 0.2 times the thickness (it crashes below
-    about 0.16), and above the 0.1 its bend region reaches past the sheet."""
-    return max(0.2 * thickness, 0.12)
+#: Smallest inside radius: the kernel's bend region reaches 0.1 past the sheet on both sides, so
+#: unfolding needs a radius above 0.1.
+MIN_RADIUS = 0.11
 
 
 def _check_radius(what: str, radius: float, thickness: float) -> None:
-    low = _min_radius(thickness)
-    if radius < low - 1e-12:
-        raise ModelingError(f"{what}: the inside radius {radius:g} is too tight for a sheet {thickness:g} thick; the "
-                            f"kernel unfolds bends from {low:.4g} (0.2 times the thickness, at least 0.12); use a "
-                            f"radius of at least {low:.4g}")
+    if radius < MIN_RADIUS - 1e-12:
+        raise ModelingError(f"{what}: the inside radius {radius:g} is too small; the kernel bends and unfolds radii "
+                            f"from {MIN_RADIUS:g} (its bend region reaches 0.1 past the sheet)")
 
 
 def bend_allowance(angle: float, *, radius: float, thickness: float, k_factor: float = K_FACTOR) -> float:
@@ -283,11 +280,12 @@ def _require_part(part: Any, what: str) -> Part:
 # =============================================================================
 # Bending
 # =============================================================================
-def _strip_area(part: Part, p_in: Vector, across: Vector, along: Vector, n_in: Vector, width: float,
-                lo: float, hi: float, thickness: float) -> float | None:
-    """Area of the sheet in the bend strip (the material the bend takes), from the volume of the
-    part inside the bend region: ``width`` across the line through ``p_in`` (on the inside face),
-    from ``lo`` to ``hi`` along it, through the thickness."""
+def _zone_material(part: Part, p_in: Vector, across: Vector, along: Vector, n_in: Vector, width: float,
+                   lo: float, hi: float, thickness: float, what: str) -> float:
+    """Area of the sheet in the bend zone (the material the bend takes), from the part inside the
+    kernel's bend region: ``width`` across the line through ``p_in`` (on the inside face), ``lo``
+    to ``hi`` along it, through the thickness and 0.1 past it. Raises when the region holds
+    anything but flat sheet (the kernel would build a broken body or crash)."""
     from .parts import Box
 
     margin = 0.1  # the kernel's bend region reaches as far past the sheet
@@ -295,13 +293,32 @@ def _strip_area(part: Part, p_in: Vector, across: Vector, along: Vector, n_in: V
     region = Box(width, hi - lo + 2 * margin, thickness + 2 * margin).moved(
         Plane(center, x_dir=across, z_dir=n_in).location)
     try:
-        with kernel_call("bend"):
+        with kernel_call(what):
             common = Part._wrap(k.boolean(part._copy_brep(), region._copy_brep(), operation=k.BooleanOp.INTERSECTION))
-        if common._brep.face_count() == 0:
-            return 0.0
-        return float(common._props(accuracy=1e-9)["volume"]) / thickness
-    except KernelError:
-        return None
+    except KernelError as e:
+        raise ModelingError(f"{what}: the material in the bend zone cannot be measured; move the bend line a little "
+                            "(away from edges and features)") from e
+    if common._brep.face_count() == 0:
+        raise ModelingError(f"{what}: the bend line does not cross the sheet (there is no material in the bend zone)")
+    tol = _tol(part)
+    depth = common.moved(Plane(center, x_dir=across, z_dir=n_in).location.inverse()).bbox().size.z
+    if depth > thickness + tol:
+        raise ModelingError(f"{what}: the bend zone holds more than the sheet ({depth:.6g} deep across it, the sheet is "
+                            f"{thickness:.6g} thick): a rib, flange or other bend stands in it; move the line")
+    for f in common.faces():
+        kind = f.geom_type
+        if kind == "plane":
+            c = abs(f.normal_at().dot(n_in))
+            if c < 1 - 1e-9 and c > 1e-9:
+                raise ModelingError(f"{what}: the bend zone holds a face inclined to the sheet; move the line")
+        elif kind == "cylinder" and f.axis.direction.is_parallel(n_in, 1e-7):
+            pass  # the wall of a hole or of a rounded corner: bends into NURBS
+        elif kind == "cylinder":
+            raise ModelingError(f"{what}: the bend zone overlaps another bend; keep the bend line at least half the "
+                                f"bend allowance ({width / 2:.4g}) away from the flat end of every other bend")
+        else:
+            raise ModelingError(f"{what}: the bend zone holds a {kind} face; bend only across flat sheet")
+    return float(common._props(accuracy=1e-9)["volume"]) / thickness
 
 
 def bend(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor: float = K_FACTOR,
@@ -374,7 +391,7 @@ def bend(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor
         lo, hi = min(proj) - 1.0, max(proj) + 1.0
     allowance = bend_allowance(abs(a), radius=radius, thickness=t, k_factor=k_factor)
 
-    strip = _strip_area(part, p_in, across, axis_dir, n_in, allowance, lo, hi, t)
+    strip = _zone_material(part, p_in, across, axis_dir, n_in, allowance, lo, hi, t, what)
     h = BrepHandle(part._copy_brep())
     hint = ("the bend zone must lie inside one flat region of the sheet: move the line away from edges, holes and "
             "other bends (at least half the bend allowance, %.4g)" % (allowance / 2))
@@ -405,7 +422,7 @@ def bend(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor
     return result
 
 
-def _check_bend_result(result: Part, before: Part, what: str, strip: float | None, radius: float, t: float,
+def _check_bend_result(result: Part, before: Part, what: str, strip: float, radius: float, t: float,
                        k_factor: float, axis: Axis, partial: bool, hint: str) -> None:
     relief = (" The sheet next to a partial bend must be cut free (relief cuts) so that only the bent strip "
               "connects the two sides." if partial else "")
@@ -421,8 +438,6 @@ def _check_bend_result(result: Part, before: Part, what: str, strip: float | Non
         raise ModelingError(f"{what}: the kernel did not build exact bend faces (cylinders of radius {radius:g} and "
                             f"{radius + t:g}); {hint}")
     v0 = before.volume
-    if strip is None:  # no independent measure of the strip: take it from the inside faces
-        strip = sum(f.area for f in inner) * (radius + k_factor * t) / radius
     expected = v0 + strip * t * t * (0.5 - k_factor) / (radius + k_factor * t)
     if not _volume_agrees(result, expected, v0):
         raise ModelingError(f"{what}: the result has the volume {result.volume:.9g}, expected {expected:.9g} for the "
@@ -751,6 +766,42 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
     return _Unfolded(work, base_face, done, thickness, k_factor)
 
 
+def _loops(edges: list[Edge], tol: float) -> list[list[Edge]]:
+    """Split boundary edges into closed loops, each ordered head to tail."""
+    rest = list(edges)
+    loops = []
+    while rest:
+        loop = [rest.pop(0)]
+        while not loop[-1].end.is_close(loop[0].start, tol):
+            for i, e in enumerate(rest):
+                if e.start.is_close(loop[-1].end, tol):
+                    loop.append(rest.pop(i))
+                    break
+                if e.end.is_close(loop[-1].end, tol):
+                    loop.append(rest.pop(i).reversed())
+                    break
+            else:
+                raise ModelingError("flat_pattern: the outline of the flat part is not closed")
+        loops.append(loop)
+    return loops
+
+
+def _cut_contour(laid: Part, tol: float) -> Sketch:
+    """The cutting contour at z = 0: the edges that only one bottom face of the flat uses (the
+    others are the edges of the bend zones), joined into loops, collinear pieces merged."""
+    from .shapes import Wire, _merged_lines
+
+    count: dict[Any, list[Edge]] = {}
+    for f in laid.faces():
+        if f.geom_type == "plane" and f.normal_at().z < -1 + 1e-9 and abs(f.interior_point().z) <= tol:
+            for e in f.edges():
+                count.setdefault(e._identity(), []).append(e)
+    boundary = [es[0] for es in count.values() if len(es) == 1]
+    wires = [_merged_lines(Wire._raw(loop)) for loop in _loops(boundary, tol)]
+    with kernel_call("flat_pattern", "the outline of the flat part could not be made into a sketch"):
+        return Sketch._from_wires(wires, Plane.XY)
+
+
 def _long_side(flat: Part, plane: Plane) -> Vector:
     """Direction (in ``plane``) of the longer side of the smallest rectangle around the flat part."""
     pts = []
@@ -835,8 +886,10 @@ def flat_pattern(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None =
     laid = laid.moved(shift)
     place = shift * to_xy
     t = float(thickness)
-    with kernel_call("flat_pattern", "the flat part could not be cut at mid-thickness"):
-        outline = laid.section(Plane((0, 0, t / 2))).translate(0, 0, -t / 2)
+    outline = _cut_contour(laid, _tol(laid))
+    if abs(outline.area * t - laid.volume) > 1e-6 * laid.volume:
+        raise ModelingError(f"flat_pattern: the outline encloses {outline.area:.9g}, the flat part is "
+                            f"{laid.volume / t:.9g} in area; the part is not a flat sheet")
     pattern_bends = []
     for g, start, direction, inside in u.bends:
         p0 = place * start

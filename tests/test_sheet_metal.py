@@ -133,10 +133,12 @@ def test_radius_range():
     big = bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=20)
     assert len(cylinders(big, 20)) == 1 and len(cylinders(big, 22)) == 1
     assert unfold(big).volume == pytest.approx(8000, rel=1e-12)
-    tight = bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.4)  # 0.2 times the thickness
-    assert unfold(tight).volume == pytest.approx(8000, rel=1e-12)
-    with pytest.raises(ModelingError, match="too tight"):
-        bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.3)
+    for r in (0.3, 0.11):  # far below the thickness
+        tight = bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=r)
+        assert len(cylinders(tight, r)) == 1
+        assert unfold(tight).volume == pytest.approx(8000, rel=1e-12)
+    with pytest.raises(ModelingError, match="too small"):
+        bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.1)
 
 
 def test_oblique_bend_line_is_exact():
