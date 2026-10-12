@@ -69,7 +69,9 @@ def _rounded_cube(s, r):
 
 def test_fillet_close_to_the_limit_is_refused():
     cube = Box(10, 10, 10)
-    with pytest.raises(ModelingError, match="too close to the largest"):
+    # the kernel's result differs between builds: a valid-looking body with regions missing
+    # (caught by the volume bound) or a broken one (caught by the validity check)
+    with pytest.raises(ModelingError, match="too close to the largest|too large"):
         cube.fillet(cube.edges(), 4.99)  # returned volume 11.19 instead of 525.17
     for r in (4, 4.97):
         p = cube.fillet(cube.edges(), r)
