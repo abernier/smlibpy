@@ -241,8 +241,10 @@ def _plan_twist(shape: Any, angle: float, axis: Axis, start: float | None, end: 
 
 def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = None, end: float | None = None,
           tolerance: float | None = None) -> Any:
-    """Twist a part about an axis: every cross-section turns by an angle that grows evenly
-    from 0 at ``start`` to ``angle`` at ``end``.
+    """Twist a part about an axis by ``angle`` degrees over its length (or from ``start`` to ``end``).
+
+    Every cross-section turns by an angle that grows evenly from 0 at ``start`` to ``angle``
+    at ``end``.
 
     Args:
         shape: a Part (or a Shell).
@@ -287,8 +289,10 @@ def _plan_taper(shape: Any, scale: float, axis: Axis, start: float | None, end: 
 
 def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = None, end: float | None = None,
           tolerance: float | None = None) -> Any:
-    """Taper a part along an axis: cross-sections are scaled toward the axis by a factor that
-    changes evenly from 1 at ``start`` to ``scale`` at ``end``.
+    """Taper a part along an axis: its cross-sections scale from 1 to ``scale`` (exact result).
+
+    The cross-sections are scaled toward the axis by a factor that changes evenly from 1 at
+    ``start`` to ``scale`` at ``end``.
 
     Args:
         shape: a Part (or a Shell).
@@ -373,7 +377,7 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
 
 def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane = Plane.XZ,
          start: float | None = None, end: float | None = None, tolerance: float | None = None) -> Any:
-    """Bend a part around an axis, like a bar bent over a mandrel.
+    """Bend a part around an axis by ``angle`` degrees, like a bar bent over a mandrel.
 
     ``plane`` sets the bend: its ``x_dir`` runs along the part, a positive ``angle`` bends
     the part toward ``y_dir``, and the bend axis is parallel to the plane normal. The layer
@@ -429,7 +433,7 @@ def _axis_index(axis: Any) -> int:
 
 
 class Lattice:
-    """A grid of control points around a part, for free-form deformation.
+    """A grid of control points around a part for free-form deformation (exact results).
 
     The points start evenly spaced over a box (``counts`` points per direction, corners
     included). Move them, then ``apply`` the lattice to a part: space inside the box moves
