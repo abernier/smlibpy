@@ -42,6 +42,11 @@ SYNONYMS = {
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "drawing": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
     "diff": ["diff_images"], "before": ["diff_images"],
+    "zebra": ["render", "verification"], "reflection": ["render", "zebra"], "stripes": ["render", "zebra"],
+    "curvature": ["render", "verification"], "continuity": ["fillet", "verification", "zebra"],
+    "class": ["verification", "zebra", "curvature"], "smooth": ["fillet", "verification", "zebra"],
+    "g": ["continuity", "zebra", "verification"],  # G1, G2, G3 split into "g" and the digit
+    "blend": ["loft", "fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],

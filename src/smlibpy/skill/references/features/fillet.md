@@ -14,6 +14,9 @@ Rounds edges of a part.
 - `continuity`: `None` circular arc. `"G1"`, `"G2"`, `"G3"` (or 1, 2, 3; case does not matter)
   make a blend instead: it meets the faces at the same setback as the circular round but bulges
   more (removes less: 4 vertical box edges r5 remove 429.2 circular, 400.0 G1, 270.7 G2, 212.0 G3).
+  A picture shows the difference: `render(part, zebra=True)` (stripes kink at a circular round,
+  bend smoothly into a G2 blend) or `render(part, curvature="max")` (one color against a ramp
+  from white); see `recipes/verification`.
 - `fullness`: blends only (ignored for circular). Below 1 flatter, above 1 fuller. 0.5 to 1.2
   work; 1.5 and 2.0 fail on a box edge with the radius error message.
 
