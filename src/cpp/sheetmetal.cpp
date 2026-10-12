@@ -23,11 +23,13 @@
 // interval [0, length].
 
 #include "ext.h"
+#include "SmPyError.h"
 
 #include <SmApiGeneral.h>
 #include <SmBendVolume.h>
 #include <SmCylinder.h>
 #include <SmMerge.h>
+#include <SmPlane.h>
 #include <SmSpaceBend.h>
 #include <SmSpaceUnbend.h>
 #include <SmTopologyTraverser.h>
@@ -36,14 +38,26 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 
 namespace
 {
 
+// Raise a RuntimeError with the whole message (SmPyRaise keeps only a C call name), the status
+// name and the kernel's error trail.
+[[noreturn]] void fail(SmStatus status, const std::string& message)
+{
+    std::string trail = SmPyErrorTrail::take();
+    std::string text = message + " (" + sm_status_name(status) + ")";
+    if (!trail.empty())
+        text += ". Kernel trace: " + trail;
+    throw std::runtime_error(text);
+}
+
 void check(SmStatus status, const char* what)
 {
     if (status != SM_SUCCESS)
-        SmPyRaise(status, what, __FILE__, __LINE__);
+        fail(status, what);
 }
 
 SmVector3d vec(const std::vector<double>& v)
@@ -171,7 +185,76 @@ SmStatus partition(SmBrep& brep, SmBrep* domain, SmBrep* start, SmBrep* stop, Pa
     for (ULONG i = 0; i < p.in_vertices.GetSize(); ++i)
         p.in_vertices[i]->Mark(mark);
     collect(stop_topology, p.after_faces, p.after_edges, p.after_vertices);
+
     return SM_SUCCESS;
+}
+
+// The region must cut the body in two: a face reached from both boundaries (the sheet goes
+// around the region, as beside a partial bend without relief cuts) cannot be both kept and
+// turned, and the kernel crashes on such a body.
+void check_partition(const Partition& p, const char* what)
+{
+    if (p.in_faces.GetSize() == 0)
+        fail(SM_ERR_INVALID_INPUT, std::string(what) + ": no material in the bend region");
+    SmTArray<SmFace*> common;
+    p.before_faces.FindCommonElements(p.after_faces, common);
+    if (common.GetSize() > 0 || p.before_faces.GetSize() == 0 || p.after_faces.GetSize() == 0)
+        fail(SM_ERR_INVALID_INPUT, std::string(what) + ": the bend region does not cut the body in two");
+}
+
+// Points along the edges of a face.
+template <class Visit>
+void sample_boundary(SmFace* face, Visit visit)
+{
+    SmTArray<SmEdge*> edges;
+    face->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        SmCurve* curve = edges[i]->GetCurve();
+        SmExtent1d ivl = edges[i]->GetInterval();
+        for (int j = 0; j <= 8; ++j)
+        {
+            SmPoint3d p;
+            if (curve->EvaluatePoint(ivl.Evaluate(j / 8.0), p) == SM_SUCCESS)
+                visit(p);
+        }
+    }
+}
+
+// Give the planar faces of the bend region that are parallel to the sheet a plane parameterized
+// along the bend (across it and along the axis). The exact conversion of a bent face samples the
+// UV box of its surface, which must stay within the bend: for a strip cut obliquely by the
+// outline, the box in the plate's own parameterization reaches far outside the strip.
+void align_planes(SmBrep& brep, const SmTArray<SmFace*>& faces, const SmVector3d& axis, const SmVector3d& direction)
+{
+    SmVector3d across = axis * direction;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmFace* face = faces[i];
+        SmSurface* surface = face->GetSurface();
+        if (!surface || surface->GetType() != SmPlane_TYPE)
+            continue;
+        SmAxis2Placement placement;
+        if (static_cast<SmPlane*>(surface)->GetCanonical(placement) != SM_SUCCESS)
+            continue;
+        SmVector3d normal = placement.GetXAxisRef() * placement.GetYAxisRef();
+        if (std::abs(std::abs(normal.Dot(direction)) - 1.0) > 1e-9)
+            continue;
+        SmVector3d x = across, y = axis;
+        if ((x * y).Dot(normal) < 0.0)
+            std::swap(x, y);
+        SmPoint3d origin = placement.GetOriginRef();
+        SmExtent2d domain;
+        sample_boundary(face, [&](const SmPoint3d& p) {
+            domain.AddPoint2d(SmPoint2d((p - origin).Dot(x), (p - origin).Dot(y)));
+        });
+        if (domain.IsInit())
+            continue;
+        domain.ExpandAbsolute(1e-6 * (1.0 + domain.GetMaxDimension()));
+        SmPlane* plane = new (brep.GetContext()) SmPlane(origin, x, y, SmVector2d(1.0, 1.0), domain, brep.GetContext());
+        if (brep.ReplaceSurface(face, plane, FALSE, nullptr, TRUE) != SM_SUCCESS && plane->GetOwner() == nullptr)
+            delete plane;
+    }
 }
 
 // Move the exact cylinder of a bent face along its axis onto the face (see the file comment).
@@ -186,19 +269,7 @@ void move_cylinder_onto_face(SmBSplineSurface* cylinder, SmFace* face)
     SmVector3d y = placement.GetYAxisRef();
     SmVector3d axis = x * y;
     double lo = SM_BIG_DOUBLE;
-    SmTArray<SmEdge*> edges;
-    face->GetEdges(edges);
-    for (ULONG i = 0; i < edges.GetSize(); ++i)
-    {
-        SmCurve* curve = edges[i]->GetCurve();
-        SmExtent1d ivl = edges[i]->GetInterval();
-        for (int j = 0; j <= 8; ++j)
-        {
-            SmPoint3d p;
-            if (curve->EvaluatePoint(ivl.Evaluate(j / 8.0), p) == SM_SUCCESS)
-                lo = std::min(lo, (p - origin).Dot(axis));
-        }
-    }
+    sample_boundary(face, [&](const SmPoint3d& p) { lo = std::min(lo, (p - origin).Dot(axis)); });
     if (lo == SM_BIG_DOUBLE || std::abs(lo) < 1e-12)
         return;
     SmAxis2Placement shift(origin, x, y, origin + lo * axis, x, y);
@@ -290,8 +361,8 @@ void bind_sheetmetal(py::module_ m)
         Partition p;
         check(partition(*brep, bend->GetBendDomain(), bend->GetStartBendBoundary(), bend->GetStopBendBoundary(), p),
               "sheet metal bend: classifying the bend region");
-        if (p.in_faces.GetSize() == 0)
-            check(SM_ERR_INVALID_INPUT, "sheet metal bend: no material in the bend region");
+        check_partition(p, "sheet metal bend");
+        align_planes(*brep, p.in_faces, a, d);
         Transforms t{bend->GetBeforeBendTransform(), bend->GetInsideBendTransform(), bend->GetAfterBendTransform()};
         auto map_region = [&](const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e, const SmTArray<SmVertex*>& v) {
             std::unique_ptr<SmBendVolume> volume(bend->CreateBendVolume(*brep->GetContext()));
@@ -324,12 +395,13 @@ void bind_sheetmetal(py::module_ m)
         check(partition(*brep, unbend->GetUnbendDomain(), unbend->GetStartUnbendBoundary(),
                         unbend->GetStopUnbendBoundary(), p),
               "sheet metal unbend: classifying the bend region");
-        if (p.in_faces.GetSize() == 0)
-            check(SM_ERR_INVALID_INPUT, "sheet metal unbend: no material in the bend region");
+        check_partition(p, "sheet metal unbend");
         ULONG found = 0;
         int fixed = -1;  // the part before the region stays
         if (anchor && p.after_faces.FindElement(anchor, found))
             fixed = 1;
+        else if (anchor && !p.before_faces.FindElement(anchor, found))
+            fail(SM_ERR_INVALID_INPUT, "sheet metal unbend: the anchor face is on neither side of the bend region");
         // The unbend ignores the orientation argument of its Get*Transform methods; an object
         // built for the other orientation supplies the transforms.
         auto oriented = fixed > 0 ? make(SM_UO_FIXED_AFTER_UNBENDING) : nullptr;
@@ -347,5 +419,5 @@ void bind_sheetmetal(py::module_ m)
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"), py::arg("anchor") = nullptr,
        "Unbend a Brep in place: the inverse of `bend`, with `direction` pointing from the axis to the middle "
        "of the bent region. The side that holds the face `anchor` stays in place (without one, the side of "
-       "cross(direction, axis)). Returns -1 if that side stayed, +1 if the other side stayed.");
+       "cross(direction, axis)). Returns -1 if the side of cross(direction, axis) stayed, +1 if the other one.");
 }
