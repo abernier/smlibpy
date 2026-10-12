@@ -59,6 +59,7 @@ _RED = np.array([230, 40, 30]) / 255  # highlighted edges
 _MARKER = np.array([220, 30, 30]) / 255
 _OVERLAY = np.array([0, 90, 220]) / 255  # sketches drawn over solids
 _DIVIDER = np.array([190, 190, 190]) / 255
+_WHITE = np.ones(3)
 _FIT = 0.88  # share of the picture the shapes fill
 _CAPTION = 34  # pixels kept free under the iso view of a drawing, for the projection method
 
@@ -332,10 +333,14 @@ def _vec3(p: Any) -> np.ndarray:
 
 def _section(section: Any, cap: bool) -> _Cut | None:
     from .geometry import Plane
-    from .shapes import Face
+    from .shapes import Face, Shape
 
     if section is None or section is False:
         return None
+    if isinstance(section, (list, tuple)) and section and all(isinstance(f, Shape) for f in section):
+        if len(section) != 1:
+            raise TypeError(f"section takes one planar face, got {len(section)} shapes")
+        section = section[0]
     if isinstance(section, dict):
         origin, normal = section["origin"], section["normal"]
         cap = bool(section.get("cap", cap))
@@ -422,7 +427,7 @@ class _Camera:
     def __init__(self, back: Any, right: Any = None, label: str | None = None):
         b = np.asarray(back, dtype=np.float64)
         if not np.isfinite(b).all() or np.linalg.norm(b) < 1e-12:
-            raise ValueError(f"view: the direction {tuple(b)} has no length")
+            raise ValueError(f"view: the direction {tuple(float(c) for c in b)} has no length")
         b = b / np.linalg.norm(b)
         if right is None:
             r = np.cross([0.0, 0.0, 1.0], b)
@@ -591,7 +596,11 @@ class _Scene:
         tol = self.tolerance if self.tolerance is not None else self.diagonal * 1e-3
         faces: list[Any] = []
         if highlight is not None:
-            for s in _flatten_all(highlight if isinstance(highlight, (list, tuple)) else [highlight]):
+            items = highlight if isinstance(highlight, (list, tuple)) else [highlight]
+            bad = [type(s).__name__ for s in items if not isinstance(s, (Shape, Mesh, list, tuple))]
+            if bad:
+                raise TypeError(f"highlight takes shapes or lists of them, got {bad[0]}")
+            for s in _flatten_all(items):
                 if isinstance(s, Vertex):
                     self.hl_points.append(_vec3(s))
                 elif isinstance(s, (Edge, Wire)):
@@ -639,23 +648,30 @@ class _Canvas:
         self.img = np.empty((self.W * self.H, 3))
         self.img[:] = bg
         self.zbuf = np.full(self.W * self.H, -np.inf)
-        self.texts: list[tuple[float, float, str, np.ndarray, int, str]] = []
+        self.u = max(1, round(min(w, h) / 600))  # overlays grow with large pictures
+        self.texts: list[tuple[float, float, str, np.ndarray, int, str, np.ndarray | None]] = []
 
     def screen(self, p: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         x, y, z = self.cam.project(p)
         return self.W / 2.0 + (x - self.mx) * self.s, self.H / 2.0 - (y - self.my) * self.s, z
 
-    def text(self, x: float, y: float, text: str, color: np.ndarray, scale: int = 2, anchor: str = "start") -> None:
+    def text(self, x: float, y: float, text: str, color: np.ndarray, scale: int = 2, anchor: str = "start",
+             halo: np.ndarray | None = None) -> None:
         """Text in output pixels; drawn after averaging down, so the glyphs stay crisp."""
-        self.texts.append((x, y, text, color, scale, anchor))
+        self.texts.append((x, y, text, color, scale, anchor, halo))
 
     def finish(self) -> np.ndarray:
         k = self.k
         img = self.img.reshape(self.H, self.W, 3)
-        if k > 1:
-            img = img.reshape(self.h, k, self.w, k, 3).mean(axis=(1, 3))
-        for x, y, text, color, scale, anchor in self.texts:
-            _text(img, x, y, text, color, scale, anchor)
+        if k > 1:  # average k x k blocks
+            big = img
+            img = np.zeros((self.h, self.w, 3))
+            for dy in range(k):
+                for dx in range(k):
+                    img += big[dy::k, dx::k]
+            img /= k * k
+        for x, y, text, color, scale, anchor, halo in self.texts:
+            _text(img, x, y, text, color, scale, anchor, halo)
         return img
 
 
@@ -668,12 +684,14 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
     # the triangles of all bodies (clipped by the section), then the highlighted faces
     parts: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []  # tris, normals, colors, shade factor
     caps: list[tuple[np.ndarray, np.ndarray, int]] = []  # cut outline, body color, body index
+    outlines: list[np.ndarray] = []
     for bi, body in enumerate(scene.bodies):
         tris, norms = body.tris, body.norms
         if cut is not None:
-            if cut.cap and body.closed and not o.xray:
+            if body.closed:
                 outline = _crossings(tris, cut)
-                if len(outline):
+                outlines.append(outline)
+                if cut.cap and not o.xray and len(outline):
                     caps.append((outline, body.rgb, bi))
             tris, norms = _clip(tris, norms, cut)
         if not len(tris):
@@ -722,7 +740,7 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
     segs: list[np.ndarray] = []
     if o.edges or o.lines:
         segs += [b.segs if cut is None else _clip_segments(b.segs, cut) for b in scene.bodies]
-        segs += [c[0] for c in caps]
+        segs += outlines
     if o.lines:
         segs += [_silhouettes(b, cam) if cut is None else _clip_segments(_silhouettes(b, cam), cut)
                  for b in scene.bodies]
@@ -776,7 +794,11 @@ class _Triangles:
         self.b0 = np.stack([x1 * y2 - x2 * y1, x2 * y0 - x0 * y2, x0 * y1 - x1 * y0], axis=1) / a
         self.sx, self.sy = sx, sy
         self.zx, self.zy, self.z0 = (self.bx * sz).sum(1), (self.by * sz).sum(1), (self.b0 * sz).sum(1)
-        self.ncam = norms @ np.stack([cam.right, cam.up, cam.back], axis=1)
+        # the normal (camera coordinates) at a pixel: nx * x + ny * y + n0
+        ncam = norms @ np.stack([cam.right, cam.up, cam.back], axis=1)
+        self.nx = np.einsum("ti,tij->tj", self.bx, ncam)
+        self.ny = np.einsum("ti,tij->tj", self.by, ncam)
+        self.n0 = np.einsum("ti,tij->tj", self.b0, ncam)
         self.rgb, self.factor = rgb, factor
 
     def depth(self, t: np.ndarray, xc: np.ndarray, yc: np.ndarray) -> np.ndarray:
@@ -854,8 +876,8 @@ def _depth_fill(cv: _Canvas, tri: _Triangles) -> np.ndarray:
 def _lighting(n: np.ndarray, rgb: np.ndarray, factor: np.ndarray) -> np.ndarray:
     """Colors for normals in camera coordinates: a key light from the upper left, a fill
     light, ambient and a little specular. Both sides of a surface are lit."""
-    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
-    n = n * np.where(n[:, 2:3] < 0, -1.0, 1.0)
+    n = n / np.maximum(np.sqrt((n * n).sum(axis=1, keepdims=True)), 1e-12)
+    n *= np.where(n[:, 2:3] < 0, -1.0, 1.0)
     key = _unit(np.array([-0.45, 0.65, 0.9]))
     fill = _unit(np.array([0.6, -0.2, 0.8]))
     half = _unit(key + np.array([0.0, 0.0, 1.0]))
@@ -868,8 +890,7 @@ def _lighting(n: np.ndarray, rgb: np.ndarray, factor: np.ndarray) -> np.ndarray:
 def _shade_pixels(tri: _Triangles, t: np.ndarray, pix: np.ndarray, W: int) -> np.ndarray:
     """Per pixel: the normal interpolated over the triangle, then lit."""
     xc, yc = _centers(pix, W)
-    b = tri.bx[t] * xc[:, None] + tri.by[t] * yc[:, None] + tri.b0[t]
-    n = np.einsum("ni,nij->nj", b, tri.ncam[t])
+    n = tri.nx[t] * xc[:, None] + tri.ny[t] * yc[:, None] + tri.n0[t]
     return _lighting(n, tri.rgb[t], tri.factor[t])
 
 
@@ -908,7 +929,11 @@ def _xray(cv: _Canvas, tri: _Triangles, o: _Options) -> None:
     zmin, zmax = float(z.min()), float(z.max())
     zq = ((zmax - z) / max(zmax - zmin, 1e-300) * ((1 << 30) - 1)).astype(np.int64)  # 0 = nearest
     order = np.argsort((pix << 31) | zq, kind="stable")
-    pix, t = pix[order], t[order]
+    pix, t, z = pix[order], t[order], z[order]
+    # a pixel on the edge between two triangles is covered by both: one surface, blended once
+    same = np.zeros(len(pix), dtype=bool)
+    same[1:] = (pix[1:] == pix[:-1]) & (np.abs(z[1:] - z[:-1]) <= (zmax - zmin) * 1e-7 + 1e-12)
+    pix, t = pix[~same], t[~same]
     first = np.ones(len(pix), dtype=bool)
     first[1:] = pix[1:] != pix[:-1]
     rank = np.arange(len(pix)) - np.flatnonzero(first)[np.cumsum(first) - 1]  # nearer ones in front
@@ -1146,26 +1171,28 @@ def _dot(cv: _Canvas, p: np.ndarray, color: np.ndarray, radius_px: float) -> Non
 
 
 def _marker(cv: _Canvas, pos: np.ndarray, label: str, color: np.ndarray) -> None:
-    """A crosshair in a circle, and the label to its right."""
-    k = cv.k
+    """A crosshair in a circle and the label to its right, with a white halo."""
+    k, u = cv.k, cv.u
     x, y, _ = cv.screen(pos[None])
     cx, cy = float(x[0]), float(y[0])
-    r, ring = 7 * k, 5 * k
+    r, ring = (8 * u + 1) * k, (5.5 * u + 0.5) * k
     segs = [(cx - r, cy, cx + r, cy), (cx, cy - r, cx, cy + r)]
-    a = np.linspace(0, 2 * np.pi, 33)
+    a = np.linspace(0, 2 * np.pi, 41)
     segs += [(cx + ring * math.cos(a0), cy + ring * math.sin(a0), cx + ring * math.cos(a1), cy + ring * math.sin(a1))
              for a0, a1 in zip(a[:-1], a[1:])]
-    _screen_lines(cv, segs, color, 0.5 * k)
+    _screen_lines(cv, segs, _WHITE, (0.5 * u + 1) * k)
+    _screen_lines(cv, segs, color, 0.5 * u * k)
     if label:
-        cv.text(cx / k + 11, cy / k - 7, label, color, 2)
+        cv.text(cx / k + 8 * u + 5, cy / k - 3.5 * (u + 1), label, color, u + 1, halo=_WHITE)
 
 
 def _annotate(cv: _Canvas, scene: _Scene) -> None:
     """The size of the bounding box (bottom right), the axes as the view shows them (bottom
     left) and a scale bar (bottom middle)."""
-    k, w, h = cv.k, cv.w, cv.h
-    cv.text(w - 10, h - 24, " X ".join(_round_text(v) for v in scene.hi - scene.lo), _LABEL, 2, "end")
-    ox, oy = 34 * k, (h - 34) * k
+    k, w, h, u = cv.k, cv.w, cv.h, cv.u
+    cv.text(w - 10 * u, h - 10 * u - 7 * (u + 1), " X ".join(_round_text(v) for v in scene.hi - scene.lo), _LABEL,
+            u + 1, "end")
+    ox, oy = 34 * u * k, (h - 34 * u) * k
     for d, color, name in ((np.array([1.0, 0, 0]), np.array([200, 40, 40]) / 255, "X"),
                            (np.array([0, 1.0, 0]), np.array([40, 150, 40]) / 255, "Y"),
                            (np.array([0, 0, 1.0]), np.array([40, 70, 200]) / 255, "Z")):
@@ -1174,18 +1201,20 @@ def _annotate(cv: _Canvas, scene: _Scene) -> None:
         if length < 1e-6:
             continue  # the axis points into the screen
         ux, uy = dx / length, dy / length
-        tx, ty = ox + ux * 26 * k, oy + uy * 26 * k
-        _screen_lines(cv, [(ox, oy, tx, ty)], color, 0.6 * k)
-        cv.text(tx / k + ux * 6 - 2.5, ty / k + uy * 6 - 3.5, name, color, 1)
-    scale = cv.s / k
+        tx, ty = ox + ux * 26 * u * k, oy + uy * 26 * u * k
+        _screen_lines(cv, [(ox, oy, tx, ty)], color, 0.6 * u * k)
+        cv.text(tx / k + (ux * 6 - 2.5) * u, ty / k + (uy * 6 - 3.5) * u, name, color, u)
+    scale = cv.s / k / u  # model units per overlay pixel
     bar = 10.0 ** math.floor(math.log10(100 / scale))
     for m in (1, 2, 5, 10):
         if bar * m * scale >= 60:
             bar *= m
             break
-    x0, x1, y0 = (w - bar * scale) / 2 * k, (w + bar * scale) / 2 * k, (h - 16) * k
-    _screen_lines(cv, [(x0, y0, x1, y0), (x0, y0, x0, y0 - 4 * k), (x1, y0, x1, y0 - 4 * k)], _LABEL, 0.5 * k)
-    cv.text(w / 2, h - 30, _round_text(bar), _LABEL, 1, "middle")
+    half = bar * scale * u / 2
+    x0, x1, y0 = (w / 2 - half) * k, (w / 2 + half) * k, (h - 16 * u) * k
+    _screen_lines(cv, [(x0, y0, x1, y0), (x0, y0, x0, y0 - 4 * u * k), (x1, y0, x1, y0 - 4 * u * k)], _LABEL,
+                  0.5 * u * k)
+    cv.text(w / 2, h - 30 * u, _round_text(bar), _LABEL, u, "middle")
 
 
 def _round_text(v: float) -> str:
@@ -1359,24 +1388,35 @@ def _text_width(text: str, scale: int = 1) -> int:
 
 
 def _text(img: np.ndarray, x: float, y: float, text: str, color: np.ndarray, scale: int = 1,
-          anchor: str = "start") -> None:
+          anchor: str = "start", halo: np.ndarray | None = None) -> None:
     """Text in the 5 x 7 font, in capitals. (x, y) is the top left of the text, or its top
-    middle or top right for anchor "middle" or "end". Characters without a glyph stay blank."""
+    middle or top right for anchor "middle" or "end". Characters without a glyph stay blank.
+    ``halo``: a one pixel outline in this color, so the text reads on any background."""
     text = str(text).upper()
-    width = _text_width(text, scale)
-    x0 = round(x - (width if anchor == "end" else width / 2 if anchor == "middle" else 0))
-    y0 = round(y)
-    h, w = img.shape[:2]
+    if not text:
+        return
+    mask = np.zeros((7 * scale + 2, len(text) * 6 * scale + 2), dtype=bool)
     for i, ch in enumerate(text):
         glyph = _FONT.get(ch)
-        if glyph is None:
-            continue
-        big = np.kron(glyph, np.ones((scale, scale), dtype=bool))
-        gx = x0 + i * 6 * scale
-        sx0, sy0 = max(gx, 0), max(y0, 0)
-        sx1, sy1 = min(gx + big.shape[1], w), min(y0 + big.shape[0], h)
-        if sx1 > sx0 and sy1 > sy0:
-            img[sy0:sy1, sx0:sx1][big[sy0 - y0:sy1 - y0, sx0 - gx:sx1 - gx]] = color
+        if glyph is not None:
+            mask[1:-1, 1 + i * 6 * scale:1 + i * 6 * scale + 5 * scale] = np.kron(glyph, np.ones((scale, scale), bool))
+    width = _text_width(text, scale)
+    x0 = round(x - (width if anchor == "end" else width / 2 if anchor == "middle" else 0)) - 1
+    y0 = round(y) - 1
+    h, w = img.shape[:2]
+    sx0, sy0 = max(x0, 0), max(y0, 0)
+    sx1, sy1 = min(x0 + mask.shape[1], w), min(y0 + mask.shape[0], h)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return
+    region = img[sy0:sy1, sx0:sx1]
+    if halo is not None:
+        grown = mask.copy()
+        grown[1:] |= mask[:-1]
+        grown[:-1] |= mask[1:]
+        grown[:, 1:] |= grown[:, :-1].copy()
+        grown[:, :-1] |= grown[:, 1:].copy()
+        region[grown[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0]] = halo
+    region[mask[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0]] = color
 
 
 # -----------------------------------------------------------------------------
