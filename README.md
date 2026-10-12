@@ -99,6 +99,7 @@ export_glb(flange, "flange.glb")
 - [Measuring and analysis](docs/analysis.md), [files and viewer](docs/files.md)
 - [Examples](docs/examples.md) and [coming from build123d](docs/build123d.md)
 - [The kernel](docs/kernel.md): how smlibpy uses SMLib, accuracy, limitations
+- [AI agents](docs/mcp.md): the MCP server, so Claude and other agents can model with smlibpy
 
 ## Status
 

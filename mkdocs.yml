@@ -15,6 +15,7 @@ nav:
   - Surfaces: surfaces.md
   - Measuring: analysis.md
   - Files and viewer: files.md
+  - AI agents (MCP): mcp.md
   - Examples: examples.md
   - Coming from build123d: build123d.md
   - The kernel: kernel.md

@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Build and install
-        run: pip install -v ".[test]"
+        run: pip install -v ".[test,mcp]"
       - name: OpenCASCADE for the STEP cross-checks
         if: runner.os != 'Windows'
         continue-on-error: true

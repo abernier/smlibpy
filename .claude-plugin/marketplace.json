@@ -1,0 +1,12 @@
+{
+  "name": "smlibpy",
+  "owner": { "name": "AWV Informatik AG", "email": "info@awv-informatik.ch" },
+  "metadata": { "description": "smlibpy for Claude: model exact 3D CAD parts in Python on the SMLib kernel." },
+  "plugins": [
+    {
+      "name": "smlibpy",
+      "source": "./plugins/smlibpy",
+      "description": "Build, check and export exact 3D CAD parts by running Python with smlibpy, the library on NVIDIA's open-source SMLib kernel."
+    }
+  ]
+}
