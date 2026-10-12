@@ -404,6 +404,14 @@ class ShapeList(list[T]):
         """Edges where two faces meet tangentially, such as the borders of a fillet."""
         return ShapeList(s for s in self if isinstance(s, Edge) and s.convexity == "smooth")
 
+    def fillets(self, max_radius: float | None = None) -> ShapeList[T]:
+        """Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry
+        (with the corner patches where fillets meet), up to ``max_radius``. See
+        :mod:`smlibpy.defeature`."""
+        from .defeature import fillet_faces
+
+        return fillet_faces(self, max_radius)  # type: ignore[return-value]
+
     def within(self, box: BoundBox) -> ShapeList[T]:
         """Shapes whose bounding box lies inside ``box``."""
         return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
@@ -2184,6 +2192,34 @@ class Part(_Body):
         with kernel_call("section"):
             b = k.create_planar_faces(list(curves))
         return Sketch._wrap(b, pl)
+
+    def remove_fillets(self, faces: Any = None, *, max_radius: float | None = None) -> Part:
+        """The part with fillets taken out and their edges sharp again: ``faces`` (fillet faces
+        of this part), or all fillets up to ``max_radius``. See :mod:`smlibpy.defeature`."""
+        from .defeature import remove_fillets
+
+        return remove_fillets(self, faces, max_radius=max_radius)
+
+    def remove_faces(self, faces: Any) -> Part:
+        """The part with ``faces`` (a hole, a boss, a pocket) cut out and the gap closed by the
+        faces around it. See :mod:`smlibpy.defeature`."""
+        from .defeature import remove_faces
+
+        return remove_faces(self, faces)
+
+    def draft_analysis(self, direction: Axis | VectorLike, *, min_angle: float = 1.0) -> Any:
+        """Draft angle of every face for the pull direction, with the faces grouped by whether
+        they release (see :class:`smlibpy.draft.DraftAnalysis`)."""
+        from .draft import draft_analysis
+
+        return draft_analysis(self, direction, min_angle=min_angle)
+
+    def parting_line(self, direction: Axis | VectorLike) -> ShapeList[Wire]:
+        """The closed lines where the part's surface turns from facing ``direction`` to facing
+        away from it (see :func:`smlibpy.draft.parting_line`)."""
+        from .draft import parting_line
+
+        return parting_line(self, direction)
 
     def draft(self, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:  # pragma: no cover - planned
         raise NotImplementedError("face drafts are not available in the open-source kernel yet; "
