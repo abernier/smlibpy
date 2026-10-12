@@ -9,13 +9,13 @@ def test_open_curves_make_surfaces():
     arc = ThreePointArc((0, 0, 0), (10, 5, 0), (20, 0, 0))
     wall = extrude(arc, 10)
     assert isinstance(wall, Shell)
-    assert wall.area == pytest.approx(arc.length * 10, rel=1e-7)
+    assert wall.area == pytest.approx(arc.length * 10, rel=1e-6)
 
     vase = revolve(Line((5, 0, 0), (5, 0, 10)), Z)
-    assert vase.area == pytest.approx(2 * math.pi * 5 * 10, rel=1e-7)
+    assert vase.area == pytest.approx(2 * math.pi * 5 * 10, rel=1e-6)
 
     patch = loft([Line((0, 0, 0), (10, 0, 0)), Line((0, 10, 5), (10, 10, 5))])
-    assert patch.area == pytest.approx(10 * math.hypot(10, 5), rel=1e-7)
+    assert patch.area == pytest.approx(10 * math.hypot(10, 5), rel=1e-6)
 
 
 def test_surface_through_points_and_thicken():

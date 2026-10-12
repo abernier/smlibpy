@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 
 import numpy as np
 
-from ._kernel import BrepHandle, CurveHandle, KernelError, ext, k, kernel_call
+from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -32,8 +32,9 @@ __all__ = [
     "MassProperties",
 ]
 
-#: Relative accuracy of exact integration (areas, volumes, centroids, inertia).
-ACCURACY = 1e-8
+#: Relative accuracy of exact integration (areas, volumes, centroids, inertia). The error
+#: of the results is usually far below it; ``mass_properties(accuracy=...)`` takes another.
+ACCURACY = 1e-7
 
 S = TypeVar("S", bound="Shape")
 
@@ -1474,9 +1475,9 @@ class Part(_Body):
     __slots__ = ()
 
     # -- measures -------------------------------------------------------------
-    def _props(self, density: float = 1.0) -> dict[str, Any]:
+    def _props(self, density: float = 1.0, accuracy: float | None = None) -> dict[str, Any]:
         with kernel_call("mass properties", "is the part a closed solid?"):
-            return ext.brep_properties(self._brep, ACCURACY, density)
+            return ext.brep_properties(self._brep, accuracy or ACCURACY, density)
 
     @property
     def volume(self) -> float:
@@ -1492,9 +1493,12 @@ class Part(_Body):
         p = self._props()
         return Vector(p["origin"]) + Vector(p["moments"][4]) / p["mass"]
 
-    def mass_properties(self, density: float = 1.0) -> MassProperties:
-        """Mass, center of mass and inertia tensor for a uniform ``density``."""
-        p = self._props(density)
+    def mass_properties(self, density: float = 1.0, accuracy: float | None = None) -> MassProperties:
+        """Mass, center of mass and inertia tensor for a uniform ``density``.
+
+        ``accuracy`` is the relative accuracy of the integration (default ``ACCURACY``, 1e-7).
+        """
+        p = self._props(density, accuracy)
         o = Vector(p["origin"])
         mass = float(p["mass"])
         d = Vector(p["moments"][4]) / mass  # centroid relative to the origin of integration
@@ -1623,6 +1627,52 @@ class Part(_Body):
             raise ValueError(f"{operation}: the selection holds only seam or smooth edges, nothing to {operation}")
         return out
 
+    def _check_round_sizes(self, edges: list[Edge], setbacks: list[float], what: str, size_name: str) -> None:
+        """Reject rounds that cannot fit: on a face, two edges running alongside each other
+        must be further apart than their setbacks. (The kernel does not always notice and
+        may return an invalid solid.)"""
+        setback_of = {e._identity(): s for e, s in zip(edges, setbacks)}
+        for e, s in zip(edges, setbacks):
+            ends = {v._identity() for v in e.vertices()}
+            samples = [e.point_at(t) for t in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0)]
+            for f in e.faces():
+                for g in f.edges():
+                    if g._identity() == e._identity() or ends & {v._identity() for v in g.vertices()}:
+                        continue  # the same edge, or a neighbour meeting it at a corner
+                    total = s + setback_of.get(g._identity(), 0.0)
+                    dists = [_distance_to_edge(g, p) for p in samples]
+                    near = min(dists)
+                    if near >= total - 1e-9 or max(dists) > 1.5 * max(near, 1e-12):
+                        continue  # far enough, or not running alongside
+                    limit = near / 2 if g._identity() in setback_of else near
+                    raise ModelingError(
+                        f"{what}: the {size_name} is too large; the rounds on edges {near:.4g} apart would "
+                        f"overlap (largest possible setback here: {limit:.4g})")
+
+    @staticmethod
+    def _setback(e: Edge, radius: float) -> float:
+        """Distance from the edge to where a circular round of ``radius`` meets the faces."""
+        fs = e.faces()
+        if len(fs) != 2:
+            return radius
+        p = e.center()
+        theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
+        return radius * math.tan(theta / 2) if theta > 1e-6 else radius
+
+    def _check_volume_change(self, result: Part, edges: list[Edge], what: str) -> None:
+        convex = [e.is_convex() for e in edges]
+        if not (all(convex) or not any(convex)):
+            return
+        try:
+            before = self._props(accuracy=1e-4)["volume"]
+            after = result._props(accuracy=1e-4)["volume"]
+        except KernelError:
+            return
+        grows = after > before * (1 + 1e-3)
+        if all(convex) and grows or not any(convex) and after < before * (1 - 1e-3):
+            raise KernelError(what, "kernel result failed the volume check", None,
+                              "the size is too large for the selected edges")
+
     def _with_edges(self, edges: Any) -> tuple[BrepHandle, list[Any]]:
         own = self._own_edges(edges)
         copy, _, mapped, _ = ext.copy_with_map(self._brep, [], own, [])
@@ -1654,7 +1704,16 @@ class Part(_Body):
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
         """
-        h, kedges = self._with_edges(self._sharp_edges(edges, "fillet"))
+        sel = self._sharp_edges(edges, "fillet")
+        if isinstance(radius, tuple) and len(radius) == 2:
+            radii = [max(float(radius[0]), float(radius[1]))] * len(sel)
+        elif isinstance(radius, (list, np.ndarray)):
+            radii = [float(r) for r in radius]
+        else:
+            radii = [float(radius)] * len(sel)
+        if len(radii) == len(sel):
+            self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
+        h, kedges = self._with_edges(sel)
         cont = _continuity(continuity)
         with kernel_call("fillet", "the radius may be too large for the selected edges"):
             if isinstance(radius, tuple) and len(radius) == 2:
@@ -1670,11 +1729,14 @@ class Part(_Body):
                 k.fillet_edges(h.brep, kedges, radius=float(radius))
             else:
                 k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
-        return self._like(_take(h))
+        result = self._like(_take(h))
+        self._check_volume_change(result, sel, "fillet")
+        return result
 
     def chamfer(self, edges: Any, length: float) -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces."""
         sel = self._sharp_edges(edges, "chamfer")
+        self._check_round_sizes(sel, [float(length)] * len(sel), "chamfer", "length")
         radii = []
         for e in sel:
             fs = e.faces()
@@ -1694,7 +1756,9 @@ class Part(_Body):
                 for ke, r in zip(kedges, radii):
                     k.fillet_edges(h.brep, [ke], radius=r, xsect_type=0)
         del xs
-        return self._like(_take(h))
+        result = self._like(_take(h))
+        self._check_volume_change(result, sel, "chamfer")
+        return result
 
     def shell(self, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
         """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
@@ -1752,12 +1816,22 @@ class Part(_Body):
 
     def __repr__(self) -> str:
         try:
-            vol = f"volume={self.volume:.6g}"
+            vol = f"volume={self._props(accuracy=1e-5)['volume']:.6g}"
         except KernelError:
             vol = "not a closed solid"
         n = self._brep.face_count()
         label = f"{self.name!r}, " if self.name else ""
         return f"Part({label}{n} faces, {vol})"
+
+
+def _distance_to_edge(e: Edge, p: Vector) -> float:
+    """Distance from a point to an edge (analytic for straight edges)."""
+    if e.geom_type == "line":
+        a, b = e.start, e.end
+        ab = b - a
+        t = max(0.0, min(1.0, (p - a).dot(ab) / max(ab.dot(ab), 1e-300)))
+        return (a + ab * t).distance_to(p)
+    return e.distance_to(p)
 
 
 def _take(h: BrepHandle) -> Any:

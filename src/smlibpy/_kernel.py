@@ -16,10 +16,14 @@ from . import _core as k
 
 ext = k.ext
 
-__all__ = ["k", "ext", "BrepHandle", "CurveHandle", "KernelError", "kernel_call"]
+__all__ = ["k", "ext", "BrepHandle", "CurveHandle", "ModelingError", "KernelError", "kernel_call"]
 
 
-class KernelError(RuntimeError):
+class ModelingError(RuntimeError):
+    """A modeling operation cannot be done (for example a fillet radius that does not fit)."""
+
+
+class KernelError(ModelingError):
     """An SMLib operation failed.
 
     ``operation`` names the smlibpy call, ``status`` the kernel status code

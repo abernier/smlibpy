@@ -50,6 +50,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+const VIEW = __VIEW__;
+const MARGIN = __MARGIN__;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -74,14 +76,27 @@ let root = null;
 function frame() {
   if (!root) return;
   const box = new THREE.Box3().setFromObject(root);
-  const size = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-6);
   const center = box.getCenter(new THREE.Vector3());
+  const size = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-6);
+  const dir = new THREE.Vector3(...VIEW).normalize();
+  // camera basis: back = dir, right = up x back, up' = back x right
+  const back = dir.clone();
+  let right = new THREE.Vector3(0, 1, 0).cross(back);
+  if (right.lengthSq() < 1e-12) right = new THREE.Vector3(1, 0, 0);
+  right.normalize();
+  const up = back.clone().cross(right).normalize();
+  const ty = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const tx = ty * camera.aspect;
+  let d = 0;
+  for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+    const c = new THREE.Vector3(x, y, z).sub(center);
+    const along = c.dot(back);
+    d = Math.max(d, Math.abs(c.dot(right)) / tx + along, Math.abs(c.dot(up)) / ty + along);
+  }
+  d *= MARGIN;
   controls.target.copy(center);
-  const dir = new THREE.Vector3(1, 0.75, 1.25).normalize();
-  const fov = THREE.MathUtils.degToRad(Math.min(camera.fov, camera.fov * camera.aspect));
-  const dist = (size / 2) / Math.sin(fov / 2) * 0.92;
-  camera.position.copy(center).addScaledVector(dir, dist);
-  camera.near = size / 2000; camera.far = size * 200;
+  camera.position.copy(center).addScaledVector(dir, d);
+  camera.near = Math.max(d - size, size * 1e-4) / 4; camera.far = d + size * 10;
   camera.updateProjectionMatrix();
   key.position.copy(center).add(new THREE.Vector3(1, 2, 1.5).multiplyScalar(size));
   key.target.position.copy(center);
@@ -147,10 +162,15 @@ def _glb_bytes(shapes: Any, tolerance: float | None, angle: float, edges: bool) 
 
 
 def html_page(*shapes: Any, title: str = "smlibpy", tolerance: float | None = None, angle: float = 12.0,
-              edges: bool = True) -> str:
-    """A self-contained HTML page showing the shapes."""
+              edges: bool = True, view: Any = (1.0, -1.25, 0.75), margin: float = 1.1) -> str:
+    """A self-contained HTML page showing the shapes.
+
+    ``view`` is the direction from the model towards the camera (Z up).
+    """
     glb, summary = _glb_bytes(list(shapes), tolerance, angle, edges)
+    vx, vy, vz = (float(c) for c in view)
     page = _TEMPLATE.replace("__V__", THREE_VERSION).replace("__TITLE__", html.escape(title))
+    page = page.replace("__VIEW__", f"[{vx}, {vz}, {-vy}]").replace("__MARGIN__", str(float(margin)))
     page = page.replace("__HUD__", summary).replace("__GLB__", base64.b64encode(glb).decode())
     return page
 

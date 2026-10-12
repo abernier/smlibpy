@@ -4,7 +4,7 @@ import pytest
 
 from smlibpy import *
 
-REL = 1e-7
+REL = 1e-6
 
 
 def approx(v, rel=REL):
