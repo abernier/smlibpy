@@ -201,13 +201,13 @@ of the loops in one face (900 holes 2.5 s, 1911 holes 11 s).
 ## Checks
 
 - Glyph areas and counts of pieces and holes against the font's own outlines (exact areas
-  from the Bézier segments; fontTools as an independent reader where it is installed).
+  from the Bézier segments; an independent font reader where one is installed).
 - Advance widths and kerning against the `hmtx`, `kern` and `GPOS` values.
 - Emboss and engrave: the volume changes by area × depth.
 - DXF: hand-written files for every entity, units, bulges, OCS, blocks, nesting, open curves;
-  round trips with exact radii and areas; ezdxf as an independent reader where installed (its
-  auditor finds no errors and nothing to fix). FreeCAD's importer also read the files during
-  development.
-- The font reader against fontTools on 20 fonts (TrueType, CFF, CID-keyed CFF, WOFF, TTC):
-  character maps, advances, outline areas to 1e-15 and kerning agree.
+  round trips with exact radii and areas; an independent DXF reader and writer where one is
+  installed (its audit of our files finds no errors and nothing to fix, and our reader reads
+  its full R2018 files, periodic splines included).
+- The font reader against an independent reader on 20 fonts (TrueType, CFF, CID-keyed CFF,
+  WOFF, TTC): character maps, advances, outline areas to 1e-15 and kerning agree.
 - MCP: a text embossing script through `Session`; `save(format="dxf")`.

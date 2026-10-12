@@ -54,9 +54,9 @@ def test_bundled_font_kern_table_matches_gpos():
     assert all(f.kerning(left, right).advance1 == v for (left, right), v in pairs.items())
 
 
-def test_reader_against_fonttools():
+def test_reader_against_an_independent_reader():
     """Every glyph of the bundled font and of the test fonts: character map, advance and the
-    exact area of the outline agree with fontTools, an independent reader."""
+    exact area of the outline agree with an independent font reader."""
     ttlib = pytest.importorskip("fontTools.ttLib")
     from fontTools.pens.areaPen import AreaPen
 
@@ -68,7 +68,7 @@ def test_reader_against_fonttools():
         assert {c: f.glyph_index(chr(c)) for c in cmap} == {c: tt.getGlyphID(n) for c, n in cmap.items()}
         for gid, name in enumerate(tt.getGlyphOrder()):
             assert f.advance(gid) == tt["hmtx"][name][0]
-            if name == "P":  # point matching, which fontTools does not draw
+            if name == "P":  # point matching, which the other reader does not draw
                 continue
             pen = AreaPen(gs)
             gs[name].draw(pen)
@@ -548,7 +548,7 @@ def test_dxf_units_and_planes_on_export(tmp_path):
     assert exact_area(import_dxf(tmp_path / "text.dxf")) == pytest.approx(exact_area(text), rel=1e-10)
 
 
-def test_dxf_read_by_ezdxf(tmp_path):
+def test_dxf_read_by_an_independent_reader(tmp_path):
     """An independent reader finds a valid drawing with the same geometry."""
     ezdxf = pytest.importorskip("ezdxf")
     from ezdxf import recover
@@ -578,7 +578,7 @@ def test_dxf_read_by_ezdxf(tmp_path):
     assert ours == theirs
 
 
-def test_dxf_written_by_ezdxf(tmp_path):
+def test_dxf_written_by_an_independent_writer(tmp_path):
     """A full R2018 drawing written by an independent writer: inch units, a polyline with bulges,
     a periodic closed spline, an ellipse and a scaled, turned block."""
     ezdxf = pytest.importorskip("ezdxf")
@@ -593,8 +593,8 @@ def test_dxf_written_by_ezdxf(tmp_path):
     msp.add_spline(dxfattribs={"flags": 1 | 2 | 8}).apply_construction_tool(closed_uniform_bspline(ctrl, order=4))
     doc.blocks.new("HOLE", base_point=(0, 0)).add_circle((0, 0), 1)
     msp.add_blockref("HOLE", (40, 0), dxfattribs={"xscale": 2, "yscale": 1, "rotation": 30})
-    doc.saveas(tmp_path / "ezdxf.dxf")
-    s = import_dxf(tmp_path / "ezdxf.dxf")
+    doc.saveas(tmp_path / "other.dxf")
+    s = import_dxf(tmp_path / "other.dxf")
     pts = np.array([_cyclic_point(ctrl, u) for u in np.linspace(0, len(ctrl), 20001)[:-1]])
     spline = 0.5 * abs(np.dot(pts[:, 0], np.roll(pts[:, 1], -1)) - np.dot(np.roll(pts[:, 0], -1), pts[:, 1]))
     expected = sorted([300 + math.pi * 25, spline, math.pi * 32, math.pi * 9 - math.pi * 2])  # in square inches
