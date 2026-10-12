@@ -364,6 +364,14 @@ class ShapeList(list[T]):
                     pass
         return out
 
+    def convex(self) -> ShapeList[T]:
+        """Edges on outside corners (material angle below 180 degrees)."""
+        return ShapeList(s for s in self if isinstance(s, Edge) and s.is_convex())
+
+    def concave(self) -> ShapeList[T]:
+        """Edges on inside corners (material angle above 180 degrees)."""
+        return ShapeList(s for s in self if isinstance(s, Edge) and not s.is_convex())
+
     def within(self, box: BoundBox) -> ShapeList[T]:
         """Shapes whose bounding box lies inside ``box``."""
         return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
@@ -374,6 +382,9 @@ class ShapeList(list[T]):
         return ShapeList(s for s in self if s.distance_to(p) <= tol)  # type: ignore[attr-defined]
 
     # -- set operations and expansion ----------------------------------------
+    def __add__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
+        return ShapeList(list.__add__(self, list(other)))
+
     def __or__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
         out = ShapeList(self)
         for s in other:
@@ -425,6 +436,17 @@ class ShapeList(list[T]):
     # -- placement of the whole list -------------------------------------------
     def moved(self, location: Location) -> ShapeList[T]:
         return ShapeList(s.moved(location) for s in self)
+
+    def on(self, target: Any) -> ShapeList[T]:
+        """Every shape placed onto a plane or face (see :meth:`Shape.on`)."""
+        loc = _as_plane(target).location
+        return ShapeList(s.moved(loc) for s in self)
+
+    def translate(self, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> ShapeList[T]:
+        return ShapeList(s.translate(x, y, z) for s in self)
+
+    def rotate(self, axis: Axis = Z, angle: float = 0.0) -> ShapeList[T]:
+        return ShapeList(s.rotate(axis, angle) for s in self)
 
     def __rmul__(self, other: Any) -> Any:
         if isinstance(other, (Location, Plane)):
@@ -639,6 +661,26 @@ class Edge(Shape):
         if len(fs) != 1:
             return False
         return sum(1 for loop in fs[0].boundary_loops() for e, _ in loop if e is self._e) > 1
+
+    def is_convex(self) -> bool:
+        """True if the material angle at this edge is less than 180 degrees (an outside
+        corner), false for an inside corner. Edges of a single face count as convex."""
+        if self._e is None:
+            return True
+        fs = self._e.faces()
+        if len(fs) != 2:
+            return True
+        f1, f2 = Face(self._owner, fs[0]), Face(self._owner, fs[1])
+        p = self.center()
+        t = self.tangent_at(0.5)
+        n1, n2 = f1.normal_at(p), f2.normal_at(p)
+        size = max(self.length, 1e-9)
+        eps = 1e-4 * size
+        into = n1.cross(t)
+        # pick the in-face direction of face 1 that stays on the face
+        if f1.distance_to(p + into * eps) > f1.distance_to(p - into * eps):
+            into = -into
+        return n2.dot(into) < 0
 
     @property
     def direction(self) -> Vector:
@@ -908,6 +950,29 @@ class Wire(Shape):
     def __repr__(self) -> str:
         kind = "closed" if self.is_closed else "open"
         return f"Wire({len(self._edges)} edges, {kind}, length={self.length:.6g})"
+
+
+def _merged_lines(wire: Wire) -> Wire:
+    """The wire with consecutive collinear line segments joined into one."""
+    edges = list(wire.edges())
+    if len(edges) < 2:
+        return wire
+    from .curves import Line
+
+    def collinear(a: Edge, b: Edge) -> bool:
+        return (a.geom_type == "line" and b.geom_type == "line" and a.end.is_close(b.start, 1e-9)
+                and a.direction.angle_to(b.direction) < 1e-7)
+
+    out: list[Edge] = []
+    for e in edges:
+        if out and collinear(out[-1], e):
+            out[-1] = Line(out[-1].start, e.end)
+        else:
+            out.append(e)
+    if len(out) > 2 and wire.is_closed and collinear(out[-1], out[0]):
+        out[0] = Line(out[-1].start, out[0].end)
+        out.pop()
+    return Wire._raw(out) if len(out) != len(edges) else wire
 
 
 def _chain(edges: list[Edge], tol: float = 1e-6) -> list[Edge]:
@@ -1472,6 +1537,26 @@ class Part(_Body):
                 raise ValueError(f"{f!r} is not a face of this part")
         return out
 
+    def _sharp_edges(self, edges: Any, operation: str) -> list[Edge]:
+        """The selected edges without seams and tangent (smooth) edges, which cannot be rounded."""
+        sel = _flatten_edges(edges)
+        out = []
+        for e in sel:
+            if e.is_seam:
+                continue
+            fs = e.faces()
+            if len(fs) == 2:
+                p = e.center()
+                try:
+                    if fs[0].normal_at(p).angle_to(fs[1].normal_at(p)) < 0.5:
+                        continue
+                except (KernelError, ValueError):
+                    pass
+            out.append(e)
+        if not out:
+            raise ValueError(f"{operation}: the selection holds only seam or smooth edges, nothing to {operation}")
+        return out
+
     def _with_edges(self, edges: Any) -> tuple[BrepHandle, list[Any]]:
         own = self._own_edges(edges)
         copy, _, mapped, _ = ext.copy_with_map(self._brep, [], own, [])
@@ -1503,7 +1588,7 @@ class Part(_Body):
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
         """
-        h, kedges = self._with_edges(edges)
+        h, kedges = self._with_edges(self._sharp_edges(edges, "fillet"))
         cont = _continuity(continuity)
         with kernel_call("fillet", "the radius may be too large for the selected edges"):
             if isinstance(radius, tuple) and len(radius) == 2:
@@ -1523,7 +1608,7 @@ class Part(_Body):
 
     def chamfer(self, edges: Any, length: float) -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces."""
-        sel = _flatten_edges(edges)
+        sel = self._sharp_edges(edges, "chamfer")
         radii = []
         for e in sel:
             fs = e.faces()
@@ -1707,7 +1792,7 @@ class Sketch(Shell):
         for w in wires:
             if not w.is_closed:
                 raise ValueError("a sketch region needs closed wires; use wire.close()")
-            curves.extend(w._copy_curves())
+            curves.extend(_merged_lines(w)._copy_curves())
         if plane is None:
             plane = wires[0].plane()
             if plane.z_dir.dot(Z.direction) < -1e-9 or (abs(plane.z_dir.z) < 1e-9 and plane.z_dir.dot((1, 1, 0)) < 0):

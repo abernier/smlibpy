@@ -88,17 +88,22 @@ def CenterArc(
     c = _vec(center)
     sweep = end_angle - start_angle
     with kernel_call("CenterArc"):
-        # A true circle (exact radius/center queries, CIRCLE in STEP), started at the
-        # start angle and trimmed by angle: the circle's parameter is linear in angle.
+        # A true circle (exact radius/center queries, CIRCLE in STEP), started at the start
+        # angle and trimmed at the parameter of the end point. (The parameter of a rational
+        # NURBS circle is not proportional to the angle.)
         curve = k.create_circle((0.0, 0.0, 0.0), float(radius))
         lo, hi = curve.parameter_range()
         a0 = start_angle if sweep >= 0 else end_angle
         if a0 % 360.0:
             k.rotate(curve, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), float(a0))
         span = min(abs(sweep), 360.0)
-        if span < 360.0 - 1e-12:
+        if span < 360.0 - 1e-9:
+            a1 = math.radians(a0 + span)
+            _, t_end, _ = k.curve_closest_point(curve, (radius * math.cos(a1), radius * math.sin(a1), 0.0))
+            if t_end <= lo + 1e-12:
+                t_end = hi
             whole = curve
-            curve = ext.trimmed_curve(whole, lo, lo + (hi - lo) * span / 360.0)
+            curve = ext.trimmed_curve(whole, lo, float(t_end))
             ext.delete_curve(whole)
         if sweep < 0:
             ext.reverse_curve(curve)

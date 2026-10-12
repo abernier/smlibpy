@@ -32,6 +32,8 @@ from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, 
 from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
 from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot, Trapezoid, make_face
 from ._kernel import KernelError
+from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
+from .viewer import show
 
 __version__ = "0.1.0"
 
@@ -52,6 +54,9 @@ __all__ = [
     # operations
     "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section",
     "thicken", "tessellate",
+    # files and viewer
+    "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl",
+    "show",
     # errors
     "KernelError",
 ]
