@@ -71,7 +71,8 @@ len(part.faces())) and look with snapshot(view="sheet"): a technical drawing (fr
 from the left, top view; hidden edges dashed) with a shaded iso view. A picture alone can mislead \
 (it is scaled to fit); a number alone can too. Fix what is wrong before going on. snapshot also \
 cuts sections (section=), shows what a selection picks (highlight="part.edges().concave()"), marks \
-points (markers=) and compares before and after (frame= and compare=); see recipes/verification.
+points (markers=), proves smooth blends (zebra=, curvature=) and compares before and after (frame= \
+and compare=); see recipes/verification.
 4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png). \
 Tell the user where the file is.
 
@@ -254,6 +255,17 @@ def build_server(session: Session | None = None) -> Any:
         annotate: Annotated[bool, Field(description=(
             "Measurement overlay: the size of the bounding box, the axes as the view shows them, a scale bar."))] = False,
         xray: Annotated[bool, Field(description="Translucent bodies: hidden geometry shines through.")] = False,
+        zebra: Annotated[bool | dict[str, Any] | None, Field(description=(
+            "Zebra stripes, the reflection of parallel light lines, from the exact surface normals: they break "
+            "where faces meet with an edge (G0), kink at a circular fillet (G1) and bend smoothly across a "
+            "curvature-continuous blend (G2). true, or {\"stripes\": 16, \"width\": 0.5, \"direction\": "
+            "\"vertical\" | \"horizontal\" | [x, y, z]}. A round that curves along the light lines shows no "
+            "stripes: turn the direction."))] = None,
+        curvature: Annotated[str | dict[str, Any] | None, Field(description=(
+            "Curvature map of the exact surfaces: \"mean\", \"gaussian\", \"max\" or \"min\" (principal "
+            "curvatures). Blue concave, white flat, red convex; a legend gives the range in 1/mm. "
+            "{\"kind\": \"max\", \"range\": 0.2} fixes the range. A circular fillet of radius r is one "
+            "color (1/r), a G2 blend a ramp from white at its edges."))] = None,
         colors: Annotated[str, Field(description=(
             "'native' (default): the shapes' own colors; 'distinct': one color per body, to tell bodies apart."))
                           ] = "native",
@@ -269,7 +281,7 @@ def build_server(session: Session | None = None) -> Any:
     ) -> list[Any]:
         """Render a picture of the model (Z up, orthographic, scaled to fit) to check what you built: a view, a
         technical drawing with hidden edges dashed, sheets of views, sections, highlights of selections, markers,
-        x-ray, and before/after comparisons."""
+        x-ray, zebra stripes and curvature maps for surface quality, and before/after comparisons."""
         v: Any = view
         if isinstance(view, str) and "," in view:
             v = tuple(float(c) for c in view.split(","))
@@ -282,7 +294,8 @@ def build_server(session: Session | None = None) -> Any:
         target = path or os.path.join(_snapshot_dir(), f"{time.strftime('%H%M%S')}-{next(_counter)}-{kind}.png")
         options = dict(drawing=drawing, sheet=sheet, lines=lines, section=section, cap=cap, highlight=highlight,
                        highlight_at=highlight_at, markers=markers, annotate=annotate, xray=xray, colors=colors,
-                       zoom=zoom, look_at=look_at, frame=frame, compare=compare, supersample=supersample)
+                       zoom=zoom, look_at=look_at, frame=frame, compare=compare, supersample=supersample,
+                       zebra=zebra, curvature=curvature)
         res = await call(session.call, "snapshot", 300.0, view=v, size=(width, height), names=names, edges=edges,
                          path=target, **{k: x for k, x in options.items() if x is not None})
         if not res.get("ok"):

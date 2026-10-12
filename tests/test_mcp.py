@@ -85,6 +85,20 @@ def test_snapshot_options_frame_and_compare(session, tmp_path):
     assert same["diff"]["changed"] == 0
 
 
+def test_snapshot_zebra_and_curvature(session):
+    session.clear()
+    session.run("box = Box(40, 40, 20)\nsoft = box.fillet(box.edges().parallel_to(Z), 8, continuity='G2')\n"
+                "show(soft)")
+    zebra = session.call("snapshot", size=(300, 200), zebra={"stripes": 20, "direction": [0, 0, 1]},
+                         highlight="soft.faces().top()", markers=[{"position": [0, 0, 10], "label": "top"}])
+    curv = session.call("snapshot", size=(300, 200), curvature={"kind": "max", "range": 0.2})
+    sheet = session.call("snapshot", size=(400, 300), sheet=True, curvature="mean")
+    assert zebra["ok"] and curv["ok"] and sheet["ok"] and zebra["png"] != curv["png"]
+    assert curv["frame"]["scale"] > 0 and sheet["frame"] is None
+    bad = session.call("snapshot", curvature="sharpness")
+    assert not bad["ok"] and "curvature" in bad["error"]
+
+
 def test_discovery_finds_api_and_guides():
     keys = {e.key for e in discovery.methods()}
     assert {"Box", "Part.fillet", "ShapeList.top", "import_step"} <= keys
@@ -146,5 +160,11 @@ def test_stdio_server_round_trip():
                                                          "view": {"azimuth": 30, "elevation": 20}})
                 assert [c.type for c in drawing.content] == ["image", "text"]
                 assert "frame:" not in drawing.content[1].text
+                stripes = await s.call_tool("snapshot", {"width": 300, "height": 200, "zebra": True,
+                                                         "curvature": None})
+                assert stripes.content[0].type == "image"
+                curv = await s.call_tool("snapshot", {"width": 300, "height": 200,
+                                                      "curvature": {"kind": "gaussian", "range": 0.01}})
+                assert curv.content[0].type == "image"
 
     asyncio.run(go())
