@@ -2185,6 +2185,29 @@ class Part(_Body):
             b = k.create_planar_faces(list(curves))
         return Sketch._wrap(b, pl)
 
+    # -- deformations (smlibpy.deform) ---------------------------------------
+    def twist(self, angle: float, **kwargs: Any) -> Part:
+        """Twist about an axis (default Z) by ``angle`` degrees over the part; see :func:`smlibpy.twist`."""
+        from .deform import twist
+
+        return twist(self, angle, **kwargs)
+
+    def taper(self, scale: float, **kwargs: Any) -> Part:
+        """Scale cross-sections toward an axis (default Z) from 1 to ``scale``; see :func:`smlibpy.taper`."""
+        from .deform import taper
+
+        return taper(self, scale, **kwargs)
+
+    def bend(self, angle: float, **kwargs: Any) -> Part:
+        """Bend around an axis by ``angle`` degrees (default: along X, toward +Z); see :func:`smlibpy.bend`."""
+        from .deform import bend
+
+        return bend(self, angle, **kwargs)
+
+    def deform(self, lattice: Any, **kwargs: Any) -> Part:
+        """Deform with a :class:`smlibpy.Lattice` (same as ``lattice.apply(part)``)."""
+        return lattice.apply(self, **kwargs)
+
     def draft(self, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:  # pragma: no cover - planned
         raise NotImplementedError("face drafts are not available in the open-source kernel yet; "
                                   "use Sketch.extrude(taper=...) for drafted extrusions")
