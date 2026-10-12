@@ -50,9 +50,16 @@ build-verbosity = 1
 test-requires = ["pytest>=8"]
 test-command = "pytest {project}/tests -q"
 
+# The kernel does not depend on the Python version: a compiler cache lets every wheel after the
+# first reuse it, instead of compiling all of SMLib again for each Python.
+[tool.cibuildwheel.linux]
+before-all = "dnf install -y epel-release && dnf install -y ccache"
+environment = { CMAKE_C_COMPILER_LAUNCHER = "ccache", CMAKE_CXX_COMPILER_LAUNCHER = "ccache", CCACHE_DIR = "/tmp/ccache", CCACHE_MAXSIZE = "4G" }
+
 [tool.cibuildwheel.macos]
 archs = ["arm64", "x86_64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+before-all = "brew install ccache"
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0", CMAKE_C_COMPILER_LAUNCHER = "ccache", CMAKE_CXX_COMPILER_LAUNCHER = "ccache", CCACHE_MAXSIZE = "4G" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
