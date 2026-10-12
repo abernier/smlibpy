@@ -18,3 +18,6 @@ Docs go to `src/smlibpy/skill/references/files/`. Work through the rows in order
 | 10 | `render.md` | render | views, sheet, size, edges, colors, bytes | [x] render.md |
 | 11 | `show.md` | show | browser and notebook behaviour, path, open_browser | [x] show.md |
 | 12 | `Mesh.md` | Mesh, tessellate | tessellation parameters, Mesh fields, mesh Booleans, volume/area of meshes | [x] Mesh.md |
+| 13 | `import_dxf.md` | import_dxf, load (.dxf) | entities, units, layers, tolerance, nesting (even-odd), open and branching outlines, blocks | [x] import_dxf.md |
+| 14 | `import_dxf_wires.md` | import_dxf_wires | open and closed chains, branching, uses as paths | [x] import_dxf_wires.md |
+| 15 | `export_dxf.md` | export_dxf, export (.dxf) | entities, sections (arcs from B-splines), units, the drawing plane, layers from names, errors | [x] export_dxf.md |

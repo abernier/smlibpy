@@ -166,3 +166,14 @@
   produced by tessellate()`, although the mesh was made by `tessellate()`. A merged mesh has no
   kernel data.
 - **Expected:** "... need meshes of a single body made by tessellate()".
+
+### 18. `import_dxf`: outlines with many holes are slow (kernel face building grows with the square)
+- **Session:** `2026-10-13_00-44-16_files-dxf` (measured while writing the guide)
+- **What happens:** one outline with n circular holes: `create_planar_faces` takes 0.04 s for 100 holes,
+  0.47 s for 400, 2.5 s for 900, 11 s for 1911. Building the outline alone and subtracting all holes with
+  one 2D Boolean is not faster (16 s for 1911). smlibpy already knows which loop is a hole of which.
+- **Expected:** near-linear time when the nesting is given.
+- **Reproduce:** a LWPOLYLINE frame 200 x 160 with a 49 x 39 grid of CIRCLE r 1, `import_dxf`.
+- **Workaround:** none; documented in `files/import_dxf.md`. A kernel entry point that takes the loops of
+  a face explicitly (outer first, then holes) on an analytic plane would avoid the search.
+

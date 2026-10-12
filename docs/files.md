@@ -9,6 +9,7 @@ control. All of them accept a single shape or a list.
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact and lossless |
+| DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
 | STL (`.stl`) | `export_stl` | triangles |
 | OBJ (`.obj`) | `export_obj` | triangles |
@@ -61,8 +62,8 @@ bracket = load("bracket.step")   # exact, from any CAD system
 print(bracket.name, bracket.volume)
 ```
 
-STEP and SMLib's own `.smb` files give exact parts; an STL file gives a `Mesh`
-(`import_stl`).
+STEP and SMLib's own `.smb` files give exact parts, a DXF file the sketch of its outlines; an
+STL file gives a `Mesh` (`import_stl`).
 
 ### STEP
 
@@ -82,6 +83,50 @@ The importer is checked against OpenCASCADE on more than 400 files written by NX
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
 among them. Not read yet: wireframe geometry, references to other files, PMI, and
 assembly placements that mirror a part.
+
+## DXF
+
+DXF is the exchange format of 2D drawings: laser cutters, CNC software and 2D CAD programs read
+it. `export_dxf` writes sketches, cross-sections of parts, text, wires and edges with exact
+entities: lines, arcs, circles, ellipses, and splines with their control points, knots and
+weights.
+
+```python
+part = Box(40, 30, 20) - Cylinder(8, 30)
+export_dxf(part.section(Plane.XY), "section.dxf")      # four lines and a circle
+export_dxf(part.section(Plane.XZ), "side.dxf")         # drawn in the XZ plane: x and z
+tag = [RoundedRectangle(40, 12, 2).named("cut"), Text("PART 7", 5).named("engrave")]
+export_dxf(tag, "tag.dxf", unit="inch")                # two layers, in inches
+```
+
+The kernel returns the edges of a section as B-splines, also where the part is round. The writer
+recognizes the circular ones and writes them as arcs and circles, so a drawing program sees the
+hole above as a circle of radius 8. Shapes lying in the XY plane are drawn with their X and Y; a
+sketch in another plane is drawn in that plane's own coordinates, and `plane=` chooses the plane
+explicitly. A shape's name becomes its layer. `unit` converts the millimeters of the model, as
+it does for STEP, and the file declares its unit in `$INSUNITS`.
+
+`import_dxf` reads the closed outlines of a drawing as a sketch, in millimeters and at the
+drawing's coordinates:
+
+```python
+outline = import_dxf("section.dxf")
+plate = outline.extrude(6)
+cut_only = import_dxf("tag.dxf", layers=["cut"])
+print(round(plate.volume, 3), cut_only.bbox().size)    # 5993.628 Vector(40, 12, 0)
+```
+
+It reads lines, arcs, circles, ellipses, polylines (their bulges become exact arcs), splines
+(as exact NURBS) and inserted blocks, also scaled, mirrored, rotated and nested ones. Text,
+hatches and dimensions are left out with a warning. The file's unit is converted to millimeters;
+a file without one is read as millimeters, and `unit=` overrides it.
+
+The curves are joined end to end into loops. A loop inside another one is a hole, and a loop
+inside a hole is an island again. When curves do not close, the error names the loose ends, their
+layers and the size of the gap; `layers=` reads only the outline's layers, and `tolerance=`
+joins ends that are a little apart. Lettering drawn inside an outline would turn into holes of
+it, so read such layers one at a time. `import_dxf_wires` returns every chain of curves as a
+wire, open or closed, for paths and for drawings that are not outlines.
 
 ## Pictures
 

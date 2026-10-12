@@ -310,9 +310,9 @@ class _Worker:
         if not items:
             return {"ok": False, "error": "nothing to save: no part or shell yet, and show(...) chose nothing"}
         ext = {"step": ".step", "stp": ".step", "stl": ".stl", "glb": ".glb", "gltf": ".gltf", "obj": ".obj",
-               "smb": ".smb", "png": ".png"}.get(format.lower())
+               "smb": ".smb", "png": ".png", "dxf": ".dxf"}.get(format.lower())
         if ext is None:
-            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, smb or png"}
+            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, smb, png or dxf"}
         if path is None:
             base = items[0][0] if len(items) == 1 else "model"
             path = os.path.join(tempfile.gettempdir(), "smlibpy-files", base + ext)
@@ -327,6 +327,13 @@ class _Worker:
             if len(shapes) != 1:
                 return {"ok": False, "error": "an .smb file holds one body: name it with names=[...]"}
             self.sm.save(shapes[0], path)
+        elif ext == ".dxf":
+            flat = [s for s in shapes if not isinstance(s, self.sm.Part)]
+            if not flat:
+                return {"ok": False, "error": "a DXF file is a 2D drawing: name sketches, sections, wires or edges "
+                                              "with names=[...] (a part's cross-section: part.section(plane))"}
+            self.sm.export_dxf(flat, path)
+            items = [(n, s) for n, s in items if not isinstance(s, self.sm.Part)]
         else:
             self.sm.export(shapes, path)
         return {"ok": True, "path": path, "bytes": os.path.getsize(path), "shapes": [n for n, _ in items]}

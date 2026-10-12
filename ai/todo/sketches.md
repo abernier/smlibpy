@@ -176,3 +176,14 @@
 - **Session:** `2026-10-12_21-26-11_sketches-generic`, script `01-basics.py`
 - **What happens:** `Circle(10).area` is 314.1593105, pi*100 = 314.1592654 (relative error 1.4e-7).
 - **Expected:** the docs say "accurate to about 1e-7" instead of "exact".
+
+### 16. `Sketch.area` of lettering is off by up to a few 1e-6 at the default accuracy
+- **Session:** `2026-10-13_00-41-18_sketches-text` (checked against the exact areas of the font outlines)
+- **What happens:** faces bounded by long B-spline edges integrate less accurately at `ACCURACY = 1e-7`:
+  `Text("@&8", 8).area` is 2.0e-6 too small, single glyphs at size 10 up to 1.2e-5 (Inter `(`). With
+  `ext.face_properties(face, 1e-11)` every glyph agrees with the exact outline area to about 1e-11, and
+  `text.extrude(1).mass_properties(accuracy=1e-10).volume` to 1e-9: the geometry is exact, the
+  integration is not.
+- **Expected:** `area` as accurate for curved outlines as for circles (1e-7), or an `accuracy=` argument.
+- **Workaround:** `mass_properties(accuracy=1e-10)` of an extrusion; documented in `sketches/Text.md`.
+

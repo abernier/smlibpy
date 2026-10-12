@@ -3,8 +3,9 @@
 ========  ===================================================  ==========
 Format    Extension                                            Direction
 ========  ===================================================  ==========
-STEP      ``.step``, ``.stp``                                  write
+STEP      ``.step``, ``.stp``                                  read/write
 SMLib     ``.smb`` (exact, lossless native kernel format)      read/write
+DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
 glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
 OBJ       ``.obj``                                             write
@@ -67,8 +68,12 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         export_obj(shapes, p, **kwargs)
     elif ext == ".smb":
         save(shapes, p, **kwargs)
+    elif ext == ".dxf":
+        from .dxf import export_dxf
+
+        export_dxf(shapes, p, **kwargs)
     else:
-        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj or .smb")
+        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf")
 
 
 def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None) -> None:
@@ -381,7 +386,8 @@ def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> No
 
 def load(path: str | os.PathLike[str]) -> Any:
     """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``) and
-    SMLib (``.smb``) give exact parts, STL a :class:`Mesh`.
+    SMLib (``.smb``) give exact parts, DXF (``.dxf``) a :class:`Sketch` of the drawing's
+    outlines, STL a :class:`Mesh`.
 
     A STEP file with one body gives that part, one with several a :class:`ShapeList`. A
     native file that encloses no volume comes back as a :class:`Shell`.
@@ -395,8 +401,12 @@ def load(path: str | os.PathLike[str]) -> Any:
         return import_step(path)
     if ext_ == ".stl":
         return import_stl(path)
+    if ext_ == ".dxf":
+        from .dxf import import_dxf
+
+        return import_dxf(path)
     if ext_ != ".smb":
-        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl and .smb")
+        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl, .smb and .dxf")
     if not os.path.exists(os.fspath(path)):
         raise FileNotFoundError(os.fspath(path))
     with kernel_call("load"):

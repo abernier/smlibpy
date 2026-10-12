@@ -30,7 +30,7 @@ edges are picked by their geometry, for example `part.faces().top()` or
   sweep (also along helices), shell, offset, draft, mirror, split, thicken
 - Fillets: circular, variable-radius and curvature-continuous (G2/G3); chamfers
 - Sketches and curves: rectangles, circles, ellipses, polygons, slots, trapezoids; lines, arcs,
-  splines, Béziers, helices; 2D fillet and offset
+  splines, Béziers, helices; 2D fillet and offset; text with exact font outlines
 - Surfaces: freeform surfaces from point grids, ruled surfaces, stitching into solids
 - Selection by geometry: `top()`, `parallel_to()`, `concave()`, `circles()`, `largest()`,
   filters, sorting and grouping
@@ -38,8 +38,8 @@ edges are picked by their geometry, for example `part.faces().top()` or
   intersections, validity
 - Checks: every kernel result is checked; a fillet or shell that cannot work raises an error
   that says what fits
-- Files: STEP in and out (exact geometry, assemblies, units, names, colors), STL, glTF/GLB, OBJ,
-  SMLib's own format
+- Files: STEP in and out (exact geometry, assemblies, units, names, colors), DXF in and out
+  (exact arcs and splines), STL, glTF/GLB, OBJ, SMLib's own format
 - Pictures: a software renderer, no GPU or browser needed: shaded views, technical drawings
   (ISO E and A) with hidden lines and center lines, sections, x-ray, highlights, markers,
   zebra stripes, curvature maps, image diffs
@@ -104,6 +104,15 @@ flange = profile.on(Plane.front).revolve(Z)
 flange -= PolarLocations(47.5, 8) * Cylinder(5, 30)
 ```
 
+### Text
+
+Lettering is a sketch with the exact outlines of a font; `size` is the height of the capitals.
+
+```python
+tag = Box(60, 20, 3)
+tag -= Text("SMLIB 01", 8).on(tag.faces().top()).extrude(-0.5)
+```
+
 ### Selecting edges and faces
 
 Selectors chain and always return lists. A list with one element works wherever a single shape
@@ -144,11 +153,12 @@ mp.mass, mp.center, mp.inertia
 
 ### Files
 
-STEP, STL, glTF/GLB, OBJ and SMLib's own exact format.
+STEP, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")
 export_glb(flange, "flange.glb")
+export_dxf(flange.section(Plane.XZ), "flange-profile.dxf")
 ```
 
 ## Documentation
@@ -163,9 +173,9 @@ export_glb(flange, "flange.glb")
 
 ## Status
 
-smlibpy is new (version 0.1). It covers solid and surface modeling, and reads and writes STEP
-with the exact geometry. Assemblies with product structure, dimensioned 2D drawings and text are not there
-yet.
+smlibpy is new (version 0.1). It covers solid and surface modeling, text, and reads and writes
+STEP and DXF with the exact geometry. Assemblies with product structure and dimensioned 2D
+drawings are not there yet.
 
 ## License
 

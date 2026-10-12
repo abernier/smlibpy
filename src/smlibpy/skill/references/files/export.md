@@ -15,6 +15,7 @@ the format functions.
 | `.gltf` | `export_gltf` | `tolerance`, `angle`, `edges`, `edge_color` |
 | `.obj` | `export_obj` | `tolerance`, `angle` |
 | `.smb` | `save` | `ascii` |
+| `.dxf` | `export_dxf` | `unit`, `plane` |
 
 - `shapes`: one shape or a list (nested lists are flattened). `path`: `str` or `pathlib.Path`.
 - `kwargs` go to the format function unchanged. A keyword argument that the format does not
@@ -25,7 +26,8 @@ the format functions.
 
 ## Gotchas
 - STEP and `.smb` are exact. STL, glTF and OBJ are triangle meshes. Deliver STEP for CAD, and a
-  mesh format for printing or viewing.
+  mesh format for printing or viewing. DXF is exact and 2D: sketches, sections, text, wires and
+  edges; a `Part` raises `TypeError` (write `part.section(plane)`).
 - `.stp` with `unit="inch"` writes the coordinates in inches (converted from mm, see
   `export_step`).
 - `.smb` holds one body. `export([a, b], "x.smb")` raises.
@@ -33,11 +35,11 @@ the format functions.
   for `.smb` it raises `AttributeError`.
 - No extension, or `.iges`, `.3mf` and other formats, raise `ValueError` before anything is
   written.
-- `load` is the reverse for `.step`/`.stp`, `.stl` and `.smb` only. glTF and OBJ cannot be read
-  back.
+- `load` is the reverse for `.step`/`.stp`, `.stl`, `.smb` and `.dxf` (a `Sketch`). glTF and OBJ
+  cannot be read back.
 
 ## Errors
-- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj or .smb`.
+- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf`.
 - `TypeError: export_step() got an unexpected keyword argument 'tolerance'`: a mesh keyword
   argument used on an exact format, or the other way round.
 
@@ -50,4 +52,4 @@ print(type(load("bracket.step")).__name__, type(load("bracket.stl")).__name__)  
 ```
 
 ## Related
-`export_step`, `export_stl`, `export_glb`, `export_obj`, `save_load.md`, `generic.md`.
+`export_step`, `export_stl`, `export_glb`, `export_obj`, `export_dxf`, `save_load.md`, `generic.md`.

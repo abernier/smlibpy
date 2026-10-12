@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, measurements, STEP/STL/glTF export and STEP import. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, measurements, STEP/STL/glTF export, STEP import, DXF drawings in and out. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -28,7 +28,7 @@ export_step(plate, "plate.step")
 3. **Verify every step** with numbers and a picture: `volume`, `bbox()`, `is_valid()`, face
    counts; `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Sections,
    highlighted selections and before/after comparisons: see `recipes/verification`.
-4. **Deliver** a STEP file (exact), STL or glTF (meshes), and say where it is.
+4. **Deliver** a STEP file (exact), STL or glTF (meshes), DXF for 2D outlines, and say where it is.
 
 ## Conventions
 
@@ -65,12 +65,12 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | geometry | `geometry/*` | Vector, Axis, Plane, Location, Pos, Rot, BoundBox, Align, placement methods, patterns |
 | selection | `selection/*` | ShapeList and its selectors, topology (faces, edges, vertices), Face, Edge, Vertex |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
-| sketches | `sketches/*` | Sketch, 2D shapes (Rectangle, Circle, Polygon, Slot, ...), make_face, 2D offset and fillet |
+| sketches | `sketches/*` | Sketch, 2D shapes (Rectangle, Circle, Polygon, Slot, ...), Text, make_face, 2D offset and fillet |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire |
 | features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft, heal |
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity |
-| files | `files/*` | STEP in and out, STL, glTF, OBJ, the native format, render, show, meshes |
+| files | `files/*` | STEP in and out, DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API
 (`features/fillet`, `parts/Box`, `selection/filter_by`).

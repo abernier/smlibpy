@@ -33,6 +33,7 @@ Everything below is importable from `smlibpy` directly.
 ## Sketches
 
 ::: smlibpy.sketches
+::: smlibpy.text.Text
 
 ## Curves
 
@@ -58,6 +59,9 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.exporters
 ::: smlibpy.step_import.import_step
+::: smlibpy.dxf.import_dxf
+::: smlibpy.dxf.import_dxf_wires
+::: smlibpy.dxf.export_dxf
 
 ## Viewer
 

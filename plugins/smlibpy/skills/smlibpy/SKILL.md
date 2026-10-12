@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Build, check and export exact 3D CAD parts (mechanical parts, brackets, enclosures, flanges, gears, bottles, springs, freeform shells) by writing Python with smlibpy through the smlibpy MCP tools. Also for reading STEP files and measuring parts. Use when the user wants a 3D model made, measured or exported as a file. For models that must stay editable and regenerate (constrained sketches, feature history, expressions, assemblies, apps built on buerli or Buerligons), use the ClassCAD MCP instead.
+description: Build, check and export exact 3D CAD parts (mechanical parts, brackets, enclosures, flanges, gears, bottles, springs, freeform shells) by writing Python with smlibpy through the smlibpy MCP tools. Also for reading STEP files, lettering (engraved or embossed text), DXF drawings in and out, and measuring parts. Use when the user wants a 3D model made, measured or exported as a file. For models that must stay editable and regenerate (constrained sketches, feature history, expressions, assemblies, apps built on buerli or Buerligons), use the ClassCAD MCP instead.
 ---
 
 # smlibpy CAD
@@ -15,8 +15,8 @@ shows them in a live 3D viewer.
 3. After every step check the numbers the script prints (volume, bbox, `is_valid()`) and look
    with `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Fix before going
    on. `checkpoint()` before risky steps.
-4. Deliver with `save(format="step", path=...)` (or stl, glb) and tell the user where the file
-   is. Send them a snapshot when a picture helps.
+4. Deliver with `save(format="step", path=...)` (or stl, glb; dxf for 2D outlines and sections)
+   and tell the user where the file is. Send them a snapshot when a picture helps.
 
 The first script that makes a model returns a viewer link; open it once as the server's
 instructions say. Units are millimeters, Z is up.

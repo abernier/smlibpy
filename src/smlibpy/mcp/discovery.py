@@ -51,7 +51,15 @@ SYNONYMS = {
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],
     "profile": ["Sketch", "Rectangle", "Circle"], "2d": ["Sketch"], "polygon": ["Polygon", "RegularPolygon"],
-    "hexagon": ["RegularPolygon"], "slot": ["Slot"], "text": [], "gear": ["Polygon", "PolarLocations"],
+    "hexagon": ["RegularPolygon"], "slot": ["Slot"], "gear": ["Polygon", "PolarLocations"],
+    "text": ["Text"], "label": ["Text"], "labels": ["Text"], "lettering": ["Text"], "letters": ["Text"],
+    "letter": ["Text"], "font": ["Text"], "fonts": ["Text"], "inscription": ["Text"], "writing": ["Text"],
+    "engrave": ["Text", "extrude", "cut"], "engraved": ["Text", "extrude", "cut"],
+    "engraving": ["Text", "extrude", "cut"], "emboss": ["Text", "extrude", "fuse"],
+    "embossed": ["Text", "extrude", "fuse"], "embossing": ["Text", "extrude", "fuse"],
+    "dxf": ["import_dxf", "export_dxf", "import_dxf_wires"], "drawing": ["import_dxf", "export_dxf"],
+    "drawings": ["import_dxf", "export_dxf"], "autocad": ["import_dxf", "export_dxf"],
+    "dwg": ["import_dxf", "export_dxf"], "laser": ["export_dxf", "section"], "outline": ["import_dxf", "outline"],
 }
 
 
