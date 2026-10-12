@@ -39,6 +39,17 @@ wheel.packages = ["src/smlibpy"]
 sdist.include = ["third_party/usd-brep/source/SMLib", "third_party/usd-brep/source/SM_API", "third_party/usd-brep/source/SmPyLib/src", "third_party/usd-brep/LICENSE", "third_party/usd-brep/THIRD_PARTY_NOTICES.md"]
 sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests", "third_party/usd-brep/tools", "third_party/usd-brep/Examples", "out", "build", ".venv*"]
 
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *_i686 *-win32"
+build-verbosity = 1
+test-requires = ["pytest>=8"]
+test-command = "pytest {project}/tests -q"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64", "x86_64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
