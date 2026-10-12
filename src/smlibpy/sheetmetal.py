@@ -11,8 +11,8 @@ outside). Unfolding does the inverse, so a part folded and unfolded with the sam
 blank again.
 
     blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    bracket = bend(blank, Axis((20, 0, 2), Y), 90, radius=2)   # fold the +X end up
-    pattern = flat_pattern(bracket)                            # the blank, laid on XY
+    bracket = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)   # fold the +X end up
+    pattern = flat_pattern(bracket)                                    # the blank, laid on XY
     pattern.outline, pattern.bend_lines
 
 The kernel does the geometry (SMLib's space bend and unbend); see ``src/cpp/sheetmetal.cpp``.
