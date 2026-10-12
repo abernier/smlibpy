@@ -69,7 +69,7 @@ def test_bend_is_exact(angle):
     """The bend zone becomes cylinders of R and R + t on the bend axis; the volume grows by the
     stretched material only; unfolding gives the blank back."""
     blank = plate()
-    part = bend(blank, Axis((20, 0, T), ALONG_Y), angle, radius=R)
+    part = fold(blank, Axis((20, 0, T), ALONG_Y), angle, radius=R)
     assert part.is_valid()
     ba = allowance(angle)
     assert volume(part) == pytest.approx(bent_volume(8000, ba * 40), rel=1e-10)
@@ -91,7 +91,7 @@ def test_bend_is_exact(angle):
 
 
 def test_bend_position_and_developed_length():
-    part = bend(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = fold(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
     ba = allowance(90)
     bb = part.bbox()
     # the flange stands on the outer face of the bend: its outside at 20 - BA/2 + R + t
@@ -105,22 +105,22 @@ def test_bend_position_and_developed_length():
 
 def test_bend_directions_and_fixed_side():
     blank = plate()
-    up = bend(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R)
-    down = bend(blank, Axis((20, 0, T), ALONG_Y), -90, radius=R)
+    up = fold(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    down = fold(blank, Axis((20, 0, T), ALONG_Y), -90, radius=R)
     assert up.bbox().min.z == pytest.approx(0, abs=1e-9) and up.bbox().max.z > 30
     assert down.bbox().max.z == pytest.approx(T, abs=1e-9) and down.bbox().min.z < -27
     # a line on the bottom face folds the other way for the same angle
-    under = bend(blank, Axis((20, 0, 0), ALONG_Y), 90, radius=R)
+    under = fold(blank, Axis((20, 0, 0), ALONG_Y), 90, radius=R)
     assert under.bbox().min.z < -27
     # the side with the point stays
-    other = bend(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, fixed=(40, 0, 0))
+    other = fold(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, fixed=(40, 0, 0))
     assert other.bbox().max.x == pytest.approx(50, abs=1e-9) and other.bbox().min.x > 15
     assert volume(other) == pytest.approx(volume(up), rel=1e-10)
 
 
 @pytest.mark.parametrize("k_bend, k_unfold", [(0.3, 0.3), (0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (0.3, 0.5)])
 def test_k_factor(k_bend, k_unfold):
-    part = bend(plate(), Axis((0, 0, T), ALONG_Y), 90, radius=R, k_factor=k_bend)
+    part = fold(plate(), Axis((0, 0, T), ALONG_Y), 90, radius=R, k_factor=k_bend)
     assert volume(part) == pytest.approx(bent_volume(8000, allowance(90, k=k_bend) * 40, k=k_bend), rel=1e-10)
     pattern = flat_pattern(part, k_factor=k_unfold)
     # the strip the bend took grows or shrinks with the K-factor it is unfolded with
@@ -130,22 +130,22 @@ def test_k_factor(k_bend, k_unfold):
 
 def test_radius_range():
     blank = plate()
-    big = bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=20)
+    big = fold(blank, Axis((0, 0, T), ALONG_Y), 90, radius=20)
     assert len(cylinders(big, 20)) == 1 and len(cylinders(big, 22)) == 1
     assert unfold(big).volume == pytest.approx(8000, rel=1e-12)
     for r in (0.3, 0.11):  # far below the thickness
-        tight = bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=r)
+        tight = fold(blank, Axis((0, 0, T), ALONG_Y), 90, radius=r)
         assert len(cylinders(tight, r)) == 1
         assert unfold(tight).volume == pytest.approx(8000, rel=1e-12)
     with pytest.raises(ModelingError, match="too small"):
-        bend(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.1)
+        fold(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.1)
 
 
 def test_oblique_bend_line_is_exact():
     """A bend line at 45 degrees: the bend faces are still exact cylinders (only the side faces
     cut obliquely through the bend zone become NURBS)."""
     blank = plate()
-    part = bend(blank, Axis((0, 0, T), (1, 1, 0)), 90, radius=R)
+    part = fold(blank, Axis((0, 0, T), (1, 1, 0)), 90, radius=R)
     assert len(cylinders(part, R)) == 1 and len(cylinders(part, R + T)) == 1
     strip = allowance(90) * 40 * math.sqrt(2)
     assert part.volume == pytest.approx(bent_volume(8000, strip), rel=1e-6)
@@ -155,9 +155,9 @@ def test_oblique_bend_line_is_exact():
 def test_partial_bend_needs_relief_cuts():
     blank = plate()
     with pytest.raises(ModelingError, match="not cut free"):
-        bend(blank, Line((25, -10, T), (25, 10, T)), 90, radius=R, partial=True)
+        fold(blank, Line((25, -10, T), (25, 10, T)), 90, radius=R, partial=True)
     slotted = blank - Box(31, 1, 10).translate(35, 10.5, 0) - Box(31, 1, 10).translate(35, -10.5, 0)
-    tab = bend(slotted, Line((25, -10, T), (25, 10, T)), 90, radius=R, partial=True)
+    tab = fold(slotted, Line((25, -10, T), (25, 10, T)), 90, radius=R, partial=True)
     assert volume(tab) == pytest.approx(bent_volume(volume(slotted), allowance(90) * 20), rel=1e-10)
     (only,) = tab.bends()
     assert only.length == pytest.approx(20, abs=1e-9) and only.angle == pytest.approx(90, abs=1e-9)
@@ -166,10 +166,10 @@ def test_partial_bend_needs_relief_cuts():
 
 
 def test_bending_a_flange_again():
-    part = bend(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = fold(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
     # the inside face of the flange is at x = 20 - BA/2 + R; bend it 15 above the plate
     x = 20 - allowance(90) / 2 + R
-    hook = bend(part, Axis((x, 0, 15), ALONG_Y), 90, radius=R, fixed=(0, 0, 0))
+    hook = fold(part, Axis((x, 0, 15), ALONG_Y), 90, radius=R, fixed=(0, 0, 0))
     assert [b.radius for b in hook.bends()] == pytest.approx([R, R], abs=1e-9)
     pattern = flat_pattern(hook)
     assert pattern.part.volume == pytest.approx(8000, rel=1e-12)
@@ -181,7 +181,7 @@ def test_bending_a_flange_again():
 
 def test_hole_in_a_flange_and_across_a_bend():
     holed = plate() - Cylinder(5, 10).translate(35, 0, 0)
-    part = bend(holed, Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = fold(holed, Axis((20, 0, T), ALONG_Y), 90, radius=R)
     flat = unfold(part)
     assert flat.bbox().max.to_tuple() == pytest.approx((50, 20, T), abs=1e-9)
     assert len([f for f in flat.faces() if f.geom_type == "cylinder"]) == 1
@@ -192,7 +192,7 @@ def test_hole_in_a_flange_and_across_a_bend():
     assert hole.radius == pytest.approx(5, abs=1e-9) and hole.arc_center.to_tuple() == pytest.approx((85, 20, 0))
     # a hole across the bend zone: its walls in the zone become NURBS (within 1e-4)
     across = plate() - Cylinder(5, 10).translate(20, 0, 0)
-    part = bend(across, Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = fold(across, Axis((20, 0, T), ALONG_Y), 90, radius=R)
     assert part.is_valid() and any(f.geom_type == "bspline" for f in part.faces())
     flat = unfold(part)
     assert flat.mesh(0.001).volume == pytest.approx(8000 - math.pi * 25 * T, rel=1e-5)
@@ -201,23 +201,23 @@ def test_hole_in_a_flange_and_across_a_bend():
 def test_bend_errors():
     blank = plate()
     with pytest.raises(ModelingError, match="does not lie on a face"):
-        bend(blank, Axis((20, 0, 5), ALONG_Y), 90, radius=R)
+        fold(blank, Axis((20, 0, 5), ALONG_Y), 90, radius=R)
     with pytest.raises(ModelingError, match="does not cross the sheet"):
-        bend(blank, Axis((60, 0, T), ALONG_Y), 90, radius=R)
+        fold(blank, Axis((60, 0, T), ALONG_Y), 90, radius=R)
     with pytest.raises(ModelingError, match="does not cut the sheet in two"):
-        bend(blank, Axis((49, 0, T), ALONG_Y), 90, radius=R)
+        fold(blank, Axis((49, 0, T), ALONG_Y), 90, radius=R)
     with pytest.raises(ValueError, match="angle"):
-        bend(blank, Axis((20, 0, T), ALONG_Y), 0, radius=R)
+        fold(blank, Axis((20, 0, T), ALONG_Y), 0, radius=R)
     with pytest.raises(ValueError, match="angle"):
-        bend(blank, Axis((20, 0, T), ALONG_Y), 200, radius=R)
+        fold(blank, Axis((20, 0, T), ALONG_Y), 200, radius=R)
     with pytest.raises(ValueError, match="K-factor"):
-        bend(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, k_factor=-0.1)
+        fold(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, k_factor=-0.1)
     with pytest.raises(ValueError, match="straight"):
-        bend(blank, CenterArc((0, 0, T), 10, 0, 90), 90, radius=R)
+        fold(blank, CenterArc((0, 0, T), 10, 0, 90), 90, radius=R)
     with pytest.raises(ValueError, match="partial"):
-        bend(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, partial=True)
+        fold(blank, Axis((20, 0, T), ALONG_Y), 90, radius=R, partial=True)
     with pytest.raises(TypeError, match="Part"):
-        bend(Rectangle(10, 10), Axis((0, 0, 0), ALONG_Y), 90, radius=R)
+        fold(Rectangle(10, 10), Axis((0, 0, 0), ALONG_Y), 90, radius=R)
 
 
 # -- flanges ----------------------------------------------------------------------
@@ -280,8 +280,8 @@ def test_flange_errors():
 # -- unfolding and flat patterns -------------------------------------------------------
 def test_u_and_z_channels_unfold():
     blank = plate()
-    u = bend(bend(blank, Axis((-30, 0, T), ALONG_Y), 90, radius=R), Axis((30, 0, T), ALONG_Y), 90, radius=R)
-    z = bend(bend(blank, Axis((-30, 0, T), ALONG_Y), 90, radius=R), Axis((30, 0, T), ALONG_Y), -90, radius=R)
+    u = fold(fold(blank, Axis((-30, 0, T), ALONG_Y), 90, radius=R), Axis((30, 0, T), ALONG_Y), 90, radius=R)
+    z = fold(fold(blank, Axis((-30, 0, T), ALONG_Y), 90, radius=R), Axis((30, 0, T), ALONG_Y), -90, radius=R)
     for part, directions in ((u, ["up", "up"]), (z, ["down", "up"])):
         pattern = flat_pattern(part)
         assert pattern.part.volume == pytest.approx(8000, rel=1e-12)
@@ -303,7 +303,7 @@ def test_box_from_a_relieved_cross_blank():
     box = blank
     for line in (Line((-27, 20, T), (27, 20, T)), Line((-27, -20, T), (27, -20, T)),
                  Line((30, -17, T), (30, 17, T)), Line((-30, -17, T), (-30, 17, T))):
-        box = bend(box, line, 90, radius=R, fixed=(0, 0, 0), partial=True)
+        box = fold(box, line, 90, radius=R, fixed=(0, 0, 0), partial=True)
     assert box.is_valid() and len(box.bends()) == 4
     pattern = flat_pattern(box)
     assert pattern.part.volume == pytest.approx(blank.volume, rel=1e-12)
@@ -315,7 +315,7 @@ def test_box_from_a_relieved_cross_blank():
 
 
 def test_unfold_an_extruded_l_profile():
-    """A sheet metal part that was not made by bend(): an L profile with an inside radius."""
+    """A sheet metal part that was not made by fold(): an L profile with an inside radius."""
     t, r = T, R
     profile = make_face([Line((0, r + t), (0, 25)), Line((0, 25), (t, 25)), Line((t, 25), (t, r + t)),
                          CenterArc((r + t, r + t), r, 180, 90), Line((r + t, t), (30, t)), Line((30, t), (30, 0)),
@@ -338,7 +338,7 @@ def test_flat_pattern_of_a_flat_part_and_not_sheet_metal():
 
 
 def test_unfold_keeps_the_fixed_face():
-    part = bend(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = fold(plate(), Axis((20, 0, T), ALONG_Y), 90, radius=R)
     flange_face = part.faces().filter(lambda f: f.geom_type == "plane" and f.normal_at().x > 0.99).largest()
     flat = unfold(part, fixed=flange_face)
     # the flange stays standing: the flat now lies in its plane
@@ -350,7 +350,7 @@ def test_unfold_keeps_the_fixed_face():
 
 def test_part_methods():
     blank = plate()
-    part = blank.bend(Axis((20, 0, T), ALONG_Y), 90, radius=R)
+    part = blank.fold(Axis((20, 0, T), ALONG_Y), 90, radius=R)
     assert part.bends()[0].allowance == pytest.approx(allowance(90), rel=1e-15)
     assert part.unfold().volume == pytest.approx(8000, rel=1e-12)
     assert part.flat_pattern().size.to_tuple() == pytest.approx((100, 40, T), abs=1e-9)
@@ -367,14 +367,14 @@ def test_bend_and_unfold_through_the_mcp_session():
     s = Session()
     try:
         ok = s.run("blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
-                   "bracket = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)\n"
+                   "bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)\n"
                    "pattern = flat_pattern(bracket)\n"
                    "print(len(bracket.bends()), round(pattern.part.volume, 9), [b.direction for b in pattern.bends])")
         assert ok["ok"], ok
         assert ok["output"].strip() == "1 8000.0 ['up']"
         flat = s.run("unfold(bracket).bbox().size.x")
         assert flat["ok"] and float(flat["value"]) == pytest.approx(100, abs=1e-9)
-        bad = s.run("bend(blank, Axis((49, 0, 2), (0, 1, 0)), 90, radius=2)")
+        bad = s.run("fold(blank, Axis((49, 0, 2), (0, 1, 0)), 90, radius=2)")
         assert not bad["ok"] and "ModelingError" in bad["error"]
     finally:
         s.close()

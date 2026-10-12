@@ -1,14 +1,14 @@
 # Sheet metal: what the functions share
 
 Sheet metal parts are solids of one thickness: flat regions joined by bends. smlibpy bends and
-unfolds them exactly with the kernel's space bend: `bend`, `flange`, `unfold`, `flat_pattern`,
+unfolds them exactly with the kernel's space bend: `fold`, `flange`, `unfold`, `flat_pattern`,
 `Part.bends`, and the formulas `bend_allowance`, `bend_deduction`, `developed_length`.
 
 ## Building a part
 1. Base flange: a plate lying on XY, `Box(L, W, t, align=(Align.CENTER, Align.CENTER, Align.MIN))`
    (z = 0..t), or `sketch.extrude(t)` for any outline. Cut holes now if they stay out of the
    bend zones (holes across a bend zone are better cut in the flat; see Limits).
-2. Edge flanges with `flange` on outer edges, bends with `bend` along lines on a sheet face.
+2. Edge flanges with `flange` on outer edges, bends with `fold` along lines on a sheet face.
 3. Check: `is_valid()`, `bbox()`, `part.bends()`; then `flat_pattern(part)` for the blank.
 
 ## Terms
@@ -23,7 +23,7 @@ unfolds them exactly with the kernel's space bend: `bend`, `flange`, `unfold`, `
   virtual sharp, where the outer faces of the two legs meet. Bend deduction = 2 setbacks - BA.
 
 ## Directions
-- `bend(part, line, angle)`: the line lies on a sheet face. A positive angle folds towards the
+- `fold(part, line, angle)`: the line lies on a sheet face. A positive angle folds towards the
   side that face faces (it ends up inside the bend), a negative one the other way. A line on
   the bottom face with a positive angle folds down.
 - The side that stays: `fixed=` a point on it; by default the side that reaches farther from the line.
@@ -42,7 +42,7 @@ unfolds them exactly with the kernel's space bend: `bend`, `flange`, `unfold`, `
   bounding box to 1e-9.
 
 ## Limits
-- `|angle|` above 0 and up to 180 for `bend` (180 makes a hem), below 180 for `flange`.
+- `|angle|` above 0 and up to 180 for `fold` (180 makes a hem), below 180 for `flange`.
 - `radius` at least 0.11: the kernel's bend region reaches 0.1 past the sheet. Radii far below
   the thickness work (0.3 on t 2, 0.11 on t 2).
 - The bend zone (BA wide, centered on the line) must cross flat sheet only: keep the line at
@@ -68,7 +68,7 @@ unfolds them exactly with the kernel's space bend: `bend`, `flange`, `unfold`, `
 t, r = 2, 2                                                     # sheet thickness, inside bend radius
 plate = Box(100, 60, t, align=(Align.CENTER, Align.CENTER, Align.MIN))   # base flange: a plate on XY
 part = plate.flange(plate.edges().filter_by(Y).filter(lambda e: e.center().z > t / 2).last, 25, radius=r)
-part = part.bend(Axis((-20, 0, t), (0, 1, 0)), 90, radius=r)          # fold the -X end up as well
+part = part.fold(Axis((-20, 0, t), (0, 1, 0)), 90, radius=r)          # fold the -X end up as well
 print(part.is_valid(), part.bbox().size, len(part.bends()))
 ba = bend_allowance(90, radius=r, thickness=t)                     # 4.5239 with the default K 0.44
 pattern = part.flat_pattern()
@@ -77,5 +77,5 @@ print(pattern.size, [b.direction for b in pattern.bends], round(ba, 4))
 Prints `True Vector(71.7381, 60, 35.7381) 2` and `Vector(125.524, 60, 2) ['up', 'up'] 4.5239`.
 
 ## Related
-`sheetmetal/bend`, `sheetmetal/flange`, `sheetmetal/unfold`, `sheetmetal/flat_pattern`,
+`sheetmetal/fold`, `sheetmetal/flange`, `sheetmetal/unfold`, `sheetmetal/flat_pattern`,
 `sheetmetal/bends`, `sheetmetal/bend_allowance`, `recipes/sheet-metal`.

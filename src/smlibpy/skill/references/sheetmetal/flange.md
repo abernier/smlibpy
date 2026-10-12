@@ -50,4 +50,4 @@ print(tray.bbox().size, tray.is_valid())                 # 100 + 2 * (r + t) by 
 Prints `Vector(108, 68, 20) True`.
 
 ## Related
-`bend`, `flat_pattern`, `sheetmetal/generic`, `recipes/sheet-metal`.
+`fold`, `flat_pattern`, `sheetmetal/generic`, `recipes/sheet-metal`.

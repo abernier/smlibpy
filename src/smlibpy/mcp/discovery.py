@@ -85,10 +85,10 @@ SYNONYMS = {
 
 # Sheet metal.
 SYNONYMS.update({
-    "sheet": ["sheetmetal", "bend", "flange", "flat_pattern", "unfold"], "metal": ["sheetmetal", "bend", "flange"],
-    "bend": ["bend", "flange", "bends"], "bending": ["bend"], "bent": ["bend", "bends"], "fold": ["bend", "flange"],
-    "folded": ["bend", "unfold"], "flange": ["flange"], "hem": ["bend"], "brake": ["bend"], "tab": ["bend"],
-    "relief": ["bend"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"],
+    "sheet": ["sheetmetal", "fold", "flange", "flat_pattern", "unfold"], "metal": ["sheetmetal", "fold", "flange"],
+    "bend": ["fold", "flange", "bends"], "bending": ["fold"], "bent": ["fold", "bends"], "fold": ["fold", "flange"],
+    "folded": ["fold", "unfold"], "flange": ["flange"], "hem": ["fold"], "brake": ["fold"], "tab": ["fold"],
+    "relief": ["fold"], "unfold": ["unfold", "flat_pattern"], "unbend": ["unfold"],
     "flatten": ["unfold", "flat_pattern"],
     "flat": ["flat_pattern", "unfold"], "development": ["flat_pattern", "developed_length"],
     "developed": ["developed_length"], "blank": ["flat_pattern", "developed_length"], "laser": ["flat_pattern"],

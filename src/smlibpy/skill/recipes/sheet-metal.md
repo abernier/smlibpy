@@ -16,7 +16,7 @@ blank = Box(length, 30, t, align=Align.MIN)                    # x = 0..length, 
 blank -= [Cylinder(3, 10).translate(x, 15, 0) for x in (15, 45)]             # holes in the 60 leg
 blank -= [Cylinder(3, 10).translate(length - x, 15, 0) for x in (12, 28)]    # holes in the 40 leg
 line_x = 60 - (r + t) + bend_allowance(90, radius=r, thickness=t) / 2        # middle of the bend zone
-bracket = bend(blank, Axis((line_x, 0, t), (0, 1, 0)), 90, radius=r, fixed=(0, 0, 0))
+bracket = fold(blank, Axis((line_x, 0, t), (0, 1, 0)), 90, radius=r, fixed=(0, 0, 0))
 print(bracket.is_valid(), round(bracket.bbox().size.x, 6), round(bracket.bbox().size.z, 6))   # True 60.0 40.0
 ```
 
@@ -56,7 +56,7 @@ for sx in (1, -1):
 box = cross.extrude(t)
 for line in (Line((-27, 20, t), (27, 20, t)), Line((-27, -20, t), (27, -20, t)),
              Line((30, -17, t), (30, 17, t)), Line((-30, -17, t), (-30, 17, t))):
-    box = bend(box, line, 90, radius=r, fixed=(0, 0, 0), partial=True)
+    box = fold(box, line, 90, radius=r, fixed=(0, 0, 0), partial=True)
 print(box.is_valid(), box.bbox().size)                         # True Vector(63.4761, 43.4761, 21.7381)
 ```
 
@@ -110,7 +110,7 @@ print(round(k, 4), round(developed_length(*legs, radius=r, thickness=t, k_factor
 - The bend line must lie on the top or bottom face of the sheet, and its bend zone (BA wide)
   must cross only flat sheet: not within BA/2 of a parallel edge, another bend or a rib.
 - A bend that stops inside the sheet needs relief cuts and `partial=True`.
-- Angles up to 180 (hems) for `bend`, below 180 for `flange`; radius from 0.11.
+- Angles up to 180 (hems) for `fold`, below 180 for `flange`; radius from 0.11.
 - `unfold` and `flat_pattern` need bends as coaxial cylinders one thickness apart; a sharp
   corner (no radius) raises `ModelingError: unfold: the unfolded part is ... deep across the fixed face`.
 - Holes across a bend zone become NURBS and make the part's volume unreliable; cut them in the flat.

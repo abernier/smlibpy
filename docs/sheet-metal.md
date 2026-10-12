@@ -13,7 +13,7 @@ Start with a plate lying on the XY plane and bend it along a line drawn on its t
 from smlibpy import *
 
 blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))   # 2 mm sheet, z = 0..2
-bracket = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)
+bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)
 print(bracket.bbox().size)                    # 71.7381 x 40 x 31.7381
 print(bracket.bends())                        # one bend: 90 degrees, radius 2, length 40
 ```
@@ -27,9 +27,9 @@ the top face folds upwards; a negative angle folds downwards. The side of the li
 reaches farther stays in place; `fixed=` takes a point on the side that should stay:
 
 ```python
-down = bend(blank, Axis((20, 0, 2), (0, 1, 0)), -90, radius=2)
-other_side = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(40, 0, 0))
-hem = bend(blank, Axis((40, 0, 2), (0, 1, 0)), 180, radius=1)            # folded flat onto itself
+down = fold(blank, Axis((20, 0, 2), (0, 1, 0)), -90, radius=2)
+other_side = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(40, 0, 0))
+hem = fold(blank, Axis((40, 0, 2), (0, 1, 0)), 180, radius=1)            # folded flat onto itself
 ```
 
 ## The K-factor
@@ -53,7 +53,7 @@ so a bracket with outside legs of 60 and 40 is bent from a blank 96.52 long:
 length = developed_length(60, 40, radius=2, thickness=2)       # 96.5239
 blank = Box(length, 30, 2, align=Align.MIN)
 line_x = 60 - (2 + 2) + bend_allowance(90, radius=2, thickness=2) / 2
-bracket = bend(blank, Axis((line_x, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(0, 0, 0))
+bracket = fold(blank, Axis((line_x, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(0, 0, 0))
 print(bracket.bbox().size)                                     # 60 x 30 x 40
 ```
 
@@ -93,7 +93,7 @@ part:
 ```python
 slots = Box(31, 1, 10).translate(35, 10.5, 0) + Box(31, 1, 10).translate(35, -10.5, 0)
 sheet = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN)) - slots
-tab = bend(sheet, Line((25, -10, 2), (25, 10, 2)), 90, radius=2, partial=True)
+tab = fold(sheet, Line((25, -10, 2), (25, 10, 2)), 90, radius=2, partial=True)
 ```
 
 ## Unfolding and flat patterns
@@ -112,7 +112,7 @@ flat = tray.unfold()                         # the same, in place
 ```
 
 Bending and unfolding with the same K-factor give back the same blank exactly. Parts that were
-not made with `bend` unfold too, as long as each bend is a pair of cylinder faces one
+not made with `fold` unfold too, as long as each bend is a pair of cylinder faces one
 thickness apart, for example a profile with an inside radius extruded to a channel.
 
 The outline and the bend lines lie in the XY plane, ready for a 2D export for the cutter;

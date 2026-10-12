@@ -2283,12 +2283,12 @@ class Part(_Body):
                                   "use Sketch.extrude(taper=...) for drafted extrusions")
 
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
-    def bend(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
+    def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
              partial: bool = False) -> Part:
-        """Fold this sheet along a line on its top or bottom face (see :func:`smlibpy.bend`)."""
-        from .sheetmetal import bend
+        """Fold this sheet along a line on its top or bottom face (see :func:`smlibpy.fold`)."""
+        from .sheetmetal import fold
 
-        return bend(self, line, angle, radius=radius, k_factor=k_factor, fixed=fixed, partial=partial)
+        return fold(self, line, angle, radius=radius, k_factor=k_factor, fixed=fixed, partial=partial)
 
     def flange(self, edge: Any, length: float, *, angle: float = 90.0, radius: float, k_factor: float = 0.44) -> Part:
         """Add a flange along a straight outer edge of this sheet (see :func:`smlibpy.flange`)."""

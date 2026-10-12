@@ -11,7 +11,7 @@ outside). Unfolding does the inverse, so a part folded and unfolded with the sam
 blank again.
 
     blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    bracket = bend(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)   # fold the +X end up
+    bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)   # fold the +X end up
     pattern = flat_pattern(bracket)                                    # the blank, laid on XY
     pattern.outline, pattern.bend_lines
 
@@ -32,7 +32,7 @@ __all__ = [
     "K_FACTOR",
     "Bend",
     "FlatPattern",
-    "bend",
+    "fold",
     "flange",
     "unfold",
     "flat_pattern",
@@ -321,7 +321,7 @@ def _zone_material(part: Part, p_in: Vector, across: Vector, along: Vector, n_in
     return float(common._props(accuracy=1e-9)["volume"]) / thickness
 
 
-def bend(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor: float = K_FACTOR,
+def fold(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor: float = K_FACTOR,
          fixed: VectorLike | Shape | None = None, partial: bool = False) -> Part:
     """Fold a sheet along a line.
 
@@ -517,7 +517,7 @@ def flange(part: Part, edge: Edge | ShapeList[Edge], length: float, *, angle: fl
                             "with nothing beyond it")
     line_start = e.start + out * (allowance / 2)
     line = _line(line_start, line_start + d * w)
-    return bend(extended, line, a, radius=radius, k_factor=k_factor, fixed=e.center(), partial=True)
+    return fold(extended, line, a, radius=radius, k_factor=k_factor, fixed=e.center(), partial=True)
 
 
 def _line(a: Vector, b: Vector) -> Edge:

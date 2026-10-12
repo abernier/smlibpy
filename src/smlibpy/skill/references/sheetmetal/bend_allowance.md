@@ -22,9 +22,9 @@ legs meet) to the next. `angle` is one angle for all bends or a list of `len(leg
 K 0.33 / 0.4 / 0.44 / 0.5 with R 2: BA 4.1783 / 4.3982 / 4.5239 / 4.7124.
 
 ## Gotchas
-- The bend line for `bend` is the middle of the zone: for an outside leg L from the free end,
+- The bend line for `fold` is the middle of the zone: for an outside leg L from the free end,
   put it at `L - (radius + thickness) + bend_allowance(...) / 2` (90 degrees).
-- These match what `bend` and `flat_pattern` do exactly: the extruded L with legs 30 and 25
+- These match what `fold` and `flat_pattern` do exactly: the extruded L with legs 30 and 25
   unfolds to `developed_length(30, 25, ...)`, a bent blank of that length measures 60 x 40.
 
 ## Example
@@ -38,10 +38,10 @@ u_length = developed_length(20, 50, 20, angle=[90, 90], radius=r, thickness=t)
 print(round(u_length, 6))
 blank = Box(blank_length, 30, t, align=Align.MIN)
 line_x = 60 - (r + t) + bend_allowance(90, radius=r, thickness=t) / 2     # middle of the bend zone
-bracket = bend(blank, Axis((line_x, 0, t), (0, 1, 0)), 90, radius=r, fixed=(0, 0, 0))
+bracket = fold(blank, Axis((line_x, 0, t), (0, 1, 0)), 90, radius=r, fixed=(0, 0, 0))
 print(round(bracket.bbox().size.x, 6), round(bracket.bbox().size.z, 6))  # 60 x 40 outside
 ```
 Prints `4.523893`, `3.476107`, `96.523893`, `83.047787` and `60.0 40.0`.
 
 ## Related
-`bend`, `flat_pattern`, `sheetmetal/generic`, `recipes/sheet-metal`.
+`fold`, `flat_pattern`, `sheetmetal/generic`, `recipes/sheet-metal`.

@@ -17,7 +17,7 @@ flange, the flat stands in that face's plane.
 
 ## What unfolds
 - Bends are pairs of coaxial cylinder faces one thickness apart, up to 180 degrees, made by
-  `bend` and `flange` or not: an L profile extruded with inside radius 2 and outside radius 4
+  `fold` and `flange` or not: an L profile extruded with inside radius 2 and outside radius 4
   unfolds to `developed_length(30, 25, radius=2, thickness=2)` = 51.523893 exactly.
 - Holes and rounded corners (cylinders without a partner) stay as they are.
 - Bends unfold from the fixed face outwards; any number, both directions.
@@ -34,8 +34,8 @@ flange, the flat stands in that face's plane.
 ## Example
 ```python
 blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
-u = bend(blank, Axis((-30, 0, 2), (0, 1, 0)), 90, radius=2)
-u = bend(u, Axis((30, 0, 2), (0, 1, 0)), 90, radius=2)
+u = fold(blank, Axis((-30, 0, 2), (0, 1, 0)), 90, radius=2)
+u = fold(u, Axis((30, 0, 2), (0, 1, 0)), 90, radius=2)
 flat = unfold(u)                                          # the base stays where it is
 print(flat.bbox(), round(flat.volume, 9))
 side = u.faces().filter(lambda f: f.geom_type == "plane").sort_by(X).first   # outside of the -X flange
@@ -45,4 +45,4 @@ Prints `BoundBox(min=(-50.0, -20.0, 0.0), max=(50.0, 20.0, 2.0)) 8000.0` and
 `BoundBox(min=(-31.7381, -20.0, -78.2619), max=(-29.7381, 20.0, 21.7381))`.
 
 ## Related
-`flat_pattern`, `bends`, `bend`, `developed_length`.
+`flat_pattern`, `bends`, `fold`, `developed_length`.

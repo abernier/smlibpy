@@ -41,8 +41,8 @@ from .dxf import export_dxf, import_dxf, import_dxf_wires
 from .render import diff_images, render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
-from .sheetmetal import (Bend, FlatPattern, bend, bend_allowance, bend_deduction, developed_length, flange,
-                         flat_pattern, unfold)
+from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
+                         flat_pattern, fold, unfold)
 
 __version__ = "0.1.4"
 
@@ -68,7 +68,7 @@ __all__ = [
     # surfaces
     "surface", "ruled", "stitch",
     # sheet metal
-    "bend", "flange", "unfold", "flat_pattern", "bend_allowance", "bend_deduction", "developed_length", "Bend",
+    "fold", "flange", "unfold", "flat_pattern", "bend_allowance", "bend_deduction", "developed_length", "Bend",
     "FlatPattern",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
