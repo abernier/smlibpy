@@ -12,6 +12,7 @@ Environment:
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import tempfile
@@ -33,6 +34,7 @@ from .live import LiveViewer
 from .session import DEFAULT_TIMEOUT, Session
 
 DOCS_BUDGET = 48_000
+_counter = itertools.count(1)
 
 
 def _mode() -> str:
@@ -65,8 +67,11 @@ the operations you will use (docs) before you write the script.
 2. Build with run_script. `from smlibpy import *`, math and numpy (as np) are already imported. \
 Variables persist between calls: build in steps, one feature or a few at a time.
 3. Verify after every step: print numbers (part.volume, part.bbox(), part.is_valid(), \
-len(part.faces())) and look with snapshot(view="sheet"). A picture alone can mislead (it is scaled \
-to fit); a number alone can too. Fix what is wrong before going on.
+len(part.faces())) and look with snapshot(view="sheet"): a technical drawing (front view, the view \
+from the left, top view; hidden edges dashed) with a shaded iso view. A picture alone can mislead \
+(it is scaled to fit); a number alone can too. Fix what is wrong before going on. snapshot also \
+cuts sections (section=), shows what a selection picks (highlight="part.edges().concave()"), marks \
+points (markers=) and compares before and after (frame= and compare=); see recipes/verification.
 4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png). \
 Tell the user where the file is.
 
@@ -211,28 +216,105 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def snapshot(
-        view: Annotated[str, Field(description="iso, front, back, left, right, top, bottom, sheet (front, left, top "
-                                   "and iso at one scale, arranged as in ISO projection method E), or a direction 'x,y,z' from the model "
-                                   "towards the camera.")] = "iso",
+        view: Annotated[str | dict[str, Any], Field(description=(
+            "The camera, orthographic, Z up: iso (default, a true isometric view from front, right and above), front, "
+            "back, left, right, top, bottom; {\"azimuth\": a, \"elevation\": e} in degrees (azimuth 0 = from the "
+            "front, 90 = from +X; elevation 90 = from above); {\"direction\": [x, y, z], \"up\": [x, y, z]}, the "
+            "direction the camera looks in; or 'x,y,z', the direction from the model towards the camera. "
+            "'sheet' is the same as drawing=true."))] = "iso",
         names: Annotated[list[str] | None, Field(description="Variables to render instead of what is shown.")] = None,
         width: Annotated[int, Field(ge=64, le=3000)] = 1000,
         height: Annotated[int, Field(ge=64, le=3000)] = 750,
         edges: Annotated[bool, Field(description="Draw the edges of faces (hidden ones stay hidden).")] = True,
         path: Annotated[str | None, Field(description="Where to keep the PNG (absolute path). Default: the "
                                           "snapshot folder.")] = None,
+        drawing: Annotated[bool | str | dict[str, Any] | None, Field(description=(
+            "A technical drawing in one picture: front, top and side view with visible edges solid and hidden edges "
+            "dashed, aligned at one scale, and a shaded iso view. true or 'first-angle' (ISO method E, Europe): the "
+            "top view below the front view, the view from the left to its right. 'third-angle' (method A, US): the "
+            "top view above it, the view from the right to its right. {\"projection\": ..., \"side\": "
+            "\"left\" or \"right\", \"iso\": false} picks the side view or leaves out the iso view. To check "
+            "against a reference drawing, use its method and compare view by view."))] = None,
+        sheet: Annotated[bool | list[str | dict[str, Any]] | None, Field(description=(
+            "Shaded views in one picture: true (top, iso, front, right), 4 views (2 x 2), or 2 views side by side "
+            "as panels A and B, e.g. a view and its mirror image for a handedness check: "
+            "[{\"azimuth\": 30, \"elevation\": 30}, {\"azimuth\": -30, \"elevation\": 30}]. Named ortho views "
+            "share one scale."))] = None,
+        lines: Annotated[bool, Field(description=(
+            "Line style: no fill, visible edges and silhouettes solid, hidden edges dashed. Hidden lines show bores, "
+            "pockets, hollow or solid. Also for every panel of a sheet."))] = False,
+        section: Annotated[dict[str, Any] | str | None, Field(description=(
+            "Cut at a plane and leave out the side its normal points to; the cut faces are filled and hatched, bores "
+            "and pockets stay open, so wall thicknesses read directly. {\"origin\": [x, y, z], \"normal\": "
+            "[x, y, z], \"cap\": true} or a Python expression of the session giving a Plane or a planar face, "
+            "e.g. \"Plane.XZ\" or \"part.faces().top()[0]\". Combines with drawing for section views."))] = None,
+        cap: Annotated[bool, Field(description=(
+            "With section: fill and hatch the cut faces (default); false leaves the cut open and shows the inside "
+            "walls darker."))] = True,
+        highlight: Annotated[str | list[str] | None, Field(description=(
+            "Python expressions of the session for shapes drawn in signal colors, faces and bodies orange, edges red: "
+            "\"part.edges().concave()\", [\"part.faces().top()\", \"rim\"]. Shows whether a selection picks "
+            "what you meant before you fillet or cut with it."))] = None,
+        highlight_at: Annotated[list[list[float]] | None, Field(description=(
+            "Points [[x, y, z], ...]: the face closest to each point is highlighted."))] = None,
+        markers: Annotated[list[dict[str, Any]] | None, Field(description=(
+            "Crosshairs with labels, drawn on top: [{\"position\": [x, y, z], \"label\": \"A\", \"color\": "
+            "\"green\"}]. For probe points and measured positions."))] = None,
+        annotate: Annotated[bool, Field(description=(
+            "Measurement overlay: the size of the bounding box, the axes as the view shows them, a scale bar."))] = False,
+        xray: Annotated[bool, Field(description="Translucent bodies: hidden geometry shines through.")] = False,
+        colors: Annotated[str, Field(description=(
+            "'native' (default): the shapes' own colors; 'distinct': one color per body, to tell bodies apart."))
+                          ] = "native",
+        zoom: Annotated[float, Field(gt=0, le=50, description="Factor on the scale that fits the model.")] = 1.0,
+        look_at: Annotated[list[float] | None, Field(description="[x, y, z] that lands in the middle.")] = None,
+        frame: Annotated[dict[str, float] | None, Field(description=(
+            "The frame an earlier snapshot of the same view and size reported: keeps its scale and middle, so a "
+            "snapshot of the changed model compares pixel by pixel. Overrides zoom and look_at."))] = None,
+        compare: Annotated[str | None, Field(description=(
+            "Path of an earlier snapshot of the same view and size (take this one with its frame): reports the "
+            "pixels that changed and adds a picture with them in red."))] = None,
+        supersample: Annotated[int, Field(ge=1, le=4, description="Antialiasing factor (default 2).")] = 2,
     ) -> list[Any]:
-        """Render a picture of the model (Z up, orthographic, scaled to fit) to look at what you built."""
+        """Render a picture of the model (Z up, orthographic, scaled to fit) to check what you built: a view, a
+        technical drawing with hidden edges dashed, sheets of views, sections, highlights of selections, markers,
+        x-ray, and before/after comparisons."""
         v: Any = view
-        if "," in view:
+        if isinstance(view, str) and "," in view:
             v = tuple(float(c) for c in view.split(","))
-        target = path or os.path.join(_snapshot_dir(), f"{time.strftime('%H%M%S')}-{view.replace(',', '_')}.png")
+        if drawing not in (None, False) or (isinstance(view, str) and view == "sheet"):
+            kind = "drawing"
+        elif sheet not in (None, False):
+            kind = "sheet"
+        else:
+            kind = view.replace(",", "_") if isinstance(view, str) else "view"
+        target = path or os.path.join(_snapshot_dir(), f"{time.strftime('%H%M%S')}-{next(_counter)}-{kind}.png")
+        options = dict(drawing=drawing, sheet=sheet, lines=lines, section=section, cap=cap, highlight=highlight,
+                       highlight_at=highlight_at, markers=markers, annotate=annotate, xray=xray, colors=colors,
+                       zoom=zoom, look_at=look_at, frame=frame, compare=compare, supersample=supersample)
         res = await call(session.call, "snapshot", 300.0, view=v, size=(width, height), names=names, edges=edges,
-                         path=target)
+                         path=target, **{k: x for k, x in options.items() if x is not None})
         if not res.get("ok"):
             return [f"Snapshot failed: {res.get('error')}"]
-        return [Image(data=res["png"], format="png"),
-                f"Saved: {target}\nShown: {', '.join(res.get('shown', []))}. Pictures are scaled to fit: compare "
-                "sizes with numbers, not by eye. Send the file to the user when they should see it."]
+        lines_out = [f"Saved: {target}", f"Shown: {', '.join(res.get('shown', []))}."]
+        if res.get("frame"):
+            lines_out.append(f"frame: {json.dumps(res['frame'])} (pass it as frame, with the same view and size, to "
+                             "compare a later snapshot pixel by pixel)")
+        content: list[Any] = [Image(data=res["png"], format="png")]
+        diff = res.get("diff")
+        if diff:
+            if diff["changed"]:
+                x0, y0, x1, y1 = diff["bbox"]
+                lines_out.append(f"Compared with {compare}: {diff['changed']} pixels changed "
+                                 f"({100 * diff['fraction']:.3g} %), in x {x0}..{x1}, y {y0}..{y1}; red in "
+                                 f"{diff['path']}")
+                content.append(Image(data=diff["png"], format="png"))
+            else:
+                lines_out.append(f"Compared with {compare}: no pixel changed.")
+        lines_out.append("Pictures are scaled to fit: compare sizes with numbers, not by eye. Send the file to the "
+                         "user when they should see it.")
+        content.append("\n".join(lines_out))
+        return content
 
     @tool()
     async def scene() -> str:

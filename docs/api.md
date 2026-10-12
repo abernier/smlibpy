@@ -63,6 +63,9 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.viewer.show
 ::: smlibpy.render.render
+::: smlibpy.render.diff_images
+::: smlibpy.render.Picture
+::: smlibpy.render.ImageDiff
 ::: smlibpy.viewer.html_page
 
 ## Errors

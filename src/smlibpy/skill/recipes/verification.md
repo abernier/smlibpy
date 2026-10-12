@@ -23,11 +23,39 @@ print(part.is_valid(), round(part.volume, 3), part.bbox().size, len(part.faces()
 
 ## Look
 
-`snapshot(view="sheet")` shows front, left, top and iso at one scale, arranged as in ISO
-projection method E: the view from the left stands to the right of the front view, the top
-view below it. Use it for shape,
-topology and placement; use numbers for sizes, because pictures are scaled to fit. A feature
-on a hidden side shows in the sheet, not always in the iso view.
+Pictures check shape, topology and placement; numbers check sizes, because every picture is
+scaled to fit. `snapshot` (MCP) and `render` (Python) take the same options.
+
+- **The drawing, after every few steps:** `snapshot(view="sheet")`, the same as
+  `drawing=True`. A technical drawing in ISO projection method E: the front view, the view from
+  the left to its right, the top view below it, all in line style at one scale, and a shaded
+  iso view. Visible edges are solid, hidden edges dashed, round features have center lines.
+  The hidden lines show what a shaded view cannot: through or blind holes, bores, pockets,
+  hollow or solid. A feature on a hidden side shows here, not always in the iso view.
+- **A reference drawing to match:** read its projection method from the projection symbol or
+  the title block, render the same method, `drawing="first-angle"` (ISO E, usual in Europe) or
+  `drawing="third-angle"` (ISO A, usual in the US), and compare view by view, hidden lines
+  included. With the wrong method the side and top views swap places and the part looks
+  mirrored.
+- **Handedness:** before rendering, write down what the reference shows (for example "the slot
+  opens to the upper right in the iso view"). Then `snapshot(sheet=[view, mirrored view])`, for
+  example `[{"azimuth": 30, "elevation": 30}, {"azimuth": -30, "elevation": 30}]`, gives panels A
+  and B side by side; decide which panel matches the reference image, not your own notes.
+- **Wall thickness and inner shapes:** `section={"origin": [x, y, z], "normal": [nx, ny, nz]}`
+  or `section="Plane.XZ"` cuts the model and hatches the cut faces; bores and pockets stay
+  open. Measure the wall with `distance_to` afterwards; the cut shows where to measure.
+- **Before filleting, chamfering or cutting with a selection:** `snapshot(highlight="part.edges()
+  .concave()")` draws the selected edges red (faces orange). A selection that picks other edges
+  than you meant is the most common reason for a wrong result.
+- **Probe points:** `markers=[{"position": [x, y, z], "label": "A"}]` puts a crosshair where a
+  measured or computed point is, to see whether it lies where you think.
+- **Size at a glance:** `annotate=True` writes the bounding box size and draws a scale bar.
+- **Before and after a change:** take the first snapshot, keep the `frame` it reports, change
+  the model, then `snapshot(frame=..., compare="<path of the first PNG>")`: the answer counts the
+  changed pixels and shows them red. A change outside the expected area, or none at all, is a
+  finding. Use a view or `lines=True` that shows the change.
+- **Hidden geometry without choosing a plane:** `xray=True`.
+- **Bodies that should be separate:** `colors="distinct"` gives every body its own color.
 
 ## Before delivering
 

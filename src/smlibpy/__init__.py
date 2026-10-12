@@ -34,7 +34,7 @@ from .sketches import Circle, Ellipse, Polygon, Rectangle, RegularPolygon, Round
 from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
 from .step_import import import_step
-from .render import render
+from .render import diff_images, render
 from .viewer import show
 from .surfaces import ruled, stitch, surface
 
@@ -61,7 +61,7 @@ __all__ = [
     "surface", "ruled", "stitch",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
-    "show", "render",
+    "show", "render", "diff_images",
     # errors
     "ModelingError", "KernelError",
 ]

@@ -191,14 +191,38 @@ class _Worker:
         return {"ok": True, "scene": scene}
 
     def op_snapshot(self, view: Any = "iso", size: tuple[int, int] = (1000, 750), names: list[str] | None = None,
-                    edges: bool = True, path: str | None = None) -> dict[str, Any]:
-        from smlibpy.render import render
+                    edges: bool = True, path: str | None = None, highlight: Any = None, section: Any = None,
+                    compare: str | None = None, **options: Any) -> dict[str, Any]:
+        """A picture of what is shown. ``highlight`` and a ``section`` given as text are Python
+        expressions evaluated in the session; ``compare`` is the path of an earlier snapshot."""
+        from smlibpy.render import diff_images, render
 
         items = self._items(names)
         if not items:
             return {"ok": False, "error": "nothing to show: no part or shell yet, and show(...) chose nothing"}
-        png = render(*[s for _, s in items], view=view, size=tuple(size), edges=edges, path=path)
-        return {"ok": True, "png": png, "shown": [n for n, _ in items]}
+        if isinstance(highlight, str):
+            highlight = [highlight]
+        if highlight:
+            highlight = [self._evaluate(e, "highlight") for e in highlight]
+        if isinstance(section, str):
+            section = self._evaluate(section, "section")
+        pic = render(*[s for _, s in items], view=view, size=tuple(size), edges=edges, path=path, highlight=highlight,
+                     section=section, **options)
+        answer: dict[str, Any] = {"ok": True, "png": bytes(pic), "shown": [n for n, _ in items], "frame": pic.frame}
+        if compare:
+            d = diff_images(os.path.abspath(os.path.expanduser(compare)), pic)
+            diff_path = os.path.splitext(path)[0] + "-diff.png" if path else None
+            if diff_path:
+                d.save(diff_path)
+            answer["diff"] = {"changed": d.changed, "fraction": d.fraction, "bbox": d.bbox, "path": diff_path,
+                              "png": bytes(d.picture)}
+        return answer
+
+    def _evaluate(self, expression: str, what: str) -> Any:
+        try:
+            return eval(expression, self.ns)
+        except Exception as e:
+            raise ValueError(f"{what} {expression!r}: {type(e).__name__}: {e}") from None
 
     # -- looking at things ----------------------------------------------------------
     def op_vars(self) -> dict[str, Any]:
