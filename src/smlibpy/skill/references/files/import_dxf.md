@@ -51,6 +51,8 @@ Everything else (TEXT, MTEXT, HATCH, DIMENSION, POINT, meshes) is left out with 
 - `$INSUNITS` 21 (US survey feet) is 304.8006096 mm, not 304.8.
 - Splines given only by fit points are interpolated by smlibpy; the drawing program's own curve
   through those points may differ slightly.
+- Many holes in one outline take time: the kernel's face building grows with the square of the
+  holes (a plate with 100 holes 0.04 s, 900 holes 2.5 s, 1911 holes 11 s).
 
 ## Errors
 - `ModelingError: import_dxf: 1 chain of curves does not close: 4 curves from (0.02, 10) to (0, 10) on layer 'CUT' (the nearest other loose end is 0.02 mm away). Pick the layers of the outline with layers=[...], join small gaps with tolerance=..., or read every curve with import_dxf_wires()`.

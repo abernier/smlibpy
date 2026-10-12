@@ -108,19 +108,9 @@ class Font:
         self.units_per_em = _u16(head, 18)
         self._long_loca = _i16(head, 50) == 1
         self.num_glyphs = _u16(self._tables["maxp"], 4)
-        hhea = self._tables["hhea"]
-        self.ascender = float(_i16(hhea, 4))
-        self.descender = float(_i16(hhea, 6))
-        self.line_gap = float(_i16(hhea, 8))
-        self._num_hmetrics = _u16(hhea, 34)
+        self._num_hmetrics = _u16(self._tables["hhea"], 34)
         os2 = self._tables.get("OS/2")
-        cap = 0
-        if os2 is not None and len(os2) >= 78:
-            self.ascender = float(_i16(os2, 68))
-            self.descender = float(_i16(os2, 70))
-            self.line_gap = float(_i16(os2, 72))
-            if _u16(os2, 0) >= 2 and len(os2) >= 90:
-                cap = _i16(os2, 88)
+        cap = _i16(os2, 88) if os2 is not None and len(os2) >= 90 and _u16(os2, 0) >= 2 else 0
         self.name = _font_name(self._tables.get("name")) or Path(self.path).stem
         if "glyf" in self._tables and "loca" in self._tables:
             self._outlines: Any = _TrueTypeOutlines(self._tables["glyf"], self._tables["loca"], self._long_loca,
@@ -135,6 +125,8 @@ class Font:
                             "install it or use a TrueType or CFF font")
         self._cmap = _read_cmap(self._tables["cmap"])
         self._kern: _Kerning | None = None
+        self._fallback: _FontToolsOutlines | None = None
+        #: Height of the capital letters in font units: ``OS/2`` sCapHeight, or the top of ``H``.
         self.cap_height = float(cap) if cap > 0 else self._measured_cap_height()
 
     def __repr__(self) -> str:
@@ -188,12 +180,14 @@ class Font:
 
     def _fallback_outlines(self) -> _FontToolsOutlines | None:
         """fontTools for glyphs this reader cannot draw (CFF accents built with seac)."""
-        if self._fonttools is None:
-            try:
-                self._fonttools = _fonttools_font(self.path, "these glyphs")
-            except FontError:
-                return None
-        return _FontToolsOutlines(self._fonttools)
+        if self._fallback is None:
+            if self._fonttools is None:
+                try:
+                    self._fonttools = _fonttools_font(self.path, "these glyphs")
+                except FontError:
+                    return None
+            self._fallback = _FontToolsOutlines(self._fonttools)
+        return self._fallback
 
     def _measured_cap_height(self) -> float:
         for ch in "HIEXT":

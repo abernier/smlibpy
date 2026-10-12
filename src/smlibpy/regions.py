@@ -92,6 +92,20 @@ def polygons_cross(a: np.ndarray, b: np.ndarray) -> bool:
     return bool(meet.any())
 
 
+def overlapping_boxes(lo: Sequence[np.ndarray], hi: Sequence[np.ndarray]) -> list[tuple[int, int]]:
+    """The pairs of boxes (by index) that overlap: sorted by their left side and swept, so a
+    drawing of many separate loops is not compared pair by pair."""
+    order = sorted(range(len(lo)), key=lambda i: float(lo[i][0]))
+    pairs = []
+    for a, i in enumerate(order):
+        for j in order[a + 1:]:
+            if lo[j][0] > hi[i][0]:
+                break
+            if np.all(lo[i] <= hi[j]) and np.all(lo[j] <= hi[i]):
+                pairs.append((i, j) if i < j else (j, i))
+    return pairs
+
+
 def _samples(polygon: np.ndarray, count: int = 5) -> np.ndarray:
     idx = np.linspace(0, len(polygon), count, endpoint=False).astype(int)
     return polygon[idx]
@@ -110,15 +124,8 @@ def plan(polygons: Sequence[np.ndarray], rule: str, areas: Sequence[float] | Non
         return Plan("faces")
     area = [float(a) for a in areas] if areas is not None else [signed_area(p) for p in polygons]
     boxes = [(p.min(axis=0), p.max(axis=0)) for p in polygons]
-    crossing = False
-    for i in range(n):
-        for j in range(i + 1, n):
-            if np.all(boxes[i][0] <= boxes[j][1]) and np.all(boxes[j][0] <= boxes[i][1]):
-                if polygons_cross(polygons[i], polygons[j]):
-                    crossing = True
-                    break
-        if crossing:
-            break
+    crossing = any(polygons_cross(polygons[i], polygons[j])
+                   for i, j in overlapping_boxes([b[0] for b in boxes], [b[1] for b in boxes]))
 
     def contains(outer: int, inner: int) -> bool:
         if not (np.all(boxes[outer][0] <= boxes[inner][0]) and np.all(boxes[inner][1] <= boxes[outer][1])):

@@ -96,10 +96,10 @@ the others are only collected into one sketch.
 - The reader is our own, without dependencies: sfnt and WOFF containers, `cmap` (formats 0, 4,
   6, 12, 13), `head`, `hhea`, `hmtx`, `maxp`, `OS/2`, `loca`, `glyf` (simple and composite
   glyphs with all transform forms and point matching), `CFF ` (Type 2 charstrings with
-  subroutines, flex, hint masks, CID-keyed fonts, `seac` accents), `kern` (format 0, Microsoft
-  and Apple headers) and `GPOS` pair adjustment (formats 1 and 2, extension lookups).
-- fontTools is used, when it is installed, only for what the reader does not do (WOFF2,
-  variable CFF2 outlines).
+  subroutines, flex, hint masks, CID-keyed fonts), `kern` (format 0, Microsoft and Apple
+  headers) and `GPOS` pair adjustment (formats 1 and 2, extension lookups).
+- fontTools is used, when it is installed, only for what the reader does not do: WOFF2,
+  variable CFF2 outlines, and CFF accents built with the old `seac` operator.
 - No shaping: one character is one glyph. No ligatures, right-to-left scripts or combining
   marks; a character the font lacks raises `ValueError` naming it.
 
@@ -192,6 +192,12 @@ export_dxf(Text("A1", 5).named("engrave"), "a1.dxf", unit="inch")
 - `smlibpy/dxf.py`: `import_dxf`, `import_dxf_wires`, `export_dxf`.
 - `smlibpy/fonts/`: `Lato-Regular.ttf` and `OFL.txt`.
 
+## Performance
+
+Text is fast (224 characters: 0.09 s); glyph outlines and nesting plans are cached per font. A
+DXF outline with many holes is bounded by the kernel's face building, which grows with the square
+of the loops in one face (900 holes 2.5 s, 1911 holes 11 s).
+
 ## Checks
 
 - Glyph areas and counts of pieces and holes against the font's own outlines (exact areas
@@ -199,5 +205,9 @@ export_dxf(Text("A1", 5).named("engrave"), "a1.dxf", unit="inch")
 - Advance widths and kerning against the `hmtx`, `kern` and `GPOS` values.
 - Emboss and engrave: the volume changes by area × depth.
 - DXF: hand-written files for every entity, units, bulges, OCS, blocks, nesting, open curves;
-  round trips with exact radii and areas; ezdxf as an independent reader where installed.
+  round trips with exact radii and areas; ezdxf as an independent reader where installed (its
+  auditor finds no errors and nothing to fix). FreeCAD's importer also read the files during
+  development.
+- The font reader against fontTools on 20 fonts (TrueType, CFF, CID-keyed CFF, WOFF, TTC):
+  character maps, advances, outline areas to 1e-15 and kerning agree.
 - MCP: a text embossing script through `Session`; `save(format="dxf")`.

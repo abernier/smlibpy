@@ -407,11 +407,9 @@ def _sketch(f: Font, placed: list[_Placed], scale: float) -> Sketch:
             i = group[i]
         return i
 
-    for i in range(len(items)):
-        for j in range(i + 1, len(items)):
-            a, b = items[i], items[j]
-            if np.all(a[3] <= b[4]) and np.all(b[3] <= a[4]) and _overlap(a[2], b[2]):
-                group[root(j)] = root(i)
+    for i, j in regions.overlapping_boxes([it[3] for it in items], [it[4] for it in items]):
+        if _overlap(items[i][2], items[j][2]):
+            group[root(j)] = root(i)
     hint = "the font's outlines for this glyph could not be built"
     pieces: dict[int, Sketch] = {}
     for i, (p, g, _, _, _) in enumerate(items):
