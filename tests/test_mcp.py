@@ -68,16 +68,28 @@ def test_discovery_finds_api_and_guides():
 
 
 def test_live_viewer_serves_the_scene(session):
+    import gzip
+    import json
+
     from smlibpy.mcp.live import LiveViewer
 
     session.clear()
-    session.run("c = Cylinder(5, 10)")
+    session.run("c = Cylinder(5, 10).colored('#d9925a')", label="a cylinder")
     viewer = LiveViewer(session)
     try:
         page = urllib.request.urlopen(viewer.url, timeout=10).read()
-        assert b"EventSource" in page
-        glb = urllib.request.urlopen(viewer.url + "scene.glb", timeout=30).read()
-        assert glb[:4] == b"glTF"
+        assert b"/assets/viewer.js" in page and b"__NONCE__" not in page
+        port = viewer.url.split(":")[2].split("/")[0]
+        three = urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/vendor/three.module.min.js", timeout=10).read()
+        assert len(three) > 100_000
+        raw = urllib.request.urlopen(viewer.url + "/scene", timeout=30).read()
+        payload = json.loads(gzip.decompress(raw))
+        scene = payload["scene"]
+        assert scene["kind"] == "PART" and scene["stats"]["bodies"] == 1 and scene["stats"]["faces"] == 3
+        assert scene["bodies"][0]["color"] == [217, 146, 90]
+        assert scene["features"] == [{"no": 1, "name": "a cylinder", "kind": "run_script"}]
+        step = urllib.request.urlopen(viewer.url + "/export/c.step", timeout=60).read()
+        assert step.startswith(b"ISO-10303-21;")
     finally:
         viewer.close()
 

@@ -123,6 +123,73 @@ class _Worker:
         glb, summary = _glb_bytes(shapes, None, 12.0, True)
         return {"ok": True, "glb": glb, "summary": summary}
 
+    def op_scene_json(self) -> dict[str, Any]:
+        """What the viewer page draws (the scene format of classcad-ai's viewer): per body its
+        faces as meshes (positions, normals, triangles, planar or not), its edges as
+        polylines, its color, and the bounds of everything."""
+        import numpy as np
+
+        from smlibpy import Edge, Face, Mesh, Wire
+        from smlibpy.colors import to_rgb
+        from smlibpy.exporters import _curve_points, _edge_polylines
+        from smlibpy.mesh import tessellate
+
+        def flat(a: Any) -> list[float]:
+            return [round(float(v), 4) for v in np.asarray(a, dtype=float).ravel()]
+
+        def mesh_face(m: Any, planar: bool) -> dict[str, Any]:
+            normals = None
+            if m.normals is not None and len(m.triangles):
+                n = np.zeros_like(m.vertices)
+                n[m.triangles.ravel()] = np.asarray(m.normals, dtype=float).reshape(-1, 3)
+                normals = flat(n)
+            return {"p": flat(m.vertices), "n": normals, "i": [int(v) for v in m.triangles.ravel()], "flat": planar}
+
+        bodies, placements = [], []
+        stats = {"bodies": 0, "faces": 0, "triangles": 0, "edges": 0}
+        lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
+        for name, shape in self._items():
+            color = getattr(shape, "color", None)
+            body: dict[str, Any] = {"id": len(bodies), "name": getattr(shape, "name", None) or name,
+                                    "color": [round(c * 255) for c in to_rgb(color)] if color is not None else None,
+                                    "opacity": 1, "faces": [], "edges": []}
+            try:
+                if isinstance(shape, Mesh):
+                    body["faces"].append(mesh_face(shape, False))
+                elif isinstance(shape, (Edge, Wire)):
+                    body["edges"] = [flat(pl) for pl in _curve_points(shape)]
+                else:
+                    faces = [shape] if isinstance(shape, Face) else list(shape.faces())
+                    size = max(shape.bbox().diagonal, 1e-6)
+                    for f in faces:
+                        m = tessellate(f, size * 1e-3, 12.0)
+                        if len(m.triangles):
+                            body["faces"].append(mesh_face(m, f.geom_type == "plane"))
+                    lines = _edge_polylines(shape) if not isinstance(shape, Face) else _curve_points(shape)
+                    body["edges"] = [flat(pl) for pl in lines]
+            except Exception:
+                continue
+            for f in body["faces"]:
+                p = np.asarray(f["p"]).reshape(-1, 3)
+                if len(p):
+                    lo, hi = np.minimum(lo, p.min(axis=0)), np.maximum(hi, p.max(axis=0))
+                stats["triangles"] += len(f["i"]) // 3
+            for e in body["edges"]:
+                p = np.asarray(e).reshape(-1, 3)
+                if len(p):
+                    lo, hi = np.minimum(lo, p.min(axis=0)), np.maximum(hi, p.max(axis=0))
+            stats["faces"] += len(body["faces"])
+            stats["edges"] += len(body["edges"])
+            placements.append({"body": len(bodies), "m": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]})
+            bodies.append(body)
+        stats["bodies"] = len(bodies)
+        names = [b["name"] for b in bodies]
+        scene = {"kind": "PART" if bodies else "EMPTY",
+                 "name": names[0] if len(names) == 1 else (f"{len(names)} shapes" if names else ""),
+                 "bodies": bodies, "placements": placements, "features": [], "stats": stats,
+                 "bounds": {"min": [float(v) for v in lo], "max": [float(v) for v in hi]} if bodies and np.isfinite(lo).all() else None}
+        return {"ok": True, "scene": scene}
+
     def op_snapshot(self, view: Any = "iso", size: tuple[int, int] = (1000, 750), names: list[str] | None = None,
                     edges: bool = True, path: str | None = None) -> dict[str, Any]:
         from smlibpy.render import render
