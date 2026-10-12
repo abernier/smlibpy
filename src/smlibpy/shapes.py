@@ -2193,12 +2193,13 @@ class Part(_Body):
             b = k.create_planar_faces(list(curves))
         return Sketch._wrap(b, pl)
 
-    def remove_fillets(self, faces: Any = None, *, max_radius: float | None = None) -> Part:
+    def remove_fillets(self, faces: Any = None, *, max_radius: float | None = None, partial: bool = False) -> Part:
         """The part with fillets taken out and their edges sharp again: ``faces`` (fillet faces
-        of this part), or all fillets up to ``max_radius``. See :mod:`smlibpy.defeature`."""
+        of this part), or all fillets up to ``max_radius``. With ``partial`` the fillets the
+        kernel cannot take out stay. See :mod:`smlibpy.defeature`."""
         from .defeature import remove_fillets
 
-        return remove_fillets(self, faces, max_radius=max_radius)
+        return remove_fillets(self, faces, max_radius=max_radius, partial=partial)
 
     def remove_faces(self, faces: Any) -> Part:
         """The part with ``faces`` (a hole, a boss, a pocket) cut out and the gap closed by the

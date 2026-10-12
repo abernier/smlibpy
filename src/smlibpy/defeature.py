@@ -15,7 +15,10 @@ fillets or holes were taken out, down for concave fillets and bosses).
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Iterable
+import os
+import time
+import warnings
+from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
 
 from ._kernel import ModelingError, k
 
@@ -28,7 +31,50 @@ __all__ = ["fillet_faces", "remove_fillets", "remove_faces"]
 #: tangentially: the edge is a rail of a fillet.
 TANGENCY = 2.0
 
+#: Seconds the kernel may take. On Linux and macOS the kernel first does the work in a forked
+#: copy of the process: if it crashes there or takes longer than this, a ``ModelingError`` says
+#: so and this process is left alone (SMLib's patching and Boolean code can crash or loop on
+#: some parts). ``0`` runs the kernel directly, as on Windows.
+GUARD_SECONDS = 60.0
+
 _D = k.defeature
+R = TypeVar("R")
+
+
+def _guarded(what: str, work: Callable[[], R]) -> R:
+    """``work()``, after a forked copy of the process has run it to the end (see GUARD_SECONDS).
+    The kernel is deterministic, and the copy starts from the same memory, so it does what
+    this process will do."""
+    limit = float(GUARD_SECONDS)
+    if not limit > 0 or not hasattr(os, "fork"):
+        return work()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
+        pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child
+        code = 0
+        try:
+            work()
+        except BaseException:  # the parent raises it again when it does the work
+            code = 3
+        os._exit(code)
+    deadline = time.monotonic() + limit
+    pause = 0.001
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        if time.monotonic() > deadline:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            raise ModelingError(f"{what}: the kernel did not finish within {limit:g} s; take out fewer faces at a "
+                                f"time (smlibpy.defeature.GUARD_SECONDS sets the limit)")
+        time.sleep(pause)
+        pause = min(pause * 2, 0.05)
+    if os.WIFSIGNALED(status):
+        raise ModelingError(f"{what}: the kernel crashed on this part (signal {os.WTERMSIG(status)}; this process "
+                            f"was not affected); take out fewer faces at a time, or other faces first")
+    return work()
 
 
 # =============================================================================
@@ -201,52 +247,78 @@ def _fillet_bound(b: _Blends, faces: list[Face]) -> float:
     return total
 
 
-def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> Part:
-    """Take one set of fillet faces of ``part`` out and check the result."""
-    before = _volume(part)
-    bound = _fillet_bound(b, faces)
-    edge = [f for f in faces if b.is_edge_fillet(f)]
-    corners = [f for f in faces if not b.is_edge_fillet(f)]
-    failures: list[str] = []
-
-    def executive(body: Part, rest: list[Face]) -> Part | None:
-        res = _D.defeature(body._brep, [[f._f for f in g] for g in _groups(rest)], "extend")
-        if res["brep"] is None:
-            failures.append("the kernel could not close the gap the fillets leave")
-            return None
-        return part._like(res["brep"])
-
-    # 1. Fillets with sharp ends one by one, then whatever is left (corner patches, rings).
-    body: Part | None = part
-    rest = list(faces)
-    if edge:
-        res = _D.remove_fillet_faces(part._brep, [f._f for f in edge])
-        if res["brep"] is not None:
-            body = part._like(res["brep"])
-            rest = [f for f, done in zip(edge, res["removed"]) if not done] + corners
-            if rest:
-                rest = _match(body, rest)
-    if body is not None and rest:
-        body = executive(body, rest)
-    if body is not None and body is not part:
-        problem = _problem(before, body, expect, bound)
-        if problem is None:
-            return body
-        failures.append(f"the kernel returned {problem}")
-    # 2. All at once by the executive.
-    if edge and body is not part:
-        body = executive(part, faces)
-        if body is not None:
-            problem = _problem(before, body, expect, bound)
-            if problem is None:
-                return body
-            failures.append(f"the kernel returned {problem}")
-    reason = failures[-1] if failures else "the kernel could not take them out"
-    raise ModelingError(f"remove_fillets: {reason}; take out fewer fillets at a time, or the fillets around "
-                        f"them first (corner patches go with the fillets they join)")
+def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) -> Part | None:
+    """The executive's patched copy of ``body`` without ``groups``, or None if it failed."""
+    try:
+        res = _guarded(what, lambda: _D.defeature(body._brep, [[f._f for f in g] for g in groups], rebuild))
+    except ModelingError:  # a crash or a hang in the kernel
+        return None
+    return None if res["brep"] is None else body._like(res["brep"])
 
 
-def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = None) -> Part:
+def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> tuple[Part, list[Face]]:
+    """Take a set of fillet faces of ``part`` out, as far as the kernel can; every step is
+    checked. Returns the body and the faces (of the original part) that stayed."""
+    body = part
+    pending = list(faces)  # faces of `body`
+    origin = {f._identity(): f for f in faces}  # face of body -> face of part
+    tried_a: set[frozenset[Any]] = set()  # face sets tried with the fillet removal
+    tried_b: set[frozenset[Any]] = set()  # groups tried with the executive
+
+    def key(fs: list[Face]) -> frozenset[Any]:
+        return frozenset(origin[f._identity()]._identity() for f in fs if f._identity() in origin)
+
+    def radius(g: list[Face]) -> float:
+        return min((r for r in (b.radius(f) for f in g) if math.isfinite(r)), default=math.inf)
+
+    progress = True
+    while pending and progress:
+        progress = False
+        # 1. Fillets with sharp ends, one by one (the kernel's fillet removal).
+        edge = [f for f in pending if b.is_edge_fillet(f)]
+        if edge and key(edge) not in tried_a:
+            tried_a.add(key(edge))
+            try:
+                res = _guarded("remove_fillets", lambda: _D.remove_fillet_faces(body._brep, [f._f for f in edge]))
+            except ModelingError:  # a crash or a hang in the kernel
+                res = {"brep": None}
+            if res["brep"] is not None:
+                gone = [f for f, done in zip(edge, res["removed"]) if done]
+                candidate = body._like(res["brep"])
+                if _problem(_volume(body), candidate, expect, _fillet_bound(b, gone)) is None:
+                    rest = [f for f in pending if f not in gone]
+                    pending, origin, body = _carry(candidate, rest, origin)
+                    progress = True
+        # 2. Connected sets (with their corner patches, around bosses and holes): the
+        #    executive, smallest radius first.
+        for group in sorted(_groups(pending), key=radius):
+            if key(group) in tried_b:
+                continue
+            tried_b.add(key(group))
+            candidate = _executive("remove_fillets", body, [group], "extend")
+            if candidate is None or _problem(_volume(body), candidate, expect, _fillet_bound(b, group)) is not None:
+                continue
+            rest = [f for f in pending if f not in group]
+            pending, origin, body = _carry(candidate, rest, origin)
+            progress = True
+            break  # group again on the new body
+    return body, [origin[f._identity()] for f in pending if f._identity() in origin]
+
+
+def _carry(new: Part, faces: list[Face], origin: dict[Any, Face]) -> tuple[list[Face], dict[Any, Face], Part]:
+    """``faces`` (of an earlier version of ``new``) as faces of ``new``, with their faces of the
+    original part."""
+    moved: list[Face] = []
+    mapping: dict[Any, Face] = {}
+    for f in faces:
+        for g in _match(new, [f]):
+            if g not in moved:
+                moved.append(g)
+                mapping[g._identity()] = origin.get(f._identity(), f)
+    return moved, mapping, new
+
+
+def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = None, partial: bool = False) -> Part:
     """See :meth:`Part.remove_fillets`."""
     part._require_valid("remove_fillets")
     b = _Blends()
@@ -270,19 +342,36 @@ def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = 
         for g in f.neighbors():
             if g not in sel and b.corner_fillets(g) and all(c in sel for c in b.corner_fillets(g)):
                 sel.append(g)
-    convex = [g for g in _groups(sel) if all(b.convex(f) for f in g)]
-    concave = [g for g in _groups(sel) if not any(b.convex(f) for f in g)]
-    mixed = [g for g in _groups(sel) if g not in convex and g not in concave]
+    groups = _groups(sel)
+    # Concave fillets first, then convex ones, then sets that mix both; one kind can make room
+    # for the other, so the round repeats while it takes fillets out.
+    left = {
+        -1: [f for g in groups if not any(b.convex(f) for f in g) for f in g],
+        1: [f for g in groups if all(b.convex(f) for f in g) for f in g],
+    }
+    left[0] = [f for f in sel if f not in left[-1] and f not in left[1]]
     body = part
-    for groups, expect in ((convex, 1), (concave, -1), (mixed, 0)):
-        if not groups:
-            continue
-        faces_now = [f for g in groups for f in g]
-        if body is not part:
-            faces_now = _match(body, faces_now)
-            if not faces_now:
+    progress = True
+    while progress:
+        progress = False
+        for expect in (-1, 1, 0):
+            if not left[expect]:
                 continue
-        body = _remove_pass(body, faces_now, b, expect)
+            todo, origin, _ = _carry(body, left[expect], {}) if body is not part else (left[expect], {}, body)
+            if not todo:
+                continue
+            body, stays = _remove_pass(body, todo, b, expect)
+            stays = [origin.get(f._identity(), f) for f in stays]
+            if len(stays) < len(left[expect]):
+                progress = True
+            left[expect] = stays
+    stayed = left[-1] + left[1] + left[0]
+    if stayed and not partial:
+        where = ", ".join(f"({c.x:.4g}, {c.y:.4g}, {c.z:.4g})" for c in [f.center() for f in stayed][:4])
+        more = f" and {len(stayed) - 4} more" if len(stayed) > 4 else ""
+        raise ModelingError(f"remove_fillets: the kernel could not take out {len(stayed)} of the {len(sel)} fillet "
+                            f"faces (at {where}{more}); remove_fillets(..., partial=True) keeps them and takes out "
+                            f"the others, or take out the fillets around them first")
     return body
 
 
@@ -329,13 +418,17 @@ def remove_faces(part: Part, faces: Any) -> Part:
     sel = _complete(_faces_of(part, faces, "remove_faces"))
     if len(sel) == len(part.faces()):
         raise ModelingError("remove_faces: that is every face of the part; nothing would be left")
-    groups = _groups(sel)
-    kinds = {_feature_kind(g) for g in groups}
+    groups = [[f._f for f in g] for g in _groups(sel)]
+    kinds = {_feature_kind(g) for g in _groups(sel)}
     expect = kinds.pop() if len(kinds) == 1 else 0
     before = _volume(part)
     failures = []
     for rebuild in ("extend", "planar_cap"):
-        res = _D.defeature(part._brep, [[f._f for f in g] for g in groups], rebuild)
+        try:
+            res = _guarded("remove_faces", lambda: _D.defeature(part._brep, groups, rebuild))
+        except ModelingError as e:  # a crash or a hang in the kernel
+            failures.append(str(e).split(": ", 1)[1].split(";")[0])
+            continue
         if res["brep"] is None:
             failures.append("could not close the hole the faces leave" if res["added"] else
                             "did not accept the faces as features (each set of connected faces must be bounded "
@@ -346,6 +439,6 @@ def remove_faces(part: Part, faces: Any) -> Part:
         if problem is None:
             return body
         failures.append(f"returned {problem}")
-    raise ModelingError(f"remove_faces: the kernel {failures[0]}; select every face of the feature (the wall and "
-                        f"the floor of a pocket, the side and the top of a boss) and take out its fillets first "
-                        f"(remove_fillets)")
+    reason = failures[0] if failures[0].startswith("the kernel") else f"the kernel {failures[0]}"
+    raise ModelingError(f"remove_faces: {reason}; select every face of the feature (the wall and the floor of "
+                        f"a pocket, the side and the top of a boss) and take out its fillets first (remove_fillets)")

@@ -22,7 +22,8 @@ SYNONYMS = {
     "round": ["fillet"], "rounded": ["fillet", "RoundedRectangle"], "radius": ["fillet", "radius"],
     "bevel": ["chamfer"], "hollow": ["shell"], "wall": ["shell", "thicken"], "thickness": ["shell", "thicken"],
     "union": ["fuse"], "join": ["fuse"], "combine": ["fuse"], "add": ["fuse"], "subtract": ["cut"],
-    "difference": ["cut"], "remove": ["cut"], "boolean": ["fuse", "cut", "intersect"], "common": ["intersect"],
+    "difference": ["cut"], "remove": ["cut", "remove_fillets", "remove_faces"], "boolean": ["fuse", "cut", "intersect"],
+    "common": ["intersect"],
     "pad": ["extrude"], "pocket": ["extrude", "cut"], "prism": ["extrude"], "lathe": ["revolve"],
     "turn": ["revolve"], "pipe": ["sweep"], "path": ["sweep"], "blend": ["loft"], "transition": ["loft"],
     "pattern": ["Locations", "GridLocations", "PolarLocations"], "array": ["GridLocations", "PolarLocations"],
@@ -42,9 +43,16 @@ SYNONYMS = {
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
-    "cross": ["section"], "draft": ["draft"], "taper": ["draft", "extrude"], "offset": ["offset"],
+    "cross": ["section"], "draft": ["draft", "draft_analysis"], "taper": ["draft", "extrude"], "offset": ["offset"],
     "profile": ["Sketch", "Rectangle", "Circle"], "2d": ["Sketch"], "polygon": ["Polygon", "RegularPolygon"],
     "hexagon": ["RegularPolygon"], "slot": ["Slot"], "text": [], "gear": ["Polygon", "PolarLocations"],
+    "defeature": ["remove_fillets", "remove_faces"], "defeaturing": ["remove_fillets", "remove_faces"],
+    "simplify": ["remove_fillets", "remove_faces"], "suppress": ["remove_faces", "remove_fillets"],
+    "fillets": ["fillets", "remove_fillets"], "unfillet": ["remove_fillets"], "sharp": ["remove_fillets"],
+    "undercut": ["draft_analysis"], "undercuts": ["draft_analysis"], "mold": ["draft_analysis", "parting_line"],
+    "mould": ["draft_analysis", "parting_line"], "molding": ["draft_analysis", "parting_line"],
+    "casting": ["draft_analysis", "parting_line"], "cast": ["draft_analysis", "parting_line"],
+    "parting": ["parting_line"], "pull": ["draft_analysis", "parting_line"], "demold": ["draft_analysis"],
 }
 
 

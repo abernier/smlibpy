@@ -113,6 +113,39 @@ private:
     }
 };
 
+// A cheap check of the topology the fillet removal edited: every vertex and edge still belongs
+// to the Brep, every edge has its curve and both vertices, and every edge of the solid joins
+// two faces (or one face twice, at a seam). The kernel can leave a dangling vertex behind
+// where a corner did not go as planned, and stitching such a Brep crashes.
+bool sound_topology(const SmBrep* brep)
+{
+    SmTArray<SmVertex*> vertices;
+    brep->GetVertices(vertices);
+    for (ULONG i = 0; i < vertices.GetSize(); ++i)
+        if (vertices[i] == nullptr || vertices[i]->GetBrep() != brep)
+            return false;
+    SmTArray<SmEdge*> edges;
+    brep->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        SmEdge* e = edges[i];
+        if (e == nullptr || e->GetCurve() == nullptr)
+            return false;
+        SmVertex* v0 = e->GetStartVertex();
+        SmVertex* v1 = e->GetEndVertex();
+        if (v0 == nullptr || v1 == nullptr || v0->GetBrep() != brep || v1->GetBrep() != brep)
+            return false;
+        SmTArray<SmEdgeuse*> uses;
+        e->GetEdgeuses(uses);
+        if (uses.GetSize() != 4)  // two faces, each used from both sides
+            return false;
+        for (ULONG j = 0; j < uses.GetSize(); ++j)
+            if (uses[j] == nullptr || uses[j]->GetFace() == nullptr)
+                return false;
+    }
+    return true;
+}
+
 // A copy of `brep` and the faces of the copy that correspond to `faces`.
 SmBrep* copy_mapping(const SmBrep* brep, const std::vector<SmFace*>& faces, std::vector<SmFace*>& mapped)
 {
@@ -338,14 +371,19 @@ py::dict remove_fillet_faces(const SmBrep* brep, const std::vector<SmFace*>& fac
         {
             SmFace* face = pending[i];
             double tol = tolerance > 0 ? tolerance : static_cast<double>(face->GetTolerance());
-            SmTemporaryChangeValue<SmBoolean> editing(work->m_bEditingEnabled, TRUE);
-            FilletRemoval removal(face, tol);
-            if (removal.Prepare() != SM_SUCCESS)
-                continue;
-            // The edit itself can fail half way: keep a copy to go back to.
+            SmBrep* backup = nullptr;
             std::vector<SmFace*> backup_faces;
-            SmBrep* backup = copy_mapping(work, pending, backup_faces);
-            if (removal.Apply() == SM_SUCCESS)
+            bool applied = false;
+            {
+                SmTemporaryChangeValue<SmBoolean> editing(work->m_bEditingEnabled, TRUE);
+                FilletRemoval removal(face, tol);
+                if (removal.Prepare() != SM_SUCCESS)
+                    continue;
+                // The edit itself can fail half way: keep a copy to go back to.
+                backup = copy_mapping(work, pending, backup_faces);
+                applied = removal.Apply() == SM_SUCCESS && sound_topology(work);
+            }
+            if (applied)
             {
                 delete backup;
                 removed[index[i]] = true;
