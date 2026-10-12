@@ -8,3 +8,6 @@ void bind_smlibpy_ext(py::module_ m);
 
 // STEP import: Brep construction from neutral data (step_build.cpp).
 void bind_step_build(py::module_& m);
+
+// Sheet metal: exact bending and unbending (sheetmetal.cpp), registered as `_core.sheetmetal`.
+void bind_sheetmetal(py::module_ m);
