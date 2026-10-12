@@ -58,9 +58,12 @@ def test_lines_draw_silhouettes_of_curved_faces():
     right, up = (1, 0, 0), (0, 0, 1)
     x_left, y_mid = _pixel(pic, right, up, (-10, 0, 0))
     x_right, _ = _pixel(pic, right, up, (10, 0, 0))
-    row = pic.pixels[y_mid].min(axis=1)
-    assert row[x_left - 2:x_left + 3].min() < 60 and row[x_right - 2:x_right + 3].min() < 60
-    assert (row[x_left + 5:x_right - 5] == 255).all()  # no seam line in between
+    x_mid = (x_left + x_right) // 2
+    rows = pic.pixels[y_mid - 10:y_mid + 10].min(axis=(0, 2))
+    assert rows[x_left - 2:x_left + 3].min() < 60 and rows[x_right - 2:x_right + 3].min() < 60
+    # in between only the axis, thin and dash-dotted; no seam, no mesh edges
+    assert (rows[x_left + 5:x_mid - 3] == 255).all() and (rows[x_mid + 4:x_right - 5] == 255).all()
+    assert 60 < rows[x_mid - 2:x_mid + 3].min() < 200
 
 
 def _quadrants(pic):
@@ -106,6 +109,47 @@ def test_drawing_ortho_views_share_one_scale_and_line_up():
     width = front[:, 1].max() - front[:, 1].min()
     depth = top[:, 0].max() - top[:, 0].min()
     assert depth / width == pytest.approx(30 / 80, rel=0.05)
+
+
+def _drawn(px):
+    return px.min(axis=-1) < 200
+
+
+def test_center_lines_in_line_style(bored):
+    # seen along the axis: a cross over the bore, a little longer than its radius, dash-dotted
+    top = render(bored, view="top", lines=True, size=(400, 300))
+    cx, cy = _pixel(top, (1, 0, 0), (0, 1, 0), (0, 0, 0))
+    r = int(round(8 * top.frame["scale"]))
+    row = _drawn(top.pixels[cy])
+    col = _drawn(top.pixels[:, cx])
+    assert row[cx - 2:cx + 3].all() and col[cy - 2:cy + 3].all()  # a dash crosses the center
+    assert row[cx + r + 2:cx + r + 9].sum() >= 2 and row[cx - r - 8:cx - r - 1].sum() >= 2  # past the circle
+    assert not row[cx + r + 11:cx + r + 30].any()  # but not far
+    assert _runs(top.pixels[cy, cx - r + 2:cx + r - 1]) >= 3
+    # seen from the side: the axis, past the top and bottom outline
+    front = render(bored, view="front", lines=True, size=(400, 300))
+    cx, y_top = _pixel(front, (1, 0, 0), (0, 0, 1), (0, 0, 15))
+    _, y_bottom = _pixel(front, (1, 0, 0), (0, 0, 1), (0, 0, -15))
+    col = _drawn(front.pixels[:, cx - 1:cx + 2]).any(axis=1)
+    assert col[y_top - 9:y_top - 1].sum() >= 2 and col[y_bottom + 2:y_bottom + 10].sum() >= 2
+    assert not col[y_top - 30:y_top - 11].any() and not col[y_bottom + 12:y_bottom + 30].any()
+    # not in shaded views, not on quarter-round fillets
+    shaded = render(bored, view="top", size=(400, 300)).pixels
+    assert not (_gray(shaded[cy - 1:cy + 2, cx + r + 2:cx + r + 9]) & _drawn(shaded[cy - 1:cy + 2, cx + r + 2:cx + r + 9])).any()
+    rounded = Box(40, 30, 10).fillet(Box(40, 30, 10).edges().parallel_to(Z), 5)
+    corner = render(rounded, view="top", lines=True, size=(400, 300))
+    x, y = _pixel(corner, (1, 0, 0), (0, 1, 0), (15, 10, 0))
+    assert not _drawn(corner.pixels[y - 3:y + 4, x - 3:x + 4]).any()
+
+
+def test_drawing_views_carry_the_center_lines():
+    # a flat plate: the top view sets the drawing's scale, so it equals the line-style top view
+    plate = Box(60, 50, 10) - Cylinder(8, 20)
+    drawing = _quadrants(render(plate, drawing=True, size=(800, 600)))
+    single = render(plate, view="top", lines=True, size=(400, 300)).pixels[2:298, 2:398]
+    assert np.array_equal(drawing["BL"][30:], single[30:])  # below the label
+    cx, cy = 198, 148  # the middle of the cropped panel
+    assert _drawn(drawing["BL"][cy, cx - 2:cx + 3]).all()
 
 
 def test_view_sheet_is_the_first_angle_drawing(bored):

@@ -538,6 +538,7 @@ class _Scene:
         self.hl_segs: list[np.ndarray] = []
         self.hl_points: list[np.ndarray] = []
         self.tolerance = tolerance
+        self._axes: list[tuple[np.ndarray, np.ndarray, float, float, float]] | None = None
         items = _flatten_all(shapes)
         solids = any(isinstance(it, (Mesh, Face)) or (isinstance(it, Solidish) and not isinstance(it, Sketch))
                      for it in items)
@@ -588,6 +589,31 @@ class _Scene:
         self.lo, self.hi = tri_pts.min(axis=0), tri_pts.max(axis=0)
         self.diagonal = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))) or 1.0
 
+    def axes(self) -> list[tuple[np.ndarray, np.ndarray, float, float, float]]:
+        """The axes of round features, for center lines: from the circles and arcs of at least
+        half a turn among the edges, one entry per axis line with a point on it, its
+        direction, the range of the circles along it and their largest radius."""
+        if self._axes is None:
+            found: dict[tuple[Any, ...], list[Any]] = {}
+            q = self.diagonal * 1e-6
+            for item in self.items:
+                if not hasattr(item, "edges"):
+                    continue
+                for e in item.edges():
+                    circle = _circle_of(e)
+                    if circle is None:
+                        continue
+                    c, d, r = circle
+                    d = d / np.linalg.norm(d)
+                    d = d if d[np.argmax(np.abs(d))] > 0 else -d
+                    foot = c - (c @ d) * d  # the point of the axis line nearest the origin
+                    key = (*np.round(d, 6), *np.round(foot / q))
+                    entry = found.setdefault(key, [foot, d, np.inf, -np.inf, 0.0])
+                    t = float(c @ d)
+                    entry[2], entry[3], entry[4] = min(entry[2], t), max(entry[3], t), max(entry[4], r)
+            self._axes = [(f, d, t0, t1, r) for f, d, t0, t1, r in found.values()]
+        return self._axes
+
     def add_highlights(self, highlight: Any, highlight_at: Any) -> None:
         from .exporters import _curve_points, _flatten_all
         from .mesh import Mesh, tessellate
@@ -626,6 +652,36 @@ class _Scene:
         if len(mesh.triangles):
             n = mesh.normals if mesh.normals is not None else np.repeat(mesh.triangle_normals[:, None], 3, axis=1)
             self.hl_tris.append((mesh.vertices[mesh.triangles], np.asarray(n, dtype=np.float64)))
+
+
+def _circle_of(edge: Any) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Center, axis and radius of an edge that is a circle or an arc of at least half a turn,
+    also when the kernel made it a B-spline (chamfers, revolved profiles); else None."""
+    try:
+        kind = edge.geom_type
+        if kind == "circle":
+            r = edge.radius
+            if edge.length < np.pi * r * (1 - 1e-6):
+                return None
+            return np.array(edge.arc_center.to_tuple()), np.array(edge.normal.to_tuple()), float(r)
+        if kind != "bspline":
+            return None
+        pts = np.array([edge.point_at(t).to_tuple() for t in np.linspace(0, 1, 9)])
+    except Exception:  # an edge the kernel cannot describe
+        return None
+    a, ab, ac = pts[0], pts[3] - pts[0], pts[6] - pts[0]
+    n = np.cross(ab, ac)
+    nn = float(n @ n)
+    if nn < 1e-24:
+        return None
+    c = a + (np.cross(n, ab) * (ac @ ac) + np.cross(ac, n) * (ab @ ab)) / (2 * nn)
+    r = float(np.linalg.norm(a - c))
+    d = n / np.sqrt(nn)
+    off_circle = np.abs(np.linalg.norm(pts - c, axis=1) - r).max()
+    off_plane = np.abs((pts - c) @ d).max()
+    if max(off_circle, off_plane) > 1e-4 * r or edge.length < np.pi * r * (1 - 1e-4):
+        return None
+    return c, d, r
 
 
 def _segments(polylines: list[np.ndarray]) -> np.ndarray:
@@ -753,6 +809,7 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         both = np.concatenate([edge_segs, hl])
         hidden = np.concatenate([np.repeat(_HIDDEN_INK[None], len(edge_segs), axis=0), hl_cols])
         _lines(cv, both, hidden, 0.5 * k, "hidden", near, eps)  # hidden first, thin and dashed
+        _center_lines(cv, scene, cut)
         _lines(cv, both, np.concatenate([edge_cols, hl_cols]), 1.0 * k, "visible", near, eps)
     elif o.xray:
         _lines(cv, edge_segs, edge_cols, 0.5 * k, "all")
@@ -1146,6 +1203,56 @@ def _lines(cv: _Canvas, segs: np.ndarray, cols: np.ndarray, radius: float, mode:
         jx, jy = ix + dx, iy + dy
         ok = (jx >= 0) & (jx < W) & (jy >= 0) & (jy < H)
         cv.img[jy[ok] * W + jx[ok]] = color[ok]
+
+
+def _center_lines(cv: _Canvas, scene: _Scene, cut: _Cut | None) -> None:
+    """Center lines as in a technical drawing, thin and dash-dotted: a cross where a round
+    feature is seen along its axis, a line along the axis where it is seen from the side;
+    both a little past the outline. Oblique axes get none."""
+    k, u = cv.k, cv.u
+    over = 8 * u * k  # overhang past the outline, canvas pixels
+    lines: list[tuple[float, float, float, float, float, float]] = []
+    for foot, d, t0, t1, r in scene.axes():
+        a, b = foot + d * t0, foot + d * t1
+        if cut is not None:
+            da, db = float(cut.distance(a)), float(cut.distance(b))
+            if da > 0 and db > 0:
+                continue  # cut away
+            if da > 0 or db > 0:
+                m = a + (b - a) * (da / (da - db))
+                a, b = (m, b) if da > 0 else (a, m)
+        along = float(d @ cv.cam.back)
+        if abs(along) > 1 - 1e-6:  # seen along the axis: a cross
+            x, y, _ = cv.screen(a[None])
+            cx, cy, arm = float(x[0]), float(y[0]), r * cv.s + over
+            lines += [(cx - arm, cy, cx + arm, cy, cx, cy), (cx, cy - arm, cx, cy + arm, cx, cy)]
+        elif abs(along) < 1e-6 and t1 > t0:  # seen from the side: the axis
+            x, y, _ = cv.screen(np.stack([a, b]))
+            length = math.hypot(x[1] - x[0], y[1] - y[0])
+            if length < 1e-9:
+                continue
+            ux, uy = (x[1] - x[0]) / length, (y[1] - y[0]) / length
+            lines.append((x[0] - ux * over, y[0] - uy * over, x[1] + ux * over, y[1] + uy * over,
+                          (x[0] + x[1]) / 2, (y[0] + y[1]) / 2))
+    if not lines:
+        return
+    s = np.array(lines)
+    length = np.hypot(s[:, 2] - s[:, 0], s[:, 3] - s[:, 1])
+    n = np.ceil(length / 0.5).astype(np.int64) + 1
+    i = np.repeat(np.arange(len(n)), n)
+    t = (np.arange(int(n.sum())) - np.repeat(np.cumsum(n) - n, n)) / np.repeat(np.maximum(n - 1, 1), n)
+    px = s[i, 0] + (s[i, 2] - s[i, 0]) * t
+    py = s[i, 1] + (s[i, 3] - s[i, 1]) * t
+    # a long dash, a gap, a dot, a gap; a dash sits on the middle of every line
+    dist = np.hypot(px - s[i, 4], py - s[i, 5]) / (u * k)
+    phase = (dist + 6) % 20
+    on = (phase < 12) | ((phase >= 15) & (phase < 17))
+    x = np.floor(np.round(px[on], 6)).astype(np.int64)
+    y = np.floor(np.round(py[on], 6)).astype(np.int64)
+    for dx, dy in _disc(0.5 * k):
+        jx, jy = x + dx, y + dy
+        ok = (jx >= 0) & (jx < cv.W) & (jy >= 0) & (jy < cv.H)
+        cv.img[jy[ok] * cv.W + jx[ok]] = _HIDDEN_INK
 
 
 def _screen_lines(cv: _Canvas, segs: list[tuple[float, float, float, float]], color: np.ndarray, radius: float) -> None:
