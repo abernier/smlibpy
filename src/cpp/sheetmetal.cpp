@@ -21,9 +21,15 @@
 //     unbounded interval (SmExtent1d::Init) evaluates to SM_BIG_DOUBLE;
 //   * the exact lines, arcs and planes made for the region build their NURBS data only when
 //     asked, and SmPlane::DropCurve copies such a curve and reads the missing data (a crash when
-//     trim curves are built later, seen for small radii and overlapping bends).
-// The bindings therefore always place the axis point at the start of the region, pass the
-// interval [0, length] and build the NURBS data of every new curve and surface at once.
+//     trim curves are built later, seen for small radii and overlapping bends);
+//   * the exact conversion samples the whole UV box of a face's surface, which for a strip cut
+//     obliquely by the outline reaches outside the bend (no cylinder is made), and
+//     SmEdge::ApproximateWithBSpline reports success when it replaces nothing.
+// The bindings therefore place the axis point at the start of the region and pass the interval
+// [0, length], give the region's planes a parameterization along the bend, move the cylinders
+// onto their faces, approximate the curves left over and build the NURBS data of every new curve
+// and surface at once. Callers make sure the region holds nothing but flat sheet (bend) or one
+// bend (unbend); a region that does not cut the body in two is refused here.
 
 #include "ext.h"
 #include "SmPyError.h"
