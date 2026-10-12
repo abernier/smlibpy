@@ -502,3 +502,172 @@ def test_everything_together_is_deterministic(bored):
                       highlight=bored.faces().top(), markers=[((0, 0, 15), "top")], size=(500, 400))
 
     assert bytes(go()) == bytes(go())
+
+
+# -- surface quality: zebra stripes and curvature maps ------------------------------------
+@pytest.fixture(scope="module")
+def bosses():
+    """A cylinder on a plate, its base rounded with a circular fillet (G1) and with a G2 blend."""
+    boss = Box(60, 60, 10, align=(Align.CENTER, Align.CENTER, Align.MAX)) + \
+        Cylinder(10, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    return boss.fillet(boss.edges().concave(), 6), boss.fillet(boss.edges().concave(), 6, continuity="G2")
+
+
+def _stripe_edges(row):
+    """Sub-pixel x positions where a row of a zebra picture changes between black and white."""
+    g = row.astype(float).mean(axis=1) - 127.5
+    i = np.nonzero(np.sign(g[:-1]) * np.sign(g[1:]) < 0)[0]
+    return i + 0.5 + g[i] / (g[i] - g[i + 1])
+
+
+def _stripe_slopes(part):
+    """Follow stripe edges from the cylinder down across its joint with the fillet; for each,
+    the slope (dx/dy) just above and just below the joint."""
+    from smlibpy.render import _Camera
+
+    zb = [f for f in part.faces() if f.geom_type == "cylinder"][0].bbox().min.z  # the joint
+    view = {"azimuth": 0, "elevation": 20}
+    pic = render(part, size=(800, 800), zebra={"stripes": 24}, view=view, zoom=2.2, look_at=(0, -10, zb),
+                 edges=False)
+    cam, f, px = _Camera.of(view), pic.frame, pic.pixels
+
+    def follow(rows, x):
+        found = []
+        for y in rows:
+            e = _stripe_edges(px[y])
+            j = np.argmin(np.abs(e - x)) if len(e) else None
+            if j is None or abs(e[j] - x) > 3:
+                return None  # the stripe broke off
+            x = e[j]
+            found.append((y, x))
+        return np.array(found)
+
+    slopes = []
+    for x_world in (-3.0, -2.0, 2.0, 3.0):
+        p = np.array([x_world, -np.sqrt(100 - x_world ** 2), zb])
+        xb = pic.width / 2 + (p @ cam.right - f["mid_x"]) * f["scale"]
+        yb = int(pic.height / 2 - (p @ cam.up - f["mid_y"]) * f["scale"])
+        start = _stripe_edges(px[yb - 4])
+        above = follow(range(yb - 4, yb - 16, -1), start[np.argmin(np.abs(start - xb))])
+        across = follow(range(yb - 4, yb + 4), above[0, 1])
+        assert across is not None  # the stripes run on across the joint
+        below = follow(range(yb + 3, yb + 10), across[-1, 1])
+        slopes.append((np.polyfit(above[:, 0], above[:, 1], 1)[0], np.polyfit(below[:, 0], below[:, 1], 1)[0]))
+    return np.array(slopes)
+
+
+def test_zebra_kinks_at_a_circular_fillet_and_runs_smooth_across_a_g2_blend(bosses):
+    g1, g2 = _stripe_slopes(bosses[0]), _stripe_slopes(bosses[1])
+    assert np.abs(g1[:, 0]).max() < 0.05 and np.abs(g2[:, 0]).max() < 0.05  # straight down the cylinder
+    kink_g1 = np.abs(g1[:, 1] - g1[:, 0])
+    kink_g2 = np.abs(g2[:, 1] - g2[:, 0])
+    assert kink_g1.min() > 0.3  # the circular fillet: the stripes turn at once
+    assert (kink_g1 > 3 * kink_g2).all()  # the G2 blend: they start to turn smoothly
+
+
+def test_zebra_options(bosses):
+    part = bosses[0]
+    plain = render(part, size=(300, 200), zebra=True)
+    same = render(part, size=(300, 200), zebra={"stripes": 16, "width": 0.5, "direction": "vertical"})
+    assert bytes(plain) == bytes(same)
+    assert _gray(plain.pixels).all()  # black and white (and gray)
+    can = Cylinder(10, 20)  # seen from the front: the stripes turn with the normal around the axis
+    count = []
+    for n in (8, 16):
+        pic = render(can, view="front", size=(400, 200), zebra={"stripes": n})
+        x0, y = _pixel(pic, (1, 0, 0), (0, 0, 1), (-7, 0, 0))
+        x1, _ = _pixel(pic, (1, 0, 0), (0, 0, 1), (7, 0, 0))
+        count.append(len(_stripe_edges(pic.pixels[y, x0:x1])))  # the middle, where they do not crowd
+    assert count[0] >= 6 and count[1] == pytest.approx(2 * count[0], abs=2)
+    wide = render(part, size=(300, 200), zebra={"width": 0.8}).pixels
+    assert (wide.mean(axis=-1) < 128).sum() > (plain.pixels.mean(axis=-1) < 128).sum()
+    for direction in ("horizontal", (0, 0, 1)):
+        assert bytes(render(part, size=(300, 200), zebra={"direction": direction})) != bytes(plain)
+    for bad in ({"stripes": 0}, {"width": 1.5}, {"direction": "diagonal"}, {"colour": 1}):
+        with pytest.raises(ValueError):
+            render(part, size=(100, 100), zebra=bad)
+
+
+def test_curvature_of_a_sphere_and_a_cylinder():
+    from smlibpy._kernel import ext
+    from smlibpy.render import _Scene
+
+    def at(face):
+        (u0, v0), (u1, v1) = face._f.uv_domain()
+        grid = np.linspace(0.1, 0.9, 5)  # inside the face, away from the poles of a sphere
+        uv = np.stack(np.meshgrid(u0 + (u1 - u0) * grid, v0 + (v1 - v0) * grid), -1).reshape(-1, 2)
+        return ext.face_curvatures(face._f, uv)
+
+    sphere = at(Sphere(10).faces()[0])
+    assert sphere["k1"] == pytest.approx(0.1, rel=1e-6) and sphere["k2"] == pytest.approx(0.1, rel=1e-6)
+    side = at(Cylinder(10, 30).faces().cylinders()[0])
+    assert side["k1"] == pytest.approx(0.1, abs=1e-9) and side["k2"] == pytest.approx(0, abs=1e-9)
+    bore = at((Box(40, 40, 20) - Cylinder(5, 30)).faces().cylinders()[0])
+    assert bore["k1"] == pytest.approx(0, abs=1e-9) and bore["k2"] == pytest.approx(-0.2, abs=1e-9)
+    # at every corner of the rendered mesh, from the exact surface
+    ball = _Scene([Sphere(10)], None, "native", fine=True).bodies[0]
+    assert ball.curvature("mean") == pytest.approx(0.1, rel=1e-3)
+    assert ball.curvature("gaussian") == pytest.approx(0.01, rel=1e-3)
+    can = _Scene([Cylinder(10, 30)], None, "native", fine=True)
+    k1, k2 = can.bodies[0].curvature("max"), can.bodies[0].curvature("min")
+    assert np.isin(np.round(k1, 9), [0.0, 0.1]).all() and np.abs(k2).max() < 1e-9
+    assert can.curvature_range("max", None) == pytest.approx((0, 0.1))
+    from smlibpy.render import _curvature_spec
+
+    assert _curvature_spec({"kind": "max", "range": 0.5}) == ("max", (-0.5, 0.5))
+    assert can.curvature_range("max", (0.02, 0.5)) == (0.0, 0.5)  # a range always holds zero
+    for bad in ("sharpness", {"kind": "mean", "range": (1, 0)}, 3):
+        with pytest.raises(ValueError):
+            render(Sphere(1), size=(50, 50), curvature=bad)
+
+
+def test_curvature_maps_color_and_legend():
+    from smlibpy.render import _value_text
+
+    ball = render(Sphere(10), size=(400, 300), curvature="mean").pixels.astype(int)
+    lit = ball[100:200, 120:240]
+    assert ((lit[..., 0] - lit[..., 1] > 60) & (lit[..., 0] - lit[..., 2] > 60)).mean() > 0.95  # convex: red
+    # the legend at the right edge: from white (0) at the bottom to red (0.1) at the top
+    assert ball[45, 380, 0] > 150 and ball[45, 380, 1] < 60
+    assert np.abs(ball[160, 380] - 236).max() < 20
+    assert [_value_text(v) for v in (0.1, -0.25, 0.0, 1.2e-5)] == ["0.1", "-0.25", "0", "1.2e-5"]
+    # a bore is concave: blue, and nothing red on the flat plate around it
+    bored = render(Box(40, 40, 10) - Cylinder(12, 20), size=(400, 300), curvature="min").pixels[:, :340].astype(int)
+    blue = (bored[..., 2] > bored[..., 0] + 60).sum()
+    red = (bored[..., 0] > bored[..., 2] + 60).sum()
+    assert blue > 500 and red == 0
+
+
+def test_curvature_map_shows_the_ramp_of_a_g2_blend():
+    box = Box(40, 40, 20)
+    g1 = box.fillet(box.edges().parallel_to(Z), 8)
+    g2 = box.fillet(box.edges().parallel_to(Z), 8, continuity="G2")
+
+    def redness(part):
+        """How red the fillet is across, independent of the shading: 0 white, 1 full red."""
+        pic = render(part, view="front", size=(400, 300), curvature="max", edges=False)
+        x0, y = _pixel(pic, (1, 0, 0), (0, 0, 1), (13, 0, 0))
+        x1, _ = _pixel(pic, (1, 0, 0), (0, 0, 1), (19.5, 0, 0))
+        band = pic.pixels[y, x0:x1].astype(float)
+        return (band[:, 0] - band[:, 1]) / band[:, 0]
+
+    circular, blend = redness(g1), redness(g2)
+    assert circular.min() > 0.9 and np.ptp(circular) < 0.05  # constant curvature 1/8: one color
+    assert blend.min() < 0.3 and blend.max() > 0.9  # from flat at the plane to the most curved inside
+
+
+def test_zebra_and_curvature_in_sheets_with_highlights_and_markers(bosses):
+    part = bosses[1]
+    side = part.faces().cylinders()  # highlighted faces keep their stripes, in orange and black
+    zebra = render(part, sheet=True, zebra=True, highlight=side, markers=[((0, 0, 30), "top")], size=(600, 450))
+    assert _orange(zebra.pixels).sum() > 200 and _red(zebra.pixels).sum() > 20
+    assert bytes(zebra) == bytes(render(part, sheet=True, zebra=True, highlight=side,
+                                        markers=[((0, 0, 30), "top")], size=(600, 450)))
+    curv = render(part, sheet=True, curvature="min", size=(600, 450))
+    blue = lambda q: ((q[..., 2] > q[..., 0] + 60)).sum()  # noqa: E731
+    q = _quadrants(curv)
+    assert all(blue(q[k][30:].astype(int)) > 50 for k in q)  # the concave blend in every panel
+    legends = [blue(q[k][20:200, -40:].astype(int)) for k in ("TL", "TR", "BL", "BR")]
+    assert legends[3] > 50 and legends[:3] == [0, 0, 0]  # one legend, in the last panel
+    drawing = render(part, drawing=True, zebra=True, size=(600, 450))
+    assert _gray(_quadrants(drawing)["TL"]).all()  # line-style views stay line style

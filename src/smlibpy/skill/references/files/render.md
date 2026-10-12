@@ -2,13 +2,15 @@
 
 Draws shapes into a PNG in software: no browser, no GPU. Use it to look at what you built:
 a shaded view, a technical drawing with hidden edges dashed, a section, highlighted
-selections, markers at measured points, and pixel comparisons of two states of a model.
+selections, markers at measured points, zebra stripes and curvature maps of the exact
+surfaces, and pixel comparisons of two states of a model.
 
 ## Signature
 `render(*shapes, path=None, view="iso", size=(800, 600), edges=True, background="white",
 tolerance=None, zoom=1.0, look_at=None, frame=None, supersample=2, colors="native",
 lines=False, drawing=False, sheet=False, section=None, cap=True, highlight=None,
-highlight_at=None, markers=None, annotate=False, xray=False, xray_alpha=0.42)`
+highlight_at=None, markers=None, annotate=False, xray=False, xray_alpha=0.42, zebra=False,
+curvature=None)`
 
 All options combine (a sectioned drawing with highlights and markers is fine). The same input
 gives the same pixels.
@@ -86,6 +88,36 @@ A name and a camera aimed the same way give identical pictures: `"right"` = `{"a
   view shows them (an axis pointing into the screen is left out) and a scale bar of a round
   length.
 
+## Surface quality
+Two modes judge the exact surfaces, not the facets. They replace the shading of the shaded
+views (single views, sheets, the iso view of a drawing) and keep highlights and markers.
+
+- `zebra=True`: the reflection of parallel light lines (black and white stripes), from the exact
+  surface normals at the mesh points, interpolated per pixel. Where two faces meet:
+  - **G0** (only touching, an edge): the stripes break off;
+  - **G1** (tangent, a circular fillet `fillet(e, r)`): the stripes run on but turn at once, a
+    kink at the joint;
+  - **G2** (curvature continuous, `fillet(e, r, continuity="G2")`): the stripes bend smoothly
+    into the next face.
+
+  Options: `{"stripes": 16, "width": 0.5, "direction": "vertical"}`: the number of black stripes
+  around the light, the black share of each stripe, and the direction of the light lines,
+  `"vertical"` or `"horizontal"` on the screen, or a world direction such as `(0, 0, 1)`. A
+  surface that curves only along the light lines shows no stripes (a fillet along a horizontal
+  edge under vertical lines): turn the direction. Where the reflection points along the lines
+  the stripes have no angle; such areas fade to gray (a flat top face seen from 45 degrees
+  above under vertical lines).
+- `curvature="mean"`, `"gaussian"`, `"max"` or `"min"`: colors from the curvature of the exact
+  surface, evaluated by the kernel at the mesh points from the first and second fundamental
+  forms. `"max"` and `"min"` are the principal curvatures, `"mean"` their average,
+  `"gaussian"` their product. Blue is concave, white flat, red convex: a sphere of radius R is
+  1/R everywhere (`"mean"`), a cylinder 1/R (`"max"`) and 0 (`"min"`), a bore -1/R (`"min"`). A legend
+  at the right gives the range in 1/mm (1/mm² for Gaussian). By default the range spans the
+  values on the shapes and always holds zero; `{"kind": "mean", "range": 0.2}` or `(lo, hi)`
+  fixes it (values beyond saturate). A circular fillet shows one flat color with a jump at its
+  edges; a G2 blend a ramp from white at its edges to its highest curvature in the middle.
+  Meshes (STL) have no exact surface: they show gray.
+
 ## Returns
 A `Picture`: the PNG file contents as `bytes` (starting `b'\x89PNG'`), also when `path` is given,
 with
@@ -117,8 +149,10 @@ front, a shaded picture of this hole is the same as before (`lines=True` would s
   from its symbol or title block before comparing; a wrong method mirrors the part in your head.
 - Solids are culled from behind. Open surfaces are lit on both sides and get no cap.
 - Labels use a built-in 5 x 7 font in capitals; characters it lacks stay blank.
+- The smallest radius sets the curvature scale: a 1 mm fillet makes everything else look
+  white. Pass a `range` to look at gentler surfaces.
 - Speed: a sphere at 800 x 600 takes 0.11 s, at 1600 x 1200 0.39 s. The flange example at
-  1200 x 900: shaded 0.29 s, drawing 0.2 s, x-ray 0.56 s.
+  1200 x 900: shaded 0.3 s, drawing 0.2 s, zebra 0.47 s, curvature 0.42 s, x-ray 0.56 s.
 
 ## Errors
 - `ValueError: nothing to render`: no shapes, or only vertices.
@@ -138,6 +172,11 @@ render(plate, path="plate_cut.png", section=Plane.XZ)                      # hat
 render(plate, path="plate_hl.png", highlight=plate.faces().top(), markers=[((0, 0, 5), "bore")])
 render(plate, path="plate_under.png", view=(1, -1, -1), edges=False, background="#202020")
 print(png[:4], png.frame)
+
+box = Box(40, 40, 20)
+soft = box.fillet(box.edges().parallel_to(Z), 8, continuity="G2")
+render(soft, path="soft_zebra.png", zebra=True)                # stripes bend smoothly into the blends
+render(soft, path="soft_curv.png", curvature="max")             # white at the joints, red inside
 ```
 
 ## Related

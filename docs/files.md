@@ -118,6 +118,22 @@ render(part, path="size.png", annotate=True)                        # size, axes
 render(part, path="inside.png", xray=True)                          # translucent
 ```
 
+Two more modes judge the surfaces themselves, from the exact geometry rather than the
+triangles: zebra stripes (the reflection of parallel light lines) and curvature maps. They
+tell a circular fillet from a curvature-continuous blend, which a shaded picture cannot:
+
+```python
+box = Box(40, 40, 20)
+soft = box.fillet(box.edges().parallel_to(Z), 8, continuity="G2")
+render(soft, path="zebra.png", zebra=True)         # the stripes bend smoothly into the blends
+render(soft, path="curvature.png", curvature="max")  # blue concave, white flat, red convex, in 1/mm
+```
+
+At a circular fillet (`continuity=None`) the stripes kink where it meets the next face and its
+curvature map is one color; across a G2 blend the stripes run on smoothly and its curvature
+rises from zero at the joints. `curvature` takes `"mean"`, `"gaussian"`, `"max"` or `"min"`,
+and a legend gives the range.
+
 The result is the PNG file as `bytes` (a notebook shows it with
 `IPython.display.Image(render(part))`), with `.pixels` and `.frame`. The frame pins scale and
 middle for a later picture of a changed model, and `diff_images` counts what changed:

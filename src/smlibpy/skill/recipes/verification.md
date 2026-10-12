@@ -57,6 +57,32 @@ scaled to fit. `snapshot` (MCP) and `render` (Python) take the same options.
 - **Hidden geometry without choosing a plane:** `xray=True`.
 - **Bodies that should be separate:** `colors="distinct"` gives every body its own color.
 
+## Surface quality: G2 blends, smooth transitions
+
+When the user asked for smooth or curvature-continuous transitions (`continuity="G2"`, Class A
+surfaces, consumer-product rounds), prove them; a shaded picture cannot tell G1 from G2.
+
+- **Zebra stripes:** `snapshot(zebra=True, view=...)`, with a view in which the joint lies across
+  the stripes. Follow the stripes over the joint between two faces:
+  - they break off: the faces only touch (G0), a sharp edge;
+  - they run on but turn at once, a kink at the joint: tangent but not curvature continuous
+    (G1), as a circular fillet is;
+  - they bend smoothly into the next face: curvature continuous (G2).
+
+  Next to a plane the stripes of a circular fillet stay evenly spaced up to the joint; those of
+  a G2 blend widen into a broad band there, because its curvature goes to zero. The stripes
+  only show curvature across the light lines: if a fillet shows none, take
+  `zebra={"direction": "horizontal"}` (or a world direction). Gray patches are where the
+  reflection points along the lines; turn the view a little.
+- **Curvature map:** `snapshot(curvature="max")` (or `"min"` for concave rounds, `"mean"`,
+  `"gaussian"`). Blue is concave, white flat, red convex; the legend gives the range in 1/mm.
+  A circular fillet of radius r is one color, 1/r, with a jump to white at its edges; a G2 blend
+  ramps from white at its edges to its highest curvature in the middle. Read the numbers off
+  the legend: a 6 mm G2 blend peaks above 1/6, because it is flatter at its ends. Ripples or
+  spots in a blend are the surface itself, not the picture; check them with
+  `curvature={"kind": "max", "range": ...}` to stretch the colors.
+- In doubt, compare with the circular version: two snapshots with the same view, one of each.
+
 ## Before delivering
 
 - The part is one solid when it should be: `len(part.solids()) == 1`.
