@@ -172,7 +172,8 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     """Triangulate a shape.
 
     Args:
-        shape: A part, sketch, shell or face.
+        shape: A part, sketch, shell or face. A face's mesh faces the way the face does in
+            its body's mesh (out of a part).
         tolerance: Maximum distance between mesh and exact surface. Default: 0.1 % of the
             bounding box diagonal.
         angle: Maximum angle (degrees) between neighbouring triangle normals on curved faces.
@@ -189,7 +190,12 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     if isinstance(shape, ShapeList):
         meshes = [tessellate(s, tolerance, angle) for s in shape]
         return merge(meshes)
+    turned = False
     if isinstance(shape, Face):
+        # A face is meshed as a copy in a sheet of its own, which faces where the face's
+        # surface normal points: the mesh of a face whose surface normal points into its body
+        # is turned.
+        turned = not shape._natural_is_outward()
         shape = shape.to_shell()
     if not isinstance(shape, _Body):
         raise TypeError(f"cannot tessellate a {type(shape).__name__}")
@@ -201,7 +207,12 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
         # the kernel's own tessellate (k.tessellate) always uses the grid
         poly = ext.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
                               curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))
-    return Mesh._from_poly(poly)
+    mesh = Mesh._from_poly(poly)
+    if turned:  # the kernel's mesh behind it (for mesh Booleans) stays as it is
+        mesh.triangles = mesh.triangles[:, [0, 2, 1]]
+        if mesh.normals is not None:
+            mesh.normals = -mesh.normals[:, [0, 2, 1]]
+    return mesh
 
 
 def merge(meshes: list[Mesh]) -> Mesh:

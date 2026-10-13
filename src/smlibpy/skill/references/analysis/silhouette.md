@@ -7,8 +7,9 @@ viewer. Use it for outlines of curved parts and to find where a surface is tange
 
 `body.silhouette(direction=(0, 0, 1)) -> ShapeList[Edge]`
 
-`direction` points from the model towards the viewer (like `view=` of `snapshot`). Its length
-does not matter; `(0, 0, 0)` raises `KernelError: silhouette failed (SM_ERR_INVALID_INPUT)`.
+`direction` points from the model towards the viewer (like `view=` of `snapshot`): an Axis
+(`Z`) or a vector. Its length does not matter; `(0, 0, 0)` raises
+`ValueError: silhouette: the direction must not be zero`.
 The result does not depend on where the body is: a moved sphere gives the same curve, moved.
 
 ## Returns
