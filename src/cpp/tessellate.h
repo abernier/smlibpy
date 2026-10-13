@@ -7,7 +7,9 @@
 
 #include <SmBrep.h>  // SmTessellationReport
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 class SmFace;
 class SmPolyBrep;
@@ -40,6 +42,10 @@ Tessellation tessellate(SmBrep* brep, const TessellateOptions& options);
 // "halving" if tessellate with algorithm "auto" halves the faces for these tolerances, else "grid".
 std::string tessellation_algorithm(SmBrep* brep, double chord_height_tolerance, double surface_angle_tolerance_deg,
                                    double max_edge_length, double max_aspect_ratio);
+// For each polygon of a mesh made of brep (the polygons with an outer loop of edges, in the mesh's
+// order), the index of the face of brep it was made from, or -1.
+std::vector<int32_t> poly_face_indices(SmPolyBrep* poly, SmBrep* brep);
+
 // The estimated distance between the kernel's grid and a face twisted along a straight direction.
 double grid_deviation(const SmFace* face, double chord_height_tolerance, double surface_angle_tolerance_deg,
                       double max_edge_length);

@@ -16,8 +16,10 @@
 #include <SmBSplineSurface.h>
 #include <SmCircle.h>
 #include <SmCone.h>
+#include <SmCurveClass.h>
 #include <SmCylinder.h>
 #include <SmEllipse.h>
+#include <SmFace.h>
 #include <SmLine.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
@@ -29,6 +31,7 @@
 #include <cmath>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -294,6 +297,13 @@ SmSurface* make_surface(const smlibpy::Value& s)
         SmTorus* t = nullptr;
         check(SmTorus::CreateCanonical(ctx(), placement(s), s["major"].num(), s["minor"].num(), t),
               "SmTorus::CreateCanonical");
+        if (s.has("v_start"))  // the seam around the tube, where the face does not reach
+        {
+            double v0 = s["v_start"].num();
+            SmExtent2d dom = t->GetSTEPUVDomain();
+            check(t->AdjustSTEPUVDomain(SmExtent2d(dom.GetUMin(), v0, dom.GetUMax(), v0 + 360.0)),
+                  "SmTorus::AdjustSTEPUVDomain");
+        }
         return t;
     }
     if (kind == "bspline")
@@ -423,6 +433,11 @@ SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool sol
     return brep;
 }
 
+const char* seam_name(SmSurfParamType t)
+{
+    return t == SM_SP_U ? "u" : t == SM_SP_V ? "v" : t == SM_SP_BOTH ? "both" : "";
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -432,6 +447,41 @@ SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reve
     return build(faces, edges, solid, reversed, mirrored);
 }
 
+Value seam_problems(SmBrep* brep, bool fix, const std::vector<long>* only)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    std::vector<ULONG> which;
+    if (only == nullptr)
+        for (ULONG i = 0; i < faces.GetSize(); ++i)
+            which.push_back(i);
+    else
+        for (long i : *only)
+            if (i >= 0 && static_cast<ULONG>(i) < faces.GetSize())
+                which.push_back(static_cast<ULONG>(i));
+    Value out = Value::make_list();
+    for (ULONG i : which)
+    {
+        SmCurveClassification cu, cv;
+        SmSurfParamType crossed = SM_SP_UNKNOWN, missing = SM_SP_UNKNOWN, near = SM_SP_UNKNOWN;
+        faces[i]->HasSeamProblem(cu, cv, crossed, missing, near, FALSE);
+        const char *m = seam_name(missing), *c = seam_name(crossed);
+        if (!*m && !*c)
+            continue;
+        Value d = Value::dict();
+        d.set("face", Value::integer(static_cast<long long>(i)));
+        d.set("missing", Value::of(std::string(m)));
+        d.set("crossed", Value::of(std::string(c)));
+        if (fix)
+        {
+            SmTemporaryChangeValue<SmBoolean> editing(brep->m_bEditingEnabled, TRUE);
+            check(faces[i]->SplitAtSeam(cu, cv, crossed, missing, near), "SmFace::SplitAtSeam");
+        }
+        out.push(d);
+    }
+    return out;
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -439,6 +489,16 @@ SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reve
 
 void bind_step_build(py::module_& m)
 {
+    m.def("seam_problems", [](SmBrep* brep, bool fix, py::object only) {
+        std::vector<long> indices;
+        if (!only.is_none())
+            for (py::handle h : only)
+                indices.push_back(py::cast<long>(h));
+        return smlibpy::to_python(smlibpy::seam_problems(brep, fix, only.is_none() ? nullptr : &indices));
+    }, py::arg("brep"), py::arg("fix") = false, py::arg("only") = py::none(),
+          "Faces of periodic surfaces whose seam no edge runs along, or edges cross: [{face, missing, crossed}] "
+          "('u', 'v' or 'both'). fix=True has the kernel add the seams (in place); only= limits both to these face "
+          "indices.");
     m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored) {
         return smlibpy::build_brep(smlibpy::to_value(faces), smlibpy::to_value(edges), solid, reversed, mirrored);
     }, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,

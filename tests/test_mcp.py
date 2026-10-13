@@ -168,3 +168,27 @@ def test_stdio_server_round_trip():
                 assert curv.content[0].type == "image"
 
     asyncio.run(go())
+
+
+def test_viewer_shows_a_read_step_file_and_imported_assemblies(session, tmp_path):
+    from test_step_import import _tool_with_supplemental_geometry
+
+    path = tmp_path / "tool.step"
+    path.write_text(_tool_with_supplemental_geometry())
+    session.clear()
+    r = session.run(f"tool = read_step({str(path)!r})\nparts = tool.bodies")
+    assert r["ok"], r.get("error")
+    # shown without show(): the read file, and the list of its bodies
+    assert [item["name"] for item in r["scene"]] == ["tool", "parts[0]"]
+    assert r["scene"][0]["frames"] == ["MCS (TOOL)"]
+    scene = session.call("scene_json")["scene"]
+    assert scene["kind"] == "PART"
+    names = [b["name"] for b in scene["bodies"]]
+    assert names.count("cylinder") == 2 and {"CUTTING EDGE LINE", "ARC", "PATH"} <= set(names)
+    edge_line = next(b for b in scene["bodies"] if b["name"] == "CUTTING EDGE LINE")
+    assert edge_line["edgeColor"] == [255, 0, 0] and not edge_line["faces"]
+    [mcs] = scene["marks"]["frames"]
+    assert (mcs["name"], mcs["o"], mcs["x"]) == ("MCS", [0, 0, 120], [0, 1, 0])
+    assert [p["name"] for p in scene["marks"]["points"]] == ["CRP"]
+    assert scene["bounds"]["max"][2] == pytest.approx(120)
+    assert session.call("snapshot", size=(300, 200))["ok"]

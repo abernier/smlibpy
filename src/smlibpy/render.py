@@ -155,7 +155,8 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
     Args:
         shapes: Parts, sketches, shells, faces, edges, wires, meshes, or lists of them. Edges,
             wires, and sketches shown together with solids, are drawn on top of everything at
-            their place in space.
+            their place in space. A read STEP file (``read_step``) draws its bodies and curves,
+            and marks its coordinate systems and named points.
         path: Also write the PNG to this file.
         view: The camera, orthographic, Z up:
 
@@ -244,9 +245,10 @@ def render(*shapes: Any, path: str | os.PathLike[str] | None = None, view: Any =
     if isinstance(view, str) and view.strip().lower() == "sheet":
         drawing = drawing or True
     stripes, curv = _zebra_spec(zebra), _curvature_spec(curvature)
+    shapes, step_markers = _step_models_drawn(shapes)
     opts = _Options(k=k, bg=np.array(to_rgb(background), dtype=np.float64), edges=bool(edges), lines=bool(lines),
                     xray=bool(xray) and not lines, alpha=float(xray_alpha), section=_section(section, cap),
-                    markers=_markers(markers), annotate=bool(annotate), zebra=stripes)
+                    markers=_markers(markers) + _markers(step_markers), annotate=bool(annotate), zebra=stripes)
     scene = _Scene(shapes, tolerance, colors, fine=bool(stripes or curv))
     scene.add_highlights(highlight, highlight_at)
     if curv is not None:
@@ -430,6 +432,26 @@ def _section(section: Any, cap: bool) -> _Cut | None:
     if length < 1e-12:
         raise ValueError("section: the normal has no length")
     return _Cut(_vec3(origin), n / length, bool(cap))
+
+
+def _step_models_drawn(shapes: tuple[Any, ...]) -> tuple[tuple[Any, ...], list[dict[str, Any]]]:
+    """The shapes with each :class:`~smlibpy.StepModel` (from ``read_step``) replaced by its
+    bodies and curves, and markers for its coordinate systems and named points."""
+    from .step_import import StepModel
+
+    if not any(isinstance(s, StepModel) for s in shapes):
+        return shapes, []
+    out: list[Any] = []
+    markers: list[dict[str, Any]] = []
+    for s in shapes:
+        if not isinstance(s, StepModel):
+            out.append(s)
+            continue
+        out.extend(s.bodies)
+        out.extend(c.shape for c in s.curves)
+        markers.extend({"position": f.plane.origin, "label": f.name} for f in s.frames)
+        markers.extend({"position": p.point, "label": p.name} for p in s.points if p.name)
+    return tuple(out), markers
 
 
 def _markers(markers: Any) -> list[tuple[np.ndarray, str, np.ndarray]]:

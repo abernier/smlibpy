@@ -64,6 +64,7 @@
 #include <cmath>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -587,10 +588,38 @@ double grid_deviation(const SmFace* face, double chord_height_tolerance, double 
     return face_grid_deviation(face, chord_height_tolerance, surface_angle_tolerance_deg, max_edge_length);
 }
 
+std::vector<int32_t> poly_face_indices(SmPolyBrep* poly, SmBrep* brep)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    std::unordered_map<const SmFace*, int32_t> index;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+        index[faces[i]] = static_cast<int32_t>(i);
+    SmTArray<SmPolyFace*> poly_faces;
+    poly->GetPolyFaces(poly_faces);
+    std::vector<int32_t> out;
+    out.reserve(poly_faces.GetSize());
+    for (ULONG i = 0; i < poly_faces.GetSize(); ++i)
+    {
+        SmPolyLoop* loop = poly_faces[i]->GetOuterPolyLoop();
+        if (!loop)
+            continue;
+        SmTArray<SmPolyEdge*> edges;
+        loop->GetPolyEdges(edges);
+        if (edges.GetSize() == 0)
+            continue;
+        auto it = index.find(poly_faces[i]->GetOriginalFace());
+        out.push_back(it == index.end() ? -1 : it->second);
+    }
+    return out;
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
 #include "ext.h"
+
+#include <pybind11/numpy.h>
 
 namespace {
 
@@ -669,6 +698,12 @@ void bind_tessellate(py::module_ m)
           "halves a body with a face whose grid would be off by more than twice the chord height (see "
           "grid_deviation) unless a max edge length or aspect ratio is given, and takes the grid otherwise. The "
           "report (return_report=True) names the algorithm used.");
+    m.def("poly_face_indices", [](SmPolyBrep* poly, SmBrep* brep) {
+        const std::vector<int32_t> out = smlibpy::poly_face_indices(poly, brep);
+        return py::array_t<int32_t>(static_cast<py::ssize_t>(out.size()), out.data());
+    }, py::arg("poly"), py::arg("brep"),
+          "For each polygon of poly.to_numpy_arrays(), the index of the face of brep (in brep.get_faces() order) "
+          "it was made from, -1 where it has none.");
     m.def("tessellation_algorithm", &smlibpy::tessellation_algorithm,
         py::arg("brep"), py::kw_only(), py::arg("chord_height_tolerance"),
         py::arg("surface_angle_tolerance_deg") = SmTessellationDefaults::kSurfaceAngleTolDeg,

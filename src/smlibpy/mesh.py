@@ -215,6 +215,35 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     return mesh
 
 
+def face_meshes(shape: "Shape", tolerance: float | None = None, angle: float = 15.0) -> list[Mesh]:
+    """One mesh per face of a part, shell or sketch (in ``shape.faces()`` order), cut from
+    one tessellation of the whole body. Faces of imported bodies that the kernel cannot
+    mesh on their own (copied out of the body) get theirs this way, and the faces share
+    the points where they meet."""
+    mesh = tessellate(shape, tolerance, angle)
+    poly = mesh._poly.poly if mesh._poly is not None else None
+    count = len(shape.faces())
+    if poly is None:
+        return [Mesh(np.zeros((0, 3)), np.zeros((0, 3))) for _ in range(count)]
+    owners = np.asarray(ext.poly_face_indices(poly, shape._brep), dtype=np.int64)
+    polygons = np.asarray(poly.to_numpy_arrays(face_varying_normals=False)["faces"], dtype=np.int64)
+    sizes, i = [], 0
+    while i < len(polygons):
+        sizes.append(int(polygons[i]))
+        i += sizes[-1] + 1
+    owner = np.repeat(owners, np.maximum(np.array(sizes, dtype=np.int64) - 2, 0))  # per triangle
+    if len(owner) != len(mesh.triangles):
+        raise ModelingError("tessellate: the mesh does not say which face each triangle belongs to")
+    out = []
+    for fi in range(count):
+        sel = owner == fi
+        tris = mesh.triangles[sel]
+        used, local = np.unique(tris, return_inverse=True)
+        out.append(Mesh(mesh.vertices[used], local.reshape(-1, 3),
+                        None if mesh.normals is None else mesh.normals[sel]))
+    return out
+
+
 def merge(meshes: list[Mesh]) -> Mesh:
     """Concatenate meshes (no Boolean)."""
     verts, tris, norms = [], [], []

@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from ._kernel import KernelError, ModelingError, ext, k, kernel_call
-from .step_reader import BodyData, interpret, parse
+from .curves import CenterArc, EllipticalArc, Line
+from .geometry import Location, Plane, Vector
+from .shapes import Edge
+from .step_reader import BodyData, interpret, interpret_extras, parse
 
-__all__ = ["import_step"]
+__all__ = ["import_step", "read_step", "StepModel", "StepFrame", "StepCurve", "StepPoint"]
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -89,6 +93,14 @@ class _Builder:
                 "weights": c["weights"], "p0": p0, "p1": p1, "forward": e["same_sense"], "closed": closed}
 
     # -- surfaces ---------------------------------------------------------------
+    def loop_points(self, loop: dict[str, Any], n: int = 16) -> list[np.ndarray]:
+        """Points along a loop in its direction."""
+        out: list[np.ndarray] = []
+        for ei, fwd in loop["edges"]:
+            p = _sample(self.specs.get(ei) or self.edge_spec(ei), n)
+            out.extend(p if fwd else p[::-1])
+        return out
+
     def face_points(self, face: dict[str, Any]) -> list[np.ndarray]:
         pts = []
         for loop in face["loops"]:
@@ -140,6 +152,22 @@ class _Builder:
                 spec["radius"] = s["radius"]
             else:
                 spec["major"], spec["minor"] = s["major"], s["minor"]
+                # The seam around the tube (v = 0 on the outer equator) cannot be turned with
+                # the frame: move the torus' v window so that it starts at the face's seam
+                # edge along the torus, or else outside the face. A face that runs all the
+                # way around the tube without such an edge gets one added later.
+                o, z = spec["origin"], spec["z"]
+
+                def tube_angle(p: np.ndarray) -> float:
+                    d = p - o
+                    h = float(d.dot(z))
+                    return math.atan2(h, float(np.linalg.norm(d - z * h)) - s["major"])
+
+                loops = [self.loop_points(l) for l in face["loops"] if l.get("edges")]
+                seam = self.tube_seam(face, tube_angle)
+                if seam is not None or (pts and not any(_winding(l, tube_angle) for l in loops)):
+                    v0 = math.degrees(seam if seam is not None else _largest_gap_of(sorted(tube_angle(p) for p in pts)))
+                    spec["v_start"] = v0 - 360.0 if v0 > 0 else v0
             return spec
         if kind == "bspline":
             return {"kind": "bspline", "u_degree": s["u_degree"], "v_degree": s["v_degree"], "nu": s["nu"],
@@ -148,9 +176,22 @@ class _Builder:
         if kind == "extrusion":
             curve = self._free_curve(s["curve"])
             vec = self.D(s["vector"])
-            L2 = float(vec.dot(vec))
-            base = np.asarray(curve["poles"][0] if curve["kind"] == "bspline" else curve.get("p0", curve.get("center")))
-            vs = [float((p - base).dot(vec) / L2) for p in self.face_points(face)]
+            pts = self.face_points(face)
+            if curve["kind"] in ("circle", "ellipse") and abs(float(vec.dot(curve["z"]))) > 1e-9 * float(np.linalg.norm(vec)):
+                # a point of the surface lies v * vec above its generator's plane
+                vs = [float((p - curve["center"]).dot(curve["z"]) / vec.dot(curve["z"])) for p in pts]
+                curve = self._start_outside(curve, face, vec, pts)
+            elif curve["kind"] == "line":  # p = p0 + t (p1 - p0) + v vec
+                A = np.array([curve["p1"] - curve["p0"], vec]).T
+                vs = [float(np.linalg.lstsq(A, p - curve["p0"], rcond=None)[0][1]) for p in pts]
+            else:
+                # p = C(u) + v vec: v is p's height along vec less that of the generator's
+                # point, which lies between the heights of the generator's poles
+                L2 = float(vec.dot(vec))
+                gen = np.asarray(curve["poles"]) if curve["kind"] == "bspline" else np.array([curve["center"]])
+                g = (gen - gen[0]) @ vec / L2
+                vs = [float((p - gen[0]).dot(vec) / L2) for p in pts]
+                vs = [min(vs) - float(g.max()), max(vs) - float(g.min())]
             pad = 0.05 * max(max(vs) - min(vs), 1e-6) + 1e-6
             return {"kind": "extrusion", "curve": curve, "vector": vec, "v_range": (min(vs) - pad, max(vs) + pad)}
         if kind == "revolution":
@@ -190,6 +231,44 @@ class _Builder:
                     return dirs[len(dirs) // 2]
         return None
 
+    def tube_seam(self, face: dict[str, Any], tube_angle: Any) -> float | None:
+        """The angle around the tube of a torus face's seam edge that runs along the torus
+        (an edge a loop uses twice and that keeps one angle around the tube), or None."""
+        for loop in face["loops"]:
+            if not loop.get("edges"):
+                continue
+            for ei in {e for e, _ in loop["edges"] if sum(1 for x, _ in loop["edges"] if x == e) > 1}:
+                angles = [tube_angle(p) for p in _sample(self.specs.get(ei) or self.edge_spec(ei), 8)]
+                if all(abs((a - angles[0] + math.pi) % (2 * math.pi) - math.pi) < 1e-6 for a in angles):
+                    return angles[0]
+        return None
+
+    def _start_outside(self, curve: dict[str, Any], face: dict[str, Any], vec: np.ndarray,
+                       pts: list[np.ndarray]) -> dict[str, Any]:
+        """A whole circle or ellipse, the generator of an extrusion, turned to start on the
+        face's seam edge, or where the face does not reach: the surface's seam is there."""
+        o, z, x = curve["center"], curve["z"], curve["x"]
+        y = np.cross(z, x)
+        r1, r2 = (curve["r1"], curve["r2"]) if curve["kind"] == "ellipse" else (curve["radius"], curve["radius"])
+
+        def param(p: np.ndarray) -> float:
+            d = p - o
+            d = d - vec * (d.dot(z) / vec.dot(z))  # along the extrusion into the generator's plane
+            return math.atan2(d.dot(y) / r2, d.dot(x) / r1)
+
+        seam = next((ei for loop in face["loops"] if loop.get("edges") for ei, _ in loop["edges"]
+                     if sum(1 for e, _ in loop["edges"] if e == ei) > 1), None)
+        if seam is not None:
+            t = param(_sample(self.specs.get(seam) or self.edge_spec(seam), 2)[0])
+        elif pts:
+            t = _largest_gap_of(sorted(param(p) for p in pts))
+        else:
+            return curve
+        if curve["kind"] == "circle":
+            return dict(curve, x=_unit(x * math.cos(t) + y * math.sin(t)))
+        start = o + x * r1 * math.cos(t) + y * r2 * math.sin(t)
+        return dict(curve, p0=start, p1=start)
+
     def _surface_from(self, s: dict[str, Any], face: dict[str, Any]) -> dict[str, Any]:
         saved = self.b.surfaces
         try:
@@ -210,6 +289,11 @@ class _Builder:
         if kind == "circle":
             return {"kind": "circle", "center": self.P(c["origin"]), "z": _unit(self.D(c["z"])),
                     "x": _unit(self.D(c["x"])), "radius": c["radius"], "sweep": 360.0}
+        if kind == "ellipse":  # NX writes small roundings as extruded ellipses
+            o, x = self.P(c["origin"]), _unit(self.D(c["x"]))
+            start = o + x * c["r1"]
+            return {"kind": "ellipse", "center": o, "z": _unit(self.D(c["z"])), "x": x, "r1": c["r1"], "r2": c["r2"],
+                    "p0": start, "p1": start, "forward": True, "closed": True}
         raise NotImplementedError(f"generator curve {kind}")
 
 
@@ -248,11 +332,26 @@ def _conic_arc(c: dict[str, Any], o: np.ndarray, z: np.ndarray, x: np.ndarray, p
 def _largest_gap(o: np.ndarray, z: np.ndarray, x: np.ndarray, pts: list[np.ndarray]) -> np.ndarray:
     """The direction about the axis in the middle of the largest angular gap between the
     points (where a face without a seam edge does not reach)."""
-    angs = sorted(_angle_in(o, z, x, p) for p in pts)
-    gaps = [(angs[(i + 1) % len(angs)] - angs[i]) % (2 * math.pi) for i in range(len(angs))]
-    i = int(np.argmax(gaps))
-    mid = angs[i] + gaps[i] / 2
+    mid = _largest_gap_of(sorted(_angle_in(o, z, x, p) for p in pts))
     return _unit(x * math.cos(mid) + np.cross(z, x) * math.sin(mid))
+
+
+def _largest_gap_of(angs: list[float]) -> float:
+    """The angle in the middle of the largest gap between sorted angles (radians)."""
+    gaps = [(angs[(i + 1) % len(angs)] - angs[i]) % (2 * math.pi) for i in range(len(angs))]
+    if len(angs) == 1:
+        gaps = [2 * math.pi]
+    i = int(np.argmax(gaps))
+    return angs[i] + gaps[i] / 2
+
+
+def _winding(pts: list[np.ndarray], angle: Any) -> int:
+    """How many times a closed run of points goes around in the angle ``angle(p)``."""
+    if len(pts) < 2:
+        return 0
+    a = [angle(p) for p in pts]
+    turn = sum((a[(i + 1) % len(a)] - a[i] + math.pi) % (2 * math.pi) - math.pi for i in range(len(a)))
+    return round(turn / (2 * math.pi))
 
 
 def _generator_direction(curve: dict[str, Any], o: np.ndarray, z: np.ndarray) -> np.ndarray:
@@ -467,10 +566,10 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         reversed_ = bool(sh["reversed"]) and not (solid and si > 0)
         with kernel_call("import STEP", "the file may hold faces the kernel cannot rebuild"):
             brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
-        part = Part._wrap(brep) if closed else Shell._wrap(brep)
+        part = _with_seams(Part._wrap(brep) if closed else Shell._wrap(brep))
         if closed and not _positive(part):
             with kernel_call("import STEP"):
-                part = Part._wrap(ext.build_brep(shell_faces, edges, closed, not reversed_, False))
+                part = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, not reversed_, False)))
         if heal and closed and not _sound(part):
             # Only heal what came out broken: the kernel's healer can damage good bodies.
             try:
@@ -494,6 +593,33 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     if body.color is not None:
         result.color = body.color
     return result
+
+
+_SWEPT = ("cylinder", "cone", "sphere", "torus", "revolution", "extrusion")
+
+
+def _with_seams(body: Any) -> Any:
+    """The body with the seams its faces lack. A face on a cylinder, cone, revolution or
+    extrusion around which its loops run (NX writes the shank of a drill as the circle at
+    one end and the outline of its flat at the other) needs an edge along the surface's
+    seam: without it the kernel can neither mesh nor integrate the face. The kernel adds
+    them; a body that would come out broken keeps its faces as they are."""
+    from .shapes import Part
+
+    faces = body.faces()
+    # B-spline surfaces closed on themselves are left as they are: they read right as written
+    lacking = [d["face"] for d in ext.seam_problems(body._brep) if faces[d["face"]].geom_type in _SWEPT]
+    if not lacking:
+        return body
+    try:
+        fixed = body._like(body._copy_brep())
+        with kernel_call("import STEP: seams"):
+            ext.seam_problems(fixed._brep, True, lacking)
+        if fixed.is_valid() and (not isinstance(fixed, Part) or _positive(fixed)):
+            return fixed
+    except KernelError:
+        pass
+    return body
 
 
 def _outer_first(bld: _Builder, loops: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -523,6 +649,209 @@ def _positive(part: Any) -> bool:
         return part._kernel_props(1e-4)["volume"] > 0
     except KernelError:
         return False
+
+
+@dataclass(frozen=True)
+class StepFrame:
+    """A coordinate system of a STEP file (a named ``AXIS2_PLACEMENT_3D``) at its place in
+    the assembly. ``product`` names the part or assembly it belongs to."""
+
+    name: str
+    plane: Plane
+    product: str = ""
+    color: tuple[float, float, float] | None = None
+
+    @property
+    def location(self) -> Location:
+        """The placement that moves the world origin onto this coordinate system."""
+        return self.plane.location
+
+    def __repr__(self) -> str:
+        return f"StepFrame({self.name!r}, product={self.product!r}, {self.plane!r})"
+
+
+@dataclass(frozen=True)
+class StepCurve:
+    """A curve of a STEP file that belongs to no body (wireframe geometry, contours), at its
+    place in the assembly: an :class:`~smlibpy.Edge`, or a :class:`~smlibpy.Wire` for a
+    composite curve."""
+
+    name: str
+    shape: Any
+    product: str = ""
+    color: tuple[float, float, float] | None = None
+
+    def __repr__(self) -> str:
+        return f"StepCurve({self.name!r}, product={self.product!r}, {self.shape!r})"
+
+
+@dataclass(frozen=True)
+class StepPoint:
+    """A point of a STEP file that belongs to no body, at its place in the assembly."""
+
+    name: str
+    point: Vector
+    product: str = ""
+    color: tuple[float, float, float] | None = None
+
+    def __repr__(self) -> str:
+        return f"StepPoint({self.name!r}, product={self.product!r}, {self.point!r})"
+
+
+@dataclass(frozen=True)
+class StepModel:
+    """Everything :func:`read_step` reads from a STEP file: the bodies (what
+    :func:`import_step` returns, always as a list), and the coordinate systems, curves and
+    points that belong to no body."""
+
+    bodies: Any
+    frames: list[StepFrame] = field(default_factory=list)
+    curves: list[StepCurve] = field(default_factory=list)
+    points: list[StepPoint] = field(default_factory=list)
+
+    def frame(self, name: str, product: str | None = None) -> Plane:
+        """The coordinate system called ``name`` as a :class:`~smlibpy.Plane`. Where several
+        have that name (each part of a tool assembly has its own ``MCS``), ``product`` picks
+        the one of the product whose name is or begins with it."""
+        found = [f for f in self.frames if f.name == name and (product is None or f.product.startswith(product))]
+        if len(found) == 1:
+            return found[0].plane
+        if not found:
+            names = sorted({f.name for f in self.frames})
+            raise KeyError(f"no coordinate system {name!r}" + (f" in product {product!r}" if product else "")
+                           + (f"; there are {', '.join(map(repr, names))}" if names else "; the file has none"))
+        raise KeyError(f"{len(found)} coordinate systems are called {name!r}, in "
+                       f"{', '.join(repr(f.product) for f in found)}: choose one with product=")
+
+    def __repr__(self) -> str:
+        return (f"StepModel({len(self.bodies)} bodies, {len(self.frames)} frames, {len(self.curves)} curves, "
+                f"{len(self.points)} points)")
+
+
+def read_step(path: str | os.PathLike[str], *, heal: bool = True) -> StepModel:
+    """Read everything a STEP file holds that smlibpy can use: its bodies, and the
+    coordinate systems, curves and points that belong to no body.
+
+    The bodies are those of :func:`import_step`, as a :class:`~smlibpy.ShapeList` also when
+    there is one. Coordinate systems are the placements of supplemental geometry (as NX,
+    CATIA and tool catalogs write ``MCS``, ``PCS`` or ``CSW``) and the named placements of
+    shape representations; curves and points are the wireframe geometry (contours such as a
+    tool's cutting edge line, curve sets, reference points). Each carries its name and the
+    product it belongs to, at its place in the assembly, in millimeters. Items on hidden
+    layers are left out. A file with no bodies gives an empty ``bodies``.
+    """
+    from .shapes import ShapeList
+
+    with open(os.fspath(path), "r", encoding="latin-1") as fh:
+        sf = parse(fh.read())
+    bodies = ShapeList(_build_body(b, m, heal) for b, m in interpret(sf))
+    model = StepModel(bodies)
+    for item in interpret_extras(sf):
+        name, product, color = item["name"], item["product"], item["color"]
+        if item["kind"] == "frame":
+            plane = Plane(Vector(*item["origin"]), x_dir=Vector(*item["x"]), z_dir=Vector(*item["z"]))
+            model.frames.append(StepFrame(name, plane, product, color))
+        elif item["kind"] == "point":
+            model.points.append(StepPoint(name, Vector(*item["point"]), product, color))
+        else:
+            try:
+                shape = _curve_shape(item["curve"])
+            except (KernelError, ValueError):
+                shape = None
+            if shape is not None:
+                model.curves.append(StepCurve(name, shape, product, color))
+    return model
+
+
+def _curve_shape(c: dict[str, Any]) -> Any:
+    """An edge (a wire for a composite curve) from a curve of ``interpret_extras``; None for
+    one that cannot be drawn."""
+    from .shapes import Wire
+
+    kind = c["kind"]
+    if kind == "composite":
+        edges = []
+        for segment, same in c["segments"]:
+            s = _curve_shape(segment)
+            if s is None:
+                return None
+            parts = list(s.edges()) if isinstance(s, Wire) else [s]
+            edges.extend(parts if same else [e.reversed() for e in reversed(parts)])
+        return Wire._raw(edges) if len(edges) > 1 else edges[0] if edges else None
+    if kind == "trimmed":
+        return _trimmed_edge(c["basis"], c["trims"], c["sense"])
+    if kind == "bspline":
+        return Edge._from_curve(_bspline_curve(c))
+    if kind in ("circle", "ellipse"):
+        return _conic_edge(c, 0.0, 2 * math.pi)
+    return None
+
+
+def _bspline_curve(c: dict[str, Any]) -> Any:
+    from .shapes import _canonical_curve
+
+    with kernel_call("read STEP curve"):
+        return _canonical_curve(np.asarray(c["poles"]), c["knots"], c["degree"], c["weights"])
+
+
+def _conic_edge(c: dict[str, Any], t0: float, t1: float) -> Any:
+    """A circle or ellipse from angle ``t0`` to ``t1`` (radians, the direction they say)."""
+    plane = Plane(Vector(*c["origin"]), x_dir=Vector(*c["x"]), z_dir=Vector(*c["z"]))
+    a0, span = math.degrees(t0), math.degrees(t1 - t0)
+    if abs(span) < 1e-12 or abs(span) >= 360.0 - 1e-9:
+        span = 360.0 if span >= 0 else -360.0
+    if c["kind"] == "circle":
+        return CenterArc((0, 0), c["radius"], a0, span, plane)
+    lo, hi = (a0, a0 + span) if span > 0 else (a0 + span, a0)
+    e = EllipticalArc((0, 0), c["r1"], c["r2"], lo, hi if abs(span) < 360.0 else lo, plane)
+    return e if span > 0 else e.reversed()
+
+
+def _trimmed_edge(basis: dict[str, Any], trims: list[dict[str, Any]], sense: bool) -> Any:
+    kind = basis["kind"]
+
+    def param(trim: dict[str, Any]) -> float:
+        if "param" in trim:
+            return trim["param"]
+        d = trim["point"] - basis.get("origin", 0.0)
+        if kind == "line":
+            v = basis["direction"]
+            return float(d.dot(v) / v.dot(v))
+        if kind in ("circle", "ellipse"):
+            x, z = basis["x"], basis["z"]
+            y = np.cross(z, x)
+            r1, r2 = (basis["radius"],) * 2 if kind == "circle" else (basis["r1"], basis["r2"])
+            return math.atan2(float(d.dot(y)) / r2, float(d.dot(x)) / r1)
+        raise ValueError("no parameter")
+
+    if kind == "line":
+        o, v = basis["origin"], basis["direction"]
+        return Line(tuple(o + v * param(trims[0])), tuple(o + v * param(trims[1])))
+    if kind in ("circle", "ellipse"):
+        t0, t1 = param(trims[0]), param(trims[1])
+        turn = 2 * math.pi
+        t1 = t0 + ((t1 - t0) % turn or turn) if sense else t0 - ((t0 - t1) % turn or turn)
+        return _conic_edge(basis, t0, t1)
+    if kind == "bspline":
+        curve = _bspline_curve(basis)
+        try:
+            ts = []
+            for trim in trims:
+                if "param" in trim:
+                    ts.append(trim["param"])
+                else:
+                    _, t, _ = k.curve_closest_point(curve, tuple(trim["point"]))
+                    ts.append(float(t))
+            lo, hi = min(ts), max(ts)
+            with kernel_call("read STEP curve"):
+                part = ext.trimmed_curve(curve, lo, hi) if hi - lo > 1e-12 else None
+        finally:
+            ext.delete_curve(curve)
+        if part is None:
+            return None
+        e = Edge._from_curve(part)
+        return e if (ts[0] <= ts[1]) == sense else e.reversed()
+    return None
 
 
 def import_step(path: str | os.PathLike[str], *, heal: bool = True) -> Any:

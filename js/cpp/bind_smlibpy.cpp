@@ -103,6 +103,18 @@ uintptr_t build_brep(val faces, val edges, bool solid, bool reversed, bool mirro
     return guard([&] { return ptr(smlibpy::build_brep(from_js(faces), from_js(edges), solid, reversed, mirrored)); });
 }
 
+val seam_problems(uintptr_t b, bool fix, val only)
+{
+    return guard([&] {
+        if (only.isNull() || only.isUndefined())
+            return to_js(smlibpy::seam_problems(brep(b), fix, nullptr));
+        std::vector<long> faces;
+        for (double f : numbers(only))
+            faces.push_back(static_cast<long>(f));
+        return to_js(smlibpy::seam_problems(brep(b), fix, &faces));
+    });
+}
+
 // ---------------------------------------------------------------- ext: surfaces, measures
 // uv: flat (u, v) pairs. Results: flat (x, y, z) triples.
 val surface_derivatives(uintptr_t s, val uv)
@@ -281,6 +293,11 @@ std::string tessellation_algorithm(uintptr_t b, double chord, double surface_ang
                                    double max_aspect_ratio)
 {
     return guard([&] { return smlibpy::tessellation_algorithm(brep(b), chord, surface_angle, max_edge_length, max_aspect_ratio); });
+}
+
+val poly_face_indices(uintptr_t p, uintptr_t b)
+{
+    return guard([&] { return int32(smlibpy::poly_face_indices(poly(p), brep(b))); });
 }
 
 double grid_deviation(uintptr_t f, double chord, double surface_angle, double max_edge_length)
@@ -539,6 +556,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__surface_kind", &surface_kind);
     function("ext__object_class", &object_class);
     function("ext__build_brep", &build_brep);
+    function("ext__seam_problems", &seam_problems);
     function("ext__surface_derivatives", &surface_derivatives);
     function("ext__face_curvatures", &face_curvatures);
     function("ext__poly_curvatures", &poly_curvatures);
@@ -548,6 +566,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__curve_parameter_at_length", &curve_parameter_at_length);
     function("ext__tessellate", &tessellate);
     function("ext__tessellation_algorithm", &tessellation_algorithm);
+    function("ext__poly_face_indices", &poly_face_indices);
     function("ext__grid_deviation", &grid_deviation);
 
     function("sheetmetal__bend", &bend);

@@ -213,3 +213,15 @@ def test_exports_take_the_turned_mesh_of_a_face(tmp_path):
     path = tmp_path / "side.stl"
     export_stl(side, path)
     assert np.allclose(import_stl(path).triangle_normals, mesh.triangle_normals, atol=1e-4)
+
+
+def test_face_meshes_cut_one_tessellation_by_face():
+    from smlibpy.mesh import face_meshes
+
+    part = Box(20, 10, 5)
+    part = part.fillet(part.edges().parallel_to(Z), 2) - Cylinder(2, 10)
+    meshes = face_meshes(part, 0.005)
+    assert len(meshes) == len(part.faces())
+    for face, mesh in zip(part.faces(), meshes):
+        assert mesh.area == pytest.approx(face.area, rel=1e-2)
+    assert sum(len(m.triangles) for m in meshes) == len(tessellate(part, 0.005).triangles)

@@ -140,6 +140,13 @@ def _fmt_scene(scene: list[dict[str, Any]], explicit: bool) -> str:
     rows = []
     for item in scene:
         bits = [item["type"]]
+        if item["type"] == "StepModel":
+            bits.append(f"{item['bodies']} bodies")
+            for key in ("frames", "curves"):
+                if item.get(key):
+                    bits.append(f"{key} " + ", ".join(item[key]))
+            if item.get("points"):
+                bits.append(f"{item['points']} points")
         if "volume" in item:
             bits.append(f"volume {item['volume']}")
         if "faces" in item:
@@ -152,7 +159,7 @@ def _fmt_scene(scene: list[dict[str, Any]], explicit: bool) -> str:
         if "problem" in item:
             bits.append(item["problem"])
         rows.append(f"- {item['name']}: " + ", ".join(bits))
-    head = "Shown (chosen with show):" if explicit else "Shown (every part and shell):"
+    head = "Shown (chosen with show):" if explicit else "Shown (every part, shell and read STEP file):"
     return head + "\n" + "\n".join(rows)
 
 
