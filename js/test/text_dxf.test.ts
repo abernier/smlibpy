@@ -691,3 +691,37 @@ test('DXF in memory: toDxf, fromDxf and fromDxfWires as the file functions (smli
 // MCP
 // =============================================================================
 test('the MCP session embosses text and saves DXF', { skip: "the MCP server is smlibpy's (Python)" }, () => {})
+
+test('fit point tangents keep all their coordinates', () => {
+  // The y and z of a fit-point spline's end tangents (codes 22/32 and 23/33) were never read: a
+  // vertical start tangent became zero and failed, (1, 1) became (1, 0).
+  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-dxf-'))
+  try {
+    const fit = [
+      [0, 0],
+      [10, 5],
+      [20, 0],
+    ]
+    const spline =
+      '0\nSPLINE\n8\n0\n70\n8\n71\n3\n72\n0\n73\n0\n74\n3\n12\n0\n22\n1\n32\n0\n13\n1\n23\n1\n33\n0\n' + fit.map(([a, b]) => `11\n${a}\n21\n${b}\n31\n0\n`).join('')
+    const wires = importDxfWires(dxf(dir, spline))
+    assert.equal(wires.length, 1)
+    const edge = wires[0].edges().one()
+    assert.ok(edge.tangentAt(0).isClose([0, 1, 0]), String(edge.tangentAt(0)))
+    assert.ok(edge.tangentAt(1).isClose([Math.SQRT1_2, Math.SQRT1_2, 0]), String(edge.tangentAt(1)))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a byte order mark is no part of the drawing', () => {
+  // A UTF-8 DXF that starts with a byte order mark was "not a DXF file".
+  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-dxf-'))
+  try {
+    const path = dxf(dir, lw([[0, 0], [10, 0], [10, 5], [0, 5]]))
+    writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), readFileSync(path)]))
+    assert.ok(Math.abs(importDxf(path).area - 50) < 1e-9)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

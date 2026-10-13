@@ -74,6 +74,8 @@ export {
   importStl,
   load,
   save,
+  fromSmb,
+  toSmb,
   fromStl,
   toGlb,
   toGltf,

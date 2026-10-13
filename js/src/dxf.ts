@@ -68,11 +68,12 @@ export interface DxfWriteOptions {
 // =============================================================================
 // Low level: group codes, sections, entities
 // =============================================================================
-/** The text of a DXF file: UTF-8, else code page 1252, else latin-1 (as smlibpy decodes it). */
+/** The text of a DXF file: UTF-8 (without a byte order mark), else code page 1252, else latin-1 (as smlibpy
+ * decodes it). */
 function _readText(data: Uint8Array, label: string): string {
   if (_startsWith(data, 'AutoCAD Binary DXF')) throw new RangeError(`${label}: a binary DXF; save the drawing as ASCII DXF`)
   try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data)
+    return new TextDecoder('utf-8', { fatal: true }).decode(data) // (a byte order mark is no part of the drawing)
   } catch {
     // not UTF-8
   }
@@ -370,9 +371,9 @@ function _splineCurve(e: _Entity, layer: string): _Curve | null {
     else if (code === 21 && fit.length) fit[fit.length - 1][1] = _float(value)
     else if (code === 31 && fit.length) fit[fit.length - 1][2] = _float(value)
     else if (code === 12 || code === 13) tangents.set(code, [_float(value), 0.0, 0.0])
-    else if ((code === 22 || code === 23 || code === 32 || code === 33) && tangents.has(code % 10)) {
+    else if ((code === 22 || code === 23 || code === 32 || code === 33) && tangents.has(10 + (code % 10))) {
       // (as smlibpy: the tangents are kept under 12 and 13, so their y and z never arrive here)
-      ;(tangents.get(code % 10) as V3)[code < 30 ? 1 : 2] = _float(value)
+      ;(tangents.get(10 + (code % 10)) as V3)[code < 30 ? 1 : 2] = _float(value)
     }
   }
   if (poles.length) {

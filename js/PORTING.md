@@ -77,8 +77,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   exports while it is first evaluated: no top-level code that builds shapes.
 - **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node:
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
-    `toObj`, `toDxf`: `string`; `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`,
-    `fromDxfWires(data)` take a `string` or `Uint8Array`.
+    `toObj`, `toDxf`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
+    `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)` take a
+    `string` or `Uint8Array`.
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
