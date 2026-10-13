@@ -23,7 +23,8 @@
 //     gaps between the vertices, edges and faces of the result are measured;
 //   * it edits the Brep in place, also when it fails: it works on a copy.
 
-#include "ext.h"
+#include "kernel.h"
+#include "face_draft.h"
 
 #include <SmApiGeneral.h>
 #include <SmCone.h>
@@ -315,8 +316,8 @@ std::pair<double, double> gaps(SmBrep* brep)
     return {vertex_edge, vertex_face};
 }
 
-py::dict draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<double>& origin,
-                     const std::vector<double>& normal, double angle, double tangency_deg)
+smlibpy::FaceDraft draft_impl(const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<double>& origin,
+                              const std::vector<double>& normal, double angle, double tangency_deg)
 {
     if (brep == nullptr)
         throw std::invalid_argument("brep is None");
@@ -328,19 +329,11 @@ py::dict draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, cons
     plane.normal = unit(plane.normal);
     const double tol = std::max(static_cast<double>(brep->GetTolerance()), 1e-9);
 
-    py::dict d;
-    d["brep"] = py::none();
-    d["error"] = py::none();
-    d["face"] = -1;
-    d["other"] = py::none();
-    d["gaps"] = py::none();
-    d["gaps_before"] = py::none();
+    smlibpy::FaceDraft d;
 
     // The new surfaces, built from the faces of the given Brep (its copy has the same geometry).
     SmTArray<SmSurface*> surfaces;
-    py::list befores;
-    d["before"] = befores;
-    d["tolerance"] = tol;
+    d.tolerance = tol;
     auto drop_surfaces = [&]() {
         for (ULONG i = 0; i < surfaces.GetSize(); ++i)
             delete surfaces[i];
@@ -357,14 +350,14 @@ py::dict draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, cons
         try
         {
             surfaces.Add(drafted_surface(faces[i], plane, angle, tol, before));
-            befores.append(before);
+            d.before.push_back(before);
         }
         catch (const Refusal& r)
         {
             drop_surfaces();
-            befores.append(before);
-            d["error"] = r.reason;
-            d["face"] = static_cast<long>(i);
+            d.before.push_back(before);
+            d.error = r.reason;
+            d.face = static_cast<long>(i);
             return d;
         }
     }
@@ -386,9 +379,9 @@ py::dict draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, cons
                 if (edges[j]->IsTangentEdge(tangency_deg))
                 {
                     drop_surfaces();
-                    d["error"] = "tangent";
-                    d["face"] = static_cast<long>(i);
-                    d["other"] = py::cast(other, py::return_value_policy::reference);
+                    d.error = "tangent";
+                    d.face = static_cast<long>(i);
+                    d.other = other;
                     return d;
                 }
             }
@@ -402,36 +395,71 @@ py::dict draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, cons
     for (SmFace* f : faces)
         targets.Add(static_cast<SmFace*>(reverse.GetAt(f)));
     auto g0 = gaps(copy);
-    d["gaps_before"] = py::make_tuple(g0.first, g0.second);
+    d.has_gaps_before = true;
+    d.gaps_before[0] = g0.first, d.gaps_before[1] = g0.second;
 
     // From here on the kernel owns the new surfaces (it puts them into the faces it builds).
     SmStatus status = copy->LocalOperation(targets, surfaces);
     if (status != SM_SUCCESS)
     {
         delete copy;
-        d["error"] = "kernel";
+        d.error = "kernel";
         return d;
     }
     if (!copy->IsManifoldSolid())
     {
         delete copy;
-        d["error"] = "open";
+        d.error = "open";
         return d;
     }
-    d["restored"] = restore_analytic_curves(copy);
+    d.has_restored = true;
+    d.restored = restore_analytic_curves(copy);
     auto g = gaps(copy);
-    d["gaps"] = py::make_tuple(g.first, g.second);
-    d["brep"] = py::cast(copy, py::return_value_policy::take_ownership);
+    d.has_gaps = true;
+    d.gaps[0] = g.first, d.gaps[1] = g.second;
+    d.brep = copy;
     return d;
 }
 
 }  // namespace
 
+namespace smlibpy {
+
+FaceDraft draft_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<double>& origin,
+                      const std::vector<double>& normal, double angle, double tangency_deg)
+{
+    return draft_impl(brep, faces, origin, normal, angle, tangency_deg);
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
 void bind_face_draft(py::module_& root)
 {
     py::module_ m = root.def_submodule("face_draft", "smlibpy: face drafts (SmBrep::LocalOperation).");
 
-    m.def("draft_faces", &draft_faces, py::arg("brep"), py::arg("faces"), py::arg("origin"), py::arg("normal"),
+    m.def("draft_faces", [](const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<double>& origin,
+                            const std::vector<double>& normal, double angle, double tangency_deg) {
+        const smlibpy::FaceDraft r = smlibpy::draft_faces(brep, faces, origin, normal, angle, tangency_deg);
+        py::dict d;
+        d["brep"] = r.brep ? py::cast(r.brep, py::return_value_policy::take_ownership) : py::object(py::none());
+        d["error"] = r.error.empty() ? py::object(py::none()) : py::object(py::str(r.error));
+        d["face"] = r.face;
+        d["other"] = r.other ? py::cast(r.other, py::return_value_policy::reference) : py::object(py::none());
+        d["gaps"] = r.has_gaps ? py::object(py::make_tuple(r.gaps[0], r.gaps[1])) : py::object(py::none());
+        d["gaps_before"] = r.has_gaps_before ? py::object(py::make_tuple(r.gaps_before[0], r.gaps_before[1]))
+                                             : py::object(py::none());
+        py::list before;
+        for (double b : r.before)
+            before.append(b);
+        d["before"] = before;
+        d["tolerance"] = r.tolerance;
+        if (r.has_restored)
+            d["restored"] = r.restored;
+        return d;
+    }, py::arg("brep"), py::arg("faces"), py::arg("origin"), py::arg("normal"),
           py::arg("angle"), py::arg("tangency_deg") = 1.0,
           "Tilt faces of a copy of a solid by `angle` (radians; positive turns their outward normals towards the "
           "plane's normal, the pull direction) about the lines where they meet the neutral plane (origin, normal). "
@@ -443,3 +471,4 @@ void bind_face_draft(py::module_& root)
           "vertex-edge gap, largest vertex-face gap) of the result and of the given Brep, 'tolerance': the Brep's "
           "tolerance, 'restored': the number of B-spline edges that became lines and circles}.");
 }
+#endif  // SMLIBPY_PYTHON
