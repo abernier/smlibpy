@@ -25,6 +25,7 @@ as `Axis.X`, `Axis.Y`, `Axis.Z`.
 | `Location.about(axis, angle)` | yes | no: AttributeError |
 | `Vector.rotate(axis, angle)` | yes | yes (through the world origin) |
 | `parallel_to`, `facing` | yes | yes, a direction tuple |
+| `silhouette`, `project`, `draft_analysis`, `parting_line`, `extrude(direction=)`, `Helix(direction=)` | yes, its direction | yes, a direction tuple |
 | `sort_by`, `group_by` | yes | no: `TypeError: cannot sort by (0, 0, 1)` |
 | `shape.mirror(...)` | no: needs a `Plane` | no |
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
 from ._kernel import ModelingError, ext, k, kernel_call
-from .geometry import Axis, Vector, VectorLike, _vec
+from .geometry import Axis, Vector, VectorLike, _direction
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Part, ShapeList, Wire
@@ -30,13 +30,6 @@ ANGLE_TOLERANCE = 1e-6
 
 _DR = k.draft
 _GRID = 12  # parameter grid per face before the extremes are refined
-
-
-def _direction(direction: Axis | VectorLike, what: str) -> Vector:
-    d = direction.direction if isinstance(direction, Axis) else _vec(direction)
-    if not d.length > 0 or not all(math.isfinite(x) for x in d):
-        raise ValueError(f"{what}: the direction must not be zero")
-    return d.normalized()
 
 
 def _range(face: Face, d: Vector) -> tuple[float, float]:

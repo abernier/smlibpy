@@ -44,3 +44,23 @@ def test_queries():
     curves = Box(10, 10, 10).intersection_curves(Cylinder(3, 20))
     assert len(curves) == 2 and all(c.geom_type in ("circle", "bspline") for c in curves)
     assert Box(10, 10, 10).distance_to(Box(10, 10, 10).translate(15, 0, 0)) == pytest.approx(5)
+
+
+def test_directions_take_an_axis():
+    # An Axis such as Z gives its direction wherever a direction is asked for, as in the
+    # selectors; silhouette, project, extrude and Helix took only vectors.
+    torus = Torus(28, 9)
+    assert (sorted(e.length for e in torus.silhouette(Z))
+            == pytest.approx(sorted(e.length for e in torus.silhouette((0, 0, 1)))))
+    box = Box(40, 30, 10)
+    circle = Circle(5).on(Plane.XY.offset(30)).edges()[0]
+    assert (sorted(e.length for e in box.project(circle, -Z))
+            == pytest.approx(sorted(e.length for e in box.project(circle, (0, 0, -1)))))
+    slant = Axis((5, 5, 5), (0, 1, 2))  # only the direction counts
+    assert Circle(5).extrude(20, direction=slant).volume == pytest.approx(math.pi * 25 * 20 * 2 / math.sqrt(5))
+    assert extrude(Line((0, 0), (10, 0)), 5, direction=Y).area == pytest.approx(50)
+    assert Helix(5, 20, 10, direction=X).end == Helix(5, 20, 10, direction=(1, 0, 0)).end
+    for call in (lambda: Sphere(5).silhouette((0, 0, 0)), lambda: box.project(circle, (0, 0, 0))):
+        with pytest.raises(ValueError, match="the direction must not be zero"):
+            call()
+

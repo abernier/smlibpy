@@ -10,7 +10,8 @@ A helical edge, cylindrical or conical. The usual path for springs, coils and th
 - `height`: total rise along `direction`, from `center`.
 - `radius`: start radius. `end_radius`: radius at the top, for a conical helix (> 0).
 - `center`: the point on the axis where the helix starts (the bottom).
-- `direction`: the axis. The helix rises along it.
+- `direction`: the axis, a vector or an Axis (only its direction counts; `center` places the
+  helix). The helix rises along it.
 - `left_handed=False`: right-handed, i.e. counterclockwise seen from the tip of `direction`
   while rising.
 
@@ -55,7 +56,7 @@ screw = rod + thread                                                   # valid, 
 - `ValueError: pitch, height and radius must be positive`.
 - `KernelError: Helix failed (SM_ERR_INVALID_INPUT)` for `end_radius <= 0` or very many turns.
 - `KernelError: Helix failed (SM_ERR_NOT_WITHIN_TOLERANCE)` for too many turns (above).
-- `ValueError: cannot normalize a zero-length vector` for `direction=(0, 0, 0)`.
+- `ValueError: Helix: the direction must not be zero` for `direction=(0, 0, 0)`.
 
 ## Example
 ```python

@@ -12,7 +12,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from ._kernel import KernelError, ext, k, kernel_call
-from .geometry import Axis, Location, Plane, Vector, VectorLike, _vec
+from .geometry import Axis, Location, Plane, Vector, VectorLike, _direction, _vec
 from .shapes import Edge, Vertex, Wire, _canonical_curve, _transform_curve
 
 __all__ = [
@@ -351,13 +351,14 @@ def Helix(
     radius: float,
     *,
     center: VectorLike = (0, 0, 0),
-    direction: VectorLike = (0, 0, 1),
+    direction: Axis | VectorLike = (0, 0, 1),
     end_radius: float | None = None,
     left_handed: bool = False,
 ) -> Edge:
     """A helix around ``direction`` through ``center``.
 
-    ``end_radius`` makes a conical helix; ``pitch`` is the rise per turn.
+    ``direction`` is a vector or an axis (only its direction counts; ``center`` places the
+    helix). ``end_radius`` makes a conical helix; ``pitch`` is the rise per turn.
     """
     if pitch <= 0 or height <= 0 or radius <= 0:
         raise ValueError("pitch, height and radius must be positive")
@@ -366,7 +367,7 @@ def Helix(
         curve = k.create_helix((0.0, 0.0, 0.0), float(height), float(radius),
                                float(end_radius if end_radius is not None else radius), float(turns),
                                right_handed=not left_handed)
-    plane = Plane(_vec(center), z_dir=_vec(direction))
+    plane = Plane(_vec(center), z_dir=_direction(direction, "Helix"))
     return Edge._from_curve(_transform_curve(curve, plane.location.matrix))
 
 

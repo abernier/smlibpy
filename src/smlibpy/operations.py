@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from ._kernel import BrepHandle, KernelError, ext, k, kernel_call
-from .geometry import Axis, Plane, Vector, VectorLike, Z, _vec
+from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
 from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _as_plane, _flatten_edges, _flatten_faces,
                      _require_solid, _revolve_axis_angle)
 
@@ -69,15 +69,15 @@ def _curve_direction(w: Wire) -> Vector:
 
 
 def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = False, taper: float = 0.0,
-            direction: VectorLike | None = None) -> Part | Shell:
+            direction: Axis | VectorLike | None = None) -> Part | Shell:
     """Extrude a sketch, a planar face or a closed wire into a solid (see :meth:`Sketch.extrude`).
 
-    An open curve extrudes into a surface (a :class:`Shell`), along ``direction`` or the
-    normal of the curve's plane.
+    An open curve extrudes into a surface (a :class:`Shell`), along ``direction`` (an axis or a
+    vector) or the normal of the curve's plane.
     """
     w = _open_curve(profile)
     if w is not None:
-        d = _vec(direction).normalized() if direction is not None else _curve_direction(w)
+        d = _direction(direction, "extrude") if direction is not None else _curve_direction(w)
         curves = w._copy_curves()
         start = 0.0
         if both:

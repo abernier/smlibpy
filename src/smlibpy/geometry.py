@@ -295,6 +295,14 @@ Axis.Z = Axis((0, 0, 0), (0, 0, 1))
 X, Y, Z = Axis.X, Axis.Y, Axis.Z
 
 
+def _direction(direction: Axis | VectorLike, what: str) -> Vector:
+    """The unit vector of a direction given as an axis (its direction) or as a vector."""
+    d = direction.direction if isinstance(direction, Axis) else _vec(direction)
+    if not d.length > 0 or not all(math.isfinite(x) for x in d):
+        raise ValueError(f"{what}: the direction must not be zero")
+    return d.normalized()
+
+
 class Location:
     """A rigid placement (rotation + translation), stored as a 4x4 matrix.
 

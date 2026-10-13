@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _vec
+from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import Mesh
@@ -382,12 +382,12 @@ class ShapeList(list[T]):
 
     def parallel_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
         """Straight edges along ``axis``, or planar faces whose normal is along ``axis``."""
-        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        d = _direction(axis, "parallel_to")
         return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_parallel(d))
 
     def perpendicular_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
         """Straight edges perpendicular to ``axis``, or planar faces containing it."""
-        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        d = _direction(axis, "perpendicular_to")
         return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_perpendicular(d))
 
     def facing(self, direction: Axis | VectorLike, max_angle: float = 1e-3) -> ShapeList[T]:
@@ -395,7 +395,7 @@ class ShapeList(list[T]):
 
         Curved faces are judged at their center.
         """
-        d = direction.direction if isinstance(direction, Axis) else _vec(direction).normalized()
+        d = _direction(direction, "facing")
         out = ShapeList()
         for s in self:
             if isinstance(s, Face):
@@ -1501,21 +1501,23 @@ class _Body(Shape):
             curves, _ = k.intersect_breps(self._brep, other._brep)
         return ShapeList(Edge._from_curve(c) for c in curves)
 
-    def silhouette(self, direction: VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
-        """Silhouette curves on the body as seen along ``direction``."""
-        d = _vec(direction)
+    def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
+        """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
+        d = _direction(direction, "silhouette")
         with kernel_call("silhouette"):
             curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
         return ShapeList(Edge._from_curve(c) for c in curves)
 
-    def project(self, curve: Edge | Wire, direction: VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
-        """Project a curve onto the body along ``direction``; returns the curves on its faces."""
+    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
+        """Project a curve onto the body along ``direction`` (an axis or a vector); returns the
+        curves on its faces."""
+        d = _direction(direction, "project")
         out = ShapeList()
         for e in curve.edges():
             c = e._copy_curve()
             try:
                 with kernel_call("project"):
-                    res = k.project_curve(self._brep, c, _vec(direction).to_tuple())
+                    res = k.project_curve(self._brep, c, d.to_tuple())
             finally:
                 ext.delete_curve(c)
             out.extend(Edge._from_curve(r) for r in res)
@@ -2974,7 +2976,7 @@ class Sketch(Shell):
         *,
         both: bool = False,
         taper: float = 0.0,
-        direction: VectorLike | None = None,
+        direction: Axis | VectorLike | None = None,
     ) -> Part:
         """Extrude the region into a solid.
 
@@ -2982,12 +2984,12 @@ class Sketch(Shell):
             amount: Distance along the sketch normal (negative goes the other way).
             both: Extrude ``amount`` to both sides of the sketch.
             taper: Draft angle in degrees; positive narrows the solid away from the sketch.
-            direction: Extrude along this direction instead of the normal.
+            direction: Extrude along this direction (an axis or a vector) instead of the normal.
         """
         if amount == 0:
             raise ValueError("extrude amount must not be zero")
         self._require_region("extrude")
-        d = _vec(direction).normalized() if direction is not None else self._plane.z_dir
+        d = _direction(direction, "extrude") if direction is not None else self._plane.z_dir
         if taper:
             return self._extrude_taper(amount, taper, both)
         src = self
