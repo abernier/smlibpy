@@ -40,8 +40,8 @@
 // integrands are the kernel's (volume terms from fields such as (0, 0, z)), so the results
 // are the values the kernel's integration converges to.
 
+#include "kernel.h"
 #include "measure.h"
-#include "SmPyError.h"  // SmPyRaise: a kernel status as a C++ exception (no Python)
 
 #include <SmApiGeneral.h>
 #include <SmBrep.h>

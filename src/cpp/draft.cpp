@@ -12,7 +12,8 @@
 //     the kernel (SmSurface::CreateSilhouetteCurves, the tracer behind SmHCR) otherwise; they
 //     go into the faces as edges with SmBrep::MergeCurvesOnSurface.
 
-#include "ext.h"
+#include "kernel.h"
+#include "draft.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -159,7 +160,7 @@ void refine_edge(const DraftField& f, SmEdgeuse* eu, double t0, double t1, Extre
     }
 }
 
-py::dict face_draft_range(const SmFace* face, const std::vector<double>& direction, int grid)
+smlibpy::DraftRange draft_range(const SmFace* face, const std::vector<double>& direction, int grid)
 {
     DraftField f{face, face->GetSurface(), unit(direction), outward_sign(face)};
     if (f.surface == nullptr)
@@ -242,16 +243,16 @@ py::dict face_draft_range(const SmFace* face, const std::vector<double>& directi
         refine_inside(f, lo, step, true);
         refine_inside(f, hi, step, false);
     }
-    auto point = [&](const SmPoint2d& uv) {
+    auto point = [&](const SmPoint2d& uv, double* out) {
         SmPoint3d p;
         f.surface->EvaluatePoint(uv, p);
-        return py::make_tuple(p.x, p.y, p.z);
+        out[0] = p.x, out[1] = p.y, out[2] = p.z;
     };
-    py::dict d;
-    d["min"] = std::max(-1.0, std::min(1.0, lo.value));
-    d["max"] = std::max(-1.0, std::min(1.0, hi.value));
-    d["min_point"] = point(lo.uv);
-    d["max_point"] = point(hi.uv);
+    smlibpy::DraftRange d;
+    d.min = std::max(-1.0, std::min(1.0, lo.value));
+    d.max = std::max(-1.0, std::min(1.0, hi.value));
+    point(lo.uv, d.min_point);
+    point(hi.uv, d.max_point);
     return d;
 }
 
@@ -340,8 +341,8 @@ void free_curves(SmTArray<SmCurve*>& curves)
     curves.ReSet();
 }
 
-py::dict split_at_silhouettes(const SmBrep* brep, const std::vector<double>& direction, double tolerance,
-                              const std::vector<SmFace*>& straddling)
+smlibpy::SilhouetteSplit silhouette_split(const SmBrep* brep, const std::vector<double>& direction, double tolerance,
+                                          const std::vector<SmFace*>& straddling)
 {
     SmVector3d d = unit(direction);
     SmCopyBrepMap reverse;  // original -> copy
@@ -351,8 +352,7 @@ py::dict split_at_silhouettes(const SmBrep* brep, const std::vector<double>& dir
     copy->CalculateBoundingBox(box);
     double size = box.GetSize().Length();
     double ang = 10.0 * SM_PI / 180.0;
-    py::list failed, edges;
-    int exact = 0, traced = 0;
+    smlibpy::SilhouetteSplit out;
     for (size_t i = 0; i < straddling.size(); ++i)
     {
         SmFace* face = static_cast<SmFace*>(reverse.GetAt(straddling[i]));
@@ -379,36 +379,72 @@ py::dict split_at_silhouettes(const SmBrep* brep, const std::vector<double>& dir
         free_curves(curves_uv);
         if (st != SM_SUCCESS)
         {
-            failed.append(i);
+            out.failed.push_back(static_cast<int>(i));
             continue;
         }
-        (is_exact ? exact : traced) += 1;
+        (is_exact ? out.exact : out.traced) += 1;
         for (ULONG j = 0; j < merged.GetSize(); ++j)
-            edges.append(py::cast(merged[j], py::return_value_policy::reference));
+            out.edges.push_back(merged[j]);
     }
-    py::dict out;
-    out["brep"] = py::cast(copy, py::return_value_policy::take_ownership);
-    out["edges"] = edges;
-    out["failed"] = failed;
-    out["exact"] = exact;
-    out["traced"] = traced;
+    out.brep = copy;
     return out;
 }
 
 }  // namespace
 
+namespace smlibpy {
+
+DraftRange face_draft_range(const SmFace* face, const std::vector<double>& direction, int grid)
+{
+    return draft_range(face, direction, grid);
+}
+
+SilhouetteSplit split_at_silhouettes(const SmBrep* brep, const std::vector<double>& direction, double tolerance,
+                                     const std::vector<SmFace*>& straddling)
+{
+    return silhouette_split(brep, direction, tolerance, straddling);
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
 void bind_draft(py::module_& root)
 {
     py::module_ m = root.def_submodule("draft", "smlibpy: draft analysis and parting lines.");
 
-    m.def("face_draft_range", &face_draft_range, py::arg("face"), py::arg("direction"), py::arg("grid") = 12,
+    m.def("face_draft_range", [](const SmFace* face, const std::vector<double>& direction, int grid) {
+        const smlibpy::DraftRange r = smlibpy::face_draft_range(face, direction, grid);
+        py::dict d;
+        d["min"] = r.min;
+        d["max"] = r.max;
+        d["min_point"] = py::make_tuple(r.min_point[0], r.min_point[1], r.min_point[2]);
+        d["max_point"] = py::make_tuple(r.max_point[0], r.max_point[1], r.max_point[2]);
+        return d;
+    }, py::arg("face"), py::arg("direction"), py::arg("grid") = 12,
           "The least and greatest n . d over a face (n the outward normal, d the unit direction): "
           "{'min', 'max', 'min_point', 'max_point'}. Sampled on a grid of the face's parameters and "
           "along its edges, then refined.");
 
-    m.def("split_at_silhouettes", &split_at_silhouettes, py::arg("brep"), py::arg("direction"),
-          py::arg("tolerance"), py::arg("faces"),
+    m.def("split_at_silhouettes", [](const SmBrep* brep, const std::vector<double>& direction, double tolerance,
+                                     const std::vector<SmFace*>& faces) {
+        const smlibpy::SilhouetteSplit r = smlibpy::split_at_silhouettes(brep, direction, tolerance, faces);
+        py::list edges, failed;
+        for (SmEdge* e : r.edges)
+            edges.append(py::cast(e, py::return_value_policy::reference));
+        for (int i : r.failed)
+            failed.append(i);
+        py::dict out;
+        out["brep"] = py::cast(r.brep, py::return_value_policy::take_ownership);
+        out["edges"] = edges;
+        out["failed"] = failed;
+        out["exact"] = r.exact;
+        out["traced"] = r.traced;
+        return out;
+    }, py::arg("brep"), py::arg("direction"), py::arg("tolerance"), py::arg("faces"),
           "A copy of the Brep with the given faces (those whose n . d changes sign) split along their "
           "silhouettes for `direction`. Returns {'brep', 'edges' (the merged silhouette edges of the copy), "
           "'failed' (indices into `faces`), 'exact', 'traced'}.");
 }
+#endif  // SMLIBPY_PYTHON
