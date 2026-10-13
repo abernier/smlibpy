@@ -41,12 +41,28 @@ to 1e-11.
 | part | `accuracy` | volume error | time |
 |---|---|---|---|
 | `Sphere(10)` | 1e-4 / 1e-7 (default) / 1e-10 | below 1e-15 | 2 / 2 / 4 ms |
-| spring of `examples/spring.py` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 0.19 / 0.47 / 0.48 s |
-| triangle swept along a 20-turn helix | 1e-7 | below 1e-15 (against 1e-10) | 0.1 s |
+| spring of `examples/spring.py` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 23 / 54 / 55 ms |
+| triangle swept along a 20-turn helix | 1e-7 | below 1e-15 (against 1e-10) | 25 ms |
+| surface through 105 x 105 points, `thicken(2)` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10; the kernel at 1e-11: 7e-10) | 0.58 s each |
+
+A coarse `accuracy` saves little on dense free-form faces: every knot span gets at least 7 x 7
+points.
 
 A body whose faces the kernel fits (B-spline chamfers, shells and offsets of curved faces,
 sweeps cut by planes) is itself defined only to 1e-7 to 4e-6 in volume: its faces meet to
-within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`.
+within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`. Beyond 1e-5 (or a
+coarser `accuracy`) the result comes with a `RuntimeWarning`, once per part, which gives the
+volume of the faces as they are and how uncertain it is; the integration measures that by
+integrating the volume with three fields that agree only on a closed surface:
+
+```
+mass properties: the faces of this part do not meet exactly (there are gaps between them), so its
+volume is uncertain by about 8e-05 of its value: integrated as the faces are, 7843.403086
+```
+
+That one is a sheet unfolded across a hole in a bend zone (true volume 7842.92). A body that
+could not be integrated to `accuracy` gets "the integration reached a relative accuracy of
+..., not ..." the same way.
 
 ## Gotchas
 
