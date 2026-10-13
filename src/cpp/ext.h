@@ -23,3 +23,5 @@ void bind_draft(py::module_& m);
 
 // Areas, volumes, moments and curve lengths with an error bound (measure.cpp).
 void bind_measure(py::module_ m);
+// Tessellation that halves the faces of bodies with twisted faces (tessellate.cpp).
+void bind_tessellate(py::module_ m);

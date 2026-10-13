@@ -35,9 +35,19 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 | Sphere(10) | 0.01 / 5 | 16128 | -0.10 % |
 | Sphere(10) | 0.001 / 15 | 133984 | -0.013 % |
 | Box | anything | 12 | 0 |
+| Box(20, 20, 100).twist(90) | default (0.108) / 15 | 2076 | +0.15 % |
+| Box(20, 20, 100).twist(90) | 0.001 / 15 | 131596 (0.6 s) | -0.004 % |
+| ruled loft, square to circle | default (0.035) / 15 | 2316 | -0.06 % |
 
 The stricter of the two limits wins. A mesh of a closed part is closed and outward, so `volume`
 is positive.
+
+Parts with a face that is straight in one direction and twisted along it (twisted parts, a
+ruled loft between different sections, the walls of a thickened free-form sheet) are divided
+differently: the kernel's usual grid would put one facet across such a face (the twisted box:
+68 triangles, 1 mm off, +5.5 %), so all faces of the part are halved until they are flat
+within the tolerance. That costs 10 to 30 times the triangles, in proportion to 1 / tolerance.
+Other parts get the kernel's triangles unchanged.
 
 ## Gotchas
 - **Mesh Booleans (`m1 + m2`, `m1 - m2`, `m1 & m2`) mostly fail.** The kernel's mesh Booleans

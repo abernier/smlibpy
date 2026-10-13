@@ -25,6 +25,19 @@
 - **Workaround:** `k.tessellate(..., max_edge_length=2)` gives 0.007 mm (5060 triangles);
   `max_edge_length=-1` (automatic) 0.013 mm, but turns a plain box from 12 into 2752
   triangles. Fix belongs in the kernel (`SM_TA_FEWER_POLYGONS` or a block check).
+- **Fixed (2026-10-13):** `tessellate` (and with it `mesh()`, STL, glTF, OBJ, the renderer and
+  the viewer) goes through `_core.ext.tessellate` (`src/cpp/tessellate.cpp`): it estimates
+  for each face how far the grid would be off (a face straight in one direction and twisted
+  along it; chord height and angle tolerance of the faces) and halves the faces of a body
+  with a face beyond twice the tolerance (`SM_TA_FEWER_POLYGONS`, the whole body). The twisted
+  box: 2076 triangles, 0.031 mm off, volume 40061 (12.5 ms). Bodies without such a face keep
+  the kernel's facets (identical arrays for the examples and 183 STEP bodies). The cause in
+  this kernel is `SmSurfaceCache::SubdivideByBlock` + `SmSurface::FindTessellationSplits`
+  (grid lines from the part's border curves only; diagonals only when all four borders are
+  straight); `SmTess` defaults to the grid and `SmBrep::ConvertToPolyBrep` never changes it.
+  Not covered: a face that is twisted but not straight in a direction (a sweep along a 3D
+  curve, then twisted: 4.7 times the tolerance off); free-form sheets whose own twist puts
+  the grid 2 to 5 times the tolerance off (`surface(grid)` in the README: 4.65).
 
 ## MEDIUM
 
