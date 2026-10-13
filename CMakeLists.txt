@@ -20,6 +20,28 @@ endif()
 # Boolean pre-processing only, so it is optional.
 option(SMLIBPY_USE_TBB "Use oneTBB for the parallel parts of the kernel" OFF)
 
+# Patched copies of a few kernel sources are compiled in place of the originals:
+# third_party/patches/<dir>/src/<file> replaces source/<dir>/src/<file> of usd-brep. What each
+# one fixes, and how to drop it, is in third_party/patches/README.md.
+set(SMLIBPY_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patches")
+function(smlibpy_patch_sources sources_var dir)
+  file(GLOB patched CONFIGURE_DEPENDS "${SMLIBPY_PATCH_DIR}/${dir}/src/*.cpp")
+  set(sources ${${sources_var}})
+  foreach(file ${patched})
+    get_filename_component(name "${file}" NAME)
+    string(REPLACE "." "\\." pattern "/${name}$")
+    list(LENGTH sources before)
+    list(FILTER sources EXCLUDE REGEX "${pattern}")
+    list(LENGTH sources after)
+    math(EXPR removed "${before} - ${after}")
+    if(NOT removed EQUAL 1)
+      message(FATAL_ERROR "${file} must replace exactly one kernel source source/${dir}/src/${name}")
+    endif()
+    list(APPEND sources "${file}")
+  endforeach()
+  set(${sources_var} ${sources} PARENT_SCOPE)
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Kernel (SMLib) and its C-style wrapper (SM_API), both static so the Python
 # extension is a single self-contained module.
@@ -34,6 +56,7 @@ if(SMLIBPY_KERNEL_DIR AND NOT SMLIBPY_KERNEL_ONLY)
   include("${SMLIBPY_KERNEL_DIR}/smlibpy-kernel.cmake")
 else()
   file(GLOB SMLIB_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SMLib/src/*.cpp")
+  smlibpy_patch_sources(SMLIB_SOURCES SMLib)
   add_library(smlib STATIC ${SMLIB_SOURCES})
   target_include_directories(smlib PUBLIC "${USD_BREP_DIR}/source/SMLib/inc")
   # Same defines as the upstream release configuration (premake5.lua).
@@ -46,6 +69,7 @@ else()
   endif()
 
   file(GLOB SM_API_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SM_API/src/*.cpp")
+  smlibpy_patch_sources(SM_API_SOURCES SM_API)
   add_library(sm_api STATIC ${SM_API_SOURCES})
   target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
   # PUBLIC: everything is linked statically into one module, so consumers must not see
