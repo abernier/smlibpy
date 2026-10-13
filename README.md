@@ -180,7 +180,7 @@ export_dxf(flange.section(Plane.XZ), "flange-profile.dxf")
 
 ## Status
 
-smlibpy is new (version 0.1). It covers solid and surface modeling, text, and reads and writes
+smlibpy is new (version 0.2). It covers solid and surface modeling, text, and reads and writes
 STEP and DXF with the exact geometry. Assemblies with product structure and dimensioned 2D
 drawings are not there yet.
 
