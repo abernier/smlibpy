@@ -13,7 +13,8 @@
 // smlibpy works on copies: every function here leaves the given Brep unchanged and returns
 // a new Brep (or None).
 
-#include "ext.h"
+#include "kernel.h"
+#include "defeature.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -226,21 +227,21 @@ bool edge_mid_uv(SmEdge* edge, const SmFace* face, SmPoint2d& uv, SmVector3d& ta
     return tangent.Unitize() == SM_SUCCESS;
 }
 
-py::object blend_info(SmFace* face, double tangency_deg)
+smlibpy::BlendInfo blend(SmFace* face, double tangency_deg)
 {
+    smlibpy::BlendInfo info;
     const SmSurface* surface = face->GetSurface();
     if (surface == nullptr || surface->IsKindOf(SmPlane_TYPE))
-        return py::none();
+        return info;
     SmPoint2d uv;
     if (!interior_uv(face, uv))
-        return py::none();
+        return info;
     Curvature c;
     if (!curvature_at(face, uv, c) || c.radius == 0.0)
-        return py::none();
+        return info;
 
     SmTArray<SmEdge*> edges;
     face->GetEdges(edges);
-    py::list smooth, rails, sharp;
     int edge_count = 0;
     for (ULONG i = 0; i < edges.GetSize(); ++i)
     {
@@ -251,13 +252,12 @@ py::object blend_info(SmFace* face, double tangency_deg)
         SmTArray<SmFace*> faces;
         e->GetFaces(faces);
         bool is_smooth = faces.GetSize() == 2 && faces[0] != faces[1] && e->IsTangentEdge(tangency_deg);
-        py::object ref = py::cast(e, py::return_value_policy::reference);
         if (!is_smooth)
         {
-            sharp.append(ref);
+            info.sharp.push_back(e);
             continue;
         }
-        smooth.append(ref);
+        info.smooth.push_back(e);
         // A rail runs across the direction in which the fillet is curved. The curvature is
         // taken a little inside the face: a curvature-continuous blend is flat at its rails.
         SmPoint2d euv;
@@ -268,17 +268,14 @@ py::object blend_info(SmFace* face, double tangency_deg)
             SmPoint2d probe(euv.x + 0.3 * (uv.x - euv.x), euv.y + 0.3 * (uv.y - euv.y));
             if (curvature_at(face, probe, ce) && ce.radius > 0.0 && !ce.umbilic &&
                 std::fabs(t.Dot(ce.direction)) < 0.5)
-                rails.append(ref);
+                info.rails.push_back(e);
         }
     }
-    py::dict d;
-    d["radius"] = c.radius;
-    d["convex"] = c.convex;
-    d["smooth"] = smooth;
-    d["rails"] = rails;
-    d["sharp"] = sharp;
-    d["edges"] = edge_count;
-    return d;
+    info.is_blend = true;
+    info.radius = c.radius;
+    info.convex = c.convex;
+    info.edges = edge_count;
+    return info;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -295,7 +292,7 @@ SmRebuildBrepType rebuild_type(const std::string& name)
 // Remove four-sided fillets one by one with SmFilletRemoval. Fillets that do not qualify yet
 // may after a neighbour went (two mitred fillets of different radii), so the faces are tried
 // in rounds until a round removes none.
-py::dict remove_fillet_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, double tolerance)
+smlibpy::FilletsRemoved remove_fillets(const SmBrep* brep, const std::vector<SmFace*>& faces, double tolerance)
 {
     std::vector<SmFace*> pending;
     SmBrep* work = copy_mapping(brep, faces, pending);
@@ -342,34 +339,28 @@ py::dict remove_fillet_faces(const SmBrep* brep, const std::vector<SmFace*>& fac
             break;
         }
     }
-    py::dict d;
+    smlibpy::FilletsRemoved d;
     if (count > 0)
     {
         SmTemporaryChangeValue<SmBoolean> editing(work->m_bEditingEnabled, TRUE);
         work->StitchAndOrient();
-        d["brep"] = py::cast(work, py::return_value_policy::take_ownership);
+        d.brep = work;
     }
     else
-    {
         delete work;
-        d["brep"] = py::none();
-    }
-    py::list flags;
-    for (bool r : removed)
-        flags.append(r);
-    d["removed"] = flags;
+    d.removed = removed;
     return d;
 }
 
 // Cut connected face sets out of a copy and patch the holes (SmFeatureExecutive).
-py::dict defeature(const SmBrep* brep, const std::vector<std::vector<SmFace*>>& groups, const std::string& rebuild)
+smlibpy::Defeatured cut_and_patch(const SmBrep* brep, const std::vector<std::vector<SmFace*>>& groups, const std::string& rebuild)
 {
     std::vector<SmFace*> all, mapped;
     for (const auto& g : groups)
         all.insert(all.end(), g.begin(), g.end());
     SmRebuildBrepType type = rebuild_type(rebuild);
     SmBrep* copy = copy_mapping(brep, all, mapped);
-    py::dict d;
+    smlibpy::Defeatured d;
     SmBrep* base = nullptr;
     SmTArray<SmBrep*> feature_breps;
     bool applied = true, added = true;
@@ -401,21 +392,54 @@ py::dict defeature(const SmBrep* brep, const std::vector<std::vector<SmFace*>>& 
     for (ULONG i = 0; i < feature_breps.GetSize(); ++i)
         if (feature_breps[i] != nullptr && feature_breps[i] != copy)
             delete feature_breps[i];
-    d["added"] = added;
-    d["applied"] = added && applied;
+    d.added = added;
+    d.applied = added && applied;
     if (added && applied && base == copy)
     {
         // The patches are faces of their own; merge them with the faces they extend.
         SmTemporaryChangeValue<SmBoolean> editing(copy->m_bEditingEnabled, TRUE);
         copy->RemoveTopologicalEdgesAndVertices();
-        d["brep"] = py::cast(copy, py::return_value_policy::take_ownership);
+        d.brep = copy;
     }
     else
-    {
         delete copy;
-        d["brep"] = py::none();
-    }
     return d;
+}
+
+}  // namespace
+
+namespace smlibpy {
+
+BlendInfo blend_info(SmFace* face, double tangency_deg) { return blend(face, tangency_deg); }
+
+FilletsRemoved remove_fillet_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, double tolerance)
+{
+    return remove_fillets(brep, faces, tolerance);
+}
+
+Defeatured defeature(const SmBrep* brep, const std::vector<std::vector<SmFace*>>& groups, const std::string& rebuild)
+{
+    return cut_and_patch(brep, groups, rebuild);
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+
+py::list edge_list(const std::vector<SmEdge*>& edges)
+{
+    py::list out;
+    for (SmEdge* e : edges)
+        out.append(py::cast(e, py::return_value_policy::reference));
+    return out;
+}
+
+py::object owned(SmBrep* brep)
+{
+    return brep ? py::cast(brep, py::return_value_policy::take_ownership) : py::object(py::none());
 }
 
 }  // namespace
@@ -424,19 +448,47 @@ void bind_defeature(py::module_& root)
 {
     py::module_ m = root.def_submodule("defeature", "smlibpy: fillet and face removal.");
 
-    m.def("blend_info", &blend_info, py::arg("face"), py::arg("tangency_deg") = 2.0,
+    m.def("blend_info", [](SmFace* face, double tangency_deg) -> py::object {
+        const smlibpy::BlendInfo r = smlibpy::blend_info(face, tangency_deg);
+        if (!r.is_blend)
+            return py::none();
+        py::dict d;
+        d["radius"] = r.radius;
+        d["convex"] = r.convex;
+        d["smooth"] = edge_list(r.smooth);
+        d["rails"] = edge_list(r.rails);
+        d["sharp"] = edge_list(r.sharp);
+        d["edges"] = r.edges;
+        return d;
+    }, py::arg("face"), py::arg("tangency_deg") = 2.0,
           "What makes a face a fillet: None for a planar or flat face, else a dict with 'radius' (in the "
           "more curved direction, at a point inside the face), 'convex', the edges where it meets its "
           "neighbours tangentially ('smooth'), those of them that run across its curvature ('rails'), "
           "the others ('sharp') and the number of edges without seams ('edges').");
 
-    m.def("remove_fillet_faces", &remove_fillet_faces, py::arg("brep"), py::arg("faces"),
-          py::arg("tolerance") = -1.0,
+    m.def("remove_fillet_faces", [](const SmBrep* brep, const std::vector<SmFace*>& faces, double tolerance) {
+        smlibpy::FilletsRemoved r = smlibpy::remove_fillet_faces(brep, faces, tolerance);
+        py::dict d;
+        d["brep"] = owned(r.brep);
+        py::list flags;
+        for (bool removed : r.removed)
+            flags.append(removed);
+        d["removed"] = flags;
+        return d;
+    }, py::arg("brep"), py::arg("faces"), py::arg("tolerance") = -1.0,
           "Remove four-sided fillets with sharp ends (SmFilletRemoval) from a copy. Returns {'brep': the "
           "copy or None if nothing was removed, 'removed': one flag per face}.");
 
-    m.def("defeature", &defeature, py::arg("brep"), py::arg("groups"), py::arg("rebuild") = "extend",
+    m.def("defeature", [](const SmBrep* brep, const std::vector<std::vector<SmFace*>>& groups, const std::string& rebuild) {
+        const smlibpy::Defeatured r = smlibpy::defeature(brep, groups, rebuild);
+        py::dict d;
+        d["added"] = r.added;
+        d["applied"] = r.applied;
+        d["brep"] = owned(r.brep);
+        return d;
+    }, py::arg("brep"), py::arg("groups"), py::arg("rebuild") = "extend",
           "Cut groups of connected faces out of a copy and patch the holes (SmFeatureExecutive) by extending "
           "the surrounding surfaces ('extend') or with planar caps ('planar_cap'). Returns {'brep': the patched "
           "copy or None, 'added': every group was accepted as a feature, 'applied': every patch was applied}.");
 }
+#endif  // SMLIBPY_PYTHON
