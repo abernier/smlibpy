@@ -75,8 +75,8 @@ const _MARGIN = 0.1
 // asked for) the volume measure says so.
 const _GAPS = 1e-5
 
-// Shapes that only smlibjs makes (edges, bodies) take this as their constructor's argument.
-const INTERNAL = Symbol('smlibjs.internal')
+// Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
+const INTERNAL = Symbol('smlibwasm.internal')
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 

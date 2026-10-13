@@ -480,7 +480,7 @@ test('the Part methods', () => {
 
 // -- the module's example ---------------------------------------------------------------------
 // Python runs it in an MCP session (and checks that the docs index finds the sheet metal pages);
-// smlibjs has no MCP server, so the script runs here as it is.
+// smlibwasm has no MCP server, so the script runs here as it is.
 test('bend and unfold as the example does', () => {
   const blank = Box(100, 40, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
   const bracket = fold(blank, new Axis([20, 0, 2], [0, 1, 0]), 90, { radius: 2 })

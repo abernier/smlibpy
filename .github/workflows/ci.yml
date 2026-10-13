@@ -44,7 +44,7 @@ jobs:
         run: pytest -q
 
   js:
-    # smlibjs: the kernel and smlibpy's C++ compiled to WebAssembly, and the TypeScript port with
+    # smlibwasm: the kernel and smlibpy's C++ compiled to WebAssembly, and the TypeScript port with
     # its tests (js/)
     name: JavaScript (WebAssembly)
     if: github.event_name != 'workflow_dispatch' || inputs.only != 'python'

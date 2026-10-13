@@ -1,6 +1,6 @@
 # Porting smlibpy to JavaScript
 
-smlibjs is smlibpy for JavaScript and TypeScript: the same kernel compiled to WebAssembly, the
+smlibwasm is smlibpy for JavaScript and TypeScript: the same kernel compiled to WebAssembly, the
 same modeling API, for the browser and Node. Branch `feat/js`, everything under `js/`.
 
 ## Layers
@@ -23,7 +23,7 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
    kernel.ts for smlibpy's own): `k.fillet_edges(b, edges, { radius: 2, xsect_type: 2 })`.
    Always go through this: the module itself does not check argument counts, a missing
    argument arrives as 0.
-3. **smlibjs** (js/src/*.ts): smlibpy's Python modules, one TypeScript module each, same
+3. **smlibwasm** (js/src/*.ts): smlibpy's Python modules, one TypeScript module each, same
    file names (shapes.py -> shapes.ts, _regions.py -> _regions.ts).
 
 ## Porting rules
@@ -57,7 +57,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   returns a plain array. Python's `ShapeList.at(point)` is `atPoint(point)` (Array has `at`).
   `new ShapeList(...shapes)` builds one; the internal helper is `_list(iterable)`.
 - **Errors.** `ValueError` and `IndexError` -> `RangeError`; `TypeError` -> `TypeError`;
-  `ModelingError` and `KernelError` are smlibjs's classes (kernel.ts). `kernel_call` is
+  `ModelingError` and `KernelError` are smlibwasm's classes (kernel.ts). `kernel_call` is
   `kernelCall(operation, () => ..., hint)`. `except (KernelError, ValueError)` is
   `catch (e) { if (!(e instanceof KernelError || e instanceof RangeError)) throw e }`.
   `warnings.warn` is `_warn(message)` (kernel.ts).
@@ -66,7 +66,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   16 numbers row by row (`m[r * 4 + c]`); `Location.matrix` gives them as rows. Meshes hold
   flat typed arrays (vertices `Float64Array` of x, y, z; triangles `Uint32Array` of three
   indices each).
-- **numpy slices** of arrays smlibjs hands out (a Lattice's points) become an index per axis:
+- **numpy slices** of arrays smlibwasm hands out (a Lattice's points) become an index per axis:
   a number (negative counts from the end), `null` for all (Python's `:`) or an array of numbers:
   `lattice.points[i][j][k]` is a point `[x, y, z]`; `layer(Z, -1)` is `[null, null, -1]`.
 - **Kernel objects** are numbers. Python's `id(kernel_object)` identity is the number.

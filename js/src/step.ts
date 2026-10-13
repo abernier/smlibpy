@@ -591,8 +591,8 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
   }
 
   const header = [
-    "FILE_DESCRIPTION(('smlibjs model'),'2;1');",
-    `FILE_NAME(${_s(path.split('/').pop())},${_s(_stamp())},(${_s(author)}),(${_s(organization)}),` + "'smlibjs','smlibjs (SMLib kernel)','');",
+    "FILE_DESCRIPTION(('smlibwasm model'),'2;1');",
+    `FILE_NAME(${_s(path.split('/').pop())},${_s(_stamp())},(${_s(author)}),(${_s(organization)}),` + "'smlibwasm','smlibwasm (SMLib kernel)','');",
     "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
   ]
   return w.text(header)

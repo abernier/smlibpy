@@ -49,7 +49,7 @@ function approx(actual: number | readonly number[], expected: number | readonly 
 
 /** A fresh directory for the files of a test (pytest's tmp_path), removed after it. */
 function tmp(ctx: TestContext): string {
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-text-dxf-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-text-dxf-'))
   ctx.after(() => rmSync(dir, { recursive: true, force: true }))
   return dir
 }
@@ -102,7 +102,7 @@ test('containers and kerning sources', () => {
   assert.equal(cff.kerning(cff.glyphIndex('H') as number, cff.glyphIndex('O') as number).advance1, -30)
 })
 
-test('fonts as bytes: the same font as from its file, read once (smlibjs)', () => {
+test('fonts as bytes: the same font as from its file, read once (smlibwasm)', () => {
   const bytes = new Uint8Array(readFileSync(QUAD))
   const f = loadFont(bytes)
   assert.equal(loadFont(bytes), f)
@@ -660,7 +660,7 @@ test('DXF: read by an independent reader', { skip: 'needs ezdxf, which only Pyth
 
 test('DXF: written by an independent writer', { skip: 'needs ezdxf, which only Python has' }, () => {})
 
-test('DXF in memory: toDxf, fromDxf and fromDxfWires as the file functions (smlibjs)', (ctx) => {
+test('DXF in memory: toDxf, fromDxf and fromDxfWires as the file functions (smlibwasm)', (ctx) => {
   const dir = tmp(ctx)
   const plate = RoundedRectangle(60, 40, 5).cut(Circle(6)).named('plate')
   const text = toDxf(plate)
@@ -695,7 +695,7 @@ test('the MCP session embosses text and saves DXF', { skip: "the MCP server is s
 test('fit point tangents keep all their coordinates', () => {
   // The y and z of a fit-point spline's end tangents (codes 22/32 and 23/33) were never read: a
   // vertical start tangent became zero and failed, (1, 1) became (1, 0).
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-dxf-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-dxf-'))
   try {
     const fit = [
       [0, 0],
@@ -716,7 +716,7 @@ test('fit point tangents keep all their coordinates', () => {
 
 test('a byte order mark is no part of the drawing', () => {
   // A UTF-8 DXF that starts with a byte order mark was "not a DXF file".
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-dxf-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-dxf-'))
   try {
     const path = dxf(dir, lw([[0, 0], [10, 0], [10, 5], [0, 5]]))
     writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), readFileSync(path)]))

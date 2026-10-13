@@ -418,7 +418,7 @@ test('draft adds to the draft a face has', () => {
 test('draft after a STEP round trip', () => {
   const box = Box(40, 30, 20)
   const part = box.fillet(box.edges().parallelTo(Z), 4).cut(Cylinder(5, 40))
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-draft-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-draft-'))
   exportStep(part, join(dir, 'part.step'))
   const imported = importStep(join(dir, 'part.step')) as Part
   const here = part.draft(walls(part), 3, Plane.XY.offset(-10))

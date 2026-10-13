@@ -9,7 +9,7 @@ import { exportGlb, exportGltf, exportStep, exportStl, fromSmb, fromStl, importS
 import { approx } from './_approx.ts'
 
 function tmpPath(): string {
-  return mkdtempSync(join(tmpdir(), 'smlibjs-io-'))
+  return mkdtempSync(join(tmpdir(), 'smlibwasm-io-'))
 }
 
 function plate(): Part {
@@ -100,7 +100,7 @@ const occShapes: [string, (() => Part) | null][] = [
   ['loft', () => loft([Rectangle(20, 20), Circle(8).translate(0, 0, 20)]) as Part],
 ]
 for (const [name] of occShapes) {
-  test(`step reads back in opencascade [${name}]`, { skip: 'needs OpenCASCADE (OCP), which smlibjs has no binding for' }, () => {})
+  test(`step reads back in opencascade [${name}]`, { skip: 'needs OpenCASCADE (OCP), which smlibwasm has no binding for' }, () => {})
 }
 
 test('render png', () => {
@@ -116,7 +116,7 @@ test('render png', () => {
   assert.deepEqual([ds.getUint32(16), ds.getUint32(20)], [400, 300])
 })
 
-// smlibjs's in-memory pairs (no Python counterpart): the same formats without files
+// smlibwasm's in-memory pairs (no Python counterpart): the same formats without files
 test('formats in memory', () => {
   const p = plate()
   approx(fromStl(toStl(p)).volume, p.volume, 1e-3)

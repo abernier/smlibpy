@@ -33,7 +33,7 @@ import { approx } from './_approx.ts'
 
 const PI = Math.PI
 
-/** The kernel's union without smlibjs's checks (an invalid body for tangent operands). */
+/** The kernel's union without smlibwasm's checks (an invalid body for tangent operands). */
 function rawUnion(a: Part, b: Part): Part {
   return Part._wrap(k.boolean(a._copyBrep(), b._copyBrep(), { operation: k.BooleanOp.UNION }))
 }

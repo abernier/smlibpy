@@ -1,5 +1,5 @@
 {
-  "name": "smlibjs",
+  "name": "@classcad/smlibwasm",
   "version": "0.2.2",
   "description": "CAD in JavaScript on the SMLib NURBS kernel, compiled to WebAssembly: smlibpy's API for the web and Node",
   "license": "MIT AND Apache-2.0 AND OFL-1.1",
@@ -28,13 +28,13 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./wasm/smlibjs.wasm": "./wasm/smlibjs.wasm",
+    "./wasm/smlibwasm.wasm": "./wasm/smlibwasm.wasm",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "wasm/smlibjs.mjs",
-    "wasm/smlibjs.wasm",
+    "wasm/smlibwasm.mjs",
+    "wasm/smlibwasm.wasm",
     "fonts",
     "NOTICE",
     "LICENSE.usd-brep"
@@ -49,6 +49,9 @@
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "24.3.0",

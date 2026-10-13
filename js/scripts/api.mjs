@@ -82,7 +82,7 @@ function names(st) {
 
 const printer = ts.createPrinter({ removeComments: true })
 let out = '## API\n\n' +
-  'The exports of `smlibjs` as TypeScript declarations. The [API reference](api.md) describes each of them\n' +
+  'The exports of `@classcad/smlibwasm` as TypeScript declarations. The [API reference](api.md) describes each of them\n' +
   'under its Python name: `parallel_to` there is `parallelTo` here.\n'
 for (const [title, modules] of SECTIONS) {
   const parts = []

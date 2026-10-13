@@ -162,7 +162,7 @@ test('removing selected fillets only', () => {
 
 test('removing fillets after a STEP round trip', () => {
   const rounded = box.fillet(box.edges(), 3)
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-defeature-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-defeature-'))
   exportStep(rounded, join(dir, 'rounded.step'))
   const imported = importStep(join(dir, 'rounded.step')) as Part
   const sharp = imported.removeFillets()

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, rmSync } from 'node:fs'
 
 const js = new URL('..', import.meta.url)
-for (const file of ['wasm/smlibjs.mjs', 'wasm/smlibjs.wasm'])
+for (const file of ['wasm/smlibwasm.mjs', 'wasm/smlibwasm.wasm'])
   if (!existsSync(new URL(file, js))) throw new Error(`${file} is missing: run npm run wasm first`)
 rmSync(new URL('dist', js), { recursive: true, force: true })
 execFileSync('npm', ['run', 'build'], { cwd: js, stdio: 'inherit' })

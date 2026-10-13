@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the WebAssembly module (js/wasm/smlibjs.mjs and smlibjs.wasm) from the repository root's
+# Builds the WebAssembly module (js/wasm/smlibwasm.mjs and smlibwasm.wasm) from the repository root's
 # CMake project with Emscripten. Needs the Emscripten SDK on the PATH (source emsdk_env.sh), or in
 # ~/emsdk.
 set -e
@@ -17,6 +17,6 @@ OUT_DIR="${OUT_DIR:-$ROOT/js/wasm}"
 # (Ninja where there is one; a build directory keeps the generator it was made with)
 GENERATOR=""
 if [ ! -f "$BUILD_DIR/CMakeCache.txt" ] && command -v ninja >/dev/null 2>&1; then GENERATOR="-G Ninja"; fi
-emcmake cmake -S "$ROOT" -B "$BUILD_DIR" $GENERATOR -DCMAKE_BUILD_TYPE=Release -DSMLIBJS_OUT_DIR="$OUT_DIR"
+emcmake cmake -S "$ROOT" -B "$BUILD_DIR" $GENERATOR -DCMAKE_BUILD_TYPE=Release -DSMLIBWASM_OUT_DIR="$OUT_DIR"
 cmake --build "$BUILD_DIR" --parallel
 ls -la "$OUT_DIR"

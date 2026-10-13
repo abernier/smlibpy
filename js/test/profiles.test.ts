@@ -4,7 +4,7 @@
 // Python's random disks and shapes (random.seed) come from a seeded generator of its own here; the
 // tests check properties, not the particular shapes. The last four Python tests (the MCP server's
 // search and guides, the skill's guides run as scripts, a script in an MCP session) test smlibpy's
-// MCP server and skill, which smlibjs does not have.
+// MCP server and skill, which smlibwasm does not have.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Profile } from '../src/profiles.ts'

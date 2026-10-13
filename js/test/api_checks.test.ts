@@ -115,7 +115,7 @@ test('feature argument checks', () => {
 })
 
 test('file argument checks', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-'))
   assert.throws(() => load(join(dir, 'x.glb')), (e: Error) => e instanceof RangeError && /unknown file type/.test(e.message))
   assert.throws(() => load(join(dir, 'missing.smb')), (e: NodeJS.ErrnoException) => e.code === 'ENOENT')
   assert.throws(() => Box(1, 1, 1).mesh(0), (e: Error) => e instanceof RangeError && /positive/.test(e.message))

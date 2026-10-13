@@ -564,7 +564,7 @@ test('diffImages with a pinned frame', () => {
   assert.ok(x0 <= hx && hx <= x1 && y0 <= hy && hy <= y1 && x1 - x0 < 60)
   assert.equal(Px.of(d.picture).count(red), d.changed)
   // any form: pictures, PNG data, files, pixels
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-render-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-render-'))
   try {
     const file = join(dir, 'before.png')
     before.save(file)
@@ -924,14 +924,14 @@ test('the viewer page holds the model and the camera', () => {
 })
 
 test('show writes the page', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-viewer-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-viewer-'))
   try {
     const path = join(dir, 'model.html')
     assert.equal(show(bored(), { path, openBrowser: false, title: 'bored' }), path)
     assert.ok(readFileSync(path, 'utf8').includes('<title>bored</title>'))
     const temp = show(Box(1, 2, 3), { openBrowser: false })
     try {
-      assert.match(temp, /smlibjs-[a-z0-9]+\.html$/)
+      assert.match(temp, /smlibwasm-[a-z0-9]+\.html$/)
       assert.ok(readFileSync(temp, 'utf8').includes('GLTFLoader'))
     } finally {
       rmSync(temp, { force: true })

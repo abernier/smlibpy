@@ -1,11 +1,11 @@
 # JavaScript
 
-smlibjs is smlibpy for JavaScript and TypeScript: the same modeling API on the same kernel,
-SMLib, compiled to WebAssembly. It runs in the browser and in Node, needs no server and has no
+smlibwasm (`@classcad/smlibwasm` on npm) is smlibpy for JavaScript and TypeScript: the same
+modeling API on the same kernel, SMLib, compiled to WebAssembly. It runs in the browser and in Node, needs no server and has no
 dependencies. Parts are built, measured and exported where the page runs.
 
 ```js
-import { Box, Cylinder, GridLocations, Z, toStep } from 'smlibjs'
+import { Box, Cylinder, GridLocations, Z, toStep } from '@classcad/smlibwasm'
 
 let plate = Box(80, 60, 10)
 plate = plate.fillet(plate.edges().parallelTo(Z), 8)
@@ -18,12 +18,12 @@ const step = toStep(plate) // the STEP file as text
 ## Install
 
 ```bash
-npm install smlibjs
+npm install @classcad/smlibwasm
 ```
 
 The package is an ES module with type declarations. Importing it loads the kernel: the import
 waits for it once, and every call after that is synchronous. The kernel is a WebAssembly file
-next to the module, found with `new URL('smlibjs.wasm', import.meta.url)`, which Vite, webpack 5
+next to the module, found with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite, webpack 5
 and other bundlers resolve on their own. Node needs version 22.18 or later.
 
 ## Size
@@ -33,8 +33,8 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibjs.wasm` | 1.5 MB | 2.2 MB | 6.2 MB |
-| Its loader, `smlibjs.mjs` | 22 kB | 24 kB | 86 kB |
+| The kernel, `smlibwasm.wasm` | 1.5 MB | 2.2 MB | 6.2 MB |
+| Its loader, `smlibwasm.mjs` | 22 kB | 24 kB | 86 kB |
 | The library | 0.21 MB | 0.26 MB | 0.96 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
 | **Together** | **1.8 MB** | **2.5 MB** | **7.4 MB** |
@@ -48,7 +48,7 @@ A part's mesh goes straight into a renderer such as three.js:
 
 ```js
 import * as THREE from 'three'
-import { Box, Cylinder } from 'smlibjs'
+import { Box, Cylinder } from '@classcad/smlibwasm'
 
 const part = Box(40, 30, 10).cut(Cylinder(6, 20))
 const mesh = part.mesh(0.01) // chord height tolerance in mm
@@ -69,7 +69,7 @@ const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
 `htmlPage(part)` is a page with a 3D viewer for an iframe (`iframe.srcdoc = htmlPage(part)`), and
 `render(part)` draws a PNG (`picture.data`) without a GPU.
 
-## From smlibpy to smlibjs
+## From smlibpy to smlibwasm
 
 The functions, classes, checks and error messages are smlibpy's, so the rest of these docs
 applies. The differences come from the language:
@@ -93,7 +93,7 @@ body's kernel object is freed when the body is garbage collected; `part.dispose(
 
 ## API
 
-The exports of `smlibjs` as TypeScript declarations. The [API reference](api.md) describes each of them
+The exports of `@classcad/smlibwasm` as TypeScript declarations. The [API reference](api.md) describes each of them
 under its Python name: `parallel_to` there is `parallelTo` here.
 
 ### Geometry

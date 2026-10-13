@@ -1,7 +1,7 @@
-smlibjs
+smlibwasm
 Copyright (c) 2026 AWV Informatik AG. Licensed under the MIT License (see LICENSE).
 
-The WebAssembly module (wasm/smlibjs.wasm and its loader wasm/smlibjs.mjs) contains the
+The WebAssembly module (wasm/smlibwasm.wasm and its loader wasm/smlibwasm.mjs) contains the
 SMLib solid modeling kernel and its SM_API wrapper from USD BRep, compiled with Emscripten,
 and code taken from USD BRep's Python bindings (SmPyLib):
 

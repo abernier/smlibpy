@@ -356,7 +356,7 @@ test('deformed parts work downstream', () => {
   assert.ok(holed.isValid() && volume(holed) < volume(bar))
   const rounded = bar.fillet(bar.faces().sortBy(Z).at(-1)!.edges(), 2)
   assert.ok(rounded.isValid())
-  const dir = mkdtempSync(join(tmpdir(), 'smlibjs-deform-'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-deform-'))
   exportStep(bar, join(dir, 'bar.step'))
   const back = importStep(join(dir, 'bar.step')) as Part
   approx(volume(back), 40000, 1e-7)

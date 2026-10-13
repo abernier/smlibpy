@@ -235,7 +235,7 @@ export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean 
     normals.set(m.triangleNormals, corner - tri.length)
   }
   if (ascii) {
-    const parts: string[] = ['solid smlibjs\n']
+    const parts: string[] = ['solid smlibwasm\n']
     for (let i = 0; i < count; i++) {
       parts.push(`facet normal ${_pyE(normals[i * 3])} ${_pyE(normals[i * 3 + 1])} ${_pyE(normals[i * 3 + 2])}\n outer loop\n`)
       for (let c = 0; c < 3; c++) {
@@ -244,11 +244,11 @@ export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean 
       }
       parts.push(' endloop\nendfacet\n')
     }
-    parts.push('endsolid smlibjs\n')
+    parts.push('endsolid smlibwasm\n')
     return new TextEncoder().encode(parts.join(''))
   }
   const out = new Uint8Array(84 + 50 * count)
-  out.set(new TextEncoder().encode('smlibjs binary STL'.padEnd(80, ' ')))
+  out.set(new TextEncoder().encode('smlibwasm binary STL'.padEnd(80, ' ')))
   const dv = new DataView(out.buffer)
   dv.setUint32(80, count, true)
   for (let i = 0; i < count; i++) {
@@ -480,7 +480,7 @@ function _aheapsort(t: Int32Array, start: number, n: number, cmp: (i: number, j:
 /** Wavefront OBJ text of the shapes (one object per part). */
 export function toObj(shapes: unknown, options: MeshOptions = {}): string {
   const { tolerance = null, angle = 15.0 } = options
-  const lines = ['# smlibjs']
+  const lines = ['# smlibwasm']
   let offset = 1
   _meshes(shapes, tolerance, angle).forEach(([item, m], i) => {
     lines.push(`o ${(item as Any).name || `part_${i + 1}`}`)
@@ -683,7 +683,7 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
   })
 
   const doc = {
-    asset: { version: '2.0', generator: 'smlibjs' },
+    asset: { version: '2.0', generator: 'smlibwasm' },
     scene: 0,
     scenes: [{ nodes: nodes.map((_, i) => i) }],
     nodes,
@@ -823,7 +823,7 @@ let _tmp = 0
 /** A free name for a file in the module's own (in-memory) file system. */
 function _tmpName(): string {
   _tmp += 1
-  return `/tmp/smlibjs-${_tmp}.smb`
+  return `/tmp/smlibwasm-${_tmp}.smb`
 }
 
 function _unlink(name: string): void {

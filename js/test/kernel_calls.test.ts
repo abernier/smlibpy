@@ -1,7 +1,7 @@
 // The kernel's calls (js/cpp/bind_kernel*.cpp), each with a small case whose answer is known
 // exactly: distances from points to boxes, cylinders and fillets, the edges of known bodies. They
 // show that the right kernel call runs, with its arguments in the right order.
-// SMLIBJS_WASM=<path of smlibjs.mjs> tests another build than js/wasm.
+// SMLIBWASM_WASM=<path of smlibwasm.mjs> tests another build than js/wasm.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -13,8 +13,8 @@ import { SIGNATURES } from '../src/signatures.ts'
 type Any = any
 type Vec = [number, number, number]
 
-const where = process.env.SMLIBJS_WASM
-const url = where ? pathToFileURL(resolve(where)).href : new URL('../wasm/smlibjs.mjs', import.meta.url).href
+const where = process.env.SMLIBWASM_WASM
+const url = where ? pathToFileURL(resolve(where)).href : new URL('../wasm/smlibwasm.mjs', import.meta.url).href
 const { default: createSmlib } = await import(url)
 const K: Any = await createSmlib()
 K.init()

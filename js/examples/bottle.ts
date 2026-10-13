@@ -1,4 +1,4 @@
-// The classic OpenCASCADE bottle, built with smlibjs.
+// The classic OpenCASCADE bottle, built with smlibwasm.
 import { Align, Cylinder, Line, type Part, Plane, ThreePointArc, Wire, makeFace } from '../src/index.ts'
 
 export function model(): Part {

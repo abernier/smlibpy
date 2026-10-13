@@ -5,7 +5,7 @@
 A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep) with an API inspired by [cadquery](https://github.com/cadquery/cadquery) and [build123d](https://github.com/gumyr/build123d).
 
 It comes with an MCP server, so your agent can build parts too. And it runs in the browser:
-[smlibjs](#in-javascript) is the same library for JavaScript and TypeScript, on the kernel compiled
+[smlibwasm](#in-javascript) is the same library for JavaScript and TypeScript, on the kernel compiled
 to WebAssembly.
 
 **[Website](https://smlibpy.classcad.ch)** · **[Documentation](https://smlibpy.classcad.ch/docs/)** ·
@@ -158,15 +158,15 @@ agent works in four steps:
 
 ## In JavaScript
 
-smlibjs is smlibpy for JavaScript and TypeScript: the same API on the same kernel, compiled to
-WebAssembly. It runs in the browser and in Node, without a server and without dependencies.
+smlibwasm (`@classcad/smlibwasm` on npm) is smlibpy for JavaScript and TypeScript: the same API on
+the same kernel, compiled to WebAssembly. It runs in the browser and in Node, without a server and without dependencies.
 
 ```bash
-npm install smlibjs
+npm install @classcad/smlibwasm
 ```
 
 ```js
-import { Box, Cylinder, GridLocations, Z, toStep } from 'smlibjs'
+import { Box, Cylinder, GridLocations, Z, toStep } from '@classcad/smlibwasm'
 
 let plate = Box(80, 60, 10)
 plate = plate.fillet(plate.edges().parallelTo(Z), 8)
@@ -176,7 +176,7 @@ const step = toStep(plate) // the STEP file as text
 
 Names are camelCase, keyword arguments become an options object, and operators become methods
 (`a.cut(b)` for `a - b`). A browser loads about 1.8 MB with brotli: 1.5 MB for the kernel
-(`smlibjs.wasm`, 6.2 MB uncompressed) and 0.3 MB for the library and its font. The
+(`smlibwasm.wasm`, 6.2 MB uncompressed) and 0.3 MB for the library and its font. The
 [JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
 TypeScript; the source is in [`js/`](js).
 
@@ -261,7 +261,7 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
   [sheet metal](https://smlibpy.classcad.ch/docs/sheet-metal)
 - [Measuring and analysis](https://smlibpy.classcad.ch/docs/analysis), [files and pictures](https://smlibpy.classcad.ch/docs/files)
 - [AI agents](https://smlibpy.classcad.ch/docs/mcp): the MCP server, so Claude and other agents can model with smlibpy
-- [JavaScript](https://smlibpy.classcad.ch/docs/javascript): smlibjs, on the kernel compiled to WebAssembly
+- [JavaScript](https://smlibpy.classcad.ch/docs/javascript): smlibwasm, on the kernel compiled to WebAssembly
 - [Examples](https://smlibpy.classcad.ch/docs/examples)
 - [The kernel](https://smlibpy.classcad.ch/docs/kernel): how smlibpy uses SMLib, accuracy, limitations
 - [API reference](https://smlibpy.classcad.ch/docs/api)
@@ -269,11 +269,11 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
 ## Status
 
 smlibpy is new (version 0.2). It covers solid and surface modeling, text, and reads and writes
-STEP and DXF with the exact geometry; smlibjs has all of it in JavaScript. Assemblies with product structure and dimensioned 2D
+STEP and DXF with the exact geometry; smlibwasm has all of it in JavaScript. Assemblies with product structure and dimensioned 2D
 drawings are not there yet.
 
 ## License
 
-smlibpy and smlibjs are MIT licensed. They build and bundle the SMLib kernel from
+smlibpy and smlibwasm are MIT licensed. They build and bundle the SMLib kernel from
 [NVIDIA-Omniverse/usd-brep](https://github.com/NVIDIA-Omniverse/usd-brep), © NVIDIA, under
 the Apache License 2.0; see [NOTICE](NOTICE).

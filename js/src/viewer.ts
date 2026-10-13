@@ -174,7 +174,7 @@ function _float(v: number): string {
 
 /** The options of `htmlPage`. */
 export interface PageOptions {
-  /** The page title (default "smlibjs"). */
+  /** The page title (default "smlibwasm"). */
   title?: string
   /** Tessellation tolerance; default 0.1 % of each body's size. */
   tolerance?: number | null
@@ -199,7 +199,7 @@ export interface PageOptions {
  */
 export function htmlPage(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<PageOptions>(args)
-  const { title = 'smlibjs', tolerance = null, angle = 12.0, edges = true, view = [1.0, -1.25, 0.75], margin = 1.1 } = options
+  const { title = 'smlibwasm', tolerance = null, angle = 12.0, edges = true, view = [1.0, -1.25, 0.75], margin = 1.1 } = options
   const [glb, summary] = _glbBytes(shapes, tolerance, angle, edges)
   const [vx, vy, vz] = Array.from(view, Number)
   // (functions as replacements: the texts are taken as they are, "$" patterns and all)
@@ -211,7 +211,7 @@ export function htmlPage(...args: unknown[]): string {
 
 /** The options of `show`. */
 export interface ShowOptions {
-  /** The page title (default "smlibjs"). */
+  /** The page title (default "smlibwasm"). */
   title?: string
   /** Where to write the page (default: a new temporary file). */
   path?: string | null
@@ -244,7 +244,7 @@ function _builtin(name: string): Any {
  */
 export function show(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<ShowOptions>(args)
-  const { title = 'smlibjs', openBrowser = true, tolerance = null, angle = 12.0, edges = true } = options
+  const { title = 'smlibwasm', openBrowser = true, tolerance = null, angle = 12.0, edges = true } = options
   let { path = null } = options
   if (!_builtin('node:fs')) throw new Error('show needs Node.js to write the page and open a browser; in a browser app, show htmlPage(...) in an iframe')
   const fs = _fs()
@@ -254,7 +254,7 @@ export function show(...args: unknown[]): string {
     const nodePath = _builtin('node:path')
     // a new file of our own, as Python's tempfile.mkstemp
     for (;;) {
-      const name = nodePath.join(os.tmpdir(), `smlibjs-${Math.random().toString(36).slice(2, 10)}.html`)
+      const name = nodePath.join(os.tmpdir(), `smlibwasm-${Math.random().toString(36).slice(2, 10)}.html`)
       try {
         fs.closeSync(fs.openSync(name, 'wx', 0o600))
         path = name as string
