@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Build, check and export exact 3D CAD parts (mechanical parts, brackets, enclosures, flanges, gears, bottles, springs, freeform shells) by writing Python with smlibpy through the smlibpy MCP tools. Also for sheet metal (bends, flanges, flat patterns), deforming parts (twist, taper, bend, lattice), reading STEP files, lettering (engraved or embossed text), DXF drawings in and out, and measuring parts. Use when the user wants a 3D model made, measured or exported as a file. For models that must stay editable and regenerate (constrained sketches, feature history, expressions, assemblies, apps built on buerli or Buerligons), use the ClassCAD MCP instead.
+description: Build, check and export exact 3D CAD parts (mechanical parts, brackets, enclosures, flanges, gears, bottles, springs, freeform shells) by writing Python with smlibpy through the smlibpy MCP tools. Also for sheet metal (bends, flanges, flat patterns), deforming parts (twist, taper, bend, lattice), removing fillets and features, draft analysis and parting lines, reading STEP files, lettering (engraved or embossed text), DXF drawings in and out, and measuring parts. Use when the user wants a 3D model made, measured or exported as a file. For models that must stay editable and regenerate (constrained sketches, feature history, expressions, assemblies, apps built on buerli or Buerligons), use the ClassCAD MCP instead.
 ---
 
 # smlibpy CAD

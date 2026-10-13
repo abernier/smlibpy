@@ -32,6 +32,8 @@ edges are picked by their geometry, for example `part.faces().top()` or
 - Sheet metal: exact bends with radius and K-factor, flanges, unfolding, flat patterns with bend
   lines
 - Deformation: twist, taper and bend finished parts, or deform them freely with a lattice
+- Simplifying: take fillets, holes and bosses out of a part, an imported one too
+- Molding: draft analysis for a pull direction and the parting line
 - Sketches and curves: a profile builder with tangent arcs and inline fillets; rectangles,
   circles, ellipses, polygons, triangles, slots, hulls, bands along paths; exact 2D Booleans,
   offsets, corner fillets and chamfers; lines, arcs, splines, Béziers, helices; text with exact

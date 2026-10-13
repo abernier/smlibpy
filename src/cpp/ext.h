@@ -15,3 +15,8 @@ void bind_surface_eval(py::module_ m);
 void bind_sheetmetal(py::module_ m);
 // Space deformations: twist, taper, bend, lattice (deform.cpp).
 void bind_deform(py::module_& m);
+// Fillet and face removal (defeature.cpp), registered as `_core.defeature`.
+void bind_defeature(py::module_& m);
+
+// Draft analysis and parting lines (draft.cpp), registered as `_core.draft`.
+void bind_draft(py::module_& m);

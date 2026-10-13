@@ -1,0 +1,17 @@
+# Part.remove_fillets on imported STEP parts
+import os, tempfile
+d = tempfile.mkdtemp()
+box = Box(40, 30, 20)
+export_step(box.fillet(box.edges(), 3), os.path.join(d, "rounded.step"))
+imp = import_step(os.path.join(d, "rounded.step"))
+print("[04] imported:", len(imp.faces()), sorted({f.geom_type for f in imp.faces()}), "fillets", len(imp.faces().fillets()))
+back = imp.remove_fillets()
+print("[04] removed:", len(back.faces()), "volume error %.1e" % (back.mass_properties(accuracy=1e-10).volume - 24000))
+plate = Box(60, 40, 5, align=(Align.CENTER, Align.CENTER, Align.MAX))
+sharp = plate + Box(20, 16, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+part = sharp.fillet(sharp.edges().filter(lambda e: abs(e.center().z) < 1e-6 and e.convexity == "concave"), 2)
+export_step(part, os.path.join(d, "boss.step"))
+imp = import_step(os.path.join(d, "boss.step"))
+print("[04] imported boss:", sorted({f.geom_type for f in imp.faces().fillets()}), len(imp.faces().fillets()))
+back = imp.remove_fillets()
+print("[04] removed:", len(back.faces()), "volume error %.1e" % (back.mass_properties(accuracy=1e-10).volume - 15200))

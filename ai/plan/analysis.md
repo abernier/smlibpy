@@ -15,3 +15,5 @@ Docs go to `src/smlibpy/skill/references/analysis/`. Work through the rows in or
 | 7 | `project.md` | project | curves onto bodies or planes | [x] project.md |
 | 8 | `outline.md` | outline | 2D drawing views of a body | [x] outline.md |
 | 9 | `is_valid.md` | is_valid, info | what valid means, how to get details | [x] is_valid.md |
+| 10 | `draft_analysis.md` | Part.draft_analysis, DraftAnalysis, FaceDraft | pull direction, min_angle, the four groups, angles, accuracy, one direction vs. two mold halves, curved faces, what it does not see | [x] draft_analysis.md |
+| 11 | `parting_line.md` | Part.parting_line | result, exact and traced curves, walls without draft, several lines, errors | [x] parting_line.md |

@@ -42,4 +42,5 @@ print(round(drafted.volume, 3))                         # 23475.068
 ```
 
 ## Related
-`extrude` (taper), `split`, `loft`.
+`extrude` (taper), `split`, `loft`; `analysis/draft_analysis` measures the draft of every face,
+`analysis/parting_line` finds where the mold halves meet.

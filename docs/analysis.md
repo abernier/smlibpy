@@ -61,6 +61,35 @@ box.outline(Plane.XZ)                       # edges projected to a plane
 Line((0, 0), (10, 10)).intersections(Line((0, 10), (10, 0)))  # [Vector(5, 5, 0)]
 ```
 
+## Draft and parting lines
+
+A part that is molded or cast must come out of its mold: every face needs draft, a slight
+angle towards the direction in which its mold half moves away. `draft_analysis` measures the
+draft angle of every face for a pull direction and sorts the faces into four groups:
+`positive` (at least `min_angle` everywhere), `insufficient` (some draft, but less),
+`vertical` (parallel to the direction) and `undercut` (turned away from it somewhere).
+
+```python
+core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)
+up = core.draft_analysis(Z, min_angle=1)
+print(len(up.positive), len(up.vertical), len(up.undercut))   # 9 0 1: the walls, the top; the bottom
+print(Box(40, 30, 20).draft_analysis(Z).vertical.__len__())    # 4 walls that need draft
+```
+
+The groups are selections of the part's faces, and `up.angles(face)` gives the least and the
+greatest angle of a face in degrees. The bottom of the core turns away from Z: in a two-part
+mold it belongs to the other half, which `draft_analysis(-Z)` checks.
+
+`parting_line` finds where the two halves meet: where the surface turns from facing the
+direction to facing away from it, through the middle of curved faces where needed. The lines
+are closed wires of exact curves, a circle around a sphere's equator:
+
+```python
+equator = Sphere(10).parting_line(Z)[0]
+print([e.geom_type for e in equator.edges()], round(equator.length, 6))   # ['circle', 'circle'] 62.831853
+print(core.parting_line(Z)[0].bbox().max.z)                             # 0.0: the core's bottom rim
+```
+
 ## Meshes
 
 `tessellate` (or `shape.mesh()`) turns exact shapes into triangles, with a tolerance on the

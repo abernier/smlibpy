@@ -86,4 +86,6 @@ PYBIND11_MODULE(_core, m)
     bind_surface_eval(m.attr("ext").cast<py::module_>());
     bind_sheetmetal(m.def_submodule("sheetmetal", "Sheet metal: exact bending and unbending."));
     bind_deform(m);
+    bind_defeature(m);
+    bind_draft(m);
 }
