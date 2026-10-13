@@ -42,11 +42,12 @@ Planes come back as planes, cylinders as cylinders (the faces are extended, not 
 
 ## Imported parts
 Exact on simple parts; on real parts the kernel cannot take out every fillet:
-- example bracket (5 fillets): all 5 native (volume 31287.064 → 31376.338); 2 of 5 after a STEP
-  round trip (`partial=True`).
+- example bracket (5 fillets): all 5 go when it is made here (volume 31287.064 → 31376.338);
+  after a STEP round trip 2 go and 3 stay (`partial=True`).
 - example flange (ring fillet at the neck): native and STEP.
-- B-spline faces (STEP files from other systems, `to_nurbs()`) are extended as smooth
-  continuations, not exactly: a boss whose faces are B-splines came back 1.5e-6 too large.
+- B-spline faces (many STEP files, `to_nurbs()`) are extended as smooth continuations: the
+  boss with B-spline faces came back within 1.3e-8 (relative), the fully rounded box within
+  1.1e-11, but the patches stay faces of their own (16 faces instead of 11, 12 instead of 6).
 Use `partial=True` on imported parts and check `result.faces().fillets()` for what stayed.
 
 ## Crashes and hangs
@@ -54,8 +55,8 @@ SMLib's patching and Boolean code crashes or loops on some parts (both seen on t
 enclosure and bottle). On Linux and macOS each kernel step first runs in a forked copy of the
 process; a crash there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only
 drops that step, and this process goes on. On Windows the kernel runs directly. A crash in the
-copy costs little, a hang the 20 s: the example enclosure (20 fillet faces, 12 taken out) took
-149 s with 8 steps stopped. Successful steps on it took up to 2.7 s.
+copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
+and with the stopped steps `remove_fillets(partial=True)` takes 180 s.
 
 ## Errors
 - `ModelingError: remove_fillets: 1 of the faces are no fillets (plane); a fillet meets two faces tangentially along its length. Select fillets with part.faces().fillets(), or take other faces out with remove_faces`

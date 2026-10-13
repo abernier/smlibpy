@@ -110,7 +110,12 @@
   `k.remove_fillet` removes nothing and reports success (upstream KNOWN_ISSUES lists the symptom).
   The same lookup feeds `SmFace.cpp:380` (surface fitting through vertices), `SmLoopuse.cpp:713`
   (UV boxes), `SmCurveClass.cpp:14722` and `SmVertex::HasParallelFaces`.
-- **Expected:** `if (pThisFace == pFace)` before taking the vertexuse (as `SmEdge::GetEdgeuseOfFace` still has).
+  `SmVertex::GetLoopOfFace` lost its face test the same way (it feeds `SmPointClassification`,
+  `SmPointClass.cpp:230`).
+- **Expected:** `if (pThisFace == pFace)` before taking the vertexuse or loop (as
+  `SmEdge::GetEdgeuseOfFace` still has). Tried on a copy of the kernel with both tests restored
+  (and the fix of 36): `k.remove_fillet` then gives the box back (6 faces, 24000.0) and both
+  test suites pass.
 - **Reproduce:** `b = box.fillet(box.edges().parallel_to(Z), 3)._copy_brep(); k.remove_fillet(b)` leaves 10 faces.
 
 ### 36. Kernel: use-after-free in every Boolean (`SmProtoTopologyManager` destructor)
@@ -241,11 +246,12 @@
   all 4 hole features crash the kernel; straight from the import they go.
 - **Workaround:** `partial=True`, then the other order.
 
-### 39. Surface extension of B-spline faces is approximate
+### 39. Patches on B-spline faces stay faces of their own
 - **Session:** `2026-10-13_02-00-00_defeature-draft`, script `18-hard-parts.py`
-- **What happens:** the executive extends faces with a G1 continuation; for B-spline faces
-  (`to_nurbs()`, many STEP files) the gap is closed by an approximation: a boss with B-spline
-  faces comes back about 1.5e-6 (relative) too large; analytic faces are exact.
+- **What happens:** the executive extends faces with a G1 continuation. On B-spline faces
+  (`to_nurbs()`, many STEP files) the result is close (boss within 1.3e-8 relative, fully
+  rounded box 1.1e-11) but `RemoveTopologicalEdgesAndVertices` does not merge the patches with
+  the faces they continue: 16 faces instead of 11, 12 instead of 6.
 
 ### 40. `Face.radius` fails for ring fillets
 - **What happens:** fillets around bosses and holes are surfaces of revolution:

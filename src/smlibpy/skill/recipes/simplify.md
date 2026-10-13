@@ -28,8 +28,9 @@ fillet. After a STEP round trip, the holes go straight from the import, but not 
 fillets were taken out.
 
 ## What the kernel cannot do
-- Some fillets on imported parts stay (2 of 5 on the example bracket after a STEP round trip).
-- B-spline faces are extended as smooth continuations, not exactly.
+- Some fillets on imported parts stay (3 of 5 on the example bracket after a STEP round trip).
+- B-spline faces are extended as smooth continuations (within about 1e-8 here); their patches
+  stay faces of their own.
 - The kernel can crash or loop on some parts. On Linux and macOS that happens in a forked copy
   of the process and only drops the step (`smlibpy.defeature.GUARD_SECONDS`, 20 s per step).
 
