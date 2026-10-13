@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pytest
 
 from smlibpy import *
@@ -175,6 +176,23 @@ def test_curves():
     h = Helix(pitch=5, height=20, radius=10)
     assert h.end == Vector(10, 0, 20)
     assert Polyline((0, 0), (10, 0), (10, 10), close=True).is_closed
+
+
+@pytest.mark.parametrize("start, end", [(300, 60), (210, 390), (-90, 90), (45, 395)])
+def test_elliptical_arc_across_angle_0(start, end):
+    rx, ry, span = 27, 15, (end - start) % 360
+    arc = EllipticalArc((0, 0), rx, ry, start, end)
+    assert arc.geom_type == "ellipse"
+    # the length against Gauss-Legendre integration of the ellipse's speed from start to end
+    a0, a1 = math.radians(start), math.radians(start + span)
+    x, w = np.polynomial.legendre.leggauss(64)
+    t = a0 + (a1 - a0) * (x + 1) / 2
+    assert arc.length == pytest.approx((a1 - a0) / 2 * np.dot(w, np.hypot(rx * np.sin(t), ry * np.cos(t))), rel=1e-10)
+    assert arc.start.distance_to((rx * math.cos(a0), ry * math.sin(a0))) < 1e-9
+    assert arc.end.distance_to((rx * math.cos(a1), ry * math.sin(a1))) < 1e-9
+    # counterclockwise from start to end: the middle lies within the arc's angles, not on the rest of the ellipse
+    mid = arc.point_at(0.5)
+    assert 0 < (math.degrees(math.atan2(mid.y / ry, mid.x / rx)) - start) % 360 < span
 
 
 # -- selectors --------------------------------------------------------------------
