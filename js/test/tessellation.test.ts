@@ -42,6 +42,8 @@ import { gltfDocument } from '../src/exporters.ts'
 import { faceMeshes } from '../src/mesh.ts'
 import * as render from '../src/render.ts'
 import { approx } from './_approx.ts'
+import { Box as _Box, Cylinder as _Cylinder, Mesh as _Mesh } from '../src/index.ts'
+import { fromStl as _fromStl, toStl as _toStl } from '../src/exporters.ts'
 
 type Body = Part | Shell
 
@@ -333,3 +335,31 @@ test('face meshes cut one tessellation by face', () => {
     tessellate(part, 0.005).length,
   )
 })
+
+test('mesh Booleans on any mesh', () => {
+  const a = _Box(20, 20, 20)
+  const b = _Cylinder(6, 40)
+  const pairs: [_Mesh, _Mesh][] = [
+    [a.mesh(), b.mesh()],
+    [new _Mesh(a.mesh().vertices, a.mesh().triangles), new _Mesh(b.mesh().vertices, b.mesh().triangles)],
+  ]
+  for (const [ma, mb] of pairs) {
+    const both = ma.intersect(mb).volume
+    assert.ok(ma.intersect(mb).isClosed())
+    approx(both, mb.volume / 2, 1e-9)
+    assert.ok(ma.cut(mb).isClosed())
+    approx(ma.cut(mb).volume, ma.volume - both, 1e-9)
+    assert.ok(ma.fuse(mb).isClosed())
+    approx(ma.fuse(mb).volume, ma.volume + mb.volume - both, 1e-9)
+  }
+  const sa = _fromStl(_toStl(a)) // meshes of their own
+  const sb = _fromStl(_toStl(b))
+  const diff = sa.cut(sb)
+  assert.ok(diff.isClosed())
+  approx(diff.volume, sa.volume - sa.intersect(sb).volume, 1e-6)
+  approx(diff.volume, a.cut(b).volume, 1e-2) // (the cylinder's facets cut its corners)
+  const tet = new _Mesh([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+  approx(tet.intersect(tet).volume, 1 / 6)
+  assert.throws(() => new _Mesh([0, 0, 0], []).fuse(tet), /triangles/)
+})
+

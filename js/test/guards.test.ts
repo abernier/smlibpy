@@ -288,7 +288,11 @@ test('distanceTo takes points and bodies', () => {
 test('wrong mesh Booleans throw', () => {
   const box = Box(20, 20, 20).mesh()
   const sphere = Sphere(12).mesh()
-  throwsMatching(() => box.cut(sphere), ModelingError, /exact parts/) // was an open mesh of volume 4377 (exact 1616)
+  // (was an open mesh of volume 4377, exact 1616: the polygons with holes the kernel leaves were read
+  // by their outer loops; now they are triangulated first)
+  const corners = box.cut(sphere)
+  assert.ok(corners.isClosed())
+  approx(corners.volume, box.volume - box.intersect(sphere).volume)
   throwsMatching(() => box.fuse(Cylinder(3, 60).rotate(X, 30).rotate(Z, 20).mesh()), ModelingError, /exact parts/)
   const shifted = box.cut(Box(20, 20, 20).translate(10, 10, 10).mesh()) // no face gets a hole: right
   assert.ok(shifted.isClosed())

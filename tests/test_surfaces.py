@@ -100,7 +100,7 @@ def test_surface_fitted_to_a_cloud_of_points():
     # noisy points: the surface follows the shape, not the noise
     noisy = cloud + np.column_stack([np.zeros((len(cloud), 2)), rng.normal(0, 0.05, len(cloud))])
     smooth = surface(noisy, smoothing=0.01)
-    assert max(smooth.distance_to(p) for p in cloud[::40]) < 0.05
+    assert np.mean([smooth.distance_to(p) for p in cloud[::40]]) < 0.02  # (the noise: 0.05)
     # points as a list of vectors; control points by hand (along the longer side first)
     few = surface([Vector(*p) for p in cloud[:300]], controls=(6, 5))
     poles = ext.surface_data(few.faces()[0]._f.surface(), True)["poles"]

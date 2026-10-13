@@ -7,9 +7,11 @@
 //   glTF     .glb, .gltf                                          write
 //   STL      .stl                                                 read/write
 //   OBJ      .obj                                                 write
+//   USD      .usda, .usd (exact: BrepArray prims, as text)        read/write
 //
 // Every format has a pair that works in memory, in the browser and in Node (`toStep` and
-// `fromStep`, `toStl` and `fromStl`, `toGlb`, `toGltf`, `toObj`, `toSmb` and `fromSmb`), and a
+// `fromStep`, `toStl` and `fromStl`, `toGlb`, `toGltf`, `toObj`, `toSmb` and `fromSmb`, `toUsd` and
+// `fromUsd`), and a
 // pair that reads and writes files, which needs Node (`exportStep` and `importStep`, ..., and
 // `exportFile` and `load`, which pick the format by the file's extension).
 
@@ -20,6 +22,7 @@ import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName 
 import { _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
 import { exportDxf, importDxf } from './dxf.ts'
+import { exportUsd, importUsd } from './usd.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
 type Any = any
@@ -58,7 +61,7 @@ function _isIterable(x: unknown): x is Iterable<unknown> {
 
 /** The bodies and meshes of `shapes` (a shape, a mesh or nested lists of them); a face becomes a
  * sheet of its own, or stays a face with `faces`. */
-function _items(shapes: unknown, faces = false): (Shape | Mesh)[] {
+export function _items(shapes: unknown, faces = false): (Shape | Mesh)[] {
   if (shapes instanceof _Body || shapes instanceof Mesh) return [shapes]
   if (shapes instanceof Face) return [faces ? shapes : shapes.toShell()]
   if (!_isIterable(shapes)) throw new TypeError(`'${_typeName(shapes)}' object is not iterable`)
@@ -78,7 +81,8 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
   else if (ext_ === '.obj') exportObj(shapes, p, options)
   else if (ext_ === '.smb') save(shapes, p, options)
   else if (ext_ === '.dxf') exportDxf(shapes, p, options)
-  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf`)
+  else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
+  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda`)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -878,8 +882,8 @@ export function save(shapes: unknown, path: string, options: { ascii?: boolean }
 }
 
 /**
- * Read a file, picking the format from the extension: STEP (`.step`, `.stp`) and SMLib (`.smb`)
- * give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's outlines, STL a `Mesh`.
+ * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), USD (`.usda`) and
+ * SMLib (`.smb`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's outlines, STL a `Mesh`.
  *
  * A STEP file with one body gives that part, one with several a `ShapeList`. A native file that
  * encloses no volume comes back as a `Shell`.
@@ -890,6 +894,7 @@ export function load(path: string): Any {
   if (ext_ === '.step' || ext_ === '.stp' || ext_ === '.p21') return importStep(p)
   if (ext_ === '.stl') return importStl(p)
   if (ext_ === '.dxf') return importDxf(p)
-  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .stl, .smb and .dxf`)
+  if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return importUsd(p)
+  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .stl, .smb, .dxf and .usda`)
   return fromSmb(_fs().readFileSync(p))
 }

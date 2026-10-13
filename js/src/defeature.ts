@@ -45,7 +45,7 @@ class _KernelFault extends ModelingError {
 /** `work()`. JavaScript cannot run it first in a forked copy of the process as smlibpy does on
  * Linux and macOS; a trap of the WebAssembly module (the kernel crashed) becomes a _KernelFault,
  * so that the step is dropped as smlibpy drops a step that crashed in its copy. */
-function _guarded<R>(what: string, work: () => R): R {
+export function _guarded<R>(what: string, work: () => R): R {
   try {
     return work()
   } catch (e) {

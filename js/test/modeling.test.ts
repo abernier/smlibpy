@@ -36,6 +36,7 @@ import {
   type Part,
 } from '../src/index.ts'
 import { approx, leggauss, same } from './_approx.ts'
+import { Box as _Box, Rectangle as _Rectangle, Sphere as _Sphere, merge as _merge } from '../src/index.ts'
 
 const PI = Math.PI
 
@@ -301,3 +302,38 @@ test('oversized rounds are rejected', () => {
   assert.throws(() => cube.chamfer(cube.edges(), 6), ModelingError)
   assert.ok(cube.fillet(cube.edges(), 4).isValid())
 })
+
+// -- cells ------------------------------------------------------------------------------------
+test('merge makes cells', () => {
+  const a = _Box(10, 10, 10)
+  const b = _Box(10, 10, 10).translate([5, 0, 0])
+  const m = a.merge(b)
+  approx(m.volume, 1500)
+  assert.ok(!m.isValid()) // cells share faces: not a manifold solid
+  const cells = m.cells()
+  assert.equal(cells.length, 3)
+  for (const c of cells) {
+    approx(c.volume, 500)
+    assert.ok(c.isValid())
+  }
+  approx(_merge(a, b).volume, 1500)
+  // touching parts share the face between them
+  const t = _Box(10, 10, 10).merge(_Box(10, 10, 10).translate([10, 0, 0]))
+  assert.equal(t.faces().length, 11)
+  for (const c of t.cells()) approx(c.volume, 1000)
+  approx(_Box(1, 1, 1).cells()[0].volume, 1)
+})
+
+test('cells with cavities', () => {
+  const [outer, inner] = _Box(10, 10, 10).merge(_Box(2, 2, 2)).cells()
+  approx(outer.volume, 992)
+  approx(inner.volume, 8)
+  assert.equal(outer.faces().length, 12) // the outer box and the cavity
+  const ball = _Sphere(4).translate([0, 0, 5])
+  const cells = _Box(10, 10, 10).merge(ball).cells().map((c) => c.volume).sort((x, y) => x - y)
+  const want = [_Box(10, 10, 10).cut(ball).volume, _Box(10, 10, 10).intersect(ball).volume, ball.cut(_Box(10, 10, 10)).volume].sort((x, y) => x - y)
+  cells.forEach((v, i) => approx(v, want[i], 1e-6))
+  assert.throws(() => _Box(1, 1, 1).merge(_Rectangle(1, 1) as any), /parts/)
+  assert.throws(() => _merge(_Box(1, 1, 1)), /two or more/)
+})
+

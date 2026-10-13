@@ -9,16 +9,19 @@
 #include "common.h"
 #include "value_js.h"
 
+#include "cells.h"
 #include "defeature.h"
 #include "deform.h"
 #include "draft.h"
 #include "ext_shared.h"
 #include "face_draft.h"
+#include "fit.h"
 #include "measure.h"
 #include "sheetmetal.h"
 #include "step_build.h"
 #include "surface_eval.h"
 #include "tessellate.h"
+#include "usd.h"
 
 using namespace emscripten;
 using namespace smjs;
@@ -527,6 +530,87 @@ val draft_faces(uintptr_t b, val faces, val origin, val normal, double angle, do
 
 }  // namespace
 
+// ---------------------------------------------------------------- ext: clouds, meshes, cells, USD
+template <typename... T>
+val items(const T&... values)
+{
+    val out = val::array();
+    (out.call<void>("push", val(values)), ...);
+    return out;
+}
+
+bool none(const val& v) { return v.isNull() || v.isUndefined(); }
+
+// [surface, max_error, rms_error, nu, nv]: the surface is the caller's. nu, nv 0: chosen here.
+val fit_surface(val points, int nu, int nv, double smoothing)
+{
+    return guard([&] {
+        const smlibpy::SurfaceFit r = smlibpy::fit_surface(numbers(points), nu, nv, smoothing);
+        return items(ptr(r.surface), r.max_error, r.rms_error, r.nu, r.nv);
+    });
+}
+
+uintptr_t poly_from_triangles(val vertices, val triangles)
+{
+    return guard([&] {
+        std::vector<long> t;
+        for (double x : numbers(triangles))
+            t.push_back(static_cast<long>(x));
+        return ptr(smlibpy::poly_from_triangles(numbers(vertices), t));
+    });
+}
+
+void triangulate_poly(uintptr_t p) { guard([&] { smlibpy::triangulate_poly(poly(p)); }); }
+
+// Per cell, the solids inside its shells (outer first), each the caller's.
+val region_shells(uintptr_t b)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& cell : smlibpy::region_shells(brep(b)))
+            out.call<void>("push", pointer_array(cell));
+        return out;
+    });
+}
+
+// items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
+std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
+{
+    return guard([&] {
+        std::vector<smlibpy::UsdItem> in;
+        const unsigned n = shapes["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+        {
+            val it = shapes[i];
+            smlibpy::UsdItem item;
+            item.brep = maybe<SmBrep>(it[0]);
+            item.name = it[1].as<std::string>();
+            if (!none(it[2]))
+                item.color = numbers(it[2]);
+            if (!none(it[3]))
+                item.points = numbers(it[3]);
+            if (!none(it[4]))
+                for (double x : numbers(it[4]))
+                    item.triangles.push_back(static_cast<long>(x));
+            if (it["length"].as<unsigned>() > 5 && !none(it[5]))
+                item.normals = numbers(it[5]);
+            in.push_back(std::move(item));
+        }
+        return smlibpy::usd_text(in, up_axis, meters_per_unit);
+    });
+}
+
+// [[brep, name, [r, g, b] or null]] of the BrepArray prims; the Breps are the caller's.
+val usd_read(std::string text, bool heal)
+{
+    return guard([&] {
+        val out = val::array();
+        for (auto& item : smlibpy::usd_read(text, heal))
+            out.call<void>("push", items(ptr(item.brep), item.name, item.color.empty() ? val::null() : float64(item.color)));
+        return out;
+    });
+}
+
 EMSCRIPTEN_BINDINGS(smlib_smlibpy)
 {
     function("ext__curve_data", &curve_data);
@@ -566,6 +650,12 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__face_curvatures", &face_curvatures);
     function("ext__poly_curvatures", &poly_curvatures);
     function("ext__brep_measure", &brep_measure);
+    function("ext__fit_surface", &fit_surface);
+    function("ext__poly_from_triangles", &poly_from_triangles);
+    function("ext__triangulate_poly", &triangulate_poly);
+    function("ext__region_shells", &region_shells);
+    function("ext__usd_text", &usd_text);
+    function("ext__usd_read", &usd_read);
     function("ext__face_measure", &face_measure);
     function("ext__curve_length", &curve_length);
     function("ext__curve_parameter_at_length", &curve_parameter_at_length);

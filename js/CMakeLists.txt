@@ -9,12 +9,13 @@
 file(GLOB SMLIBWASM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
 # smlibpy's own C++, shared with the Python extension (its Python bindings sit behind
 # SMLIBPY_PYTHON, which is not defined here), and the kernel's error messages from SmPyLib
-file(GLOB SMLIBPY_SHARED_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/cpp/*.cpp")
+file(GLOB SMLIBPY_SHARED_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/cpp/*.cpp" "${CMAKE_SOURCE_DIR}/src/cpp/usd/*.cpp")
 list(FILTER SMLIBPY_SHARED_SOURCES EXCLUDE REGEX ".*/module\\.cpp$")
 set(SMPY_DIR "${USD_BREP_DIR}/source/SmPyLib/src")
 
 add_executable(smlibwasm ${SMLIBWASM_SOURCES} ${SMLIBPY_SHARED_SOURCES} "${SMPY_DIR}/SmPyError.cpp")
-target_include_directories(smlibwasm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp" "${SMPY_DIR}")
+target_include_directories(smlibwasm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp"
+                           "${CMAKE_SOURCE_DIR}/src/cpp/usd" "${SMPY_DIR}")
 target_link_libraries(smlibwasm PRIVATE sm_api smlib)
 # (a second build, in its own build directory, can write its module elsewhere)
 set(SMLIBWASM_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wasm" CACHE PATH "Where the module (smlibwasm.mjs, smlibwasm.wasm) is written")

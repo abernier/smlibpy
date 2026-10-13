@@ -780,6 +780,31 @@ Plane.left = new Plane([0, 0, 0], [0, -1, 0], [-1, 0, 0])
 
 // -------------------------------------------------------------------------------- BoundBox
 /** An axis-aligned bounding box. */
+/**
+ * Where a ray meets a shape or a mesh (see `raycast`).
+ *
+ * - `point`: the point where the ray meets the surface.
+ * - `distance`: how far along the ray, from its start.
+ * - `normal`: the outward unit normal of the surface there (of the face, or the triangle).
+ * - `face`: the face that was hit (shapes), or `null`.
+ * - `triangle`: the index of the triangle that was hit (meshes), or `null`.
+ */
+export class Hit {
+  readonly point: Vector
+  readonly distance: number
+  readonly normal: Vector
+  readonly face: any // (a Face of shapes.ts, or null: typed loosely here, where shapes are not known)
+  readonly triangle: number | null
+
+  constructor(point: Vector, distance: number, normal: Vector, face: any = null, triangle: number | null = null) {
+    this.point = point
+    this.distance = distance
+    this.normal = normal
+    this.face = face
+    this.triangle = triangle
+  }
+}
+
 export class BoundBox {
   min: Vector
   max: Vector

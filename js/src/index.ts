@@ -11,7 +11,7 @@
 export const version = '0.2.3'
 
 // geometry
-export { TOLERANCE, Axis, BoundBox, Location, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'
+export { TOLERANCE, Axis, BoundBox, Hit, Location, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'
 export { Align, type AlignLike } from './align.ts'
 // shapes
 export { ACCURACY, Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
@@ -31,6 +31,7 @@ export {
   Spline,
   TangentArc,
   ThreePointArc,
+  makeCompatible,
 } from './curves.ts'
 // sketches
 export { Profile } from './profiles.ts'
@@ -56,11 +57,11 @@ export { Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, To
 // patterns
 export { GridLocations, HexLocations, Locations, PolarLocations } from './locations.ts'
 // operations
-export { chamfer, extrude, fillet, loft, mirror, offset, revolve, section, shell, split, sweep, thicken } from './operations.ts'
+export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, thicken } from './operations.ts'
 // deformations
 export { Lattice, bend, taper, twist } from './deform.ts'
 // surfaces
-export { ruled, stitch, surface } from './surfaces.ts'
+export { ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
 // sheet metal
 export { Bend, FlatPattern, bendAllowance, bendDeduction, developedLength, flange, flatPattern, fold, unfold } from './sheetmetal.ts'
 // files, viewer, pictures
@@ -94,6 +95,7 @@ export {
   type StepPoint,
 } from './step_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
+export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions } from './usd.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors and warnings
