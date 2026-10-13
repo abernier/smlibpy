@@ -1,7 +1,7 @@
 # AI agents (MCP)
 
 smlibpy comes with an MCP server. An agent such as Claude writes Python scripts with smlibpy,
-and the server runs them, shows the model in a live 3D viewer and renders pictures, so the
+and the server runs them, shows the model live in Buerligons and renders pictures, so the
 agent can check its work. If you ask for "a flange with six M8 holes on a 90 mm circle", the
 agent builds the part, looks at it and saves a STEP file.
 
@@ -58,9 +58,10 @@ or `.vscode/mcp.json` (VS Code, where the key is `servers` and each entry has
 | `list_methods`, `describe_method`, `docs` | The API index, signatures and the guides of the skill |
 | `save`, `load` | STEP, USD, STL, glTF, OBJ, the native format, PNG, DXF (sketches and sections); STEP, USD, STL and DXF in |
 | `checkpoint`, `restore`, `clear` | Go back to an earlier state, or start over |
-| `view` | The link of the live viewer |
+| `view` | The link of the live view (Buerligons) |
+| `get_selection`, `set_selection` | What you selected in the live view, as expressions for scripts; faces and edges the agent highlights for you |
 
-`show(a, b)` in a script chooses what the viewer and the pictures display; without it every
+`show(a, b)` in a script chooses what the live view and the pictures display; without it every
 part and shell of the session is shown.
 
 The server's instructions tell the agent how to work: plan, build in steps, check volume,
@@ -82,13 +83,28 @@ the agent asks for more), and a crash of the kernel ends that process, not the s
 way the session is rebuilt by running the scripts that built it again, so nothing that worked
 is lost. Checkpoints work the same way.
 
-The viewer is a page on `127.0.0.1` that updates after every script. In the Claude desktop
-app the agent opens it in its own browser pane; elsewhere it opens in your default browser.
-Everything runs on your machine; the page loads three.js from a CDN.
+## The live view
+
+The live view is Buerligons, the ClassCAD app, served by the MCP server on `127.0.0.1` and
+following every script. In the Claude desktop app the agent opens it in its own browser pane;
+elsewhere it opens in your default browser. There you turn the model, select and measure
+faces and edges, and save it as STEP or STL. Modeling stays with the agent's scripts: the app
+opens in view mode.
+
+What you select reaches the agent: ask "fillet the edges I selected" and `get_selection` gives
+it each face, edge or vertex with its measurements and the expression that reaches it in a
+script, such as `plate.faces()[6]`. The other way round, `set_selection` highlights what the
+agent means ("is it this face?").
+
+The app comes from the npm package `@classcad/mcp`, at a version and hash pinned in smlibpy.
+It is downloaded the first time a session needs it and kept in your cache folder; without a
+network that first time, `snapshot` still shows the model and the next `view` tries again.
 
 | Variable | Effect |
 |---|---|
 | `SMLIBPY_VIEWER` | `host` (the agent opens the link), `browser` (your browser) or `off` |
+| `SMLIBPY_APP_DIR` | A folder with the app to use instead of the downloaded one |
+| `SMLIBPY_CACHE` | Where the downloaded app is kept (default: your cache folder) |
 | `SMLIBPY_SNAPSHOT_DIR` | Where pictures are kept (default: a folder in the temp directory) |
 
 ## smlibpy or ClassCAD

@@ -111,7 +111,8 @@ undercut. `parting_line` finds the parting line.
 - `show()` opens a 3D viewer in the browser or a notebook.
 
 **[Agents](https://smlibpy.classcad.ch/docs/mcp)**
-- The MCP server `smlibpy-mcp` has a live viewer, snapshots, function search and a tested guide
+- The MCP server `smlibpy-mcp` shows the session live in Buerligons, where what you select reaches
+  the agent; it has snapshots, function search and a tested guide
   for every function. People who want parametric apps that rebuild from sketches and features
   are sent to the [ClassCAD](https://classcad.ai) MCP.
 - A Claude Code plugin, installed from this repository (see below)
