@@ -1,16 +1,17 @@
 name: Release
 
-# Wheels and the sdist are built for every run. Run it by hand (workflow_dispatch) to try
-# the build without publishing. Publishing a GitHub release uploads to PyPI through
-# trusted publishing (OIDC, environment "pypi"); no API token is involved.
+# Wheels, the sdist and the npm package are built for every run. Run it by hand
+# (workflow_dispatch) to try the build without publishing. Publishing a GitHub release uploads
+# to PyPI and npm through trusted publishing (OIDC, environments "pypi" and "npm"); no API
+# token is involved.
 
 on:
   workflow_dispatch:
     inputs:
       only:
-        description: Which wheels to build
+        description: What to build
         type: choice
-        options: [all, windows]
+        options: [all, windows, npm]
         default: all
   release:
     types: [published]
@@ -68,6 +69,7 @@ jobs:
   # into the same release, so the rest need not wait for them
   wheels-windows:
     name: wheels windows-latest
+    if: github.event_name == 'release' || inputs.only != 'npm'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -119,6 +121,69 @@ jobs:
           test -z "$(find dist -mindepth 1 ! -name '*.whl' ! -name '*.tar.gz')"
           test -n "$(find dist -name '*.tar.gz')"
       - uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  # @classcad/smlibwasm: the WebAssembly module and the TypeScript port (js/), published to npm
+  # through trusted publishing (OIDC, environment "npm"; no token is involved) and attached to
+  # the GitHub release with the module's two files
+  npm:
+    name: npm package
+    if: github.event_name == 'release' || inputs.only == 'all' || inputs.only == 'npm'
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@classcad/smlibwasm
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      EMSDK_VERSION: 6.0.12
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: The release tag matches the package version
+        if: github.event_name == 'release'
+        run: |
+          version=$(node -p "require('./js/package.json').version")
+          test "${GITHUB_REF_NAME}" = "v${version}" || { echo "tag ${GITHUB_REF_NAME} but version ${version}"; exit 1; }
+          grep -q "export const version = '${version}'" js/src/index.ts || { echo "js/src/index.ts does not say version ${version}"; exit 1; }
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}
+      - name: Emscripten
+        run: |
+          [ -d ~/emsdk ] || git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+      - name: Build the module
+        run: sh js/scripts/build-wasm.sh
+      - name: Install
+        working-directory: js
+        run: npm ci
+      - name: Test
+        working-directory: js
+        run: npm test
+      # prepack compiles dist afresh and copies the license texts in
+      - name: Pack
+        working-directory: js
+        run: npm pack
+      # trusted publishing needs npm 11.5.1 or later; publishing the packed file runs no scripts
+      - name: Publish to npm
+        if: github.event_name == 'release' && github.event.action == 'published'
+        working-directory: js
+        run: |
+          npm install -g npm@11.19.0
+          npm publish ./classcad-smlibwasm-*.tgz
+      - name: The package and the module as files of the release
+        if: github.event_name == 'release' && github.event.action == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" js/classcad-smlibwasm-*.tgz js/wasm/smlibwasm.wasm js/wasm/smlibwasm.mjs
 
   publish-windows:
     name: publish the Windows wheels to PyPI
