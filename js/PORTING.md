@@ -66,6 +66,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   16 numbers row by row (`m[r * 4 + c]`); `Location.matrix` gives them as rows. Meshes hold
   flat typed arrays (vertices `Float64Array` of x, y, z; triangles `Uint32Array` of three
   indices each).
+- **numpy slices** of arrays smlibjs hands out (a Lattice's points) become an index per axis:
+  a number (negative counts from the end), `null` for all (Python's `:`) or an array of numbers:
+  `lattice.points[i][j][k]` is a point `[x, y, z]`; `layer(Z, -1)` is `[null, null, -1]`.
 - **Kernel objects** are numbers. Python's `id(kernel_object)` identity is the number.
   Owning handles (`BrepHandle`, `CurveHandle`, ...) free on garbage collection and have
   `dispose()`; `_take(h)` releases one to a new owner.

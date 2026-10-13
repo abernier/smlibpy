@@ -35,8 +35,8 @@ import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
 import { filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
-import { bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
-import { _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
+import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
+import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import {
@@ -2695,18 +2695,18 @@ export class Part extends _Body {
 
   // -- deformations (the deform module) -----------------------------------------------------
   /** Twist about an axis (default Z) by `angle` degrees over the part; see `twist`. */
-  twist(angle: number, options: Record<string, unknown> = {}): Part {
-    return _twist(this, angle, options) as Part
+  twist(angle: number, options: TwistOptions = {}): Part {
+    return _twist(this, angle, options)
   }
 
   /** Scale cross-sections toward an axis (default Z) from 1 to `scale`; see `taper`. */
-  taper(scale: number, options: Record<string, unknown> = {}): Part {
-    return _taper(this, scale, options) as Part
+  taper(scale: number, options: TaperOptions = {}): Part {
+    return _taper(this, scale, options)
   }
 
   /** Bend around an axis by `angle` degrees (default: along X, toward +Z); see `bend`. */
-  bend(angle: number, options: Record<string, unknown> = {}): Part {
-    return _bend(this, angle, options) as Part
+  bend(angle: number, options: BendOptions = {}): Part {
+    return _bend(this, angle, options)
   }
 
   /** Deform with a `Lattice` (same as `lattice.apply(part)`). */
@@ -2730,7 +2730,7 @@ export class Part extends _Body {
 
   /** Draft angle of every face for the pull direction, with the faces grouped by whether they
    * release (see `DraftAnalysis`). */
-  draftAnalysis(direction: Axis | VectorLike, options: { minAngle?: number } = {}): Any {
+  draftAnalysis(direction: Axis | VectorLike, options: { minAngle?: number } = {}): DraftAnalysis {
     return _draftAnalysis(this, direction, options)
   }
 
