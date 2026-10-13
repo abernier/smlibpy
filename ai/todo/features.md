@@ -161,6 +161,7 @@
   of the same kind; the null dereferences and the loops happen every time and are caught.
 
 ### 42. Kernel: use-after-free in `thicken` beyond a concave radius (offset executive)
+- **Fixed:** kernel patch `third_party/patches/SMLib/src/SmOffsetExecutive.cpp`: `RemoveExcessFaces` forgets the removed faces and their edgeuses in the executive's relations; AddressSanitizer reports nothing for -10.5, -11, -12, -20, the result is the empty body smlibpy rejects (27). Found again by the WebAssembly build, where it trapped.
 - **Found:** AddressSanitizer run of the test suite with the kernel patches (2026-10-13); the one
   report in the whole suite, from `tests/test_guards.py::test_thicken_refuses_broken_results`.
 - **What happens:** `SmOffsetExecutive::RemoveExcessFaces` deletes edges (`SmBrep::RemoveFaces` →
