@@ -105,6 +105,7 @@ class LiveViewer:
         self.session._bump()  # wakes the event streams, which say "closed"
         if self._server is not None:
             self._server.shutdown()
+            self._server.server_close()
             self._server = None
 
 
