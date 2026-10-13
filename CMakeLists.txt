@@ -92,10 +92,25 @@ else()
       target_compile_options(${t} PRIVATE -w)
     endforeach()
   endif()
+  if(EMSCRIPTEN)
+    # The kernel throws in a few places and never catches: with WebAssembly exceptions a
+    # binding turns such a throw into a JavaScript error instead of ending the module.
+    foreach(t smlib sm_api)
+      target_compile_options(${t} PUBLIC -fwasm-exceptions)
+    endforeach()
+  endif()
   if(SMLIBPY_KERNEL_ONLY)
     export(TARGETS smlib sm_api FILE "${CMAKE_BINARY_DIR}/smlibpy-kernel.cmake")
     return()
   endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# WebAssembly (Emscripten): the JavaScript module of js/ instead of the Python extension.
+# ---------------------------------------------------------------------------
+if(EMSCRIPTEN)
+  add_subdirectory(js)
+  return()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -115,6 +130,9 @@ target_include_directories(_core PRIVATE
   "${USD_BREP_DIR}/source/SmPyLib/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp")
 target_link_libraries(_core PRIVATE sm_api smlib)
+# smlibpy's own C++ (src/cpp) is shared with the JavaScript module: its Python bindings sit
+# behind SMLIBPY_PYTHON.
+target_compile_definitions(_core PRIVATE SMLIBPY_PYTHON)
 if(MSVC)
   target_compile_options(_core PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267)
   if(CMAKE_GENERATOR MATCHES "Visual Studio")

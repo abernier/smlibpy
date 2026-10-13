@@ -40,7 +40,8 @@
 // integrands are the kernel's (volume terms from fields such as (0, 0, z)), so the results
 // are the values the kernel's integration converges to.
 
-#include "ext.h"
+#include "measure.h"
+#include "SmPyError.h"  // SmPyRaise: a kernel status as a C++ exception (no Python)
 
 #include <SmApiGeneral.h>
 #include <SmBrep.h>
@@ -1040,8 +1041,6 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
     }
 }
 
-py::tuple xyz(double x, double y, double z) { return py::make_tuple(x, y, z); }
-
 double diagonal(const SmExtent3d& box)
 {
     const SmVector3d d = box.GetSize();
@@ -1062,87 +1061,6 @@ Settings settings(const SmExtent3d& box, double tolerance)
     // |integrand| over the strips under the trim curves: a small multiple of the result.
     s.inner = std::max(1e-3 * tolerance, 1e-12);
     return s;
-}
-
-py::dict brep_measure(const SmBrep* brep, double tolerance)
-{
-    if (!brep)
-        throw std::invalid_argument("brep is None");
-    SmExtent3d box;
-    check(brep->CalculateBoundingBox(box), "SmBrep::CalculateBoundingBox");
-    Settings s = settings(box, tolerance);
-
-    // the faceuses SmBrep::ComputePreciseProperties integrates with the default behaviour:
-    // faces between two regions, from the side of each region that is not a void
-    std::vector<Job> jobs;
-    SmTArray<SmFace*> faces;
-    brep->GetFaces(faces);
-    for (ULONG i = 0; i < faces.GetSize(); ++i)
-    {
-        SmFace* face = faces[i];
-        SmFaceuse* uses[2];
-        uses[0] = face->GetUpwardFaceuse();
-        uses[1] = uses[0] ? uses[0]->GetMate() : nullptr;
-        if (!uses[0] || !uses[1] || uses[0]->GetShell()->GetRegion() == uses[1]->GetShell()->GetRegion())
-            continue;  // not volume separating: such a face counts only with a face thickness
-        for (SmFaceuse* fu : uses)
-        {
-            // the kernel integrates a faceuse for its area (solid region beside a void) or its
-            // volume (solid region), and then adds both: the faceuse of every solid region
-            if (fu->GetShell()->GetRegion()->IsVoid())
-                continue;
-            Job job = make_job(face);
-            job.sign = fu->GetOrientation() == SM_OT_SAME ? -1.0 : 1.0;
-            jobs.push_back(std::move(job));
-        }
-    }
-    const Result r = integrate(jobs, s);
-
-    py::dict d;
-    d["area"] = r.val[AREA];
-    d["volume"] = r.val[VOL];
-    d["origin"] = xyz(s.origin.x, s.origin.y, s.origin.z);
-    d["first_moments"] = xyz(r.val[VX], r.val[VY], r.val[VZ]);
-    d["second_moments"] = py::make_tuple(r.val[VXX], r.val[VYY], r.val[VZZ], r.val[VYZ], r.val[VZX], r.val[VXY]);
-    d["closure"] = xyz(r.val[NX], r.val[NY], r.val[NZ]);
-    d["field_volumes"] = xyz(r.val[VOLX], r.val[VOLY], r.val[VOL]);
-    py::dict e;
-    e["area"] = r.err[AREA];
-    e["volume"] = r.err[VOL];
-    e["first_moments"] = xyz(r.err[VX], r.err[VY], r.err[VZ]);
-    e["second_moments"] = py::make_tuple(r.err[VXX], r.err[VYY], r.err[VZZ], r.err[VYZ], r.err[VZX], r.err[VXY]);
-    d["error"] = e;
-    d["relative_error"] = r.relative;
-    d["size"] = s.size;
-    d["converged"] = r.converged;
-    d["panels"] = r.panels;
-    d["evaluations"] = s.evaluations;
-    return d;
-}
-
-py::dict face_measure(const SmFace* face, double tolerance)
-{
-    if (!face)
-        throw std::invalid_argument("face is None");
-    SmExtent3d box;
-    check(face->CalculateBoundingBox(box), "SmFace::CalculateBoundingBox");
-    Settings s = settings(box, tolerance);
-    s.first = AREA, s.last = VOL;
-    std::vector<Job> jobs;
-    jobs.push_back(make_job(face));
-    jobs.back().volume = false;
-    const Result r = integrate(jobs, s);
-    py::dict d;
-    d["area"] = std::fabs(r.val[AREA]);
-    d["signed_area"] = r.val[AREA];
-    d["origin"] = xyz(s.origin.x, s.origin.y, s.origin.z);
-    d["first_moments"] = xyz(r.val[AX], r.val[AY], r.val[AZ]);
-    d["error"] = r.err[AREA];
-    d["relative_error"] = r.relative;
-    d["converged"] = r.converged;
-    d["panels"] = r.panels;
-    d["evaluations"] = s.evaluations;
-    return d;
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,15 +1152,112 @@ double arc_length(const SmCurve* curve, double t0, double t1, double tolerance)
     return total;
 }
 
+}  // namespace
+
+namespace smlibpy {
+
+BrepMeasure brep_measure(const SmBrep* brep, double tolerance)
+{
+    if (!brep)
+        throw std::invalid_argument("brep is None");
+    SmExtent3d box;
+    check(brep->CalculateBoundingBox(box), "SmBrep::CalculateBoundingBox");
+    Settings s = settings(box, tolerance);
+
+    // the faceuses SmBrep::ComputePreciseProperties integrates with the default behaviour:
+    // faces between two regions, from the side of each region that is not a void
+    std::vector<Job> jobs;
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmFace* face = faces[i];
+        SmFaceuse* uses[2];
+        uses[0] = face->GetUpwardFaceuse();
+        uses[1] = uses[0] ? uses[0]->GetMate() : nullptr;
+        if (!uses[0] || !uses[1] || uses[0]->GetShell()->GetRegion() == uses[1]->GetShell()->GetRegion())
+            continue;  // not volume separating: such a face counts only with a face thickness
+        for (SmFaceuse* fu : uses)
+        {
+            // the kernel integrates a faceuse for its area (solid region beside a void) or its
+            // volume (solid region), and then adds both: the faceuse of every solid region
+            if (fu->GetShell()->GetRegion()->IsVoid())
+                continue;
+            Job job = make_job(face);
+            job.sign = fu->GetOrientation() == SM_OT_SAME ? -1.0 : 1.0;
+            jobs.push_back(std::move(job));
+        }
+    }
+    const Result r = integrate(jobs, s);
+
+    BrepMeasure m;
+    m.area = r.val[AREA];
+    m.volume = r.val[VOL];
+    const double origin[3] = {s.origin.x, s.origin.y, s.origin.z};
+    const int first[3] = {VX, VY, VZ}, second[6] = {VXX, VYY, VZZ, VYZ, VZX, VXY};
+    const int closure[3] = {NX, NY, NZ}, fields[3] = {VOLX, VOLY, VOL};
+    for (int i = 0; i < 3; ++i)
+    {
+        m.origin[i] = origin[i];
+        m.first_moments[i] = r.val[first[i]];
+        m.closure[i] = r.val[closure[i]];
+        m.field_volumes[i] = r.val[fields[i]];
+        m.error.first_moments[i] = r.err[first[i]];
+    }
+    for (int i = 0; i < 6; ++i)
+    {
+        m.second_moments[i] = r.val[second[i]];
+        m.error.second_moments[i] = r.err[second[i]];
+    }
+    m.error.area = r.err[AREA];
+    m.error.volume = r.err[VOL];
+    m.relative_error = r.relative;
+    m.size = s.size;
+    m.converged = r.converged;
+    m.panels = r.panels;
+    m.evaluations = s.evaluations;
+    return m;
+}
+
+FaceMeasure face_measure(const SmFace* face, double tolerance)
+{
+    if (!face)
+        throw std::invalid_argument("face is None");
+    SmExtent3d box;
+    check(face->CalculateBoundingBox(box), "SmFace::CalculateBoundingBox");
+    Settings s = settings(box, tolerance);
+    s.first = AREA, s.last = VOL;
+    std::vector<Job> jobs;
+    jobs.push_back(make_job(face));
+    jobs.back().volume = false;
+    const Result r = integrate(jobs, s);
+    FaceMeasure m;
+    m.area = std::fabs(r.val[AREA]);
+    m.signed_area = r.val[AREA];
+    m.origin[0] = s.origin.x, m.origin[1] = s.origin.y, m.origin[2] = s.origin.z;
+    m.first_moments[0] = r.val[AX], m.first_moments[1] = r.val[AY], m.first_moments[2] = r.val[AZ];
+    m.error = r.err[AREA];
+    m.relative_error = r.relative;
+    m.converged = r.converged;
+    m.panels = r.panels;
+    m.evaluations = s.evaluations;
+    return m;
+}
+
+double curve_length(const SmCurve* curve, double t0, double t1, double tolerance)
+{
+    return arc_length(curve, std::min(t0, t1), std::max(t0, t1), tolerance);
+}
+
 // The parameter at signed arc length `length` from t_start, within the natural interval;
 // (t, past_end) with past_end when the curve ends first.
-py::tuple parameter_at_length(const SmCurve* curve, double t_start, double length, double tolerance)
+std::pair<double, bool> curve_parameter_at_length(const SmCurve* curve, double t_start, double length, double tolerance)
 {
     const SmExtent1d ivl = curve->GetNaturalInterval();
     const double lo = ivl.GetMin(), hi = ivl.GetMax();
     t_start = std::min(std::max(t_start, lo), hi);
     if (length == 0.0)
-        return py::make_tuple(t_start, false);
+        return {t_start, false};
     const bool forward = length > 0;
     double want = std::fabs(length);
     auto dist = [&](double a, double b) { return arc_length(curve, std::min(a, b), std::max(a, b), tolerance); };
@@ -1284,30 +1299,74 @@ py::tuple parameter_at_length(const SmCurve* curve, double t_start, double lengt
                 break;
             t = next;
         }
-        return py::make_tuple(t, false);
+        return {t, false};
     }
-    return py::make_tuple(forward ? hi : lo, want > 1e-12 * (1.0 + std::fabs(length)));
+    return {forward ? hi : lo, want > 1e-12 * (1.0 + std::fabs(length))};
 }
 
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+py::tuple py3(const double* v) { return py::make_tuple(v[0], v[1], v[2]); }
+py::tuple py6(const double* v) { return py::make_tuple(v[0], v[1], v[2], v[3], v[4], v[5]); }
 }  // namespace
 
 void bind_measure(py::module_ m)
 {
-    m.def("brep_measure", &brep_measure, py::arg("brep"), py::arg("tolerance") = 1e-9,
+    m.def("brep_measure", [](const SmBrep* brep, double tolerance) {
+        const smlibpy::BrepMeasure r = smlibpy::brep_measure(brep, tolerance);
+        py::dict d;
+        d["area"] = r.area;
+        d["volume"] = r.volume;
+        d["origin"] = py3(r.origin);
+        d["first_moments"] = py3(r.first_moments);
+        d["second_moments"] = py6(r.second_moments);
+        d["closure"] = py3(r.closure);
+        d["field_volumes"] = py3(r.field_volumes);
+        py::dict e;
+        e["area"] = r.error.area;
+        e["volume"] = r.error.volume;
+        e["first_moments"] = py3(r.error.first_moments);
+        e["second_moments"] = py6(r.error.second_moments);
+        d["error"] = e;
+        d["relative_error"] = r.relative_error;
+        d["size"] = r.size;
+        d["converged"] = r.converged;
+        d["panels"] = r.panels;
+        d["evaluations"] = r.evaluations;
+        return d;
+    }, py::arg("brep"), py::arg("tolerance") = 1e-9,
           "Area, volume, and first and second volume moments of a Brep (about the bounding box centre, "
           "'origin'), integrated until the estimated error of each is below `tolerance` times its scale: "
           "the area, |volume|, |volume| * size, |volume| * size^2 (size: the bounding box diagonal). "
           "'error' holds the estimates, 'converged' whether they met the tolerance, 'closure' the integral "
           "of the outward normal (zero for a closed surface; else the vector area of the gaps).");
-    m.def("face_measure", &face_measure, py::arg("face"), py::arg("tolerance") = 1e-9,
+    m.def("face_measure", [](const SmFace* face, double tolerance) {
+        const smlibpy::FaceMeasure r = smlibpy::face_measure(face, tolerance);
+        py::dict d;
+        d["area"] = r.area;
+        d["signed_area"] = r.signed_area;
+        d["origin"] = py3(r.origin);
+        d["first_moments"] = py3(r.first_moments);
+        d["error"] = r.error;
+        d["relative_error"] = r.relative_error;
+        d["converged"] = r.converged;
+        d["panels"] = r.panels;
+        d["evaluations"] = r.evaluations;
+        return d;
+    }, py::arg("face"), py::arg("tolerance") = 1e-9,
           "Area and first area moments of a face (about its bounding box centre, 'origin'), to a relative "
           "`tolerance` (first moments: tolerance * area * size).");
-    m.def("curve_length", [](const SmCurve* curve, double t0, double t1, double tolerance) {
-        return arc_length(curve, std::min(t0, t1), std::max(t0, t1), tolerance);
-    }, py::arg("curve"), py::arg("t0"), py::arg("t1"), py::arg("tolerance") = 1e-12,
-       "Arc length between two parameters, integrated per knot span to a relative tolerance.");
+    m.def("curve_length", &smlibpy::curve_length,
+          py::arg("curve"), py::arg("t0"), py::arg("t1"), py::arg("tolerance") = 1e-12,
+          "Arc length between two parameters, integrated per knot span to a relative tolerance.");
     m.def("curve_parameter_at_length", [](const SmCurve* curve, double t_start, double length, double tolerance) {
-        return parameter_at_length(curve, t_start, length, tolerance);
+        const auto r = smlibpy::curve_parameter_at_length(curve, t_start, length, tolerance);
+        return py::make_tuple(r.first, r.second);
     }, py::arg("curve"), py::arg("t_start"), py::arg("length"), py::arg("tolerance") = 1e-12,
        "Parameter at signed arc length `length` from `t_start`; returns (t, past_end).");
 }
+#endif  // SMLIBPY_PYTHON

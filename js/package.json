@@ -1,0 +1,21 @@
+{
+  "name": "smlibjs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CAD in JavaScript on the SMLib NURBS kernel, compiled to WebAssembly: smlibpy's API for the web and Node",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "wasm"],
+  "scripts": {
+    "wasm": "sh scripts/build-wasm.sh",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
