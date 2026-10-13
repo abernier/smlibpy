@@ -47,6 +47,24 @@
 
 ## MEDIUM
 
+### 19. `import_dxf`: the kernel nests loops wrongly, and differently in the WebAssembly build
+- **Found:** by the JavaScript port (2026-10-13), the one of 99 local DXF files whose import differs.
+- **What happens:** `create_planar_faces` gets the same 10 B-spline loops (polygons equal to 1e-13) and nests
+  them differently: native 3 faces (holes 0, 0, 7), area 56008.26; WebAssembly 2 faces (holes 0, 8), area
+  55817.34. The even-odd answer from the polygons is 1 face with 9 holes, about 55732.3: both are wrong.
+- **Reproduce:** `import_dxf("../classcad/data/Test/Input/BugReporting/CAD-3602/yon002k7.dxf")` (plan
+  "faces", all 10 loops kept).
+- **Expected:** the nesting smlibpy's plan already knows (see 18: a kernel entry point that takes the loops of
+  a face would fix both).
+
+### 20. DXF: fit-point tangents lost their y and z; a byte order mark was "not a DXF file"
+- **Fixed:** `_spline_curve` reads codes 22/32 and 23/33 into the tangents of 12 and 13 (it looked for 2 and
+  3), and the text is decoded as utf-8-sig (2026-10-13). Found by the JavaScript port.
+- **What happens:** a fit-point SPLINE with a start tangent (1, 1) started along (1, 0); a vertical one (0, 1)
+  failed with "cannot normalize a zero-length vector". A UTF-8 file with a BOM was rejected.
+- **Tests:** `tests/test_text_dxf.py::test_fit_point_tangents_keep_all_their_coordinates`,
+  `test_a_byte_order_mark_is_no_part_of_the_drawing`.
+
 ### 3. `tessellate`: tolerance not kept near the poles of a sphere
 - **Session:** `2026-10-12_21-32-28_files-mesh`, scripts `03-sphere-deviation.py`, `04-sphere-slivers.py`
 - **What happens:** `tessellate(Sphere(10), 0.01, 15)` (also with angle 45) has a largest
