@@ -50,6 +50,7 @@ export {
   makeFace,
 } from './sketches.ts'
 export { Text } from './text.ts'
+export { DEFAULT_FONT, Font, FontError, loadFont } from './font.ts'
 // parts
 export { Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge } from './parts.ts'
 // patterns

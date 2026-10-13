@@ -11,13 +11,15 @@
   },
   "files": [
     "src",
-    "wasm"
+    "wasm",
+    "fonts"
   ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
     "build": "tsc -p tsconfig.build.json",
     "test": "node --test 'test/*.test.ts'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fonts": "node scripts/fonts.mjs"
   },
   "engines": {
     "node": ">=22.18"
