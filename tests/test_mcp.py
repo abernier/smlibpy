@@ -175,7 +175,7 @@ def test_live_viewer_serves_the_scene(session):
         viewer.close()
 
 
-def test_stdio_server_round_trip():
+def test_stdio_server_round_trip(tmp_path):
     pytest.importorskip("mcp")
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -208,6 +208,19 @@ def test_stdio_server_round_trip():
                 curv = await s.call_tool("snapshot", {"width": 300, "height": 200,
                                                       "curvature": {"kind": "gaussian", "range": 0.01}})
                 assert curv.content[0].type == "image"
+                # the kernel tools, as an agent uses them: a script, then a USD file out and back in
+                res = await s.call_tool("run_script", {"script": (
+                    "cloud = np.random.default_rng(2).uniform(-10, 10, (300, 2))\n"
+                    "skin = surface(np.column_stack([cloud, 0.02 * (cloud ** 2).sum(axis=1)]))\n"
+                    "hits = part.raycast((0, 0, 50), (0, 0, -1))\n"
+                    "cells = part.merge(Box(4, 4, 20)).cells()\n"
+                    "print(len(hits), len(cells), skin.faces()[0].geom_type)")})
+                assert "2 4 bspline" in res.content[0].text  # (the pin through the box: 3 pieces of it, and the box)
+                usd = str(tmp_path / "part.usda")
+                saved = await s.call_tool("save", {"format": "usd", "path": usd, "names": ["part"]})
+                assert saved.content[0].text.startswith(f"Wrote {usd}")
+                loaded = await s.call_tool("load", {"path": usd, "name": "again"})
+                assert "Loaded" in loaded.content[0].text and "volume 1000" in loaded.content[0].text
 
     asyncio.run(go())
 
