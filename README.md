@@ -26,32 +26,80 @@ edges are picked by their geometry, for example `part.faces().top()` or
 
 ## Features
 
-- Modeling: primitives, holes and patterns, Booleans, extrude (also tapered), revolve, loft,
-  sweep (also along helices), shell, offset, draft, mirror, split, thicken
-- Fillets: circular, variable-radius and curvature-continuous (G2/G3); chamfers
-- Sheet metal: exact bends with radius and K-factor, flanges, unfolding, flat patterns with bend
-  lines
-- Deformation: twist, taper and bend finished parts, or deform them freely with a lattice
-- Simplifying: take fillets, holes and bosses out of a part, an imported one too
-- Molding: draft analysis for a pull direction and the parting line
-- Sketches and curves: a profile builder with tangent arcs and inline fillets; rectangles,
-  circles, ellipses, polygons, triangles, slots, hulls, bands along paths; exact 2D Booleans,
-  offsets, corner fillets and chamfers; lines, arcs, splines, Béziers, helices; text with exact
-  font outlines
-- Surfaces: freeform surfaces from point grids, ruled surfaces, stitching into solids
-- Selection by geometry: `top()`, `parallel_to()`, `concave()`, `circles()`, `largest()`,
-  filters, sorting and grouping
-- Measuring: volume, area, center and inertia integrated over the exact surfaces to seven
-  significant digits, with an error estimate; exact distances, intersections, validity
-- Checks: every kernel result is checked; a fillet or shell that cannot work raises an error
-  that says what fits
-- Files: STEP in and out (exact geometry, assemblies, units, names, colors), DXF in and out
-  (exact arcs and splines), STL, glTF/GLB, OBJ, SMLib's own format
-- Pictures: a software renderer, no GPU or browser needed: shaded views, technical drawings
-  (ISO E and A) with hidden lines and center lines, sections, x-ray, highlights, markers,
-  zebra stripes, curvature maps, image diffs
-- Agents: an MCP server with a live viewer, snapshots and a tested guide for every function,
-  and a Claude Code plugin
+**Modeling**
+- Primitives: `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`
+- Holes: `Hole`, `CounterBoreHole`, `CounterSinkHole`, placed with `Locations`, `GridLocations`,
+  `PolarLocations`, `HexLocations`
+- Booleans: `fuse`, `cut`, `intersect`, which can also be written `+`, `-`, `&`
+- Operations: `extrude` (also tapered), `revolve`, `loft`, `sweep` (also along helices), `shell`,
+  `offset`, `thicken`, `draft`, `mirror`, `split`, `section`
+- Fillets: circular, variable radius, and curvature-continuous (G2/G3); chamfers
+
+**Sheet metal**
+- `fold` and `flange` with exact bends (radius and K-factor)
+- `unfold`, and `flat_pattern` with bend lines
+- `bends()`, `bend_allowance`, `bend_deduction`, `developed_length`
+
+**Deformation**
+- `twist`, `taper` and `bend` work on finished parts. A tapered cylinder becomes an exact cone.
+- Free-form deformation with a `Lattice`
+
+**Simplifying:** `remove_fillets` and `remove_faces` take out fillets, holes and bosses, also on
+imported parts. `faces().fillets()` finds the fillet faces.
+
+**Molding:** `draft_analysis` sorts each face for a pull direction into positive, insufficient,
+vertical or undercut. `parting_line` finds the parting line.
+
+**2D**
+- `Profile` is a pen: it draws lines and tangent arcs, turns, and adds fillets and chamfers at
+  corners as it goes.
+- Shapes: `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`,
+  `Triangle`, `Trapezoid`, `Slot`, `ArcSlot`, `Hull`, and `Stroke` (a band along a path). The
+  polygon shapes take `fillet=` and `chamfer=`.
+- Exact 2D Booleans, offsets, and corner fillets and chamfers. Sketches can be extruded,
+  revolved and swept.
+- `Text` with exact font outlines (the Lato font is included)
+
+**Curves and surfaces**
+- Curves: `Line`, `Polyline`, `PolarLine`, `CenterArc`, `ThreePointArc`, `RadiusArc`,
+  `SagittaArc`, `TangentArc`, `EllipticalArc`, `Spline`, `Bezier`, `Helix`, `FilletPolyline`
+- Surfaces: `surface` through a grid of points, `ruled`, `stitch` (faces into a solid),
+  `to_nurbs`
+
+**Selection**
+- By position (`top()`, `bottom()`, `nearest()`, …), by size (`largest()`, `smallest()`), and
+  by geometry (`lines()`, `circles()`, `planar()`, `cylinders()`, `parallel_to()`, `facing()`,
+  `convex()`, `concave()`, `fillets()`, …)
+- `filter_by`, `sort_by`, `group_by`, set operators between lists, and `neighbors()` of a face
+
+**Measuring and checks**
+- `volume`, `area`, `center` and `mass_properties` (inertia, principal axes), computed from the
+  exact surfaces to seven significant digits, with an error estimate
+- `distance_to`, `closest_point`, `intersection_curves`, `silhouette`, `project`, `outline`,
+  edge radius and convexity
+- `is_valid` and `heal()`. Every kernel result is checked, and a fillet or shell that can't
+  work raises an error that says what would fit.
+
+**Files**
+- STEP in and out: exact geometry, assemblies, units, names and colors (`named()`, `colored()`)
+- DXF in and out with exact arcs and splines; STL in and out; glTF/GLB and OBJ out
+- SMLib's own format (`save`, `load`)
+
+**Pictures**
+- `render()` needs no GPU or browser:
+  - shaded views, and sheets of 2 or 4 views
+  - technical drawings in first-angle (ISO E) or third-angle (ISO A) projection, with dashed
+    hidden lines and center lines
+  - sections, x-ray, highlights, markers, a measurement overlay, zebra stripes and curvature
+    maps
+- `diff_images` compares two renders.
+- `show()` opens a 3D viewer in the browser or a notebook.
+
+**Agents**
+- The MCP server `smlibpy-mcp` has a live viewer, snapshots, function search and a tested guide
+  for every function. People who want parametric apps that rebuild from sketches and features
+  are sent to the [ClassCAD](https://classcad.ai) MCP.
+- A Claude Code plugin, installed from this repository (see below)
 
 ## Install
 
@@ -60,8 +108,9 @@ pip install smlibpy
 ```
 
 There are wheels for Linux (x86_64, aarch64), macOS (arm64, x86_64) and Windows, for Python
-3.10 to 3.14, with the kernel compiled in. They are 5 to 7 MB. For agents, `pip install "smlibpy[mcp]"` adds the
-MCP server; see [AI agents](docs/mcp.md).
+3.10 to 3.14, with the kernel compiled in. They are 5 to 7 MB, and numpy is the only
+dependency. For agents, `pip install "smlibpy[mcp]"` adds the MCP server; see
+[AI agents](docs/mcp.md).
 
 To build from source you need CMake and a C++17 compiler (about a minute on a laptop):
 
