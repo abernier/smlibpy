@@ -36,6 +36,44 @@ jobs:
       - name: Test
         run: pytest -q
 
+  js:
+    # smlibjs: the kernel and smlibpy's C++ compiled to WebAssembly, and the TypeScript port with
+    # its tests (js/)
+    name: JavaScript (WebAssembly)
+    runs-on: ubuntu-latest
+    env:
+      EMSDK_VERSION: 6.0.12
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}
+      - name: Emscripten
+        run: |
+          [ -d ~/emsdk ] || git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+      - name: Build the module
+        run: sh js/scripts/build-wasm.sh
+      - name: Install
+        working-directory: js
+        run: npm ci
+      - name: Type check
+        working-directory: js
+        run: npm run typecheck
+      - name: Build the package
+        working-directory: js
+        run: npm run build
+      - name: Test
+        working-directory: js
+        run: npm test
+
   docs:
     runs-on: ubuntu-latest
     steps:
