@@ -9,6 +9,7 @@ integration at 1e-10.
 import importlib.util
 import math
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -194,6 +195,24 @@ def test_dense_free_form_body():
     assert np.abs(mp.inertia - ref.inertia).max() <= ACCURACY * np.abs(ref.inertia).max()
     assert ref.volume == pytest.approx(20730.45218, rel=1e-6)  # the kernel at 1e-11
     assert body._h.props["evaluations"] < 10_000_000 and elapsed < 10.0
+
+
+def test_folded_face():
+    """Thickening this surface folds the offset face over itself in thin strips along one edge
+    (the normal turns over and back): the area element |Su x Sv| has corners there, which the
+    inner integrals take a few bisections to find. The result converges like any other."""
+    n = 10
+    pts = [[(x, y, 3 * math.sin(x / 7) * math.cos(y / 9)) for y in np.linspace(0, 100, n)]
+           for x in np.linspace(0, 100, n)]
+    slab = surface(pts).thicken(5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no "the integration reached a relative accuracy of ..."
+        mp = slab.mass_properties()
+    assert slab._h.props["converged"]  # bisection used to stop at the folds, 1.8e-7 off the face's area
+    ref = slab.named("again").mass_properties(accuracy=1e-10)
+    assert abs(mp.volume - ref.volume) <= ACCURACY * ref.volume
+    assert abs(mp.area - ref.area) <= ACCURACY * ref.area
+    assert ref.area == pytest.approx(22733.584128, rel=1e-6)
 
 
 def test_accuracy_means_what_it_says():

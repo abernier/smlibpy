@@ -552,9 +552,17 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
         if (!inner_panel(job, s, iso, fixed, fixed_upper, p))
             return false;
 
+    // Bisection divides the error of a smooth integrand by far more than 2. A fold of the
+    // surface (|Su x Sv| with a corner where the normal turns over) takes a few rounds before
+    // its piece is small enough to see it, and its estimate can even grow meanwhile; but its
+    // error stays in one half of each piece split. Rounding of the surface evaluation (in a tiny
+    // knot span, say) is what bisection does not reduce and what spreads to both halves: stop
+    // there. The outer panel carries the error of an inner integral that stops early.
+    const double finest = 1e-13 * (std::fabs(lo) + std::fabs(hi) + (hi - lo));
     double last_ratio = std::numeric_limits<double>::infinity();
     int stalled = 0;
-    for (;;)
+    bool spreading = true;
+    for (int round = 0;; ++round)
     {
         Values tv, te, ta, target;
         zero(tv), zero(te), zero(ta);
@@ -562,17 +570,19 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
             for (int k = s.first; k < s.last; ++k)
                 tv[k] += p.val[k], te[k] += p.err[k], ta[k] += p.abs[k];
         double ratio = 0.0;
+        int worst = s.first;
         for (int k = s.first; k < s.last; ++k)
         {
             target[k] = s.inner * std::max(ta[k], std::max(ta[AREA], job.column) * s.size_pow[kPower[k]]);
-            ratio = std::max(ratio, te[k] / target[k]);
+            if (te[k] / target[k] > ratio)
+                ratio = te[k] / target[k], worst = k;
         }
-        // Bisection divides the error of a smooth integrand by far more than 2; where it does
-        // not, what is left is rounding of the surface evaluation (in a tiny knot span, say).
-        // The outer panel carries the error of an inner integral that stops early.
-        stalled = ratio > 0.5 * last_ratio ? stalled + 1 : 0;
+        if (ratio > 0.5 * last_ratio)
+            stalled += spreading ? 1 : 0;
+        else
+            stalled = 0;
         last_ratio = ratio;
-        if (ratio <= 1.0 || stalled >= 2 || pieces.size() > 1000)
+        if (ratio <= 1.0 || stalled >= 2 || pieces.size() > 1000 || round >= 60)
         {
             const double sign = to >= from ? 1.0 : -1.0;
             for (int k = s.first; k < s.last; ++k)
@@ -582,11 +592,13 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
         // bisect every piece whose error is above its share of the target
         std::vector<Piece> next;
         next.reserve(pieces.size() * 2);
+        double halves = 0.0, lesser = 0.0;  // the error of the halves, and of the lesser half of each
         for (const Piece& p : pieces)
         {
             bool split = false;
-            for (int k = s.first; k < s.last && !split; ++k)
-                split = p.err[k] > target[k] * (p.b - p.a) / (hi - lo);
+            if (p.b - p.a > finest)
+                for (int k = s.first; k < s.last && !split; ++k)
+                    split = p.err[k] > target[k] * (p.b - p.a) / (hi - lo);
             if (!split)
             {
                 next.push_back(p);
@@ -596,9 +608,13 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
             Piece l{p.a, m, {}, {}, {}}, r{m, p.b, {}, {}, {}};
             if (!inner_panel(job, s, iso, fixed, fixed_upper, l) || !inner_panel(job, s, iso, fixed, fixed_upper, r))
                 return false;
+            halves += l.err[worst] + r.err[worst];
+            lesser += std::min(l.err[worst], r.err[worst]);
             next.push_back(l);
             next.push_back(r);
         }
+        // both halves of a piece with about the same error (at least a third of the other's)
+        spreading = !(lesser < 0.25 * halves);
         pieces.swap(next);
     }
 }
