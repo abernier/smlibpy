@@ -124,14 +124,16 @@ double gk_error(double resk, double resg, double resabs, double resasc)
 // ---------------------------------------------------------------------------
 
 // The components, the kernel's quantities: area, integral of (x, y, z) dA, volume, integral of
-// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration.
+// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration; and
+// the closure, the integral of the outward normal over the surface, which vanishes for a
+// closed surface (what is left is the vector area of the gaps between the faces).
 enum
 {
-    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, NC
+    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, NX, NY, NZ, NC
 };
 using Values = std::array<double, NC>;
 // Power of length by which a component exceeds the area (for scales and tolerance floors).
-constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3};
+constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 0, 0, 0};
 
 void zero(Values& v) { v.fill(0.0); }
 
@@ -151,6 +153,7 @@ struct Job
 {
     const SmSurface* surface = nullptr;
     std::vector<SmBSplineCurve*> curves;  // oriented trim curves in the parameter plane, owned
+    std::vector<char> skip;               // curves along which the outer coordinate does not change
     bool inner_v = true;                  // inner integrals along v (outer factor -du/dt), else along u (dv/dt)
     bool planar = false;                  // a plane: every integrand is a low-degree polynomial along a line
     double base = 0.0;                    // where the inner integrals start
@@ -169,6 +172,7 @@ struct Job
         surface = o.surface;
         curves = std::move(o.curves);
         o.curves.clear();
+        skip = std::move(o.skip);
         inner_v = o.inner_v, planar = o.planar, base = o.base;
         inner_knots = std::move(o.inner_knots), outer_knots = std::move(o.outer_knots);
         column = o.column, sign = o.sign, area = o.area, volume = o.volume;
@@ -202,6 +206,7 @@ bool integrand(const Job& job, Settings& s, double u, double v, bool upper_u, bo
     g[VX] = x * w, g[VY] = y * w, g[VZ] = 0.5 * z * w;
     g[VXX] = x * x * w, g[VYY] = y * y * w, g[VZZ] = z * z * w / 3.0;
     g[VYZ] = 0.5 * y * z * w, g[VZX] = 0.5 * x * z * w, g[VXY] = x * y * w;
+    g[NX] = n.x, g[NY] = n.y, g[NZ] = n.z;
     return std::isfinite(a) && std::isfinite(w);
 }
 
@@ -458,7 +463,56 @@ Job make_job(const SmFace* face)
     const SmExtent2d dom = face->GetUVDomain();
     std::vector<double> uk = surface_knots(job.surface, SM_SP_U), vk = surface_knots(job.surface, SM_SP_V);
     job.planar = job.surface->GetType() == SmPlane_TYPE;
-    job.inner_v = spans_within(vk, dom.GetMin().y, dom.GetMax().y) <= spans_within(uk, dom.GetMin().x, dom.GetMax().x);
+
+    // How far each trim curve runs in u and in v: the extent of its control points, which
+    // hold the curve. A curve along which u does not change adds nothing to the integral with
+    // inner integrals along v (its factor du/dt vanishes), and the other way round.
+    const size_t n = job.curves.size();
+    std::vector<double> run_u(n, HUGE_VAL), run_v(n, HUGE_VAL);
+    std::vector<size_t> spans(n, 1);
+    for (size_t c = 0; c < n; ++c)
+    {
+        const SmBSplineCurve* curve = job.curves[c];
+        ULONG dim = 0, degree = 0;
+        SmTArray<SmPoint3d> poles;
+        SmBSplineCurveForm form;
+        SmTArray<ULONG> mults;
+        SmTArray<double> knots, weights;
+        SmKnotType knot_type;
+        if (curve->GetCanonical(dim, degree, poles, form, mults, knots, knot_type, weights) != SM_SUCCESS)
+            continue;  // runs both ways, as far as we know
+        spans[c] = knots.GetSize() > 1 ? knots.GetSize() - 1 : 1;
+        bool positive = true;  // the convex hull holds a rational curve only with positive weights
+        for (ULONG i = 0; i < weights.GetSize(); ++i)
+            positive = positive && weights[i] > 0;
+        if (!positive || poles.GetSize() == 0)
+            continue;
+        double ulo = HUGE_VAL, uhi = -HUGE_VAL, vlo = HUGE_VAL, vhi = -HUGE_VAL;
+        for (ULONG i = 0; i < poles.GetSize(); ++i)
+        {
+            ulo = std::min(ulo, poles[i].x), uhi = std::max(uhi, poles[i].x);
+            vlo = std::min(vlo, poles[i].y), vhi = std::max(vhi, poles[i].y);
+        }
+        run_u[c] = uhi - ulo, run_v[c] = vhi - vlo;
+    }
+    const double eps_u = 1e-12 * (std::fabs(dom.GetMin().x) + std::fabs(dom.GetMax().x) + dom.GetMax().x - dom.GetMin().x);
+    const double eps_v = 1e-12 * (std::fabs(dom.GetMin().y) + std::fabs(dom.GetMax().y) + dom.GetMax().y - dom.GetMin().y);
+    // the inner direction: the one with less work, (outer spans) x (inner spans)
+    double cost_v = 0.0, cost_u = 0.0;
+    for (size_t c = 0; c < n; ++c)
+    {
+        cost_v += run_u[c] > eps_u ? static_cast<double>(spans[c]) : 0.0;
+        cost_u += run_v[c] > eps_v ? static_cast<double>(spans[c]) : 0.0;
+    }
+    if (!job.planar)
+    {
+        cost_v *= static_cast<double>(spans_within(vk, dom.GetMin().y, dom.GetMax().y));
+        cost_u *= static_cast<double>(spans_within(uk, dom.GetMin().x, dom.GetMax().x));
+    }
+    job.inner_v = cost_v <= cost_u;
+    job.skip.assign(n, 0);
+    for (size_t c = 0; c < n; ++c)
+        job.skip[c] = job.inner_v ? run_u[c] <= eps_u : run_v[c] <= eps_v;
     job.base = job.inner_v ? dom.GetMin().y : dom.GetMin().x;
     job.inner_knots = job.inner_v ? vk : uk;
     job.outer_knots = job.inner_v ? uk : vk;
@@ -582,7 +636,7 @@ Values scales(const Values& total, const Settings& s)
     const double area = std::max(std::fabs(total[AREA]), std::numeric_limits<double>::min());
     const double volume = std::max(std::fabs(total[VOL]), 1e-9 * area * s.size);
     for (int k = 0; k < NC; ++k)
-        sc[k] = k < VOL ? area * std::pow(s.size, kPower[k]) : volume * std::pow(s.size, kPower[k] - 1);
+        sc[k] = k < VOL || k >= NX ? area * std::pow(s.size, kPower[k]) : volume * std::pow(s.size, kPower[k] - 1);
     return sc;
 }
 
@@ -592,7 +646,8 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
     std::vector<Panel> panels;
     for (size_t j = 0; j < jobs.size(); ++j)
         for (size_t c = 0; c < jobs[j].curves.size(); ++c)
-            initial_panels(jobs[j], static_cast<int>(j), static_cast<int>(c), panels);
+            if (!jobs[j].skip[c])
+                initial_panels(jobs[j], static_cast<int>(j), static_cast<int>(c), panels);
     auto evaluate = [&](Panel& p) {
         if (!outer_panel(jobs[static_cast<size_t>(p.job)], s, p))
             throw std::runtime_error("the integration cannot evaluate a face's surface (SM_ERR)");
@@ -742,6 +797,7 @@ py::dict brep_measure(const SmBrep* brep, double tolerance)
     d["origin"] = xyz(s.origin.x, s.origin.y, s.origin.z);
     d["first_moments"] = xyz(r.val[VX], r.val[VY], r.val[VZ]);
     d["second_moments"] = py::make_tuple(r.val[VXX], r.val[VYY], r.val[VZZ], r.val[VYZ], r.val[VZX], r.val[VXY]);
+    d["closure"] = xyz(r.val[NX], r.val[NY], r.val[NZ]);
     py::dict e;
     e["area"] = r.err[AREA];
     e["volume"] = r.err[VOL];
@@ -933,7 +989,8 @@ void bind_measure(py::module_ m)
           "Area, volume, and first and second volume moments of a Brep (about the bounding box centre, "
           "'origin'), integrated until the estimated error of each is below `tolerance` times its scale: "
           "the area, |volume|, |volume| * size, |volume| * size^2 (size: the bounding box diagonal). "
-          "'error' holds the estimates, 'converged' whether they met the tolerance.");
+          "'error' holds the estimates, 'converged' whether they met the tolerance, 'closure' the integral "
+          "of the outward normal (zero for a closed surface; else the vector area of the gaps).");
     m.def("face_measure", &face_measure, py::arg("face"), py::arg("tolerance") = 1e-9,
           "Area and first area moments of a face (about its bounding box centre, 'origin'), to a relative "
           "`tolerance` (first moments: tolerance * area * size).");
