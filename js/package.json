@@ -9,13 +9,20 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": ["src", "wasm"],
+  "files": [
+    "src",
+    "wasm"
+  ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
-    "test": "node --test test/",
+    "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22.18"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "typescript": "5.9.3"
   }
 }
