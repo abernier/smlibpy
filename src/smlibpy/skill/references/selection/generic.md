@@ -67,8 +67,9 @@ Print `len(sel)` after every selection that feeds a feature, or use `.one()` whe
 - `circles()` also returns fillet arcs; `cylinders()` also returns fillet faces.
 - After `chamfer`, `loft`, `ruled` or `to_nurbs`, straight edges can be `bspline`: `lines()` and
   `parallel_to()` still find them; `of_type("line")` does not.
-- `facing()` on a full cylinder, sphere or torus face is arbitrary (the centroid is on the axis).
-  Use `facing` for planar faces.
+- `facing()` takes a curved face only when its normal is within `max_angle` everywhere: the walls
+  of holes and bosses never face a direction, so `faces().facing(-X)` of a holed block is its
+  flat -X face alone.
 - `sort()` and `reverse()` are the in-place list methods and return `None`; use `sort_by`.
 - `sl.copy()` and `Pos(...) * sl` return a plain `list` without selectors; wrap in `ShapeList(...)`.
 

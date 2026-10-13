@@ -6,7 +6,8 @@ Select by distance to a point, by a bounding region, or by the direction a face 
 - `sl.nearest(point)` → one shape: the one whose `center()` is closest to `point`.
 - `sl.within(box)` → ShapeList of shapes whose bounding box lies inside `box` (a `BoundBox`).
 - `sl.facing(direction, max_angle=1e-3)` → ShapeList of faces whose outward normal is within
-  `max_angle` degrees of `direction` (an Axis or a vector; its length is ignored).
+  `max_angle` degrees of `direction` (an Axis or a vector; its length is ignored), on a curved
+  face everywhere.
 
 ## nearest: centers, not surfaces
 `nearest` compares centers (face centroid, edge midpoint), not the true distance. For
@@ -30,10 +31,11 @@ truly closest shape sort by `distance_to`:
   Compare `parallel_to(Z)`, which takes both.
 - The default `max_angle` (1e-3°) means "exactly". Pass a larger angle for inclined faces:
   a wedge's slope (normal 26.6° from Z) is found with `facing(Z, max_angle=60)`.
-- Curved faces are judged by the normal at the projection of their centroid. For a half cylinder
-  that is the middle of the face (works). For a full cylinder, sphere or torus face the centroid
-  lies on the axis and the normal is arbitrary: do not use `facing` on them. Use
-  `faces().planar().facing(d)` when you mean flat faces.
+- A curved face counts only when its normal is within `max_angle` everywhere on the face (the
+  least n·d over the face, as `draft_analysis` measures it). With the default angle only flat
+  faces count. The wall of a hole or a boss, a sphere, a torus and a half cylinder face no
+  direction. A dome whose rim normal is 53.1° from Z counts for `facing(Z, max_angle=60)`; a
+  fillet only for an angle that takes in the normals of both faces it joins.
 
 ## Example
 ```python

@@ -393,14 +393,25 @@ class ShapeList(list[T]):
     def facing(self, direction: Axis | VectorLike, max_angle: float = 1e-3) -> ShapeList[T]:
         """Faces whose outward normal points along ``direction`` (within ``max_angle`` degrees).
 
-        Curved faces are judged at their center.
+        A curved face counts only when its normal does so everywhere on the face: the wall of a
+        hole or a boss faces no direction, and a fillet only with a ``max_angle`` that takes in
+        all its normals.
         """
+        from .draft import _range
+
         d = _direction(direction, "facing")
         out = ShapeList()
         for s in self:
             if isinstance(s, Face):
                 try:
-                    if s.normal_at().angle_to(d) <= max_angle:
+                    if s.geom_type == "plane":
+                        ok = s.normal_at().angle_to(d) <= max_angle
+                    else:
+                        # One normal first: most curved faces turn away from d there already.
+                        # Then the least n . d over the face.
+                        ok = (s.normal_at(s.interior_point()).angle_to(d) <= max_angle
+                              and math.degrees(math.acos(_range(s, d)[0])) <= max_angle)
+                    if ok:
                         out.append(s)
                 except (KernelError, ValueError):
                     pass

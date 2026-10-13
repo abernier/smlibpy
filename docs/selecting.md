@@ -39,7 +39,7 @@ Position selectors compare shape centers and return every shape that ties, so
 | `planar()`, `cylinders()` | planar / cylindrical faces |
 | `parallel_to(axis)` | straight edges along an axis, planar faces normal to it |
 | `perpendicular_to(axis)` | straight edges across an axis, planar faces containing it |
-| `facing(direction)` | faces whose outward normal points that way |
+| `facing(direction)` | faces whose outward normal points that way (on a curved face: everywhere) |
 | `convex()`, `concave()`, `smooth()` | edges on outside / inside corners, tangent edges |
 | `filter(predicate)` | anything you can test in Python |
 

@@ -192,6 +192,33 @@ def test_selectors():
     assert part.faces().top().one().plane.origin.z == pytest.approx(5)
 
 
+def test_facing_takes_a_curved_face_only_when_all_its_normals_qualify():
+    # The wall of a hole was judged at its centroid, which lies on the axis, where any normal
+    # comes back: facing(-X) took both walls here. A full wall faces no direction.
+    holed = Box(40, 30, 20) - Cylinder(5, 30) - Cylinder(3, 30).translate(12, 0, 0)
+    for d in (X, -X, Y, -Y, Z, -Z):
+        assert [f.geom_type for f in holed.faces().facing(d)] == ["plane"]
+    boss = (Box(40, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MAX))
+            + Cylinder(6, 15, align=(Align.CENTER, Align.CENTER, Align.MIN)))
+    assert sorted(round(f.center().z, 6) for f in boss.faces().facing(Z)) == [0, 15]  # block and boss tops
+    for d in (X, -X, Y, -Y):
+        assert [f.geom_type for f in boss.faces().facing(d)] == ["plane"]
+    # A fillet between the top and the +X side: its normals turn from Z to X, so it faces
+    # (1, 0, 1) only with an angle that takes in both ends (45 degrees off).
+    block = Box(40, 30, 20)
+    rounded = block.fillet(block.edges().parallel_to(Y).top().right(), 5)
+    assert [f.geom_type for f in rounded.faces().facing(X)] == ["plane"]
+    assert [f.geom_type for f in rounded.faces().facing(Z)] == ["plane"]
+    fillet = rounded.faces().cylinders()
+    assert len(fillet) == 1
+    assert not fillet.facing((1, 0, 1), max_angle=40)
+    assert fillet.facing((1, 0, 1), max_angle=50) == fillet
+    # a dome whose rim normal is acos(12 / 20) = 53.13 degrees off Z
+    dome = Sphere(20) & Box(60, 60, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(0, 0, 12)
+    assert not dome.faces().facing(Z, max_angle=50).of_type("sphere")
+    assert len(dome.faces().facing(Z, max_angle=56).of_type("sphere")) == 1
+
+
 def test_sketch_booleans_of_overlapping_circles():
     a, b = Circle(10).translate(-5, 0), Circle(10).translate(5, 0)
     lens = 2 * 100 * math.acos(0.5) - 5 * math.sqrt(300)
