@@ -26,6 +26,14 @@ waits for it once, and every call after that is synchronous. The kernel is a Web
 next to the module, found with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite, webpack 5
 and other bundlers resolve on their own. Node needs version 22.18 or later.
 
+Vite's dev server bundles dependencies in advance and loses the file on the way; leave the package
+out of that (a build needs nothing):
+
+```js
+// vite.config.js
+export default { optimizeDeps: { exclude: ['@classcad/smlibwasm'] } }
+```
+
 ## Size
 
 What a browser loads, compressed as web servers send it (brotli at its best level, gzip for

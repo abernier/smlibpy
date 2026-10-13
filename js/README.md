@@ -27,7 +27,8 @@ npm install @classcad/smlibwasm
 The package is an ES module with type declarations. Importing it loads the kernel, a WebAssembly
 file next to the module, so the first import takes a moment and everything after it is synchronous.
 The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite and webpack 5
-resolve on their own. Node needs version 22.18 or later.
+resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
+to the config. Node needs version 22.18 or later.
 
 A browser loads about 1.8 MB with brotli: 1.5 MB for the kernel (6.2 MB uncompressed) and 0.3 MB for
 the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
