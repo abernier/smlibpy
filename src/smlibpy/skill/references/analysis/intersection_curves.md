@@ -13,10 +13,10 @@ body, placed on the plane, such as `Rectangle(40, 40).on(Plane.XY.offset(6))`.
 
 ## Returns
 
-A `ShapeList` of standalone `Edge`s, in no particular order, not joined. A closed curve comes
-in pieces: split where it crosses a seam of a curved surface or an edge of a face. A sphere cut
-by a plane gives 2 arcs; a tilted cylinder through a box gives 7 pieces (3 on the bottom
-face, 2 on the top, 1 on each side wall).
+A `ShapeList` of standalone `Edge`s, each curve once, in no particular order, not joined. A
+closed curve comes in pieces: split where it crosses a seam of a curved surface or an edge of a
+face. A sphere cut by a plane gives 2 arcs; a tilted cylinder through a box gives 7 pieces (3 on
+the bottom face, 2 on the top, 1 on each side wall).
 
 Edge types are exact where the geometry allows: `circle` (sphere, cylinder or torus cut
 square to its axis, `radius` and `arc_center` work), `ellipse` (tilted cylinder by a plane,
@@ -35,9 +35,10 @@ different radii).
 - **No crossing raises**: disjoint bodies, or one body nested inside the other, raise
   `KernelError: intersection curves failed (SM_ERR)` instead of returning an empty list. Wrap
   the call in `try` when no crossing is possible.
-- Coincident faces give odd results: two boxes sharing a face return 6 pieces of total
-  length 120 for a 20 x 20 face (perimeter 80); a body with itself returns every edge twice.
-  Do not rely on the output where faces overlap.
+- Where faces of the two bodies lie in one plane, the kernel finds the curves along their
+  borders twice (also reversed); the repeats (within 1e-6 of the bodies' size) are dropped.
+  Two boxes sharing a 20 x 20 face give its 4 sides (total 80), a body with itself each of its
+  edges once.
 - `Wire(pieces)` joins pieces of one loop (`is_closed` True). Pieces of several loops give a
   wire with `is_closed == False` and no error: group the pieces per loop first, for example
   by `piece.center().z`.

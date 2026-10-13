@@ -14,8 +14,9 @@ face list, wire or edge)
 - `taper`: degrees, between -90 and 90. Positive narrows the solid away from the sketch,
   negative widens it. Works with negative amounts and `both` too (each side narrows away from
   the sketch). Holes widen where the outline narrows.
-- `direction`: a vector to extrude along instead of the normal. `amount` is the length along
-  that vector, so the height above the sketch is `amount * cos(angle to the normal)`.
+- `direction`: a vector or an Axis to extrude along instead of the normal. `amount` is the
+  length along that direction, so the height above the sketch is
+  `amount * cos(angle to the normal)`.
 
 ## Returns
 A `Part` (an open curve gives a `Shell`). The solid starts at the sketch plane:
@@ -48,6 +49,7 @@ A `Part` (an open curve gives a `Shell`). The solid starts at the sketch plane:
 ## Errors
 - `ValueError: extrude amount must not be zero`.
 - `ValueError: extrude: the taper must be between -90 and 90 degrees`.
+- `ValueError: extrude: the direction must not be zero` for `direction=(0, 0, 0)`.
 - `ModelingError: extrude: the taper of 56 degrees closes the profile after 6.74509 of 10; use a smaller taper or a shorter extrusion`.
 - `TypeError: expected a sketch, face or closed wire, got Part` (pass a face, not the part).
 - `ValueError: a cylinder face has no plane; use normal_at() or a planar face` for curved faces.

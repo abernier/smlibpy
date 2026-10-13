@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _vec
+from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import Mesh
@@ -382,25 +382,36 @@ class ShapeList(list[T]):
 
     def parallel_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
         """Straight edges along ``axis``, or planar faces whose normal is along ``axis``."""
-        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        d = _direction(axis, "parallel_to")
         return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_parallel(d))
 
     def perpendicular_to(self, axis: Axis | VectorLike) -> ShapeList[T]:
         """Straight edges perpendicular to ``axis``, or planar faces containing it."""
-        d = axis.direction if isinstance(axis, Axis) else _vec(axis).normalized()
+        d = _direction(axis, "perpendicular_to")
         return ShapeList(s for s in self if _direction_of(s) is not None and _direction_of(s).is_perpendicular(d))
 
     def facing(self, direction: Axis | VectorLike, max_angle: float = 1e-3) -> ShapeList[T]:
         """Faces whose outward normal points along ``direction`` (within ``max_angle`` degrees).
 
-        Curved faces are judged at their center.
+        A curved face counts only when its normal does so everywhere on the face: the wall of a
+        hole or a boss faces no direction, and a fillet only with a ``max_angle`` that takes in
+        all its normals.
         """
-        d = direction.direction if isinstance(direction, Axis) else _vec(direction).normalized()
+        from .draft import _range
+
+        d = _direction(direction, "facing")
         out = ShapeList()
         for s in self:
             if isinstance(s, Face):
                 try:
-                    if s.normal_at().angle_to(d) <= max_angle:
+                    if s.geom_type == "plane":
+                        ok = s.normal_at().angle_to(d) <= max_angle
+                    else:
+                        # One normal first: most curved faces turn away from d there already.
+                        # Then the least n . d over the face.
+                        ok = (s.normal_at(s.interior_point()).angle_to(d) <= max_angle
+                              and math.degrees(math.acos(_range(s, d)[0])) <= max_angle)
+                    if ok:
                         out.append(s)
                 except (KernelError, ValueError):
                     pass
@@ -1496,26 +1507,30 @@ class _Body(Shape):
 
     # -- geometric queries ----------------------------------------------------
     def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
-        """The curves where this body's surface meets another body's surface."""
+        """The curves where this body's surface meets another body's surface, each one once."""
         with kernel_call("intersection curves"):
             curves, _ = k.intersect_breps(self._brep, other._brep)
-        return ShapeList(Edge._from_curve(c) for c in curves)
+        # Where faces of the two bodies lie in one plane, the kernel hands out curves on their
+        # borders twice (also reversed).
+        return _distinct_curves(curves, 1e-6 * max(1.0, self._loose_box().union(other._loose_box()).diagonal))
 
-    def silhouette(self, direction: VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
-        """Silhouette curves on the body as seen along ``direction``."""
-        d = _vec(direction)
+    def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
+        """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
+        d = _direction(direction, "silhouette")
         with kernel_call("silhouette"):
             curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
         return ShapeList(Edge._from_curve(c) for c in curves)
 
-    def project(self, curve: Edge | Wire, direction: VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
-        """Project a curve onto the body along ``direction``; returns the curves on its faces."""
+    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
+        """Project a curve onto the body along ``direction`` (an axis or a vector); returns the
+        curves on its faces."""
+        d = _direction(direction, "project")
         out = ShapeList()
         for e in curve.edges():
             c = e._copy_curve()
             try:
                 with kernel_call("project"):
-                    res = k.project_curve(self._brep, c, _vec(direction).to_tuple())
+                    res = k.project_curve(self._brep, c, d.to_tuple())
             finally:
                 ext.delete_curve(c)
             out.extend(Edge._from_curve(r) for r in res)
@@ -1527,17 +1542,7 @@ class _Body(Shape):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
         # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
         # circles seen edge-on come with a copy each); a drawing view needs each line once.
-        tol = 1e-7 * max(self.bbox().diagonal, 1.0)
-        kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
-        for c in curves:
-            e = Edge._from_curve(c)
-            a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
-            if any(np.linalg.norm(m - km) <= tol
-                   and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
-                   for _, ka, kb, km in kept):
-                continue
-            kept.append((e, a, b, m))
-        return ShapeList(e for e, _, _, _ in kept)
+        return _distinct_curves(curves, 1e-7 * max(self.bbox().diagonal, 1.0))
 
     def _transformed(self, m: np.ndarray) -> Any:
         b = self._copy_brep()
@@ -1581,6 +1586,21 @@ class _Body(Shape):
             "vertices": self._brep.vertex_count(),
             "bbox": (b.min.to_tuple(), b.max.to_tuple()),
         }
+
+
+def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
+    """Edges of new kernel curves, each curve once: one whose ends and midpoint lie within
+    ``tol`` of those of a curve kept already (either way round) is left out."""
+    kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
+    for c in curves:
+        e = Edge._from_curve(c)
+        a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
+        if any(np.linalg.norm(m - km) <= tol
+               and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
+               for _, ka, kb, km in kept):
+            continue
+        kept.append((e, a, b, m))
+    return ShapeList(e for e, _, _, _ in kept)
 
 
 def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
@@ -2974,7 +2994,7 @@ class Sketch(Shell):
         *,
         both: bool = False,
         taper: float = 0.0,
-        direction: VectorLike | None = None,
+        direction: Axis | VectorLike | None = None,
     ) -> Part:
         """Extrude the region into a solid.
 
@@ -2982,12 +3002,12 @@ class Sketch(Shell):
             amount: Distance along the sketch normal (negative goes the other way).
             both: Extrude ``amount`` to both sides of the sketch.
             taper: Draft angle in degrees; positive narrows the solid away from the sketch.
-            direction: Extrude along this direction instead of the normal.
+            direction: Extrude along this direction (an axis or a vector) instead of the normal.
         """
         if amount == 0:
             raise ValueError("extrude amount must not be zero")
         self._require_region("extrude")
-        d = _vec(direction).normalized() if direction is not None else self._plane.z_dir
+        d = _direction(direction, "extrude") if direction is not None else self._plane.z_dir
         if taper:
             return self._extrude_taper(amount, taper, both)
         src = self

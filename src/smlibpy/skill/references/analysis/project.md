@@ -9,8 +9,8 @@ body, for example a path on a curved face.
 
 - `curve`: an `Edge`, a `Wire` or anything with `.edges()` (a `Sketch` works: its outline is
   projected). Each edge is projected on its own.
-- `direction`: the projection direction; its length does not matter. `(0, 0, 0)` raises
-  `KernelError: project failed (SM_ERR_INVALID_INPUT)`.
+- `direction`: the projection direction, an Axis (`-Z`) or a vector; its length does not
+  matter. `(0, 0, 0)` raises `ValueError: project: the direction must not be zero`.
 
 ## Returns
 
