@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smlibjs check</title>
+<style>
+  body { margin: 16px; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: #f6f6f4; color: #1f2328; }
+  @media (prefers-color-scheme: dark) { body { background: #17191c; color: #e5e7eb; } }
+</style>
+</head>
+<body>
+<pre id="out">loading the kernel ...</pre>
+<script type="module">
+  // smlibjs in the browser: the package (dist, npm run build) and the WebAssembly module (wasm,
+  // npm run wasm), served from js/.
+  const out = document.getElementById('out')
+  const lines = []
+  const say = (line) => { lines.push(line); out.textContent = lines.join('\n') }
+  try {
+    const t0 = performance.now()
+    const s = await import('../dist/index.js')
+    say(`kernel loaded in ${(performance.now() - t0).toFixed(0)} ms`)
+    const t1 = performance.now()
+    let plate = s.Box(80, 60, 10)
+    plate = plate.fillet(plate.edges().parallelTo(s.Z), 8)
+    plate = plate.cut(s.GridLocations(60, 40, 2, 2).mul(s.Cylinder(4, 10)))
+    say(`${plate}`)
+    say(`volume ${plate.volume.toFixed(6)} (exact ${(((80 * 60 - (4 - Math.PI) * 64) - 4 * Math.PI * 16) * 10).toFixed(6)})`)
+    say(`${plate.mesh()}`)
+    const ring = s.Circle(10).cut(s.Circle(4)).extrude(5)
+    say(`ring ${ring}, ${ring.faces().length} faces`)
+    say(`modeled in ${(performance.now() - t1).toFixed(0)} ms`)
+    say('ok')
+  } catch (e) {
+    say(`failed: ${e && e.stack ? e.stack : e}`)
+  }
+</script>
+</body>
+</html>
