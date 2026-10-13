@@ -5,10 +5,17 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      only:
+        description: The jobs to run (python or js, so that the other does not rebuild)
+        type: choice
+        options: [all, python, js]
+        default: all
 
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    if: github.event_name != 'workflow_dispatch' || inputs.only != 'js'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -40,6 +47,7 @@ jobs:
     # smlibjs: the kernel and smlibpy's C++ compiled to WebAssembly, and the TypeScript port with
     # its tests (js/)
     name: JavaScript (WebAssembly)
+    if: github.event_name != 'workflow_dispatch' || inputs.only != 'python'
     runs-on: ubuntu-latest
     env:
       EMSDK_VERSION: 6.0.12
@@ -75,6 +83,7 @@ jobs:
         run: npm test
 
   docs:
+    if: github.event_name != 'workflow_dispatch' || inputs.only != 'js'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
