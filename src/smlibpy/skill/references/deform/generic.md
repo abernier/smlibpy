@@ -42,11 +42,12 @@ stays; beyond `end` it is turned (twist, bend) or scaled (taper) as a whole. Fac
   turns space inside out is refused before it runs.
 
 ## Gotchas
-- Meshes of twisted faces are coarser than the mesh tolerance asks: the kernel's
-  tessellator does not split a twisted face across its straight rulings. `Box(20, 20,
-  100).twist(90).mesh()` (default tolerance 0.105) is up to 0.48 mm off the surface and 5 %
-  too large; at `tolerance=0.001` still 0.027 mm. STEP is exact; for STL use a small
-  tolerance and check `mesh.volume` against the part.
+- Meshes of twisted parts are within the mesh tolerance but have many more triangles: a
+  face that stays straight across while it twists along makes `tessellate` halve all faces of
+  the part until they are flat (the kernel's grid put one facet across such a face, 1 mm off).
+  `Box(20, 20, 100).twist(90).mesh()` (default tolerance 0.108): 2076 triangles instead of 12
+  for the box, 0.03 mm off, volume 40061; at `tolerance=0.001` 131596 triangles, 0.6 s. Bent
+  and tapered parts do not twist their faces and keep the usual triangle counts.
 - `offset()` of twisted, tapered or bent parts usually fails outward (`ModelingError: offset:
   the kernel could not build a valid result`); `shell()` works.
 - Self-intersection is not detected: a bend of more than 180° with long legs makes the legs

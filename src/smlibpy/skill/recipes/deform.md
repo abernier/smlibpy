@@ -75,8 +75,9 @@ prints `True 27`, `True 23`, `True [(-80.0, -0.0), (-80.0, 60.0)]` (the two hole
 ## Limits
 - Twist and bend are within `tolerance` (1e-6 mm); lattices and tapers are exact up to
   degree 12.
-- Meshes, STL and snapshots of twisted faces are coarse (one facet across each twisted face);
-  STEP is exact. Mesh with a small tolerance and compare `mesh.volume` with the part.
+- Meshes, STL and snapshots of twisted parts keep to the tolerance but take many more
+  triangles (2076 for `Box(20, 20, 100).twist(90)`, the box 12; about 1 / tolerance more for a
+  finer one). Do not ask for a finer mesh than needed. STEP is exact.
 - `part.volume` can be 4e-4 off on bent parts; measure with `mass_properties(accuracy=1e-10)`.
 - Bends stay under 360°; legs crossing after a large bend are not detected.
 - A lattice point moved past its neighbours folds space and is refused.

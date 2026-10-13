@@ -49,6 +49,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The seam has to lie where the surface's angle parameter starts | turns the surface frame to the seam edge of the file |
 | The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode |
 | Arcs from the API are plain B-splines | arcs are trimmed kernel circles, so they keep radius and center |
+| Tessellation cuts each face into a grid placed by the curves along its borders, so a face that is straight in one direction and twisted along it gets one facet across (a twisted bar: 1 mm off) | estimates for every face how far the grid would be off and halves all faces of such a body until they are flat; other bodies keep the kernel's triangles |
 
 ## Known kernel limitations
 

@@ -34,9 +34,11 @@ the range keep their type (`plane`, `cylinder`).
 - `Box(20, 10, 100).twist(90)` turns the top by 90°: the 20 x 10 top becomes 10 wide and 20
   deep. A square turned by 90° or 360° looks unchanged at the ends; check the middle.
 - The bounding box grows to the turned corners (11.18 for a 20 x 10 bar).
-- Meshes and renders of twisted faces are coarse: one facet across each twisted face
-  (kernel tessellator). `Box(20, 20, 100).twist(90).mesh()` is up to 0.48 mm off and 5 % too
-  large; use a small mesh tolerance for STL. STEP is exact.
+- Meshes (STL, glTF, renders) of twisted parts have far more triangles than those of the
+  untwisted part: a twisted face needs triangles in proportion to 1 / tolerance, and the whole
+  part is divided finer. `Box(20, 20, 100).twist(90).mesh()` has 2076 triangles, 0.03 mm off
+  (volume 40061); `mesh(0.001)` 131596 triangles in 0.6 s. Ask for no finer tolerance than
+  needed. STEP is exact.
 - `offset()` of a twisted part fails outward; `shell()` works.
 
 ## Errors

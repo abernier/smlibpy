@@ -72,6 +72,11 @@ mesh.vertices, mesh.triangles          # numpy arrays
 mesh.volume, mesh.area, len(mesh)
 ```
 
+A part with a face that stays straight across while it twists along (a twisted part, a ruled
+loft between different sections, the walls of a thickened free-form sheet) is divided until
+all its faces are flat within the tolerance. Its mesh is right, but it takes many more
+triangles: 2076 for `Box(20, 20, 100).twist(90)`, where the box has 12.
+
 Meshes made by `tessellate` also take `+`, `-` and `&`, but the kernel's mesh Booleans only
 work where no face of the result gets a hole. The result is checked (closed, a volume the
 operation can give) and a wrong one raises `ModelingError`. Do Booleans on the exact parts

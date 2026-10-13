@@ -122,6 +122,8 @@ several bends along a known path is a sweep), when a feature must keep its exact
 (add it after the deformation, so a bore drilled into a tapered grip stays round), or when
 the part will be offset outward, which the kernel cannot do for most deformed parts.
 
-Meshes of twisted faces are coarser than the tolerance you ask for: the kernel's
-tessellator puts one facet across a twisted face. STEP files are exact; for STL, use a
-small mesh tolerance and compare the mesh volume with the part.
+Meshes of twisted parts (STL, glTF, pictures) keep to the tolerance you ask for, but they
+need many more triangles than the straight part: a face that stays straight across while it
+twists along is divided until its pieces are flat, and with it the rest of the part.
+`Box(20, 20, 100).twist(90).mesh()` has 2076 triangles where the box has 12. STEP files are
+exact.
