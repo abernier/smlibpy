@@ -329,6 +329,33 @@ def test_step_cylinder_band_ending_in_an_open_loop(tmp_path):
     assert part.mesh().volume == pytest.approx(part.volume, rel=2e-2)
 
 
+
+def test_step_cylinder_band_sheet_gets_its_seam(tmp_path):
+    """The band above as a sheet (a surface model of the cylinder face alone): it gets the
+    seam as well, without the checks a solid has to pass."""
+    e = [
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
+        "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", "#5=CARTESIAN_POINT('',(0.,0.,20.));",
+        "#6=AXIS2_PLACEMENT_3D('',#5,#2,#3);", "#7=CYLINDRICAL_SURFACE('',#4,10.);",
+        "#10=CIRCLE('',#4,10.);", "#11=CIRCLE('',#6,10.);",
+        "#12=CARTESIAN_POINT('',(10.,0.,0.));", "#13=VERTEX_POINT('',#12);",
+        "#14=CARTESIAN_POINT('',(10.,0.,20.));", "#15=VERTEX_POINT('',#14);",
+        "#16=CARTESIAN_POINT('',(-10.,0.,20.));", "#17=VERTEX_POINT('',#16);",
+        "#18=EDGE_CURVE('',#13,#13,#10,.T.);",
+        "#19=EDGE_CURVE('',#15,#17,#11,.T.);", "#20=EDGE_CURVE('',#17,#15,#11,.T.);",
+        "#30=ORIENTED_EDGE('',*,*,#18,.T.);", "#31=EDGE_LOOP('',(#30));", "#32=FACE_BOUND('',#31,.T.);",
+        "#33=ORIENTED_EDGE('',*,*,#20,.F.);", "#34=ORIENTED_EDGE('',*,*,#19,.F.);",
+        "#35=EDGE_LOOP('',(#33,#34));", "#36=FACE_BOUND('',#35,.T.);", "#37=ADVANCED_FACE('',(#32,#36),#7,.T.);",
+        "#97=OPEN_SHELL('',(#37));", "#99=SHELL_BASED_SURFACE_MODEL('band',(#97));",
+    ]
+    path = tmp_path / "band_sheet.step"
+    path.write_text(_step(e))
+    sheet = import_step(path)
+    assert not isinstance(sheet, Part)
+    area = 2 * math.pi * 10 * 20
+    assert sheet.area == pytest.approx(area, rel=1e-6)
+    assert sheet.mesh().area == pytest.approx(area, rel=1e-2)
+
 def _torus_entities(R: float, r: float) -> list[str]:
     return ["#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
             "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", f"#5=TOROIDAL_SURFACE('',#4,{R},{r});"]

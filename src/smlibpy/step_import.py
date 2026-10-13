@@ -666,7 +666,8 @@ def _with_seams(body: Any) -> Any:
         fixed = body._like(body._copy_brep())
         with kernel_call("import STEP: seams"):
             ext.seam_problems(fixed._brep, True, lacking)
-        if fixed.is_valid() and (not isinstance(fixed, Part) or _positive(fixed)):
+        # a sheet cannot be checked for closure: it keeps the kernel's seams
+        if not isinstance(fixed, Part) or (fixed.is_valid() and _positive(fixed)):
             return fixed
     except KernelError:
         pass
