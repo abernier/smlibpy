@@ -51,7 +51,7 @@ export class Mesh {
       const nx = uy * wz - uz * wy
       const ny = uz * wx - ux * wz
       const nz = ux * wy - uy * wx
-      const ln = Math.hypot(nx, ny, nz) || 1
+      const ln = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1 // as numpy's norm
       out[i] = nx / ln
       out[i + 1] = ny / ln
       out[i + 2] = nz / ln
@@ -71,7 +71,8 @@ export class Mesh {
       const wx = v[c] - v[a]
       const wy = v[c + 1] - v[a + 1]
       const wz = v[c + 2] - v[a + 2]
-      s += Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx)
+      const [cx, cy, cz] = [uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx]
+      s += Math.sqrt(cx * cx + cy * cy + cz * cz) // as numpy's norm
     }
     return 0.5 * s
   }

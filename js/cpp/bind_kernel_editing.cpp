@@ -8,6 +8,7 @@
 
 #include <SmApiBrep.h>
 #include <SmApiPrimitives.h>
+#include <SmApiFillets.h>
 #include <SmFilletSolver.h>
 
 #include <cstdio>
@@ -217,8 +218,17 @@ uintptr_t fillet_edges_per_edge(uintptr_t b, val edges, val radii, val xsect_typ
     return b;
 }
 
+// The kernel's own fillet removal (defeaturing): removes the fillet faces it recognises; changes
+// brep in place and returns it.
+uintptr_t remove_fillet(uintptr_t b)
+{
+    SMJS_CHECK(SmApiRemoveFillet(brep(b)));
+    return b;
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_fillets)
 {
+    function("remove_fillet", &remove_fillet);
     function("fillet_edges", &fillet_edges);
     function("variable_radius_fillet", &variable_radius_fillet);
     function("fillet_edges_per_edge", &fillet_edges_per_edge);

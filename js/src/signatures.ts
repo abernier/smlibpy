@@ -69,6 +69,7 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   fillet_edges: ['brep', 'edges', 'radius', ['xsect_type', 1], ['continuity', 1], ['thumbweight', 1.0]],
   variable_radius_fillet: ['brep', 'edges', 'start_radius', 'end_radius', ['xsect_type', 1], ['continuity', 1]],
   fillet_edges_per_edge: ['brep', 'edges', 'radii', 'xsect_types', ['continuity', 1], ['thumbweight', 1.0]],
+  remove_fillet: ['brep'],
 
   // offset (SmPyOffset.cpp)
   shell_brep: [
