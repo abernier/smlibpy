@@ -31,8 +31,8 @@
 // and surface at once. Callers make sure the region holds nothing but flat sheet (bend) or one
 // bend (unbend); a region that does not cut the body in two is refused here.
 
-#include "ext.h"
-#include "SmPyError.h"
+#include "kernel.h"
+#include "sheetmetal.h"
 
 #include <SmApiGeneral.h>
 #include <SmBendVolume.h>
@@ -401,32 +401,87 @@ void check_frame(const SmVector3d& axis, const SmVector3d& direction)
 
 }  // namespace
 
+namespace smlibpy {
+
+BendFaces sheet_bend(SmBrep* brep, double angle, double radius, double k_factor, double thickness,
+                     const std::vector<double>& axis_point, const std::vector<double>& axis,
+                     const std::vector<double>& direction, double length)
+{
+    check_bend_input(angle, radius, k_factor, thickness, length);
+    SmVector3d a = vec(axis), d = vec(direction);
+    check_frame(a, d);
+    double neutral = radius + k_factor * thickness;
+    std::unique_ptr<SmSpaceBend> bend(new (brep->GetContext()) SmSpaceBend(
+        *brep, angle, neutral, vec(axis_point), a, d, SmExtent1d(0.0, length), thickness, k_factor,
+        SM_BO_FIXED_BEFORE_BENDING));
+    Partition p;
+    check(partition(*brep, bend->GetBendDomain(), bend->GetStartBendBoundary(), bend->GetStopBendBoundary(), p),
+          "sheet metal bend: classifying the bend region");
+    check_partition(p, "sheet metal bend");
+    align_planes(*brep, p.in_faces, a, d);
+    Transforms t{bend->GetBeforeBendTransform(), bend->GetInsideBendTransform(), bend->GetAfterBendTransform()};
+    auto map_region = [&](const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e, const SmTArray<SmVertex*>& v) {
+        std::unique_ptr<SmBendVolume> volume(bend->CreateBendVolume(*brep->GetContext()));
+        return bend->BendTopology(*volume, *brep, f, e, v);
+    };
+    auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
+                    const SmTArray<SmVertex*>& v) { return bend->TransformTopology(m, *brep, f, e, v); };
+    check_mapped(map_and_move(*brep, p, t, map_region, move, bend->GetApproxTol()), "sheet metal bend");
+    return {p.in_faces.GetSize(), p.before_faces.GetSize(), p.after_faces.GetSize()};
+}
+
+int sheet_unbend(SmBrep* brep, double angle, double radius, double k_factor, double thickness,
+                 const std::vector<double>& axis_point, const std::vector<double>& axis,
+                 const std::vector<double>& direction, double length, SmFace* anchor)
+{
+    check_bend_input(angle, radius, k_factor, thickness, length);
+    SmVector3d a = vec(axis), d = vec(direction);
+    check_frame(a, d);
+    double neutral = radius + k_factor * thickness;
+    auto make = [&](SmUnbendOrientTYPE orient) {
+        return std::unique_ptr<SmSpaceUnbend>(new (brep->GetContext()) SmSpaceUnbend(
+            *brep, angle, neutral, vec(axis_point), a, d, SmExtent1d(0.0, length), thickness, k_factor, orient));
+    };
+    auto unbend = make(SM_UO_FIXED_BEFORE_UNBENDING);
+    Partition p;
+    check(partition(*brep, unbend->GetUnbendDomain(), unbend->GetStartUnbendBoundary(),
+                    unbend->GetStopUnbendBoundary(), p),
+          "sheet metal unbend: classifying the bend region");
+    check_partition(p, "sheet metal unbend");
+    ULONG found = 0;
+    int fixed = -1;  // the part before the region stays
+    if (anchor && p.after_faces.FindElement(anchor, found))
+        fixed = 1;
+    else if (anchor && !p.before_faces.FindElement(anchor, found))
+        fail(SM_ERR_INVALID_INPUT, "sheet metal unbend: the anchor face is on neither side of the bend region");
+    // The unbend ignores the orientation argument of its Get*Transform methods; an object
+    // built for the other orientation supplies the transforms.
+    auto oriented = fixed > 0 ? make(SM_UO_FIXED_AFTER_UNBENDING) : nullptr;
+    SmSpaceUnbend* u = oriented ? oriented.get() : unbend.get();
+    Transforms t{u->GetBeforeUnbendTransform(), u->GetInsideUnbendTransform(), u->GetAfterUnbendTransform()};
+    auto map_region = [&](const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e, const SmTArray<SmVertex*>& v) {
+        std::unique_ptr<SmUnbendVolume> volume(unbend->CreateUnbendVolume(*brep->GetContext()));
+        return unbend->UnbendTopology(*volume, *brep, f, e, v);
+    };
+    auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
+                    const SmTArray<SmVertex*>& v) { return unbend->TransformTopology(m, *brep, f, e, v); };
+    check_mapped(map_and_move(*brep, p, t, map_region, move, unbend->GetApproxTol()), "sheet metal unbend");
+    return fixed;
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
 void bind_sheetmetal(py::module_ m)
 {
     m.def("bend", [](SmBrep* brep, double angle, double radius, double k_factor, double thickness,
                      const std::vector<double>& axis_point, const std::vector<double>& axis,
                      const std::vector<double>& direction, double length) {
-        check_bend_input(angle, radius, k_factor, thickness, length);
-        SmVector3d a = vec(axis), d = vec(direction);
-        check_frame(a, d);
-        double neutral = radius + k_factor * thickness;
-        std::unique_ptr<SmSpaceBend> bend(new (brep->GetContext()) SmSpaceBend(
-            *brep, angle, neutral, vec(axis_point), a, d, SmExtent1d(0.0, length), thickness, k_factor,
-            SM_BO_FIXED_BEFORE_BENDING));
-        Partition p;
-        check(partition(*brep, bend->GetBendDomain(), bend->GetStartBendBoundary(), bend->GetStopBendBoundary(), p),
-              "sheet metal bend: classifying the bend region");
-        check_partition(p, "sheet metal bend");
-        align_planes(*brep, p.in_faces, a, d);
-        Transforms t{bend->GetBeforeBendTransform(), bend->GetInsideBendTransform(), bend->GetAfterBendTransform()};
-        auto map_region = [&](const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e, const SmTArray<SmVertex*>& v) {
-            std::unique_ptr<SmBendVolume> volume(bend->CreateBendVolume(*brep->GetContext()));
-            return bend->BendTopology(*volume, *brep, f, e, v);
-        };
-        auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
-                        const SmTArray<SmVertex*>& v) { return bend->TransformTopology(m, *brep, f, e, v); };
-        check_mapped(map_and_move(*brep, p, t, map_region, move, bend->GetApproxTol()), "sheet metal bend");
-        return py::make_tuple(p.in_faces.GetSize(), p.before_faces.GetSize(), p.after_faces.GetSize());
+        const smlibpy::BendFaces f =
+            smlibpy::sheet_bend(brep, angle, radius, k_factor, thickness, axis_point, axis, direction, length);
+        return py::make_tuple(f.in, f.before, f.after);
     }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"),
        "Bend a Brep in place by `angle` degrees about the axis through `axis_point` along `axis`, with inside "
@@ -434,45 +489,11 @@ void bind_sheetmetal(py::module_ m)
        "[0, length] along the axis from `axis_point`. The part on the side of cross(direction, axis) stays in "
        "place. Returns the numbers of faces in, before and after the region.");
 
-    m.def("unbend", [](SmBrep* brep, double angle, double radius, double k_factor, double thickness,
-                       const std::vector<double>& axis_point, const std::vector<double>& axis,
-                       const std::vector<double>& direction, double length, SmFace* anchor) {
-        check_bend_input(angle, radius, k_factor, thickness, length);
-        SmVector3d a = vec(axis), d = vec(direction);
-        check_frame(a, d);
-        double neutral = radius + k_factor * thickness;
-        auto make = [&](SmUnbendOrientTYPE orient) {
-            return std::unique_ptr<SmSpaceUnbend>(new (brep->GetContext()) SmSpaceUnbend(
-                *brep, angle, neutral, vec(axis_point), a, d, SmExtent1d(0.0, length), thickness, k_factor, orient));
-        };
-        auto unbend = make(SM_UO_FIXED_BEFORE_UNBENDING);
-        Partition p;
-        check(partition(*brep, unbend->GetUnbendDomain(), unbend->GetStartUnbendBoundary(),
-                        unbend->GetStopUnbendBoundary(), p),
-              "sheet metal unbend: classifying the bend region");
-        check_partition(p, "sheet metal unbend");
-        ULONG found = 0;
-        int fixed = -1;  // the part before the region stays
-        if (anchor && p.after_faces.FindElement(anchor, found))
-            fixed = 1;
-        else if (anchor && !p.before_faces.FindElement(anchor, found))
-            fail(SM_ERR_INVALID_INPUT, "sheet metal unbend: the anchor face is on neither side of the bend region");
-        // The unbend ignores the orientation argument of its Get*Transform methods; an object
-        // built for the other orientation supplies the transforms.
-        auto oriented = fixed > 0 ? make(SM_UO_FIXED_AFTER_UNBENDING) : nullptr;
-        SmSpaceUnbend* u = oriented ? oriented.get() : unbend.get();
-        Transforms t{u->GetBeforeUnbendTransform(), u->GetInsideUnbendTransform(), u->GetAfterUnbendTransform()};
-        auto map_region = [&](const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e, const SmTArray<SmVertex*>& v) {
-            std::unique_ptr<SmUnbendVolume> volume(unbend->CreateUnbendVolume(*brep->GetContext()));
-            return unbend->UnbendTopology(*volume, *brep, f, e, v);
-        };
-        auto move = [&](const SmAxis2Placement& m, const SmTArray<SmFace*>& f, const SmTArray<SmEdge*>& e,
-                        const SmTArray<SmVertex*>& v) { return unbend->TransformTopology(m, *brep, f, e, v); };
-        check_mapped(map_and_move(*brep, p, t, map_region, move, unbend->GetApproxTol()), "sheet metal unbend");
-        return fixed;
-    }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
+    m.def("unbend", &smlibpy::sheet_unbend,
+       py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"), py::arg("anchor") = nullptr,
        "Unbend a Brep in place: the inverse of `bend`, with `direction` pointing from the axis to the middle "
        "of the bent region. The side that holds the face `anchor` stays in place (without one, the side of "
        "cross(direction, axis)). Returns -1 if the side of cross(direction, axis) stayed, +1 if the other one.");
 }
+#endif  // SMLIBPY_PYTHON
