@@ -200,7 +200,7 @@ def _run(plan: _Plan, what: str, source: Any) -> Any:
         problem = result._shape_problem()
         if problem is None:
             try:
-                volume = float(result._props(accuracy=1e-6)["volume"])
+                volume = result._quick_volume()  # a check with a margin of 1e-3
             except KernelError:
                 volume = float("nan")
             problem = result._solid_problem(volume)
@@ -216,7 +216,7 @@ def _volume_problem(source: Any, volume: float, ratio: tuple[float, float]) -> s
     """The volume of a deformed part lies between the smallest and the largest local volume
     change of the map times the original volume. Catches broken bodies, not small errors."""
     try:
-        v0 = float(source._props(accuracy=1e-6)["volume"])
+        v0 = source._quick_volume()
     except KernelError:
         return None
     lo, hi = ratio

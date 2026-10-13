@@ -136,7 +136,10 @@ def test_radius_range():
     for r in (0.3, 0.11):  # far below the thickness
         tight = fold(blank, Axis((0, 0, T), ALONG_Y), 90, radius=r)
         assert len(cylinders(tight, r)) == 1
-        assert unfold(tight).volume == pytest.approx(8000, rel=1e-12)
+        # The side faces of the unfolded bend zone are trimmed by curves that miss their straight
+        # edges (0.5 % of the face at r = 0.3), so the faces do not close up and the volume says so.
+        with pytest.warns(RuntimeWarning, match="do not meet exactly"):
+            assert unfold(tight).volume == pytest.approx(8000, rel=1e-12)
     with pytest.raises(ModelingError, match="too small"):
         fold(blank, Axis((0, 0, T), ALONG_Y), 90, radius=0.1)
 

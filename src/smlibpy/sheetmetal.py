@@ -251,14 +251,21 @@ def _point_of(target: Any) -> Vector:
     return _vec(target)
 
 
+def _volume(part: Part) -> float:
+    """The volume for the checks of an operation: measured like ``part.volume``, without its
+    warnings (they are for the user's own measures)."""
+    return float(part._props()["volume"])
+
+
 def _volume_agrees(result: Part, expected: float, scale: float) -> bool:
     """Whether ``result`` has the ``expected`` volume.
 
-    The kernel's exact integration is unreliable for bodies with NURBS faces made by bending or
-    unbending other curved faces (a hole across a bend zone): there the volume of a fine mesh
-    decides, within the mesh's error (curved area times the chord tolerance).
+    Bending or unbending curved faces (a hole across a bend zone) gives NURBS faces whose trim
+    curves do not quite meet their neighbours': the volume integrated over the faces as they
+    are is then uncertain by up to 1e-4, and the volume of a fine mesh decides, within the
+    mesh's error (curved area times the chord tolerance).
     """
-    if abs(result.volume - expected) <= 1e-6 * scale:
+    if abs(_volume(result) - expected) <= 1e-6 * scale:
         return True
     faces = result.faces()
     if not any(f.geom_type == "bspline" for f in faces):
@@ -437,10 +444,10 @@ def _check_bend_result(result: Part, before: Part, what: str, strip: float, radi
     if not inner or not outer:
         raise ModelingError(f"{what}: the kernel did not build exact bend faces (cylinders of radius {radius:g} and "
                             f"{radius + t:g}); {hint}")
-    v0 = before.volume
+    v0 = _volume(before)
     expected = v0 + strip * t * t * (0.5 - k_factor) / (radius + k_factor * t)
     if not _volume_agrees(result, expected, v0):
-        raise ModelingError(f"{what}: the result has the volume {result.volume:.9g}, expected {expected:.9g} for the "
+        raise ModelingError(f"{what}: the result has the volume {_volume(result):.9g}, expected {expected:.9g} for the "
                             f"material in the bend zone; {hint}.{relief}")
 
 
@@ -511,8 +518,8 @@ def flange(part: Part, edge: Edge | ShapeList[Edge], length: float, *, angle: fl
     center = e.center() + out * (reach / 2) - n_face * (t / 2)
     strip = Box(reach, w, t).moved(Plane(center, x_dir=out, z_dir=n_face).location)
     extended = part + strip
-    expected = part.volume + reach * w * t
-    if abs(extended.volume - expected) > 1e-6 * expected:
+    expected = _volume(part) + reach * w * t
+    if abs(_volume(extended) - expected) > 1e-6 * expected:
         raise ModelingError("flange: the strip for the flange overlaps the part; the edge must be an outer edge "
                             "with nothing beyond it")
     line_start = e.start + out * (allowance / 2)
@@ -715,7 +722,7 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
     work = Part._wrap(copy, name=part.name, color=part.color)
     anchor = mapped[0]
     done: list[tuple[_BendGeom, Vector, Vector, Vector]] = []
-    volume = part.volume
+    volume = _volume(part)
     expected = volume
     hint = "the part must be a sheet of constant thickness whose bends are separated by flat regions"
     for _ in range(len(found)):
@@ -768,7 +775,7 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
                                 f"{thickness:.6g} thick: some of it is not a bend (only pairs of coaxial cylinder "
                                 f"faces one thickness apart unfold); {hint}")
     if not _volume_agrees(work, expected, volume):
-        raise ModelingError(f"{what}: the unfolded part has the volume {work.volume:.9g}, expected {expected:.9g}; "
+        raise ModelingError(f"{what}: the unfolded part has the volume {_volume(work):.9g}, expected {expected:.9g}; "
                             f"{hint}")
     work._h.sound = True
     return _Unfolded(work, base_face, done, thickness, k_factor)
@@ -895,9 +902,9 @@ def flat_pattern(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None =
     place = shift * to_xy
     t = float(thickness)
     outline = _cut_contour(laid, _tol(laid))
-    if abs(outline.area * t - laid.volume) > 1e-6 * laid.volume:
+    if abs(outline.area * t - _volume(laid)) > 1e-6 * _volume(laid):
         raise ModelingError(f"flat_pattern: the outline encloses {outline.area:.9g}, the flat part is "
-                            f"{laid.volume / t:.9g} in area; the part is not a flat sheet")
+                            f"{_volume(laid) / t:.9g} in area; the part is not a flat sheet")
     pattern_bends = []
     for g, start, direction, inside in u.bends:
         p0 = place * start

@@ -159,18 +159,25 @@ double gk_error(double resk, double resg, double resabs, double resasc)
 // ---------------------------------------------------------------------------
 
 // The components, the kernel's quantities: area, integral of (x, y, z) dA, volume, integral of
-// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration; and
-// the closure, the integral of the outward normal over the surface, which vanishes for a
+// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration; the
+// volume again from the fields (x, 0, 0) and (0, y, 0), which agree with (0, 0, z) only on a
+// closed surface; and the closure, the integral of the outward normal, which vanishes on a
 // closed surface (what is left is the vector area of the gaps between the faces).
 enum
 {
-    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, NX, NY, NZ, NC
+    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, VOLX, VOLY, NX, NY, NZ, NC
 };
 using Values = std::array<double, NC>;
 // Power of length by which a component exceeds the area (for scales and tolerance floors).
-constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 0, 0, 0};
+constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 1, 1, 0, 0, 0};
 
 void zero(Values& v) { v.fill(0.0); }
+
+// The field volumes only tell how far the faces leave gaps between them (smlibpy says so beyond
+// 1e-5 of the volume): they are integrated to kFieldTolerance (or a coarser tolerance asked for)
+// and do not count in the error reported.
+constexpr double kFieldTolerance = 1e-7;
+bool is_field(int k) { return k == VOLX || k == VOLY; }
 
 struct Settings
 {
@@ -437,6 +444,7 @@ bool values(const SmVector3d* d, Settings& s, Values& g)
     g[VX] = x * w, g[VY] = y * w, g[VZ] = 0.5 * z * w;
     g[VXX] = x * x * w, g[VYY] = y * y * w, g[VZZ] = z * z * w / 3.0;
     g[VYZ] = 0.5 * y * z * w, g[VZX] = 0.5 * x * z * w, g[VXY] = x * y * w;
+    g[VOLX] = x * n.x, g[VOLY] = y * n.y;
     g[NX] = n.x, g[NY] = n.y, g[NZ] = n.z;
     return std::isfinite(a) && std::isfinite(w);
 }
@@ -573,7 +581,8 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
         int worst = s.first;
         for (int k = s.first; k < s.last; ++k)
         {
-            target[k] = s.inner * std::max(ta[k], std::max(ta[AREA], job.column) * s.size_pow[kPower[k]]);
+            const double inner = is_field(k) ? std::max(s.inner, 1e-3 * kFieldTolerance) : s.inner;
+            target[k] = inner * std::max(ta[k], std::max(ta[AREA], job.column) * s.size_pow[kPower[k]]);
             if (te[k] / target[k] > ratio)
                 ratio = te[k] / target[k], worst = k;
         }
@@ -972,13 +981,14 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
         bool done = true;
         for (int k = s.first; k < s.last; ++k)
         {
-            target[k] = s.tolerance * sc[k];
+            target[k] = (is_field(k) ? std::max(s.tolerance, kFieldTolerance) : s.tolerance) * sc[k];
             done = done && err[k] <= target[k];
         }
         r.val = total, r.err = err, r.panels = static_cast<long>(panels.size());
         r.relative = 0.0;
         for (int k = s.first; k < s.last; ++k)
-            r.relative = std::max(r.relative, err[k] / sc[k]);
+            if (!is_field(k))
+                r.relative = std::max(r.relative, err[k] / sc[k]);
         // stop when done, and also when bisection has stopped paying (rounding noise)
         double excess = 0.0;
         for (Panel& p : panels)
@@ -1095,6 +1105,7 @@ py::dict brep_measure(const SmBrep* brep, double tolerance)
     d["first_moments"] = xyz(r.val[VX], r.val[VY], r.val[VZ]);
     d["second_moments"] = py::make_tuple(r.val[VXX], r.val[VYY], r.val[VZZ], r.val[VYZ], r.val[VZX], r.val[VXY]);
     d["closure"] = xyz(r.val[NX], r.val[NY], r.val[NZ]);
+    d["field_volumes"] = xyz(r.val[VOLX], r.val[VOLY], r.val[VOL]);
     py::dict e;
     e["area"] = r.err[AREA];
     e["volume"] = r.err[VOL];
