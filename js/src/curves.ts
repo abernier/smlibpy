@@ -6,7 +6,7 @@
 import { ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { solve } from './_linalg.ts'
-import { Edge, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
+import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
 
 /** Python's float modulo: the result has the sign of the divisor. */
 export function _mod(a: number, b: number): number {
@@ -435,9 +435,14 @@ export function _filletWire(wire: Wire, radius: number, vertices: Iterable<Vecto
  */
 export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[] {
   const flat: Edge[] = []
-  for (const e of edges) flat.push(...(e instanceof Edge ? [e] : Array.from(e)))
+  for (const e of edges) flat.push(...(e instanceof Edge || e instanceof Shape ? [e as Edge] : Array.from(e)))
+  for (const e of flat) {
+    if (!(e instanceof Edge)) {
+      const hint = (e as unknown) instanceof Wire ? ' (pass wire.edges())' : ''
+      throw new TypeError(`makeCompatible takes edges, not a ${_typeName(e)}${hint}`)
+    }
+  }
   if (flat.length < 2) throw new RangeError(`makeCompatible needs two or more edges, got ${flat.length}`)
-  for (const e of flat) if (!(e instanceof Edge)) throw new TypeError(`makeCompatible takes edges, not a ${_typeName(e)}`)
   const curves: number[] = []
   try {
     for (const e of flat) { // every curve a B-spline of its own (a line or an arc is one of its own kind)

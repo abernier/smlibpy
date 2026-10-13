@@ -43,11 +43,13 @@ def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.n
             across)`` (4 to 64), "along" the longer side of the cloud. Default: about one per 8
             points, shaped like the cloud. More follow finer detail, and noise.
         smoothing: Clouds: how much the surface resists bending, against how close it comes to
-            the points: 0 to 1, default 1e-3. Raise it for noisy points.
+            the points: 0 to 1, default 1e-3. For noisy points raise it (0.1 to 1), or take fewer
+            control points.
 
     A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over).
     The surface spans the smallest rectangle around the points in that plane; where there are
-    no points, the smoothing shapes it.
+    no points, the smoothing shapes it. Its normal points up (+Z); for a cloud that stands
+    upright, to +Y, else to +X.
     """
     if _is_cloud(points):
         return _fit(points, controls, smoothing)

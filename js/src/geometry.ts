@@ -805,6 +805,25 @@ export class Hit {
   }
 }
 
+/**
+ * A curve as a NURBS (see `Edge.nurbs`): the degree, the knot vector (every knot as often as its
+ * multiplicity, `points.length + degree + 1` of them), the control points and the weight of each
+ * (`null` for a non-rational curve).
+ */
+export class Nurbs {
+  readonly degree: number
+  readonly knots: number[]
+  readonly points: Vector[]
+  readonly weights: number[] | null
+
+  constructor(degree: number, knots: number[], points: Vector[], weights: number[] | null = null) {
+    this.degree = degree
+    this.knots = knots
+    this.points = points
+    this.weights = weights
+  }
+}
+
 export class BoundBox {
   min: Vector
   max: Vector

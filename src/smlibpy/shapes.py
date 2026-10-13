@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec
+from .geometry import (TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction,
+                       _vec)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import Mesh
@@ -881,6 +882,18 @@ class Edge(Shape):
         e = Edge.__new__(Edge)
         e._owner, e._e, e._c, e._rev, e._cache = self._owner, self._e, self._c, not self._rev, self._cache
         return e
+
+    def nurbs(self) -> Nurbs:
+        """This edge as a NURBS curve, from its start to its end: degree, knots, control points and
+        weights. Exact for lines, arcs (rational) and B-splines; other curves are approximated
+        within 1e-7."""
+        c = self._copy_curve()
+        try:
+            d = ext.curve_data(c, True)
+        finally:
+            ext.delete_curve(c)
+        return Nurbs(int(d["degree"]), [float(x) for x in d["knots"]], [Vector(*p) for p in d["poles"]],
+                     None if d["weights"] is None else [float(w) for w in d["weights"]])
 
     def remove_knots(self) -> Edge:
         """The same curve with the knots it does not need taken out: a B-spline with fewer control

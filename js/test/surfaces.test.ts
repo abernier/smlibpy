@@ -160,6 +160,31 @@ test('surface fitted to a cloud of points', () => {
   assert.equal(_ext.surface_data(_k.face_surface(few.faces()[0]._f), true).poles.length, 30)
 })
 
+test('surface of a cloud faces up', () => {
+  let state = 3
+  const rnd = (): number => ((state = (state * 16807) % 2147483647) / 2147483647)
+  const bump: number[][] = [] // a bump: up at its top
+  for (let i = 0; i < 500; i++) {
+    const x = rnd() * 20 - 10
+    const y = rnd() * 20 - 10
+    bump.push([x, y, 2 * Math.exp(-(x * x + y * y) / 50)])
+  }
+  const cases: [number[][], number[]][] = [
+    [bump, [0, 0, 1]],
+    [bump.map(([x, y, z]) => [x, y, -z]), [0, 0, 1]],
+    [bump.map(([x, y, z]) => [x, -z, y]), [0, 1, 0]], // (standing in XZ)
+    [bump.map(([x, y, z]) => [-x, z, -y]), [0, 1, 0]],
+    [bump.map(([x, y, z]) => [z, y, -x]), [1, 0, 0]], // (in YZ)
+    [bump.map(([x, y, z]) => [-z, -y, x]), [1, 0, 0]],
+  ]
+  for (const [points, up] of cases) {
+    const f = _surface(points).faces()[0]
+    const dot = (p: number[]): number => p[0] * up[0] + p[1] * up[1] + p[2] * up[2]
+    const top = points.reduce((a, b) => (Math.abs(dot(b)) > Math.abs(dot(a)) ? b : a)) // (the point of the bump)
+    assert.ok(f.normalAt(top).dot(up) > 0.99)
+  }
+})
+
 test('surface cloud checks', () => {
   const points = cloud(100)
   assert.throws(() => _surface([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]]), /line/)

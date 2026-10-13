@@ -13,7 +13,7 @@ import numpy as np
 
 from ._kernel import KernelError, ext, k, kernel_call
 from .geometry import Axis, Location, Plane, Vector, VectorLike, _direction, _vec
-from .shapes import Edge, Vertex, Wire, _canonical_curve, _transform_curve
+from .shapes import Edge, Shape, Vertex, Wire, _canonical_curve, _transform_curve
 
 __all__ = [
     "Line",
@@ -452,12 +452,13 @@ def make_compatible(*edges: Edge | Iterable[Edge]) -> list[Edge]:
     """
     flat: list[Edge] = []
     for e in edges:
-        flat.extend([e] if isinstance(e, Edge) else list(e))
-    if len(flat) < 2:
-        raise ValueError(f"make_compatible needs two or more edges, got {len(flat)}")
+        flat.extend([e] if isinstance(e, (Edge, Shape)) else list(e))
     for e in flat:
         if not isinstance(e, Edge):
-            raise TypeError(f"make_compatible takes edges, not a {type(e).__name__}")
+            hint = " (pass wire.edges())" if isinstance(e, Wire) else ""
+            raise TypeError(f"make_compatible takes edges, not a {type(e).__name__}{hint}")
+    if len(flat) < 2:
+        raise ValueError(f"make_compatible needs two or more edges, got {len(flat)}")
     curves = []
     try:
         for e in flat:  # every curve a B-spline of its own (a line or an arc is one of its own kind)

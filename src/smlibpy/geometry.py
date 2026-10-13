@@ -25,6 +25,7 @@ __all__ = [
     "Rot",
     "BoundBox",
     "Hit",
+    "Nurbs",
     "X",
     "Y",
     "Z",
@@ -687,6 +688,23 @@ class Hit(NamedTuple):
     normal: "Vector"
     face: Any = None
     triangle: int | None = None
+
+
+class Nurbs(NamedTuple):
+    """A curve as a NURBS (see :meth:`Edge.nurbs`).
+
+    Attributes:
+        degree: The degree of the curve.
+        knots: The knot vector, every knot as often as its multiplicity
+            (``len(points) + degree + 1`` of them).
+        points: The control points.
+        weights: The weight of each control point, or ``None`` for a non-rational curve.
+    """
+
+    degree: int
+    knots: list[float]
+    points: list["Vector"]
+    weights: list[float] | None
 
 
 class BoundBox:

@@ -11,6 +11,7 @@ import {
   Axis,
   BoundBox,
   Hit,
+  Nurbs,
   Location,
   Plane,
   Vector,
@@ -1024,6 +1025,23 @@ export class Edge extends Shape {
     e._rev = !this._rev
     e._cache = this._cache
     return e
+  }
+
+  /**
+   * This edge as a NURBS curve, from its start to its end: degree, knots, control points and
+   * weights. Exact for lines, arcs (rational) and B-splines; other curves are approximated within
+   * 1e-7.
+   */
+  nurbs(): Nurbs {
+    const c = this._copyCurve()
+    let d: Any
+    try {
+      d = ext.curve_data(c, true)
+    } finally {
+      ext.delete_curve(c)
+    }
+    return new Nurbs(Number(d.degree), d.knots.map(Number), d.poles.map((p: number[]) => new Vector(p[0], p[1], p[2])),
+      d.weights == null ? null : d.weights.map(Number))
   }
 
   /**

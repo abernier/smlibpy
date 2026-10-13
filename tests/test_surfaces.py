@@ -107,6 +107,18 @@ def test_surface_fitted_to_a_cloud_of_points():
     assert len(poles) == 30
 
 
+def test_surface_of_a_cloud_faces_up():
+    xy = np.random.default_rng(3).uniform(-10, 10, (500, 2))
+    cloud = np.column_stack([xy, 2 * np.exp(-(xy ** 2).sum(axis=1) / 50)])  # a bump: up at its top
+    turn_x = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])  # (90 degrees about X: the cloud stands in XZ)
+    turn_y = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]])  # (90 degrees about Y: in YZ)
+    for points, up in [(cloud, Z), (cloud * [1, 1, -1], Z), (cloud @ turn_x.T, Y), (-(cloud @ turn_x.T), Y),
+                       (cloud @ turn_y.T, X), (-(cloud @ turn_y.T), X)]:
+        f = surface(points).faces()[0]
+        top = max(points, key=lambda p: abs(Vector(*p).dot(up.direction)))  # (the point of the bump)
+        assert f.normal_at(top).dot(up.direction) > 0.99
+
+
 def test_surface_cloud_checks():
     cloud, _ = _cloud(100)
     with pytest.raises(ValueError, match="line"):

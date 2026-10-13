@@ -26,7 +26,7 @@ from .curves import (
     ThreePointArc,
     make_compatible,
 )
-from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Plane, Pos, Rot, Vector, X, Y, Z
+from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, tessellate
 from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
@@ -52,7 +52,8 @@ __version__ = "0.2.3"
 
 __all__ = [
     # geometry
-    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "X", "Y", "Z", "TOLERANCE", "Align",
+    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "Nurbs", "X", "Y", "Z", "TOLERANCE",
+    "Align",
     # shapes
     "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Mesh",
     # curves

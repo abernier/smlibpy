@@ -22,6 +22,8 @@
 //  3. Parameter correction: each (u_i, v_i) moves to the foot of its point on the surface (two
 //     Gauss-Newton steps), then 2. again. Three rounds.
 //
+// The normal of the surface points up (+Z); for a cloud that stands upright, to +Y, else to +X.
+//
 // The cloud must be a height field over its best-fit plane (no overhangs, no folds over): a cloud
 // that is not (a tube, a hemisphere seen from the side) gets a surface that fits it badly, which
 // the returned errors show. The surface covers the rectangle the projected points span; where
@@ -310,6 +312,18 @@ SurfaceFit fit_surface(const std::vector<double>& points, int nu, int nv, double
     }
     double values[3], axes[3][3];
     eigen3(cov, values, axes);
+    // The normal of the surface is axes[0] x axes[1] (u and v below are turned in that plane), whose
+    // sign the decomposition leaves to chance: it is made to point up (+Z), or for a cloud that
+    // stands upright (within about half a degree) to +Y, else +X.
+    {
+        const double n[3] = {axes[0][1] * axes[1][2] - axes[0][2] * axes[1][1],
+                             axes[0][2] * axes[1][0] - axes[0][0] * axes[1][2],
+                             axes[0][0] * axes[1][1] - axes[0][1] * axes[1][0]};
+        const bool flip = std::fabs(n[2]) > 0.01 ? n[2] < 0 : std::fabs(n[1]) > 0.01 ? n[1] < 0 : n[0] < 0;
+        if (flip)
+            for (double& a : axes[1])
+                a = -a;
+    }
     std::vector<double> x(count), y(count);
     for (size_t i = 0; i < count; ++i)
     {
