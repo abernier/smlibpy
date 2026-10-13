@@ -1,10 +1,14 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmProtoTopology.cpp,
 // changed for smlibpy by AWV Informatik AG on 2026-10-13. Compiled in place of the original
-// (see third_party/patches/README.md). The change is marked "smlibpy patch":
+// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmProtoTopologyManager::~SmProtoTopologyManager cuts the links between ProtoVertices and
 //   ProtoEdges before it deletes them. It deleted the ProtoEdges first, and a ProtoVertex that
 //   still listed one wrote into it (SmProtoEdge::RemoveProtoVertex): a write into freed memory
 //   in every Boolean (AddressSanitizer: Box(40, 30, 20) - Cylinder(5, 40)).
+//   SmProtoTopologyManager::GlueCoincidentBrepVertices no longer calls Destruct() on the
+//   EdgeDefinitions of the short Edges it deletes. Destruct() deleted the curves the Breps had
+//   taken from them, also those the other Brep's Edge still used: freed curves were read later
+//   in Booleans that glue vertices (AddressSanitizer: fillet removal on an imported valve body).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -6252,7 +6256,12 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                     || sDeletedEdges2.IsIn( pThisED->GetFinalEdge( 2 ) ) )
                   {
                       pThisPE->RemoveEdgeDefinition( pThisED) ;
-                      pThisED->Destruct();
+                      // smlibpy patch: no Destruct() here. This EdgeDefinition was imprinted, so
+                      // the Breps own the curves it made their Edges from: the deleted Edge took
+                      // its curves along, the other Brep's Edge still uses its own. Destruct()
+                      // deleted them all; the destructor deletes only the curves no Brep took
+                      // (where the EdgeDefinition lies on an existing Edge, see Imprint()).
+                      //   pThisED->Destruct();
                       delete pThisED; pThisED = NULL;
                   }
               }
