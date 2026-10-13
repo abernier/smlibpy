@@ -4,7 +4,7 @@
 //
 //   tessellate(brep, ...)               sm.tessellate (SmApiTessellate) with the choice below
 //   tessellation_algorithm(brep, ...)   "grid" or "halving" for the given tolerances
-//   grid_deviation(face, ...)           how far the facets of the grid would be off a face
+//   grid_deviation(face, ...)                how far the facets of the grid would be off a face
 //
 // The kernel's tessellator (SmTess) knows two ways to divide a B-spline face (any other surface
 // is approximated by Bezier patches, which are always halved):
@@ -48,7 +48,8 @@
 //     reaches from its ends to the halved parts next to it (2.9 times the chord height off on a
 //     twisted plate). The copy that is halved gets its trim curves moved onto the border.
 
-#include "ext.h"
+#include "kernel.h"
+#include "tessellate.h"
 
 #include <SmApiBrep.h>
 #include <SmApiTessellationParams.h>
@@ -234,7 +235,7 @@ double twist_deviation(const SmSurface* surface, const SmExtent2d& domain, SmSur
 // diagonals). `angle_tol_deg` is the angle tolerance of the faces: the one of the edges adds
 // points to the borders of a face but no lines to its grid, and those points do not help where
 // the two borders of a face are divided differently.
-double grid_deviation(const SmFace* face, double chord_height, double angle_tol_deg, double max_edge_length)
+double face_grid_deviation(const SmFace* face, double chord_height, double angle_tol_deg, double max_edge_length)
 {
     const SmSurface* surface = face ? face->GetSurface() : nullptr;
     if (!surface || !(chord_height > 0.0) || !can_be_twisted(surface))
@@ -267,7 +268,7 @@ SmTessAlgorithmType choose_algorithm(const SmBrep* brep, double chord_height, do
     SmTArray<SmFace*> faces;
     brep->GetFaces(faces);
     for (ULONG i = 0; i < faces.GetSize(); ++i)
-        if (grid_deviation(faces[i], chord_height, surface_angle_tol_deg, 0.0) > kMaxDeviationFactor * chord_height)
+        if (face_grid_deviation(faces[i], chord_height, surface_angle_tol_deg, 0.0) > kMaxDeviationFactor * chord_height)
             return SM_TA_FEWER_POLYGONS;
     return SM_TA_FASTER_TESSELLATION;
 }
@@ -539,7 +540,61 @@ const char* algorithm_name(SmTessAlgorithmType algorithm)
     return algorithm == SM_TA_FEWER_POLYGONS ? "halving" : "grid";
 }
 
-py::dict report_to_dict(const SmTessellationReport& report, SmTessAlgorithmType algorithm)
+}  // namespace
+
+namespace smlibpy {
+
+Tessellation tessellate(SmBrep* brep, const TessellateOptions& o)
+{
+    if (!brep)
+        throw std::invalid_argument("tessellate: no body");
+    if (o.algorithm != "auto" && o.algorithm != "grid" && o.algorithm != "halving")
+        throw std::invalid_argument("algorithm must be 'auto', 'grid' or 'halving', not '" + o.algorithm + "'");
+    if (o.algorithm == "halving" && (o.max_edge_length != 0.0 || o.max_aspect_ratio != 0.0))
+        throw std::invalid_argument("the halving takes no max_edge_length or max_aspect_ratio: with them the kernel "
+                                    "divides the faces down to a thousandth of their size");
+
+    SmTessellationParams params;
+    params.dChordHeightTol = o.chord_height_tolerance;
+    params.dCurveAngleTolDeg = o.curve_angle_tolerance_deg;
+    params.dSurfaceAngleTolDeg = o.surface_angle_tolerance_deg;
+    params.dMaxEdgeLength = o.max_edge_length;
+    params.dMaxAspectRatio = o.max_aspect_ratio;
+    const SmTessAlgorithmType chosen =
+        o.algorithm == "grid"      ? SM_TA_FASTER_TESSELLATION
+        : o.algorithm == "halving" ? SM_TA_FEWER_POLYGONS
+                                   : choose_algorithm(brep, o.chord_height_tolerance, o.surface_angle_tolerance_deg,
+                                                      o.max_edge_length, o.max_aspect_ratio);
+    Tessellation t;
+    t.algorithm = algorithm_name(chosen);
+    SmPyErrorTrail::clear();
+    t.status = chosen == SM_TA_FASTER_TESSELLATION
+                   ? SmApiTessellate(brep, t.mesh, params, o.allow_partial, nullptr, &t.report)
+                   : tessellate_by_halving(brep, t.mesh, params, o.allow_partial, t.report);
+    return t;
+}
+
+std::string tessellation_algorithm(SmBrep* brep, double chord_height_tolerance, double surface_angle_tolerance_deg,
+                                   double max_edge_length, double max_aspect_ratio)
+{
+    return algorithm_name(choose_algorithm(brep, chord_height_tolerance, surface_angle_tolerance_deg, max_edge_length,
+                                           max_aspect_ratio));
+}
+
+double grid_deviation(const SmFace* face, double chord_height_tolerance, double surface_angle_tolerance_deg,
+                      double max_edge_length)
+{
+    return face_grid_deviation(face, chord_height_tolerance, surface_angle_tolerance_deg, max_edge_length);
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+
+py::dict report_to_dict(const SmTessellationReport& report, const std::string& algorithm)
 {
     py::dict result;
     result["failures"] = tessellation_failures_to_list(report.failures);
@@ -548,65 +603,50 @@ py::dict report_to_dict(const SmTessellationReport& report, SmTessAlgorithmType 
     result["input_manifold"] = bool(report.inputManifold);
     result["output_manifold"] = bool(report.outputManifold);
     result["has_mesh"] = bool(report.hasMesh);
-    result["algorithm"] = algorithm_name(algorithm);
+    result["algorithm"] = algorithm;
     return result;
 }
 
-py::object tessellate(SmBrep* brep, double chord_height_tol, double curve_angle_tol_deg, double surface_angle_tol_deg,
-                      double max_edge_length, double max_aspect_ratio, const std::string& algorithm, bool allow_partial,
-                      bool return_failures, bool return_report)
+py::object tessellate_py(SmBrep* brep, double chord_height_tol, double curve_angle_tol_deg, double surface_angle_tol_deg,
+                         double max_edge_length, double max_aspect_ratio, const std::string& algorithm,
+                         bool allow_partial, bool return_failures, bool return_report)
 {
     if (!brep)
         throw py::value_error("tessellate: no body");
     if (allow_partial && !return_failures && !return_report)
         throw py::value_error("allow_partial=True requires return_failures=True or return_report=True");
-    if (algorithm != "auto" && algorithm != "grid" && algorithm != "halving")
-        throw py::value_error("algorithm must be 'auto', 'grid' or 'halving', not '" + algorithm + "'");
-    if (algorithm == "halving" && (max_edge_length != 0.0 || max_aspect_ratio != 0.0))
-        throw py::value_error("the halving takes no max_edge_length or max_aspect_ratio: with them the kernel divides "
-                              "the faces down to a thousandth of their size");
-
-    SmTessellationParams params;
-    params.dChordHeightTol = chord_height_tol;
-    params.dCurveAngleTolDeg = curve_angle_tol_deg;
-    params.dSurfaceAngleTolDeg = surface_angle_tol_deg;
-    params.dMaxEdgeLength = max_edge_length;
-    params.dMaxAspectRatio = max_aspect_ratio;
-    const SmTessAlgorithmType chosen =
-        algorithm == "grid"      ? SM_TA_FASTER_TESSELLATION
-        : algorithm == "halving" ? SM_TA_FEWER_POLYGONS
-                                 : choose_algorithm(brep, chord_height_tol, surface_angle_tol_deg, max_edge_length,
-                                                    max_aspect_ratio);
-
-    SmPolyBrep* mesh = nullptr;
-    SmTessellationReport report;
-    SmPyErrorTrail::clear();
-    const SmStatus status = chosen == SM_TA_FASTER_TESSELLATION
-                                ? SmApiTessellate(brep, mesh, params, allow_partial, nullptr, &report)
-                                : tessellate_by_halving(brep, mesh, params, allow_partial, report);
-    if (status != SM_SUCCESS)
+    smlibpy::TessellateOptions o;
+    o.chord_height_tolerance = chord_height_tol;
+    o.curve_angle_tolerance_deg = curve_angle_tol_deg;
+    o.surface_angle_tolerance_deg = surface_angle_tol_deg;
+    o.max_edge_length = max_edge_length;
+    o.max_aspect_ratio = max_aspect_ratio;
+    o.algorithm = algorithm;
+    o.allow_partial = allow_partial;
+    smlibpy::Tessellation t = smlibpy::tessellate(brep, o);
+    if (t.status != SM_SUCCESS)
     {
         try
         {
-            SmPyRaise(status, "tessellate", __FILE__, __LINE__);
+            SmPyRaise(t.status, "tessellate", __FILE__, __LINE__);
         }
         catch (const std::runtime_error& error)
         {
             py::object type = py::module_::import("_omni_solid").attr("TessellationError");
             py::object exception = type(error.what());
-            exception.attr("report") = report_to_dict(report, chosen);
+            exception.attr("report") = report_to_dict(t.report, t.algorithm);
             exception.attr("failures") = exception.attr("report")["failures"];
-            exception.attr("status") = status;
-            exception.attr("status_name") = sm_status_name(status);
+            exception.attr("status") = t.status;
+            exception.attr("status_name") = sm_status_name(t.status);
             PyErr_SetObject(type.ptr(), exception.ptr());
             throw py::error_already_set();
         }
     }
-    py::object result = py::cast(mesh, py::return_value_policy::reference);
+    py::object result = py::cast(t.mesh, py::return_value_policy::reference);
     if (return_report)
-        return py::make_tuple(result, report_to_dict(report, chosen));
+        return py::make_tuple(result, report_to_dict(t.report, t.algorithm));
     if (return_failures)
-        return py::make_tuple(result, tessellation_failures_to_list(report.failures));
+        return py::make_tuple(result, tessellation_failures_to_list(t.report.failures));
     return result;
 }
 
@@ -614,7 +654,7 @@ py::object tessellate(SmBrep* brep, double chord_height_tol, double curve_angle_
 
 void bind_tessellate(py::module_ m)
 {
-    m.def("tessellate", &tessellate, py::return_value_policy::reference, py::arg("brep"), py::kw_only(),
+    m.def("tessellate", &tessellate_py, py::return_value_policy::reference, py::arg("brep"), py::kw_only(),
           py::arg("chord_height_tolerance") = SmTessellationDefaults::kChordHeightTol,
           py::arg("curve_angle_tolerance_deg") = SmTessellationDefaults::kCurveAngleTolDeg,
           py::arg("surface_angle_tolerance_deg") = SmTessellationDefaults::kSurfaceAngleTolDeg,
@@ -629,20 +669,14 @@ void bind_tessellate(py::module_ m)
           "halves a body with a face whose grid would be off by more than twice the chord height (see "
           "grid_deviation) unless a max edge length or aspect ratio is given, and takes the grid otherwise. The "
           "report (return_report=True) names the algorithm used.");
-    m.def(
-        "tessellation_algorithm",
-        [](SmBrep* brep, double chord_height_tol, double surface_angle_tol_deg, double max_edge_length,
-           double max_aspect_ratio) {
-            return std::string(algorithm_name(choose_algorithm(brep, chord_height_tol, surface_angle_tol_deg,
-                                                               max_edge_length, max_aspect_ratio)));
-        },
+    m.def("tessellation_algorithm", &smlibpy::tessellation_algorithm,
         py::arg("brep"), py::kw_only(), py::arg("chord_height_tolerance"),
         py::arg("surface_angle_tolerance_deg") = SmTessellationDefaults::kSurfaceAngleTolDeg,
         py::arg("max_edge_length") = SmTessellationDefaults::kMaxEdgeLength,
         py::arg("max_aspect_ratio") = SmTessellationDefaults::kMaxAspectRatio,
         "'halving' if tessellate(algorithm='auto') halves the faces of the Brep for these tolerances, 'grid' "
         "otherwise.");
-    m.def("grid_deviation", &grid_deviation, py::arg("face"), py::kw_only(), py::arg("chord_height_tolerance"),
+    m.def("grid_deviation", &smlibpy::grid_deviation, py::arg("face"), py::kw_only(), py::arg("chord_height_tolerance"),
           py::arg("surface_angle_tolerance_deg") = SmTessellationDefaults::kSurfaceAngleTolDeg,
           py::arg("max_edge_length") = SmTessellationDefaults::kMaxEdgeLength,
           "Estimated distance between the facets of the kernel's grid and a face which is straight in one "
@@ -650,3 +684,4 @@ void bind_tessellate(py::module_ m)
           "steps are usually between half of that and that). 0 for a face the grid divides both ways, a face that "
           "is not twisted, and a face of a surface that is straight both ways (the grid follows its diagonals).");
 }
+#endif  // SMLIBPY_PYTHON
