@@ -7,7 +7,8 @@
 // edges shared by two faces (or used twice by one face, as seams are) are created once and
 // passed to the second use, so the result needs no tolerance-based stitching.
 
-#include "ext.h"
+#include "kernel.h"
+#include "step_build.h"
 
 #include <SmApiGeneral.h>
 #include <SmBrepData.h>
@@ -43,15 +44,15 @@ void check(SmStatus status, const char* what)
         SmPyRaise(status, what, __FILE__, __LINE__);
 }
 
-SmVector3d vec(py::handle h)
+SmVector3d vec(const smlibpy::Value& h)
 {
-    auto s = py::cast<std::vector<double>>(h);
+    const std::vector<double> s = h.nums();
     if (s.size() < 3)
         throw std::invalid_argument("expected three coordinates");
     return SmVector3d(s[0], s[1], s[2]);
 }
 
-SmAxis2Placement placement(const py::dict& d, const char* origin_key = "origin")
+SmAxis2Placement placement(const smlibpy::Value& d, const char* origin_key = "origin")
 {
     SmAxis2Placement a;
     check(a.SetSTEPCanonical(vec(d[origin_key]), vec(d["z"]), vec(d["x"])), "SmAxis2Placement::SetSTEPCanonical");
@@ -73,21 +74,21 @@ void split_knots(const std::vector<double>& knots, SmTArray<double>& unique, SmT
     }
 }
 
-SmBSplineCurve* make_bspline_curve(const py::dict& d)
+SmBSplineCurve* make_bspline_curve(const smlibpy::Value& d)
 {
-    ULONG degree = py::cast<ULONG>(d["degree"]);
+    ULONG degree = static_cast<ULONG>(d["degree"].num());
     SmTArray<SmPoint3d> poles;
-    for (auto p : d["poles"])
+    for (const smlibpy::Value& p : d["poles"].list())
         poles.Add(vec(p));
     SmTArray<double> unique;
     SmTArray<ULONG> mults;
-    split_knots(py::cast<std::vector<double>>(d["knots"]), unique, mults);
+    split_knots(d["knots"].nums(), unique, mults);
     SmTArray<double> weights;
     const SmTArray<double>* pw = nullptr;
     if (!d["weights"].is_none())
     {
-        for (auto w : d["weights"])
-            weights.Add(py::cast<double>(w));
+        for (const smlibpy::Value& w : d["weights"].list())
+            weights.Add(w.num());
         pw = &weights;
     }
     SmBSplineCurve* c = nullptr;
@@ -109,9 +110,9 @@ double drop(const SmCurve* c, const SmPoint3d& p)
 }
 
 // A curve that runs exactly from the edge's start vertex to its end vertex.
-SmCurve* make_edge_curve(const py::dict& e)
+SmCurve* make_edge_curve(const smlibpy::Value& e)
 {
-    std::string kind = py::cast<std::string>(e["kind"]);
+    std::string kind = e["kind"].str();
     if (kind == "line")
     {
         SmLine* l = nullptr;
@@ -122,17 +123,17 @@ SmCurve* make_edge_curve(const py::dict& e)
     {
         // x points at the start vertex and z is oriented so the edge runs counterclockwise
         SmAxis2Placement a = placement(e, "center");
-        double sweep = py::cast<double>(e["sweep"]);
+        double sweep = e["sweep"].num();
         SmExtent1d ivl(0.0, sweep);
         SmCircle* c = nullptr;
-        check(SmCircle::CreateCanonical(ctx(), a, py::cast<double>(e["radius"]), c, sweep < 360.0 - 1e-9 ? &ivl : nullptr),
+        check(SmCircle::CreateCanonical(ctx(), a, e["radius"].num(), c, sweep < 360.0 - 1e-9 ? &ivl : nullptr),
               "SmCircle::CreateCanonical");
         return c;
     }
     if (kind == "ellipse")
     {
         SmAxis2Placement a = placement(e, "center");
-        double r1 = py::cast<double>(e["r1"]), r2 = py::cast<double>(e["r2"]);
+        double r1 = e["r1"].num(), r2 = e["r2"].num();
         SmVector3d o = vec(e["center"]), x = vec(e["x"]);
         SmVector3d z = vec(e["z"]);
         SmVector3d y = z * x;
@@ -141,8 +142,8 @@ SmCurve* make_edge_curve(const py::dict& e)
             double deg = std::atan2(d.Dot(y) / r2, d.Dot(x) / r1) * 180.0 / kPi;
             return std::fmod(deg + 360.0, 360.0);
         };
-        bool forward = py::cast<bool>(e["forward"]);
-        bool closed = py::cast<bool>(e["closed"]);
+        bool forward = e["forward"].boolean();
+        bool closed = e["closed"].boolean();
         double a0 = angle(vec(e["p0"])), a1 = angle(vec(e["p1"]));
         double start = forward ? a0 : a1;
         double span = closed ? 360.0 : std::fmod((forward ? a1 - a0 : a0 - a1) + 720.0, 360.0);
@@ -163,13 +164,13 @@ SmCurve* make_edge_curve(const py::dict& e)
     if (kind == "bspline")
     {
         std::unique_ptr<SmBSplineCurve> c(make_bspline_curve(e));
-        if (e.contains("whole") && py::cast<bool>(e["whole"]))
+        if (e.has("whole") && e["whole"].boolean())
             return c.release();
-        bool forward = py::cast<bool>(e["forward"]);
+        bool forward = e["forward"].boolean();
         SmExtent1d nat = c->GetNaturalInterval();
         double lo = nat.GetMin(), hi = nat.GetMax();
         double t0 = lo, t1 = hi;
-        if (!py::cast<bool>(e["closed"]))
+        if (!e["closed"].boolean())
         {
             t0 = drop(c.get(), vec(e["p0"]));
             t1 = drop(c.get(), vec(e["p1"]));
@@ -233,7 +234,7 @@ SmCurve* make_edge_curve(const py::dict& e)
     throw std::invalid_argument("unknown edge curve kind: " + kind);
 }
 
-SmBSplineCurve* make_generator(const py::dict& g)
+SmBSplineCurve* make_generator(const smlibpy::Value& g)
 {
     SmCurve* c = make_edge_curve(g);
     SmBSplineCurve* b = SM_CAST_PTR(SmBSplineCurve, c);
@@ -245,23 +246,23 @@ SmBSplineCurve* make_generator(const py::dict& g)
     return b;
 }
 
-SmSurface* make_surface(const py::dict& s)
+SmSurface* make_surface(const smlibpy::Value& s)
 {
-    std::string kind = py::cast<std::string>(s["kind"]);
+    std::string kind = s["kind"].str();
     if (kind == "plane")
     {
         SmPlane* p = nullptr;
         check(SmPlane::CreateCanonical(ctx(), placement(s), p), "SmPlane::CreateCanonical");
-        auto d = py::cast<std::vector<double>>(s["domain"]);  // u0, u1, v0, v1
+        auto d = s["domain"].nums();  // u0, u1, v0, v1
         check(p->AdjustSTEPUVDomain(SmExtent2d(d[0], d[2], d[1], d[3])), "SmPlane::AdjustSTEPUVDomain");
         return p;
     }
     if (kind == "cylinder")
     {
         SmCylinder* c = nullptr;
-        check(SmCylinder::CreateCanonical(ctx(), placement(s), py::cast<double>(s["radius"]), c),
+        check(SmCylinder::CreateCanonical(ctx(), placement(s), s["radius"].num(), c),
               "SmCylinder::CreateCanonical");
-        auto h = py::cast<std::vector<double>>(s["height"]);
+        auto h = s["height"].nums();
         check(c->AdjustSTEPUVDomain(SmExtent2d(0.0, h[0], 360.0, h[1])), "SmCylinder::AdjustSTEPUVDomain");
         return c;
     }
@@ -270,9 +271,9 @@ SmSurface* make_surface(const py::dict& s)
         // A bounded cone is built from its bottom and top circle (as NVIDIA's USD import
         // does): adjusting the domain of an unbounded cone away from v = 0 loses the surface.
         SmVector3d o = vec(s["origin"]), z = vec(s["z"]), x = vec(s["x"]);
-        double r = py::cast<double>(s["radius"]);
-        double semi = py::cast<double>(s["semi_angle"]);  // radians, positive
-        auto h = py::cast<std::vector<double>>(s["height"]);
+        double r = s["radius"].num();
+        double semi = s["semi_angle"].num();  // radians, positive
+        auto h = s["height"].nums();
         double t = std::tan(semi);
         double r0 = std::max(0.0, r + h[0] * t), r1 = std::max(0.0, r + h[1] * t);
         SmAxis2Placement a;
@@ -284,33 +285,33 @@ SmSurface* make_surface(const py::dict& s)
     if (kind == "sphere")
     {
         SmSphere* sp = nullptr;
-        check(SmSphere::CreateCanonical(ctx(), placement(s), py::cast<double>(s["radius"]), sp),
+        check(SmSphere::CreateCanonical(ctx(), placement(s), s["radius"].num(), sp),
               "SmSphere::CreateCanonical");
         return sp;
     }
     if (kind == "torus")
     {
         SmTorus* t = nullptr;
-        check(SmTorus::CreateCanonical(ctx(), placement(s), py::cast<double>(s["major"]), py::cast<double>(s["minor"]), t),
+        check(SmTorus::CreateCanonical(ctx(), placement(s), s["major"].num(), s["minor"].num(), t),
               "SmTorus::CreateCanonical");
         return t;
     }
     if (kind == "bspline")
     {
-        ULONG ud = py::cast<ULONG>(s["u_degree"]), vd = py::cast<ULONG>(s["v_degree"]);
+        ULONG ud = static_cast<ULONG>(s["u_degree"].num()), vd = static_cast<ULONG>(s["v_degree"].num());
         SmTArray<SmPoint3d> poles;
-        for (auto p : s["poles"])
+        for (const smlibpy::Value& p : s["poles"].list())
             poles.Add(vec(p));
         SmTArray<double> uu, vu;
         SmTArray<ULONG> um, vm;
-        split_knots(py::cast<std::vector<double>>(s["u_knots"]), uu, um);
-        split_knots(py::cast<std::vector<double>>(s["v_knots"]), vu, vm);
+        split_knots(s["u_knots"].nums(), uu, um);
+        split_knots(s["v_knots"].nums(), vu, vm);
         SmTArray<double> weights;
         const SmTArray<double>* pw = nullptr;
         if (!s["weights"].is_none())
         {
-            for (auto w : s["weights"])
-                weights.Add(py::cast<double>(w));
+            for (const smlibpy::Value& w : s["weights"].list())
+                weights.Add(w.num());
             pw = &weights;
         }
         SmBSplineSurface* b = nullptr;
@@ -321,10 +322,10 @@ SmSurface* make_surface(const py::dict& s)
     }
     if (kind == "extrusion")
     {
-        SmBSplineCurve* g = make_generator(s["curve"].cast<py::dict>());
+        SmBSplineCurve* g = make_generator(s["curve"]);
         SmSurfOfExtrusion* e = nullptr;
         check(SmSurfOfExtrusion::CreateCanonical(ctx(), g, vec(s["vector"]), e), "SmSurfOfExtrusion::CreateCanonical");
-        auto v = py::cast<std::vector<double>>(s["v_range"]);
+        auto v = s["v_range"].nums();
         SmExtent2d dom = e->GetSTEPUVDomain();
         check(e->AdjustSTEPUVDomain(SmExtent2d(dom.GetUMin(), v[0], dom.GetUMax(), v[1])),
               "SmSurfOfExtrusion::AdjustSTEPUVDomain");
@@ -332,7 +333,7 @@ SmSurface* make_surface(const py::dict& s)
     }
     if (kind == "revolution")
     {
-        SmBSplineCurve* g = make_generator(s["curve"].cast<py::dict>());
+        SmBSplineCurve* g = make_generator(s["curve"]);
         SmSurfOfRevolution* r = nullptr;
         check(SmSurfOfRevolution::CreateCanonical(ctx(), g, vec(s["axis_origin"]), vec(s["axis"]), r),
               "SmSurfOfRevolution::CreateCanonical");
@@ -340,15 +341,15 @@ SmSurface* make_surface(const py::dict& s)
     }
     if (kind == "offset")
     {
-        SmSurface* base = make_surface(s["basis"].cast<py::dict>());
-        return new (ctx()) SmOffsetSurface(py::cast<double>(s["distance"]), *base, TRUE);
+        SmSurface* base = make_surface(s["basis"]);
+        return new (ctx()) SmOffsetSurface(s["distance"].num(), *base, TRUE);
     }
     throw std::invalid_argument("unknown surface kind: " + kind);
 }
 
 // faces: [{"surface": spec, "same_sense": bool, "loops": [{"edges": [(edge_id, forward)]} | {"vertex": point}]}]
 // edges: {edge_id: curve spec running from the edge's start to its end vertex}
-SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, bool reversed, bool mirrored)
+SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool solid, bool reversed, bool mirrored)
 {
     SmBrepConstructor bc;
     SmBrep* brep = bc.StartBrep(ctx());
@@ -361,21 +362,19 @@ SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, boo
         SmShell *outer = nullptr, *inner = nullptr;
         check(bc.StartShell(outer, inner), "SmBrepConstructor::StartShell");
         std::unordered_map<long, SmEdge*> made;
-        for (auto fh : faces)
+        for (const smlibpy::Value& f : faces.list())
         {
-            py::dict f = fh.cast<py::dict>();
-            bool same = py::cast<bool>(f["same_sense"]);
-            SmSurface* srf = make_surface(f["surface"].cast<py::dict>());
+            bool same = f["same_sense"].boolean();
+            SmSurface* srf = make_surface(f["surface"]);
             if (!bc.StartFace((same != reversed) ? SM_OT_SAME : SM_OT_OPPOSITE))
             {
                 delete srf;
                 throw std::runtime_error("SmBrepConstructor::StartFace failed");
             }
             check(bc.SetFaceSurface(srf, srf->GetNaturalUVDomain()), "SmBrepConstructor::SetFaceSurface");
-            for (auto lh : f["loops"])
+            for (const smlibpy::Value& loop : f["loops"].list())
             {
-                py::dict loop = lh.cast<py::dict>();
-                if (loop.contains("vertex"))
+                if (loop.has("vertex"))
                 {
                     if (!bc.StartAndEndSingleVertexLoop(vec(loop["vertex"])))
                         throw std::runtime_error("SmBrepConstructor::StartAndEndSingleVertexLoop failed");
@@ -384,11 +383,10 @@ SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, boo
                 // loops run counterclockwise around the face normal (STEP convention)
                 if (!bc.StartLoop((same != mirrored) ? SM_OT_SAME : SM_OT_OPPOSITE))
                     throw std::runtime_error("SmBrepConstructor::StartLoop failed");
-                for (auto uh : loop["edges"])
+                for (const smlibpy::Value& use : loop["edges"].list())
                 {
-                    py::tuple use = uh.cast<py::tuple>();
-                    long id = py::cast<long>(use[0]);
-                    SmOrientType o = py::cast<bool>(use[1]) ? SM_OT_SAME : SM_OT_OPPOSITE;
+                    long id = static_cast<long>(use.at(0).num());
+                    SmOrientType o = use.at(1).boolean() ? SM_OT_SAME : SM_OT_OPPOSITE;
                     auto it = made.find(id);
                     if (it != made.end())
                     {
@@ -400,7 +398,7 @@ SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, boo
                     SmEdge* e = bc.StartEdge(o, nullptr, nullptr, nullptr);
                     if (!e)
                         throw std::runtime_error("SmBrepConstructor::StartEdge failed");
-                    SmCurve* c = make_edge_curve(edges[py::int_(id)].cast<py::dict>());
+                    SmCurve* c = make_edge_curve(edges[std::to_string(id)]);
                     check(bc.SetEdgeCurve(c, FALSE), "SmBrepConstructor::SetEdgeCurve");
                     SmExtent1d ivl = c->GetNaturalInterval();
                     check(bc.SetLimits(SmVertexNode(ivl.GetMin()), SmVertexNode(ivl.GetMax())),
@@ -427,9 +425,61 @@ SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, boo
 
 }  // namespace
 
+namespace smlibpy {
+
+SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reversed, bool mirrored)
+{
+    return build(faces, edges, solid, reversed, mirrored);
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+
+// The importer's data as a Value, read the way pybind11 reads it: Python and numpy booleans,
+// numbers (numpy scalars too), strings, dicts (keys as their str) and sequences (numpy arrays by row).
+smlibpy::Value to_value(py::handle h)
+{
+    if (h.is_none())
+        return {};
+    if (py::isinstance<py::bool_>(h))
+        return smlibpy::Value::of(h.cast<bool>());
+    if (py::isinstance<py::str>(h))
+        return smlibpy::Value::of(h.cast<std::string>());
+    if (py::isinstance<py::dict>(h))
+    {
+        std::vector<std::pair<std::string, smlibpy::Value>> fields;
+        for (auto kv : h.cast<py::dict>())
+            fields.emplace_back(py::str(kv.first).cast<std::string>(), to_value(kv.second));
+        return smlibpy::Value::dict(std::move(fields));
+    }
+    if (py::isinstance<py::int_>(h) || py::isinstance<py::float_>(h))
+        return smlibpy::Value::of(h.cast<double>());
+    // (a numpy array has __float__ too, for one element: sequences first, a 0-d array a number)
+    const bool scalar_array = py::hasattr(h, "ndim") && h.attr("ndim").cast<int>() == 0;
+    if (!scalar_array && (py::isinstance<py::sequence>(h) || py::isinstance<py::iterable>(h)))
+    {
+        std::vector<smlibpy::Value> items;
+        for (auto item : h)
+            items.push_back(to_value(item));
+        return smlibpy::Value::list(std::move(items));
+    }
+    if (py::hasattr(h, "__float__"))  // numpy scalars and booleans
+        return smlibpy::Value::of(h.cast<double>());
+    throw py::type_error("build_brep: unsupported value of type " + py::str(py::type::of(h)).cast<std::string>());
+}
+
+}  // namespace
+
 void bind_step_build(py::module_& m)
 {
-    m.def("build_brep", &build_brep, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
+    m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored) {
+        return smlibpy::build_brep(to_value(faces), to_value(edges), solid, reversed, mirrored);
+    }, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
           py::arg("mirrored") = false, py::return_value_policy::take_ownership,
           "Build a Brep from neutral face/edge data (used by the STEP importer).");
 }
+#endif  // SMLIBPY_PYTHON
