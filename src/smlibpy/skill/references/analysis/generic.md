@@ -67,9 +67,12 @@ print(plate.info()["faces"])                           # 14
 ## Gotchas
 
 - A part keeps its measures: the first of `volume`, `area`, `center()` and
-  `mass_properties()` integrates (a few milliseconds for most parts, 0.5 s for a spring with
-  512 knot spans), the others reuse it. A copy (`named()`, `colored()`, a moved part)
-  integrates again.
+  `mass_properties()` integrates (a few milliseconds for most parts, 55 ms for a spring with
+  512 knot spans, 0.6 s for a thickened surface with 46,000 knot spans on a face), the others
+  reuse it. A copy (`named()`, `colored()`, a moved part) integrates again.
+- A `RuntimeWarning` "mass properties: the faces of this part do not meet exactly ..." means
+  the body's faces leave gaps that make its volume uncertain by more than 1e-5 (the warning
+  gives how much). The body is at fault, not the measure: see `mass_properties`.
 - Only `Part` has `volume`, `mass_properties()` and `is_valid()`. `Shell` and `Sketch` have
   `area` and `center()` only (`AttributeError` otherwise); all bodies have `info()` and `bbox()`.
 - `center()` means different things: the centroid for parts, faces, sketches and shells; the

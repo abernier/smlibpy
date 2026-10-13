@@ -39,15 +39,19 @@ its own C++ module (`src/cpp/ext.cpp`) calls the kernel directly.
   `examples/spring.py`: 2.9e-5 at 1e-7, still 2.8e-7 at 1e-9 after 12 s). smlibpy integrates
   the same surface integrals over the faces' trim curves (Green's theorem in the parameter
   plane) with adaptive Gauss–Kronrod quadrature, split at the knots, until every estimate is
-  ten times below the accuracy asked for. It is also faster: the spring takes 0.47 s instead
-  of 1.1 s, most parts a few milliseconds. The quick checks inside operations (is a result
-  inside out, did a fillet change the volume plausibly) still use the kernel's integration at
-  a coarse accuracy.
+  ten times below the accuracy asked for. It evaluates B-spline surfaces itself, along each
+  line of integration from the poles, and integrates the knot spans of dense faces with 7
+  points instead of 15. It is also faster: the spring takes 55 ms instead of 1.1 s, a
+  thickened surface with 46,000 knot spans on a face 0.6 s (the kernel: 0.4 s, 2e-8 off),
+  most parts a few milliseconds. The quick checks inside operations (is a result inside out,
+  did a fillet or a deformation change the volume plausibly) still use the kernel's
+  integration at a coarse accuracy.
 - **Edge lengths** are integrated per knot span to 1e-12 (the kernel's `SmCurve::Length`
   counts a span whose curve starts with a zero tangent as 0).
 - **A body is as exact as its faces meet.** Faces that the kernel fits (B-spline chamfers,
   shell offsets, intersections of curved faces) close up only to about 1e-6 to 2e-5 mm; the
-  volume of such a body depends on that by 1e-7 to 4e-6 of its value.
+  volume of such a body depends on that by 1e-7 to 4e-6 of its value. Beyond 1e-5 the
+  measures say so in a warning (see [Measuring](analysis.md)).
 - **STEP export** writes the kernel's exact curves and surfaces. The test suite reads the
   files back with OpenCASCADE and checks validity and volume.
 - **STEP import** rebuilds every face on its exact surface and keeps the file's topology,

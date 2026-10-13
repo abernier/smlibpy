@@ -22,7 +22,8 @@ The single numbers of each shape type. All are exact-geometry integrations (see 
 - `Part.volume`, `Part.area`, `Part.center()`: integrated with an error estimate to 1e-7 (the
   center to 1e-7 of the bounding-box diagonal); measured against formulas 1e-10 and better,
   swept bodies included. For another bound use `mass_properties(accuracy=...)`; these
-  properties take no accuracy argument.
+  properties take no accuracy argument. A body whose faces leave gaps gets a warning with
+  the uncertainty of its volume; see `mass_properties`.
 - `Face.area`, `Sketch.area`, `Shell.area`: the same bound, 1e-7. Measured: cylinder face
   2e-11, sphere and torus faces 2e-16, ring sketch 4e-16, lettering exact.
 - `Edge.length`: 1e-12 (lines, circles, ellipses measured exact); `point_at(t)` follows the

@@ -86,26 +86,58 @@ constexpr double kWG[4] = {0.129484966168869693270611432679082, 0.27970539148927
                            0.381830050505118944950369775488975, 0.417959183673469387755102040816327};
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 
-// The 15 nodes of a panel on [-1, 1] in order, with their Kronrod and Gauss weights (Gauss
-// weight 0 at the Kronrod-only nodes).
+// The nodes of a panel on [-1, 1] in order, with their Kronrod and Gauss weights (Gauss weight
+// 0 at the Kronrod-only nodes).
 struct Node
 {
     double x, wk, wg;
 };
-const std::array<Node, 15>& nodes()
+struct Rule
 {
-    static const std::array<Node, 15> n = [] {
-        std::array<Node, 15> a{};
+    int n;
+    std::array<Node, 15> nodes;
+};
+
+// Gauss-Kronrod 7/15 (QUADPACK qk15): exact to degree 22 (Gauss: 13).
+const Rule& k15()
+{
+    static const Rule r = [] {
+        Rule a{15, {}};
         int k = 0;
         for (int i = 0; i < 7; ++i)
-            a[k++] = {-kXGK[i], kWGK[i], (i % 2 == 1) ? kWG[i / 2] : 0.0};
-        a[k++] = {0.0, kWGK[7], kWG[3]};
+            a.nodes[k++] = {-kXGK[i], kWGK[i], (i % 2 == 1) ? kWG[i / 2] : 0.0};
+        a.nodes[k++] = {0.0, kWGK[7], kWG[3]};
         for (int i = 6; i >= 0; --i)
-            a[k++] = {kXGK[i], kWGK[i], (i % 2 == 1) ? kWG[i / 2] : 0.0};
+            a.nodes[k++] = {kXGK[i], kWGK[i], (i % 2 == 1) ? kWG[i / 2] : 0.0};
         return a;
     }();
-    return n;
+    return r;
 }
+
+// Gauss-Kronrod 3/7, Kronrod's extension of the 3-point Gauss rule: exact to degree 11 (Gauss:
+// 5). For the knot spans of dense B-splines, where the integrands are nearly polynomial over a
+// span and the 15-point rule spends twice the evaluations on the same digits.
+const Rule& k7()
+{
+    static const Rule r = [] {
+        const double x1 = 0.434243749346802558002071502844628, x2 = 0.774596669241483377035853079956480,
+                     x3 = 0.960491268708020283423507092629080;
+        const double w0 = 0.450916538658474142345110087045571, w1 = 0.401397414775962222905051818618432,
+                     w2 = 0.268488089868333440728569280666710, w3 = 0.104656226026467265194672251448792;
+        Rule a{7, {}};
+        a.nodes[0] = {-x3, w3, 0.0}, a.nodes[1] = {-x2, w2, 5.0 / 9.0}, a.nodes[2] = {-x1, w1, 0.0};
+        a.nodes[3] = {0.0, w0, 8.0 / 9.0};
+        a.nodes[4] = {x1, w1, 0.0}, a.nodes[5] = {x2, w2, 5.0 / 9.0}, a.nodes[6] = {x3, w3, 0.0};
+        return a;
+    }();
+    return r;
+}
+
+const std::array<Node, 15>& nodes() { return k15().nodes; }
+
+// A direction (or a trim curve) with at least this many knot spans is dense: its spans are
+// small, and the 3/7 rule integrates each.
+constexpr size_t kDense = 16;
 
 // QUADPACK's error estimate from the Kronrod and Gauss results, the integral of |f| (resabs)
 // and of |f - mean| (resasc), all scaled by the half length.
@@ -113,7 +145,10 @@ double gk_error(double resk, double resg, double resabs, double resasc)
 {
     double err = std::fabs(resk - resg);
     if (resasc != 0.0 && err != 0.0)
-        err = resasc * std::min(1.0, std::pow(200.0 * err / resasc, 1.5));
+    {
+        const double q = 200.0 * err / resasc;
+        err = resasc * std::min(1.0, q * std::sqrt(q));
+    }
     if (resabs > std::numeric_limits<double>::min() / (50.0 * kEps))
         err = std::max(50.0 * kEps * resabs, err);
     return err;
@@ -124,18 +159,25 @@ double gk_error(double resk, double resg, double resabs, double resasc)
 // ---------------------------------------------------------------------------
 
 // The components, the kernel's quantities: area, integral of (x, y, z) dA, volume, integral of
-// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration; and
-// the closure, the integral of the outward normal over the surface, which vanishes for a
+// (x, y, z) dV and of (x^2, y^2, z^2, yz, zx, xy) dV, all about the origin of integration; the
+// volume again from the fields (x, 0, 0) and (0, y, 0), which agree with (0, 0, z) only on a
+// closed surface; and the closure, the integral of the outward normal, which vanishes on a
 // closed surface (what is left is the vector area of the gaps between the faces).
 enum
 {
-    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, NX, NY, NZ, NC
+    AREA, AX, AY, AZ, VOL, VX, VY, VZ, VXX, VYY, VZZ, VYZ, VZX, VXY, VOLX, VOLY, NX, NY, NZ, NC
 };
 using Values = std::array<double, NC>;
 // Power of length by which a component exceeds the area (for scales and tolerance floors).
-constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 0, 0, 0};
+constexpr int kPower[NC] = {0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 1, 1, 0, 0, 0};
 
 void zero(Values& v) { v.fill(0.0); }
+
+// The field volumes only tell how far the faces leave gaps between them (smlibpy says so beyond
+// 1e-5 of the volume): they are integrated to kFieldTolerance (or a coarser tolerance asked for)
+// and do not count in the error reported.
+constexpr double kFieldTolerance = 1e-7;
+bool is_field(int k) { return k == VOLX || k == VOLY; }
 
 struct Settings
 {
@@ -143,10 +185,194 @@ struct Settings
     double tolerance = 1e-9;      // relative, for every quantity
     double inner = 1e-12;         // relative accuracy of the inner integrals
     double size = 1.0;            // the size of the body (bounding box diagonal)
+    double size_pow[4] = {1, 1, 1, 1};  // size^0 .. size^3
     int first = AREA, last = NC;  // the components integrated: [first, last)
     long max_panels = 500000;
     long evaluations = 0;
 };
+
+// ---------------------------------------------------------------------------
+// B-spline surfaces along iso-lines
+// ---------------------------------------------------------------------------
+
+// The inner integrals run along iso-parameter lines. For a B-spline surface the line is a
+// B-spline curve whose poles are the surface's poles combined with the basis functions of the
+// fixed parameter; evaluating that curve costs p + 1 poles a point, where the kernel's
+// EvaluateSimple takes about 110 ns (a bicubic patch). Dense faces (thousands of knot spans)
+// spend nearly all their time here.
+constexpr int kMaxDegree = 30;
+
+struct Spline
+{
+    bool ok = false;
+    int p[2] = {0, 0}, n[2] = {0, 0};  // degree and number of poles in u and v
+    std::vector<double> knots[2];       // full knot vectors
+    std::vector<double> pw;             // homogeneous poles (x w, y w, z w, w), [(i * n[1] + j) * 4 + c]
+};
+
+// The span index i with knots[i] <= t < knots[i + 1] (upper) or knots[i] < t <= knots[i + 1]
+// (lower: the span below a knot), within [p, n - 1].
+int find_span(const std::vector<double>& knots, int p, int n, double t, bool upper)
+{
+    const auto it = upper ? std::upper_bound(knots.begin(), knots.end(), t) : std::lower_bound(knots.begin(), knots.end(), t);
+    const int i = static_cast<int>(it - knots.begin()) - 1;
+    return std::min(std::max(i, p), n - 1);
+}
+
+// The p + 1 nonzero basis functions at t in span i and their first derivatives (The NURBS
+// Book, A2.2 and A2.3).
+void basis(const std::vector<double>& knots, int p, int i, double t, double* N, double* dN)
+{
+    double ndu[kMaxDegree + 1][kMaxDegree + 1], left[kMaxDegree + 1], right[kMaxDegree + 1];
+    ndu[0][0] = 1.0;
+    for (int j = 1; j <= p; ++j)
+    {
+        left[j] = t - knots[static_cast<size_t>(i + 1 - j)];
+        right[j] = knots[static_cast<size_t>(i + j)] - t;
+        double saved = 0.0;
+        for (int r = 0; r < j; ++r)
+        {
+            ndu[j][r] = right[r + 1] + left[j - r];
+            const double tmp = ndu[r][j - 1] / ndu[j][r];
+            ndu[r][j] = saved + right[r + 1] * tmp;
+            saved = left[j - r] * tmp;
+        }
+        ndu[j][j] = saved;
+    }
+    for (int r = 0; r <= p; ++r)
+    {
+        N[r] = ndu[r][p];
+        double d = 0.0;
+        if (r >= 1)
+            d += ndu[r - 1][p - 1] / ndu[p][r - 1];
+        if (r <= p - 1)
+            d -= ndu[r][p - 1] / ndu[p][r];
+        dN[r] = p * d;
+    }
+}
+
+// The surface along one parameter at a fixed value of the other: poles of S and of its
+// derivative across the line, both homogeneous.
+struct Iso
+{
+    int dir = 1;  // the parameter along the line: 0 = u, 1 = v
+    std::vector<std::array<double, 4>> q, qd;
+};
+
+void make_iso(const Spline& sp, int dir, double fixed, bool upper, Iso& iso)
+{
+    const int o = 1 - dir;
+    const int po = sp.p[o], io = find_span(sp.knots[o], po, sp.n[o], fixed, upper);
+    double M[kMaxDegree + 1], dM[kMaxDegree + 1];
+    basis(sp.knots[o], po, io, fixed, M, dM);
+    const int n = sp.n[dir];
+    iso.dir = dir;
+    iso.q.resize(static_cast<size_t>(n));
+    iso.qd.resize(static_cast<size_t>(n));
+    for (int j = 0; j < n; ++j)
+    {
+        std::array<double, 4> a{0, 0, 0, 0}, b{0, 0, 0, 0};
+        for (int k = 0; k <= po; ++k)
+        {
+            const int io_k = io - po + k;
+            const double* P = &sp.pw[static_cast<size_t>(((dir == 1 ? io_k * sp.n[1] + j : j * sp.n[1] + io_k)) * 4)];
+            for (int c = 0; c < 4; ++c)
+                a[static_cast<size_t>(c)] += M[k] * P[c], b[static_cast<size_t>(c)] += dM[k] * P[c];
+        }
+        iso.q[static_cast<size_t>(j)] = a, iso.qd[static_cast<size_t>(j)] = b;
+    }
+}
+
+// The point and first derivatives at t along the line, as EvaluateSimple gives them:
+// d = [S, Sv, Su].
+void eval_iso(const Spline& sp, const Iso& iso, double t, bool upper, SmVector3d* d)
+{
+    const int dir = iso.dir, p = sp.p[dir], i = find_span(sp.knots[dir], p, sp.n[dir], t, upper);
+    double N[kMaxDegree + 1], dN[kMaxDegree + 1];
+    basis(sp.knots[dir], p, i, t, N, dN);
+    double a[4] = {0, 0, 0, 0}, at[4] = {0, 0, 0, 0}, ao[4] = {0, 0, 0, 0};
+    for (int r = 0; r <= p; ++r)
+    {
+        const auto& q = iso.q[static_cast<size_t>(i - p + r)];
+        const auto& qd = iso.qd[static_cast<size_t>(i - p + r)];
+        for (int c = 0; c < 4; ++c)
+            a[c] += N[r] * q[static_cast<size_t>(c)], at[c] += dN[r] * q[static_cast<size_t>(c)],
+                ao[c] += N[r] * qd[static_cast<size_t>(c)];
+    }
+    const double w = a[3];
+    const SmVector3d S(a[0] / w, a[1] / w, a[2] / w);
+    const SmVector3d St((at[0] - at[3] * S.x) / w, (at[1] - at[3] * S.y) / w, (at[2] - at[3] * S.z) / w);
+    const SmVector3d So((ao[0] - ao[3] * S.x) / w, (ao[1] - ao[3] * S.y) / w, (ao[2] - ao[3] * S.z) / w);
+    d[0] = S;
+    d[1] = dir == 1 ? St : So;  // Sv
+    d[2] = dir == 1 ? So : St;  // Su
+}
+
+// The poles and knots of a plain B-spline surface (not a plane, cylinder, ... evaluated in
+// closed form), checked against the kernel's evaluation at a few points of `dom`.
+void load_spline(const SmSurface* surface, const SmExtent2d& dom, Spline& sp)
+{
+    sp.ok = false;
+    if (surface->GetType() != SmBSplineSurface_TYPE)
+        return;
+    ULONG udeg = 0, vdeg = 0;
+    SmTArray<SmPoint3d> poles;
+    SmBSplineSurfaceForm form;
+    SmTArray<ULONG> umults, vmults;
+    SmTArray<double> uknots, vknots, weights;
+    SmKnotType knot_type;
+    if (static_cast<const SmBSplineSurface*>(surface)->GetCanonical(udeg, vdeg, poles, form, umults, vmults, uknots,
+                                                                     vknots, knot_type, weights) != SM_SUCCESS)
+        return;
+    if (udeg < 1 || vdeg < 1 || udeg > kMaxDegree || vdeg > kMaxDegree)
+        return;
+    sp.p[0] = static_cast<int>(udeg), sp.p[1] = static_cast<int>(vdeg);
+    const SmTArray<double>* unique[2] = {&uknots, &vknots};
+    const SmTArray<ULONG>* mults[2] = {&umults, &vmults};
+    for (int d = 0; d < 2; ++d)
+    {
+        sp.knots[d].clear();
+        if (mults[d]->GetSize() != unique[d]->GetSize())
+            return;
+        for (ULONG i = 0; i < unique[d]->GetSize(); ++i)
+            for (ULONG m = 0; m < (*mults[d])[i]; ++m)
+                sp.knots[d].push_back((*unique[d])[i]);
+        sp.n[d] = static_cast<int>(sp.knots[d].size()) - sp.p[d] - 1;
+    }
+    const size_t count = static_cast<size_t>(sp.n[0]) * static_cast<size_t>(sp.n[1]);
+    if (sp.n[0] <= sp.p[0] || sp.n[1] <= sp.p[1] || poles.GetSize() != count
+        || (weights.GetSize() != 0 && weights.GetSize() != count))
+        return;
+    sp.pw.resize(count * 4);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const double w = weights.GetSize() ? weights[static_cast<ULONG>(i)] : 1.0;
+        if (!(w > 0))
+            return;
+        const SmPoint3d& P = poles[static_cast<ULONG>(i)];
+        sp.pw[i * 4] = P.x * w, sp.pw[i * 4 + 1] = P.y * w, sp.pw[i * 4 + 2] = P.z * w, sp.pw[i * 4 + 3] = w;
+    }
+    // the same surface as the kernel's? (pole order, periodic knot vectors, ...)
+    Iso iso;
+    for (int k = 0; k < 6; ++k)
+    {
+        const double fu = 0.13 + 0.15 * k, fv = 0.91 - 0.14 * k;
+        const double u = dom.GetMin().x + fu * (dom.GetMax().x - dom.GetMin().x);
+        const double v = dom.GetMin().y + fv * (dom.GetMax().y - dom.GetMin().y);
+        SmVector3d ref[4], got[4];
+        if (surface->EvaluateSimple(SmPoint2d(u, v), 1, 1, TRUE, TRUE, TRUE, ref) != SM_SUCCESS)
+            return;
+        make_iso(sp, k % 2, k % 2 ? u : v, true, iso);
+        eval_iso(sp, iso, k % 2 ? v : u, true, got);
+        for (int c = 0; c < 3; ++c)
+        {
+            const double scale = 1.0 + ref[c].Length();
+            if (!((got[c] - ref[c]).Length() <= 1e-9 * scale))
+                return;
+        }
+    }
+    sp.ok = true;
+}
 
 // One faceuse to integrate.
 struct Job
@@ -160,6 +386,9 @@ struct Job
     std::vector<double> inner_knots;      // surface knots in the inner direction, sorted
     std::vector<double> outer_knots;      // surface knots in the other direction, sorted
     double column = 0.0;                  // a typical inner integral of the area element
+    Spline spline;                        // a plain B-spline surface, evaluated here
+    const Rule* inner_rule = &k15();      // the 3/7 rule across a dense direction
+    std::vector<const Rule*> outer_rule;  // per curve: the 3/7 rule along a dense one
     double sign = 1.0;                    // sign of the volume terms (faceuse orientation)
     bool area = true, volume = true;      // the terms this faceuse adds to the body
 
@@ -176,6 +405,7 @@ struct Job
         inner_v = o.inner_v, planar = o.planar, base = o.base;
         inner_knots = std::move(o.inner_knots), outer_knots = std::move(o.outer_knots);
         column = o.column, sign = o.sign, area = o.area, volume = o.volume;
+        inner_rule = o.inner_rule, outer_rule = std::move(o.outer_rule), spline = std::move(o.spline);
         return *this;
     }
     ~Job()
@@ -189,12 +419,20 @@ struct Job
 // upper_v say which span to evaluate on a knot (or within the kernel's snapping distance of
 // one): the one above it or the one below. Where the derivatives jump at a knot, a point must
 // be evaluated on the side its integration interval lies on, or the integrand is not smooth.
+bool values(const SmVector3d* d, Settings& s, Values& g);
+
 bool integrand(const Job& job, Settings& s, double u, double v, bool upper_u, bool upper_v, Values& g)
 {
     SmVector3d d[4];  // [S, Sv, Su, Suv] (Suv untouched)
     if (job.surface->EvaluateSimple(SmPoint2d(u, v), 1, 1, upper_u ? TRUE : FALSE, upper_v ? TRUE : FALSE, TRUE, d)
         != SM_SUCCESS)
         return false;
+    return values(d, s, g);
+}
+
+// The integrands from the point and the first derivatives d = [S, Sv, Su].
+bool values(const SmVector3d* d, Settings& s, Values& g)
+{
     s.evaluations++;
     const SmVector3d n = d[2] * d[1];  // Su x Sv (operator* is the cross product)
     const double x = d[0].x - s.origin.x, y = d[0].y - s.origin.y, z = d[0].z - s.origin.z;
@@ -206,6 +444,7 @@ bool integrand(const Job& job, Settings& s, double u, double v, bool upper_u, bo
     g[VX] = x * w, g[VY] = y * w, g[VZ] = 0.5 * z * w;
     g[VXX] = x * x * w, g[VYY] = y * y * w, g[VZZ] = z * z * w / 3.0;
     g[VYZ] = 0.5 * y * z * w, g[VZX] = 0.5 * x * z * w, g[VXY] = x * y * w;
+    g[VOLX] = x * n.x, g[VOLY] = y * n.y;
     g[NX] = n.x, g[NY] = n.y, g[NZ] = n.z;
     return std::isfinite(a) && std::isfinite(w);
 }
@@ -220,18 +459,26 @@ struct Piece
     Values val, err, abs;
 };
 
-bool inner_panel(const Job& job, Settings& s, double fixed, bool fixed_upper, Piece& p)
+bool inner_panel(const Job& job, Settings& s, const Iso* iso, double fixed, bool fixed_upper, Piece& p)
 {
     const double c = 0.5 * (p.a + p.b), h = 0.5 * (p.b - p.a);
     Values fk, fg, fa, f[15];
     zero(fk), zero(fg), zero(fa);
-    const auto& nd = nodes();
-    for (int i = 0; i < 15; ++i)
+    const Rule& rule = *job.inner_rule;
+    const auto& nd = rule.nodes;
+    for (int i = 0; i < rule.n; ++i)
     {
         const double t = c + h * nd[i].x;
         const bool upper = t < c;  // a node near the start of the piece belongs to the span above it
-        if (!(job.inner_v ? integrand(job, s, fixed, t, fixed_upper, upper, f[i])
-                          : integrand(job, s, t, fixed, upper, fixed_upper, f[i])))
+        if (iso)
+        {
+            SmVector3d d[3];
+            eval_iso(job.spline, *iso, t, upper, d);
+            if (!values(d, s, f[i]))
+                return false;
+        }
+        else if (!(job.inner_v ? integrand(job, s, fixed, t, fixed_upper, upper, f[i])
+                               : integrand(job, s, t, fixed, upper, fixed_upper, f[i])))
             return false;
         for (int k = s.first; k < s.last; ++k)
         {
@@ -245,7 +492,7 @@ bool inner_panel(const Job& job, Settings& s, double fixed, bool fixed_upper, Pi
     {
         const double mean = 0.5 * fk[k];
         double asc = 0.0;
-        for (int i = 0; i < 15; ++i)
+        for (int i = 0; i < rule.n; ++i)
             asc += nd[i].wk * std::fabs(f[i][k] - mean);
         p.val[k] = fk[k] * h;
         p.abs[k] = fa[k] * ah;
@@ -301,13 +548,29 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
         a = *it;
     }
     pieces.push_back(Piece{a, hi, {}, {}, {}});
+    // a B-spline surface along this line, once for all its points
+    thread_local Iso iso_buffer;
+    const Iso* iso = nullptr;
+    if (job.spline.ok)
+    {
+        make_iso(job.spline, job.inner_v ? 1 : 0, fixed, fixed_upper, iso_buffer);
+        iso = &iso_buffer;
+    }
     for (Piece& p : pieces)
-        if (!inner_panel(job, s, fixed, fixed_upper, p))
+        if (!inner_panel(job, s, iso, fixed, fixed_upper, p))
             return false;
 
+    // Bisection divides the error of a smooth integrand by far more than 2. A fold of the
+    // surface (|Su x Sv| with a corner where the normal turns over) takes a few rounds before
+    // its piece is small enough to see it, and its estimate can even grow meanwhile; but its
+    // error stays in one half of each piece split. Rounding of the surface evaluation (in a tiny
+    // knot span, say) is what bisection does not reduce and what spreads to both halves: stop
+    // there. The outer panel carries the error of an inner integral that stops early.
+    const double finest = 1e-13 * (std::fabs(lo) + std::fabs(hi) + (hi - lo));
     double last_ratio = std::numeric_limits<double>::infinity();
     int stalled = 0;
-    for (;;)
+    bool spreading = true;
+    for (int round = 0;; ++round)
     {
         Values tv, te, ta, target;
         zero(tv), zero(te), zero(ta);
@@ -315,17 +578,20 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
             for (int k = s.first; k < s.last; ++k)
                 tv[k] += p.val[k], te[k] += p.err[k], ta[k] += p.abs[k];
         double ratio = 0.0;
+        int worst = s.first;
         for (int k = s.first; k < s.last; ++k)
         {
-            target[k] = s.inner * std::max(ta[k], std::max(ta[AREA], job.column) * std::pow(s.size, kPower[k]));
-            ratio = std::max(ratio, te[k] / target[k]);
+            const double inner = is_field(k) ? std::max(s.inner, 1e-3 * kFieldTolerance) : s.inner;
+            target[k] = inner * std::max(ta[k], std::max(ta[AREA], job.column) * s.size_pow[kPower[k]]);
+            if (te[k] / target[k] > ratio)
+                ratio = te[k] / target[k], worst = k;
         }
-        // Bisection divides the error of a smooth integrand by far more than 2; where it does
-        // not, what is left is rounding of the surface evaluation (in a tiny knot span, say).
-        // The outer panel carries the error of an inner integral that stops early.
-        stalled = ratio > 0.5 * last_ratio ? stalled + 1 : 0;
+        if (ratio > 0.5 * last_ratio)
+            stalled += spreading ? 1 : 0;
+        else
+            stalled = 0;
         last_ratio = ratio;
-        if (ratio <= 1.0 || stalled >= 2 || pieces.size() > 1000)
+        if (ratio <= 1.0 || stalled >= 2 || pieces.size() > 1000 || round >= 60)
         {
             const double sign = to >= from ? 1.0 : -1.0;
             for (int k = s.first; k < s.last; ++k)
@@ -335,11 +601,13 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
         // bisect every piece whose error is above its share of the target
         std::vector<Piece> next;
         next.reserve(pieces.size() * 2);
+        double halves = 0.0, lesser = 0.0;  // the error of the halves, and of the lesser half of each
         for (const Piece& p : pieces)
         {
             bool split = false;
-            for (int k = s.first; k < s.last && !split; ++k)
-                split = p.err[k] > target[k] * (p.b - p.a) / (hi - lo);
+            if (p.b - p.a > finest)
+                for (int k = s.first; k < s.last && !split; ++k)
+                    split = p.err[k] > target[k] * (p.b - p.a) / (hi - lo);
             if (!split)
             {
                 next.push_back(p);
@@ -347,11 +615,15 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
             }
             const double m = 0.5 * (p.a + p.b);
             Piece l{p.a, m, {}, {}, {}}, r{m, p.b, {}, {}, {}};
-            if (!inner_panel(job, s, fixed, fixed_upper, l) || !inner_panel(job, s, fixed, fixed_upper, r))
+            if (!inner_panel(job, s, iso, fixed, fixed_upper, l) || !inner_panel(job, s, iso, fixed, fixed_upper, r))
                 return false;
+            halves += l.err[worst] + r.err[worst];
+            lesser += std::min(l.err[worst], r.err[worst]);
             next.push_back(l);
             next.push_back(r);
         }
+        // both halves of a piece with about the same error (at least a third of the other's)
+        spreading = !(lesser < 0.25 * halves);
         pieces.swap(next);
     }
 }
@@ -391,8 +663,9 @@ bool outer_panel(const Job& job, Settings& s, Panel& p)
 
     Values fk, fg, fa, ie, f[15];
     zero(fk), zero(fg), zero(fa), zero(ie);
-    const auto& nd = nodes();
-    for (int i = 0; i < 15; ++i)
+    const Rule& rule = *job.outer_rule[static_cast<size_t>(p.curve)];
+    const auto& nd = rule.nodes;
+    for (int i = 0; i < rule.n; ++i)
     {
         zero(f[i]);
         SmPoint3d e[2];
@@ -419,7 +692,7 @@ bool outer_panel(const Job& job, Settings& s, Panel& p)
     {
         const double mean = 0.5 * fk[k];
         double asc = 0.0;
-        for (int i = 0; i < 15; ++i)
+        for (int i = 0; i < rule.n; ++i)
             asc += nd[i].wk * std::fabs(f[i][k] - mean);
         p.val[k] = fk[k] * h;
         p.err[k] = gk_error(fk[k] * h, fg[k] * h, fa[k] * ah, asc * ah) + ie[k] * ah;
@@ -460,7 +733,7 @@ Job make_job(const SmFace* face)
         job.curves.push_back(curves[i]);
     check(st, "SmFace::CreateOrientedTrimBoundary");
 
-    const SmExtent2d dom = face->GetUVDomain();
+    const SmExtent2d face_dom = face->GetUVDomain();
     std::vector<double> uk = surface_knots(job.surface, SM_SP_U), vk = surface_knots(job.surface, SM_SP_V);
     job.planar = job.surface->GetType() == SmPlane_TYPE;
 
@@ -470,6 +743,11 @@ Job make_job(const SmFace* face)
     const size_t n = job.curves.size();
     std::vector<double> run_u(n, HUGE_VAL), run_v(n, HUGE_VAL);
     std::vector<size_t> spans(n, 1);
+    // the box of the trim curves' control points, which holds the face: the inner integrals
+    // start at its edge (a face cut from a larger surface does not integrate the rest of it,
+    // which can be far larger, or folded where the surface is extrapolated)
+    double box_lo[2] = {HUGE_VAL, HUGE_VAL}, box_hi[2] = {-HUGE_VAL, -HUGE_VAL};
+    bool boxed = n > 0;
     for (size_t c = 0; c < n; ++c)
     {
         const SmBSplineCurve* curve = job.curves[c];
@@ -480,13 +758,19 @@ Job make_job(const SmFace* face)
         SmTArray<double> knots, weights;
         SmKnotType knot_type;
         if (curve->GetCanonical(dim, degree, poles, form, mults, knots, knot_type, weights) != SM_SUCCESS)
+        {
+            boxed = false;
             continue;  // runs both ways, as far as we know
+        }
         spans[c] = knots.GetSize() > 1 ? knots.GetSize() - 1 : 1;
         bool positive = true;  // the convex hull holds a rational curve only with positive weights
         for (ULONG i = 0; i < weights.GetSize(); ++i)
             positive = positive && weights[i] > 0;
         if (!positive || poles.GetSize() == 0)
+        {
+            boxed = false;
             continue;
+        }
         double ulo = HUGE_VAL, uhi = -HUGE_VAL, vlo = HUGE_VAL, vhi = -HUGE_VAL;
         for (ULONG i = 0; i < poles.GetSize(); ++i)
         {
@@ -494,7 +778,18 @@ Job make_job(const SmFace* face)
             vlo = std::min(vlo, poles[i].y), vhi = std::max(vhi, poles[i].y);
         }
         run_u[c] = uhi - ulo, run_v[c] = vhi - vlo;
+        box_lo[0] = std::min(box_lo[0], ulo), box_hi[0] = std::max(box_hi[0], uhi);
+        box_lo[1] = std::min(box_lo[1], vlo), box_hi[1] = std::max(box_hi[1], vhi);
     }
+    SmExtent2d dom = face_dom;
+    if (boxed)
+    {
+        const double ulo = std::max(box_lo[0], face_dom.GetMin().x), uhi = std::min(box_hi[0], face_dom.GetMax().x);
+        const double vlo = std::max(box_lo[1], face_dom.GetMin().y), vhi = std::min(box_hi[1], face_dom.GetMax().y);
+        if (uhi > ulo && vhi > vlo)
+            dom = SmExtent2d(SmPoint2d(ulo, vlo), SmPoint2d(uhi, vhi));
+    }
+    load_spline(job.surface, dom, job.spline);
     const double eps_u = 1e-12 * (std::fabs(dom.GetMin().x) + std::fabs(dom.GetMax().x) + dom.GetMax().x - dom.GetMin().x);
     const double eps_v = 1e-12 * (std::fabs(dom.GetMin().y) + std::fabs(dom.GetMax().y) + dom.GetMax().y - dom.GetMin().y);
     // the inner direction: the one with less work, (outer spans) x (inner spans)
@@ -516,6 +811,10 @@ Job make_job(const SmFace* face)
     job.base = job.inner_v ? dom.GetMin().y : dom.GetMin().x;
     job.inner_knots = job.inner_v ? vk : uk;
     job.outer_knots = job.inner_v ? uk : vk;
+    const size_t inner_spans = job.inner_v ? spans_within(vk, dom.GetMin().y, dom.GetMax().y)
+                                           : spans_within(uk, dom.GetMin().x, dom.GetMax().x);
+    job.inner_rule = inner_spans >= kDense ? &k7() : &k15();
+    job.outer_rule.assign(n, &k15());
 
     // the inner integral of the area element across the whole domain, at three places
     const double olo = job.inner_v ? dom.GetMin().x : dom.GetMin().y, ohi = job.inner_v ? dom.GetMax().x : dom.GetMax().y;
@@ -636,7 +935,7 @@ Values scales(const Values& total, const Settings& s)
     const double area = std::max(std::fabs(total[AREA]), std::numeric_limits<double>::min());
     const double volume = std::max(std::fabs(total[VOL]), 1e-9 * area * s.size);
     for (int k = 0; k < NC; ++k)
-        sc[k] = k < VOL || k >= NX ? area * std::pow(s.size, kPower[k]) : volume * std::pow(s.size, kPower[k] - 1);
+        sc[k] = k < VOL || k >= NX ? area * s.size_pow[kPower[k]] : volume * s.size_pow[kPower[k] - 1];
     return sc;
 }
 
@@ -647,7 +946,12 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
     for (size_t j = 0; j < jobs.size(); ++j)
         for (size_t c = 0; c < jobs[j].curves.size(); ++c)
             if (!jobs[j].skip[c])
+            {
+                const size_t before = panels.size();
                 initial_panels(jobs[j], static_cast<int>(j), static_cast<int>(c), panels);
+                // a curve with many knot spans or crossings of knot lines has small panels
+                jobs[j].outer_rule[c] = panels.size() - before >= kDense ? &k7() : &k15();
+            }
     auto evaluate = [&](Panel& p) {
         if (!outer_panel(jobs[static_cast<size_t>(p.job)], s, p))
             throw std::runtime_error("the integration cannot evaluate a face's surface (SM_ERR)");
@@ -677,13 +981,14 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
         bool done = true;
         for (int k = s.first; k < s.last; ++k)
         {
-            target[k] = s.tolerance * sc[k];
+            target[k] = (is_field(k) ? std::max(s.tolerance, kFieldTolerance) : s.tolerance) * sc[k];
             done = done && err[k] <= target[k];
         }
         r.val = total, r.err = err, r.panels = static_cast<long>(panels.size());
         r.relative = 0.0;
         for (int k = s.first; k < s.last; ++k)
-            r.relative = std::max(r.relative, err[k] / sc[k]);
+            if (!is_field(k))
+                r.relative = std::max(r.relative, err[k] / sc[k]);
         // stop when done, and also when bisection has stopped paying (rounding noise)
         double excess = 0.0;
         for (Panel& p : panels)
@@ -750,6 +1055,8 @@ Settings settings(const SmExtent3d& box, double tolerance)
     Settings s;
     s.origin = box.GetMid();
     s.size = std::max(diagonal(box), std::numeric_limits<double>::min());
+    for (int i = 1; i < 4; ++i)
+        s.size_pow[i] = s.size_pow[i - 1] * s.size;
     s.tolerance = tolerance;
     // The outer error from the inner integrals is at most s.inner times the integral of
     // |integrand| over the strips under the trim curves: a small multiple of the result.
@@ -798,6 +1105,7 @@ py::dict brep_measure(const SmBrep* brep, double tolerance)
     d["first_moments"] = xyz(r.val[VX], r.val[VY], r.val[VZ]);
     d["second_moments"] = py::make_tuple(r.val[VXX], r.val[VYY], r.val[VZZ], r.val[VYZ], r.val[VZX], r.val[VXY]);
     d["closure"] = xyz(r.val[NX], r.val[NY], r.val[NZ]);
+    d["field_volumes"] = xyz(r.val[VOLX], r.val[VOLY], r.val[VOL]);
     py::dict e;
     e["area"] = r.err[AREA];
     e["volume"] = r.err[VOL];

@@ -314,7 +314,7 @@ def _summary(items: list[Any]) -> str:
         if isinstance(it, _Body):
             parts.append(f"{it._brep.face_count()} faces")
         if isinstance(it, Part):
-            parts.append(f"volume {_fmt_num(it.volume)}")
+            parts.append(f"volume {_fmt_num(it._props()['volume'])}")  # no measure warnings here
         elif isinstance(it, (Sketch, Shell)):
             parts.append(f"area {_fmt_num(it.area)}")
         b = it.bbox()

@@ -44,6 +44,12 @@ ACCURACY = 1e-7
 # 10^6 times below the accuracy asked for.
 _MARGIN = 0.1
 
+# Faces that meet only within a tolerance leave gaps, and the volume then depends on the field
+# it is integrated with (the kernel's (0, 0, z) against (x, 0, 0) and (0, y, 0)): by 1e-7 to 3e-6
+# for fitted chamfers, sweeps cut by planes and shells of curved faces. Beyond _GAPS (and the
+# accuracy asked for) the volume measure says so.
+_GAPS = 1e-5
+
 S = TypeVar("S", bound="Shape")
 
 
@@ -1716,20 +1722,41 @@ class Part(_Body):
     def _props(self, accuracy: float | None = None) -> dict[str, Any]:
         """Area, volume and moments (density 1) to the relative ``accuracy`` (default
         ``ACCURACY``), integrated by smlibpy with an error estimate (src/cpp/measure.cpp).
-        Kept with the body, which does not change: the next query costs nothing."""
+        Kept with the body, which does not change: the next query costs nothing. No warnings:
+        for the checks inside operations; the public measures go through ``_measured``."""
         accuracy = ACCURACY if accuracy is None else accuracy
         cached = self._h.props
         if cached is not None and cached["accuracy"] <= accuracy:
             return cached
         with kernel_call("mass properties", "is the part a closed solid?"):
             p = ext.brep_measure(self._brep, accuracy * _MARGIN)
-        if not p["converged"] and p["relative_error"] > accuracy:
-            import warnings
-
-            warnings.warn(f"mass properties: the integration reached a relative accuracy of "
-                          f"{p['relative_error']:.1e}, not {accuracy:.0e}", RuntimeWarning, stacklevel=3)
         p["accuracy"] = accuracy
+        vx, vy, vz = p["field_volumes"]
+        p["gaps"] = max(abs(vx - vz), abs(vy - vz)) / abs(vz) if vz else 0.0
         self._h.props = p
+        return p
+
+    def _measured(self, accuracy: float | None = None) -> dict[str, Any]:
+        """``_props`` for the user: says when the numbers are not what was asked for (the
+        integration did not reach the accuracy, or the body's faces leave gaps that make its
+        volume uncertain beyond the fifth digit), each thing once per part."""
+        p = self._props(accuracy)
+        asked = ACCURACY if accuracy is None else accuracy
+        notes = []
+        if not p["converged"] and p["relative_error"] > asked:
+            notes.append(f"mass properties: the integration reached a relative accuracy of "
+                         f"{p['relative_error']:.1e}, not {asked:.0e}")
+        if p["gaps"] > max(asked, _GAPS):
+            notes.append(f"mass properties: the faces of this part do not meet exactly (there are gaps "
+                         f"between them), so its volume is uncertain by about {p['gaps']:.0e} of its value: "
+                         f"integrated as the faces are, {p['volume']:.10g}")
+        said = p.setdefault("said", set())
+        for note in notes:
+            if note not in said:
+                said.add(note)
+                import warnings
+
+                warnings.warn(note, RuntimeWarning, stacklevel=3)
         return p
 
     def _kernel_props(self, accuracy: float) -> dict[str, Any]:
@@ -1740,18 +1767,26 @@ class Part(_Body):
         with kernel_call("mass properties", "is the part a closed solid?"):
             return ext.brep_properties(self._brep, accuracy, 1.0)
 
+    def _quick_volume(self, accuracy: float = 1e-6) -> float:
+        """The volume for a plausibility check with a margin of 1e-3 or more: the measured one
+        if the part has it, else the kernel's quick integration at ``accuracy`` (see
+        ``_kernel_props``)."""
+        if self._h.props is not None:
+            return float(self._h.props["volume"])
+        return float(self._kernel_props(accuracy)["volume"])
+
     @property
     def volume(self) -> float:
-        return float(self._props()["volume"])
+        return float(self._measured()["volume"])
 
     @property
     def area(self) -> float:
         """Total surface area."""
-        return float(self._props()["area"])
+        return float(self._measured()["area"])
 
     def center(self) -> Vector:
         """Center of mass (uniform density)."""
-        p = self._props()
+        p = self._measured()
         return Vector(p["origin"]) + Vector(p["first_moments"]) / p["volume"]
 
     def mass_properties(self, density: float = 1.0, accuracy: float | None = None) -> MassProperties:
@@ -1766,7 +1801,7 @@ class Part(_Body):
             raise ValueError("mass_properties: the density must be positive")
         if accuracy is not None and not 1e-10 <= accuracy <= 1e-2:
             raise ValueError("mass_properties: accuracy must be between 1e-10 and 1e-2")
-        p = self._props(accuracy)
+        p = self._measured(accuracy)
         volume = float(p["volume"])
         d = Vector(p["first_moments"]) / volume  # centroid relative to the origin of integration
         xx, yy, zz, yz, zx, xy = p["second_moments"]

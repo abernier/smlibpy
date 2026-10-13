@@ -21,7 +21,8 @@ def test_is_valid_needs_a_positive_volume():
     # a profile across the axis, revolved by the kernel directly: a "manifold" body of volume 0
     curves = Rectangle(10, 10).on(Plane.front).faces()[0].outer_wire()._copy_curves()
     inside_out = Part._wrap(k.rotational_sweep(curves, (0, 0, 0), (0, 0, 1), 360.0, cap_ends=True))
-    assert inside_out._brep.is_manifold_solid() and inside_out.volume <= 1e-6
+    with pytest.warns(RuntimeWarning, match="do not meet exactly"):  # its faces overlap: no volume to speak of
+        assert inside_out._brep.is_manifold_solid() and inside_out.volume <= 1e-6
     assert not inside_out.is_valid()
     assert Box(1, 2, 3).is_valid() and (Box(10, 10, 10) - Sphere(3)).is_valid()
 

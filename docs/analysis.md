@@ -30,8 +30,10 @@ closed forms and converged references, the results are right to 1e-11 and better
 lengths are integrated to 1e-12, and `point_at` follows the arc length as closely.
 
 A part keeps its measures: `volume`, `area`, `center()` and `mass_properties()` share one
-integration, the first of them pays for it (a few milliseconds for most parts, 0.5 s for the
-spring of `examples/spring.py` with its 512 knot spans).
+integration, the first of them pays for it: a few milliseconds for most parts, 55 ms for the
+spring of `examples/spring.py` with its 512 knot spans, 0.6 s for a surface through 105 x 105
+points thickened to a solid (46,000 knot spans on its top face; the kernel's own integration
+takes 0.4 s there at 1e-7 and is 2e-8 off).
 
 ## Mass properties
 
@@ -47,7 +49,9 @@ precise = part.mass_properties(density=7.85e-3, accuracy=1e-10)
 ```
 
 `accuracy` (1e-10 to 1e-2) sets the bound above for one call. It costs little: the spring
-takes 0.47 s at 1e-7 and at 1e-10, 0.19 s at 1e-4.
+takes 55 ms at 1e-7 and at 1e-10, 23 ms at 1e-4. A coarse accuracy saves little on dense
+free-form faces, though: every knot span gets at least 7 x 7 points, and the thickened surface
+above takes 0.6 s at any accuracy.
 
 ## How exact a body is
 
@@ -59,6 +63,15 @@ of `examples/flange.py` differs by 2.6e-7, two crossing cylinders of the same ra
 the shelled bottle by 3.6e-6. Bodies whose edges are lines and circles close up exactly and
 agree with their formulas to 1e-10 and better. Compare against formulas with a relative
 tolerance of 1e-6, or 1e-5 for sweeps, shells and offsets of curved faces.
+
+The integration measures the gaps as well: it integrates the volume with three fields, the
+kernel's (0, 0, z) and (x, 0, 0) and (0, y, 0), which give the same volume only for faces that
+close up. Where they differ by more than 1e-5 (or the accuracy asked for, if that is coarser),
+`volume`, `area`, `center()` and `mass_properties()` say so in a `RuntimeWarning` with the size
+of the uncertainty, and give the volume of the faces as they are. A sheet unfolded across a hole
+in a bend zone, whose NURBS faces as trimmed do not quite meet their neighbours, gets 8e-5 (its
+volume is 6e-5 off). A warning that the integration did not reach the accuracy asked for looks
+the same; each comes once per part.
 
 ## Distances
 
