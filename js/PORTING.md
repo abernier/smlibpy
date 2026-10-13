@@ -72,7 +72,22 @@ the Python code works around a kernel defect, so does the TypeScript.
 - **Imports.** Modules import each other statically, also where Python imports inside a
   function to break a cycle. ES modules allow the cycles as long as no module uses another's
   exports while it is first evaluated: no top-level code that builds shapes.
-- **Files.** Paths work in Node (node:fs); the browser gets bytes (`Uint8Array`) or text.
+- **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node:
+  - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
+    `toObj`, `toDxf`: `string`; `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`,
+    `fromDxfWires(data)` take a `string` or `Uint8Array`.
+  - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
+    extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
+    functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
+    static `node:` import, so bundlers for the browser do not trip) and throw a clear error
+    outside Node.
+  - Python's `smlibpy.export(...)` is `exportFile` (`export` cannot name a function).
+- **Names between modules.** What one module imports from another, beyond the public API:
+  `exporters.ts`: `exportFile`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
+  `_flattenAll`, `_zUp`, `gltfDocumentMixed`; `dxf.ts`: `exportDxf`, `importDxf`,
+  `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
+  `polygonsCross`, `pointInPolygon`, `signedArea`; `align.ts`: `_one`; `surfaces.ts`:
+  `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...).
 
 ## Status
 

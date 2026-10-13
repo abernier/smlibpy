@@ -16,7 +16,7 @@ export type Align = (typeof Align)[keyof typeof Align]
 /** One alignment for all axes, or one per axis (null leaves an axis alone). */
 export type AlignLike = Align | string | null | readonly (Align | string | null)[]
 
-function _one(a: Align | string | null): Align | null {
+export function _one(a: Align | string | null): Align | null {
   if (a == null) return null
   const v = a.toLowerCase()
   if (v !== 'min' && v !== 'center' && v !== 'max') throw new RangeError(`'${a}' is not a valid Align`)
