@@ -98,10 +98,14 @@ std::string surface_kind(uintptr_t s) { return guard([&] { return smlibpy::surfa
 std::string object_class(uintptr_t o) { return guard([&] { return smlibpy::object_class(as<SmObject>(o, "object")); }); }
 
 // faces: [{surface, same_sense, loops: [{edges: [[id, forward]]} | {vertex}]}]; edges: {id: curve}
-uintptr_t build_brep(val faces, val edges, bool solid, bool reversed, bool mirrored)
+uintptr_t build_brep(val faces, val edges, bool solid, bool reversed, bool mirrored, val voids)
 {
-    return guard([&] { return ptr(smlibpy::build_brep(from_js(faces), from_js(edges), solid, reversed, mirrored)); });
+    return guard([&] {
+        return ptr(smlibpy::build_brep(from_js(faces), from_js(edges), solid, reversed, mirrored, from_js(voids)));
+    });
 }
+
+val inverted_faces(uintptr_t b) { return guard([&] { return to_js(smlibpy::inverted_faces(brep(b))); }); }
 
 val seam_problems(uintptr_t b, bool fix, val only)
 {
@@ -556,6 +560,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__surface_kind", &surface_kind);
     function("ext__object_class", &object_class);
     function("ext__build_brep", &build_brep);
+    function("ext__inverted_faces", &inverted_faces);
     function("ext__seam_problems", &seam_problems);
     function("ext__surface_derivatives", &surface_derivatives);
     function("ext__face_curvatures", &face_curvatures);

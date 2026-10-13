@@ -11,6 +11,7 @@
 #include "step_build.h"
 
 #include <SmApiGeneral.h>
+#include <SmApiQueries.h>
 #include <SmBrepData.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
@@ -23,11 +24,13 @@
 #include <SmLine.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
+#include <SmRegion.h>
 #include <SmSphere.h>
 #include <SmSurfOfExtrusion.h>
 #include <SmSurfOfRevolution.h>
 #include <SmTorus.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -357,9 +360,298 @@ SmSurface* make_surface(const smlibpy::Value& s)
     throw std::invalid_argument("unknown surface kind: " + kind);
 }
 
-// faces: [{"surface": spec, "same_sense": bool, "loops": [{"edges": [(edge_id, forward)]} | {"vertex": point}]}]
-// edges: {edge_id: curve spec running from the edge's start to its end vertex}
-SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool solid, bool reversed, bool mirrored)
+// Points along the edges of loops (a face's), ends included.
+std::vector<SmPoint3d> loop_points(const smlibpy::Value& loops, const smlibpy::Value& edges, int per_edge)
+{
+    std::vector<SmPoint3d> out;
+    for (const smlibpy::Value& loop : loops.list())
+    {
+        if (!loop.has("edges"))
+            continue;
+        for (const smlibpy::Value& use : loop["edges"].list())
+        {
+            long id = static_cast<long>(use.at(0).num());
+            std::unique_ptr<SmCurve> c(make_edge_curve(edges[std::to_string(id)]));
+            SmExtent1d ivl = c->GetNaturalInterval();
+            for (int i = 0; i <= per_edge; ++i)
+            {
+                SmVector3d p[1];
+                if (c->Evaluate(ivl.Evaluate(double(i) / per_edge), 0, TRUE, p, FALSE) == SM_SUCCESS)
+                    out.push_back(p[0]);
+            }
+        }
+    }
+    return out;
+}
+
+// Where the seam of a B-spline surface closed in `dir` has to be for a face whose boundary
+// passes through `points` to stay off it: in the widest stretch of the parameter the face does
+// not reach, at a knot of the surface there if it has one (a split right beside a knot leaves a
+// span too short for the tessellator). NaN if the face does not cross the seam (touching it is
+// fine), or if it reaches all the way around.
+double seam_outside(const SmSurface* srf, SmSurfParamType dir, const std::vector<SmPoint3d>& points)
+{
+    const SmExtent2d dom = srf->GetNaturalUVDomain();
+    const SmExtent1d ivl = dir == SM_SP_U ? dom.GetUInterval() : dom.GetVInterval();
+    const double lo = ivl.GetMin(), hi = ivl.GetMax(), period = hi - lo;
+    const double none = std::nan("");
+    if (!(period > 0.0))
+        return none;
+    // points on the seam belong to either end and say nothing about crossing it
+    const double on_seam = 1e-5 * period;
+    std::vector<double> ts;
+    for (const SmPoint3d& p : points)
+    {
+        SmPoint3d closest;
+        SmTArray<SmPoint2d> uvs;
+        double dist = 0.0;
+        if (SmApiSurfaceClosestPoint(srf, p, closest, uvs, dist) != SM_SUCCESS || uvs.IsEmpty())
+            continue;
+        const double t = dir == SM_SP_U ? uvs[0].x : uvs[0].y;
+        if (uvs.GetSize() > 1 || t < lo + on_seam || t > hi - on_seam)
+            continue;
+        ts.push_back(t);
+    }
+    if (ts.size() < 3)
+        return none;
+    std::sort(ts.begin(), ts.end());
+    double widest = (ts.front() - lo) + (hi - ts.back()), from = none, to = none;  // the stretch across the seam
+    for (size_t i = 0; i + 1 < ts.size(); ++i)
+        if (ts[i + 1] - ts[i] > widest)
+        {
+            widest = ts[i + 1] - ts[i];
+            from = ts[i];
+            to = ts[i + 1];
+        }
+    if (std::isnan(from) || widest <= 0.05 * period)
+        return none;
+    const double middle = 0.5 * (from + to);
+    double at = middle;
+    SmTArray<double> knots;
+    if (srf->GetKnots(dir, knots, nullptr, nullptr) == SM_SUCCESS)
+        for (ULONG i = 0; i < knots.GetSize(); ++i)
+            if (knots[i] > from + 0.1 * widest && knots[i] < to - 0.1 * widest
+                && std::fabs(knots[i] - middle) < std::fabs(at - middle) + (at == middle ? widest : 0.0))
+                at = knots[i];
+    return at;
+}
+
+// The same surface with its seam in direction `dir` moved to `at`: split there, and the two
+// pieces joined the other way round.
+SmBSplineSurface* move_seam(SmBSplineSurface* b, SmSurfParamType dir, double at)
+{
+    SmSurface *left = nullptr, *right = nullptr;
+    check(b->SplitAt(ctx(), at, dir, left, right), "SmBSplineSurface::SplitAt");
+    std::unique_ptr<SmSurface> l(left), r(right);
+    SmBSplineSurface *lb = SM_CAST_PTR(SmBSplineSurface, left), *rb = SM_CAST_PTR(SmBSplineSurface, right);
+    if (!lb || !rb)
+        throw std::runtime_error("SmBSplineSurface::SplitAt returned no B-spline surfaces");
+    // the flag is the direction the parameter crosses the joint in (its comment in the header has
+    // u and v the other way round)
+    SmBSplineSurface* joined = nullptr;
+    check(rb->JoinSurface(ctx(), lb, dir, 1e-7, joined), "SmBSplineSurface::JoinSurface");
+    return joined;
+}
+
+// A face on a B-spline surface that closes on itself, with no seam edge of its own, may lie
+// across the surface's seam (where its parameter starts over): the kernel then trims the
+// face the wrong way round, so it covers the rest of the surface instead. Such a surface
+// gets its seam moved to where the face (bounded by `loops`) does not reach.
+SmSurface* seam_off_face(SmSurface* srf, const smlibpy::Value& loops, const smlibpy::Value& edges)
+{
+    if (srf->GetType() != SmBSplineSurface_TYPE)
+        return srf;
+    const SmExtent2d dom = srf->GetNaturalUVDomain();
+    std::vector<SmPoint3d> points;
+    for (SmSurfParamType dir : {SM_SP_U, SM_SP_V})
+    {
+        // where this fails, the surface stays as it is: the face is no worse than written
+        try
+        {
+            if (!srf->IsClosed(dom, dir))
+                continue;
+            if (points.empty())
+                points = loop_points(loops, edges, 32);
+            const double at = seam_outside(srf, dir, points);
+            if (std::isnan(at))
+                continue;
+            SmBSplineSurface* moved = move_seam(SM_CAST_PTR(SmBSplineSurface, srf), dir, at);
+            delete srf;
+            srf = moved;
+        }
+        catch (const std::exception&)
+        {
+        }
+    }
+    return srf;
+}
+
+// How many times a closed chain of edge uses winds around a surface closed in `dir`: the
+// parameter of points along it, unwrapped, from the start round to the start.
+double winding(const SmSurface* srf, SmSurfParamType dir, const std::vector<smlibpy::Value>& uses,
+               const smlibpy::Value& edges)
+{
+    const SmExtent2d dom = srf->GetNaturalUVDomain();
+    const double period = (dir == SM_SP_U ? dom.GetUInterval() : dom.GetVInterval()).GetLength();
+    std::vector<double> ts;
+    for (const smlibpy::Value& use : uses)
+    {
+        std::unique_ptr<SmCurve> c(make_edge_curve(edges[std::to_string(static_cast<long>(use.at(0).num()))]));
+        const bool forward = use.at(1).boolean();
+        const SmExtent1d ivl = c->GetNaturalInterval();
+        constexpr int n = 16;
+        for (int i = 0; i < n; ++i)  // the end is where the next use starts
+        {
+            SmVector3d p[1];
+            const double s = double(i) / n;
+            if (c->Evaluate(ivl.Evaluate(forward ? s : 1.0 - s), 0, TRUE, p, FALSE) != SM_SUCCESS)
+                continue;
+            SmPoint3d closest;
+            SmTArray<SmPoint2d> uvs;
+            double dist = 0.0;
+            if (SmApiSurfaceClosestPoint(srf, p[0], closest, uvs, dist) == SM_SUCCESS && !uvs.IsEmpty())
+                ts.push_back(dir == SM_SP_U ? uvs[0].x : uvs[0].y);
+        }
+    }
+    double turns = 0.0;
+    for (size_t i = 0; i < ts.size(); ++i)
+    {
+        double step = ts[(i + 1) % ts.size()] - ts[i];
+        step -= period * std::round(step / period);  // the short way round
+        turns += step;
+    }
+    return period > 0.0 ? turns / period : 0.0;
+}
+
+// A loop that runs along an edge and straight back (two uses next to each other) has a slit,
+// or the seam up to a pole (a cone's tip). On a surface that closes on itself it is the seam
+// only if the rest of the loop goes around the surface; otherwise the edge is a cut into the
+// face that a broken file left (it may even run out of the face), and the face is what the
+// rest of the loop bounds: the loop without it. The face's loops with such slits dropped, or
+// none if it has none.
+smlibpy::Value drop_slits(const SmSurface* srf, const smlibpy::Value& f, const smlibpy::Value& edges)
+{
+    const SmExtent2d dom = srf->GetNaturalUVDomain();
+    std::vector<SmSurfParamType> closed;
+    for (SmSurfParamType dir : {SM_SP_U, SM_SP_V})
+        if (srf->IsClosed(dom, dir))
+            closed.push_back(dir);
+    if (closed.empty())
+        return {};
+    bool dropped = false;
+    smlibpy::Value loops = smlibpy::Value::make_list();
+    for (const smlibpy::Value& loop : f["loops"].list())
+    {
+        if (!loop.has("edges"))
+        {
+            loops.push(loop);
+            continue;
+        }
+        const std::vector<smlibpy::Value>& uses = loop["edges"].list();
+        const size_t n = uses.size();
+        std::vector<bool> slit(n, false);
+        for (size_t i = 0; i < n && n > 2; ++i)
+        {
+            const size_t j = (i + 1) % n;
+            if (static_cast<long>(uses[i].at(0).num()) == static_cast<long>(uses[j].at(0).num())
+                && uses[i].at(1).boolean() != uses[j].at(1).boolean())
+                slit[i] = slit[j] = true;
+        }
+        std::vector<smlibpy::Value> rest;
+        for (size_t i = 0; i < n; ++i)
+            if (!slit[i])
+                rest.push_back(uses[i]);
+        bool around = rest.empty() || rest.size() == n;
+        for (SmSurfParamType dir : closed)
+            if (!around && std::fabs(winding(srf, dir, rest, edges)) > 0.5)
+                around = true;
+        if (around)
+        {
+            loops.push(loop);
+            continue;
+        }
+        smlibpy::Value copy = loop;
+        copy.set("edges", smlibpy::Value::make_list(std::move(rest)));
+        loops.push(std::move(copy));
+        dropped = true;
+    }
+    return dropped ? loops : smlibpy::Value();
+}
+
+// The faces of one shell, into the shell the constructor has open. Edges already made (by this
+// shell or an earlier one) are used again.
+void add_faces(SmBrepConstructor& bc, const smlibpy::Value& faces, const smlibpy::Value& edges, bool reversed,
+               bool mirrored, std::unordered_map<long, SmEdge*>& made)
+{
+    for (const smlibpy::Value& f : faces.list())
+    {
+        bool same = f["same_sense"].boolean();
+        SmSurface* srf = make_surface(f["surface"]);
+        bool free_seam = f.has("free_seam") && f["free_seam"].boolean();
+        smlibpy::Value without_slits;
+        if (srf->GetType() == SmBSplineSurface_TYPE)
+        {
+            try
+            {
+                without_slits = drop_slits(srf, f, edges);
+            }
+            catch (const std::exception&)
+            {
+            }
+            if (!without_slits.is_none())
+                free_seam = true;  // the face's own seam edge is gone: its surface's seam may have to move
+        }
+        const smlibpy::Value& loops = without_slits.is_none() ? f["loops"] : without_slits;
+        if (free_seam)
+            srf = seam_off_face(srf, loops, edges);
+        if (!bc.StartFace((same != reversed) ? SM_OT_SAME : SM_OT_OPPOSITE))
+        {
+            delete srf;
+            throw std::runtime_error("SmBrepConstructor::StartFace failed");
+        }
+        check(bc.SetFaceSurface(srf, srf->GetNaturalUVDomain()), "SmBrepConstructor::SetFaceSurface");
+        for (const smlibpy::Value& loop : loops.list())
+        {
+            if (loop.has("vertex"))
+            {
+                if (!bc.StartAndEndSingleVertexLoop(vec(loop["vertex"])))
+                    throw std::runtime_error("SmBrepConstructor::StartAndEndSingleVertexLoop failed");
+                continue;
+            }
+            // loops run counterclockwise around the face normal (STEP convention)
+            if (!bc.StartLoop((same != mirrored) ? SM_OT_SAME : SM_OT_OPPOSITE))
+                throw std::runtime_error("SmBrepConstructor::StartLoop failed");
+            for (const smlibpy::Value& use : loop["edges"].list())
+            {
+                long id = static_cast<long>(use.at(0).num());
+                SmOrientType o = use.at(1).boolean() ? SM_OT_SAME : SM_OT_OPPOSITE;
+                auto it = made.find(id);
+                if (it != made.end())
+                {
+                    if (!bc.StartEdge(o, it->second, nullptr, nullptr))
+                        throw std::runtime_error("SmBrepConstructor::StartEdge failed");
+                    check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
+                    continue;
+                }
+                SmEdge* e = bc.StartEdge(o, nullptr, nullptr, nullptr);
+                if (!e)
+                    throw std::runtime_error("SmBrepConstructor::StartEdge failed");
+                SmCurve* c = make_edge_curve(edges[std::to_string(id)]);
+                check(bc.SetEdgeCurve(c, FALSE), "SmBrepConstructor::SetEdgeCurve");
+                SmExtent1d ivl = c->GetNaturalInterval();
+                check(bc.SetLimits(SmVertexNode(ivl.GetMin()), SmVertexNode(ivl.GetMax())),
+                      "SmBrepConstructor::SetLimits");
+                check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
+                made[id] = e;
+            }
+            check(bc.EndLoop(), "SmBrepConstructor::EndLoop");
+        }
+        check(bc.EndFace(), "SmBrepConstructor::EndFace");
+    }
+}
+
+SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool solid, bool reversed, bool mirrored,
+              const smlibpy::Value& voids)
 {
     SmBrepConstructor bc;
     SmBrep* brep = bc.StartBrep(ctx());
@@ -367,62 +659,31 @@ SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool sol
         throw std::runtime_error("SmBrepConstructor::StartBrep failed");
     try
     {
-        if (solid && !bc.StartRegion(TRUE, nullptr))
+        SmRegion* region = nullptr;
+        if (solid && !(region = bc.StartRegion(TRUE, nullptr)))
             throw std::runtime_error("SmBrepConstructor::StartRegion failed");
         SmShell *outer = nullptr, *inner = nullptr;
         check(bc.StartShell(outer, inner), "SmBrepConstructor::StartShell");
         std::unordered_map<long, SmEdge*> made;
-        for (const smlibpy::Value& f : faces.list())
-        {
-            bool same = f["same_sense"].boolean();
-            SmSurface* srf = make_surface(f["surface"]);
-            if (!bc.StartFace((same != reversed) ? SM_OT_SAME : SM_OT_OPPOSITE))
-            {
-                delete srf;
-                throw std::runtime_error("SmBrepConstructor::StartFace failed");
-            }
-            check(bc.SetFaceSurface(srf, srf->GetNaturalUVDomain()), "SmBrepConstructor::SetFaceSurface");
-            for (const smlibpy::Value& loop : f["loops"].list())
-            {
-                if (loop.has("vertex"))
-                {
-                    if (!bc.StartAndEndSingleVertexLoop(vec(loop["vertex"])))
-                        throw std::runtime_error("SmBrepConstructor::StartAndEndSingleVertexLoop failed");
-                    continue;
-                }
-                // loops run counterclockwise around the face normal (STEP convention)
-                if (!bc.StartLoop((same != mirrored) ? SM_OT_SAME : SM_OT_OPPOSITE))
-                    throw std::runtime_error("SmBrepConstructor::StartLoop failed");
-                for (const smlibpy::Value& use : loop["edges"].list())
-                {
-                    long id = static_cast<long>(use.at(0).num());
-                    SmOrientType o = use.at(1).boolean() ? SM_OT_SAME : SM_OT_OPPOSITE;
-                    auto it = made.find(id);
-                    if (it != made.end())
-                    {
-                        if (!bc.StartEdge(o, it->second, nullptr, nullptr))
-                            throw std::runtime_error("SmBrepConstructor::StartEdge failed");
-                        check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
-                        continue;
-                    }
-                    SmEdge* e = bc.StartEdge(o, nullptr, nullptr, nullptr);
-                    if (!e)
-                        throw std::runtime_error("SmBrepConstructor::StartEdge failed");
-                    SmCurve* c = make_edge_curve(edges[std::to_string(id)]);
-                    check(bc.SetEdgeCurve(c, FALSE), "SmBrepConstructor::SetEdgeCurve");
-                    SmExtent1d ivl = c->GetNaturalInterval();
-                    check(bc.SetLimits(SmVertexNode(ivl.GetMin()), SmVertexNode(ivl.GetMax())),
-                          "SmBrepConstructor::SetLimits");
-                    check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
-                    made[id] = e;
-                }
-                check(bc.EndLoop(), "SmBrepConstructor::EndLoop");
-            }
-            check(bc.EndFace(), "SmBrepConstructor::EndFace");
-        }
+        add_faces(bc, faces, edges, reversed, mirrored, made);
         check(bc.EndShell(FALSE), "SmBrepConstructor::EndShell");
         if (solid)
             check(bc.EndRegion(), "SmBrepConstructor::EndRegion");
+        // a cavity is a region of its own with the solid's region outside it (SmBrepConstructor)
+        if (!voids.is_none())
+            for (const smlibpy::Value& v : voids.list())
+            {
+                if (!solid)
+                    throw std::invalid_argument("build_brep: voids need a solid");
+                SmRegion* cavity = bc.StartRegion(TRUE, region);
+                if (!cavity)
+                    throw std::runtime_error("SmBrepConstructor::StartRegion failed");
+                check(bc.StartShell(outer, inner), "SmBrepConstructor::StartShell");
+                add_faces(bc, v.at(0), edges, v.at(1).boolean(), mirrored, made);
+                check(bc.EndShell(FALSE), "SmBrepConstructor::EndShell");
+                check(bc.EndRegion(), "SmBrepConstructor::EndRegion");
+                cavity->SetIsVoid(TRUE);
+            }
         check(bc.EndBrep(), "SmBrepConstructor::EndBrep");
     }
     catch (...)
@@ -442,9 +703,65 @@ const char* seam_name(SmSurfParamType t)
 
 namespace smlibpy {
 
-SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reversed, bool mirrored)
+SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reversed, bool mirrored,
+                   const Value& voids)
 {
-    return build(faces, edges, solid, reversed, mirrored);
+    return build(faces, edges, solid, reversed, mirrored, voids);
+}
+
+Value inverted_faces(SmBrep* brep)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    Value out = Value::make_list();
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmTArray<ULONG> loops;  // the number of curves of each loop
+        SmTArray<SmBSplineCurve*> curves;
+        const SmStatus st = faces[i]->CreateOrientedTrimBoundary(ctx(), TRUE, TRUE, loops, curves);
+        std::vector<std::unique_ptr<SmBSplineCurve>> owned;
+        for (ULONG c = 0; c < curves.GetSize(); ++c)
+            owned.emplace_back(curves[c]);
+        if (st != SM_SUCCESS || owned.empty())
+            continue;
+        const SmExtent2d dom = faces[i]->GetUVDomain();
+        const double size = std::max(dom.GetUInterval().GetLength(), dom.GetVInterval().GetLength());
+        // Green: twice the enclosed area is the closed integral of u dv - v du, here summed over
+        // the chords of the sampled curves. Only for loops that close in the parameter plane: a
+        // band around a periodic surface has loops that do not, and no sign to read.
+        double twice = 0.0;
+        bool closed = true;
+        size_t first = 0;
+        for (ULONG l = 0; l < loops.GetSize() && closed; ++l)
+        {
+            SmVector3d start[1], prev[1];
+            bool have = false;
+            for (size_t c = first; c < first + loops[l] && c < owned.size(); ++c)
+            {
+                const SmExtent1d ivl = owned[c]->GetNaturalInterval();
+                constexpr int n = 32;
+                for (int k = 0; k <= n; ++k)
+                {
+                    SmVector3d p[1];
+                    if (owned[c]->Evaluate(ivl.Evaluate(double(k) / n), 0, k < n, p, FALSE) != SM_SUCCESS)
+                        continue;
+                    if (!have)
+                        start[0] = p[0], have = true;
+                    else
+                        twice += prev[0].x * p[0].y - p[0].x * prev[0].y;
+                    prev[0] = p[0];
+                }
+            }
+            first += loops[l];
+            if (!have || (prev[0] - start[0]).Length() > 1e-6 * std::max(1.0, size))
+                closed = false;
+            else
+                twice += prev[0].x * start[0].y - start[0].x * prev[0].y;
+        }
+        if (closed && twice < -1e-9 * std::max(1.0, size * size))
+            out.push(Value::integer(static_cast<long long>(i)));
+    }
+    return out;
 }
 
 Value seam_problems(SmBrep* brep, bool fix, const std::vector<long>* only)
@@ -489,6 +806,10 @@ Value seam_problems(SmBrep* brep, bool fix, const std::vector<long>* only)
 
 void bind_step_build(py::module_& m)
 {
+    m.def("inverted_faces", [](SmBrep* brep) { return smlibpy::to_python(smlibpy::inverted_faces(brep)); },
+          py::arg("brep"),
+          "Indices of faces whose oriented trim curves enclose a negative area in the parameter plane: loops "
+          "that run the wrong way round for the face's orientation.");
     m.def("seam_problems", [](SmBrep* brep, bool fix, py::object only) {
         std::vector<long> indices;
         if (!only.is_none())
@@ -499,10 +820,13 @@ void bind_step_build(py::module_& m)
           "Faces of periodic surfaces whose seam no edge runs along, or edges cross: [{face, missing, crossed}] "
           "('u', 'v' or 'both'). fix=True has the kernel add the seams (in place); only= limits both to these face "
           "indices.");
-    m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored) {
-        return smlibpy::build_brep(smlibpy::to_value(faces), smlibpy::to_value(edges), solid, reversed, mirrored);
+    m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored,
+                           py::object voids) {
+        return smlibpy::build_brep(smlibpy::to_value(faces), smlibpy::to_value(edges), solid, reversed, mirrored,
+                                   smlibpy::to_value(voids));
     }, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
-          py::arg("mirrored") = false, py::return_value_policy::take_ownership,
-          "Build a Brep from neutral face/edge data (used by the STEP importer).");
+          py::arg("mirrored") = false, py::arg("voids") = py::list(), py::return_value_policy::take_ownership,
+          "Build a Brep from neutral face/edge data (used by the STEP importer). voids: [(faces, reversed)], the "
+          "cavities of a solid, each built as a void region inside it.");
 }
 #endif  // SMLIBPY_PYTHON

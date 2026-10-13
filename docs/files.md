@@ -84,7 +84,15 @@ circle at one end and the outline of its flat at the other, and small roundings 
 extruded ellipses bounded by their two ends. The importer gives such faces the seam edge
 the kernel needs to mesh and integrate them, and turns a surface's own seam (where its
 angle starts, also around the tube of a torus) to where the face has its seam edge, or
-out of the face.
+out of the face. B-spline surfaces that close on themselves get the same: the seam of the
+surface moves off a face that lies across it, and a face that runs all the way around one
+without a seam edge (the hub of an impeller) gets one.
+
+Files from tool catalogs bring more: a face whose `same_sense` flag says the opposite of
+its loops (the loops decide, as they agree with the neighbouring faces), a loop that runs
+up a cut into its face and back (dropped where the rest of the loop does not go around the
+surface), and cavities (`BREP_WITH_VOIDS`), which become void regions inside the solid as
+the file has them rather than a Boolean difference.
 
 The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
