@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },

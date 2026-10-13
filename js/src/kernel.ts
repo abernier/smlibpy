@@ -78,7 +78,8 @@ const OWN: Record<string, Signature> = {
   'ext.curve_parameter_at_length': ['curve', 't_start', 'length', ['tolerance', 1e-12]],
   // (SmTessellationDefaults: no chord height, 25 degrees, no edge length, no aspect ratio)
   'ext.tessellate': ['brep', ['chord_height_tolerance', 0], ['curve_angle_tolerance_deg', 25], ['surface_angle_tolerance_deg', 25],
-    ['max_edge_length', 0], ['max_aspect_ratio', 0], ['algorithm', 'auto'], ['allow_partial', false]],
+    ['max_edge_length', 0], ['max_aspect_ratio', 0], ['algorithm', 'auto'], ['allow_partial', false], ['return_failures', false],
+    ['return_report', false]],
   'ext.tessellation_algorithm': ['brep', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0],
     ['max_aspect_ratio', 0]],
   'ext.grid_deviation': ['face', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0]],
@@ -217,9 +218,19 @@ const STATUS_RE = /(SM_[A-Z0-9_]+)/
  * (wrong arguments) are not.
  */
 export function _isRuntimeError(e: unknown): e is Error {
-  if (e instanceof ModelingError) return true
+  if (e instanceof ModelingError || _isTrap(e)) return true
   if (!(e instanceof Error) || Object.getPrototypeOf(e) !== Error.prototype) return false
   return e.name === 'Error' || e.name.endsWith('Error') && !['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'BindingError', 'InternalError'].includes(e.name)
+}
+
+/**
+ * A trap of the WebAssembly module: the kernel crashed (read memory it should not have, called
+ * through a broken pointer). Natively such kernel defects mostly go unnoticed and the operation
+ * fails or returns a broken body; here the call stops. The module stays usable (what the call had
+ * allocated is lost), so a trap is a failed kernel call.
+ */
+function _isTrap(e: unknown): boolean {
+  return typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
 }
 
 /** Runs `fn`; a failure of the kernel becomes a KernelError with context. */
@@ -228,7 +239,7 @@ export function kernelCall<T>(operation: string, fn: () => T, hint: string | nul
     return fn()
   } catch (e) {
     if (e instanceof KernelError || !_isRuntimeError(e)) throw e
-    const text = e.message
+    const text = _isTrap(e) ? `the kernel crashed (${(e as Error).message})` : (e as Error).message
     const m = STATUS_RE.exec(text)
     const error = new KernelError(operation, text, m ? m[1] : null, hint)
     ;(error as Any).cause = e

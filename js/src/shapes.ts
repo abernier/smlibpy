@@ -40,6 +40,11 @@ import { _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _pa
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import {
+  type Bend,
+  type FlangeOptions,
+  type FlatPattern,
+  type FoldOptions,
+  type UnfoldOptions,
   bends as _bends,
   flange as _flange,
   flatPattern as _flatPattern,
@@ -158,7 +163,7 @@ export abstract class Shape {
 
   /** A mirrored copy (reflection in `plane`, a plane or a planar face; by default the XZ plane,
    * which flips Y). */
-  mirror(plane: Plane | Face | Axis = Plane.XZ): this {
+  mirror(plane: Plane | Face | Axis | ShapeList<Face> = Plane.XZ): this {
     const pl = _asPlane(plane)
     const n = pl.zDir.toArray()
     const d = pl.origin.dot(pl.zDir)
@@ -2069,6 +2074,7 @@ export class Part extends _Body {
   /** Center of mass (uniform density). */
   override center(): Vector {
     const p = this._measured()
+    if (p.volume === 0) throw new RangeError('the part has no volume, so it has no center')
     return new Vector(p.origin).add(new Vector(p.first_moments).div(p.volume))
   }
 
@@ -2085,6 +2091,7 @@ export class Part extends _Body {
     if (accuracy != null && !(1e-10 <= accuracy && accuracy <= 1e-2)) throw new RangeError('massProperties: accuracy must be between 1e-10 and 1e-2')
     const p = this._measured(accuracy)
     const volume = Number(p.volume)
+    if (volume === 0) throw new RangeError('massProperties: the part has no volume')
     const d = new Vector(p.first_moments).div(volume) // centroid relative to the origin of integration
     const [xx, yy, zz, yz, zx, xy] = p.second_moments
     const io = [
@@ -2760,27 +2767,27 @@ export class Part extends _Body {
 
   // -- sheet metal (the logic is in the sheetmetal module) ----------------------------------
   /** Fold this sheet along a line on its top or bottom face (see `fold`). */
-  fold(line: unknown, angle: number, options: { radius: number; kFactor?: number; fixed?: unknown; partial?: boolean }): Part {
+  fold(line: Axis | Edge, angle: number, options: FoldOptions): Part {
     return _fold(this, line, angle, options)
   }
 
   /** Add a flange along a straight outer edge of this sheet (see `flange`). */
-  flange(edge: unknown, length: number, options: { angle?: number; radius: number; kFactor?: number }): Part {
+  flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part {
     return _flange(this, edge, length, options)
   }
 
   /** The bends of this sheet metal part (see `bends`). */
-  bends(options: { kFactor?: number } = {}): Any[] {
+  bends(options: { kFactor?: number } = {}): Bend[] {
     return _bends(this, options)
   }
 
   /** This sheet metal part unfolded flat (see `unfold`). */
-  unfold(options: { kFactor?: number; fixed?: Face | null } = {}): Part {
+  unfold(options: UnfoldOptions = {}): Part {
     return _unfold(this, options)
   }
 
   /** The flat pattern of this sheet metal part on XY (see `flatPattern`). */
-  flatPattern(options: { kFactor?: number; fixed?: Face | null } = {}): Any {
+  flatPattern(options: UnfoldOptions = {}): FlatPattern {
     return _flatPattern(this, options)
   }
 
@@ -3291,7 +3298,7 @@ export class Sketch extends Shell {
    * Lines stay lines and arcs stay arcs. The sketch keeps facing the same way when the mirror is
    * an axis in its own plane, so the mirrored profile extrudes to the same side.
    */
-  override mirror(plane: Plane | Face | Axis = Plane.XZ): this {
+  override mirror(plane: Plane | Face | Axis | ShapeList<Face> = Plane.XZ): this {
     return mirrorSketch(this, plane) as this
   }
 
@@ -3428,7 +3435,7 @@ export class Sketch extends Shell {
 
   /** Sweep the region along a path. The sketch should sit at the start of the path. */
   sweep(path: Edge | Wire, options: { sharpCorners?: boolean | null } = {}): Part {
-    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null })
+    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null }) as Part
   }
 
   override toString(): string {

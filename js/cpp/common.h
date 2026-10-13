@@ -8,8 +8,9 @@
 //    vertices belong to their Brep.
 //  * A kernel call that fails throws a JavaScript Error with the message Python's KernelError
 //    carries (SMJS_CHECK, as SmPyLib's CHECK_STATUS: the call, the status and the kernel's trace).
-//  * A C++ exception from the shared code (std::invalid_argument and the like) becomes a
-//    JavaScript Error with its message (guard).
+//  * A C++ exception from the shared code becomes a JavaScript error with its message (guard):
+//    a RangeError where Python gets a ValueError (std::invalid_argument and the like), an Error
+//    otherwise.
 //  * Points and vectors are arrays [x, y, z]; lists of numbers come back as Float64Arrays,
 //    lists of kernel objects as arrays of numbers.
 
@@ -22,6 +23,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -58,13 +60,47 @@ inline void raise_status(SmStatus status, const char* what, const char* file, in
             ::smjs::raise_status(smjs_status_, #expr, __FILE__, __LINE__); \
     } while (0)
 
-// Runs f; a C++ exception becomes a JavaScript Error with its message.
+// A RangeError: where Python raises ValueError (or IndexError).
+[[noreturn]] inline void throw_range_error(const std::string& message)
+{
+    val::global("RangeError").new_(message).throw_();
+    __builtin_unreachable();
+}
+
+// Runs f; a C++ exception becomes a JavaScript error with its message: a RangeError where
+// pybind11 makes it a ValueError, IndexError or OverflowError (invalid_argument, domain_error,
+// length_error, out_of_range, range_error, overflow_error), an Error (Python's RuntimeError)
+// otherwise.
 template <typename F>
 auto guard(F&& f) -> decltype(f())
 {
     try
     {
         return f();
+    }
+    catch (const std::invalid_argument& e)
+    {
+        throw_range_error(e.what());
+    }
+    catch (const std::domain_error& e)
+    {
+        throw_range_error(e.what());
+    }
+    catch (const std::length_error& e)
+    {
+        throw_range_error(e.what());
+    }
+    catch (const std::out_of_range& e)
+    {
+        throw_range_error(e.what());
+    }
+    catch (const std::range_error& e)
+    {
+        throw_range_error(e.what());
+    }
+    catch (const std::overflow_error& e)
+    {
+        throw_range_error(e.what());
     }
     catch (const std::exception& e)
     {

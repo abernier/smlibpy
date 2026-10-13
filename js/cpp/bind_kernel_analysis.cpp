@@ -251,9 +251,86 @@ val tessellate_boundaries(uintptr_t b, double angle_tolerance_deg, bool allow_pa
     return tuple(float64(flat), float64(doubles(counts)), pointer_array(edges));
 }
 
+// SmPyLib's report of a tessellation (tessellation_report_to_dict).
+val tessellation_report(const SmTessellationReport& report)
+{
+    val failures = val::array();
+    for (ULONG i = 0; i < report.failures.GetSize(); ++i)
+    {
+        const SmTessellationFailure& f = report.failures[i];
+        val entry = val::object();
+        entry.set("face_index", static_cast<double>(f.lFaceIndex));
+        entry.set("stage", std::string(f.eStage == SM_TS_BOUNDARY_PREPARATION ? "boundary_preparation"
+                                       : f.eStage == SM_TS_FACE_TESSELLATION   ? "face_tessellation"
+                                                                               : "polygon_output"));
+        entry.set("status", static_cast<double>(f.eStatus));
+        entry.set("status_name", std::string(sm_status_name(f.eStatus)));
+        failures.call<void>("push", entry);
+    }
+    val r = val::object();
+    r.set("failures", failures);
+    r.set("lamina_edge_count", static_cast<double>(report.laminaEdges));
+    r.set("spine_edge_count", static_cast<double>(report.spineEdges));
+    r.set("input_manifold", bool(report.inputManifold));
+    r.set("output_manifold", bool(report.outputManifold));
+    r.set("has_mesh", bool(report.hasMesh));
+    return r;
+}
+
+// The kernel's own tessellation (SmApiTessellate, always the grid), as SmPyLib's tessellate: the
+// mesh (a new PolyBrep), [mesh, report] with return_report, [mesh, failures] with
+// return_failures. A failure throws an Error named TessellationError with .report, .failures,
+// .status and .status_name. Python defaults (keyword-only): SmTessellationDefaults (chord height
+// 0, angles 25, no edge length, no aspect ratio), allow_partial, return_failures and return_report
+// false.
+val tessellate(uintptr_t b, double chord_height_tolerance, double curve_angle_tolerance_deg, double surface_angle_tolerance_deg,
+               double max_edge_length, double max_aspect_ratio, bool allow_partial, bool return_failures, bool return_report)
+{
+    SmBrep* source = brep(b);
+    if (allow_partial && !return_failures && !return_report)
+        throw_range_error("allow_partial=True requires return_failures=True or return_report=True");
+    SmPolyBrep* r = nullptr;
+    SmTessellationReport report;
+    SmPyErrorTrail::clear();
+    SmTessellationParams params;
+    params.dChordHeightTol = chord_height_tolerance;
+    params.dCurveAngleTolDeg = curve_angle_tolerance_deg;
+    params.dSurfaceAngleTolDeg = surface_angle_tolerance_deg;
+    params.dMaxEdgeLength = max_edge_length;
+    params.dMaxAspectRatio = max_aspect_ratio;
+    const SmStatus status = SmApiTessellate(source, r, params, flag(allow_partial), nullptr, &report);
+    if (status != SM_SUCCESS)
+    {
+        std::string message = "SmApiTessellate failed";
+        try
+        {
+            SmPyRaise(status, "SmApiTessellate", __FILE__, __LINE__);
+        }
+        catch (const std::exception& e)
+        {
+            message = e.what();
+        }
+        val error = val::global("Error").new_(message);
+        val dict = tessellation_report(report);
+        error.set("name", std::string("TessellationError"));
+        error.set("report", dict);
+        error.set("failures", dict["failures"]);
+        error.set("status", static_cast<double>(status));
+        error.set("status_name", std::string(sm_status_name(status)));
+        error.throw_();
+    }
+    val mesh(ptr(r));
+    if (return_report)
+        return tuple(mesh, tessellation_report(report));
+    if (return_failures)
+        return tuple(mesh, tessellation_report(report)["failures"]);
+    return mesh;
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_tessellation)
 {
     function("tessellate_boundaries", &tessellate_boundaries);
+    function("tessellate", &tessellate);
 }
 
 }  // namespace

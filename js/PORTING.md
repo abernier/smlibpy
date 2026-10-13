@@ -86,7 +86,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   `exporters.ts`: `exportFile`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
   `_flattenAll`, `_zUp`, `gltfDocumentMixed`; `dxf.ts`: `exportDxf`, `importDxf`,
   `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
-  `polygonsCross`, `pointInPolygon`, `signedArea`; `align.ts`: `_one`; `surfaces.ts`:
+  `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
+  arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...).
 
 ## Status

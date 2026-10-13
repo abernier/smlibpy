@@ -314,7 +314,7 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance: number | n
         chord_height_tolerance: Number(tol),
         curve_angle_tolerance_deg: Number(angle),
         surface_angle_tolerance_deg: Number(angle),
-      }).mesh,
+      }),
   )
   const mesh = Mesh._fromPoly(poly)
   if (turned) {

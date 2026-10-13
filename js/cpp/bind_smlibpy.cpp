@@ -219,11 +219,39 @@ val report_js(const SmTessellationReport& report, const std::string& algorithm)
     return r;
 }
 
-// {mesh, report}; a kernel failure throws an Error named TessellationError with .report, .failures,
-// .status and .status_name, as Python's TessellationError carries them.
-val tessellate(uintptr_t b, double chord, double curve_angle, double surface_angle, double max_edge_length,
-               double max_aspect_ratio, std::string algorithm, bool allow_partial)
+// A failed tessellation: an Error named TessellationError with .report, .failures, .status and
+// .status_name, as Python's TessellationError carries them.
+[[noreturn]] void throw_tessellation_error(SmStatus status, val report)
 {
+    std::string message = "tessellate failed";
+    try
+    {
+        SmPyRaise(status, "tessellate", __FILE__, __LINE__);
+    }
+    catch (const std::exception& e)
+    {
+        message = e.what();
+    }
+    val error = val::global("Error").new_(message);
+    error.set("name", std::string("TessellationError"));
+    error.set("report", report);
+    error.set("failures", report["failures"]);
+    error.set("status", static_cast<double>(status));
+    error.set("status_name", std::string(sm_status_name(status)));
+    error.throw_();
+    __builtin_unreachable();
+}
+
+// As Python's: the mesh (a new PolyBrep), [mesh, report] with return_report, [mesh, failures]
+// with return_failures.
+val tessellate(uintptr_t b, double chord, double curve_angle, double surface_angle, double max_edge_length,
+               double max_aspect_ratio, std::string algorithm, bool allow_partial, bool return_failures,
+               bool return_report)
+{
+    if (!b)
+        throw_range_error("tessellate: no body");
+    if (allow_partial && !return_failures && !return_report)
+        throw_range_error("allow_partial=True requires return_failures=True or return_report=True");
     smlibpy::Tessellation t = guard([&] {
         smlibpy::TessellateOptions o;
         o.chord_height_tolerance = chord;
@@ -237,28 +265,16 @@ val tessellate(uintptr_t b, double chord, double curve_angle, double surface_ang
     });
     val report = report_js(t.report, t.algorithm);
     if (t.status != SM_SUCCESS)
+        throw_tessellation_error(t.status, report);
+    val mesh(ptr(t.mesh));
+    if (return_report || return_failures)
     {
-        std::string message = "tessellate failed";
-        try
-        {
-            SmPyRaise(t.status, "tessellate", __FILE__, __LINE__);
-        }
-        catch (const std::exception& e)
-        {
-            message = e.what();
-        }
-        val error = val::global("Error").new_(message);
-        error.set("name", std::string("TessellationError"));
-        error.set("report", report);
-        error.set("failures", report["failures"]);
-        error.set("status", static_cast<double>(t.status));
-        error.set("status_name", std::string(sm_status_name(t.status)));
-        error.throw_();
+        val out = val::array();
+        out.call<void>("push", mesh);
+        out.call<void>("push", return_report ? report : report["failures"]);
+        return out;
     }
-    val out = val::object();
-    out.set("mesh", ptr(t.mesh));
-    out.set("report", report);
-    return out;
+    return mesh;
 }
 
 std::string tessellation_algorithm(uintptr_t b, double chord, double surface_angle, double max_edge_length,

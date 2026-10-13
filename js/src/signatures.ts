@@ -120,5 +120,16 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
 
   // poly, tessellation (SmPyPolyOps.cpp, SmPyTessellation.cpp)
   poly_boolean: ['poly_brep1', 'poly_brep2', 'operation'],
+  tessellate: [
+    'brep',
+    ['chord_height_tolerance', 0.0],
+    ['curve_angle_tolerance_deg', 25.0],
+    ['surface_angle_tolerance_deg', 25.0],
+    ['max_edge_length', 0.0],
+    ['max_aspect_ratio', 0.0],
+    ['allow_partial', false],
+    ['return_failures', false],
+    ['return_report', false],
+  ],
   tessellate_boundaries: ['brep', ['angle_tolerance_deg', 5.0], ['allow_partial', false]],
 }
