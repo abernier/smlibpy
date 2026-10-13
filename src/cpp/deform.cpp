@@ -26,7 +26,8 @@
 //     until they are within the tolerance. Exact faces that would get more than
 //     `max_exact_points` control points are approximated the same way.
 
-#include "ext.h"
+#include "kernel.h"
+#include "deform.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
@@ -61,9 +62,8 @@ void check(SmStatus status, const char* what)
         SmPyRaise(status, what, __FILE__, __LINE__);
 }
 
-SmVector3d vec3(py::handle h)
+SmVector3d vec3(const std::vector<double>& v)
 {
-    auto v = py::cast<std::vector<double>>(h);
     if (v.size() != 3)
         throw std::invalid_argument("expected three coordinates");
     return SmVector3d(v[0], v[1], v[2]);
@@ -383,14 +383,14 @@ void row_matrix(const std::vector<double>& m, double t[4][4])
     t[3][3] = 1.0;
 }
 
-std::unique_ptr<Piece> make_piece(const py::dict& d)
+std::unique_ptr<Piece> make_piece(const smlibpy::DeformPiece& d)
 {
     auto piece = std::make_unique<Piece>();
-    if (d.contains("lo"))
-        piece->lo = py::cast<double>(d["lo"]);
-    if (d.contains("hi"))
-        piece->hi = py::cast<double>(d["hi"]);
-    const std::string kind = py::cast<std::string>(d["kind"]);
+    if (d.has_lo)
+        piece->lo = d.lo;
+    if (d.has_hi)
+        piece->hi = d.hi;
+    const std::string& kind = d.kind;
     if (kind == "identity")
     {
         piece->kind = Piece::IDENTITY;
@@ -398,7 +398,7 @@ std::unique_ptr<Piece> make_piece(const py::dict& d)
     else if (kind == "affine" || kind == "rigid")
     {
         double t[4][4];
-        row_matrix(py::cast<std::vector<double>>(d["matrix"]), t);
+        row_matrix(d.matrix, t);
         piece->volume.reset(new (ctx()) SmTransform(&ctx(), t));
         piece->kind = kind == "rigid" ? Piece::RIGID : Piece::VOLUME;
         piece->degree = 1;
@@ -412,21 +412,19 @@ std::unique_ptr<Piece> make_piece(const py::dict& d)
     }
     else if (kind == "twist")
     {
-        piece->volume.reset(new (ctx()) SmTwistVolume(ctx(), vec3(d["origin"]), vec3(d["axis"]), vec3(d["mid"]),
-                                                      py::cast<double>(d["period"])));
+        piece->volume.reset(new (ctx()) SmTwistVolume(ctx(), vec3(d.origin), vec3(d.axis), vec3(d.mid), d.period));
         piece->kind = Piece::VOLUME;
     }
     else if (kind == "bend")
     {
-        piece->volume.reset(new (ctx()) SmBendVolume(ctx(), vec3(d["center"]), vec3(d["axis"]), vec3(d["mid"]),
-                                                     py::cast<double>(d["neutral"])));
+        piece->volume.reset(new (ctx()) SmBendVolume(ctx(), vec3(d.center), vec3(d.axis), vec3(d.mid), d.neutral));
         piece->kind = Piece::VOLUME;
     }
     else if (kind == "lattice")
     {
-        auto counts = py::cast<std::vector<int>>(d["counts"]);
-        auto size = py::cast<std::vector<double>>(d["size"]);
-        auto pts = py::cast<std::vector<double>>(d["points"]);
+        const std::vector<int>& counts = d.counts;
+        const std::vector<double>& size = d.size;
+        const std::vector<double>& pts = d.points;
         if (counts.size() != 3 || size.size() != 3)
             throw std::invalid_argument("lattice: counts and size need three values");
         for (int a = 0; a < 3; ++a)
@@ -440,10 +438,10 @@ std::unique_ptr<Piece> make_piece(const py::dict& d)
         if (pts.size() != 3 * n)
             throw std::invalid_argument("lattice: wrong number of control points");
         Lattice& lat = piece->lattice;
-        lat.origin = vec3(d["origin"]);
-        lat.x = vec3(d["x"]);
-        lat.y = vec3(d["y"]);
-        lat.z = vec3(d["z"]);
+        lat.origin = vec3(d.origin);
+        lat.x = vec3(d.x);
+        lat.y = vec3(d.y);
+        lat.z = vec3(d.z);
         for (int a = 0; a < 3; ++a)
         {
             lat.size[a] = size[a];
@@ -461,12 +459,12 @@ std::unique_ptr<Piece> make_piece(const py::dict& d)
     return piece;
 }
 
-std::unique_ptr<Deformation> make_deformation(const py::dict& spec, double size)
+std::unique_ptr<Deformation> make_deformation(const smlibpy::DeformSpec& spec, double size)
 {
     auto def = std::make_unique<Deformation>();
-    if (spec.contains("axis") && !spec["axis"].is_none())
+    if (spec.has_axis)
     {
-        auto a = py::cast<std::vector<double>>(spec["axis"]);
+        const std::vector<double>& a = spec.axis;
         if (a.size() != 6)
             throw std::invalid_argument("axis: expected origin and direction (6 values)");
         def->has_axis = true;
@@ -474,18 +472,18 @@ std::unique_ptr<Deformation> make_deformation(const py::dict& spec, double size)
         def->direction = SmVector3d(a[3], a[4], a[5]);
         def->direction.Unitize();
     }
-    for (auto item : py::cast<py::list>(spec["pieces"]))
-        def->pieces.push_back(make_piece(py::cast<py::dict>(item)));
+    for (const smlibpy::DeformPiece& item : spec.pieces)
+        def->pieces.push_back(make_piece(item));
     if (def->pieces.empty())
         throw std::invalid_argument("a deformation needs at least one piece");
-    if (spec.contains("tolerance"))
-        def->tolerance = py::cast<double>(spec["tolerance"]);
-    if (spec.contains("max_degree"))
-        def->max_degree = std::clamp(py::cast<int>(spec["max_degree"]), 1, 17);
-    if (spec.contains("max_exact_points"))
-        def->max_exact_points = py::cast<size_t>(spec["max_exact_points"]);
-    if (spec.contains("approx_degree"))
-        def->approx_degree = std::clamp(py::cast<int>(spec["approx_degree"]), 2, 9);
+    if (spec.has_tolerance)
+        def->tolerance = spec.tolerance;
+    if (spec.has_max_degree)
+        def->max_degree = std::clamp(spec.max_degree, 1, 17);
+    if (spec.has_max_exact_points)
+        def->max_exact_points = spec.max_exact_points;
+    if (spec.has_approx_degree)
+        def->approx_degree = std::clamp(spec.approx_degree, 2, 9);
     if (!(def->tolerance > 0.0))
         throw std::invalid_argument("tolerance must be positive");
     def->exact_tol = std::min(1e-11 * std::max(1.0, size), 0.01 * def->tolerance);
@@ -1399,17 +1397,17 @@ struct SavedTrims
     }
 };
 
-py::dict stats_dict(const Stats& st)
+smlibpy::DeformStats stats_of(const Stats& st)
 {
-    py::dict d;
-    d["faces_kept"] = st.faces_kept;
-    d["faces_exact"] = st.faces_exact;
-    d["faces_approximated"] = st.faces_approx;
-    d["edges_kept"] = st.edges_kept;
-    d["edges_exact"] = st.edges_exact;
-    d["edges_approximated"] = st.edges_approx;
-    d["max_error"] = st.max_error;
-    d["max_degree"] = st.max_degree;
+    smlibpy::DeformStats d;
+    d.faces_kept = st.faces_kept;
+    d.faces_exact = st.faces_exact;
+    d.faces_approximated = st.faces_approx;
+    d.edges_kept = st.edges_kept;
+    d.edges_exact = st.edges_exact;
+    d.edges_approximated = st.edges_approx;
+    d.max_error = st.max_error;
+    d.max_degree = st.max_degree;
     return d;
 }
 
@@ -1421,7 +1419,7 @@ double model_size(const SmBrep* brep)
     return box.GetSize().Length();
 }
 
-py::tuple deform_brep(const SmBrep* brep, const py::dict& spec)
+smlibpy::Deformed deform(const SmBrep* brep, const smlibpy::DeformSpec& spec)
 {
     std::unique_ptr<Deformation> def = make_deformation(spec, model_size(brep));
     SmBrep* out = new (ctx()) SmBrep(*brep, nullptr, nullptr, TRUE, FALSE);
@@ -1484,11 +1482,11 @@ py::tuple deform_brep(const SmBrep* brep, const py::dict& spec)
         delete out;
         throw;
     }
-    return py::make_tuple(py::cast(out, py::return_value_policy::take_ownership), stats_dict(st));
+    return {out, stats_of(st)};
 }
 
 // The kernel's own composition (SmSrfInVolume / SmCrvInVolume, procedural and exact), for checks.
-SmBrep* composite_brep(const SmBrep* brep, const py::dict& spec)
+SmBrep* composite(const SmBrep* brep, const smlibpy::DeformSpec& spec)
 {
     std::unique_ptr<Deformation> def = make_deformation(spec, model_size(brep));
     SmBrep* out = new (ctx()) SmBrep(*brep, nullptr, nullptr, TRUE, FALSE);
@@ -1542,7 +1540,7 @@ SmBrep* composite_brep(const SmBrep* brep, const py::dict& spec)
 // Largest distance between the deformed Brep and the exact deformation of the original, compared
 // at the same surface and curve parameters (the parameterization is kept), on an n x n grid per
 // face, n points per edge and at the vertices.
-py::dict deviation(const SmBrep* src, const SmBrep* dst, const py::dict& spec, int n)
+smlibpy::Deviation distance(const SmBrep* src, const SmBrep* dst, const smlibpy::DeformSpec& spec, int n)
 {
     std::unique_ptr<Deformation> def = make_deformation(spec, model_size(src));
     SmBrep* copy = new (ctx()) SmBrep(*src, nullptr, nullptr, TRUE, FALSE);
@@ -1597,11 +1595,94 @@ py::dict deviation(const SmBrep* src, const SmBrep* dst, const py::dict& spec, i
     for (ULONG i = 0; i < vertices.GetSize(); ++i)
         dv = std::max(dv, def->pieces[topo.vertex_piece[i]]->map(topo.vertices[i]->GetPoint())
                               .DistanceBetween(vertices[i]->GetPoint()));
-    py::dict d;
-    d["faces"] = df;
-    d["edges"] = de;
-    d["vertices"] = dv;
-    return d;
+    return {df, de, dv};
+}
+
+}  // namespace
+
+namespace smlibpy {
+
+Deformed deform_brep(const SmBrep* brep, const DeformSpec& spec) { return deform(brep, spec); }
+
+SmBrep* composite_brep(const SmBrep* brep, const DeformSpec& spec) { return composite(brep, spec); }
+
+Deviation deviation(const SmBrep* source, const SmBrep* result, const DeformSpec& spec, int samples)
+{
+    return distance(source, result, spec, samples);
+}
+
+std::vector<double> map_points(const DeformSpec& spec, const std::vector<double>& points)
+{
+    if (points.size() % 3 != 0)
+        throw std::invalid_argument("expected points with three coordinates");
+    std::unique_ptr<Deformation> def = make_deformation(spec, 1.0);
+    std::vector<double> out;
+    out.reserve(points.size());
+    for (size_t i = 0; i < points.size(); i += 3)
+    {
+        SmPoint3d q(points[i], points[i + 1], points[i + 2]);
+        SmPoint3d r = def->pieces[def->piece_at(q)]->map(q);
+        out.insert(out.end(), {r.x, r.y, r.z});
+    }
+    return out;
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+
+// The spec as smlibpy's Python sends it: a dict, its pieces dicts, with optional keys.
+smlibpy::DeformSpec spec_from(const py::dict& d)
+{
+    smlibpy::DeformSpec spec;
+    if (d.contains("axis") && !d["axis"].is_none())
+    {
+        spec.has_axis = true;
+        spec.axis = py::cast<std::vector<double>>(d["axis"]);
+    }
+    for (auto item : py::cast<py::list>(d["pieces"]))
+    {
+        const py::dict p = py::cast<py::dict>(item);
+        smlibpy::DeformPiece piece;
+        piece.kind = py::cast<std::string>(p["kind"]);
+        if (p.contains("lo"))
+            piece.has_lo = true, piece.lo = py::cast<double>(p["lo"]);
+        if (p.contains("hi"))
+            piece.has_hi = true, piece.hi = py::cast<double>(p["hi"]);
+        auto numbers = [&](const char* key, std::vector<double>& out) {
+            if (p.contains(key))
+                out = py::cast<std::vector<double>>(p[key]);
+        };
+        numbers("matrix", piece.matrix);
+        numbers("origin", piece.origin);
+        numbers("axis", piece.axis);
+        numbers("mid", piece.mid);
+        numbers("center", piece.center);
+        numbers("size", piece.size);
+        numbers("x", piece.x);
+        numbers("y", piece.y);
+        numbers("z", piece.z);
+        numbers("points", piece.points);
+        if (p.contains("counts"))
+            piece.counts = py::cast<std::vector<int>>(p["counts"]);
+        if (p.contains("period"))
+            piece.period = py::cast<double>(p["period"]);
+        if (p.contains("neutral"))
+            piece.neutral = py::cast<double>(p["neutral"]);
+        spec.pieces.push_back(std::move(piece));
+    }
+    if (d.contains("tolerance"))
+        spec.has_tolerance = true, spec.tolerance = py::cast<double>(d["tolerance"]);
+    if (d.contains("max_degree"))
+        spec.has_max_degree = true, spec.max_degree = py::cast<int>(d["max_degree"]);
+    if (d.contains("max_exact_points"))
+        spec.has_max_exact_points = true, spec.max_exact_points = py::cast<size_t>(d["max_exact_points"]);
+    if (d.contains("approx_degree"))
+        spec.has_approx_degree = true, spec.approx_degree = py::cast<int>(d["approx_degree"]);
+    return spec;
 }
 
 }  // namespace
@@ -1610,31 +1691,55 @@ void bind_deform(py::module_& parent)
 {
     py::module_ m = parent.def_submodule("deform", "Space deformations of whole Breps: twist, taper, bend, lattice.");
 
-    m.def("deform_brep", &deform_brep, py::arg("brep"), py::arg("spec"),
+    m.def("deform_brep", [](const SmBrep* brep, const py::dict& spec) {
+        const smlibpy::Deformed r = smlibpy::deform_brep(brep, spec_from(spec));
+        py::dict d;
+        d["faces_kept"] = r.stats.faces_kept;
+        d["faces_exact"] = r.stats.faces_exact;
+        d["faces_approximated"] = r.stats.faces_approximated;
+        d["edges_kept"] = r.stats.edges_kept;
+        d["edges_exact"] = r.stats.edges_exact;
+        d["edges_approximated"] = r.stats.edges_approximated;
+        d["max_error"] = r.stats.max_error;
+        d["max_degree"] = r.stats.max_degree;
+        return py::make_tuple(py::cast(r.brep, py::return_value_policy::take_ownership), d);
+    }, py::arg("brep"), py::arg("spec"),
           "Send a copy of a Brep through a space deformation and convert every face and edge to NURBS "
           "(exact where the composition is polynomial, within spec['tolerance'] elsewhere). The spec "
           "lists pieces of kernel volume maps (identity, rigid, affine, twist, bend, lattice) along an "
           "optional axis. Returns (brep, report).");
 
-    m.def("composite_brep", &composite_brep, py::arg("brep"), py::arg("spec"), py::return_value_policy::take_ownership,
+    m.def("composite_brep", [](const SmBrep* brep, const py::dict& spec) {
+        return smlibpy::composite_brep(brep, spec_from(spec));
+    }, py::arg("brep"), py::arg("spec"), py::return_value_policy::take_ownership,
           "The kernel's exact procedural composition (SmSrfInVolume faces, SmCrvInVolume edges) of a "
           "copy of a Brep with the deformation, for checks.");
 
-    m.def("deviation", &deviation, py::arg("source"), py::arg("result"), py::arg("spec"), py::arg("samples") = 9,
+    m.def("deviation", [](const SmBrep* source, const SmBrep* result, const py::dict& spec, int samples) {
+        const smlibpy::Deviation r = smlibpy::deviation(source, result, spec_from(spec), samples);
+        py::dict d;
+        d["faces"] = r.faces;
+        d["edges"] = r.edges;
+        d["vertices"] = r.vertices;
+        return d;
+    }, py::arg("source"), py::arg("result"), py::arg("spec"), py::arg("samples") = 9,
           "Largest distance between a deformed Brep and the exact deformation of its source at the same "
           "parameters: {'faces', 'edges', 'vertices'}.");
 
     m.def("map_points", [](const py::dict& spec, const std::vector<std::vector<double>>& points) {
-        std::unique_ptr<Deformation> def = make_deformation(spec, 1.0);
-        py::list out;
+        std::vector<double> flat;
+        flat.reserve(points.size() * 3);
         for (const auto& p : points)
         {
             if (p.size() != 3)
                 throw std::invalid_argument("expected points with three coordinates");
-            SmPoint3d q(p[0], p[1], p[2]);
-            SmPoint3d r = def->pieces[def->piece_at(q)]->map(q);
-            out.append(py::make_tuple(r.x, r.y, r.z));
+            flat.insert(flat.end(), p.begin(), p.end());
         }
+        const std::vector<double> mapped = smlibpy::map_points(spec_from(spec), flat);
+        py::list out;
+        for (size_t i = 0; i < mapped.size(); i += 3)
+            out.append(py::make_tuple(mapped[i], mapped[i + 1], mapped[i + 2]));
         return out;
     }, py::arg("spec"), py::arg("points"), "Map points through a deformation.");
 }
+#endif  // SMLIBPY_PYTHON
