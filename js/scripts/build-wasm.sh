@@ -5,7 +5,11 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 if ! command -v emcmake >/dev/null 2>&1; then
-  . "${EMSDK:-$HOME/emsdk}/emsdk_env.sh" >/dev/null
+  # (sourced from its own directory: under a plain sh, such as dash, it cannot find that itself)
+  HERE="$(pwd)"
+  cd "${EMSDK:-$HOME/emsdk}"
+  . ./emsdk_env.sh >/dev/null
+  cd "$HERE"
 fi
 # (BUILD_DIR and OUT_DIR: a build of its own, for example next to another one)
 BUILD_DIR="${BUILD_DIR:-$ROOT/build-wasm}"
