@@ -7,9 +7,14 @@
 # the TypeScript layer (js/src) owns them and frees them. Kernel errors become JavaScript errors.
 
 file(GLOB SMLIBJS_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
+# smlibpy's own C++, shared with the Python extension (its Python bindings sit behind
+# SMLIBPY_PYTHON, which is not defined here), and the kernel's error messages from SmPyLib
+file(GLOB SMLIBPY_SHARED_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/cpp/*.cpp")
+list(FILTER SMLIBPY_SHARED_SOURCES EXCLUDE REGEX ".*/module\\.cpp$")
+set(SMPY_DIR "${USD_BREP_DIR}/source/SmPyLib/src")
 
-add_executable(smlibjs ${SMLIBJS_SOURCES})
-target_include_directories(smlibjs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
+add_executable(smlibjs ${SMLIBJS_SOURCES} ${SMLIBPY_SHARED_SOURCES} "${SMPY_DIR}/SmPyError.cpp")
+target_include_directories(smlibjs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp" "${SMPY_DIR}")
 target_link_libraries(smlibjs PRIVATE sm_api smlib)
 set_target_properties(smlibjs PROPERTIES
   SUFFIX ".mjs"

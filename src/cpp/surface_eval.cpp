@@ -19,7 +19,6 @@
 #include <SmApiQueries.h>
 #include <SmApiSurfaces.h>
 
-#include <pybind11/numpy.h>
 
 #include <cmath>
 #include <limits>
@@ -250,6 +249,7 @@ PolyCurvatures poly_curvatures(SmPolyBrep& poly)
 
 #ifdef SMLIBPY_PYTHON
 #include "ext.h"
+#include <pybind11/numpy.h>
 
 namespace {
 
