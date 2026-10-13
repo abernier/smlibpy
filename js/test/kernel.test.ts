@@ -80,7 +80,7 @@ test('a handle frees its Brep on dispose, once', () => {
 
 test('a mesh comes out as arrays', () => {
   const box = k.create_box([0, 0, 0], 2, 3, 4)
-  const { mesh } = ext.tessellate(box, { chord_height_tolerance: 0.01 })
+  const mesh = ext.tessellate(box, { chord_height_tolerance: 0.01 })
   const m = k.poly_mesh(mesh, true)
   assert.ok(m.points instanceof Float32Array)
   assert.ok(m.faces instanceof Int32Array)

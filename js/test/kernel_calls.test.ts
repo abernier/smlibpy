@@ -520,7 +520,7 @@ test('poly_boolean: the union of two box meshes', (t) => {
     return
   }
   const mesh = (b: number): number => {
-    const m = K.ext__tessellate(b, 0.1, 15, 15, 0, 0, 'auto', false).mesh
+    const m = K.ext__tessellate(b, 0.1, 15, 15, 0, 0, 'auto', false, false, false)
     free(b)
     return m
   }
