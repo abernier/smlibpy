@@ -678,7 +678,9 @@ def _unmeshed(body: Any) -> set[int]:
     """Indices of the faces the kernel's tessellation fails on (all of them if it fails as a whole)."""
     try:
         tol = max(body.bbox().diagonal * 1e-3, 1e-6)
-        _, failures = ext.tessellate(body._brep, chord_height_tolerance=tol, allow_partial=True, return_failures=True)
+        mesh, failures = ext.tessellate(body._brep, chord_height_tolerance=tol, allow_partial=True, return_failures=True)
+        if mesh is not None:  # the binding hands the mesh over: it is ours to free
+            ext.delete_polybrep(mesh)
         return {int(f["face_index"]) for f in failures}
     except Exception:
         return set(range(len(body.faces())))
