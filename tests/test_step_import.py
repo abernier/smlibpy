@@ -422,6 +422,211 @@ def test_step_extrusion_whose_generator_rises_along_it(tmp_path):
     assert import_step(path).area == pytest.approx(36.0, rel=1e-9)
 
 
+# -- closed B-spline surfaces, flipped faces and cavities (files from tool catalogs) ---------
+class _Entities:
+    """STEP entities numbered from #100 as they are added (the body is #99, see _step)."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def add(self, text: str) -> str:
+        ref = f"#{100 + len(self.lines)}"
+        self.lines.append(f"{ref}={text};")
+        return ref
+
+    def point(self, x: float, y: float, z: float) -> str:
+        return self.add(f"CARTESIAN_POINT('',({float(x)!r},{float(y)!r},{float(z)!r}))")
+
+    def vertex(self, x: float, y: float, z: float) -> str:
+        return self.add(f"VERTEX_POINT('',{self.point(x, y, z)})")
+
+    def axis(self, origin: tuple[float, float, float], z: tuple[float, float, float] = (0.0, 0.0, 1.0),
+             x: tuple[float, float, float] | None = None) -> str:
+        zd = self.add(f"DIRECTION('',({float(z[0])!r},{float(z[1])!r},{float(z[2])!r}))")
+        if x is None:
+            return self.add(f"AXIS2_PLACEMENT_3D('',{self.point(*origin)},{zd},$)")
+        xd = self.add(f"DIRECTION('',({float(x[0])!r},{float(x[1])!r},{float(x[2])!r}))")
+        return self.add(f"AXIS2_PLACEMENT_3D('',{self.point(*origin)},{zd},{xd})")
+
+    def line(self, a: str, b: str, pa: tuple[float, float, float], pb: tuple[float, float, float]) -> str:
+        d = [q - p for p, q in zip(pa, pb)]
+        n = math.sqrt(sum(c * c for c in d))
+        direction = self.add(f"DIRECTION('',({d[0] / n!r},{d[1] / n!r},{d[2] / n!r}))")
+        line = self.add(f"LINE('',{self.point(*pa)},{self.add(f'VECTOR($,{direction},{n!r})')})")
+        return self.add(f"EDGE_CURVE('',{a},{b},{line},.T.)")
+
+    def arc(self, a: str, b: str, z: float, r: float) -> str:
+        """Counterclockwise about +z around the z axis, at height z."""
+        circle = self.add(f"CIRCLE('',{self.axis((0, 0, z), x=(1, 0, 0))},{r!r})")
+        return self.add(f"EDGE_CURVE('',{a},{b},{circle},.T.)")
+
+    def plane(self, origin: tuple[float, float, float], normal: tuple[float, float, float] = (0.0, 0.0, 1.0)) -> str:
+        return self.add(f"PLANE('',{self.axis(origin, normal)})")
+
+    def solid(self, name: str, faces: list[str]) -> str:
+        shell = self.add(f"CLOSED_SHELL('',({','.join(faces)}))")
+        return self.step(f"MANIFOLD_SOLID_BREP('{name}',{shell})")
+
+    def face(self, surface: str, same_sense: bool, *loops: list[tuple[str, bool]]) -> str:
+        bounds = []
+        for i, loop in enumerate(loops):
+            uses = ",".join(self.add(f"ORIENTED_EDGE('',*,*,{e},{'.T.' if fwd else '.F.'})") for e, fwd in loop)
+            kind = "FACE_OUTER_BOUND" if i == 0 else "FACE_BOUND"
+            loop_ref = self.add(f"EDGE_LOOP('',({uses}))")
+            bounds.append(self.add(f"{kind}('',{loop_ref},.T.)"))
+        return self.add(f"ADVANCED_FACE('',({','.join(bounds)}),{surface},{'.T.' if same_sense else '.F.'})")
+
+    def bspline_cylinder(self, r: float, h: float, seam: float) -> str:
+        """A cylinder about z as a closed rational B-spline surface (u around, v up), its seam
+        at the angle ``seam`` in degrees."""
+        rows, weights = [], []
+        for k in range(9):
+            a = math.radians(seam + 45 * k)
+            f = 1.0 if k % 2 == 0 else math.sqrt(2)
+            x, y = r * f * math.cos(a), r * f * math.sin(a)
+            rows.append(f"({self.point(x, y, 0)},{self.point(x, y, h)})")
+            w = 1.0 if k % 2 == 0 else math.sqrt(0.5)
+            weights.append(f"({w!r},{w!r})")
+        return self.add(f"(BOUNDED_SURFACE()B_SPLINE_SURFACE(2,1,({','.join(rows)}),.UNSPECIFIED.,.T.,.F.,.F.)"
+                        "B_SPLINE_SURFACE_WITH_KNOTS((3,2,2,2,3),(2,2),(0.,0.25,0.5,0.75,1.),(0.,1.),.UNSPECIFIED.)"
+                        f"GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(({','.join(weights)}))"
+                        "REPRESENTATION_ITEM('')SURFACE())")
+
+    def step(self, body: str) -> str:
+        return _step(self.lines + [f"#99={body};"])
+
+
+def _segment_on_bspline(a0: float, a1: float, seam: float, slit_at: float | None = None) -> str:
+    """The solid between the arc from a0 to a1 degrees (radius 10, height 10) and its chord,
+    the curved face on a closed B-spline cylinder with its seam at ``seam``. ``slit_at``: the
+    curved face's loop also runs up a cut half way at that angle and back down."""
+    r, h, s = 10.0, 10.0, _Entities()
+    p = {n: (r * math.cos(math.radians(a)), r * math.sin(math.radians(a))) for n, a in (("0", a0), ("1", a1))}
+    v0b, v1b = s.vertex(*p["0"], 0), s.vertex(*p["1"], 0)
+    v0t, v1t = s.vertex(*p["0"], h), s.vertex(*p["1"], h)
+    top, chord_t, chord_b = s.arc(v0t, v1t, h, r), s.line(v1t, v0t, (*p["1"], h), (*p["0"], h)), \
+        s.line(v1b, v0b, (*p["1"], 0), (*p["0"], 0))
+    up0, up1 = s.line(v0b, v0t, (*p["0"], 0), (*p["0"], h)), s.line(v1b, v1t, (*p["1"], 0), (*p["1"], h))
+    if slit_at is None:
+        bottom = [(s.arc(v0b, v1b, 0, r), True)]
+        cut = []
+    else:
+        q = (r * math.cos(math.radians(slit_at)), r * math.sin(math.radians(slit_at)))
+        vs, vc = s.vertex(*q, 0), s.vertex(*q, h / 2)
+        bottom = [(s.arc(v0b, vs, 0, r), True), (s.arc(vs, v1b, 0, r), True)]
+        slit = s.line(vs, vc, (*q, 0), (*q, h / 2))
+        cut = [(slit, True), (slit, False)]
+    m = math.radians((a0 + a1) / 2)
+    return s.solid("segment", [
+        s.face(s.bspline_cylinder(r, h, seam), True, bottom[:1] + cut + bottom[1:] + [(up1, True), (top, False), (up0, False)]),
+        s.face(s.plane((0, 0, 0)), False, [(e, False) for e, _ in reversed(bottom)] + [(chord_b, False)]),
+        s.face(s.plane((0, 0, h)), True, [(top, True), (chord_t, True)]),
+        s.face(s.plane((*p["0"], 0), (-math.cos(m), -math.sin(m), 0)), True,
+               [(chord_b, True), (up0, True), (chord_t, False), (up1, False)]),
+    ])
+
+
+def _segment_volume(a0: float, a1: float) -> float:
+    t = math.radians(a1 - a0)
+    return 10.0 * 100 / 2 * (t - math.sin(t))
+
+
+@pytest.mark.parametrize("a0,a1,seam", [(-90, 90, 0), (-60, 150, 30), (0, 180, 0), (10, 170, 0), (200, 350, 300)])
+def test_step_face_across_the_seam_of_a_closed_bspline(tmp_path, a0, a1, seam):
+    """A face on a closed B-spline surface that lies across the surface's seam, without an edge
+    there: the kernel trims it the wrong way round unless the seam is moved off it."""
+    path = tmp_path / "segment.step"
+    path.write_text(_segment_on_bspline(a0, a1, seam))
+    part = import_step(path)
+    assert part.is_valid()
+    assert part.volume == pytest.approx(_segment_volume(a0, a1), rel=1e-6)
+    curved = part.faces().sort_by(lambda f: -f.area)[0]
+    assert curved.area == pytest.approx(10 * math.radians(a1 - a0) * 10, rel=1e-6)
+    assert part.mesh().volume == pytest.approx(part.volume, rel=1e-2)
+
+
+def test_step_slit_into_a_face_on_a_closed_bspline(tmp_path):
+    """A loop that runs up a cut into the face and back (a broken file): on a closed surface it
+    looks like a seam, but the rest of the loop does not go around the surface."""
+    path = tmp_path / "slit.step"
+    path.write_text(_segment_on_bspline(-90, 90, 0, slit_at=0))
+    part = import_step(path)
+    assert part.is_valid()
+    assert part.volume == pytest.approx(_segment_volume(-90, 90), rel=1e-6)
+    assert part.area == pytest.approx(10 * math.pi * 10 + 2 * 50 * math.pi + 200, rel=1e-6)
+
+
+def test_step_bspline_tube_bounded_by_two_circles(tmp_path):
+    """A closed B-spline face bounded by a circle at each end and no seam edge (the hub of an
+    impeller): it needs the seam the kernel adds."""
+    r, h, s = 10.0, 10.0, _Entities()
+    vb, vt = s.vertex(r, 0, 0), s.vertex(r, 0, h)
+    bottom, top = s.arc(vb, vb, 0, r), s.arc(vt, vt, h, r)
+    path = tmp_path / "tube.step"
+    path.write_text(s.solid("tube", [
+        s.face(s.bspline_cylinder(r, h, 0), True, [(bottom, True)], [(top, False)]),
+        s.face(s.plane((0, 0, 0)), False, [(bottom, False)]),
+        s.face(s.plane((0, 0, h)), True, [(top, True)]),
+    ]))
+    part = import_step(path)
+    assert part.is_valid()
+    assert part.volume == pytest.approx(math.pi * r * r * h, rel=1e-6)
+    assert part.mesh().volume == pytest.approx(part.volume, rel=1e-2)
+
+
+def test_step_face_flagged_against_its_loops(tmp_path):
+    """A face whose same_sense flag disagrees with its loops (and so with its neighbours): the
+    loops decide, as they do in the other readers."""
+    path = tmp_path / "box.step"
+    export_step(Box(10, 20, 30), path)
+    text = path.read_text()
+    faces = re.findall(r"(#\d+)=ADVANCED_FACE\('[^']*',\([^)]*\),#\d+,\.(T|F)\.\)", text)
+    ref, flag = faces[0]
+    flipped = {"T": "F", "F": "T"}[flag]
+    text = re.sub(rf"({ref}=ADVANCED_FACE\('[^']*',\([^)]*\),#\d+,)\.{flag}\.\)", rf"\1.{flipped}.)", text)
+    path.write_text(text)
+    part = import_step(path)
+    assert part.is_valid()
+    assert part.volume == pytest.approx(6000, rel=1e-9)
+    assert part.area == pytest.approx(2 * (200 + 300 + 600), rel=1e-9)
+
+
+def _box(s: _Entities, lo: tuple[float, float, float], hi: tuple[float, float, float]) -> str:
+    """The closed shell of an axis-aligned box, faces pointing out of it."""
+    c = [(x, y, z) for z in (lo[2], hi[2]) for y in (lo[1], hi[1]) for x in (lo[0], hi[0])]
+    v = [s.vertex(*p) for p in c]
+    edges: dict[tuple[int, int], str] = {}
+
+    def edge(i: int, j: int) -> tuple[str, bool]:
+        if (j, i) in edges:
+            return edges[(j, i)], False
+        edges[(i, j)] = edges.get((i, j)) or s.line(v[i], v[j], c[i], c[j])
+        return edges[(i, j)], True
+
+    # each face's corners counterclockwise seen from outside, and its outward normal
+    quads = [((0, 2, 3, 1), (0, 0, -1)), ((4, 5, 7, 6), (0, 0, 1)), ((0, 1, 5, 4), (0, -1, 0)),
+             ((2, 6, 7, 3), (0, 1, 0)), ((0, 4, 6, 2), (-1, 0, 0)), ((1, 3, 7, 5), (1, 0, 0))]
+    faces = []
+    for q, n in quads:
+        faces.append(s.face(s.plane(c[q[0]], n), True, [edge(q[k], q[(k + 1) % 4]) for k in range(4)]))
+    return s.add(f"CLOSED_SHELL('',({','.join(faces)}))")
+
+
+def test_step_solid_with_a_cavity(tmp_path):
+    """BREP_WITH_VOIDS: the cavity is a void region inside the solid, as the file has it (the
+    Boolean difference fails where a cavity comes close to the outside)."""
+    s = _Entities()
+    outer = _box(s, (0, 0, 0), (40, 30, 20))
+    cavity = s.add(f"ORIENTED_CLOSED_SHELL('',*,{_box(s, (10, 10, 5), (30, 20, 15))},.F.)")
+    path = tmp_path / "cavity.step"
+    path.write_text(s.step(f"BREP_WITH_VOIDS('block',{outer},({cavity}))"))
+    part = import_step(path)
+    assert part.is_valid()
+    assert len(part.faces()) == 12
+    assert part.volume == pytest.approx(40 * 30 * 20 - 20 * 10 * 10, rel=1e-9)
+    assert part.area == pytest.approx(2 * (1200 + 800 + 600) + 2 * (200 + 200 + 100), rel=1e-9)
+
+
 # -- read_step: coordinate systems, curves and points ---------------------------------------
 def _tool_with_supplemental_geometry() -> str:
     """An assembly ASM holding the product TOOL 100 up: TOOL has the cylinder as its body,

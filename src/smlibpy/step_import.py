@@ -556,9 +556,14 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
             edges[seam] = {"kind": "circle", "center": o, "z": -y, "x": -z, "radius": srf["radius"], "sweep": 180.0}
             loops = [{"edges": [(seam, False), (seam, True)]}]
             f = dict(f, loops=loops, frame=(z, x))
-        faces.append({"surface": bld.surface_spec(f), "same_sense": bool(f["same_sense"]), "loops": loops})
+        # a face on a closed B-spline surface without a seam edge of its own may lie across the
+        # surface's seam; build_brep moves the seam off it
+        free_seam = srf["kind"] == "bspline" and not any(_is_seam_loop(l) for l in loops if l.get("edges"))
+        faces.append({"surface": bld.surface_spec(f), "same_sense": bool(f["same_sense"]), "loops": loops,
+                      "free_seam": free_seam})
     solid = body.kind == "solid"
     parts = []
+    built = []  # the faces and orientation each shell was built with in the end
     for si, sh in enumerate(body.shells):
         closed = solid and bool(sh.get("closed", True))
         shell_faces = [faces[i] for i in sh["faces"]]
@@ -566,10 +571,25 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         reversed_ = bool(sh["reversed"]) and not (solid and si > 0)
         with kernel_call("import STEP", "the file may hold faces the kernel cannot rebuild"):
             brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
+            # A few writers flip a face's same_sense flag against its loops (which agree with
+            # the loops of its neighbours): the loops decide.
+            # (Faces that lack their seam have loops that do not close in the parameter
+            # plane, and no sense to read.)
+            inverted = ext.inverted_faces(brep)
+            if inverted:
+                unseamed = {d["face"] for d in ext.seam_problems(brep)}
+                inverted = [i for i in inverted if i not in unseamed]
+            if inverted and 2 * len(inverted) < len(shell_faces):
+                for i in inverted:
+                    shell_faces[i] = dict(shell_faces[i], same_sense=not shell_faces[i]["same_sense"])
+                ext.delete_brep(brep)
+                brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
         part = _with_seams(Part._wrap(brep) if closed else Shell._wrap(brep))
         if closed and not _positive(part):
+            reversed_ = not reversed_
             with kernel_call("import STEP"):
-                part = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, not reversed_, False)))
+                part = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, reversed_, False)))
+        built.append((shell_faces, reversed_))
         if heal and closed and not _sound(part):
             # Only heal what came out broken: the kernel's healer can damage good bodies.
             try:
@@ -582,9 +602,8 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     if not parts:
         raise ModelingError("empty body")
     result = parts[0]
-    if solid and len(parts) > 1:
-        for void in parts[1:]:  # BREP_WITH_VOIDS: subtract the cavities
-            result = result - void
+    if solid and len(parts) > 1:  # BREP_WITH_VOIDS
+        result = _with_cavities(result, parts[1:], built, edges)
     elif len(parts) > 1:  # a surface model of several shells stays a surface
         with kernel_call("import STEP"):
             result = Shell._wrap(ext.combine([p._brep for p in parts]))
@@ -592,6 +611,31 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         result.name = body.name
     if body.color is not None:
         result.color = body.color
+    return result
+
+
+def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any], bool]], edges: dict[int, Any]) -> Any:
+    """A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the
+    solid, as the file has it. The Boolean difference is the fallback; it fails where a
+    cavity's faces come close to the solid's."""
+    from .shapes import Part
+
+    expected = outer.volume - sum(c.volume for c in cavities)
+    (faces, rev) = built[0]
+    # The cavity's faces as when it was built as a solid of its own; the constructor's
+    # comments say the other way round, so that is tried as well. The volume decides.
+    for flip in (False, True):
+        voids = [(f, r != flip) for f, r in built[1:]]
+        try:
+            with kernel_call("import STEP: cavities"):
+                part = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
+            if part.is_valid() and abs(part.volume - expected) <= 1e-6 * max(abs(outer.volume), 1.0):
+                return part
+        except (KernelError, ModelingError):
+            pass
+    result = outer
+    for cavity in cavities:
+        result = result - cavity
     return result
 
 
@@ -607,8 +651,15 @@ def _with_seams(body: Any) -> Any:
     from .shapes import Part
 
     faces = body.faces()
-    # B-spline surfaces closed on themselves are left as they are: they read right as written
-    lacking = [d["face"] for d in ext.seam_problems(body._brep) if faces[d["face"]].geom_type in _SWEPT]
+    problems = ext.seam_problems(body._brep)
+    lacking = [d["face"] for d in problems if faces[d["face"]].geom_type in _SWEPT]
+    # B-spline surfaces closed on themselves read right as written, unless a face runs all the
+    # way around one without a seam edge (the hub of an impeller): the kernel cannot mesh it, and
+    # it needs the seam as the others do. (The kernel says the same of small faces at a pole,
+    # which mesh as they are and break when split.)
+    spline = [d["face"] for d in problems if faces[d["face"]].geom_type == "bspline" and d["missing"]]
+    if spline:
+        lacking += sorted(set(spline) & _unmeshed(body))
     if not lacking:
         return body
     try:
@@ -620,6 +671,16 @@ def _with_seams(body: Any) -> Any:
     except KernelError:
         pass
     return body
+
+
+def _unmeshed(body: Any) -> set[int]:
+    """Indices of the faces the kernel's tessellation fails on (all of them if it fails as a whole)."""
+    try:
+        tol = max(body.bbox().diagonal * 1e-3, 1e-6)
+        _, failures = ext.tessellate(body._brep, chord_height_tolerance=tol, allow_partial=True, return_failures=True)
+        return {int(f["face_index"]) for f in failures}
+    except Exception:
+        return set(range(len(body.faces())))
 
 
 def _outer_first(bld: _Builder, loops: list[dict[str, Any]]) -> list[dict[str, Any]]:
