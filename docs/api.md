@@ -60,6 +60,14 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.sheetmetal
 
+## Simplifying
+
+::: smlibpy.defeature
+
+## Molding
+
+::: smlibpy.draft
+
 ## Meshes
 
 ::: smlibpy.mesh
