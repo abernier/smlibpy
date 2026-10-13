@@ -82,6 +82,7 @@ holes → 8 faces, 32640.0 (the plain L); holes first leaves the inner fillet (9
 ### 18-hard-parts.py
 B-spline boss (`to_nurbs`): 19 → 16 faces (patches not merged), relative error −1.3e-8;
 B-spline full round box: 12 faces, −1.1e-11. Invalid input: the not-a-valid-solid message.
-Example enclosure, guard 20 s: strict raises after 191 s naming 8 of 20; partial: 51 → 39 faces,
-35658.793 → 38476.606, 8 left, 180 s (crashed and stopped steps in the forked copies).
+Example enclosure, guard 20 s: strict raises after 109 s naming 8 of 20; partial: 51 → 39 faces,
+35658.793 → 38476.606, 8 left, 109 s (crashed and stopped steps in the forked copies; before
+faulted sets were skipped in later rounds it took 180 to 191 s).
 **📌 doc:** B-spline extensions are close but stay separate faces; the guard's cost.

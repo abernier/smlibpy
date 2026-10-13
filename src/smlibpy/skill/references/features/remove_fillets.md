@@ -56,7 +56,8 @@ enclosure and bottle). On Linux and macOS each kernel step first runs in a forke
 process; a crash there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only
 drops that step, and this process goes on. On Windows the kernel runs directly. A crash in the
 copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
-and with the stopped steps `remove_fillets(partial=True)` takes 180 s.
+and with the stopped steps `remove_fillets(partial=True)` takes 109 s. A set of fillets the
+kernel crashed or hung on is not tried again in the same call.
 
 The copy catches what the kernel does every time. Some of its defects read memory it already
 freed, and those can crash this process after the copy came through: seen once, on an imported
