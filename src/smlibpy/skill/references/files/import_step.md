@@ -46,12 +46,14 @@ types, so a cylinder stays a cylinder and a B-spline keeps its control points. A
 - A `Sketch` written to STEP comes back as a `Shell`.
 - A single-body file gives a bare `Part`, so `len(r)` and `for p in r` fail on it. Use the
   pattern above.
-- Not read: wireframe geometry, references to external files, PMI, and assembly placements
-  that mirror a part (`ModelingError: mirrored assembly placements are not supported yet`).
+- Coordinate systems, curves (contours such as a tool's cutting edge line) and points are not
+  bodies: `read_step` reads them with the bodies.
+- Not read: references to external files, PMI, and assembly placements that mirror a part
+  (`ModelingError: mirrored assembly placements are not supported yet`).
 
 ## Errors
 - `ModelingError: the STEP file holds no B-rep solids or surfaces`: a wireframe-only or empty
-  file.
+  file (`read_step` gives its curves and points).
 - `ValueError: not a STEP file (no DATA section)`: the file is not STEP.
 - `FileNotFoundError` for a missing file.
 - `KernelError` for the operation `import STEP`, with the hint "the file may hold faces the
@@ -71,4 +73,5 @@ loft, sweep, hollow, chamfer, shell) all read back valid, with the volume within
 OpenCASCADE's value.
 
 ## Related
-`load`, `export_step`, `Part.heal`, `Part.is_valid`, `render` (to check an import), `generic.md`.
+`read_step` (coordinate systems, curves, points), `load`, `export_step`, `Part.heal`, `Part.is_valid`,
+`render` (to check an import), `generic.md`.

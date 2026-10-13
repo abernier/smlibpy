@@ -37,7 +37,7 @@ from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, Regul
 from .text import Text
 from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
-from .step_import import import_step
+from .step_import import StepModel, import_step, read_step
 from .dxf import export_dxf, import_dxf, import_dxf_wires
 from .render import diff_images, render
 from .viewer import show
@@ -75,6 +75,7 @@ __all__ = [
     "FlatPattern",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
+    "read_step", "StepModel",
     "export_dxf", "import_dxf", "import_dxf_wires",
     "show", "render", "diff_images",
     # errors

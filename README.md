@@ -82,7 +82,8 @@ undercut. `parting_line` finds the parting line.
   work raises an error that says what would fit.
 
 **Files**
-- STEP in and out: exact geometry, assemblies, units, names and colors (`named()`, `colored()`)
+- STEP in and out: exact geometry, assemblies, units, names and colors (`named()`, `colored()`);
+  `read_step` also reads coordinate systems, curves and points
 - DXF in and out with exact arcs and splines; STL in and out; glTF/GLB and OBJ out
 - SMLib's own format (`save`, `load`)
 

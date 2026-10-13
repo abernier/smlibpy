@@ -15,8 +15,10 @@
 #include <SmBSplineSurface.h>
 #include <SmCircle.h>
 #include <SmCone.h>
+#include <SmCurveClass.h>
 #include <SmCylinder.h>
 #include <SmEllipse.h>
+#include <SmFace.h>
 #include <SmLine.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
@@ -28,6 +30,7 @@
 #include <cmath>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -293,6 +296,13 @@ SmSurface* make_surface(const py::dict& s)
         SmTorus* t = nullptr;
         check(SmTorus::CreateCanonical(ctx(), placement(s), py::cast<double>(s["major"]), py::cast<double>(s["minor"]), t),
               "SmTorus::CreateCanonical");
+        if (s.contains("v_start"))  // the seam around the tube, where the face does not reach
+        {
+            double v0 = py::cast<double>(s["v_start"]);
+            SmExtent2d dom = t->GetSTEPUVDomain();
+            check(t->AdjustSTEPUVDomain(SmExtent2d(dom.GetUMin(), v0, dom.GetUMax(), v0 + 360.0)),
+                  "SmTorus::AdjustSTEPUVDomain");
+        }
         return t;
     }
     if (kind == "bspline")
@@ -425,10 +435,62 @@ SmBrep* build_brep(const py::list& faces, const py::dict& edges, bool solid, boo
     return brep;
 }
 
+const char* seam_name(SmSurfParamType t)
+{
+    return t == SM_SP_U ? "u" : t == SM_SP_V ? "v" : t == SM_SP_BOTH ? "both" : "";
+}
+
+// Faces on periodic surfaces that no edge runs along the seam of, or that edges cross the
+// seam of: [{"face", "missing", "crossed"}]. STEP writers leave seams out (NX writes a
+// cylinder band as its two end loops), and the kernel's tessellation and integration need
+// them. With fix, the kernel adds the seam edges and splits the edges that cross it
+// (SmFace::SplitAtSeam), in place. ``only`` limits both to these face indices.
+py::list seam_problems(SmBrep* brep, bool fix, const py::object& only)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    std::vector<ULONG> which;
+    if (only.is_none())
+        for (ULONG i = 0; i < faces.GetSize(); ++i)
+            which.push_back(i);
+    else
+        for (auto h : only)
+        {
+            ULONG i = py::cast<ULONG>(h);
+            if (i < faces.GetSize())
+                which.push_back(i);
+        }
+    py::list out;
+    for (ULONG i : which)
+    {
+        SmCurveClassification cu, cv;
+        SmSurfParamType crossed = SM_SP_UNKNOWN, missing = SM_SP_UNKNOWN, near = SM_SP_UNKNOWN;
+        faces[i]->HasSeamProblem(cu, cv, crossed, missing, near, FALSE);
+        const char *m = seam_name(missing), *c = seam_name(crossed);
+        if (!*m && !*c)
+            continue;
+        py::dict d;
+        d["face"] = i;
+        d["missing"] = m;
+        d["crossed"] = c;
+        if (fix)
+        {
+            SmTemporaryChangeValue<SmBoolean> editing(brep->m_bEditingEnabled, TRUE);
+            check(faces[i]->SplitAtSeam(cu, cv, crossed, missing, near), "SmFace::SplitAtSeam");
+        }
+        out.append(d);
+    }
+    return out;
+}
+
 }  // namespace
 
 void bind_step_build(py::module_& m)
 {
+    m.def("seam_problems", &seam_problems, py::arg("brep"), py::arg("fix") = false, py::arg("only") = py::none(),
+          "Faces of periodic surfaces whose seam no edge runs along, or edges cross: [{face, missing, crossed}] "
+          "('u', 'v' or 'both'). fix=True has the kernel add the seams (in place); only= limits both to these face "
+          "indices.");
     m.def("build_brep", &build_brep, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
           py::arg("mirrored") = false, py::return_value_policy::take_ownership,
           "Build a Brep from neutral face/edge data (used by the STEP importer).");

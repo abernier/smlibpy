@@ -79,10 +79,42 @@ share their edges as they do in the file, so nothing is stitched together by tol
 A body that still comes out invalid goes through the kernel's healer; valid bodies are
 left alone, and `heal=False` skips healing.
 
+Some writers leave out the seams of round faces: NX writes the shank of a drill as the
+circle at one end and the outline of its flat at the other, and small roundings as
+extruded ellipses bounded by their two ends. The importer gives such faces the seam edge
+the kernel needs to mesh and integrate them, and turns a surface's own seam (where its
+angle starts, also around the tube of a torus) to where the face has its seam edge, or
+out of the face.
+
 The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
-among them. Not read yet: wireframe geometry, references to other files, PMI, and
-assembly placements that mirror a part.
+among them. Not read yet: wireframe topology (`EDGE_BASED_WIREFRAME_MODEL`), references to
+other files, PMI, and assembly placements that mirror a part.
+
+#### Coordinate systems, curves and points
+
+`read_step(path)` reads what `import_step` reads, and also what belongs to no body: the
+coordinate systems (the placements of supplemental geometry, and named placements), the
+curves (curve sets, trimmed and composite curves) and the points. Tool catalogs and NX
+write a cutting tool so, with its mounting and reference systems (`MCS`, `PCS`, `CSW`) and
+its cutting edge line. Each comes with its name and the product it belongs to, at its place
+in the assembly, in millimeters; items on hidden layers are left out.
+
+```python
+# not run
+tool = read_step("drill.stp")
+print(tool)                      # StepModel(3 bodies, 9 frames, 2 curves, 10 points)
+for f in tool.frames:
+    print(f.name, f.product, f.plane.origin)
+mcs = tool.frame("MCS", product="NOCUT")       # a Plane: origin, x_dir, z_dir
+edge = tool.curves[0].shape                    # the cutting edge line, an Edge
+holder = holder.moved(mcs.location)            # put something on the tool's MCS
+```
+
+`tool.bodies` is always a `ShapeList`. `frame(name)` raises when the name is missing, or when
+several products have a coordinate system of that name (each part of an assembly has its own
+`MCS`): `product=` picks one by the beginning of its product's name. `render(tool)` and the
+live viewer draw the bodies and curves and mark the coordinate systems and named points.
 
 ## DXF
 

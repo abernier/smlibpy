@@ -75,6 +75,10 @@ def _step(entities: list[str]) -> str:
 def _cylinder(seam_at: float | None) -> str:
     """Radius 10, height 20. ``seam_at`` None: the side face is bounded by its two circles
     only (as NX writes it), otherwise by a seam line at that angle."""
+    return _step(_cylinder_entities(seam_at))
+
+
+def _cylinder_entities(seam_at: float | None) -> list[str]:
     e = [
         "#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
         "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", "#5=CARTESIAN_POINT('',(0.,0.,20.));",
@@ -104,7 +108,7 @@ def _cylinder(seam_at: float | None) -> str:
               "#45=ORIENTED_EDGE('',*,*,#43,.F.);", "#31=EDGE_LOOP('',(#29,#44,#30,#45));",
               "#33=FACE_OUTER_BOUND('',#31,.T.);", "#35=ADVANCED_FACE('',(#33),#7,.T.);"]
     e += ["#98=CLOSED_SHELL('',(#24,#28,#35));", "#99=MANIFOLD_SOLID_BREP('cylinder',#98);"]
-    return _step(e)
+    return e
 
 
 @pytest.mark.parametrize("seam_at", [None, 0.0, 180.0, 117.0])
@@ -254,3 +258,246 @@ def test_step_unnamed_solid_takes_the_product_name(tmp_path):
     path.write_text(text.replace("MANIFOLD_SOLID_BREP('widget'", "MANIFOLD_SOLID_BREP(''")
                     .replace("PRODUCT('widget','widget'", "PRODUCT('W-1','Widget'"))
     assert import_step(path).name == "Widget"
+
+
+# -- faces NX writes: extruded ellipses, periodic faces without seams --------------------------
+def _elliptic_cylinder() -> str:
+    """Semi-axes 6 and 3, height 10: the side face is a SURFACE_OF_LINEAR_EXTRUSION of an
+    ELLIPSE, bounded by its two ellipses only (as NX writes small roundings)."""
+    e = [
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
+        "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", "#5=CARTESIAN_POINT('',(0.,0.,10.));",
+        "#6=AXIS2_PLACEMENT_3D('',#5,#2,#3);", "#7=ELLIPSE('',#4,6.,3.);", "#8=ELLIPSE('',#6,6.,3.);",
+        "#9=VECTOR('',#2,10.);", "#10=SURFACE_OF_LINEAR_EXTRUSION('',#7,#9);",
+        "#11=PLANE('',#4);", "#12=PLANE('',#6);",
+        "#13=CARTESIAN_POINT('',(6.,0.,0.));", "#14=CARTESIAN_POINT('',(6.,0.,10.));",
+        "#15=VERTEX_POINT('',#13);", "#16=VERTEX_POINT('',#14);",
+        "#17=EDGE_CURVE('',#15,#15,#7,.T.);", "#18=EDGE_CURVE('',#16,#16,#8,.T.);",
+        "#21=ORIENTED_EDGE('',*,*,#17,.F.);", "#22=EDGE_LOOP('',(#21));", "#23=FACE_OUTER_BOUND('',#22,.T.);",
+        "#24=ADVANCED_FACE('',(#23),#11,.F.);",
+        "#25=ORIENTED_EDGE('',*,*,#18,.T.);", "#26=EDGE_LOOP('',(#25));", "#27=FACE_OUTER_BOUND('',#26,.T.);",
+        "#28=ADVANCED_FACE('',(#27),#12,.T.);",
+        "#29=ORIENTED_EDGE('',*,*,#17,.T.);", "#30=ORIENTED_EDGE('',*,*,#18,.F.);",
+        "#31=EDGE_LOOP('',(#29));", "#32=EDGE_LOOP('',(#30));", "#33=FACE_BOUND('',#31,.T.);",
+        "#34=FACE_BOUND('',#32,.T.);", "#35=ADVANCED_FACE('',(#33,#34),#10,.T.);",
+        "#98=CLOSED_SHELL('',(#24,#28,#35));", "#99=MANIFOLD_SOLID_BREP('ellipse',#98);",
+    ]
+    return _step(e)
+
+
+def test_step_extruded_ellipse(tmp_path):
+    path = tmp_path / "ellipse.step"
+    path.write_text(_elliptic_cylinder())
+    part = import_step(path)
+    assert part.is_valid()
+    assert part.volume == pytest.approx(math.pi * 6 * 3 * 10, rel=1e-6)
+    [side] = [f for f in part.faces() if f.geom_type == "extrusion"]
+    perimeter = EllipticalArc((0, 0), 6, 3).length
+    assert side.area == pytest.approx(perimeter * 10, rel=1e-6)
+    assert part.mesh().volume == pytest.approx(part.volume, rel=2e-2)
+
+
+def test_step_cylinder_band_ending_in_an_open_loop(tmp_path):
+    """A cylinder face bounded by a circle at one end and two arcs at the other, without a
+    seam edge (NX writes a shank with a flat so): the kernel needs the seam added."""
+    e = [
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
+        "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", "#5=CARTESIAN_POINT('',(0.,0.,20.));",
+        "#6=AXIS2_PLACEMENT_3D('',#5,#2,#3);", "#7=CYLINDRICAL_SURFACE('',#4,10.);",
+        "#8=PLANE('',#4);", "#9=PLANE('',#6);", "#10=CIRCLE('',#4,10.);", "#11=CIRCLE('',#6,10.);",
+        "#12=CARTESIAN_POINT('',(10.,0.,0.));", "#13=VERTEX_POINT('',#12);",
+        "#14=CARTESIAN_POINT('',(10.,0.,20.));", "#15=VERTEX_POINT('',#14);",
+        "#16=CARTESIAN_POINT('',(-10.,0.,20.));", "#17=VERTEX_POINT('',#16);",
+        "#18=EDGE_CURVE('',#13,#13,#10,.T.);",
+        "#19=EDGE_CURVE('',#15,#17,#11,.T.);", "#20=EDGE_CURVE('',#17,#15,#11,.T.);",
+        "#21=ORIENTED_EDGE('',*,*,#18,.F.);", "#22=EDGE_LOOP('',(#21));", "#23=FACE_OUTER_BOUND('',#22,.T.);",
+        "#24=ADVANCED_FACE('',(#23),#8,.F.);",
+        "#25=ORIENTED_EDGE('',*,*,#19,.T.);", "#26=ORIENTED_EDGE('',*,*,#20,.T.);",
+        "#27=EDGE_LOOP('',(#25,#26));", "#28=FACE_OUTER_BOUND('',#27,.T.);", "#29=ADVANCED_FACE('',(#28),#9,.T.);",
+        "#30=ORIENTED_EDGE('',*,*,#18,.T.);", "#31=EDGE_LOOP('',(#30));", "#32=FACE_BOUND('',#31,.T.);",
+        "#33=ORIENTED_EDGE('',*,*,#20,.F.);", "#34=ORIENTED_EDGE('',*,*,#19,.F.);",
+        "#35=EDGE_LOOP('',(#33,#34));", "#36=FACE_BOUND('',#35,.T.);", "#37=ADVANCED_FACE('',(#32,#36),#7,.T.);",
+        "#98=CLOSED_SHELL('',(#24,#29,#37));", "#99=MANIFOLD_SOLID_BREP('band',#98);",
+    ]
+    path = tmp_path / "band.step"
+    path.write_text(_step(e))
+    part = import_step(path)
+    assert part.is_valid()
+    props = part._props()
+    assert props["field_volumes"] == pytest.approx([math.pi * 100 * 20] * 3, rel=1e-6)
+    assert part.faces().cylinders()[0].area == pytest.approx(2 * math.pi * 10 * 20, rel=1e-6)
+    assert part.mesh().volume == pytest.approx(part.volume, rel=2e-2)
+
+
+def _torus_entities(R: float, r: float) -> list[str]:
+    return ["#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
+            "#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);", f"#5=TOROIDAL_SURFACE('',#4,{R},{r});"]
+
+
+def test_step_torus_patch_across_the_outer_equator(tmp_path):
+    """A torus face over u in [0, 90] and v in [-45, 45] degrees: it crosses v = 0, where the
+    kernel's torus has its seam around the tube."""
+    R, r, v = 20.0, 5.0, math.pi / 4
+    s, c = math.sin(v), math.cos(v)
+    e = _torus_entities(R, r) + [
+        f"#10=CARTESIAN_POINT('',({R + r * c},0.,{-r * s}));", f"#11=CARTESIAN_POINT('',(0.,{R + r * c},{-r * s}));",
+        f"#12=CARTESIAN_POINT('',(0.,{R + r * c},{r * s}));", f"#13=CARTESIAN_POINT('',({R + r * c},0.,{r * s}));",
+        "#14=VERTEX_POINT('',#10);", "#15=VERTEX_POINT('',#11);", "#16=VERTEX_POINT('',#12);", "#17=VERTEX_POINT('',#13);",
+        # the parallels v = -45 and v = 45
+        f"#20=CARTESIAN_POINT('',(0.,0.,{-r * s}));", "#21=AXIS2_PLACEMENT_3D('',#20,#2,#3);", f"#22=CIRCLE('',#21,{R + r * c});",
+        f"#23=CARTESIAN_POINT('',(0.,0.,{r * s}));", "#24=AXIS2_PLACEMENT_3D('',#23,#2,#3);", f"#25=CIRCLE('',#24,{R + r * c});",
+        # the meridians u = 0 and u = 90 (tube circles; their angle runs against v)
+        f"#30=CARTESIAN_POINT('',({R},0.,0.));", "#31=DIRECTION('',(0.,1.,0.));", "#32=AXIS2_PLACEMENT_3D('',#30,#31,#3);",
+        f"#33=CIRCLE('',#32,{r});", f"#34=CARTESIAN_POINT('',(0.,{R},0.));", "#35=DIRECTION('',(-1.,0.,0.));",
+        "#36=DIRECTION('',(0.,1.,0.));", "#37=AXIS2_PLACEMENT_3D('',#34,#35,#36);", f"#38=CIRCLE('',#37,{r});",
+        "#40=EDGE_CURVE('',#14,#15,#22,.T.);", "#41=EDGE_CURVE('',#15,#16,#38,.F.);",
+        "#42=EDGE_CURVE('',#16,#17,#25,.F.);", "#43=EDGE_CURVE('',#17,#14,#33,.T.);",
+        "#44=ORIENTED_EDGE('',*,*,#40,.T.);", "#45=ORIENTED_EDGE('',*,*,#41,.T.);",
+        "#46=ORIENTED_EDGE('',*,*,#42,.T.);", "#47=ORIENTED_EDGE('',*,*,#43,.T.);",
+        "#48=EDGE_LOOP('',(#44,#45,#46,#47));", "#49=FACE_OUTER_BOUND('',#48,.T.);",
+        "#50=ADVANCED_FACE('',(#49),#5,.T.);", "#97=OPEN_SHELL('',(#50));",
+        "#99=SHELL_BASED_SURFACE_MODEL('patch',(#97));",
+    ]
+    path = tmp_path / "patch.step"
+    path.write_text(_step(e))
+    sheet = import_step(path)
+    area = r * (R * 2 * v + r * 2 * s) * math.pi / 2
+    assert sheet.area == pytest.approx(area, rel=1e-6)
+    assert sheet.mesh().area == pytest.approx(area, rel=1e-2)
+
+
+def test_step_half_torus_bounded_by_its_tube_circles(tmp_path):
+    """A torus face bounded by two tube circles only: it runs all the way around the tube
+    and needs a seam edge along it."""
+    R, r = 20.0, 5.0
+    e = _torus_entities(R, r) + [
+        "#6=DIRECTION('',(0.,1.,0.));", "#7=DIRECTION('',(0.,-1.,0.));",
+        f"#10=CARTESIAN_POINT('',({R},0.,0.));", "#11=AXIS2_PLACEMENT_3D('',#10,#6,#3);", f"#12=CIRCLE('',#11,{r});",
+        f"#13=CARTESIAN_POINT('',({R + r},0.,0.));", "#14=VERTEX_POINT('',#13);", "#15=EDGE_CURVE('',#14,#14,#12,.T.);",
+        f"#20=CARTESIAN_POINT('',({-R},0.,0.));", "#21=DIRECTION('',(-1.,0.,0.));",
+        "#22=AXIS2_PLACEMENT_3D('',#20,#6,#21);", f"#23=CIRCLE('',#22,{r});",
+        f"#24=CARTESIAN_POINT('',({-R - r},0.,0.));", "#25=VERTEX_POINT('',#24);", "#26=EDGE_CURVE('',#25,#25,#23,.T.);",
+        "#30=AXIS2_PLACEMENT_3D('',#10,#7,#3);", "#31=PLANE('',#30);",
+        "#32=ORIENTED_EDGE('',*,*,#15,.T.);", "#33=EDGE_LOOP('',(#32));", "#34=FACE_OUTER_BOUND('',#33,.T.);",
+        "#35=ADVANCED_FACE('',(#34),#31,.T.);",
+        "#40=AXIS2_PLACEMENT_3D('',#20,#7,#21);", "#41=PLANE('',#40);",
+        "#42=ORIENTED_EDGE('',*,*,#26,.T.);", "#43=EDGE_LOOP('',(#42));", "#44=FACE_OUTER_BOUND('',#43,.T.);",
+        "#45=ADVANCED_FACE('',(#44),#41,.T.);",
+        "#50=ORIENTED_EDGE('',*,*,#15,.F.);", "#51=EDGE_LOOP('',(#50));", "#52=FACE_BOUND('',#51,.T.);",
+        "#53=ORIENTED_EDGE('',*,*,#26,.F.);", "#54=EDGE_LOOP('',(#53));", "#55=FACE_BOUND('',#54,.T.);",
+        "#56=ADVANCED_FACE('',(#52,#55),#5,.T.);",
+        "#98=CLOSED_SHELL('',(#35,#45,#56));", "#99=MANIFOLD_SOLID_BREP('half torus',#98);",
+    ]
+    path = tmp_path / "half_torus.step"
+    path.write_text(_step(e))
+    part = import_step(path)
+    assert part.is_valid()
+    assert part._props()["field_volumes"] == pytest.approx([math.pi * r * r * math.pi * R] * 3, rel=1e-6)
+
+
+def test_step_extrusion_whose_generator_rises_along_it(tmp_path):
+    """An extrusion along z of a B-spline that itself climbs 10 in z: the face's height
+    above the generator is not its height above the generator's first pole."""
+    e = [
+        "#1=CARTESIAN_POINT('',(0.,0.,0.));", "#2=DIRECTION('',(0.,0.,1.));", "#3=DIRECTION('',(1.,0.,0.));",
+        "#5=CARTESIAN_POINT('',(10.,0.,10.));",
+        "#6=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#5),.UNSPECIFIED.,.F.,.F.,(2,2),(0.,1.),.UNSPECIFIED.);",
+        "#7=VECTOR('',#2,1.);", "#8=SURFACE_OF_LINEAR_EXTRUSION('',#6,#7);",
+        "#10=CARTESIAN_POINT('',(2.,0.,20.));", "#11=CARTESIAN_POINT('',(2.,0.,26.));",
+        "#12=CARTESIAN_POINT('',(8.,0.,26.));", "#13=CARTESIAN_POINT('',(8.,0.,20.));",
+        "#14=VERTEX_POINT('',#10);", "#15=VERTEX_POINT('',#11);", "#16=VERTEX_POINT('',#12);", "#17=VERTEX_POINT('',#13);",
+        "#20=LINE('',#10,#7);", "#21=LINE('',#11,#23);", "#22=LINE('',#12,#24);", "#23=VECTOR('',#3,1.);",
+        "#24=VECTOR('',#25,1.);", "#25=DIRECTION('',(0.,0.,-1.));", "#26=LINE('',#13,#27);",
+        "#27=VECTOR('',#28,1.);", "#28=DIRECTION('',(-1.,0.,0.));",
+        "#30=EDGE_CURVE('',#14,#15,#20,.T.);", "#31=EDGE_CURVE('',#15,#16,#21,.T.);",
+        "#32=EDGE_CURVE('',#16,#17,#22,.T.);", "#33=EDGE_CURVE('',#17,#14,#26,.T.);",
+        "#34=ORIENTED_EDGE('',*,*,#30,.T.);", "#35=ORIENTED_EDGE('',*,*,#31,.T.);",
+        "#36=ORIENTED_EDGE('',*,*,#32,.T.);", "#37=ORIENTED_EDGE('',*,*,#33,.T.);",
+        "#38=EDGE_LOOP('',(#34,#35,#36,#37));", "#39=FACE_OUTER_BOUND('',#38,.T.);",
+        "#40=ADVANCED_FACE('',(#39),#8,.T.);", "#97=OPEN_SHELL('',(#40));",
+        "#99=SHELL_BASED_SURFACE_MODEL('sheet',(#97));",
+    ]
+    path = tmp_path / "rising.step"
+    path.write_text(_step(e))
+    assert import_step(path).area == pytest.approx(36.0, rel=1e-9)
+
+
+# -- read_step: coordinate systems, curves and points ---------------------------------------
+def _tool_with_supplemental_geometry() -> str:
+    """An assembly ASM holding the product TOOL 100 up: TOOL has the cylinder as its body,
+    the coordinate system MCS (and a hidden one), and a curve set with a red B-spline, an
+    arc, a composite path and the point CRP (NX and tool catalogs write tools so)."""
+    e = _cylinder_entities(0.0) + [
+        "#100=APPLICATION_CONTEXT('automotive design');", "#101=PRODUCT_CONTEXT('',#100,'mechanical');",
+        "#102=PRODUCT_DEFINITION_CONTEXT('part definition',#100,'design');",
+        "#110=PRODUCT('ASM','ASM','',(#101));", "#111=PRODUCT_DEFINITION_FORMATION('','',#110);",
+        "#112=PRODUCT_DEFINITION('design','',#111,#102);", "#113=PRODUCT_DEFINITION_SHAPE('','',#112);",
+        "#114=SHAPE_REPRESENTATION('ASM',(#4,#130),#903);", "#115=SHAPE_DEFINITION_REPRESENTATION(#113,#114);",
+        "#120=PRODUCT('TOOL','TOOL','',(#101));", "#121=PRODUCT_DEFINITION_FORMATION('','',#120);",
+        "#122=PRODUCT_DEFINITION('design','',#121,#102);", "#123=PRODUCT_DEFINITION_SHAPE('','',#122);",
+        "#124=SHAPE_REPRESENTATION('TOOL',(#4),#903);", "#125=SHAPE_DEFINITION_REPRESENTATION(#123,#124);",
+        "#126=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','','',#112,#122,$);", "#127=PRODUCT_DEFINITION_SHAPE('','',#126);",
+        "#128=(REPRESENTATION_RELATIONSHIP('','',#124,#114)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#129)"
+        "SHAPE_REPRESENTATION_RELATIONSHIP());",
+        "#129=ITEM_DEFINED_TRANSFORMATION('','',#4,#130);", "#131=CARTESIAN_POINT('',(0.,0.,100.));",
+        "#130=AXIS2_PLACEMENT_3D('',#131,#2,#3);", "#132=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#128,#127);",
+        "#133=SHAPE_REPRESENTATION_RELATIONSHIP('','',#124,#904);",
+        # supplemental geometry: MCS at the top of the cylinder, a hidden helper at z = 5
+        "#140=CONSTRUCTIVE_GEOMETRY_REPRESENTATION('supplemental geometry',(#141,#144),#903);",
+        "#142=CARTESIAN_POINT('',(0.,0.,20.));", "#143=DIRECTION('',(0.,1.,0.));",
+        "#141=AXIS2_PLACEMENT_3D('MCS',#142,#2,#143);", "#145=CARTESIAN_POINT('',(0.,0.,5.));",
+        "#144=AXIS2_PLACEMENT_3D('',#145,#2,#3);",
+        "#146=CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP('supplemental geometry','',#124,#140);",
+        "#147=PRESENTATION_LAYER_ASSIGNMENT('180','',(#144));", "#148=INVISIBILITY((#147));",
+        # wireframe: a curve set
+        "#150=GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION('TOOL',(#151),#903);",
+        "#151=GEOMETRIC_CURVE_SET('',(#152,#160,#170,#155));",
+        "#153=CARTESIAN_POINT('',(0.,0.,0.));", "#154=CARTESIAN_POINT('',(3.,4.,0.));",
+        "#152=B_SPLINE_CURVE_WITH_KNOTS('CUTTING EDGE LINE',1,(#153,#154),.UNSPECIFIED.,.F.,.F.,(2,2),(0.,1.),"
+        ".UNSPECIFIED.);",
+        "#155=CARTESIAN_POINT('CRP',(1.,2.,3.));",
+        "#161=CIRCLE('',#4,10.);",
+        f"#160=TRIMMED_CURVE('ARC',#161,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE({math.pi / 2})),.T.,.PARAMETER.);",
+        "#175=VECTOR('',#3,1.);", "#176=LINE('',#1,#175);", "#177=CARTESIAN_POINT('',(10.,0.,0.));",
+        "#173=TRIMMED_CURVE('',#176,(#1),(#177),.T.,.CARTESIAN.);",
+        "#178=VECTOR('',#143,1.);", "#179=LINE('',#177,#178);",
+        "#174=TRIMMED_CURVE('',#179,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(10.)),.T.,.PARAMETER.);",
+        "#171=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#173);", "#172=COMPOSITE_CURVE_SEGMENT(.CONTINUOUS.,.T.,#174);",
+        "#170=COMPOSITE_CURVE('PATH',(#171,#172),.F.);",
+        "#156=SHAPE_REPRESENTATION_RELATIONSHIP('','',#124,#150);",
+        "#190=STYLED_ITEM('',(#191),#152);", "#191=PRESENTATION_STYLE_ASSIGNMENT((#192));",
+        "#192=CURVE_STYLE('',#193,POSITIVE_LENGTH_MEASURE(1.),#194);",
+        "#193=DRAUGHTING_PRE_DEFINED_CURVE_FONT('continuous');", "#194=COLOUR_RGB('',1.,0.,0.);",
+    ]
+    return _step(e)
+
+
+def test_read_step_reads_coordinate_systems_curves_and_points(tmp_path):
+    path = tmp_path / "tool.step"
+    path.write_text(_tool_with_supplemental_geometry())
+    model = read_step(path)
+    assert repr(model) == "StepModel(1 bodies, 1 frames, 3 curves, 1 points)"
+    [body] = model.bodies
+    assert body.volume == pytest.approx(math.pi * 100 * 20, rel=1e-6)
+    assert body.bbox().min.z == pytest.approx(100, abs=1e-9)  # placed by the assembly
+    # the coordinate system, at its place in the assembly; the hidden one is left out
+    [mcs] = model.frames
+    assert (mcs.name, mcs.product) == ("MCS", "TOOL")
+    assert mcs.plane.origin.to_tuple() == pytest.approx((0, 0, 120))
+    assert mcs.plane.x_dir.to_tuple() == pytest.approx((0, 1, 0))
+    assert model.frame("MCS") == mcs.plane and model.frame("MCS", product="TO") == mcs.plane
+    with pytest.raises(KeyError, match="no coordinate system 'PCS'.*'MCS'"):
+        model.frame("PCS")
+    # the curves: a red B-spline, a quarter circle, and a path of two lines as a wire
+    line, arc, path_ = model.curves
+    assert (line.name, line.product, line.color) == ("CUTTING EDGE LINE", "TOOL", (1.0, 0.0, 0.0))
+    assert line.shape.length == pytest.approx(5)
+    assert line.shape.start.to_tuple() == pytest.approx((0, 0, 100))
+    assert arc.shape.length == pytest.approx(5 * math.pi)
+    assert arc.shape.end.to_tuple() == pytest.approx((0, 10, 100), abs=1e-9)
+    assert isinstance(path_.shape, Wire) and path_.shape.length == pytest.approx(20)
+    assert path_.shape.end.to_tuple() == pytest.approx((10, 10, 100), abs=1e-9)
+    [crp] = model.points
+    assert (crp.name, crp.point.to_tuple()) == ("CRP", pytest.approx((1, 2, 103)))
+    # import_step reads the same file for its body alone
+    assert import_step(path).volume == pytest.approx(body.volume)

@@ -59,10 +59,13 @@
 #include <SmTess.h>
 #include <SmTopologyTraverser.h>
 
+#include <pybind11/numpy.h>
+
 #include <algorithm>
 #include <cmath>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace
 {
@@ -610,6 +613,34 @@ py::object tessellate(SmBrep* brep, double chord_height_tol, double curve_angle_
     return result;
 }
 
+// For each polygon of PolyBrep.to_numpy_arrays (the polygons with an outer loop of edges,
+// in the PolyBrep's order), the index of the face of `brep` it was made from, or -1.
+py::array_t<int32_t> poly_face_indices(SmPolyBrep* poly, SmBrep* brep)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    std::unordered_map<const SmFace*, int32_t> index;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+        index[faces[i]] = static_cast<int32_t>(i);
+    SmTArray<SmPolyFace*> poly_faces;
+    poly->GetPolyFaces(poly_faces);
+    std::vector<int32_t> out;
+    out.reserve(poly_faces.GetSize());
+    for (ULONG i = 0; i < poly_faces.GetSize(); ++i)
+    {
+        SmPolyLoop* loop = poly_faces[i]->GetOuterPolyLoop();
+        if (!loop)
+            continue;
+        SmTArray<SmPolyEdge*> edges;
+        loop->GetPolyEdges(edges);
+        if (edges.GetSize() == 0)
+            continue;
+        auto it = index.find(poly_faces[i]->GetOriginalFace());
+        out.push_back(it == index.end() ? -1 : it->second);
+    }
+    return py::array_t<int32_t>(static_cast<py::ssize_t>(out.size()), out.data());
+}
+
 }  // namespace
 
 void bind_tessellate(py::module_ m)
@@ -629,6 +660,9 @@ void bind_tessellate(py::module_ m)
           "halves a body with a face whose grid would be off by more than twice the chord height (see "
           "grid_deviation) unless a max edge length or aspect ratio is given, and takes the grid otherwise. The "
           "report (return_report=True) names the algorithm used.");
+    m.def("poly_face_indices", &poly_face_indices, py::arg("poly"), py::arg("brep"),
+          "For each polygon of poly.to_numpy_arrays(), the index of the face of brep (in brep.get_faces() order) "
+          "it was made from, -1 where it has none.");
     m.def(
         "tessellation_algorithm",
         [](SmBrep* brep, double chord_height_tol, double surface_angle_tol_deg, double max_edge_length,
