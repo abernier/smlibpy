@@ -7,7 +7,8 @@
 //   * explicit lifetime control of kernel objects (Python wrappers are non-owning),
 //   * arbitrary 4x4 transforms, face extraction, body separation, topology-preserving copies.
 
-#include "ext.h"
+#include "kernel.h"
+#include "ext_shared.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -29,6 +30,11 @@
 namespace
 {
 
+using smlibpy::tup;
+using smlibpy::Value;
+template <typename T>
+Value val(const T& x) { return smlibpy::v(x); }
+
 const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 
 void check(SmStatus status, const char* what)
@@ -38,44 +44,44 @@ void check(SmStatus status, const char* what)
 }
 
 // SmPoint3d is an alias of SmVector3d.
-py::tuple xyz(const SmVector3d& v) { return py::make_tuple(v.x, v.y, v.z); }
+Value xyz(const SmVector3d& p) { return tup(p.x, p.y, p.z); }
 
-py::dict placement(const SmAxis2Placement& a)
+Value placement(const SmAxis2Placement& a)
 {
-    py::dict d;
+    Value d = Value::dict();
     SmVector3d x = a.GetXAxisRef();
     SmVector3d y = a.GetYAxisRef();
     SmVector3d z = x * y;  // operator* is the cross product for SmVector3d
-    d["origin"] = xyz(a.GetOriginRef());
-    d["x_dir"] = xyz(x);
-    d["y_dir"] = xyz(y);
-    d["z_dir"] = xyz(z);
+    d.set("origin", val(xyz(a.GetOriginRef())));
+    d.set("x_dir", val(xyz(x)));
+    d.set("y_dir", val(xyz(y)));
+    d.set("z_dir", val(xyz(z)));
     return d;
 }
 
-py::list knot_vector(const SmTArray<double>& unique, const SmTArray<ULONG>& mults)
+Value knot_vector(const SmTArray<double>& unique, const SmTArray<ULONG>& mults)
 {
-    py::list knots;
+    Value knots = Value::make_list();
     for (ULONG i = 0; i < unique.GetSize(); ++i)
         for (ULONG m = 0; m < mults[i]; ++m)
-            knots.append(unique[i]);
+            knots.push(val(unique[i]));
     return knots;
 }
 
 template <typename T>
-py::list to_list(const SmTArray<T>& a)
+Value to_list(const SmTArray<T>& a)
 {
-    py::list l;
+    Value l = Value::make_list();
     for (ULONG i = 0; i < a.GetSize(); ++i)
-        l.append(a[i]);
+        l.push(val(a[i]));
     return l;
 }
 
-py::list points(const SmTArray<SmPoint3d>& a)
+Value points(const SmTArray<SmPoint3d>& a)
 {
-    py::list l;
+    Value l = Value::make_list();
     for (ULONG i = 0; i < a.GetSize(); ++i)
-        l.append(xyz(a[i]));
+        l.push(val(xyz(a[i])));
     return l;
 }
 
@@ -83,7 +89,7 @@ py::list points(const SmTArray<SmPoint3d>& a)
 // Curves
 // ---------------------------------------------------------------------------
 
-const char* curve_kind(const SmCurve* c)
+const char* curve_kind_name(const SmCurve* c)
 {
     switch (c->GetType())
     {
@@ -98,7 +104,7 @@ const char* curve_kind(const SmCurve* c)
     return "other";
 }
 
-void add_bspline_curve(py::dict& d, const SmBSplineCurve* c)
+void add_bspline_curve(Value& d, const SmBSplineCurve* c)
 {
     ULONG dim = 0, degree = 0;
     SmTArray<SmPoint3d> poles;
@@ -107,23 +113,23 @@ void add_bspline_curve(py::dict& d, const SmBSplineCurve* c)
     SmTArray<double> knots, weights;
     SmKnotType knot_type;
     check(c->GetCanonical(dim, degree, poles, form, mults, knots, knot_type, weights), "SmBSplineCurve::GetCanonical");
-    d["degree"] = degree;
-    d["poles"] = points(poles);
-    d["knots"] = knot_vector(knots, mults);
-    d["weights"] = weights.GetSize() ? py::object(to_list(weights)) : py::object(py::none());
-    d["dimension"] = dim;
+    d.set("degree", val(degree));
+    d.set("poles", val(points(poles)));
+    d.set("knots", val(knot_vector(knots, mults)));
+    d.set("weights", val(weights.GetSize() ? to_list(weights) : Value()));
+    d.set("dimension", val(dim));
 }
 
-py::dict curve_data(const SmCurve* curve, bool nurbs = true)
+Value make_curve_data(const SmCurve* curve, bool nurbs = true)
 {
     if (!curve)
         throw std::invalid_argument("curve is None");
-    py::dict d;
-    const char* kind = curve_kind(curve);
-    d["kind"] = kind;
-    d["class"] = std::string(curve->GetClassString());
+    Value d = Value::dict();
+    const char* kind = curve_kind_name(curve);
+    d.set("kind", val(kind));
+    d.set("class", val(std::string(curve->GetClassString())));
     SmExtent1d ivl = curve->GetNaturalInterval();
-    d["interval"] = py::make_tuple(ivl.GetMin(), ivl.GetMax());
+    d.set("interval", val(tup(ivl.GetMin(), ivl.GetMax())));
 
     if (curve->GetType() == SmLine_TYPE)
     {
@@ -133,8 +139,8 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
         SmExtent1d dom;
         SmBoolean inside_out = FALSE;
         check(line->GetCanonical(p, v, &dom, &inside_out), "SmLine::GetCanonical");
-        d["origin"] = xyz(p);
-        d["direction"] = xyz(v);
+        d.set("origin", val(xyz(p)));
+        d.set("direction", val(xyz(v)));
     }
     else if (curve->GetType() == SmCircle_TYPE)
     {
@@ -143,8 +149,8 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
         double r = 0.0;
         SmBoolean inside_out = FALSE;
         check(circle->GetCanonical(a, r, &inside_out), "SmCircle::GetCanonical");
-        d["placement"] = placement(a);
-        d["radius"] = r;
+        d.set("placement", val(placement(a)));
+        d.set("radius", val(r));
     }
     else if (curve->GetType() == SmEllipse_TYPE)
     {
@@ -154,9 +160,9 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
         SmExtent1d dom;
         SmBoolean inside_out = FALSE;
         check(ellipse->GetCanonical(a, r1, r2, &dom, &inside_out), "SmEllipse::GetCanonical");
-        d["placement"] = placement(a);
-        d["radius1"] = r1;
-        d["radius2"] = r2;
+        d.set("placement", val(placement(a)));
+        d.set("radius1", val(r1));
+        d.set("radius2", val(r2));
     }
 
     if (!nurbs)
@@ -164,7 +170,7 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
     if (curve->IsKindOf(SmBSplineCurve_TYPE))
     {
         add_bspline_curve(d, static_cast<const SmBSplineCurve*>(curve));
-        d["approximated"] = false;
+        d.set("approximated", val(false));
     }
     else
     {
@@ -178,8 +184,8 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
         check(curve->ApproximateCurve(ctx(), breaks, 1e-7, gap, approx, FALSE, TRUE),
               "SmCurve::ApproximateCurve");
         add_bspline_curve(d, approx);
-        d["approximated"] = true;
-        d["approximation_gap"] = gap;
+        d.set("approximated", val(true));
+        d.set("approximation_gap", val(gap));
         delete approx;
     }
     return d;
@@ -189,7 +195,7 @@ py::dict curve_data(const SmCurve* curve, bool nurbs = true)
 // Surfaces
 // ---------------------------------------------------------------------------
 
-const char* surface_kind(const SmSurface* s)
+const char* surface_kind_name(const SmSurface* s)
 {
     switch (s->GetType())
     {
@@ -209,7 +215,7 @@ const char* surface_kind(const SmSurface* s)
     return "other";
 }
 
-void add_bspline_surface(py::dict& d, const SmBSplineSurface* s)
+void add_bspline_surface(Value& d, const SmBSplineSurface* s)
 {
     ULONG udeg = 0, vdeg = 0;
     SmTArray<SmPoint3d> poles;
@@ -219,24 +225,23 @@ void add_bspline_surface(py::dict& d, const SmBSplineSurface* s)
     SmKnotType knot_type;
     check(s->GetCanonical(udeg, vdeg, poles, form, umults, vmults, uknots, vknots, knot_type, weights),
           "SmBSplineSurface::GetCanonical");
-    d["u_degree"] = udeg;
-    d["v_degree"] = vdeg;
-    d["poles"] = points(poles);
-    d["u_knots"] = knot_vector(uknots, umults);
-    d["v_knots"] = knot_vector(vknots, vmults);
-    d["weights"] = weights.GetSize() ? py::object(to_list(weights)) : py::object(py::none());
+    d.set("u_degree", val(udeg));
+    d.set("v_degree", val(vdeg));
+    d.set("poles", val(points(poles)));
+    d.set("u_knots", val(knot_vector(uknots, umults)));
+    d.set("v_knots", val(knot_vector(vknots, vmults)));
+    d.set("weights", val(weights.GetSize() ? to_list(weights) : Value()));
 }
 
-py::dict surface_data(const SmSurface* surface, bool nurbs = true)
+Value make_surface_data(const SmSurface* surface, bool nurbs = true)
 {
     if (!surface)
         throw std::invalid_argument("surface is None");
-    py::dict d;
-    d["kind"] = surface_kind(surface);
-    d["class"] = std::string(surface->GetClassString());
+    Value d = Value::dict();
+    d.set("kind", val(surface_kind_name(surface)));
+    d.set("class", val(std::string(surface->GetClassString())));
     SmExtent2d dom = surface->GetNaturalUVDomain();
-    d["uv_domain"] = py::make_tuple(py::make_tuple(dom.GetMin().x, dom.GetMin().y),
-                                    py::make_tuple(dom.GetMax().x, dom.GetMax().y));
+    d.set("uv_domain", tup(tup(dom.GetMin().x, dom.GetMin().y), tup(dom.GetMax().x, dom.GetMax().y)));
     SmBoolean inside_out = FALSE, swap_uv = FALSE;
     switch (surface->GetType())
     {
@@ -244,7 +249,7 @@ py::dict surface_data(const SmSurface* surface, bool nurbs = true)
     {
         SmAxis2Placement a;
         check(static_cast<const SmPlane*>(surface)->GetCanonical(a), "SmPlane::GetCanonical");
-        d["placement"] = placement(a);
+        d.set("placement", val(placement(a)));
         break;
     }
     case SmCylinder_TYPE:
@@ -252,9 +257,9 @@ py::dict surface_data(const SmSurface* surface, bool nurbs = true)
         SmAxis2Placement a;
         double r = 0.0;
         check(static_cast<const SmCylinder*>(surface)->GetCanonical(a, r), "SmCylinder::GetCanonical");
-        d["placement"] = placement(a);
-        d["radius"] = r;
-        d["inside_out"] = static_cast<bool>(static_cast<const SmCylinder*>(surface)->GetInsideOut());
+        d.set("placement", val(placement(a)));
+        d.set("radius", val(r));
+        d.set("inside_out", val(static_cast<bool>(static_cast<const SmCylinder*>(surface)->GetInsideOut())));
         break;
     }
     case SmCone_TYPE:
@@ -263,10 +268,10 @@ py::dict surface_data(const SmSurface* surface, bool nurbs = true)
         double r = 0.0, semi = 0.0;
         check(static_cast<const SmCone*>(surface)->GetCanonical(a, r, semi, &swap_uv, &inside_out),
               "SmCone::GetCanonical");
-        d["placement"] = placement(a);
-        d["radius"] = r;
-        d["semi_angle_deg"] = semi;
-        d["inside_out"] = static_cast<bool>(inside_out);
+        d.set("placement", val(placement(a)));
+        d.set("radius", val(r));
+        d.set("semi_angle_deg", val(semi));
+        d.set("inside_out", val(static_cast<bool>(inside_out)));
         break;
     }
     case SmSphere_TYPE:
@@ -275,9 +280,9 @@ py::dict surface_data(const SmSurface* surface, bool nurbs = true)
         double r = 0.0;
         check(static_cast<const SmSphere*>(surface)->GetCanonical(a, r, &swap_uv, &inside_out),
               "SmSphere::GetCanonical");
-        d["placement"] = placement(a);
-        d["radius"] = r;
-        d["inside_out"] = static_cast<bool>(inside_out);
+        d.set("placement", val(placement(a)));
+        d.set("radius", val(r));
+        d.set("inside_out", val(static_cast<bool>(inside_out)));
         break;
     }
     case SmTorus_TYPE:
@@ -286,10 +291,10 @@ py::dict surface_data(const SmSurface* surface, bool nurbs = true)
         double R = 0.0, r = 0.0;
         check(static_cast<const SmTorus*>(surface)->GetCanonical(a, R, r, &swap_uv, &inside_out),
               "SmTorus::GetCanonical");
-        d["placement"] = placement(a);
-        d["major_radius"] = R;
-        d["minor_radius"] = r;
-        d["inside_out"] = static_cast<bool>(inside_out);
+        d.set("placement", val(placement(a)));
+        d.set("major_radius", val(R));
+        d.set("minor_radius", val(r));
+        d.set("inside_out", val(static_cast<bool>(inside_out)));
         break;
     }
     default: break;
@@ -315,7 +320,7 @@ std::unordered_map<const T*, size_t> index_of(const SmTArray<T*>& items)
 
 // Full structural description of a Brep as plain Python data. Geometry is included when
 // `geometry` is true (STEP export); otherwise only the graph (cheap queries).
-py::dict brep_dump(const SmBrep* brep, bool geometry)
+Value make_brep_dump(const SmBrep* brep, bool geometry)
 {
     if (!brep)
         throw std::invalid_argument("brep is None");
@@ -333,123 +338,122 @@ py::dict brep_dump(const SmBrep* brep, bool geometry)
     auto eidx = index_of(edges);
     auto fidx = index_of(faces);
 
-    py::list vlist;
+    Value vlist = Value::make_list();
     for (ULONG i = 0; i < vertices.GetSize(); ++i)
-        vlist.append(xyz(vertices[i]->GetPoint()));
+        vlist.push(val(xyz(vertices[i]->GetPoint())));
 
-    py::list elist;
+    Value elist = Value::make_list();
     for (ULONG i = 0; i < edges.GetSize(); ++i)
     {
         SmEdge* e = edges[i];
-        py::dict ed;
+        Value ed = Value::dict();
         SmExtent1d ivl = e->GetInterval();
-        ed["interval"] = py::make_tuple(ivl.GetMin(), ivl.GetMax());
+        ed.set("interval", val(tup(ivl.GetMin(), ivl.GetMax())));
         SmVertex* v0 = e->GetStartVertex();
         SmVertex* v1 = e->GetEndVertex();
-        ed["v0"] = v0 ? py::object(py::int_(vidx.at(v0))) : py::object(py::none());
-        ed["v1"] = v1 ? py::object(py::int_(vidx.at(v1))) : py::object(py::none());
+        ed.set("v0", val(v0 ? val(vidx.at(v0)) : Value()));
+        ed.set("v1", val(v1 ? val(vidx.at(v1)) : Value()));
         if (geometry)
-            ed["curve"] = curve_data(e->GetCurve(), true);
+            ed.set("curve", val(make_curve_data(e->GetCurve(), true)));
         else
-            ed["kind"] = curve_kind(e->GetCurve());
-        elist.append(ed);
+            ed.set("kind", val(curve_kind_name(e->GetCurve())));
+        elist.push(val(ed));
     }
 
     // Shells are reached through regions; number them in region order.
     std::unordered_map<const SmShell*, size_t> sidx;
-    py::list rlist, slist;
+    Value rlist = Value::make_list(), slist = Value::make_list();
     for (ULONG r = 0; r < regions.GetSize(); ++r)
     {
         SmRegion* region = regions[r];
         SmTArray<SmShell*> shells;
         region->GetShells(shells);
-        py::list shell_ids;
+        Value shell_ids = Value::make_list();
         for (ULONG s = 0; s < shells.GetSize(); ++s)
         {
             size_t id = sidx.size();
             sidx[shells[s]] = id;
-            shell_ids.append(id);
-            py::dict sd;
-            sd["region"] = r;
-            sd["closed"] = static_cast<bool>(shells[s]->IsClosed());
-            slist.append(sd);
+            shell_ids.push(val(id));
+            Value sd = Value::dict();
+            sd.set("region", val(r));
+            sd.set("closed", val(static_cast<bool>(shells[s]->IsClosed())));
+            slist.push(val(sd));
         }
-        py::dict rd;
-        rd["infinite"] = region == brep->GetInfiniteRegion();
-        rd["void"] = region->IsVoid() == TRUE;
-        rd["shells"] = shell_ids;
-        rlist.append(rd);
+        Value rd = Value::dict();
+        rd.set("infinite", val(region == brep->GetInfiniteRegion()));
+        rd.set("void", val(region->IsVoid() == TRUE));
+        rd.set("shells", val(shell_ids));
+        rlist.push(val(rd));
     }
 
     auto loops_of = [&](const SmFaceuse* fu) {
-        py::list loops;
+        Value loops = Value::make_list();
         SmTArray<SmLoopuse*> lus;
         fu->GetLoopuses(lus);
         for (ULONG l = 0; l < lus.GetSize(); ++l)
         {
             SmLoopuse* lu = lus[l];
-            py::dict ld;
+            Value ld = Value::dict();
             if (lu->IsVertexLoopuse())
             {
                 SmVertexuse* vu = lu->GetVertexuse();
-                ld["vertex"] = vu ? py::object(py::int_(vidx.at(vu->GetVertex()))) : py::object(py::none());
-                ld["edges"] = py::list();
+                ld.set("vertex", val(vu ? val(vidx.at(vu->GetVertex())) : Value()));
+                ld.set("edges", Value::make_list());
             }
             else
             {
                 SmTArray<SmEdgeuse*> eus;
                 lu->GetEdgeuses(eus);
-                py::list items;
+                Value items = Value::make_list();
                 for (ULONG k = 0; k < eus.GetSize(); ++k)
-                    items.append(py::make_tuple(eidx.at(eus[k]->GetEdge()), eus[k]->GetOrientation() == SM_OT_SAME));
-                ld["edges"] = items;
-                ld["vertex"] = py::none();
+                    items.push(val(tup(eidx.at(eus[k]->GetEdge()), eus[k]->GetOrientation() == SM_OT_SAME)));
+                ld.set("edges", val(items));
+                ld.set("vertex", Value());
             }
-            ld["outer"] = l == 0;
-            loops.append(ld);
+            ld.set("outer", val(l == 0));
+            loops.push(val(ld));
         }
         return loops;
     };
 
-    py::list flist;
+    Value flist = Value::make_list();
     for (ULONG i = 0; i < faces.GetSize(); ++i)
     {
         SmFace* f = faces[i];
         SmFaceuse* up = f->GetUpwardFaceuse();
         SmFaceuse* down = up ? up->GetMate() : nullptr;
-        py::dict fd;
+        Value fd = Value::dict();
         SmExtent2d dom = f->GetUVDomain();
-        fd["uv_domain"] = py::make_tuple(py::make_tuple(dom.GetMin().x, dom.GetMin().y),
-                                         py::make_tuple(dom.GetMax().x, dom.GetMax().y));
+        fd.set("uv_domain", tup(tup(dom.GetMin().x, dom.GetMin().y), tup(dom.GetMax().x, dom.GetMax().y)));
         if (geometry)
-            fd["surface"] = surface_data(f->GetSurface(), true);
+            fd.set("surface", val(make_surface_data(f->GetSurface(), true)));
         else
-            fd["kind"] = surface_kind(f->GetSurface());
-        py::list uses;
+            fd.set("kind", val(surface_kind_name(f->GetSurface())));
+        Value uses = Value::make_list();
         for (SmFaceuse* fu : {up, down})
         {
-            py::dict ud;
+            Value ud = Value::dict();
             if (!fu)
             {
-                uses.append(py::none());
+                uses.push(Value());
                 continue;
             }
-            ud["same"] = fu->GetOrientation() == SM_OT_SAME;
+            ud.set("same", val(fu->GetOrientation() == SM_OT_SAME));
             auto it = sidx.find(fu->GetShell());
-            ud["shell"] = it == sidx.end() ? py::object(py::none()) : py::object(py::int_(it->second));
-            ud["loops"] = loops_of(fu);
-            uses.append(ud);
+            ud.set("shell", val(it == sidx.end() ? Value() : val(it->second)));
+            ud.set("loops", val(loops_of(fu)));
+            uses.push(val(ud));
         }
-        fd["uses"] = uses;  // [upward (SAME) faceuse, its mate]
-        flist.append(fd);
+        fd.set("uses", val(uses));  // [upward (SAME) faceuse, its mate]
+        flist.push(val(fd));
     }
 
-    py::dict out;
-    out["vertices"] = vlist;
-    out["edges"] = elist;
-    out["faces"] = flist;
-    out["shells"] = slist;
-    out["regions"] = rlist;
+    Value out = Value::dict();
+    out.set("vertices", val(vlist));
+    out.set("edges", val(elist));
+    out.set("faces", val(flist));
+    out.set("shells", val(slist));
+    out.set("regions", val(rlist));
     return out;
 }
 
@@ -469,20 +473,77 @@ std::vector<long> indices_in(const SmTArray<T*>& all, const std::vector<T*>& wan
     return out;
 }
 
+}  // namespace
+
+namespace smlibpy {
+
+Value curve_data(const SmCurve* curve, bool nurbs) { return make_curve_data(curve, nurbs); }
+Value surface_data(const SmSurface* surface, bool nurbs) { return make_surface_data(surface, nurbs); }
+Value brep_dump(const SmBrep* brep, bool geometry) { return make_brep_dump(brep, geometry); }
+
+std::vector<long> seam_edges(const SmBrep* brep)
+{
+    // Edges that one face uses twice: the seams of periodic surfaces.
+    SmTArray<SmEdge*> edges;
+    brep->GetEdges(edges);
+    std::vector<long> out;
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        SmTArray<SmFace*> faces;
+        edges[i]->GetFaces(faces);
+        if (faces.GetSize() != 1)
+            continue;
+        SmTArray<SmLoopuse*> lus;
+        faces[0]->GetUpwardLoopuses(lus);
+        int uses = 0;
+        for (ULONG l = 0; l < lus.GetSize(); ++l)
+        {
+            SmTArray<SmEdgeuse*> eus;
+            lus[l]->GetEdgeuses(eus);
+            for (ULONG j = 0; j < eus.GetSize(); ++j)
+                uses += eus[j]->GetEdge() == edges[i] ? 1 : 0;
+        }
+        if (uses > 1)
+            out.push_back(static_cast<long>(i));
+    }
+    return out;
+}
+
+std::vector<long> face_indices(const SmBrep* brep, const std::vector<SmFace*>& faces)
+{
+    SmTArray<SmFace*> all;
+    brep->GetFaces(all);
+    return indices_in(all, faces);
+}
+
+std::vector<long> edge_indices(const SmBrep* brep, const std::vector<SmEdge*>& edges)
+{
+    SmTArray<SmEdge*> all;
+    brep->GetEdges(all);
+    return indices_in(all, edges);
+}
+
+std::vector<long> vertex_indices(const SmBrep* brep, const std::vector<SmVertex*>& vertices)
+{
+    SmTArray<SmVertex*> all;
+    brep->GetVertices(all);
+    return indices_in(all, vertices);
+}
+
 // Copy a Brep and map the given topology of the original onto the copy.
-py::tuple copy_with_map(const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<SmEdge*>& edges,
-                        const std::vector<SmVertex*>& vertices)
+CopyMap copy_with_map(const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<SmEdge*>& edges,
+                      const std::vector<SmVertex*>& vertices)
 {
     SmCopyBrepMap reverse;  // original -> copy
-    SmBrep* copy = new (ctx()) SmBrep(*brep, nullptr, &reverse, TRUE, FALSE);
-    py::list f, e, v;
+    CopyMap out;
+    out.brep = new (ctx()) SmBrep(*brep, nullptr, &reverse, TRUE, FALSE);
     for (SmFace* x : faces)
-        f.append(py::cast(static_cast<SmFace*>(reverse.GetAt(x)), py::return_value_policy::reference));
+        out.faces.push_back(static_cast<SmFace*>(reverse.GetAt(x)));
     for (SmEdge* x : edges)
-        e.append(py::cast(static_cast<SmEdge*>(reverse.GetAt(x)), py::return_value_policy::reference));
+        out.edges.push_back(static_cast<SmEdge*>(reverse.GetAt(x)));
     for (SmVertex* x : vertices)
-        v.append(py::cast(static_cast<SmVertex*>(reverse.GetAt(x)), py::return_value_policy::reference));
-    return py::make_tuple(py::cast(copy, py::return_value_policy::take_ownership), f, e, v);
+        out.vertices.push_back(static_cast<SmVertex*>(reverse.GetAt(x)));
+    return out;
 }
 
 void transform_brep(SmBrep* brep, const std::vector<double>& m)
@@ -496,272 +557,344 @@ void transform_brep(SmBrep* brep, const std::vector<double>& m)
     check(brep->Transform(t, TRUE), "SmBrep::Transform");
 }
 
-}  // namespace
-
-void bind_smlibpy_ext(py::module_ m)
+SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
 {
-    bind_step_build(m);
+    SmTArray<SmFace*> list;
+    for (SmFace* f : faces)
+        list.Add(f);
+    SmBrep* out = new (ctx()) SmBrep();
+    SmStatus st = const_cast<SmBrep*>(brep)->CopyFaces(list, out, nullptr, FALSE);
+    if (st != SM_SUCCESS)
+    {
+        delete out;
+        check(st, "SmBrep::CopyFaces");
+    }
+    return out;
+}
 
-    m.def("curve_data", &curve_data, py::arg("curve"), py::arg("nurbs") = true,
-          "Exact definition of a curve: kind, NURBS data (degree, poles, knots, weights) and analytic "
-          "parameters for lines, circles and ellipses.");
-    m.def("surface_data", &surface_data, py::arg("surface"), py::arg("nurbs") = true,
-          "Exact definition of a surface: kind, NURBS data and analytic parameters for planes, "
-          "cylinders, cones, spheres and tori.");
-    m.def("brep_dump", &brep_dump, py::arg("brep"), py::arg("geometry") = true,
-          "Topology (regions, shells, faces with both faceuses and their loops, edges, vertices) "
-          "and optionally exact geometry of a Brep as plain Python data.");
+SmBrep* face_from_surface(const SmSurface* surface)
+{
+    SmSurface* copy = nullptr;
+    check(surface->Copy(ctx(), copy), "SmSurface::Copy");
+    SmBrep* out = new (ctx()) SmBrep();
+    SmFace* face = nullptr;
+    SmStatus st = out->CreateFaceFromSurface(copy, copy->GetNaturalUVDomain(), face);
+    if (st != SM_SUCCESS)
+    {
+        if (copy->GetOwner() == nullptr)
+            delete copy;
+        delete out;
+        check(st, "SmBrep::CreateFaceFromSurface");
+    }
+    return out;
+}
 
-    m.def("seam_edges", [](const SmBrep* brep) {
-        // Edges that one face uses twice: the seams of periodic surfaces.
-        SmTArray<SmEdge*> edges;
-        brep->GetEdges(edges);
-        std::vector<long> out;
-        for (ULONG i = 0; i < edges.GetSize(); ++i)
-        {
-            SmTArray<SmFace*> faces;
-            edges[i]->GetFaces(faces);
-            if (faces.GetSize() != 1)
-                continue;
-            SmTArray<SmLoopuse*> lus;
-            faces[0]->GetUpwardLoopuses(lus);
-            int uses = 0;
-            for (ULONG l = 0; l < lus.GetSize(); ++l)
-            {
-                SmTArray<SmEdgeuse*> eus;
-                lus[l]->GetEdgeuses(eus);
-                for (ULONG j = 0; j < eus.GetSize(); ++j)
-                    uses += eus[j]->GetEdge() == edges[i] ? 1 : 0;
-            }
-            if (uses > 1)
-                out.push_back(static_cast<long>(i));
-        }
-        return out;
-    }, py::arg("brep"), "Indices (in edge order) of the seam edges of a Brep.");
-
-    m.def("face_indices", [](const SmBrep* brep, const std::vector<SmFace*>& faces) {
-        SmTArray<SmFace*> all;
-        brep->GetFaces(all);
-        return indices_in(all, faces);
-    });
-    m.def("edge_indices", [](const SmBrep* brep, const std::vector<SmEdge*>& edges) {
-        SmTArray<SmEdge*> all;
-        brep->GetEdges(all);
-        return indices_in(all, edges);
-    });
-    m.def("vertex_indices", [](const SmBrep* brep, const std::vector<SmVertex*>& vertices) {
-        SmTArray<SmVertex*> all;
-        brep->GetVertices(all);
-        return indices_in(all, vertices);
-    });
-
-    m.def("copy_with_map", &copy_with_map, py::arg("brep"), py::arg("faces") = std::vector<SmFace*>(),
-          py::arg("edges") = std::vector<SmEdge*>(), py::arg("vertices") = std::vector<SmVertex*>(),
-          "Copy a Brep and return (copy, faces, edges, vertices) with the given topology of the original "
-          "mapped onto the copy.");
-
-    m.def("transform_brep", &transform_brep, py::arg("brep"), py::arg("matrix"),
-          "Apply a row-major 4x4 matrix to a Brep in place (rigid, scaling and mirroring).");
-
-    m.def("copy_faces", [](const SmBrep* brep, const std::vector<SmFace*>& faces) {
-        SmTArray<SmFace*> list;
-        for (SmFace* f : faces)
-            list.Add(f);
-        SmBrep* out = new (ctx()) SmBrep();
-        SmStatus st = const_cast<SmBrep*>(brep)->CopyFaces(list, out, nullptr, FALSE);
+SmBrep* combine(const std::vector<SmBrep*>& breps)
+{
+    SmBrep* out = new (ctx()) SmBrep();
+    for (SmBrep* b : breps)
+    {
+        SmTArray<SmFace*> faces;
+        b->GetFaces(faces);
+        SmStatus st = b->CopyFaces(faces, out, nullptr, FALSE);
         if (st != SM_SUCCESS)
         {
             delete out;
             check(st, "SmBrep::CopyFaces");
         }
-        return out;
-    }, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
-       "Copy faces of a Brep into a new Brep (no merge, no stitching).");
+    }
+    return out;
+}
 
-    m.def("face_from_surface", [](const SmSurface* surface) {
-        SmSurface* copy = nullptr;
-        check(surface->Copy(ctx(), copy), "SmSurface::Copy");
-        SmBrep* out = new (ctx()) SmBrep();
-        SmFace* face = nullptr;
-        SmStatus st = out->CreateFaceFromSurface(copy, copy->GetNaturalUVDomain(), face);
-        if (st != SM_SUCCESS)
-        {
-            if (copy->GetOwner() == nullptr)
-                delete copy;
-            delete out;
-            check(st, "SmBrep::CreateFaceFromSurface");
-        }
-        return out;
-    }, py::arg("surface"), py::return_value_policy::take_ownership,
-       "A sheet Brep with one face covering the whole (copied) surface.");
-
-    m.def("combine", [](const std::vector<SmBrep*>& breps) {
-        SmBrep* out = new (ctx()) SmBrep();
-        for (SmBrep* b : breps)
-        {
-            SmTArray<SmFace*> faces;
-            b->GetFaces(faces);
-            SmStatus st = b->CopyFaces(faces, out, nullptr, FALSE);
-            if (st != SM_SUCCESS)
-            {
-                delete out;
-                check(st, "SmBrep::CopyFaces");
-            }
-        }
-        return out;
-    }, py::arg("breps"), py::return_value_policy::take_ownership,
-       "Copy all faces of several Breps into one new Brep without Booleans (for disjoint bodies).");
-
-    m.def("separate_bodies", [](const SmBrep* brep) {
-        SmBrep* copy = new (ctx()) SmBrep(*brep, nullptr, nullptr, TRUE, FALSE);
-        SmTArray<SmBrep*> parts;
-        SmStatus st = SmBrep::CreateOneBrepPerBody(copy, parts, FALSE);
-        if (st != SM_SUCCESS)
-        {
-            bool in_parts = false;
-            for (ULONG i = 0; i < parts.GetSize(); ++i)
-            {
-                in_parts = in_parts || parts[i] == copy;
-                delete parts[i];
-            }
-            if (copy && !in_parts)
-                delete copy;
-            check(st, "SmBrep::CreateOneBrepPerBody");
-        }
-        py::list out;
+std::vector<SmBrep*> separate_bodies(const SmBrep* brep)
+{
+    SmBrep* copy = new (ctx()) SmBrep(*brep, nullptr, nullptr, TRUE, FALSE);
+    SmTArray<SmBrep*> parts;
+    SmStatus st = SmBrep::CreateOneBrepPerBody(copy, parts, FALSE);
+    if (st != SM_SUCCESS)
+    {
+        bool in_parts = false;
         for (ULONG i = 0; i < parts.GetSize(); ++i)
-            out.append(py::cast(parts[i], py::return_value_policy::take_ownership));
-        return out;
-    }, py::arg("brep"), "Split a copy of a Brep into one Brep per connected body.");
+        {
+            in_parts = in_parts || parts[i] == copy;
+            delete parts[i];
+        }
+        if (copy && !in_parts)
+            delete copy;
+        check(st, "SmBrep::CreateOneBrepPerBody");
+    }
+    std::vector<SmBrep*> out;
+    for (ULONG i = 0; i < parts.GetSize(); ++i)
+        out.push_back(parts[i]);
+    return out;
+}
 
-    m.def("delete_brep", [](SmBrep* brep) { delete brep; }, py::arg("brep"),
-          "Free a Brep. Every handle into it becomes invalid.");
-    m.def("delete_curve", [](SmCurve* curve) {
-        if (curve && curve->GetOwner() == nullptr)
-            delete curve;
-    }, py::arg("curve"), "Free a standalone curve (curves owned by a Brep are left alone).");
-    m.def("delete_surface", [](SmSurface* surface) {
-        if (surface && surface->GetOwner() == nullptr)
-            delete surface;
-    }, py::arg("surface"), "Free a standalone surface (surfaces owned by a Brep are left alone).");
-    m.def("delete_polybrep", [](SmPolyBrep* poly) { delete poly; }, py::arg("poly"));
+void delete_brep(SmBrep* brep) { delete brep; }
 
-    m.def("copy_curve", [](const SmCurve* curve) {
-        SmCurve* out = nullptr;
-        check(curve->Copy(ctx(), out), "SmCurve::Copy");
-        return out;
-    }, py::arg("curve"), py::return_value_policy::take_ownership,
-       "Standalone copy of a curve (also of a curve owned by an edge).");
+void delete_curve(SmCurve* curve)
+{
+    if (curve && curve->GetOwner() == nullptr)
+        delete curve;
+}
 
-    m.def("trimmed_curve", [](const SmCurve* curve, double t0, double t1) {
-        SmCurve* out = nullptr;
-        check(curve->Copy(ctx(), out), "SmCurve::Copy");
-        SmExtent1d ivl(t0, t1);
+void delete_surface(SmSurface* surface)
+{
+    if (surface && surface->GetOwner() == nullptr)
+        delete surface;
+}
+
+void delete_polybrep(SmPolyBrep* poly) { delete poly; }
+
+SmCurve* copy_curve(const SmCurve* curve)
+{
+    SmCurve* out = nullptr;
+    check(curve->Copy(ctx(), out), "SmCurve::Copy");
+    return out;
+}
+
+SmCurve* trimmed_curve(const SmCurve* curve, double t0, double t1)
+{
+    SmCurve* out = nullptr;
+    check(curve->Copy(ctx(), out), "SmCurve::Copy");
+    SmExtent1d ivl(t0, t1);
+    SmStatus st = out->Trim(ivl);
+    if (st != SM_SUCCESS)
+    {
+        delete out;
+        check(st, "SmCurve::Trim");
+    }
+    return out;
+}
+
+SmCurve* ellipse_arc(const SmCurve* curve, double start, double end)
+{
+    if (!curve || curve->GetType() != SmEllipse_TYPE)
+        throw std::invalid_argument("expected an ellipse");
+    if (!(start >= -360.0 && start < end && end <= 360.0 && end - start <= 360.0))
+        throw std::invalid_argument("the angles must run upwards within [-360, 360], at most 360 apart");
+    SmAxis2Placement a;
+    double r1 = 0.0, r2 = 0.0;
+    check(static_cast<const SmEllipse*>(curve)->GetCanonical(a, r1, r2), "SmEllipse::GetCanonical");
+    // An ellipse's angles may run from -360 to 360, so an arc across angle 0 is one curve
+    // (a trim of the whole ellipse cannot cross its start).
+    SmExtent1d ivl(start, end);
+    SmEllipse* out = nullptr;
+    check(SmEllipse::CreateCanonical(ctx(), a, r1, r2, out, &ivl), "SmEllipse::CreateCanonical");
+    return out;
+}
+
+SmCurve* edge_curve(const SmEdge* edge)
+{
+    SmCurve* out = nullptr;
+    check(edge->GetCurve()->Copy(ctx(), out), "SmCurve::Copy");
+    SmExtent1d ivl = edge->GetInterval();
+    SmExtent1d nat = out->GetNaturalInterval();
+    if (std::abs(ivl.GetMin() - nat.GetMin()) > 1e-12 || std::abs(ivl.GetMax() - nat.GetMax()) > 1e-12)
+    {
         SmStatus st = out->Trim(ivl);
         if (st != SM_SUCCESS)
         {
             delete out;
             check(st, "SmCurve::Trim");
         }
-        return out;
-    }, py::arg("curve"), py::arg("t0"), py::arg("t1"), py::return_value_policy::take_ownership,
-       "Standalone copy of a curve restricted to [t0, t1].");
+    }
+    return out;
+}
 
-    m.def("ellipse_arc", [](const SmCurve* curve, double start, double end) {
-        if (!curve || curve->GetType() != SmEllipse_TYPE)
-            throw std::invalid_argument("expected an ellipse");
-        if (!(start >= -360.0 && start < end && end <= 360.0 && end - start <= 360.0))
-            throw std::invalid_argument("the angles must run upwards within [-360, 360], at most 360 apart");
-        SmAxis2Placement a;
-        double r1 = 0.0, r2 = 0.0;
-        check(static_cast<const SmEllipse*>(curve)->GetCanonical(a, r1, r2), "SmEllipse::GetCanonical");
-        // An ellipse's angles may run from -360 to 360, so an arc across angle 0 is one curve
-        // (a trim of the whole ellipse cannot cross its start).
-        SmExtent1d ivl(start, end);
-        SmEllipse* out = nullptr;
-        check(SmEllipse::CreateCanonical(ctx(), a, r1, r2, out, &ivl), "SmEllipse::CreateCanonical");
-        return static_cast<SmCurve*>(out);
-    }, py::arg("ellipse"), py::arg("start"), py::arg("end"), py::return_value_policy::take_ownership,
-       "Standalone copy of an ellipse over the ellipse angles [start, end] in degrees "
-       "(-360 <= start < end <= 360, at most 360 apart).");
+std::pair<double, double> reverse_curve(SmCurve* curve)
+{
+    SmExtent1d reversed;
+    check(curve->ReverseParameterization(curve->GetNaturalInterval(), reversed), "SmCurve::ReverseParameterization");
+    return {reversed.GetMin(), reversed.GetMax()};
+}
 
-    m.def("edge_curve", [](const SmEdge* edge) {
-        SmCurve* out = nullptr;
-        check(edge->GetCurve()->Copy(ctx(), out), "SmCurve::Copy");
-        SmExtent1d ivl = edge->GetInterval();
-        SmExtent1d nat = out->GetNaturalInterval();
-        if (std::abs(ivl.GetMin() - nat.GetMin()) > 1e-12 || std::abs(ivl.GetMax() - nat.GetMax()) > 1e-12)
-        {
-            SmStatus st = out->Trim(ivl);
-            if (st != SM_SUCCESS)
-            {
-                delete out;
-                check(st, "SmCurve::Trim");
-            }
-        }
-        return out;
-    }, py::arg("edge"), py::return_value_policy::take_ownership,
-       "Standalone copy of an edge's curve over the edge's interval.");
+SmBSplineCurve* approximate_curve(const SmCurve* curve, double tolerance)
+{
+    SmTArray<double> breaks;
+    SmExtent1d ivl = curve->GetNaturalInterval();
+    breaks.Add(ivl.GetMin());
+    breaks.Add(ivl.GetMax());
+    double gap = 0.0;
+    SmBSplineCurve* out = nullptr;
+    check(curve->ApproximateCurve(ctx(), breaks, tolerance, gap, out, FALSE, TRUE), "SmCurve::ApproximateCurve");
+    return out;
+}
 
+// Precise integration without the SM_API accuracy clamp ([1e-4, 1e-1] for faces): the kernel's
+// error falls as the accuracy is tightened (usd-brep KNOWN_ISSUES, "Area, volume and mass
+// properties of faces bounded by circles").
+Value face_properties(const SmFace* face, double accuracy)
+{
+    SmExtent3d box;
+    check(face->CalculateBoundingBox(box), "SmFace::CalculateBoundingBox");
+    SmPoint3d origin = box.GetMid();
+    SmVector3d size = box.GetSize();
+    double extent = std::max(size.z, std::max(size.x, size.y));
+    double area = 0.0, delta_volume = 0.0;
+    SmTArray<SmVector3d> moments;
+    check(face->ComputePreciseProperties(SM_OT_SAME, accuracy, origin, extent * extent / 100.0, 0.0, area,
+                                         delta_volume, moments, SM_PPF_AREA | SM_PPF_AREA_FIRST_MOMENTS),
+          "SmFace::ComputePreciseProperties");
+    Value d = Value::dict();
+    d.set("area", val(std::abs(area)));
+    d.set("origin", xyz(origin));
+    d.set("first_moments", xyz(moments[0]));
+    d.set("signed_area", val(area));
+    return d;
+}
+
+Value brep_properties(const SmBrep* brep, double accuracy, double density)
+{
+    SmExtent3d box;
+    check(brep->CalculateBoundingBox(box), "SmBrep::CalculateBoundingBox");
+    SmPoint3d origin = box.GetMid();
+    SmMassPropertyBehavior behavior(density);
+    double area = 0.0, volume = 0.0, mass = 0.0;
+    SmTArray<SmVector3d> moments;
+    check(brep->ComputePreciseProperties(accuracy, origin, behavior, area, volume, mass, moments),
+          "SmBrep::ComputePreciseProperties");
+    Value d = Value::dict();
+    d.set("area", val(area));
+    d.set("volume", val(volume));
+    d.set("mass", val(mass));
+    d.set("origin", xyz(origin));
+    Value m8 = Value::make_list();
+    for (ULONG i = 0; i < moments.GetSize(); ++i)
+        m8.push(xyz(moments[i]));
+    d.set("moments", m8);
+    return d;
+}
+
+Value curve_eval(const SmCurve* curve, double t, int derivatives)
+{
+    if (derivatives < 0 || derivatives > 3)
+        throw std::invalid_argument("derivatives must be 0..3");
+    SmVector3d out[4];
+    check(curve->Evaluate(t, static_cast<ULONG>(derivatives), TRUE, out, FALSE), "SmCurve::Evaluate");
+    Value l = Value::make_list();
+    for (int i = 0; i <= derivatives; ++i)
+        l.push(xyz(out[i]));
+    return l;
+}
+
+SmBrep* curve_sweep(const std::vector<SmCurve*>& profile, SmBSplineCurve* path, bool cap_ends, bool center,
+                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve)
+{
+    SmTArray<SmCurve*> curves;
+    for (SmCurve* c : profile)
+        curves.Add(c);
+    SmSweepOptions options;
+    options.bCapEndsArg = cap_ends ? TRUE : FALSE;
+    options.bMoveProfileCenterToPath = center ? TRUE : FALSE;
+    options.bOrientProfilePerpendicularToPath = orient ? TRUE : FALSE;
+    options.bTranslationalSweep = translational ? TRUE : FALSE;
+    options.bMoveToProfile = FALSE;
+    SmBrep* out = nullptr;
+    check(SmApiCreateCurveSweep(curves, path, scale_reference, scale_curve, &options, out, nullptr, nullptr, nullptr),
+          "SmApiCreateCurveSweep");
+    return out;
+}
+
+std::string curve_kind(const SmCurve* curve) { return curve_kind_name(curve); }
+std::string surface_kind(const SmSurface* surface) { return surface_kind_name(surface); }
+std::string object_class(const SmObject* object) { return std::string(object->GetClassString()); }
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "py_value.h"
+
+namespace {
+
+template <typename T>
+py::list owned_list(const std::vector<T*>& items, py::return_value_policy policy)
+{
+    py::list out;
+    for (T* item : items)
+        out.append(py::cast(item, policy));
+    return out;
+}
+
+}  // namespace
+
+void bind_smlibpy_ext(py::module_ m)
+{
+    bind_step_build(m);
+
+    m.def("curve_data", [](const SmCurve* curve, bool nurbs) {
+        return smlibpy::to_python(smlibpy::curve_data(curve, nurbs));
+    }, py::arg("curve"), py::arg("nurbs") = true,
+          "Exact definition of a curve: kind, NURBS data (degree, poles, knots, weights) and analytic "
+          "parameters for lines, circles and ellipses.");
+    m.def("surface_data", [](const SmSurface* surface, bool nurbs) {
+        return smlibpy::to_python(smlibpy::surface_data(surface, nurbs));
+    }, py::arg("surface"), py::arg("nurbs") = true,
+          "Exact definition of a surface: kind, NURBS data and analytic parameters for planes, "
+          "cylinders, cones, spheres and tori.");
+    m.def("brep_dump", [](const SmBrep* brep, bool geometry) {
+        return smlibpy::to_python(smlibpy::brep_dump(brep, geometry));
+    }, py::arg("brep"), py::arg("geometry") = true,
+          "Topology (regions, shells, faces with both faceuses and their loops, edges, vertices) "
+          "and optionally exact geometry of a Brep as plain Python data.");
+
+    m.def("seam_edges", &smlibpy::seam_edges, py::arg("brep"), "Indices (in edge order) of the seam edges of a Brep.");
+    m.def("face_indices", &smlibpy::face_indices);
+    m.def("edge_indices", &smlibpy::edge_indices);
+    m.def("vertex_indices", &smlibpy::vertex_indices);
+
+    m.def("copy_with_map", [](const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<SmEdge*>& edges,
+                              const std::vector<SmVertex*>& vertices) {
+        const smlibpy::CopyMap r = smlibpy::copy_with_map(brep, faces, edges, vertices);
+        const auto ref = py::return_value_policy::reference;
+        return py::make_tuple(py::cast(r.brep, py::return_value_policy::take_ownership), owned_list(r.faces, ref),
+                              owned_list(r.edges, ref), owned_list(r.vertices, ref));
+    }, py::arg("brep"), py::arg("faces") = std::vector<SmFace*>(),
+          py::arg("edges") = std::vector<SmEdge*>(), py::arg("vertices") = std::vector<SmVertex*>(),
+          "Copy a Brep and return (copy, faces, edges, vertices) with the given topology of the original "
+          "mapped onto the copy.");
+
+    m.def("transform_brep", &smlibpy::transform_brep, py::arg("brep"), py::arg("matrix"),
+          "Apply a row-major 4x4 matrix to a Brep in place (rigid, scaling and mirroring).");
+
+    m.def("copy_faces", &smlibpy::copy_faces, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
+          "Copy faces of a Brep into a new Brep (no merge, no stitching).");
+    m.def("face_from_surface", &smlibpy::face_from_surface, py::arg("surface"), py::return_value_policy::take_ownership,
+          "A sheet Brep with one face covering the whole (copied) surface.");
+    m.def("combine", &smlibpy::combine, py::arg("breps"), py::return_value_policy::take_ownership,
+          "Copy all faces of several Breps into one new Brep without Booleans (for disjoint bodies).");
+    m.def("separate_bodies", [](const SmBrep* brep) {
+        return owned_list(smlibpy::separate_bodies(brep), py::return_value_policy::take_ownership);
+    }, py::arg("brep"), "Split a copy of a Brep into one Brep per connected body.");
+
+    m.def("delete_brep", &smlibpy::delete_brep, py::arg("brep"), "Free a Brep. Every handle into it becomes invalid.");
+    m.def("delete_curve", &smlibpy::delete_curve, py::arg("curve"),
+          "Free a standalone curve (curves owned by a Brep are left alone).");
+    m.def("delete_surface", &smlibpy::delete_surface, py::arg("surface"),
+          "Free a standalone surface (surfaces owned by a Brep are left alone).");
+    m.def("delete_polybrep", &smlibpy::delete_polybrep, py::arg("poly"));
+
+    m.def("copy_curve", &smlibpy::copy_curve, py::arg("curve"), py::return_value_policy::take_ownership,
+          "Standalone copy of a curve (also of a curve owned by an edge).");
+    m.def("trimmed_curve", &smlibpy::trimmed_curve, py::arg("curve"), py::arg("t0"), py::arg("t1"),
+          py::return_value_policy::take_ownership, "Standalone copy of a curve restricted to [t0, t1].");
+    m.def("ellipse_arc", &smlibpy::ellipse_arc, py::arg("ellipse"), py::arg("start"), py::arg("end"),
+          py::return_value_policy::take_ownership,
+          "Standalone copy of an ellipse over the ellipse angles [start, end] in degrees "
+          "(-360 <= start < end <= 360, at most 360 apart).");
+    m.def("edge_curve", &smlibpy::edge_curve, py::arg("edge"), py::return_value_policy::take_ownership,
+          "Standalone copy of an edge's curve over the edge's interval.");
     m.def("reverse_curve", [](SmCurve* curve) {
-        SmExtent1d reversed;
-        check(curve->ReverseParameterization(curve->GetNaturalInterval(), reversed), "SmCurve::ReverseParameterization");
-        return py::make_tuple(reversed.GetMin(), reversed.GetMax());
+        const auto r = smlibpy::reverse_curve(curve);
+        return py::make_tuple(r.first, r.second);
     }, py::arg("curve"), "Reverse the direction of a standalone curve in place; returns the new interval.");
+    m.def("approximate_curve", &smlibpy::approximate_curve, py::arg("curve"), py::arg("tolerance") = 1e-7,
+          py::return_value_policy::take_ownership, "NURBS approximation of any curve that keeps its parameterisation.");
 
-    m.def("approximate_curve", [](const SmCurve* curve, double tolerance) {
-        SmTArray<double> breaks;
-        SmExtent1d ivl = curve->GetNaturalInterval();
-        breaks.Add(ivl.GetMin());
-        breaks.Add(ivl.GetMax());
-        double gap = 0.0;
-        SmBSplineCurve* out = nullptr;
-        check(curve->ApproximateCurve(ctx(), breaks, tolerance, gap, out, FALSE, TRUE), "SmCurve::ApproximateCurve");
-        return out;
-    }, py::arg("curve"), py::arg("tolerance") = 1e-7, py::return_value_policy::take_ownership,
-       "NURBS approximation of any curve that keeps its parameterisation.");
-
-    // Precise integration without the SM_API accuracy clamp ([1e-4, 1e-1] for faces): the
-    // kernel's error falls as the accuracy is tightened (usd-brep KNOWN_ISSUES, "Area, volume
-    // and mass properties of faces bounded by circles").
     m.def("face_properties", [](const SmFace* face, double accuracy) {
-        SmExtent3d box;
-        check(face->CalculateBoundingBox(box), "SmFace::CalculateBoundingBox");
-        SmPoint3d origin = box.GetMid();
-        SmVector3d size = box.GetSize();
-        double extent = std::max(size.z, std::max(size.x, size.y));
-        double area = 0.0, delta_volume = 0.0;
-        SmTArray<SmVector3d> moments;
-        check(face->ComputePreciseProperties(SM_OT_SAME, accuracy, origin, extent * extent / 100.0, 0.0, area,
-                                             delta_volume, moments, SM_PPF_AREA | SM_PPF_AREA_FIRST_MOMENTS),
-              "SmFace::ComputePreciseProperties");
-        py::dict d;
-        d["area"] = std::abs(area);
-        d["origin"] = xyz(origin);
-        d["first_moments"] = xyz(moments[0]);
-        d["signed_area"] = area;
-        return d;
+        return smlibpy::to_python(smlibpy::face_properties(face, accuracy));
     }, py::arg("face"), py::arg("accuracy") = 1e-8);
-
     m.def("brep_properties", [](const SmBrep* brep, double accuracy, double density) {
-        SmExtent3d box;
-        check(brep->CalculateBoundingBox(box), "SmBrep::CalculateBoundingBox");
-        SmPoint3d origin = box.GetMid();
-        SmMassPropertyBehavior behavior(density);
-        double area = 0.0, volume = 0.0, mass = 0.0;
-        SmTArray<SmVector3d> moments;
-        check(brep->ComputePreciseProperties(accuracy, origin, behavior, area, volume, mass, moments),
-              "SmBrep::ComputePreciseProperties");
-        py::dict d;
-        d["area"] = area;
-        d["volume"] = volume;
-        d["mass"] = mass;
-        d["origin"] = xyz(origin);
-        py::list m8;
-        for (ULONG i = 0; i < moments.GetSize(); ++i)
-            m8.append(xyz(moments[i]));
-        d["moments"] = m8;
-        return d;
+        return smlibpy::to_python(smlibpy::brep_properties(brep, accuracy, density));
     }, py::arg("brep"), py::arg("accuracy") = 1e-8, py::arg("density") = 1.0,
        "Area, volume, mass and moments (about the bounding box centre, see 'origin').");
 
@@ -769,39 +902,19 @@ void bind_smlibpy_ext(py::module_ m)
     // whose curve starts with a zero tangent as 0).
 
     m.def("curve_eval", [](const SmCurve* curve, double t, int derivatives) {
-        if (derivatives < 0 || derivatives > 3)
-            throw std::invalid_argument("derivatives must be 0..3");
-        SmVector3d out[4];
-        check(curve->Evaluate(t, static_cast<ULONG>(derivatives), TRUE, out, FALSE), "SmCurve::Evaluate");
-        py::list l;
-        for (int i = 0; i <= derivatives; ++i)
-            l.append(xyz(out[i]));
-        return l;
+        return smlibpy::to_python(smlibpy::curve_eval(curve, t, derivatives));
     }, py::arg("curve"), py::arg("t"), py::arg("derivatives") = 1,
        "Point and derivatives [p, dp/dt, d2p/dt2, ...] at parameter t.");
 
-    m.def("curve_sweep", [](const std::vector<SmCurve*>& profile, SmBSplineCurve* path, bool cap_ends, bool center,
-                            bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve) {
-        SmTArray<SmCurve*> curves;
-        for (SmCurve* c : profile)
-            curves.Add(c);
-        SmSweepOptions options;
-        options.bCapEndsArg = cap_ends ? TRUE : FALSE;
-        options.bMoveProfileCenterToPath = center ? TRUE : FALSE;
-        options.bOrientProfilePerpendicularToPath = orient ? TRUE : FALSE;
-        options.bTranslationalSweep = translational ? TRUE : FALSE;
-        options.bMoveToProfile = FALSE;
-        SmBrep* out = nullptr;
-        check(SmApiCreateCurveSweep(curves, path, scale_reference, scale_curve, &options, out, nullptr, nullptr, nullptr), "SmApiCreateCurveSweep");
-        return out;
-    }, py::arg("profile"), py::arg("path"), py::arg("cap_ends") = true, py::arg("center") = true,
-       py::arg("orient") = false, py::arg("translational") = false, py::arg("scale_reference") = nullptr,
-       py::arg("scale_curve") = nullptr, py::return_value_policy::take_ownership,
-       "Sweep profile curves along a path with all SmSweepOptions. Profile and path are copied, not consumed. "
-       "With `center` the bounding-box centre of all profile curves travels along the path; otherwise the "
-       "start point of the first curve does.");
+    m.def("curve_sweep", &smlibpy::curve_sweep, py::arg("profile"), py::arg("path"), py::arg("cap_ends") = true,
+          py::arg("center") = true, py::arg("orient") = false, py::arg("translational") = false,
+          py::arg("scale_reference") = nullptr, py::arg("scale_curve") = nullptr, py::return_value_policy::take_ownership,
+          "Sweep profile curves along a path with all SmSweepOptions. Profile and path are copied, not consumed. "
+          "With `center` the bounding-box centre of all profile curves travels along the path; otherwise the "
+          "start point of the first curve does.");
 
-    m.def("curve_kind", [](const SmCurve* c) { return std::string(curve_kind(c)); });
-    m.def("surface_kind", [](const SmSurface* s) { return std::string(surface_kind(s)); });
-    m.def("object_class", [](const SmObject* o) { return std::string(o->GetClassString()); });
+    m.def("curve_kind", &smlibpy::curve_kind);
+    m.def("surface_kind", &smlibpy::surface_kind);
+    m.def("object_class", &smlibpy::object_class);
 }
+#endif  // SMLIBPY_PYTHON

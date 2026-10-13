@@ -435,49 +435,12 @@ SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reve
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
-#include "ext.h"
-
-namespace {
-
-// The importer's data as a Value, read the way pybind11 reads it: Python and numpy booleans,
-// numbers (numpy scalars too), strings, dicts (keys as their str) and sequences (numpy arrays by row).
-smlibpy::Value to_value(py::handle h)
-{
-    if (h.is_none())
-        return {};
-    if (py::isinstance<py::bool_>(h))
-        return smlibpy::Value::of(h.cast<bool>());
-    if (py::isinstance<py::str>(h))
-        return smlibpy::Value::of(h.cast<std::string>());
-    if (py::isinstance<py::dict>(h))
-    {
-        std::vector<std::pair<std::string, smlibpy::Value>> fields;
-        for (auto kv : h.cast<py::dict>())
-            fields.emplace_back(py::str(kv.first).cast<std::string>(), to_value(kv.second));
-        return smlibpy::Value::dict(std::move(fields));
-    }
-    if (py::isinstance<py::int_>(h) || py::isinstance<py::float_>(h))
-        return smlibpy::Value::of(h.cast<double>());
-    // (a numpy array has __float__ too, for one element: sequences first, a 0-d array a number)
-    const bool scalar_array = py::hasattr(h, "ndim") && h.attr("ndim").cast<int>() == 0;
-    if (!scalar_array && (py::isinstance<py::sequence>(h) || py::isinstance<py::iterable>(h)))
-    {
-        std::vector<smlibpy::Value> items;
-        for (auto item : h)
-            items.push_back(to_value(item));
-        return smlibpy::Value::list(std::move(items));
-    }
-    if (py::hasattr(h, "__float__"))  // numpy scalars and booleans
-        return smlibpy::Value::of(h.cast<double>());
-    throw py::type_error("build_brep: unsupported value of type " + py::str(py::type::of(h)).cast<std::string>());
-}
-
-}  // namespace
+#include "py_value.h"
 
 void bind_step_build(py::module_& m)
 {
     m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored) {
-        return smlibpy::build_brep(to_value(faces), to_value(edges), solid, reversed, mirrored);
+        return smlibpy::build_brep(smlibpy::to_value(faces), smlibpy::to_value(edges), solid, reversed, mirrored);
     }, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
           py::arg("mirrored") = false, py::return_value_policy::take_ownership,
           "Build a Brep from neutral face/edge data (used by the STEP importer).");
