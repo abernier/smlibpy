@@ -1,25 +1,51 @@
 {
   "name": "smlibjs",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.2.2",
   "description": "CAD in JavaScript on the SMLib NURBS kernel, compiled to WebAssembly: smlibpy's API for the web and Node",
-  "license": "MIT",
+  "license": "MIT AND Apache-2.0 AND OFL-1.1",
+  "homepage": "https://smlibpy.classcad.ch/docs/javascript",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awv-informatik/smlibpy.git",
+    "directory": "js"
+  },
+  "bugs": "https://github.com/awv-informatik/smlibpy/issues",
+  "keywords": [
+    "cad",
+    "brep",
+    "nurbs",
+    "solid-modeling",
+    "step",
+    "stl",
+    "webassembly",
+    "wasm"
+  ],
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./wasm/smlibjs.wasm": "./wasm/smlibjs.wasm",
+    "./package.json": "./package.json"
   },
   "files": [
-    "src",
-    "wasm",
-    "fonts"
+    "dist",
+    "wasm/smlibjs.mjs",
+    "wasm/smlibjs.wasm",
+    "fonts",
+    "NOTICE",
+    "LICENSE.usd-brep"
   ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
     "build": "tsc -p tsconfig.build.json",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "fonts": "node scripts/fonts.mjs"
+    "fonts": "node scripts/fonts.mjs",
+    "prepack": "node scripts/prepack.mjs"
   },
   "engines": {
     "node": ">=22.18"

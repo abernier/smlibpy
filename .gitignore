@@ -15,3 +15,5 @@ build-wasm*/
 js/wasm/
 js/node_modules/
 js/dist/
+js/LICENSE
+js/LICENSE.usd-brep
