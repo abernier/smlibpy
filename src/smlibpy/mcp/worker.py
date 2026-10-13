@@ -55,13 +55,13 @@ class _Worker:
         self.ns: dict[str, Any] = {"__name__": "__session__", "__builtins__": __builtins__}
         exec("from smlibpy import *\nimport math\nimport numpy as np", self.ns)
         self.ns["show"] = self._show
-        self.shown: list[Any] | None = None  # set by show(...); None: every part and shell
+        self.shown: list[Any] | None = None  # set by show(...); None: every part, shell and read STEP file
         self.count = 0
 
     # -- scripts ----------------------------------------------------------------
     def _show(self, *shapes: Any, **_ignored: Any) -> None:
         """In a session, show(...) chooses what the viewer and snapshots display; show()
-        without arguments goes back to showing every part and shell."""
+        without arguments goes back to showing every part, shell (also in lists) and read STEP file."""
         flat: list[Any] = []
         for s in shapes:
             flat.extend(s) if isinstance(s, (list, tuple)) else flat.append(s)
@@ -95,7 +95,9 @@ class _Worker:
         return getattr(obj, "name", None) or type(obj).__name__
 
     def _items(self, names: list[str] | None = None) -> list[tuple[str, Any]]:
-        from smlibpy import Mesh, Part, Shape, Shell
+        """What is shown: the variables asked for, what show(...) chose, or else every part,
+        shell, list of them (an imported assembly) and read STEP file of the session."""
+        from smlibpy import Mesh, Part, Shape, ShapeList, Shell, StepModel
 
         if names:
             out = []
@@ -105,9 +107,16 @@ class _Worker:
                 out.append((n, self.ns[n]))
             return out
         if self.shown is not None:
-            return [(self._named(s), s) for s in self.shown if isinstance(s, (Shape, Mesh))]
-        return [(k, v) for k, v in self.ns.items()
-                if not k.startswith("_") and isinstance(v, (Part, Shell)) and not isinstance(v, type)]
+            return [(self._named(s), s) for s in self.shown if isinstance(s, (Shape, Mesh, StepModel))]
+        out = []
+        for k, v in self.ns.items():
+            if k.startswith("_") or isinstance(v, type):
+                continue
+            if isinstance(v, (Part, Shell, StepModel)):
+                out.append((k, v))
+            elif isinstance(v, ShapeList) and v and all(isinstance(s, (Part, Shell)) for s in v):
+                out.extend((f"{k}[{i}]", s) for i, s in enumerate(v))
+        return out
 
     def op_scene(self) -> dict[str, Any]:
         return {"ok": True, "scene": [{"name": n, **self._summary(s)} for n, s in self._items()],
@@ -116,23 +125,26 @@ class _Worker:
     def op_glb(self) -> dict[str, Any]:
         from smlibpy.viewer import _glb_bytes
 
-        items = self._items()
+        items = _drawn(self._items())
         if not items:
             return {"ok": True, "glb": None, "summary": ""}
-        shapes = [s.named(n) if hasattr(s, "named") and not getattr(s, "name", None) else s for n, s in items]
+        shapes = [s.named(n) if hasattr(s, "named") and not getattr(s, "name", None) else s for n, s, _ in items]
         glb, summary = _glb_bytes(shapes, None, 12.0, True)
         return {"ok": True, "glb": glb, "summary": summary}
 
     def op_scene_json(self) -> dict[str, Any]:
         """What the viewer page draws (the scene format of classcad-ai's viewer): per body its
         faces as meshes (positions, normals, triangles, planar or not), its edges as
-        polylines, its color, and the bounds of everything."""
+        polylines, its color, and the bounds of everything. A read STEP file adds its curves
+        as bodies of edges in their color, and its coordinate systems and points as
+        ``marks``: ``{"frames": [{"name", "o", "x", "y", "z"}], "points": [{"name", "p",
+        "color"}]}``."""
         import numpy as np
 
         from smlibpy import Edge, Face, Mesh, Wire
         from smlibpy.colors import to_rgb
         from smlibpy.exporters import _curve_points, _edge_polylines
-        from smlibpy.mesh import tessellate
+        from smlibpy.mesh import face_meshes, tessellate
 
         def flat(a: Any) -> list[float]:
             return [round(float(v), 4) for v in np.asarray(a, dtype=float).ravel()]
@@ -145,29 +157,49 @@ class _Worker:
                 normals = flat(n)
             return {"p": flat(m.vertices), "n": normals, "i": [int(v) for v in m.triangles.ravel()], "flat": planar}
 
+        def rgb(color: Any) -> list[int] | None:
+            return [round(c * 255) for c in to_rgb(color)] if color is not None else None
+
         bodies, placements = [], []
         stats = {"bodies": 0, "faces": 0, "triangles": 0, "edges": 0}
         lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
-        for name, shape in self._items():
-            color = getattr(shape, "color", None)
+        items = self._items()
+        for name, shape, color in _drawn(items):
             body: dict[str, Any] = {"id": len(bodies), "name": getattr(shape, "name", None) or name,
-                                    "color": [round(c * 255) for c in to_rgb(color)] if color is not None else None,
-                                    "opacity": 1, "faces": [], "edges": []}
+                                    "color": rgb(color), "opacity": 1, "faces": [], "edges": []}
             try:
                 if isinstance(shape, Mesh):
                     body["faces"].append(mesh_face(shape, False))
                 elif isinstance(shape, (Edge, Wire)):
                     body["edges"] = [flat(pl) for pl in _curve_points(shape)]
+                    # a curve is drawn in its color, unless white or black would vanish on the stage
+                    if color is not None and max(to_rgb(color)) > 0.1 and min(to_rgb(color)) < 0.9:
+                        body["edgeColor"] = body["color"]
                 else:
                     faces = [shape] if isinstance(shape, Face) else list(shape.faces())
-                    size = max(shape.bbox().diagonal, 1e-6)
-                    for f in faces:
-                        m = tessellate(f, size * 1e-3, 12.0)
+                    tol = max(shape.bbox().diagonal, 1e-6) * 1e-3
+                    # the body is meshed in one piece and cut by face: imported faces the
+                    # kernel cannot mesh on their own show too
+                    try:
+                        meshes = face_meshes(shape, tol, 12.0) if not isinstance(shape, Face) else None
+                    except Exception:
+                        meshes = None
+                    for i, f in enumerate(faces):
+                        try:
+                            m = meshes[i] if meshes is not None else tessellate(f, tol, 12.0)
+                            planar = f.geom_type == "plane"
+                        except Exception:  # one face the kernel cannot mesh: the others still show
+                            continue
                         if len(m.triangles):
-                            body["faces"].append(mesh_face(m, f.geom_type == "plane"))
-                    lines = _edge_polylines(shape) if not isinstance(shape, Face) else _curve_points(shape)
-                    body["edges"] = [flat(pl) for pl in lines]
+                            body["faces"].append(mesh_face(m, planar))
+                    try:
+                        lines = _edge_polylines(shape) if not isinstance(shape, Face) else _curve_points(shape)
+                        body["edges"] = [flat(pl) for pl in lines]
+                    except Exception:
+                        pass
             except Exception:
+                continue
+            if not body["faces"] and not body["edges"]:
                 continue
             for f in body["faces"]:
                 p = np.asarray(f["p"]).reshape(-1, 3)
@@ -182,12 +214,23 @@ class _Worker:
             stats["edges"] += len(body["edges"])
             placements.append({"body": len(bodies), "m": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]})
             bodies.append(body)
+        marks: dict[str, list[dict[str, Any]]] = {"frames": [], "points": []}
+        for model in _step_models(items):
+            for f in model.frames:
+                p = f.plane
+                marks["frames"].append({"name": f.name, "o": flat(p.origin.to_tuple()), "x": flat(p.x_dir.to_tuple()),
+                                        "y": flat(p.y_dir.to_tuple()), "z": flat(p.z_dir.to_tuple())})
+            for pt in model.points:
+                marks["points"].append({"name": pt.name, "p": flat(pt.point.to_tuple()), "color": rgb(pt.color)})
+        for p in [m["o"] for m in marks["frames"]] + [m["p"] for m in marks["points"]]:
+            lo, hi = np.minimum(lo, p), np.maximum(hi, p)
         stats["bodies"] = len(bodies)
         names = [b["name"] for b in bodies]
-        scene = {"kind": "PART" if bodies else "EMPTY",
+        shown = bodies or marks["frames"] or marks["points"]
+        scene = {"kind": "PART" if shown else "EMPTY",
                  "name": names[0] if len(names) == 1 else (f"{len(names)} shapes" if names else ""),
-                 "bodies": bodies, "placements": placements, "features": [], "stats": stats,
-                 "bounds": {"min": [float(v) for v in lo], "max": [float(v) for v in hi]} if bodies and np.isfinite(lo).all() else None}
+                 "bodies": bodies, "placements": placements, "features": [], "stats": stats, "marks": marks,
+                 "bounds": {"min": [float(v) for v in lo], "max": [float(v) for v in hi]} if shown and np.isfinite(lo).all() else None}
         return {"ok": True, "scene": scene}
 
     def op_snapshot(self, view: Any = "iso", size: tuple[int, int] = (1000, 750), names: list[str] | None = None,
@@ -226,13 +269,13 @@ class _Worker:
 
     # -- looking at things ----------------------------------------------------------
     def op_vars(self) -> dict[str, Any]:
-        from smlibpy import Mesh, Shape, ShapeList
+        from smlibpy import Mesh, Shape, ShapeList, StepModel
 
         rows = []
         for k, v in self.ns.items():
             if k.startswith("_") or k in ("math", "np"):
                 continue
-            if isinstance(v, (Shape, ShapeList, Mesh)) and k not in _LIBRARY_NAMES:
+            if isinstance(v, (Shape, ShapeList, Mesh, StepModel)) and k not in _LIBRARY_NAMES:
                 rows.append({"name": k, **self._summary(v)})
         return {"ok": True, "vars": rows}
 
@@ -252,10 +295,14 @@ class _Worker:
         return {"ok": True, "info": info}
 
     def _summary(self, obj: Any, full: bool = False) -> dict[str, Any]:
-        from smlibpy import Edge, Face, Mesh, Part, Shape, ShapeList, Shell, Sketch, Wire
+        from smlibpy import Edge, Face, Mesh, Part, Shape, ShapeList, Shell, Sketch, StepModel, Wire
 
         d: dict[str, Any] = {"type": type(obj).__name__}
         try:
+            if isinstance(obj, StepModel):
+                d.update(bodies=len(obj.bodies), frames=[f"{f.name} ({f.product})" for f in obj.frames],
+                         curves=[f"{c.name} ({c.product})" for c in obj.curves], points=len(obj.points))
+                return d
             if isinstance(obj, ShapeList):
                 d["count"] = len(obj)
                 kinds: dict[str, int] = {}
@@ -297,16 +344,16 @@ class _Worker:
         return d
 
     def _describe(self, value: Any) -> str:
-        from smlibpy import Mesh, Shape, ShapeList
+        from smlibpy import Mesh, Shape, ShapeList, StepModel
 
-        if isinstance(value, (Shape, ShapeList, Mesh)):
+        if isinstance(value, (Shape, ShapeList, Mesh, StepModel)):
             return repr(value)[:VALUE_LIMIT]
         text = repr(value)
         return text if len(text) <= VALUE_LIMIT else text[:VALUE_LIMIT] + f" … ({len(text)} characters)"
 
     # -- files --------------------------------------------------------------------
     def op_save(self, format: str, path: str | None = None, names: list[str] | None = None) -> dict[str, Any]:
-        items = self._items(names)
+        items = [(n, x) for n, x, _ in _drawn(self._items(names), curves=False)]
         if not items:
             return {"ok": False, "error": "nothing to save: no part or shell yet, and show(...) chose nothing"}
         ext = {"step": ".step", "stp": ".step", "stl": ".stl", "glb": ".glb", "gltf": ".gltf", "obj": ".obj",
@@ -351,6 +398,28 @@ class _Worker:
 
     def op_ping(self) -> dict[str, Any]:
         return {"ok": True, "pid": os.getpid()}
+
+
+def _drawn(items: list[tuple[str, Any]], curves: bool = True) -> list[tuple[str, Any, Any]]:
+    """(name, shape, color) of what is drawn: a read STEP file (``read_step``) gives its
+    bodies and, with ``curves``, its curves in their colors."""
+    from smlibpy import StepModel
+
+    out: list[tuple[str, Any, Any]] = []
+    for name, s in items:
+        if isinstance(s, StepModel):
+            out.extend((b.name or f"{name}.bodies[{i}]", b, b.color) for i, b in enumerate(s.bodies))
+            if curves:
+                out.extend((c.name or f"{name}.curves[{i}]", c.shape, c.color) for i, c in enumerate(s.curves))
+        else:
+            out.append((name, s, getattr(s, "color", None)))
+    return out
+
+
+def _step_models(items: list[tuple[str, Any]]) -> list[Any]:
+    from smlibpy import StepModel
+
+    return [s for _, s in items if isinstance(s, StepModel)]
 
 
 _LIBRARY_NAMES = {"X", "Y", "Z"}

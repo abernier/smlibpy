@@ -85,13 +85,71 @@ controls.addEventListener('change', () => {
   silDirty = true
 })
 
-const fat = positions => {
+const fat = (positions, material = edgeMaterial) => {
   const g = new LineSegmentsGeometry()
   g.setPositions(positions.length ? positions : [0, 0, 0, 0, 0, 0])
-  const l = new LineSegments2(g, edgeMaterial)
+  const l = new LineSegments2(g, material)
   l.frustumCulled = false
   l.renderOrder = 2
   return l
+}
+
+// Lines in a colour of their own: the curves of a STEP file, the axes of its coordinate
+// systems. Made with each model, and let go with it.
+let lineMaterials = []
+let axisMaterials = {} // x, y, z: they follow the theme
+const colouredLines = (positions, color) => {
+  const material = new LineMaterial({ color, linewidth: 1.6, transparent: true })
+  material.resolution.copy(edgeMaterial.resolution)
+  lineMaterials.push(material)
+  return fat(positions, material)
+}
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+
+// The names of coordinate systems and points, written beside them.
+const labelLayer = document.createElement('div')
+labelLayer.className = 'marks'
+labelLayer.setAttribute('aria-hidden', 'true')
+stage.insertBefore(labelLayer, $('hud'))
+let labels = [] // { el, p }
+const projected = new THREE.Vector3()
+function placeLabels() {
+  const w = stage.clientWidth, h = stage.clientHeight
+  for (const l of labels) {
+    projected.copy(l.p).project(camera)
+    l.el.style.transform = `translate(${(((projected.x + 1) / 2) * w).toFixed(1)}px, ${(((1 - projected.y) / 2) * h).toFixed(1)}px)`
+  }
+}
+
+// Coordinate systems as their three axes (x, y, z in the axis colours), points as small
+// crosses, both with their names.
+function buildMarks(marks, length) {
+  const group = new THREE.Group()
+  const axes = { x: [], y: [], z: [] }
+  const crosses = []
+  for (const f of marks.frames) {
+    for (const k of ['x', 'y', 'z']) axes[k].push(...f.o, ...f.o.map((v, i) => v + f[k][i] * length))
+    labels.push({ text: f.name, p: new THREE.Vector3(...f.o), kind: 'frame' })
+  }
+  const arm = length / 4
+  for (const pt of marks.points) {
+    for (const d of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) crosses.push(...pt.p.map((v, i) => v - d[i] * arm), ...pt.p.map((v, i) => v + d[i] * arm))
+    if (pt.name) labels.push({ text: pt.name, p: new THREE.Vector3(...pt.p), kind: 'point' })
+  }
+  for (const k of ['x', 'y', 'z']) {
+    if (!axes[k].length) continue
+    const line = colouredLines(axes[k], new THREE.Color(css(`--axis-${k}`) || '#888'))
+    axisMaterials[k] = line.material
+    group.add(line)
+  }
+  if (crosses.length) group.add(fat(crosses))
+  for (const l of labels) {
+    l.el = document.createElement('span')
+    l.el.className = `mark mark--${l.kind}`
+    l.el.textContent = l.text
+    labelLayer.append(l.el)
+  }
+  return group
 }
 
 // Interior edges of curved faces with the normals of both triangles beside them: a
@@ -164,7 +222,10 @@ function buildBody(body) {
   if (!haveNormals) g.computeVertexNormals()
   const segs = []
   for (const p of body.edges) for (let i = 0; i + 5 < p.length; i += 3) segs.push(p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4], p[i + 5])
-  return { geometry: g, segments: segs, cands: silhouetteCandidates(body.faces), opacity: body.opacity ?? 1 }
+  return {
+    geometry: g, segments: segs, cands: silhouetteCandidates(body.faces), opacity: body.opacity ?? 1,
+    edgeColor: body.edgeColor ? new THREE.Color(`rgb(${body.edgeColor.join(',')})`) : null, wire: !body.faces.length,
+  }
 }
 
 function setModel(data) {
@@ -173,7 +234,13 @@ function setModel(data) {
     o.traverse?.(x => x.geometry?.dispose?.())
   }
   model = null
-  if (!data.bodies.length) return
+  for (const m of lineMaterials) m.dispose()
+  lineMaterials = []
+  axisMaterials = {}
+  labels = []
+  labelLayer.replaceChildren()
+  const marks = data.marks ?? { frames: [], points: [] }
+  if (!data.bodies.length && !marks.frames.length && !marks.points.length) return
   const built = data.bodies.map(buildBody)
   const parts = []
   for (const pl of data.placements) {
@@ -183,14 +250,19 @@ function setModel(data) {
     group.matrixAutoUpdate = false
     group.matrix.copy(m)
     const mesh = new THREE.Mesh(b.geometry, faceMaterial(b.opacity))
-    const edges = fat(b.segments)
+    const edges = b.edgeColor ? colouredLines(b.segments, b.edgeColor) : fat(b.segments)
+    edges.visible = showEdges || b.wire
     const sil = fat([])
     group.add(mesh, edges, sil)
     holder.add(group)
-    parts.push({ group, edges, sil, cands: b.cands, normalToLocal: new THREE.Matrix3().setFromMatrix4(m).invert() })
+    parts.push({ group, edges, sil, wire: b.wire, cands: b.cands, normalToLocal: new THREE.Matrix3().setFromMatrix4(m).invert() })
   }
   holder.updateMatrixWorld(true)
   const box = data.bounds ? new THREE.Box3(new THREE.Vector3(...data.bounds.min), new THREE.Vector3(...data.bounds.max)) : new THREE.Box3().setFromObject(holder)
+  if (marks.frames.length || marks.points.length) {
+    holder.add(buildMarks(marks, Math.max(box.getSize(new THREE.Vector3()).length() * 0.03, 1e-3)))
+    holder.updateMatrixWorld(true)
+  }
   model = { parts, box, sphere: box.getBoundingSphere(new THREE.Sphere()) }
   silDirty = true
   needsRender = true
@@ -286,6 +358,7 @@ function resize() {
   const w = stage.clientWidth || 1, h = stage.clientHeight || 1
   renderer.setSize(w, h, false)
   edgeMaterial.resolution.set(w, h)
+  for (const m of lineMaterials) m.resolution.set(w, h)
   lens()
   needsRender = true
 }
@@ -322,6 +395,7 @@ function loop() {
   drawTriad()
   clip()
   renderer.render(scene, camera)
+  placeLabels()
 }
 
 function applyTheme() {
@@ -330,6 +404,7 @@ function applyTheme() {
   // ShaderMaterial writes display values: undo three's conversion of the hex to linear
   faceUniforms.uPaper.value.convertLinearToSRGB()
   edgeMaterial.color.set(c.edge)
+  for (const [k, m] of Object.entries(axisMaterials)) m.color.set(css(`--axis-${k}`) || '#888')
   $('theme').setAttribute('aria-pressed', String(theme() === 'dark'))
   needsRender = true
 }
@@ -408,8 +483,8 @@ async function load() {
       const wasEmpty = !model
       setModel(payload.scene)
       setChrome(payload)
-      app.dataset.state = payload.scene.bodies.length ? 'ready' : 'empty'
-      $('doing').textContent = payload.scene.bodies.length ? `live · updated ${clock()}` : 'live · waiting for the first body'
+      app.dataset.state = model ? 'ready' : 'empty'
+      $('doing').textContent = model ? `live · updated ${clock()}` : 'live · waiting for the first body'
       if (model && (first || wasEmpty || !userMoved)) frame(...VIEWS.iso, !first && !wasEmpty)
       if (!first && model) pale = 0.45
       needsRender = true
@@ -484,7 +559,7 @@ $('fit').addEventListener('click', () => {
 $('edges').addEventListener('click', e => {
   showEdges = !showEdges
   e.currentTarget.setAttribute('aria-pressed', String(showEdges))
-  for (const p of model?.parts ?? []) p.edges.visible = showEdges
+  for (const p of model?.parts ?? []) p.edges.visible = showEdges || p.wire
   for (const p of model?.parts ?? []) p.sil.visible = showEdges
   silDirty = true
   needsRender = true

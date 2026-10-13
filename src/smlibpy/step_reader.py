@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["parse", "Ref", "StepFile", "interpret", "BodyData"]
+__all__ = ["parse", "Ref", "StepFile", "interpret", "interpret_extras", "BodyData"]
 
 
 class Ref(int):
@@ -429,6 +429,42 @@ class _Interp:
             return self.curve(a[1])
         raise NotImplementedError(f"curve type {t}")
 
+    def wire_curve(self, ref: Any) -> dict[str, Any] | None:
+        """A curve that stands on its own (wireframe geometry), with its trims and segments:
+        ``{"kind": "trimmed", "basis", "trims": [{"param"} | {"point"}] * 2, "sense"}``,
+        ``{"kind": "composite", "segments": [(curve, same_sense)]}``, or a curve of
+        :meth:`curve`. None for a line without ends."""
+        t, a = self.sf.get(ref)
+        if t == "TRIMMED_CURVE":
+            basis = self.curve(a[1])
+            master = str(a[5]) if len(a) > 5 else "UNSPECIFIED"
+            trims = [self._trim(sel, basis, master) for sel in (a[2], a[3])]
+            if any(x is None for x in trims):
+                return None
+            return {"kind": "trimmed", "basis": basis, "trims": trims, "sense": str(a[4]) != "F"}
+        if t == "COMPOSITE_CURVE":
+            segments = []
+            for sref in a[1]:
+                _, sa = self.sf.get(sref)  # COMPOSITE_CURVE_SEGMENT(transition, same_sense, parent)
+                c = self.wire_curve(sa[2])
+                if c is None:
+                    return None
+                segments.append((c, str(sa[1]) != "F"))
+            return {"kind": "composite", "segments": segments}
+        if t == "LINE":
+            return None
+        return self.curve(ref)
+
+    def _trim(self, select: list[Any], basis: dict[str, Any], master: str) -> dict[str, Any] | None:
+        """One end of a trimmed curve: a parameter (radians on circles and ellipses), or a
+        point where the file gives only that."""
+        param = next((x.args[0] for x in select if isinstance(x, Typed) and x.name == "PARAMETER_VALUE"), None)
+        point = next((x for x in select if isinstance(x, Ref)), None)
+        if param is not None and (point is None or master != "CARTESIAN"):
+            p = float(param)
+            return {"param": p * self.angle_scale if basis["kind"] in ("circle", "ellipse") else p}
+        return {"point": self.point(point)} if point is not None else None
+
     # -- surfaces ----------------------------------------------------------------
     def surface(self, ref: Any) -> dict[str, Any]:
         sf = self.sf
@@ -622,6 +658,146 @@ def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
     return bodies
 
 
+_CURVES = {"LINE", "CIRCLE", "ELLIPSE", "POLYLINE", "TRIMMED_CURVE", "COMPOSITE_CURVE", "B_SPLINE_CURVE_WITH_KNOTS",
+           *(k for k in _KNOT_FORMS if k.endswith("CURVE"))}
+
+
+def interpret_extras(sf: StepFile) -> list[dict[str, Any]]:
+    """The coordinate systems, points and curves of the file that belong to no body, each
+    at its place in the assembly (mm, world coordinates), in file order.
+
+    Coordinate systems are the placements of supplemental geometry
+    (``CONSTRUCTIVE_GEOMETRY_REPRESENTATION``) and the named placements of shape
+    representations; points and curves are the items of shape representations, also inside
+    ``GEOMETRIC_CURVE_SET`` and ``GEOMETRIC_SET``. Items on hidden layers (``INVISIBILITY``)
+    are left out.
+
+    Each item is ``{"kind": "frame" | "point" | "curve", "name", "product", "color", ...}``
+    with ``origin``, ``z`` and ``x`` for a frame, ``point`` for a point, and ``curve`` (a
+    curve as ``_Interp.wire_curve`` gives it) for a curve.
+    """
+    it = _Interp(sf)
+    transforms, in_product = _representation_transforms(it)
+    product_names = _representation_product_names(sf)
+    hidden = _hidden_items(sf)
+    reps = [r for r in _rep_items(sf) if _geometry_representation(sf.type_of(r))]
+    out: list[dict[str, Any]] = []
+    placed: dict[int, list[np.ndarray]] = {}  # item -> where it went already
+    for rep in [r for r in reps if r in in_product] or reps:
+        constructive = "CONSTRUCTIVE_GEOMETRY" in sf.type_of(rep)
+        it.use_units(rep)
+        found: list[tuple[int, dict[str, Any]]] = []
+
+        def take(item: int, color: Any, depth: int = 0) -> None:
+            if item in hidden or item not in sf.entities:
+                return
+            t, a = sf.get(item)
+            name = _item_name(sf, item)
+            color = it.colors.get(item, color)
+            if t == "AXIS2_PLACEMENT_3D" and (name.strip() or constructive):
+                o, z, x = it.axis2(item)
+                found.append((item, {"kind": "frame", "name": name, "color": color, "origin": o, "z": z, "x": x}))
+            elif t == "CARTESIAN_POINT":
+                found.append((item, {"kind": "point", "name": name, "color": color, "point": it.point(item)}))
+            elif t in ("GEOMETRIC_CURVE_SET", "GEOMETRIC_SET") and depth < 8:
+                for element in a[1]:
+                    if isinstance(element, Ref):
+                        take(int(element), color, depth + 1)
+            elif t in _CURVES or (t.startswith("COMPLEX:") and "B_SPLINE_CURVE" in sf.complex[item]):
+                try:
+                    c = it.wire_curve(item)
+                except (NotImplementedError, ValueError, KeyError, IndexError, TypeError):
+                    c = None
+                if c is not None:
+                    found.append((item, {"kind": "curve", "name": name, "color": color, "curve": c}))
+
+        for item in _representation_item_list(sf, rep):
+            take(item, None)
+        it.use_units(None)
+        for m in transforms.get(rep, [np.eye(4)]):
+            atol = 1e-9 * max(1.0, float(np.abs(m).max()))
+            for item, data in found:
+                if any(np.allclose(m, q, rtol=0.0, atol=atol) for q in placed.get(item, [])):
+                    continue  # listed by two related representations: one item
+                placed.setdefault(item, []).append(m)
+                out.append(dict(_moved(data, m), product=product_names.get(rep, "")))
+    return out
+
+
+def _geometry_representation(kind: str) -> bool:
+    return ("SHAPE_REPRESENTATION" in kind or "CONSTRUCTIVE_GEOMETRY_REPRESENTATION" in kind) \
+        and "RELATIONSHIP" not in kind
+
+
+def _representation_item_list(sf: StepFile, rep: int) -> list[int]:
+    """The items of a representation in the order the file lists them."""
+    t, a = sf.entities[rep]
+    if t.startswith("COMPLEX:"):
+        a = next((v for k, v in sf.complex[rep].items() if k.endswith("REPRESENTATION") and len(v) >= 2), [])
+    return [int(x) for x in a[1] if isinstance(x, Ref)] if len(a) >= 2 and isinstance(a[1], list) else []
+
+
+def _item_name(sf: StepFile, ref: int) -> str:
+    t, a = sf.entities[ref]
+    if t.startswith("COMPLEX:"):
+        a = sf.complex[ref].get("REPRESENTATION_ITEM", [""])
+    return a[0] if a and isinstance(a[0], str) else ""
+
+
+def _hidden_items(sf: StepFile) -> set[int]:
+    """Items made invisible: listed by INVISIBILITY themselves, by their styled item, or by
+    a presentation layer that is."""
+    out: set[int] = set()
+    for eid in sf.of_type("INVISIBILITY"):
+        for ref in sf.get(eid)[1][0]:
+            if not isinstance(ref, Ref) or int(ref) not in sf.entities:
+                continue
+            t, a = sf.get(ref)
+            if t == "PRESENTATION_LAYER_ASSIGNMENT":
+                out.update(int(x) for x in a[2] if isinstance(x, Ref))
+            elif t in ("STYLED_ITEM", "OVER_RIDING_STYLED_ITEM") and isinstance(a[2], Ref):
+                out.add(int(a[2]))
+            else:
+                out.add(int(ref))
+    return out
+
+
+def _moved(data: dict[str, Any], m: np.ndarray) -> dict[str, Any]:
+    """An item's data placed by the 4x4 matrix ``m``."""
+    R, t = m[:3, :3], m[:3, 3]
+    out = dict(data)
+    if data["kind"] == "frame":
+        out.update(origin=R @ data["origin"] + t, z=R @ data["z"], x=R @ data["x"])
+    elif data["kind"] == "point":
+        out.update(point=R @ data["point"] + t)
+    else:
+        out.update(curve=_moved_curve(data["curve"], R, t))
+    return out
+
+
+def _moved_curve(c: dict[str, Any], R: np.ndarray, t: np.ndarray) -> dict[str, Any]:
+    kind = c["kind"]
+    out = dict(c)
+    if kind == "trimmed":
+        out["basis"] = _moved_curve(c["basis"], R, t)
+        out["trims"] = [dict(x, point=R @ x["point"] + t) if "point" in x else x for x in c["trims"]]
+    elif kind == "composite":
+        out["segments"] = [(_moved_curve(s, R, t), same) for s, same in c["segments"]]
+    elif kind == "bspline":
+        out["poles"] = np.asarray(c["poles"]) @ R.T + t
+    elif kind == "line":
+        out.update(origin=R @ c["origin"] + t, direction=R @ c["direction"])
+    else:  # circle, ellipse, hyperbola, parabola
+        out.update(origin=R @ c["origin"] + t, z=R @ c["z"], x=R @ c["x"])
+    return out
+
+
+# Representations related without a placement: a part's B-rep, wireframe and supplemental
+# geometry (coordinate systems, AP242) next to its main shape representation.
+_PLAIN_RELATIONSHIPS = ("SHAPE_REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP",
+                        "CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP")
+
+
 def _representation_product_names(sf: StepFile) -> dict[int, str]:
     """The name of the product each shape representation belongs to, also for the
     representations linked to a product's shape without a placement (a part's B-rep
@@ -645,7 +821,7 @@ def _representation_product_names(sf: StepFile) -> dict[int, str]:
     for _ in range(4):  # follow chains of plain representation relationships
         grew = False
         for eid, (t, a) in sf.entities.items():
-            if t in ("SHAPE_REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP") and len(a) >= 4:
+            if t in _PLAIN_RELATIONSHIPS and len(a) >= 4:
                 try:
                     r1, r2 = int(a[2]), int(a[3])
                 except (TypeError, ValueError):
@@ -732,7 +908,7 @@ def _representation_transforms(it: _Interp) -> tuple[dict[int, list[np.ndarray]]
             if m is not None:
                 link(child, parent, m)
     for eid, (t, a) in sf.entities.items():
-        if t in ("SHAPE_REPRESENTATION_RELATIONSHIP", "REPRESENTATION_RELATIONSHIP") and len(a) >= 4:
+        if t in _PLAIN_RELATIONSHIPS and len(a) >= 4:
             r1, r2 = int(a[2]), int(a[3])
             # the representation that is a product's main shape is the parent
             prod_reps = set(pd_rep.values())

@@ -72,7 +72,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
-| files | `files/*` | STEP in and out, DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes |
+| files | `files/*` | STEP in and out (also coordinate systems and curves), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API

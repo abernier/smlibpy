@@ -25,6 +25,7 @@
 #include <SmApiBrep.h>
 
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -569,12 +570,33 @@ void bind_smlibpy_ext(py::module_ m)
             list.Add(f);
         SmBrep* out = new (ctx()) SmBrep();
         SmStatus st = const_cast<SmBrep*>(brep)->CopyFaces(list, out, nullptr, FALSE);
-        if (st != SM_SUCCESS)
+        if (st == SM_SUCCESS)
+            return out;
+        delete out;
+        // CopyFaces builds each face again from its trimming curves, which fails for some
+        // imported faces (bounded by B-spline edges that meet within the file's tolerance):
+        // copy the whole body and delete the other faces, which keeps the edges as they are.
+        SmCopyBrepMap map;  // original -> copy
+        SmBrep* copy = new (ctx()) SmBrep(*brep, nullptr, &map, TRUE, FALSE);
+        std::unordered_set<SmFace*> keep;
+        for (SmFace* f : faces)
+            keep.insert(static_cast<SmFace*>(map.GetAt(f)));
+        SmTArray<SmFace*> all, drop;
+        copy->GetFaces(all);
+        for (ULONG i = 0; i < all.GetSize(); ++i)
+            if (!keep.count(all[i]))
+                drop.Add(all[i]);
+        SmStatus removed;
         {
-            delete out;
+            SmTemporaryChangeValue<SmBoolean> editing(copy->m_bEditingEnabled, TRUE);
+            removed = copy->RemoveFaces(drop);
+        }
+        if (removed != SM_SUCCESS)
+        {
+            delete copy;
             check(st, "SmBrep::CopyFaces");
         }
-        return out;
+        return copy;
     }, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
        "Copy faces of a Brep into a new Brep (no merge, no stitching).");
 
@@ -602,6 +624,9 @@ void bind_smlibpy_ext(py::module_ m)
             SmTArray<SmFace*> faces;
             b->GetFaces(faces);
             SmStatus st = b->CopyFaces(faces, out, nullptr, FALSE);
+            // faces CopyFaces cannot build again (see copy_faces) go in as they are
+            if (st != SM_SUCCESS && out->MergeBrep(*b, nullptr, nullptr, FALSE) == SM_SUCCESS)
+                st = SM_SUCCESS;
             if (st != SM_SUCCESS)
             {
                 delete out;

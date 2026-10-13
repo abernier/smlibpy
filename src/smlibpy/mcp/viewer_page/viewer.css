@@ -464,6 +464,30 @@ button {
   pointer-events: none;
 }
 
+/* the names of coordinate systems and points, beside them */
+.marks {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.mark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 0 0 5px;
+  margin-top: -13px;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--rcad-ink);
+  text-shadow: 0 0 2px var(--rcad-viewport), 0 0 2px var(--rcad-viewport);
+}
+.mark--point {
+  color: var(--rcad-mute);
+}
+
 /* the view's dock: upright, at the right */
 .dock {
   position: absolute;

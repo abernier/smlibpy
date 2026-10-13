@@ -76,6 +76,8 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.exporters
 ::: smlibpy.step_import.import_step
+::: smlibpy.step_import.read_step
+::: smlibpy.step_import.StepModel
 ::: smlibpy.dxf.import_dxf
 ::: smlibpy.dxf.import_dxf_wires
 ::: smlibpy.dxf.export_dxf
