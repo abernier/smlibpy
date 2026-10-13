@@ -18,6 +18,7 @@ nav:
   - Measuring: analysis.md
   - Files and viewer: files.md
   - AI agents (MCP): mcp.md
+  - JavaScript (WASM): javascript.md
   - Examples: examples.md
   - The kernel: kernel.md
   - API reference: api.md
