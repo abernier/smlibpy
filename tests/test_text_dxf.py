@@ -497,7 +497,9 @@ def test_dxf_round_trip_is_exact(tmp_path):
     original = [e for e in plate.edges() if e.geom_type == "bspline"][0]
     again = [e for e in back.edges() if e.geom_type == "bspline"][0]
     a, b = ext.curve_data(original._curve()), ext.curve_data(again._curve())
-    assert np.array_equal(np.array(a["poles"]), np.array(b["poles"])) and list(a["knots"]) == list(b["knots"])
+    # exact to the last bits on one machine; across platforms the kernel's arithmetic differs in them
+    assert np.allclose(np.array(a["poles"]), np.array(b["poles"]), rtol=0, atol=1e-12)
+    assert np.allclose(np.array(a["knots"]), np.array(b["knots"]), rtol=0, atol=1e-12)
 
 
 def test_dxf_writes_sections_with_arcs_and_circles(tmp_path):

@@ -379,3 +379,5 @@
   wrong way reads as "positive" for the upper half although the cover's top hides it; only the 3
   parting lines (instead of 1) show the problem. Occlusion would need ray tests
   (`SmBrep::RayIntersection`).
+
+- [ ] 43. parting_line: traced loops close only within the trace tolerance (1e-6 of the part size), so `Wire.is_closed` (1e-6 mm) can be False; seen on Linux aarch64 for `Torus(20, 5).rotate(X, 30).parting_line(Z)` (open wire of 2 edges, 155.3 long). Snap the curve ends of topologically closed chains, or give Wire.is_closed a length-relative tolerance.

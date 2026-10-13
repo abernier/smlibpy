@@ -1525,7 +1525,19 @@ class _Body(Shape):
         """The body's edges projected onto a plane (a 2D drawing view)."""
         with kernel_call("outline"):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
-        return ShapeList(Edge._from_curve(c) for c in curves)
+        # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
+        # circles seen edge-on come with a copy each); a drawing view needs each line once.
+        tol = 1e-7 * max(self.bbox().diagonal, 1.0)
+        kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
+        for c in curves:
+            e = Edge._from_curve(c)
+            a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
+            if any(np.linalg.norm(m - km) <= tol
+                   and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
+                   for _, ka, kb, km in kept):
+                continue
+            kept.append((e, a, b, m))
+        return ShapeList(e for e, _, _, _ in kept)
 
     def _transformed(self, m: np.ndarray) -> Any:
         b = self._copy_brep()

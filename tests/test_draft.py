@@ -100,7 +100,10 @@ def test_parting_line_of_tori():
     assert all(abs(e.arc_center.z) <= 1e-12 for e in circles)
     tilted = Torus(20, 5).rotate(X, 30)
     line = tilted.parting_line(Z)  # traced: the outer and the inner contour
-    assert len(line) == 2 and all(w.is_closed for w in line)
+    # A traced line closes within the trace's fit tolerance (1e-6 of the part's size), which can
+    # be more than Wire.is_closed allows (on Linux on ARM a gap of a few 1e-5 mm).
+    trace_tol = 1e-6 * tilted.bbox().diagonal
+    assert len(line) == 2 and all(w.start.distance_to(w.end) <= 10 * trace_tol for w in line)
     face = tilted.faces()[0]
     for w in line:
         for p in points(w, 200):

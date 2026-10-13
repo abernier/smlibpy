@@ -61,3 +61,11 @@ print([round(w.length, 4) for w in Torus(20, 5).parting_line(Z)])   # [157.0796,
 ## Related
 `draft_analysis`, `recipes/mold-check`, `silhouette` (what is visible from a direction),
 `outline`, `split` (cut a part at a flat parting line).
+
+## Closing of traced lines
+
+A traced line (anything that is not a sphere, a cylinder across the direction or a torus
+around it) closes within the trace's fit tolerance, 1e-6 of the part's size. `Wire.is_closed`
+allows 1e-6 mm, so on some platforms (Linux on ARM) a traced loop can report `is_closed`
+False with its ends a few 1e-5 mm apart. Check `w.start.distance_to(w.end)` against that
+tolerance instead.
