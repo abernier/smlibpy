@@ -61,15 +61,17 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
 
 class BrepHandle:
     """Owns one kernel Brep and frees it with the last reference. ``sound`` records that
-    the body was found a sound solid (a body's Brep does not change once wrapped)."""
+    the body was found a sound solid, ``props`` its integrated mass properties (a body's
+    Brep does not change once wrapped)."""
 
-    __slots__ = ("brep", "sound", "__weakref__")
+    __slots__ = ("brep", "sound", "props", "__weakref__")
 
     def __init__(self, brep: "k.Brep"):
         if brep is None:
             raise KernelError("kernel", "operation returned no body")
         self.brep = brep
         self.sound = False
+        self.props = None
 
     def __del__(self) -> None:
         b, self.brep = self.brep, None

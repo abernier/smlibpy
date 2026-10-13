@@ -88,4 +88,5 @@ PYBIND11_MODULE(_core, m)
     bind_deform(m);
     bind_defeature(m);
     bind_draft(m);
+    bind_measure(m.attr("ext").cast<py::module_>());
 }

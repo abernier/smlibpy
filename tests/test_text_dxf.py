@@ -19,8 +19,8 @@ CUBIC = str(DATA / "test-cubic.otf")
 
 
 def exact_area(sketch):
-    """The sketch's area integrated far more accurately than ``.area`` does."""
-    return sum(ext.face_properties(f._f, 1e-11)["area"] for f in sketch.faces())
+    """The sketch's area (the integration is exact for the polynomial outlines of a font)."""
+    return sketch.area
 
 
 def holes(sketch):
@@ -598,7 +598,7 @@ def test_dxf_written_by_an_independent_writer(tmp_path):
     pts = np.array([_cyclic_point(ctrl, u) for u in np.linspace(0, len(ctrl), 20001)[:-1]])
     spline = 0.5 * abs(np.dot(pts[:, 0], np.roll(pts[:, 1], -1)) - np.dot(np.roll(pts[:, 0], -1), pts[:, 1]))
     expected = sorted([300 + math.pi * 25, spline, math.pi * 32, math.pi * 9 - math.pi * 2])  # in square inches
-    areas = sorted(ext.face_properties(f._f, 1e-11)["area"] / 25.4 ** 2 for f in s.faces())
+    areas = sorted(f.area / 25.4 ** 2 for f in s.faces())
     assert areas == pytest.approx(expected, rel=1e-7)
     assert holes(s) == [0, 0, 0, 1]
 

@@ -513,14 +513,14 @@ def _outer_first(bld: _Builder, loops: list[dict[str, Any]]) -> list[dict[str, A
 
 def _sound(part: Any) -> bool:
     try:
-        return bool(part.is_valid()) and part._props(accuracy=1e-4)["volume"] > 0
+        return bool(part.is_valid()) and part._kernel_props(1e-4)["volume"] > 0
     except KernelError:
         return False
 
 
 def _positive(part: Any) -> bool:
     try:
-        return part._props(accuracy=1e-4)["volume"] > 0
+        return part._kernel_props(1e-4)["volume"] > 0
     except KernelError:
         return False
 

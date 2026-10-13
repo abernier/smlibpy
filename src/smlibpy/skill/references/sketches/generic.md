@@ -26,7 +26,7 @@ The shapes share their option names: `rotation=` (degrees about the shape's cent
 
 `s.area`, `s.perimeter` (outlines and holes), `s.center()` (area centroid), `s.bbox()`,
 `len(s.faces())` (pieces), `len(s.faces()[0].inner_wires())` (holes), `s.plane`. `area` is
-integrated to about 1e-7: a circle of radius 10 gives 314.15931 instead of 314.15927.
+integrated to 1e-7 or better: a circle of radius 10 gives 314.15926535897927 (pi * 100 to 1e-16).
 `(Rectangle(40, 20, fillet=4) - Circle(5)).perimeter` is 144.548668, exactly the closed form.
 
 ## Corners

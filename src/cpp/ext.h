@@ -20,3 +20,6 @@ void bind_defeature(py::module_& m);
 
 // Draft analysis and parting lines (draft.cpp), registered as `_core.draft`.
 void bind_draft(py::module_& m);
+
+// Areas, volumes, moments and curve lengths with an error bound (measure.cpp).
+void bind_measure(py::module_ m);

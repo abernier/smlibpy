@@ -79,9 +79,8 @@ cylinder, cut the text prism together with a skin of the wall:
 - A space-only text has nothing to draw and raises.
 - Text with hundreds of letters is fast (224 characters: 0.09 s), but every letter adds faces
   to a part: keep embossing to the text you need.
-- `area` is integrated numerically and is off by up to a few 1e-6 for letters (`Text("@&8", 8)`:
-  2e-6). The outlines themselves are exact: `text.extrude(1).mass_properties(accuracy=1e-10).volume`
-  matches the font's outline area to 1e-9.
+- `area` is the area of the exact outlines (to rounding, 1e-15): the integration is exact for
+  the polynomial curves of a font. `text.extrude(1).volume` is the same number.
 
 ## Errors
 - `ValueError: Text: the font Lato Regular has no glyph for 'ж' (U+0436); pass font= with a font that has it`.

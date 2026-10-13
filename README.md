@@ -41,8 +41,8 @@ edges are picked by their geometry, for example `part.faces().top()` or
 - Surfaces: freeform surfaces from point grids, ruled surfaces, stitching into solids
 - Selection by geometry: `top()`, `parallel_to()`, `concave()`, `circles()`, `largest()`,
   filters, sorting and grouping
-- Measuring: volume, area, center and inertia from the exact surfaces, exact distances,
-  intersections, validity
+- Measuring: volume, area, center and inertia integrated over the exact surfaces to seven
+  significant digits, with an error estimate; exact distances, intersections, validity
 - Checks: every kernel result is checked; a fillet or shell that cannot work raises an error
   that says what fits
 - Files: STEP in and out (exact geometry, assemblies, units, names, colors), DXF in and out
