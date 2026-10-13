@@ -1,4 +1,4 @@
-"""Draft analysis and parting lines, for parts that are molded or cast.
+"""Draft analysis, parting lines and face drafts, for parts that are molded or cast.
 
 A mold half moves away from the part along the pull direction ``d``. A face releases from it
 when it turns towards ``d``. The draft angle of a face at a point is the angle between the face
@@ -8,21 +8,29 @@ looks along ``d``, 0 on a wall parallel to ``d``, and negative where the face tu
 
 The kernel provides the silhouettes of a surface for a direction (where ``n . d = 0``) and puts
 curves into faces as edges; the parting line comes from a copy of the part split along them.
+
+A face draft turns faces by an angle about the lines where they meet a neutral plane, whose
+normal is the pull direction. The kernel's ``SmBrep::LocalOperation`` rebuilds the part from
+the new surfaces of the drafted faces and the extended surfaces of the faces around them
+(src/cpp/face_draft.cpp); the result is checked, because the kernel can return a closed body
+whose edges leave its faces.
 """
 
 from __future__ import annotations
 
 import math
+import numbers
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
 from ._kernel import ModelingError, ext, k, kernel_call
-from .geometry import Axis, Vector, VectorLike, _direction
+from .geometry import Axis, Plane, Vector, VectorLike, _direction
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Part, ShapeList, Wire
 
-__all__ = ["DraftAnalysis", "FaceDraft", "draft_analysis", "parting_line", "ANGLE_TOLERANCE"]
+__all__ = ["DraftAnalysis", "FaceDraft", "draft_analysis", "parting_line", "draft_faces", "ANGLE_TOLERANCE",
+           "TANGENCY"]
 
 #: Draft angles (degrees) within this of 0 count as none: such a face is parallel to the pull
 #: direction there.
@@ -263,3 +271,153 @@ def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
         wires.append(Wire(curves))
     del body
     return ShapeList(sorted(wires, key=lambda w: -w.length))
+
+
+# =============================================================================
+# Face drafts
+# =============================================================================
+_FD = k.face_draft
+
+#: Angle (degrees) between the normals of two faces along an edge below which the faces meet
+#: tangentially. A face that meets a drafted face so must be drafted with it.
+TANGENCY = 1.0
+
+_STEEPEST = 89.0  # degrees of draft a face may have after the draft (the kernel's limit is 90)
+
+
+def _draft_angle(angle: float) -> float:
+    if isinstance(angle, bool) or not isinstance(angle, numbers.Real):
+        raise TypeError("draft: the angle must be a number of degrees")
+    a = float(angle)
+    if not (math.isfinite(a) and abs(a) < 90.0):
+        raise ValueError(f"draft: the angle must be between -90 and 90 degrees (got {angle!r})")
+    if a == 0:
+        raise ValueError("draft: the angle is 0; nothing to do")
+    return a
+
+
+def _neutral(neutral_plane: Any) -> Plane:
+    from .shapes import _as_plane
+
+    try:
+        return _as_plane(neutral_plane)
+    except ValueError as e:  # a face that is not flat
+        raise ValueError(f"draft: the neutral plane must be a Plane or a planar face; {e}") from None
+
+
+def _where(face: Face) -> str:
+    c = face.center()
+    x, y, z = (round(v, 9) + 0.0 for v in (c.x, c.y, c.z))  # no -3e-15
+    return f"{face.geom_type} face at ({x:.4g}, {y:.4g}, {z:.4g})"
+
+
+def _draftable(face: Face, plane: Plane) -> bool:
+    """Whether a face is of a kind the draft turns: a plane that is not parallel to the neutral
+    plane, or a cylinder or cone whose axis runs along its normal."""
+    if face.is_planar:
+        return face.normal_at().cross(plane.z_dir).length > 1e-6
+    if face.geom_type in ("cylinder", "cone"):
+        return face.axis.direction.normalized().cross(plane.z_dir).length <= 1e-6
+    return False
+
+
+def _refusal(res: dict[str, Any], part: Part, faces: list[Face], angle: float, plane: Plane) -> str:
+    """The message for a face the kernel was not asked to draft, or for a kernel failure."""
+    from .shapes import Face
+
+    code = res["error"]
+    f = faces[res["face"]] if res["face"] >= 0 else None
+    if code == "tangent":
+        g = Face(part, res["other"])
+        fix = ("; add it to the faces" if _draftable(g, plane) else
+               f", but a {g.geom_type} face cannot be drafted about this plane; draft before rounding or blending "
+               f"there, and round afterwards")
+        return f"draft: the {_where(g)} meets the drafted {_where(f)} tangentially, so it must be drafted with it{fix}"
+    if code == "in_plane":
+        return f"draft: the {_where(f)} lies in the neutral plane; there is no line in it to turn it about"
+    if code == "parallel":
+        return (f"draft: the {_where(f)} is parallel to the neutral plane; only faces that cross the plane's normal "
+                f"at an angle can be drafted (walls, not tops or floors)")
+    if code == "axis":
+        tilt = math.degrees(math.acos(min(1.0, abs(f.axis.direction.normalized().dot(plane.z_dir)))))
+        return (f"draft: the axis of the {_where(f)} is {tilt:.4g} degrees off the normal of the neutral plane; a "
+                f"cylinder or cone can be drafted only when its axis runs along that normal")
+    if code == "unsupported":
+        return (f"draft: the {_where(f)} cannot be drafted; draft turns planes, and cylinders and cones whose axis "
+                f"runs along the normal of the neutral plane")
+    if code == "apex":
+        return f"draft: the {_where(f)} is part of a cone that ends in its tip before the neutral plane or on the face"
+    if code == "tip":
+        return f"draft: at {angle:g} degrees the {_where(f)} would narrow to a point; use a smaller angle"
+    if code == "too_steep":
+        total = math.degrees(res["before"][-1]) + angle
+        return (f"draft: at {angle:g} degrees the {_where(f)} would have {total:.4g} degrees of draft and lie almost "
+                f"flat; a face can have up to {_STEEPEST:g} degrees")
+    if code == "kernel":
+        return ("draft: the kernel could not rebuild the part around the drafted faces; the angle may be too large "
+                "for the faces around them")
+    if code == "open":
+        return ("draft: the drafted faces do not close the part again: at this angle a face around them vanishes, or "
+                "drafted faces run into each other; use a smaller angle")
+    return f"draft: the {_where(f)} could not be prepared for the draft ({code})"
+
+
+def draft_faces(part: Part, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:
+    """See :meth:`Part.draft`."""
+    from .shapes import Face, _flatten_faces
+
+    a = _draft_angle(angle)
+    plane = _neutral(neutral_plane)
+    part._require_valid("draft")
+    if not _flatten_faces(faces):
+        raise ValueError("draft: no faces selected")
+    sel: list[Face] = []
+    for kf in part._own_faces(faces):
+        if all(kf is not f._f for f in sel):
+            sel.append(Face(part, kf))
+    d = plane.z_dir.normalized()
+    with kernel_call("draft"):
+        res = _FD.draft_faces(part._brep, [f._f for f in sel], list(plane.origin.to_tuple()), list(d.to_tuple()),
+                              math.radians(a), TANGENCY)
+    if res["error"] is not None:
+        raise ModelingError(_refusal(res, part, sel, a, plane))
+    result = part._like(res["brep"])
+
+    # The kernel may close the part with faces that do not meet: its vertices and edges then
+    # leave the faces they bound (by whole millimetres, where a correct draft has 1e-6 or less).
+    gap = max(res["gaps"])
+    limit = max(10.0 * res["tolerance"], 10.0 * max(res["gaps_before"]))
+    if not gap <= limit:
+        raise ModelingError(f"draft: the kernel returned a part whose edges leave its faces (by up to {gap:.2g}); a "
+                            f"face that meets a drafted face may have to be drafted too, or the angle is too large")
+    if len(result.faces()) != len(part.faces()):
+        raise ModelingError("draft: at this angle the drafted faces change which faces of the part meet (a face "
+                            "vanishes or a drafted face runs into another one); use a smaller angle")
+    problem = result._solid_problem()
+    if problem is not None:
+        raise ModelingError(f"draft: the kernel returned a body that is {problem}; use a smaller angle")
+    # Each drafted face moves into the material on the side of the neutral plane the normal
+    # points to (for a positive angle) and out of it on the other side. (A quick volume, so only
+    # a change beyond its error counts.)
+    sides = {_side_of(f, plane) for f in sel}
+    if len(sides) == 1 and 0 not in sides:
+        before, after = part._quick_volume(), result._quick_volume()
+        shrinks = sides.pop() * a > 0
+        if (after - before if shrinks else before - after) > 1e-4 * abs(before):
+            raise ModelingError(f"draft: the kernel returned a body whose volume went the wrong way ({before:.6g} -> "
+                                f"{after:.6g}); use a smaller angle")
+    return result
+
+
+def _side_of(face: Face, plane: Plane) -> int:
+    """+1 if the face lies on the side of the plane its normal points to, -1 on the other, 0 if
+    it crosses the plane (judged by the corners of its bounding box)."""
+    bb = face.bbox()
+    heights = [plane.z_dir.dot(Vector(x, y, z) - plane.origin) for x in (bb.min.x, bb.max.x)
+               for y in (bb.min.y, bb.max.y) for z in (bb.min.z, bb.max.z)]
+    tol = 1e-9 * max(1.0, bb.diagonal)
+    if min(heights) >= -tol:
+        return 1
+    if max(heights) <= tol:
+        return -1
+    return 0

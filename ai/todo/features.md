@@ -362,6 +362,7 @@
 - **Expected:** accept faces via `_as_plane`; consider making `plane` required.
 
 ### 33. `Part.draft` is a public method that always raises `NotImplementedError`
+- **Fixed:** `Part.draft(faces, angle, neutral_plane)` tilts planes, and cylinders and cones along the plane's normal, with the kernel's `SmBrep::LocalOperation` (src/cpp/face_draft.cpp) and checks the result; docs/features.md "Draft" and the guide features/draft describe it.
 - **Session:** `2026-10-12_21-44-19_features-mirror-split-section-misc`, script `04-draft.py`
 - **What happens:** it shows up in `dir(Part)`, `describe_method` and the plan; agents will try it.
   docs/features.md "Draft" only shows tapered extrusions.

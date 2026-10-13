@@ -30,7 +30,7 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
 - A side with no material raises `ModelingError: split: nothing of the part lies above the
   plane` (or `below`); `keep="both"` raises if either side is empty. A plane that misses the
   part with the whole part on the kept side returns a copy of the part.
-- There is no face draft in smlibpy; a split with a tilted plane through a bottom edge makes
+- Faces are drafted with `draft`; a split with a tilted plane through a bottom edge also makes
   one drafted wall (example).
 
 ## Example

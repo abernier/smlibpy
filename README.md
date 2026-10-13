@@ -47,8 +47,9 @@ edges are picked by their geometry, for example `part.faces().top()` or
 **Simplifying:** `remove_fillets` and `remove_faces` take out fillets, holes and bosses, also on
 imported parts. `faces().fillets()` finds the fillet faces.
 
-**Molding:** `draft_analysis` sorts each face for a pull direction into positive, insufficient,
-vertical or undercut. `parting_line` finds the parting line.
+**Molding:** `draft` tilts walls, pockets and holes by a draft angle about a neutral plane.
+`draft_analysis` sorts each face for a pull direction into positive, insufficient, vertical or
+undercut. `parting_line` finds the parting line.
 
 **2D**
 - `Profile` is a pen: it draws lines and tangent arcs, turns, and adds fillets and chamfers at

@@ -1,6 +1,6 @@
 # Features
 
-Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring.
+Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting.
 Each one is a method of `Part` that returns a new part.
 
 ## Fillets
@@ -122,7 +122,48 @@ whole = half + half.mirror(Plane.YZ)
 
 ## Draft
 
-Drafted walls come from tapered extrusions:
+A part that is molded or cast needs draft: walls that lean a little, so that it comes out of
+its mold. `draft` tilts faces of a part by an angle about the line where each one meets a
+neutral plane, where they keep their size:
+
+```python
+box = Box(40, 30, 20)
+walls = box.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+core = box.draft(walls, 3, Plane.XY.offset(-10))   # the bottom keeps 40 x 30, the top narrows
+print(round(core.faces().top().one().bbox().size.x, 3))   # 37.904 = 40 - 2 * 20 * tan(3)
+```
+
+The normal of the neutral plane is the pull direction, the way the mold moves off the part. A
+positive angle turns each face to look more along it: the part narrows, and pockets and holes
+widen, along the normal, on both sides of the plane. `draft_analysis` of that direction then
+finds the angle on each drafted face. A face as the neutral plane pulls along its outward
+normal: with the top face the top keeps its size and the bottom grows, and a pocket drafted
+about the face around it opens upwards.
+
+```python
+cavity = box.draft(walls, 3, box.faces().top())    # the top keeps 40 x 30, the bottom grows
+block = Box(60, 40, 20) - Box(30, 20, 10, align=(Align.CENTER, Align.CENTER, Align.MAX)).translate(0, 0, 10)
+pocket = block.faces().filter(lambda f: abs(f.normal_at().z) < 0.5 and abs(f.center().x) < 29 and abs(f.center().y) < 19)
+opened = block.draft(pocket, 3, block.faces().top())   # the pocket narrows towards its floor
+```
+
+Planes can be drafted, and cylinders and cones whose axis runs along the normal: a cylinder
+becomes a cone. A face that meets a drafted face tangentially must be drafted with it: the
+rounds between walls go with the walls and become cones. Rounds along a top or a floor cannot
+be drafted, so draft first and round afterwards:
+
+```python
+rounded = box.fillet(box.edges().parallel_to(Z), 5)
+sides = rounded.faces().filter(lambda f: abs(f.normal_at(f.interior_point()).z) < 0.5)   # walls and rounds
+core = rounded.draft(sides, 3, Plane.XY.offset(-10))
+core = core.fillet(core.edges().top(), 2)
+```
+
+The kernel rebuilds the part around the drafted faces, and smlibpy checks the result: where
+the kernel cannot close the part again (an angle at which faces run into each other, a sphere
+next to a drafted face) `draft` raises a `ModelingError` and leaves the part as it was.
+
+Profiles can be drafted as they are extruded, all side walls at once:
 
 ```python
 mold_core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)

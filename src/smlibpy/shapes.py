@@ -2448,9 +2448,31 @@ class Part(_Body):
 
         return parting_line(self, direction)
 
-    def draft(self, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:  # pragma: no cover - planned
-        raise NotImplementedError("face drafts are not available in the open-source kernel yet; "
-                                  "use Sketch.extrude(taper=...) for drafted extrusions")
+    def draft(self, faces: Any, angle: float, neutral_plane: Plane | Face) -> Part:
+        """Tilt faces by a draft angle, so that a molded or cast part comes out of its mold.
+
+        Each face turns about the line where it meets the neutral plane and keeps its size
+        there. The normal of the neutral plane is the pull direction, the way the mold moves off
+        the part: a positive angle turns each face to look more along it, so the part narrows
+        and pockets and holes widen along the normal, on either side of the plane. Afterwards
+        ``draft_analysis`` of that direction finds ``angle`` more draft on each of the faces.
+
+        Planes can be drafted, and cylinders and cones whose axis runs along the normal (a
+        cylinder becomes a cone). A face that meets a drafted face tangentially, such as a
+        fillet between two walls, must be drafted with it; the faces around the drafted ones
+        are extended or trimmed to meet them.
+
+        Args:
+            faces: Faces of this part (a selection or a single face).
+            angle: Draft angle in degrees, between -90 and 90 and not 0. A face's draft may be
+                89 degrees at most.
+            neutral_plane: Where the faces keep their size, a :class:`Plane` or a planar face.
+                A face's normal points out of the part: the top face drafts for a mold that
+                moves up, the bottom face for one that moves down (use ``Plane.XY`` there).
+        """
+        from .draft import draft_faces
+
+        return draft_faces(self, faces, angle, neutral_plane)
 
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
     def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
