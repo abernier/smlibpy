@@ -39,6 +39,7 @@ import {
 } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { gltfDocument } from '../src/exporters.ts'
+import { faceMeshes } from '../src/mesh.ts'
 import * as render from '../src/render.ts'
 import { approx } from './_approx.ts'
 
@@ -209,7 +210,7 @@ function signedVolume(tris: Float64Array): number {
 test('exports and the renderer take the halved mesh', () => {
   const bar = Box(20, 20, 100).twist(90)
   const mesh = bar.mesh()
-  const path = join(mkdtempSync(join(tmpdir(), 'smlibjs-')), 'bar.stl')
+  const path = join(mkdtempSync(join(tmpdir(), 'smlibwasm-')), 'bar.stl')
   exportStl(bar, path)
   approx(importStl(path).volume, mesh.volume, 1e-6)
   const [doc, buf] = gltfDocument(bar, { edges: false })
@@ -313,10 +314,22 @@ test('exports take the turned mesh of a face', () => {
   const v = mesh.vertices
   const t = mesh.triangles
   for (let i = 0; i < t.length; i++) for (let j = 0; j < 3; j++) assert.ok(Math.abs(tris[i * 3 + j] - v[t[i] * 3 + j]) <= 1e-4 + 1e-5 * Math.abs(v[t[i] * 3 + j]))
-  const path = join(mkdtempSync(join(tmpdir(), 'smlibjs-')), 'side.stl')
+  const path = join(mkdtempSync(join(tmpdir(), 'smlibwasm-')), 'side.stl')
   exportStl(side as unknown as Shape, path)
   const a = importStl(path).triangleNormals
   const b = mesh.triangleNormals
   assert.equal(a.length, b.length)
   for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) <= 1e-4 + 1e-5 * Math.abs(b[i]))
+})
+
+test('face meshes cut one tessellation by face', () => {
+  let part = Box(20, 10, 5)
+  part = part.fillet(part.edges().parallelTo(Z), 2).cut(Cylinder(2, 10))
+  const meshes = faceMeshes(part, 0.005)
+  assert.equal(meshes.length, part.faces().length)
+  part.faces().forEach((face, i) => approx(meshes[i].area, face.area, 1e-2))
+  assert.equal(
+    meshes.reduce((n, m) => n + m.length, 0),
+    tessellate(part, 0.005).length,
+  )
 })

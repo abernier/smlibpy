@@ -21,6 +21,7 @@ import { Mesh, _triangulate, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
 import { _withOptions } from './curves.ts'
 import { _DEFAULT_COLORS, _curvePoints, _edgePolylines, _flattenAll, _fs } from './exporters.ts'
+import { StepModel } from './step_import.ts'
 
 // biome-ignore lint: shapes and options of any kind
 type Any = any
@@ -403,11 +404,12 @@ export interface RenderOptions {
  *
  * @param args Parts, sketches, shells, faces, edges, wires, meshes, or lists of them, and last the
  *   options (see `RenderOptions`). Edges, wires, and sketches shown together with solids, are
- *   drawn on top of everything at their place in space.
+ *   drawn on top of everything at their place in space. A read STEP file (`readStep`) draws its
+ *   bodies and curves, and marks its coordinate systems and named points.
  * @returns A `Picture`: the PNG file contents (`data`), with `pixels` and `frame`.
  */
 export function render(...args: unknown[]): Picture {
-  const { items: shapes, options } = _withOptions<RenderOptions>(args)
+  const { items, options } = _withOptions<RenderOptions>(args)
   const {
     path = null,
     view = 'iso',
@@ -445,6 +447,7 @@ export function render(...args: unknown[]): Picture {
   if (typeof view === 'string' && view.trim().toLowerCase() === 'sheet') drawing = drawing || true
   const stripes = _zebraSpec(zebra)
   const curv = _curvatureSpec(curvature)
+  const [shapes, stepMarkers] = _stepModelsDrawn(items)
   const opts: _Options = {
     k,
     bg: toRgb(background as string),
@@ -453,7 +456,7 @@ export function render(...args: unknown[]): Picture {
     xray: Boolean(xray) && !lines,
     alpha: Number(xrayAlpha),
     section: _section(section, Boolean(cap)),
-    markers: _markers(markers),
+    markers: [..._markers(markers), ..._markers(stepMarkers)],
     annotate: Boolean(annotate),
     zebra: stripes,
     curvature: null,
@@ -682,6 +685,25 @@ function _section(section: unknown, cap: boolean): _Cut | null {
   const length = _norm3(n)
   if (length < 1e-12) throw new RangeError('section: the normal has no length')
   return new _Cut(_vec3(origin), [n[0] / length, n[1] / length, n[2] / length], Boolean(cap))
+}
+
+/** The shapes with each `StepModel` (from `readStep`) replaced by its bodies and curves, and
+ * markers for its coordinate systems and named points. */
+function _stepModelsDrawn(shapes: unknown[]): [unknown[], { position: Vector; label: string }[]] {
+  if (!shapes.some((s) => s instanceof StepModel)) return [shapes, []]
+  const out: unknown[] = []
+  const markers: { position: Vector; label: string }[] = []
+  for (const s of shapes) {
+    if (!(s instanceof StepModel)) {
+      out.push(s)
+      continue
+    }
+    out.push(...s.bodies)
+    out.push(...s.curves.map((c) => c.shape))
+    markers.push(...s.frames.map((f) => ({ position: f.plane.origin, label: f.name })))
+    markers.push(...s.points.filter((p) => p.name).map((p) => ({ position: p.point, label: p.name })))
+  }
+  return [out, markers]
 }
 
 function _markers(markers: unknown): [Vec3, string, RGB][] {

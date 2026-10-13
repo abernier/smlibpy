@@ -46,7 +46,8 @@ The functions, classes, checks and error messages are smlibpy's, so
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: `toStep`, `toStl`, `toGlb`, `toDxf` give the file's contents and `fromStep`, `fromStl`,
-  `fromDxf` read them, in the browser and in Node. In Node, `exportStep(shapes, path)`,
+  `fromDxf` read them, in the browser and in Node; `fromStepModel` reads a STEP file with its
+  coordinate systems, curves and points as well. In Node, `exportStep(shapes, path)`,
   `importStep(path)` and the other path functions write and read files as smlibpy's do.
 
 ## Memory

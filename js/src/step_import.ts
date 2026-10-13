@@ -5,12 +5,24 @@
 // kept: faces share their edges as they do in the file, so no stitching is needed. Bodies that
 // still come out invalid are healed.
 
-import { KernelError, ModelingError, ext, kernelCall } from './kernel.ts'
-import type { Matrix } from './geometry.ts'
+import { KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { type Location, type Matrix, Plane, Vector } from './geometry.ts'
 import { det3 } from './_linalg.ts'
-import { Part, Shell, _list, type ShapeList } from './shapes.ts'
-import { NotImplementedError, interpret, parse, type BodyData, type FaceData, type LoopData } from './step_reader.ts'
+import { CenterArc, EllipticalArc, Line } from './curves.ts'
+import { Edge, Part, Shell, Wire, _canonicalCurve, _list, type ShapeList } from './shapes.ts'
+import {
+  NotImplementedError,
+  _repr,
+  interpret,
+  interpretExtras,
+  parse,
+  type BodyData,
+  type FaceData,
+  type LoopData,
+} from './step_reader.ts'
 import { _fs } from './exporters.ts'
+
+const inspect = Symbol.for('nodejs.util.inspect.custom')
 
 // biome-ignore lint: curve and surface specs are plain objects of many shapes
 type Any = any
@@ -83,6 +95,19 @@ function _min(xs: number[]): number {
   let m = xs[0]
   for (const x of xs) if (x < m) m = x
   return m
+}
+
+// Python's round (half to even; a NaN or infinity cannot be an integer)
+function _round(x: number): number {
+  if (Number.isNaN(x)) throw new RangeError('cannot convert float NaN to integer')
+  if (!Number.isFinite(x)) throw new RangeError('cannot convert float infinity to integer')
+  const r = Math.round(x)
+  return Math.abs(x % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r
+}
+
+// Python's `x or y` of numbers (0 is false, a NaN is true)
+function _or(x: number, y: number): number {
+  return x === 0 ? y : x
 }
 
 // numpy's min and max of an array (a NaN wins)
@@ -185,6 +210,16 @@ class _Builder {
   }
 
   // -- surfaces -----------------------------------------------------------------------------
+  /** Points along a loop in its direction. */
+  loopPoints(loop: LoopData, n = 16): V[] {
+    const out: V[] = []
+    for (const [ei, fwd] of loop.edges as [number, boolean][]) {
+      const p = _sample(this.specs.get(ei) ?? this.edgeSpec(ei), n)
+      out.push(...(fwd ? p : p.reverse()))
+    }
+    return out
+  }
+
   facePoints(face: FaceData): V[] {
     const pts: V[] = []
     for (const loop of face.loops) {
@@ -246,6 +281,23 @@ class _Builder {
       else {
         spec.major = s.major
         spec.minor = s.minor
+        // The seam around the tube (v = 0 on the outer equator) cannot be turned with the frame:
+        // move the torus' v window so that it starts at the face's seam edge along the torus, or
+        // else outside the face. A face that runs all the way around the tube without such an
+        // edge gets one added later.
+        const to: V = spec.origin
+        const tz: V = spec.z
+        const tubeAngle = (p: V): number => {
+          const d = _sub(p, to)
+          const h = _dot(d, tz)
+          return Math.atan2(h, _norm(_sub(d, _mul(tz, h))) - s.major)
+        }
+        const loops = face.loops.filter((l) => l.edges?.length).map((l) => this.loopPoints(l))
+        const seam = this.tubeSeam(face, tubeAngle)
+        if (seam !== null || (pts.length && !loops.some((l) => _winding(l, tubeAngle)))) {
+          const v0 = _degrees(seam !== null ? seam : _largestGapOf(pts.map(tubeAngle).sort((a, b) => a - b)))
+          spec.v_start = v0 > 0 ? v0 - 360.0 : v0
+        }
       }
       return spec
     }
@@ -263,11 +315,28 @@ class _Builder {
       }
     }
     if (kind === 'extrusion') {
-      const curve = this._freeCurve(s.curve)
+      let curve = this._freeCurve(s.curve)
       const vec = this.D(s.vector)
-      const L2 = _dot(vec, vec)
-      const base: V = curve.kind === 'bspline' ? curve.poles[0] : 'p0' in curve ? curve.p0 : curve.center
-      const vs = this.facePoints(face).map((p) => _dot(_sub(p, base), vec) / L2)
+      const pts = this.facePoints(face)
+      let vs: number[]
+      if ((curve.kind === 'circle' || curve.kind === 'ellipse') && Math.abs(_dot(vec, curve.z)) > 1e-9 * _norm(vec)) {
+        // a point of the surface lies v * vec above its generator's plane
+        const { center, z: cz } = curve
+        vs = pts.map((p) => _dot(_sub(p, center), cz) / _dot(vec, cz))
+        curve = this._startOutside(curve, face, vec, pts)
+      } else if (curve.kind === 'line') {
+        // p = p0 + t (p1 - p0) + v vec
+        const { p0, p1 } = curve
+        vs = pts.map((p) => _lstsq2(_sub(p1, p0), vec, _sub(p, p0))[1])
+      } else {
+        // p = C(u) + v vec: v is p's height along vec less that of the generator's point, which
+        // lies between the heights of the generator's poles
+        const L2 = _dot(vec, vec)
+        const gen: V[] = curve.kind === 'bspline' ? curve.poles : [curve.center]
+        const g = gen.map((q) => _dot(_sub(q, gen[0]), vec) / L2)
+        const heights = pts.map((p) => _dot(_sub(p, gen[0]), vec) / L2)
+        vs = [_min(heights) - _npMax(g), _max(heights) - _npMin(g)]
+      }
       const pad = 0.05 * _max([_max(vs) - _min(vs), 1e-6]) + 1e-6
       return { kind: 'extrusion', curve, vector: vec, v_range: [_min(vs) - pad, _max(vs) + pad] }
     }
@@ -308,6 +377,54 @@ class _Builder {
     return null
   }
 
+  /** The angle around the tube of a torus face's seam edge that runs along the torus (an edge a
+   * loop uses twice and that keeps one angle around the tube), or null. */
+  tubeSeam(face: FaceData, tubeAngle: (p: V) => number): number | null {
+    for (const loop of face.loops) {
+      if (!loop.edges?.length) continue
+      const edges = loop.edges
+      // (Python goes through a set of these; a face has one at most)
+      const twice = new Set(edges.map(([e]) => e).filter((e) => edges.filter(([x]) => x === e).length > 1))
+      for (const ei of twice) {
+        const angles = _sample(this.specs.get(ei) ?? this.edgeSpec(ei), 8).map(tubeAngle)
+        if (angles.every((a) => Math.abs(_mod(a - angles[0] + Math.PI, 2 * Math.PI) - Math.PI) < 1e-6)) return angles[0]
+      }
+    }
+    return null
+  }
+
+  /** A whole circle or ellipse, the generator of an extrusion, turned to start on the face's seam
+   * edge, or where the face does not reach: the surface's seam is there. */
+  _startOutside(curve: Any, face: FaceData, vec: V, pts: V[]): Any {
+    const o: V = curve.center
+    const z: V = curve.z
+    const x: V = curve.x
+    const y = _cross(z, x)
+    const [r1, r2]: number[] = curve.kind === 'ellipse' ? [curve.r1, curve.r2] : [curve.radius, curve.radius]
+    const param = (p: V): number => {
+      let d = _sub(p, o)
+      d = _sub(d, _mul(vec, _dot(d, z) / _dot(vec, z))) // along the extrusion into the generator's plane
+      return Math.atan2(_dot(d, y) / r2, _dot(d, x) / r1)
+    }
+    let seam: number | null = null
+    search: for (const loop of face.loops) {
+      if (!loop.edges?.length) continue
+      for (const [ei] of loop.edges) {
+        if ((loop.edges as [number, boolean][]).filter(([e]) => e === ei).length > 1) {
+          seam = ei
+          break search
+        }
+      }
+    }
+    let t: number
+    if (seam !== null) t = param(_sample(this.specs.get(seam) ?? this.edgeSpec(seam), 2)[0])
+    else if (pts.length) t = _largestGapOf(pts.map(param).sort((a, b) => a - b))
+    else return curve
+    if (curve.kind === 'circle') return { ...curve, x: _unit(_add(_mul(x, Math.cos(t)), _mul(y, Math.sin(t)))) }
+    const start = _add(_add(o, _mul(_mul(x, r1), Math.cos(t))), _mul(_mul(y, r2), Math.sin(t)))
+    return { ...curve, p0: start, p1: start }
+  }
+
   _surfaceFrom(s: Any, face: FaceData): Any {
     const saved = this.b.surfaces
     try {
@@ -331,6 +448,13 @@ class _Builder {
     }
     if (kind === 'circle') {
       return { kind: 'circle', center: this.P(c.origin), z: _unit(this.D(c.z)), x: _unit(this.D(c.x)), radius: c.radius, sweep: 360.0 }
+    }
+    if (kind === 'ellipse') {
+      // NX writes small roundings as extruded ellipses
+      const o = this.P(c.origin)
+      const x = _unit(this.D(c.x))
+      const start = _add(o, _mul(x, c.r1))
+      return { kind: 'ellipse', center: o, z: _unit(this.D(c.z)), x, r1: c.r1, r2: c.r2, p0: start, p1: start, forward: true, closed: true }
     }
     throw new NotImplementedError(`generator curve ${kind}`)
   }
@@ -418,11 +542,26 @@ function _conicArc(c: Any, o: V, z: V, x: V, p0: V, p1: V): Any {
 /** The direction about the axis in the middle of the largest angular gap between the points
  * (where a face without a seam edge does not reach). */
 function _largestGap(o: V, z: V, x: V, pts: V[]): V {
-  const angs = pts.map((p) => _angleIn(o, z, x, p)).sort((a, b) => a - b)
-  const gaps = angs.map((a, i) => _mod(angs[(i + 1) % angs.length] - a, 2 * Math.PI))
-  const i = _argmax(gaps)
-  const mid = angs[i] + gaps[i] / 2
+  const mid = _largestGapOf(pts.map((p) => _angleIn(o, z, x, p)).sort((a, b) => a - b))
   return _unit(_add(_mul(x, Math.cos(mid)), _mul(_cross(z, x), Math.sin(mid))))
+}
+
+/** The angle in the middle of the largest gap between sorted angles (radians). */
+function _largestGapOf(angs: number[]): number {
+  let gaps = angs.map((a, i) => _mod(angs[(i + 1) % angs.length] - a, 2 * Math.PI))
+  if (angs.length === 1) gaps = [2 * Math.PI]
+  if (!gaps.length) throw new RangeError('attempt to get argmax of an empty sequence')
+  const i = _argmax(gaps)
+  return angs[i] + gaps[i] / 2
+}
+
+/** How many times a closed run of points goes around in the angle `angle(p)`. */
+function _winding(pts: V[], angle: (p: V) => number): number {
+  if (pts.length < 2) return 0
+  const a = pts.map(angle)
+  let turn = 0
+  for (let i = 0; i < a.length; i++) turn += _mod(a[(i + 1) % a.length] - a[i] + Math.PI, 2 * Math.PI) - Math.PI
+  return _round(turn / (2 * Math.PI))
 }
 
 /** Direction from the axis to a revolution's generator curve. */
@@ -632,23 +771,50 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
       ]
       f = { ...f, loops, frame: [z, x] }
     }
-    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops })
+    // a face on a closed B-spline surface without a seam edge of its own may lie across the
+    // surface's seam; build_brep moves the seam off it
+    const freeSeam = srf.kind === 'bspline' && !loops.some((l) => l.edges?.length && _isSeamLoop(l))
+    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam })
   })
   const solid = body.kind === 'solid'
   const parts: (Part | Shell)[] = []
+  const built: [Any[], boolean][] = [] // the faces and orientation each shell was built with in the end
   const hint = 'the file may hold faces the kernel cannot rebuild'
   body.shells.forEach((sh, si) => {
     const closed = solid && Boolean(sh.closed ?? true)
     const shellFaces = sh.faces.map((i) => faces[i])
     // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
-    const reversed = Boolean(sh.reversed) && !(solid && si > 0)
-    const brep = kernelCall('import STEP', () => ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), hint)
-    let part: Part | Shell = closed ? Part._wrap(brep) : Shell._wrap(brep)
+    let reversed = Boolean(sh.reversed) && !(solid && si > 0)
+    const brep = kernelCall(
+      'import STEP',
+      () => {
+        let b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+        // A few writers flip a face's same_sense flag against its loops (which agree with the
+        // loops of its neighbours): the loops decide.
+        // (Faces that lack their seam have loops that do not close in the parameter plane, and no
+        // sense to read.)
+        let inverted = [...(ext.inverted_faces(b) as Iterable<number>)]
+        if (inverted.length) {
+          const unseamed = new Set((ext.seam_problems(b) as { face: number }[]).map((d) => d.face))
+          inverted = inverted.filter((i) => !unseamed.has(i))
+        }
+        if (inverted.length && 2 * inverted.length < shellFaces.length) {
+          for (const i of inverted) shellFaces[i] = { ...shellFaces[i], same_sense: !shellFaces[i].same_sense }
+          ext.delete_brep(b)
+          b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+        }
+        return b
+      },
+      hint,
+    )
+    let part: Part | Shell = _withSeams(closed ? Part._wrap(brep) : Shell._wrap(brep))
     if (closed && !_positive(part as Part)) {
-      const turned = kernelCall('import STEP', () => Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, !reversed, false)))
+      reversed = !reversed
+      const turned = kernelCall('import STEP', () => _withSeams(Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false))))
       part.dispose()
       part = turned
     }
+    built.push([shellFaces, reversed])
     if (heal && closed && !_sound(part as Part)) {
       // Only heal what came out broken: the kernel's healer can damage good bodies.
       try {
@@ -666,7 +832,8 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   if (!parts.length) throw new ModelingError('empty body')
   let result = parts[0]
   if (solid && parts.length > 1) {
-    for (const cavity of parts.slice(1)) result = (result as Part).cut(cavity as Part) // BREP_WITH_VOIDS: subtract the cavities
+    // BREP_WITH_VOIDS
+    result = _withCavities(result as Part, parts.slice(1) as Part[], built, edges)
   } else if (parts.length > 1) {
     // a surface model of several shells stays a surface
     result = kernelCall('import STEP', () => Shell._wrap(ext.combine(parts.map((p) => p._brep))))
@@ -674,6 +841,82 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   if (body.name) result.name = body.name
   if (body.color !== null) result.color = body.color
   return result
+}
+
+/** A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the solid, as the
+ * file has it. The Boolean difference is the fallback; it fails where a cavity's faces come close
+ * to the solid's. */
+function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][], edges: Map<number, Any>): Part {
+  const expected = outer.volume - cavities.reduce((sum, c) => sum + c.volume, 0)
+  const [faces, rev] = built[0]
+  // The cavity's faces as when it was built as a solid of its own; the constructor's comments say
+  // the other way round, so that is tried as well. The volume decides.
+  for (const flip of [false, true]) {
+    const voids = built.slice(1).map(([f, r]) => [f, r !== flip])
+    let part: Part | null = null
+    try {
+      part = kernelCall('import STEP: cavities', () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids))))
+      if (part.isValid() && Math.abs(part.volume - expected) <= 1e-6 * Math.max(Math.abs(outer.volume), 1.0)) return part
+    } catch (e) {
+      if (!(e instanceof ModelingError)) throw e // (a KernelError is one)
+    }
+    part?.dispose()
+  }
+  let result = outer
+  for (const cavity of cavities) result = result.cut(cavity)
+  return result
+}
+
+const _SWEPT = ['cylinder', 'cone', 'sphere', 'torus', 'revolution', 'extrusion']
+
+/**
+ * The body with the seams its faces lack. A face on a cylinder, cone, revolution or extrusion
+ * around which its loops run (NX writes the shank of a drill as the circle at one end and the
+ * outline of its flat at the other) needs an edge along the surface's seam: without it the kernel
+ * can neither mesh nor integrate the face. The kernel adds them; a solid that would come out
+ * broken keeps its faces as they are. (The body given is disposed when the one returned is new.)
+ */
+function _withSeams<B extends Part | Shell>(body: B): B {
+  const faces = body.faces()
+  const problems = ext.seam_problems(body._brep) as { face: number; missing: string }[]
+  const lacking = problems.filter((d) => _SWEPT.includes(faces[d.face].geomType)).map((d) => d.face)
+  // B-spline surfaces closed on themselves read right as written, unless a face runs all the way
+  // around one without a seam edge (the hub of an impeller): the kernel cannot mesh it, and it
+  // needs the seam as the others do. (The kernel says the same of small faces at a pole, which
+  // mesh as they are and break when split.)
+  const spline = problems.filter((d) => faces[d.face].geomType === 'bspline' && d.missing).map((d) => d.face)
+  if (spline.length) {
+    const unmeshed = _unmeshed(body)
+    lacking.push(...[...new Set(spline)].filter((i) => unmeshed.has(i)).sort((a, b) => a - b))
+  }
+  if (!lacking.length) return body
+  let fixed: B | null = null
+  try {
+    const copy = body._like(body._copyBrep()) as B
+    fixed = copy
+    kernelCall('import STEP: seams', () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
+    // (a sheet cannot be checked for closure: it takes the kernel's seams)
+    if (!(copy instanceof Part) || (copy.isValid() && _positive(copy))) {
+      body.dispose()
+      return copy
+    }
+  } catch (e) {
+    if (!(e instanceof KernelError)) throw e
+  }
+  fixed?.dispose()
+  return body
+}
+
+/** Indices of the faces the kernel's tessellation fails on (all of them if it fails as a whole). */
+function _unmeshed(body: Part | Shell): Set<number> {
+  try {
+    const tol = Math.max(body.bbox().diagonal * 1e-3, 1e-6)
+    const [mesh, failures] = ext.tessellate(body._brep, { chord_height_tolerance: tol, allow_partial: true, return_failures: true })
+    if (mesh) ext.delete_polybrep(mesh)
+    return new Set((failures as { face_index: number }[]).map((f) => Math.trunc(Number(f.face_index))))
+  } catch {
+    return new Set(Array.from({ length: body.faces().length }, (_, i) => i))
+  }
 }
 
 /** Loops with the outer one first. Files that do not mark the outer bound get the loop with the
@@ -708,16 +951,331 @@ function _positive(part: Part): boolean {
   }
 }
 
+// -------------------------------------------------------------------------------- readStep
+/** Python's == of the fields of its dataclasses: shapes, planes and vectors by `equals`, colors
+ * component by component. */
+function _same(a: unknown, b: unknown): boolean {
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return a === b
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((x, i) => _same(x, b[i]))
+  const eq = (a as { equals?: (o: unknown) => boolean }).equals
+  return typeof eq === 'function' ? eq.call(a, b) : a === b
+}
+
+/** A coordinate system of a STEP file (a named `AXIS2_PLACEMENT_3D`) at its place in the
+ * assembly. `product` names the part or assembly it belongs to. */
+export class StepFrame {
+  readonly name: string
+  readonly plane: Plane
+  readonly product: string
+  /** [r, g, b] from 0 to 1, or null */
+  readonly color: readonly number[] | null
+
+  constructor(name: string, plane: Plane, product = '', color: readonly number[] | null = null) {
+    this.name = name
+    this.plane = plane
+    this.product = product
+    this.color = color
+    Object.freeze(this)
+  }
+
+  /** The placement that moves the world origin onto this coordinate system. */
+  get location(): Location {
+    return this.plane.location
+  }
+
+  equals(other: unknown): boolean {
+    return (
+      other instanceof StepFrame &&
+      this.name === other.name &&
+      _same(this.plane, other.plane) &&
+      this.product === other.product &&
+      _same(this.color, other.color)
+    )
+  }
+
+  toString(): string {
+    return `StepFrame(${_repr(this.name)}, product=${_repr(this.product)}, ${this.plane})`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
+}
+
+/** A curve of a STEP file that belongs to no body (wireframe geometry, contours), at its place in
+ * the assembly: an `Edge`, or a `Wire` for a composite curve. */
+export class StepCurve {
+  readonly name: string
+  readonly shape: Edge | Wire
+  readonly product: string
+  /** [r, g, b] from 0 to 1, or null */
+  readonly color: readonly number[] | null
+
+  constructor(name: string, shape: Edge | Wire, product = '', color: readonly number[] | null = null) {
+    this.name = name
+    this.shape = shape
+    this.product = product
+    this.color = color
+    Object.freeze(this)
+  }
+
+  equals(other: unknown): boolean {
+    return (
+      other instanceof StepCurve &&
+      this.name === other.name &&
+      _same(this.shape, other.shape) &&
+      this.product === other.product &&
+      _same(this.color, other.color)
+    )
+  }
+
+  toString(): string {
+    return `StepCurve(${_repr(this.name)}, product=${_repr(this.product)}, ${this.shape})`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
+}
+
+/** A point of a STEP file that belongs to no body, at its place in the assembly. */
+export class StepPoint {
+  readonly name: string
+  readonly point: Vector
+  readonly product: string
+  /** [r, g, b] from 0 to 1, or null */
+  readonly color: readonly number[] | null
+
+  constructor(name: string, point: Vector, product = '', color: readonly number[] | null = null) {
+    this.name = name
+    this.point = point
+    this.product = product
+    this.color = color
+    Object.freeze(this)
+  }
+
+  equals(other: unknown): boolean {
+    return (
+      other instanceof StepPoint &&
+      this.name === other.name &&
+      _same(this.point, other.point) &&
+      this.product === other.product &&
+      _same(this.color, other.color)
+    )
+  }
+
+  toString(): string {
+    return `StepPoint(${_repr(this.name)}, product=${_repr(this.product)}, ${this.point})`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
+}
+
+/** Everything `readStep` reads from a STEP file: the bodies (what `importStep` returns, always as
+ * a list), and the coordinate systems, curves and points that belong to no body. */
+export class StepModel {
+  readonly bodies: ShapeList<Part | Shell>
+  readonly frames: StepFrame[]
+  readonly curves: StepCurve[]
+  readonly points: StepPoint[]
+
+  constructor(bodies: ShapeList<Part | Shell>, frames: StepFrame[] = [], curves: StepCurve[] = [], points: StepPoint[] = []) {
+    this.bodies = bodies
+    this.frames = frames
+    this.curves = curves
+    this.points = points
+    Object.freeze(this)
+  }
+
+  /** The coordinate system called `name` as a `Plane`. Where several have that name (each part of
+   * a tool assembly has its own `MCS`), `product` picks the one of the product whose name is or
+   * begins with it. */
+  frame(name: string, product: string | null = null): Plane {
+    const found = this.frames.filter((f) => f.name === name && (product === null || f.product.startsWith(product)))
+    if (found.length === 1) return found[0].plane
+    if (!found.length) {
+      const names = [...new Set(this.frames.map((f) => f.name))].sort()
+      throw new RangeError(
+        `no coordinate system ${_repr(name)}${product ? ` in product ${_repr(product)}` : ''}${
+          names.length ? `; there are ${names.map(_repr).join(', ')}` : '; the file has none'
+        }`,
+      )
+    }
+    throw new RangeError(
+      `${found.length} coordinate systems are called ${_repr(name)}, in ${found.map((f) => _repr(f.product)).join(', ')}: choose one with frame(name, product)`,
+    )
+  }
+
+  equals(other: unknown): boolean {
+    return (
+      other instanceof StepModel &&
+      _same(this.bodies, other.bodies) &&
+      _same(this.frames, other.frames) &&
+      _same(this.curves, other.curves) &&
+      _same(this.points, other.points)
+    )
+  }
+
+  toString(): string {
+    return `StepModel(${this.bodies.length} bodies, ${this.frames.length} frames, ${this.curves.length} curves, ${this.points.length} points)`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
+}
+
+/**
+ * Read everything STEP file contents hold that smlibwasm can use (the text, or the bytes of the
+ * file): its bodies, and the coordinate systems, curves and points that belong to no body.
+ *
+ * `readStep` for the contents in memory (in the browser too); see `readStep`.
+ */
+export function fromStepModel(data: string | Uint8Array, options: { heal?: boolean } = {}): StepModel {
+  const { heal = true } = options
+  const sf = parse(_text(data, 'fromStepModel'))
+  const bodies = _list(interpret(sf).map(([b, m]) => _buildBody(b, m, heal)))
+  const frames: StepFrame[] = []
+  const curves: StepCurve[] = []
+  const points: StepPoint[] = []
+  for (const item of interpretExtras(sf)) {
+    const { name, product, color } = item
+    if (item.kind === 'frame') frames.push(new StepFrame(name, new Plane(item.origin, item.x, item.z), product, color))
+    else if (item.kind === 'point') points.push(new StepPoint(name, new Vector(item.point), product, color))
+    else {
+      let shape: Edge | Wire | null
+      try {
+        shape = _curveShape(item.curve)
+      } catch (e) {
+        if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+        shape = null
+      }
+      if (shape !== null) curves.push(new StepCurve(name, shape, product, color))
+    }
+  }
+  return new StepModel(bodies, frames, curves, points)
+}
+
+/**
+ * Read everything a STEP file holds that smlibwasm can use: its bodies, and the coordinate systems,
+ * curves and points that belong to no body.
+ *
+ * The bodies are those of `importStep`, as a `ShapeList` also when there is one. Coordinate
+ * systems are the placements of supplemental geometry (as NX, CATIA and tool catalogs write
+ * `MCS`, `PCS` or `CSW`) and the named placements of shape representations; curves and points are
+ * the wireframe geometry (contours such as a tool's cutting edge line, curve sets, reference
+ * points). Each carries its name and the product it belongs to, at its place in the assembly, in
+ * millimeters. Items on hidden layers are left out. A file with no bodies gives an empty
+ * `bodies`. `heal` as for `importStep` (default true).
+ */
+export function readStep(path: string, options: { heal?: boolean } = {}): StepModel {
+  return fromStepModel(_fs().readFileSync(String(path)), options)
+}
+
+/** An edge (a wire for a composite curve) from a curve of `interpretExtras`; null for one that
+ * cannot be drawn. */
+function _curveShape(c: Any): Edge | Wire | null {
+  const kind = c.kind
+  if (kind === 'composite') {
+    const edges: Edge[] = []
+    for (const [segment, same] of c.segments as [Any, boolean][]) {
+      const s = _curveShape(segment)
+      if (s === null) return null
+      const parts = s instanceof Wire ? [...s.edges()] : [s]
+      edges.push(...(same ? parts : parts.reverse().map((e) => e.reversed())))
+    }
+    return edges.length > 1 ? Wire._raw(edges) : edges.length ? edges[0] : null
+  }
+  if (kind === 'trimmed') return _trimmedEdge(c.basis, c.trims, c.sense)
+  if (kind === 'bspline') return Edge._fromCurve(_bsplineCurve(c))
+  if (kind === 'circle' || kind === 'ellipse') return _conicEdge(c, 0.0, 2 * Math.PI)
+  return null
+}
+
+function _bsplineCurve(c: Any): number {
+  return kernelCall('read STEP curve', () => _canonicalCurve(c.poles, c.knots, c.degree, c.weights))
+}
+
+/** A circle or ellipse from angle `t0` to `t1` (radians, the direction they say). */
+function _conicEdge(c: Any, t0: number, t1: number): Edge {
+  const plane = new Plane(c.origin, c.x, c.z)
+  const a0 = _degrees(t0)
+  let span = _degrees(t1 - t0)
+  if (Math.abs(span) < 1e-12 || Math.abs(span) >= 360.0 - 1e-9) span = span >= 0 ? 360.0 : -360.0
+  if (c.kind === 'circle') return CenterArc([0, 0], c.radius, a0, span, plane)
+  const [lo, hi] = span > 0 ? [a0, a0 + span] : [a0 + span, a0]
+  const e = EllipticalArc([0, 0], c.r1, c.r2, lo, Math.abs(span) < 360.0 ? hi : lo, plane)
+  return span > 0 ? e : e.reversed()
+}
+
+function _trimmedEdge(basis: Any, trims: Any[], sense: boolean): Edge | null {
+  const kind = basis.kind
+
+  const param = (trim: Any): number => {
+    if ('param' in trim) return trim.param
+    const d = _sub(trim.point, basis.origin ?? [0, 0, 0])
+    if (kind === 'line') {
+      const v: V = basis.direction
+      return _dot(d, v) / _dot(v, v)
+    }
+    if (kind === 'circle' || kind === 'ellipse') {
+      const { x, z } = basis
+      const y = _cross(z, x)
+      const [r1, r2]: number[] = kind === 'circle' ? [basis.radius, basis.radius] : [basis.r1, basis.r2]
+      return Math.atan2(_dot(d, y) / r2, _dot(d, x) / r1)
+    }
+    throw new RangeError('no parameter')
+  }
+
+  if (kind === 'line') {
+    const { origin: o, direction: v } = basis
+    return Line(_add(o, _mul(v, param(trims[0]))), _add(o, _mul(v, param(trims[1]))))
+  }
+  if (kind === 'circle' || kind === 'ellipse') {
+    const t0 = param(trims[0])
+    let t1 = param(trims[1])
+    const turn = 2 * Math.PI
+    t1 = sense ? t0 + _or(_mod(t1 - t0, turn), turn) : t0 - _or(_mod(t0 - t1, turn), turn)
+    return _conicEdge(basis, t0, t1)
+  }
+  if (kind === 'bspline') {
+    const curve = _bsplineCurve(basis)
+    const ts: number[] = []
+    let part: number | null
+    try {
+      for (const trim of trims) {
+        if ('param' in trim) ts.push(trim.param)
+        else {
+          const [, t] = k.curve_closest_point(curve, [...trim.point])
+          ts.push(Number(t))
+        }
+      }
+      const lo = _min(ts)
+      const hi = _max(ts)
+      part = kernelCall('read STEP curve', () => (hi - lo > 1e-12 ? (ext.trimmed_curve(curve, lo, hi) as number) : null))
+    } finally {
+      ext.delete_curve(curve)
+    }
+    if (part === null) return null
+    const e = Edge._fromCurve(part)
+    return ts[0] <= ts[1] === sense ? e : e.reversed()
+  }
+  return null
+}
+
+// -------------------------------------------------------------------------------- importStep
 /** The text of STEP file contents: bytes are Latin-1, as Python reads the file, and line ends
  * become "\n" (Python's universal newlines). */
-function _text(data: string | Uint8Array): string {
+function _text(data: string | Uint8Array, caller = 'fromStep'): string {
   let text: string
   if (typeof data === 'string') text = data
   else if (ArrayBuffer.isView(data) || (data as unknown) instanceof ArrayBuffer) {
     const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data as ArrayBuffer)
     text = ''
     for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  } else throw new TypeError("fromStep takes the file's contents: a string or a Uint8Array")
+  } else throw new TypeError(`${caller} takes the file's contents: a string or a Uint8Array`)
   return text.replace(/\r\n?/g, '\n')
 }
 

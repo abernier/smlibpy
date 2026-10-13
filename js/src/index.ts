@@ -1,14 +1,14 @@
-// smlibjs: CAD modeling in JavaScript on SMLib, the open-source NURBS solid modeling kernel,
+// smlibwasm: CAD modeling in JavaScript on SMLib, the open-source NURBS solid modeling kernel,
 // compiled to WebAssembly. smlibpy's API, for the browser and Node:
 //
-//     import { Box, Cylinder, GridLocations, Z } from 'smlibjs'
+//     import { Box, Cylinder, GridLocations, Z } from '@classcad/smlibwasm'
 //
 //     let plate = Box(80, 60, 10)
 //     plate = plate.fillet(plate.edges().parallelTo(Z), 8)
 //     plate = plate.cut(GridLocations(60, 40, 2, 2).mul(Cylinder(4, 10)))
 //     const step = toStep(plate)
 
-export const version = '0.0.0'
+export const version = '0.2.2'
 
 // geometry
 export { TOLERANCE, Axis, BoundBox, Location, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'
@@ -83,7 +83,16 @@ export {
   toStep,
   toStl,
 } from './exporters.ts'
-export { fromStep, importStep } from './step_import.ts'
+export {
+  StepModel,
+  fromStep,
+  fromStepModel,
+  importStep,
+  readStep,
+  type StepCurve,
+  type StepFrame,
+  type StepPoint,
+} from './step_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'

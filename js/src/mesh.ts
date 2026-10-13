@@ -337,6 +337,58 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance: number | n
   return mesh
 }
 
+/**
+ * One mesh per face of a part, shell or sketch (in `shape.faces()` order), cut from one
+ * tessellation of the whole body. Faces of imported bodies that the kernel cannot mesh on their
+ * own (copied out of the body) get theirs this way, and the faces share the points where they
+ * meet.
+ */
+export function faceMeshes(shape: _Body | ShapeList<Shape>, tolerance: number | null = null, angle = 15): Mesh[] {
+  const mesh = tessellate(shape, tolerance, angle)
+  const poly = mesh._poly !== null ? mesh._poly.poly : 0
+  const count = shape.faces().length
+  if (!poly) return Array.from({ length: count }, () => new Mesh([], []))
+  const brep = (shape as _Body)._brep
+  if (brep === undefined) throw new TypeError(`faceMeshes: a ${_typeName(shape)} has no body of its own; give a part, shell or sketch`)
+  const owners = ext.poly_face_indices(poly, brep) as Int32Array
+  const polygons = k.poly_mesh(poly, false).faces as Int32Array
+  const sizes: number[] = []
+  for (let i = 0; i < polygons.length; i += sizes[sizes.length - 1] + 1) sizes.push(polygons[i])
+  // the face of each triangle (numpy's repeat: one count for all, or one per polygon)
+  if (sizes.length !== owners.length && sizes.length !== 1) {
+    throw new RangeError(`operands could not be broadcast together with shape (${owners.length},) (${sizes.length},)`)
+  }
+  const owner: number[] = []
+  owners.forEach((fi, i) => {
+    for (let n = Math.max((sizes.length === 1 ? sizes[0] : sizes[i]) - 2, 0); n > 0; n--) owner.push(fi)
+  })
+  const t = mesh.triangles
+  if (owner.length !== t.length / 3) throw new ModelingError('tessellate: the mesh does not say which face each triangle belongs to')
+  const byFace: number[][] = Array.from({ length: count }, () => [])
+  owner.forEach((fi, i) => {
+    if (fi >= 0 && fi < count) byFace[fi].push(i)
+  })
+  const v = mesh.vertices
+  const nm = mesh.normals
+  return byFace.map((tris) => {
+    // the vertices the face's triangles use, in their order in the whole mesh (numpy's unique)
+    const used = [...new Set(tris.flatMap((i) => [t[i * 3], t[i * 3 + 1], t[i * 3 + 2]]))].sort((a, b) => a - b)
+    const local = new Map(used.map((vi, j) => [vi, j]))
+    const vertices = new Float64Array(used.length * 3)
+    used.forEach((vi, j) => vertices.set(v.subarray(vi * 3, vi * 3 + 3), j * 3))
+    const triangles = new Uint32Array(tris.length * 3)
+    tris.forEach((i, j) => {
+      for (let c = 0; c < 3; c++) triangles[j * 3 + c] = local.get(t[i * 3 + c]) as number
+    })
+    let normals: Float32Array | null = null
+    if (nm !== null) {
+      normals = new Float32Array(tris.length * 9)
+      tris.forEach((i, j) => normals?.set(nm.subarray(i * 9, i * 9 + 9), j * 9))
+    }
+    return new Mesh(vertices, triangles, normals)
+  })
+}
+
 /** Concatenate meshes (no Boolean). */
 export function merge(meshes: readonly Mesh[]): Mesh {
   const verts: number[] = []

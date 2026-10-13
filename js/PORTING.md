@@ -92,12 +92,14 @@ the Python code works around a kernel defect, so does the TypeScript.
   `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
-  `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...).
+  `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
+  `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it).
 
 ## Status
 
 - [x] The kernel's calls, topology, meshes, smlibpy's C++: bound and tested (js/test).
-- [x] kernel.ts, geometry.ts.
-- [ ] shapes.ts, then the modules it uses, then the rest; each with its tests ported from
-      tests/*.py.
-- [ ] Packaging (npm), docs, a demo page, CI.
+- [x] Every smlibpy module, each with its tests ported from tests/*.py; skipped are the tests of
+      what only Python has (OpenCASCADE through OCP, fontTools, ezdxf, the MCP server).
+- [x] Packaging (npm `@classcad/smlibwasm`, prepack, the release job), docs
+      (docs/javascript.md, its API section from scripts/api.mjs), CI (the js job of ci.yml).
+- [ ] A demo page beyond js/demo/index.html.

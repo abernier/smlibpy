@@ -93,8 +93,8 @@ function _pyType(x: unknown): string {
   return (x as { constructor?: { name?: string } }).constructor?.name ?? typeof x
 }
 
-/** Python's repr of a string, for messages. */
-function _repr(s: string): string {
+/** Python's repr of a string, for messages (also step_import.ts's). */
+export function _repr(s: string): string {
   const q = s.includes("'") && !s.includes('"') ? '"' : "'"
   let out = q
   for (const ch of s) {
@@ -734,6 +734,52 @@ class _Interp {
     throw new NotImplementedError(`curve type ${t}`)
   }
 
+  /** A curve that stands on its own (wireframe geometry), with its trims and segments:
+   * `{ kind: 'trimmed', basis, trims: [{ param } | { point }] (two), sense }`,
+   * `{ kind: 'composite', segments: [[curve, sameSense], ...] }`, or a curve of `curve`. null for
+   * a line without ends. */
+  wireCurve(ref: unknown): Any | null {
+    const [t, a] = this.sf.get(ref)
+    if (t === 'TRIMMED_CURVE') {
+      const basis = this.curve(_at(a, 1))
+      const master = a.length > 5 ? String(a[5]) : 'UNSPECIFIED'
+      const trims = [_at(a, 2), _at(a, 3)].map((sel) => this._trim(sel, basis, master))
+      if (trims.some((x) => x === null)) return null
+      return { kind: 'trimmed', basis, trims, sense: String(_at(a, 4)) !== 'F' }
+    }
+    if (t === 'COMPOSITE_CURVE') {
+      const segments: [Any, boolean][] = []
+      for (const sref of _iter(_at(a, 1))) {
+        const [, sa] = this.sf.get(sref) // COMPOSITE_CURVE_SEGMENT(transition, same_sense, parent)
+        const c = this.wireCurve(_at(sa, 2))
+        if (c === null) return null
+        segments.push([c, String(_at(sa, 1)) !== 'F'])
+      }
+      return { kind: 'composite', segments }
+    }
+    if (t === 'LINE') return null
+    return this.curve(ref)
+  }
+
+  /** One end of a trimmed curve: a parameter (radians on circles and ellipses), or a point where
+   * the file gives only that. */
+  _trim(select: StepValue, basis: Any, master: string): Any | null {
+    const items = _iter(select)
+    let param: StepValue = null
+    for (const x of items) {
+      if (x instanceof Typed && x.name === 'PARAMETER_VALUE') {
+        param = _at(x.args, 0)
+        break
+      }
+    }
+    const point = items.find((x) => x instanceof Ref) ?? null
+    if (param !== null && (point === null || master !== 'CARTESIAN')) {
+      const p = _float(param)
+      return { param: basis.kind === 'circle' || basis.kind === 'ellipse' ? p * this.angleScale : p }
+    }
+    return point !== null ? { point: this.point(point) } : null
+  }
+
   // -- surfaces -----------------------------------------------------------------------------
   surface(ref: unknown): Any {
     const sf = this.sf
@@ -979,6 +1025,172 @@ export function interpret(sf: StepFile): [BodyData, Matrix][] {
   return bodies
 }
 
+const _CURVES = new Set([
+  'LINE',
+  'CIRCLE',
+  'ELLIPSE',
+  'POLYLINE',
+  'TRIMMED_CURVE',
+  'COMPOSITE_CURVE',
+  'B_SPLINE_CURVE_WITH_KNOTS',
+  ...Object.keys(_KNOT_FORMS).filter((kind) => kind.endsWith('CURVE')),
+])
+
+/**
+ * The coordinate systems, points and curves of the file that belong to no body, each at its place
+ * in the assembly (mm, world coordinates), in file order.
+ *
+ * Coordinate systems are the placements of supplemental geometry
+ * (`CONSTRUCTIVE_GEOMETRY_REPRESENTATION`) and the named placements of shape representations;
+ * points and curves are the items of shape representations, also inside `GEOMETRIC_CURVE_SET`
+ * and `GEOMETRIC_SET`. Items on hidden layers (`INVISIBILITY`) are left out.
+ *
+ * Each item is `{ kind: 'frame' | 'point' | 'curve', name, product, color, ... }` with `origin`,
+ * `z` and `x` for a frame, `point` for a point, and `curve` (a curve as `_Interp.wireCurve` gives
+ * it) for a curve.
+ */
+export function interpretExtras(sf: StepFile): Any[] {
+  const it = new _Interp(sf)
+  const [transforms, inProduct] = _representationTransforms(it)
+  const productNames = _representationProductNames(sf)
+  const hidden = _hiddenItems(sf)
+  const reps = [..._repItems(sf).keys()].filter((r) => _geometryRepresentation(sf.typeOf(r)))
+  const out: Any[] = []
+  const placed = new Map<number, Matrix[]>() // item -> where it went already
+  const inside = reps.filter((r) => inProduct.has(r))
+  for (const rep of inside.length ? inside : reps) {
+    const constructive = sf.typeOf(rep).includes('CONSTRUCTIVE_GEOMETRY')
+    it.useUnits(rep)
+    const found: [number, Any][] = []
+
+    const take = (item: number, inherited: number[] | null, depth = 0): void => {
+      if (hidden.has(item) || !sf.entities.has(item)) return
+      const [t, a] = sf.get(item)
+      const name = _itemName(sf, item)
+      const color = it.colors.get(item) ?? inherited
+      if (t === 'AXIS2_PLACEMENT_3D' && (_strip(name) || constructive)) {
+        const [o, z, x] = it.axis2(item)
+        found.push([item, { kind: 'frame', name, color, origin: o, z, x }])
+      } else if (t === 'CARTESIAN_POINT') {
+        found.push([item, { kind: 'point', name, color, point: it.point(item) }])
+      } else if ((t === 'GEOMETRIC_CURVE_SET' || t === 'GEOMETRIC_SET') && depth < 8) {
+        for (const element of _iter(_at(a, 1))) if (element instanceof Ref) take(element.id, color, depth + 1)
+      } else if (_CURVES.has(t) || (t.startsWith('COMPLEX:') && (sf.complex.get(item) as Map<string, StepValue[]>).has('B_SPLINE_CURVE'))) {
+        let c: Any = null
+        try {
+          c = it.wireCurve(item)
+        } catch (e) {
+          // (Python's NotImplementedError, ValueError, KeyError, IndexError, TypeError)
+          if (!(e instanceof NotImplementedError || e instanceof RangeError || e instanceof TypeError)) throw e
+          c = null
+        }
+        if (c !== null) found.push([item, { kind: 'curve', name, color, curve: c }])
+      }
+    }
+
+    for (const item of _representationItemList(sf, rep)) take(item, null)
+    it.useUnits(null)
+    for (const m of transforms.get(rep) ?? [_identity()]) {
+      let largest = 0
+      for (const v of m) if (Math.abs(v) > largest) largest = Math.abs(v)
+      const atol = 1e-9 * (largest > 1.0 ? largest : 1.0)
+      for (const [item, data] of found) {
+        const where = placed.get(item) ?? []
+        if (where.some((q) => m.every((v, i) => Math.abs(v - q[i]) <= atol))) continue // listed by two related representations: one item
+        where.push(m)
+        placed.set(item, where)
+        out.push({ ..._moved(data, m), product: productNames.get(rep) ?? '' })
+      }
+    }
+  }
+  return out
+}
+
+function _geometryRepresentation(kind: string): boolean {
+  return (kind.includes('SHAPE_REPRESENTATION') || kind.includes('CONSTRUCTIVE_GEOMETRY_REPRESENTATION')) && !kind.includes('RELATIONSHIP')
+}
+
+/** The items of a representation in the order the file lists them. */
+function _representationItemList(sf: StepFile, rep: number): number[] {
+  let [t, a] = sf.get(rep)
+  if (t.startsWith('COMPLEX:')) {
+    a = []
+    for (const [kind, v] of sf.complex.get(rep) as Map<string, StepValue[]>) {
+      if (kind.endsWith('REPRESENTATION') && v.length >= 2) {
+        a = v
+        break
+      }
+    }
+  }
+  if (a.length < 2 || !Array.isArray(a[1])) return []
+  return a[1].filter((x): x is Ref => x instanceof Ref).map((x) => x.id)
+}
+
+function _itemName(sf: StepFile, ref: number): string {
+  let [t, a] = sf.get(ref)
+  if (t.startsWith('COMPLEX:')) a = (sf.complex.get(ref) as Map<string, StepValue[]>).get('REPRESENTATION_ITEM') ?? ['']
+  return a.length && _isStr(a[0]) ? String(a[0]) : ''
+}
+
+/** Items made invisible: listed by INVISIBILITY themselves, by their styled item, or by a
+ * presentation layer that is. */
+function _hiddenItems(sf: StepFile): Set<number> {
+  const out = new Set<number>()
+  for (const eid of sf.ofType('INVISIBILITY')) {
+    for (const ref of _iter(_at(sf.get(eid)[1], 0))) {
+      if (!(ref instanceof Ref) || !sf.entities.has(ref.id)) continue
+      const [t, a] = sf.get(ref)
+      if (t === 'PRESENTATION_LAYER_ASSIGNMENT') {
+        for (const x of _iter(_at(a, 2))) if (x instanceof Ref) out.add(x.id)
+      } else if ((t === 'STYLED_ITEM' || t === 'OVER_RIDING_STYLED_ITEM') && _at(a, 2) instanceof Ref) out.add((a[2] as Ref).id)
+      else out.add(ref.id)
+    }
+  }
+  return out
+}
+
+/** `R @ p + t` of the 4 x 4 placement `m` (a point). */
+function _place(m: Matrix, p: readonly number[]): number[] {
+  return [0, 1, 2].map((r) => m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3])
+}
+
+/** `R @ d` of the 4 x 4 placement `m` (a direction). */
+function _turn(m: Matrix, d: readonly number[]): number[] {
+  return [0, 1, 2].map((r) => m[r * 4] * d[0] + m[r * 4 + 1] * d[1] + m[r * 4 + 2] * d[2])
+}
+
+/** An item's data placed by the 4 x 4 matrix `m`. */
+function _moved(data: Any, m: Matrix): Any {
+  const out = { ...data }
+  if (data.kind === 'frame') Object.assign(out, { origin: _place(m, data.origin), z: _turn(m, data.z), x: _turn(m, data.x) })
+  else if (data.kind === 'point') out.point = _place(m, data.point)
+  else out.curve = _movedCurve(data.curve, m)
+  return out
+}
+
+function _movedCurve(c: Any, m: Matrix): Any {
+  const kind = c.kind
+  const out = { ...c }
+  if (kind === 'trimmed') {
+    out.basis = _movedCurve(c.basis, m)
+    out.trims = c.trims.map((x: Any) => ('point' in x ? { ...x, point: _place(m, x.point) } : x))
+  } else if (kind === 'composite') {
+    out.segments = c.segments.map(([s, same]: [Any, boolean]) => [_movedCurve(s, m), same])
+  } else if (kind === 'bspline') {
+    out.poles = (c.poles as number[][]).map((p) => _place(m, p))
+  } else if (kind === 'line') {
+    Object.assign(out, { origin: _place(m, c.origin), direction: _turn(m, c.direction) })
+  } else {
+    // circle, ellipse, hyperbola, parabola
+    Object.assign(out, { origin: _place(m, c.origin), z: _turn(m, c.z), x: _turn(m, c.x) })
+  }
+  return out
+}
+
+// Representations related without a placement: a part's B-rep, wireframe and supplemental geometry
+// (coordinate systems, AP242) next to its main shape representation.
+const _PLAIN_RELATIONSHIPS = ['SHAPE_REPRESENTATION_RELATIONSHIP', 'REPRESENTATION_RELATIONSHIP', 'CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP']
+
 /** The name of the product each shape representation belongs to, also for the representations
  * linked to a product's shape without a placement (a part's B-rep representation next to its main
  * shape representation). */
@@ -1008,7 +1220,7 @@ function _representationProductNames(sf: StepFile): Map<number, string> {
     // follow chains of plain representation relationships
     let grew = false
     for (const [, [t, a]] of sf.entities) {
-      if ((t === 'SHAPE_REPRESENTATION_RELATIONSHIP' || t === 'REPRESENTATION_RELATIONSHIP') && a.length >= 4) {
+      if (_PLAIN_RELATIONSHIPS.includes(t) && a.length >= 4) {
         let r1: number
         let r2: number
         try {
@@ -1127,7 +1339,7 @@ function _representationTransforms(it: _Interp): [Map<number, Matrix[]>, Set<num
     }
   }
   for (const [eid, [t, a]] of sf.entities) {
-    if ((t === 'SHAPE_REPRESENTATION_RELATIONSHIP' || t === 'REPRESENTATION_RELATIONSHIP') && a.length >= 4) {
+    if (_PLAIN_RELATIONSHIPS.includes(t) && a.length >= 4) {
       const r1 = _int(a[2])
       const r2 = _int(a[3])
       // the representation that is a product's main shape is the parent

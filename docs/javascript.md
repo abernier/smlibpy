@@ -66,8 +66,10 @@ const part = fromStep(await file.text()) // a File from an <input type="file">
 const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
 ```
 
-`htmlPage(part)` is a page with a 3D viewer for an iframe (`iframe.srcdoc = htmlPage(part)`), and
-`render(part)` draws a PNG (`picture.data`) without a GPU.
+`fromStepModel(data)` reads a STEP file with the coordinate systems, curves and points it holds
+besides its bodies (`readStep(path)` in Node). `htmlPage(part)` is a page with a 3D viewer for an
+iframe (`iframe.srcdoc = htmlPage(part)`), and `render(part)` draws a PNG (`picture.data`) without
+a GPU.
 
 ## From smlibpy to smlibwasm
 
@@ -909,6 +911,50 @@ export function save(shapes: unknown, path: string, options?: {
     ascii?: boolean;
 }): void;
 export function load(path: string): Any;
+export class StepFrame {
+    readonly name: string;
+    readonly plane: Plane;
+    readonly product: string;
+    readonly color: readonly number[] | null;
+    constructor(name: string, plane: Plane, product?: string, color?: readonly number[] | null);
+    get location(): Location;
+    equals(other: unknown): boolean;
+    toString(): string;
+}
+export class StepCurve {
+    readonly name: string;
+    readonly shape: Edge | Wire;
+    readonly product: string;
+    readonly color: readonly number[] | null;
+    constructor(name: string, shape: Edge | Wire, product?: string, color?: readonly number[] | null);
+    equals(other: unknown): boolean;
+    toString(): string;
+}
+export class StepPoint {
+    readonly name: string;
+    readonly point: Vector;
+    readonly product: string;
+    readonly color: readonly number[] | null;
+    constructor(name: string, point: Vector, product?: string, color?: readonly number[] | null);
+    equals(other: unknown): boolean;
+    toString(): string;
+}
+export class StepModel {
+    readonly bodies: ShapeList<Part | Shell>;
+    readonly frames: StepFrame[];
+    readonly curves: StepCurve[];
+    readonly points: StepPoint[];
+    constructor(bodies: ShapeList<Part | Shell>, frames?: StepFrame[], curves?: StepCurve[], points?: StepPoint[]);
+    frame(name: string, product?: string | null): Plane;
+    equals(other: unknown): boolean;
+    toString(): string;
+}
+export function fromStepModel(data: string | Uint8Array, options?: {
+    heal?: boolean;
+}): StepModel;
+export function readStep(path: string, options?: {
+    heal?: boolean;
+}): StepModel;
 export function fromStep(data: string | Uint8Array, options?: {
     heal?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
