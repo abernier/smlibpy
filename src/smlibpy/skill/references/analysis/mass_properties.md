@@ -7,8 +7,9 @@ Mass, volume, area, center of mass and inertia tensor of a `Part`, in one integr
 `part.mass_properties(density=1.0, accuracy=None) -> MassProperties`
 
 - `density`: mass per mm³, uniform, positive. `7.85e-3` (steel, g/mm³) gives grams and g·mm².
-- `accuracy`: relative accuracy of the integration, 1e-10 to 1e-2. `None` means the default
-  1e-7.
+- `accuracy`: relative accuracy of the results, 1e-10 to 1e-2. `None` means the default 1e-7:
+  volume, mass and area to 1e-7 of their value, the center to 1e-7 of the bounding-box
+  diagonal, the inertia to 1e-7 of its largest principal moment.
 
 ## Returns
 
@@ -31,27 +32,29 @@ its mass in +x/-y and -x/+y gives a positive `inertia[0][1]`.
 
 ## Accuracy
 
-Checked against formulas at the default accuracy: box exact; cylinder, cone, sphere, torus
-volume and inertia to 1e-7 to 4e-7; the center lies within about 1e-6 of the exact point
-(3e-6 for a cylinder 100 long). The same body rotated or moved to 1e6 gives the same numbers.
+The integration estimates its error for each result and refines until the estimate is ten
+times below `accuracy`; the results are usually far better than asked. Checked against
+formulas at the default: box, sphere, cylinder, cones, torus and filleted boxes to 1e-10 and
+better in volume, area, center and inertia. The same body moved to 1e6 gives the same numbers
+to 1e-11.
 
-| `accuracy` | sphere volume error | time (sphere) |
-|---|---|---|
-| 1e-4 | 9e-5 | 3 ms |
-| 1e-7 (default) | 2e-7 | 28 ms |
-| 1e-8 | 1.5e-8 | 47 ms |
-| 1e-10 | 3e-10 | 185 ms |
+| part | `accuracy` | volume error | time |
+|---|---|---|---|
+| `Sphere(10)` | 1e-4 / 1e-7 (default) / 1e-10 | below 1e-15 | 2 / 2 / 4 ms |
+| spring of `examples/spring.py` | 1e-4 / 1e-7 / 1e-10 | below 1e-15 (against 1e-10) | 0.19 / 0.47 / 0.48 s |
+| triangle swept along a 20-turn helix | 1e-7 | below 1e-15 (against 1e-10) | 0.1 s |
 
-Swept bodies are slower and worse: a 20-turn spring takes 0.14 s at the default and 3.4 s at
-1e-10; a triangle swept along a helix is 1.4e-5 off at the default, 5e-7 at 1e-9 and 1e-7 at
-1e-10. Ask for `accuracy=1e-10` when a swept volume must be exact.
+A body whose faces the kernel fits (B-spline chamfers, shells and offsets of curved faces,
+sweeps cut by planes) is itself defined only to 1e-7 to 4e-6 in volume: its faces meet to
+within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`.
 
 ## Gotchas
 
 - A part made of several disjoint solids gives the properties of all of them together.
 - Only `Part` has it. For a `Shell` or `Sketch` use `area` and `center()`.
-- `part.volume`, `part.area` and `part.center()` each run the full integration again at the
-  default accuracy. One `mass_properties()` call is cheaper when you need several.
+- The part keeps the result: `part.volume`, `part.area`, `part.center()` and
+  `mass_properties()` share one integration (also with another density, or a coarser
+  `accuracy`). A copy (`named()`, a moved part) integrates again.
 
 ## Errors
 
@@ -66,13 +69,13 @@ shaft = Cylinder(10, 100)
 mp = shaft.mass_properties(density=7.85e-3)     # steel, g/mm^3 -> grams
 m = 7.85e-3 * math.pi * 10**2 * 100
 print(round(mp.mass, 3), round(m, 3))           # 246.615 246.615
-print(mp.center)                                # about (0, 0, 0), off by up to 3e-6
+print(mp.center)                                # Vector(0, 0, 0)
 izz = mp.inertia[2][2]                          # g*mm^2, about the center of mass
-print(abs(izz - m * 10**2 / 2) / izz < 1e-6)    # True
+print(abs(izz - m * 10**2 / 2) / izz < 1e-7)    # True (3e-15)
 print(mp.principal_moments)                     # ascending: about (12330.8, 211678, 211678)
 
 precise = shaft.mass_properties(accuracy=1e-10)
-print(precise.volume)                           # 31415.9265...
+print(precise.volume)                           # 31415.92653589793
 ```
 
 Inertia about another point `p` (parallel axis theorem, checked on a box corner):

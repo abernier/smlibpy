@@ -74,6 +74,7 @@
 - **Workaround:** pass a positive density.
 
 ### 5. `ACCURACY` docstring and docs overstate the accuracy of volumes
+- **Fixed:** volume, area, center and inertia are integrated by smlibpy (src/cpp/measure.cpp) with an error estimate for each and refined to a tenth of `accuracy`; measured against closed forms 1e-10 and better, the triangle along a helix to 1e-15 of its 1e-10 integration. Docs and guides state the measured accuracy; tests/test_measure.py holds it.
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, scripts `02-accuracy-param.py`, `08-spring-convergence.py`, `09-realistic-parts.py`
 - **What happens:** `shapes.ACCURACY` says "The error of the results is usually far below it";
   `docs/analysis.md` and `docs/kernel.md` say volumes are integrated "to a relative accuracy of

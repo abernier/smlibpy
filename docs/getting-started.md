@@ -62,8 +62,8 @@ print(plate.bbox().size)     # Vector(80, 60, 10)
 print(plate.is_valid())      # a closed, manifold solid with a positive volume
 ```
 
-Volumes, areas and centers come from exact integration over the NURBS geometry, not from a
-mesh.
+Volumes, areas and centers are integrated over the exact geometry, not a mesh, to seven
+significant digits (see [Measuring](analysis.md)).
 
 ## Save it
 

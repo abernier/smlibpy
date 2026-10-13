@@ -9,31 +9,37 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
 
 ## How exact the numbers are
 
-| Measure | Source | Typical relative error |
+| Measure | Source | Relative error |
 |---|---|---|
 | `bbox()` of a body | exact geometry | below 1e-9; tight, not padded |
-| `Edge.length` | integration along the curve | 1e-11 (lines exact) |
-| `volume`, `area`, `center()` of planar bodies | integration | exact (1e-15) |
-| `volume`, `area`, `center()` of curved bodies | integration at `accuracy=1e-7` | 1e-8 to 3e-7 |
-| `volume` of swept, wound, bent bodies (springs, threads, pipes) | same | 2e-6 to 1.5e-5 |
-| `Face.area`, `Sketch.area` | integration at 1e-7 | 1e-8 to 3e-7 |
+| `Edge.length`, `point_at(t)` | integration along the curve | 1e-12 (lines exact) |
+| `volume`, `area`, `center()`, inertia of parts | integration with an error estimate, to `accuracy=1e-7` | at most 1e-7; measured 1e-10 and better |
+| `Face.area`, `Sketch.area`, `Shell.area` | the same | the same; lettering exact |
 | `mesh().volume` | triangles | 1e-5 to 4e-4, depends on `tolerance` |
 
-- Volume, area, center and inertia are integrated over the exact NURBS geometry, never a mesh.
-- The error is about 1 to 3 times the requested `accuracy`, not "far below" it. On swept
-  bodies the kernel controls its steps by the area only, so the volume can be 100 times worse
-  than asked (a triangle swept along a 20-turn helix: 1.4e-5 at the default).
-- Position does not matter: the same body at the origin, rotated, or moved to 1e6 gives the
-  same numbers to 1e-7. Integration runs about the body's bounding-box center.
-- Rotating a body that has B-spline edges changes its geometry slightly: expect the measures
-  of a transformed body to agree with the original to 1e-7 relative, not better.
+- Volume, area, center and inertia are integrated over the exact geometry, never a mesh. The
+  integration estimates its error for each of them and refines until the estimate is ten
+  times below the accuracy: 1e-7 by default, `mass_properties(accuracy=...)` from 1e-10 to
+  1e-2. Volumes and areas to that fraction of their value, the center to that fraction of the
+  body's bounding-box diagonal, the inertia to that fraction of its largest principal moment.
+- Measured: closed forms (box, sphere, cylinder, cone, torus, filleted boxes) agree to 1e-10
+  and better; a spring (a circle swept along a helix) agrees with its own integration at
+  1e-10 to 1e-15.
+- Position does not matter: the same body moved to 1e6 gives the same numbers to 1e-11.
+  Integration runs about the body's bounding-box center.
+- The body can be less exact than its numbers. Where the kernel fits a surface or an
+  intersection curve (B-spline chamfers, variable fillets, shells and offsets of curved faces,
+  sweeps cut by planes, two cylinders crossing), the faces meet only to about 1e-6 to 2e-5 mm,
+  and the volume is defined only to that: the same body turned by 90 degrees measures 1e-7
+  (the flange example) to 4e-6 (a shelled bottle) different. Bodies whose edges are lines and
+  circles close up exactly.
 - Curve constructions are fits: `Helix` is a NURBS approximation 2e-6 shorter than the
   formula, and bodies swept along it inherit that.
-- `mass_properties(accuracy=1e-10)` (the tightest allowed) brings curved bodies to 1e-10. It
-  costs 5 to 200 times more time (a 20-turn spring: 0.14 s -> 3.4 s).
+- `mass_properties(accuracy=1e-10)` costs about as much as the default (the spring: 0.47 s
+  either way); a coarse accuracy saves little (1e-4: 0.19 s).
 
-Compare against formulas with a relative tolerance: `1e-6` for analytic bodies, `1e-4` for
-sweeps and lofts. Never compare floats with `==`.
+Compare against formulas with a relative tolerance: `1e-6`, or `1e-5` for sweeps, shells and
+offsets of curved faces. Never compare floats with `==`.
 
 ## What to check after each modeling step
 
@@ -60,8 +66,10 @@ print(plate.info()["faces"])                           # 14
 
 ## Gotchas
 
-- Every `volume`, `area` and `center()` call integrates the whole body again. When you need
-  several values, call `mass_properties()` once and read its fields.
+- A part keeps its measures: the first of `volume`, `area`, `center()` and
+  `mass_properties()` integrates (a few milliseconds for most parts, 0.5 s for a spring with
+  512 knot spans), the others reuse it. A copy (`named()`, `colored()`, a moved part)
+  integrates again.
 - Only `Part` has `volume`, `mass_properties()` and `is_valid()`. `Shell` and `Sketch` have
   `area` and `center()` only (`AttributeError` otherwise); all bodies have `info()` and `bbox()`.
 - `center()` means different things: the centroid for parts, faces, sketches and shells; the

@@ -19,12 +19,14 @@ The single numbers of each shape type. All are exact-geometry integrations (see 
 
 ## Accuracy
 
-- `Part.volume`, `Part.area`, `Part.center()`: integration at 1e-7; box exact, curved
-  primitives 1e-8 to 3e-7, swept bodies up to 1.5e-5. For more, use
-  `mass_properties(accuracy=1e-10)`; these properties take no accuracy argument.
-- `Face.area`, `Sketch.area`, `Shell.area`: 1e-7, fixed. Measured: cylinder face 9e-8, sphere
-  1.3e-7, torus 2.4e-7, ring sketch 1.6e-8.
-- `Edge.length`: lines exact, circles and arcs 5e-12, ellipses 8e-11, splines 3e-9.
+- `Part.volume`, `Part.area`, `Part.center()`: integrated with an error estimate to 1e-7 (the
+  center to 1e-7 of the bounding-box diagonal); measured against formulas 1e-10 and better,
+  swept bodies included. For another bound use `mass_properties(accuracy=...)`; these
+  properties take no accuracy argument.
+- `Face.area`, `Sketch.area`, `Shell.area`: the same bound, 1e-7. Measured: cylinder face
+  2e-11, sphere and torus faces 2e-16, ring sketch 4e-16, lettering exact.
+- `Edge.length`: 1e-12 (lines, circles, ellipses measured exact); `point_at(t)` follows the
+  arc length as closely (arcs to 1e-15 mm).
 
 ## Gotchas
 
@@ -38,8 +40,8 @@ The single numbers of each shape type. All are exact-geometry integrations (see 
 - `Face.center()` of a curved face is the area centroid and may lie off the face (a
   half-cylinder face of radius 10 gives a point 2r/π = 6.366 from the axis). Use
   `face.interior_point()` for a point on the face.
-- Every call of `Part.volume`, `area` or `center()` integrates again (a sphere: 28 ms each).
-  Store the value or use `mass_properties()`.
+- The part keeps its measures: the first of `volume`, `area`, `center()` and
+  `mass_properties()` integrates (a sphere: 2 ms), the others reuse it.
 - `Shell` and `Sketch` have no `volume` (`AttributeError`). A cylinder has 3 edges with seams
   (`part.edges(seams=True)`), 2 without; seams do not change `area` or `volume`.
 - `Sketch.area` stays the same wherever the sketch is placed (`.on(tilted_plane)`); its

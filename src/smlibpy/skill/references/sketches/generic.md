@@ -17,8 +17,8 @@ It is the profile you extrude, revolve, sweep or loft. `Sketch` is a subclass of
 ## Measuring
 
 `s.area`, `s.center()` (area centroid), `s.bbox()`, `len(s.faces())` (pieces),
-`len(s.faces()[0].inner_wires())` (holes), `s.plane`. `area` is integrated numerically: a
-circle of radius 10 gives 314.15931 instead of 314.15927.
+`len(s.faces()[0].inner_wires())` (holes), `s.plane`. `area` is integrated to 1e-7 or better:
+a circle of radius 10 gives 314.15926535897927 (pi * 100 to 1e-16).
 
 ## 2D Booleans
 

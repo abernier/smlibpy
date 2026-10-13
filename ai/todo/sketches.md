@@ -173,11 +173,13 @@
 - **Expected:** collinear pieces merged, 4 edges.
 
 ### 15. `docs/sketches.md` calls `area` exact
+- **Fixed:** `area` is integrated with an error estimate to 1e-7 or better: `Circle(10).area` is pi * 100 to 1e-16.
 - **Session:** `2026-10-12_21-26-11_sketches-generic`, script `01-basics.py`
 - **What happens:** `Circle(10).area` is 314.1593105, pi*100 = 314.1592654 (relative error 1.4e-7).
 - **Expected:** the docs say "accurate to about 1e-7" instead of "exact".
 
 ### 16. `Sketch.area` of lettering is off by up to a few 1e-6 at the default accuracy
+- **Fixed:** faces are integrated by smlibpy (src/cpp/measure.cpp, a 3-point rule across planes, Gauss-Kronrod along the outlines): lettering matches the exact area of its outlines to 1e-15 (tests/test_measure.py).
 - **Session:** `2026-10-13_00-41-18_sketches-text` (checked against the exact areas of the font outlines)
 - **What happens:** faces bounded by long B-spline edges integrate less accurately at `ACCURACY = 1e-7`:
   `Text("@&8", 8).area` is 2.0e-6 too small, single glyphs at size 10 up to 1.2e-5 (Inter `(`). With

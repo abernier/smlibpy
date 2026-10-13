@@ -11,7 +11,8 @@ Python bindings, as open source under the Apache License 2.0 in the
 smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL, viewer
   └─ smlibpy._core       one compiled extension module
        ├─ ext            smlibpy's own C++: exact geometry and topology access, transforms,
-       │                 sweeps with all options, precise integration, body splitting
+       │                 sweeps with all options, error-controlled integration of mass
+       │                 properties and curve lengths, body splitting
        ├─ SmPyLib        NVIDIA's pybind11 bindings of SM_API (without the USD parts)
        ├─ SM_API         NVIDIA's C-style API over the kernel
        └─ SMLib          the kernel: geometry, topology, Booleans, fillets, sweeps, healing
@@ -19,16 +20,31 @@ smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL, 
 
 The kernel sources come in as a git submodule (`third_party/usd-brep`) and are compiled
 with CMake into a single, self-contained Python extension. Nothing of the kernel is
-modified; where smlibpy needs more than the published bindings offer, its own C++ module
-(`src/cpp/ext.cpp`) calls the kernel directly.
+modified; where smlibpy needs more than the published bindings offer, its own C++ code
+(`src/cpp/`) calls the kernel directly.
 
 ## Accuracy
 
 - **Geometry** is exact: planes, cylinders, cones, spheres and tori are analytic; free-form
   geometry is NURBS. Booleans and fillets work on the exact surfaces.
-- **Areas, volumes and centers** are integrated over the exact geometry to a relative
-  accuracy of 1e-7 by default. The kernel API limits face areas to 1e-4; smlibpy calls the
-  kernel's integration directly to get past that limit.
+- **Areas, volumes, centers and inertia** are integrated over the exact geometry to seven
+  significant digits by default (`ACCURACY = 1e-7`; see [Measuring](analysis.md)), with an
+  error estimate for each of them. The integration is smlibpy's own
+  (`src/cpp/measure.cpp`): the kernel's (`SmBrep::ComputePreciseProperties`) controls its
+  steps by the area alone and measures them against the running sum along each trim curve,
+  so its volumes and moments can be far worse than asked for (the swept spring of
+  `examples/spring.py`: 2.9e-5 at 1e-7, still 2.8e-7 at 1e-9 after 12 s). smlibpy integrates
+  the same surface integrals over the faces' trim curves (Green's theorem in the parameter
+  plane) with adaptive Gauss–Kronrod quadrature, split at the knots, until every estimate is
+  ten times below the accuracy asked for. It is also faster: the spring takes 0.47 s instead
+  of 1.1 s, most parts a few milliseconds. The quick checks inside operations (is a result
+  inside out, did a fillet change the volume plausibly) still use the kernel's integration at
+  a coarse accuracy.
+- **Edge lengths** are integrated per knot span to 1e-12 (the kernel's `SmCurve::Length`
+  counts a span whose curve starts with a zero tangent as 0).
+- **A body is as exact as its faces meet.** Faces that the kernel fits (B-spline chamfers,
+  shell offsets, intersections of curved faces) close up only to about 1e-6 to 2e-5 mm; the
+  volume of such a body depends on that by 1e-7 to 4e-6 of its value.
 - **STEP export** writes the kernel's exact curves and surfaces. The test suite reads the
   files back with OpenCASCADE and checks validity and volume.
 - **STEP import** rebuilds every face on its exact surface and keeps the file's topology,
@@ -49,6 +65,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The seam has to lie where the surface's angle parameter starts | turns the surface frame to the seam edge of the file |
 | The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode |
 | Arcs from the API are plain B-splines | arcs are trimmed kernel circles, so they keep radius and center |
+| Mass properties control their integration steps by the area alone: a volume can be 300 times worse than the accuracy asked for | integrates areas, volumes, centers and inertia itself, with an error estimate for each |
+| A curve's length leaves out a span that starts with a zero tangent (the outline of a cylinder had 30 mm top and bottom lines instead of 60) | integrates lengths and arc-length positions itself |
 
 ## Known kernel limitations
 

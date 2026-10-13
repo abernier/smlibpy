@@ -20,8 +20,12 @@
 ## What valid means
 
 Every edge has exactly two faces, the faces close up, the bounding box is finite, and the
-enclosed volume (integrated coarsely) is positive. Inside-out bodies and bodies without
-volume are not valid. It does **not** check the geometry beyond that.
+enclosed volume is positive. The volume is a quick, coarse integration (or the measured one,
+if the part was measured before): it decides the sign, it is no measure. Inside-out bodies
+and bodies without volume are not valid. It does **not** check the geometry beyond that:
+"close up" is the topology. Faces that the kernel fitted meet only to within about 1e-6 to
+2e-5 mm (B-spline chamfers, shells of curved faces); such a body is valid, and its volume is
+defined only to 1e-7 to 4e-6 of its value (see `generic`).
 
 | Body | `is_valid()` | Volume |
 |---|---|---|
