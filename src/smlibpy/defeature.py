@@ -39,6 +39,7 @@ GUARD_SECONDS = 20.0
 
 _D = k.defeature
 R = TypeVar("R")
+_VOLUMES: dict[int, tuple[Any, float]] = {}  # id of a body's handle -> (handle, volume)
 
 
 class _KernelFault(ModelingError):
@@ -225,7 +226,15 @@ def _match(body: Part, faces: list[Face]) -> list[Face]:
 
 
 def _volume(part: Part) -> float:
-    return float(part._props(accuracy=1e-9)["volume"])
+    """The volume, integrated precisely once per body (a body does not change)."""
+    hit = _VOLUMES.get(id(part._h))
+    if hit is not None and hit[0] is part._h:
+        return hit[1]
+    v = float(part._props(accuracy=1e-9)["volume"])
+    if len(_VOLUMES) > 64:
+        _VOLUMES.clear()
+    _VOLUMES[id(part._h)] = (part._h, v)
+    return v
 
 
 def _problem(before: float, result: Part, expect: int, bound: float | None) -> str | None:
@@ -255,21 +264,25 @@ def _fillet_bound(b: _Blends, faces: list[Face]) -> float:
     return total
 
 
-def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) -> Part | None:
-    """The executive's patched copy of ``body`` without ``groups``, or None if it failed."""
+def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) -> tuple[Part | None, bool]:
+    """The executive's patched copy of ``body`` without ``groups`` (None if it failed), and
+    whether the kernel crashed or hung."""
     try:
         res = _guarded(what, lambda: _D.defeature(body._brep, [[f._f for f in g] for g in groups], rebuild))
-    except _KernelFault:  # a crash or a hang in the kernel
-        return None
-    return None if res["brep"] is None else body._like(res["brep"])
+    except _KernelFault:
+        return None, True
+    return (None if res["brep"] is None else body._like(res["brep"])), False
 
 
-def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> tuple[Part, list[Face]]:
+def _remove_pass(part: Part, faces: list[Face], origin: dict[Any, Face], b: _Blends, expect: int,
+                 faulted: set[frozenset[Any]]) -> tuple[Part, list[Face]]:
     """Take a set of fillet faces of ``part`` out, as far as the kernel can; every step is
-    checked. Returns the body and the faces (of the original part) that stayed."""
+    checked. ``origin`` maps the faces to the faces of the part the user gave; sets of those on
+    which the kernel crashed or hung (``faulted``) are not tried again. Returns the body and the
+    original faces that stayed."""
     body = part
     pending = list(faces)  # faces of `body`
-    origin = {f._identity(): f for f in faces}  # face of body -> face of part
+    origin = {f._identity(): origin.get(f._identity(), f) for f in faces}
     tried_a: set[frozenset[Any]] = set()  # face sets tried with the fillet removal
     tried_b: set[frozenset[Any]] = set()  # groups tried with the executive
 
@@ -284,11 +297,12 @@ def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> tupl
         progress = False
         # 1. Fillets with sharp ends, one by one (the kernel's fillet removal).
         edge = [f for f in pending if b.is_edge_fillet(f)]
-        if edge and key(edge) not in tried_a:
+        if edge and key(edge) not in tried_a and key(edge) not in faulted:
             tried_a.add(key(edge))
             try:
                 res = _guarded("remove_fillets", lambda: _D.remove_fillet_faces(body._brep, [f._f for f in edge]))
-            except _KernelFault:  # a crash or a hang in the kernel
+            except _KernelFault:
+                faulted.add(key(edge))
                 res = {"brep": None}
             if res["brep"] is not None:
                 gone = [f for f, done in zip(edge, res["removed"]) if done]
@@ -300,10 +314,12 @@ def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> tupl
         # 2. Connected sets (with their corner patches, around bosses and holes): the
         #    executive, smallest radius first.
         for group in sorted(_groups(pending), key=radius):
-            if key(group) in tried_b:
+            if key(group) in tried_b or key(group) in faulted:
                 continue
             tried_b.add(key(group))
-            candidate = _executive("remove_fillets", body, [group], "extend")
+            candidate, fault = _executive("remove_fillets", body, [group], "extend")
+            if fault:
+                faulted.add(key(group))
             if candidate is None or _problem(_volume(body), candidate, expect, _fillet_bound(b, group)) is not None:
                 continue
             rest = [f for f in pending if f not in group]
@@ -359,6 +375,7 @@ def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = 
     }
     left[0] = [f for f in sel if f not in left[-1] and f not in left[1]]
     body = part
+    faulted: set[frozenset[Any]] = set()  # sets of the user's faces the kernel crashed or hung on
     progress = True
     while progress:
         progress = False
@@ -368,8 +385,7 @@ def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = 
             todo, origin, _ = _carry(body, left[expect], {}) if body is not part else (left[expect], {}, body)
             if not todo:
                 continue
-            body, stays = _remove_pass(body, todo, b, expect)
-            stays = [origin.get(f._identity(), f) for f in stays]
+            body, stays = _remove_pass(body, todo, origin, b, expect, faulted)
             if len(stays) < len(left[expect]):
                 progress = True
             left[expect] = stays

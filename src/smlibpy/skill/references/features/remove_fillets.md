@@ -58,6 +58,11 @@ drops that step, and this process goes on. On Windows the kernel runs directly. 
 copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
 and with the stopped steps `remove_fillets(partial=True)` takes 180 s.
 
+The copy catches what the kernel does every time. Some of its defects read memory it already
+freed, and those can crash this process after the copy came through: seen once, on an imported
+valve body with B-spline faces. In the MCP session such a crash ends the script, and the
+session builds its state again; in a plain script, save your work first.
+
 ## Errors
 - `ModelingError: remove_fillets: 1 of the faces are no fillets (plane); a fillet meets two faces tangentially along its length. Select fillets with part.faces().fillets(), or take other faces out with remove_faces`
 - `ModelingError: remove_fillets: the kernel could not take out 2 of the 4 fillet faces (at (1.454, 1.454, 25), (58.55, 38.55, 4)); remove_fillets(..., partial=True) keeps them and takes out the others, or take out the fillets around them first`

@@ -138,6 +138,11 @@
   example bottle). Both in `SmFeatureExecutive::ExtSurfaceRebuild` → `SmMerge`. The example
   enclosure's outer rounds and several inner fillets loop for more than 600 s.
 - **Expected:** a failure status.
+- **Not caught by the guard:** on `Ventil.stp` (all B-spline faces) a step that went through in
+  the forked copy crashed the process itself when it ran there (`remove_fillets(partial=True)`,
+  exit 139): the defects of 36 and 37 read and write freed memory, so the copy does not always
+  predict this process. With the kernel copy of 35/36 the same call finishes (3 of 13 fillets
+  go, 4 steps crash in copies, 14 s).
 
 ## MEDIUM
 
