@@ -32,7 +32,7 @@ edges are picked by their geometry, for example `part.faces().top()` or
   `PolarLocations`, `HexLocations`
 - Booleans: `fuse`, `cut`, `intersect`, which can also be written `+`, `-`, `&`
 - Operations: `extrude` (also tapered), `revolve`, `loft`, `sweep` (also along helices), `shell`,
-  `offset`, `thicken`, `draft`, `mirror`, `split`, `section`
+  `offset`, `thicken`, `mirror`, `split`, `section`
 - Fillets: circular, variable radius, and curvature-continuous (G2/G3); chamfers
 
 **Sheet metal**
