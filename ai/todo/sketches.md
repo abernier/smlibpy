@@ -2,6 +2,21 @@
 
 ## HIGH
 
+### 20. 2D Booleans of regions of several faces: wrong results without an error
+- **Found:** by the JavaScript port (2026-10-13): the WebAssembly kernel's answer differs from the native one,
+  and both are wrong.
+- **What happens:** the kernel's planar Boolean returns a wrong region without an error for operands of several
+  faces. `_boolean2d_plausible` checks unions only, so exclusive ors (and the other operations) pass.
+  Building the exclusive or from the kernel's difference and union, `(a - b) + (b - a)`, is wrong as well
+  (713.36). The slab route (`_slab_boolean`) is right here, at 10 to 30 ms instead of 0.5 to 2 ms, but it
+  failed itself on some random regions (`extrude failed (SM_ERR)` for a slab).
+- **Reproduce:** `abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2, 4)`, then
+  `(abc ^ Polygon((-20, -20), (20, -20), (0, 20))).area`: 702.18 native (2 faces), 67.09 in WebAssembly
+  (1 face, the triangle lost); right is 689.46 (the slab route; the other order, `t ^ abc`, makes the kernel
+  fail, falls back to slabs and is right in both).
+- **Expected:** a check that catches it (the area of `a ^ b` is `area(a) + area(b) - 2 area(a & b)`), and a
+  fallback that holds. Also hits `import_dxf` of crossing loops (`regions.build`, rule "xor").
+
 ### 16. 2D Booleans: wrong unions without an error when the left operand was moved
 - **Fixed:** both operands are rebuilt from their curves before the kernel's `boolean_2d` (2026-10-13).
 - **Session:** `2026-10-13_00-42-19_sketches-profiles`, `ai/plan/2d.md`

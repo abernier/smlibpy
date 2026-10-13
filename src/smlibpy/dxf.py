@@ -50,7 +50,7 @@ def _read_text(path: str) -> str:
         data = fh.read()
     if data.startswith(b"AutoCAD Binary DXF"):
         raise ValueError(f"{path}: a binary DXF; save the drawing as ASCII DXF")
-    for enc in ("utf-8", "cp1252"):
+    for enc in ("utf-8-sig", "cp1252"):  # (utf-8-sig: a byte order mark is no part of the drawing)
         try:
             return data.decode(enc)
         except UnicodeDecodeError:
@@ -309,8 +309,8 @@ def _spline_curve(e: _Entity, layer: str) -> _Curve | None:
             fit[-1][2] = float(value)
         elif code in (12, 13):
             tangents[code] = [float(value), 0.0, 0.0]
-        elif code in (22, 23, 32, 33) and (code % 10) in tangents:
-            tangents[code % 10][1 if code < 30 else 2] = float(value)
+        elif code in (22, 23, 32, 33) and (10 + code % 10) in tangents:
+            tangents[10 + code % 10][1 if code < 30 else 2] = float(value)
     if poles:
         P = np.array(poles, dtype=float)
         if len(knots) != len(P) + deg + 1:

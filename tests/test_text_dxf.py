@@ -351,6 +351,25 @@ def test_dxf_arcs_ellipses_splines(tmp_path):
     assert exact_area(circle) == pytest.approx(math.pi * 100, rel=1e-9)
 
 
+def test_fit_point_tangents_keep_all_their_coordinates(tmp_path):
+    # The y and z of a fit-point spline's end tangents (codes 22/32 and 23/33) were never read: a
+    # vertical start tangent became zero and failed, (1, 1) became (1, 0).
+    fit = [(0, 0), (10, 5), (20, 0)]
+    spline = ("0\nSPLINE\n8\n0\n70\n8\n71\n3\n72\n0\n73\n0\n74\n3\n12\n0\n22\n1\n32\n0\n13\n1\n23\n1\n33\n0\n"
+              + "".join(f"11\n{a}\n21\n{b}\n31\n0\n" for a, b in fit))
+    (wire,) = import_dxf_wires(_dxf(tmp_path, spline))
+    edge = wire.edges().one()
+    assert edge.tangent_at(0) == Vector(0, 1, 0)
+    assert edge.tangent_at(1) == Vector(1, 1, 0).normalized()
+
+
+def test_a_byte_order_mark_is_no_part_of_the_drawing(tmp_path):
+    # A UTF-8 DXF that starts with a byte order mark was "not a DXF file".
+    path = _dxf(tmp_path, _lw([(0, 0), (10, 0), (10, 5), (0, 5)]))
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert import_dxf(path).area == pytest.approx(50)
+
+
 def _cyclic_point(P, u):
     """A point of the uniform cubic B-spline with control points P (closed, period len(P))."""
     n = len(P)
