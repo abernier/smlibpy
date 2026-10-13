@@ -1507,10 +1507,12 @@ class _Body(Shape):
 
     # -- geometric queries ----------------------------------------------------
     def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
-        """The curves where this body's surface meets another body's surface."""
+        """The curves where this body's surface meets another body's surface, each one once."""
         with kernel_call("intersection curves"):
             curves, _ = k.intersect_breps(self._brep, other._brep)
-        return ShapeList(Edge._from_curve(c) for c in curves)
+        # Where faces of the two bodies lie in one plane, the kernel hands out curves on their
+        # borders twice (also reversed).
+        return _distinct_curves(curves, 1e-6 * max(1.0, self._loose_box().union(other._loose_box()).diagonal))
 
     def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
         """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
@@ -1540,17 +1542,7 @@ class _Body(Shape):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
         # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
         # circles seen edge-on come with a copy each); a drawing view needs each line once.
-        tol = 1e-7 * max(self.bbox().diagonal, 1.0)
-        kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
-        for c in curves:
-            e = Edge._from_curve(c)
-            a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
-            if any(np.linalg.norm(m - km) <= tol
-                   and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
-                   for _, ka, kb, km in kept):
-                continue
-            kept.append((e, a, b, m))
-        return ShapeList(e for e, _, _, _ in kept)
+        return _distinct_curves(curves, 1e-7 * max(self.bbox().diagonal, 1.0))
 
     def _transformed(self, m: np.ndarray) -> Any:
         b = self._copy_brep()
@@ -1594,6 +1586,21 @@ class _Body(Shape):
             "vertices": self._brep.vertex_count(),
             "bbox": (b.min.to_tuple(), b.max.to_tuple()),
         }
+
+
+def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
+    """Edges of new kernel curves, each curve once: one whose ends and midpoint lie within
+    ``tol`` of those of a curve kept already (either way round) is left out."""
+    kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
+    for c in curves:
+        e = Edge._from_curve(c)
+        a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
+        if any(np.linalg.norm(m - km) <= tol
+               and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
+               for _, ka, kb, km in kept):
+            continue
+        kept.append((e, a, b, m))
+    return ShapeList(e for e, _, _, _ in kept)
 
 
 def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:

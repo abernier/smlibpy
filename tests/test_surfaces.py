@@ -64,3 +64,16 @@ def test_directions_take_an_axis():
         with pytest.raises(ValueError, match="the direction must not be zero"):
             call()
 
+
+def test_intersection_curves_come_once_where_faces_lie_in_one_plane():
+    # Both bottoms lie in z = 0: the kernel finds the arc there twice (the other way round
+    # also the two lines on it). The total length shows any repeat, however the curves are cut.
+    a = Box(60, 44, 28, align=Align.MIN)
+    b = Cylinder(19, 44, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(56.2, 3.8, 0)
+    line = 3.8 + math.sqrt(19 ** 2 - 3.8 ** 2)  # along x = 60 and y = 0 at z = 0
+    arc = 19 * (math.pi / 2 + 2 * math.asin(3.8 / 19))  # the circle inside the box, at z = 0 and 28
+    for curves in (a.intersection_curves(b), b.intersection_curves(a)):
+        assert sum(c.length for c in curves) == pytest.approx(2 * arc + 2 * 28 + 2 * line, rel=1e-6)
+    box = Box(20, 20, 20)
+    shared = box.intersection_curves(box.translate(20, 0, 0))  # the face x = 10: its 4 sides
+    assert sum(c.length for c in shared) == pytest.approx(80)
