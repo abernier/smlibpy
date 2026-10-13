@@ -1,9 +1,12 @@
-"""Meshes of faces that are straight in one direction and twisted along it.
+"""Meshes of faces that are straight in one direction and twisted along it, and of single faces.
 
 The kernel cuts a face into a grid whose lines it places by the curves along the face's
 borders, so such a face got one facet across it. A body with such a face is now divided by
 halving its faces until they are flat within the tolerance (smlibpy.mesh.tessellate, through
 _core.ext.tessellate); other bodies keep the kernel's facets.
+
+A single face is meshed as a copy in a sheet of its own, which faces where the face's surface
+normal points; where that is into the face's part, the mesh is turned.
 """
 
 import math
@@ -11,11 +14,11 @@ import math
 import numpy as np
 import pytest
 
-from smlibpy import (Axis, Box, Circle, Cylinder, Helix, Line, Rectangle, Sphere, export_stl, import_stl, loft,
-                     ruled, surface, sweep)
+from smlibpy import (Axis, Box, Circle, Cylinder, Helix, Line, Plane, Rectangle, Sphere, Z, export_stl, import_stl,
+                     loft, ruled, surface, sweep)
 from smlibpy._kernel import ext, k
 from smlibpy.exporters import gltf_document
-from smlibpy.mesh import Mesh
+from smlibpy.mesh import Mesh, tessellate
 
 
 def default_tolerance(shape) -> float:
@@ -168,3 +171,45 @@ def test_tessellate_options():
     side = max(bar.faces(), key=lambda f: f.area)
     assert ext.grid_deviation(side._f, chord_height_tolerance=tol, surface_angle_tolerance_deg=15) > 5 * tol
     assert ext.grid_deviation(Box(20, 20, 100).faces()[0]._f, chord_height_tolerance=tol) == 0
+
+
+def normal_near(mesh: Mesh, point: np.ndarray) -> np.ndarray:
+    """The mean corner normal of the triangle nearest to a point."""
+    t = mesh.vertices[mesh.triangles]
+    return mesh.normals[np.argmin(np.linalg.norm(t.mean(axis=1) - point, axis=1))].mean(axis=0)
+
+
+@pytest.mark.parametrize("make, inward", [
+    (lambda: loft([Rectangle(50, 50), Circle(13).on(Plane.XY.offset(54))]), ["bspline"] * 4 + ["plane"]),
+    (lambda: (Rectangle(10, 10) - Circle(2)).translate(20, 0, 0).on(Plane.XZ).revolve(Z), ["torus"]),
+    (lambda: Box(10, 20, 30), []),
+], ids=["loft", "revolve", "box"])
+def test_the_mesh_of_a_face_faces_out_of_its_part(make, inward):
+    # inward: the faces whose surface normal points into the part (the sides and the bottom of
+    # the loft, the wall of the hole running round the ring), whose meshes faced into the part
+    part = make()
+    found = []
+    for face in part.faces():
+        p = np.array(face.interior_point().to_tuple())
+        outward = np.array(face.normal_at(p).to_tuple())
+        mesh = tessellate(face)
+        assert normal_near(mesh, p) @ outward > 0.9
+        t = mesh.vertices[mesh.triangles]  # counterclockwise around the normals
+        turn = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+        assert (np.einsum("ij,ij->i", turn, mesh.normals.sum(axis=1)) > 0).all()
+        if normal_near(face.to_shell().mesh(), p) @ outward < 0:  # the sheet faces like the surface
+            found.append(face.geom_type)
+    assert sorted(found) == inward  # the defect the test is about
+
+
+def test_exports_take_the_turned_mesh_of_a_face(tmp_path):
+    side = loft([Rectangle(50, 50), Circle(13).on(Plane.XY.offset(54))]).faces()[0]  # surface normal points in
+    mesh = side.mesh()
+    doc, buf = gltf_document(side, edges=False)
+    acc = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
+    view = doc["bufferViews"][acc["bufferView"]]
+    tris = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3, 3).astype(float)
+    assert np.allclose(tris, mesh.vertices[mesh.triangles], atol=1e-4)
+    path = tmp_path / "side.stl"
+    export_stl(side, path)
+    assert np.allclose(import_stl(path).triangle_normals, mesh.triangle_normals, atol=1e-4)
