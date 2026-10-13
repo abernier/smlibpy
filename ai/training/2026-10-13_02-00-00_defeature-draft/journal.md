@@ -86,3 +86,8 @@ Example enclosure, guard 20 s: strict raises after 109 s naming 8 of 20; partial
 35658.793 → 38476.606, 8 left, 109 s (crashed and stopped steps in the forked copies; before
 faulted sets were skipped in later rounds it took 180 to 191 s).
 **📌 doc:** B-spline extensions are close but stay separate faces; the guard's cost.
+
+### Rerun with the kernel patches (`third_party/patches`, same day)
+Scripts 12 and 18 again, on the kernel with the four fixes: same results. Script 18's enclosure
+now takes 94 s instead of 109 s (2 crashes and 3 hangs caught in the copies), still 8 of 20 left.
+**📌 doc:** the time in the `remove_fillets` guide.

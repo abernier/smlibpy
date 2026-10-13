@@ -53,7 +53,8 @@ class _KernelFault(ModelingError):
 def _guarded(what: str, work: Callable[[], R]) -> R:
     """``work()``, after a forked copy of the process has run it to the end (see GUARD_SECONDS).
     The kernel is deterministic, and the copy starts from the same memory, so it does what
-    this process will do."""
+    this process will do; not always where the kernel reads memory it has freed, since the two
+    processes reuse freed memory differently (ai/todo/features.md, 37)."""
     limit = float(GUARD_SECONDS)
     if not limit > 0 or not hasattr(os, "fork"):
         return work()

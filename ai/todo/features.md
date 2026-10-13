@@ -101,7 +101,7 @@
 - **Reproduce:** `print(Box(40, 30, 10).shell(6).volume)   # 10992`
 
 ### 35. Kernel: `SmVertex::GetVertexuseOfFace` ignores its face, fillet removal removes nothing
-- **Worked around** in `src/cpp/defeature.cpp` (the corner parameters of `SmFilletRemoval` are read from the right faces); `remove_fillets` uses it.
+- **Fixed** in smlibpy's kernel build: `third_party/patches/SMLib/src/SmVertex.cpp` restores the face test in both lookups (usd-brep 1.0.0 itself still has the defect). `k.remove_fillet` gives the box back (6 faces, 24000.0; `test_kernel_fillet_removal`), and the workaround in `src/cpp/defeature.cpp` is gone.
 - **Session:** `2026-10-13_02-00-00_defeature-draft`
 - **What happens:** in usd-brep 1.0.0 the face test of `SmVertex::GetVertexuseOfFace`
   (`SmVertex.cpp`, "Remove Composite") is commented out together with the composite branch, so it
@@ -113,36 +113,63 @@
   `SmVertex::GetLoopOfFace` lost its face test the same way (it feeds `SmPointClassification`,
   `SmPointClass.cpp:230`).
 - **Expected:** `if (pThisFace == pFace)` before taking the vertexuse or loop (as
-  `SmEdge::GetEdgeuseOfFace` still has). Tried on a copy of the kernel with both tests restored
-  (and the fix of 36): `k.remove_fillet` then gives the box back (6 faces, 24000.0) and both
-  test suites pass.
-- **Reproduce:** `b = box.fillet(box.edges().parallel_to(Z), 3)._copy_brep(); k.remove_fillet(b)` leaves 10 faces.
+  `SmEdge::GetEdgeuseOfFace` still has); that is the patch.
+- **Reproduce (unpatched kernel):** `b = box.fillet(box.edges().parallel_to(Z), 3)._copy_brep(); k.remove_fillet(b)` leaves 10 faces.
 
 ### 36. Kernel: use-after-free in every Boolean (`SmProtoTopologyManager` destructor)
+- **Fixed** in smlibpy's kernel build: `third_party/patches/SMLib/src/SmProtoTopology.cpp`: at the
+  start of the destructor every proto edge's start and end vertex is set to NULL and every proto
+  vertex's edge list cleared, then everything is deleted as before. ASan reports nothing for
+  `Box(40, 30, 20) - Cylinder(5, 40)` any more.
 - **Session:** `2026-10-13_02-00-00_defeature-draft` (AddressSanitizer build)
-- **What happens:** `~SmProtoTopologyManager` deletes the proto edges before the proto vertices;
-  a vertex that still lists an edge then writes into it (`SmProtoEdge::RemoveProtoVertex` from
-  `~SmProtoVertex`, `SmProtoTopology.cpp:3371`). ASan reports it for `Box(40, 30, 20) -
+- **What happens (unpatched):** `~SmProtoTopologyManager` deletes the proto edges before the proto
+  vertices; a vertex that still lists an edge then writes into it (`SmProtoEdge::RemoveProtoVertex`
+  from `~SmProtoVertex`, `SmProtoTopology.cpp:3371`). ASan reports it for `Box(40, 30, 20) -
   Cylinder(5, 40)`. In release builds it writes into freed memory.
-- **Fix (verified under ASan, not applied):** at the start of the destructor set every proto
-  edge's start and end vertex to NULL and clear every proto vertex's edge list, then delete as now.
 
 ### 37. Kernel: crashes and endless loops in the feature executive's patching
 - **Guarded:** `remove_fillets` / `remove_faces` run each kernel step first in a forked copy
   (`smlibpy.defeature.GUARD_SECONDS`, Linux and macOS); a crash or a hang only drops that step.
+- **Partly fixed** in smlibpy's kernel build: `SmProtoTopologyManager::GlueCoincidentBrepVertices`
+  called `Destruct()` on the edge definitions of the short edges it deletes, which freed curves
+  the Breps still used (read in `SmEdge::CalculateBoundingBox` and `~SmEdgeuse`; `Ventil.stp`).
+  `third_party/patches/SMLib/src/SmProtoTopology.cpp` deletes them without it; AddressSanitizer
+  then reports nothing for all 30 kernel steps on `Ventil.stp`.
 - **Session:** `2026-10-13_02-00-00_defeature-draft`, scripts `12-simplify.py`, `18-hard-parts.py`
-- **What happens:** ASan (with the fix of 36): `SmProtoTopologyManager::GlueCoincidentBrepVertices`
-  destructs an edge definition whose curve a Brep edge still uses (read in
-  `SmEdge::CalculateBoundingBox`; `Ventil.stp`, one concave fillet), and `SmBrep::DeleteVertex`
-  reads a loopuse it deleted (`CombineCoincidentVertices` from `SmTopologyIntersector::FixGaps`;
-  example bottle). Both in `SmFeatureExecutive::ExtSurfaceRebuild` → `SmMerge`. The example
-  enclosure's outer rounds and several inner fillets loop for more than 600 s.
+- **What happens (patched kernel, AddressSanitizer):**
+  - `SmTopologyIntersector::FixGaps` → `SmBrep::CombineCoincidentVertices` deletes topology that
+    is still in use: `SmBrep::DeleteVertex` reads a loopuse it has deleted itself, and
+    `SmBrep::SqueezeEdge` deletes an edge that `SmMerge::ManifoldBoolean` marks afterwards
+    (`SmTopology::Mark`, `SmMerge.cpp:2890`). Both in `SmFeatureExecutive::ExtSurfaceRebuild` →
+    `SmMerge`, on the example bottle.
+  - `SmFeatureExecutive::ExtSurfaceRebuild` goes on with the surface `CreateExtendedSurface` did
+    not make (null, `SmFeatureExecutive.cpp:2062`; example enclosure).
+  - `SmStitchCallback::SelectTopologyToKeep` gets a vertex without a Brep (null,
+    `SmStitch.cpp:110`, from `SmFeature::ApplyPatches` → `SmBrep::StitchAndOrient`; the holes of
+    the STEP bracket after `remove_fillets(partial=True)`, see 38).
+  - The example enclosure's outer rounds and several inner fillets loop for more than 600 s; on
+    the example bottle 3 steps run past 20 s.
+- **Caught by the guard (release build):** example bottle 4 of 19 kernel steps (1 crash, 3 hangs),
+  example enclosure 5 of 16 (2 crashes, 3 hangs), STEP bracket with fillets, then holes 6 of 20
+  (the hole steps crash), `Ventil.stp` none of 30.
 - **Expected:** a failure status.
-- **Not caught by the guard:** on `Ventil.stp` (all B-spline faces) a step that went through in
-  the forked copy crashed the process itself when it ran there (`remove_fillets(partial=True)`,
-  exit 139): the defects of 36 and 37 read and write freed memory, so the copy does not always
-  predict this process. With the kernel copy of 35/36 the same call finishes (3 of 13 fillets
-  go, 4 steps crash in copies, 14 s).
+- **Not caught by the guard:** a defect that reads freed memory can crash this process after the
+  forked copy came through, because the two processes reuse freed memory differently. Before the
+  glue fix, `remove_fillets(partial=True)` on `Ventil.stp` (all B-spline faces) crashed the
+  process in 3 of 3 runs (exit 139), each time after 2 crashes caught in copies; with it, 10 of 10
+  runs finish (3 of 13 fillet faces go), 5 of them without the guard. The `FixGaps` defects are
+  of the same kind; the null dereferences and the loops happen every time and are caught.
+
+### 42. Kernel: use-after-free in `thicken` beyond a concave radius (offset executive)
+- **Found:** AddressSanitizer run of the test suite with the kernel patches (2026-10-13); the one
+  report in the whole suite, from `tests/test_guards.py::test_thicken_refuses_broken_results`.
+- **What happens:** `SmOffsetExecutive::RemoveExcessFaces` deletes edges (`SmBrep::RemoveFaces` →
+  `DeleteEdge`), and `BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend` then reads one of
+  their edgeuses (`SmEdgeuse::GetEdge`, `SmBrep.cpp:2815`). smlibpy rejects the broken result
+  (27), but the kernel has read freed memory on the way, so a release build can crash here.
+  Possibly also behind the shell crash that came only in some runs (24).
+- **Reproduce (AddressSanitizer build):** `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`
+- **Expected:** a failure status without reading freed memory.
 
 ## MEDIUM
 

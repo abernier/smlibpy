@@ -18,9 +18,12 @@ smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL, 
 ```
 
 The kernel sources come in as a git submodule (`third_party/usd-brep`) and are compiled
-with CMake into a single, self-contained Python extension. Nothing of the kernel is
-modified; where smlibpy needs more than the published bindings offer, its own C++ module
-(`src/cpp/ext.cpp`) calls the kernel directly.
+with CMake into a single, self-contained Python extension. The submodule stays as published.
+Kernel defects that smlibpy cannot work around from outside (fillet removal that removed
+nothing, reads and writes of freed memory in Booleans) are fixed in copies of two kernel
+source files in `third_party/patches`, which the build compiles in place of the originals;
+its README lists every change. Where smlibpy needs more than the published bindings offer,
+its own C++ module (`src/cpp/ext.cpp`) calls the kernel directly.
 
 ## Accuracy
 

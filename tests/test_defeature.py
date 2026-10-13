@@ -68,6 +68,18 @@ def test_remove_vertical_fillets_gives_the_box_back(box):
     assert len(rounded.faces()) == 10  # the input is unchanged
 
 
+def test_kernel_fillet_removal(box):
+    # SMLib's own fillet removal needs the face test of SmVertex::GetVertexuseOfFace
+    # (third_party/patches/SMLib/src/SmVertex.cpp); without it the kernel removes nothing.
+    from smlibpy._kernel import k
+
+    brep = box.fillet(box.edges().parallel_to(Z), 3)._copy_brep()
+    k.remove_fillet(brep)
+    sharp = Part._wrap(brep)
+    assert sharp.is_valid() and len(sharp.faces()) == 6
+    assert same(exact_volume(sharp), 24000.0, 1e-12)
+
+
 def test_remove_all_rounds_of_a_box(box):
     rounded = box.fillet(box.edges(), 3)
     sharp = rounded.remove_fillets()
