@@ -12,7 +12,8 @@
 // normal of the face: a convex surface (a sphere seen from outside) is positive, a bore is
 // negative, a plane is zero.
 
-#include "ext.h"
+#include "kernel.h"
+#include "surface_eval.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
@@ -120,20 +121,150 @@ SmVector3d corner_normal(SmPolyVertex* vertex, SmFace* original)
     return average;
 }
 
-std::vector<SmPoint2d> to_uvs(const py::array_t<double, py::array::c_style | py::array::forcecast>& uv)
+std::vector<SmPoint2d> to_uvs(const std::vector<double>& uv)
 {
-    if (uv.ndim() != 2 || uv.shape(1) != 2)
-        throw py::value_error("uv must be an (n, 2) array");
-    std::vector<SmPoint2d> out(static_cast<size_t>(uv.shape(0)));
-    auto r = uv.unchecked<2>();
-    for (py::ssize_t i = 0; i < uv.shape(0); ++i)
-        out[static_cast<size_t>(i)] = SmPoint2d(r(i, 0), r(i, 1));
+    if (uv.size() % 2 != 0)
+        throw std::invalid_argument("uv must be an (n, 2) array");
+    std::vector<SmPoint2d> out(uv.size() / 2);
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = SmPoint2d(uv[2 * i], uv[2 * i + 1]);
     return out;
 }
 
-py::array_t<double> vectors(const std::vector<double>& flat)
+void push(std::vector<double>& flat, const SmVector3d& v)
 {
-    py::array_t<double> a({static_cast<py::ssize_t>(flat.size() / 3), static_cast<py::ssize_t>(3)});
+    flat.insert(flat.end(), {v.x, v.y, v.z});
+}
+
+} // namespace
+
+namespace smlibpy {
+
+SurfaceDerivatives surface_derivatives(const SmSurface* surface, const std::vector<double>& uv)
+{
+    const auto uvs = to_uvs(uv);
+    SurfaceDerivatives r;
+    for (const auto& q : uvs)
+    {
+        Derivatives d;
+        if (!evaluate(surface, q, d))
+            throw std::invalid_argument("surface_derivatives: the surface cannot be evaluated at a parameter");
+        push(r.point, d.p), push(r.du, d.du), push(r.dv, d.dv), push(r.duu, d.duu), push(r.duv, d.duv), push(r.dvv, d.dvv);
+    }
+    return r;
+}
+
+FaceCurvatures face_curvatures(const SmFace* face, const std::vector<double>& uv)
+{
+    const auto uvs = to_uvs(uv);
+    const SmExtent2d domain = face->GetUVDomain();
+    FaceCurvatures r;
+    r.k1.assign(uvs.size(), kNaN);
+    r.k2.assign(uvs.size(), kNaN);
+    r.normal.reserve(uvs.size() * 3);
+    for (size_t i = 0; i < uvs.size(); ++i)
+    {
+        SmVector3d out(0, 0, 0), n(0, 0, 0);
+        const bool oriented = outward_normal(face, uvs[i], out);
+        curvature_at(face->GetSurface(), uvs[i], &domain, oriented ? &out : nullptr, r.k1[i], r.k2[i], n);
+        push(r.normal, n);
+    }
+    return r;
+}
+
+PolyCurvatures poly_curvatures(SmPolyBrep& poly)
+{
+    // the corner walk of PolyBrep.to_numpy_arrays: faces in order, the corners of the
+    // outer loop, faces with a corner outside the vertex list left out
+    SmTArray<SmPolyVertex*> vertices;
+    SmTArray<SmPolyFace*> faces;
+    poly.GetPolyVertices(vertices);
+    poly.GetPolyFaces(faces);
+    std::unordered_set<SmPolyVertex*> known;
+    for (ULONG i = 0; i < vertices.GetSize(); ++i)
+        known.insert(vertices[i]);
+    PolyCurvatures r;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmPolyFace* pf = faces[i];
+        SmPolyLoop* loop = pf->GetOuterPolyLoop();
+        if (!loop)
+            continue;
+        SmTArray<SmPolyEdge*> edges;
+        loop->GetPolyEdges(edges);
+        bool bad = edges.GetSize() == 0;
+        for (ULONG j = 0; j < edges.GetSize() && !bad; ++j)
+            bad = !known.count(edges[j]->GetStartPolyVertex());
+        if (bad)
+            continue;
+        SmFace* face = pf->GetOriginalFace();
+        const SmSurface* surface = face ? face->GetSurface() : nullptr;
+        const SmExtent2d domain = face ? face->GetUVDomain() : SmExtent2d();
+        for (ULONG j = 0; j < edges.GetSize(); ++j)
+        {
+            double a = kNaN, b = kNaN;
+            SmPoint2d q(kNaN, kNaN);
+            SmPolyVertex* pv = edges[j]->GetStartPolyVertex();
+            if (surface)
+            {
+                const SmPolyVertAuxData* aux = edges[j]->GetAuxData();
+                bool found = false;
+                if (aux)
+                {
+                    // the tessellator's parameter, if it lands on the corner
+                    SmPoint3d at;
+                    q = aux->m_vUV;
+                    found = surface->EvaluatePoint(q, at) == SM_SUCCESS
+                            && (at - pv->GetPoint()).Length() <= 1e-6 * (1.0 + pv->GetPoint().Length());
+                }
+                if (!found)
+                {
+                    SmPoint3d closest;
+                    SmTArray<SmPoint2d> uvs;
+                    double gap = 0;
+                    if (SmApiSurfaceClosestPoint(surface, pv->GetPoint(), closest, uvs, gap) == SM_SUCCESS
+                        && uvs.GetSize() > 0)
+                    {
+                        q = uvs[0];
+                        found = true;
+                    }
+                }
+                if (found)
+                {
+                    const SmVector3d out = corner_normal(pv, face);
+                    SmVector3d n;
+                    if (!curvature_at(surface, q, &domain, out.Length() > 0 ? &out : nullptr, a, b, n))
+                        a = b = kNaN;
+                    r.solved++;
+                }
+            }
+            r.k1.push_back(a);
+            r.k2.push_back(b);
+            r.uv.insert(r.uv.end(), {q.x, q.y});
+        }
+    }
+    return r;
+}
+
+}  // namespace smlibpy
+
+#ifdef SMLIBPY_PYTHON
+#include "ext.h"
+
+namespace {
+
+using UV = py::array_t<double, py::array::c_style | py::array::forcecast>;
+
+std::vector<double> flat_uv(const UV& uv)
+{
+    if (uv.ndim() != 2 || uv.shape(1) != 2)
+        throw py::value_error("uv must be an (n, 2) array");
+    return std::vector<double>(uv.data(), uv.data() + uv.size());
+}
+
+py::array_t<double> rows(const std::vector<double>& flat, py::ssize_t width)
+{
+    py::array_t<double> a({static_cast<py::ssize_t>(flat.size()) / width, width});
     std::copy(flat.begin(), flat.end(), a.mutable_data());
     return a;
 }
@@ -145,137 +276,38 @@ py::array_t<double> values(const std::vector<double>& v)
     return a;
 }
 
-void push(std::vector<double>& flat, const SmVector3d& v)
-{
-    flat.insert(flat.end(), {v.x, v.y, v.z});
-}
-
-} // namespace
+}  // namespace
 
 void bind_surface_eval(py::module_ m)
 {
-    m.def("surface_derivatives",
-          [](const SmSurface* surface, const py::array_t<double, py::array::c_style | py::array::forcecast>& uv) {
-              const auto uvs = to_uvs(uv);
-              std::vector<double> p, du, dv, duu, duv, dvv;
-              for (const auto& q : uvs)
-              {
-                  Derivatives d;
-                  if (!evaluate(surface, q, d))
-                      throw py::value_error("surface_derivatives: the surface cannot be evaluated at a parameter");
-                  push(p, d.p), push(du, d.du), push(dv, d.dv), push(duu, d.duu), push(duv, d.duv), push(dvv, d.dvv);
-              }
-              py::dict out;
-              out["point"] = vectors(p), out["du"] = vectors(du), out["dv"] = vectors(dv);
-              out["duu"] = vectors(duu), out["duv"] = vectors(duv), out["dvv"] = vectors(dvv);
-              return out;
-          },
-          py::arg("surface"), py::arg("uv"),
+    m.def("surface_derivatives", [](const SmSurface* surface, const UV& uv) {
+        const smlibpy::SurfaceDerivatives r = smlibpy::surface_derivatives(surface, flat_uv(uv));
+        py::dict out;
+        out["point"] = rows(r.point, 3), out["du"] = rows(r.du, 3), out["dv"] = rows(r.dv, 3);
+        out["duu"] = rows(r.duu, 3), out["duv"] = rows(r.duv, 3), out["dvv"] = rows(r.dvv, 3);
+        return out;
+    }, py::arg("surface"), py::arg("uv"),
           "Position and partial derivatives (du, dv, duu, duv, dvv) of a surface at (n, 2) parameters.");
 
-    m.def("face_curvatures",
-          [](const SmFace* face, const py::array_t<double, py::array::c_style | py::array::forcecast>& uv) {
-              const auto uvs = to_uvs(uv);
-              const SmExtent2d domain = face->GetUVDomain();
-              std::vector<double> k1(uvs.size(), kNaN), k2(uvs.size(), kNaN), normals;
-              normals.reserve(uvs.size() * 3);
-              for (size_t i = 0; i < uvs.size(); ++i)
-              {
-                  SmVector3d out(0, 0, 0), n(0, 0, 0);
-                  const bool oriented = outward_normal(face, uvs[i], out);
-                  curvature_at(face->GetSurface(), uvs[i], &domain, oriented ? &out : nullptr, k1[i], k2[i], n);
-                  push(normals, n);
-              }
-              py::dict r;
-              r["k1"] = values(k1), r["k2"] = values(k2), r["normal"] = vectors(normals);
-              return r;
-          },
-          py::arg("face"), py::arg("uv"),
+    m.def("face_curvatures", [](const SmFace* face, const UV& uv) {
+        const smlibpy::FaceCurvatures r = smlibpy::face_curvatures(face, flat_uv(uv));
+        py::dict out;
+        out["k1"] = values(r.k1), out["k2"] = values(r.k2), out["normal"] = rows(r.normal, 3);
+        return out;
+    }, py::arg("face"), py::arg("uv"),
           "Principal curvatures k1 >= k2 (1/length; convex positive) and outward normals of a face at "
           "(n, 2) parameters. NaN where the surface has no curvature (a singular point).");
 
-    m.def("poly_curvatures",
-          [](SmPolyBrep& poly) {
-              // the corner walk of PolyBrep.to_numpy_arrays: faces in order, the corners of the
-              // outer loop, faces with a corner outside the vertex list left out
-              SmTArray<SmPolyVertex*> vertices;
-              SmTArray<SmPolyFace*> faces;
-              poly.GetPolyVertices(vertices);
-              poly.GetPolyFaces(faces);
-              std::unordered_set<SmPolyVertex*> known;
-              for (ULONG i = 0; i < vertices.GetSize(); ++i)
-                  known.insert(vertices[i]);
-              std::vector<double> k1, k2, uv;
-              ULONG solved = 0;
-              for (ULONG i = 0; i < faces.GetSize(); ++i)
-              {
-                  SmPolyFace* pf = faces[i];
-                  SmPolyLoop* loop = pf->GetOuterPolyLoop();
-                  if (!loop)
-                      continue;
-                  SmTArray<SmPolyEdge*> edges;
-                  loop->GetPolyEdges(edges);
-                  bool bad = edges.GetSize() == 0;
-                  for (ULONG j = 0; j < edges.GetSize() && !bad; ++j)
-                      bad = !known.count(edges[j]->GetStartPolyVertex());
-                  if (bad)
-                      continue;
-                  SmFace* face = pf->GetOriginalFace();
-                  const SmSurface* surface = face ? face->GetSurface() : nullptr;
-                  const SmExtent2d domain = face ? face->GetUVDomain() : SmExtent2d();
-                  for (ULONG j = 0; j < edges.GetSize(); ++j)
-                  {
-                      double a = kNaN, b = kNaN;
-                      SmPoint2d q(kNaN, kNaN);
-                      SmPolyVertex* pv = edges[j]->GetStartPolyVertex();
-                      if (surface)
-                      {
-                          const SmPolyVertAuxData* aux = edges[j]->GetAuxData();
-                          bool found = false;
-                          if (aux)
-                          {
-                              // the tessellator's parameter, if it lands on the corner
-                              SmPoint3d at;
-                              q = aux->m_vUV;
-                              found = surface->EvaluatePoint(q, at) == SM_SUCCESS
-                                      && (at - pv->GetPoint()).Length() <= 1e-6 * (1.0 + pv->GetPoint().Length());
-                          }
-                          if (!found)
-                          {
-                              SmPoint3d closest;
-                              SmTArray<SmPoint2d> uvs;
-                              double gap = 0;
-                              if (SmApiSurfaceClosestPoint(surface, pv->GetPoint(), closest, uvs, gap) == SM_SUCCESS
-                                  && uvs.GetSize() > 0)
-                              {
-                                  q = uvs[0];
-                                  found = true;
-                              }
-                          }
-                          if (found)
-                          {
-                              const SmVector3d out = corner_normal(pv, face);
-                              SmVector3d n;
-                              if (!curvature_at(surface, q, &domain, out.Length() > 0 ? &out : nullptr, a, b, n))
-                                  a = b = kNaN;
-                              solved++;
-                          }
-                      }
-                      k1.push_back(a);
-                      k2.push_back(b);
-                      uv.insert(uv.end(), {q.x, q.y});
-                  }
-              }
-              py::dict r;
-              r["k1"] = values(k1), r["k2"] = values(k2);
-              py::array_t<double> uva({static_cast<py::ssize_t>(uv.size() / 2), static_cast<py::ssize_t>(2)});
-              std::copy(uv.begin(), uv.end(), uva.mutable_data());
-              r["uv"] = uva;
-              r["solved"] = solved;
-              return r;
-          },
-          py::arg("poly"),
+    m.def("poly_curvatures", [](SmPolyBrep& poly) {
+        const smlibpy::PolyCurvatures r = smlibpy::poly_curvatures(poly);
+        py::dict out;
+        out["k1"] = values(r.k1), out["k2"] = values(r.k2);
+        out["uv"] = rows(r.uv, 2);
+        out["solved"] = r.solved;
+        return out;
+    }, py::arg("poly"),
           "Principal curvatures k1 >= k2 (1/length; convex positive) of the exact surface at every corner of "
           "a tessellation, in the corner order of to_numpy_arrays(face_varying_normals=True). The source "
           "Brep must still exist. NaN where a corner has no source face or the surface no curvature.");
 }
+#endif  // SMLIBPY_PYTHON
