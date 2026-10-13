@@ -200,23 +200,27 @@ def EllipticalArc(
     end_angle: float = 360.0,
     plane: Plane = Plane.XY,
 ) -> Edge:
-    """An ellipse (or elliptical arc) around ``center`` in ``plane``."""
+    """An ellipse (or elliptical arc) around ``center`` in ``plane``.
+
+    The angles are ellipse angles in degrees (the point at angle a is
+    ``(x_radius cos a, y_radius sin a)``). The arc runs counterclockwise from ``start_angle``
+    to ``end_angle``, also across 0 (300 to 60 passes through the X axis); equal angles give
+    the whole ellipse.
+    """
+    span = (end_angle - start_angle) % 360.0
     with kernel_call("EllipticalArc"):
         curve = k.create_ellipse((0.0, 0.0, 0.0), float(x_radius), float(y_radius))
-    e = Edge._from_curve(_transform_curve(curve, (plane.location * Location(_vec(center))).matrix))
-    if abs((end_angle - start_angle) % 360.0) < 1e-12:
-        return e
-    # trim by angle: find the parameters at the requested angles
-    pts = [plane.from_local(_vec(center) + (x_radius * math.cos(math.radians(a)), y_radius * math.sin(math.radians(a)), 0))
-           for a in (start_angle, end_angle)]
-    c = e._curve()
-    t0 = k.curve_closest_point(c, pts[0].to_tuple())[1]
-    t1 = k.curve_closest_point(c, pts[1].to_tuple())[1]
-    if t1 <= t0:
-        lo, hi = c.parameter_range()
-        t1 += hi - lo
-    with kernel_call("EllipticalArc"):
-        return Edge._from_curve(ext.trimmed_curve(c, float(t0), float(t1)))
+        if 1e-12 <= span < 360.0 - 1e-12:
+            # A true ellipse over the arc's angles. They may run from -360 to 360, so an arc
+            # across 0 starts below 0 and stays one curve: the whole ellipse starts at 0 and
+            # cannot be trimmed across its start.
+            start = start_angle % 360.0
+            if start + span > 360.0:
+                start -= 360.0
+            whole = curve
+            curve = ext.ellipse_arc(whole, float(start), float(start + span))
+            ext.delete_curve(whole)
+    return Edge._from_curve(_transform_curve(curve, (plane.location * Location(_vec(center))).matrix))
 
 
 # -----------------------------------------------------------------------------

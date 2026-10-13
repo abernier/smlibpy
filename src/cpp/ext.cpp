@@ -667,6 +667,24 @@ void bind_smlibpy_ext(py::module_ m)
     }, py::arg("curve"), py::arg("t0"), py::arg("t1"), py::return_value_policy::take_ownership,
        "Standalone copy of a curve restricted to [t0, t1].");
 
+    m.def("ellipse_arc", [](const SmCurve* curve, double start, double end) {
+        if (!curve || curve->GetType() != SmEllipse_TYPE)
+            throw std::invalid_argument("expected an ellipse");
+        if (!(start >= -360.0 && start < end && end <= 360.0 && end - start <= 360.0))
+            throw std::invalid_argument("the angles must run upwards within [-360, 360], at most 360 apart");
+        SmAxis2Placement a;
+        double r1 = 0.0, r2 = 0.0;
+        check(static_cast<const SmEllipse*>(curve)->GetCanonical(a, r1, r2), "SmEllipse::GetCanonical");
+        // An ellipse's angles may run from -360 to 360, so an arc across angle 0 is one curve
+        // (a trim of the whole ellipse cannot cross its start).
+        SmExtent1d ivl(start, end);
+        SmEllipse* out = nullptr;
+        check(SmEllipse::CreateCanonical(ctx(), a, r1, r2, out, &ivl), "SmEllipse::CreateCanonical");
+        return static_cast<SmCurve*>(out);
+    }, py::arg("ellipse"), py::arg("start"), py::arg("end"), py::return_value_policy::take_ownership,
+       "Standalone copy of an ellipse over the ellipse angles [start, end] in degrees "
+       "(-360 <= start < end <= 360, at most 360 apart).");
+
     m.def("edge_curve", [](const SmEdge* edge) {
         SmCurve* out = nullptr;
         check(edge->GetCurve()->Copy(ctx(), out), "SmCurve::Copy");
