@@ -33,7 +33,9 @@ HOST_PEER = "smlibpy"  # the session's own peer id on presence frames
 ERROR = 51  # the message level at which the app rejects a request
 PRESENCE_MAX_BYTES = 8 * 1024
 RESERVED_CHANNELS = {"config", "leave"}
-SAVE_FORMATS = {"STP": "step", "STEP": "step", "STL": "stl"}
+# what the app may save in, offered in this order (an app that knows only ClassCAD's formats offers
+# STP and STL of them), as smlibpy's save calls them
+SAVE_FORMATS = {"STP": "step", "STL": "stl", "GLB": "glb", "OBJ": "obj", "SMB": "smb"}
 # what a ClassCAD server starts every connection with (buerli's session/host.ts)
 DEFAULT_EMISSION: dict[str, bool | int] = {
     "sendStructure": True, "sendStructure_Patch": False, "sendStructure_Compressed": False,
@@ -150,9 +152,9 @@ class BuerliHost:
             others = list(self.guests)
             self.guests.add(guest)
         guest.send({"command": "SessionJoined", "role": "view", "inviteName": "smlibpy"})
-        # what the session offers: Save only in the formats smlibpy writes
+        # what the session offers: Save in the formats smlibpy writes
         guest.send({"command": "Presence", "channel": "config", "peerId": HOST_PEER,
-                    "data": {"saveFormats": sorted(set(SAVE_FORMATS) - {"STEP"})}})
+                    "data": {"saveFormats": list(SAVE_FORMATS)}})
         for other in others:  # what everyone already here last said
             for channel, data in other.presence.items():
                 guest.send({"command": "Presence", "channel": channel, "peerId": other.peer, "data": data})
@@ -223,8 +225,9 @@ class BuerliHost:
         return result
 
     def _save(self, fmt: str) -> dict[str, str]:
+        fmt = "STP" if fmt == "STEP" else fmt
         if fmt not in SAVE_FORMATS:
-            raise ValueError(f"{fmt} is ClassCAD's own format; save as STEP or STL")
+            raise ValueError(f"smlibpy does not save {fmt}; it saves {', '.join(SAVE_FORMATS)}")
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "model." + SAVE_FORMATS[fmt])
             res = self.session.call("save", 600.0, format=SAVE_FORMATS[fmt], path=path)

@@ -231,7 +231,8 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
             joined = json.loads(ws.recv(timeout=10))
             assert joined == {"command": "SessionJoined", "role": "view", "inviteName": "smlibpy"}
             offered = json.loads(ws.recv(timeout=10))
-            assert offered["channel"] == "config" and offered["data"] == {"saveFormats": ["STL", "STP"]}
+            assert offered["channel"] == "config"
+            assert offered["data"] == {"saveFormats": ["STP", "STL", "GLB", "OBJ", "SMB"]}
             config = ask({"command": "SetEmissionConfig", "config": {"sendStructure_Patch": True, "bogus": 1}})
             assert config["result"]["sendStructure"] is True and config["result"]["sendStructure_Patch"] is True
             assert "bogus" not in config["result"]
@@ -246,6 +247,8 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
             assert ask({"command": "StoreState"})["maxLevel"] == 51
             saved = ask({"command": "Execute", "task": [{"v1.common.save": [{"format": "STP", "encoding": "base64"}]}]})
             assert base64.b64decode(saved["result"]["content"]).startswith(b"ISO-10303-21;")
+            saved = ask({"command": "Execute", "task": [{"v1.common.save": [{"format": "GLB", "encoding": "base64"}]}]})
+            assert base64.b64decode(saved["result"]["content"])[:4] == b"glTF"
 
             # what the user selects is kept; a script's change reaches the app without being asked for
             ws.send(json.dumps({"command": "Presence", "channel": "selection", "data": {"total": 1, "items": [
