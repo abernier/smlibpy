@@ -15,3 +15,5 @@ void bind_surface_eval(py::module_ m);
 void bind_sheetmetal(py::module_ m);
 // Space deformations: twist, taper, bend, lattice (deform.cpp).
 void bind_deform(py::module_& m);
+// Tessellation that halves the faces of bodies with twisted faces (tessellate.cpp).
+void bind_tessellate(py::module_ m);

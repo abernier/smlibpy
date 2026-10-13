@@ -176,6 +176,13 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
         tolerance: Maximum distance between mesh and exact surface. Default: 0.1 % of the
             bounding box diagonal.
         angle: Maximum angle (degrees) between neighbouring triangle normals on curved faces.
+
+    The kernel cuts each face into a grid whose lines it places by the curves along the
+    face's borders. A face that is straight in one direction and twisted along it (the sides
+    of a twisted bar, a ruled loft between different curves, the walls of a thickened
+    free-form sheet) gets no lines across, so a body with such a face is divided by halving
+    its faces until every part is flat within the tolerance: more triangles, but within the
+    tolerance. Other bodies get the grid's triangles.
     """
     from .shapes import Face, ShapeList, _Body
 
@@ -191,8 +198,9 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     if not tolerance > 0 or not angle > 0:
         raise ValueError("tessellate: tolerance and angle must be positive")
     with kernel_call("tessellate"):
-        poly = k.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
-                            curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))
+        # the kernel's own tessellate (k.tessellate) always uses the grid
+        poly = ext.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
+                              curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))
     return Mesh._from_poly(poly)
 
 
