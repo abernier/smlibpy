@@ -16,9 +16,11 @@ set(SMPY_DIR "${USD_BREP_DIR}/source/SmPyLib/src")
 add_executable(smlibjs ${SMLIBJS_SOURCES} ${SMLIBPY_SHARED_SOURCES} "${SMPY_DIR}/SmPyError.cpp")
 target_include_directories(smlibjs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp" "${SMPY_DIR}")
 target_link_libraries(smlibjs PRIVATE sm_api smlib)
+# (a second build, in its own build directory, can write its module elsewhere)
+set(SMLIBJS_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wasm" CACHE PATH "Where the module (smlibjs.mjs, smlibjs.wasm) is written")
 set_target_properties(smlibjs PROPERTIES
   SUFFIX ".mjs"
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/wasm")
+  RUNTIME_OUTPUT_DIRECTORY "${SMLIBJS_OUT_DIR}")
 
 # (WebAssembly exceptions: set on the kernel targets by the parent, see there)
 target_link_options(smlibjs PRIVATE

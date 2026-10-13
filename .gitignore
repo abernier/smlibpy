@@ -11,7 +11,7 @@ site/
 *.log
 out/
 ai/training/*/files/
-build-wasm/
+build-wasm*/
 js/wasm/
 js/node_modules/
 js/dist/
