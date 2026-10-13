@@ -39,16 +39,16 @@ __all__ = [
 ]
 
 
-def _items(shapes: Any) -> list[Any]:
+def _items(shapes: Any, faces: bool = False) -> list[Any]:
     from .shapes import Face, ShapeList, _Body
 
     if isinstance(shapes, (_Body, Mesh)):
         return [shapes]
     if isinstance(shapes, Face):
-        return [shapes.to_shell()]
+        return [shapes if faces else shapes.to_shell()]
     out: list[Any] = []
     for s in shapes:
-        out.extend(_items(s))
+        out.extend(_items(s, faces))
     return out
 
 
@@ -85,7 +85,7 @@ def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", 
 
 def _meshes(shapes: Any, tolerance: float | None, angle: float) -> list[tuple[Any, Mesh]]:
     out = []
-    for it in _items(shapes):
+    for it in _items(shapes, faces=True):  # a face is meshed itself, facing out of its part
         out.append((it, it if isinstance(it, Mesh) else tessellate(it, tolerance, angle)))
     return out
 
@@ -267,7 +267,8 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
                           "material": material("#d9480f", True), "mode": 0})
         else:
             body = item.to_shell() if isinstance(item, Face) else item
-            m = body if isinstance(body, Mesh) else tessellate(body, tolerance, angle)
+            # a face is meshed itself, facing out of its part; its copy gives the edges
+            m = body if isinstance(body, Mesh) else tessellate(item, tolerance, angle)
             color = getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
             color_index += 1
             pos = m.vertices[m.triangles].reshape(-1, 3).astype(np.float32)
