@@ -100,6 +100,40 @@
 - **Expected:** `ModelingError`.
 - **Reproduce:** `print(Box(40, 30, 10).shell(6).volume)   # 10992`
 
+### 35. Kernel: `SmVertex::GetVertexuseOfFace` ignores its face, fillet removal removes nothing
+- **Worked around** in `src/cpp/defeature.cpp` (the corner parameters of `SmFilletRemoval` are read from the right faces); `remove_fillets` uses it.
+- **Session:** `2026-10-13_02-00-00_defeature-draft`
+- **What happens:** in usd-brep 1.0.0 the face test of `SmVertex::GetVertexuseOfFace`
+  (`SmVertex.cpp`, "Remove Composite") is commented out together with the composite branch, so it
+  returns the first vertexuse on an upward faceuse of any face. `SmFilletRemoval` takes the corner
+  parameters of the wrong faces and fails in `FindSideEdgeExtensions`; `SmApiRemoveFillet` /
+  `k.remove_fillet` removes nothing and reports success (upstream KNOWN_ISSUES lists the symptom).
+  The same lookup feeds `SmFace.cpp:380` (surface fitting through vertices), `SmLoopuse.cpp:713`
+  (UV boxes), `SmCurveClass.cpp:14722` and `SmVertex::HasParallelFaces`.
+- **Expected:** `if (pThisFace == pFace)` before taking the vertexuse (as `SmEdge::GetEdgeuseOfFace` still has).
+- **Reproduce:** `b = box.fillet(box.edges().parallel_to(Z), 3)._copy_brep(); k.remove_fillet(b)` leaves 10 faces.
+
+### 36. Kernel: use-after-free in every Boolean (`SmProtoTopologyManager` destructor)
+- **Session:** `2026-10-13_02-00-00_defeature-draft` (AddressSanitizer build)
+- **What happens:** `~SmProtoTopologyManager` deletes the proto edges before the proto vertices;
+  a vertex that still lists an edge then writes into it (`SmProtoEdge::RemoveProtoVertex` from
+  `~SmProtoVertex`, `SmProtoTopology.cpp:3371`). ASan reports it for `Box(40, 30, 20) -
+  Cylinder(5, 40)`. In release builds it writes into freed memory.
+- **Fix (verified under ASan, not applied):** at the start of the destructor set every proto
+  edge's start and end vertex to NULL and clear every proto vertex's edge list, then delete as now.
+
+### 37. Kernel: crashes and endless loops in the feature executive's patching
+- **Guarded:** `remove_fillets` / `remove_faces` run each kernel step first in a forked copy
+  (`smlibpy.defeature.GUARD_SECONDS`, Linux and macOS); a crash or a hang only drops that step.
+- **Session:** `2026-10-13_02-00-00_defeature-draft`, scripts `12-simplify.py`, `18-hard-parts.py`
+- **What happens:** ASan (with the fix of 36): `SmProtoTopologyManager::GlueCoincidentBrepVertices`
+  destructs an edge definition whose curve a Brep edge still uses (read in
+  `SmEdge::CalculateBoundingBox`; `Ventil.stp`, one concave fillet), and `SmBrep::DeleteVertex`
+  reads a loopuse it deleted (`CombineCoincidentVertices` from `SmTopologyIntersector::FixGaps`;
+  example bottle). Both in `SmFeatureExecutive::ExtSurfaceRebuild` → `SmMerge`. The example
+  enclosure's outer rounds and several inner fillets loop for more than 600 s.
+- **Expected:** a failure status.
+
 ## MEDIUM
 
 ### 3. `revolve`: negative angle revolves 360+angle in the positive sense
@@ -199,6 +233,24 @@
   its own plane expects the same extrusion direction.
 - **Expected:** keep the sketch normal when the mirror plane contains it (mirror in-plane), or document it.
 
+### 38. `remove_fillets` / `remove_faces`: not every detail of an imported part goes
+- **Session:** `2026-10-13_02-00-00_defeature-draft`, scripts `05-remove-real.py`, `12-simplify.py`
+- **What happens:** the example bracket loses all 5 fillets when made here, 2 of 5 after a STEP
+  round trip (neither the kernel's fillet removal nor the executive takes the other 3 out). The order matters: fillets first, then holes takes the native bracket to the plain L;
+  holes first leaves the inner fillet. After `remove_fillets(partial=True)` on the STEP bracket
+  all 4 hole features crash the kernel; straight from the import they go.
+- **Workaround:** `partial=True`, then the other order.
+
+### 39. Surface extension of B-spline faces is approximate
+- **Session:** `2026-10-13_02-00-00_defeature-draft`, script `18-hard-parts.py`
+- **What happens:** the executive extends faces with a G1 continuation; for B-spline faces
+  (`to_nurbs()`, many STEP files) the gap is closed by an approximation: a boss with B-spline
+  faces comes back about 1.5e-6 (relative) too large; analytic faces are exact.
+
+### 40. `Face.radius` fails for ring fillets
+- **What happens:** fillets around bosses and holes are surfaces of revolution:
+  `ValueError: a revolution face has no radius`. `fillets(max_radius=...)` measures them.
+
 ## LOW
 
 ### 7. `extrude`: `taper` ignores `direction`, and open curves ignore `taper`
@@ -282,3 +334,10 @@
 - **What happens:** negative-volume revolves and sweeps, the r4.99 fillet, disconnected sweeps
   stay broken after `heal()`. Not a defect of heal (kernel docstring: no gap closing), but the
   docstring "Repair gaps, tolerances and topology" promises more than it does.
+
+### 41. `draft_analysis` does not see hidden faces
+- **Session:** `2026-10-13_02-00-00_defeature-draft`, script `11-mold-check.py`
+- **What happens:** faces are judged by their own normals. The inside of a cover tapered the
+  wrong way reads as "positive" for the upper half although the cover's top hides it; only the 3
+  parting lines (instead of 1) show the problem. Occlusion would need ray tests
+  (`SmBrep::RayIntersection`).

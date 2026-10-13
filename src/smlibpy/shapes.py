@@ -2201,12 +2201,13 @@ class Part(_Body):
 
         return remove_fillets(self, faces, max_radius=max_radius, partial=partial)
 
-    def remove_faces(self, faces: Any) -> Part:
+    def remove_faces(self, faces: Any, *, partial: bool = False) -> Part:
         """The part with ``faces`` (a hole, a boss, a pocket) cut out and the gap closed by the
-        faces around it. See :mod:`smlibpy.defeature`."""
+        faces around it. With ``partial`` the features the kernel cannot close stay. See
+        :mod:`smlibpy.defeature`."""
         from .defeature import remove_faces
 
-        return remove_faces(self, faces)
+        return remove_faces(self, faces, partial=partial)
 
     def draft_analysis(self, direction: Axis | VectorLike, *, min_angle: float = 1.0) -> Any:
         """Draft angle of every face for the pull direction, with the faces grouped by whether

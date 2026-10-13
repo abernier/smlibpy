@@ -66,9 +66,9 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, 2D shapes (Rectangle, Circle, Polygon, Slot, ...), make_face, 2D offset and fillet |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire |
-| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft, heal |
+| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft, heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces) |
 | surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
-| analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity |
+| analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
 | files | `files/*` | STEP in and out, STL, glTF, OBJ, the native format, render, show, meshes |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API
@@ -79,3 +79,5 @@ Each domain has a `generic.md` with the concepts; the other docs are named after
 - `recipes/verification`: what to check after each step, and how.
 - `recipes/modeling`: the patterns that work (plates, holes, bosses, revolved parts, shells,
   sweeps along helices) and the order of operations.
+- `recipes/simplify`: taking fillets, holes and bosses out of a part, an imported one too.
+- `recipes/mold-check`: draft and parting line of a part that is molded or cast.

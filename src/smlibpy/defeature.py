@@ -35,10 +35,18 @@ TANGENCY = 2.0
 #: copy of the process: if it crashes there or takes longer than this, a ``ModelingError`` says
 #: so and this process is left alone (SMLib's patching and Boolean code can crash or loop on
 #: some parts). ``0`` runs the kernel directly, as on Windows.
-GUARD_SECONDS = 60.0
+GUARD_SECONDS = 20.0
 
 _D = k.defeature
 R = TypeVar("R")
+
+
+class _KernelFault(ModelingError):
+    """The kernel crashed or did not finish in the forked copy; ``reason`` says which."""
+
+    def __init__(self, what: str, reason: str, hint: str):
+        self.reason = reason
+        super().__init__(f"{what}: {reason}; {hint}")
 
 
 def _guarded(what: str, work: Callable[[], R]) -> R:
@@ -67,13 +75,13 @@ def _guarded(what: str, work: Callable[[], R]) -> R:
         if time.monotonic() > deadline:
             os.kill(pid, 9)
             os.waitpid(pid, 0)
-            raise ModelingError(f"{what}: the kernel did not finish within {limit:g} s; take out fewer faces at a "
-                                f"time (smlibpy.defeature.GUARD_SECONDS sets the limit)")
+            raise _KernelFault(what, f"the kernel did not finish within {limit:g} s",
+                               "smlibpy.defeature.GUARD_SECONDS sets the limit")
         time.sleep(pause)
         pause = min(pause * 2, 0.05)
     if os.WIFSIGNALED(status):
-        raise ModelingError(f"{what}: the kernel crashed on this part (signal {os.WTERMSIG(status)}; this process "
-                            f"was not affected); take out fewer faces at a time, or other faces first")
+        raise _KernelFault(what, f"the kernel crashed (signal {os.WTERMSIG(status)}, in a copy of this process)",
+                           "this process is fine")
     return work()
 
 
@@ -251,7 +259,7 @@ def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) ->
     """The executive's patched copy of ``body`` without ``groups``, or None if it failed."""
     try:
         res = _guarded(what, lambda: _D.defeature(body._brep, [[f._f for f in g] for g in groups], rebuild))
-    except ModelingError:  # a crash or a hang in the kernel
+    except _KernelFault:  # a crash or a hang in the kernel
         return None
     return None if res["brep"] is None else body._like(res["brep"])
 
@@ -280,7 +288,7 @@ def _remove_pass(part: Part, faces: list[Face], b: _Blends, expect: int) -> tupl
             tried_a.add(key(edge))
             try:
                 res = _guarded("remove_fillets", lambda: _D.remove_fillet_faces(body._brep, [f._f for f in edge]))
-            except ModelingError:  # a crash or a hang in the kernel
+            except _KernelFault:  # a crash or a hang in the kernel
                 res = {"brep": None}
             if res["brep"] is not None:
                 gone = [f for f, done in zip(edge, res["removed"]) if done]
@@ -412,33 +420,51 @@ def _feature_kind(group: list[Face]) -> int:
     return 0
 
 
-def remove_faces(part: Part, faces: Any) -> Part:
+def _close(body: Part, group: list[Face]) -> tuple[Part | None, str]:
+    """``body`` without one connected set of faces, the gap closed and checked; or None and why."""
+    expect = _feature_kind(group)
+    before = _volume(body)
+    why = ""
+    for rebuild in ("extend", "planar_cap"):
+        try:
+            res = _guarded("remove_faces", lambda: _D.defeature(body._brep, [[f._f for f in group]], rebuild))
+        except _KernelFault as e:
+            why = why or e.reason
+            continue
+        if res["brep"] is None:
+            why = why or ("the kernel could not close the gap" if res["added"] else
+                          "the kernel did not take the faces as a feature (it must be bounded by closed loops of edges)")
+            continue
+        candidate = body._like(res["brep"])
+        problem = _problem(before, candidate, expect, None)
+        if problem is None:
+            return candidate, ""
+        why = why or f"the kernel returned {problem}"
+    return None, why
+
+
+def remove_faces(part: Part, faces: Any, *, partial: bool = False) -> Part:
     """See :meth:`Part.remove_faces`."""
     part._require_valid("remove_faces")
     sel = _complete(_faces_of(part, faces, "remove_faces"))
     if len(sel) == len(part.faces()):
         raise ModelingError("remove_faces: that is every face of the part; nothing would be left")
-    groups = [[f._f for f in g] for g in _groups(sel)]
-    kinds = {_feature_kind(g) for g in _groups(sel)}
-    expect = kinds.pop() if len(kinds) == 1 else 0
-    before = _volume(part)
-    failures = []
-    for rebuild in ("extend", "planar_cap"):
-        try:
-            res = _guarded("remove_faces", lambda: _D.defeature(part._brep, groups, rebuild))
-        except ModelingError as e:  # a crash or a hang in the kernel
-            failures.append(str(e).split(": ", 1)[1].split(";")[0])
+    body = part
+    failed: list[tuple[list[Face], str]] = []
+    for group in _groups(sel):
+        todo = group if body is part else _carry(body, group, {})[0]
+        if not todo:
             continue
-        if res["brep"] is None:
-            failures.append("could not close the hole the faces leave" if res["added"] else
-                            "did not accept the faces as features (each set of connected faces must be bounded "
-                            "by closed loops of edges)")
-            continue
-        body = part._like(res["brep"])
-        problem = _problem(before, body, expect, None)
-        if problem is None:
-            return body
-        failures.append(f"returned {problem}")
-    reason = failures[0] if failures[0].startswith("the kernel") else f"the kernel {failures[0]}"
-    raise ModelingError(f"remove_faces: {reason}; select every face of the feature (the wall and the floor of "
-                        f"a pocket, the side and the top of a boss) and take out its fillets first (remove_fillets)")
+        result, why = _close(body, todo)
+        if result is None:
+            failed.append((group, why))
+        else:
+            body = result
+    if failed and not partial:
+        group, why = failed[0]
+        c = group[0].center()
+        more = f" ({len(failed)} of {len(_groups(sel))} features failed)" if len(failed) > 1 else ""
+        raise ModelingError(f"remove_faces: {why} at ({c.x:.4g}, {c.y:.4g}, {c.z:.4g}){more}; select every face of "
+                            f"the feature (the wall and the floor of a pocket, the side and the top of a boss), take "
+                            f"out its fillets first (remove_fillets), or keep it with partial=True")
+    return body

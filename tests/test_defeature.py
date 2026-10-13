@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from smlibpy import Align, Box, Cylinder, ModelingError, Part, Slot, Z, export_step, import_step
+from smlibpy import Align, BoundBox, Box, Cylinder, ModelingError, Part, Slot, Z, export_step, import_step
 
 
 def exact_volume(part: Part) -> float:
@@ -159,7 +159,8 @@ def test_remove_faces_closes_holes_and_drops_bosses(box, name):
         faces = part.faces().cylinders()  # the top goes with the side
     elif name == "pocket":
         part = box - Box(10, 8, 6, align=(Align.CENTER, Align.CENTER, Align.MAX)).translate(0, 0, 10)
-        faces = part.faces().filter(lambda f: f.bbox().max.z < 10 + 1e-6 and f.bbox().min.z > 3.9)
+        faces = part.faces().within(BoundBox((-5.1, -4.1, 3.9), (5.1, 4.1, 10.1)))
+        assert len(faces) == 5
     elif name == "counterbore":
         part = box - Cylinder(3, 40) - Cylinder(6, 4, align=(Align.CENTER, Align.CENTER, Align.MAX)).translate(0, 0, 10)
         faces = part.faces().filter(lambda f: f.geom_type == "cylinder" or (f.is_planar and abs(f.center().z - 6) < 1e-9))
@@ -179,3 +180,31 @@ def test_remove_faces_errors(box):
         holed.remove_faces(holed.faces())
     with pytest.raises(ValueError):
         holed.remove_faces(Box(1, 1, 1).translate(100, 0, 0).faces().top())
+
+
+# -- through the MCP session -----------------------------------------------------------------
+def test_session_removes_fillets_and_faces():
+    from smlibpy.mcp.session import Session
+
+    s = Session()
+    try:
+        ok = s.run("box = Box(40, 30, 20)\nrounded = box.fillet(box.edges(), 3)\n"
+                   "sharp = rounded.remove_fillets()\nprint(len(rounded.faces().fillets()), len(sharp.faces()))")
+        assert ok["ok"] and ok["output"].split() == ["20", "6"]
+        assert float(s.run("sharp.volume")["value"]) == pytest.approx(24000, rel=1e-9)
+        ok = s.run("holed = box - Cylinder(5, 40)\nplain = holed.remove_faces(holed.faces().cylinders())\nplain.volume")
+        assert ok["ok"] and float(ok["value"]) == pytest.approx(24000, rel=1e-9)
+        bad = s.run("rounded.remove_fillets(rounded.faces().top())")
+        assert not bad["ok"] and "ModelingError" in bad["error"] and "no fillets" in bad["error"]
+    finally:
+        s.close()
+
+
+def test_search_finds_defeaturing():
+    from smlibpy.mcp import discovery
+
+    for query in ("remove fillets", "defeature an imported part", "simplify", "suppress a hole"):
+        keys = [e.key for _, e in discovery.search(query, 6)]
+        assert {"Part.remove_fillets", "Part.remove_faces"} & set(keys), (query, keys)
+    assert discovery.guide("features/remove_fillets") is not None and discovery.guide("recipes/simplify") is not None
+    assert discovery.guide_for(discovery.find_method("ShapeList.fillets")).key == "features/fillets"

@@ -22,3 +22,6 @@ Docs go to `src/smlibpy/skill/references/features/`. Work through the rows in or
 | 14 | `heal.md` | Part.heal | what it repairs, when to call it | [x] heal.md |
 | 15 | `to_nurbs.md` | to_nurbs | what changes, why you would | [x] to_nurbs.md |
 | 16 | `generic.md` | (all) | added: results that pass is_valid() but are wrong, directions, limits, errors, order | [x] generic.md |
+| 17 | `fillets.md` | ShapeList.fillets | what counts as a fillet, corner patches, lookalikes, how the radius is measured, max_radius | [x] fillets.md |
+| 18 | `remove_fillets.md` | Part.remove_fillets | all, selected, max_radius, partial; exactness, how, imported parts, crashes and hangs, errors | [x] remove_fillets.md |
+| 19 | `remove_faces.md` | Part.remove_faces | holes, bosses, pockets, enclosed faces, checks, partial, errors | [x] remove_faces.md |

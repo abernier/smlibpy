@@ -178,8 +178,8 @@ def _side(lo: float, hi: float, eps: float) -> int | None:
     return None
 
 
-def _loops(edges: list[Any]) -> list[list[Any]]:
-    """Edges (of one body) grouped into chains connected at their vertices."""
+def _loops(body: Any, edges: list[Any]) -> list[list[Any]]:
+    """Edges of ``body`` grouped into chains connected at their vertices."""
     parent = list(range(len(edges)))
 
     def find(i: int) -> int:
@@ -190,8 +190,8 @@ def _loops(edges: list[Any]) -> list[list[Any]]:
 
     at: dict[int, int] = {}
     for i, e in enumerate(edges):
-        for v in e.vertices():
-            key = id(v._v)
+        kv = [v._v for v in e.vertices()]
+        for key in ext.vertex_indices(body._brep, kv):  # stable ids: wrappers come and go
             if key in at:
                 parent[find(i)] = find(at[key])
             else:
@@ -265,7 +265,7 @@ def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
         if len(fs) == 2 and side[fs[0]._identity()] != side[fs[1]._identity()]:
             line.append(e)
     wires = []
-    for chain in _loops(line):
+    for chain in _loops(body, line):
         curves = [Edge._from_curve(ext.edge_curve(e._e)) for e in chain]
         wires.append(Wire(curves))
     del body

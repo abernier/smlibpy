@@ -128,6 +128,45 @@ Drafted walls come from tapered extrusions:
 mold_core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)
 ```
 
+## Removing fillets and faces
+
+Imported parts and parts made for one purpose often carry details another purpose does not
+need: rounds and fillets, small holes, bosses. smlibpy takes them out again with the kernel's
+defeaturing tools, which extend the faces around a detail until the gap closes.
+
+`faces().fillets()` finds the fillets by their shape, whether they were made here or came in
+through STEP: faces that meet two other faces tangentially and are curved across, plus the
+corner patches where fillets meet. `max_radius` keeps only the small ones.
+
+```python
+box = Box(40, 30, 20)
+rounded = box.fillet(box.edges(), 3)
+print(len(rounded.faces().fillets()))            # 12 rounds and 8 corner patches: 20
+
+sharp = rounded.remove_fillets()                 # the box again, every edge sharp
+print(len(sharp.faces()), round(sharp.volume, 6))   # 6 24000.0
+```
+
+`remove_fillets()` takes out every fillet, `remove_fillets(faces)` the ones you select, and
+`remove_fillets(max_radius=2)` the small ones. Rounds of outside edges give material back,
+fillets of inside edges take it away; each step is checked against that, and the result must
+be a valid solid.
+
+`remove_faces` does the same for holes, pockets and bosses. Select the faces of the feature; a
+hole's floor or a boss's top goes with its walls on its own:
+
+```python
+drilled = Box(40, 30, 20) - Cylinder(5, 40) - Cylinder(3, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(12, 0, 0)
+plain = drilled.remove_faces(drilled.faces().cylinders())
+print(len(plain.faces()), round(plain.volume, 6))   # 6 24000.0
+```
+
+On parts made here the result is exact: the faces are extended, planes stay planes and
+cylinders cylinders. On imported parts the kernel cannot take out every detail; both methods
+then raise a `ModelingError` that says which, and `partial=True` keeps those and takes out the
+rest. On Linux and macOS the kernel first works in a forked copy of the process, so the rare
+crash or endless loop in its patching code only drops that step.
+
 ## Repair and conversion
 
 ```python

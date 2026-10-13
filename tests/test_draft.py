@@ -120,3 +120,31 @@ def test_parting_line_of_an_open_box_and_a_drafted_core():
 def test_parting_line_errors():
     with pytest.raises(ValueError):
         Box(10, 10, 10).parting_line((0, 0, 0))
+
+
+# -- through the MCP session -----------------------------------------------------------------
+def test_session_draft_and_parting_line():
+    from smlibpy.mcp.session import Session
+
+    s = Session()
+    try:
+        ok = s.run("core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)\nda = core.draft_analysis(Z, min_angle=1)\n"
+                   "print(len(da.positive), len(da.vertical), len(da.undercut))\n"
+                   "print(round(Sphere(10).parting_line(Z)[0].length, 6))")
+        assert ok["ok"] and ok["output"].split() == ["9", "0", "1", "62.831853"]
+        bad = s.run("core.parting_line((0, 0, 0))")
+        assert not bad["ok"] and "ValueError" in bad["error"]
+    finally:
+        s.close()
+
+
+def test_search_finds_mold_checks():
+    from smlibpy.mcp import discovery
+
+    for query, wanted in (("draft angle", "Part.draft_analysis"), ("undercut", "Part.draft_analysis"),
+                          ("mold", "Part.parting_line"), ("casting", "Part.draft_analysis"),
+                          ("parting line", "Part.parting_line"), ("pull direction", "Part.draft_analysis")):
+        keys = [e.key for _, e in discovery.search(query, 6)]
+        assert wanted in keys, (query, keys)
+    assert discovery.guide("recipes/mold-check") is not None
+    assert discovery.guide_for(discovery.find_method("Part.parting_line")).key == "analysis/parting_line"
