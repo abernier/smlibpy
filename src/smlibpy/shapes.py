@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec
+from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import Mesh
@@ -882,6 +882,15 @@ class Edge(Shape):
         e._owner, e._e, e._c, e._rev, e._cache = self._owner, self._e, self._c, not self._rev, self._cache
         return e
 
+    def remove_knots(self) -> Edge:
+        """The same curve with the knots it does not need taken out: a B-spline with fewer control
+        points (the kernel's knot removal, which keeps the curve within about 1e-6 of where it was).
+        Lines, arcs and other analytic curves come back as they are."""
+        c = self._copy_curve()
+        with kernel_call("remove_knots"):
+            k.remove_curve_knots(c)
+        return Edge._from_curve(c)
+
     def _transformed(self, m: np.ndarray) -> Edge:
         return Edge._from_curve(_transform_curve(self._copy_curve(), m))
 
@@ -1332,6 +1341,10 @@ class Face(Shape):
         _, d = self._f.closest_point(_vec(point).to_tuple())
         return float(d)
 
+    def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
+        """Where a ray meets this face, nearest first (see :meth:`Part.raycast`)."""
+        return _raycast([self], origin, direction, self.bbox())
+
     # -- topology -------------------------------------------------------------
     def _loops(self) -> list[Wire]:
         loops = self._f.boundary_loops()
@@ -1504,6 +1517,18 @@ class _Body(Shape):
     def closest_point(self, point: VectorLike) -> Vector:
         p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
         return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
+
+    def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
+        """Where a ray meets this body's faces, nearest first: the exact points (``Hit``: point,
+        distance from the start, the face, its outward normal there).
+
+        The ray starts at ``origin`` and runs along ``direction`` (an axis or a vector); an axis
+        alone is a ray from its origin along its direction. Points behind the start are not
+        hits. A ray through an edge or a vertex hits once, a ray along a face where it enters
+        the face. ``hits[0]`` is what the ray sees first; ``len(hits)`` is odd from inside a
+        closed part.
+        """
+        return _raycast(self.faces(), origin, direction, self._loose_box())
 
     # -- geometric queries ----------------------------------------------------
     def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
@@ -1708,6 +1733,109 @@ def _bodies(items: Any, name: str = "combine") -> list[_Body]:
     return out
 
 
+def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: VectorLike | Axis | None,
+             box: BoundBox) -> list[Hit]:
+    if isinstance(origin, Axis) and direction is None:
+        o, d = origin.origin, origin.direction.normalized()
+    elif direction is None:
+        raise TypeError("raycast takes an origin and a direction, or an axis")
+    else:
+        o, d = _vec(origin), _direction(direction, "raycast")
+    if not all(math.isfinite(x) for x in o):
+        raise ValueError("raycast: the origin must be finite")
+    size = max(box.diagonal, 1e-9)
+    corners = [Vector(x, y, z) for x in (box.min.x, box.max.x) for y in (box.min.y, box.max.y)
+               for z in (box.min.z, box.max.z)]
+    reach = max((c - o).dot(d) for c in corners) + 1e-3 * size
+    if reach <= 0:  # the body is behind the start
+        return []
+    tol = 1e-9 * max(size, o.length)
+    hits: list[Hit] = []
+    meshes: dict[int, Any] = {}  # id of a body -> its faces' meshes (for faces the kernel cannot intersect)
+    with kernel_call("raycast"):
+        ray = k.create_line_segment(o.to_tuple(), (o + d * reach).to_tuple())
+        try:
+            for f in faces:
+                if not _ray_meets_box(o, d, reach, f._f.bounding_box(False), tol):
+                    continue
+                try:
+                    curves, points = k.intersect_curve_face(ray, f._f)
+                except RuntimeError:
+                    # The kernel fails where a ray runs parallel to a plane or along a cylinder
+                    # without meeting it (and on some other faces): there the face's mesh finds
+                    # the hits, and they are moved onto the exact surface.
+                    found = _mesh_hits(f, o, d, reach, tol, meshes)
+                else:
+                    found = [Vector(p) for p in points]
+                    for c in curves:  # the ray runs along the face: it meets it where it enters it
+                        ends = [Vector(c.start_point()), Vector(c.end_point())]
+                        found.append(min(ends, key=lambda q: (q - o).dot(d)))
+                        ext.delete_curve(c)
+                for q in found:
+                    t = (q - o).dot(d)
+                    if t >= -tol:
+                        hits.append(Hit(q, max(t, 0.0), f.normal_at(q), f))
+        finally:
+            ext.delete_curve(ray)
+    hits.sort(key=lambda h: h.distance)
+    out: list[Hit] = []
+    for h in hits:  # through an edge or a vertex: one hit
+        if not out or h.distance - out[-1].distance > 10 * tol or (h.point - out[-1].point).length > 10 * tol:
+            out.append(h)
+    return out
+
+
+def _mesh_hits(f: Face, o: Vector, d: Vector, reach: float, tol: float, meshes: dict[int, Any]) -> list[Vector]:
+    """The points where the ray crosses the mesh of face ``f``, moved onto its exact surface."""
+    from .mesh import _ray_triangles, face_meshes
+
+    owner = f._owner
+    if id(owner) not in meshes:
+        meshes[id(owner)] = (owner, face_meshes(owner))  # (the owner is kept: its id stays its own)
+    (index,) = ext.face_indices(owner._brep, [f._f])
+    m = meshes[id(owner)][1][index]
+    out: list[Vector] = []
+    ts, _ = _ray_triangles(o, d, m.vertices, m.triangles, tol)
+    srf = f._f.surface()
+    for t0 in sorted(float(t) for t in ts if t <= reach):
+        if out and abs(t0 - (out[-1] - o).dot(d)) < 1e-6 * max(reach, 1.0):
+            continue  # (an edge between two triangles)
+        t = t0
+        for _ in range(30):  # Newton along the ray, against the tangent plane at the closest point
+            p = o + d * t
+            q, uvs, _ = k.surface_closest_point(srf, p.to_tuple())
+            n = Vector(f._f.normal_at_uv(uvs[0].x, uvs[0].y))
+            dn = d.dot(n)
+            if abs(dn) < 1e-12:
+                break
+            step = (Vector(q.x, q.y, q.z) - p).dot(n) / dn
+            t += step
+            if abs(step) <= tol:
+                break
+        q = o + d * t
+        if f.distance_to(q) <= 100 * tol:
+            out.append(q)
+    return out
+
+
+def _ray_meets_box(o: Vector, d: Vector, reach: float, box: Any, tol: float) -> bool:
+    lo, hi = box
+    t0, t1 = 0.0, reach
+    for a, oa, da in ((0, o.x, d.x), (1, o.y, d.y), (2, o.z, d.z)):
+        low, high = lo[a] - tol, hi[a] + tol
+        if abs(da) < 1e-300:
+            if oa < low or oa > high:
+                return False
+            continue
+        ta, tb = (low - oa) / da, (high - oa) / da
+        if ta > tb:
+            ta, tb = tb, ta
+        t0, t1 = max(t0, ta), min(t1, tb)
+        if t0 > t1:
+            return False
+    return True
+
+
 class MassProperties:
     """Mass properties of a part.
 
@@ -1905,6 +2033,46 @@ class Part(_Body):
         with kernel_call("solids"):
             parts = ext.separate_bodies(self._brep)
         return ShapeList(Part._wrap(b, name=self.name, color=self.color) for b in parts)
+
+    def merge(self, *others: Part | Sequence[Part]) -> Part:
+        """This part and others as one part made of cells. Where parts overlap, the overlap becomes
+        a cell of its own; cells that touch share the faces between them (each such face bounds
+        two cells: the body is non-manifold). For simulation meshes that must match across
+        materials, and for models of several materials.
+
+        ``cells()`` gives the cells as parts of their own; ``volume`` is the volume of the union.
+        A merged part is not a manifold solid: ``is_valid()`` is False, and Booleans, fillets and
+        shells take its cells rather than the part itself.
+        """
+        tools = _bodies(others, "merge")
+        if not tools:
+            raise ValueError("merge needs another part")
+        for t in tools:
+            if not isinstance(t, Part) or isinstance(t, Sketch):
+                raise TypeError(f"merge takes parts, not a {type(t).__name__}")
+        h = BrepHandle(self._copy_brep())
+        for t in tools:
+            with kernel_call("merge", "the parts may only touch along an edge or at a point"):
+                r = k.non_manifold_boolean(_take(h), t._copy_brep(), operation=k.BooleanOp.MERGE)
+            h = BrepHandle(r)
+        return Part._wrap(_take(h), name=self.name, color=self.color)
+
+    def cells(self) -> ShapeList[Part]:
+        """The cells of a part made by :meth:`merge`, each as a part of its own (every closed region
+        of the body; a cavity is not a cell). A part that is one solid: ``[itself]``."""
+        d = ext.brep_dump(self._brep, False)
+        if sum(1 for r in d["regions"] if not r["infinite"] and not r["void"]) <= 1:
+            return ShapeList([self])
+        with kernel_call("cells"):
+            regions = ext.region_shells(self._brep)
+        out: ShapeList[Part] = ShapeList()
+        for shells in regions:
+            outer, *cavities = [Part._wrap(b, name=self.name, color=self.color) for b in shells]
+            part = outer.cut(cavities) if cavities else outer
+            if not part.is_valid():
+                raise ModelingError(f"cells: a cell is not a sound solid ({part._solid_problem()})")
+            out.append(part)
+        return out
 
     # -- booleans -------------------------------------------------------------
     def _boolean(self, others: Any, op: Any, name: str) -> Part:

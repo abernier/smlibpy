@@ -1,8 +1,10 @@
 import math
 
+import numpy as np
 import pytest
 
 from smlibpy import *
+from smlibpy._kernel import ext
 
 
 def test_open_curves_make_surfaces():
@@ -77,3 +79,83 @@ def test_intersection_curves_come_once_where_faces_lie_in_one_plane():
     box = Box(20, 20, 20)
     shared = box.intersection_curves(box.translate(20, 0, 0))  # the face x = 10: its 4 sides
     assert sum(c.length for c in shared) == pytest.approx(80)
+
+
+def _cloud(count=2000, seed=7):
+    rng = np.random.default_rng(seed)
+    xy = rng.uniform(-10, 10, (count, 2))
+    z = 0.02 * (xy[:, 0] ** 2 - xy[:, 1] ** 2) + 0.5 * np.sin(xy[:, 0] / 2)
+    return np.column_stack([xy, z]), rng
+
+
+def test_surface_fitted_to_a_cloud_of_points():
+    cloud, rng = _cloud()
+    s = surface(cloud)
+    assert isinstance(s, Shell) and s.faces()[0].geom_type == "bspline"
+    assert max(s.distance_to(p) for p in cloud[::40]) < 0.005
+    # the smallest rectangle around the points: the square of the cloud, not a turned one
+    box = s.bbox()
+    assert box.min.x == pytest.approx(-10, abs=0.1) and box.max.x == pytest.approx(10, abs=0.1)
+    assert box.min.y == pytest.approx(-10, abs=0.1) and box.max.y == pytest.approx(10, abs=0.1)
+    # noisy points: the surface follows the shape, not the noise
+    noisy = cloud + np.column_stack([np.zeros((len(cloud), 2)), rng.normal(0, 0.05, len(cloud))])
+    smooth = surface(noisy, smoothing=0.01)
+    assert max(smooth.distance_to(p) for p in cloud[::40]) < 0.05
+    # points as a list of vectors; control points by hand (along the longer side first)
+    few = surface([Vector(*p) for p in cloud[:300]], controls=(6, 5))
+    poles = ext.surface_data(few.faces()[0]._f.surface(), True)["poles"]
+    assert len(poles) == 30
+
+
+def test_surface_cloud_checks():
+    cloud, _ = _cloud(100)
+    with pytest.raises(ValueError, match="line"):
+        surface([(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)])
+    with pytest.raises(ValueError, match="at least 4"):
+        surface([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+    with pytest.raises(ValueError, match="controls"):
+        surface(cloud, controls=3)
+    with pytest.raises(ValueError, match="smoothing"):
+        surface(cloud, smoothing=2)
+    grid = [[(x, y, 0) for x in range(5)] for y in range(5)]
+    with pytest.raises(ValueError, match="clouds"):
+        surface(grid, controls=5)
+
+
+def test_surface_fillet_between_two_sheets():
+    floor = Rectangle(40, 40).faces()[0]  # normal +Z
+    wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]
+    ny = wall.normal_at().y
+    for sides in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        blend = surface_fillet(floor, wall, 5, sides=sides)
+        assert blend.area == pytest.approx(math.pi / 2 * 5 * 40, rel=1e-6)
+        c = blend.center()  # a quarter circle's centroid: 2 r / pi from its centre
+        assert c.z == pytest.approx(sides[0] * (5 - 10 / math.pi), abs=1e-6)
+        assert c.y == pytest.approx(sides[1] * ny * (5 - 10 / math.pi), abs=1e-6)
+    # the same faces again (the kernel changes the surfaces it blends: copies are blended)
+    assert surface_fillet(floor, wall, 5).area == pytest.approx(math.pi / 2 * 5 * 40, rel=1e-6)
+
+
+def test_surface_fillet_between_crossing_pipes():
+    a = Cylinder(5, 60).faces().cylinders()[0]
+    b = Cylinder(4, 60).rotate(Axis.X, 90).faces().cylinders()[0]
+    blend = surface_fillet(a, b, 1.5, sides=(1, 1))
+    assert len(blend.faces()) == 2
+    for e in blend.edges():
+        p = e.point_at(0.5)
+        on_a = abs(math.hypot(p.x, p.y) - 5)
+        on_b = abs(math.hypot(p.x, p.z) - 4)
+        if e.length > 5:  # the rails, along the pipes (the ends are short arcs across)
+            assert min(on_a, on_b) < 1e-5
+
+
+def test_surface_fillet_checks():
+    floor = Rectangle(40, 40).faces()[0]
+    with pytest.raises(ValueError, match="positive"):
+        surface_fillet(floor, floor, 0)
+    with pytest.raises(ValueError, match="sides"):
+        surface_fillet(floor, floor, 1, sides=(1, 0))
+    with pytest.raises(TypeError, match="faces"):
+        surface_fillet(Box(1, 1, 1), floor, 1)
+    with pytest.raises(ModelingError, match="meet"):  # parallel planes: nowhere to roll
+        surface_fillet(floor, Rectangle(40, 40).translate((0, 0, 50)).faces()[0], 1)

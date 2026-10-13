@@ -55,3 +55,30 @@ def test_axis_helpers():
     assert X.is_parallel((-1, 0, 0))
     assert Z.distance_to((3, 4, 10)) == pytest.approx(5)
     assert Y.position_along((0, 7, 0)) == pytest.approx(7)
+
+
+def test_curve_tools():
+    import numpy as np
+
+    from smlibpy import Bezier, CenterArc, Line, Spline, make_compatible
+    from smlibpy._kernel import ext
+
+    def knots(e):
+        return len(ext.curve_data(e._curve(), True)["poles"])
+
+    a = Bezier((0, 0, 0), (1, 3, 0), (4, 3, 1), (6, 0, 0))
+    b = Spline((0, 0, 5), (2, 1, 5), (3, -1, 5), (4, 2, 5), (6, 0, 5))
+    arc = CenterArc((3, 0, 10), 3, 180, 180)
+    out = make_compatible(a, [b, arc], Line((0, 0, 15), (6, 0, 15)))
+    data = [ext.curve_data(e._curve(), True) for e in out]
+    assert len({len(d["knots"]) for d in data}) == 1 and len({d["degree"] for d in data}) == 1
+    assert all(d["knots"] == pytest.approx(data[0]["knots"]) for d in data)
+    assert all(e.geom_type == "bspline" for e in out)
+    for src, e in zip([a, b, arc], out):
+        assert max(src.distance_to(e.point_at(t)) for t in np.linspace(0, 1, 21)) < 1e-9
+    # the Bezier's copy carries the knots of the others; it needs none of them
+    assert knots(out[0]) > 4 and knots(out[0].remove_knots()) == 4
+    assert max(a.distance_to(out[0].remove_knots().point_at(t)) for t in np.linspace(0, 1, 21)) < 1e-6
+    assert Line((0, 0, 0), (1, 0, 0)).remove_knots().geom_type == "line"
+    with pytest.raises(ValueError, match="two or more"):
+        make_compatible(a)

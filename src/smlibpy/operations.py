@@ -26,6 +26,7 @@ __all__ = [
     "offset",
     "mirror",
     "split",
+    "merge",
     "section",
     "thicken",
 ]
@@ -375,6 +376,19 @@ def mirror(shape: Shape, plane: Plane = Plane.XZ) -> Any:
 def split(part: Part, plane: Plane | Face, keep: str = "above") -> Any:
     """Cut a part with a plane (see :meth:`Part.split`)."""
     return part.split(plane, keep)
+
+
+def merge(*parts: Part | Sequence[Part]) -> Part:
+    """Parts as one part made of cells: overlaps become cells of their own, touching cells share
+    their faces (see :meth:`Part.merge`; ``cells()`` gives them as parts)."""
+    flat: list[Any] = []
+    for p in parts:
+        flat.extend([p] if isinstance(p, Shape) else list(p))
+    if len(flat) < 2:
+        raise ValueError(f"merge needs two or more parts, got {len(flat)}")
+    if not isinstance(flat[0], Part):
+        raise TypeError(f"merge takes parts, not a {type(flat[0]).__name__}")
+    return flat[0].merge(*flat[1:])
 
 
 def section(part: Part, plane: Plane | Face = Plane.XY) -> Sketch:

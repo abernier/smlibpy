@@ -91,4 +91,6 @@ PYBIND11_MODULE(_core, m)
     bind_draft(m);
     bind_face_draft(m);
     bind_measure(m.attr("ext").cast<py::module_>());
+    bind_fit(m.attr("ext").cast<py::module_>());
+    bind_cells(m.attr("ext").cast<py::module_>());
 }

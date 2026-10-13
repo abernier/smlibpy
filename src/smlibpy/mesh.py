@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ._kernel import ModelingError, PolyHandle, ext, k, kernel_call
-from .geometry import BoundBox, Vector
+from .geometry import Axis, BoundBox, Hit, Vector, VectorLike, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Shape
@@ -63,15 +63,23 @@ class Mesh:
 
     # -- mesh Booleans (kernel polygon Booleans) -------------------------------
     def _poly_brep(self) -> Any:
+        """The kernel's mesh of this one: from the tessellation, or built from the triangles
+        (meshes read from files or made from arrays), stitched along the edges they share."""
         if self._poly is not None and self._poly.poly is not None:
             return self._poly.poly
-        raise TypeError("mesh Booleans need meshes produced by tessellate()")
+        if not len(self.triangles):
+            raise ValueError("mesh Booleans need triangles: this mesh has none")
+        with kernel_call("mesh", "the mesh may have no triangle with an area"):
+            poly = ext.poly_from_triangles(self.vertices.ravel().tolist(), self.triangles.ravel().tolist())
+        self._poly = PolyHandle(poly)
+        return poly
 
     def _bool(self, other: Mesh, op: Any, name: str) -> Mesh:
         with kernel_call(f"mesh {name}"):
             a = self._poly_brep().copy()
             b = other._poly_brep().copy()
             r = k.poly_boolean(a, b, op)
+            ext.triangulate_poly(r)  # (its polygons with holes: the mesh arrays take only outer loops)
         result = Mesh._from_poly(r)
         # The kernel's mesh Booleans often return open or wrong meshes (faces that should get
         # a hole stay whole). Check what can be checked: closed, and a volume the operation
@@ -108,6 +116,29 @@ class Mesh:
         _, counts = np.unique(e, axis=0, return_counts=True)
         return int((counts != 2).sum())
 
+    def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
+        """Where a ray meets the mesh's triangles, nearest first (``Hit``: point, distance from
+        the start, the triangle's normal and its index ``triangle``). As :meth:`Part.raycast`,
+        on the triangles instead of the exact faces."""
+        if isinstance(origin, Axis) and direction is None:
+            o, d = origin.origin, origin.direction.normalized()
+        elif direction is None:
+            raise TypeError("raycast takes an origin and a direction, or an axis")
+        else:
+            o, d = _vec(origin), _direction(direction, "raycast")
+        if not len(self.triangles):
+            return []
+        size = float(np.linalg.norm(self.vertices.max(axis=0) - self.vertices.min(axis=0)))
+        tol = 1e-9 * max(size, o.length, 1e-300)
+        ts, tris = _ray_triangles(o, d, self.vertices, self.triangles, tol)
+        normals = self.triangle_normals
+        out: list[Hit] = []
+        for t, i in sorted(zip(ts.tolist(), tris.tolist())):
+            if out and t - out[-1].distance <= 1e-9 * max(size, 1.0):
+                continue  # (through an edge or a corner: one hit)
+            out.append(Hit(o + d * max(t, 0.0), max(t, 0.0), Vector(*normals[i]), None, int(i)))
+        return out
+
     def is_closed(self) -> bool:
         """True if every edge of the mesh is shared by exactly two triangles (a watertight mesh)."""
         return self._open_edge_count() == 0
@@ -143,6 +174,32 @@ class Mesh:
 
     def __repr__(self) -> str:
         return f"Mesh({len(self.vertices)} vertices, {len(self.triangles)} triangles)"
+
+
+def _ray_triangles(o: Vector, d: Vector, vertices: np.ndarray, triangles: np.ndarray,
+                   tol: float) -> tuple[np.ndarray, np.ndarray]:
+    """Where the ray o + t d (t >= 0) crosses triangles (Moeller-Trumbore): the distances t and
+    the indices of the triangles."""
+    v = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    tri = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if not len(tri):
+        return np.zeros(0), np.zeros(0, dtype=np.int64)
+    dv = np.array(d.to_tuple())
+    v0 = v[tri[:, 0]]
+    e1, e2 = v[tri[:, 1]] - v0, v[tri[:, 2]] - v0
+    p = np.cross(dv, e2)
+    det = np.einsum("ij,ij->i", e1, p)
+    scale = np.linalg.norm(e1, axis=1) * np.linalg.norm(e2, axis=1)
+    ok = np.abs(det) > 1e-12 * np.where(scale > 0, scale, 1.0)
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    s = np.array(o.to_tuple()) - v0
+    u = np.einsum("ij,ij->i", s, p) * inv
+    q = np.cross(s, e1)
+    w = (q @ dv) * inv
+    t = np.einsum("ij,ij->i", e2, q) * inv
+    eps = 1e-9
+    hit = ok & (u >= -eps) & (w >= -eps) & (u + w <= 1 + eps) & (t >= -tol)
+    return t[hit], np.nonzero(hit)[0]
 
 
 def _triangulate(faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

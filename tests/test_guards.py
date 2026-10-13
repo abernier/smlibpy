@@ -253,8 +253,10 @@ def test_distance_to_takes_points_and_bodies():
 # -- mesh Booleans ------------------------------------------------------------------------
 def test_wrong_mesh_booleans_raise():
     box, sphere = Box(20, 20, 20).mesh(), Sphere(12).mesh()
-    with pytest.raises(ModelingError, match="exact parts"):
-        box - sphere  # was an open mesh of volume 4377 (exact 1616)
+    # (was an open mesh of volume 4377, exact 1616: the polygons with holes the kernel leaves were
+    # read by their outer loops; now they are triangulated first)
+    corners = box - sphere
+    assert corners.is_closed() and corners.volume == approx(box.volume - (box & sphere).volume)
     with pytest.raises(ModelingError, match="exact parts"):
         box + Cylinder(3, 60).rotate(X, 30).rotate(Z, 20).mesh()
     shifted = box - Box(20, 20, 20).translate(10, 10, 10).mesh()  # no face gets a hole: right

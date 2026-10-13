@@ -225,3 +225,22 @@ def test_face_meshes_cut_one_tessellation_by_face():
     for face, mesh in zip(part.faces(), meshes):
         assert mesh.area == pytest.approx(face.area, rel=1e-2)
     assert sum(len(m.triangles) for m in meshes) == len(tessellate(part, 0.005).triangles)
+
+
+def test_mesh_booleans_on_any_mesh(tmp_path):
+    a, b = Box(20, 20, 20), Cylinder(6, 40)
+    for ma, mb in [(a.mesh(), b.mesh()), (Mesh(a.mesh().vertices, a.mesh().triangles), Mesh(b.mesh().vertices, b.mesh().triangles))]:
+        both = (ma & mb).volume
+        assert (ma & mb).is_closed() and both == pytest.approx(mb.volume / 2, rel=1e-9)
+        assert (ma - mb).is_closed() and (ma - mb).volume == pytest.approx(ma.volume - both, rel=1e-9)
+        assert (ma + mb).is_closed() and (ma + mb).volume == pytest.approx(ma.volume + mb.volume - both, rel=1e-9)
+    a.export(tmp_path / "a.stl")
+    b.export(tmp_path / "b.stl")
+    sa, sb = import_stl(tmp_path / "a.stl"), import_stl(tmp_path / "b.stl")  # meshes of their own
+    diff = sa - sb
+    assert diff.is_closed() and diff.volume == pytest.approx(sa.volume - (sa & sb).volume, rel=1e-6)
+    assert diff.volume == pytest.approx((a - b).volume, rel=1e-2)  # (the cylinder's facets cut its corners)
+    tet = Mesh([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)])
+    assert (tet & tet).volume == pytest.approx(1 / 6)
+    with pytest.raises(ValueError, match="triangles"):
+        Mesh([(0, 0, 0)], []) + tet
