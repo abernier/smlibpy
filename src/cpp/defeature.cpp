@@ -28,30 +28,9 @@ namespace
 
 const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 
-// The vertexuse of `vertex` in `face` (the one on the upward faceuse if there are two).
-// SmVertex::GetVertexuseOfFace in usd-brep 1.0.0 lost its face test when composite faces were
-// taken out ("Remove Composite" in SmVertex.cpp): it returns the first vertexuse of any face.
-// SmFilletRemoval reads the corner parameters of the wrong faces through it and then fails
-// to extend the side edges, which is why the kernel's remove_fillet removes nothing.
-SmVertexuse* vertexuse_of_face(SmVertex* vertex, const SmFace* face)
-{
-    SmTArray<SmVertexuse*> uses;
-    vertex->GetVertexuses(uses);
-    SmVertexuse* found = nullptr;
-    for (ULONG i = 0; i < uses.GetSize(); ++i)
-    {
-        SmFaceuse* fu = uses[i]->GetFaceuse();
-        if (fu == nullptr || fu->GetFace() != face)
-            continue;
-        found = uses[i];
-        if (face->GetUpwardFaceuse() == fu)
-            break;
-    }
-    return found;
-}
-
-// SmFilletRemoval with the corner parameters taken from the right faces. The stages are the
-// kernel's own; only the corner parameters of CollectFilletTopology are recomputed.
+// SmFilletRemoval in two steps, so that a copy of the Brep can be kept for the step that edits
+// it. (Its corner parameters come through SmVertex::GetVertexuseOfFace, which needs the fix in
+// third_party/patches/SMLib/src/SmVertex.cpp: without it the kernel removes no fillet.)
 class FilletRemoval : public SmFilletRemoval
 {
 public:
@@ -62,7 +41,6 @@ public:
     SmStatus Prepare()
     {
         SER(CollectFilletTopology());
-        SER(FixCornerParameters());
         for (ULONG end = 0; end < 2; ++end)
         {
             SER(CalcNewCornerVertices(end));
@@ -74,43 +52,6 @@ public:
 
     // Edits the Brep; a failure here can leave it half edited.
     SmStatus Apply() { return DoRemoval(); }
-
-private:
-    SmStatus FixCornerParameters()
-    {
-        for (ULONG end = 0; end < 2; ++end)
-            for (ULONG side = 0; side < 2; ++side)
-            {
-                SmFilletCornerInfo& corner = m_aCornerInfo[end][side];
-                SmVertexuse* vu = vertexuse_of_face(corner.m_pVertex, m_pFaceToDelete);
-                NER(vu);
-                SER(vu->ComputeUVPoint(corner.m_sUVFilSurf));
-                vu = vertexuse_of_face(corner.m_pVertex, m_aEndFaces[end]);
-                NER(vu);
-                SER(vu->ComputeUVPoint(corner.m_sUVEndSurfOld));
-                vu = vertexuse_of_face(corner.m_pVertex, m_aTanFaces[side]);
-                NER(vu);
-                SER(vu->ComputeUVPoint(corner.m_sUVTanSurfOld));
-            }
-        // The orientation of the fillet surface follows from the corner parameters.
-        SmVector2d end_to_end(m_aCornerInfo[1][0].m_sUVFilSurf - m_aCornerInfo[0][0].m_sUVFilSurf);
-        SmVector2d side_to_side(m_aCornerInfo[0][1].m_sUVFilSurf - m_aCornerInfo[0][0].m_sUVFilSurf);
-        end_to_end.Unitize();
-        side_to_side.Unitize();
-        if (smos_Fabs(end_to_end.x) > smos_Fabs(end_to_end.y))
-        {
-            m_eRailParam = SM_SP_U;
-            m_bEndsSwapped = end_to_end.x < 0;
-            m_bSidesSwapped = side_to_side.y < 0;
-        }
-        else
-        {
-            m_eRailParam = SM_SP_V;
-            m_bEndsSwapped = end_to_end.y < 0;
-            m_bSidesSwapped = side_to_side.x < 0;
-        }
-        return SM_SUCCESS;
-    }
 };
 
 // A cheap check of the topology the fillet removal edited: every vertex and edge still belongs

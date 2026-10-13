@@ -12,6 +12,9 @@ and its Python bindings (SmPyLib) from USD BRep:
 The Apache License 2.0 text is in third_party/usd-brep/LICENSE; third-party notices
 of USD BRep are in third_party/usd-brep/THIRD_PARTY_NOTICES.md. Binary distributions
 of smlibpy contain compiled USD BRep code and are subject to that license as well.
+A few USD BRep source files are compiled from copies modified by AWV Informatik AG to
+fix defects; the copies are in third_party/patches, each with a notice of what was
+changed, and third_party/patches/README.md lists the changes.
 
 The default font of Text, Lato Regular (src/smlibpy/fonts/Lato-Regular.ttf), is included
 unmodified:

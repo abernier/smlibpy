@@ -56,13 +56,16 @@ enclosure and bottle). On Linux and macOS each kernel step first runs in a forke
 process; a crash there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only
 drops that step, and this process goes on. On Windows the kernel runs directly. A crash in the
 copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
-and with the stopped steps `remove_fillets(partial=True)` takes 109 s. A set of fillets the
+and with the stopped steps `remove_fillets(partial=True)` takes about 95 s. A set of fillets the
 kernel crashed or hung on is not tried again in the same call.
 
-The copy catches what the kernel does every time. Some of its defects read memory it already
-freed, and those can crash this process after the copy came through: seen once, on an imported
-valve body with B-spline faces. In the MCP session such a crash ends the script, and the
-session builds its state again; in a plain script, save your work first.
+The copy catches what the kernel does every time. A defect that reads memory the kernel has
+already freed can still crash this process after the copy came through, because the two
+processes reuse freed memory differently. smlibpy's build of the kernel fixes the one that did
+that on an imported valve body with B-spline faces (13 fillet faces: 3 go, 10 stay); others
+of that kind remain (seen on the example bottle), so far always caught in the copy. In the MCP
+session such a crash ends the script, and the session builds its state again; in a plain
+script, save your work first.
 
 ## Errors
 - `ModelingError: remove_fillets: 1 of the faces are no fillets (plane); a fillet meets two faces tangentially along its length. Select fillets with part.faces().fillets(), or take other faces out with remove_faces`
