@@ -216,7 +216,7 @@ const STATUS_RE = /(SM_[A-Z0-9_]+)/
  * covers both). Errors of JavaScript itself (TypeError, RangeError) and of the module's bindings
  * (wrong arguments) are not.
  */
-function isKernelFailure(e: unknown): e is Error {
+export function _isRuntimeError(e: unknown): e is Error {
   if (e instanceof ModelingError) return true
   if (!(e instanceof Error) || Object.getPrototypeOf(e) !== Error.prototype) return false
   return e.name === 'Error' || e.name.endsWith('Error') && !['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'BindingError', 'InternalError'].includes(e.name)
@@ -227,7 +227,7 @@ export function kernelCall<T>(operation: string, fn: () => T, hint: string | nul
   try {
     return fn()
   } catch (e) {
-    if (e instanceof KernelError || !isKernelFailure(e)) throw e
+    if (e instanceof KernelError || !_isRuntimeError(e)) throw e
     const text = e.message
     const m = STATUS_RE.exec(text)
     const error = new KernelError(operation, text, m ? m[1] : null, hint)
@@ -254,6 +254,8 @@ function free(kind: string, p: number): void {
   else if (kind === 'poly') ext.delete_polybrep(p)
 }
 
+let handles = 0
+
 abstract class Handle {
   protected _p: number
   private readonly _kind: string
@@ -262,6 +264,19 @@ abstract class Handle {
     this._kind = kind
     this._p = p
     if (p) freed.register(this, [kind, p], this)
+  }
+
+  /** A number that tells handles apart for as long as they live (their kernel objects' numbers
+   * can be reused once freed). */
+  readonly id: number = ++handles
+
+  /** Gives the kernel object to a new owner: this handle no longer frees it. */
+  release(): number {
+    const p = this._p
+    if (!p) throw new Error('the kernel object was disposed')
+    this._p = 0
+    freed.unregister(this)
+    return p
   }
 
   /** Frees the kernel object now (it is freed on garbage collection otherwise). */
@@ -334,4 +349,16 @@ export class PolyHandle extends Handle {
   get poly(): number {
     return this._p
   }
+}
+
+// -------------------------------------------------------------------------------- warnings
+let warningHandler: (message: string) => void = (message) => console.warn(message)
+
+/** Where smlibjs's warnings go (Python's warnings.warn): `console.warn` unless set here. */
+export function setWarningHandler(handler: (message: string) => void): void {
+  warningHandler = handler
+}
+
+export function _warn(message: string): void {
+  warningHandler(message)
 }

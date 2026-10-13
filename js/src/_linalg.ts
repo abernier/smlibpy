@@ -121,3 +121,35 @@ export function spread(points: readonly (readonly number[])[]): { values: number
 export function det3(m: Mat3): number {
   return m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6])
 }
+
+/** The solution X of A X = B (numpy's linalg.solve): A is n x n (rows), B n x m (rows). Gaussian
+ * elimination with partial pivoting; a singular matrix throws a RangeError. */
+export function solve(A: readonly (readonly number[])[], B: readonly (readonly number[])[]): number[][] {
+  const n = A.length
+  const a = A.map((row) => row.slice())
+  const b = B.map((row) => row.slice())
+  for (let col = 0; col < n; col++) {
+    let pivot = col
+    for (let r = col + 1; r < n; r++) if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r
+    if (a[pivot][col] === 0) throw new RangeError('Singular matrix')
+    if (pivot !== col) {
+      ;[a[pivot], a[col]] = [a[col], a[pivot]]
+      ;[b[pivot], b[col]] = [b[col], b[pivot]]
+    }
+    for (let r = col + 1; r < n; r++) {
+      const f = a[r][col] / a[col][col]
+      if (f === 0) continue
+      for (let c = col; c < n; c++) a[r][c] -= f * a[col][c]
+      for (let c = 0; c < b[r].length; c++) b[r][c] -= f * b[col][c]
+    }
+  }
+  const x = b.map((row) => row.map(() => 0))
+  for (let r = n - 1; r >= 0; r--) {
+    for (let c = 0; c < b[r].length; c++) {
+      let s = b[r][c]
+      for (let j = r + 1; j < n; j++) s -= a[r][j] * x[j][c]
+      x[r][c] = s / a[r][r]
+    }
+  }
+  return x
+}

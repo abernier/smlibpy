@@ -199,6 +199,15 @@ export function _formatG(v: number, precision = 6): string {
   return s
 }
 
+// Python's "{:.Ne}": N digits after the point, the exponent with a sign and two digits at least.
+export function _formatE(v: number, digits: number): string {
+  if (Number.isNaN(v)) return 'nan'
+  if (!Number.isFinite(v)) return v > 0 ? 'inf' : '-inf'
+  const [mantissa, exponent] = v.toExponential(digits).split('e')
+  const e = Number(exponent)
+  return `${mantissa}e${e < 0 ? '-' : '+'}${String(Math.abs(e)).padStart(2, '0')}`
+}
+
 export function _fmt(v: number): string {
   if (Math.abs(v) < 5e-13) v = 0
   return _formatG(v, 6)
