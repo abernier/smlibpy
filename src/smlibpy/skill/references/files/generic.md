@@ -1,11 +1,12 @@
 # Files: formats and what they keep
 
-STEP and `.smb` keep the exact 3D geometry, DXF the exact 2D curves of sketches, sections and
-text. The other formats are triangle meshes or pictures.
+STEP, USD and `.smb` keep the exact 3D geometry, DXF the exact 2D curves of sketches, sections
+and text. The other formats are triangle meshes or pictures.
 
 | Format | Write | Read | Geometry | Bodies | Names | Colors | Units in file |
 |---|---|---|---|---|---|---|---|
 | STEP `.step` `.stp` | `export_step` | `import_step` | exact (analytic + B-spline) | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
+| USD `.usda` `.usd` | `export_usd` | `import_usd` | exact (`BrepArray` prims of usd-brep), meshes as `Mesh` prims; text only | many, merged parts with their cells | yes (prim names) | yes | mm (`metersPerUnit = 0.001`), read as they are |
 | SMLib `.smb` | `save` | `load` | exact, binary bit-identical | **one** | no | no | none (mm) |
 | DXF `.dxf` | `export_dxf` | `import_dxf` → `Sketch`, `import_dxf_wires` → `Wire`s | exact 2D curves: LINE, ARC, CIRCLE, ELLIPSE, SPLINE | 2D only, no `Part` | names become layers | no | mm or `unit=` (converted on export), `$INSUNITS` converted to mm on import |
 | STL `.stl` | `export_stl` | `import_stl` → `Mesh` | triangles, float32 | merged into one mesh | no | no | none |
@@ -15,12 +16,14 @@ text. The other formats are triangle meshes or pictures.
 | HTML | `show` | | an interactive viewer | | | yes | |
 
 `export(shapes, path)` and `shape.export(path)` choose the writer by extension. `load(path)`
-chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`, `.dxf`; any other extension raises
-`ValueError: unknown file type ...`).
+chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`, `.dxf`, `.usda`/`.usd`; any other
+extension raises `ValueError: unknown file type ...`).
 
 ## Which format
 - **Deliver a CAD model: STEP.** Every CAD system reads it. Names, colors and exact surfaces
   survive. Read it back and compare `volume` before you hand it over.
+- **USD pipelines, Omniverse: `.usda`** with `export_usd`, the exact bodies; add `mesh=True` for
+  viewers that do not read B-reps.
 - **Cache an intermediate body between scripts: `.smb`** with `ascii=False` (bit-exact). Set
   the name and color again after `load`.
 - **3D printing: STL** with `tolerance=0.01`.
@@ -51,15 +54,16 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`, `.dxf`; any other ext
   still check foreign assemblies with a picture.
 
 ## Shape kinds
-| Shape | STEP | `.smb` | STL / OBJ / glTF | DXF | render, show |
-|---|---|---|---|---|---|
-| `Part` | solid (a two-solid part becomes two solids) | yes | yes | `TypeError`: write `part.section(plane)` | yes |
-| `Shell`, `Sketch`, `Face` | surface, comes back as `Shell` | comes back as `Shell` | open mesh | planar ones; comes back as `Sketch` | yes |
-| `Mesh` | `TypeError` | `AttributeError` | yes | `TypeError` | yes |
-| `Edge`, `Wire` | `TypeError: 'Edge' object is not iterable` | same | glTF only (lines) | yes (`import_dxf_wires` reads them back) | yes (lines) |
-| `Vertex` | `TypeError: 'float' object is not iterable` | same | glTF only (a point) | `TypeError` | render skips it, show draws it |
+| Shape | STEP | USD | `.smb` | STL / OBJ / glTF | DXF | render, show |
+|---|---|---|---|---|---|---|
+| `Part` | solid (a two-solid part becomes two solids, a merged part one per cell) | one `BrepArray` (a merged part with its cells) | yes | yes | `TypeError`: write `part.section(plane)` | yes |
+| `Shell`, `Sketch`, `Face` | surface, comes back as `Shell` | a sheet, comes back as `Shell` | comes back as `Shell` | open mesh | planar ones; comes back as `Sketch` | yes |
+| `Mesh` | `TypeError` | a `Mesh` prim (not read back) | `AttributeError` | yes | `TypeError` | yes |
+| `Edge`, `Wire` | `TypeError: 'Edge' object is not iterable` | same | same | glTF only (lines) | yes (`import_dxf_wires` reads them back) | yes (lines) |
+| `Vertex` | `TypeError: 'float' object is not iterable` | same | same | glTF only (a point) | `TypeError` | render skips it, show draws it |
 
 ## Related
 `export.md`, `export_step.md`, `import_step.md`, `save_load.md`, `export_stl.md`,
 `import_stl.md`, `export_glb.md`, `export_obj.md`, `export_dxf.md`, `import_dxf.md`,
-`import_dxf_wires.md`, `render.md`, `diff_images.md`, `show.md`, `Mesh.md`.
+`import_dxf_wires.md`, `export_usd.md`, `import_usd.md`, `render.md`, `diff_images.md`, `show.md`,
+`Mesh.md`.

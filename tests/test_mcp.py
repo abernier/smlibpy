@@ -56,6 +56,11 @@ def test_show_snapshot_save_inspect(session, tmp_path):
     assert shot["ok"] and shot["png"][:8] == b"\x89PNG\r\n\x1a\n"
     saved = session.call("save", format="step", path=str(tmp_path / "b.step"))
     assert saved["ok"] and os.path.getsize(saved["path"]) > 0
+    saved = session.call("save", format="usd", path=str(tmp_path / "b.usda"))  # exact bodies in USD
+    assert saved["ok"] and saved["shapes"] == ["b"]
+    loaded = session.load(saved["path"], "b_again")
+    assert loaded["ok"] and loaded["type"] == "Part" and loaded["volume"] == pytest.approx(268.083, rel=1e-5)
+    assert loaded["label"] == "b"
     info = session.call("inspect", name="a", faces=True)
     assert info["ok"] and len(info["info"]["faces"]) == 6 and info["info"]["valid"]
 
@@ -104,6 +109,43 @@ def test_discovery_finds_api_and_guides():
     assert {"Box", "Part.fillet", "ShapeList.top", "import_step"} <= keys
     assert "fillet" in [e.key.split(".")[-1] for _, e in discovery.search("round the edges", 5)]
     assert discovery.guide("SKILL") is not None and discovery.guide("recipes/verification") is not None
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("ray", "analysis/raycast"),
+    ("inside outside test", "analysis/raycast"),
+    ("point cloud", "surfaces/surface"),
+    ("fit a surface to points", "surfaces/surface"),
+    ("blend two surfaces", "surfaces/surface_fillet"),
+    ("cells", "features/cells"),
+    ("several materials", "features/merge"),
+    ("knot removal", "curves/remove_knots"),
+    ("compatible curves", "curves/make_compatible"),
+    ("control points of a curve", "curves/nurbs"),
+    ("usd", "files/export_usd"),
+    ("omniverse", "files/import_usd"),
+    ("mesh boolean", "files/Mesh"),
+])
+def test_search_finds_the_kernel_tools(query, expected):
+    assert expected in [e.key for _, e in discovery.search(query, 5)]
+
+
+KERNEL_TOOL_GUIDES = ["analysis/raycast", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
+                      "features/cells", "curves/nurbs", "curves/make_compatible", "curves/remove_knots",
+                      "files/export_usd", "files/import_usd", "files/Mesh"]
+
+
+@pytest.mark.parametrize("key", KERNEL_TOOL_GUIDES)
+def test_kernel_tool_guides_run(key, tmp_path, monkeypatch):
+    import re
+
+    monkeypatch.chdir(tmp_path)
+    guide = discovery.guide(key)
+    assert guide is not None and discovery.guide_for(discovery.find_method(key.split("/")[1])) is not None
+    ns: dict = {}
+    exec("from smlibpy import *\nimport math\nimport numpy as np", ns)
+    for i, code in enumerate(re.findall(r"```python\n(.*?)```", guide.text, re.S)):
+        exec(compile(code, f"{key}[{i + 1}]", "exec"), ns)
 
 
 def test_live_viewer_serves_the_scene(session):

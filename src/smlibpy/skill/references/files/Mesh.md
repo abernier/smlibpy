@@ -25,6 +25,8 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 | `area`, `volume` | float | from the triangles |
 | `bbox()`, `center()` | | `center()` is the **bbox center**, not the centroid |
 | `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
+| `raycast(origin, direction)` | list of `Hit` | where a ray meets the triangles, nearest first (see `raycast`) |
+| `m1 + m2`, `m1 - m2`, `m1 & m2` | `Mesh` | mesh Booleans, see below |
 
 ## Tolerance and triangle count
 | Shape | tolerance / angle | triangles | volume error |
@@ -49,15 +51,21 @@ differently: the kernel's usual grid would put one facet across such a face (the
 within the tolerance. That costs 10 to 30 times the triangles, in proportion to 1 / tolerance.
 Other parts get the kernel's triangles unchanged.
 
+## Mesh Booleans
+`m1 + m2`, `m1 - m2`, `m1 & m2` work on closed meshes from anywhere: `tessellate`, `import_stl`,
+`Mesh(...)`. The result is a closed mesh. For meshes that have no exact part behind them (scans,
+STL files from elsewhere); with exact parts, do the Boolean on the parts and mesh the result
+(exact, and the mesh then follows the tolerance).
+
+- smlibpy checks every result (closed, a volume the operation can give) and raises
+  `ModelingError: mesh union: the kernel's mesh Boolean returned a volume of 0, where 8000 to
+  9685.51 is possible; ...` where the kernel fails. It still does for some meshes (a slanted
+  pin through a box).
+- The time grows fast with the triangles: 2000 triangles 0.03 s, 260000 triangles 13 s.
+- Open meshes are not checked (they have no volume to compare): check `is_closed()` of both
+  first.
+
 ## Gotchas
-- **Mesh Booleans (`m1 + m2`, `m1 - m2`, `m1 & m2`) mostly fail.** The kernel's mesh Booleans
-  only work where no face of the result gets a hole (box minus an offset box). smlibpy checks
-  the result (closed, a volume the operation can give) and raises `ModelingError: mesh
-  difference: the kernel's mesh Boolean returned an open mesh ...` otherwise. Do the Boolean on
-  the exact parts and mesh the result.
-- Mesh Booleans also need meshes of one body made by `tessellate`. Meshes from `import_stl`,
-  `Mesh(...)` or `tessellate(ShapeList)` raise `TypeError: mesh Booleans need meshes produced
-  by tessellate()`.
 - The tolerance is not a hard limit near the poles of spheres. `Sphere(10)` with
   `tolerance=0.01` had sliver triangles 0.68 mm off the surface. Add `angle=5`: the largest
   deviation then drops to 0.006.
@@ -70,6 +78,9 @@ Other parts get the kernel's triangles unchanged.
 
 ## Example
 ```python
+corners = Box(20, 20, 20).mesh() - Sphere(12).mesh()   # a mesh Boolean
+print(corners.is_closed(), round(corners.volume, 2))    # True 1631.68 (exact: 1616.28)
+
 solid = Box(20, 20, 20) - Sphere(12)       # Boolean on exact parts first
 m = solid.mesh(tolerance=0.01)             # then mesh
 print(m, m.vertices.shape, m.triangles.shape, m.normals.shape)
@@ -79,4 +90,4 @@ print(round(m.volume, 2), round(solid.volume, 2), round(m.area, 2), round(solid.
 ```
 
 ## Related
-`export_stl`, `import_stl`, `export_glb`, `export_obj`, `render`.
+`export_stl`, `import_stl`, `export_glb`, `export_obj`, `export_usd`, `raycast`, `render`.

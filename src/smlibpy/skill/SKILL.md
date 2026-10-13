@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces, sheet metal (exact bends with radius and K-factor, flanges, flat patterns), twist/taper/bend/lattice deformations, measurements, STEP/STL/glTF export, STEP import, DXF drawings in and out. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces (also fitted to point clouds, blends between sheets), sheet metal (exact bends with radius and K-factor, flanges, flat patterns), twist/taper/bend/lattice deformations, parts of several cells (merge), measurements and ray casting, STEP/STL/glTF/USD export, STEP and USD import, DXF drawings in and out, mesh Booleans. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -67,12 +67,12 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | selection | `selection/*` | ShapeList and its selectors, topology (faces, edges, vertices), Face, Edge, Vertex |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
-| curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire |
-| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces) |
+| curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; NURBS data of an edge (nurbs), make_compatible, remove_knots |
+| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
-| surfaces | `surfaces/*` | surface, ruled, stitch, Shell |
-| analysis | `analysis/*` | mass properties, measures, distances, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
-| files | `files/*` | STEP in and out (also coordinate systems and curves), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes |
+| surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
+| analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
+| files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API

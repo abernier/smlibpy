@@ -1,7 +1,8 @@
 # Features: what they share
 
 Features make solids from profiles (`extrude`, `revolve`, `loft`, `sweep`, `thicken`) and change
-solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). Each returns a new shape.
+solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). `merge` combines parts into
+one part made of cells (`cells()`). Each returns a new shape.
 
 ## `is_valid()` is not enough
 Features check their result: revolve, sweep, loft, extrude with taper and thicken raise

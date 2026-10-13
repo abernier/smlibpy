@@ -20,6 +20,7 @@ there is no public constructor.
 | `to_shell()` | a Shell with a copy of any face |
 | `extrude(amount)` | a Part from a planar face, `amount` along the outward normal |
 | `distance_to(point)`, `bbox()` | true distance, tight bounding box |
+| `raycast(origin, direction)` | where a ray meets the face, nearest first (see `raycast`) |
 
 ## Details
 - `normal_at()` points out of the material. On a hole wall it points towards the hole's axis:
@@ -72,4 +73,4 @@ print(round((part - pocket).volume, 3))          # 21498.053: 10 * 6 * 4 removed
 
 ## Related
 `topology`, `types`, `spatial` (`facing`), `Edge`, `Vertex`, `Plane` (geometry domain),
-`Sketch.extrude` (features domain).
+`Sketch.extrude` (features domain), `raycast` (analysis domain).
