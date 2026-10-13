@@ -82,7 +82,7 @@ export {
 } from './exporters.ts'
 export { fromStep, importStep } from './step_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
-export { diffImages, render } from './render.ts'
-export { htmlPage, show } from './viewer.ts'
+export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
+export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors and warnings
 export { KernelError, ModelingError, setWarningHandler } from './kernel.ts'

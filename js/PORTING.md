@@ -87,7 +87,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   - Python's `smlibpy.export(...)` is `exportFile` (`export` cannot name a function).
 - **Names between modules.** What one module imports from another, beyond the public API:
   `exporters.ts`: `exportFile`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
-  `_flattenAll`, `_zUp`, `gltfDocumentMixed`; `dxf.ts`: `exportDxf`, `importDxf`,
+  `_flattenAll`, `_zUp`, `gltfDocumentMixed`, `_fs`, `_base64`; `dxf.ts`: `exportDxf`, `importDxf`,
   `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
