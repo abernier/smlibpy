@@ -144,7 +144,7 @@ struct Settings
     double inner = 1e-12;         // relative accuracy of the inner integrals
     double size = 1.0;            // the size of the body (bounding box diagonal)
     int first = AREA, last = NC;  // the components integrated: [first, last)
-    long max_panels = 1000000;
+    long max_panels = 500000;
     long evaluations = 0;
 };
 
@@ -307,7 +307,7 @@ bool inner_integral(const Job& job, Settings& s, double fixed, bool fixed_upper,
 
     double last_ratio = std::numeric_limits<double>::infinity();
     int stalled = 0;
-    for (int round = 0;; ++round)
+    for (;;)
     {
         Values tv, te, ta, target;
         zero(tv), zero(te), zero(ta);
