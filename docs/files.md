@@ -8,6 +8,7 @@ control. All of them accept a single shape or a list.
 | Format | Function | Contents |
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
+| USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims, names and colors; meshes too |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact and lossless |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
@@ -40,6 +41,20 @@ OpenCASCADE.
 model (in mm) is converted to it, so `bracket_inch.step` above holds a 2.362 x 1.575 x 0.315
 inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm.
 
+### USD
+
+`export_usd` writes each body as a `BrepArray` prim, the B-rep of NVIDIA's usd-brep (its
+omniSolid schema), with the exact surfaces and curves, its name and its color, under `/World`
+in a stage in millimeters with Z up. usd-brep, its usdview plugin and Omniverse read them as
+solids; for viewers that only draw meshes, `mesh=True` adds a `Mesh` prim of each body. The
+files are text (`.usda`); `usdcat` from OpenUSD converts them to `.usdc` or `.usdz`. The test
+suite checks them with NVIDIA's validator and OpenUSD.
+
+```python
+export_usd([bracket, cover], "assembly.usda")
+export_usd(bracket, "bracket_view.usda", mesh=True)   # plus a Mesh prim for plain viewers
+```
+
 ### Meshes
 
 `tolerance` is the largest distance between mesh and true surface (default: 0.1 % of the
@@ -62,8 +77,10 @@ bracket = load("bracket.step")   # exact, from any CAD system
 print(bracket.name, bracket.volume)
 ```
 
-STEP and SMLib's own `.smb` files give exact parts, a DXF file the sketch of its outlines; an
-STL file gives a `Mesh` (`import_stl`).
+STEP, USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF file the sketch of its
+outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
+a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors; a merged part
+(see [cells](features.md#cells)) comes back with its cells.
 
 ### STEP
 

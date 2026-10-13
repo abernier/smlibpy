@@ -41,11 +41,11 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.5 MB | 2.2 MB | 6.2 MB |
-| Its loader, `smlibwasm.mjs` | 22 kB | 24 kB | 86 kB |
-| The library | 0.21 MB | 0.26 MB | 0.96 MB |
+| The kernel, `smlibwasm.wasm` | 1.65 MB | 2.3 MB | 6.6 MB |
+| Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
+| The library | 0.22 MB | 0.27 MB | 1.0 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **1.8 MB** | **2.5 MB** | **7.4 MB** |
+| **Together** | **1.9 MB** | **2.7 MB** | **7.8 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -227,6 +227,13 @@ export class Hit {
     readonly triangle: number | null;
     constructor(point: Vector, distance: number, normal: Vector, face?: any, triangle?: number | null);
 }
+export class Nurbs {
+    readonly degree: number;
+    readonly knots: number[];
+    readonly points: Vector[];
+    readonly weights: number[] | null;
+    constructor(degree: number, knots: number[], points: Vector[], weights?: number[] | null);
+}
 export class BoundBox {
     min: Vector;
     max: Vector;
@@ -367,6 +374,7 @@ export class Edge extends Shape {
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
     reversed(): Edge;
+    nurbs(): Nurbs;
     removeKnots(): Edge;
     add(other: Edge | Wire): Wire;
     equals(other: unknown): boolean;

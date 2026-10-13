@@ -112,6 +112,26 @@ cut = part.section(Plane.XY)                       # the cross-section, as a ske
 print(cut.area)                                    # 40 * 30 - pi * 8^2
 ```
 
+## Cells
+
+`merge` makes one part of several, as for models of several materials whose meshes must match
+where they meet: where the parts overlap, the overlap becomes a cell of its own, and cells that
+touch share the face between them. `cells()` gives every cell as a solid:
+
+```python
+a = Box(20, 20, 20)
+b = Box(20, 20, 20).translate(10, 0, 0)
+both = a.merge(b)
+print(both.volume, len(both.cells()))              # 12000.0 3: a alone, b alone, the overlap
+
+block_with_insert = merge(Box(40, 40, 20), Cylinder(6, 30))
+print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 2262.0, 565.5, 565.5]
+```
+
+A merged part is no manifold solid (`is_valid()` is False): model the parts first and merge
+last, or work on the cells. STEP writes each cell as a solid of its own; USD keeps the merged
+body with its shared faces.
+
 ## Mirror
 
 ```python

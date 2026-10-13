@@ -8,11 +8,12 @@ Python bindings, as open source under the Apache License 2.0 in the
 ## How it fits together
 
 ```text
-smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL, viewer
+smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL/USD, viewer
   └─ smlibpy._core       one compiled extension module
        ├─ ext            smlibpy's own C++: exact geometry and topology access, transforms,
        │                 sweeps with all options, error-controlled integration of mass
-       │                 properties and curve lengths, body splitting
+       │                 properties and curve lengths, body splitting, surfaces fitted to
+       │                 point clouds, USD files (usd-brep's conversion, without OpenUSD)
        ├─ SmPyLib        NVIDIA's pybind11 bindings of SM_API (without the USD parts)
        ├─ SM_API         NVIDIA's C-style API over the kernel
        └─ SMLib          the kernel: geometry, topology, Booleans, fillets, sweeps, healing
@@ -75,6 +76,11 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Mass properties control their integration steps by the area alone: a volume can be 300 times worse than the accuracy asked for | integrates areas, volumes, centers and inertia itself, with an error estimate for each |
 | A curve's length leaves out a span that starts with a zero tangent (the outline of a cylinder had 30 mm top and bottom lines instead of 60) | integrates lengths and arc-length positions itself |
 | Tessellation cuts each face into a grid placed by the curves along its borders, so a face that is straight in one direction and twisted along it gets one facet across (a twisted bar: 1 mm off) | estimates for every face how far the grid would be off and halves all faces of such a body until they are flat; other bodies keep the kernel's triangles |
+| Mesh Booleans leave polygons with holes, which the mesh arrays read by their outer loops (an open mesh) | triangulates every polygon of the result first |
+| Fitting a surface to scattered points takes 4 s for 100 points and minutes for 300 | fits clouds itself (least squares with smoothing): 20,000 points in 50 ms |
+| A curve-face intersection fails where a ray runs parallel to a plane or along a cylinder without meeting it | `raycast` intersects such faces through their mesh and moves the points onto the exact surface |
+| Blending two surfaces changes them, so a second blend of the same surfaces fails | `surface_fillet` blends copies |
+| usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below), and trusts the arrays of a file it reads (a malformed one crashes it) | writes such cones as cylinders or turned around; checks every array and reference before converting |
 
 ## Known kernel limitations
 
