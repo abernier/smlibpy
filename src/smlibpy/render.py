@@ -275,8 +275,9 @@ def diff_images(a: Any, b: Any, tolerance: int = 0) -> ImageDiff:
     first): without it, a changed model is fitted anew and every pixel moves.
 
     Args:
-        a, b: Pictures from :func:`render`, PNG bytes, PNG file paths, or ``(h, w, 3)``
-            ``uint8`` arrays.
+        a: A picture from :func:`render`, PNG bytes, a PNG file path, or an ``(h, w, 3)``
+            ``uint8`` array.
+        b: The picture to compare with, in any of the same forms.
         tolerance: Largest difference per color channel (0 to 255) that still counts as equal.
 
     Returns:

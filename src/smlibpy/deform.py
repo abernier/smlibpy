@@ -251,9 +251,10 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
         angle: the turn in degrees between ``start`` and ``end``, counterclockwise seen from
             the tip of ``axis`` (right-hand rule, like ``rotate``). May exceed 360.
         axis: the line to twist about (default the world Z axis through the origin).
-        start, end: where the twist begins and ends, as distances along the axis from
-            ``axis.origin``. Default: the part's extent along the axis. What lies before
-            ``start`` stays; what lies beyond ``end`` is turned by the whole ``angle``.
+        start: where the twist begins, as a distance along the axis from ``axis.origin``.
+            Default: where the part begins along the axis. What lies before ``start`` stays.
+        end: where the twist ends, measured the same way. Default: where the part ends along
+            the axis. What lies beyond ``end`` is turned by the whole ``angle``.
         tolerance: largest distance of the twisted faces from the exact twist (mm).
 
     Returns a Part (a Shell for a shell). The volume does not change.
@@ -299,9 +300,10 @@ def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = Non
         scale: size of the cross-section at ``end`` relative to ``start`` (> 0): 0.5 halves
             it, 2 doubles it. Lines along the axis stay straight.
         axis: the line the cross-sections shrink toward (default the world Z axis).
-        start, end: the tapered range as distances along the axis from ``axis.origin``.
-            Default: the part's extent. What lies before ``start`` stays; what lies beyond
-            ``end`` is scaled by ``scale`` across the axis.
+        start: where the tapered range begins, as a distance along the axis from
+            ``axis.origin``. Default: where the part begins. What lies before ``start`` stays.
+        end: where the tapered range ends, measured the same way. Default: where the part
+            ends. What lies beyond ``end`` is scaled by ``scale`` across the axis.
         tolerance: only for faces whose exact image would exceed ``MAX_DEGREE`` (mm).
 
     The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid.
@@ -393,11 +395,12 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
         radius: the bend radius of the neutral layer. With ``radius`` and no ``start`` or
             ``end``, the bend (length ``radius * angle``) is centered on the plane origin;
             with one of them, it starts or ends there.
-        start, end: where the bend begins and ends, as distances along ``x_dir`` from
-            ``plane.origin``. Without ``radius`` they set it (radius = (end - start) /
-            angle); their default is the part's extent, so ``bend(part, 90)`` bends the
-            whole part into a quarter circle. What lies before ``start`` stays; what lies
-            beyond ``end`` goes on straight, turned by ``angle``.
+        start: where the bend begins, as a distance along ``x_dir`` from ``plane.origin``.
+            Default: where the part begins. What lies before ``start`` stays.
+        end: where the bend ends, measured the same way. Default: where the part ends, so
+            ``bend(part, 90)`` bends the whole part into a quarter circle. What lies beyond
+            ``end`` goes on straight, turned by ``angle``. Without ``radius``, ``start`` and
+            ``end`` set it: radius = (end - start) / angle, with the angle in radians.
         tolerance: largest distance of the bent faces from the exact bend (mm).
 
     The bend axis lies ``radius`` from the neutral layer on the side the part bends toward;
