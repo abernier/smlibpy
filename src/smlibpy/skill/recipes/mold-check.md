@@ -16,11 +16,15 @@ are undercuts (side actions, cores). The two halves meet at the parting line.
    `down = part.draft_analysis(-Z, min_angle=1)`. A face is fine when it is in `up.positive` or
    in `down.positive`.
 4. The rest: faces in `vertical` for both need draft (walls along the pull direction, ribs);
-   faces in `insufficient` need more; a face whose angles cross 0 (`up.angles(face)`: least
-   below 0, greatest above) is split by the parting line, which is fine when that is where you
-   want the line.
-5. Fix the design: taper the walls (`extrude(..., taper=deg)`, a tapered tool for pockets), and
-   check again.
+   faces in `insufficient` need more. `part.draft(faces, angle, neutral_plane)` gives it to them:
+   the neutral plane is where they keep their size (the parting line, or where a rib or a boss
+   starts), and its normal is the direction of the half that forms them. A face as the neutral
+   plane pulls along its outward normal: the inside of a cover's top pulls down. A face whose
+   angles cross 0 (`up.angles(face)`: least below 0, greatest above) is split by the parting
+   line, which is fine when that is where you want the line.
+5. Draft what step 4 found, or build the walls drafted (`extrude(..., taper=deg)`, a tapered
+   tool for pockets), and check again. Round edges after drafting: a round next to a drafted
+   face has to be drafted with it (see `features/draft`).
 
 Typical minimum draft: 0.5 to 2 degrees for injection molding, more for textured surfaces and
 for sand casting. The analysis judges faces by their own normals; it does not check whether
@@ -45,10 +49,15 @@ ribbed = cover + Box(2, 44, 10, align=(Align.CENTER, Align.CENTER, Align.MAX)).t
 up, down = ribbed.draft_analysis(Z), ribbed.draft_analysis(-Z)
 need = [f for f in ribbed.faces() if f not in up.positive and f not in down.positive]
 print(len(need), [round(up.angles(f)[0], 6) for f in need])   # 2 [0.0, 0.0]: the rib's sides need draft
+
+ceiling = ribbed.faces().filter(lambda f: f.is_planar and abs(f.center().z - 23) < 1e-9)[0]  # where the rib starts, normal down
+ribbed = ribbed.draft(need, 1.5, ceiling)       # the rib narrows downwards, for the half that moves down
+up, down = ribbed.draft_analysis(Z), ribbed.draft_analysis(-Z)
+print(len([f for f in ribbed.faces() if f not in up.positive and f not in down.positive]))   # 0
 ```
 
 The inside of the same cover tapered the wrong way (`taper=-1.5`: wider at the top) gives 3
 parting lines (z = 0, 23 and 0): the inside faces up, and the lower half could not come out.
 
-Guides: `analysis/draft_analysis`, `analysis/parting_line`, `features/extrude` (taper),
-`features/draft`.
+Guides: `analysis/draft_analysis`, `analysis/parting_line`, `features/draft`, `features/extrude`
+(taper).

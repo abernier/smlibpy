@@ -59,7 +59,8 @@ SYNONYMS = {
     "blend": ["loft", "fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
-    "cross": ["section"], "draft": ["draft", "draft_analysis"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
+    "cross": ["section"], "draft": ["draft", "tilt", "tilts"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
+    "tilt": ["draft"], "tilted": ["draft"], "tilting": ["draft"], "incline": ["draft"], "inclined": ["draft"],
     "profile": ["Profile", "Sketch", "Rectangle", "Circle"], "2d": ["Sketch", "Profile"],
     "polygon": ["Polygon", "RegularPolygon"], "hexagon": ["RegularPolygon"], "slot": ["Slot", "ArcSlot", "Stroke"],
     "gear": ["Polygon", "PolarLocations"],
@@ -105,7 +106,7 @@ SYNONYMS.update({
     "flat": ["flat_pattern", "unfold"], "development": ["flat_pattern", "developed_length"],
     "developed": ["developed_length"], "blank": ["flat_pattern", "developed_length"], "laser": ["flat_pattern"],
     "cutter": ["flat_pattern"], "nesting": ["flat_pattern"], "allowance": ["bend_allowance"],
-    "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance"],
+    "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance", "draft"],
 })
 
 _CONSTANTS = {

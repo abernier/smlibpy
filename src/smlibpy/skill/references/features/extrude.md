@@ -80,4 +80,4 @@ print(type(sheet).__name__, round(sheet.area, 3))       # Shell 157.08
 ```
 
 ## Related
-`revolve`, `loft`, `sweep`, `thicken` (surfaces to solids), `draft` (tapered walls).
+`revolve`, `loft`, `sweep`, `thicken` (surfaces to solids), `draft` (tilts faces of a finished part).

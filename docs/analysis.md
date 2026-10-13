@@ -113,7 +113,8 @@ print(Box(40, 30, 20).draft_analysis(Z).vertical.__len__())    # 4 walls that ne
 
 The groups are selections of the part's faces, and `up.angles(face)` gives the least and the
 greatest angle of a face in degrees. The bottom of the core turns away from Z: in a two-part
-mold it belongs to the other half, which `draft_analysis(-Z)` checks.
+mold it belongs to the other half, which `draft_analysis(-Z)` checks. Faces without enough draft
+get it with `part.draft(faces, angle, neutral_plane)` (see [Features](features.md#draft)).
 
 `parting_line` finds where the two halves meet: where the surface turns from facing the
 direction to facing away from it, through the middle of curved faces where needed. The lines
