@@ -2,7 +2,7 @@
 
 # smlibpy
 
-A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep) with an API inspired by [cadquery](https://github.com/cadquery/cadquery) and [build123d](https://github.com/gumyr/build123d).
+A Python library for 3D modeling on the [SMLib NURBS kernel](https://github.com/NVIDIA-Omniverse/usd-brep). The API takes most from [build123d](https://github.com/gumyr/build123d)'s algebra mode and a few ideas from [CadQuery](https://github.com/cadquery/cadquery), but not its method chains: shapes are plain values, and every operation returns a new one.
 
 It comes with an MCP server, so your agent can build parts too. And it runs in the browser:
 [smlibwasm](#in-javascript) is the same library for JavaScript and TypeScript, on the kernel compiled
