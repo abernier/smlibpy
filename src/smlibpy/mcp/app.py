@@ -20,8 +20,8 @@ import urllib.request
 from pathlib import Path
 
 PACKAGE = "@classcad/mcp"
-VERSION = "0.4.0"
-INTEGRITY = "sha512-X3yUxj9eIaUuJdVzzNTmrZcb4GSPzJlHFRZpyfOlH/3rahVn0Hb/pYYV+MrSRn7WmeoGD+RBD+9jS7rRVGoudw=="
+VERSION = "0.4.1"
+INTEGRITY = "sha512-AgdsaRWeLY+m3I7Uwls9SYl7Dg5Zwaq3i6ggBX8lvjmBQa6jQjab7zmGcLVWPkMO9XT1FYJjlTABQgD1ZR0O3g=="
 TARBALL = f"https://registry.npmjs.org/{PACKAGE}/-/mcp-{VERSION}.tgz"
 FOLDER = "package/dist/app/"  # the app inside the tarball
 DONE = ".complete"  # written last: a folder without it is not used
