@@ -31,7 +31,7 @@ export function _shellOfSurface(srf: number): Shell {
  *   (clouds): control points of the surface per direction, a number or `[along, across]` (4 to
  *   64), "along" the longer side of the cloud; default about one per 8 points, shaped like the
  *   cloud. `smoothing` (clouds): how much the surface resists bending, against how close it comes
- *   to the points: 0 to 1, default 1e-3; for noisy points raise it (0.1 to 1), or take fewer
+ *   to the points: 0 to 1, default 1e-2; for noisy points raise it (0.1 to 1), or take fewer
  *   control points.
  *
  * A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over). The
@@ -43,7 +43,7 @@ export function surface(
   points: readonly (readonly VectorLike[])[] | readonly VectorLike[],
   options: { interpolate?: boolean; controls?: number | readonly [number, number] | null; smoothing?: number } = {},
 ): Shell {
-  if (_isCloud(points)) return _fit(points as readonly VectorLike[], options.controls ?? null, options.smoothing ?? 1e-3)
+  if (_isCloud(points)) return _fit(points as readonly VectorLike[], options.controls ?? null, options.smoothing ?? 1e-2)
   if (options.controls != null) throw new RangeError('surface: controls are for clouds of points; a grid sets its own')
   const interpolate = options.interpolate ?? true
   const grid = Array.from(points as readonly (readonly VectorLike[])[], (row) => Array.from(row, (p) => _vec(p).toArray()))

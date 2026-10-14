@@ -30,7 +30,7 @@ def _shell_of_surface(srf: Any) -> Shell:
 
 
 def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.ndarray, *, interpolate: bool = True,
-            controls: int | tuple[int, int] | None = None, smoothing: float = 1e-3) -> Shell:
+            controls: int | tuple[int, int] | None = None, smoothing: float = 1e-2) -> Shell:
     """A freeform NURBS surface through a grid of points, or fitted to a cloud of points.
 
     Args:
@@ -43,7 +43,7 @@ def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.n
             across)`` (4 to 64), "along" the longer side of the cloud. Default: about one per 8
             points, shaped like the cloud. More follow finer detail, and noise.
         smoothing: Clouds: how much the surface resists bending, against how close it comes to
-            the points: 0 to 1, default 1e-3. For noisy points raise it (0.1 to 1), or take fewer
+            the points: 0 to 1, default 1e-2. For noisy points raise it (0.1 to 1), or take fewer
             control points.
 
     A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over).

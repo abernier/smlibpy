@@ -185,6 +185,29 @@ test('surface of a cloud faces up', () => {
   }
 })
 
+test('surface of a sparse noisy cloud neither folds nor overshoots', () => {
+  let state = 4
+  const rnd = (): number => ((state = (state * 16807) % 2147483647) / 2147483647)
+  const wave = (x: number, y: number): number => 7 * Math.sin(x / 11) * Math.cos(y / 13) + 0.004 * x * x
+  const noisy: number[][] = []
+  for (let i = 0; i < 260; i++) {
+    const x = rnd() * 60 - 30
+    const y = rnd() * 40 - 20
+    noisy.push([x, y, wave(x, y) + 0.6 * Math.sqrt(-2 * Math.log(rnd())) * Math.cos(2 * Math.PI * rnd())])
+  }
+  const f = _surface(noisy).faces()[0]
+  const grid: number[][] = []
+  for (let i = 0; i < 24; i++) for (let j = 0; j < 16; j++) {
+    const x = -29 + (58 * i) / 23
+    const y = -19 + (38 * j) / 15
+    grid.push([x, y, wave(x, y)])
+  }
+  assert.ok(Math.min(...grid.map((p) => f.normalAt(p).z)) > 0.5) // no fold: the normal stays up everywhere
+  const zs = grid.map((p) => p[2])
+  assert.ok(f.bbox().max.z < Math.max(...zs) + 1 && f.bbox().min.z > Math.min(...zs) - 1)
+  assert.ok(grid.reduce((a, p) => a + f.distanceTo(p), 0) / grid.length < 0.35)
+})
+
 test('surface cloud checks', () => {
   const points = cloud(100)
   assert.throws(() => _surface([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]]), /line/)

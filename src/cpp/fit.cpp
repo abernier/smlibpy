@@ -19,8 +19,12 @@
 //     normal matrix of the distances, so that `smoothing` does not depend on the number of points
 //     or the size of the cloud. The normal equations are banded (control points are coupled at
 //     most three rows apart): a banded Cholesky solves them.
-//  3. Parameter correction: each (u_i, v_i) moves to the foot of its point on the surface (two
-//     Gauss-Newton steps), then 2. again. Three rounds.
+//  3. The errors: how far each point is from the surface, measured to its foot on it.
+//
+// The parameters stay where the projection put them. Moving them to the feet of the points and
+// fitting again (parameter correction) lets noisy points pull the surface sideways until it folds
+// over (a sparse cloud with 0.6 mm of noise: normals turned down, a corner 22 mm too high); for
+// a height field the projected parameters are the right ones, and the fit is as close without it.
 //
 // The normal of the surface points up (+Z); for a cloud that stands upright, to +Y, else to +X.
 //
@@ -406,58 +410,53 @@ SurfaceFit fit_surface(const std::vector<double>& points, int nu, int nv, double
 
     SurfaceFit out;
     out.nu = nu, out.nv = nv;
-    for (int round = 0; round < 4; ++round)
+    // 2. The control points.
+    Band a(n, w);
+    std::vector<double> rhs[3] = {std::vector<double>(n, 0.0), std::vector<double>(n, 0.0),
+                                  std::vector<double>(n, 0.0)};
+    for (size_t p = 0; p < count; ++p)
     {
-        // 2. The control points for the current parameters.
-        Band a(n, w);
-        std::vector<double> rhs[3] = {std::vector<double>(n, 0.0), std::vector<double>(n, 0.0),
-                                      std::vector<double>(n, 0.0)};
-        for (size_t p = 0; p < count; ++p)
-        {
-            const int iu = span(g.ku, nu, u[p]), iv = span(g.kv, nv, v[p]);
-            double Nu[4], Du[4], Nv[4], Dv[4];
-            basis(g.ku, iu, u[p], Nu, Du);
-            basis(g.kv, iv, v[p], Nv, Dv);
-            int idx[16];
-            double wt[16];
-            for (int x = 0; x < 4; ++x)
-                for (int y = 0; y < 4; ++y)
-                {
-                    idx[4 * x + y] = (iu - 3 + x) * nv + (iv - 3 + y);
-                    wt[4 * x + y] = Nu[x] * Nv[y];
-                }
-            for (int s = 0; s < 16; ++s)
+        const int iu = span(g.ku, nu, u[p]), iv = span(g.kv, nv, v[p]);
+        double Nu[4], Du[4], Nv[4], Dv[4];
+        basis(g.ku, iu, u[p], Nu, Du);
+        basis(g.kv, iv, v[p], Nv, Dv);
+        int idx[16];
+        double wt[16];
+        for (int x = 0; x < 4; ++x)
+            for (int y = 0; y < 4; ++y)
             {
-                for (int t = 0; t <= s; ++t)
-                    a.add(idx[s], idx[t], wt[s] * wt[t]);
-                for (int k = 0; k < 3; ++k)
-                    rhs[k][idx[s]] += wt[s] * points[3 * p + k];
+                idx[4 * x + y] = (iu - 3 + x) * nv + (iv - 3 + y);
+                wt[4 * x + y] = Nu[x] * Nv[y];
             }
-        }
-        const double lambda = std::max(smoothing, 1e-9) * a.trace() / energy.trace();
-        for (size_t e = 0; e < a.band.size(); ++e)
-            a.band[e] += lambda * energy.band[e];
-        a.factor();
-        g.poles.assign(3 * static_cast<size_t>(n), 0.0);
-        for (int k = 0; k < 3; ++k)
+        for (int s = 0; s < 16; ++s)
         {
-            a.solve(rhs[k]);
-            for (int i = 0; i < n; ++i)
-                g.poles[3 * static_cast<size_t>(i) + k] = rhs[k][i];
+            for (int t = 0; t <= s; ++t)
+                a.add(idx[s], idx[t], wt[s] * wt[t]);
+            for (int k = 0; k < 3; ++k)
+                rhs[k][idx[s]] += wt[s] * points[3 * p + k];
         }
-        // 3. The feet of the points, and how far the points are from the surface.
-        double worst = 0.0, sum = 0.0;
-        for (size_t p = 0; p < count; ++p)
-        {
-            const double d = foot(g, &points[3 * p], u[p], v[p], round < 3 ? 2 : 4);
-            worst = std::max(worst, d);
-            sum += d * d;
-        }
-        out.max_error = worst;
-        out.rms_error = std::sqrt(sum / static_cast<double>(count));
-        if (round == 3)
-            break;
     }
+    const double lambda = std::max(smoothing, 1e-9) * a.trace() / energy.trace();
+    for (size_t e = 0; e < a.band.size(); ++e)
+        a.band[e] += lambda * energy.band[e];
+    a.factor();
+    g.poles.assign(3 * static_cast<size_t>(n), 0.0);
+    for (int k = 0; k < 3; ++k)
+    {
+        a.solve(rhs[k]);
+        for (int i = 0; i < n; ++i)
+            g.poles[3 * static_cast<size_t>(i) + k] = rhs[k][i];
+    }
+    // 3. How far the points are from the surface: from their feet on it.
+    double worst = 0.0, sum = 0.0;
+    for (size_t p = 0; p < count; ++p)
+    {
+        const double d = foot(g, &points[3 * p], u[p], v[p], 4);
+        worst = std::max(worst, d);
+        sum += d * d;
+    }
+    out.max_error = worst;
+    out.rms_error = std::sqrt(sum / static_cast<double>(count));
 
     SmTArray<SmPoint3d> poles;
     for (int i = 0; i < n; ++i)
@@ -591,7 +590,7 @@ void bind_fit(py::module_ m)
         const smlibpy::SurfaceFit r = smlibpy::fit_surface(points, nu, nv, smoothing);
         return py::make_tuple(py::cast(r.surface, py::return_value_policy::reference), r.max_error, r.rms_error, r.nu,
                               r.nv);
-    }, py::arg("points"), py::arg("nu") = 0, py::arg("nv") = 0, py::arg("smoothing") = 1e-3,
+    }, py::arg("points"), py::arg("nu") = 0, py::arg("nv") = 0, py::arg("smoothing") = 1e-2,
        "A bicubic B-spline surface approximating scattered points (x, y, z flat), with nu x nv control points (0 and "
        "0: about one per 8 points): (surface, max_error, rms_error, nu, nv). The surface is the caller's "
        "(ext.delete_surface).");

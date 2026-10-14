@@ -4,7 +4,7 @@ A freeform NURBS face through (or controlled by) a grid of points, or fitted to 
 points such as a scan. Returns a `Shell` with one face.
 
 ## Signature
-`surface(points, *, interpolate=True, controls=None, smoothing=1e-3)`
+`surface(points, *, interpolate=True, controls=None, smoothing=1e-2)`
 
 - `points`: a grid: rows of 3D points, `points[i][j]`, all rows the same length (lists of
   tuples, `Vector`s or a numpy array of shape (rows, cols, 3); 2D points `(x, y)` get z = 0).
@@ -54,7 +54,7 @@ A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximate
 - `controls`: control points per direction, a number or `(along, across)`, 4 to 64; "along" is
   the longer side of the cloud. Default: about one per 8 points (16 to 1024 in all), shaped like
   the cloud. More follow finer detail, and noise.
-- `smoothing`: 0 to 1, default 1e-3: how much the surface resists bending, against how close it
+- `smoothing`: 0 to 1, default 1e-2: how much the surface resists bending, against how close it
   comes to the points.
 - The surface spans the smallest rectangle around the points in their best-fit plane. Where
   there are no points (holes in a scan, the corners of a round cloud), the smoothing shapes it.
@@ -63,14 +63,19 @@ A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximate
 - The cloud must be a **height field over its best-fit plane**: no overhangs, nothing folded
   over. A hemisphere seen from the side or a tube gives a surface that misses the points by
   millimetres, without an error: check `max(s.distance_to(p) for p in points)`.
-- Fast: 2000 points 5 ms, 20000 points 50 ms. Smooth shapes come close: a bump of 2000 points
-  within 0.001 mm, 20000 points within 3e-5 mm.
+- Each point is matched to the surface where its projection onto the plane lies (the surface is
+  a height field over the plane), so noise does not pull the surface sideways.
+- Fast: 2000 points 3 ms, 20000 points 30 ms. Smooth shapes come close: a bump of 2000 points
+  within 0.001 mm, 20000 points within 4e-5 mm.
 - Noisy points (a scan): the surface should stay about as far from the points as the noise
   (on average). Coming much closer means it follows the noise: take fewer control points
   (`controls=12`) or more smoothing (0.1 to 1). With noise of 0.1 mm on 3000 points, the
-  default came to 0.027 mm of the true shape on average, `controls=12` to 0.014 and
+  default came to 0.025 mm of the true shape on average, `controls=12` to 0.016 and
   `smoothing=1` to 0.015. Too few control points (8) with `smoothing=1` flattens the shape
-  (0.07 mm, 0.6 mm at most).
+  (0.07 mm, 0.56 mm at most).
+- Few points with noise (a few hundred): keep the control points few. Many control points with
+  little smoothing overshoot where the points end: 260 points with 0.6 mm of noise and
+  `controls=8, smoothing=1e-3` put a corner 11 mm above the shape; the defaults stay on it.
 
 ## Gotchas
 - At least **4 x 4 points** (bicubic), in both modes. For a four-sided bilinear patch use

@@ -50,7 +50,7 @@ import numpy as np
 rng = np.random.default_rng(1)
 xy = rng.uniform(-30, 30, (2000, 2))
 cloud = np.column_stack([xy, 6 * np.exp(-(xy ** 2).sum(axis=1) / 300)])
-scan = surface(cloud)                                  # 5 ms
+scan = surface(cloud)                                  # 3 ms
 print(max(scan.distance_to(p) for p in cloud) < 0.001)  # True: within 0.001 mm of every point
 noisy = cloud + rng.normal(0, 0.1, cloud.shape) * [0, 0, 1]
 fair = surface(noisy, controls=12)                     # follows the shape, not the noise

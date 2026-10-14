@@ -119,6 +119,23 @@ def test_surface_of_a_cloud_faces_up():
         assert f.normal_at(top).dot(up.direction) > 0.99
 
 
+def test_surface_of_a_sparse_noisy_cloud_neither_folds_nor_overshoots():
+    # (fitting the parameters to the points again let the noise fold the surface over, and too
+    # little smoothing let the corners, where there are few points, fly off)
+    rng = np.random.default_rng(4)
+    xy = rng.uniform((-30, -20), (30, 20), (260, 2))
+
+    def wave(x, y):
+        return 7 * math.sin(x / 11) * math.cos(y / 13) + 0.004 * x * x
+
+    noisy = np.column_stack([xy, [wave(x, y) + rng.normal(0, 0.6) for x, y in xy]])
+    f = surface(noisy).faces()[0]
+    grid = [(x, y, wave(x, y)) for x in np.linspace(-29, 29, 24) for y in np.linspace(-19, 19, 16)]
+    assert min(f.normal_at(p).z for p in grid) > 0.5  # no fold: the normal stays up everywhere
+    assert f.bbox().max.z < max(p[2] for p in grid) + 1.0 and f.bbox().min.z > min(p[2] for p in grid) - 1.0
+    assert np.mean([f.distance_to(p) for p in grid]) < 0.35
+
+
 def test_surface_cloud_checks():
     cloud, _ = _cloud(100)
     with pytest.raises(ValueError, match="line"):
