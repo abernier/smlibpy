@@ -317,6 +317,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     concave(): ShapeList<T>;
     smooth(): ShapeList<T>;
     fillets(maxRadius?: number | null): ShapeList<T>;
+    hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
     atPoint(point: VectorLike, tol?: number): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;

@@ -33,6 +33,7 @@ import { model as flange } from '../examples/flange.ts'
 import { model as spring } from '../examples/spring.ts'
 import { approx, leggauss } from './_approx.ts'
 import { Axis as _Axis, Box as _Box, Cylinder as _Cylinder, Sphere as _Sphere, Vector as _Vector } from '../src/index.ts'
+import { _list } from '../src/shapes.ts'
 
 const PI = Math.PI
 type M3 = number[][]
@@ -386,6 +387,28 @@ test('raycast where the kernel finds no crossing', () => {
   const want = [5 * s3, (10 - 3 / Math.sqrt(2)) * s3, (10 + 3 / Math.sqrt(2)) * s3, 15 * s3]
   assert.equal(hits.length, 4)
   hits.forEach((h, i) => approx(h.distance, want[i], 0, 1e-6))
+})
+
+test('hitBy selects what a ray meets', () => {
+  const part = _Box(40, 30, 20).cut(_Cylinder(5, 30))
+  const met = part.faces().hitBy([-50, 0, 0], [1, 0, 0])
+  assert.deepEqual(met.map((f) => f.geomType), ['plane', 'cylinder', 'plane']) // the hole's wall once
+  met.forEach((f, i) => approx(f.center().x, [-20, 0, 20][i], 0, 1e-9))
+  // it chains: only the faces in the list count, the others are looked past
+  assert.deepEqual(part.faces().planar().hitBy([-50, 0, 0], [1, 0, 0]).map((f) => f.geomType), ['plane', 'plane'])
+  assert.ok(part.faces().hitBy(new _Axis([10, 8, 50], [0, 0, -1])).first.center().equals([0, 0, 10]))
+  assert.equal(part.faces().hitBy([0, 0, 50], [0, 0, -1]).length, 0) // down the hole
+  // through an edge: the faces on both sides
+  const box = _Box(10, 10, 10)
+  const corners = box.faces().hitBy([-20, -20, 0], [1, 1, 0]).map((f) => f.center().toArray().map((c) => Math.round(c)).join(','))
+  assert.deepEqual(corners.slice(0, 2).sort(), ['-5,0,0', '0,-5,0'])
+  assert.deepEqual(corners.slice(2).sort(), ['0,5,0', '5,0,0'])
+  // bodies: which part of an assembly a ray meets first
+  const parts = _list([0, 20, 40].map((x) => _Box(5, 5, 5).translate(x, 0, 0).named(`b${x}`)))
+  assert.deepEqual(parts.hitBy([100, 0, 0], [-1, 0, 0]).map((p) => p.name), ['b40', 'b20', 'b0'])
+  assert.equal(parts.hitBy([100, 50, 0], [-1, 0, 0]).length, 0)
+  assert.throws(() => box.edges().hitBy([0, 0, 50], [0, 0, -1]), /faces and bodies/)
+  assert.throws(() => box.faces().hitBy([0, 0, 0]), /axis/)
 })
 
 test('raycast on faces and meshes', () => {

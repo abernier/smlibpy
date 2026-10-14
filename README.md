@@ -81,6 +81,7 @@ undercut. `parting_line` finds the parting line.
   by geometry (`lines()`, `circles()`, `planar()`, `cylinders()`, `parallel_to()`, `facing()`,
   `convex()`, `concave()`, `fillets()`, …)
 - `filter_by`, `sort_by`, `group_by`, set operators between lists, and `neighbors()` of a face
+- `hit_by()`: the faces a ray meets, nearest first
 
 **[Measuring and checks](https://smlibpy.classcad.ch/docs/analysis)**
 - `volume`, `area`, `center` and `mass_properties` (inertia, principal axes), computed from the

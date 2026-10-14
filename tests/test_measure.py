@@ -304,6 +304,32 @@ def test_raycast_where_the_kernel_finds_no_crossing():
                                                         (10 + 3 / math.sqrt(2)) * s, 15 * s], abs=1e-6)
 
 
+def test_hit_by_selects_what_a_ray_meets():
+    part = Box(40, 30, 20) - Cylinder(5, 30)
+    met = part.faces().hit_by((-50, 0, 0), (1, 0, 0))
+    assert [f.geom_type for f in met] == ["plane", "cylinder", "plane"]  # the hole's wall once
+    assert [f.center().x for f in met] == [pytest.approx(-20), pytest.approx(0, abs=1e-9), pytest.approx(20)]
+    # it chains: only the faces in the list count, the others are looked past
+    assert [f.geom_type for f in part.faces().planar().hit_by((-50, 0, 0), (1, 0, 0))] == ["plane", "plane"]
+    assert part.faces().hit_by(Axis((10, 8, 50), (0, 0, -1))).first.center() == Vector(0, 0, 10)
+    assert part.faces().hit_by((0, 0, 50), (0, 0, -1)) == []  # down the hole
+    # through an edge: the faces on both sides
+    box = Box(10, 10, 10)
+    corners = box.faces().hit_by((-20, -20, 0), (1, 1, 0))
+    def at(faces):
+        return sorted(tuple(round(c, 9) + 0.0 for c in f.center().to_tuple()) for f in faces)
+
+    assert at(corners[:2]) == [(-5, 0, 0), (0, -5, 0)] and at(corners[2:]) == [(0, 5, 0), (5, 0, 0)]
+    # bodies: which part of an assembly a ray meets first
+    parts = ShapeList([Box(5, 5, 5).translate(x, 0, 0).named(f"b{x}") for x in (0, 20, 40)])
+    assert [p.name for p in parts.hit_by((100, 0, 0), (-1, 0, 0))] == ["b40", "b20", "b0"]
+    assert parts.hit_by((100, 50, 0), (-1, 0, 0)) == []
+    with pytest.raises(TypeError, match="faces and bodies"):
+        box.edges().hit_by((0, 0, 50), (0, 0, -1))
+    with pytest.raises(TypeError, match="axis"):
+        box.faces().hit_by((0, 0, 0))
+
+
 def test_raycast_on_faces_and_meshes():
     ball = Sphere(5)
     hits = ball.faces()[0].raycast((3, 0, 20), (0, 0, -1))

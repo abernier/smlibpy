@@ -100,6 +100,9 @@ print(top.point)                                   # Vector(10, 8, 10)
 print(len(part.raycast((10, 8, 0), Z)) % 2 == 1)   # True: the point is inside the material
 ```
 
+To select faces with a ray instead, and chain on, use `part.faces().hit_by(origin, direction)`
+(see [Selecting](selecting.md#by-position)).
+
 ## Intersections and projections
 
 ```python

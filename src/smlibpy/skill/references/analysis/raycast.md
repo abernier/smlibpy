@@ -29,6 +29,8 @@ A list of `Hit`, nearest first, `[]` when the ray misses. A `Hit` is a named tup
 - From inside a closed part the number of hits is odd, from outside it is even (0 when it misses).
 
 ## Gotchas
+- To select faces with a ray (and chain on), use `part.faces().hit_by(origin, direction)`: the
+  faces the ray meets, nearest first, as a ShapeList.
 - Meshes: the points lie on the triangles, so they are off the exact surface by up to the mesh
   tolerance (a `Sphere(10).mesh(0.01)`: 0.003).
 - Wall thickness along a normal: start a little outside, `part.raycast(p + n, -n)`, and take the
@@ -68,4 +70,4 @@ print(round(hit.point.z, 3), hit.triangle is not None)   # 9.536 True (exact: 9.
 ```
 
 ## Related
-`distance_to`, `closest_point`, `intersection_curves`, `Mesh`, `generic`
+`hit_by` (select faces with a ray), `distance_to`, `closest_point`, `intersection_curves`, `Mesh`, `generic`

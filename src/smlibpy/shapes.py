@@ -441,6 +441,39 @@ class ShapeList(list[T]):
 
         return fillet_faces(self, max_radius)  # type: ignore[return-value]
 
+    def hit_by(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> ShapeList[T]:
+        """The faces (or bodies) of the list that a ray meets, nearest first: each once, in the
+        order the ray meets them (see :meth:`Part.raycast`). Only the shapes in the list count, so
+        ``part.faces().planar().hit_by(...)`` looks past the faces that are not planar.
+
+        The ray starts at ``origin`` and runs along ``direction`` (an axis or a vector); an axis
+        alone is a ray from its origin along its direction. A ray through an edge meets the faces
+        on both sides of it.
+        """
+        for s in self:
+            if not isinstance(s, (Face, _Body)):
+                raise TypeError(f"hit_by takes faces and bodies, not a {type(s).__name__}")
+        first: dict[int, float] = {}
+        faces = [s for s in self if isinstance(s, Face)]
+        if faces:
+            box = faces[0].bbox()
+            for f in faces[1:]:
+                box = box.union(f.bbox())
+            for h in _raycast(faces, origin, direction, box, one_per_point=False):
+                first.setdefault(id(h.face), h.distance)  # (nearest first)
+        for s in self:
+            if isinstance(s, _Body) and id(s) not in first:
+                hits = s.raycast(origin, direction)
+                if hits:
+                    first[id(s)] = hits[0].distance
+        seen: set[int] = set()
+        met = []
+        for i, s in enumerate(self):
+            if id(s) in first and id(s) not in seen:
+                seen.add(id(s))
+                met.append((first[id(s)], i, s))
+        return ShapeList(s for _, _, s in sorted(met, key=lambda m: (m[0], m[1])))
+
     def within(self, box: BoundBox) -> ShapeList[T]:
         """Shapes whose bounding box lies inside ``box``."""
         return ShapeList(s for s in self if box.contains(s.bbox().min) and box.contains(s.bbox().max))
@@ -1747,7 +1780,7 @@ def _bodies(items: Any, name: str = "combine") -> list[_Body]:
 
 
 def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: VectorLike | Axis | None,
-             box: BoundBox) -> list[Hit]:
+             box: BoundBox, one_per_point: bool = True) -> list[Hit]:
     if isinstance(origin, Axis) and direction is None:
         o, d = origin.origin, origin.direction.normalized()
     elif direction is None:
@@ -1791,6 +1824,8 @@ def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: Vector
         finally:
             ext.delete_curve(ray)
     hits.sort(key=lambda h: h.distance)
+    if not one_per_point:
+        return hits
     out: list[Hit] = []
     for h in hits:  # through an edge or a vertex: one hit
         if not out or h.distance - out[-1].distance > 10 * tol or (h.point - out[-1].point).length > 10 * tol:

@@ -566,6 +566,43 @@ export class ShapeList<T = Shape> extends Array<T> {
     return filletFaces(this as unknown as Iterable<Face>, maxRadius) as unknown as ShapeList<T>
   }
 
+  /**
+   * The faces (or bodies) of the list that a ray meets, nearest first: each once, in the order the
+   * ray meets them (see `Part.raycast`). Only the shapes in the list count, so
+   * `part.faces().planar().hitBy(...)` looks past the faces that are not planar.
+   *
+   * The ray starts at `origin` and runs along `direction` (an axis or a vector); an axis alone is a
+   * ray from its origin along its direction. A ray through an edge meets the faces on both sides of it.
+   */
+  hitBy(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): ShapeList<T> {
+    for (const s of this) {
+      if (!(s instanceof Face || s instanceof _Body)) throw new TypeError(`hitBy takes faces and bodies, not a ${_typeName(s)}`)
+    }
+    const first = new Map<unknown, number>()
+    const faces = [...this].filter((s): s is T & Face => s instanceof Face)
+    if (faces.length) {
+      let box = faces[0].bbox()
+      for (const f of faces.slice(1)) box = box.union(f.bbox())
+      for (const h of _raycast(faces, origin, direction, box, false)) if (!first.has(h.face)) first.set(h.face, h.distance) // (nearest first)
+    }
+    for (const s of this) {
+      if (s instanceof _Body && !first.has(s)) {
+        const hits = s.raycast(origin, direction)
+        if (hits.length) first.set(s, hits[0].distance)
+      }
+    }
+    const met: [number, number, T][] = []
+    const seen = new Set<unknown>()
+    this.forEach((s, i) => {
+      if (first.has(s) && !seen.has(s)) {
+        seen.add(s)
+        met.push([first.get(s)!, i, s])
+      }
+    })
+    met.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    return _list(met.map((m) => m[2]))
+  }
+
   /** Shapes whose bounding box lies inside `box`. */
   within(box: BoundBox): ShapeList<T> {
     return this.filter((s) => {
@@ -1996,7 +2033,7 @@ export function _bodies(items: unknown, name = 'combine'): _Body[] {
  * `inertia` is the inertia tensor about the center of mass (axes parallel to the world axes),
  * row by row; `principalMoments` and `principalAxes` are its eigen-decomposition.
  */
-function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: VectorLike | Axis | null, box: BoundBox): Hit[] {
+function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: VectorLike | Axis | null, box: BoundBox, onePerPoint = true): Hit[] {
   let o: Vector
   let d: Vector
   if (origin instanceof Axis && direction == null) {
@@ -2050,6 +2087,7 @@ function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: V
     }
   })
   hits.sort((a, b) => a.distance - b.distance)
+  if (!onePerPoint) return hits
   const out: Hit[] = []
   for (const h of hits) { // through an edge or a vertex: one hit
     const last = out[out.length - 1]
