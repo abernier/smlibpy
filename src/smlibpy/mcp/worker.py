@@ -181,12 +181,13 @@ class _Worker:
             try:
                 shape = self.index_shapes[it["containerId"]]
                 elem = getattr(shape, many)()[i]
+                size = _size(shape)
                 if kind == "face":
-                    row.update({k: v for k, v in _face_row(i, elem).items() if k != "i"})
+                    row.update({k: v for k, v in _face_row(i, elem, size).items() if k != "i"})
                 elif kind == "edge":
-                    row.update({k: v for k, v in _edge_row(i, elem).items() if k != "i"})
+                    row.update({k: v for k, v in _edge_row(i, elem, size).items() if k != "i"})
                 else:
-                    row["position"] = [_r(c) for c in elem.center().to_tuple()]
+                    row["position"] = [_r(c, size) for c in elem.center().to_tuple()]
             except Exception:
                 pass
             rows.append(row)
@@ -276,10 +277,11 @@ class _Worker:
         else:
             obj = self.ns[name]
         info = {"name": name, **self._summary(obj, full=True)}
+        size = _size(obj) if faces or edges else 1.0
         if faces and hasattr(obj, "faces"):
-            info["faces"] = [_face_row(i, f) for i, f in enumerate(obj.faces())]
+            info["faces"] = [_face_row(i, f, size) for i, f in enumerate(obj.faces())]
         if edges and hasattr(obj, "edges"):
-            info["edges"] = [_edge_row(i, e) for i, e in enumerate(obj.edges())]
+            info["edges"] = [_edge_row(i, e, size) for i, e in enumerate(obj.edges())]
         return {"ok": True, "info": info}
 
     def _summary(self, obj: Any, full: bool = False) -> dict[str, Any]:
@@ -305,8 +307,9 @@ class _Worker:
                 return d
             if getattr(obj, "name", None):
                 d["label"] = obj.name
-            bb = obj.bbox()
-            d["bbox"] = {"min": [_r(c) for c in bb.min.to_tuple()], "max": [_r(c) for c in bb.max.to_tuple()]}
+            bb, size = obj.bbox(), _size(obj)
+            d["bbox"] = {"min": [_r(c, size) for c in bb.min.to_tuple()],
+                         "max": [_r(c, size) for c in bb.max.to_tuple()]}
             if isinstance(obj, Part):
                 d["valid"] = bool(obj.is_valid())
                 d["volume"] = _r(obj.volume)
@@ -324,7 +327,7 @@ class _Worker:
                 for f in obj.faces():
                     kinds[f.geom_type] = kinds.get(f.geom_type, 0) + 1
                 d["face_types"] = kinds
-                d["center"] = [_r(c) for c in obj.center().to_tuple()]
+                d["center"] = [_r(c, size) for c in obj.center().to_tuple()]
                 if getattr(obj, "color", None) is not None:
                     d["color"] = str(obj.color)
         except Exception as e:  # a broken body still gets a line
@@ -407,13 +410,27 @@ def _drawn(items: list[tuple[str, Any]], curves: bool = True) -> list[tuple[str,
 _LIBRARY_NAMES = {"X", "Y", "Z"}
 
 
-def _r(v: float) -> float:
-    return float(f"{float(v):.6g}")
+def _r(v: float, size: float = 1.0) -> float:
+    """A measurement to six significant digits. Under a billionth of ``size`` it is float noise
+    (a face on y = 0 has its center at y = 4e-16) and reads 0.0, never -0.0: ``size`` is the
+    model's for a coordinate (:func:`_size`) and 1 otherwise (normals are unit vectors)."""
+    v = float(v)
+    return 0.0 if abs(v) < 1e-9 * size else float(f"{v:.6g}")
 
 
-def _face_row(i: int, f: Any) -> dict[str, Any]:
+def _size(shape: Any) -> float:
+    """The size the coordinates of ``shape`` are measured against in :func:`_r`: the diagonal
+    of its box, at least 1."""
+    try:
+        box = shape._loose_box() if hasattr(shape, "_loose_box") else shape.bbox()
+        return max(1.0, box.diagonal)
+    except Exception:
+        return 1.0
+
+
+def _face_row(i: int, f: Any, size: float) -> dict[str, Any]:
     row: dict[str, Any] = {"i": i, "type": f.geom_type, "area": _r(f.area),
-                           "center": [_r(c) for c in f.center().to_tuple()]}
+                           "center": [_r(c, size) for c in f.center().to_tuple()]}
     try:
         if f.geom_type == "plane":
             row["normal"] = [_r(c) for c in f.normal_at().to_tuple()]
@@ -426,9 +443,9 @@ def _face_row(i: int, f: Any) -> dict[str, Any]:
     return row
 
 
-def _edge_row(i: int, e: Any) -> dict[str, Any]:
+def _edge_row(i: int, e: Any, size: float) -> dict[str, Any]:
     row: dict[str, Any] = {"i": i, "type": e.geom_type, "length": _r(e.length),
-                           "center": [_r(c) for c in e.center().to_tuple()]}
+                           "center": [_r(c, size) for c in e.center().to_tuple()]}
     try:
         if e.geom_type == "circle":
             row["radius"] = _r(e.radius)

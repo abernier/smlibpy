@@ -195,6 +195,20 @@ def test_buerli_scene_has_ids_loops_and_surfaces(session):
     assert len(t["missing"]) == 1
 
 
+def test_picks_and_inspect_read_zeros_not_float_noise(session):
+    session.clear()
+    assert session.run("block = Box(40, 30, 10) - Box(20, 10, 4).translate(0, 0, 3) - Cylinder(3, 20)")["ok"]
+    assert session.call("buerli_scene")["ok"]
+    t = session.call("targets", expressions=["block.faces().facing(Z).bottom()", "block.faces().cylinders()"])
+    floor, bore = session.call("picks", items=[{"kind": "face", **target} for target in t["targets"]])["picks"]
+    # as get_selection prints them: the pocket's floor and the bore sit on the z axis (the kernel says
+    # 1e-16 there) and the floor faces up (the kernel says -0.0, -0.0, 1.0)
+    assert str(floor["center"]) == "[0.0, 0.0, 1.0]" and str(floor["normal"]) == "[0.0, 0.0, 1.0]"
+    assert str(bore["center"]) == "[0.0, 0.0, -2.0]"
+    [row] = session.call("inspect", name="block.faces().facing(Z).bottom()", faces=True)["info"]["faces"]
+    assert str(row["center"]) == "[0.0, 0.0, 1.0]" and str(row["normal"]) == "[0.0, 0.0, 1.0]"
+
+
 def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypatch):
     import json
     import urllib.error
