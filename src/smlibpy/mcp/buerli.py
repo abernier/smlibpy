@@ -36,7 +36,7 @@ PRESENCE_MAX_BYTES = 8 * 1024
 RESERVED_CHANNELS = {"config", "leave"}
 # what the app may save in, offered in this order (an app that knows only ClassCAD's formats offers
 # STP and STL of them), as smlibpy's save calls them
-SAVE_FORMATS = {"STP": "step", "STL": "stl", "GLB": "glb", "OBJ": "obj", "SMB": "smb"}
+SAVE_FORMATS = {"STP": "step", "STL": "stl", "GLB": "glb", "OBJ": "obj", "USDA": "usd", "SMB": "smb"}
 # what a ClassCAD server starts every connection with (buerli's session/host.ts)
 DEFAULT_EMISSION: dict[str, bool | int] = {
     "sendStructure": True, "sendStructure_Patch": False, "sendStructure_Compressed": False,

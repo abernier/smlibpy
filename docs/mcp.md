@@ -88,13 +88,15 @@ is lost. Checkpoints work the same way.
 The live view is Buerligons, the ClassCAD app, served by the MCP server on `127.0.0.1` and
 following every script. In the Claude desktop app the agent opens it in its own browser pane;
 elsewhere it opens in your default browser. There you turn the model, select and measure
-faces and edges, and save it as STEP or STL. Modeling stays with the agent's scripts: the app
-opens in view mode.
+faces and edges, and save it as STEP, STL, glTF, OBJ, USD or SMLib's own format. Modeling stays
+with the agent's scripts: the app opens in view mode.
 
 What you select reaches the agent: ask "fillet the edges I selected" and `get_selection` gives
 it each face, edge or vertex with its measurements and the expression that reaches it in a
 script, such as `plate.faces()[6]`. The other way round, `set_selection` highlights what the
-agent means ("is it this face?").
+agent means ("is it this face?"). A selection lasts until the model changes: a face or an edge
+is named by its place in the drawing, which the new model gives to whatever is there now, so
+the app's selection is cleared with each change.
 
 The app comes from the npm package `@classcad/mcp`, at a version and hash pinned in smlibpy.
 It is downloaded the first time a session needs it and kept in your cache folder; without a

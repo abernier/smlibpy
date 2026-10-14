@@ -233,7 +233,7 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
             assert joined == {"command": "SessionJoined", "role": "view", "inviteName": "smlibpy"}
             offered = json.loads(ws.recv(timeout=10))
             assert offered["channel"] == "config"
-            assert offered["data"] == {"saveFormats": ["STP", "STL", "GLB", "OBJ", "SMB"]}
+            assert offered["data"] == {"saveFormats": ["STP", "STL", "GLB", "OBJ", "USDA", "SMB"]}
             config = ask({"command": "SetEmissionConfig", "config": {"sendStructure_Patch": True, "bogus": 1}})
             assert config["result"]["sendStructure"] is True and config["result"]["sendStructure_Patch"] is True
             assert "bogus" not in config["result"]
@@ -250,6 +250,8 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
             assert base64.b64decode(saved["result"]["content"]).startswith(b"ISO-10303-21;")
             saved = ask({"command": "Execute", "task": [{"v1.common.save": [{"format": "GLB", "encoding": "base64"}]}]})
             assert base64.b64decode(saved["result"]["content"])[:4] == b"glTF"
+            saved = ask({"command": "Execute", "task": [{"v1.common.save": [{"format": "USDA", "encoding": "base64"}]}]})
+            assert base64.b64decode(saved["result"]["content"]).startswith(b"#usda 1.0")
 
             # what the user selects is kept until the model changes; the change reaches the app without
             # being asked for, after a request that clears the app's selection (its ids would now name
