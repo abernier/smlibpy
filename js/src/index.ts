@@ -8,7 +8,7 @@
 //     plate = plate.cut(GridLocations(60, 40, 2, 2).mul(Cylinder(4, 10)))
 //     const step = toStep(plate)
 
-export const version = '0.2.3'
+export const version = '0.3.0'
 
 // geometry
 export { TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'

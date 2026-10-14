@@ -274,7 +274,7 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
 
 ## Status
 
-smlibpy is new (version 0.2). It covers solid and surface modeling, text, and reads and writes
+smlibpy is new (version 0.3). It covers solid and surface modeling, text, and reads and writes
 STEP, USD and DXF with the exact geometry; smlibwasm has all of it in JavaScript. Assemblies with product structure and dimensioned 2D
 drawings are not there yet.
 
