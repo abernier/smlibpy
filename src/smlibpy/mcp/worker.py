@@ -122,116 +122,105 @@ class _Worker:
         return {"ok": True, "scene": [{"name": n, **self._summary(s)} for n, s in self._items()],
                 "explicit": self.shown is not None}
 
-    def op_glb(self) -> dict[str, Any]:
-        from smlibpy.viewer import _glb_bytes
+    def _shown(self) -> list[tuple[str, str | None, Any, Any]]:
+        """(label, expression, shape, color) of what is drawn. The expression reaches the shape
+        from the session's variables; None for a shape that is no variable."""
+        from smlibpy import StepModel
 
-        items = _drawn(self._items())
-        if not items:
-            return {"ok": True, "glb": None, "summary": ""}
-        shapes = [s.named(n) if hasattr(s, "named") and not getattr(s, "name", None) else s for n, s, _ in items]
-        glb, summary = _glb_bytes(shapes, None, 12.0, True)
-        return {"ok": True, "glb": glb, "summary": summary}
+        out: list[tuple[str, str | None, Any, Any]] = []
+        for name, s in self._items():
+            expr = name if self._reaches(name, s) else None
+            if isinstance(s, StepModel):
+                out.extend((b.name or f"{name}.bodies[{i}]", expr and f"{expr}.bodies[{i}]", b, b.color)
+                           for i, b in enumerate(s.bodies))
+                out.extend((c.name or f"{name}.curves[{i}]", expr and f"{expr}.curves[{i}].shape", c.shape, c.color)
+                           for i, c in enumerate(s.curves))
+            else:
+                out.append((getattr(s, "name", None) or name, expr, s, getattr(s, "color", None)))
+        return out
 
-    def op_scene_json(self) -> dict[str, Any]:
-        """What the viewer page draws (the scene format of classcad-ai's viewer): per body its
-        faces as meshes (positions, normals, triangles, planar or not), its edges as
-        polylines, its color, and the bounds of everything. A read STEP file adds its curves
-        as bodies of edges in their color, and its coordinate systems and points as
-        ``marks``: ``{"frames": [{"name", "o", "x", "y", "z"}], "points": [{"name", "p",
-        "color"}]}``."""
-        import numpy as np
+    def _reaches(self, expression: str, obj: Any) -> bool:
+        try:
+            return eval(expression, self.ns) is obj
+        except Exception:
+            return False
 
-        from smlibpy import Edge, Face, Mesh, Wire
-        from smlibpy.colors import to_rgb
-        from smlibpy.exporters import _curve_points, _edge_polylines
-        from smlibpy.mesh import face_meshes, tessellate
+    def op_buerli_scene(self) -> dict[str, Any]:
+        """What is shown, as Buerligons draws it (see graphic.py): the model tree, the graphic
+        containers and their index. The index is kept for picks and targets."""
+        from .graphic import CONTAINER0, scene
 
-        def flat(a: Any) -> list[float]:
-            return [round(float(v), 4) for v in np.asarray(a, dtype=float).ravel()]
+        shown = self._shown()
+        name = shown[0][0] if len(shown) == 1 else (f"{len(shown)} shapes" if shown else "smlibpy")
+        built = scene(shown, name)
+        self.index = built["index"]
+        self.index_shapes = {CONTAINER0 + k: item[2] for k, item in enumerate(shown) if CONTAINER0 + k in self.index}
+        return {"ok": True, **built}
 
-        def mesh_face(m: Any, planar: bool) -> dict[str, Any]:
-            normals = None
-            if m.normals is not None and len(m.triangles):
-                n = np.zeros_like(m.vertices)
-                n[m.triangles.ravel()] = np.asarray(m.normals, dtype=float).reshape(-1, 3)
-                normals = flat(n)
-            return {"p": flat(m.vertices), "n": normals, "i": [int(v) for v in m.triangles.ravel()], "flat": planar}
+    def op_picks(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """What the user selected in Buerligons: per item the face, edge or vertex, its
+        measurements, and the expression that reaches it in scripts."""
+        from .graphic import EDGES, POINTS
 
-        def rgb(color: Any) -> list[int] | None:
-            return [round(c * 255) for c in to_rgb(color)] if color is not None else None
-
-        bodies, placements = [], []
-        stats = {"bodies": 0, "faces": 0, "triangles": 0, "edges": 0}
-        lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
-        items = self._items()
-        for name, shape, color in _drawn(items):
-            body: dict[str, Any] = {"id": len(bodies), "name": getattr(shape, "name", None) or name,
-                                    "color": rgb(color), "opacity": 1, "faces": [], "edges": []}
+        rows = []
+        for it in items:
+            entry = getattr(self, "index", {}).get(it.get("containerId"))
+            kind = it.get("kind")
+            if entry is None:
+                rows.append({"what": f"a {kind or 'thing'} that is no longer shown"})
+                continue
+            g = int(it.get("graphicId") or 0) - entry["base"]
+            label, expr = entry["label"], entry["expr"]
+            sub = {"face": ("faces", g), "edge": ("edges", g - EDGES), "vertex": ("vertices", g - POINTS)}.get(kind)
+            if sub is None:
+                rows.append({"what": f"{label} (the whole body)", "expr": expr})
+                continue
+            many, i = sub
+            target = f"{expr}.{many}()[{i}]" if expr else None
+            row: dict[str, Any] = {"what": f"{kind} {i} of {label}", "expr": target}
             try:
-                if isinstance(shape, Mesh):
-                    body["faces"].append(mesh_face(shape, False))
-                elif isinstance(shape, (Edge, Wire)):
-                    body["edges"] = [flat(pl) for pl in _curve_points(shape)]
-                    # a curve is drawn in its color, unless white or black would vanish on the stage
-                    if color is not None and max(to_rgb(color)) > 0.1 and min(to_rgb(color)) < 0.9:
-                        body["edgeColor"] = body["color"]
+                shape = self.index_shapes[it["containerId"]]
+                elem = getattr(shape, many)()[i]
+                size = _size(shape)
+                if kind == "face":
+                    row.update({k: v for k, v in _face_row(i, elem, size).items() if k != "i"})
+                elif kind == "edge":
+                    row.update({k: v for k, v in _edge_row(i, elem, size).items() if k != "i"})
                 else:
-                    faces = [shape] if isinstance(shape, Face) else list(shape.faces())
-                    tol = max(shape.bbox().diagonal, 1e-6) * 1e-3
-                    # the body is meshed in one piece and cut by face: imported faces the
-                    # kernel cannot mesh on their own show too
-                    try:
-                        meshes = face_meshes(shape, tol, 12.0) if not isinstance(shape, Face) else None
-                    except Exception:
-                        meshes = None
-                    for i, f in enumerate(faces):
-                        try:
-                            m = meshes[i] if meshes is not None else tessellate(f, tol, 12.0)
-                            planar = f.geom_type == "plane"
-                        except Exception:  # one face the kernel cannot mesh: the others still show
-                            continue
-                        if len(m.triangles):
-                            body["faces"].append(mesh_face(m, planar))
-                    try:
-                        lines = _edge_polylines(shape) if not isinstance(shape, Face) else _curve_points(shape)
-                        body["edges"] = [flat(pl) for pl in lines]
-                    except Exception:
-                        pass
+                    row["position"] = [_r(c, size) for c in elem.center().to_tuple()]
             except Exception:
-                continue
-            if not body["faces"] and not body["edges"]:
-                continue
-            for f in body["faces"]:
-                p = np.asarray(f["p"]).reshape(-1, 3)
-                if len(p):
-                    lo, hi = np.minimum(lo, p.min(axis=0)), np.maximum(hi, p.max(axis=0))
-                stats["triangles"] += len(f["i"]) // 3
-            for e in body["edges"]:
-                p = np.asarray(e).reshape(-1, 3)
-                if len(p):
-                    lo, hi = np.minimum(lo, p.min(axis=0)), np.maximum(hi, p.max(axis=0))
-            stats["faces"] += len(body["faces"])
-            stats["edges"] += len(body["edges"])
-            placements.append({"body": len(bodies), "m": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]})
-            bodies.append(body)
-        marks: dict[str, list[dict[str, Any]]] = {"frames": [], "points": []}
-        for model in _step_models(items):
-            for f in model.frames:
-                p = f.plane
-                marks["frames"].append({"name": f.name, "o": flat(p.origin.to_tuple()), "x": flat(p.x_dir.to_tuple()),
-                                        "y": flat(p.y_dir.to_tuple()), "z": flat(p.z_dir.to_tuple())})
-            for pt in model.points:
-                marks["points"].append({"name": pt.name, "p": flat(pt.point.to_tuple()), "color": rgb(pt.color)})
-        for p in [m["o"] for m in marks["frames"]] + [m["p"] for m in marks["points"]]:
-            lo, hi = np.minimum(lo, p), np.maximum(hi, p)
-        stats["bodies"] = len(bodies)
-        names = [b["name"] for b in bodies]
-        shown = bodies or marks["frames"] or marks["points"]
-        scene = {"kind": "PART" if shown else "EMPTY",
-                 "name": names[0] if len(names) == 1 else (f"{len(names)} shapes" if names else ""),
-                 "bodies": bodies, "placements": placements, "features": [], "stats": stats, "marks": marks,
-                 "bounds": {"min": [float(v) for v in lo], "max": [float(v) for v in hi]} if shown and np.isfinite(lo).all() else None}
-        return {"ok": True, "scene": scene}
+                pass
+            rows.append(row)
+        return {"ok": True, "picks": rows}
+
+    def op_targets(self, expressions: list[str]) -> dict[str, Any]:
+        """Faces, edges and vertices named by expressions, as Buerligons finds them (container
+        and element id), for a selection the agent shows the user."""
+        from smlibpy import Edge, Face, Vertex
+
+        from .graphic import EDGES, POINTS
+
+        shapes = getattr(self, "index_shapes", {})
+        targets, missing = [], []
+        for expression in expressions:
+            value = self._evaluate(expression, "selection")
+            for elem in (value if isinstance(value, (list, tuple)) else [value]):
+                found = None
+                for cid, body in shapes.items():
+                    base = self.index[cid]["base"]
+                    if elem is body:
+                        found = {"objectId": self.index[cid]["solid"]}
+                    elif isinstance(elem, (Face, Edge, Vertex)) and getattr(elem, "_owner", None) is body:
+                        group = {Face: (body.faces(), 0), Edge: (body.edges(), EDGES), Vertex: (body.vertices(), POINTS)}
+                        listed, offset = group[type(elem)]
+                        for i, other in enumerate(listed):
+                            if other == elem:
+                                found = {"containerId": cid, "graphicId": base + offset + i}
+                                break
+                    if found:
+                        break
+                (targets if found else missing).append(found or repr(elem)[:80])
+        return {"ok": True, "targets": targets, "missing": missing}
 
     def op_snapshot(self, view: Any = "iso", size: tuple[int, int] = (1000, 750), names: list[str] | None = None,
                     edges: bool = True, path: str | None = None, highlight: Any = None, section: Any = None,
@@ -288,10 +277,11 @@ class _Worker:
         else:
             obj = self.ns[name]
         info = {"name": name, **self._summary(obj, full=True)}
+        size = _size(obj) if faces or edges else 1.0
         if faces and hasattr(obj, "faces"):
-            info["faces"] = [_face_row(i, f) for i, f in enumerate(obj.faces())]
+            info["faces"] = [_face_row(i, f, size) for i, f in enumerate(obj.faces())]
         if edges and hasattr(obj, "edges"):
-            info["edges"] = [_edge_row(i, e) for i, e in enumerate(obj.edges())]
+            info["edges"] = [_edge_row(i, e, size) for i, e in enumerate(obj.edges())]
         return {"ok": True, "info": info}
 
     def _summary(self, obj: Any, full: bool = False) -> dict[str, Any]:
@@ -317,8 +307,9 @@ class _Worker:
                 return d
             if getattr(obj, "name", None):
                 d["label"] = obj.name
-            bb = obj.bbox()
-            d["bbox"] = {"min": [_r(c) for c in bb.min.to_tuple()], "max": [_r(c) for c in bb.max.to_tuple()]}
+            bb, size = obj.bbox(), _size(obj)
+            d["bbox"] = {"min": [_r(c, size) for c in bb.min.to_tuple()],
+                         "max": [_r(c, size) for c in bb.max.to_tuple()]}
             if isinstance(obj, Part):
                 d["valid"] = bool(obj.is_valid())
                 d["volume"] = _r(obj.volume)
@@ -336,7 +327,7 @@ class _Worker:
                 for f in obj.faces():
                     kinds[f.geom_type] = kinds.get(f.geom_type, 0) + 1
                 d["face_types"] = kinds
-                d["center"] = [_r(c) for c in obj.center().to_tuple()]
+                d["center"] = [_r(c, size) for c in obj.center().to_tuple()]
                 if getattr(obj, "color", None) is not None:
                     d["color"] = str(obj.color)
         except Exception as e:  # a broken body still gets a line
@@ -416,22 +407,30 @@ def _drawn(items: list[tuple[str, Any]], curves: bool = True) -> list[tuple[str,
     return out
 
 
-def _step_models(items: list[tuple[str, Any]]) -> list[Any]:
-    from smlibpy import StepModel
-
-    return [s for _, s in items if isinstance(s, StepModel)]
-
-
 _LIBRARY_NAMES = {"X", "Y", "Z"}
 
 
-def _r(v: float) -> float:
-    return float(f"{float(v):.6g}")
+def _r(v: float, size: float = 1.0) -> float:
+    """A measurement to six significant digits. Under a billionth of ``size`` it is float noise
+    (a face on y = 0 has its center at y = 4e-16) and reads 0.0, never -0.0: ``size`` is the
+    model's for a coordinate (:func:`_size`) and 1 otherwise (normals are unit vectors)."""
+    v = float(v)
+    return 0.0 if abs(v) < 1e-9 * size else float(f"{v:.6g}")
 
 
-def _face_row(i: int, f: Any) -> dict[str, Any]:
+def _size(shape: Any) -> float:
+    """The size the coordinates of ``shape`` are measured against in :func:`_r`: the diagonal
+    of its box, at least 1."""
+    try:
+        box = shape._loose_box() if hasattr(shape, "_loose_box") else shape.bbox()
+        return max(1.0, box.diagonal)
+    except Exception:
+        return 1.0
+
+
+def _face_row(i: int, f: Any, size: float) -> dict[str, Any]:
     row: dict[str, Any] = {"i": i, "type": f.geom_type, "area": _r(f.area),
-                           "center": [_r(c) for c in f.center().to_tuple()]}
+                           "center": [_r(c, size) for c in f.center().to_tuple()]}
     try:
         if f.geom_type == "plane":
             row["normal"] = [_r(c) for c in f.normal_at().to_tuple()]
@@ -444,9 +443,9 @@ def _face_row(i: int, f: Any) -> dict[str, Any]:
     return row
 
 
-def _edge_row(i: int, e: Any) -> dict[str, Any]:
+def _edge_row(i: int, e: Any, size: float) -> dict[str, Any]:
     row: dict[str, Any] = {"i": i, "type": e.geom_type, "length": _r(e.length),
-                           "center": [_r(c) for c in e.center().to_tuple()]}
+                           "center": [_r(c, size) for c in e.center().to_tuple()]}
     try:
         if e.geom_type == "circle":
             row["radius"] = _r(e.radius)

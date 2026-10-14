@@ -51,8 +51,7 @@ mcs = tool.frame("MCS", product="NOCUT")   # Plane.XY: the tool's mounting syste
 - Placing a tool by its mounting system: `holder.moved(tool.frame("MCS", product="NOCUT").location)`.
 - The cutting edge as a curve: `tool.curves[0].shape.length`, `.point_at(t)`, `sweep` along it.
 - Looking at it: `render(tool)` draws the bodies and curves and marks the coordinate systems and
-  named points; in a session the live viewer shows frames as axes (x red, y green, z blue) with
-  their names.
+  named points; the live view of a session shows the bodies and curves.
 - Wireframe-only files (sketches, curve sets), which `import_step` refuses: `read_step` gives
   their curves and no bodies.
 

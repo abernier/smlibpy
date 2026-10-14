@@ -24,7 +24,7 @@ classifiers = [
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.20"]
+mcp = ["mcp>=1.20", "websockets>=13"]
 test = ["pytest>=8"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
 

@@ -2,11 +2,15 @@
 
 Run it with ``smlibpy-mcp`` (or ``python -m smlibpy.mcp``); it speaks MCP over stdio.
 
+The live view is Buerligons, the ClassCAD app (see buerli.py and app.py).
+
 Environment:
-    SMLIBPY_VIEWER        how the live viewer reaches the user: ``host`` (the agent opens the
+    SMLIBPY_VIEWER        how the live view reaches the user: ``host`` (the agent opens the
                           link in its own browser pane; the default in the Claude desktop
                           app), ``browser`` (the user's default browser; the default
                           elsewhere) or ``off`` (only the link is handed over)
+    SMLIBPY_APP_DIR       a folder with the app to use instead of the one downloaded from npm
+    SMLIBPY_CACHE         where the downloaded app is kept (default: the user's cache folder)
     SMLIBPY_SNAPSHOT_DIR  where snapshots are kept (default: a folder in the temp directory)
 """
 
@@ -30,7 +34,8 @@ except ImportError:  # 1.x
     from mcp.server.fastmcp import Image  # type: ignore[no-redef]
 
 from . import discovery
-from .live import LiveViewer
+from .app import AppUnavailable
+from .buerli import BuerliHost
 from .session import DEFAULT_TIMEOUT, Session
 
 DOCS_BUDGET = 48_000
@@ -44,21 +49,25 @@ def _mode() -> str:
     return "host" if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop" else "browser"
 
 
+_APP = ("The live view is Buerligons, the ClassCAD app: the user turns the model, selects and measures faces "
+        "and edges, and saves STEP or STL there. get_selection tells you what they selected, with the expression "
+        "that reaches it in a script (\"fillet the edge I selected\"); set_selection highlights faces or edges "
+        "for them (\"is it this face?\").")
 _VIEWER_NOTE = {
     "host": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\". Open that link in your own "
              "browser pane right then (in the Claude desktop app: preview_start with url set to the link), once; "
-             "the page follows every later script by itself. Tell the user in a few words that the model is in "
-             "the browser pane. view() gives the link again."),
-    "browser": ("VIEWER: the first script that makes a model opens a live 3D viewer in the user's browser and "
-                "returns \"Viewer: <link>\". The page follows every later script by itself; do not open it again. "
-                "view() gives the link again."),
+             "the app follows every later script by itself. Tell the user in a few words that the model is in "
+             "the browser pane. view() gives the link again. " + _APP),
+    "browser": ("VIEWER: the first script that makes a model opens a live 3D view in the user's browser and "
+                "returns \"Viewer: <link>\". The app follows every later script by itself; do not open it again. "
+                "view() gives the link again. " + _APP),
     "off": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\", a live 3D view that follows "
-            "every later script. Hand the link to the user once."),
+            "every later script. Hand the link to the user once. " + _APP),
 }
 
 _GUIDE = """\
 smlibpy: CAD modeling in Python on SMLib, the NURBS solid modeling kernel. You build exact solids by \
-writing Python scripts; this server runs them, shows the result in a live 3D viewer and renders \
+writing Python scripts; this server runs them, shows the result live in Buerligons (the ClassCAD app) and renders \
 pictures for you to check.
 
 WORKFLOW
@@ -86,7 +95,7 @@ part.edges().parallel_to(Z), part.faces().cylinders().largest(). Indices change 
 - Sketches are planar regions drawn on XY: shapes (Rectangle(w, h, fillet=r), Circle, Slot, ...) combined \
 with + - &, or Profile(...) for outlines with tangent arcs, rounded corners or symmetry (recipes/profiles); \
 then .on(plane or face) and extrude or revolve.
-- show(a, b) at the end of a script chooses what the viewer and snapshots display. Without it, \
+- show(a, b) at the end of a script chooses what the live view and snapshots display. Without it, \
 every Part and Shell variable of the session is shown, tools and intermediate bodies included.
 - Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.
 - A script that fails changes nothing: the session keeps the state before it. checkpoint() before \
@@ -167,7 +176,7 @@ def build_server(session: Session | None = None) -> Any:
     import smlibpy
 
     session = session or Session()
-    viewer = LiveViewer(session)
+    viewer = BuerliHost(session)
     mode = _mode()
     server = MCPServer(name="smlibpy", instructions=instructions())
 
@@ -183,10 +192,13 @@ def build_server(session: Session | None = None) -> Any:
         return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
 
     def viewer_note(scene: list[dict[str, Any]]) -> str | None:
-        if viewer.opened or not scene or mode == "none":
+        if viewer.opened or not scene:
             return None
+        try:
+            link = viewer.url
+        except AppUnavailable as e:
+            return f"The live view (Buerligons) is not available: {e}. snapshot() shows the model."
         viewer.opened = True
-        link = viewer.url
         if mode == "browser":
             try:
                 webbrowser.open(link)
@@ -342,7 +354,7 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def scene() -> str:
-        """What the viewer and snapshots show, and every shape variable of the session."""
+        """What the live view and snapshots show, and every shape variable of the session."""
         shown = await call(session.call, "scene")
         allv = await call(session.call, "vars")
         text = _fmt_scene(shown.get("scene", []), bool(shown.get("explicit")))
@@ -467,9 +479,51 @@ def build_server(session: Session | None = None) -> Any:
         return "The session is empty."
 
     @tool()
+    async def get_selection() -> str:
+        """What the user selected in the live view (Buerligons): faces, edges and vertices, measured, each with
+        the expression that reaches it in a script."""
+        items = list(viewer.selection)
+        if not items:
+            hint = "" if viewer.guests else " (the live view is not open)"
+            return f"Nothing is selected in the live view{hint}. A selection lasts until the model changes."
+        res = await call(session.call, "picks", items=items)
+        if not res.get("ok"):
+            return f"The selection could not be read: {res.get('error')}"
+        rows = []
+        for pick in res["picks"]:
+            facts = ", ".join(f"{k} {v}" for k, v in pick.items() if k not in ("what", "expr"))
+            row = f"- {pick['what']}" + (f": {facts}" if facts else "")
+            row += f"\n  {pick['expr']}" if pick.get("expr") else "\n  (not reachable from a variable: show() it as one)"
+            rows.append(row)
+        return f"Selected ({len(rows)}):\n" + "\n".join(rows)
+
+    @tool()
+    async def set_selection(
+        expressions: Annotated[list[str], Field(description="Python expressions of the session giving faces, edges, "
+                                                "vertices or shown bodies: [\"part.faces().top()\", \"rim\"].",
+                                                min_length=1)],
+        add: Annotated[bool, Field(description="Add to what is selected instead of replacing it.")] = False,
+    ) -> str:
+        """Select faces, edges, vertices or bodies in the live view, to show the user what you mean."""
+        res = await call(session.call, "targets", expressions=expressions)
+        if not res.get("ok"):
+            return f"Nothing selected: {res.get('error')}"
+        targets, missing = res["targets"], res["missing"]
+        apps = viewer.select(targets, replace=not add)
+        text = f"Selected {len(targets)} in {apps} open view{'s' if apps != 1 else ''}."
+        if not apps:
+            text = "The live view is not open: view() gives its link."
+        if missing:
+            text += " Not shown, so not selected: " + ", ".join(missing[:10])
+        return text
+
+    @tool()
     async def view(open: Annotated[bool, Field(description="Also open it in the user's default browser.")] = False) -> str:
-        """The link of the live 3D viewer."""
-        link = viewer.url
+        """The link of the live 3D view (Buerligons)."""
+        try:
+            link = viewer.url
+        except AppUnavailable as e:
+            return f"The live view (Buerligons) is not available: {e}. snapshot() shows the model."
         viewer.opened = True
         if open:
             try:
