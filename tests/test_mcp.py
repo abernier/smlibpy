@@ -2,6 +2,7 @@ import asyncio
 import base64
 import os
 import sys
+import time
 import urllib.request
 
 import pytest
@@ -250,16 +251,26 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
             saved = ask({"command": "Execute", "task": [{"v1.common.save": [{"format": "GLB", "encoding": "base64"}]}]})
             assert base64.b64decode(saved["result"]["content"])[:4] == b"glTF"
 
-            # what the user selects is kept; a script's change reaches the app without being asked for
+            # what the user selects is kept until the model changes; the change reaches the app without
+            # being asked for, after a request that clears the app's selection (its ids would now name
+            # other faces)
             ws.send(json.dumps({"command": "Presence", "channel": "selection", "data": {"total": 1, "items": [
                 {"kind": "face", "objectId": 1000, "containerId": CONTAINER0, "graphicId": STRIDE}]}}))
+            deadline = time.time() + 10
+            while not host.selection and time.time() < deadline:
+                time.sleep(0.02)
+            assert host.selection[0]["graphicId"] == STRIDE
             assert session.run("c = Box(10, 20, 30)")["ok"]
+            seen = []
             while True:
                 pushed = json.loads(ws.recv(timeout=60))
+                seen.append(pushed)
                 if pushed.get("_from_") == "GetTree":
                     break
+            clear = [f["data"] for f in seen if f.get("channel") == "select"]
+            assert clear[0]["items"] == [] and clear[0]["replace"] is True and clear[1]["done"] is True
             assert len(pushed["graphic"]["containers"][0]["meshes"]) == 6
-            assert host.selection[0]["graphicId"] == STRIDE
+            assert host.selection == []
             # the agent's selection reaches the app as a request, then its end
             assert host.select([{"containerId": CONTAINER0, "graphicId": STRIDE + 1}]) == 1
             request = json.loads(ws.recv(timeout=10))

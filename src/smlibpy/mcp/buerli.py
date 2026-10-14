@@ -8,7 +8,8 @@ a session it connects to, answered the way a ClassCAD server answers (the twin o
 
 The app joins in the view role (no modeling tools; Save writes STEP or STL). What a script
 shows reaches every open app after each change; what the user selects there is kept for
-``get_selection``; ``select`` highlights faces, edges or vertices for the user.
+``get_selection`` until the model changes; ``select`` highlights faces, edges or vertices for the
+user.
 """
 
 from __future__ import annotations
@@ -274,6 +275,7 @@ class BuerliHost:
             seen = version
             with self._lock:
                 guests = list(self.guests)
+            self._end_selection(guests)
             if not guests:
                 continue
             scene = self.scene()
@@ -281,6 +283,20 @@ class BuerliHost:
                                 "structure": scene["structure"], "graphic": scene["graphic"]}, separators=(",", ":"))
             for guest in guests:
                 guest.send(frame)
+
+    def _end_selection(self, guests: list[_Guest]) -> None:
+        """A pick names a face, an edge or a vertex by its place in the drawing (graphic.py), which
+        the new model gives to whatever is there now: a selection ends with the model it was made
+        on. Forgotten here, and cleared in the apps before the new model reaches them, by the
+        request to select that they already follow (an empty one, replacing what they have)."""
+        self.selection = []
+        if not any(g.presence.get("selection", {}).get("items") for g in guests):
+            return
+        request = uuid.uuid4().hex
+        for data in ({"id": request, "items": [], "replace": True}, {"id": request, "done": True}):
+            text = json.dumps({"command": "Presence", "channel": "select", "peerId": HOST_PEER, "data": data})
+            for guest in guests:
+                guest.send(text)
 
     def select(self, targets: list[dict[str, Any]], replace: bool = True) -> int:
         """Asks every app to select ``targets`` (container and element ids, or tree objects)."""

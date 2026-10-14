@@ -485,7 +485,7 @@ def build_server(session: Session | None = None) -> Any:
         items = list(viewer.selection)
         if not items:
             hint = "" if viewer.guests else " (the live view is not open)"
-            return f"Nothing is selected in the live view{hint}."
+            return f"Nothing is selected in the live view{hint}. A selection lasts until the model changes."
         res = await call(session.call, "picks", items=items)
         if not res.get("ok"):
             return f"The selection could not be read: {res.get('error')}"
