@@ -157,8 +157,9 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     faces of one part, such as two sheets that cross (``fillet`` rounds the edges of a part).
 
     Args:
-        a, b: The two faces (or sheets of one face). Their surfaces are blended, as far as the
-            surfaces reach: the blend may run past the faces.
+        a: The first face (or a sheet of one face). Its surface is blended, as far as the
+            surface reaches: the blend may run past the face.
+        b: The second face (or a sheet of one face), the same way.
         radius: The radius of the blend: of the ball that rolls between the two surfaces.
         sides: The side of each face the blend lies on: 1 the side its normal (``normal_at()``)
             points to, -1 the other. Two crossing surfaces leave four places for a ball to roll,
