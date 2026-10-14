@@ -16,6 +16,7 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
 | `volume`, `area`, `center()`, inertia of parts | integration with an error estimate, to `accuracy=1e-7` | at most 1e-7; measured 1e-10 and better |
 | `Face.area`, `Sketch.area`, `Shell.area` | the same | the same; lettering exact |
 | `mesh().volume` | triangles | 1e-5 to 4e-4, depends on `tolerance` |
+| `raycast` points of a body | the ray intersected with the exact faces | 1e-12 |
 
 - Volume, area, center and inertia are integrated over the exact geometry, never a mesh. The
   integration estimates its error for each of them and refines until the estimate is ten
@@ -83,4 +84,4 @@ print(plate.info()["faces"])                           # 14
 
 ## Related
 
-`mass_properties`, `measures`, `is_valid`, `distance_to`, `recipes/verification`
+`mass_properties`, `measures`, `is_valid`, `distance_to`, `raycast`, `recipes/verification`

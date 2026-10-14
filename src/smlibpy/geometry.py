@@ -7,7 +7,7 @@ to create. Angles are in degrees everywhere.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Iterable, Iterator, Sequence, Union, overload
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, NamedTuple, Sequence, Union, overload
 
 import numpy as np
 
@@ -24,6 +24,8 @@ __all__ = [
     "Pos",
     "Rot",
     "BoundBox",
+    "Hit",
+    "Nurbs",
     "X",
     "Y",
     "Z",
@@ -668,6 +670,41 @@ Plane.front = Plane.XZ
 Plane.back = Plane((0, 0, 0), (-1, 0, 0), (0, 1, 0))
 Plane.right = Plane.YZ
 Plane.left = Plane((0, 0, 0), (0, -1, 0), (-1, 0, 0))
+
+
+class Hit(NamedTuple):
+    """Where a ray meets a shape or a mesh (see ``raycast``).
+
+    Attributes:
+        point: The point where the ray meets the surface.
+        distance: How far along the ray, from its start.
+        normal: The outward unit normal of the surface there (of the face, or the triangle).
+        face: The face that was hit (shapes), or ``None``.
+        triangle: The index of the triangle that was hit (meshes), or ``None``.
+    """
+
+    point: "Vector"
+    distance: float
+    normal: "Vector"
+    face: Any = None
+    triangle: int | None = None
+
+
+class Nurbs(NamedTuple):
+    """A curve as a NURBS (see :meth:`Edge.nurbs`).
+
+    Attributes:
+        degree: The degree of the curve.
+        knots: The knot vector, every knot as often as its multiplicity
+            (``len(points) + degree + 1`` of them).
+        points: The control points.
+        weights: The weight of each control point, or ``None`` for a non-rational curve.
+    """
+
+    degree: int
+    knots: list[float]
+    points: list["Vector"]
+    weights: list[float] | None
 
 
 class BoundBox:

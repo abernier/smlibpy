@@ -7,6 +7,10 @@ import { join } from 'node:path'
 import { Box, Cone, Cylinder, GridLocations, Part, Sphere, Spline, Torus, Z, loft, Circle, Rectangle, render } from '../src/index.ts'
 import { exportGlb, exportGltf, exportStep, exportStl, fromSmb, fromStl, importStl, load, save, toGlb, toGltf, toObj, toSmb, toStl } from '../src/exporters.ts'
 import { approx } from './_approx.ts'
+import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { Shell, ShapeList, merge as _merge, surface as _surface } from '../src/index.ts'
+import { exportFile } from '../src/exporters.ts'
+import { exportUsd, fromUsd, importUsd, toUsd } from '../src/usd.ts'
 
 function tmpPath(): string {
   return mkdtempSync(join(tmpdir(), 'smlibwasm-io-'))
@@ -148,3 +152,102 @@ test('files need Node: a clear error elsewhere', () => {
     proc.getBuiltinModule = saved
   }
 })
+
+// -- USD --------------------------------------------------------------------------------------
+const USD_SAMPLES = new URL('../../third_party/usd-brep/TestFiles/', import.meta.url).pathname
+
+const USD_PARTS: [string, () => Part][] = [
+  ['box', () => Box(10, 20, 30)],
+  ['ball', () => Sphere(5)],
+  ['ring', () => Torus(10, 3)],
+  ['narrowing', () => Cone(5, 2, 10)], // (a negative semi-angle in SMLib)
+  ['rounded', () => Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)], // (cylinders as cones of angle 0)
+  ['countersunk', () => Box(30, 30, 10).cut(Cone(6, 3, 3).translate([0, 0, 3.5])).cut(Cylinder(3, 10))],
+  ['cup', () => Box(30, 30, 30).shell(2, Box(30, 30, 30).faces().top())],
+]
+
+for (const [name, make] of USD_PARTS) {
+  test(`usd roundtrip is exact: ${name}`, () => {
+    const part = make()
+    const back = fromUsd(toUsd(part.named(name))) as Part
+    assert.ok(back instanceof Part && back.name === name && back.isValid())
+    assert.equal(back.faces().length, part.faces().length)
+    approx(back.volume, part.volume, 1e-12)
+    assert.deepEqual(back.faces().map((f) => f.geomType), part.faces().map((f) => f.geomType))
+  })
+}
+
+test('usd names, colors, sheets, cells and meshes', () => {
+  const p = plate()
+  const grid = Array.from({ length: 5 }, (_, y) => Array.from({ length: 5 }, (_, x) => [x * 10, y * 10, (3 * ((x - 2) ** 2 - (y - 2) ** 2)) / 4]))
+  const sheet = _surface(grid)
+  const cells = Box(10, 10, 10).merge(Sphere(4).translate([0, 0, 5]))
+  const dir = tmpPath()
+  exportFile([p, sheet.named('sheet'), cells.named('cells')], join(dir, 'all.usda'))
+  const back = load(join(dir, 'all.usda')) as ShapeList<any>
+  assert.deepEqual(Array.from(back, (b: any) => b.name), ['plate', 'sheet', 'cells'])
+  ;[70 / 255, 130 / 255, 180 / 255].forEach((c, i) => approx(back[0].color[i], c, 1e-9)) // steelblue
+  assert.ok(back[1] instanceof Shell && !(back[1] instanceof Part))
+  approx(back[1].area, sheet.area, 1e-12)
+  const want = cells.cells().map((c) => c.volume).sort((x, y) => x - y)
+  back[2].cells().map((c: Part) => c.volume).sort((x: number, y: number) => x - y).forEach((v: number, i: number) => approx(v, want[i], 1e-9))
+  const text = readFileSync(join(dir, 'all.usda'), 'utf8')
+  assert.ok(text.startsWith('#usda 1.0') && text.includes('upAxis = "Z"') && text.includes('metersPerUnit = 0.001'))
+  assert.equal(text.split('def BrepArray').length - 1, 3)
+  assert.ok(!text.includes('def Mesh'))
+  exportUsd([p, p.mesh()], join(dir, 'meshes.usda'), { mesh: true })
+  const withMeshes = readFileSync(join(dir, 'meshes.usda'), 'utf8')
+  assert.equal(withMeshes.split('def BrepArray').length - 1, 1)
+  assert.equal(withMeshes.split('def Mesh').length - 1, 2)
+  assert.ok(withMeshes.includes('normal3f[] normals'))
+  approx((importUsd(join(dir, 'meshes.usda')) as Part).volume, p.volume, 1e-12) // (meshes are not read)
+})
+
+test('usd rejects what it cannot read', () => {
+  const p = plate()
+  const dir = tmpPath()
+  assert.throws(() => exportUsd(p, join(dir, 'plate.usdc')), /usdcat/)
+  assert.throws(() => fromUsd(new Uint8Array([...new TextEncoder().encode('PXR-USDC'), ...new Uint8Array(100)])), /binary/)
+  assert.throws(() => fromUsd('#usda 1.0\ndef Xform "World"\n{\n}\n'), /no BrepArray/)
+  const broken = toUsd(p).replace('uniform uint[] faceuse:faceIndex = [', 'uniform uint[] faceuse:faceIndex = [99, ')
+  assert.throws(() => fromUsd(broken), /malformed/)
+})
+
+test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's test files are not checked out" }, () => {
+  // their files of good bodies, and their validator's files of broken ones: each gives bodies or a
+  // RangeError that names what is wrong, none crashes
+  const good: Record<string, number> = {
+    'Cube.usda': 1, 'CubeBrepArray.usda': 2, 'sphere_nurbs.usda': 1, 'cubeWithVoid.usda': 1, 'mouse.usda': 1,
+    'RevitWallHealerCrash.usda': 1, 'Cone_SmConnect_Brep.usda': 1,
+  }
+  const files: string[] = []
+  const walk = (d: string): void => {
+    for (const n of readdirSync(d)) {
+      const f = join(d, n)
+      if (statSync(f).isDirectory()) walk(f)
+      else if (n.endsWith('.usda')) files.push(f)
+    }
+  }
+  walk(USD_SAMPLES)
+  let seen = 0
+  for (const f of files.sort()) {
+    const text = readFileSync(f, 'utf8')
+    if (!text.includes('def BrepArray') || text.startsWith('version https://git-lfs')) continue
+    const name = f.slice(f.lastIndexOf('/') + 1)
+    if (name in good) {
+      const bodies = fromUsd(text)
+      const list = bodies instanceof ShapeList ? Array.from(bodies) : [bodies]
+      assert.equal(list.length, good[name], name)
+      assert.ok(list.every((b) => (b as Part).isValid()), name)
+      seen += 1
+    } else {
+      try {
+        fromUsd(text)
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e
+      }
+    }
+  }
+  assert.equal(seen, Object.keys(good).length)
+})
+

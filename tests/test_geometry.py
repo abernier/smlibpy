@@ -55,3 +55,44 @@ def test_axis_helpers():
     assert X.is_parallel((-1, 0, 0))
     assert Z.distance_to((3, 4, 10)) == pytest.approx(5)
     assert Y.position_along((0, 7, 0)) == pytest.approx(7)
+
+
+def test_curve_tools():
+    import numpy as np
+
+    from smlibpy import Bezier, CenterArc, Line, Spline, make_compatible
+
+    a = Bezier((0, 0, 0), (1, 3, 0), (4, 3, 1), (6, 0, 0))
+    b = Spline((0, 0, 5), (2, 1, 5), (3, -1, 5), (4, 2, 5), (6, 0, 5))
+    arc = CenterArc((3, 0, 10), 3, 180, 180)
+    out = make_compatible(a, [b, arc], Line((0, 0, 15), (6, 0, 15)))
+    data = [e.nurbs() for e in out]
+    assert len({len(d.points) for d in data}) == 1 and len({d.degree for d in data}) == 1
+    assert all(d.knots == pytest.approx(data[0].knots) for d in data)
+    assert all(e.geom_type == "bspline" for e in out)
+    for src, e in zip([a, b, arc], out):
+        assert max(src.distance_to(e.point_at(t)) for t in np.linspace(0, 1, 21)) < 1e-9
+    # the Bezier's copy carries the knots of the others; it needs none of them
+    assert len(out[0].nurbs().points) > 4 and len(out[0].remove_knots().nurbs().points) == 4
+    assert max(a.distance_to(out[0].remove_knots().point_at(t)) for t in np.linspace(0, 1, 21)) < 1e-6
+    assert Line((0, 0, 0), (1, 0, 0)).remove_knots().geom_type == "line"
+    with pytest.raises(ValueError, match="two or more"):
+        make_compatible(a)
+    with pytest.raises(TypeError, match=r"not a Wire \(pass wire.edges\(\)\)"):
+        make_compatible(a, Spline((0, 0), (1, 1), (2, 0)) + Line((2, 0), (3, 0)))
+
+
+def test_edges_as_nurbs():
+    from smlibpy import Bezier, Box, CenterArc, Line
+
+    n = Bezier((0, 0, 0), (1, 3, 0), (4, 3, 1), (6, 0, 0)).nurbs()
+    assert n.degree == 3 and n.knots == [0, 0, 0, 0, 1, 1, 1, 1] and n.weights is None
+    assert n.points == [Vector(0, 0, 0), Vector(1, 3, 0), Vector(4, 3, 1), Vector(6, 0, 0)]
+    arc = CenterArc((0, 0, 0), 3, 0, 90).nurbs()  # an exact rational quadratic
+    assert arc.degree == 2 and arc.weights == pytest.approx([1, math.sqrt(0.5), 1])
+    assert arc.points[0] == Vector(3, 0, 0) and arc.points[-1] == Vector(0, 3, 0)
+    assert len(arc.knots) == len(arc.points) + arc.degree + 1
+    line = Line((1, 2, 3), (4, 5, 6)).nurbs()
+    assert line.degree == 1 and line.points == [Vector(1, 2, 3), Vector(4, 5, 6)]
+    e = Box(10, 10, 10).edges()[0]  # an edge of a part runs from its start to its end, also reversed
+    assert e.nurbs().points == [e.start, e.end] and e.reversed().nurbs().points == [e.end, e.start]

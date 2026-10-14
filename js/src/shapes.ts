@@ -10,6 +10,8 @@ import {
   TOLERANCE,
   Axis,
   BoundBox,
+  Hit,
+  Nurbs,
   Location,
   Plane,
   Vector,
@@ -30,7 +32,7 @@ import {
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
-import { tessellate, type Mesh } from './mesh.ts'
+import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
@@ -564,6 +566,43 @@ export class ShapeList<T = Shape> extends Array<T> {
     return filletFaces(this as unknown as Iterable<Face>, maxRadius) as unknown as ShapeList<T>
   }
 
+  /**
+   * The faces (or bodies) of the list that a ray meets, nearest first: each once, in the order the
+   * ray meets them (see `Part.raycast`). Only the shapes in the list count, so
+   * `part.faces().planar().hitBy(...)` looks past the faces that are not planar.
+   *
+   * The ray starts at `origin` and runs along `direction` (an axis or a vector); an axis alone is a
+   * ray from its origin along its direction. A ray through an edge meets the faces on both sides of it.
+   */
+  hitBy(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): ShapeList<T> {
+    for (const s of this) {
+      if (!(s instanceof Face || s instanceof _Body)) throw new TypeError(`hitBy takes faces and bodies, not a ${_typeName(s)}`)
+    }
+    const first = new Map<unknown, number>()
+    const faces = [...this].filter((s): s is T & Face => s instanceof Face)
+    if (faces.length) {
+      let box = faces[0].bbox()
+      for (const f of faces.slice(1)) box = box.union(f.bbox())
+      for (const h of _raycast(faces, origin, direction, box, false)) if (!first.has(h.face)) first.set(h.face, h.distance) // (nearest first)
+    }
+    for (const s of this) {
+      if (s instanceof _Body && !first.has(s)) {
+        const hits = s.raycast(origin, direction)
+        if (hits.length) first.set(s, hits[0].distance)
+      }
+    }
+    const met: [number, number, T][] = []
+    const seen = new Set<unknown>()
+    this.forEach((s, i) => {
+      if (first.has(s) && !seen.has(s)) {
+        seen.add(s)
+        met.push([first.get(s)!, i, s])
+      }
+    })
+    met.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    return _list(met.map((m) => m[2]))
+  }
+
   /** Shapes whose bounding box lies inside `box`. */
   within(box: BoundBox): ShapeList<T> {
     return this.filter((s) => {
@@ -1023,6 +1062,34 @@ export class Edge extends Shape {
     e._rev = !this._rev
     e._cache = this._cache
     return e
+  }
+
+  /**
+   * This edge as a NURBS curve, from its start to its end: degree, knots, control points and
+   * weights. Exact for lines, arcs (rational) and B-splines; other curves are approximated within
+   * 1e-7.
+   */
+  nurbs(): Nurbs {
+    const c = this._copyCurve()
+    let d: Any
+    try {
+      d = ext.curve_data(c, true)
+    } finally {
+      ext.delete_curve(c)
+    }
+    return new Nurbs(Number(d.degree), d.knots.map(Number), d.poles.map((p: number[]) => new Vector(p[0], p[1], p[2])),
+      d.weights == null ? null : d.weights.map(Number))
+  }
+
+  /**
+   * The same curve with the knots it does not need taken out: a B-spline with fewer control points
+   * (the kernel's knot removal, which keeps the curve within about 1e-6 of where it was). Lines,
+   * arcs and other analytic curves come back as they are.
+   */
+  removeKnots(): Edge {
+    const c = this._copyCurve()
+    kernelCall('removeKnots', () => k.remove_curve_knots(c))
+    return Edge._fromCurve(c)
   }
 
   _transformed(m: Matrix): Edge {
@@ -1499,6 +1566,11 @@ export class Face extends Shape {
     return Number(k.face_closest_point(this._f, p.toArray())[1])
   }
 
+  /** Where a ray meets this face, nearest first (see `Part.raycast`). */
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+    return _raycast([this], origin, direction, this.bbox())
+  }
+
   // -- topology -----------------------------------------------------------------------------
   _loops(): Wire[] {
     const loops: [number, boolean][][] = k.face_boundary_loops(this._f)
@@ -1707,6 +1779,19 @@ export class _Body extends Shape {
 
   closestPoint(point: VectorLike): Vector {
     return new Vector(k.brep_closest_point(this._brep, _vec(point).toArray())[0])
+  }
+
+  /**
+   * Where a ray meets this body's faces, nearest first: the exact points (`Hit`: point, distance
+   * from the start, the face, its outward normal there).
+   *
+   * The ray starts at `origin` and runs along `direction` (an axis or a vector); an axis alone is a
+   * ray from its origin along its direction. Points behind the start are not hits. A ray through an
+   * edge or a vertex hits once, a ray along a face where it enters the face. `hits[0]` is what the
+   * ray sees first; `hits.length` is odd from inside a closed part.
+   */
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+    return _raycast(this.faces(), origin, direction, this._looseBox())
   }
 
   // -- geometric queries --------------------------------------------------------------------
@@ -1948,6 +2033,120 @@ export function _bodies(items: unknown, name = 'combine'): _Body[] {
  * `inertia` is the inertia tensor about the center of mass (axes parallel to the world axes),
  * row by row; `principalMoments` and `principalAxes` are its eigen-decomposition.
  */
+function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: VectorLike | Axis | null, box: BoundBox, onePerPoint = true): Hit[] {
+  let o: Vector
+  let d: Vector
+  if (origin instanceof Axis && direction == null) {
+    o = origin.origin
+    d = origin.direction.normalized()
+  } else if (direction == null) {
+    throw new TypeError('raycast takes an origin and a direction, or an axis')
+  } else {
+    o = _vec(origin as VectorLike)
+    d = _direction(direction, 'raycast')
+  }
+  if (![o.x, o.y, o.z].every(Number.isFinite)) throw new RangeError('raycast: the origin must be finite')
+  const size = Math.max(box.diagonal, 1e-9)
+  let reach = -Infinity
+  for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+    reach = Math.max(reach, new Vector(x, y, z).sub(o).dot(d))
+  }
+  reach += 1e-3 * size
+  if (reach <= 0) return [] // the body is behind the start
+  const tol = 1e-9 * Math.max(size, o.length)
+  const hits: Hit[] = []
+  const meshes = new Map<unknown, Mesh[]>() // a body -> its faces' meshes (for faces the kernel cannot intersect)
+  kernelCall('raycast', () => {
+    const ray: number = k.create_line_segment(o.toArray(), o.add(d.mul(reach)).toArray())
+    try {
+      for (const f of faces) {
+        if (!_rayMeetsBox(o, d, reach, k.face_bounding_box(f._f, false), tol)) continue
+        let found: Vector[]
+        try {
+          const [curves, points]: [number[], number[][]] = k.intersect_curve_face(ray, f._f)
+          found = points.map((p) => new Vector(p))
+          for (const c of curves) { // the ray runs along the face: it meets it where it enters it
+            const ends = [new Vector(k.curve_start_point(c)), new Vector(k.curve_end_point(c))]
+            found.push(ends[0].sub(o).dot(d) <= ends[1].sub(o).dot(d) ? ends[0] : ends[1])
+            ext.delete_curve(c)
+          }
+        } catch (e) {
+          // The kernel fails where a ray runs parallel to a plane or along a cylinder without
+          // meeting it (and on some other faces): there the face's mesh finds the hits, and they
+          // are moved onto the exact surface.
+          if (!_isRuntimeError(e)) throw e
+          found = _meshHits(f, o, d, reach, tol, meshes)
+        }
+        for (const q of found) {
+          const t = q.sub(o).dot(d)
+          if (t >= -tol) hits.push(new Hit(q, Math.max(t, 0), f.normalAt(q), f))
+        }
+      }
+    } finally {
+      ext.delete_curve(ray)
+    }
+  })
+  hits.sort((a, b) => a.distance - b.distance)
+  if (!onePerPoint) return hits
+  const out: Hit[] = []
+  for (const h of hits) { // through an edge or a vertex: one hit
+    const last = out[out.length - 1]
+    if (!last || h.distance - last.distance > 10 * tol || h.point.sub(last.point).length > 10 * tol) out.push(h)
+  }
+  return out
+}
+
+/** The points where the ray crosses the mesh of face `f`, moved onto its exact surface. */
+function _meshHits(f: Face, o: Vector, d: Vector, reach: number, tol: number, meshes: Map<unknown, Mesh[]>): Vector[] {
+  const owner = f._owner!
+  if (!meshes.has(owner)) meshes.set(owner, faceMeshes(owner))
+  const [index] = ext.face_indices(owner._brep, [f._f])
+  const m = meshes.get(owner)![index]
+  const out: Vector[] = []
+  const [ts] = _rayTriangles(o, d, m.vertices, m.triangles, tol)
+  const srf = k.face_surface(f._f)
+  for (const t0 of ts.filter((t) => t <= reach).sort((a, b) => a - b)) {
+    if (out.length && Math.abs(t0 - out[out.length - 1].sub(o).dot(d)) < 1e-6 * Math.max(reach, 1)) continue // (an edge between two triangles)
+    let t = t0
+    for (let i = 0; i < 30; i++) { // Newton along the ray, against the tangent plane at the closest point
+      const p = o.add(d.mul(t))
+      const [q, uvs] = k.surface_closest_point(srf, p.toArray())
+      const n = new Vector(k.face_normal_at_uv(f._f, uvs[0][0], uvs[0][1]))
+      const dn = d.dot(n)
+      if (Math.abs(dn) < 1e-12) break
+      const step = new Vector(q).sub(p).dot(n) / dn
+      t += step
+      if (Math.abs(step) <= tol) break
+    }
+    const q = o.add(d.mul(t))
+    if (f.distanceTo(q) <= 100 * tol) out.push(q)
+  }
+  return out
+}
+
+function _rayMeetsBox(o: Vector, d: Vector, reach: number, box: [number[], number[]], tol: number): boolean {
+  const [lo, hi] = box
+  let t0 = 0
+  let t1 = reach
+  const oa = [o.x, o.y, o.z]
+  const da = [d.x, d.y, d.z]
+  for (let a = 0; a < 3; a++) {
+    const low = lo[a] - tol
+    const high = hi[a] + tol
+    if (Math.abs(da[a]) < 1e-300) {
+      if (oa[a] < low || oa[a] > high) return false
+      continue
+    }
+    let ta = (low - oa[a]) / da[a]
+    let tb = (high - oa[a]) / da[a]
+    if (ta > tb) [ta, tb] = [tb, ta]
+    t0 = Math.max(t0, ta)
+    t1 = Math.min(t1, tb)
+    if (t0 > t1) return false
+  }
+  return true
+}
+
 export class MassProperties {
   readonly mass: number
   readonly volume: number
@@ -2168,6 +2367,49 @@ export class Part extends _Body {
   solids(): ShapeList<Part> {
     const parts: number[] = kernelCall('solids', () => ext.separate_bodies(this._brep))
     return _list(parts.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
+  }
+
+  /**
+   * This part and others as one part made of cells. Where parts overlap, the overlap becomes a
+   * cell of its own; cells that touch share the faces between them (each such face bounds two
+   * cells: the body is non-manifold). For simulation meshes that must match across materials, and
+   * for models of several materials.
+   *
+   * `cells()` gives the cells as parts of their own; `volume` is the volume of the union. A merged
+   * part is not a manifold solid: `isValid()` is false, and Booleans, fillets and shells take its
+   * cells rather than the part itself.
+   */
+  merge(...others: unknown[]): Part {
+    const tools = _bodies(others, 'merge')
+    if (!tools.length) throw new RangeError('merge needs another part')
+    for (const t of tools) {
+      if (!(t instanceof Part) || t instanceof Sketch) throw new TypeError(`merge takes parts, not a ${_typeName(t)}`)
+    }
+    let h = new BrepHandle(this._copyBrep())
+    for (const t of tools) {
+      const r: number = kernelCall('merge', () => k.non_manifold_boolean(_take(h), t._copyBrep(), { operation: k.BooleanOp.MERGE }),
+        'the parts may only touch along an edge or at a point')
+      h = new BrepHandle(r)
+    }
+    return Part._wrap(_take(h), { name: this.name, color: this.color })
+  }
+
+  /**
+   * The cells of a part made by `merge`, each as a part of its own (every closed region of the
+   * body; a cavity is not a cell). A part that is one solid: `[itself]`.
+   */
+  cells(): ShapeList<Part> {
+    const d = ext.brep_dump(this._brep, false)
+    if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
+    const regions: number[][] = kernelCall('cells', () => ext.region_shells(this._brep))
+    const out = new ShapeList<Part>()
+    for (const shells of regions) {
+      const [outer, ...cavities] = shells.map((b) => Part._wrap(b, { name: this.name, color: this.color }))
+      const part = cavities.length ? outer.cut(cavities) : outer
+      if (!part.isValid()) throw new ModelingError(`cells: a cell is not a sound solid (${part._solidProblem()})`)
+      out.push(part)
+    }
+    return out
   }
 
   // -- booleans -----------------------------------------------------------------------------

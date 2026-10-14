@@ -40,6 +40,13 @@ jobs:
         if: runner.os != 'Windows'
         continue-on-error: true
         run: pip install cadquery-ocp-novtk
+      - name: OpenUSD for the USD cross-checks
+        continue-on-error: true
+        run: pip install usd-core
+      - name: NVIDIA's usd-brep for the USD round trips (its wheels are for Python 3.12 on Linux and Windows)
+        if: runner.os == 'Linux' && matrix.python == '3.12'
+        continue-on-error: true
+        run: pip install usd-brep
       - name: Test
         run: pytest -q
 

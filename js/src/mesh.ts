@@ -1,7 +1,7 @@
 // Triangle meshes: tessellation of exact shapes, mesh Booleans, mesh files.
 
 import { ModelingError, PolyHandle, ext, k, kernelCall } from './kernel.ts'
-import { BoundBox, Vector, _formatG } from './geometry.ts'
+import { Axis, BoundBox, Hit, Vector, _direction, _formatG, _vec, type VectorLike } from './geometry.ts'
 import { Face, ShapeList, _Body, _typeName, type Shape } from './shapes.ts'
 import { exportFile } from './exporters.ts'
 
@@ -109,18 +109,27 @@ export class Mesh {
   }
 
   // -- mesh Booleans (kernel polygon Booleans) ----------------------------------------------
+  /**
+   * The kernel's mesh of this one: from the tessellation, or built from the triangles (meshes read
+   * from files or made from arrays), stitched along the edges they share.
+   */
   _polyBrep(): number {
     if (this._poly !== null && this._poly.poly) return this._poly.poly
-    throw new TypeError('mesh Booleans need meshes produced by tessellate()')
+    if (!this.triangles.length) throw new RangeError('mesh Booleans need triangles: this mesh has none')
+    const poly: number = kernelCall('mesh', () => ext.poly_from_triangles(this.vertices, this.triangles), 'the mesh may have no triangle with an area')
+    this._poly = new PolyHandle(poly)
+    return poly
   }
 
   _bool(other: Mesh, op: number, name: string): Mesh {
     const r = kernelCall(`mesh ${name}`, () => {
       const a = k.poly_copy(this._polyBrep())
       const b = k.poly_copy(other._polyBrep())
-      return k.poly_boolean(a, b, op)
+      const r = k.poly_boolean(a, b, op)
+      ext.triangulate_poly(r) // (its polygons with holes: the mesh arrays take only outer loops)
+      return r
     })
-    const result = Mesh._fromPoly(r)
+    const result = Mesh._fromPoly(r, false) // (the kernel gives a Boolean's result no normals)
     // The kernel's mesh Booleans often return open or wrong meshes (faces that should get a hole
     // stay whole). Check what can be checked: closed, and a volume the operation can give.
     const va = this.volume
@@ -183,6 +192,40 @@ export class Mesh {
     return open
   }
 
+  /**
+   * Where a ray meets the mesh's triangles, nearest first (`Hit`: point, distance from the start,
+   * the triangle's normal and its index `triangle`). As `Part.raycast`, on the triangles instead
+   * of the exact faces.
+   */
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+    let o: Vector
+    let d: Vector
+    if (origin instanceof Axis && direction == null) {
+      o = origin.origin
+      d = origin.direction.normalized()
+    } else if (direction == null) {
+      throw new TypeError('raycast takes an origin and a direction, or an axis')
+    } else {
+      o = _vec(origin as VectorLike)
+      d = _direction(direction, 'raycast')
+    }
+    if (!this.triangles.length) return []
+    const b = this.bbox()
+    const size = b.max.sub(b.min).length
+    const tol = 1e-9 * Math.max(size, o.length, 1e-300)
+    const [ts, tris] = _rayTriangles(o, d, this.vertices, this.triangles, tol)
+    const normals = this.triangleNormals
+    const order = Array.from(ts.keys()).sort((i, j) => ts[i] - ts[j] || tris[i] - tris[j])
+    const out: Hit[] = []
+    for (const i of order) {
+      const t = ts[i]
+      if (out.length && t - out[out.length - 1].distance <= 1e-9 * Math.max(size, 1)) continue // (through an edge or a corner: one hit)
+      const n = tris[i]
+      out.push(new Hit(o.add(d.mul(Math.max(t, 0))), Math.max(t, 0), new Vector(normals[3 * n], normals[3 * n + 1], normals[3 * n + 2]), null, n))
+    }
+    return out
+  }
+
   /** True if every edge of the mesh is shared by exactly two triangles (a watertight mesh). */
   isClosed(): boolean {
     return this._openEdgeCount() === 0
@@ -243,6 +286,39 @@ export class Mesh {
 
 /** A VTK-style polygon list (n, i0, ..., n, ...) as triangles (a fan per polygon) and, per
  * triangle corner, the index of its polygon corner. */
+/**
+ * Where the ray o + t d (t >= 0) crosses triangles (Moeller-Trumbore): the distances t and the
+ * indices of the triangles.
+ */
+export function _rayTriangles(o: Vector, d: Vector, vertices: ArrayLike<number>, triangles: ArrayLike<number>, tol: number): [number[], number[]] {
+  const ts: number[] = []
+  const tris: number[] = []
+  const v = vertices
+  const eps = 1e-9
+  for (let i = 0; i + 2 < triangles.length; i += 3) {
+    const a = triangles[i] * 3
+    const b = triangles[i + 1] * 3
+    const c = triangles[i + 2] * 3
+    const e1 = [v[b] - v[a], v[b + 1] - v[a + 1], v[b + 2] - v[a + 2]]
+    const e2 = [v[c] - v[a], v[c + 1] - v[a + 1], v[c + 2] - v[a + 2]]
+    const p = [d.y * e2[2] - d.z * e2[1], d.z * e2[0] - d.x * e2[2], d.x * e2[1] - d.y * e2[0]]
+    const det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2]
+    const scale = Math.hypot(e1[0], e1[1], e1[2]) * Math.hypot(e2[0], e2[1], e2[2])
+    if (!(Math.abs(det) > 1e-12 * (scale > 0 ? scale : 1))) continue
+    const inv = 1 / det
+    const s = [o.x - v[a], o.y - v[a + 1], o.z - v[a + 2]]
+    const u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv
+    const q = [s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0]]
+    const w = (q[0] * d.x + q[1] * d.y + q[2] * d.z) * inv
+    const t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv
+    if (u >= -eps && w >= -eps && u + w <= 1 + eps && t >= -tol) {
+      ts.push(t)
+      tris.push(i / 3)
+    }
+  }
+  return [ts, tris]
+}
+
 export function _triangulate(faces: ArrayLike<number>): [Uint32Array, Uint32Array] {
   const n = faces.length
   // fast path: all triangles

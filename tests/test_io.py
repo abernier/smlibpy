@@ -1,5 +1,9 @@
+import importlib.util
 import math
 import struct
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -112,3 +116,125 @@ def test_render_png(tmp_path, plate):
     assert (tmp_path / "plate.png").read_bytes() == data
     sheet = render(plate, Spline((0, 0, 20), (30, 20, 30)), view="sheet", size=(400, 300))
     assert struct.unpack(">II", sheet[16:24]) == (400, 300)
+
+
+# -- USD ---------------------------------------------------------------------------------------------
+USD_SAMPLES = Path(__file__).resolve().parent.parent / "third_party" / "usd-brep" / "TestFiles"
+
+
+@pytest.mark.parametrize("name, shape", [
+    ("box", lambda: Box(10, 20, 30)),
+    ("ball", lambda: Sphere(5)),
+    ("ring", lambda: Torus(10, 3)),
+    ("narrowing", lambda: Cone(5, 2, 10)),  # (a negative semi-angle in SMLib)
+    ("rounded", lambda: Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)),  # (cylinders as cones of angle 0)
+    ("countersunk", lambda: Box(30, 30, 10) - Cone(6, 3, 3).translate((0, 0, 3.5)) - Cylinder(3, 10)),
+    ("cup", lambda: Box(30, 30, 30).shell(2, openings=Box(30, 30, 30).faces().top())),
+])
+def test_usd_roundtrip_is_exact(tmp_path, name, shape):
+    part = shape()
+    export_usd(part.named(name), tmp_path / "part.usda")
+    back = import_usd(tmp_path / "part.usda")
+    assert isinstance(back, Part) and back.name == name and back.is_valid()
+    assert len(back.faces()) == len(part.faces())
+    assert back.volume == pytest.approx(part.volume, rel=1e-12)
+    assert [f.geom_type for f in back.faces()] == [f.geom_type for f in part.faces()]
+
+
+def test_usd_names_colors_sheets_cells_and_meshes(tmp_path, plate):
+    sheet = surface([[(x * 10, y * 10, 3 * ((x - 2) ** 2 - (y - 2) ** 2) / 4) for x in range(5)] for y in range(5)])
+    cells = Box(10, 10, 10).merge(Sphere(4).translate((0, 0, 5)))
+    export([plate, sheet.named("sheet"), cells.named("cells")], tmp_path / "all.usda")
+    back = load(tmp_path / "all.usda")
+    assert [b.name for b in back] == ["plate", "sheet", "cells"]
+    assert back[0].color == pytest.approx((70 / 255, 130 / 255, 180 / 255))  # steelblue
+    assert isinstance(back[1], Shell) and not isinstance(back[1], Part)
+    assert back[1].area == pytest.approx(sheet.area, rel=1e-12)
+    assert sorted(c.volume for c in back[2].cells()) == pytest.approx(sorted(c.volume for c in cells.cells()), rel=1e-9)
+    text = (tmp_path / "all.usda").read_text()
+    assert text.startswith("#usda 1.0") and 'upAxis = "Z"' in text and "metersPerUnit = 0.001" in text
+    assert text.count("def BrepArray") == 3 and "def Mesh" not in text
+    export_usd([plate, plate.mesh()], tmp_path / "meshes.usda", mesh=True)
+    text = (tmp_path / "meshes.usda").read_text()
+    assert text.count("def BrepArray") == 1 and text.count("def Mesh") == 2 and "normal3f[] normals" in text
+    assert load(tmp_path / "meshes.usda").volume == pytest.approx(plate.volume, rel=1e-12)  # (meshes are not read)
+
+
+def test_usd_rejects_what_it_cannot_read(tmp_path, plate):
+    with pytest.raises(ValueError, match="usdcat"):
+        export_usd(plate, tmp_path / "plate.usdc")
+    (tmp_path / "binary.usdc").write_bytes(b"PXR-USDC" + bytes(100))
+    with pytest.raises(ValueError, match="binary"):
+        import_usd(tmp_path / "binary.usdc")
+    (tmp_path / "none.usda").write_text('#usda 1.0\ndef Xform "World"\n{\n}\n')
+    with pytest.raises(ValueError, match="no BrepArray"):
+        import_usd(tmp_path / "none.usda")
+    good = tmp_path / "good.usda"
+    export_usd(plate, good)
+    broken = good.read_text().replace("uniform uint[] faceuse:faceIndex = [", "uniform uint[] faceuse:faceIndex = [99, ")
+    (tmp_path / "broken.usda").write_text(broken)
+    with pytest.raises(ValueError, match="malformed"):
+        import_usd(tmp_path / "broken.usda")
+
+
+@pytest.mark.skipif(not USD_SAMPLES.is_dir(), reason="usd-brep's test files are not checked out")
+def test_usd_reads_usd_brep_files():
+    # their files of good bodies, and their validator's files of broken ones: each gives bodies or a
+    # ValueError that names what is wrong, none crashes
+    good = {"Cube.usda": 1, "CubeBrepArray.usda": 2, "sphere_nurbs.usda": 1, "cubeWithVoid.usda": 1, "mouse.usda": 1,
+            "RevitWallHealerCrash.usda": 1, "Cone_SmConnect_Brep.usda": 1}
+    seen = 0
+    for path in sorted(USD_SAMPLES.rglob("*.usda")):
+        text = path.read_text(errors="replace")
+        if "def BrepArray" not in text or text.startswith("version https://git-lfs"):
+            continue
+        if path.name in good:
+            bodies = import_usd(path)
+            bodies = bodies if isinstance(bodies, ShapeList) else [bodies]
+            assert len(bodies) == good[path.name] and all(b.is_valid() for b in bodies), path.name
+            seen += 1
+        else:
+            try:
+                import_usd(path)
+            except ValueError:
+                pass
+    assert seen == len(good)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("pxr") is None, reason="OpenUSD (usd-core) is not installed")
+def test_usd_opens_in_openusd(tmp_path, plate):
+    from pxr import Usd, UsdGeom
+
+    export_usd([plate, Sphere(5).named("ball")], tmp_path / "parts.usda", mesh=True)
+    stage = Usd.Stage.Open(str(tmp_path / "parts.usda"))
+    prims = {str(p.GetPath()): p.GetTypeName() for p in stage.Traverse()}
+    assert prims == {"/World": "Xform", "/World/plate": "BrepArray", "/World/plate_mesh": "Mesh",
+                     "/World/ball": "BrepArray", "/World/ball_mesh": "Mesh"}
+    assert UsdGeom.GetStageUpAxis(stage) == "Z" and UsdGeom.GetStageMetersPerUnit(stage) == pytest.approx(0.001)
+    brep = stage.GetPrimAtPath("/World/plate")
+    spec = stage.GetRootLayer().GetPrimAtPath("/World/plate")
+    assert "BrepSurfaceCylinderAPI" in spec.GetInfo("apiSchemas").prependedItems
+    assert len(brep.GetAttribute("face:surfaceType").Get()) == len(plate.faces())
+    mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/plate_mesh"))
+    assert len(mesh.GetFaceVertexCountsAttr().Get()) == len(plate.mesh().triangles)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("usd_brep") is None, reason="NVIDIA's usd-brep is not installed")
+def test_usd_files_go_both_ways_with_usd_brep(tmp_path, plate):
+    # usd-brep reads what smlibpy writes, smlibpy what usd-brep writes (in a process of its own:
+    # the two packages each hold a copy of the kernel)
+    export_usd(plate, tmp_path / "ours.usda")
+    script = (
+        "import sys, usd_brep\n"
+        "(brep,) = usd_brep.usd.import_breps(sys.argv[1])\n"
+        "print(brep.volume(1e-9), len(brep.faces()))\n"
+        "box = usd_brep.primitives.create_box((0.0, 0.0, 0.0), 10.0, 20.0, 30.0)\n"
+        "usd_brep.usd.export_brep(box, sys.argv[2])\n"
+    )
+    out = subprocess.run([sys.executable, "-c", script, str(tmp_path / "ours.usda"), str(tmp_path / "theirs.usda")],
+                         capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr
+    volume, faces = out.stdout.split()
+    assert float(volume) == pytest.approx(plate.volume, rel=1e-6) and int(faces) == len(plate.faces())
+    box = import_usd(tmp_path / "theirs.usda")
+    assert box.is_valid() and box.volume == pytest.approx(6000, rel=1e-12)

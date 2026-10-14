@@ -357,9 +357,9 @@ class _Worker:
         if not items:
             return {"ok": False, "error": "nothing to save: no part or shell yet, and show(...) chose nothing"}
         ext = {"step": ".step", "stp": ".step", "stl": ".stl", "glb": ".glb", "gltf": ".gltf", "obj": ".obj",
-               "smb": ".smb", "png": ".png", "dxf": ".dxf"}.get(format.lower())
+               "usd": ".usda", "usda": ".usda", "smb": ".smb", "png": ".png", "dxf": ".dxf"}.get(format.lower())
         if ext is None:
-            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, smb, png or dxf"}
+            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, usd, smb, png or dxf"}
         if path is None:
             base = items[0][0] if len(items) == 1 else "model"
             path = os.path.join(tempfile.gettempdir(), "smlibpy-files", base + ext)

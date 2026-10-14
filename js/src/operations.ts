@@ -381,6 +381,18 @@ export function split(part: Part, plane: Plane | Face, keep: 'above' | 'below' |
   return keep === 'both' ? part.split(plane, 'both') : part.split(plane, keep)
 }
 
+/**
+ * Parts as one part made of cells: overlaps become cells of their own, touching cells share their
+ * faces (see `Part.merge`; `cells()` gives them as parts).
+ */
+export function merge(...parts: (Part | Iterable<Part>)[]): Part {
+  const flat: unknown[] = []
+  for (const p of parts) flat.push(...(p instanceof Part || !(Symbol.iterator in Object(p)) ? [p] : Array.from(p as Iterable<Part>)))
+  if (flat.length < 2) throw new RangeError(`merge needs two or more parts, got ${flat.length}`)
+  if (!(flat[0] instanceof Part)) throw new TypeError(`merge takes parts, not a ${_typeName(flat[0])}`)
+  return flat[0].merge(...flat.slice(1))
+}
+
 /** Cross-section of a part (see `Part.section`). */
 export function section(part: Part, plane: Plane | Face = Plane.XY): Sketch {
   return part.section(plane)

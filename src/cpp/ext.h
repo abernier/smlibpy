@@ -27,3 +27,9 @@ void bind_face_draft(py::module_& m);
 void bind_measure(py::module_ m);
 // Tessellation that halves the faces of bodies with twisted faces (tessellate.cpp).
 void bind_tessellate(py::module_ m);
+// Surfaces fitted to point clouds, kernel meshes from triangles (fit.cpp).
+void bind_fit(py::module_ m);
+// The cells of a non-manifold body (cells.cpp).
+void bind_cells(py::module_ m);
+// USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
+void bind_usd_files(py::module_ m);

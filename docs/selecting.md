@@ -26,9 +26,21 @@ part.faces().cylinders().one().radius         # 6.0
 | `nearest(point)` | the shape closest to a point |
 | `at(point)` | shapes passing through a point |
 | `within(bbox)` | shapes inside a box |
+| `hit_by(origin, direction)` | the faces (or bodies) a ray meets, nearest first |
 
 Position selectors compare shape centers and return every shape that ties, so
 `box.faces().top()` is one face but `box.edges().top()` is the four top edges.
+
+`hit_by` selects with a ray: the faces it meets, each once, in the order it meets them. Only the
+faces in the list count, so it chains with the other selectors, and `.first` is what the ray
+sees first:
+
+```python
+part = Box(40, 30, 20) - Cylinder(5, 30)
+part.faces().hit_by((-50, 0, 0), (1, 0, 0))              # the -X face, the hole's wall, the +X face
+seen = part.faces().hit_by(Axis((10, 8, 50), (0, 0, -1))).first   # looking down: the top face
+part = part.fillet(seen.edges(), 2)
+```
 
 ## By geometry
 

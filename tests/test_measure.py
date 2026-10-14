@@ -272,3 +272,75 @@ def test_lengths_of_curves():
     for f in (0.1, 0.37, 0.5, 0.83):  # point_at runs proportional to arc length
         t = np.interp(f * s[-1], s, ts[::2])
         assert spline.point_at(f).distance_to(Vector(ext.curve_eval(c, t, 0)[0])) < 1e-5
+
+
+# -- rays ------------------------------------------------------------------------
+def test_raycast_finds_exact_points_nearest_first():
+    part = Box(10, 10, 10) - Cylinder(3, 10)
+    hits = part.raycast((-20, 0, 0), (1, 0, 0))
+    assert [h.point for h in hits] == [Vector(-5, 0, 0), Vector(-3, 0, 0), Vector(3, 0, 0), Vector(5, 0, 0)]
+    assert [h.distance for h in hits] == pytest.approx([15, 17, 23, 25], abs=1e-9)
+    assert [h.face.geom_type for h in hits] == ["plane", "cylinder", "cylinder", "plane"]
+    # normals point out of the material: into the hole on its wall
+    assert [h.normal for h in hits] == [Vector(-1, 0, 0), Vector(1, 0, 0), Vector(-1, 0, 0), Vector(1, 0, 0)]
+    # an axis is a ray; behind the start nothing counts
+    assert part.raycast(Axis((4, 4, 50), (0, 0, -1)))[0].point == Vector(4, 4, 5)
+    assert part.raycast((-20, 0, 0), (-1, 0, 0)) == []
+    # from inside the material: an odd number of hits
+    assert len(part.raycast((0, 4, 0), (0, 0, 1))) == 1
+
+
+def test_raycast_where_the_kernel_finds_no_crossing():
+    part = Box(10, 10, 10) - Cylinder(3, 10)
+    # down the hole (along the cylinder, parallel to the side faces): nothing
+    assert part.raycast(Axis((0, 0, 50), (0, 0, -1))) == []
+    # along a face: where the ray enters it
+    hits = part.raycast((-20, 5, 0), (1, 0, 0))
+    assert hits[0].point == Vector(-5, 5, 0)
+    # through corners: one hit each
+    hits = part.raycast((-10, -10, -10), (1, 1, 1))
+    s = math.sqrt(3)
+    assert [h.distance for h in hits] == pytest.approx([5 * s, (10 - 3 / math.sqrt(2)) * s,
+                                                        (10 + 3 / math.sqrt(2)) * s, 15 * s], abs=1e-6)
+
+
+def test_hit_by_selects_what_a_ray_meets():
+    part = Box(40, 30, 20) - Cylinder(5, 30)
+    met = part.faces().hit_by((-50, 0, 0), (1, 0, 0))
+    assert [f.geom_type for f in met] == ["plane", "cylinder", "plane"]  # the hole's wall once
+    assert [f.center().x for f in met] == [pytest.approx(-20), pytest.approx(0, abs=1e-9), pytest.approx(20)]
+    # it chains: only the faces in the list count, the others are looked past
+    assert [f.geom_type for f in part.faces().planar().hit_by((-50, 0, 0), (1, 0, 0))] == ["plane", "plane"]
+    assert part.faces().hit_by(Axis((10, 8, 50), (0, 0, -1))).first.center() == Vector(0, 0, 10)
+    assert part.faces().hit_by((0, 0, 50), (0, 0, -1)) == []  # down the hole
+    # through an edge: the faces on both sides
+    box = Box(10, 10, 10)
+    corners = box.faces().hit_by((-20, -20, 0), (1, 1, 0))
+    def at(faces):
+        return sorted(tuple(round(c, 9) + 0.0 for c in f.center().to_tuple()) for f in faces)
+
+    assert at(corners[:2]) == [(-5, 0, 0), (0, -5, 0)] and at(corners[2:]) == [(0, 5, 0), (5, 0, 0)]
+    # bodies: which part of an assembly a ray meets first
+    parts = ShapeList([Box(5, 5, 5).translate(x, 0, 0).named(f"b{x}") for x in (0, 20, 40)])
+    assert [p.name for p in parts.hit_by((100, 0, 0), (-1, 0, 0))] == ["b40", "b20", "b0"]
+    assert parts.hit_by((100, 50, 0), (-1, 0, 0)) == []
+    with pytest.raises(TypeError, match="faces and bodies"):
+        box.edges().hit_by((0, 0, 50), (0, 0, -1))
+    with pytest.raises(TypeError, match="axis"):
+        box.faces().hit_by((0, 0, 0))
+
+
+def test_raycast_on_faces_and_meshes():
+    ball = Sphere(5)
+    hits = ball.faces()[0].raycast((3, 0, 20), (0, 0, -1))
+    assert [h.point for h in hits] == [Vector(3, 0, 4), Vector(3, 0, -4)]
+    assert hits[0].normal == Vector(0.6, 0, 0.8)
+    mesh = ball.mesh(0.01)
+    near = mesh.raycast((3, 0, 20), (0, 0, -1))
+    assert len(near) == 2 and near[0].triangle is not None and near[0].face is None
+    assert near[0].point.z == pytest.approx(4, abs=0.02)
+    assert near[0].normal.dot(Vector(0.6, 0, 0.8)) > 0.99
+    with pytest.raises(TypeError, match="axis"):
+        ball.raycast((0, 0, 0))
+    with pytest.raises(ValueError, match="zero"):
+        ball.raycast((0, 0, 0), (0, 0, 0))

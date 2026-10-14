@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Axis, Location, Plane, Pos, Rot, Vector, X, Y, Z } from '../src/index.ts'
 import { approx, same } from './_approx.ts'
+import { Bezier, Box, CenterArc, type Edge, Line, Spline, makeCompatible } from '../src/index.ts'
 
 test('vector algebra', () => {
   const a = new Vector(1, 2, 3)
@@ -54,4 +55,48 @@ test('axis helpers', () => {
   assert.ok(X.isParallel([-1, 0, 0]))
   approx(Z.distanceTo([3, 4, 10]), 5)
   approx(Y.positionAlong([0, 7, 0]), 7)
+})
+
+test('curve tools', () => {
+  const a = Bezier([0, 0, 0], [1, 3, 0], [4, 3, 1], [6, 0, 0])
+  const b = Spline([0, 0, 5], [2, 1, 5], [3, -1, 5], [4, 2, 5], [6, 0, 5])
+  const arc = CenterArc([3, 0, 10], 3, 180, 180)
+  const out = makeCompatible(a, [b, arc], Line([0, 0, 15], [6, 0, 15]))
+  const data = out.map((e) => e.nurbs())
+  assert.equal(new Set(data.map((d) => d.points.length)).size, 1)
+  assert.equal(new Set(data.map((d) => d.degree)).size, 1)
+  for (const d of data) d.knots.forEach((x, i) => approx(x, data[0].knots[i], 0, 1e-12))
+  assert.ok(out.every((e) => e.geomType === 'bspline'))
+  ;[a, b, arc].forEach((src, i) => {
+    for (let t = 0; t <= 1; t += 0.05) assert.ok(src.distanceTo(out[i].pointAt(t)) < 1e-9)
+  })
+  // the Bezier's copy carries the knots of the others; it needs none of them
+  assert.ok(out[0].nurbs().points.length > 4)
+  const simple = out[0].removeKnots()
+  assert.equal(simple.nurbs().points.length, 4)
+  for (let t = 0; t <= 1; t += 0.05) assert.ok(a.distanceTo(simple.pointAt(t)) < 1e-6)
+  assert.equal(Line([0, 0, 0], [1, 0, 0]).removeKnots().geomType, 'line')
+  assert.throws(() => makeCompatible(a), /two or more/)
+  assert.throws(() => makeCompatible(a, Spline([0, 0], [1, 1], [2, 0]).add(Line([2, 0], [3, 0])) as unknown as Edge), /not a Wire \(pass wire\.edges\(\)\)/)
+})
+
+test('edges as NURBS', () => {
+  const points = (ps: Vector[], expected: unknown[]): void => {
+    assert.equal(ps.length, expected.length)
+    ps.forEach((q, i) => same(q, expected[i]))
+  }
+  const n = Bezier([0, 0, 0], [1, 3, 0], [4, 3, 1], [6, 0, 0]).nurbs()
+  assert.equal(n.degree, 3)
+  assert.deepEqual(n.knots, [0, 0, 0, 0, 1, 1, 1, 1])
+  assert.equal(n.weights, null)
+  points(n.points, [[0, 0, 0], [1, 3, 0], [4, 3, 1], [6, 0, 0]])
+  const arc = CenterArc([0, 0, 0], 3, 0, 90).nurbs() // an exact rational quadratic
+  assert.equal(arc.degree, 2)
+  arc.weights!.forEach((w, i) => approx(w, [1, Math.sqrt(0.5), 1][i]))
+  same(arc.points[0], [3, 0, 0])
+  same(arc.points[arc.points.length - 1], [0, 3, 0])
+  assert.equal(arc.knots.length, arc.points.length + arc.degree + 1)
+  const e = Box(10, 10, 10).edges()[0] // an edge of a part runs from its start to its end, also reversed
+  points(e.nurbs().points, [e.start, e.end])
+  points(e.reversed().nurbs().points, [e.end, e.start])
 })

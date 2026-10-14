@@ -9,6 +9,7 @@ DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
 glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
 OBJ       ``.obj``                                             write
+USD       ``.usda``, ``.usd`` (exact: BrepArray prims, as text)  read/write
 ========  ===================================================  ==========
 """
 
@@ -72,8 +73,12 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         from .dxf import export_dxf
 
         export_dxf(shapes, p, **kwargs)
+    elif ext in (".usda", ".usd", ".usdc", ".usdz"):
+        from .usd import export_usd
+
+        export_usd(shapes, p, **kwargs)
     else:
-        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf")
+        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda")
 
 
 def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None) -> None:
@@ -386,9 +391,9 @@ def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> No
 
 
 def load(path: str | os.PathLike[str]) -> Any:
-    """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``) and
-    SMLib (``.smb``) give exact parts, DXF (``.dxf``) a :class:`Sketch` of the drawing's
-    outlines, STL a :class:`Mesh`.
+    """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``), USD
+    (``.usda``) and SMLib (``.smb``) give exact parts, DXF (``.dxf``) a :class:`Sketch` of the
+    drawing's outlines, STL a :class:`Mesh`.
 
     A STEP file with one body gives that part, one with several a :class:`ShapeList`. A
     native file that encloses no volume comes back as a :class:`Shell`.
@@ -406,8 +411,12 @@ def load(path: str | os.PathLike[str]) -> Any:
         from .dxf import import_dxf
 
         return import_dxf(path)
+    if ext_ in (".usda", ".usd", ".usdc", ".usdz"):
+        from .usd import import_usd
+
+        return import_usd(path)
     if ext_ != ".smb":
-        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl, .smb and .dxf")
+        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl, .smb, .dxf and .usda")
     if not os.path.exists(os.fspath(path)):
         raise FileNotFoundError(os.fspath(path))
     with kernel_call("load"):

@@ -780,6 +780,50 @@ Plane.left = new Plane([0, 0, 0], [0, -1, 0], [-1, 0, 0])
 
 // -------------------------------------------------------------------------------- BoundBox
 /** An axis-aligned bounding box. */
+/**
+ * Where a ray meets a shape or a mesh (see `raycast`).
+ *
+ * - `point`: the point where the ray meets the surface.
+ * - `distance`: how far along the ray, from its start.
+ * - `normal`: the outward unit normal of the surface there (of the face, or the triangle).
+ * - `face`: the face that was hit (shapes), or `null`.
+ * - `triangle`: the index of the triangle that was hit (meshes), or `null`.
+ */
+export class Hit {
+  readonly point: Vector
+  readonly distance: number
+  readonly normal: Vector
+  readonly face: any // (a Face of shapes.ts, or null: typed loosely here, where shapes are not known)
+  readonly triangle: number | null
+
+  constructor(point: Vector, distance: number, normal: Vector, face: any = null, triangle: number | null = null) {
+    this.point = point
+    this.distance = distance
+    this.normal = normal
+    this.face = face
+    this.triangle = triangle
+  }
+}
+
+/**
+ * A curve as a NURBS (see `Edge.nurbs`): the degree, the knot vector (every knot as often as its
+ * multiplicity, `points.length + degree + 1` of them), the control points and the weight of each
+ * (`null` for a non-rational curve).
+ */
+export class Nurbs {
+  readonly degree: number
+  readonly knots: number[]
+  readonly points: Vector[]
+  readonly weights: number[] | null
+
+  constructor(degree: number, knots: number[], points: Vector[], weights: number[] | null = null) {
+    this.degree = degree
+    this.knots = knots
+    this.points = points
+    this.weights = weights
+  }
+}
+
 export class BoundBox {
   min: Vector
   max: Vector

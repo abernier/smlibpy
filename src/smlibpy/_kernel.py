@@ -74,7 +74,7 @@ class BrepHandle:
         self.props = None
 
     def __del__(self) -> None:
-        b, self.brep = self.brep, None
+        b, self.brep = getattr(self, "brep", None), None  # (none: __init__ raised)
         if b is not None and ext is not None:
             try:
                 ext.delete_brep(b)
@@ -93,7 +93,7 @@ class CurveHandle:
         self.curve = curve
 
     def __del__(self) -> None:
-        c, self.curve = self.curve, None
+        c, self.curve = getattr(self, "curve", None), None  # (none: __init__ raised)
         if c is not None and ext is not None:
             try:
                 ext.delete_curve(c)
@@ -112,7 +112,7 @@ class SurfaceHandle:
         self.surface = surface
 
     def __del__(self) -> None:
-        s, self.surface = self.surface, None
+        s, self.surface = getattr(self, "surface", None), None  # (none: __init__ raised)
         if s is not None and ext is not None:
             try:
                 ext.delete_surface(s)

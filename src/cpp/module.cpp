@@ -27,8 +27,8 @@ SMLIBPY_OPNEW_ATTR void* SmPolyVertex::operator new(size_t sz) { return smos_Mal
 SMLIBPY_OPNEW_ATTR void* SmPolyEdge::operator new(size_t sz) { return smos_Malloc(sz); }
 SMLIBPY_OPNEW_ATTR void* SmPolyFace::operator new(size_t sz) { return smos_Malloc(sz); }
 
-// SmPyUsd.cpp is not compiled (no OpenUSD dependency); the spine below does not call it.
-void bind_usd(py::module_&) {}
+// SmPyUsd.cpp is not compiled (no OpenUSD dependency); the spine below does not call it. (smlibpy's own USD
+// reading and writing is ext.usd_text / ext.usd_read, usd.cpp.)
 
 PYBIND11_MODULE(_core, m)
 {
@@ -91,4 +91,7 @@ PYBIND11_MODULE(_core, m)
     bind_draft(m);
     bind_face_draft(m);
     bind_measure(m.attr("ext").cast<py::module_>());
+    bind_fit(m.attr("ext").cast<py::module_>());
+    bind_cells(m.attr("ext").cast<py::module_>());
+    bind_usd_files(m.attr("ext").cast<py::module_>());
 }

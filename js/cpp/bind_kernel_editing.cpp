@@ -59,9 +59,21 @@ uintptr_t boolean_2d(uintptr_t brep1, uintptr_t brep2, int operation)
     return ptr(r);
 }
 
+// Non-manifold results allowed (cells sharing faces: Part.merge). Consumes both as boolean.
+// operation: BooleanOp (keyword-only in Python).
+uintptr_t non_manifold_boolean(uintptr_t brep1, uintptr_t brep2, int operation)
+{
+    const SmBooleanOperationType op = one_of<SmBooleanOperationType>(
+        operation, {SM_BO_UNION, SM_BO_DIFFERENCE, SM_BO_INTERSECTION, SM_BO_MERGE}, "operation (BooleanOp)");
+    SmBrep* r = nullptr;
+    SMJS_CHECK(SmApiNonManifoldBoolean(brep(brep1), brep(brep2), op, r));
+    return ptr(r);
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_booleans)
 {
     function("boolean", &boolean_op);
+    function("non_manifold_boolean", &non_manifold_boolean);
     function("boolean_with_options", &boolean_with_options);
     function("boolean_2d", &boolean_2d);
 }
@@ -226,8 +238,21 @@ uintptr_t remove_fillet(uintptr_t b)
     return b;
 }
 
+// A new sheet Brep: the fillet between two surfaces (the caller's; the surfaces stay the caller's,
+// though the kernel changes them). Python defaults (keyword-only): xsect_type 1, mirror false,
+// complement false.
+uintptr_t surface_surface_fillet(uintptr_t surface1, uintptr_t surface2, double radius1, double radius2,
+                                 double tolerance, unsigned long xsect_type, bool mirror, bool complement)
+{
+    SmBrep* r = nullptr;
+    SMJS_CHECK(SmApiSurfaceSurfaceFillet(smjs::surface(surface1), smjs::surface(surface2), radius1, radius2, tolerance,
+                                         r, xsect_type, flag(mirror), flag(complement)));
+    return ptr(r);
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_fillets)
 {
+    function("surface_surface_fillet", &surface_surface_fillet);
     function("remove_fillet", &remove_fillet);
     function("fillet_edges", &fillet_edges);
     function("variable_radius_fillet", &variable_radius_fillet);

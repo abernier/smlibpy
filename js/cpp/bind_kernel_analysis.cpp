@@ -149,8 +149,19 @@ val intersect_curves(uintptr_t curve1, uintptr_t curve2)
     return tuple(point_array(points), float64(doubles(t1)), float64(doubles(t2)));
 }
 
+// [curves, points]: where a curve meets one trimmed face; the curves (where it runs on the face) are
+// new and the caller's.
+val intersect_curve_face(uintptr_t c, uintptr_t f)
+{
+    SmTArray<SmCurve*> curves;
+    SmTArray<SmPoint3d> points;
+    SMJS_CHECK(SmApiIntersectCurveFace(smjs::curve(c), smjs::face(f), curves, points));
+    return tuple(curve_array(curves), point_array(points));
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_intersect)
 {
+    function("intersect_curve_face", &intersect_curve_face);
     function("intersect_breps", &intersect_breps);
     function("intersect_brep_with_plane", &intersect_brep_with_plane);
     function("intersect_curves", &intersect_curves);

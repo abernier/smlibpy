@@ -56,7 +56,7 @@ SYNONYMS = {
     "curvature": ["render", "verification"], "continuity": ["fillet", "verification", "zebra"],
     "class": ["verification", "zebra", "curvature"], "smooth": ["fillet", "verification", "zebra"],
     "g": ["continuity", "zebra", "verification"],  # G1, G2, G3 split into "g" and the digit
-    "blend": ["loft", "fillet"], "quality": ["verification", "zebra", "curvature"],
+    "blend": ["loft", "fillet", "surface_fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
     "step": ["export_step", "import_step", "read_step"], "csys": ["read_step", "Plane"],
     "coordinate": ["read_step", "Plane"], "wireframe": ["read_step", "import_dxf_wires"], "mcs": ["read_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
@@ -96,6 +96,23 @@ SYNONYMS = {
     "casting": ["draft_analysis", "parting_line"], "cast": ["draft_analysis", "parting_line"],
     "parting": ["parting_line"], "pull": ["draft_analysis", "parting_line"], "demold": ["draft_analysis"],
 }
+
+# Rays, clouds of points, cells, curve data, USD.
+SYNONYMS.update({
+    "ray": ["raycast"], "rays": ["raycast"], "hit": ["raycast", "hit_by"], "hits": ["raycast", "hit_by"],
+    "shoot": ["raycast"], "sight": ["raycast", "hit_by"], "inside": ["raycast"], "outside": ["raycast"],
+    "pierce": ["raycast", "hit_by"], "sees": ["hit_by"], "visible": ["hit_by"],
+    "cloud": ["surface"], "scan": ["surface", "import_stl"], "scanned": ["surface", "import_stl"],
+    "scanner": ["surface"], "fit": ["surface"], "fitting": ["surface"], "approximate": ["surface"],
+    "cell": ["cells", "merge"], "cells": ["cells", "merge"], "manifold": ["merge", "cells"],
+    "materials": ["merge", "cells"], "insert": ["merge", "cells"], "overmold": ["merge", "cells"],
+    "regions": ["cells", "merge"],
+    "knot": ["remove_knots", "nurbs"], "knots": ["remove_knots", "nurbs"], "compatible": ["make_compatible"],
+    "nurbs": ["nurbs", "to_nurbs"], "control": ["nurbs", "Bezier"], "poles": ["nurbs"], "weights": ["nurbs"],
+    "degree": ["nurbs"], "morph": ["make_compatible", "Lattice"],
+    "usd": ["export_usd", "import_usd"], "usda": ["export_usd", "import_usd"], "openusd": ["export_usd", "import_usd"],
+    "omniverse": ["export_usd", "import_usd"], "pixar": ["export_usd"],
+})
 
 # Sheet metal.
 SYNONYMS.update({

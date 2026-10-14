@@ -146,8 +146,26 @@ uintptr_t create_canonical_curve(val points, val knots, val knot_multiplicities,
     return curve_ptr(r);
 }
 
+// Changes the curve in place and returns it: the B-spline knots it does not need taken out.
+uintptr_t remove_curve_knots(uintptr_t c)
+{
+    SMJS_CHECK(SmApiRemoveCurveKnots(smjs::curve(c)));
+    return c;
+}
+
+// Changes the B-spline curves in place to one degree and one knot vector.
+void make_curves_compatible(val curves)
+{
+    SmTArray<SmBSplineCurve*> arr;
+    for (SmCurve* c : pointers<SmCurve>(curves))
+        arr.Add(static_cast<SmBSplineCurve*>(c));
+    SMJS_CHECK(SmApiMakeCurvesCompatible(arr));
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_curves)
 {
+    function("remove_curve_knots", &remove_curve_knots);
+    function("make_curves_compatible", &make_curves_compatible);
     function("create_line_segment", &create_line_segment);
     function("create_circle", &create_circle);
     function("create_ellipse", &create_ellipse);

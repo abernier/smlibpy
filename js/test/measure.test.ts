@@ -32,6 +32,8 @@ import { ext } from '../src/kernel.ts'
 import { model as flange } from '../examples/flange.ts'
 import { model as spring } from '../examples/spring.ts'
 import { approx, leggauss } from './_approx.ts'
+import { Axis as _Axis, Box as _Box, Cylinder as _Cylinder, Sphere as _Sphere, Vector as _Vector } from '../src/index.ts'
+import { _list } from '../src/shapes.ts'
 
 const PI = Math.PI
 type M3 = number[][]
@@ -356,3 +358,71 @@ test('lengths of curves', () => {
     assert.ok(spline.pointAt(f).distanceTo(new Vector(ext.curve_eval(c, t, 0)[0])) < 1e-5)
   }
 })
+
+// -- rays -------------------------------------------------------------------------------------
+test('raycast finds exact points nearest first', () => {
+  const part = _Box(10, 10, 10).cut(_Cylinder(3, 10))
+  const hits = part.raycast([-20, 0, 0], [1, 0, 0])
+  assert.deepEqual(hits.map((h) => h.point.x).map((x) => Math.round(x * 1e9) / 1e9), [-5, -3, 3, 5])
+  hits.forEach((h, i) => approx(h.distance, [15, 17, 23, 25][i], 0, 1e-9))
+  assert.deepEqual(hits.map((h) => h.face.geomType), ['plane', 'cylinder', 'cylinder', 'plane'])
+  // normals point out of the material: into the hole on its wall
+  assert.deepEqual(hits.map((h) => Math.round(h.normal.x)), [-1, 1, -1, 1])
+  // an axis is a ray; behind the start nothing counts
+  assert.ok(part.raycast(new _Axis([4, 4, 50], [0, 0, -1]))[0].point.equals([4, 4, 5]))
+  assert.deepEqual(part.raycast([-20, 0, 0], [-1, 0, 0]), [])
+  // from inside the material: an odd number of hits
+  assert.equal(part.raycast([0, 4, 0], [0, 0, 1]).length, 1)
+})
+
+test('raycast where the kernel finds no crossing', () => {
+  const part = _Box(10, 10, 10).cut(_Cylinder(3, 10))
+  // down the hole (along the cylinder, parallel to the side faces): nothing
+  assert.deepEqual(part.raycast(new _Axis([0, 0, 50], [0, 0, -1])), [])
+  // along a face: where the ray enters it
+  assert.ok(part.raycast([-20, 5, 0], [1, 0, 0])[0].point.equals([-5, 5, 0]))
+  // through corners: one hit each
+  const hits = part.raycast([-10, -10, -10], [1, 1, 1])
+  const s3 = Math.sqrt(3)
+  const want = [5 * s3, (10 - 3 / Math.sqrt(2)) * s3, (10 + 3 / Math.sqrt(2)) * s3, 15 * s3]
+  assert.equal(hits.length, 4)
+  hits.forEach((h, i) => approx(h.distance, want[i], 0, 1e-6))
+})
+
+test('hitBy selects what a ray meets', () => {
+  const part = _Box(40, 30, 20).cut(_Cylinder(5, 30))
+  const met = part.faces().hitBy([-50, 0, 0], [1, 0, 0])
+  assert.deepEqual(met.map((f) => f.geomType), ['plane', 'cylinder', 'plane']) // the hole's wall once
+  met.forEach((f, i) => approx(f.center().x, [-20, 0, 20][i], 0, 1e-9))
+  // it chains: only the faces in the list count, the others are looked past
+  assert.deepEqual(part.faces().planar().hitBy([-50, 0, 0], [1, 0, 0]).map((f) => f.geomType), ['plane', 'plane'])
+  assert.ok(part.faces().hitBy(new _Axis([10, 8, 50], [0, 0, -1])).first.center().equals([0, 0, 10]))
+  assert.equal(part.faces().hitBy([0, 0, 50], [0, 0, -1]).length, 0) // down the hole
+  // through an edge: the faces on both sides
+  const box = _Box(10, 10, 10)
+  const corners = box.faces().hitBy([-20, -20, 0], [1, 1, 0]).map((f) => f.center().toArray().map((c) => Math.round(c)).join(','))
+  assert.deepEqual(corners.slice(0, 2).sort(), ['-5,0,0', '0,-5,0'])
+  assert.deepEqual(corners.slice(2).sort(), ['0,5,0', '5,0,0'])
+  // bodies: which part of an assembly a ray meets first
+  const parts = _list([0, 20, 40].map((x) => _Box(5, 5, 5).translate(x, 0, 0).named(`b${x}`)))
+  assert.deepEqual(parts.hitBy([100, 0, 0], [-1, 0, 0]).map((p) => p.name), ['b40', 'b20', 'b0'])
+  assert.equal(parts.hitBy([100, 50, 0], [-1, 0, 0]).length, 0)
+  assert.throws(() => box.edges().hitBy([0, 0, 50], [0, 0, -1]), /faces and bodies/)
+  assert.throws(() => box.faces().hitBy([0, 0, 0]), /axis/)
+})
+
+test('raycast on faces and meshes', () => {
+  const ball = _Sphere(5)
+  const hits = ball.faces()[0].raycast([3, 0, 20], [0, 0, -1])
+  assert.ok(hits[0].point.equals([3, 0, 4]) && hits[1].point.equals([3, 0, -4]))
+  assert.ok(hits[0].normal.equals([0.6, 0, 0.8]))
+  const mesh = ball.mesh(0.01)
+  const near = mesh.raycast([3, 0, 20], [0, 0, -1])
+  assert.equal(near.length, 2)
+  assert.ok(near[0].triangle !== null && near[0].face === null)
+  approx(near[0].point.z, 4, 0, 0.02)
+  assert.ok(near[0].normal.dot(new _Vector(0.6, 0, 0.8)) > 0.99)
+  assert.throws(() => ball.raycast([0, 0, 0]), /axis/)
+  assert.throws(() => ball.raycast([0, 0, 0], [0, 0, 0]), /zero/)
+})
+

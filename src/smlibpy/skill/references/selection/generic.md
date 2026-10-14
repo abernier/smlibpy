@@ -61,6 +61,7 @@ Print `len(sel)` after every selection that feeds a feature, or use `.one()` whe
 | holes | `faces().cylinders()`, by radius: `.filter(lambda f: abs(f.radius - r) < 1e-6)` |
 | hole rims only (not fillet arcs) | `edges().circles().filter(lambda e: e.is_closed)` |
 | the face at a known point | `faces().at((x, y, z))` |
+| what a ray meets, nearest first | `faces().hit_by(origin, direction)`, `.first` for what it sees |
 | exactly one, or fail loudly | `.one()` |
 
 ## Gotchas

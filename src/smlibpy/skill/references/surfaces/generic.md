@@ -8,6 +8,8 @@ is a `Part`. The path is always: **make faces → (stitch them) → thicken or c
 | Need | Use | Gives |
 |---|---|---|
 | A freeform patch through measured or computed points | `surface(grid)` (at least 4 x 4) | 1 bicubic face |
+| A surface fitted to a cloud of points (a scan), in any order | `surface(points)` | 1 bicubic face |
+| A round blend between two sheets (or a sheet and a pipe) | `surface_fillet(a, b, r)` | Shell |
 | Straight lines between two curves (blades, transitions, walls) | `ruled(a, b)` | 1 face |
 | A skin through three or more open curves | `loft([curve, ...])` | Shell |
 | A wall from an open curve | `extrude(curve, h)`, `revolve(curve, axis)`, `sweep(curve, path)` | Shell |

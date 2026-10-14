@@ -83,6 +83,26 @@ a.distance_to((0, 0, 30))        # to a point
 a.closest_point((0, 0, 30))      # Vector(0, 0, 5)
 ```
 
+## Rays
+
+`raycast` gives the exact points where a ray meets a body (or a face, or a mesh), nearest
+first, each with its distance, the face and the outward normal there. What a line of sight
+sees first, wall thicknesses along a direction, or whether a point is inside (an odd number of
+hits) all come from it:
+
+```python
+part = Box(40, 30, 20) - Cylinder(5, 30)
+hits = part.raycast((-50, 0, 0), (1, 0, 0))
+print([round(h.distance, 6) for h in hits])        # [30.0, 45.0, 55.0, 70.0]: in, hole, out of it, out
+print(hits[1].face.geom_type, hits[1].normal)      # cylinder Vector(1, 0, 0): into the hole
+top = part.raycast(Axis((10, 8, 50), (0, 0, -1)))[0]
+print(top.point)                                   # Vector(10, 8, 10)
+print(len(part.raycast((10, 8, 0), Z)) % 2 == 1)   # True: the point is inside the material
+```
+
+To select faces with a ray instead, and chain on, use `part.faces().hit_by(origin, direction)`
+(see [Selecting](selecting.md#by-position)).
+
 ## Intersections and projections
 
 ```python
@@ -142,12 +162,15 @@ loft between different sections, the walls of a thickened free-form sheet) is di
 all its faces are flat within the tolerance. Its mesh is right, but it takes many more
 triangles: 2076 for `Box(20, 20, 100).twist(90)`, where the box has 12.
 
-Meshes made by `tessellate` also take `+`, `-` and `&`, but the kernel's mesh Booleans only
-work where no face of the result gets a hole. The result is checked (closed, a volume the
-operation can give) and a wrong one raises `ModelingError`. Do Booleans on the exact parts
-and mesh the result:
+Closed meshes from anywhere (`tessellate`, `import_stl`, `Mesh(...)`) take `+`, `-` and `&`,
+for meshes that have no exact part behind them, such as scans. Every result is checked (closed,
+a volume the operation can give), and where the kernel fails, which still happens for some
+meshes, it raises `ModelingError`. With exact parts, do the Boolean on the parts and mesh the
+result:
 
 ```python
-blob = (Box(10, 10, 10) - Sphere(6)).mesh()
-print(blob.is_closed(), round(blob.volume, 1))
+corners = Box(20, 20, 20).mesh() - Sphere(12).mesh()       # a mesh Boolean
+print(corners.is_closed(), round(corners.volume, 2))       # True 1631.68
+blob = (Box(20, 20, 20) - Sphere(12)).mesh(tolerance=0.01) # exact first: closer to 1616.28
+print(round(blob.volume, 2))
 ```

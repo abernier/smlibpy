@@ -13,7 +13,7 @@ import numpy as np
 
 from ._kernel import KernelError, ext, k, kernel_call
 from .geometry import Axis, Location, Plane, Vector, VectorLike, _direction, _vec
-from .shapes import Edge, Vertex, Wire, _canonical_curve, _transform_curve
+from .shapes import Edge, Shape, Vertex, Wire, _canonical_curve, _transform_curve
 
 __all__ = [
     "Line",
@@ -29,6 +29,7 @@ __all__ = [
     "Helix",
     "EllipticalArc",
     "FilletPolyline",
+    "make_compatible",
 ]
 
 
@@ -439,3 +440,38 @@ def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vert
         if i in arcs:
             out.append(arcs[i])
     return Wire._raw(out)
+
+
+def make_compatible(*edges: Edge | Iterable[Edge]) -> list[Edge]:
+    """Copies of the curves as B-splines of one degree and one knot vector, with the same shapes:
+    their control points correspond one to one, as surfaces through the curves (a loft, a skin)
+    need them in other systems. Lines and arcs become B-splines too (arcs rational ones).
+
+    Args:
+        edges: Two or more edges (or lists of them).
+    """
+    flat: list[Edge] = []
+    for e in edges:
+        flat.extend([e] if isinstance(e, (Edge, Shape)) else list(e))
+    for e in flat:
+        if not isinstance(e, Edge):
+            hint = " (pass wire.edges())" if isinstance(e, Wire) else ""
+            raise TypeError(f"make_compatible takes edges, not a {type(e).__name__}{hint}")
+    if len(flat) < 2:
+        raise ValueError(f"make_compatible needs two or more edges, got {len(flat)}")
+    curves = []
+    try:
+        for e in flat:  # every curve a B-spline of its own (a line or an arc is one of its own kind)
+            c = e._copy_curve()
+            if ext.curve_kind(c) != "bspline":
+                d = ext.curve_data(c, True)
+                ext.delete_curve(c)
+                c = _canonical_curve(np.asarray(d["poles"], dtype=float), d["knots"], d["degree"], d["weights"])
+            curves.append(c)
+        with kernel_call("make_compatible"):
+            k.make_curves_compatible(curves)
+    except BaseException:
+        for c in curves:
+            ext.delete_curve(c)
+        raise
+    return [Edge._from_curve(c) for c in curves]

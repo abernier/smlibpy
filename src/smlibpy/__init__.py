@@ -24,11 +24,13 @@ from .curves import (
     Spline,
     TangentArc,
     ThreePointArc,
+    make_compatible,
 )
-from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Pos, Rot, Vector, X, Y, Z
+from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, tessellate
-from .operations import chamfer, extrude, fillet, loft, mirror, offset, revolve, section, shell, split, sweep, thicken
+from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
+                         thicken)
 from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
 from .profiles import Profile
 from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
@@ -39,22 +41,24 @@ from ._kernel import KernelError, ModelingError
 from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
 from .step_import import StepModel, import_step, read_step
 from .dxf import export_dxf, import_dxf, import_dxf_wires
+from .usd import export_usd, import_usd
 from .render import diff_images, render
 from .viewer import show
-from .surfaces import ruled, stitch, surface
+from .surfaces import ruled, stitch, surface, surface_fillet
 from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
                          flat_pattern, fold, unfold)
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 __all__ = [
     # geometry
-    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "X", "Y", "Z", "TOLERANCE", "Align",
+    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "Nurbs", "X", "Y", "Z", "TOLERANCE",
+    "Align",
     # shapes
     "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Mesh",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
-    "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline",
+    "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "make_compatible",
     # sketches
     "Profile", "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Triangle", "Trapezoid",
     "Slot", "ArcSlot", "Stroke", "Hull", "make_face",
@@ -64,19 +68,19 @@ __all__ = [
     # patterns
     "Locations", "GridLocations", "PolarLocations", "HexLocations",
     # operations
-    "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section",
+    "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section", "merge",
     "thicken", "tessellate",
     # deformations
     "twist", "taper", "bend", "Lattice",
     # surfaces
-    "surface", "ruled", "stitch",
+    "surface", "ruled", "stitch", "surface_fillet",
     # sheet metal
     "fold", "flange", "unfold", "flat_pattern", "bend_allowance", "bend_deduction", "developed_length", "Bend",
     "FlatPattern",
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
     "read_step", "StepModel",
-    "export_dxf", "import_dxf", "import_dxf_wires",
+    "export_dxf", "import_dxf", "import_dxf_wires", "export_usd", "import_usd",
     "show", "render", "diff_images",
     # errors
     "ModelingError", "KernelError",

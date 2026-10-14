@@ -41,11 +41,11 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.5 MB | 2.2 MB | 6.2 MB |
-| Its loader, `smlibwasm.mjs` | 22 kB | 24 kB | 86 kB |
-| The library | 0.21 MB | 0.26 MB | 0.96 MB |
+| The kernel, `smlibwasm.wasm` | 1.6 MB | 2.3 MB | 6.5 MB |
+| Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
+| The library | 0.22 MB | 0.27 MB | 1.0 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **1.8 MB** | **2.5 MB** | **7.4 MB** |
+| **Together** | **1.9 MB** | **2.6 MB** | **7.7 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -219,6 +219,21 @@ export class Plane {
     equals(other: unknown): boolean;
     toString(): string;
 }
+export class Hit {
+    readonly point: Vector;
+    readonly distance: number;
+    readonly normal: Vector;
+    readonly face: any;
+    readonly triangle: number | null;
+    constructor(point: Vector, distance: number, normal: Vector, face?: any, triangle?: number | null);
+}
+export class Nurbs {
+    readonly degree: number;
+    readonly knots: number[];
+    readonly points: Vector[];
+    readonly weights: number[] | null;
+    constructor(degree: number, knots: number[], points: Vector[], weights?: number[] | null);
+}
 export class BoundBox {
     min: Vector;
     max: Vector;
@@ -302,6 +317,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     concave(): ShapeList<T>;
     smooth(): ShapeList<T>;
     fillets(maxRadius?: number | null): ShapeList<T>;
+    hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
     atPoint(point: VectorLike, tol?: number): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;
@@ -359,6 +375,8 @@ export class Edge extends Shape {
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
     reversed(): Edge;
+    nurbs(): Nurbs;
+    removeKnots(): Edge;
     add(other: Edge | Wire): Wire;
     equals(other: unknown): boolean;
     toString(): string;
@@ -401,6 +419,7 @@ export class Face extends Shape {
     get axis(): Axis;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
+    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
     outerWire(): Wire;
     innerWires(): ShapeList<Wire>;
     wires(): ShapeList<Wire>;
@@ -437,6 +456,8 @@ export class Part extends _Body {
     massProperties(density?: number, accuracy?: number | null): MassProperties;
     isValid(): boolean;
     solids(): ShapeList<Part>;
+    merge(...others: unknown[]): Part;
+    cells(): ShapeList<Part>;
     fuse(...others: (Part | Iterable<Part>)[]): Part;
     cut(...others: (Part | Iterable<Part>)[]): Part;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
@@ -546,6 +567,7 @@ export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | {
     radius: number;
     close?: boolean;
 })[]): Wire;
+export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[];
 ```
 
 ### Sketches and text
@@ -723,6 +745,7 @@ export function offset(shape: Part | Sketch, distance: number, options?: {
 }): Part | Sketch;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
 export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
+export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
 export function thicken(surface: Shell | Face, thickness: number): Part;
 ```
@@ -782,13 +805,18 @@ export class Lattice {
 ### Surfaces
 
 ```ts
-export function surface(points: readonly (readonly VectorLike[])[], options?: {
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: {
     interpolate?: boolean;
+    controls?: number | readonly [number, number] | null;
+    smoothing?: number;
 }): Shell;
 export function ruled(a: Edge | Wire, b: Edge | Wire): Shell;
 export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | {
     tolerance?: number | null;
 })[]): Part | Shell;
+export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: {
+    sides?: readonly [number, number];
+}): Shell;
 ```
 
 ### Sheet metal
@@ -869,6 +897,7 @@ export class Mesh {
     get volume(): number;
     bbox(): BoundBox;
     center(): Vector;
+    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
     isClosed(): boolean;
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
@@ -984,6 +1013,19 @@ export function importDxf(path: string, options?: DxfReadOptions): Sketch;
 export function fromDxf(data: string | Uint8Array, options?: DxfReadOptions): Sketch;
 export function exportDxf(shapes: unknown, path: string, options?: DxfWriteOptions): void;
 export function toDxf(shapes: unknown, options?: DxfWriteOptions): string;
+export interface UsdExportOptions {
+    mesh?: boolean;
+    tolerance?: number | null;
+    angle?: number;
+}
+export function toUsd(shapes: unknown, options?: UsdExportOptions): string;
+export function exportUsd(shapes: unknown, path: string, options?: UsdExportOptions): void;
+export function fromUsd(data: string | Uint8Array, options?: {
+    heal?: boolean;
+}): Part | Shell | ShapeList<Part | Shell>;
+export function importUsd(path: string, options?: {
+    heal?: boolean;
+}): Part | Shell | ShapeList<Part | Shell>;
 ```
 
 ### Pictures and the viewer

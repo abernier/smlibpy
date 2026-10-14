@@ -56,6 +56,11 @@ def test_show_snapshot_save_inspect(session, tmp_path):
     assert shot["ok"] and shot["png"][:8] == b"\x89PNG\r\n\x1a\n"
     saved = session.call("save", format="step", path=str(tmp_path / "b.step"))
     assert saved["ok"] and os.path.getsize(saved["path"]) > 0
+    saved = session.call("save", format="usd", path=str(tmp_path / "b.usda"))  # exact bodies in USD
+    assert saved["ok"] and saved["shapes"] == ["b"]
+    loaded = session.load(saved["path"], "b_again")
+    assert loaded["ok"] and loaded["type"] == "Part" and loaded["volume"] == pytest.approx(268.083, rel=1e-5)
+    assert loaded["label"] == "b"
     info = session.call("inspect", name="a", faces=True)
     assert info["ok"] and len(info["info"]["faces"]) == 6 and info["info"]["valid"]
 
@@ -106,6 +111,45 @@ def test_discovery_finds_api_and_guides():
     assert discovery.guide("SKILL") is not None and discovery.guide("recipes/verification") is not None
 
 
+@pytest.mark.parametrize("query,expected", [
+    ("ray", "analysis/raycast"),
+    ("select faces with a ray", "ShapeList.hit_by"),
+    ("which face does the ray hit first", "selection/hit_by"),
+    ("inside outside test", "analysis/raycast"),
+    ("point cloud", "surfaces/surface"),
+    ("fit a surface to points", "surfaces/surface"),
+    ("blend two surfaces", "surfaces/surface_fillet"),
+    ("cells", "features/cells"),
+    ("several materials", "features/merge"),
+    ("knot removal", "curves/remove_knots"),
+    ("compatible curves", "curves/make_compatible"),
+    ("control points of a curve", "curves/nurbs"),
+    ("usd", "files/export_usd"),
+    ("omniverse", "files/import_usd"),
+    ("mesh boolean", "files/Mesh"),
+])
+def test_search_finds_the_kernel_tools(query, expected):
+    assert expected in [e.key for _, e in discovery.search(query, 5)]
+
+
+KERNEL_TOOL_GUIDES = ["analysis/raycast", "selection/hit_by", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
+                      "features/cells", "curves/nurbs", "curves/make_compatible", "curves/remove_knots",
+                      "files/export_usd", "files/import_usd", "files/Mesh"]
+
+
+@pytest.mark.parametrize("key", KERNEL_TOOL_GUIDES)
+def test_kernel_tool_guides_run(key, tmp_path, monkeypatch):
+    import re
+
+    monkeypatch.chdir(tmp_path)
+    guide = discovery.guide(key)
+    assert guide is not None and discovery.guide_for(discovery.find_method(key.split("/")[1])) is not None
+    ns: dict = {}
+    exec("from smlibpy import *\nimport math\nimport numpy as np", ns)
+    for i, code in enumerate(re.findall(r"```python\n(.*?)```", guide.text, re.S)):
+        exec(compile(code, f"{key}[{i + 1}]", "exec"), ns)
+
+
 def test_live_viewer_serves_the_scene(session):
     import gzip
     import json
@@ -133,7 +177,7 @@ def test_live_viewer_serves_the_scene(session):
         viewer.close()
 
 
-def test_stdio_server_round_trip():
+def test_stdio_server_round_trip(tmp_path):
     pytest.importorskip("mcp")
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -166,6 +210,19 @@ def test_stdio_server_round_trip():
                 curv = await s.call_tool("snapshot", {"width": 300, "height": 200,
                                                       "curvature": {"kind": "gaussian", "range": 0.01}})
                 assert curv.content[0].type == "image"
+                # the kernel tools, as an agent uses them: a script, then a USD file out and back in
+                res = await s.call_tool("run_script", {"script": (
+                    "cloud = np.random.default_rng(2).uniform(-10, 10, (300, 2))\n"
+                    "skin = surface(np.column_stack([cloud, 0.02 * (cloud ** 2).sum(axis=1)]))\n"
+                    "hits = part.raycast((0, 0, 50), (0, 0, -1))\n"
+                    "cells = part.merge(Box(4, 4, 20)).cells()\n"
+                    "print(len(hits), len(cells), skin.faces()[0].geom_type)")})
+                assert "2 4 bspline" in res.content[0].text  # (the pin through the box: 3 pieces of it, and the box)
+                usd = str(tmp_path / "part.usda")
+                saved = await s.call_tool("save", {"format": "usd", "path": usd, "names": ["part"]})
+                assert saved.content[0].text.startswith(f"Wrote {usd}")
+                loaded = await s.call_tool("load", {"path": usd, "name": "again"})
+                assert "Loaded" in loaded.content[0].text and "volume 1000" in loaded.content[0].text
 
     asyncio.run(go())
 

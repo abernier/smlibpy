@@ -77,9 +77,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   exports while it is first evaluated: no top-level code that builds shapes.
 - **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node:
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
-    `toObj`, `toDxf`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
-    `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)` take a
-    `string` or `Uint8Array`.
+    `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
+    `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
+    `fromUsd(data)` take a `string` or `Uint8Array`.
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
@@ -87,13 +87,15 @@ the Python code works around a kernel defect, so does the TypeScript.
     outside Node.
   - Python's `smlibpy.export(...)` is `exportFile` (`export` cannot name a function).
 - **Names between modules.** What one module imports from another, beyond the public API:
-  `exporters.ts`: `exportFile`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
+  `exporters.ts`: `exportFile`, `_items`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
   `_flattenAll`, `_zUp`, `gltfDocumentMixed`, `_fs`, `_base64`; `dxf.ts`: `exportDxf`, `importDxf`,
   `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
-  `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it).
+  `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
+  `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them); `defeature.ts`: `_guarded`
+  (surfaces.ts blends surfaces in it).
 
 ## Status
 

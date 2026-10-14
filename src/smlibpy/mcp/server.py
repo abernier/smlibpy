@@ -73,8 +73,8 @@ from the left, top view; hidden edges dashed) with a shaded iso view. A picture 
 cuts sections (section=), shows what a selection picks (highlight="part.edges().concave()"), marks \
 points (markers=), proves smooth blends (zebra=, curvature=) and compares before and after (frame= \
 and compare=); see recipes/verification.
-4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, smb, png, and dxf \
-for sketches and sections). Tell the user where the file is.
+4. Deliver: save(format="step", path=...) writes the exact model (also stl, glb, obj, usd, smb, png, \
+and dxf for sketches and sections). Tell the user where the file is.
 
 CONVENTIONS
 - Millimeters and degrees, Z up. Primitives are centered on the origin unless align= says otherwise.
@@ -417,8 +417,9 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def save(
-        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, smb (native, one body), png, or dxf "
-                                     "(2D: sketches, sections, wires; parts are left out).")] = "step",
+        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, usd (exact bodies as .usda, for USD "
+                                     "and Omniverse), smb (native, one body), png, or dxf (2D: sketches, sections, "
+                                     "wires; parts are left out).")] = "step",
         path: Annotated[str | None, Field(description="Absolute file path. Default: a file in the temp folder.")] = None,
         names: Annotated[list[str] | None, Field(description="Variables to write instead of what is shown.")] = None,
     ) -> str:
@@ -430,8 +431,8 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def load(
-        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), SMLib (.smb), STL or DXF "
-                                   "(.dxf, read as a sketch) file.")],
+        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), USD (.usda, .usd as text), "
+                                   "SMLib (.smb), STL or DXF (.dxf, read as a sketch) file.")],
         name: Annotated[str | None, Field(description="Variable to hold it. Default: from the file name.")] = None,
     ) -> str:
         """Read a file into a session variable (a Part, a Shell, a list of them, a Mesh for STL, a Sketch for DXF)."""

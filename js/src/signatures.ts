@@ -18,6 +18,8 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   create_ellipse: ['origin', 'radius1', 'radius2'],
   create_helix: ['origin', 'height', 'radius_start', 'radius_end', 'turns', ['right_handed', true], ['tolerance', 0.0001]],
   create_rectangle: ['center', 'length', 'width'],
+  remove_curve_knots: ['curve'],
+  make_curves_compatible: ['curves'],
   create_canonical_curve: [
     'points',
     'knots',
@@ -47,6 +49,7 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
     ['keep_other_brep', false],
   ],
   boolean_2d: ['brep1', 'brep2', 'operation'],
+  non_manifold_boolean: ['brep1', 'brep2', 'operation'],
 
   // sweeps (SmPySweeps.cpp)
   linear_sweep: ['curves', 'direction', 'distance', ['cap_ends', true]],
@@ -70,6 +73,16 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   variable_radius_fillet: ['brep', 'edges', 'start_radius', 'end_radius', ['xsect_type', 1], ['continuity', 1]],
   fillet_edges_per_edge: ['brep', 'edges', 'radii', 'xsect_types', ['continuity', 1], ['thumbweight', 1.0]],
   remove_fillet: ['brep'],
+  surface_surface_fillet: [
+    'surface1',
+    'surface2',
+    'radius1',
+    'radius2',
+    'tolerance',
+    ['xsect_type', 1],
+    ['mirror', false],
+    ['complement', false],
+  ],
 
   // offset (SmPyOffset.cpp)
   shell_brep: [
@@ -113,6 +126,7 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   intersect_breps: ['brep1', 'brep2'],
   intersect_brep_with_plane: ['brep', 'plane_point', 'plane_normal'],
   intersect_curves: ['curve1', 'curve2'],
+  intersect_curve_face: ['curve', 'face'],
 
   // cutting (SmPyCutProjectTrim.cpp)
   project_brep_onto_plane: ['brep', 'plane_point', 'plane_normal'],

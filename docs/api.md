@@ -24,6 +24,8 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.geometry.Pos
 ::: smlibpy.geometry.Rot
 ::: smlibpy.geometry.BoundBox
+::: smlibpy.geometry.Hit
+::: smlibpy.geometry.Nurbs
 ::: smlibpy.align.Align
 
 ## Parts
@@ -81,6 +83,8 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.dxf.import_dxf
 ::: smlibpy.dxf.import_dxf_wires
 ::: smlibpy.dxf.export_dxf
+::: smlibpy.usd.export_usd
+::: smlibpy.usd.import_usd
 
 ## Viewer
 

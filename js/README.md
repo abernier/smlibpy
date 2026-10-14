@@ -30,7 +30,7 @@ The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, whi
 resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
 to the config. Node needs version 22.18 or later.
 
-A browser loads about 1.8 MB with brotli: 1.5 MB for the kernel (6.2 MB uncompressed) and 0.3 MB for
+A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel (6.5 MB uncompressed) and 0.3 MB for
 the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
 
 ## From smlibpy to smlibwasm
@@ -46,8 +46,8 @@ The functions, classes, checks and error messages are smlibpy's, so
   and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
-- **Files**: `toStep`, `toStl`, `toGlb`, `toDxf` give the file's contents and `fromStep`, `fromStl`,
-  `fromDxf` read them, in the browser and in Node; `fromStepModel` reads a STEP file with its
+- **Files**: `toStep`, `toStl`, `toGlb`, `toDxf`, `toUsd` give the file's contents and `fromStep`,
+  `fromStl`, `fromDxf`, `fromUsd` read them, in the browser and in Node; `fromStepModel` reads a STEP file with its
   coordinate systems, curves and points as well. In Node, `exportStep(shapes, path)`,
   `importStep(path)` and the other path functions write and read files as smlibpy's do.
 

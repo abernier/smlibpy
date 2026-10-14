@@ -253,3 +253,34 @@ def test_oversized_rounds_are_rejected():
     with pytest.raises(ModelingError):
         cube.chamfer(cube.edges(), 6)
     assert cube.fillet(cube.edges(), 4).is_valid()
+
+
+# -- cells -----------------------------------------------------------------------
+def test_merge_makes_cells():
+    a, b = Box(10, 10, 10), Box(10, 10, 10).translate((5, 0, 0))
+    m = a.merge(b)
+    assert m.volume == approx(1500)
+    assert not m.is_valid()  # cells share faces: not a manifold solid
+    assert sorted(c.volume for c in m.cells()) == [approx(500)] * 3
+    assert all(c.is_valid() for c in m.cells())
+    assert merge(a, b).volume == approx(1500)
+    # touching parts share the face between them
+    t = Box(10, 10, 10).merge(Box(10, 10, 10).translate((10, 0, 0)))
+    assert len(t.faces()) == 11 and [c.volume for c in t.cells()] == [approx(1000)] * 2
+    assert Box(1, 1, 1).cells()[0].volume == approx(1)
+
+
+def test_cells_with_cavities():
+    m = Box(10, 10, 10).merge(Box(2, 2, 2))
+    outer, inner = m.cells()
+    assert outer.volume == approx(992) and inner.volume == approx(8)
+    assert len(outer.faces()) == 12  # the outer box and the cavity
+    ball = Sphere(4).translate((0, 0, 5))
+    cells = Box(10, 10, 10).merge(ball).cells()
+    assert sorted(c.volume for c in cells) == pytest.approx(
+        sorted([(Box(10, 10, 10) - ball).volume, (Box(10, 10, 10) & ball).volume, (ball - Box(10, 10, 10)).volume]),
+        rel=1e-6)
+    with pytest.raises(TypeError, match="parts"):
+        Box(1, 1, 1).merge(Rectangle(1, 1))
+    with pytest.raises(ValueError, match="two or more"):
+        merge(Box(1, 1, 1))

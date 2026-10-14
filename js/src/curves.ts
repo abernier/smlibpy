@@ -6,7 +6,7 @@
 import { ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { solve } from './_linalg.ts'
-import { Edge, Vertex, Wire, _canonicalCurve, _transformCurve } from './shapes.ts'
+import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
 
 /** Python's float modulo: the result has the sign of the divisor. */
 export function _mod(a: number, b: number): number {
@@ -426,3 +426,38 @@ export function _filletWire(wire: Wire, radius: number, vertices: Iterable<Vecto
   return Wire._raw(out)
 }
 
+/**
+ * Copies of the curves as B-splines of one degree and one knot vector, with the same shapes: their
+ * control points correspond one to one, as surfaces through the curves (a loft, a skin) need them
+ * in other systems. Lines and arcs become B-splines too (arcs rational ones).
+ *
+ * @param edges Two or more edges (or arrays of them).
+ */
+export function makeCompatible(...edges: (Edge | Iterable<Edge>)[]): Edge[] {
+  const flat: Edge[] = []
+  for (const e of edges) flat.push(...(e instanceof Edge || e instanceof Shape ? [e as Edge] : Array.from(e)))
+  for (const e of flat) {
+    if (!(e instanceof Edge)) {
+      const hint = (e as unknown) instanceof Wire ? ' (pass wire.edges())' : ''
+      throw new TypeError(`makeCompatible takes edges, not a ${_typeName(e)}${hint}`)
+    }
+  }
+  if (flat.length < 2) throw new RangeError(`makeCompatible needs two or more edges, got ${flat.length}`)
+  const curves: number[] = []
+  try {
+    for (const e of flat) { // every curve a B-spline of its own (a line or an arc is one of its own kind)
+      let c = e._copyCurve()
+      if (ext.curve_kind(c) !== 'bspline') {
+        const d = ext.curve_data(c, true)
+        ext.delete_curve(c)
+        c = _canonicalCurve(d.poles, d.knots, d.degree, d.weights)
+      }
+      curves.push(c)
+    }
+    kernelCall('makeCompatible', () => k.make_curves_compatible(curves))
+  } catch (e) {
+    for (const c of curves) ext.delete_curve(c)
+    throw e
+  }
+  return curves.map((c) => Edge._fromCurve(c))
+}
