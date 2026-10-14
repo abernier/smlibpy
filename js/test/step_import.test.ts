@@ -889,6 +889,65 @@ test('step solid with a cavity', () => {
   approx(part.area, 2 * (1200 + 800 + 600) + 2 * (200 + 200 + 100), 1e-9)
 })
 
+/** A puck of radius 10 and height 10 whose bottom edge is rounded with radius 2 by a torus face,
+ * with the bound of one face (`flagged`) marked reversed against the loop it holds. */
+function _puck(flagged: string, axisDown: boolean): string {
+  const s = new _Entities()
+  const [R, h, rf] = [10.0, 10.0, 2.0]
+  const [vTop, vMid, vBot] = [s.vertex(R, 0, h), s.vertex(R, 0, rf), s.vertex(R - rf, 0, 0)]
+  const [cTop, cMid, cBot] = [s.arc(vTop, vTop, h, R), s.arc(vMid, vMid, rf, R), s.arc(vBot, vBot, 0, R - rf)]
+  const seam = s.line(vMid, vTop, [R, 0, rf], [R, 0, h])
+  const tube = s.add(`CIRCLE('',${s.axis([R - rf, 0, rf], [0, 1, 0], [1, 0, 0])},${f(rf)})`)
+  const tubeSeam = s.add(`EDGE_CURVE('',${vMid},${vBot},${tube},.T.)`) // down from the side to the bottom
+  const torus = s.add(
+    `TOROIDAL_SURFACE('',${s.axis([0, 0, rf], [0, 0, axisDown ? -1 : 1], [1, 0, 0])},${f(R - rf)},${f(rf)})`,
+  )
+  const faces: Record<string, string> = {
+    top: s.face(s.plane([0, 0, h]), true, [[cTop, true]]),
+    side: s.face(s.add(`CYLINDRICAL_SURFACE('',${s.axis([0, 0, 0], [0, 0, 1], [1, 0, 0])},${f(R)})`), true, [
+      [cMid, true],
+      [seam, true],
+      [cTop, false],
+      [seam, false],
+    ]),
+    bottom: s.face(s.plane([0, 0, 0], [0, 0, -1]), true, [[cBot, false]]),
+    fillet: s.face(torus, true, [
+      [cMid, false],
+      [tubeSeam, true],
+      [cBot, true],
+      [tubeSeam, false],
+    ]),
+  }
+  const face = s.lines.find((line) => line.startsWith(`${faces[flagged]}=`)) as string
+  const bound = (/ADVANCED_FACE\('',\((#\d+)/.exec(face) as RegExpExecArray)[1]
+  const i = s.lines.findIndex((line) => line.startsWith(`${bound}=`))
+  s.lines[i] = s.lines[i].replace(',.T.);', ',.F.);')
+  return s.solid('puck', Object.values(faces))
+}
+
+for (const [flagged, axisDown] of [
+  ['fillet', true],
+  ['fillet', false],
+  ['bottom', true],
+] as [string, boolean][]) {
+  test(`step face bound flagged against its neighbours [${flagged}, ${axisDown}]`, () => {
+    // A face whose bound is flagged reversed, so that its loop uses the edges it shares the same
+    // way round as its neighbours do (issue #3: the fillets of a hole in a file from another
+    // kernel). The neighbours decide: on the torus the loop would bound the rest of the tube.
+    const path = join(tmpPath(), 'puck.step')
+    writeFileSync(path, _puck(flagged, axisDown))
+    const part = importStep(path) as Part
+    const [R, h, rf] = [10.0, 10.0, 2.0]
+    const corner = rf * rf * (1 - Math.PI / 4) // the cross-section the rounding takes away, and its centroid
+    const centroid = R - (rf * (10 - 3 * Math.PI)) / (3 * (4 - Math.PI))
+    assert.ok(part.isValid())
+    assert.equal(part.faces().length, 4)
+    approx(part.volume, Math.PI * R * R * h - corner * 2 * Math.PI * centroid, 1e-9)
+    const fillet = 2 * Math.PI * rf * (((R - rf) * Math.PI) / 2 + rf) // a quarter of the tube, the outer one
+    approx(part.area, Math.PI * (R * R + 2 * R * (h - rf) + (R - rf) ** 2) + fillet, 1e-9)
+  })
+}
+
 // -- readStep: coordinate systems, curves and points --------------------------------------------
 /** An assembly ASM holding the product TOOL 100 up: TOOL has the cylinder as its body, the
  * coordinate system MCS (and a hidden one), and a curve set with a red B-spline, an arc, a

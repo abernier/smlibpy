@@ -70,6 +70,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Sweeps anchor the profile at the start point of its first curve | centers the profile on the path and orients it |
 | A full 360 degree non-manifold revolve returns an empty body | revolves each loop and subtracts the holes |
 | Faces on cylinders, cones, spheres and tori need a seam edge, but NX and others write them without one | adds the seam along the surface when importing STEP |
+| A few writers flag the bound of a face reversed (fillets on tori, around holes and bosses), so its loop runs the wrong way round; the kernel's seam check then reads the loop as the rest of the torus and cuts the face apart (2 to 30 % of the volume lost, and the body still "valid") | turns such loops round when importing STEP: in a closed shell each edge between two faces is used once each way, so the neighbouring faces decide |
 | The seam has to lie where the surface's angle parameter starts | turns the surface frame to the seam edge of the file |
 | The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode |
 | Arcs from the API are plain B-splines | arcs are trimmed kernel circles, so they keep radius and center |

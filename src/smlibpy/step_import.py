@@ -531,7 +531,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         raise ModelingError("mirrored assembly placements are not supported yet")
     edges = bld.specs
     faces = []
-    for fi, f in enumerate(body.faces):
+    for fi, f in enumerate(_agreeing_loops(body)):
         loops = []
         for loop in _outer_first(bld, f["loops"]):
             if loop.get("edges"):
@@ -699,6 +699,78 @@ def _outer_first(bld: _Builder, loops: list[dict[str, Any]]) -> list[dict[str, A
         return float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
 
     return sorted(loops, key=extent, reverse=True)
+
+
+def _agreeing_loops(body: BodyData) -> list[dict[str, Any]]:
+    """The faces of a solid with every loop running the way its neighbours say: in a closed
+    shell each edge between two faces is used once in each direction. A few writers flag a
+    face's bound reversed (fillets on tori, around holes and bosses); its loop then runs the
+    wrong way round, and on a surface closed on itself it bounds the rest of the surface
+    instead. Of the two ways to make the loops of a shell agree, the one that turns
+    fewer loops round wins. A shell whose loops cannot agree, or that would turn as many either
+    way, stays as the file has it."""
+    faces = body.faces
+    if body.kind != "solid":
+        return faces
+    turn: set[tuple[int, int]] = set()
+    for sh in body.shells:
+        if not sh.get("closed", True):
+            continue
+        nodes = [(fi, li) for fi in sh["faces"] for li, loop in enumerate(faces[fi]["loops"]) if loop.get("edges")]
+        uses: dict[int, list[tuple[int, bool]]] = {}
+        for n, (fi, li) in enumerate(nodes):
+            for ei, fwd in faces[fi]["loops"][li]["edges"]:
+                uses.setdefault(ei, []).append((n, bool(fwd)))
+        links: dict[int, list[tuple[int, bool]]] = {}  # loop -> [(neighbour, same direction)]
+        for us in uses.values():
+            # (seams, edges along a gap in the shell and edges of more than two faces say nothing)
+            if len(us) != 2 or nodes[us[0][0]][0] == nodes[us[1][0]][0]:
+                continue
+            (a, fa), (b, fb) = us
+            links.setdefault(a, []).append((b, fa == fb))
+            links.setdefault(b, []).append((a, fa == fb))
+        if any(same for near in links.values() for _, same in near):
+            turned = _turned(links)
+            if turned is not None:
+                turn.update(nodes[n] for n in turned)
+    if not turn:
+        return faces
+    out = []
+    for fi, f in enumerate(faces):
+        if any((fi, li) in turn for li in range(len(f["loops"]))):
+            f = dict(f, loops=[dict(loop, edges=[(ei, not fwd) for ei, fwd in reversed(loop["edges"])])
+                               if (fi, li) in turn else loop for li, loop in enumerate(f["loops"])])
+        out.append(f)
+    return out
+
+
+def _turned(links: dict[int, list[tuple[int, bool]]]) -> list[int] | None:
+    """The loops to turn round so that every link joins two loops running opposite ways, in
+    each connected group the fewer of the two choices (none where both are as many); None if
+    no choice makes them all agree."""
+    flip: dict[int, bool] = {}
+    out: list[int] = []
+    for start in links:
+        if start in flip:
+            continue
+        flip[start] = False
+        group, todo = [start], [start]
+        while todo:
+            a = todo.pop()
+            for b, same in links[a]:
+                want = flip[a] != same  # used the same way: one of the two turns round
+                if b not in flip:
+                    flip[b] = want
+                    group.append(b)
+                    todo.append(b)
+                elif flip[b] != want:
+                    return None
+        turned = [n for n in group if flip[n]]
+        if 2 * len(turned) < len(group):
+            out += turned
+        elif 2 * len(turned) > len(group):
+            out += [n for n in group if not flip[n]]
+    return out
 
 
 def _sound(part: Any) -> bool:
