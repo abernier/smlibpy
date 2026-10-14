@@ -24,7 +24,9 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
+#include <clocale>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -239,7 +241,15 @@ const char* type_name(Kind k)
 }
 
 // -- writing ---------------------------------------------------------------------------------------
-// The shortest text that reads back as the same double.
+// snprintf and strtod write and read the decimal point of the C locale; USD has '.' whatever it is.
+char decimal_point()
+{
+    const std::lconv* l = std::localeconv();
+    return l && l->decimal_point && *l->decimal_point ? *l->decimal_point : '.';
+}
+
+// A short text that reads back as the same double: 15 significant digits where they do, else 16
+// or 17. (Not std::to_chars, whose floating point form needs macOS 13.3: the wheels run from 11.)
 void put(std::string& out, double x)
 {
     if (!std::isfinite(x))
@@ -247,9 +257,18 @@ void put(std::string& out, double x)
         out += std::isnan(x) ? "nan" : (x > 0 ? "inf" : "-inf");
         return;
     }
-    char buf[32];
-    auto r = std::to_chars(buf, buf + sizeof buf, x);
-    out.append(buf, r.ptr);
+    char buf[40];
+    for (int digits = 15; digits <= 17; ++digits)
+    {
+        std::snprintf(buf, sizeof buf, "%.*g", digits, x);
+        if (digits == 17 || std::strtod(buf, nullptr) == x)
+            break;
+    }
+    const char point = decimal_point();
+    for (char* c = buf; *c; ++c)
+        if (*c == point)
+            *c = '.';
+    out += buf;
 }
 
 void put_field(std::string& out, const Field& f, const UsdBrepArrayData& a)
@@ -671,6 +690,8 @@ private:
             return v;
         }
         std::string w = word();
+        if (const char point = decimal_point(); point != '.')
+            std::replace(w.begin(), w.end(), '.', point);
         const char* b = w.c_str();
         char* e = nullptr;
         v.n = std::strtod(b, &e);
