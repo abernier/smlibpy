@@ -213,6 +213,7 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
     import json
     import urllib.error
 
+    pytest.importorskip("websockets")  # (the live view's server: of the mcp extra)
     from websockets.sync.client import connect
 
     from smlibpy.mcp.buerli import BuerliHost

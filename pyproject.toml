@@ -47,7 +47,7 @@ sdist.exclude = ["third_party/usd-brep/TestFiles*", "third_party/usd-brep/tests"
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_* *_i686 *-win32"
 build-verbosity = 1
-test-requires = ["pytest>=8"]
+test-requires = ["pytest>=8", "websockets>=13"]  # (websockets: the live view, of the mcp extra)
 test-command = "pytest {project}/tests -q"
 
 # The kernel does not depend on the Python version: a compiler cache lets every wheel after the
