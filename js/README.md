@@ -30,7 +30,7 @@ The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, whi
 resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
 to the config. Node needs version 22.18 or later.
 
-A browser loads about 1.9 MB with brotli: 1.65 MB for the kernel (6.6 MB uncompressed) and 0.3 MB for
+A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel (6.5 MB uncompressed) and 0.3 MB for
 the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
 
 ## From smlibpy to smlibwasm

@@ -356,6 +356,8 @@ test('mesh Booleans on any mesh', () => {
   const sb = _fromStl(_toStl(b))
   const diff = sa.cut(sb)
   assert.ok(diff.isClosed())
+  // (the kernel gives the result no normals: they come from the triangles, not all (0, 0, 1))
+  assert.equal(diff.normals, null)
   approx(diff.volume, sa.volume - sa.intersect(sb).volume, 1e-6)
   approx(diff.volume, a.cut(b).volume, 1e-2) // (the cylinder's facets cut its corners)
   const tet = new _Mesh([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])

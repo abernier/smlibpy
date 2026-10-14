@@ -240,6 +240,8 @@ def test_mesh_booleans_on_any_mesh(tmp_path):
     diff = sa - sb
     assert diff.is_closed() and diff.volume == pytest.approx(sa.volume - (sa & sb).volume, rel=1e-6)
     assert diff.volume == pytest.approx((a - b).volume, rel=1e-2)  # (the cylinder's facets cut its corners)
+    # (the kernel gives the result no normals: they come from the triangles, not all (0, 0, 1))
+    assert diff.normals is None and (a.mesh() - b.mesh()).normals is None
     tet = Mesh([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)])
     assert (tet & tet).volume == pytest.approx(1 / 6)
     with pytest.raises(ValueError, match="triangles"):

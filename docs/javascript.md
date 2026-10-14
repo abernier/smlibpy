@@ -41,11 +41,11 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.65 MB | 2.3 MB | 6.6 MB |
+| The kernel, `smlibwasm.wasm` | 1.6 MB | 2.3 MB | 6.5 MB |
 | Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
 | The library | 0.22 MB | 0.27 MB | 1.0 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **1.9 MB** | **2.7 MB** | **7.8 MB** |
+| **Together** | **1.9 MB** | **2.6 MB** | **7.7 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.

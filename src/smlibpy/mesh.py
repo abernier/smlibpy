@@ -80,7 +80,7 @@ class Mesh:
             b = other._poly_brep().copy()
             r = k.poly_boolean(a, b, op)
             ext.triangulate_poly(r)  # (its polygons with holes: the mesh arrays take only outer loops)
-        result = Mesh._from_poly(r)
+        result = Mesh._from_poly(r, normals=False)  # (the kernel gives a Boolean's result no normals)
         # The kernel's mesh Booleans often return open or wrong meshes (faces that should get
         # a hole stay whole). Check what can be checked: closed, and a volume the operation
         # can give.

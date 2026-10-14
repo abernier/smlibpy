@@ -129,7 +129,7 @@ export class Mesh {
       ext.triangulate_poly(r) // (its polygons with holes: the mesh arrays take only outer loops)
       return r
     })
-    const result = Mesh._fromPoly(r)
+    const result = Mesh._fromPoly(r, false) // (the kernel gives a Boolean's result no normals)
     // The kernel's mesh Booleans often return open or wrong meshes (faces that should get a hole
     // stay whole). Check what can be checked: closed, and a volume the operation can give.
     const va = this.volume

@@ -181,8 +181,8 @@ const step = toStep(plate) // the STEP file as text
 ```
 
 Names are camelCase, keyword arguments become an options object, and operators become methods
-(`a.cut(b)` for `a - b`). A browser loads about 1.9 MB with brotli: 1.65 MB for the kernel
-(`smlibwasm.wasm`, 6.6 MB uncompressed) and 0.3 MB for the library and its font. The
+(`a.cut(b)` for `a - b`). A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel
+(`smlibwasm.wasm`, 6.5 MB uncompressed) and 0.3 MB for the library and its font. The
 [JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
 TypeScript; the source is in [`js/`](js).
 
