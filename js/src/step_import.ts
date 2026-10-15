@@ -737,7 +737,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   if (mirrored) throw new ModelingError('mirrored assembly placements are not supported yet')
   const edges = bld.specs
   const faces: Any[] = []
-  body.faces.forEach((face, fi) => {
+  _agreeingLoops(body).forEach((face, fi) => {
     let f = face
     let loops: Any[] = []
     for (const loop of _outerFirst(bld, f.loops)) {
@@ -931,6 +931,88 @@ function _outerFirst(bld: _Builder, loops: LoopData[]): LoopData[] {
   }
   const keyed = loops.map((loop) => [extent(loop), loop] as const)
   return keyed.sort((p, q) => q[0] - p[0]).map(([, loop]) => loop)
+}
+
+/** The faces of a solid with every loop running the way its neighbours say: in a closed shell each
+ * edge between two faces is used once in each direction. A few writers flag a face's bound reversed
+ * (fillets on tori, around holes and bosses); its loop then runs the wrong way round, and on a
+ * surface closed on itself it bounds the rest of the surface instead. Of the two
+ * ways to make the loops of a shell agree, the one that turns fewer loops round wins. A shell whose
+ * loops cannot agree, or that would turn as many either way, stays as the file has it. */
+function _agreeingLoops(body: BodyData): FaceData[] {
+  const faces = body.faces
+  if (body.kind !== 'solid') return faces
+  const turn = new Set<string>() // "face,loop"
+  for (const sh of body.shells) {
+    if (!(sh.closed ?? true)) continue
+    const nodes: [number, number][] = []
+    for (const fi of sh.faces)
+      faces[fi].loops.forEach((loop, li) => {
+        if (loop.edges?.length) nodes.push([fi, li])
+      })
+    const uses = new Map<number, [number, boolean][]>()
+    nodes.forEach(([fi, li], n) => {
+      for (const [ei, fwd] of faces[fi].loops[li].edges as [number, boolean][]) {
+        if (!uses.has(ei)) uses.set(ei, [])
+        uses.get(ei)?.push([n, Boolean(fwd)])
+      }
+    })
+    const links = new Map<number, [number, boolean][]>() // loop -> [(neighbour, same direction)]
+    for (const us of uses.values()) {
+      // (seams, edges along a gap in the shell and edges of more than two faces say nothing)
+      if (us.length !== 2 || nodes[us[0][0]][0] === nodes[us[1][0]][0]) continue
+      const [[a, fa], [b, fb]] = us
+      if (!links.has(a)) links.set(a, [])
+      if (!links.has(b)) links.set(b, [])
+      links.get(a)?.push([b, fa === fb])
+      links.get(b)?.push([a, fa === fb])
+    }
+    if ([...links.values()].some((near) => near.some(([, same]) => same))) {
+      const turned = _turned(links)
+      if (turned !== null) for (const n of turned) turn.add(`${nodes[n][0]},${nodes[n][1]}`)
+    }
+  }
+  if (!turn.size) return faces
+  return faces.map((f, fi) => {
+    if (!f.loops.some((_, li) => turn.has(`${fi},${li}`))) return f
+    return {
+      ...f,
+      loops: f.loops.map((loop, li) =>
+        turn.has(`${fi},${li}`)
+          ? { ...loop, edges: [...(loop.edges as [number, boolean][])].reverse().map(([ei, fwd]) => [ei, !fwd] as [number, boolean]) }
+          : loop,
+      ),
+    }
+  })
+}
+
+/** The loops to turn round so that every link joins two loops running opposite ways, in each
+ * connected group the fewer of the two choices (none where both are as many); null if no choice
+ * makes them all agree. */
+function _turned(links: Map<number, [number, boolean][]>): number[] | null {
+  const flip = new Map<number, boolean>()
+  const out: number[] = []
+  for (const start of links.keys()) {
+    if (flip.has(start)) continue
+    flip.set(start, false)
+    const group = [start]
+    const todo = [start]
+    while (todo.length) {
+      const a = todo.pop() as number
+      for (const [b, same] of links.get(a) as [number, boolean][]) {
+        const want = flip.get(a) !== same // used the same way: one of the two turns round
+        if (!flip.has(b)) {
+          flip.set(b, want)
+          group.push(b)
+          todo.push(b)
+        } else if (flip.get(b) !== want) return null
+      }
+    }
+    const turned = group.filter((n) => flip.get(n))
+    if (2 * turned.length < group.length) out.push(...turned)
+    else if (2 * turned.length > group.length) out.push(...group.filter((n) => !flip.get(n)))
+  }
+  return out
 }
 
 function _sound(part: Part): boolean {
