@@ -21,13 +21,16 @@ they are in the file: smlibpy writes millimeters.
 ## What is kept
 - Bodies written by `export_usd` come back with the same faces, face types and edges (within
   1e-12) and the same volume (1e-7 relative).
-- Only `BrepArray` prims are read: `Mesh` prims and everything else in the stage are skipped.
+- Only `BrepArray` prims are read: `Mesh` prims (the ones `export_usd` writes beside each body
+  too) and everything else in the stage are skipped.
 
 ## Errors
 - `ValueError: the USD file holds no BrepArray prims (bodies)`.
 - `ValueError: usd: this is binary USD (.usdc), which is not read: convert it to text with
-  usdcat (usdcat in.usdc -o out.usda)`; a `.usdz` package raises a similar one. `usdcat` comes
-  with OpenUSD (`pip install usd-core`).
+  usdcat (usdcat in.usdc -o out.usda)`; a `.usdz` package raises a similar one (`usdcat
+  in.usdz -o out.usda` reads it too). The command line tools come with a full OpenUSD install
+  (macOS has them); with `pip install usd-core`, in Python:
+  `Sdf.Layer.FindOrOpen("in.usdc").Export("out.usda")`.
 - `ValueError: usd: not a .usda text (it does not start with #usda)`.
 - A malformed `BrepArray` (arrays of the wrong length, broken references between faces, loops
   and edges) raises a `ValueError` that names the field that is wrong.

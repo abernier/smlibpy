@@ -8,7 +8,7 @@ control. All of them accept a single shape or a list.
 | Format | Function | Contents |
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
-| USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims, names and colors; meshes too |
+| USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact and lossless |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
@@ -46,14 +46,21 @@ inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm.
 `export_usd` writes each body as a `BrepArray` prim, the B-rep of NVIDIA's usd-brep (its
 omniSolid schema), with the exact surfaces and curves, its name and its color, under `/World`
 in a stage in millimeters with Z up. usd-brep, its usdview plugin and Omniverse read them as
-solids; for viewers that only draw meshes, `mesh=True` adds a `Mesh` prim of each body. The
-files are text (`.usda`); `usdcat` from OpenUSD converts them to `.usdc` or `.usdz`. The test
-suite checks them with NVIDIA's validator and OpenUSD.
+solids. Other USD viewers draw only meshes, so each body also gets a `Mesh` prim
+(`<name>_mesh`); `mesh=False` leaves it out, for the tools that draw the B-rep themselves and
+would show the body twice. The test suite checks the files with NVIDIA's validator and OpenUSD.
 
 ```python
-export_usd([bracket, cover], "assembly.usda")
-export_usd(bracket, "bracket_view.usda", mesh=True)   # plus a Mesh prim for plain viewers
+export_usd([bracket, cover], "assembly.usda")              # B-reps, and meshes for viewers
+export_usd(bracket, "bracket_exact.usda", mesh=False)     # the exact B-rep alone
 ```
+
+The files are text (`.usda`). OpenUSD converts them: `usdcat out.usda -o out.usdc` to binary,
+`usdzip out.usdz out.usda` to a package (with `pip install usd-core`, in Python:
+`Sdf.Layer.FindOrOpen("out.usda").Export("out.usdc")` and
+`UsdUtils.CreateNewUsdzPackage("out.usda", "out.usdz")`). Viewers that honour the stage's units
+show the parts at their real size, a 60 mm bracket 6 cm long in a scene measured in meters: zoom
+to it if the viewer does not.
 
 ### Meshes
 
@@ -79,7 +86,8 @@ print(bracket.name, bracket.volume)
 
 STEP, USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF file the sketch of its
 outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
-a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors; a merged part
+a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors (the meshes
+beside them are skipped); a merged part
 (see [cells](features.md#cells)) comes back with its cells.
 
 ### STEP
