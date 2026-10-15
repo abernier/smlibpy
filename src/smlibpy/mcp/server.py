@@ -429,9 +429,10 @@ def build_server(session: Session | None = None) -> Any:
 
     @tool()
     async def save(
-        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, usd (exact bodies as .usda, for USD "
-                                     "and Omniverse), smb (native, one body), png, or dxf (2D: sketches, sections, "
-                                     "wires; parts are left out).")] = "step",
+        format: Annotated[str, Field(description="step, stl, glb, gltf, obj, usd (.usda: exact bodies for USD "
+                                     "and Omniverse, with a mesh of each that any USD viewer shows), smb (native, "
+                                     "one body), png, or dxf (2D: sketches, sections, wires; parts are left "
+                                     "out).")] = "step",
         path: Annotated[str | None, Field(description="Absolute file path. Default: a file in the temp folder.")] = None,
         names: Annotated[list[str] | None, Field(description="Variables to write instead of what is shown.")] = None,
     ) -> str:
