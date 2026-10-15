@@ -178,12 +178,19 @@ jobs:
         working-directory: js
         run: |
           npm install -g npm@11.19.0
-          npm publish ./classcad-smlibwasm-*.tgz
+          # (a release cut again publishes nothing twice: npm refuses a version it has, and the
+          # files below still go to the release)
+          version=$(node -p "require('./package.json').version")
+          if npm view "@classcad/smlibwasm@${version}" version >/dev/null 2>&1; then
+            echo "@classcad/smlibwasm ${version} is on npm already: not published again"
+          else
+            npm publish ./classcad-smlibwasm-*.tgz
+          fi
       - name: The package and the module as files of the release
         if: github.event_name == 'release' && github.event.action == 'published'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" js/classcad-smlibwasm-*.tgz js/wasm/smlibwasm.wasm js/wasm/smlibwasm.mjs
+        run: gh release upload --clobber "$GITHUB_REF_NAME" js/classcad-smlibwasm-*.tgz js/wasm/smlibwasm.wasm js/wasm/smlibwasm.mjs
 
   publish-windows:
     name: publish the Windows wheels to PyPI

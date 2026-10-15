@@ -153,16 +153,20 @@ def test_usd_names_colors_sheets_cells_and_meshes(tmp_path, plate):
     assert sorted(c.volume for c in back[2].cells()) == pytest.approx(sorted(c.volume for c in cells.cells()), rel=1e-9)
     text = (tmp_path / "all.usda").read_text()
     assert text.startswith("#usda 1.0") and 'upAxis = "Z"' in text and "metersPerUnit = 0.001" in text
-    assert text.count("def BrepArray") == 3 and "def Mesh" not in text
-    export_usd([plate, plate.mesh()], tmp_path / "meshes.usda", mesh=True)
-    text = (tmp_path / "meshes.usda").read_text()
-    assert text.count("def BrepArray") == 1 and text.count("def Mesh") == 2 and "normal3f[] normals" in text
-    assert load(tmp_path / "meshes.usda").volume == pytest.approx(plate.volume, rel=1e-12)  # (meshes are not read)
+    # each body with a mesh of it, which is what USD viewers draw
+    assert text.count("def BrepArray") == 3 and text.count("def Mesh") == 3 and 'def Mesh "plate_mesh"' in text
+    assert "normal3f[] normals" in text
+    export_usd([plate, plate.mesh()], tmp_path / "exact.usda", mesh=False)
+    text = (tmp_path / "exact.usda").read_text()
+    assert text.count("def BrepArray") == 1 and text.count("def Mesh") == 1  # (the mesh given)
+    assert load(tmp_path / "all.usda")[0].volume == pytest.approx(plate.volume, rel=1e-12)  # (meshes are not read)
 
 
 def test_usd_rejects_what_it_cannot_read(tmp_path, plate):
     with pytest.raises(ValueError, match="usdcat"):
         export_usd(plate, tmp_path / "plate.usdc")
+    with pytest.raises(ValueError, match="usdzip"):  # (usdcat writes no packages)
+        export_usd(plate, tmp_path / "plate.usdz")
     (tmp_path / "binary.usdc").write_bytes(b"PXR-USDC" + bytes(100))
     with pytest.raises(ValueError, match="binary"):
         import_usd(tmp_path / "binary.usdc")
@@ -205,7 +209,7 @@ def test_usd_reads_usd_brep_files():
 def test_usd_opens_in_openusd(tmp_path, plate):
     from pxr import Usd, UsdGeom
 
-    export_usd([plate, Sphere(5).named("ball")], tmp_path / "parts.usda", mesh=True)
+    export_usd([plate, Sphere(5).named("ball")], tmp_path / "parts.usda")
     stage = Usd.Stage.Open(str(tmp_path / "parts.usda"))
     prims = {str(p.GetPath()): p.GetTypeName() for p in stage.Traverse()}
     assert prims == {"/World": "Xform", "/World/plate": "BrepArray", "/World/plate_mesh": "Mesh",
@@ -217,6 +221,10 @@ def test_usd_opens_in_openusd(tmp_path, plate):
     assert len(brep.GetAttribute("face:surfaceType").Get()) == len(plate.faces())
     mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/plate_mesh"))
     assert len(mesh.GetFaceVertexCountsAttr().Get()) == len(plate.mesh().triangles)
+    export_usd(plate, tmp_path / "exact.usda", mesh=False)
+    exact = Usd.Stage.Open(str(tmp_path / "exact.usda"))
+    prims = {str(p.GetPath()): p.GetTypeName() for p in exact.Traverse()}
+    assert prims == {"/World": "Xform", "/World/plate": "BrepArray"}
 
 
 @pytest.mark.skipif(importlib.util.find_spec("usd_brep") is None, reason="NVIDIA's usd-brep is not installed")

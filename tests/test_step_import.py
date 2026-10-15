@@ -654,6 +654,50 @@ def test_step_solid_with_a_cavity(tmp_path):
     assert part.area == pytest.approx(2 * (1200 + 800 + 600) + 2 * (200 + 200 + 100), rel=1e-9)
 
 
+def _puck(flagged: str, axis_down: bool) -> str:
+    """A puck of radius 10 and height 10 whose bottom edge is rounded with radius 2 by a torus
+    face, with the bound of one face (``flagged``) marked reversed against the loop it holds."""
+    s = _Entities()
+    R, h, f = 10.0, 10.0, 2.0
+    v_top, v_mid, v_bot = s.vertex(R, 0, h), s.vertex(R, 0, f), s.vertex(R - f, 0, 0)
+    c_top, c_mid, c_bot = s.arc(v_top, v_top, h, R), s.arc(v_mid, v_mid, f, R), s.arc(v_bot, v_bot, 0, R - f)
+    seam = s.line(v_mid, v_top, (R, 0, f), (R, 0, h))
+    tube = s.add(f"CIRCLE('',{s.axis((R - f, 0, f), (0, 1, 0), (1, 0, 0))},{f!r})")
+    tube_seam = s.add(f"EDGE_CURVE('',{v_mid},{v_bot},{tube},.T.)")  # down from the side to the bottom
+    torus = s.add(f"TOROIDAL_SURFACE('',{s.axis((0, 0, f), (0, 0, -1 if axis_down else 1), (1, 0, 0))},{R - f!r},{f!r})")
+    faces = {
+        "top": s.face(s.plane((0, 0, h)), True, [(c_top, True)]),
+        "side": s.face(s.add(f"CYLINDRICAL_SURFACE('',{s.axis((0, 0, 0), x=(1, 0, 0))},{R!r})"), True,
+                       [(c_mid, True), (seam, True), (c_top, False), (seam, False)]),
+        "bottom": s.face(s.plane((0, 0, 0), (0, 0, -1)), True, [(c_bot, False)]),
+        "fillet": s.face(torus, True, [(c_mid, False), (tube_seam, True), (c_bot, True), (tube_seam, False)]),
+    }
+    face = next(line for line in s.lines if line.startswith(faces[flagged] + "="))
+    bound = re.search(r"ADVANCED_FACE\('',\((#\d+)", face).group(1)
+    i = next(i for i, line in enumerate(s.lines) if line.startswith(bound + "="))
+    s.lines[i] = s.lines[i].replace(",.T.);", ",.F.);")
+    return s.solid("puck", list(faces.values()))
+
+
+@pytest.mark.parametrize("flagged, axis_down", [("fillet", True), ("fillet", False), ("bottom", True)])
+def test_step_face_bound_flagged_against_its_neighbours(tmp_path, flagged, axis_down):
+    """A face whose bound is flagged reversed, so that its loop uses the edges it shares the
+    same way round as its neighbours do (issue #3: the fillets of a hole in a file from another
+    kernel). The neighbours decide: on the torus the loop would bound the rest of the tube."""
+    path = tmp_path / "puck.step"
+    path.write_text(_puck(flagged, axis_down))
+    part = import_step(path)
+    R, h, f = 10.0, 10.0, 2.0
+    corner = f * f * (1 - math.pi / 4)  # the cross-section the rounding takes away, and its centroid
+    centroid = R - f * (10 - 3 * math.pi) / (3 * (4 - math.pi))
+    faces = len(part.faces())  # (a number: a failed assert would print the faces, and a broken one hangs)
+    assert part.is_valid()
+    assert faces == 4
+    assert part.volume == pytest.approx(math.pi * R * R * h - corner * 2 * math.pi * centroid, rel=1e-9)
+    fillet = 2 * math.pi * f * ((R - f) * math.pi / 2 + f)  # a quarter of the tube, the outer one
+    assert part.area == pytest.approx(math.pi * (R * R + 2 * R * (h - f) + (R - f) ** 2) + fillet, rel=1e-9)
+
+
 # -- read_step: coordinate systems, curves and points ---------------------------------------
 def _tool_with_supplemental_geometry() -> str:
     """An assembly ASM holding the product TOOL 100 up: TOOL has the cylinder as its body,

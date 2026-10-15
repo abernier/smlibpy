@@ -248,6 +248,16 @@ char decimal_point()
     return l && l->decimal_point && *l->decimal_point ? *l->decimal_point : '.';
 }
 
+// snprintf's text of a number, with USD's decimal point
+void append_number(std::string& out, char* buf)
+{
+    const char point = decimal_point();
+    for (char* c = buf; *c; ++c)
+        if (*c == point)
+            *c = '.';
+    out += buf;
+}
+
 // A short text that reads back as the same double: 15 significant digits where they do, else 16
 // or 17. (Not std::to_chars, whose floating point form needs macOS 13.3: the wheels run from 11.)
 void put(std::string& out, double x)
@@ -264,11 +274,42 @@ void put(std::string& out, double x)
         if (digits == 17 || std::strtod(buf, nullptr) == x)
             break;
     }
-    const char point = decimal_point();
-    for (char* c = buf; *c; ++c)
-        if (*c == point)
-            *c = '.';
-    out += buf;
+    append_number(out, buf);
+}
+
+// The same for a float (point3f, normal3f, float3): the fewest of 6 to 9 significant digits that
+// read back as the same float.
+void put_float(std::string& out, float x)
+{
+    if (!std::isfinite(x))
+    {
+        out += std::isnan(x) ? "nan" : (x > 0 ? "inf" : "-inf");
+        return;
+    }
+    char buf[40];
+    for (int digits = 6; digits <= 9; ++digits)
+    {
+        std::snprintf(buf, sizeof buf, "%.*g", digits, static_cast<double>(x));
+        if (digits == 9 || std::strtof(buf, nullptr) == x)
+            break;
+    }
+    append_number(out, buf);
+}
+
+// (x, y, z), (x, y, z), ... of floats
+void put_float3s(std::string& out, const std::vector<float>& v)
+{
+    for (size_t i = 0; i + 2 < v.size(); i += 3)
+    {
+        out += i ? ", (" : "(";
+        for (int c = 0; c < 3; ++c)
+        {
+            if (c)
+                out += ", ";
+            put_float(out, v[i + c]);
+        }
+        out += ')';
+    }
 }
 
 void put_field(std::string& out, const Field& f, const UsdBrepArrayData& a)
@@ -335,14 +376,14 @@ void put_extent(std::string& out, const double lo[3], const double hi[3])
     {
         if (i)
             out += ", ";
-        put(out, static_cast<double>(static_cast<float>(lo[i])));
+        put_float(out, static_cast<float>(lo[i]));
     }
     out += "), (";
     for (int i = 0; i < 3; ++i)
     {
         if (i)
             out += ", ";
-        put(out, static_cast<double>(static_cast<float>(hi[i])));
+        put_float(out, static_cast<float>(hi[i]));
     }
     out += ")]\n";
 }
@@ -420,45 +461,44 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
     const auto& t = item.triangles;
     if (p.size() % 3 || t.size() % 3)
         throw std::invalid_argument("usd: a mesh needs x, y, z per point and three point indices per triangle");
+    for (long i : t)
+        if (i < 0 || static_cast<size_t>(i) * 3 >= p.size())
+            throw std::invalid_argument("usd: a triangle refers to a point that is not there");
     double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
     for (size_t i = 0; i < p.size(); ++i)
         lo[i % 3] = std::min(lo[i % 3], p[i]), hi[i % 3] = std::max(hi[i % 3], p[i]);
-    std::string out = "    def Mesh \"" + name + "\"\n    {\n";
-    if (!p.empty())
-        put_extent(out, lo, hi);
-    put_color(out, item.color);
-    out += "        int[] faceVertexCounts = [";
-    for (size_t i = 0; i < t.size() / 3; ++i)
-        out += i ? ", 3" : "3";
-    out += "]\n        int[] faceVertexIndices = [";
-    for (size_t i = 0; i < t.size(); ++i)
-    {
-        if (t[i] < 0 || static_cast<size_t>(t[i]) * 3 >= p.size())
-            throw std::invalid_argument("usd: a triangle refers to a point that is not there");
-        out += (i ? ", " : "") + std::to_string(t[i]);
-    }
-    out += "]\n        point3f[] points = [";
-    for (size_t i = 0; i < p.size() / 3; ++i)
-    {
-        out += i ? ", (" : "(";
-        for (int c = 0; c < 3; ++c)
-        {
-            if (c)
-                out += ", ";
-            put(out, static_cast<double>(static_cast<float>(p[3 * i + c])));
-        }
-        out += ')';
-    }
-    out += "]\n";
-    // normals: the given ones per triangle corner, else per point (area-weighted)
+    // A normal per point, which every viewer reads, and far less text than one per triangle corner:
+    // the given corner normals, a point whose corners have different ones (on a sharp edge) written
+    // once for each of them; without them, the area-weighted normal of each point.
+    std::vector<float> pts, nrm;  // as written: x, y, z of each point and its unit normal
+    std::vector<size_t> tri;      // three written points per triangle
+    auto unit = [](const double n[3], float u[3]) {
+        double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (!(len > 0))
+            len = 1.0;
+        for (int d = 0; d < 3; ++d)
+            u[d] = static_cast<float>(n[d] / len);
+    };
     const auto& cn = item.normals;
-    const bool corners = cn.size() == 3 * t.size() && !t.empty();
-    std::vector<double> n;
-    if (corners)
-        n = cn;
+    if (cn.size() == 3 * t.size() && !t.empty())
+    {
+        std::map<std::array<long, 4>, size_t> written;  // (point, normal to 1e-6) -> written point
+        for (size_t i = 0; i < t.size(); ++i)
+        {
+            float u[3];
+            unit(&cn[3 * i], u);
+            const std::array<long, 4> key = {t[i], std::lround(u[0] * 1e6f), std::lround(u[1] * 1e6f),
+                                             std::lround(u[2] * 1e6f)};
+            const auto [at, fresh] = written.emplace(key, pts.size() / 3);
+            if (fresh)
+                for (int d = 0; d < 3; ++d)
+                    pts.push_back(static_cast<float>(p[3 * t[i] + d])), nrm.push_back(u[d]);
+            tri.push_back(at->second);
+        }
+    }
     else
     {
-        n.assign(p.size(), 0.0);
+        std::vector<double> n(p.size(), 0.0);
         for (size_t i = 0; i + 2 < t.size(); i += 3)
         {
             const double* a = &p[3 * t[i]], *b = &p[3 * t[i + 1]], *c = &p[3 * t[i + 2]];
@@ -468,23 +508,30 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
                 for (int d = 0; d < 3; ++d)
                     n[3 * t[i + k] + d] += w[d];
         }
-    }
-    out += "        normal3f[] normals = [";
-    for (size_t i = 0; i + 2 < n.size(); i += 3)
-    {
-        double len = std::sqrt(n[i] * n[i] + n[i + 1] * n[i + 1] + n[i + 2] * n[i + 2]);
-        if (!(len > 0))
-            len = 1.0;
-        out += i ? ", (" : "(";
-        for (int d = 0; d < 3; ++d)
+        for (size_t i = 0; i + 2 < p.size(); i += 3)
         {
-            if (d)
-                out += ", ";
-            put(out, static_cast<double>(static_cast<float>(n[i + d] / len)));
+            float u[3];
+            unit(&n[i], u);
+            for (int d = 0; d < 3; ++d)
+                pts.push_back(static_cast<float>(p[i + d])), nrm.push_back(u[d]);
         }
-        out += ')';
+        tri.assign(t.begin(), t.end());
     }
-    out += std::string("] (\n            interpolation = \"") + (corners ? "faceVarying" : "vertex") + "\"\n        )\n";
+    std::string out = "    def Mesh \"" + name + "\"\n    {\n";
+    if (!p.empty())
+        put_extent(out, lo, hi);
+    put_color(out, item.color);
+    out += "        int[] faceVertexCounts = [";
+    for (size_t i = 0; i < tri.size() / 3; ++i)
+        out += i ? ", 3" : "3";
+    out += "]\n        int[] faceVertexIndices = [";
+    for (size_t i = 0; i < tri.size(); ++i)
+        out += (i ? ", " : "") + std::to_string(tri[i]);
+    out += "]\n        point3f[] points = [";
+    put_float3s(out, pts);
+    out += "]\n        normal3f[] normals = [";
+    put_float3s(out, nrm);
+    out += "] (\n            interpolation = \"vertex\"\n        )\n";
     out += "        uniform token subdivisionScheme = \"none\"\n    }\n";
     return out;
 }

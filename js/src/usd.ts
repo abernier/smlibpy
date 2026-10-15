@@ -2,9 +2,10 @@
 //
 // NVIDIA's usd-brep stores B-reps in USD as BrepArray prims (its omniSolid schema): the topology
 // and the exact geometry of each body as arrays, which USD tools with that schema (usd-brep, its
-// usdview plugin, Omniverse) read as solids. smlibwasm writes and reads them as .usda text with
-// usd-brep's own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not
-// written or read: usdcat converts between text and binary.
+// usdview plugin, Omniverse) read as solids. Other USD tools and viewers do not draw them, so each
+// body is written as a Mesh prim too. smlibwasm writes and reads them as .usda text with usd-brep's
+// own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
+// OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
 import { ext, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
@@ -15,10 +16,18 @@ import { _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
 // biome-ignore lint: kernel results are plain JSON
 type Any = any
 
-const BINARY = ['.usdc', '.usdz']
+// what to do instead of writing binary USD
+const BINARY: Record<string, string> = {
+  '.usdc':
+    "write a .usda and convert it with usdcat (usdcat out.usda -o out.usdc), or in Python with OpenUSD: Sdf.Layer.FindOrOpen('out.usda').Export('out.usdc')",
+  '.usdz':
+    "write a .usda and pack it with usdzip (usdzip out.usdz out.usda), or in Python with OpenUSD: UsdUtils.CreateNewUsdzPackage('out.usda', 'out.usdz')",
+}
 
-/** How a USD file is written: `mesh` adds a Mesh prim (`<name>_mesh`) of each body, for USD tools
- * that do not read B-reps (most viewers); `tolerance` and `angle` as in `tessellate`. */
+/** How a USD file is written: `mesh` (default true) writes a Mesh prim (`<name>_mesh`) of each body,
+ * which is what USD viewers draw, with `tolerance` and `angle` as in `tessellate`; false writes the
+ * exact B-reps alone, for usd-brep and Omniverse, which draw BrepArray prims themselves and would
+ * show each body twice. */
 export interface UsdExportOptions {
   mesh?: boolean
   tolerance?: number | null
@@ -37,7 +46,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
     const name = (it as Any).name || (it instanceof Mesh ? 'mesh' : 'body')
     if (it instanceof Mesh) {
       items.push([null, name, rgb, ..._meshArrays(it)])
-    } else if (options.mesh) {
+    } else if (options.mesh ?? true) {
       items.push([(it as Any)._brep, name, rgb, ..._meshArrays(tessellate(it, options.tolerance ?? null, options.angle ?? 15))])
     } else {
       items.push([(it as Any)._brep, name, rgb, null, null, null])
@@ -48,8 +57,9 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
 
 /**
  * The text of a USD file (.usda) of parts, sheets and meshes: each body a BrepArray prim under
- * /World, its exact B-rep, with its name and color; meshes Mesh prims. The stage is in millimeters
- * (metersPerUnit 0.001) with Z up.
+ * /World, its exact B-rep with its name and color, and a Mesh prim of it (`<name>_mesh`), which is
+ * what USD viewers draw; meshes Mesh prims. The stage is in millimeters (metersPerUnit 0.001) with
+ * Z up.
  */
 export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
   const items = _usdItems(shapes, options)
@@ -62,9 +72,7 @@ export function exportUsd(shapes: unknown, path: string, options: UsdExportOptio
   const p = String(path)
   const dot = p.lastIndexOf('.')
   const ext_ = dot > Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) ? p.slice(dot).toLowerCase() : ''
-  if (BINARY.includes(ext_)) {
-    throw new RangeError(`exportUsd writes text USD (.usda, .usd), not ${ext_}; convert it with usdcat (usdcat out.usda -o out${ext_})`)
-  }
+  if (ext_ in BINARY) throw new RangeError(`exportUsd writes text USD (.usda, .usd), not ${ext_}: ${BINARY[ext_]}`)
   _fs().writeFileSync(p, toUsd(shapes, options))
 }
 

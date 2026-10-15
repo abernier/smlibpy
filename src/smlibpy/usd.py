@@ -2,9 +2,11 @@
 
 NVIDIA's usd-brep stores B-reps in USD as ``BrepArray`` prims (its omniSolid schema): the
 topology and the exact geometry of each body as arrays, which USD tools with that schema (usd-brep,
-its usdview plugin, Omniverse) read as solids. smlibpy writes and reads them as ``.usda`` text with
+its usdview plugin, Omniverse) read as solids. Other USD tools and viewers do not draw them, so each
+body is written as a ``Mesh`` prim too. smlibpy writes and reads them as ``.usda`` text with
 usd-brep's own conversion (compiled in, without OpenUSD). Binary USD (``.usdc``, ``.usdz``) is not
-written or read: ``usdcat`` converts between text and binary.
+written or read: OpenUSD's ``usdcat`` converts between text and ``.usdc``, ``usdzip`` packs a
+``.usdz``.
 """
 
 from __future__ import annotations
@@ -17,7 +19,13 @@ from .colors import to_rgb
 
 __all__ = ["export_usd", "import_usd"]
 
-_BINARY = (".usdc", ".usdz")
+# what to do instead of writing binary USD
+_BINARY = {
+    ".usdc": "write a .usda and convert it with usdcat (usdcat out.usda -o out.usdc), or in Python with OpenUSD: "
+             "Sdf.Layer.FindOrOpen('out.usda').Export('out.usdc')",
+    ".usdz": "write a .usda and pack it with usdzip (usdzip out.usdz out.usda), or in Python with OpenUSD: "
+             "UsdUtils.CreateNewUsdzPackage('out.usda', 'out.usdz')",
+}
 
 
 def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float) -> list[tuple[Any, ...]]:
@@ -46,23 +54,24 @@ def _mesh_arrays(m: Any) -> tuple[list[float], list[int], list[float] | None]:
     return m.vertices.ravel().tolist(), m.triangles.ravel().tolist(), normals
 
 
-def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = False, tolerance: float | None = None,
+def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, tolerance: float | None = None,
                angle: float = 15.0) -> None:
     """Write parts, sheets and meshes to a USD file (``.usda``, or ``.usd`` as text).
 
-    Each body becomes a ``BrepArray`` prim under ``/World``: its exact B-rep, with its name and
-    color. The stage is in millimeters (``metersPerUnit = 0.001``) with Z up.
+    Each body becomes a ``BrepArray`` prim under ``/World``, its exact B-rep with its name and
+    color, and a ``Mesh`` prim of it (``<name>_mesh``), which is what USD viewers draw. The stage
+    is in millimeters (``metersPerUnit = 0.001``) with Z up.
 
     Args:
         shapes: Parts, sheets, faces and meshes (or lists of them). Meshes become ``Mesh`` prims.
-        mesh: Also write a ``Mesh`` prim (``<name>_mesh``) of each body, for USD tools that do not
-            read B-reps (most viewers); ``tolerance`` and ``angle`` as in :func:`tessellate`.
+        mesh: Write the ``Mesh`` prim of each body; ``tolerance`` and ``angle`` as in
+            :func:`tessellate`. ``False`` writes the exact B-reps alone, for usd-brep and Omniverse,
+            which draw ``BrepArray`` prims themselves and would show each body twice.
     """
     p = os.fspath(path)
     ext_ = os.path.splitext(p)[1].lower()
     if ext_ in _BINARY:
-        raise ValueError(f"export_usd writes text USD (.usda, .usd), not {ext_}; convert it with usdcat "
-                         f"(usdcat out.usda -o out{ext_})")
+        raise ValueError(f"export_usd writes text USD (.usda, .usd), not {ext_}: {_BINARY[ext_]}")
     items, keep = _usd_items(shapes, mesh, tolerance, angle)
     if not items:
         raise ValueError("export_usd: nothing to write")
