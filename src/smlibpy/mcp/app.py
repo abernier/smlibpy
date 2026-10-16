@@ -21,8 +21,8 @@ import urllib.request
 from pathlib import Path
 
 PACKAGE = "@buerli.io/buerligons"
-VERSION = "2.0.0-beta.20261016112850"
-INTEGRITY = "sha512-z+WJAEo8xUrMMS7D4RevNDVl7Cs9/LVVYLINuu0j6G/tw7CCXzWGOQKW1Rrx8DfT3iGiK7t+OUtM9PfNahDBbw=="
+VERSION = "0.1.0-beta.20261016171031"
+INTEGRITY = "sha512-ZtfCMOFemAEwW+UawneUUWJb60GNFJyHGjOjjdDWlQ7yE4eRAFihAmwzMay9uZgMnVq7K50RljLLe42qW6+EMw=="
 TARBALL = f"https://registry.npmjs.org/{PACKAGE}/-/buerligons-{VERSION}.tgz"
 FOLDER = "package/dist/mcp/"  # the app inside the tarball (dist/site is the one for buerligons.io)
 DONE = ".complete"  # written last: a folder without it is not used
