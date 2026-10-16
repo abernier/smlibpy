@@ -2,7 +2,7 @@
   "mcpServers": {
     "smlibpy": {
       "command": "uvx",
-      "args": ["--from", "smlibpy[mcp]==0.3.1", "smlibpy-mcp"]
+      "args": ["--from", "smlibpy[mcp]==0.3.3", "smlibpy-mcp"]
     }
   }
 }
