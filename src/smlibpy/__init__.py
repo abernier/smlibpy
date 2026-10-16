@@ -48,7 +48,7 @@ from .surfaces import ruled, stitch, surface, surface_fillet
 from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
                          flat_pattern, fold, unfold)
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     # geometry

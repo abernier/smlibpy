@@ -310,8 +310,8 @@ def test_app_is_downloaded_once_and_checked(tmp_path, monkeypatch):
     monkeypatch.setenv("SMLIBPY_CACHE", str(tmp_path / "cache"))
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, body in [("package/dist/app/index.html", b"<html></html>"), ("package/dist/app/assets/a.js", b"1"),
-                           ("package/README.md", b"not the app"), ("package/dist/app/../../evil.txt", b"no")]:
+        for name, body in [(app.FOLDER + "index.html", b"<html></html>"), (app.FOLDER + "assets/a.js", b"1"),
+                           ("package/README.md", b"not the app"), (app.FOLDER + "../../evil.txt", b"no")]:
             info = tarfile.TarInfo(name)
             info.size = len(body)
             tar.addfile(info, io.BytesIO(body))
