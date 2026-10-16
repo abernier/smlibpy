@@ -98,7 +98,7 @@ agent means ("is it this face?"). A selection lasts until the model changes: a f
 is named by its place in the drawing, which the new model gives to whatever is there now, so
 the app's selection is cleared with each change.
 
-The app comes from the npm package `@classcad/mcp`, at a version and hash pinned in smlibpy.
+The app comes from the npm package `@buerli.io/buerligons`, at a version and hash pinned in smlibpy.
 It is downloaded the first time a session needs it and kept in your cache folder; without a
 network that first time, `snapshot` still shows the model and the next `view` tries again.
 
