@@ -1,9 +1,10 @@
 """Buerligons, the ClassCAD app, as the viewer of an MCP session.
 
 Its build for MCP sessions (the app that finds its session at ``/session`` on the address it was
-loaded from) comes in the npm package ``@classcad/mcp`` (``dist/app/``). It is downloaded the first
-time a session needs it, checked against the hash pinned here and kept in the user's cache;
-``SMLIBPY_APP_DIR`` points to a folder with the app instead (an ``index.html`` and its ``assets``).
+loaded from) comes in the npm package ``@buerli.io/buerligons`` (``dist/mcp/``). It is downloaded
+the first time a session needs it, checked against the hash pinned here and kept in the user's
+cache; ``SMLIBPY_APP_DIR`` points to a folder with the app instead (an ``index.html`` and its
+``assets``).
 """
 
 from __future__ import annotations
@@ -19,11 +20,11 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-PACKAGE = "@classcad/mcp"
-VERSION = "0.4.1"
-INTEGRITY = "sha512-AgdsaRWeLY+m3I7Uwls9SYl7Dg5Zwaq3i6ggBX8lvjmBQa6jQjab7zmGcLVWPkMO9XT1FYJjlTABQgD1ZR0O3g=="
-TARBALL = f"https://registry.npmjs.org/{PACKAGE}/-/mcp-{VERSION}.tgz"
-FOLDER = "package/dist/app/"  # the app inside the tarball
+PACKAGE = "@buerli.io/buerligons"
+VERSION = "2.0.0-beta.20261016112850"
+INTEGRITY = "sha512-z+WJAEo8xUrMMS7D4RevNDVl7Cs9/LVVYLINuu0j6G/tw7CCXzWGOQKW1Rrx8DfT3iGiK7t+OUtM9PfNahDBbw=="
+TARBALL = f"https://registry.npmjs.org/{PACKAGE}/-/buerligons-{VERSION}.tgz"
+FOLDER = "package/dist/mcp/"  # the app inside the tarball (dist/site is the one for buerligons.io)
 DONE = ".complete"  # written last: a folder without it is not used
 
 
