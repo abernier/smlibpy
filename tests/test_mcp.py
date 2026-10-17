@@ -297,51 +297,17 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
         host.close()
 
 
-def test_app_is_downloaded_once_and_checked(tmp_path, monkeypatch):
-    import hashlib
-    import http.server
-    import io
-    import tarfile
-    import threading
-
+def test_app_comes_with_the_package(tmp_path, monkeypatch):
     from smlibpy.mcp import app
 
-    monkeypatch.delenv("SMLIBPY_APP_DIR", raising=False)
-    monkeypatch.setenv("SMLIBPY_CACHE", str(tmp_path / "cache"))
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, body in [(app.FOLDER + "index.html", b"<html></html>"), (app.FOLDER + "assets/a.js", b"1"),
-                           ("package/README.md", b"not the app"), (app.FOLDER + "../../evil.txt", b"no")]:
-            info = tarfile.TarInfo(name)
-            info.size = len(body)
-            tar.addfile(info, io.BytesIO(body))
-    tgz = buf.getvalue()
-    integrity = "sha512-" + base64.b64encode(hashlib.sha512(tgz).digest()).decode()
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(tgz)))
-            self.end_headers()
-            self.wfile.write(tgz)
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/app.tgz"
-    try:
-        folder = app.app_dir(url, integrity, "1.0")
-        assert sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()) == \
-            [".complete", "assets/a.js", "index.html"]
-        assert not (tmp_path / "cache" / "evil.txt").exists()
-        assert app.app_dir("http://127.0.0.1:9/gone.tgz", integrity, "1.0") == folder  # from the cache
-        with pytest.raises(app.AppUnavailable, match="pinned hash"):
-            app.app_dir(url, "sha512-" + base64.b64encode(b"x" * 64).decode(), "2.0")
-        assert not (tmp_path / "cache" / "buerligons" / "2.0").exists()
-    finally:
-        server.shutdown()
+    monkeypatch.setenv("SMLIBPY_APP_DIR", str(_fake_app(tmp_path / "own")))
+    assert app.app_dir() == tmp_path / "own"
+    monkeypatch.delenv("SMLIBPY_APP_DIR")
+    monkeypatch.setattr(app, "PACKAGED", _fake_app(tmp_path / "packaged"))
+    assert app.app_dir() == tmp_path / "packaged"
+    monkeypatch.setattr(app, "PACKAGED", tmp_path / "not-built")
+    with pytest.raises(app.AppUnavailable, match="no index.html"):
+        app.app_dir()
 
 
 def test_stdio_server_round_trip(tmp_path):

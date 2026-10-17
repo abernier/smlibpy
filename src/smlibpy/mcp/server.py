@@ -9,8 +9,7 @@ Environment:
                           link in its own browser pane; the default in the Claude desktop
                           app), ``browser`` (the user's default browser; the default
                           elsewhere) or ``off`` (only the link is handed over)
-    SMLIBPY_APP_DIR       a folder with the app to use instead of the one downloaded from npm
-    SMLIBPY_CACHE         where the downloaded app is kept (default: the user's cache folder)
+    SMLIBPY_APP_DIR       a folder with the app to use instead of the one in the package
     SMLIBPY_SNAPSHOT_DIR  where snapshots are kept (default: a folder in the temp directory)
 """
 

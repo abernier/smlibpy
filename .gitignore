@@ -17,3 +17,7 @@ js/node_modules/
 js/dist/
 js/LICENSE
 js/LICENSE.usd-brep
+
+# The live view: built from app/ when a release is built, shipped in the package
+src/smlibpy/mcp/app/
+app/node_modules/

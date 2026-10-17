@@ -98,15 +98,14 @@ agent means ("is it this face?"). A selection lasts until the model changes: a f
 is named by its place in the drawing, which the new model gives to whatever is there now, so
 the app's selection is cleared with each change.
 
-The app comes from the npm package `@buerli.io/buerligons`, at a version and hash pinned in smlibpy.
-It is downloaded the first time a session needs it and kept in your cache folder; without a
-network that first time, `snapshot` still shows the model and the next `view` tries again.
+The app comes with smlibpy: Buerligons (the npm package `@buerli.io/buerligons`) in a small page,
+built from `app/` in the repository when a release is built and shipped inside the package. Nothing
+is downloaded, and it works offline.
 
 | Variable | Effect |
 |---|---|
 | `SMLIBPY_VIEWER` | `host` (the agent opens the link), `browser` (your browser) or `off` |
-| `SMLIBPY_APP_DIR` | A folder with the app to use instead of the downloaded one |
-| `SMLIBPY_CACHE` | Where the downloaded app is kept (default: your cache folder) |
+| `SMLIBPY_APP_DIR` | A folder with the app to use instead of the one in the package |
 | `SMLIBPY_SNAPSHOT_DIR` | Where pictures are kept (default: a folder in the temp directory) |
 
 ## smlibpy or ClassCAD
