@@ -11,10 +11,14 @@ Environment:
                           elsewhere) or ``off`` (only the link is handed over)
     SMLIBPY_APP_DIR       a folder with the app to use instead of the one in the package
     SMLIBPY_SNAPSHOT_DIR  where snapshots are kept (default: a folder in the temp directory)
+    SMLIBPY_SESSION_IDLE_S  seconds a session nobody uses keeps its worker before it sleeps (default 1800)
+    SMLIBPY_SESSIONS_AWAKE  how many sessions keep a worker at once (default 8; see sessions.py)
 """
 
 from __future__ import annotations
 
+import functools
+import inspect as pyinspect  # (`inspect` is a tool)
 import itertools
 import json
 import os
@@ -28,14 +32,18 @@ from pydantic import Field
 
 try:  # MCP SDK 2.x
     from mcp.server.mcpserver import Image, MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:  # 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[no-redef]
     from mcp.server.fastmcp import Image  # type: ignore[no-redef]
+    from mcp.server.fastmcp.exceptions import ToolError  # type: ignore[no-redef]
 
 from . import discovery
 from .app import AppUnavailable
-from .buerli import BuerliHost
-from .session import DEFAULT_TIMEOUT, Session
+from .sessions import NOTE as SESSIONS_NOTE
+from .sessions import PARAM as SESSION_PARAM
+from .sessions import SessionError, Sessions, Slot, opened_note
+from .session import DEFAULT_TIMEOUT
 
 DOCS_BUDGET = 48_000
 _counter = itertools.count(1)
@@ -53,15 +61,16 @@ _APP = ("The live view is Buerligons, the ClassCAD app: the user turns the model
         "that reaches it in a script (\"fillet the edge I selected\"); set_selection highlights faces or edges "
         "for them (\"is it this face?\").")
 _VIEWER_NOTE = {
-    "host": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\". Open that link in your own "
-             "browser pane right then (in the Claude desktop app: preview_start with url set to the link), once; "
+    "host": ("VIEWER: every session has a live view: the first script that makes a model in it returns \"Viewer: "
+             "<link>\". Open that link in your own browser pane right then (in the Claude desktop app: preview_start "
+             "with url set to the link), once per session; "
              "the app follows every later script by itself. Tell the user in a few words that the model is in "
              "the browser pane. view() gives the link again. " + _APP),
-    "browser": ("VIEWER: the first script that makes a model opens a live 3D view in the user's browser and "
+    "browser": ("VIEWER: the first script that makes a model in a session opens its live 3D view in the user's browser and "
                 "returns \"Viewer: <link>\". The app follows every later script by itself; do not open it again. "
                 "view() gives the link again. " + _APP),
-    "off": ("VIEWER: the first script that makes a model returns \"Viewer: <link>\", a live 3D view that follows "
-            "every later script. Hand the link to the user once. " + _APP),
+    "off": ("VIEWER: the first script that makes a model in a session returns \"Viewer: <link>\", a live 3D view "
+            "that follows every later script. Hand the link to the user once per session. " + _APP),
 }
 
 _GUIDE = """\
@@ -69,11 +78,14 @@ smlibpy: CAD modeling in Python on SMLib, the NURBS solid modeling kernel. You b
 writing Python scripts; this server runs them, shows the result live in Buerligons (the ClassCAD app) and renders \
 pictures for you to check.
 
+{sessions}
+
 WORKFLOW
 1. Plan the part: its dimensions, its features, the order you build them in. Read the guides for \
 the operations you will use (docs) before you write the script.
-2. Build with run_script. `from smlibpy import *`, math and numpy (as np) are already imported. \
-Variables persist between calls: build in steps, one feature or a few at a time.
+2. Build with run_script, in a session of your own (session="new" first, then its id). `from smlibpy import *`, \
+math and numpy (as np) are already imported. Variables persist between the calls of a session: build in steps, \
+one feature or a few at a time.
 3. Verify after every step: print numbers (part.volume, part.bbox(), part.is_valid(), \
 len(part.faces())) and look with snapshot(view="sheet"): a technical drawing (front view, the view \
 from the left, top view; hidden edges dashed) with a shaded iso view. A picture alone can mislead \
@@ -132,7 +144,7 @@ GUIDES
 
 
 def instructions() -> str:
-    return _GUIDE.format(viewer=_VIEWER_NOTE[_mode()], methods=discovery.method_index(),
+    return _GUIDE.format(sessions=SESSIONS_NOTE, viewer=_VIEWER_NOTE[_mode()], methods=discovery.method_index(),
                          guides=discovery.guide_index() or "(none yet)")
 
 
@@ -171,11 +183,13 @@ def _fmt_scene(scene: list[dict[str, Any]], explicit: bool) -> str:
     return head + "\n" + "\n".join(rows)
 
 
-def build_server(session: Session | None = None) -> Any:
+SessionArg = Annotated[str, Field(description=SESSION_PARAM)]
+
+
+def build_server() -> Any:
     import smlibpy
 
-    session = session or Session()
-    viewer = BuerliHost(session)
+    sessions = Sessions()
     mode = _mode()
     server = MCPServer(name="smlibpy", instructions=instructions())
 
@@ -190,7 +204,32 @@ def build_server(session: Session | None = None) -> Any:
     async def call(fn: Any, *args: Any, **kwargs: Any) -> Any:
         return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
 
-    def viewer_note(scene: list[dict[str, Any]]) -> str | None:
+    def per_session(fn: Any) -> Any:
+        """A tool that works on a session (sessions.py). Its body takes the Slot first; the tool takes
+        `session` in its place (an id, or "new"), and its answer says what the call opened, or what waking
+        the session could not bring back."""
+        sig = pyinspect.signature(fn, eval_str=True)
+        param = pyinspect.Parameter("session", pyinspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=SessionArg)
+
+        @functools.wraps(fn)
+        async def tool_fn(session: str, **kwargs: Any) -> Any:
+            try:
+                slot, opened = sessions.resolve(session, fn.__name__)
+            except SessionError as e:
+                raise ToolError(str(e)) from None
+            answer = await fn(slot, **kwargs)
+            notes = [n for n in (slot.session.take_notice(), opened_note(slot.id) if opened else None) if n]
+            await call(sessions.settle)
+            if not notes:
+                return answer
+            return [*answer, *notes] if isinstance(answer, list) else "\n\n".join([answer, *notes])
+
+        del tool_fn.__wrapped__  # the tool's parameters are these:
+        tool_fn.__signature__ = sig.replace(parameters=[param, *list(sig.parameters.values())[1:]])  # type: ignore[attr-defined]
+        return tool_fn
+
+    def viewer_note(slot: Slot, scene: list[dict[str, Any]]) -> str | None:
+        viewer = slot.viewer
         if viewer.opened or not scene:
             return None
         try:
@@ -210,7 +249,8 @@ def build_server(session: Session | None = None) -> Any:
         return f"Viewer: {link}\nHand this link to the user once: a live 3D view that follows every script."
 
     @tool()
-    async def run_script(
+    @per_session
+    async def run_script(slot: Slot,
         script: Annotated[str, Field(description="Python code. `from smlibpy import *`, math and numpy (np) are "
                                      "imported; variables persist between calls. The value of a last bare "
                                      "expression is returned.")],
@@ -218,7 +258,7 @@ def build_server(session: Session | None = None) -> Any:
         timeout_s: Annotated[float, Field(description="Seconds before the script is stopped (1 to 900).")] = DEFAULT_TIMEOUT,
     ) -> str:
         """Run a Python script in the modeling session and report what it printed, its value and what is shown."""
-        res = await call(session.run, script, label, timeout_s)
+        res = await call(slot.session.run, script, label, timeout_s)
         if not res.get("ok"):
             text = "Script failed:\n" + res.get("error", "")
             if res.get("output"):
@@ -230,15 +270,16 @@ def build_server(session: Session | None = None) -> Any:
         if res.get("value") is not None:
             parts.append("Value: " + res["value"])
         scene = res.get("scene", [])
-        scene_answer = await call(session.call, "scene")
+        scene_answer = await call(slot.session.call, "scene")
         parts.append(_fmt_scene(scene, bool(scene_answer.get("explicit"))))
-        note = viewer_note(scene)
+        note = viewer_note(slot, scene)
         if note:
             parts.append(note)
         return "\n\n".join(parts)
 
     @tool()
-    async def snapshot(
+    @per_session
+    async def snapshot(slot: Slot,
         view: Annotated[str | dict[str, Any], Field(description=(
             "The camera, orthographic, Z up: iso (default, a true isometric view from front, right and above), front, "
             "back, left, right, top, bottom; {\"azimuth\": a, \"elevation\": e} in degrees (azimuth 0 = from the "
@@ -327,7 +368,7 @@ def build_server(session: Session | None = None) -> Any:
                        highlight_at=highlight_at, markers=markers, annotate=annotate, xray=xray, colors=colors,
                        zoom=zoom, look_at=look_at, frame=frame, compare=compare, supersample=supersample,
                        zebra=zebra, curvature=curvature)
-        res = await call(session.call, "snapshot", 300.0, view=v, size=(width, height), names=names, edges=edges,
+        res = await call(slot.session.call, "snapshot", 300.0, view=v, size=(width, height), names=names, edges=edges,
                          path=target, **{k: x for k, x in options.items() if x is not None})
         if not res.get("ok"):
             return [f"Snapshot failed: {res.get('error')}"]
@@ -352,25 +393,27 @@ def build_server(session: Session | None = None) -> Any:
         return content
 
     @tool()
-    async def scene() -> str:
+    @per_session
+    async def scene(slot: Slot) -> str:
         """What the live view and snapshots show, and every shape variable of the session."""
-        shown = await call(session.call, "scene")
-        allv = await call(session.call, "vars")
+        shown = await call(slot.session.call, "scene")
+        allv = await call(slot.session.call, "vars")
         text = _fmt_scene(shown.get("scene", []), bool(shown.get("explicit")))
         rows = [f"- {v['name']}: {v['type']}" + (f", volume {v['volume']}" if "volume" in v else "")
                 + (f", {v['count']} items" if "count" in v else "") for v in allv.get("vars", [])]
         return text + "\n\nVariables:\n" + ("\n".join(rows) if rows else "(none)") + \
-            f"\n\nScripts in this session: {len(session.history)}; checkpoints: " + \
-            (", ".join(k for k, _ in session.checkpoints) or "none")
+            f"\n\nScripts in this session: {len(slot.session.history)}; checkpoints: " + \
+            (", ".join(k for k, _ in slot.session.checkpoints) or "none")
 
     @tool()
-    async def inspect(
+    @per_session
+    async def inspect(slot: Slot,
         name: Annotated[str, Field(description="A variable, or an expression such as part.faces().top().")],
         faces: Annotated[bool, Field(description="List the faces: type, area, center, normal or radius.")] = False,
         edges: Annotated[bool, Field(description="List the edges: type, length, center, radius.")] = False,
     ) -> str:
         """Measurements of a shape: type, validity, volume, area, size, faces and edges."""
-        res = await call(session.call, "inspect", name=name, faces=faces, edges=edges)
+        res = await call(slot.session.call, "inspect", name=name, faces=faces, edges=edges)
         if not res.get("ok"):
             return res.get("error", "failed")
         return json.dumps(res["info"], indent=1)
@@ -427,7 +470,8 @@ def build_server(session: Session | None = None) -> Any:
         return "\n\n".join(out)
 
     @tool()
-    async def save(
+    @per_session
+    async def save(slot: Slot,
         format: Annotated[str, Field(description="step, stl, glb, gltf, obj, usd (.usda: exact bodies for USD "
                                      "and Omniverse, with a mesh of each that any USD viewer shows), smb (native, "
                                      "one body), png, or dxf (2D: sketches, sections, wires; parts are left "
@@ -436,57 +480,62 @@ def build_server(session: Session | None = None) -> Any:
         names: Annotated[list[str] | None, Field(description="Variables to write instead of what is shown.")] = None,
     ) -> str:
         """Write the shown shapes (or the named ones) to a file."""
-        res = await call(session.call, "save", 600.0, format=format, path=path, names=names)
+        res = await call(slot.session.call, "save", 600.0, format=format, path=path, names=names)
         if not res.get("ok"):
             return f"Save failed: {res.get('error')}"
         return f"Wrote {res['path']} ({res['bytes']} bytes): {', '.join(res['shapes'])}."
 
     @tool()
-    async def load(
+    @per_session
+    async def load(slot: Slot,
         path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), USD (.usda, .usd as text), "
                                    "SMLib (.smb), STL or DXF (.dxf, read as a sketch) file.")],
         name: Annotated[str | None, Field(description="Variable to hold it. Default: from the file name.")] = None,
     ) -> str:
         """Read a file into a session variable (a Part, a Shell, a list of them, a Mesh for STL, a Sketch for DXF)."""
-        res = await call(session.load, path, name)
+        res = await call(slot.session.load, path, name)
         if not res.get("ok"):
             return f"Load failed: {res.get('error')}"
         text = f"Loaded {path} as `{res['name']}`: {res.get('type')}"
         if "volume" in res:
             text += f", volume {res['volume']}"
-        shown = await call(session.call, "scene")
-        note = viewer_note(shown.get("scene", []))
+        shown = await call(slot.session.call, "scene")
+        note = viewer_note(slot, shown.get("scene", []))
         return text + (f"\n\n{note}" if note else "")
 
     @tool()
-    async def checkpoint(label: Annotated[str | None, Field(description="A name to restore it by.")] = None) -> str:
+    @per_session
+    async def checkpoint(slot: Slot, label: Annotated[str | None, Field(description="A name to restore it by.")] = None) -> str:
         """Remember the current state of the session, to go back to it with restore."""
-        name = await call(session.checkpoint, label)
-        return f"Checkpoint {name!r} after {len(session.history)} scripts."
+        name = await call(slot.session.checkpoint, label)
+        return f"Checkpoint {name!r} after {len(slot.session.history)} scripts."
 
     @tool()
-    async def restore(label: Annotated[str | None, Field(description="Checkpoint name; default: the last.")] = None) -> str:
+    @per_session
+    async def restore(slot: Slot, label: Annotated[str | None, Field(description="Checkpoint name; default: the last.")] = None) -> str:
         """Go back to a checkpoint: the session is rebuilt from the scripts that led to it."""
         try:
-            return await call(session.restore, label)
+            return await call(slot.session.restore, label)
         except KeyError as e:
             return str(e.args[0])
 
     @tool()
-    async def clear() -> str:
-        """Start over: an empty session (checkpoints are dropped too)."""
-        await call(session.clear)
+    @per_session
+    async def clear(slot: Slot) -> str:
+        """Start over in this session: it is emptied (checkpoints are dropped too). For a separate, new model open a new session instead."""
+        await call(slot.session.clear)
         return "The session is empty."
 
     @tool()
-    async def get_selection() -> str:
+    @per_session
+    async def get_selection(slot: Slot) -> str:
         """What the user selected in the live view (Buerligons): faces, edges and vertices, measured, each with
         the expression that reaches it in a script."""
-        items = list(viewer.selection)
+        items = list(slot.viewer.selection)
         if not items:
-            hint = "" if viewer.guests else " (the live view is not open)"
+            hint = "" if slot.viewer.guests else " (the live view is not open)"
             return f"Nothing is selected in the live view{hint}. A selection lasts until the model changes."
-        res = await call(session.call, "picks", items=items)
+        res = await call(slot.session.call, "picks", items=items)
         if not res.get("ok"):
             return f"The selection could not be read: {res.get('error')}"
         rows = []
@@ -498,18 +547,19 @@ def build_server(session: Session | None = None) -> Any:
         return f"Selected ({len(rows)}):\n" + "\n".join(rows)
 
     @tool()
-    async def set_selection(
+    @per_session
+    async def set_selection(slot: Slot,
         expressions: Annotated[list[str], Field(description="Python expressions of the session giving faces, edges, "
                                                 "vertices or shown bodies: [\"part.faces().top()\", \"rim\"].",
                                                 min_length=1)],
         add: Annotated[bool, Field(description="Add to what is selected instead of replacing it.")] = False,
     ) -> str:
         """Select faces, edges, vertices or bodies in the live view, to show the user what you mean."""
-        res = await call(session.call, "targets", expressions=expressions)
+        res = await call(slot.session.call, "targets", expressions=expressions)
         if not res.get("ok"):
             return f"Nothing selected: {res.get('error')}"
         targets, missing = res["targets"], res["missing"]
-        apps = viewer.select(targets, replace=not add)
+        apps = slot.viewer.select(targets, replace=not add)
         text = f"Selected {len(targets)} in {apps} open view{'s' if apps != 1 else ''}."
         if not apps:
             text = "The live view is not open: view() gives its link."
@@ -518,13 +568,14 @@ def build_server(session: Session | None = None) -> Any:
         return text
 
     @tool()
-    async def view(open: Annotated[bool, Field(description="Also open it in the user's default browser.")] = False) -> str:
+    @per_session
+    async def view(slot: Slot, open: Annotated[bool, Field(description="Also open it in the user's default browser.")] = False) -> str:
         """The link of the live 3D view (Buerligons)."""
         try:
-            link = viewer.url
+            link = slot.viewer.url
         except AppUnavailable as e:
             return f"The live view (Buerligons) is not available: {e}. snapshot() shows the model."
-        viewer.opened = True
+        slot.viewer.opened = True
         if open:
             try:
                 webbrowser.open(link)
@@ -532,8 +583,7 @@ def build_server(session: Session | None = None) -> Any:
                 pass
         return f"Viewer: {link}"
 
-    server._smlibpy_session = session  # type: ignore[attr-defined]
-    server._smlibpy_viewer = viewer  # type: ignore[attr-defined]
+    server._smlibpy_sessions = sessions  # type: ignore[attr-defined]
     _ = smlibpy
     return server
 
@@ -543,8 +593,7 @@ def main() -> None:
     try:
         server.run("stdio")
     finally:
-        server._smlibpy_viewer.close()
-        server._smlibpy_session.close()
+        server._smlibpy_sessions.close()
 
 
 if __name__ == "__main__":
