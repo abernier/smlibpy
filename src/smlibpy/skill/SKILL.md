@@ -24,7 +24,7 @@ export_step(plate, "plate.step")
 
 1. **Plan.** Write down the dimensions, the features and the order you build them in. Look up
    every API you will use (`docs`, `describe_method`) before writing the script.
-2. **Build in steps.** One feature or a few per script; in the MCP session variables persist.
+2. **Build in steps.** One feature or a few per script; in the MCP session variables persist. Through the MCP, every model gets a session of its own: `session="new"` with the first call, then the id its answer names.
 3. **Verify every step** with numbers and a picture: `volume`, `bbox()`, `is_valid()`, face
    counts; `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Sections,
    highlighted selections and before/after comparisons: see `recipes/verification`.

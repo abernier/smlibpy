@@ -50,15 +50,19 @@ or `.vscode/mcp.json` (VS Code, where the key is `servers` and each entry has
 
 ## What the agent gets
 
+Every tool that works on a model takes a `session`: `"new"` with the first call of a model, and
+the id the answer names (`s-k3v9q2xa`) in every later one (see [Sessions](#sessions)). The guides
+(`list_methods`, `describe_method`, `docs`) take none.
+
 | Tool | What it does |
 |---|---|
-| `run_script` | Runs Python with `from smlibpy import *`; variables stay between calls |
+| `run_script` | Runs Python with `from smlibpy import *`; variables stay between the calls of a session |
 | `snapshot` | A PNG of the model: a view, a technical drawing (front, side and top view with hidden edges dashed, ISO method E or A), sheets of views, sections, highlighted selections, markers, x-ray, zebra stripes and curvature maps, and before/after comparisons |
 | `scene`, `inspect` | What is shown, the variables, measurements of a shape, its faces and edges |
 | `list_methods`, `describe_method`, `docs` | The API index, signatures and the guides of the skill |
 | `save`, `load` | STEP, USD, STL, glTF, OBJ, the native format, PNG, DXF (sketches and sections); STEP, USD, STL and DXF in |
-| `checkpoint`, `restore`, `clear` | Go back to an earlier state, or start over |
-| `view` | The link of the live view (Buerligons) |
+| `checkpoint`, `restore`, `clear` | Go back to an earlier state of the session, or start over in it |
+| `view` | The link of the session's live view (Buerligons) |
 | `get_selection`, `set_selection` | What you selected in the live view, as expressions for scripts; faces and edges the agent highlights for you |
 
 `show(a, b)` in a script chooses what the live view and the pictures display; without it every
@@ -76,12 +80,28 @@ expression such as `"Plane.XZ"` besides origin and normal. Every single view rep
 a later snapshot with that `frame` and `compare=<path of the earlier picture>` reports the
 pixels that changed and shows them in red.
 
+## Sessions
+
+A session holds the variables, the scripts that made them, the checkpoints and a live view of
+its own. It belongs to the conversation that opened it: the answer to `"new"` names its id, and
+only that conversation is told it. This matters where a host sends many conversations through
+one server process, as the Claude desktop chat app and Cowork do (one process per configured
+server, for all their conversations; Cursor and VS Code run one per window): nothing in a request
+says which conversation sent it, so the session is named in the call. A call without one, or with
+an id the server does not know, is refused and changes nothing. A second, unrelated model is a
+second session.
+
 ## How it runs
 
-Scripts run in a separate process. A script that runs too long is stopped (after 120 s unless
-the agent asks for more), and a crash of the kernel ends that process, not the server. Either
-way the session is rebuilt by running the scripts that built it again, so nothing that worked
-is lost. Checkpoints work the same way.
+Scripts run in a separate process, one per session. A script that runs too long is stopped (after
+120 s unless the agent asks for more), and a crash of the kernel ends that process, not the server.
+Either way the session is rebuilt by running the scripts that built it again, so nothing that
+worked is lost. Checkpoints work the same way.
+
+A session nobody used for `SMLIBPY_SESSION_IDLE_S` (30 minutes) gives its process up the same way
+and keeps its scripts; at most `SMLIBPY_SESSIONS_AWAKE` (8) keep a process at once, the least
+recently used one going first. Its next call runs the scripts again. Should one of them not run
+again (a file it read is gone), the answer says what the session holds now.
 
 ## The live view
 
@@ -107,6 +127,8 @@ is downloaded, and it works offline.
 | `SMLIBPY_VIEWER` | `host` (the agent opens the link), `browser` (your browser) or `off` |
 | `SMLIBPY_APP_DIR` | A folder with the app to use instead of the one in the package |
 | `SMLIBPY_SNAPSHOT_DIR` | Where pictures are kept (default: a folder in the temp directory) |
+| `SMLIBPY_SESSION_IDLE_S` | Seconds a session nobody uses keeps its process (default 1800) |
+| `SMLIBPY_SESSIONS_AWAKE` | How many sessions keep a process at once (default 8) |
 
 ## smlibpy or ClassCAD
 
