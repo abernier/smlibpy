@@ -1,0 +1,25 @@
+{
+  "name": "smlibpy-app",
+  "private": true,
+  "type": "module",
+  "description": "The live view of an smlibpy MCP session: Buerligons, joined to the session it was opened with. Built into ../src/smlibpy/mcp/app, which ships in the Python package.",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@buerli.io/buerligons": "0.1.0-beta.20261017162640",
+    "@buerli.io/classcad": "2.0.0-beta.20261017162640",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "~0.184.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4"
+  }
+}

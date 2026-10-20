@@ -297,51 +297,17 @@ def test_app_session_answers_like_a_classcad_server(session, tmp_path, monkeypat
         host.close()
 
 
-def test_app_is_downloaded_once_and_checked(tmp_path, monkeypatch):
-    import hashlib
-    import http.server
-    import io
-    import tarfile
-    import threading
-
+def test_app_comes_with_the_package(tmp_path, monkeypatch):
     from smlibpy.mcp import app
 
-    monkeypatch.delenv("SMLIBPY_APP_DIR", raising=False)
-    monkeypatch.setenv("SMLIBPY_CACHE", str(tmp_path / "cache"))
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, body in [(app.FOLDER + "index.html", b"<html></html>"), (app.FOLDER + "assets/a.js", b"1"),
-                           ("package/README.md", b"not the app"), (app.FOLDER + "../../evil.txt", b"no")]:
-            info = tarfile.TarInfo(name)
-            info.size = len(body)
-            tar.addfile(info, io.BytesIO(body))
-    tgz = buf.getvalue()
-    integrity = "sha512-" + base64.b64encode(hashlib.sha512(tgz).digest()).decode()
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(tgz)))
-            self.end_headers()
-            self.wfile.write(tgz)
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/app.tgz"
-    try:
-        folder = app.app_dir(url, integrity, "1.0")
-        assert sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()) == \
-            [".complete", "assets/a.js", "index.html"]
-        assert not (tmp_path / "cache" / "evil.txt").exists()
-        assert app.app_dir("http://127.0.0.1:9/gone.tgz", integrity, "1.0") == folder  # from the cache
-        with pytest.raises(app.AppUnavailable, match="pinned hash"):
-            app.app_dir(url, "sha512-" + base64.b64encode(b"x" * 64).decode(), "2.0")
-        assert not (tmp_path / "cache" / "buerligons" / "2.0").exists()
-    finally:
-        server.shutdown()
+    monkeypatch.setenv("SMLIBPY_APP_DIR", str(_fake_app(tmp_path / "own")))
+    assert app.app_dir() == tmp_path / "own"
+    monkeypatch.delenv("SMLIBPY_APP_DIR")
+    monkeypatch.setattr(app, "PACKAGED", _fake_app(tmp_path / "packaged"))
+    assert app.app_dir() == tmp_path / "packaged"
+    monkeypatch.setattr(app, "PACKAGED", tmp_path / "not-built")
+    with pytest.raises(app.AppUnavailable, match="no index.html"):
+        app.app_dir()
 
 
 def test_stdio_server_round_trip(tmp_path):
@@ -359,27 +325,28 @@ def test_stdio_server_round_trip(tmp_path):
                 assert "run_script" in (init.instructions or "")
                 names = {t.name for t in (await s.list_tools()).tools}
                 assert {"run_script", "snapshot", "docs", "save", "get_selection", "set_selection"} <= names
-                res = await s.call_tool("run_script", {"script": "part = Box(20, 10, 5)\npart.volume"})
+                res = await s.call_tool("run_script", {"session": "new", "script": "part = Box(20, 10, 5)\npart.volume"})
                 text = res.content[0].text
                 assert "Value: 1000" in text and "Viewer: http://127.0.0.1" in text and "?invite=" in text
-                shot = await s.call_tool("snapshot", {"width": 200, "height": 150})
+                sid = _opened(text)
+                shot = await s.call_tool("snapshot", {"session": sid, "width": 200, "height": 150})
                 image = [c for c in shot.content if c.type == "image"][0]
                 assert base64.b64decode(image.data)[:4] == b"\x89PNG"
                 note = [c for c in shot.content if c.type == "text"][0].text
                 assert "frame: {" in note
-                drawing = await s.call_tool("snapshot", {"width": 400, "height": 300, "drawing": True,
+                drawing = await s.call_tool("snapshot", {"session": sid, "width": 400, "height": 300, "drawing": True,
                                                          "highlight": "part.faces().top()",
                                                          "view": {"azimuth": 30, "elevation": 20}})
                 assert [c.type for c in drawing.content] == ["image", "text"]
                 assert "frame:" not in drawing.content[1].text
-                stripes = await s.call_tool("snapshot", {"width": 300, "height": 200, "zebra": True,
+                stripes = await s.call_tool("snapshot", {"session": sid, "width": 300, "height": 200, "zebra": True,
                                                          "curvature": None})
                 assert stripes.content[0].type == "image"
-                curv = await s.call_tool("snapshot", {"width": 300, "height": 200,
+                curv = await s.call_tool("snapshot", {"session": sid, "width": 300, "height": 200,
                                                       "curvature": {"kind": "gaussian", "range": 0.01}})
                 assert curv.content[0].type == "image"
                 # the kernel tools, as an agent uses them: a script, then a USD file out and back in
-                res = await s.call_tool("run_script", {"script": (
+                res = await s.call_tool("run_script", {"session": sid, "script": (
                     "cloud = np.random.default_rng(2).uniform(-10, 10, (300, 2))\n"
                     "skin = surface(np.column_stack([cloud, 0.02 * (cloud ** 2).sum(axis=1)]))\n"
                     "hits = part.raycast((0, 0, 50), (0, 0, -1))\n"
@@ -387,12 +354,104 @@ def test_stdio_server_round_trip(tmp_path):
                     "print(len(hits), len(cells), skin.faces()[0].geom_type)")})
                 assert "2 4 bspline" in res.content[0].text  # (the pin through the box: 3 pieces of it, and the box)
                 usd = str(tmp_path / "part.usda")
-                saved = await s.call_tool("save", {"format": "usd", "path": usd, "names": ["part"]})
+                saved = await s.call_tool("save", {"session": sid, "format": "usd", "path": usd, "names": ["part"]})
                 assert saved.content[0].text.startswith(f"Wrote {usd}")
-                loaded = await s.call_tool("load", {"path": usd, "name": "again"})
+                loaded = await s.call_tool("load", {"session": sid, "path": usd, "name": "again"})
                 assert "Loaded" in loaded.content[0].text and "volume 1000" in loaded.content[0].text
 
     asyncio.run(go())
+
+
+def _opened(text):
+    import re
+
+    found = re.search(r'Session "(s-[a-z0-9]{8})" is new', text)
+    assert found, text
+    return found.group(1)
+
+
+def test_conversations_on_one_connection_keep_their_own_sessions(tmp_path):
+    """What the Claude desktop chat app does: one server process, every conversation's calls on its one
+    connection. Each conversation works in a session of its own, and one with an engine awake at a time
+    puts the other's to sleep and wakes it with its variables."""
+    pytest.importorskip("mcp")
+    app_dir = _fake_app(tmp_path / "app")
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    async def go():
+        params = StdioServerParameters(command=sys.executable, args=["-m", "smlibpy.mcp"],
+                                       env={**os.environ, "SMLIBPY_VIEWER": "off", "SMLIBPY_APP_DIR": str(app_dir),
+                                            "SMLIBPY_SESSIONS_AWAKE": "1"})
+        async with stdio_client(params) as (r, w):
+            async with ClientSession(r, w) as s:
+                await s.initialize()
+                schema = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in (await s.list_tools()).tools}
+                assert "session" in schema["run_script"]["required"]
+                assert "session" not in (schema["docs"].get("properties") or {})
+
+                async def text(name, args):
+                    res = await s.call_tool(name, args)
+                    error = getattr(res, "is_error", None)
+                    return res.isError if error is None else error, "\n".join(c.text for c in res.content if c.type == "text")
+
+                # the same variable name in two conversations
+                _, a = await text("run_script", {"session": "new", "script": "part = Box(20, 10, 5)\npart.volume"})
+                _, b = await text("run_script", {"session": "new", "script": "part = Box(1, 1, 1)\npart.volume"})
+                A, B = _opened(a), _opened(b)
+                assert A != B
+                _, va = await text("run_script", {"session": A, "script": "part.volume"})
+                assert "Value: 1000" in va, va
+                # B starts over: A keeps its part; checkpoints are a session's own
+                _, cleared = await text("clear", {"session": B})
+                assert cleared == "The session is empty."
+                await text("checkpoint", {"session": B, "label": "b"})
+                _, restored = await text("restore", {"session": A, "label": "b"})
+                assert "no checkpoint" in restored
+                _, va = await text("run_script", {"session": A, "script": "part.volume"})
+                assert "Value: 1000" in va, va
+                # what cannot reach a session changes nothing
+                err, missing = await text("clear", {})
+                assert err
+                err, made_up = await text("clear", {"session": "s-aaaaaaaa"})
+                assert err and 'No session "s-aaaaaaaa"' in made_up
+                _, scene = await text("scene", {"session": A})
+                assert "part: Part, volume 1000" in scene and "Scripts in this session: 3" in scene
+                # each has its own live view
+                _, view_a = await text("view", {"session": A})
+                _, view_b = await text("view", {"session": B})
+                assert view_a.startswith("Viewer: http://127.0.0.1") and view_a != view_b
+                # one awake at a time: B went to sleep when A ran, and wakes with its scripts run again
+                _, vb = await text("run_script", {"session": B, "script": "q = Box(2, 2, 2)\nq.volume"})
+                assert "Value: 8" in vb, vb
+                _, va = await text("run_script", {"session": A, "script": "part.volume"})
+                assert "Value: 1000" in va and "put aside" not in va, va
+
+    asyncio.run(go())
+
+
+def test_a_sleeping_session_wakes_with_its_variables_and_says_what_did_not_come_back(tmp_path):
+    s = Session()
+    try:
+        assert s.run("a = Box(10, 10, 10)")["ok"]
+        from test_step_import import _tool_with_supplemental_geometry
+
+        step = str(tmp_path / "part.step")  # written here: a script that wrote it would write it again
+        (tmp_path / "part.step").write_text(_tool_with_supplemental_geometry())
+        assert s.load(step, "loaded")["ok"]
+        assert s.sleep() and not s.awake
+        assert s.run("a.volume")["value"].startswith("1000") and s.awake
+        assert s.take_notice() is None, "every script ran again"
+        # a file the session read is gone when it wakes: it says so
+        os.remove(step)
+        assert s.sleep()
+        r = s.run("a.volume")
+        assert r["value"].startswith("1000")
+        notice = s.take_notice()
+        assert notice and "put aside" in notice and "failed" in notice, notice
+        assert s.take_notice() is None
+    finally:
+        s.close()
 
 
 def test_viewer_shows_a_read_step_file_and_imported_assemblies(session, tmp_path):

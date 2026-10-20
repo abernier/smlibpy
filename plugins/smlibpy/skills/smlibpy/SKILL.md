@@ -10,8 +10,10 @@ shows them in a live 3D viewer.
 
 1. Read first: `docs(["SKILL", "recipes/modeling", "recipes/verification"])`, then the guide of
    every API you are about to use (`list_methods(search=...)`, `describe_method(...)`).
-2. Plan the dimensions, features and order. Build with `run_script`, a step at a time; the
-   variables stay between calls.
+2. Plan the dimensions, features and order. Build with `run_script`, a step at a time, in a
+   session of your own: pass `session="new"` with the first call of a model, then the id its
+   answer names in every later call (every tool but the guides takes it). The variables stay
+   between the calls of a session. A new, unrelated model is a new session.
 3. After every step check the numbers the script prints (volume, bbox, `is_valid()`) and look
    with `snapshot(view="sheet")`, a technical drawing with hidden edges dashed. Fix before going
    on. `checkpoint()` before risky steps.

@@ -17,14 +17,40 @@ on:
     types: [published]
 
 jobs:
+  # The live view (app/: Buerligons from npm in a page that joins the session): built once, then part of the sdist
+  # and of every wheel, in src/smlibpy/mcp/app
+  app:
+    name: app
+    if: github.event_name == 'release' || inputs.only != 'npm'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+      - name: Build the app
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: app
+          path: src/smlibpy/mcp/app
+
   sdist:
     name: sdist
     if: github.event_name == 'release' || inputs.only == 'all'
+    needs: app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: app
+          path: src/smlibpy/mcp/app
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
@@ -41,6 +67,7 @@ jobs:
           "$RUNNER_TEMP/from-sdist/bin/pip" install dist/*.tar.gz
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/from-sdist/bin/python" -c "import math, smlibpy as s; v = (s.Box(10, 10, 10) - s.Cylinder(2, 20)).volume; print(v); assert abs(v / (1000 - 40 * math.pi) - 1) < 1e-6"
+          "$RUNNER_TEMP/from-sdist/bin/python" -c "from smlibpy.mcp import app; assert (app.PACKAGED / 'index.html').is_file(), 'the live view is not in the package'"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist-sdist
@@ -49,6 +76,7 @@ jobs:
   wheels:
     name: wheels ${{ matrix.os }}
     if: github.event_name == 'release' || inputs.only == 'all'
+    needs: app
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -59,6 +87,10 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: app
+          path: src/smlibpy/mcp/app
       - uses: pypa/cibuildwheel@v4.2.1
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -70,11 +102,16 @@ jobs:
   wheels-windows:
     name: wheels windows-latest
     if: github.event_name == 'release' || inputs.only != 'npm'
+    needs: app
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: app
+          path: src/smlibpy/mcp/app
       # Ninja uses every core; it needs the compiler's environment, which vcvars64.bat sets up.
       - name: The compiler's environment
         shell: pwsh

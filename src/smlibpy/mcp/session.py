@@ -2,13 +2,15 @@
 
 The state of a session is the sequence of scripts that ran without an error. When the
 worker has to be replaced (a script ran too long, the kernel crashed) or a checkpoint is
-restored, a new worker runs that sequence again.
+restored, a new worker runs that sequence again. A session that sleeps (drawings.py: nobody
+used it for a while) gives its worker up the same way, and its next request wakes it.
 """
 
 from __future__ import annotations
 
 import multiprocessing
 import threading
+import time
 from typing import Any
 
 from . import worker
@@ -33,6 +35,10 @@ class Session:
         self.checkpoints: list[tuple[str, int]] = []
         self.version = 0  # grows whenever what the viewer shows may have changed
         self._changed = threading.Condition()
+        self.last_use = time.monotonic()  # when it was last asked anything
+        self._asleep = False  # the worker was given up while idle: the next request runs the history again
+        self._notice: str | None = None  # what waking could not bring back, for the next answer
+        self._complete = True  # the last rebuild ran every script again
 
     # -- worker -------------------------------------------------------------------
     def _start(self) -> None:
@@ -52,6 +58,12 @@ class Session:
         self._proc = self._conn = None
 
     def _call(self, timeout: float, request: dict[str, Any]) -> dict[str, Any]:
+        self.last_use = time.monotonic()
+        if self._asleep:
+            self._asleep = False
+            note = self._rebuild()
+            if not self._complete:
+                self._notice = "This drawing was put aside while nobody used it, and waking it ran its scripts again: " + note
         if self._proc is None or not self._proc.is_alive():
             self._stop()
             self._start()
@@ -104,6 +116,8 @@ class Session:
 
     def _rebuild(self, upto: int | None = None) -> str:
         """A new worker, with the scripts of the history run again."""
+        self._complete = False
+        self._asleep = False  # this is the waking
         self._stop()
         scripts = self.history[: len(self.history) if upto is None else upto]
         self.history = []
@@ -125,6 +139,7 @@ class Session:
                         f"this time: {answer.get('error', '')[:300]}. The session holds what the first {i} built.")
             self.history.append((code, label))
         self._bump()
+        self._complete = True
         n = len(scripts)
         if n == 0:
             return "A new kernel process was started; the session is empty."
@@ -166,11 +181,37 @@ class Session:
 
     def clear(self) -> None:
         with self._lock:
+            self._asleep = False
             self._stop()
             self.history = []
             self.checkpoints = []
             self._start()
             self._bump()
+
+    # -- sleep ------------------------------------------------------------------------
+    @property
+    def awake(self) -> bool:
+        """A worker is running (it holds the kernel and its memory)."""
+        return self._proc is not None and self._proc.is_alive()
+
+    def sleep(self) -> bool:
+        """Gives the worker up and keeps the scripts: the next request runs them again in a new
+        one. False when it is busy, or has no worker to give up."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if not self.awake:
+                return False
+            self._stop()
+            self._asleep = True
+            return True
+        finally:
+            self._lock.release()
+
+    def take_notice(self) -> str | None:
+        """What the last waking could not bring back, once."""
+        notice, self._notice = self._notice, None
+        return notice
 
     # -- change notification --------------------------------------------------------
     def _bump(self) -> None:
