@@ -77,6 +77,10 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The fillet code has no corner for some ways the selected edges meet at a vertex, went on without one, and killed the process (and shrank fillet surfaces it had deleted) | patched (`third_party/patches`): such fillets raise `KernelError` (`SM_ERR_INVALID_INPUT`), with a hint that no size works |
 | A (start, end) radius with `continuity` gives a ruled chamfer; on a closed edge or across edges that run into each other tangentially it bends the radii | refuses those combinations (`ValueError`) |
 | A chamfer is a round of straight section with one radius per edge, so its setback follows the angle between the faces at the edge | sets each edge's radius from its angle, all edges in one call, and refuses edges whose angle changes by more than 1 degree along them |
+| SM_API's fillet calls keep the fillet executive's record of a failure to themselves (which corner or edge, and why): every failure read "the radius may be too large" | drives the executive itself (`ext.round_edges`, the same calls and defaults) and names the corner or edge it could not build |
+| SM_API has no chamfer with a different setback on each face, although the executive's solver takes two offsets | offsets the two faces of each edge so that the bevel meets them at the setbacks given (`length2`, `angle`) |
+| SM_API's fillets build the rounds' edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits then come out open (a 10 mm cube rounded by 4.98, a 20 mm cube by 9.98) | tries a failed or refused fillet or chamfer once more within 1 times the edge's tolerance, as the kernel's own all-edge fillet does: those rounds are exact |
+| A shell opening whose rim meets its neighbours tangentially keeps an open rim: the inner rounds run up to the outer edge and their edges lie off their faces | cuts planar openings of that kind out of the part shelled closed (their other rim edges must meet walls standing at right angles to them) |
 | Sweeps anchor the profile at the start point of its first curve, and the frame of each edge of a path is its own | sweeps the profile in its own frame with the center of its box (in its plane) on the start of the path, and along 3D paths joins tangent edges and carries the profile's orientation from edge to edge (the planar sweep of mitered paths keeps the kernel's anchor) |
 | The skin of single open curves has no degree | lofts open curves through the skin primitive, with the degree `ruled` and `smooth` give |
 | A full 360 degree non-manifold revolve returns an empty body | revolves each loop and subtracts the holes |
@@ -128,7 +132,15 @@ matter here:
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.
 - `shell` cannot open a face whose rim meets its neighbours tangentially, such as a face
-  bordered by fillets; shell first, then round the rim.
+  bordered by fillets. smlibpy cuts planar ones out of the part shelled closed; for a curved one,
+  or one next to a drafted wall, shell first, then round the rim.
+- SM_API asks the fillet executive for its global merge before `SetFilletParameters`, which turns it
+  off again, so fillets run without it. Turning it on for real changed no near-limit fillet and
+  broke chamfers and G2 rounds of a box with a hole, so smlibpy leaves it off as well. What does
+  make near-limit rounds exact is the finer approximation tolerance above.
+- Very close to the limit rounds still fail (all edges of a 10 mm cube with r 4.99); fillets and
+  chamfers of some parts made of Booleans fail where the kernel's rounds roll over an edge, and
+  the error then names the corner or edge.
 - The offset code behind `shell`, `offset` and `thicken` depends on memory layout in its extended
   mode: the same call can fail or succeed (and some imported parts still crash it now and then).
   smlibpy runs it in a forked copy of the process (Linux, macOS; smlibwasm: in a kernel of its

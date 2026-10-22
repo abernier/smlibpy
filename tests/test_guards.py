@@ -170,8 +170,11 @@ def test_fillet_close_to_the_limit_is_refused():
     for r in (4, 4.97):
         p = cube.fillet(cube.edges(), r)
         assert p.is_valid() and p.volume == approx(_rounded_cube(10, r), rel=1e-6)
-    with pytest.raises(ModelingError):
-        Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 9.98)
+    # closer to the limit the kernel's rounds come out open with SM_API's approximation tolerance;
+    # smlibpy tries again with a finer one (0.5.0: these raised)
+    for s, r in ((10, 4.98), (20, 9.98)):
+        p = Box(s, s, s).fillet(Box(s, s, s).edges(), r)
+        assert p.is_valid() and p.volume == approx(_rounded_cube(s, r), rel=1e-6)
 
 
 def test_round_sizes_must_be_positive():

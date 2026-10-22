@@ -353,6 +353,9 @@
   docstring gives no range. 0.5 to 1.2 work. `fullness` is silently ignored for circular fillets.
 
 ### 23. `chamfer`: only one symmetric length
+- **Fixed (kernel plan F9):** `chamfer(edges, length, *, length2=None, angle=None, reference=None)`: `length` on the
+  reference face, `length2` (or `angle` to it) on the other; the top edges of `Box(40, 30, 20)` with 2 and 1 give
+  23865.3333, as OpenCASCADE does.
 - **Session:** `2026-10-12_21-37-11_features-fillet-chamfer`, script `08-chamfer.py`
 - **What happens:** no angle or two-distance chamfer; `chamfer(edge, (2, 3))` → `TypeError: float() argument must be ...`.
   The plan and common CAD usage expect distance-distance and distance-angle forms. Feature gap, not a bug.

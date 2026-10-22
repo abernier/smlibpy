@@ -53,9 +53,11 @@ with the edge.
 - **Right at the limit the kernel can return a wrong body.** smlibpy checks that the result
   is a valid solid and that its volume changed by no more than rounds of that size can remove
   or add (edges that are neither lines nor circles, and edges that run on into an edge that is
-  not rounded, are not bounded). A 10 mm cube with all
-  edges r 4.99 raises `ModelingError`; r 4.97 and r 4.999 are right; r 5 raises. Stay 2% or
-  more below the limit, and compare the volume with a formula.
+  not rounded, are not bounded). Where the kernel fails or its body is refused, smlibpy tries
+  once more with the rounds' edges closer to the faces (as the kernel's own all-edge fillet
+  builds them), which is exact closer to the limit. A 10 mm cube with all edges: r 4.97, 4.98,
+  4.995 and 4.999 are right; r 4.99 raises `ModelingError`; r 5 raises. A 20 mm cube: r 9.98 and
+  9.99 are right. Stay 2% or more below the limit, and compare the volume with a formula.
 - A single edge can take a radius up to the full face width (one edge of a 10 cube with r 10
   gives the exact quarter cylinder).
 - `r <= 0` raises `ValueError: fillet: the radius must be positive`.
@@ -72,13 +74,18 @@ with the edge.
 
 ## Errors
 - `ModelingError: fillet: the radius is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
-- `KernelError: fillet failed (SM_ERR): the radius may be too large for the selected edges`
+- `KernelError: fillet failed (SM_ERR): the kernel could not build the corner at (3.71765, -10, 0.942249) (unable to compute geometry); the radius may be too large for the selected edges`:
+  the kernel's fillet code names the corner (a vertex) or the edge it could not build (`the round
+  of the edge from ... to ...`), and why where it says. Look there: a tiny edge, a face that
+  meets the round almost tangentially, a corner where a smaller radius or fewer edges help.
+  Without a place (`the radius may be too large for the selected edges` alone) it recorded none.
 - `KernelError: fillet failed (SM_ERR): the edge from (15, 15, 10) to (-15, 15, 10) runs on tangentially into an edge that is not selected at (15, 15, 10) and (-15, 15, 10), which the kernel cannot always round alone; select the whole run (propagate=True, the default, or edge.tangent_chain())`:
   only with `propagate=False`.
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
 - `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`
-- `KernelError: fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as given, at any size: ...`:
+- `KernelError: fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as given, at any size: it could not build the corner at (15, 10, 5) (it has no corner for the way the rounded edges meet there); select fewer edges there`
+  (a boss tangent to a side of the part), or without the corner `...: an edge whose faces meet ...`:
   an edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a
   way the kernel has no corner for (the two halves of an edge that another face touches
   tangentially; edges between duplicated vertices of an imported part). A smaller radius does

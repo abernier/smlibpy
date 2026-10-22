@@ -97,6 +97,22 @@ except ModelingError as e:
 Fillet order matters where rounds meet. Where three rounded edges meet at a corner, round
 the larger radii first.
 
+When the kernel fails, the `KernelError` names what it could not build, as the kernel's fillet
+code recorded it: the corner (a vertex) or the edge, and why where it says so:
+
+```python
+part = Box(30, 30, 10) + Cylinder(5, 20).translate(10, 10, 0)   # the boss touches a side
+try:
+    part.fillet(part.edges(), 2)
+except KernelError as e:
+    print(e)   # fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as
+               # given, at any size: it could not build the corner at (15, 10, 5) (it has no
+               # corner for the way the rounded edges meet there); select fewer edges there
+```
+
+A message without such a place ("the radius may be too large for the selected edges") means the
+kernel recorded none.
+
 ## Chamfers
 
 ```python
@@ -109,18 +125,46 @@ hexagonal prism). The faces must meet at the same angle all along each edge: whe
 boss meets a tilted or curved face the angle changes, the setback would change with it, and
 `chamfer` raises a `ModelingError`. Round such an edge with `fillet`.
 
+An asymmetric bevel measures `length` on a `reference` face of each edge and `length2` on its other
+face, or tilts the bevel by `angle` degrees against the reference face (a weld preparation, a
+lead-in):
+
+```python
+top = box.faces().top()
+lead_in = box.chamfer(top.edges(), 2, length2=1, reference=top)   # 2 on the top, 1 down the sides: 23865.3333
+bevel = box.chamfer(top.edges(), 2, angle=30, reference=top)      # 2 on the top, 30 degrees to it: 23844.5003
+```
+
+Where the faces meet at 90 degrees, `angle` gives `length2 = length * tan(angle)`; on other edges
+the bevel keeps the angle and `length2` follows. Every beveled edge must lie on a reference face
+(give several faces for edges around several). Corners where asymmetric bevels meet come out as
+with equal ones: a box's top bevels meet in a mitred corner, exact (OpenCASCADE gives the same
+volumes).
+
 ## Shell
 
 `shell` hollows a part to walls of a given thickness, leaving the chosen faces open:
-
-Shell before rounding the rim: removing a face that is surrounded by fillets is a case
-the kernel cannot do.
 
 ```python
 cup = Cylinder(20, 30).shell(2, Cylinder(20, 30).faces().top())
 case = Box(80, 50, 30).shell(2.5)                # closed, hollow inside
 lining = Box(80, 50, 30).shell(2.5, outward=True)  # walls grow outside instead
 ```
+
+An opening whose rim meets its neighbours tangentially, such as the flat top of a box rounded on
+all edges, is one the kernel leaves with its rim open. `shell` cuts such openings out of the part
+shelled closed instead, when they are planar and the rest of their rim meets walls that stand at
+right angles to them:
+
+```python
+body = Box(60, 40, 20)
+body = body.fillet(body.edges(), 5)
+tray = body.shell(2, body.faces().planar().top())   # 11134.3949: the closed shell less the lid
+```
+
+The inner rounds then end tangentially at the opening's rim, so the wall runs out to an edge
+there. Other openings with such a rim (a curved face, a drafted wall next to it) still raise
+`ModelingError`; shell such a part before rounding the rim.
 
 With openings, walls that do not fit into the part (measured across it from each face) raise a
 `ModelingError` before the kernel runs; results whose faces do not meet, or that have no cavity
@@ -134,6 +178,14 @@ is stopped; raise it for large parts.
 ```python
 bigger = Box(20, 20, 20).offset(2)       # every face moves out by 2
 smaller = Box(20, 20, 20).offset(-2)
+```
+
+Sheets and faces move along their normals and stay sheets (see [Surfaces](surfaces.md)):
+
+```python
+skin = extrude(CenterArc((0, 0), 10, 0, 180), 20)   # a half-cylinder sheet, normals outward
+outer = skin.offset(2)                               # radius 12
+lid = Box(20, 20, 20).faces().top().one().offset(5)  # a copy of the top face, 5 above it
 ```
 
 ## Split and section

@@ -16,6 +16,7 @@
 #include "draft.h"
 #include "ext_shared.h"
 #include "face_draft.h"
+#include "fillet.h"
 #include "fit.h"
 #include "measure.h"
 #include "sheetmetal.h"
@@ -565,6 +566,42 @@ val draft_faces(uintptr_t b, val faces, val origin, val normal, double angle, do
     });
 }
 
+// ---------------------------------------------------------------- ext: fillets and chamfers
+// As Python's ext.round_edges: the Brep changes in place; the result says how the executive failed.
+val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val faces, val law, int continuity,
+                double thumbweight, double tolerance_factor)
+{
+    return guard([&] {
+        smlibpy::RoundSpec spec;
+        spec.edges = pointers<SmEdge>(edges);
+        spec.radii = numbers(radii);
+        for (double s : numbers(sections))
+            spec.sections.push_back(static_cast<int>(s));
+        spec.radii2 = numbers(radii2);
+        spec.faces = pointers<SmFace>(faces);
+        const std::vector<double> l = numbers(law);
+        if (!l.empty())
+        {
+            if (l.size() != 2)
+                throw std::invalid_argument("round_edges: law is (start radius, end radius)");
+            spec.law = true, spec.start_radius = l[0], spec.end_radius = l[1];
+        }
+        spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
+        SmPyErrorTrail::clear();
+        const smlibpy::Rounded r = smlibpy::round_edges(brep(b), spec);
+        auto point = [](bool has, const double* p) { return has ? vec3(SmVector3d(p[0], p[1], p[2])) : val::null(); };
+        val d = val::object();
+        d.set("status", r.status ? val(std::string(sm_status_name(static_cast<SmStatus>(r.status)))) : val::null());
+        d.set("error", r.error);
+        d.set("edge", static_cast<double>(r.edge));
+        d.set("vertex", point(r.has_vertex, r.vertex));
+        d.set("location", point(r.has_location, r.location));
+        d.set("corner", r.corner);
+        d.set("comment", r.comment);
+        return d;
+    });
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- ext: clouds, meshes, cells, USD
@@ -759,6 +796,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__tessellation_algorithm", &tessellation_algorithm);
     function("ext__poly_face_indices", &poly_face_indices);
     function("ext__grid_deviation", &grid_deviation);
+    function("ext__round_edges", &round_edges);
 
     function("sheetmetal__bend", &bend);
     function("sheetmetal__unbend", &unbend);

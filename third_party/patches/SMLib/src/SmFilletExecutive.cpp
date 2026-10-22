@@ -6,7 +6,8 @@
 //   its list of edgeuses in m_vVertexCornerMap where its corner belonged: CollectTangentEdgeSequence
 //   and SmFilletSolver::SetExtensionFlags then called corner methods on that list. Two halves of a
 //   box edge that a cone touches tangentially, filleted together, crashed the process every time.
-//   CollectTangentEdgeSequence also checks the corners and solvers it walks to.
+//   CollectTangentEdgeSequence also checks the corners and solvers it walks to. The error record of
+//   that failure names the first vertex without a corner.
 //   SmFilletExecutive::DoFilleting shrinks only fillet surfaces whose faces are still in the
 //   fillet Brep: stitching deletes sliver faces with their surfaces, and the shrink read them.
 // The original notices follow unchanged.
@@ -1852,6 +1853,7 @@ SmStatus SmFilletExecutive::CreateFilletCorners
   // for every vertex listed in m_vFilletedVertices array
   ULONG ii, lNumFVs = m_vFilletedVertices.GetSize();
   SmBoolean bNoCorner = FALSE; // smlibpy patch: a vertex got no corner
+  SmVertex * pNoCornerVert = NULL; // smlibpy patch: the first such vertex, for the error record
   for (ii=0; ii<lNumFVs; ii++)
     {
       SmVertex * pVert = m_vFilletedVertices[ii];
@@ -1883,6 +1885,7 @@ SmBoolean bDebugMe = FALSE;
           m_vVertexCornerMap.Remove(pVert);
           delete pSolverEUs;
           bNoCorner = TRUE;
+          if ( pNoCornerVert == NULL ) { pNoCornerVert = pVert; } // smlibpy patch
           continue;
         } // end no corner check
 
@@ -1897,7 +1900,10 @@ SmBoolean bDebugMe = FALSE;
   // edgeuses is owned by a corner or deleted)
   if ( bNoCorner )
     {
-      GetFilletErrorInfo()->NoteError( SM_FILERR_VERTEX_PROBLEM,
+      // (with the vertex, so that a caller can say which corner it is)
+      TCHAR sNoCornerName[SM_TBLOCK_SIZE] = _T("");
+      GetFilletErrorInfo()->NoteError( SM_FILERR_VERTEX_PROBLEM, SM_FCR_UNKNOWN, SM_FIL_FAILURE,
+                                       sNoCornerName, pNoCornerVert, NULL, NULL, NULL, NULL,
                                        _T("Fillet Corner Error: corner case not implemented") );
     }
 

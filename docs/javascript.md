@@ -502,6 +502,7 @@ export class Face extends Shape {
     neighbors(): ShapeList<Face>;
     toSketch(): Sketch;
     toShell(): Shell;
+    offset(distance: number): Shell;
     extrude(amount: number, options?: ExtrudeOptions): Part;
     equals(other: unknown): boolean;
     toString(): string;
@@ -524,6 +525,9 @@ export interface FilletOptions {
     propagate?: boolean;
 }
 export interface ChamferOptions {
+    length2?: number | null;
+    angle?: number | null;
+    reference?: unknown;
     propagate?: boolean;
 }
 export class Part extends _Body {
@@ -584,6 +588,7 @@ export class Shell extends _Body {
     thicken(thickness: number, options?: {
         both?: boolean;
     }): Part;
+    offset(distance: number): Shell;
     fuse(...others: unknown[]): Shell;
     toString(): string;
 }
@@ -819,15 +824,17 @@ export function chamfer(edges: unknown, length: number, options?: ChamferOptions
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {
     outward?: boolean;
 }): Part;
-export function offset(shape: Part | Sketch, distance: number, options?: {
+export function offset(shape: Part | Sketch | Shell | Face, distance: number, options?: {
     corners?: string;
     round?: boolean | null;
-}): Part | Sketch;
+}): Part | Sketch | Shell;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
 export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
-export function thicken(surface: Shell | Face, thickness: number): Part;
+export function thicken(surface: Shell | Face, thickness: number, options?: {
+    both?: boolean;
+}): Part;
 export let GUARD_SECONDS: number;
 export function setGuardSeconds(seconds: number): number;
 ```

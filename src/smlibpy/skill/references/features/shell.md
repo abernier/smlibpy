@@ -43,10 +43,17 @@ bosses work too.
 - Fillet first, then shell, when the inside should follow the rounds. The inner rounds get
   radius `r - t`; with `t > r` the shell fails (all-edge r5 box, t6: `shell failed`).
 - The kernel cannot open a face whose rim meets its neighbours tangentially: the flat top of a
-  box rounded on all edges leaves its rim open (faces off their edges). That raises
-  `KernelError: shell failed (SM_ERR): the kernel cannot open a face whose rim meets its
-  neighbours tangentially; shell the part before rounding the rim, or shell it closed and cut
-  the opening out`. Round only the edges that do not meet the opening, or shell first.
+  box rounded on all edges keeps its rim open (faces off their edges). smlibpy shells such a
+  part closed and cuts the opening out (the cavity's face under it, extruded through the wall)
+  when the opening is planar and the rest of its rim meets walls that stand at right angles to
+  it: `Box(60, 40, 20).fillet(all, 5).shell(2, faces().planar().top())` gives 11134.3949, the
+  closed shell 14134.3949 less the 50 x 30 x 2 lid. The inner rounds end tangentially at the rim,
+  so the wall runs out to an edge there. Works for side openings and outward walls too (outward:
+  only where the whole rim is tangent).
+- Other openings with such a rim (a curved face, a drafted wall beside it, an opening next to
+  another one) raise `ModelingError: shell: the kernel could not build a valid result (...); the
+  kernel cannot open a face whose rim meets its neighbours tangentially; shell the part before
+  rounding the rim, or shell it closed and cut the opening out`. Shell first, then round.
 - Shell first and fillet the outer edges after when the walls are thin; then fillet the inner
   edges with `r_outer - t` for an even wall.
 
@@ -81,11 +88,17 @@ print(lining.bbox().size.to_tuple(), round(lining.volume, 1))  # (85.0, 55.0, 32
 cup = Cylinder(20, 30).shell(2, Cylinder(20, 30).faces().top())
 
 # rounded box: fillet first with radius > wall, then shell; the inner corners get r - t.
-# Round the edges that do not meet the opening: a rim the rounds meet tangentially cannot open.
 body = Box(60, 40, 20)
 body = body.fillet(body.edges().parallel_to(Z) + body.edges().bottom(), 5)
 shelled = body.shell(2, body.faces().top())
 print(shelled.is_valid(), round(shelled.volume, 1))     # True 10769.9
+
+# rounded on all edges: the flat top's rim meets the rounds tangentially; smlibpy shells it
+# closed and cuts the opening out of the lid
+body = Box(60, 40, 20)
+body = body.fillet(body.edges(), 5)
+tray = body.shell(2, body.faces().planar().top())
+print(tray.is_valid(), round(tray.volume, 4))           # True 11134.3949 = 14134.3949 - 50*30*2
 ```
 
 ## Related

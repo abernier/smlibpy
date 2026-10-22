@@ -299,7 +299,13 @@ test('a fillet close to the limit is refused', () => {
     assert.ok(p.isValid())
     approx(p.volume, roundedCube(10, r), 1e-6)
   }
-  assert.throws(() => Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 9.98), ModelingError)
+  // closer to the limit the kernel's rounds come out open with SM_API's approximation tolerance;
+  // smlibwasm tries again with a finer one (0.5.0: these threw)
+  for (const [s, r] of [[10, 4.98], [20, 9.98]]) {
+    const p = Box(s, s, s).fillet(Box(s, s, s).edges(), r)
+    assert.ok(p.isValid())
+    approx(p.volume, roundedCube(s, r), 1e-6)
+  }
 })
 
 test('round sizes must be positive', () => {

@@ -588,9 +588,12 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
     return part.shell(thickness, openings, outward=outward)
 
 
-def offset(shape: Part | Sketch, distance: float, **kwargs: Any) -> Any:
+def offset(shape: Part | Sketch | Shell | Face, distance: float, **kwargs: Any) -> Any:
     """Grow or shrink a part or a sketch by ``distance`` (for a sketch also
-    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`)."""
+    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`), or move a sheet or a face
+    along its normals (:meth:`Shell.offset`, :meth:`Face.offset`: a sheet)."""
+    if not callable(getattr(shape, "offset", None)):
+        raise TypeError(f"offset takes a part, a sketch, a sheet (Shell) or a face, not a {type(shape).__name__}")
     return shape.offset(distance, **kwargs)
 
 
@@ -622,10 +625,11 @@ def section(part: Part, plane: Plane | Face = Plane.XY) -> Sketch:
     return part.section(plane)
 
 
-def thicken(surface: Shell | Face, thickness: float) -> Part:
-    """Turn a face or sheet into a solid of ``thickness``."""
+def thicken(surface: Shell | Face, thickness: float, *, both: bool = False) -> Part:
+    """Turn a face or sheet into a solid of ``thickness`` (``both``: half of it to each side; see
+    :meth:`Shell.thicken`)."""
     if isinstance(surface, Part) or not isinstance(surface, (Shell, Face)):
         raise TypeError(f"thicken takes a face or a sheet (Shell, Sketch), not a {type(surface).__name__}; "
                         f"use shell() or offset() for parts")
     sh = surface.to_shell() if isinstance(surface, Face) else surface
-    return sh.thicken(thickness)
+    return sh.thicken(thickness, both=both)
