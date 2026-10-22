@@ -17,6 +17,7 @@
 // (the table below), with the applied API schemas it declares. Binary USD (.usdc, .usdz) is not read.
 
 #include "kernel.h"
+#include "analytic.h"
 #include "ext_shared.h"
 #include "usd.h"
 
@@ -1591,15 +1592,25 @@ std::string check(const UsdBrepArrayData& a, Layout& layout)
 // of the wrong volume that said they were valid. Directions are made unit, and a reference direction
 // that is nearly at right angles to its axis is made exactly so (frames of the conversion are not
 // orthonormalized, and the surface turned about the reference direction instead). Says what is wrong,
-// with the body, the face or edge and the rule ("" when nothing is).
-std::string check_values(UsdBrepArrayData& a, const Layout& layout)
+// with the body, the face or edge and the rule ("" when nothing is). With per_body, what is wrong with
+// a body (its first problem, without "body b, ") goes to (*per_body)[b] instead, and the check goes on
+// with the next body; what belongs to no body (numbers that are not finite) is still returned.
+std::string check_values(UsdBrepArrayData& a, const Layout& layout, std::vector<std::string>* per_body = nullptr)
 {
     using pxr::UsdBrepCurveTokens;
     using pxr::UsdBrepSurfaceTokens;
-    // (body b's face, edge, ... f: the body and its own number of it)
-    auto at = [](const std::vector<uint64_t>& starts, uint64_t i, const char* what) {
-        const auto b = std::upper_bound(starts.begin(), starts.end(), i) - starts.begin() - 1;
-        return "body " + std::to_string(b) + ", " + what + " " + std::to_string(i - starts[b]) + ": ";
+    if (per_body)
+        per_body->assign(a.m_sBrepRegionCountArray.size(), "");
+    // what is wrong with body b's face, edge, ... i (f: what, its own number of it in the body):
+    // the message, or "" where per_body takes it
+    auto at = [&](const std::vector<uint64_t>& starts, uint64_t i, const char* what, const std::string& e) {
+        const auto b = static_cast<size_t>(std::upper_bound(starts.begin(), starts.end(), i) - starts.begin() - 1);
+        const std::string where = std::string(what) + " " + std::to_string(i - starts[b]) + ": " + e;
+        if (!per_body)
+            return "body " + std::to_string(b) + ", " + where;
+        if (b < per_body->size() && (*per_body)[b].empty())
+            (*per_body)[b] = where;
+        return std::string();
     };
     auto g = [](double x) {
         char buf[32];
@@ -1627,8 +1638,12 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
     }
     for (size_t b = 0; b < a.m_sBrepRegionCountArray.size(); ++b)
         if (!(a.m_sBrepXSectTol3dArray[b] > 0))
-            return "body " + std::to_string(b) + ": brep:intersectTol3d is " + g(a.m_sBrepXSectTol3dArray[b]) +
-                   ", not positive (BA.010)";
+        {
+            const std::string e = "brep:intersectTol3d is " + g(a.m_sBrepXSectTol3dArray[b]) + ", not positive (BA.010)";
+            if (!per_body)
+                return "body " + std::to_string(b) + ": " + e;
+            (*per_body)[b] = e;
+        }
     // the weights of a NURBS block, [first, first + n), all positive
     auto weights = [&](const VtArray<double>& w, uint64_t first, uint64_t n, const char* rule) -> std::string {
         for (uint64_t i = first; i < first + n && i < w.size(); ++i)
@@ -1724,7 +1739,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
                 e = frame(a.m_sFace_SurfaceTorus_AxisArray[i], a.m_sFace_SurfaceTorus_RefDirectionArray[i], "BA.523-525");
         }
         if (!e.empty())
-            return at(layout.face, f, "face") + e;
+            if (std::string m = at(layout.face, f, "face", e); !m.empty())
+                return m;
     }
 
     // edges and wire edges: their ranges and curves
@@ -1789,7 +1805,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
                     err = frame(c.ellipse_axis[i], c.ellipse_ref[i], "BA.553-555");
             }
             if (!err.empty())
-                return at(c.starts, e, c.what) + err;
+                if (std::string m = at(c.starts, e, c.what, err); !m.empty())
+                    return m;
         }
     }
 
@@ -1799,7 +1816,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
     {
         const uint64_t n = a.m_sEdgeuse_CurveNurb_VertexCountArray[u];
         if (std::string err = weights(a.m_sEdgeuse_CurveNurb_WeightsArray, uv_cv, n, "BA.410"); !err.empty())
-            return at(layout.edgeuse, u, "edgeuse") + "its UV curve has " + err;
+            if (std::string m = at(layout.edgeuse, u, "edgeuse", "its UV curve has " + err); !m.empty())
+                return m;
         uv_cv += n;
     }
     return "";
@@ -2442,11 +2460,17 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
                 }
             }
             Layout layout;
+            std::vector<std::string> bad;  // (partial: what is wrong with each body)
             std::string problem = check(a, layout);
             if (problem.empty())
-                problem = check_values(a, layout);
+                problem = check_values(a, layout, options.partial ? &bad : nullptr);
             if (!problem.empty())
-                throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+            {
+                if (!options.partial)
+                    throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+                out.skipped.push_back("the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+                continue;
+            }
             const Matrix place = mul(stage, options.placement ? prim.world : identity());
             bool moved = false;
             for (int k = 0; k < 16; ++k)
@@ -2459,20 +2483,52 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
             UsdBrepArraySpans spans;
             for (uint32_t i = 0; i < count; ++i)
             {
+                const std::string body = "body " + std::to_string(i) + " of the BrepArray \"" + prim.path + "\"";
+                if (i < bad.size() && !bad[i].empty())
+                {
+                    out.skipped.push_back(body + " is malformed: " + bad[i]);
+                    continue;
+                }
                 pxr::usd_diagnostics().clear();
                 if (!spans.SetStartsAndCountsForBrepIndex(a, i, FALSE, TRUE))
-                    throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed (body " +
-                                                std::to_string(i) + ")" +
-                                                (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
+                {
+                    const std::string why = pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics();
+                    if (!options.partial)
+                        throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed (body " +
+                                                    std::to_string(i) + ")" + why);
+                    out.skipped.push_back(body + " is malformed" + why);
+                    continue;
+                }
                 SmBrep* brep = nullptr;
                 SmPyErrorTrail::clear();
                 SmStatus st = SMU_BrepConvert::BrepMove_OneUsdBrepToSMLib(ctx(), a, spans, i, brep, options.heal ? TRUE : FALSE);
                 if (st != SM_SUCCESS || !brep)
                 {
                     delete brep;
-                    throw std::runtime_error("usd: body " + std::to_string(i) + " of the BrepArray \"" + prim.path +
-                                             "\" could not be built (" + sm_status_name(st) + ")" +
-                                             (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
+                    const std::string why = std::string("could not be built (") + sm_status_name(st) + ")" +
+                                            (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics());
+                    if (!options.partial)
+                        throw std::runtime_error("usd: " + body + " " + why);
+                    out.skipped.push_back(body + " " + why);
+                    continue;
+                }
+                // the kernel's check, before anything measures the body (smlibpy's own files are not
+                // checked: what it writes, its kernel has built)
+                std::string found;
+                if (options.check && prim.source != "smlibpy")
+                {
+                    bool refuse = false;
+                    found = kernel_check(brep, refuse);
+                    if (refuse)
+                    {
+                        delete brep;
+                        if (!options.partial)
+                            throw std::invalid_argument("usd: " + body + " is broken: " + found +
+                                                        "; such a body measures and meshes wrong (turn the check off to "
+                                                        "read it as it is)");
+                        out.skipped.push_back(body + " is broken: " + found);
+                        continue;
+                    }
                 }
                 UsdItem item;
                 item.brep = brep;
@@ -2483,22 +2539,15 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
                 item.name = count == 1 || i == 0 ? name : name + "_" + std::to_string(i);
                 item.color = color;
                 out.items.push_back(std::move(item));
-                // the kernel's check, before anything measures the body (smlibpy's own files are not
-                // checked: what it writes, its kernel has built)
-                if (options.check && prim.source != "smlibpy")
-                {
-                    bool refuse = false;
-                    const std::string found = kernel_check(brep, refuse);
-                    const std::string body = "body " + std::to_string(i) + " of the BrepArray \"" + prim.path + "\"";
-                    if (refuse)
-                        throw std::invalid_argument("usd: " + body + " is broken: " + found +
-                                                    "; such a body measures and meshes wrong (turn the check off to read it "
-                                                    "as it is)");
-                    if (!found.empty())
-                        out.warnings.push_back(body + ": " + found + "; it may not mesh or measure exactly");
-                }
+                if (!found.empty())
+                    out.warnings.push_back(body + ": " + found + "; it may not mesh or measure exactly");
                 if (moved)
                     transform_brep(brep, rows);
+                // lines and circles that the file gives as B-splines (usd-brep and Omniverse write every
+                // edge so) get their analytic curves back (circles where their faces lie on analytic
+                // surfaces); smlibpy writes its lines, circles and ellipses as such, and its B-splines stay
+                if (prim.source != "smlibpy")
+                    restore_analytic_curves(brep, false);
             }
         }
     }
@@ -2560,7 +2609,7 @@ void bind_usd_files(py::module_ m)
        "The bodies of the BrepArray prims of a .usda text: [(brep, name, (r, g, b) or None)].");
     m.def("usd_assets", &smlibpy::usd_assets, py::arg("text"),
           "The assets a .usda text names (subLayers, references, payloads), each once, as written.");
-    m.def("usd_stage", [](const py::list& layers, bool heal, bool check, bool placement, double units) {
+    m.def("usd_stage", [](const py::list& layers, bool heal, bool check, bool placement, double units, bool partial) {
         std::vector<smlibpy::UsdLayer> in;
         for (const auto& o : layers)
         {
@@ -2574,6 +2623,7 @@ void bind_usd_files(py::module_ m)
         }
         smlibpy::UsdReadOptions options;
         options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        options.partial = partial;
         smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
         py::list bodies;
         for (auto& item : stage.items)
@@ -2583,12 +2633,14 @@ void bind_usd_files(py::module_ m)
         out["bodies"] = bodies;
         out["warnings"] = py::cast(stage.warnings);
         out["unresolved"] = py::cast(stage.unresolved);
+        out["skipped"] = py::cast(stage.skipped);
         return out;
     }, py::arg("layers"), py::arg("heal") = false, py::arg("check") = true, py::arg("placement") = true,
-       py::arg("units") = 0.0,
+       py::arg("units") = 0.0, py::arg("partial") = false,
        "The bodies of a stage: layers are (id, text, {asset: id of the layer read for it}, {asset: why none was "
        "read}), the root first. {'bodies': [(brep, name, (r, g, b) or None)], 'warnings': [...], 'unresolved': "
-       "[...]}; the bodies placed (placement: the prims' transforms and the up axis) and in millimeters (units: "
-       "millimeters per unit, 0: the stage's metersPerUnit).");
+       "[...], 'skipped': [...]}; the bodies placed (placement: the prims' transforms and the up axis) and in "
+       "millimeters (units: millimeters per unit, 0: the stage's metersPerUnit). partial: bodies that cannot be read "
+       "are left out ('skipped' says why) instead of raising.");
 }
 #endif  // SMLIBPY_PYTHON

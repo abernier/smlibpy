@@ -48,7 +48,7 @@ SYNONYMS = {
     "mass": ["mass_properties"], "inertia": ["mass_properties"], "centroid": ["center", "mass_properties"],
     "size": ["bbox"], "bounds": ["bbox", "BoundBox"], "distance": ["distance_to", "closest_point"],
     "check": ["is_valid", "heal"], "repair": ["heal"], "fix": ["heal"], "export": ["export", "export_step", "save"],
-    "import": ["load", "import_step", "read_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
+    "import": ["load", "import_step", "read_step", "import_iges", "import_stl"], "open": ["load"], "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "drawing": ["render"], "technical": ["render"], "projection": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
     "diff": ["diff_images"], "before": ["diff_images"],
@@ -58,7 +58,7 @@ SYNONYMS = {
     "g": ["continuity", "zebra", "verification"],  # G1, G2, G3 split into "g" and the digit
     "blend": ["loft", "fillet", "surface_fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
-    "step": ["export_step", "import_step", "read_step"], "csys": ["read_step", "Plane"],
+    "step": ["export_step", "import_step", "read_step"], "iges": ["import_iges", "load"], "igs": ["import_iges", "load"], "csys": ["read_step", "Plane"],
     "coordinate": ["read_step", "Plane"], "wireframe": ["read_step", "import_dxf_wires"], "mcs": ["read_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft", "tilt", "tilts"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
     "tilt": ["draft"], "tilted": ["draft"], "tilting": ["draft"], "incline": ["draft"], "inclined": ["draft"],

@@ -1,4 +1,4 @@
-# Lane IX: STEP import and export, USD names (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13)
+# Lane IX: STEP import and export, USD, IGES import (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13; batch 3: X5, X7, I14)
 
 Everything applies to smlibpy and smlibwasm alike unless marked. Codes are the plan's items
 (ai/plan/kernel-deep-dive.md). Corpus numbers: the 154 classcad-mcp parts and 294 other local
@@ -97,6 +97,34 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   converted (`1.E-10` in meters, `3.93700787401575E-9` in inches); the importer's stitching starts
   from it (I5).
 
+- USD round trips keep line, circle and ellipse edges (X5). The writer forced every edge curve to a
+  B-spline ("all curve types are currently converted to BSplines"), so `Box(20, 20, 10) -
+  Cylinder(4, 20)` written and read back had 14 B-spline edges instead of 12 lines and 2 circles:
+  `edges().circles()` found nothing, `Edge.radius` raised (`not a circular edge but a bspline`) and
+  STEP of the body read back held 45 `B_SPLINE_CURVE`s and no `CIRCLE` or `LINE`. Lines, circles
+  and ellipses are now written as the schema's `BrepCurve3dLineAPI`, `CircleAPI` and `EllipseAPI`
+  (a line with a unit direction and its range in length, a circle or ellipse in the frame it runs
+  counterclockwise in, its range in radians); a circle or ellipse on a face written as NURBS stays
+  NURBS (the UV curve the file gives on that face follows the NURBS parameters, which the schema's
+  circle does not keep). The block comes back with its 12 lines and 2 circles, radius 4.0, its STEP
+  with 2 `CIRCLE`s and 13 `LINE`s; fillets (24 circles), ellipses of a slanted cut, chamfers,
+  cones, spheres, tori, lofts and sweeps keep their edge types, volumes within 3e-12, and usd-brep's
+  validator passes the files. The files are smaller (the block 7516 -> 6557 bytes without meshes).
+- B-spline edges that are lines or circles come back as such from other writers' USD files (X5).
+  usd-brep and Omniverse write every edge as a B-spline; `import_usd` now gives lines back as lines
+  (spanning their edge) and circular arcs on faces of planes, cylinders, cones, spheres and tori as
+  circles (`SmCurve::CreateAnalyticCurve`, exact; `restore_analytic_curves` moved out of
+  `face_draft.cpp` into `analytic.cpp`). Of usd-brep's 767 B-spline edges in its readable test
+  files, 754 come back as lines, their bodies' volumes, areas, validity and meshes unchanged.
+  Circles on B-spline faces are not restored: replacing the curve drops the face's UV curves from
+  the file, and the kernel's own, made again from a circle, emptied a cap face of OpenCASCADE's
+  NURBS cylinder (volume halved). smlibpy's own files are read as written.
+- A USD body the kernel cannot build is named in the error (X7): `str(KernelError)` was `import_usd
+  failed (SM_ERR_INVALID_INPUT)`, the prim only in `.detail`. It is now `import_usd failed
+  (SM_ERR_INVALID_INPUT): body 0 of the BrepArray "/World/c" could not be built; partial=True leaves
+  such bodies out and reads the others` (smlibwasm: `partial: true`). (A sphere of radius 0, the
+  finding's probe, is a `ValueError` naming the prim since X1; a cylinder face whose range turns 60
+  radians still fails in the conversion.)
 ## New
 
 - `import_step(path, *, heal=True, strict=False)` and `read_step(..., strict=False)`
@@ -135,6 +163,50 @@ STEP files (448 in all), each imported, measured and written back to STEP before
 - `ext.surface_data` and `ext.brep_dump` give an offset surface's `distance`, `basis` (a nested
   offset's distances added) and the `extended` basis where the kernel made one (both builds).
 
+- `import_usd(path, *, partial=False)` (`fromUsd`/`importUsd` take `{ partial }`), X7: leaves out
+  the bodies that cannot be read (a malformed BrepArray, a body the kernel's check refuses, one the
+  conversion cannot build) with one `RuntimeWarning` each (`import_usd: body 0 of the BrepArray
+  "/World/c" could not be built (SM_ERR_INVALID_INPUT); it is left out`) and returns the others,
+  as usd-brep's `allow_partial`. A BrepArray of several bodies is taken apart: a body whose values
+  break a rule of the validator is left out alone (`body 1 of the BrepArray "/World/brepArray" is
+  malformed: face 0: its NURBS surface has a weight of 0, not positive (BA.440)`). A file none of
+  whose bodies can be read raises `ValueError: import_usd: no body of the file can be read: ...`.
+  The C++ (`usd_stage`, `UsdReadOptions::partial`, `UsdStage::skipped`) serves both builds.
+- `import_iges(path, *, heal=True, strict=False)` (I14; smlibwasm `fromIges(data, { heal, strict })`
+  and `importIges(path, ...)`), and `load` of `.igs` and `.iges`: the solids and surfaces of an
+  IGES file (5.3, ASCII), in mm from any unit, named (name property 406 form 15, or the entity's
+  label) and colored (color numbers, color definitions 314). A new reader (`iges_reader.py`/`.ts`:
+  the fixed-format sections, the global parameters, directory entries, free-format parameters with
+  Hollerith strings) turns the file into the STEP importer's neutral body data, which its builder
+  builds. Solid B-rep objects (186, with 514/510/508/504/502; open shells 514 as sheets) share the
+  file's edges; trimmed surfaces (144 with 142), bounded surfaces (143 with 141), bounded planes
+  (108) and untrimmed B-spline surfaces (128, 114) become faces of their own, which are stitched
+  (the kernel's stitch, then gaps up to 1e-4 of the model's size), each set that closes up a `Part`.
+  Curves: 100, 102, 104 (ellipses, hyperbolas, parabolas wherever their equation puts them), 106
+  (linear paths), 110, 112 (to cubic B-splines), 126. Surfaces: 108, 114 (to bicubic B-splines),
+  118 (through the kernel's ruled surface), 120 and 122 (planes, cylinders, cones, spheres and tori
+  where they are those, else revolutions and extrusions), 128, 140, 190-198. Transformation
+  matrices (124, also nested), subfigure instances (408 of 308, moved and scaled). A face's
+  orientation is the IGES surface's normal (`sense` per surface spec, mirroring transformations
+  included); a face whose outer loop runs clockwise in its surface's parameters is turned over, a
+  hole running the outer loop's way turned round (the kernel's new `ext.loop_areas`), slivers of no
+  area dropped. A boundary given only in a B-spline surface's parameters is taken onto it
+  (`ext.curve_on_surface`, `SmCrvOnSurf::ApproximateCurve`, within 1e-6 of its size). Untrimmed
+  surfaces become faces through `ext.surface_face` (`SmBrep::CreateFaceFromSurface`). Checked
+  against OpenCASCADE 8.0: 15 smlibpy parts (box, block with a hole, chamfer, fillets, cone, sphere,
+  torus, slanted cylinder of ellipses, extruded ellipse, revolve, loft, sweep, plate with holes, two
+  boxes, a B-spline sheet) and three OCCT models (a revolved B-spline, its mirror image, a prism of a
+  B-spline) written by OCCT's IGES writer as trimmed surfaces and as B-rep objects, in mm and inches
+  (66 files): all read valid within 1e-9 of the volume they were written from (OCCT's own reading
+  of its files misses by up to 3e-2: the torus as faces 0, the revolve 2874.6 for 2853.6); the four
+  IGES models FreeCAD ships (OpenCASCADE 6.5, inches, gaps up to 2e-3 mm) give the same closed
+  bodies as OCCT's sewing (volumes 66.3136 x 2 + 586.350, 3.55282, 1.06938, 3.38245 x 2 + 0.486 +
+  0.00785) and leave open what OCCT leaves open; Inventor's 186 cube reads with its name and color.
+- `ext.loop_areas(brep)` (both builds): per face the signed area each loop encloses in the face's
+  parameters, and the size of its domain; `ext.inverted_faces` is now computed from it (same
+  result).
+- smlibwasm: `IgesImportOptions`; `_reading`, `_label`, `_buildBody`, `_kernelVolume` and `_text`
+  of `step_import.ts` are exported for `iges_import.ts`.
 ## Behaviour changes
 
 - A STEP file with a body that cannot be read no longer raises: the other bodies come back, with a
@@ -215,6 +287,38 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   declared uncertainty as its tolerance works to 1e-7 mm in every unit. Nothing to migrate.
 - `from smlibpy import *` brings `StepFrame`, `StepCurve` and `StepPoint` along.
 
+- `export_usd` writes lines, circles and ellipses as `BrepCurve3dLineAPI`, `CircleAPI` and
+  `EllipseAPI` edges (X5). Readers of the omniSolid schema (usd-brep, Omniverse, smlibpy 0.4's
+  `import_usd`) read them; a tool of one's own that read only `edge3dNurb` arrays has to read the
+  analytic ones too, or convert:
+  ```python
+  export_usd(part, "p.usda", mesh=False)               # 0.5: line, circle, ellipse edges as such
+  export_usd(part.to_nurbs(), "p.usda", mesh=False)    # B-spline edges (and faces) only, as 0.4 wrote
+  ```
+- `import_usd` gives the B-spline edges of other writers' files that are lines (and circles on
+  analytic faces) as lines and circles: their `geom_type` is `"line"`/`"circle"` where 0.4 said
+  `"bspline"`, and `export_step` writes them as `LINE`/`CIRCLE`. Code that picked such edges by
+  `geom_type == "bspline"` picks them by their geometry instead:
+  ```python
+  cube = import_usd("Cube.usda")          # usd-brep's test cube
+  cube.edges().filter_by(lambda e: e.geom_type == "bspline")   # 0.4: 12 edges, 0.5: none
+  cube.edges().lines()                                          # 12 in both
+  ```
+- The `KernelError` of a USD body the kernel cannot build says which body (X7): its message (not
+  its type or status) changes; a pattern that matched `import_usd failed (SM_ERR...)` exactly must
+  allow the text after it.
+  ```python
+  except KernelError as e:                 # unchanged; str(e) now names the body
+      print(e.detail)                      # as before: usd: body 0 of the BrepArray ...
+  ```
+- `load` reads `.igs` and `.iges` (I14), where 0.4 raised `ValueError: unknown file type '.igs'`;
+  the message for other extensions lists them: `load reads .step, .stp, .igs, .iges, .stl, .smb,
+  .dxf and .usda` (0.4: `.step, .stp, .stl, .smb, .dxf and .usda`).
+  ```python
+  load("part.igs")     # 0.4: ValueError   0.5: the part (import_iges)
+  ```
+- The STEP builder's warnings and errors name the format they build for: unchanged for STEP
+  (`import STEP: ...`); IGES solids say `import IGES: ...` and name the entity `solid 'x' (DE 57)`.
 ## Not done
 
 - I6's wider coverage: reading `OFFSET_CURVE_3D` edges (the kernel's `SmOffsetCurve`) and edges
@@ -241,3 +345,19 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   exact surface is what other systems (and `import_step`) read.
 - Only `export_step` writes curves: `save`, `export_stl` and `export_obj` still raise the
   messages of ai/todo/files.md #8 for edges.
+- X5: circles and ellipses on faces written as NURBS (surfaces of revolution and extrusion, offset
+  surfaces) stay NURBS edges in USD, and circles on B-spline faces of other writers' files stay
+  B-spline edges on import: the face's UV curves follow the NURBS parameters, which the schema's
+  circle does not keep, and the kernel's own UV curves, made again from a circle, emptied a face of
+  OpenCASCADE's cylinder. Ellipses of other writers' files are not restored (the kernel's
+  `CreateAnalyticCurve` knows lines and circles only). smlibpy 0.4's own files keep their B-spline
+  edges (only files of other writers are restored).
+- I14: IGES is read only (the plan's item is a reader; write STEP). Not read: binary and compressed
+  IGES, offset curves (130), ruled surfaces between circles or conics, a composite curve as the
+  generatrix of a surface of revolution or a tabulated cylinder, a trimmed surface with holes whose
+  outer boundary is its surface's (N1 = 0 with inner boundaries), a whole face of a surface other
+  than a B-spline (an untrimmed 120 or 122), boundaries given only in the parameters of a surface
+  that is not a B-spline (its parameters are not kept when it becomes a plane, cylinder, ...), and
+  wireframe-only files (curves and points; `read_step`'s counterpart for IGES does not exist).
+  Form 0 ruled surfaces (equal arc lengths) are read as form 1 (equal parameters). No real file of
+  114 parametric spline surfaces was at hand: they are checked with a constructed patch only.

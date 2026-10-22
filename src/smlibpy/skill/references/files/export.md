@@ -35,8 +35,8 @@ the format functions.
   for `.smb` it raises `AttributeError`.
 - No extension, or `.iges`, `.3mf` and other formats, raise `ValueError` before anything is
   written.
-- `load` is the reverse for `.step`/`.stp`, `.stl`, `.smb` and `.dxf` (a `Sketch`). glTF and OBJ
-  cannot be read back.
+- `load` is the reverse for `.step`/`.stp`, `.usda`, `.stl`, `.smb` and `.dxf` (a `Sketch`), and
+  reads IGES (`.igs`, `.iges`), which is not written. glTF and OBJ cannot be read back.
 
 ## Errors
 - `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf`.

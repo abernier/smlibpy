@@ -24,6 +24,7 @@
 //   * it edits the Brep in place, also when it fails: it works on a copy.
 
 #include "kernel.h"
+#include "analytic.h"
 #include "face_draft.h"
 
 #include <SmApiGeneral.h>
@@ -256,56 +257,6 @@ SmSurface* drafted_surface(const SmFace* face, const NeutralPlane& plane, double
     throw Refusal{"unsupported"};
 }
 
-// A line with the parameters of `curve`, if the curve runs straight at constant speed (a
-// straight cubic, as LocalOperation makes them), else null.
-SmCurve* as_line(const SmCurve* curve)
-{
-    SmExtent1d ivl = curve->GetNaturalInterval();
-    double t0 = ivl.GetMin(), t1 = ivl.GetMax();
-    SmPoint3d p0, p1;
-    if (!(t1 > t0) || curve->EvaluatePoint(t0, p0) != SM_SUCCESS || curve->EvaluatePoint(t1, p1) != SM_SUCCESS)
-        return nullptr;
-    SmVector3d span = p1 - p0;
-    double len = length(span);
-    if (!(len > 0))
-        return nullptr;
-    for (int i = 1; i < 8; ++i)
-    {
-        double f = i / 8.0;
-        SmPoint3d p;
-        if (curve->EvaluatePoint(t0 + f * (t1 - t0), p) != SM_SUCCESS || length(p - (p0 + scaled(span, f))) > 1e-12 * (1.0 + len))
-            return nullptr;
-    }
-    SmVector3d direction = scaled(span, 1.0 / len);
-    return new (ctx()) SmLine(p0 - scaled(direction, t0 * len / (t1 - t0)), direction, ivl, len / (t1 - t0), 3);
-}
-
-// Lines and circles among the edges the kernel rebuilt as B-splines get their exact analytic
-// curve back (the kernel's own SmBrep::ConvertCurvesToAnalytics only takes lines of degree 1).
-// The analytic curve keeps the parameters of the B-spline. Returns the number of edges changed.
-long restore_analytic_curves(SmBrep* brep)
-{
-    SmTArray<SmEdge*> edges;
-    brep->GetEdges(edges);
-    long changed = 0;
-    for (ULONG i = 0; i < edges.GetSize(); ++i)
-    {
-        SmCurve* curve = edges[i]->GetCurve();
-        if (curve == nullptr || curve->GetType() != SmBSplineCurve_TYPE)
-            continue;
-        SmCurve* exact = nullptr;
-        if (curve->CreateAnalyticCurve(ctx(), curve->GetNaturalInterval(), exact) != SM_SUCCESS || exact == nullptr)
-            exact = as_line(curve);
-        if (exact == nullptr)
-            continue;
-        if (brep->ReplaceCurve(edges[i], exact) == SM_SUCCESS)
-            ++changed;
-        else
-            delete exact;
-    }
-    return changed;
-}
-
 // The largest gaps between the vertices and the edges and faces they lie on.
 std::pair<double, double> gaps(SmBrep* brep)
 {
@@ -413,7 +364,7 @@ smlibpy::FaceDraft draft_impl(const SmBrep* brep, const std::vector<SmFace*>& fa
         return d;
     }
     d.has_restored = true;
-    d.restored = restore_analytic_curves(copy);
+    d.restored = smlibpy::restore_analytic_curves(copy);
     auto g = gaps(copy);
     d.has_gaps = true;
     d.gaps[0] = g.first, d.gaps[1] = g.second;

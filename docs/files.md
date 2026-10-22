@@ -78,7 +78,11 @@ solids. Other USD viewers draw only meshes, so each body also gets a `Mesh` prim
 would show the body twice. The test suite checks the files with NVIDIA's validator and OpenUSD.
 A prim's name is the body's name with every character but ASCII letters, digits and `_` as
 `_` (`"Größe"` is the prim `Gr__e`); the name itself is the prim's `displayName`, which
-viewers show and `import_usd` gives back.
+viewers show and `import_usd` gives back. Faces and edges keep their types: planes, cylinders,
+cones, spheres and tori, and lines, circles and ellipses are written with the schema's own
+surfaces and curves (a circle or an ellipse on a face the schema has no surface type for, such
+as a surface of revolution, stays a B-spline), so a part read back selects its holes with
+`edges().circles()` as the original does.
 
 ```python
 export_usd([bracket, cover], "assembly.usda")              # B-reps, and meshes for viewers
@@ -114,15 +118,24 @@ bracket = load("bracket.step")   # exact, from any CAD system
 print(bracket.name, bracket.volume)
 ```
 
-STEP, USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF file the sketch of its
-outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
+STEP, IGES (`.igs`, `.iges`), USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF
+file the sketch of its outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
 a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors (the meshes
 beside them are skipped); a merged part
 (see [cells](features.md#cells)) comes back with its cells, from `.usda` and `.smb` alike. The
 stage is read as USD composes it (its `subLayers` and the files its prims reference, relative to
 the file), each body placed by the transforms of its prims and in millimeters (`metersPerUnit`,
 `upAxis` turned to Z up; a stage that says neither is read as it is), and bodies from other
-software are checked by the kernel before they are measured.
+software are checked by the kernel before they are measured. usd-brep and Omniverse write every
+edge as a B-spline: those that are lines, and circles on faces of analytic surfaces, come back as
+lines and circles. A body that cannot be read raises an error that names it (`body 1 of the
+BrepArray "/World/ball" could not be built`); `import_usd(path, partial=True)` leaves such bodies
+out, with a warning each, and reads the others, as usd-brep's `allow_partial` does.
+
+```python
+# not run
+parts = import_usd("plant.usda", partial=True)   # RuntimeWarning: import_usd: body 3 of ... it is left out
+```
 
 ### STEP
 
@@ -197,6 +210,38 @@ several products have a coordinate system of that name (each part of an assembly
 `MCS`): `product=` picks one by the beginning of its product's name. `export_step(tool, path)`
 writes the model back, its curves, points and coordinate systems with it. `render(tool)` and the
 live viewer draw the bodies and curves and mark the coordinate systems and named points.
+
+### IGES
+
+`import_iges(path)` (and `load` of `.igs` and `.iges`) reads the solids and surfaces of an IGES
+file (IGES 5.3, ASCII), in millimeters whatever unit it declares, named (the name property or
+the entity's label) and colored as the file has them. Most CAD systems write a solid as its
+trimmed surfaces (entity 144), which share no edges: each becomes a face on its exact surface,
+bounded by its exact curves, the faces are stitched where their edges meet, and each set of
+faces that closes up becomes a `Part`, the rest `Shell`s. Solids written as B-rep objects
+(186) come in as STEP solids do, their faces sharing the file's edges.
+
+```python
+# not run
+part = import_iges("bracket.igs")      # a Part, or a ShapeList of the bodies the file holds
+print(part.volume, part.is_valid())
+```
+
+Read: lines, circular and conic arcs, composite curves, linear paths, parametric and rational
+B-spline curves; planes, cylinders, cones, spheres, tori, B-spline and parametric spline
+surfaces, ruled surfaces, surfaces of revolution, tabulated cylinders and offset surfaces;
+trimmed and bounded surfaces (where a boundary is given only in its surface's parameters, on a
+B-spline surface it is taken onto the surface), bounded planes, untrimmed B-spline surfaces;
+transformation matrices and subfigure instances. A surface of revolution or a tabulated cylinder
+that is a plane, cylinder, cone, sphere or torus comes back as one. IGES does not say which way
+a boundary runs: a face whose outer loop runs clockwise in its surface's parameters is turned
+over, a hole that runs the way its outer loop does is turned round, and a face of no area (a
+sliver some writers leave where faces meet) is left out. Something that cannot be read (an
+entity smlibpy does not read, one the kernel cannot build) is left out with a warning that names
+it; `strict=True` raises instead. The importer is checked against OpenCASCADE on the files it
+writes in both forms, in millimeters and inches, and on the IGES models FreeCAD ships. Not read:
+binary and compressed IGES, offset curves (130), ruled surfaces between circles or conics,
+wireframe and annotation entities; IGES is not written (write STEP).
 
 ## DXF
 

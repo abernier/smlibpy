@@ -10,11 +10,13 @@ warning; the instances of a product in an assembly are built once and placed.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -548,6 +550,34 @@ def _sample(spec: dict[str, Any], n: int = 16) -> list[np.ndarray]:
     return []
 
 
+#: What the builder's messages call the import it builds for: "STEP", or "IGES" (iges_import builds
+#: its solids with it).
+_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar("smlibpy_import_source", default="STEP")
+
+
+@contextlib.contextmanager
+def _reading(source: str) -> Iterator[None]:
+    """Messages of the builder name ``source`` (a format) while it is in use."""
+    token = _SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _SOURCE.reset(token)
+
+
+def _op(rest: str = "") -> str:
+    """The operation a message of the builder names: ``import STEP``, ``import IGES: stitch``."""
+    return f"import {_SOURCE.get()}{rest}"
+
+
+def _label(body: BodyData) -> str:
+    """How a message of the builder names a body (an IGES body by its directory entry)."""
+    if _SOURCE.get() == "IGES":
+        kind = "solid" if body.kind == "solid" else "shell"
+        return f"{kind} {body.name!r} (DE {body.entity})" if body.name else f"{kind} DE {body.entity}"
+    return _body_label(body.entity, body.name, body.product)
+
+
 def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     from .shapes import Part, Shell
 
@@ -596,7 +626,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         shell_faces = [faces[i] for i in sh["faces"]]
         # Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
         reversed_ = bool(sh["reversed"]) and not (solid and si > 0)
-        with kernel_call("import STEP", "the file may hold faces the kernel cannot rebuild"):
+        with kernel_call(_op(), "the file may hold faces the kernel cannot rebuild"):
             brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
             # A few writers flip a face's same_sense flag against its loops (which agree with
             # the loops of its neighbours): the loops decide.
@@ -619,7 +649,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
                 volume = _kernel_volume(part)
             if not (volume is not None and volume > 0):
                 reversed_ = not reversed_
-                with kernel_call("import STEP"):
+                with kernel_call(_op()):
                     part, volume = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, reversed_, False)))
         built.append((shell_faces, reversed_))
         if heal and closed and not _sound(part, volume):
@@ -636,10 +666,10 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     if solid and len(parts) > 1:  # BREP_WITH_VOIDS
         result = _with_cavities(result, parts[1:], built, edges)
     elif len(parts) > 1:  # a surface model of several shells stays a surface
-        with kernel_call("import STEP"):
+        with kernel_call(_op()):
             result = Shell._wrap(ext.combine([p._brep for p in parts]))
     if broken:
-        warnings.warn(f"import STEP: {_body_label(body.entity, body.name, body.product)} is not a valid solid "
+        warnings.warn(f"{_op()}: {_label(body)} is not a valid solid "
                       f"({broken[0]}); heal and stitching could not repair it", RuntimeWarning, stacklevel=4)
     if body.name:
         result.name = body.name
@@ -669,7 +699,7 @@ def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any],
     for flip in (False, True):
         voids = [(f, r != flip) for f, r in built[1:]]
         try:
-            with kernel_call("import STEP: cavities"):
+            with kernel_call(_op(": cavities")):
                 part, _ = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
             if part._solid_problem() is None:
                 off = abs(part._props()["volume"] - expected)
@@ -713,7 +743,7 @@ def _with_seams(body: Any) -> tuple[Any, float | None]:
         return body, None
     try:
         fixed = body._like(body._copy_brep())
-        with kernel_call("import STEP: seams"):
+        with kernel_call(_op(": seams")):
             ext.seam_problems(fixed._brep, True, lacking)
         # a sheet cannot be checked for closure: it keeps the kernel's seams
         if not isinstance(fixed, Part):
@@ -860,7 +890,7 @@ def _repaired(part: Any, body: BodyData) -> tuple[Any, str | None]:
     stitched = _stitched(part, body)
     if stitched is not None:
         fixed, gap = stitched
-        warnings.warn(f"import STEP: the faces of {_body_label(body.entity, body.name, body.product)} did not share "
+        warnings.warn(f"{_op()}: the faces of {_label(body)} did not share "
                       f"their edges; stitched them, closing gaps of up to {gap:.2g} mm", RuntimeWarning, stacklevel=5)
         return fixed, None
     try:
@@ -882,7 +912,7 @@ def _stitched(part: Any, body: BodyData) -> tuple[Any, float] | None:
     measured = 0.0
     h = BrepHandle(part._copy_brep())
     try:
-        with kernel_call("import STEP: stitch"):
+        with kernel_call(_op(": stitch")):
             _, _, _, vgap, egap = k.stitch_into_solid(h.brep)
         measured = max(float(vgap), float(egap))
         candidate = _valid_or_healed(Part._wrap(_take(h)))
@@ -895,7 +925,7 @@ def _stitched(part: Any, body: BodyData) -> tuple[Any, float] | None:
     while tol <= cap:
         h = BrepHandle(part._copy_brep())
         try:
-            with kernel_call("import STEP: stitch"):
+            with kernel_call(_op(": stitch")):
                 k.stitch_advanced(h.brep, tol)
             candidate = _valid_or_healed(Part._wrap(_take(h)))
             if candidate is not None:
@@ -956,10 +986,10 @@ def _sewn(sheet: Any, body: BodyData) -> Any:
     h = BrepHandle(sheet._copy_brep())
     try:
         tol = max(body.uncertainty or 0.0, 1e-3 * sheet._loose_box().diagonal)
-        with kernel_call("import STEP: stitch"):
+        with kernel_call(_op(": stitch")):
             _, _, stitched, vgap, egap = k.stitch_into_shell(h.brep, tol)
         if int(stitched) > 0:
-            warnings.warn(f"import STEP: the faces of {_body_label(body.entity, body.name, body.product)} did not "
+            warnings.warn(f"{_op()}: the faces of {_label(body)} did not "
                           f"share their edges; stitched {int(stitched)} edges, closing gaps of up to "
                           f"{max(float(vgap), float(egap)):.2g} mm", RuntimeWarning, stacklevel=5)
             return Shell._wrap(_take(h))

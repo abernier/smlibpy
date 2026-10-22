@@ -133,7 +133,20 @@ uintptr_t build_brep(val faces, val edges, bool solid, bool reversed, bool mirro
     });
 }
 
+// The model-space curve of a curve in a surface's parameters, approximated within tolerance
+val curve_on_surface(val surface, val uv, double tolerance)
+{
+    return guard([&] { return to_js(smlibpy::curve_on_surface(from_js(surface), from_js(uv), tolerance)); });
+}
+
+// A Brep of one face that is the whole of a surface (a surface spec), within domain [u0, u1, v0, v1] or null
+uintptr_t surface_face(val surface, val domain)
+{
+    return guard([&] { return ptr(smlibpy::surface_face(from_js(surface), from_js(domain))); });
+}
+
 val inverted_faces(uintptr_t b) { return guard([&] { return to_js(smlibpy::inverted_faces(brep(b))); }); }
+val loop_areas(uintptr_t b) { return guard([&] { return to_js(smlibpy::loop_areas(brep(b))); }); }
 
 val seam_problems(uintptr_t b, bool fix, val only)
 {
@@ -659,9 +672,9 @@ val usd_assets(std::string text)
     });
 }
 
-// {bodies: [[brep, name, [r, g, b] or null]], warnings, unresolved} of a stage whose layers are
+// {bodies: [[brep, name, [r, g, b] or null]], warnings, unresolved, skipped} of a stage whose layers are
 // [[id, text, {asset: id}, {asset: why not read}]], the root first; the Breps are the caller's.
-val usd_stage(val layers, bool heal, bool check, bool placement, double units)
+val usd_stage(val layers, bool heal, bool check, bool placement, double units, bool partial)
 {
     return guard([&] {
         auto strings = [](val o) {
@@ -684,18 +697,22 @@ val usd_stage(val layers, bool heal, bool check, bool placement, double units)
         }
         smlibpy::UsdReadOptions options;
         options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        options.partial = partial;
         smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
-        val bodies = val::array(), warnings = val::array(), unresolved = val::array();
+        val bodies = val::array(), warnings = val::array(), unresolved = val::array(), skipped = val::array();
         for (auto& item : stage.items)
             bodies.call<void>("push", items(ptr(item.brep), item.name, item.color.empty() ? val::null() : float64(item.color)));
         for (const std::string& w : stage.warnings)
             warnings.call<void>("push", w);
         for (const std::string& u : stage.unresolved)
             unresolved.call<void>("push", u);
+        for (const std::string& u : stage.skipped)
+            skipped.call<void>("push", u);
         val out = val::object();
         out.set("bodies", bodies);
         out.set("warnings", warnings);
         out.set("unresolved", unresolved);
+        out.set("skipped", skipped);
         return out;
     });
 }
@@ -737,7 +754,10 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__surface_kind", &surface_kind);
     function("ext__object_class", &object_class);
     function("ext__build_brep", &build_brep);
+    function("ext__surface_face", &surface_face);
+    function("ext__curve_on_surface", &curve_on_surface);
     function("ext__inverted_faces", &inverted_faces);
+    function("ext__loop_areas", &loop_areas);
     function("ext__seam_problems", &seam_problems);
     function("ext__surface_derivatives", &surface_derivatives);
     function("ext__face_curvatures", &face_curvatures);

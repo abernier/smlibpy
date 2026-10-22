@@ -38,6 +38,7 @@ ALIASES = {
     "fromDxf": "import_dxf",
     "fromDxfWires": "import_dxf_wires",
     "fromUsd": "import_usd",
+    "fromIges": "import_iges",
 }
 
 # Functions whose **kwargs Python passes on to another function, which checks them.

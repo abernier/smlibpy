@@ -67,7 +67,7 @@ geometry.computeVertexNormals()
 ```
 
 Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj` and `toDxf` give a
-file's contents, and `fromStep`, `fromStl` and `fromDxf` read them, from text or bytes:
+file's contents, and `fromStep`, `fromIges`, `fromStl` and `fromDxf` read them, from text or bytes:
 
 ```js
 const part = fromStep(await file.text()) // a File from an <input type="file">
@@ -1088,6 +1088,12 @@ export function importStep(path: string, options?: {
     heal?: boolean;
     strict?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
+export interface IgesImportOptions {
+    heal?: boolean;
+    strict?: boolean;
+}
+export function fromIges(data: string | Uint8Array, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function importIges(path: string, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export interface DxfReadOptions {
     layers?: Iterable<string> | string | null;
     unit?: string | null;
@@ -1115,6 +1121,7 @@ export interface UsdImportOptions {
     units?: string | null;
     placement?: boolean;
     check?: boolean;
+    partial?: boolean;
 }
 export interface UsdReadOptions extends UsdImportOptions {
     resolve?: ((asset: string, from: string) => string | Uint8Array | null | undefined) | null;

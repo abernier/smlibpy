@@ -52,6 +52,8 @@ struct UsdReadOptions
     bool placement = true;   // place the bodies as the stage does: the transforms of their prims and of the
                              // prims above them (xformOps), and the stage's up axis turned to Z
     double units = 0.0;      // millimeters per unit of the stage; 0: its metersPerUnit (as it is if it has none)
+    bool partial = false;    // leave out the bodies that cannot be read (UsdStage::skipped says why) instead of
+                             // throwing for the first one
 };
 
 // The bodies of a stage and what was noted on the way.
@@ -60,13 +62,18 @@ struct UsdStage
     std::vector<UsdItem> items;
     std::vector<std::string> warnings;    // bodies with small gaps, transforms that have no value, ...
     std::vector<std::string> unresolved;  // subLayers, references and payloads that were not read
+    std::vector<std::string> skipped;     // (partial) the bodies left out and why: "body 1 of the BrepArray
+                                          // \"/World/ball\" could not be built (SM_ERR)", "the BrepArray ... is malformed: ..."
 };
 
 // The bodies of the BrepArray prims of a stage, layers[0] its root layer: composed (subLayers, references
 // and payloads; class, inactive and over-only prims hold none), in the order of the stage, named after
 // their prims (by path where two have one name; a prim that holds several: prim, prim_1, ...), placed
-// and in millimeters. A malformed BrepArray throws std::invalid_argument naming the prim, the body, the
-// face or edge and the rule of usd-brep's validator.
+// and in millimeters, their B-spline edges that are lines and circles made analytic again (not in bodies
+// smlibpy wrote, whose edges are written as they are). A malformed
+// BrepArray throws std::invalid_argument naming the prim, the body, the face or edge and the rule of
+// usd-brep's validator (a body the kernel cannot build, std::runtime_error); with options.partial such
+// bodies are left out instead (UsdStage::skipped).
 UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& options);
 
 // The bodies of every BrepArray prim of a .usda text, in the order of the file (a BrepArray prim may

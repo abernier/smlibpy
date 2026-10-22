@@ -1,11 +1,12 @@
 # Files: formats and what they keep
 
-STEP, USD and `.smb` keep the exact 3D geometry, DXF the exact 2D curves of sketches, sections
+STEP, IGES (read), USD and `.smb` keep the exact 3D geometry, DXF the exact 2D curves of sketches, sections
 and text. The other formats are triangle meshes or pictures.
 
 | Format | Write | Read | Geometry | Bodies | Names | Colors | Units in file |
 |---|---|---|---|---|---|---|---|
 | STEP `.step` `.stp` | `export_step` | `import_step`; `read_step` also curves, points, coordinate systems | exact (analytic, offset + B-spline); curves, points and coordinate systems beside the bodies | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
+| IGES `.igs` `.iges` | no | `import_iges` | exact (analytic, B-spline, revolved and extruded surfaces); trimmed surfaces stitched into solids | many | yes (name property, label) | yes | converted to mm on import |
 | USD `.usda` `.usd` | `export_usd` | `import_usd` | exact (`BrepArray` prims of usd-brep), meshes as `Mesh` prims; text only | many, merged parts with their cells | yes (prim names) | yes | mm (`metersPerUnit = 0.001`); read in mm by `metersPerUnit`, placed by the prims' transforms |
 | SMLib `.smb` | `save` | `load` | exact geometry; B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those | **one** | no | no | none (mm) |
 | DXF `.dxf` | `export_dxf` | `import_dxf` → `Sketch`, `import_dxf_wires` → `Wire`s | exact 2D curves: LINE, ARC, CIRCLE, ELLIPSE, SPLINE | 2D only, no `Part` | names become layers | no | mm or `unit=` (converted on export), `$INSUNITS` converted to mm on import |
@@ -16,8 +17,8 @@ and text. The other formats are triangle meshes or pictures.
 | HTML | `show` | | an interactive viewer | | | yes | |
 
 `export(shapes, path)` and `shape.export(path)` choose the writer by extension. `load(path)`
-chooses the reader (`.step`/`.stp`/`.p21`, `.stl`, `.smb`, `.dxf`, `.usda`/`.usd`; any other
-extension raises `ValueError: unknown file type ...`).
+chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.dxf`, `.usda`/`.usd`;
+any other extension raises `ValueError: unknown file type ...`).
 
 ## Which format
 - **Deliver a CAD model: STEP.** Every CAD system reads it. Names, colors and exact surfaces
@@ -34,6 +35,8 @@ extension raises `ValueError: unknown file type ...`).
   text). A part is not 2D: write a section of it.
 - **A 2D outline from someone else: DXF** with `import_dxf`, then `extrude` or `revolve`. Pick the
   outline's layers with `layers=`.
+- **A model from an older CAD system or a surface modeler: IGES** with `import_iges` (read
+  only); check `is_valid()`, and pass it on as STEP.
 
 ## Units
 - All modeling is in mm.
@@ -63,7 +66,7 @@ extension raises `ValueError: unknown file type ...`).
 | `Vertex` | `TypeError: 'float' object is not iterable` | same | same | glTF only (a point) | `TypeError` | render skips it, show draws it |
 
 ## Related
-`export.md`, `export_step.md`, `import_step.md`, `save_load.md`, `export_stl.md`,
+`export.md`, `export_step.md`, `import_step.md`, `import_iges.md`, `save_load.md`, `export_stl.md`,
 `import_stl.md`, `export_glb.md`, `export_obj.md`, `export_dxf.md`, `import_dxf.md`,
 `import_dxf_wires.md`, `export_usd.md`, `import_usd.md`, `render.md`, `diff_images.md`, `show.md`,
 `Mesh.md`.

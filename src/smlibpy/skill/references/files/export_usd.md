@@ -23,7 +23,10 @@ viewer draws. For USD and Omniverse pipelines, and for showing a part in any USD
   STEP). A prim name holds ASCII letters, digits and `_` only: any other character becomes one
   `_` (`"Größe"` is the prim `Gr__e`, `"Bracket #1"` `Bracket__1`), and the body's name is the
   prim's `displayName`, which viewers show and `import_usd` gives back. Faces, edges and vertices with their exact surfaces and curves: planes, cylinders,
-  cones, spheres, tori, lines, circles and ellipses as such, everything else as NURBS.
+  cones, spheres, tori, lines, circles and ellipses as such (`BrepCurve3dLineAPI`, `CircleAPI`,
+  `EllipseAPI`), everything else as NURBS. A circle or an ellipse on a face that is written as
+  NURBS (a surface of revolution) stays NURBS: its UV curve on that face follows the NURBS
+  parameters.
 - A merged part (`merge`) is one prim with its cells and the faces between them.
 - A `Mesh` prim per body (unless `mesh=False`): triangles, a normal per point (points on sharp
   edges are written once per face), the body's color.

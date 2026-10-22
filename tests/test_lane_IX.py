@@ -4,12 +4,14 @@ I3 O-rings, I4 cavities within the gaps of their faces, I5 stitching faces that 
 their edges, I6 one unreadable body, I7 assembly instances built once, I8 one integration per
 shell, I9 faces' parameter domains, I10 assemblies in export_step, X3 non-ASCII names in USD,
 I11 offset surfaces in export_step, I12 curves, points and coordinate systems in export_step,
-I13 the STEP uncertainty in any unit.
+I13 the STEP uncertainty in any unit, X5 analytic edges in USD, X7 USD bodies that cannot be read,
+I14 IGES import.
 """
 
 import math
 import re
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -824,3 +826,396 @@ def test_step_uncertainty_is_the_same_length_in_any_unit(tmp_path, unit, per_mm)
     assert value == pytest.approx(1e-7 * per_mm, rel=1e-14)
     [(body, _)] = interpret(parse(text))
     assert body.uncertainty == pytest.approx(1e-7, rel=1e-12)  # (mm, as the reader converts it)
+
+
+# -- X5: analytic edges in USD --------------------------------------------------------------------------
+DATA = Path(__file__).resolve().parent / "data"
+USD_FILES = Path(__file__).resolve().parent.parent / "third_party" / "usd-brep" / "TestFiles"
+
+
+def _edge_kinds(body) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for e in body.edges():
+        out[e.geom_type] = out.get(e.geom_type, 0) + 1
+    return out
+
+
+@pytest.mark.parametrize("name, make", [
+    ("drilled", lambda: Box(20, 20, 10) - Cylinder(4, 20)),
+    ("rounded", lambda: Box(20, 20, 10).fillet(Box(20, 20, 10).edges(), 2)),
+    ("slanted", lambda: Cylinder(5, 30) - Box(40, 40, 40).rotate(Y, 30).translate((0, 0, 25))),  # (ellipses)
+    ("chamfered", lambda: Box(20, 20, 10).chamfer(Box(20, 20, 10).edges().parallel_to(Z), 2)),  # (straight B-splines)
+])
+def test_usd_round_trip_keeps_line_circle_and_ellipse_edges(tmp_path, name, make):
+    # Every edge was written as a B-spline: circles() came back empty, Edge.radius raised and STEP
+    # wrote B-splines. Lines, circles and ellipses are written as the schema's analytic curves.
+    part = make()
+    export_usd(part.named(name), tmp_path / "p.usda", mesh=False)
+    back = import_usd(tmp_path / "p.usda")
+    assert _edge_kinds(back) == _edge_kinds(part)
+    assert back.volume == pytest.approx(part.volume, rel=1e-12) and back.is_valid()
+    assert back.bbox().max == Vector(*part.bbox().max)
+    assert sorted(e.radius for e in back.edges().circles()) == pytest.approx(sorted(e.radius for e in part.edges().circles()))
+    text = (tmp_path / "p.usda").read_text()
+    for kind, api in (("line", "Line"), ("circle", "Circle"), ("ellipse", "Ellipse")):
+        if kind in _edge_kinds(part):
+            assert f"BrepCurve3d{api}API:edge3d{api}" in text
+    export_step(back, tmp_path / "back.step")
+    export_step(part, tmp_path / "part.step")
+    step, before = (tmp_path / "back.step").read_text(), (tmp_path / "part.step").read_text()
+    for entity in ("LINE(", "CIRCLE(", "ELLIPSE("):
+        assert step.count(entity) == before.count(entity), entity
+
+
+def test_usd_edges_of_curved_b_spline_faces_stay_b_splines(tmp_path):
+    # (a circle on a face the file has as a B-spline surface: its UV curve follows the B-spline's
+    # parameters, which the schema's circle does not keep)
+    part = Polygon([(0, 0), (10, 0), (10, 5), (5, 12), (0, 12)]).revolve(axis=Y)
+    export_usd(part, tmp_path / "r.usda", mesh=False)
+    back = import_usd(tmp_path / "r.usda")
+    assert back.volume == pytest.approx(part.volume, rel=1e-12) and back.is_valid()
+    assert {f.geom_type for f in back.faces()} == {"plane", "bspline"}
+    assert _edge_kinds(back) == {"bspline": 3}
+
+
+def test_usd_reads_lines_and_circles_of_b_spline_edges():
+    # usd-brep and Omniverse write every edge as a B-spline: those that are lines, or circles on faces of
+    # analytic surfaces, come back as lines and circles (smlibpy 0.4 wrote this block so, its lines
+    # B-splines 2.5 km long)
+    back = import_usd(DATA / "usd_bspline_edges.usda")
+    assert _edge_kinds(back) == {"line": 12, "circle": 2}
+    assert [e.radius for e in back.edges().circles()] == pytest.approx([4, 4])
+    assert back.volume == pytest.approx(20 * 20 * 10 - math.pi * 16 * 10, rel=1e-12) and back.is_valid()
+    assert back.bbox().max == Vector(10, 10, 5)
+
+
+@pytest.mark.skipif(not USD_FILES.is_dir(), reason="usd-brep's test files are not checked out")
+def test_usd_brep_files_get_their_lines_back():
+    files = USD_FILES
+    cube = import_usd(files / "brep_validator" / "Cube.usda")
+    assert _edge_kinds(cube) == {"line": 12} and cube.is_valid()
+    # (OpenCASCADE's cylinder of B-spline faces: its circles stay B-splines, its volume pi * 9 * 10)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # (the kernel's check finds problems with its edgeuses)
+        cylinder = import_usd(files / "usd_TestFiles" / "test_wireEdgeTopology_absent.usda", units="mm")
+    assert _edge_kinds(cylinder) == {"line": 2, "bspline": 4}
+    assert cylinder.volume == pytest.approx(math.pi * 90, rel=1e-6) and cylinder.is_valid()
+
+
+# -- X7: USD bodies that cannot be read -----------------------------------------------------------------
+def _three_bodies(tmp_path) -> Path:
+    # a box, a cylinder whose face range turns 60 radians (the kernel cannot build it) and a sphere of
+    # radius 0 (malformed), in a file another tool wrote (checked)
+    path = tmp_path / "three.usda"
+    export_usd([Box(2, 3, 4).named("a"), Cylinder(4, 10).translate((10, 0, 0)).named("c"),
+                Sphere(3).translate((20, 0, 0)).named("s")], path, mesh=False)
+    text = path.read_text().replace('string source = "smlibpy"', 'string source = "x"')
+    text = text.replace("face:range = [(0, 0), (6.283185307179586, 10), ", "face:range = [(0, 0), (60, 10), ", 1)
+    text = re.sub(r"(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])", r"\g<1>0\2", text, count=1)
+    path.write_text(text)
+    return path
+
+
+def test_usd_body_the_kernel_cannot_build_is_named_in_the_message(tmp_path):
+    # str(KernelError) was "import_usd failed (SM_ERR_INVALID_INPUT)", the body only in .detail
+    with pytest.raises(KernelError) as caught:
+        import_usd(_three_bodies(tmp_path))
+    message = str(caught.value)
+    assert 'body 0 of the BrepArray "/World/c" could not be built' in message and "partial=True" in message
+    assert message.count("SM_ERR_INVALID_INPUT") == 1 and caught.value.status == "SM_ERR_INVALID_INPUT"
+
+
+def test_usd_partial_import_leaves_out_what_cannot_be_read(tmp_path):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        back = import_usd(_three_bodies(tmp_path), partial=True)
+    assert isinstance(back, Part) and back.name == "a" and back.volume == pytest.approx(24)
+    assert _messages(caught) == [
+        'import_usd: body 0 of the BrepArray "/World/c" could not be built (SM_ERR_INVALID_INPUT); it is left out',
+        'import_usd: body 0 of the BrepArray "/World/s" is malformed: face 0: the sphere\'s radius is 0, not '
+        "positive (BA.481); it is left out"]
+
+
+@pytest.mark.skipif(not USD_FILES.is_dir(), reason="usd-brep's test files are not checked out")
+def test_usd_partial_import_takes_the_bodies_of_one_prim_apart(tmp_path):
+    # usd-brep's own case: one BrepArray of several bodies, one of them broken (here the first face of
+    # the second of its two cubes gets a weight of 0, BA.440)
+    text = (USD_FILES / "brep_validator" / "CubeBrepArray.usda").read_text()
+    weights = re.search(r"(brep:surface:nurb:weights = \[)([^\]]*)\]", text)
+    values = weights.group(2).split(", ")
+    values[len(values) // 2] = "0"
+    path = tmp_path / "packed.usda"
+    path.write_text(text[:weights.start(2)] + ", ".join(values) + text[weights.end(2):])
+    with pytest.raises(ValueError, match="body 1, face 0: its NURBS surface has a weight of 0"):
+        import_usd(path)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        back = import_usd(path, partial=True)
+    assert isinstance(back, Part) and back.name == "brepArray" and back.is_valid()
+    assert back.volume == pytest.approx(import_usd(USD_FILES / "brep_validator" / "CubeBrepArray.usda")[0].volume)
+    assert [m for m in _messages(caught) if "left out" in m] == [
+        'import_usd: body 1 of the BrepArray "/World/brepArray" is malformed: face 0: its NURBS surface has a weight '
+        "of 0, not positive (BA.440); it is left out"]  # (and the reference to a file of materials it lacks)
+
+
+def test_usd_partial_import_of_nothing_readable_raises(tmp_path):
+    path = tmp_path / "bad.usda"
+    export_usd(Sphere(3).named("s"), path, mesh=False)
+    text = re.sub(r"(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])", r"\g<1>0\2", path.read_text())
+    path.write_text(text)
+    with pytest.raises(ValueError, match="no body of the file can be read: body 0 of the BrepArray \"/World/s\" is malformed"):
+        import_usd(path, partial=True)
+
+
+# -- I14: IGES import -------------------------------------------------------------------------------------
+# The files in tests/data/iges were written by OpenCASCADE 8.0 (IGESControl_Writer) from smlibpy parts:
+# block_brep.igs as a solid B-rep (186), the others as trimmed surfaces (144), the way most CAD
+# systems write IGES; block_faces_inch.igs in inches.
+IGES = DATA / "iges"
+DEP = "00010000"  # (the status of an entity that is part of another)
+
+
+def _iges(entities: list[dict], unit: int = 2, resolution: float = 1e-7) -> str:
+    """An IGES file of entities {"type", "params", "form", "transform", "color", "status", "label"};
+    ("@", i) in params, transform or color points at entity i (a color: its definition)."""
+    def value(v):
+        if isinstance(v, tuple):
+            return str(2 * v[1] + 1)
+        if isinstance(v, str):
+            return f"{len(v)}H{v}"
+        return repr(v) if isinstance(v, float) else str(v)
+
+    def lines(text: str, letter: str, width: int = 72) -> list[str]:
+        return [text[i:i + width].ljust(width) + letter for i in range(0, max(len(text), 1), width)]
+
+    g = ",".join(["1H,", "1H;", "4Htest", "8Htest.igs", "4Htest", "4Htest", "32", "38", "6", "308", "15", "4Htest", "1.",
+                  str(unit), "2HMM" if unit == 2 else "4HINCH", "1", "0.01", "15H20260101.000000", repr(resolution),
+                  "100.", "4Htest", "4Htest", "11", "0", "15H20260101.000000"]) + ";"
+    D, P = [], []
+    for i, e in enumerate(entities):
+        text = ",".join([str(e["type"])] + [value(v) for v in e["params"]]) + ";"
+        chunks = [text[k:k + 64] for k in range(0, len(text), 64)]
+        start = len(P) + 1
+        P += [c.ljust(64) + " " + str(2 * i + 1).rjust(7) + "P" for c in chunks]
+        col = e.get("color", 0)
+        col = "-" + value(col) if isinstance(col, tuple) else str(col)
+        tr = value(e["transform"]) if "transform" in e else "0"
+        D.append("".join(str(x).rjust(8) for x in (e["type"], start, 0, 0, 0, 0, tr, 0)) + e.get("status", "00000000").rjust(8) + "D")
+        D.append("".join(str(x).rjust(8) for x in (e["type"], 0, col, len(chunks), e.get("form", 0), "", "")) +
+                 e.get("label", "").rjust(8) + "0".rjust(8) + "D")
+    sections = [lines("smlibpy test", "S"), lines(g, "G"), D, P]
+    numbered = [line + str(k + 1).rjust(7) for sec in sections for k, line in enumerate(sec)]
+    counts = "S{:7d}G{:7d}D{:7d}P{:7d}".format(*(len(sec) for sec in sections))
+    return "\n".join(numbered + [counts.ljust(72) + "T" + "1".rjust(7)]) + "\n"
+
+
+def _line(a, b) -> dict:
+    return {"type": 110, "params": [float(x) for x in (*a, *b)], "status": DEP}
+
+
+def _bounded_plane(curves: list[dict], **extra) -> list[dict]:
+    """A bounded plane (108) z = 0 whose boundary is a composite (102) of the curves."""
+    return [{"type": 108, "form": 1, "params": [0., 0., 1., 0., ("@", 1), 0., 0., 0., 0.], **extra},
+            {"type": 102, "params": [len(curves)] + [("@", 2 + i) for i in range(len(curves))], "status": DEP}] + curves
+
+
+def _read_iges(tmp_path, entities, **kw):
+    path = tmp_path / "t.igs"
+    path.write_text(_iges(entities, **kw))
+    return import_iges(path)
+
+
+def test_iges_solid_brep_object(tmp_path):
+    # a manifold solid B-rep object (186): its faces share their edges as the file has them
+    part = import_iges(IGES / "block_brep.igs")
+    assert isinstance(part, Part) and part.is_valid()
+    assert part.volume == pytest.approx(4000 - math.pi * 16 * 10, rel=1e-12)
+    assert sorted(f.geom_type for f in part.faces()) == ["cylinder"] + ["plane"] * 6
+    assert sorted(e.geom_type for e in part.edges()) == ["circle"] * 2 + ["line"] * 12
+    assert load(IGES / "block_brep.igs").volume == pytest.approx(part.volume)
+
+
+@pytest.mark.parametrize("name, volume, faces", [
+    ("block_faces_inch.igs", 4000 - math.pi * 16 * 10, 7),  # (mirrored surfaces of revolution, inches)
+    ("torus_faces.igs", 2 * math.pi ** 2 * 10 * 4, 1),  # (its seams: two closed curves, each used twice)
+    ("vase_faces.igs", 934.8130160051498, 3),  # (a B-spline revolved; OpenCASCADE's volume)
+])
+def test_iges_trimmed_surfaces_are_stitched_into_solids(name, volume, faces):
+    part = import_iges(IGES / name)
+    assert isinstance(part, Part) and part.is_valid() and len(part.faces()) == faces
+    assert part.volume == pytest.approx(volume, rel=1e-8)  # (the inch file has 10 digits)
+
+
+def test_iges_block_faces_keep_their_surfaces_and_edges():
+    part = import_iges(IGES / "block_faces_inch.igs")
+    assert sorted(f.geom_type for f in part.faces()) == ["cylinder"] + ["plane"] * 6
+    assert sorted(e.geom_type for e in part.edges()) == ["circle"] * 2 + ["line"] * 12
+    assert part.bbox().max.to_tuple() == pytest.approx((10, 10, 5), abs=1e-6)
+
+
+def test_iges_curves_of_every_kind_bound_faces(tmp_path):
+    # a parabola (104 form 3) y = x^2 / 4 closed by a line: area 8/3
+    par = {"type": 104, "form": 3, "params": [0.25, 0., 0., 0., -1., 0., 0., -2., 1., 2., 1.], "status": DEP}
+    assert _read_iges(tmp_path, _bounded_plane([par, _line((2, 1, 0), (-2, 1, 0))])).area == pytest.approx(8 / 3)
+    # half an ellipse (104 form 1) turned by 30 degrees, from its equation: area 4 pi
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    A, B, C = c * c / 16 + s * s / 4, 2 * c * s / 16 - 2 * s * c / 4, s * s / 16 + c * c / 4
+    ell = {"type": 104, "form": 1, "params": [A, B, C, 0., 0., -1., 0., 4 * c, 4 * s, -4 * c, -4 * s], "status": DEP}
+    assert _read_iges(tmp_path, _bounded_plane([ell, _line((-4 * c, -4 * s, 0), (4 * c, 4 * s, 0))])).area == \
+        pytest.approx(4 * math.pi, rel=1e-6)
+    # a hyperbola (104 form 2) x^2 - y^2 = 1 cut by x = cosh 1: area sinh 1 cosh 1 - 1
+    ch, sh = math.cosh(1), math.sinh(1)
+    hyp = {"type": 104, "form": 2, "params": [1., 0., -1., 0., 0., -1., 0., ch, -sh, ch, sh], "status": DEP}
+    assert _read_iges(tmp_path, _bounded_plane([hyp, _line((ch, sh, 0), (ch, -sh, 0))])).area == pytest.approx(sh * ch - 1)
+    # a linear path (106 form 12): a triangle of area 9
+    tri = {"type": 106, "form": 12, "params": [2, 4, 0., 0., 0., 6., 0., 0., 0., 3., 0., 0., 0., 0.], "status": DEP}
+    assert _read_iges(tmp_path, _bounded_plane([tri])).area == pytest.approx(9)
+    # a parametric spline (112) y = 4x - x^2 over [0, 4]: area 32/3
+    spl = {"type": 112, "params": [3, 1, 2, 1, 0., 4., 0., 1., 0., 0., 0., 4., -1., 0., 0., 0., 0., 0.] + [0.] * 12,
+           "status": DEP}
+    assert _read_iges(tmp_path, _bounded_plane([spl, _line((4, 0, 0), (0, 0, 0))])).area == pytest.approx(32 / 3)
+
+
+def _square(z: float = 0.0, w: float = 10.0, h: float = 5.0, clockwise: bool = False) -> list[dict]:
+    pts = [(0, 0, z), (w, 0, z), (w, h, z), (0, h, z)]
+    if clockwise:
+        pts = pts[::-1]
+    return [_line(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+
+
+def test_iges_surfaces_of_every_kind(tmp_path):
+    # an untrimmed B-spline surface (128) on its own, and as a trimmed surface of all of itself
+    bilinear = {"type": 128, "params": [1, 1, 1, 1, 0, 0, 1, 0, 0, 0., 0., 1., 1., 0., 0., 1., 1., 1., 1., 1., 1.,
+                                        0., 0., 0., 10., 0., 0., 0., 20., 0., 10., 20., 0., 0., 1., 0., 1.]}
+    assert _read_iges(tmp_path, [bilinear]).area == pytest.approx(200)
+    assert _read_iges(tmp_path, [{"type": 144, "params": [("@", 1), 0, 0, 0]}, dict(bilinear, status=DEP)]).area == \
+        pytest.approx(200)
+    # a parametric spline surface (114): one bicubic patch, the plane x = 10 s, y = 20 t
+    coef = [0.] * 48
+    coef[1], coef[16 + 4] = 10.0, 20.0
+    sheet = _read_iges(tmp_path, [{"type": 114, "params": [3, 1, 1, 1, 0., 1., 0., 1.] + coef + [0.] * 144}])
+    assert sheet.area == pytest.approx(200)
+    # a bounded surface (143) with a boundary (141) one of whose curves runs the other way (sense 2)
+    sq = [(0, 0, 0), (10, 0, 0), (10, 5, 0), (0, 5, 0)]
+    bounded = [{"type": 143, "params": [0, ("@", 1), 1, ("@", 2)]},
+               {"type": 108, "params": [0., 0., 1., 0., 0, 0., 0., 0., 0.], "status": DEP},
+               {"type": 141, "params": [0, 0, ("@", 1), 4, ("@", 3), 1, 0, ("@", 4), 2, 0, ("@", 5), 1, 0, ("@", 6), 1, 0],
+                "status": DEP},
+               _line(sq[0], sq[1]), _line(sq[2], sq[1]), _line(sq[2], sq[3]), _line(sq[3], sq[0])]
+    assert _read_iges(tmp_path, bounded).area == pytest.approx(50)
+
+
+@pytest.mark.parametrize("backwards", [1, 0])
+def test_iges_ruled_surface(tmp_path, backwards):
+    # a ruled surface (118) between a line and a straight B-spline of degree 2 (the strip from y = 0,
+    # z = 0 to y = 5, z = 3: 10 x 5.83), trimmed by its four sides; the second curve given the other
+    # way round with the flag that says so (or the same way without it): read without the flag, the
+    # strip would be twisted
+    a, b = (10.0, 5.0, 3.0), (0.0, 5.0, 3.0)
+    if not backwards:
+        a, b = b, a
+    spline = {"type": 126, "params": [2, 2, 1, 0, 1, 0, 0., 0., 0., 1., 1., 1., 1., 1., 1.,
+                                      *a, *((x + y) / 2 for x, y in zip(a, b)), *b, 0., 1., 0., 0., 0.], "status": DEP}
+    corners = [(0, 0, 0), (10, 0, 0), (10, 5, 3), (0, 5, 3)]
+    ents = [{"type": 144, "params": [("@", 1), 1, 0, ("@", 4)]},
+            {"type": 118, "form": 1, "params": [("@", 2), ("@", 3), backwards, 0], "status": DEP},
+            _line((0, 0, 0), (10, 0, 0)), spline,
+            {"type": 142, "params": [0, ("@", 1), 0, ("@", 5), 2], "status": DEP},
+            {"type": 102, "params": [4, ("@", 6), ("@", 7), ("@", 8), ("@", 9)], "status": DEP}] + \
+        [_line(corners[i], corners[(i + 1) % 4]) for i in range(4)]
+    sheet = _read_iges(tmp_path, ents)
+    assert sheet.area == pytest.approx(10 * math.sqrt(34), rel=1e-9)
+    assert [f.geom_type for f in sheet.faces()] in (["plane"], ["bspline"])
+
+
+def test_iges_boundaries_of_either_orientation(tmp_path):
+    # IGES does not hold writers to an orientation of a boundary: a hole whose loop runs the way the
+    # outer loop does is still a hole, and an outer loop that runs clockwise still bounds the face
+    def holed(outer: list[dict]) -> list[dict]:
+        return [{"type": 144, "params": [("@", 1), 1, 1, ("@", 2), ("@", 8)]},
+                {"type": 108, "params": [0., 0., 1., 0., 0, 0., 0., 0., 0.], "status": DEP},
+                {"type": 142, "params": [0, ("@", 1), 0, ("@", 3), 2], "status": DEP},
+                {"type": 102, "params": [4, ("@", 4), ("@", 5), ("@", 6), ("@", 7)], "status": DEP}] + outer + \
+               [{"type": 142, "params": [0, ("@", 1), 0, ("@", 9), 2], "status": DEP},
+                {"type": 100, "params": [0., 5., 2.5, 6., 2.5, 6., 2.5], "status": DEP}]  # (counterclockwise)
+    for outer in (_square(), _square(clockwise=True)):
+        assert _read_iges(tmp_path, holed(outer)).area == pytest.approx(50 - math.pi)
+
+
+def test_iges_names_colors_transforms_and_subfigures(tmp_path):
+    # a name property (406 form 15), a color definition (314) and a transformation in a
+    # transformation (124: turned by 90 degrees about z and moved by 100 in x, then moved by 7 in z)
+    plate = _bounded_plane(_square(), color=("@", 7), transform=("@", 8))
+    plate[0]["params"] += [0, 1, ("@", 6)]
+    plate += [{"type": 406, "form": 15, "params": [1, "Deckel"], "status": DEP},
+              {"type": 314, "params": [100., 50., 0., "ORANGE"], "status": DEP},
+              {"type": 124, "params": [0., -1., 0., 100., 1., 0., 0., 0., 0., 0., 1., 0.], "transform": ("@", 9),
+               "status": DEP},
+              {"type": 124, "params": [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 7.], "status": DEP}]
+    sheet = _read_iges(tmp_path, plate)
+    assert sheet.name == "Deckel" and sheet.color == pytest.approx((1.0, 0.5, 0.0))
+    box = sheet.bbox()
+    assert box.min.to_tuple() == pytest.approx((95, 0, 7)) and box.max.to_tuple() == pytest.approx((100, 10, 7))
+    # a subfigure (308) placed twice (408): moved, and moved and scaled by 2
+    sub = [{"type": 408, "params": [("@", 2), 100., 0., 0., 1.]},
+           {"type": 408, "params": [("@", 2), 0., 100., 0., 2.]},
+           {"type": 308, "params": [0, "PLATE", 1, ("@", 3)], "status": "00020200"}] + \
+        [dict(e, params=[("@", v[1] + 3) if isinstance(v, tuple) else v for v in e["params"]])
+         for e in _bounded_plane(_square())]
+    sub[3]["status"] = DEP
+    a, b = _read_iges(tmp_path, sub)
+    assert (a.area, b.area) == pytest.approx((50, 200))
+    assert a.bbox().min.to_tuple() == pytest.approx((100, 0, 0)) and b.bbox().max.to_tuple() == pytest.approx((20, 110, 0))
+
+
+def test_iges_parameter_space_boundary_on_a_b_spline_surface(tmp_path):
+    # a bilinear patch over [0, 10] x [0, 20] trimmed by a triangle given in its parameters only
+    # (its corners (0, 0), (1, 0), (0, 1): half the patch)
+    patch = {"type": 128, "params": [1, 1, 1, 1, 0, 0, 1, 0, 0, 0., 0., 1., 1., 0., 0., 1., 1., 1., 1., 1., 1.,
+                                     0., 0., 0., 10., 0., 0., 0., 20., 0., 10., 20., 0., 0., 1., 0., 1.], "status": DEP}
+    uv = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    ents = [{"type": 144, "params": [("@", 1), 1, 0, ("@", 2)]}, patch,
+            {"type": 142, "params": [1, ("@", 1), ("@", 3), 0, 1], "status": DEP},
+            {"type": 102, "params": [3, ("@", 4), ("@", 5), ("@", 6)], "status": DEP}] + \
+           [dict(_line(uv[i], uv[(i + 1) % 3]), status="00010500") for i in range(3)]
+    sheet = _read_iges(tmp_path, ents)
+    assert sheet.area == pytest.approx(100, rel=1e-6)
+    assert sheet.bbox().max.to_tuple() == pytest.approx((10, 20, 0), abs=1e-6)
+
+
+def test_iges_what_cannot_be_read_is_left_out(tmp_path):
+    # a trimmed surface whose surface is no surface (a point, 116), and a good one
+    bad = [{"type": 144, "params": [("@", 1), 1, 0, ("@", 2)], "label": "ODD"},
+           {"type": 116, "params": [0., 0., 0.], "status": DEP},
+           {"type": 142, "params": [0, ("@", 1), 0, ("@", 3), 2], "status": DEP}]
+    good = [dict(e, params=[("@", v[1] + 3) if isinstance(v, tuple) else v for v in e["params"]])
+            for e in _bounded_plane(_square())]
+    path = tmp_path / "t.igs"
+    path.write_text(_iges(bad + good))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sheet = import_iges(path)
+    assert sheet.area == pytest.approx(50)
+    assert _messages(caught) == ["import IGES: left out trimmed surface 'ODD' (DE 1): surface entity 116 (DE 3), which "
+                                 "is not supported"]
+    with pytest.raises(ModelingError, match=r"import IGES: trimmed surface 'ODD' \(DE 1\): surface entity 116"):
+        import_iges(path, strict=True)
+    path.write_text(_iges(bad))
+    with pytest.raises(ModelingError, match="nothing in the file could be read: trimmed surface 'ODD'"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import_iges(path)
+
+
+def test_iges_files_it_does_not_read(tmp_path):
+    (tmp_path / "a.igs").write_text("not iges at all\n")
+    with pytest.raises(ValueError, match="not an IGES file"):
+        import_iges(tmp_path / "a.igs")
+    text = (IGES / "torus_faces.igs").read_text()
+    (tmp_path / "b.igs").write_text(text.replace("S0000001", "B0000001", 1))
+    with pytest.raises(ValueError, match="binary or compressed IGES"):
+        import_iges(tmp_path / "b.igs")
+    with pytest.raises(ModelingError, match="holds no solids or surfaces"):
+        _read_iges(tmp_path, [_line((0, 0, 0), (1, 0, 0)) | {"status": "00000000"}])
+    with pytest.raises(ValueError, match="load reads .step, .stp, .igs, .iges"):
+        load(tmp_path / "c.xyz")

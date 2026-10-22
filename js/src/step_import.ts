@@ -760,7 +760,36 @@ function _edgeObject(specs: Map<number, Any>): Record<string, Any> {
   return out
 }
 
-function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
+/** What the builder's messages call the import it builds for: "STEP", or "IGES" (iges_import.ts
+ * builds its solids with it). */
+let _source = 'STEP'
+
+/** Runs `fn` with the builder's messages naming `source` (a format). */
+export function _reading<T>(source: string, fn: () => T): T {
+  const saved = _source
+  _source = source
+  try {
+    return fn()
+  } finally {
+    _source = saved
+  }
+}
+
+/** The operation a message of the builder names: `import STEP`, `import IGES: stitch`. */
+function _op(rest = ''): string {
+  return `import ${_source}${rest}`
+}
+
+/** How a message of the builder names a body (an IGES body by its directory entry). */
+export function _label(body: BodyData): string {
+  if (_source === 'IGES') {
+    const kind = body.kind === 'solid' ? 'solid' : 'shell'
+    return body.name ? `${kind} ${_repr(body.name)} (DE ${body.entity})` : `${kind} DE ${body.entity}`
+  }
+  return _bodyLabel(body.entity, body.name, body.product)
+}
+
+export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   const bld = new _Builder(body, m)
   const mirrored = det3([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]) < 0
   if (mirrored) throw new ModelingError('mirrored assembly placements are not supported yet')
@@ -816,7 +845,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
     let reversed = Boolean(sh.reversed) && !(solid && si > 0)
     const brep = kernelCall(
-      'import STEP',
+      _op(),
       () => {
         let b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
         // A few writers flip a face's same_sense flag against its loops (which agree with the
@@ -844,7 +873,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
       if (volume === null) volume = _kernelVolume(part as Part)
       if (!(volume !== null && volume > 0)) {
         reversed = !reversed
-        const [turned, v] = kernelCall('import STEP', () => _withSeams(Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false))))
+        const [turned, v] = kernelCall(_op(), () => _withSeams(Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false))))
         part.dispose()
         part = turned
         volume = v
@@ -871,10 +900,10 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     result = _withCavities(result as Part, parts.slice(1) as Part[], built, edges)
   } else if (parts.length > 1) {
     // a surface model of several shells stays a surface
-    result = kernelCall('import STEP', () => Shell._wrap(ext.combine(parts.map((p) => p._brep))))
+    result = kernelCall(_op(), () => Shell._wrap(ext.combine(parts.map((p) => p._brep))))
   }
   if (broken.length)
-    _warn(`import STEP: ${_bodyLabel(body.entity, body.name, body.product)} is not a valid solid (${broken[0]}); heal and stitching could not repair it`)
+    _warn(`${_op()}: ${_label(body)} is not a valid solid (${broken[0]}); heal and stitching could not repair it`)
   if (body.name) result.name = body.name
   if (body.color !== null) result.color = body.color
   return result
@@ -900,7 +929,7 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
     const voids = built.slice(1).map(([f, r]) => [f, r !== flip])
     let part: Part | null = null
     try {
-      part = kernelCall('import STEP: cavities', () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids)))[0])
+      part = kernelCall(_op(': cavities'), () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids)))[0])
       if (part._solidProblem() === null) {
         const off = Math.abs(part._props().volume - expected)
         if (off <= tol && off < apart) return part
@@ -949,7 +978,7 @@ function _withSeams<B extends Part | Shell>(body: B): [B, number | null] {
   try {
     const copy = body._like(body._copyBrep()) as B
     fixed = copy
-    kernelCall('import STEP: seams', () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
+    kernelCall(_op(': seams'), () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
     // (a sheet cannot be checked for closure: it takes the kernel's seams)
     if (!(copy instanceof Part)) {
       body.dispose()
@@ -1078,7 +1107,7 @@ function _turned(links: Map<number, [number, boolean][]>): number[] | null {
 /** The kernel's coarse volume of a built shell (1e-4), null where it cannot be integrated.
  * (Integrated once per shell: on a part of 2079 faces each integration takes 0.3 s, and the checks
  * of a shell asked for it three or four times.) */
-function _kernelVolume(part: Part): number | null {
+export function _kernelVolume(part: Part): number | null {
   try {
     return Number(part._kernelProps(1e-4).volume)
   } catch (e) {
@@ -1114,7 +1143,7 @@ function _repaired(part: Part, body: BodyData): [Part, string | null] {
   if (stitched !== null) {
     const [fixed, gap] = stitched
     _warn(
-      `import STEP: the faces of ${_bodyLabel(body.entity, body.name, body.product)} did not share their edges; stitched them, closing gaps of up to ${_g2(gap)} mm`,
+      `${_op()}: the faces of ${_label(body)} did not share their edges; stitched them, closing gaps of up to ${_g2(gap)} mm`,
     )
     return [fixed, null]
   }
@@ -1150,7 +1179,7 @@ function _stitched(part: Part, body: BodyData): [Part, number] | null {
   const attempt = (stitch: (brep: number) => void): Part | null => {
     const h = new BrepHandle(part._copyBrep())
     try {
-      kernelCall('import STEP: stitch', () => stitch(h.brep))
+      kernelCall(_op(': stitch'), () => stitch(h.brep))
       return _validOrHealed(Part._wrap(_take(h)))
     } catch (e) {
       if (!(e instanceof KernelError)) throw e
@@ -1225,10 +1254,10 @@ function _sewn(sheet: Shell, body: BodyData): Shell {
   const h = new BrepHandle(sheet._copyBrep())
   try {
     const tol = Math.max(body.uncertainty ?? 0.0, 1e-3 * sheet._looseBox().diagonal)
-    const [, , stitched, vgap, egap] = kernelCall('import STEP: stitch', () => k.stitch_into_shell(h.brep, tol))
+    const [, , stitched, vgap, egap] = kernelCall(_op(': stitch'), () => k.stitch_into_shell(h.brep, tol))
     if (Math.trunc(Number(stitched)) > 0) {
       _warn(
-        `import STEP: the faces of ${_bodyLabel(body.entity, body.name, body.product)} did not share their edges; stitched ${Math.trunc(Number(stitched))} edges, closing gaps of up to ${_g2(Math.max(Number(vgap), Number(egap)))} mm`,
+        `${_op()}: the faces of ${_label(body)} did not share their edges; stitched ${Math.trunc(Number(stitched))} edges, closing gaps of up to ${_g2(Math.max(Number(vgap), Number(egap)))} mm`,
       )
       return Shell._wrap(_take(h))
     }
@@ -1626,7 +1655,7 @@ function _trimmedEdge(basis: Any, trims: Any[], sense: boolean): Edge | null {
 // -------------------------------------------------------------------------------- importStep
 /** The text of STEP file contents: bytes are Latin-1, as Python reads the file, and line ends
  * become "\n" (Python's universal newlines). */
-function _text(data: string | Uint8Array, caller = 'fromStep'): string {
+export function _text(data: string | Uint8Array, caller = 'fromStep'): string {
   let text: string
   if (typeof data === 'string') text = data
   else if (ArrayBuffer.isView(data) || (data as unknown) instanceof ArrayBuffer) {

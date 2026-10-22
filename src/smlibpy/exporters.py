@@ -4,6 +4,7 @@
 Format    Extension                                            Direction
 ========  ===================================================  ==========
 STEP      ``.step``, ``.stp``                                  read/write
+IGES      ``.igs``, ``.iges`` (solids and trimmed surfaces)    read
 SMLib     ``.smb`` (exact native kernel format)                read/write
 DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
 glTF      ``.glb``, ``.gltf``                                  write
@@ -408,11 +409,11 @@ def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> No
 
 
 def load(path: str | os.PathLike[str]) -> Any:
-    """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``), USD
-    (``.usda``) and SMLib (``.smb``) give exact parts, DXF (``.dxf``) a :class:`Sketch` of the
-    drawing's outlines, STL a :class:`Mesh`.
+    """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``), IGES
+    (``.igs``, ``.iges``), USD (``.usda``) and SMLib (``.smb``) give exact parts, DXF (``.dxf``) a
+    :class:`Sketch` of the drawing's outlines, STL a :class:`Mesh`.
 
-    A STEP file with one body gives that part, one with several a :class:`ShapeList`. A
+    A STEP or IGES file with one body gives that part, one with several a :class:`ShapeList`. A
     native file comes back as a :class:`Part` when its body encloses a volume (a merged part with
     its cells too, and a broken solid, whose ``is_valid()`` is False), as a :class:`Shell` when it
     does not.
@@ -424,6 +425,10 @@ def load(path: str | os.PathLike[str]) -> Any:
         from .step_import import import_step
 
         return import_step(path)
+    if ext_ in (".igs", ".iges"):
+        from .iges_import import import_iges
+
+        return import_iges(path)
     if ext_ == ".stl":
         return import_stl(path)
     if ext_ == ".dxf":
@@ -435,7 +440,7 @@ def load(path: str | os.PathLike[str]) -> Any:
 
         return import_usd(path)
     if ext_ != ".smb":
-        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .stl, .smb, .dxf and .usda")
+        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .igs, .iges, .stl, .smb, .dxf and .usda")
     if not os.path.exists(os.fspath(path)):
         raise FileNotFoundError(os.fspath(path))
     with kernel_call("load"):

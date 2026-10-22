@@ -488,7 +488,7 @@ def build_server() -> Any:
     @tool()
     @per_session
     async def load(slot: Slot,
-        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), USD (.usda, .usd as text), "
+        path: Annotated[str, Field(description="Absolute path of a STEP (.step, .stp), IGES (.igs, .iges), USD (.usda, .usd as text), "
                                    "SMLib (.smb), STL or DXF (.dxf, read as a sketch) file.")],
         name: Annotated[str | None, Field(description="Variable to hold it. Default: from the file name.")] = None,
     ) -> str:

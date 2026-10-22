@@ -7,7 +7,7 @@
 // own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
 // OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
-import { _opts, _warn, ext, kernelCall } from './kernel.ts'
+import { _opts, _warn, ext, KernelError, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Part, Shell, ShapeList } from './shapes.ts'
@@ -86,12 +86,15 @@ export function exportUsd(shapes: unknown, path: string, options: UsdExportOptio
  * their prims and of the prims above them, a Y-up stage turned to Z up), false leaves each body where
  * its prim has it; `check` (default true) checks each body with the kernel before anything measures
  * it (not those smlibwasm wrote): gaps of more than 1e-3 of its size throw a RangeError, smaller ones
- * give a warning. */
+ * give a warning; `partial` (default false) leaves out the bodies that cannot be read, with a warning
+ * for each that says which and why, and returns the others (as usd-brep's allow_partial), where false
+ * throws for the first one (a text none of whose bodies can be read throws either way). */
 export interface UsdImportOptions {
   heal?: boolean
   units?: string | null
   placement?: boolean
   check?: boolean
+  partial?: boolean
 }
 
 /** fromUsd's options: those of `UsdImportOptions`, and `resolve(asset, from)`, which gives the text
@@ -161,11 +164,25 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
     if (u === undefined) throw new RangeError(`unknown unit '${options.units}'; use mm, cm, m, um or inch`)
     perUnit = u
   }
-  const stage: { bodies: [number, string, Float64Array | null][]; warnings: string[]; unresolved: string[] } = kernelCall(what, () =>
-    ext.usd_stage(_layers(root, text, read), options.heal ?? false, options.check ?? true, options.placement ?? true, perUnit),
-  )
+  const layers = _layers(root, text, read)
+  let stage: { bodies: [number, string, Float64Array | null][]; warnings: string[]; unresolved: string[]; skipped: string[] }
+  try {
+    stage = kernelCall(what, () =>
+      ext.usd_stage(layers, options.heal ?? false, options.check ?? true, options.placement ?? true, perUnit, options.partial ?? false),
+    )
+  } catch (e) {
+    if (!(e instanceof KernelError)) throw e
+    // (the body that could not be built, and why, in the message)
+    const error = new KernelError(e.operation, e.detail, e.status, _builtHint(e.detail, e.status))
+    ;(error as Any).cause = (e as Any).cause
+    throw error
+  }
   const found = stage.bodies
-  if (!found.length) throw new RangeError(`the USD file holds no BrepArray prims (bodies)${stage.unresolved.map((n) => `; ${n}`).join('')}`)
+  if (!found.length) {
+    if (stage.skipped.length) throw new RangeError(`${what}: no body of the file can be read: ${stage.skipped.join('; ')}`)
+    throw new RangeError(`the USD file holds no BrepArray prims (bodies)${stage.unresolved.map((n) => `; ${n}`).join('')}`)
+  }
+  for (const note of stage.skipped) _warn(`${what}: ${note}; it is left out`)
   for (const note of [...stage.warnings, ...stage.unresolved]) _warn(`${what}: ${note}`)
   const out = new ShapeList<Part | Shell>()
   for (const [brep, name, color] of found) {
@@ -178,6 +195,14 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   return out.length === 1 ? out[0] : out
 }
 
+/** The hint of the KernelError of a body that could not be built: which, why (the status once: the
+ * message has it), and partial. */
+function _builtHint(detail: string, status: string | null): string {
+  let which = detail.startsWith('usd: ') ? detail.slice(5) : detail
+  if (status) which = which.replace(` (${status})`, '')
+  return `${which}; partial: true leaves such bodies out and reads the others`
+}
+
 /**
  * The bodies of the BrepArray prims of a USD text (.usda): a single Part (or Shell, for a body
  * that encloses no volume) when it holds one body, otherwise a ShapeList of them, named and colored
@@ -186,7 +211,10 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
  * `resolve`; abstract (class), inactive and over-only prims hold no bodies. Lengths come out in
  * millimeters, the bodies placed as the stage has them (see `UsdImportOptions`). A malformed
  * BrepArray throws a RangeError that says what is wrong, in which body, face or edge, with the rule
- * of usd-brep's validator it breaks.
+ * of usd-brep's validator it breaks; a body the kernel cannot build a KernelError that names it.
+ * Edges come back with the curves they had: lines, circles and ellipses that `toUsd` wrote as such,
+ * and B-spline edges that are lines or circular arcs exactly (usd-brep and Omniverse write every edge
+ * as a B-spline) as lines and circles.
  */
 export function fromUsd(data: string | Uint8Array, options: UsdReadOptions = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromUsd', options)

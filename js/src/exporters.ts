@@ -21,6 +21,7 @@ import { Mesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
 import { _stepItems, _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
+import { importIges } from './iges_import.ts'
 import { exportDxf, importDxf } from './dxf.ts'
 import { exportUsd, importUsd } from './usd.ts'
 
@@ -907,10 +908,11 @@ export function save(shapes: unknown, path: string, options: { ascii?: boolean }
 }
 
 /**
- * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), USD (`.usda`) and
- * SMLib (`.smb`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's outlines, STL a `Mesh`.
+ * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), IGES (`.igs`, `.iges`),
+ * USD (`.usda`) and SMLib (`.smb`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's
+ * outlines, STL a `Mesh`.
  *
- * A STEP file with one body gives that part, one with several a `ShapeList`. A native file comes
+ * A STEP or IGES file with one body gives that part, one with several a `ShapeList`. A native file comes
  * back as a `Part` when its body encloses a volume (a merged part with its cells too, and a broken
  * solid, whose `isValid()` is false), as a `Shell` when it does not.
  */
@@ -918,9 +920,10 @@ export function load(path: string): Any {
   const p = String(path)
   const ext_ = _splitext(p)[1].toLowerCase()
   if (ext_ === '.step' || ext_ === '.stp' || ext_ === '.p21') return importStep(p)
+  if (ext_ === '.igs' || ext_ === '.iges') return importIges(p)
   if (ext_ === '.stl') return importStl(p)
   if (ext_ === '.dxf') return importDxf(p)
   if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return importUsd(p)
-  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .stl, .smb, .dxf and .usda`)
+  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .igs, .iges, .stl, .smb, .dxf and .usda`)
   return fromSmb(_fs().readFileSync(p))
 }

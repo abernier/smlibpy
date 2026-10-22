@@ -94,6 +94,8 @@ undercut. `parting_line` finds the parting line.
 **[Files](https://smlibpy.classcad.ch/docs/files)**
 - STEP in and out: exact geometry, assemblies, units, names and colors (`named()`, `colored()`);
   `read_step` also reads coordinate systems, curves and points
+- IGES in: solids and trimmed surfaces (stitched into solids), exact surfaces and curves, units,
+  names and colors
 - USD in and out: exact bodies as the `BrepArray` prims of NVIDIA's usd-brep (Omniverse), with
   names and colors, meshes for plain viewers
 - DXF in and out with exact arcs and splines; STL in and out; glTF/GLB and OBJ out; Booleans of
@@ -249,7 +251,7 @@ mp.mass, mp.center, mp.inertia
 
 ### [Files](https://smlibpy.classcad.ch/docs/files)
 
-STEP, USD, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
+STEP, IGES (read), USD, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")

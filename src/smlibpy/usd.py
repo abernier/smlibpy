@@ -15,7 +15,7 @@ import os
 import warnings
 from typing import Any
 
-from ._kernel import ext, kernel_call
+from ._kernel import KernelError, ext, kernel_call
 from .colors import to_rgb
 
 __all__ = ["export_usd", "import_usd"]
@@ -84,7 +84,7 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
 
 
 def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str | None = None, placement: bool = True,
-               check: bool = True) -> Any:
+               check: bool = True, partial: bool = False) -> Any:
     """Read the bodies of the ``BrepArray`` prims of a USD text file (``.usda``, ``.usd``).
 
     Returns a single :class:`~smlibpy.Part` (or :class:`~smlibpy.Shell` for a body that encloses
@@ -109,9 +109,18 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
         check: Check each body with the kernel before anything measures it (bodies smlibpy wrote are
             not checked): a body whose faces, edges and vertices leave gaps of more than 1e-3 of its
             size raises ``ValueError``, smaller gaps give a warning.
+        partial: Leave out the bodies that cannot be read, with a ``RuntimeWarning`` for each that
+            says which and why, and return the others (as usd-brep's ``allow_partial``). ``False``
+            raises for the first one. A file none of whose bodies can be read raises either way.
 
     A malformed ``BrepArray`` raises a ``ValueError`` that says what is wrong, in which body, face
-    or edge, with the rule of usd-brep's validator it breaks.
+    or edge, with the rule of usd-brep's validator it breaks. A body the kernel cannot build raises
+    a :class:`KernelError` that names it (``body 0 of the BrepArray "/World/ball" could not be
+    built``).
+
+    Edges come back with the curves they had: lines, circles and ellipses that ``export_usd``
+    wrote as such, and B-spline edges that are lines or circular arcs exactly (usd-brep and
+    Omniverse write every edge as a B-spline) as lines and circles.
     """
     from .shapes import Part, Shell, ShapeList
 
@@ -125,12 +134,21 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
     root = os.path.abspath(os.fspath(path))
     with open(root, "rb") as fh:
         data = fh.read()
-    with kernel_call("import_usd"):
-        stage = ext.usd_stage(_layers(root, data.decode("utf-8", "replace")), heal, check, placement, per_unit)
+    layers = _layers(root, data.decode("utf-8", "replace"))
+    try:
+        with kernel_call("import_usd"):
+            stage = ext.usd_stage(layers, heal, check, placement, per_unit, partial)
+    except KernelError as e:
+        # (the body that could not be built, and why, in the message)
+        raise KernelError(e.operation, e.detail, e.status, _built_hint(e.detail, e.status)) from e.__cause__
     found = stage["bodies"]
     if not found:
+        if stage["skipped"]:
+            raise ValueError("import_usd: no body of the file can be read: " + "; ".join(stage["skipped"]))
         raise ValueError("the USD file holds no BrepArray prims (bodies)"
                          + "".join(f"; {note}" for note in stage["unresolved"]))
+    for note in stage["skipped"]:
+        warnings.warn(f"import_usd: {note}; it is left out", RuntimeWarning, stacklevel=2)
     for note in stage["warnings"] + stage["unresolved"]:
         warnings.warn(f"import_usd: {note}", RuntimeWarning, stacklevel=2)
     out = ShapeList()
@@ -140,6 +158,13 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
         solid = any(not r["infinite"] and not r["void"] for r in regions)
         out.append((Part if solid else Shell)._wrap(brep, name=name, color=tuple(color) if color else None))
     return out[0] if len(out) == 1 else out
+
+
+def _built_hint(detail: str, status: str | None) -> str:
+    """The hint of the KernelError of a body that could not be built: which, why (the status once:
+    the message has it), and partial."""
+    which = detail.removeprefix("usd: ").replace(f" ({status})", "", 1) if status else detail.removeprefix("usd: ")
+    return which + "; partial=True leaves such bodies out and reads the others"
 
 
 def _layers(root: str, text: str) -> list[tuple[str, str, dict[str, str], dict[str, str]]]:

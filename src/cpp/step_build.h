@@ -24,6 +24,22 @@ namespace smlibpy {
 SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reversed, bool mirrored,
                    const Value& voids = Value());
 
+// The model-space curve of a curve in a surface's parameters (a surface spec as build_brep's faces have
+// them; a B-spline spec of poles (u, v, 0), with "range" [t0, t1] to take a piece of it), approximated
+// within tolerance: the curve_data of the B-spline, with "gap", the largest distance seen from the curve
+// on the surface.
+Value curve_on_surface(const Value& surface, const Value& uv, double tolerance);
+
+// A Brep of one face that is the whole of a surface (a surface spec as build_brep's faces have them),
+// within domain (u0, u1, v0, v1; none: all of it) where that lies inside the surface's. The caller owns
+// the result.
+SmBrep* surface_face(const Value& surface, const Value& domain);
+
+// Per face {"loops": the signed area each of its loops encloses in the face's parameter plane, as the
+// face uses it (counterclockwise positive), or none for a loop that does not close there (a band around a
+// periodic surface without its seam); "domain": [du, dv], the size of the face's parameter domain}.
+Value loop_areas(SmBrep* brep);
+
 // Indices of faces whose loops run the wrong way round for their orientation: their oriented trim curves
 // enclose a negative area in the parameter plane. A STEP face whose same_sense flag disagrees with the
 // direction of its loops (as the loops of its neighbours have it) comes out so; the kernel then takes it

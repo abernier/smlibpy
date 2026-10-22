@@ -3,7 +3,8 @@
 // that do not share their edges, I6 one unreadable body, I7 assembly instances built once, I8 one
 // integration per shell, I9 faces' parameter domains, I10 assemblies in exportStep, X3 non-ASCII
 // names in USD, I11 offset surfaces in exportStep, I12 curves, points and coordinate systems in
-// exportStep, I13 the STEP uncertainty in any unit.
+// exportStep, I13 the STEP uncertainty in any unit, X5 analytic edges in USD, X7 USD bodies that
+// cannot be read, I14 IGES import.
 import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -22,6 +23,7 @@ import {
   ModelingError,
   Part,
   Plane,
+  Polygon,
   Shell,
   ShapeList,
   Sphere,
@@ -34,12 +36,16 @@ import {
   Vertex,
   Wire,
   X,
+  Y,
   Z,
   exportStep,
   fromStep,
   fromStepModel,
+  fromIges,
   fromUsd,
+  importIges,
   importStep,
+  importUsd,
   load,
   setWarningHandler,
   stitch,
@@ -917,3 +923,412 @@ for (const [unit, perMm] of [
     approx(body.uncertainty as number, 1e-7, 1e-19) // (mm, as the reader converts it)
   })
 }
+
+// -- X5: analytic edges in USD ------------------------------------------------------------------------------
+const _DATA = new URL('../../tests/data/', import.meta.url).pathname
+const _USD_FILES = new URL('../../third_party/usd-brep/TestFiles/', import.meta.url).pathname
+
+function _edgeKinds(body: Part | Shell): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const e of body.edges()) out[e.geomType] = (out[e.geomType] ?? 0) + 1
+  return out
+}
+
+const _ROUND_TRIPS: [string, () => Part][] = [
+  ['drilled', () => Box(20, 20, 10).cut(Cylinder(4, 20))],
+  ['rounded', () => Box(20, 20, 10).fillet(Box(20, 20, 10).edges(), 2)],
+  ['slanted', () => Cylinder(5, 30).cut(Box(40, 40, 40).rotate(Y, 30).translate([0, 0, 25]))], // (ellipses)
+  ['chamfered', () => Box(20, 20, 10).chamfer(Box(20, 20, 10).edges().parallelTo(Z), 2)], // (straight B-splines)
+]
+for (const [name, make] of _ROUND_TRIPS) {
+  test(`usd round trip keeps line, circle and ellipse edges (${name})`, () => {
+    // Every edge was written as a B-spline: circles() came back empty, Edge.radius threw and STEP
+    // wrote B-splines. Lines, circles and ellipses are written as the schema's analytic curves.
+    const part = make()
+    const text = toUsd(part.named(name), { mesh: false })
+    const back = fromUsd(text) as Part
+    assert.deepEqual(_edgeKinds(back), _edgeKinds(part))
+    approx(back.volume, part.volume, 1e-12 * part.volume)
+    assert.ok(back.isValid())
+    assert.ok(back.bbox().max.equals(part.bbox().max))
+    const radii = (p: Part) => p.edges().circles().map((e) => e.radius).sort((a, b) => a - b)
+    assert.deepEqual(radii(back).map((r) => Math.round(r * 1e9)), radii(part).map((r) => Math.round(r * 1e9)))
+    for (const [kind, api] of [['line', 'Line'], ['circle', 'Circle'], ['ellipse', 'Ellipse']]) {
+      if (kind in _edgeKinds(part)) assert.ok(text.includes(`BrepCurve3d${api}API:edge3d${api}`), kind)
+    }
+    const step = toStep(back)
+    const before = toStep(part)
+    for (const entity of ['LINE(', 'CIRCLE(', 'ELLIPSE(']) assert.equal(step.split(entity).length, before.split(entity).length, entity)
+  })
+}
+
+test('usd edges of curved b-spline faces stay b-splines', () => {
+  // (a circle on a face the file has as a B-spline surface: its UV curve follows the B-spline's
+  // parameters, which the schema's circle does not keep)
+  const part = Polygon([0, 0], [10, 0], [10, 5], [5, 12], [0, 12]).revolve(Y)
+  const back = fromUsd(toUsd(part, { mesh: false })) as Part
+  approx(back.volume, part.volume, 1e-12 * part.volume)
+  assert.ok(back.isValid())
+  assert.deepEqual([...new Set(back.faces().map((f) => f.geomType))].sort(), ['bspline', 'plane'])
+  assert.deepEqual(_edgeKinds(back), { bspline: 3 })
+})
+
+test('usd reads lines and circles of b-spline edges', () => {
+  // usd-brep and Omniverse write every edge as a B-spline: those that are lines, or circles on faces of
+  // analytic surfaces, come back as lines and circles (smlibpy 0.4 wrote this block so, its lines
+  // B-splines 2.5 km long)
+  const back = importUsd(join(_DATA, 'usd_bspline_edges.usda')) as Part
+  assert.deepEqual(_edgeKinds(back), { line: 12, circle: 2 })
+  assert.deepEqual(back.edges().circles().map((e) => Math.round(e.radius * 1e9) / 1e9), [4, 4])
+  approx(back.volume, 20 * 20 * 10 - Math.PI * 16 * 10, 1e-12 * 4000)
+  assert.ok(back.isValid())
+  assert.ok(back.bbox().max.equals(new Vector(10, 10, 5)))
+})
+
+test('usd-brep files get their lines back', { skip: !existsSync(_USD_FILES) }, () => {
+  const cube = importUsd(join(_USD_FILES, 'brep_validator', 'Cube.usda')) as Part
+  assert.deepEqual(_edgeKinds(cube), { line: 12 })
+  assert.ok(cube.isValid())
+  // (OpenCASCADE's cylinder of B-spline faces: its circles stay B-splines, its volume pi * 9 * 10)
+  const [cylinder] = warnings(() => importUsd(join(_USD_FILES, 'usd_TestFiles', 'test_wireEdgeTopology_absent.usda'), { units: 'mm' }) as Part)
+  assert.deepEqual(_edgeKinds(cylinder), { line: 2, bspline: 4 })
+  approx(cylinder.volume, Math.PI * 90, 1e-6 * 300)
+  assert.ok(cylinder.isValid())
+})
+
+// -- X7: USD bodies that cannot be read ---------------------------------------------------------------------
+function _threeBodies(): string {
+  // a box, a cylinder whose face range turns 60 radians (the kernel cannot build it) and a sphere of
+  // radius 0 (malformed), in a file another tool wrote (checked)
+  let text = toUsd(
+    [Box(2, 3, 4).named('a'), Cylinder(4, 10).translate([10, 0, 0]).named('c'), Sphere(3).translate([20, 0, 0]).named('s')],
+    { mesh: false },
+  )
+  text = text.replace('string source = "smlibpy"', 'string source = "x"')
+  text = text.replace('face:range = [(0, 0), (6.283185307179586, 10), ', 'face:range = [(0, 0), (60, 10), ')
+  return text.replace(/(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])/, '$10$2')
+}
+
+test('usd body the kernel cannot build is named in the message', () => {
+  // String(KernelError) was "fromUsd failed (SM_ERR_INVALID_INPUT)", the body only in .detail
+  assert.throws(
+    () => fromUsd(_threeBodies()),
+    (e: unknown) =>
+      e instanceof KernelError &&
+      e.message.includes('body 0 of the BrepArray "/World/c" could not be built') &&
+      e.message.includes('partial: true') &&
+      e.message.split('SM_ERR_INVALID_INPUT').length === 2 &&
+      e.status === 'SM_ERR_INVALID_INPUT',
+  )
+})
+
+test('usd partial import leaves out what cannot be read', () => {
+  const [back, said] = warnings(() => fromUsd(_threeBodies(), { partial: true }) as Part)
+  assert.ok(back instanceof Part && back.name === 'a')
+  approx(back.volume, 24, 1e-9)
+  assert.deepEqual(said, [
+    'fromUsd: body 0 of the BrepArray "/World/c" could not be built (SM_ERR_INVALID_INPUT); it is left out',
+    'fromUsd: body 0 of the BrepArray "/World/s" is malformed: face 0: the sphere\'s radius is 0, not positive (BA.481); it is left out',
+  ])
+})
+
+test('usd partial import takes the bodies of one prim apart', { skip: !existsSync(_USD_FILES) }, () => {
+  // usd-brep's own case: one BrepArray of several bodies, one of them broken (here the first face of
+  // the second of its two cubes gets a weight of 0, BA.440)
+  const text = readFileSync(join(_USD_FILES, 'brep_validator', 'CubeBrepArray.usda'), 'utf-8')
+  const m = /(brep:surface:nurb:weights = \[)([^\]]*)\]/.exec(text)!
+  const values = m[2].split(', ')
+  values[Math.floor(values.length / 2)] = '0'
+  const start = m.index + m[1].length
+  const broken = text.slice(0, start) + values.join(', ') + text.slice(start + m[2].length)
+  assert.throws(() => fromUsd(broken), /body 1, face 0: its NURBS surface has a weight of 0/)
+  const [back, said] = warnings(() => fromUsd(broken, { partial: true }) as Part)
+  assert.ok(back instanceof Part && back.name === 'brepArray' && back.isValid())
+  approx(back.volume, (warnings(() => fromUsd(text))[0] as ShapeList<Part>)[0].volume, 1e-9)
+  assert.deepEqual(said.filter((w) => w.includes('left out')), [ // (and the reference to a file of materials it lacks)
+    'fromUsd: body 1 of the BrepArray "/World/brepArray" is malformed: face 0: its NURBS surface has a weight of 0, not positive (BA.440); it is left out',
+  ])
+})
+
+test('usd partial import of nothing readable throws', () => {
+  const text = toUsd(Sphere(3).named('s'), { mesh: false }).replace(/(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])/, '$10$2')
+  assert.throws(() => fromUsd(text, { partial: true }), /no body of the file can be read: body 0 of the BrepArray "\/World\/s" is malformed/)
+})
+
+// -- I14: IGES import ---------------------------------------------------------------------------------------
+// The files in tests/data/iges were written by OpenCASCADE 8.0 (IGESControl_Writer) from smlibpy parts:
+// block_brep.igs as a solid B-rep (186), the others as trimmed surfaces (144), the way most CAD systems
+// write IGES; block_faces_inch.igs in inches.
+const _IGES = join(_DATA, 'iges')
+const DEP = '00010000' // (the status of an entity that is part of another)
+type IgesEntity = { type: number; params: (number | string | [string, number])[]; form?: number; transform?: [string, number]; color?: [string, number] | number; status?: string; label?: string }
+
+/** An IGES file of entities; ['@', i] in params, transform or color points at entity i (a color: its
+ * definition). */
+function _iges(entities: IgesEntity[], unit = 2, resolution = 1e-7): string {
+  const value = (v: number | string | [string, number]): string => {
+    if (Array.isArray(v)) return String(2 * v[1] + 1)
+    if (typeof v === 'string') return `${v.length}H${v}`
+    return String(v)
+  }
+  const lines = (text: string, letter: string, width = 72): string[] => {
+    const out: string[] = []
+    for (let i = 0; i < Math.max(text.length, 1); i += width) out.push(text.slice(i, i + width).padEnd(width) + letter)
+    return out
+  }
+  const g = `${['1H,', '1H;', '4Htest', '8Htest.igs', '4Htest', '4Htest', '32', '38', '6', '308', '15', '4Htest', '1.', String(unit), unit === 2 ? '2HMM' : '4HINCH', '1', '0.01', '15H20260101.000000', String(resolution), '100.', '4Htest', '4Htest', '11', '0', '15H20260101.000000'].join(',')};`
+  const D: string[] = []
+  const P: string[] = []
+  entities.forEach((e, i) => {
+    const text = `${[String(e.type), ...e.params.map(value)].join(',')};`
+    const chunks: string[] = []
+    for (let k = 0; k < text.length; k += 64) chunks.push(text.slice(k, k + 64))
+    const start = P.length + 1
+    for (const c of chunks) P.push(`${c.padEnd(64)} ${String(2 * i + 1).padStart(7)}P`)
+    const col = Array.isArray(e.color) ? `-${value(e.color)}` : String(e.color ?? 0)
+    const tr = e.transform ? value(e.transform) : '0'
+    D.push([e.type, start, 0, 0, 0, 0, tr, 0].map((x) => String(x).padStart(8)).join('') + (e.status ?? '00000000').padStart(8) + 'D')
+    D.push([e.type, 0, col, chunks.length, e.form ?? 0, '', ''].map((x) => String(x).padStart(8)).join('') + (e.label ?? '').padStart(8) + '0'.padStart(8) + 'D')
+  })
+  const sections = [lines('smlibpy test', 'S'), lines(g, 'G'), D, P]
+  const numbered = sections.flatMap((sec) => sec.map((line, k) => line + String(k + 1).padStart(7)))
+  const counts = `S${String(sections[0].length).padStart(7)}G${String(sections[1].length).padStart(7)}D${String(D.length).padStart(7)}P${String(P.length).padStart(7)}`
+  return `${[...numbered, `${counts.padEnd(72)}T${'1'.padStart(7)}`].join('\n')}\n`
+}
+function _line(a: number[], b: number[]): IgesEntity {
+  return { type: 110, params: [...a, ...b], status: DEP }
+}
+
+/** A bounded plane (108) z = 0 whose boundary is a composite (102) of the curves. */
+function _boundedPlane(curves: IgesEntity[], extra: Partial<IgesEntity> = {}): IgesEntity[] {
+  return [
+    { type: 108, form: 1, params: [0, 0, 1, 0, ['@', 1], 0, 0, 0, 0], ...extra },
+    { type: 102, params: [curves.length, ...curves.map((_, i) => ['@', 2 + i] as [string, number])], status: DEP },
+    ...curves,
+  ]
+}
+
+function _square(clockwise = false): IgesEntity[] {
+  let pts = [
+    [0, 0, 0],
+    [10, 0, 0],
+    [10, 5, 0],
+    [0, 5, 0],
+  ]
+  if (clockwise) pts = pts.reverse()
+  return pts.map((p, i) => _line(p, pts[(i + 1) % 4]))
+}
+
+/** Entities moved by `n` places in a list: their pointers too. */
+function _shifted(entities: IgesEntity[], n: number): IgesEntity[] {
+  return entities.map((e) => ({ ...e, params: e.params.map((v) => (Array.isArray(v) ? (['@', v[1] + n] as [string, number]) : v)) }))
+}
+
+test('iges solid brep object', () => {
+  // a manifold solid B-rep object (186): its faces share their edges as the file has them
+  const part = importIges(join(_IGES, 'block_brep.igs')) as Part
+  assert.ok(part instanceof Part && part.isValid())
+  approx(part.volume, 4000 - Math.PI * 160, 1e-12 * 4000)
+  assert.deepEqual(part.faces().map((f) => f.geomType).sort(), ['cylinder', ...Array(6).fill('plane')])
+  assert.deepEqual(part.edges().map((e) => e.geomType).sort(), [...Array(2).fill('circle'), ...Array(12).fill('line')])
+  approx((load(join(_IGES, 'block_brep.igs')) as Part).volume, part.volume, 1e-9)
+})
+
+for (const [name, volume, faces] of [
+  ['block_faces_inch.igs', 4000 - Math.PI * 160, 7], // (mirrored surfaces of revolution, inches)
+  ['torus_faces.igs', 2 * Math.PI ** 2 * 40, 1], // (its seams: two closed curves, each used twice)
+  ['vase_faces.igs', 934.8130160051498, 3], // (a B-spline revolved; OpenCASCADE's volume)
+] as [string, number, number][]) {
+  test(`iges trimmed surfaces are stitched into solids (${name})`, () => {
+    const part = importIges(join(_IGES, name)) as Part
+    assert.ok(part instanceof Part && part.isValid() && part.faces().length === faces)
+    approx(part.volume, volume, 1e-8 * volume) // (the inch file has 10 digits)
+  })
+}
+
+test('iges block faces keep their surfaces and edges', () => {
+  const part = importIges(join(_IGES, 'block_faces_inch.igs')) as Part
+  assert.deepEqual(part.faces().map((f) => f.geomType).sort(), ['cylinder', ...Array(6).fill('plane')])
+  assert.deepEqual(part.edges().map((e) => e.geomType).sort(), [...Array(2).fill('circle'), ...Array(12).fill('line')])
+  part.bbox().max.toArray().forEach((c, i) => approx(c, [10, 10, 5][i], 1e-6))
+})
+
+test('iges curves of every kind bound faces', () => {
+  const area = (ents: IgesEntity[]): number => (fromIges(_iges(ents)) as Shell).area
+  // a parabola (104 form 3) y = x^2 / 4 closed by a line: area 8/3
+  const par: IgesEntity = { type: 104, form: 3, params: [0.25, 0, 0, 0, -1, 0, 0, -2, 1, 2, 1], status: DEP }
+  approx(area(_boundedPlane([par, _line([2, 1, 0], [-2, 1, 0])])), 8 / 3, 1e-9)
+  // half an ellipse (104 form 1) turned by 30 degrees, from its equation: area 4 pi
+  const c = Math.cos(Math.PI / 6)
+  const s = Math.sin(Math.PI / 6)
+  const [A, B, C] = [(c * c) / 16 + (s * s) / 4, (2 * c * s) / 16 - (2 * s * c) / 4, (s * s) / 16 + (c * c) / 4]
+  const ell: IgesEntity = { type: 104, form: 1, params: [A, B, C, 0, 0, -1, 0, 4 * c, 4 * s, -4 * c, -4 * s], status: DEP }
+  approx(area(_boundedPlane([ell, _line([-4 * c, -4 * s, 0], [4 * c, 4 * s, 0])])), 4 * Math.PI, 1e-6 * 4 * Math.PI)
+  // a hyperbola (104 form 2) x^2 - y^2 = 1 cut by x = cosh 1: area sinh 1 cosh 1 - 1
+  const [ch, sh] = [Math.cosh(1), Math.sinh(1)]
+  const hyp: IgesEntity = { type: 104, form: 2, params: [1, 0, -1, 0, 0, -1, 0, ch, -sh, ch, sh], status: DEP }
+  approx(area(_boundedPlane([hyp, _line([ch, sh, 0], [ch, -sh, 0])])), sh * ch - 1, 1e-9)
+  // a linear path (106 form 12): a triangle of area 9
+  const tri: IgesEntity = { type: 106, form: 12, params: [2, 4, 0, 0, 0, 6, 0, 0, 0, 3, 0, 0, 0, 0], status: DEP }
+  approx(area(_boundedPlane([tri])), 9, 1e-9)
+  // a parametric spline (112) y = 4x - x^2 over [0, 4]: area 32/3
+  const spl: IgesEntity = { type: 112, params: [3, 1, 2, 1, 0, 4, 0, 1, 0, 0, 0, 4, -1, 0, 0, 0, 0, 0, ...Array(12).fill(0)], status: DEP }
+  approx(area(_boundedPlane([spl, _line([4, 0, 0], [0, 0, 0])])), 32 / 3, 1e-9)
+})
+
+test('iges surfaces of every kind', () => {
+  const area = (ents: IgesEntity[]): number => (fromIges(_iges(ents)) as Shell).area
+  // an untrimmed B-spline surface (128) on its own, and as a trimmed surface of all of itself
+  const bilinear: IgesEntity = { type: 128, params: [1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 10, 0, 0, 0, 20, 0, 10, 20, 0, 0, 1, 0, 1] }
+  approx(area([bilinear]), 200, 1e-9)
+  approx(area([{ type: 144, params: [['@', 1], 0, 0, 0] }, { ...bilinear, status: DEP }]), 200, 1e-9)
+  // a parametric spline surface (114): one bicubic patch, the plane x = 10 s, y = 20 t
+  const coef = Array(48).fill(0)
+  coef[1] = 10
+  coef[16 + 4] = 20
+  approx(area([{ type: 114, params: [3, 1, 1, 1, 0, 1, 0, 1, ...coef, ...Array(144).fill(0)] }]), 200, 1e-9)
+  // a bounded surface (143) with a boundary (141) one of whose curves runs the other way (sense 2)
+  const sq = [
+    [0, 0, 0],
+    [10, 0, 0],
+    [10, 5, 0],
+    [0, 5, 0],
+  ]
+  const bounded: IgesEntity[] = [
+    { type: 143, params: [0, ['@', 1], 1, ['@', 2]] },
+    { type: 108, params: [0, 0, 1, 0, 0, 0, 0, 0, 0], status: DEP },
+    { type: 141, params: [0, 0, ['@', 1], 4, ['@', 3], 1, 0, ['@', 4], 2, 0, ['@', 5], 1, 0, ['@', 6], 1, 0], status: DEP },
+    _line(sq[0], sq[1]),
+    _line(sq[2], sq[1]),
+    _line(sq[2], sq[3]),
+    _line(sq[3], sq[0]),
+  ]
+  approx(area(bounded), 50, 1e-9)
+})
+
+for (const backwards of [1, 0]) {
+  test(`iges ruled surface (backwards ${backwards})`, () => {
+    // a ruled surface (118) between a line and a straight B-spline of degree 2 (the strip from y = 0,
+    // z = 0 to y = 5, z = 3: 10 x 5.83), trimmed by its four sides; the second curve given the other
+    // way round with the flag that says so (or the same way without it): read without the flag, the
+    // strip would be twisted
+    let [a, b] = [
+      [10, 5, 3],
+      [0, 5, 3],
+    ]
+    if (!backwards) [a, b] = [b, a]
+    const spline: IgesEntity = { type: 126, params: [2, 2, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, ...a, ...a.map((x, i) => (x + b[i]) / 2), ...b, 0, 1, 0, 0, 0], status: DEP }
+    const corners = [
+      [0, 0, 0],
+      [10, 0, 0],
+      [10, 5, 3],
+      [0, 5, 3],
+    ]
+    const ents: IgesEntity[] = [
+      { type: 144, params: [['@', 1], 1, 0, ['@', 4]] },
+      { type: 118, form: 1, params: [['@', 2], ['@', 3], backwards, 0], status: DEP },
+      _line([0, 0, 0], [10, 0, 0]),
+      spline,
+      { type: 142, params: [0, ['@', 1], 0, ['@', 5], 2], status: DEP },
+      { type: 102, params: [4, ['@', 6], ['@', 7], ['@', 8], ['@', 9]], status: DEP },
+      ...corners.map((p, i) => _line(p, corners[(i + 1) % 4])),
+    ]
+    const sheet = fromIges(_iges(ents)) as Shell
+    approx(sheet.area, 10 * Math.sqrt(34), 1e-9 * 60)
+  })
+}
+
+test('iges boundaries of either orientation', () => {
+  // IGES does not hold writers to an orientation of a boundary: a hole whose loop runs the way the
+  // outer loop does is still a hole, and an outer loop that runs clockwise still bounds the face
+  const holed = (outer: IgesEntity[]): IgesEntity[] => [
+    { type: 144, params: [['@', 1], 1, 1, ['@', 2], ['@', 8]] },
+    { type: 108, params: [0, 0, 1, 0, 0, 0, 0, 0, 0], status: DEP },
+    { type: 142, params: [0, ['@', 1], 0, ['@', 3], 2], status: DEP },
+    { type: 102, params: [4, ['@', 4], ['@', 5], ['@', 6], ['@', 7]], status: DEP },
+    ...outer,
+    { type: 142, params: [0, ['@', 1], 0, ['@', 9], 2], status: DEP },
+    { type: 100, params: [0, 5, 2.5, 6, 2.5, 6, 2.5], status: DEP }, // (counterclockwise)
+  ]
+  for (const outer of [_square(), _square(true)]) approx((fromIges(_iges(holed(outer))) as Shell).area, 50 - Math.PI, 1e-9)
+})
+
+test('iges names, colors, transforms and subfigures', () => {
+  // a name property (406 form 15), a color definition (314) and a transformation in a transformation
+  // (124: turned by 90 degrees about z and moved by 100 in x, then moved by 7 in z)
+  const plate = _boundedPlane(_square(), { color: ['@', 7], transform: ['@', 8] })
+  plate[0].params.push(0, 1, ['@', 6])
+  plate.push(
+    { type: 406, form: 15, params: [1, 'Deckel'], status: DEP },
+    { type: 314, params: [100, 50, 0, 'ORANGE'], status: DEP },
+    { type: 124, params: [0, -1, 0, 100, 1, 0, 0, 0, 0, 0, 1, 0], transform: ['@', 9], status: DEP },
+    { type: 124, params: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 7], status: DEP },
+  )
+  const sheet = fromIges(_iges(plate)) as Shell
+  assert.equal(sheet.name, 'Deckel')
+  assert.deepEqual(sheet.color, [1, 0.5, 0])
+  const box = sheet.bbox()
+  box.min.toArray().forEach((c, i) => approx(c, [95, 0, 7][i], 1e-9))
+  box.max.toArray().forEach((c, i) => approx(c, [100, 10, 7][i], 1e-9))
+  // a subfigure (308) placed twice (408): moved, and moved and scaled by 2
+  const sub: IgesEntity[] = [
+    { type: 408, params: [['@', 2], 100, 0, 0, 1] },
+    { type: 408, params: [['@', 2], 0, 100, 0, 2] },
+    { type: 308, params: [0, 'PLATE', 1, ['@', 3]], status: '00020200' },
+    ..._shifted(_boundedPlane(_square()), 3),
+  ]
+  sub[3].status = DEP
+  const [a, b] = fromIges(_iges(sub)) as ShapeList<Shell>
+  approx(a.area, 50, 1e-9)
+  approx(b.area, 200, 1e-9)
+  a.bbox().min.toArray().forEach((c, i) => approx(c, [100, 0, 0][i], 1e-9))
+  b.bbox().max.toArray().forEach((c, i) => approx(c, [20, 110, 0][i], 1e-9))
+})
+
+test('iges parameter space boundary on a b-spline surface', () => {
+  // a bilinear patch over [0, 10] x [0, 20] trimmed by a triangle given in its parameters only (its
+  // corners (0, 0), (1, 0), (0, 1): half the patch)
+  const patch: IgesEntity = {
+    type: 128,
+    params: [1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 10, 0, 0, 0, 20, 0, 10, 20, 0, 0, 1, 0, 1],
+    status: DEP,
+  }
+  const uv = [
+    [0, 0, 0],
+    [1, 0, 0],
+    [0, 1, 0],
+  ]
+  const ents: IgesEntity[] = [
+    { type: 144, params: [['@', 1], 1, 0, ['@', 2]] },
+    patch,
+    { type: 142, params: [1, ['@', 1], ['@', 3], 0, 1], status: DEP },
+    { type: 102, params: [3, ['@', 4], ['@', 5], ['@', 6]], status: DEP },
+    ...uv.map((p, i) => ({ ..._line(p, uv[(i + 1) % 3]), status: '00010500' })),
+  ]
+  const sheet = fromIges(_iges(ents)) as Shell
+  approx(sheet.area, 100, 1e-6 * 100)
+  sheet.bbox().max.toArray().forEach((c, i) => approx(c, [10, 20, 0][i], 1e-6))
+})
+
+test('iges what cannot be read is left out', () => {
+  // a trimmed surface whose surface is no surface (a point, 116), and a good one
+  const bad: IgesEntity[] = [
+    { type: 144, params: [['@', 1], 1, 0, ['@', 2]], label: 'ODD' },
+    { type: 116, params: [0, 0, 0], status: DEP },
+    { type: 142, params: [0, ['@', 1], 0, ['@', 3], 2], status: DEP },
+  ]
+  const text = _iges([...bad, ..._shifted(_boundedPlane(_square()), 3)])
+  const [sheet, said] = warnings(() => fromIges(text) as Shell)
+  approx(sheet.area, 50, 1e-9)
+  assert.deepEqual(said, ["import IGES: left out trimmed surface 'ODD' (DE 1): surface entity 116 (DE 3), which is not supported"])
+  assert.throws(() => fromIges(text, { strict: true }), /import IGES: trimmed surface 'ODD' \(DE 1\): surface entity 116/)
+  assert.throws(() => warnings(() => fromIges(_iges(bad))), /nothing in the file could be read: trimmed surface 'ODD'/)
+})
+
+test('iges files it does not read', () => {
+  assert.throws(() => fromIges('not iges at all\n'), (e: unknown) => e instanceof RangeError && /not an IGES file/.test(e.message))
+  const text = readFileSync(join(_IGES, 'torus_faces.igs'), 'latin1').replace('S0000001', 'B0000001')
+  assert.throws(() => fromIges(text), /binary or compressed IGES/)
+  assert.throws(() => fromIges(_iges([{ ..._line([0, 0, 0], [1, 0, 0]), status: '00000000' }])), /holds no solids or surfaces/)
+  assert.throws(() => load('c.xyz'), /load reads .step, .stp, .igs, .iges/)
+})

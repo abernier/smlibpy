@@ -1,6 +1,6 @@
 ---
 name: smlibpy
-description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces (also fitted to point clouds, blends between sheets), sheet metal (exact bends with radius and K-factor, flanges, flat patterns), twist/taper/bend/lattice deformations, parts of several cells (merge), measurements and ray casting, STEP/STL/glTF/USD export, STEP and USD import, DXF drawings in and out, mesh Booleans. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
+description: Model exact 3D CAD parts in Python with smlibpy, the Python library on SMLib (NVIDIA's open-source NURBS solid modeling kernel). Solids, sketches, text (engraved or embossed lettering), holes, fillets (also G2), shells, lofts, sweeps, freeform surfaces (also fitted to point clouds, blends between sheets), sheet metal (exact bends with radius and K-factor, flanges, flat patterns), twist/taper/bend/lattice deformations, parts of several cells (merge), measurements and ray casting, STEP/STL/glTF/USD export, STEP, IGES and USD import, DXF drawings in and out, mesh Booleans. Use when building, checking or exporting CAD geometry with smlibpy, directly or through the smlibpy MCP server (tools run_script, snapshot, docs).
 license: MIT
 ---
 
@@ -72,7 +72,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
 | surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
-| files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
+| files | `files/*` | STEP in and out (also coordinate systems and curves), IGES in, USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API
