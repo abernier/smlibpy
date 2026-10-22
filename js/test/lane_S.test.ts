@@ -3,7 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { Circle, Ellipse, FilletPolyline, Line, ModelingError, Plane, Polygon, Polyline, Rectangle, Spline, Wire, sweep, type Part } from '../src/index.ts'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Align, Axis, Circle, Ellipse, FilletPolyline, Helix, Line, ModelingError, Plane, Polygon, Polyline, Rectangle, Spline, ThreePointArc, Wire, Z, exportStep, importStep, revolve, sweep, type Part, type Shell } from '../src/index.ts'
 import { ext, setWarningHandler } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
@@ -240,4 +243,180 @@ test('planar paths place asymmetric profiles by their own box', () => {
   const [wavyBody, said] = warned(() => sweep(Polygon(...ODD), wavy) as Part)
   assert.ok(wavyBody.isValid())
   assert.ok(said.length === 1 && said[0].includes('cannot be offset'), said.join('; '))
+})
+
+
+// -- batch 2: the profile's attitude along the path (S3), analytic revolves (S4), planar paths (S6) --
+
+const dot = (a: readonly number[], b: readonly number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+/** The direction of the longest edge of the planar face nearest to point (an end cap). */
+function capLongSide(part: Part, point: P3): P3 {
+  const caps = [...part.faces()].filter((f) => f.geomType === 'plane')
+  const cap = caps.reduce((a, b) => (a.center().distanceTo(point) <= b.center().distanceTo(point) ? a : b))
+  const e = [...cap.edges()].reduce((a, b) => (a.length >= b.length ? a : b))
+  return unit(e.end.sub(e.start).toArray())
+}
+
+/** The angle (degrees, modulo 180) from u to v about t. */
+const angleTo = (v: P3, u: P3, t: P3) => ((((Math.atan2(dot(cross(u, v), t), dot(u, v)) * 180) / PI) % 180) + 180) % 180
+
+test('a rectangle keeps its attitude along a helix', () => {
+  // ai/todo/features.md 10: the profile rolled about the path by some 30 degrees a turn
+  const helix = Helix(5, 30, 10)
+  const rect = quiet(() => sweep(Rectangle(2, 1), helix) as Part)
+  assert.ok(rect.isValid())
+  approx(rect.volume, 2 * helix.length, 1e-5)
+  for (const plane of [Plane.YZ, Plane.XZ]) {
+    const whole = [...rect.section(plane).faces()].map((f) => f.bbox().size).filter((s) => s.z > 0.75)
+    assert.ok(whole.length >= 6)
+    for (const s of whole) {
+      const radial = plane === Plane.YZ ? s.y : s.x
+      approx(radial, 2, 0, 2e-3)
+      approx(s.z, 1, 0, 5e-3)
+    }
+  }
+})
+
+test('the default along a conical helix and a chain of helices is their axis', () => {
+  const cone = Helix(5, 30, 10, { endRadius: 5 })
+  const found = ext.helix_axis([cone._copyCurve()], 1e-5) as number[][]
+  assert.ok(found !== null && Math.abs(found[1][2] - 1) < 1e-7)
+  const tilted = Helix(5, 30, 10, { endRadius: 5, direction: [1, 2, 3], center: [4, 5, 6] })
+  const axis = ext.helix_axis([tilted._copyCurve()], 1e-5) as number[][]
+  for (let i = 0; i < 3; i++) approx(axis[1][i], (i + 1) / Math.sqrt(14), 0, 1e-7)
+  assert.equal(ext.helix_axis([Spline([0, 0, 0], [10, 5, 3], [20, -5, 7], [30, 0, 9])._copyCurve()], 1e-5), null)
+  const body = quiet(() => sweep(Rectangle(2, 1), cone) as Part)
+  approx(body.volume, 2 * cone.length, 1e-5)
+  const end = cone.pointAt(1).toArray() as P3
+  const side = capLongSide(body, end)
+  const radial = unit([end[0], end[1], 0])
+  assert.ok(Math.abs(dot(side, radial)) > Math.cos((2 * PI) / 180))
+})
+
+test('up keeps the profile’s angle to a direction', () => {
+  const path = Spline([0, 0, 0], [10, 20, 10], [30, 10, 25], [40, 30, 30])
+  const body = quiet(() => sweep(Rectangle(4, 2), path, { up: Z }) as Part)
+  assert.ok(body.isValid())
+  approx(body.volume, 8 * path.length, 1e-5)
+  const upAt = (t: number): [P3, P3] => {
+    const tangent = path.tangentAt(t).toArray() as P3
+    return [unit([-tangent[2] * tangent[0], -tangent[2] * tangent[1], 1 - tangent[2] * tangent[2]]), tangent]
+  }
+  const angles = [0, 1].map((t) => {
+    const [up, tangent] = upAt(t)
+    return angleTo(capLongSide(body, path.pointAt(t).toArray() as P3), up, tangent)
+  })
+  const d = Math.abs(angles[1] - angles[0])
+  assert.ok(d < 1e-3 || Math.abs(d - 180) < 1e-3)
+  const free = sweep(Rectangle(4, 2), path) as Part
+  const [up, tangent] = upAt(1)
+  assert.ok(Math.abs(angleTo(capLongSide(free, path.pointAt(1).toArray() as P3), up, tangent) - angles[0]) > 1)
+  approx(Rectangle(4, 2).sweep(path, { up: new Axis([5, 5, 5], [0, 0, 1]) }).volume, body.volume, 1e-9)
+  const frenet = quiet(() => sweep(Rectangle(4, 2), path, { up: 'frenet' }) as Part)
+  assert.ok(frenet.isValid())
+  approx(frenet.volume, 8 * path.length, 1e-5)
+})
+
+test('twist turns the profile along the path', () => {
+  const line = Line([0, 0, 0], [0, 0, 100])
+  const bar = quiet(() => sweep(Rectangle(10, 2), line, { twist: 180 }) as Part)
+  assert.ok(bar.isValid())
+  approx(bar.volume, 2000, 1e-6)
+  const middle = bar.section(Plane.XY.offset(50)).bbox().size
+  approx(middle.x, 2, 0, 1e-4)
+  approx(middle.y, 10, 0, 1e-4)
+  const top = bar.section(Plane.XY.offset(100 - 1e-6)).bbox().size
+  approx(top.x, 10, 0, 1e-4)
+  approx(top.y, 2, 0, 1e-4)
+  const law = quiet(() => sweep(Rectangle(10, 2), line, { twist: (s: number) => 90 * s * s }) as Part)
+  const a = (22.5 * PI) / 180
+  const half = law.section(Plane.XY.offset(50)).bbox().size
+  approx(half.x, 10 * Math.cos(a) + 2 * Math.sin(a), 0, 1e-3)
+  approx(half.y, 10 * Math.sin(a) + 2 * Math.cos(a), 0, 1e-3)
+  const ribbon = sweep(Line([-5, 0, 0], [5, 0, 0]), line, { twist: 180 }) as Shell
+  const k = PI / 100
+  const strip = 2 * (2.5 * Math.sqrt(1 + (5 * k) ** 2) + Math.asinh(5 * k) / (2 * k))
+  approx(ribbon.area, 100 * strip, 1e-5)
+  const fp = FilletPolyline([0, 0, 0], [0, 0, 40], [40, 0, 40], [40, 40, 40], { radius: 8 })
+  approx(quiet(() => sweep(Rectangle(4, 2), fp, { twist: 90 }) as Part).volume, 8 * fp.length, 1e-5)
+  const helix = Helix(5, 30, 10)
+  approx(quiet(() => sweep(Rectangle(2, 1), helix, { twist: 360 }) as Part).volume, 2 * helix.length, 1e-5)
+})
+
+test('up and twist errors', () => {
+  const line = Line([0, 0, 0], [0, 0, 50])
+  assert.throws(() => sweep(Rectangle(4, 2), line, { up: Z }), { name: 'RangeError', message: /runs along up/ })
+  assert.throws(() => sweep(Rectangle(4, 2), line, { up: 'frenet' }), { name: 'RangeError', message: /runs straight/ })
+  assert.throws(() => sweep(Rectangle(4, 2), line, { twist: 10, translational: true }), { name: 'RangeError', message: /orient true and translational false/ })
+  assert.throws(() => sweep(Rectangle(4, 2), line, { up: 'binormal' }), { name: 'RangeError', message: /'frenet'/ })
+  assert.throws(() => sweep(Rectangle(4, 2), line, { twist: 'a lot' as unknown as number }), TypeError)
+  assert.throws(() => sweep(Rectangle(4, 2), Polyline([0, 0, 0], [0, 0, 40], [40, 0, 40]), { twist: 10, sharpCorners: true }), /sharpCorners false/)
+  const loop = Spline([20, 0, 0], [0, 20, 6], [-20, 0, 0], [0, -20, -6], { closed: true })
+  assert.throws(() => sweep(Rectangle(4, 2), loop, { twist: 90 }), { name: 'RangeError', message: /come round into itself/ })
+  const square = quiet(() => sweep(Rectangle(3, 3), loop, { twist: 90 }) as Part)
+  assert.ok(square.isValid())
+  approx(square.volume, 9 * loop.length, 1e-5)
+})
+
+test('a chain of helices with even turns is not planar', () => {
+  for (const turns of [30, 16]) {
+    const chain = new Wire([Helix(1, turns, 5), Helix(1, turns, 5, { center: [0, 0, turns] })])
+    const spring = quiet(() => sweep(Rectangle(0.6, 0.3), chain) as Part)
+    assert.ok(spring.isValid())
+    approx(spring.volume, 0.18 * chain.length, 1e-5)
+  }
+})
+
+test('planar paths whose corners cannot be mitered go piece by piece', () => {
+  const kinked = new Wire([ThreePointArc([0, 0, 0], [5, 5, 0], [10, 0, 0]), ThreePointArc([10, 0, 0], [14, 3, 0], [20, 2, 0])])
+  const [body, said] = warned(() => sweep(Rectangle(2, 1), kinked) as Part)
+  assert.ok(said.some((m) => /cannot be mitered/.test(m)))
+  assert.ok(body.isValid())
+  approx(body.volume, (sweep(Rectangle(2, 1), kinked, { sharpCorners: false }) as Part).volume, 1e-12)
+  assert.throws(() => sweep(Rectangle(2, 1), kinked, { sharpCorners: true }), ModelingError)
+})
+
+test('full revolves give cylinders, cones, spheres and tori', () => {
+  const types = (p: Part | Shell) => [...p.faces()].map((f) => f.geomType).sort()
+  const tube = Polygon([5, 0], [10, 0], [10, 20], [5, 20]).on(Plane.XZ).revolve(Z)
+  assert.deepEqual(types(tube), ['cylinder', 'cylinder', 'plane', 'plane'])
+  const radii = [...tube.faces().cylinders()].map((f) => f.radius).sort((a, b) => a - b)
+  approx(radii[0], 5, 1e-12)
+  approx(radii[1], 10, 1e-12)
+  approx(tube.volume, PI * 75 * 20, 1e-12)
+  const outer = [...tube.faces().cylinders()].reduce((a, b) => (a.radius >= b.radius ? a : b))
+  const drafted = tube.draft(outer, 3, Plane.XY)
+  assert.ok(drafted.isValid() && drafted.volume < tube.volume)
+  const lathe = Rectangle(5, 20, { align: [Align.MIN, Align.MIN] }).translate(5, 0).fillet(1).on(Plane.XZ)
+  const whole = lathe.revolve(Z)
+  assert.deepEqual(types(whole), ['cylinder', 'cylinder', 'plane', 'plane', 'torus', 'torus', 'torus', 'torus'])
+  for (const f of whole.faces()) if (f.geomType === 'torus') approx(f.radius, 1, 1e-9)
+  approx(whole.volume, 4 * lathe.revolve(Z, 90).volume, 1e-9)
+  const ball = Circle(10).intersect(Rectangle(10, 20, { align: [Align.MIN, Align.CENTER] })).on(Plane.XZ).revolve(Z)
+  assert.deepEqual(types(ball), ['sphere', 'sphere'])
+  approx(ball.volume, (4 / 3) * PI * 1000, 1e-12)
+  assert.deepEqual(types(Polygon([0, 0], [10, 0], [0, 20]).on(Plane.XZ).revolve(Z)), ['cone', 'plane'])
+  assert.deepEqual(types(Circle(2).translate(10, 0).on(Plane.XZ).revolve(Z, 90)), ['plane', 'plane', 'torus'])
+  const holed = Rectangle(10, 20, { align: [Align.MIN, Align.MIN] }).cut(Circle(1).translate(5, 10)).on(Plane.XZ).revolve(Z, 90)
+  assert.ok(!types(holed).includes('revolution'))
+  const vase = revolve(Spline([5, 0, 0], [8, 0, 5], [6, 0, 10], [9, 0, 20]), Z) as Shell
+  assert.equal(vase.faces()[0].geomType, 'revolution')
+  assert.ok(vase.faces()[0].axis.direction.isParallel([0, 0, 1]))
+  const sheet = revolve(Line([5, 0, 0], [5, 0, 20]), Z) as Shell
+  assert.deepEqual(types(sheet), ['cylinder'])
+  approx(sheet.area, 2 * PI * 5 * 20, 1e-9)
+})
+
+test('revolves within a hundredth of a degree of a turn are whole', () => {
+  const section = Polygon([5, 0], [10, 0], [10, 20], [5, 20]).on(Plane.XZ)
+  for (const angle of [359.995, 359.999, 359.9999]) approx(section.revolve(Z, angle).volume, PI * 75 * 20, 1e-12)
+  assert.ok(section.revolve(Z, 359.99).volume < PI * 75 * 20)
+  const path = join(mkdtempSync(join(tmpdir(), 'smlibwasm-lane-s-')), 'tube.step')
+  exportStep(section.revolve(Z), path)
+  const text = readFileSync(path, 'utf8')
+  assert.equal(text.split('CYLINDRICAL_SURFACE').length - 1, 2)
+  assert.ok(!text.includes('B_SPLINE_SURFACE'))
+  const back = importStep(path) as Part
+  assert.deepEqual([...back.faces()].map((f) => f.geomType).sort(), ['cylinder', 'cylinder', 'plane', 'plane'])
 })

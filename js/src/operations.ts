@@ -5,7 +5,7 @@
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
 import { ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction } from './geometry.ts'
+import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG } from './geometry.ts'
 import { spread } from './_linalg.ts'
 import { Line, ThreePointArc } from './curves.ts'
 import {
@@ -20,6 +20,7 @@ import {
   Sketch,
   Vertex,
   Wire,
+  _analyticRevolve,
   _flattenEdges,
   _requireSolid,
   _revolveAxisAngle,
@@ -104,7 +105,7 @@ export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, a
       () => k.rotational_sweep(w._copyCurves(), ax.origin.toArray(), ax.direction.toArray(), Number(a), { cap_ends: false }),
       'the axis must not cross the curve',
     )
-    return Shell._wrap(b)
+    return _analyticRevolve<Shell>(b, Shell)
   }
   return _asSketch(profile).revolve(axis, angle)
 }
@@ -312,21 +313,292 @@ function _profileFrame(sk: Sketch, tangent: V3): [Axes, V3] {
   return [axes, anchor]
 }
 
-/** A profile in its own frame (`sk`: in the XY plane, its anchor at the origin) swept along an
- * edge, placed by `placement` at the edge's start. */
-function _swept(sk: Sketch, edge: Edge, placement: Matrix, translational: boolean, cap = true): Part | Shell {
+/** A profile in its own frame (`sk`: in the XY plane, its anchor at the origin; a sketch, or an open
+ * wire for a surface) swept along an edge, placed by `placement` at the edge's start. With `law` the
+ * profile's x axis follows it along the edge (`span`: where the edge lies along the whole path, as
+ * fractions of its length). */
+function _swept(sk: Sketch | Wire, edge: Edge, placement: Matrix, translational: boolean, cap = true, law: _Law | null = null, span: [number, number] = [0, 1]): Part | Shell {
   const local = edge._transformed(_inverse(placement))
-  const curves = sk.faces().flatMap((f) => f.wires().flatMap((w) => w._copyCurves()))
+  const curves = sk instanceof Sketch ? sk.faces().flatMap((f) => f.wires().flatMap((w) => w._copyCurves())) : sk._copyCurves()
   const pathCurve = local._copyCurve()
   const hint = "the profile may be too large for the path's curvature"
   let b: number
   try {
-    b = kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, cap, true, false, translational, null, null), hint)
+    if (law === null) {
+      b = kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, cap, true, false, translational, null, null), hint)
+    } else {
+      const [ts, xs] = law.axes(pathCurve, placement, span)
+      b = kernelCall('sweep', () => ext.oriented_sweep(curves, pathCurve, ts, xs.flat(), cap), hint)
+    }
   } finally {
     ext.delete_curve(pathCurve)
     for (const c of curves) ext.delete_curve(c)
   }
   return (cap ? Part._wrap(b) : Shell._wrap(b))._transformed(placement) as Part | Shell
+}
+
+/** The axes (columns) of a placement. */
+const _axesOf = (m: Matrix): Axes => [0, 1, 2].map((c) => [m[c], m[4 + c], m[8 + c]]) as Axes
+/** rot v, rot^T v for axes (the columns of a rotation). */
+const _rotate = (rot: Axes, v: readonly number[]): V3 => [0, 1, 2].map((r) => rot[0][r] * v[0] + rot[1][r] * v[1] + rot[2][r] * v[2]) as V3
+const _unrotate = (rot: Axes, v: readonly number[]): V3 => [_dot3(rot[0], v), _dot3(rot[1], v), _dot3(rot[2], v)]
+const _scale3 = (a: readonly number[], f: number): V3 => [a[0] * f, a[1] * f, a[2] * f]
+
+// -- the profile's attitude along the path (up, twist, helices) ------------------------------------
+// The kernel's sweep carries its frame along the path from one point to the next by the smallest turn
+// (a rotation-minimizing frame): along a planar path the profile keeps its attitude to the plane, but
+// along a helix it rolls about the path by some 30 degrees a turn (ai/todo/features.md, 10). A frame
+// law gives the profile's x axis at every point instead (`ext.oriented_sweep`): kept at its angle to
+// `up` (the component of `up` across the path), to the path's principal normal ('frenet'), or carried
+// by the smallest turn as the kernel does, each turned on by `twist` along the path's length. Along a
+// helix the default is its axis as `up`.
+
+/** How the profile's x axis runs along a path: `mode` 'up' (at a fixed angle to `up` made
+ * perpendicular to the path), 'frenet' (to the principal normal) or 'rmf' (carried by the smallest
+ * turn), turned on by `twist(s)` radians at the fraction `s` of the path's length. `explicit`: asked
+ * for (an implicit law, a helix's axis, falls back to the kernel's frame). */
+class _Law {
+  /** ('up', 'frenet') the profile's angle to the base direction */
+  theta0: number | null = null
+  /** (world) the x axis where the last piece swept ended */
+  endX: V3 | null = null
+
+  readonly mode: 'up' | 'frenet' | 'rmf'
+  readonly up: V3 | null
+  readonly twist: (s: number) => number
+  readonly explicit: boolean
+
+  constructor(mode: 'up' | 'frenet' | 'rmf', up: V3 | null, twist: (s: number) => number, explicit: boolean) {
+    this.mode = mode
+    this.up = up
+    this.twist = twist
+    this.explicit = explicit
+  }
+
+  /** The base direction (across the path) at a point of it: `d` the point and its first two
+   * derivatives, `up` in the same frame, `size` the path's (`place`: the frame's placement in the
+   * world, for messages). */
+  _base(d: V3[], tangent: V3, up: V3 | null, size: number, place: Matrix | null = null): V3 {
+    const where = () => _fmt(place === null ? d[0] : _rotate(_axesOf(place), d[0]).map((v, r) => v + place[r * 4 + 3]))
+    if (this.mode === 'up') {
+      const b = _sub3(up as V3, _scale3(tangent, _dot3(up as V3, tangent)))
+      if (!(_norm3(b) > 1e-9)) {
+        throw new RangeError(`sweep: the path runs along up at ${where()}; the profile's attitude to it is not defined there (pick another up, or twist alone)`)
+      }
+      return _unit3(b)
+    }
+    const b = _sub3(d[2], _scale3(tangent, _dot3(d[2], tangent))) // (frenet: towards the center of curvature)
+    if (!(_norm3(b) > (1e-9 * _dot3(d[1], d[1])) / Math.max(size, 1e-300))) {
+      throw new RangeError(`sweep: the path runs straight at ${where()}; up 'frenet' needs a path that bends everywhere (pick up a direction)`)
+    }
+    return _unit3(b)
+  }
+
+  /** The parameters of the kernel curve `c` (a piece of the path in the profile's frame at its start:
+   * the x axis there is (1, 0, 0), `place` puts that frame in the world) at which the profile's x axis
+   * is given, and the x axes there. Records the x axis at the end (world). */
+  axes(c: number, place: Matrix, span: [number, number]): [number[], V3[]] {
+    let ts = _sampleParameters(c)
+    const theta0 = this.theta0
+    let xs: V3[] = []
+    for (let round = 0; round < 8; round++) {
+      this.theta0 = theta0
+      xs = this._axes(c, ts, place, span)
+      // (more samples where the x axis turns by more than 1/64 of a turn from one to the next)
+      const far: number[] = []
+      for (let i = 0; i + 1 < ts.length; i++) if (_dot3(xs[i], xs[i + 1]) < Math.cos(Math.PI / 32)) far.push(i)
+      if (!far.length) break
+      ts = [...ts, ...far.map((i) => 0.5 * (ts[i] + ts[i + 1]))].sort((a, b) => a - b)
+    }
+    this.endX = _rotate(_axesOf(place), xs[xs.length - 1])
+    return [ts, xs]
+  }
+
+  _axes(c: number, ts: number[], place: Matrix, span: [number, number]): V3[] {
+    const d = ts.map((t) => (ext.curve_eval(c, t, 2) as number[][]).map((v) => [v[0], v[1], v[2]] as V3))
+    const tangents = d.map((x) => _unit3(x[1]))
+    const speed = d.map((x) => _norm3(x[1]))
+    const run = [0]
+    for (let i = 1; i < ts.length; i++) run.push(run[i - 1] + 0.5 * (speed[i] + speed[i - 1]) * (ts[i] - ts[i - 1]))
+    const total = run[run.length - 1]
+    const s = run.map((r) => span[0] + ((span[1] - span[0]) * r) / total)
+    const x0: V3 = [1, 0, 0]
+    const points = d.map((x) => x[0])
+    let size = 0
+    for (let j = 0; j < 3; j++) size = Math.max(size, Math.max(...points.map((p) => p[j])) - Math.min(...points.map((p) => p[j])))
+    size = Math.max(size, 1e-300)
+    let base: V3[]
+    let angles: number[]
+    if (this.mode === 'rmf') {
+      base = _rotationMinimizing(points, tangents, x0)
+      if (_closes(points, tangents)) {
+        // (closed without a corner: the turn the frame gains around the loop spread along it, as the
+        // kernel spreads it, so that the ends meet)
+        const gain = _signedAngle(base[base.length - 1], base[0], tangents[0])
+        base = base.map((b, i) => _turned(b, tangents[i], (gain * run[i]) / total))
+      }
+      angles = s.map((si) => this.twist(si) - this.twist(span[0]))
+    } else {
+      const up = this.up !== null ? _unrotate(_axesOf(place), this.up) : null
+      base = d.map((x, i) => this._base(x, tangents[i], up, size, place))
+      if (this.theta0 === null) this.theta0 = _signedAngle(base[0], x0, tangents[0]) - this.twist(span[0])
+      const theta0 = this.theta0
+      angles = s.map((si) => theta0 + this.twist(si))
+    }
+    return base.map((b, i) => _turned(b, tangents[i], angles[i]))
+  }
+
+  /** ('up', 'frenet') The profile's axes at the start of the edge (world): x as the law gives it. */
+  startAxes(e: Edge, s: number): Axes {
+    const c = e._copyCurve()
+    let d: V3[]
+    try {
+      d = (ext.curve_eval(c, k.curve_parameter_range(c)[0], 2) as number[][]).map((v) => [v[0], v[1], v[2]] as V3)
+    } finally {
+      ext.delete_curve(c)
+    }
+    const tangent = _unit3(d[1])
+    const b = this._base(d, tangent, this.up, Math.max(e.length, 1e-300))
+    const x = _turned(b, tangent, (this.theta0 ?? 0) + this.twist(s))
+    return [x, _cross3(tangent, x), tangent]
+  }
+}
+
+const _fmt = (p: readonly number[]): string => `(${[...p].map((v) => _formatG(v)).join(', ')})`
+
+/** `v` (perpendicular to the unit `axis`) turned about it by `angle` (radians). */
+const _turned = (v: V3, axis: V3, angle: number): V3 => {
+  const c = Math.cos(angle)
+  const sn = Math.sin(angle)
+  const kv = _cross3(axis, v)
+  return [c * v[0] + sn * kv[0], c * v[1] + sn * kv[1], c * v[2] + sn * kv[2]]
+}
+
+/** The angle (radians) that turns a into b about `axis`. */
+const _signedAngle = (a: V3, b: V3, axis: V3): number => Math.atan2(_dot3(_cross3(a, b), axis), _dot3(a, b))
+
+/** Parameters of a kernel curve to give the profile's x axis at: four (at least) in each knot span,
+ * 64 at least in all (a helix of the kernel has about 32 spans a turn). */
+function _sampleParameters(c: number): number[] {
+  const [t0, t1] = k.curve_parameter_range(c) as [number, number]
+  const knots = [...new Set((ext.curve_data(c, true).knots as number[]).filter((v) => t0 < v && v < t1))].sort((a, b) => a - b)
+  const bounds = [t0, ...knots, t1]
+  const per = Math.max(4, Math.ceil(64 / (bounds.length - 1)))
+  const ts: number[] = []
+  for (let i = 0; i + 1 < bounds.length; i++) for (let j = 0; j < per; j++) ts.push(bounds[i] + ((bounds[i + 1] - bounds[i]) * j) / per)
+  ts.push(t1)
+  return ts
+}
+
+/** The x axes of a frame carried along points with tangents by the smallest turns (the double
+ * reflection method of Wang, Juettler, Zheng and Liu 2008), from `x0`. */
+function _rotationMinimizing(points: V3[], tangents: V3[], x0: V3): V3[] {
+  const out: V3[] = [_unit3(_sub3(x0, _scale3(tangents[0], _dot3(x0, tangents[0]))))]
+  for (let i = 0; i + 1 < points.length; i++) {
+    const v1 = _sub3(points[i + 1], points[i])
+    const c1 = _dot3(v1, v1)
+    let r = out[out.length - 1]
+    if (c1 > 0) {
+      const rL = _sub3(r, _scale3(v1, (2 / c1) * _dot3(v1, r)))
+      const tL = _sub3(tangents[i], _scale3(v1, (2 / c1) * _dot3(v1, tangents[i])))
+      const v2 = _sub3(tangents[i + 1], tL)
+      const c2 = _dot3(v2, v2)
+      r = c2 > 0 ? _sub3(rL, _scale3(v2, (2 / c2) * _dot3(v2, rL))) : rL
+    }
+    const t = tangents[i + 1]
+    out.push(_unit3(_sub3(r, _scale3(t, _dot3(r, t)))))
+  }
+  return out
+}
+
+/** Whether samples of a curve end where they start, in the same direction. */
+function _closes(points: V3[], tangents: V3[]): boolean {
+  let size = 0
+  for (let j = 0; j < 3; j++) size = Math.max(size, Math.max(...points.map((p) => p[j])) - Math.min(...points.map((p) => p[j])))
+  return (
+    _norm3(_sub3(points[points.length - 1], points[0])) <= 1e-6 * Math.max(1, size) &&
+    _norm3(_sub3(tangents[tangents.length - 1], tangents[0])) <= 1e-6
+  )
+}
+
+/** The frame law `up` and `twist` ask for (null for neither). */
+function _frameLaw(up: unknown, twist: unknown, orient: boolean, translational: boolean): _Law | null {
+  let lawTwist: ((s: number) => number) | null
+  if (typeof twist === 'function') {
+    lawTwist = (s) => (Number((twist as (s: number) => number)(s)) * Math.PI) / 180
+  } else {
+    if (typeof twist !== 'number') {
+      throw new TypeError(`sweep: twist is an angle in degrees or a function of the fraction of the path's length, got ${_typeName(twist)}`)
+    }
+    if (!Number.isFinite(twist)) throw new RangeError('sweep: twist must be a finite angle (degrees)')
+    const total = twist
+    lawTwist = total ? (s) => ((total * Math.PI) / 180) * s : null
+  }
+  if ((up === null || up === undefined) && lawTwist === null) return null
+  if (translational || !orient) throw new RangeError('sweep: up and twist turn the profile along the path; they need orient true and translational false')
+  let mode: 'up' | 'frenet' | 'rmf'
+  let vec: V3 | null = null
+  if (up === null || up === undefined) mode = 'rmf'
+  else if (typeof up === 'string') {
+    if (up !== 'frenet') throw new RangeError(`sweep: up is an axis, a vector or 'frenet', got '${up}'`)
+    mode = 'frenet'
+  } else {
+    mode = 'up'
+    vec = _direction(up as Axis | VectorLike, 'sweep: up').toArray() as V3
+  }
+  return new _Law(mode, vec, lawTwist ?? (() => 0), true)
+}
+
+/** An open profile swept along one edge into a surface, its attitude given by `law`: turned by the
+ * smallest rotation from the normal of its plane to the path's start (a straight profile: from the
+ * normal of the plane that holds it and the path's start tangent), the center of its box on the
+ * path. */
+function _framedSurface(w: Wire, edge: Edge, law: _Law): Shell {
+  const t0 = _tangent(edge, 0)
+  const pts = Array.from({ length: 33 }, (_, i) => w.pointAt(i / 32).toArray() as V3)
+  const { values, directions } = spread(pts)
+  let n: V3
+  if (values[1] > 1e-9 * Math.max(1, values[0])) n = _unit3(directions[2])
+  else {
+    // (straight)
+    const d = _unit3(directions[0])
+    n = _sub3(t0, _scale3(d, _dot3(t0, d)))
+    if (!(_norm3(n) > 1e-9)) throw new RangeError('sweep: an open straight profile that runs along the path\'s start makes no surface')
+    n = _unit3(n)
+  }
+  if (_dot3(n, t0) < 0) n = _scale3(n, -1)
+  const ref: V3 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]
+  const x = _unit3(_sub3(ref, _scale3(n, _dot3(ref, n))))
+  let axes: Axes = [x, _cross3(n, x), n]
+  const origin = pts[0]
+  const center = w._transformed(_inverse(_placement(axes, origin))).bbox().center.toArray()
+  const anchor = _rotate(axes, center).map((v, r) => v + origin[r]) as V3
+  const local = w._transformed(_inverse(_placement(axes, anchor)))
+  axes = axes.map(_turn(axes[2], t0)) as Axes
+  law.theta0 = null
+  return _swept(local, edge, _placement(axes, _point(edge, 0)), false, false, law) as Shell
+}
+
+/** Whether the profile (about its anchor at the origin) turned by `turn` degrees is itself again (the
+ * ends of a closed path meet). */
+function _comesRound(local: Sketch, turn: number): boolean {
+  const r = ((turn % 360) + 360) % 360
+  if (Math.min(r, 360 - r) < 1e-6) return true
+  const turned = local.rotate(new Axis([0, 0, 0], [0, 0, 1]), turn)
+  return local.xor(turned).area <= 1e-9 * local.area
+}
+
+/** The direction of the axis a path winds about at a constant pitch (a helix, also a conical one), or
+ * null (`ext.helix_axis`: the curves' points to within 1e-5 of their size). */
+function _helixAxis(edges: readonly Edge[]): V3 | null {
+  const curves = edges.map((e) => e._copyCurve())
+  let found: number[][] | null
+  try {
+    found = ext.helix_axis(curves, 1e-5)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+  return found === null ? null : _unit3(found[1])
 }
 
 /** The axes a sweep along `edge` from `placement` ends with. Along a planar edge they turn about
@@ -416,6 +688,16 @@ export interface SweepOptions {
    * paths); `false` sweeps the path piece by piece (each run of tangent edges in one go) and joins
    * the pieces. */
   sharpCorners?: boolean | null
+  /** An axis or a direction the profile keeps its attitude to: along the whole path it stands at the
+   * angle it starts at to `up` made perpendicular to the path (the path must not run along `up`).
+   * `'frenet'`: to the path's principal normal (towards the center of its curvature; the path must
+   * bend everywhere). Default: the axis of a helical path, the smallest turn on others. */
+  up?: Axis | VectorLike | string | null
+  /** Degrees the profile turns about the path on top of that, spread evenly along its length; or a
+   * function of the fraction of the length (0 at the start, 1 at the end) that gives the angle in
+   * degrees there (the profile starts turned by `twist(0)`). Along a closed path the profile must come
+   * round into itself (a whole number of turns, or of its symmetry). */
+  twist?: number | ((s: number) => number)
 }
 
 /**
@@ -436,7 +718,16 @@ export interface SweepOptions {
  * closed with a kink cross) is swept in pieces as before 0.5.0, where that puts the profile on the
  * path. Faces without area that a fuse leaves are taken out (or the sweep throws `ModelingError`).
  * The corners of a planar path of several edges are mitered, the profile placed as on any other
- * path.
+ * path; where they cannot be (arcs that meet at a corner), the path is swept piece by piece, with a
+ * warning.
+ *
+ * Along the path the profile turns as little as it can (a rotation-minimizing frame: on a planar path
+ * it keeps its attitude to the plane), except along a helix (also a conical one), where it keeps its
+ * attitude to the helix's axis, as a thread or a flat spring wire does. `up` and `twist` set the
+ * attitude instead:
+ *
+ *     const rail = sweep(Rectangle(4, 2), path, { up: Z })  // stays upright: its angle to Z kept
+ *     const bar = sweep(Rectangle(10, 2), Line([0, 0, 0], [0, 0, 100]), { twist: 180 })  // a half turn
  *
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
@@ -446,11 +737,19 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   const { orient = true, translational = false } = options
   let sharpCorners = options.sharpCorners ?? null
   let edges = _pathEdges(path)
+  let law = _frameLaw(options.up ?? null, options.twist ?? 0, orient, translational)
+  const planar = _isPlanarPath(edges)
+  if ((law === null || law.mode === 'rmf') && orient && !translational && !planar) {
+    // (along a helix the profile keeps its attitude to the axis: the base of a twist too)
+    const axis = _helixAxis(edges)
+    if (axis !== null) law = new _Law('up', axis, law !== null ? law.twist : () => 0, law !== null)
+  }
   const w = _openCurve(profile)
   if (w !== null) {
     // an open profile sweeps into a surface (also along a closed edge: only solids come out inside
     // out there)
     if (edges.length !== 1) throw new RangeError('surface sweeps need a single-edge path')
+    if (law !== null) return _framedSurface(w, edges[0], law)
     const pc = edges[0]._copyCurve()
     const curves = w._copyCurves()
     let b: number
@@ -465,7 +764,6 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   const sk = _asSketch(profile)
   const closed = edges[0].start.isClose(edges[edges.length - 1].end, 1e-6 * Math.max(1, edges[0].length))
   const tangentClosure = closed && _norm3(_sub3(_tangent(edges[edges.length - 1], 1), _tangent(edges[0], 0))) <= 1e-6
-  const planar = _isPlanarPath(edges)
   // the pieces a path was swept in before 0.5.0: its edges, or the halves of a closed edge
   const whole = edges.length === 1 && edges[0].isClosed ? edges[0] : null
   const pieces = whole !== null ? _halves(whole) : edges
@@ -473,20 +771,54 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   // The kernel sweeps a profile along a closed single-edge path inside out (it caps the ends where
   // they meet); along the same path in two halves it works.
   if (halved) edges = pieces
-  if (sharpCorners === null) sharpCorners = planar
+  const asked = sharpCorners
+  if (sharpCorners === null) sharpCorners = planar && law === null
+  let mitreError: ModelingError | null = null
   if (sharpCorners && edges.length > 1) {
     if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
-    return _mitredSweep(sk, edges, closed, orient && !translational)
+    if (law !== null) throw new RangeError("sweep: mitered corners keep the profile square to the path's plane; up and twist need sharpCorners false")
+    try {
+      return _mitredSweep(sk, edges, closed, orient && !translational)
+    } catch (err) {
+      if (!(err instanceof ModelingError) || asked) throw err
+      mitreError = err // (arcs that meet at a corner: the kernel's planar-path sweep gives no solid)
+    }
   }
   const t0 = _tangent(edges[0], 0)
   let [axes, anchor] = _profileFrame(sk, t0)
   const local = sk._transformed(_inverse(_placement(axes, anchor)))
   if (orient && !translational) axes = axes.map(_turn(axes[2], t0)) as Axes
+  if (law !== null && closed) {
+    const turn = ((law.twist(1) - law.twist(0)) * 180) / Math.PI
+    if (!_comesRound(local, turn)) {
+      throw new RangeError(
+        `sweep: along a closed path the profile must come round into itself; twisted by ${_formatG(turn)} degrees it does not (twist by whole turns, or by a turn of its symmetry)`,
+      )
+    }
+  }
   const hint = "the profile may be too large for the path's curvature"
+  let out: Part
   try {
-    return _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint)
+    out = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint, law)
   } catch (err) {
-    if (!(err instanceof ModelingError) || pieces.length < 2) throw err
+    if (!(err instanceof ModelingError)) throw err
+    if (mitreError !== null) throw mitreError
+    if (law !== null && law.explicit) throw err
+    if (law !== null) {
+      // (an implicit law, a helix's axis, that the kernel cannot sweep: its own frame, as before 0.5.0)
+      let back: Part
+      try {
+        back = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint)
+      } catch (e) {
+        if (!(e instanceof ModelingError)) throw e
+        throw err
+      }
+      if (!_round(sk, anchor)) {
+        _warn(`sweep: the profile could not keep its attitude to the helix's axis (${err.message}); it turns about the path as the kernel's frame turns it`)
+      }
+      return back
+    }
+    if (pieces.length < 2) throw err
     if (closed) {
       // A closed path the kernel cannot sweep carried along (the fuse where the halves of a loop
       // closed with a kink cross fails for some loops) is swept as before 0.5.0; a round profile
@@ -530,6 +862,10 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
     }
     return out
   }
+  if (mitreError !== null) {
+    _warn(`sweep: the corners of this planar path cannot be mitered (${mitreError.message}); it was swept piece by piece instead, as with sharpCorners false`)
+  }
+  return out
 }
 
 // How far a round profile is turned about its center (degrees) where a closed path fails with it as
@@ -538,8 +874,20 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
 // 0.5.0).
 const SEAM_TURNS = [20, -20, 45, -45, 70, -70, 100, -100, 135, -135]
 
-/** A profile carried along a path: tangent edges in one go, the frame carried across corners. */
-function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anchor: V3, halved: boolean, tangentClosure: boolean, translational: boolean, hint: string): Part {
+/** A profile carried along a path: tangent edges in one go, the frame carried across corners (or,
+ * with `law`, given by it). */
+function _carriedSweep(
+  sk: Sketch,
+  local: Sketch,
+  edges: Edge[],
+  axes: Axes,
+  anchor: V3,
+  halved: boolean,
+  tangentClosure: boolean,
+  translational: boolean,
+  hint: string,
+  law: _Law | null = null,
+): Part {
   let runs = halved ? edges.map((e) => [e]) : _g1Chains(edges)
   if (tangentClosure && edges.length === 1 && _round(sk, anchor)) {
     // A profile that turns into itself along a smooth closed edge: in two halves, as before (exact;
@@ -552,21 +900,36 @@ function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anc
     // spreads the turn of its frame around such a path, so they meet; in two halves a rectangle
     // turned by 10 degrees at the halfway point and 44 at the start).
     const chain = _joined(edges)
-    const tube = _swept(local, chain, _placement(axes, _point(chain, 0)), translational, false)
+    if (law !== null) law.theta0 = null
+    const tube = _swept(local, chain, _placement(axes, _point(chain, 0)), translational, false, law)
     kernelCall('sweep', () => k.stitch_into_solid(tube._brep), hint)
     return _sound(Part._wrap(tube._copyBrep()), hint)
   }
   const chains = runs.map((run) => _joined(run))
   const size = sk.bbox().diagonal
+  const lengths = chains.map((e) => e.length)
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
+  const total = sum(lengths)
+  if (law !== null) law.theta0 = null
   let out: Part | null = null
   let placement: Matrix = _placement(axes, _point(chains[0], 0))
   chains.forEach((e, i) => {
-    if (i) {
-      axes = _carried(chains[i - 1], placement, translational, size)
+    const span: [number, number] = [sum(lengths.slice(0, i)) / total, sum(lengths.slice(0, i + 1)) / total]
+    if (i && law !== null && law.mode !== 'rmf') {
+      axes = law.startAxes(e, span[0]) // (the law's own attitude, also after a corner)
+    } else if (i) {
+      if (law !== null) {
+        // (carried as the kernel carries it, the twist on top)
+        const te = _tangent(chains[i - 1], 1)
+        const x = law.endX as V3
+        axes = [x, _cross3(te, x), te]
+      } else {
+        axes = _carried(chains[i - 1], placement, translational, size)
+      }
       if (!translational) axes = axes.map(_turn(axes[2], _tangent(e, 0))) as Axes
     }
     placement = _placement(axes, _point(e, 0))
-    const piece = _requireSolid(_swept(local, e, placement, translational) as Part, 'sweep', hint)
+    const piece = _requireSolid(_swept(local, e, placement, translational, true, law, span) as Part, 'sweep', hint)
     out = out === null ? piece : out.fuse(piece)
   })
   return chains.length < 2 ? (out as unknown as Part) : _sound(out as unknown as Part, hint)
@@ -880,15 +1243,25 @@ function _halves(edge: Edge, at = 0.5): Edge[] {
   }
 }
 
-// Where a path is tested for lying in a plane: its ends, and 16 points between them off the halves
-// and quarters. At 0, 1/4, 1/2 and 3/4 of a closed edge, symmetric 3D loops lie in a plane
-// (Spline(...pts, pts[0]) through (20 cos a, 20 sin a, 6 sin 2a)): taken for planar, their halves
-// went to the planar-path sweep, which gave no closed solid.
+// Where a planar path's plane is fitted: its ends, and 16 points between them off the halves and
+// quarters.
 const PLANARITY_SAMPLES = [0, 1, ...Array.from({ length: 16 }, (_, i) => (i + 0.381966) / 16)]
 
+/** Whether the path lies in a plane: its curves' control points do (a NURBS curve lies in a plane
+ * exactly where its control points do). Points sampled along it lie in a plane for 3D paths too: a
+ * chain of helices with an even number of turns each (8 or 16 between samples) was taken for planar
+ * and went to the mitered sweep, which gave no closed solid for other profiles than circles. */
 function _isPlanarPath(edges: readonly Edge[]): boolean {
-  const pts = edges.flatMap((e) => PLANARITY_SAMPLES.map((t) => e.pointAt(t).toArray() as number[]))
-  const s = spread(pts).values
+  const poles: number[][] = []
+  for (const e of edges) {
+    const c = e._copyCurve()
+    try {
+      for (const p of ext.curve_data(c, true).poles as number[][]) poles.push([p[0], p[1], p[2]])
+    } finally {
+      ext.delete_curve(c)
+    }
+  }
+  const s = spread(poles).values
   return s[s.length - 1] <= 1e-7 * Math.max(1, s[0])
 }
 

@@ -3257,7 +3257,9 @@ def _fmt_point(p: Vector) -> str:
 
 
 def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
-    """The axis and the positive angle of a revolve (a negative angle turns the other way)."""
+    """The axis and the positive angle of a revolve (a negative angle turns the other way). Within
+    0.01 degrees of a whole turn it is a whole turn: the kernel returns no closed solid for angles
+    above 359.99 and below 359.99999, where its whole turn starts."""
     angle = float(angle)
     if angle == 0 or not math.isfinite(angle):
         raise ValueError("revolve: the angle must not be zero")
@@ -3265,7 +3267,38 @@ def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
         raise ValueError("revolve: the angle is at most 360 degrees")
     if angle < 0:
         ax, angle = Axis(ax.origin, -ax.direction), -angle
-    return ax, min(angle, 360.0)
+    return ax, 360.0 if angle > 360.0 - _WHOLE_TURN else angle
+
+
+# How close to 360 degrees a revolve is a whole turn (degrees).
+_WHOLE_TURN = 0.01
+
+
+def _analytic_revolve(b: Any, cls: type[_Body]) -> Any:
+    """A revolve's kernel body (taken over) wrapped as ``cls``, with cylinders, cones, spheres and
+    tori where its surfaces of revolution are one. The kernel revolves through a whole turn into
+    surfaces of revolution where part of a turn gives cylinders, cones and spheres, and gives tori in
+    neither (a revolved tube had no cylinders: no ``Face.radius``, no draft, B-splines in STEP files).
+    Where the body with them is not the same (its faces, its volume or area), the body as it was."""
+    before = cls._wrap(b)
+    try:
+        c = ext.analytic_revolutions(b)
+    except RuntimeError:
+        return before
+    if c is None:
+        return before
+    after = cls._wrap(c)
+    try:
+        if c.face_count() != b.face_count():
+            return before
+        if isinstance(after, Part):
+            if after._solid_problem() is not None or not math.isclose(after.volume, before.volume, rel_tol=1e-7):
+                return before
+        elif not math.isclose(after.area, before.area, rel_tol=1e-7):
+            return before
+    except KernelError:
+        return before
+    return after
 
 
 def _require_solid(part: Part, what: str, hint: str) -> Part:
@@ -4098,9 +4131,11 @@ class Sketch(Shell):
         with kernel_call("revolve", hint):
             for f in self.faces():
                 loops = f.wires()
-                piece = Part._wrap(k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True))
+                outer = k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True)
+                piece = _analytic_revolve(outer, Part)
                 for w in loops[1:]:
-                    piece = piece - Part._wrap(k.rotational_sweep(w._copy_curves(), o, d, float(angle), cap_ends=True))
+                    hole = k.rotational_sweep(w._copy_curves(), o, d, float(angle), cap_ends=True)
+                    piece = piece - _analytic_revolve(hole, Part)
                 result = piece if result is None else result + piece
         if result is None:
             raise ValueError("empty sketch")
@@ -4132,11 +4167,13 @@ class Sketch(Shell):
                      f"{_fmt_point(o)}, pass axis=... (for example Axis((0, 0, 0), (0, 1, 0)))") if default else ""
             raise ModelingError(f"revolve: the axis crosses the region{where}")
 
-    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None) -> Part:
-        """Sweep the region along a path. The sketch should sit at the start of the path."""
+    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
+              twist: float | Callable[[float], float] = 0.0) -> Part:
+        """Sweep the region along a path (see :func:`~smlibpy.sweep`: the center of the region's box
+        goes to the start of the path; ``up`` and ``twist`` set its attitude along it)."""
         from .operations import sweep
 
-        return sweep(self, path, sharp_corners=sharp_corners)
+        return sweep(self, path, sharp_corners=sharp_corners, up=up, twist=twist)
 
     def __repr__(self) -> str:
         return f"Sketch({self._brep.face_count()} faces, area={self.area:.6g})"

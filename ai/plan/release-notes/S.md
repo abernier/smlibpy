@@ -1,4 +1,4 @@
-# Lane S: sweeps (S1 regressions, S2 rest)
+# Lane S: sweeps and revolves (S1 regressions, S2 rest, S3, S4, S6)
 
 ## Fixed
 
@@ -60,7 +60,51 @@
   Y) the path is moved by the difference: along its normal, and to the side by its offset curve,
   which is exact for lines and arcs (corners recomputed where the offset edges meet). The
   triangle (0, 0), (6, 0), (1, 4) along a path starting at 30 degrees sat 0.25 off; now on the path
-  (open and closed polylines and fillet polylines).
+  (open and closed polylines and fillet polylines).- Profiles keep their attitude along helices (S3, `ai/todo/features.md` 10): the kernel's sweep
+  carries its frame along the path by the smallest turn, so a profile rolled about a helix by some
+  30 degrees a turn. Along a helix (also a conical one, and a chain of helices) the profile now
+  keeps its attitude to the helix's axis: `sweep(Rectangle(2, 1), Helix(pitch=5, height=30,
+  radius=10))` measures 2.0001 x 1.0039 (radial x axial; the band cut at its slope) at every
+  section in the YZ and XZ planes, where it measured 1.34 to 2.23 by 1.25 to 2.22; volume 756.3655
+  (2 x length 756.3642). Along `Helix(5, 30, 10, end_radius=5)` the rectangle ends 1.6 degrees off
+  radial (the path runs inwards there), where it ended 61 degrees off. Python and the wasm give the
+  same sections.
+- Sweeps along long helices keep their volume: NLib places the sweep's sections where a polyline
+  follows the path, at most 1000 a piece with the tolerance raised tenfold until then, so the two
+  30-turn pieces of `Helix.md`'s long spring got 7 sections a turn and `Rectangle(0.6, 0.3)` along
+  them came out 0.74 % short (336.96 with this lane's first batch; origin/next raised, see below);
+  now 339.4631, area x length. Every sweep that sets the profile's attitude (helices,
+  `up=`, `twist=`) places a section for every 1/64 of a turn of the profile's x axis (at the
+  fastest rate it turns anywhere along the path). Circles along helices: `Circle(0.3)` along that
+  chain 533.2274 (pi 0.09 x length 533.2275; was 533.2244), `Circle(1.2)` along `Helix(pitch=6,
+  height=48, radius=10)` 2284.2966 (exactly; was 2284.2930).
+- Chains of helices with an even number of turns a piece are not taken for planar paths (S6): the
+  planarity test sampled points along the path, which lay in a plane for pieces of 16 turns (and of
+  8, 24, ...); the sweep went to the mitered planar sweep and raised a misleading "the profile may
+  be too large for the path's corners". Planarity now comes from the curves' control points (a
+  NURBS curve lies in a plane exactly where they do): `sweep(Rectangle(0.6, 0.3), Wire([Helix(1,
+  16, 5), Helix(1, 16, 5, center=(0, 0, 16))]))` gives 181.047 = area x length (Python and wasm).
+- Planar paths whose corners the kernel cannot miter (arcs that meet at a corner: `Wire([
+  ThreePointArc((0, 0, 0), (5, 5, 0), (10, 0, 0)), ThreePointArc((10, 0, 0), (14, 3, 0), (20, 2,
+  0))])`, also with a circle) are swept piece by piece, as with `sharp_corners=False`, with a
+  `RuntimeWarning` (S6). They raised `ModelingError`. `sharp_corners=True` still raises.
+- Revolves give analytic surfaces (S4). The kernel revolves through a whole turn by another routine
+  than through part of one, which made every wall that is not a plane a surface of revolution, and
+  neither routine makes tori. Now lines parallel to the axis give cylinders, oblique lines cones,
+  arcs centred on the axis spheres and other arcs tori, for every angle (`ext.analytic_revolutions`
+  after `Sketch.revolve` and the open-curve `revolve`, both builds): the revolved tube
+  `Polygon((5, 0), (10, 0), (10, 20), (5, 20)).on(Plane.XZ).revolve(Z)` has 2 cylinders of radius 5
+  and 10 (`faces().cylinders()` was empty and `Face.radius` raised), `Part.draft` takes them (it
+  refused "the revolution face"), and STEP writes 2 `CYLINDRICAL_SURFACE` and no B-spline (7039
+  bytes, B-splines that read back as B-splines). 150 random lathe profiles (plain, filleted,
+  chamfered, with holes; 90 to 360 degrees) give the volumes (to 1e-7), validity and face counts of
+  origin/next; their faces: cylinders 294 -> 521, cones 52 -> 96, tori 15 -> 138, surfaces of
+  revolution 394 -> 0; B-spline surfaces in their STEP files 1182 -> 0, and OpenCASCADE reads all
+  150 valid with our volumes. Python and the wasm agree on 40 of 40 (volumes, face types).
+- Revolves through 359.99 to 359.99999 degrees (exclusive) raised "not a closed, manifold solid";
+  within 0.01 degrees of a whole turn a revolve is a whole turn now (S4).
+- `Face.axis` works on surfaces of revolution (a spline revolved): `ext.surface_data` gives their
+  placement (both builds). The docs said it did.
 
 ## New
 
@@ -70,6 +114,28 @@
 - `sweep` warns (`RuntimeWarning`) when an asymmetric profile on a mitered planar path with a
   spline among its edges cannot be put on the path by its own box (no offset curve): it sits by its
   box along the path's plane then.
+- `sweep(..., up=None, twist=0.0)` and `Sketch.sweep(path, *, sharp_corners=None, up=None,
+  twist=0.0)` (S3; wasm `{ up, twist }` options). `up`: an axis or a direction the profile keeps its
+  attitude to (it stays at the angle it starts at to `up` made perpendicular to the path, also after
+  corners), or `"frenet"` (to the path's principal normal). `twist`: degrees the profile turns about
+  the path on top of that, spread evenly along its length, or a function of the fraction of the
+  length giving the angle (`twist=lambda s: 90 * s * s`). Twisted bar `sweep(Rectangle(10, 2),
+  Line((0, 0, 0), (0, 0, 100)), twist=180)`: 1999.9996, a quarter turn halfway; a twisted ribbon
+  from an open line profile is a helicoid (area to 2e-6). Volumes are area x length to 2e-6 with
+  `up=Z` and `up="frenet"` along a 3D spline, and with `twist=90` along a 3D fillet polyline.
+  Errors: `ValueError` where the path runs along `up`, where it runs straight with `"frenet"`, with
+  `translational=True` or `orient=False`, with `sharp_corners=True`, and along a closed path that a
+  twist does not bring the profile round into itself on (`twist=90` with a square works, with a
+  4 x 2 rectangle it raises); `TypeError` for a twist that is neither a number nor a function.
+- `ext.oriented_sweep(profile, path, params, x_axes, cap_ends=True)` (new C++ in
+  `src/cpp/oriented_sweep.cpp`, both builds): the curve sweep with the profile's x axis given along
+  the path (NLib's `curZ`, which the kernel never passes). `ext.helix_axis(curves, tolerance=1e-5)`:
+  the axis of a path that winds about one at a constant pitch, its radius constant or changing
+  evenly with the angle (Gauss-Newton fit; None for other paths). `ext.analytic_revolutions(brep)`
+  (`src/cpp/revolutions.cpp`): a copy of a body whose surfaces of revolution are cylinders, cones,
+  spheres or tori where they are one (the kernel's own tests for cones and spheres; tori built from
+  the generating arc, because `SmTorus::IsNurbSurfaceTorus`, the test the kernel leaves out, gets
+  the major radius and the angles of a revolved fillet's quarter arcs wrong), or None. Internal.
 
 ## Behaviour changes
 
@@ -106,6 +172,44 @@
 - A failing sweep along a kinked loop with a round profile takes longer before it raises (up to
   about 13 tries, typically 0.2 to 0.4 s each).
 
+- The default attitude along helices changed (S3): non-round profiles along a helix, a conical
+  helix or a chain of helices no longer roll, so their bodies differ (the volume too where the
+  profile is not symmetric about its anchor: the thread tooth of `Helix.md`, `Polygon((0, -0.8),
+  (0, 0.8), (1.2, 0))` along `Helix(pitch=2, height=16, radius=5.6)`, keeps its tip out and its
+  centroid at radius 5.4: 261.0274, was 270.8705). The roll was the defect; no option brings it
+  back. Scripts that worked around it drop the workaround:
+
+  ```python
+  # before 0.5.0: a loft through copies placed along the helix, x radial (8 per turn)
+  thread = loft([Rectangle(2, 1).on(Plane(origin=h.point_at(i / n), x_dir=radial(i / n),
+                                          z_dir=h.tangent_at(i / n))) for i in range(n + 1)])
+  # now: the sweep keeps that attitude itself
+  thread = sweep(Rectangle(2, 1), h)
+  ```
+  Open profiles along helices (ribbons) keep their attitude to the axis too.
+- Sweeps along helices take longer (more sections, and a frame computed along the path): a circle
+  along an 8-turn spring 71 -> 147 ms, the thread tooth 21 -> 64 ms, the 60-turn chain with a
+  rectangle 0.5 -> 1.1 s (this lane's first batch), with a circle 0.8 -> 1.2 s.
+- Planar paths of several edges with `up=` or `twist=` are swept piece by piece (the mitered planar
+  sweep keeps the kernel's frame): `sharp_corners` defaults to `False` there, and `True` raises.
+- Planar paths whose corners cannot be mitered warn and go piece by piece instead of raising (no
+  migration; with warnings as errors, pass `sharp_corners=False`).
+- Revolved faces are cylinders, cones, spheres and tori where they were surfaces of revolution (S4):
+  a full turn of any profile of lines and arcs, and arcs in part of a turn. Selections by type
+  change:
+
+  ```python
+  # before 0.5.0: the walls of a lathe part were "revolution" faces
+  walls = part.faces().filter(lambda f: f.geom_type == "revolution")
+  # now: cylinders (and cones, spheres, tori); radius and axis work
+  walls = part.faces().cylinders()
+  ```
+  Volumes are the same to 1e-7, face counts unchanged. STEP files carry the analytic surfaces. A revolve takes longer (the copy and its
+  checks): a lathe profile 4 -> 12 ms. Spline edges (and arcs whose circle reaches over the axis, a
+  spindle torus) still give surfaces of revolution.
+- A revolve through more than 359.99 degrees is a whole turn (it raised below 359.99999; no
+  migration).
+
 ## Not done
 
 - 1 of the fixer's 60 harder loops (`Circle(2)`) builds in Python and not in the wasm (the kernel's
@@ -118,3 +222,15 @@
   still sit a little off (all sweeps; not measured).
 - No `anchor=` option for `sweep` (optional in the plan's S2): the center of the profile's own box
   goes on the path on every path now.
+- No way to ask for the kernel's own (rolling) frame along a helix (S3); `up=` sets any other.
+- `up="frenet"` spins the profile quickly where the path nearly straightens (the principal normal
+  turns there; the sweep follows it with more sections, area x length to 1e-6) and raises on
+  straight pieces: inherent in the Frenet frame.
+- The helix default is found by fitting the path (to 1e-5 of its size): helices of the kernel,
+  conical ones and chains. Other spirals (variable pitch, a spline through helix points) keep the
+  kernel's frame unless `up=` is given.
+- Along closed paths with corners (kinked loops, closed polylines) the attitude carried with
+  `twist=` alone is not made to meet at the closure; the pieces are fused there, as without a twist.
+  The profile must come round into itself only for the twist (checked) on paths closed smoothly.
+- Mitered planar paths cannot take `up=` or `twist=` (piece by piece instead).
+- No scale law (S7 is another item).

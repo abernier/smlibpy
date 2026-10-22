@@ -605,6 +605,8 @@ export class Sketch extends Shell {
     revolve(axis?: Axis | null, angle?: number): Part;
     sweep(path: Edge | Wire, options?: {
         sharpCorners?: boolean | null;
+        up?: Axis | VectorLike | string | null;
+        twist?: number | ((s: number) => number);
     }): Part;
     toString(): string;
 }
@@ -806,6 +808,8 @@ export interface SweepOptions {
     orient?: boolean;
     translational?: boolean;
     sharpCorners?: boolean | null;
+    up?: Axis | VectorLike | string | null;
+    twist?: number | ((s: number) => number);
 }
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
 export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;

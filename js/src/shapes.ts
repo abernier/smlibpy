@@ -3684,6 +3684,9 @@ function _fmtPoint(p: Vector): string {
 }
 
 /** The axis and the positive angle of a revolve (a negative angle turns the other way). */
+/** The axis and the positive angle of a revolve (a negative angle turns the other way). Within 0.01
+ * degrees of a whole turn it is a whole turn: the kernel returns no closed solid for angles above
+ * 359.99 and below 359.99999, where its whole turn starts. */
 export function _revolveAxisAngle(ax: Axis, angle: number): [Axis, number] {
   angle = Number(angle)
   if (angle === 0 || !Number.isFinite(angle)) throw new RangeError('revolve: the angle must not be zero')
@@ -3692,7 +3695,39 @@ export function _revolveAxisAngle(ax: Axis, angle: number): [Axis, number] {
     ax = new Axis(ax.origin, ax.direction.neg())
     angle = -angle
   }
-  return [ax, Math.min(angle, 360)]
+  return [ax, angle > 360 - WHOLE_TURN ? 360 : angle]
+}
+
+// How close to 360 degrees a revolve is a whole turn (degrees).
+const WHOLE_TURN = 0.01
+
+/** A revolve's kernel body (taken over) wrapped as `cls`, with cylinders, cones, spheres and tori
+ * where its surfaces of revolution are one. The kernel revolves through a whole turn into surfaces of
+ * revolution where part of a turn gives cylinders, cones and spheres, and gives tori in neither (a
+ * revolved tube had no cylinders: no `Face.radius`, no draft, B-splines in STEP files). Where the
+ * body with them is not the same (its faces, its volume or area), the body as it was. */
+export function _analyticRevolve<B extends Part | Shell>(b: number, cls: typeof Part | typeof Shell): B {
+  const before = (cls as typeof Part)._wrap(b) as unknown as B
+  let c: number | null
+  try {
+    c = ext.analytic_revolutions(b)
+  } catch (e) {
+    if (!_isRuntimeError(e)) throw e
+    return before
+  }
+  if (c === null || c === 0) return before
+  const after = (cls as typeof Part)._wrap(c) as unknown as B
+  const close = (x: number, y: number) => Math.abs(x - y) <= 1e-7 * Math.max(Math.abs(x), Math.abs(y))
+  try {
+    if (k.brep_face_count(c) !== k.brep_face_count(b)) return before
+    if (after instanceof Part) {
+      if (after._solidProblem() !== null || !close(after.volume, (before as Part).volume)) return before
+    } else if (!close((after as Shell).area, (before as Shell).area)) return before
+  } catch (e) {
+    if (!(e instanceof KernelError)) throw e
+    return before
+  }
+  return after
 }
 
 /** Throw if a feature returned a broken solid (inside out, without volume, open). */
@@ -4573,8 +4608,10 @@ export class Sketch extends Shell {
         let out: Part | null = null
         for (const f of this.faces()) {
           const loops = f.wires()
-          let piece = Part._wrap(k.rotational_sweep(loops[0]._copyCurves(), o, d, Number(angle), { cap_ends: true }))
-          for (const w of loops.slice(1)) piece = piece.cut(Part._wrap(k.rotational_sweep(w._copyCurves(), o, d, Number(angle), { cap_ends: true })))
+          let piece = _analyticRevolve<Part>(k.rotational_sweep(loops[0]._copyCurves(), o, d, Number(angle), { cap_ends: true }), Part)
+          for (const w of loops.slice(1)) {
+            piece = piece.cut(_analyticRevolve<Part>(k.rotational_sweep(w._copyCurves(), o, d, Number(angle), { cap_ends: true }), Part))
+          }
           out = out === null ? piece : out.fuse(piece)
         }
         return out
@@ -4621,10 +4658,11 @@ export class Sketch extends Shell {
     }
   }
 
-  /** Sweep the region along a path. The sketch should sit at the start of the path. */
-  sweep(path: Edge | Wire, options: { sharpCorners?: boolean | null } = {}): Part {
+  /** Sweep the region along a path (see `sweep`: the center of the region's box goes to the start of
+   * the path; `up` and `twist` set its attitude along it). */
+  sweep(path: Edge | Wire, options: { sharpCorners?: boolean | null; up?: Axis | VectorLike | string | null; twist?: number | ((s: number) => number) } = {}): Part {
     _opts('Sketch.sweep', options)
-    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null }) as Part
+    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null, up: options.up ?? null, twist: options.twist ?? 0 }) as Part
   }
 
   override toString(): string {

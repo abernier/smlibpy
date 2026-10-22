@@ -54,6 +54,11 @@ quarter = section.on(Plane.front).revolve(Z, 90)
 tube = Rectangle(10, 20).translate(15, 0).on(Plane.front).revolve(Z)
 ```
 
+The walls of a revolve are cylinders, cones, spheres and tori wherever its edges are lines and
+arcs, also for a full turn, so `tube.faces().cylinders()` finds both walls, `Face.radius` and
+drafts work on them, and STEP files carry them as such. Spline edges give surfaces of
+revolution. Angles within 0.01 degrees of 360 are a full turn.
+
 ## Loft
 
 A loft blends a series of cross sections:
@@ -90,6 +95,20 @@ elbow = sweep(Circle(4), Wire([Line((0, 0, 0), (0, 0, 20)),
 
 `translational=True` keeps the profile's orientation fixed along the path instead of turning
 it.
+
+Along the path the profile turns as little as it can, which keeps its attitude to the plane of a
+planar path. Along a helix it keeps its attitude to the helix's axis instead (a thread tooth or a
+flat spring wire stays radial), also on conical helices and chains of helices. `up` keeps it at
+its angle to a direction (or, with `up="frenet"`, to the path's curvature), and `twist` turns it
+about the path on top of that, by an angle spread along the path or a function of the fraction
+of its length:
+
+```python
+flat_spring = sweep(Rectangle(2, 0.5), Helix(pitch=4, height=40, radius=10))  # stays radial
+rail = sweep(Rectangle(4, 2), path, up=Z)                                      # stays upright
+bar = sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)        # a half turn
+ribbon = sweep(Line((-5, 0, 0), (5, 0, 0)), Line((0, 0, 0), (0, 0, 100)), twist=lambda s: 360 * s * s)
+```
 
 ## Booleans and patterns
 

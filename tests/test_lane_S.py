@@ -205,3 +205,194 @@ def test_planar_paths_place_asymmetric_profiles_by_their_own_box():
                  Spline((20 * c, 20 * s, 0), (30, 25, 0), (50, 30, 0), tangents=((c, s, 0), (1, 0, 0)))])
     with pytest.warns(RuntimeWarning, match="cannot be offset"):
         assert sweep(Polygon(*ODD), wavy).is_valid()
+
+
+# -- batch 2: the profile's attitude along the path (S3), analytic revolves (S4), planar paths (S6) --
+
+def _cap_long_side(part, point):
+    # the direction of the longest edge of the planar face nearest to point (an end cap)
+    cap = min((f for f in part.faces() if f.geom_type == "plane"), key=lambda f: f.center().distance_to(point))
+    e = max(cap.edges(), key=lambda e: e.length)
+    return np.array((e.end - e.start).to_tuple()) / e.length
+
+
+def _angle_to(v, u, t):
+    # the angle (degrees, modulo 180) from u to v about t
+    a = math.degrees(math.atan2(np.dot(np.cross(u, v), t), np.dot(u, v)))
+    return a % 180.0
+
+
+def test_a_rectangle_keeps_its_attitude_along_a_helix():
+    # ai/todo/features.md 10: the profile rolled about the path by some 30 degrees a turn
+    helix = Helix(pitch=5, height=30, radius=10)
+    rect = _quiet(lambda: sweep(Rectangle(2, 1), helix))
+    assert rect.is_valid()
+    assert rect.volume == pytest.approx(2 * helix.length, rel=1e-5)
+    for plane in (Plane.YZ, Plane.XZ):
+        sections = [f.bbox().size for f in rect.section(plane).faces()]
+        whole = [s for s in sections if s.z > 0.75]  # (the ends of the helix cut half a band)
+        assert len(whole) >= 6
+        for s in whole:
+            radial = s.y if plane is Plane.YZ else s.x
+            assert radial == pytest.approx(2.0, abs=2e-3)  # was 1.34 to 2.23
+            assert s.z == pytest.approx(1.0, abs=5e-3)  # the band cut at its slope: 1.0039 (was 1.25 to 2.22)
+
+
+def test_the_default_along_a_conical_helix_and_a_chain_of_helices_is_their_axis():
+    cone = Helix(5, 30, 10, end_radius=5)
+    found = ext.helix_axis([cone._copy_curve()], 1e-5)
+    assert found is not None and np.allclose(found[1], (0, 0, 1), atol=1e-7)
+    tilted = Helix(5, 30, 10, end_radius=5, direction=(1, 2, 3), center=(4, 5, 6))
+    axis = ext.helix_axis([tilted._copy_curve()], 1e-5)
+    assert np.allclose(axis[1], np.array((1, 2, 3)) / math.sqrt(14), atol=1e-7)
+    assert ext.helix_axis([Spline((0, 0, 0), (10, 5, 3), (20, -5, 7), (30, 0, 9))._copy_curve()], 1e-5) is None
+    body = _quiet(lambda: sweep(Rectangle(2, 1), cone))
+    assert body.volume == pytest.approx(2 * cone.length, rel=1e-5)
+    # at the end (radius 5, the start along +x at radius 10) the long side still points at the axis,
+    # as nearly as it can across the path, which runs inwards there (the kernel's frame: 61 degrees off)
+    end = cone.point_at(1.0)
+    side = _cap_long_side(body, end)
+    radial = np.array((end.x, end.y, 0.0)) / math.hypot(end.x, end.y)
+    assert abs(np.dot(side, radial)) > math.cos(math.radians(2))
+
+
+def test_up_keeps_the_profiles_angle_to_a_direction():
+    path = Spline((0, 0, 0), (10, 20, 10), (30, 10, 25), (40, 30, 30))
+    body = _quiet(lambda: sweep(Rectangle(4, 2), path, up=Z))
+    assert body.is_valid()
+    assert body.volume == pytest.approx(8 * path.length, rel=1e-5)
+    z = np.array((0.0, 0.0, 1.0))
+    angles = []
+    for t in (0.0, 1.0):
+        tangent = np.array(path.tangent_at(t).to_tuple())
+        up = z - np.dot(z, tangent) * tangent
+        angles.append(_angle_to(_cap_long_side(body, path.point_at(t)), up / np.linalg.norm(up), tangent))
+    assert abs(angles[1] - angles[0]) < 1e-3 or abs(abs(angles[1] - angles[0]) - 180) < 1e-3
+    # the kernel's own frame (the default here) ends at another angle
+    free = sweep(Rectangle(4, 2), path)
+    tangent = np.array(path.tangent_at(1.0).to_tuple())
+    up = z - np.dot(z, tangent) * tangent
+    other = _angle_to(_cap_long_side(free, path.point_at(1.0)), up / np.linalg.norm(up), tangent)
+    assert abs(other - angles[0]) > 1.0
+    # an axis gives its direction; Sketch.sweep passes them on
+    assert Rectangle(4, 2).sweep(path, up=Axis((5, 5, 5), (0, 0, 1))).volume == pytest.approx(body.volume, rel=1e-9)
+    frenet = _quiet(lambda: sweep(Rectangle(4, 2), path, up="frenet"))
+    assert frenet.is_valid() and frenet.volume == pytest.approx(8 * path.length, rel=1e-5)
+
+
+def test_twist_turns_the_profile_along_the_path():
+    line = Line((0, 0, 0), (0, 0, 100))
+    bar = _quiet(lambda: sweep(Rectangle(10, 2), line, twist=180))
+    assert bar.is_valid()
+    assert bar.volume == pytest.approx(2000, rel=1e-6)  # (two sections, a ruled surface through the axis: 666.7)
+    middle = bar.section(Plane.XY.offset(50)).bbox().size
+    assert (middle.x, middle.y) == pytest.approx((2, 10), abs=1e-4)  # a quarter turn halfway
+    top = bar.section(Plane.XY.offset(100 - 1e-6)).bbox().size
+    assert (top.x, top.y) == pytest.approx((10, 2), abs=1e-4)
+    # a law: twist(s) degrees at the fraction s of the length
+    law = _quiet(lambda: sweep(Rectangle(10, 2), line, twist=lambda s: 90 * s * s))
+    a = math.radians(22.5)
+    middle = law.section(Plane.XY.offset(50)).bbox().size
+    assert middle.x == pytest.approx(10 * math.cos(a) + 2 * math.sin(a), abs=1e-3)
+    assert middle.y == pytest.approx(10 * math.sin(a) + 2 * math.cos(a), abs=1e-3)
+    # a twisted ribbon: a helicoid, area L * integral of sqrt(1 + (k r)^2) over the width
+    ribbon = sweep(Line((-5, 0, 0), (5, 0, 0)), line, twist=180)
+    k_ = math.pi / 100
+    strip = 2 * (2.5 * math.sqrt(1 + (5 * k_) ** 2) + math.asinh(5 * k_) / (2 * k_))
+    assert ribbon.area == pytest.approx(100 * strip, rel=1e-5)  # (500: ruled through the axis)
+    # along a fillet polyline (lines and arcs joined into one curve) and a helix
+    fp = FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40), radius=8)
+    assert _quiet(lambda: sweep(Rectangle(4, 2), fp, twist=90)).volume == pytest.approx(8 * fp.length, rel=1e-5)
+    helix = Helix(5, 30, 10)
+    assert _quiet(lambda: sweep(Rectangle(2, 1), helix, twist=360)).volume == pytest.approx(2 * helix.length, rel=1e-5)
+
+
+def test_up_and_twist_errors():
+    line = Line((0, 0, 0), (0, 0, 50))
+    with pytest.raises(ValueError, match="runs along up="):
+        sweep(Rectangle(4, 2), line, up=Z)
+    with pytest.raises(ValueError, match="runs straight"):
+        sweep(Rectangle(4, 2), line, up="frenet")
+    with pytest.raises(ValueError, match="orient=True and translational=False"):
+        sweep(Rectangle(4, 2), line, twist=10, translational=True)
+    with pytest.raises(ValueError, match="'frenet'"):
+        sweep(Rectangle(4, 2), line, up="binormal")
+    with pytest.raises(TypeError):
+        sweep(Rectangle(4, 2), line, twist="a lot")
+    with pytest.raises(ValueError, match="sharp_corners=False"):
+        sweep(Rectangle(4, 2), Polyline((0, 0, 0), (0, 0, 40), (40, 0, 40)), twist=10, sharp_corners=True)
+    loop = Spline((20, 0, 0), (0, 20, 6), (-20, 0, 0), (0, -20, -6), closed=True)
+    with pytest.raises(ValueError, match="come round into itself"):
+        sweep(Rectangle(4, 2), loop, twist=90)
+    square = _quiet(lambda: sweep(Rectangle(3, 3), loop, twist=90))  # (a square comes round)
+    assert square.is_valid() and square.volume == pytest.approx(9 * loop.length, rel=1e-5)
+
+
+def test_a_chain_of_helices_with_even_turns_is_not_planar():
+    # S6: Helix.md's long spring, two pieces of 30 (and of 16) turns each: points sampled along it lie
+    # in a plane, so it went to the mitered sweep and raised
+    from smlibpy.operations import _is_planar_path
+
+    for turns in (30, 16):
+        chain = Wire([Helix(1, turns, 5), Helix(1, turns, 5, center=(0, 0, turns))])
+        assert not _is_planar_path(list(chain.edges()))
+        spring = _quiet(lambda: sweep(Rectangle(0.6, 0.3), chain))
+        assert spring.is_valid()
+        assert spring.volume == pytest.approx(0.18 * chain.length, rel=1e-5)  # (60 turns: 336.96, 0.7 % short)
+    assert _is_planar_path(list(Polyline((0, 0, 0), (10, 0, 5), (20, 3, 10)).edges()))
+
+
+def test_planar_paths_whose_corners_cannot_be_mitered_go_piece_by_piece():
+    kinked = Wire([ThreePointArc((0, 0, 0), (5, 5, 0), (10, 0, 0)), ThreePointArc((10, 0, 0), (14, 3, 0), (20, 2, 0))])
+    with pytest.warns(RuntimeWarning, match="cannot be mitered"):
+        body = sweep(Rectangle(2, 1), kinked)
+    assert body.is_valid()
+    assert body.volume == pytest.approx(sweep(Rectangle(2, 1), kinked, sharp_corners=False).volume, rel=1e-12)
+    with pytest.raises(ModelingError):
+        sweep(Rectangle(2, 1), kinked, sharp_corners=True)
+
+
+def test_full_revolves_give_cylinders_cones_spheres_and_tori():
+    tube = Polygon((5, 0), (10, 0), (10, 20), (5, 20)).on(Plane.XZ).revolve(Z)
+    assert sorted(f.geom_type for f in tube.faces()) == ["cylinder", "cylinder", "plane", "plane"]
+    assert sorted(f.radius for f in tube.faces().cylinders()) == pytest.approx([5, 10])
+    assert tube.faces().cylinders().first.axis.direction.is_parallel((0, 0, 1))
+    assert tube.volume == pytest.approx(math.pi * (100 - 25) * 20, rel=1e-12)
+    outer = tube.faces().cylinders().sort_by(lambda f: f.radius)[-1]
+    drafted = tube.draft(outer, 3, Plane.XY)
+    assert drafted.is_valid() and drafted.volume < tube.volume
+    lathe = (Rectangle(5, 20, align=(Align.MIN, Align.MIN)).translate(5, 0).fillet(1)).on(Plane.XZ)
+    whole = lathe.revolve(Z)
+    assert sorted(f.geom_type for f in whole.faces()) == ["cylinder"] * 2 + ["plane"] * 2 + ["torus"] * 4
+    assert {round(f.radius, 9) for f in whole.faces() if f.geom_type == "torus"} == {1.0}
+    assert whole.volume == pytest.approx(4 * lathe.revolve(Z, 90).volume, rel=1e-9)
+    ball = (Circle(10) & Rectangle(10, 20, align=(Align.MIN, Align.CENTER))).on(Plane.XZ).revolve(Z)
+    assert {f.geom_type for f in ball.faces()} == {"sphere"}
+    assert ball.volume == pytest.approx(4 / 3 * math.pi * 1000, rel=1e-12)
+    cone = Polygon((0, 0), (10, 0), (0, 20)).on(Plane.XZ).revolve(Z)
+    assert sorted(f.geom_type for f in cone.faces()) == ["cone", "plane"]
+    # part of a turn: arcs give tori (the kernel gives surfaces of revolution), also as holes
+    ring = Circle(2).translate(10, 0).on(Plane.XZ).revolve(Z, 90)
+    assert sorted(f.geom_type for f in ring.faces()) == ["plane", "plane", "torus"]
+    holed = (Rectangle(10, 20, align=(Align.MIN, Align.MIN)) - Circle(1).translate(5, 10)).on(Plane.XZ).revolve(Z, 90)
+    assert "revolution" not in {f.geom_type for f in holed.faces()}
+    # a spline stays a surface of revolution, which has an axis now
+    vase = revolve(Spline((5, 0, 0), (8, 0, 5), (6, 0, 10), (9, 0, 20)), Z)
+    assert vase.faces().first.geom_type == "revolution" and vase.faces().first.axis.direction.is_parallel((0, 0, 1))
+    sheet = revolve(Line((5, 0, 0), (5, 0, 20)), Z)
+    assert [f.geom_type for f in sheet.faces()] == ["cylinder"]
+    assert sheet.area == pytest.approx(2 * math.pi * 5 * 20, rel=1e-9)
+
+
+def test_revolves_within_a_hundredth_of_a_degree_of_a_turn_are_whole(tmp_path):
+    section = Polygon((5, 0), (10, 0), (10, 20), (5, 20)).on(Plane.XZ)
+    for angle in (359.995, 359.999, 359.9999):  # (raised "not a closed, manifold solid")
+        assert section.revolve(Z, angle).volume == pytest.approx(math.pi * 75 * 20, rel=1e-12)
+    assert section.revolve(Z, 359.99).volume < math.pi * 75 * 20
+    # STEP writes the cylinders as cylinders
+    path = tmp_path / "tube.step"
+    export_step(section.revolve(Z), path)
+    text = path.read_text()
+    assert text.count("CYLINDRICAL_SURFACE") == 2 and "B_SPLINE_SURFACE" not in text
+    back = import_step(path)
+    assert sorted(f.geom_type for f in back.faces()) == ["cylinder", "cylinder", "plane", "plane"]

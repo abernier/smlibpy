@@ -299,6 +299,10 @@ Value make_surface_data(const SmSurface* surface, bool nurbs = true)
         d.set("inside_out", val(static_cast<bool>(inside_out)));
         break;
     }
+    case SmSurfOfRevolution_TYPE:
+        // (its axis: the frame's z axis through its origin; x points to where the angle starts)
+        d.set("placement", val(placement(static_cast<const SmSurfOfRevolution*>(surface)->GetPosition())));
+        break;
     default: break;
     }
     if (nurbs && surface->IsKindOf(SmBSplineSurface_TYPE))

@@ -37,3 +37,7 @@ void bind_distance(py::module_ m);
 void bind_usd_files(py::module_ m);
 // Faces without area removed from a copy of a Brep (slivers.cpp).
 void bind_slivers(py::module_ m);
+// Sweeps with the profile's attitude given along the path, helix axes (oriented_sweep.cpp).
+void bind_oriented_sweep(py::module_ m);
+// Analytic surfaces for revolved faces (revolutions.cpp).
+void bind_revolutions(py::module_ m);

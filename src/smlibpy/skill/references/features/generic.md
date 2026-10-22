@@ -14,7 +14,6 @@ check the volume change; shell checks that the walls fit. A few wrong results st
 | Input | Result |
 |---|---|
 | `loft` of sections that start in different places | twisted, pinched |
-| `sweep` of a non-round profile along a helix | the profile rolls ~30° per turn |
 | `sweep` with a profile larger than the bend / pitch | self-overlapping, volume too large |
 
 Each feature doc says how to avoid its case. Fillet, chamfer, shell and offset refuse an
