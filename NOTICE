@@ -14,7 +14,9 @@ of USD BRep are in third_party/usd-brep/THIRD_PARTY_NOTICES.md. Binary distribut
 of smlibpy contain compiled USD BRep code and are subject to that license as well.
 A few USD BRep source files are compiled from copies modified by AWV Informatik AG to
 fix defects; the copies are in third_party/patches, each with a notice of what was
-changed, and third_party/patches/README.md lists the changes.
+changed, and third_party/patches/README.md lists the changes. A few NLib functions that
+USD BRep compiles out (surface region warp and flattening) are compiled from a copy in
+src/cpp/nlib_shape.cpp, modified by AWV Informatik AG as its notice says.
 
 The default font of Text, Lato Regular (src/smlibpy/fonts/Lato-Regular.ttf), is included
 unmodified:

@@ -1,14 +1,16 @@
 """Lane U of the kernel plan (phase 1): blends between sheet edges (U2), trimming sheets with
 curves on them and imprinting curves on parts (U3); fills and curve networks (U4), stitch with its
-tolerance, report and normals (U5), extending and untrimming faces (U6)."""
+tolerance, report and normals (U5), extending and untrimming faces (U6); pushing a face at a point
+(U7), warping and flattening a region of a face (U8)."""
 
 import math
 
 import numpy as np
 import pytest
 
-from smlibpy import (Box, Circle, CenterArc, Cylinder, Line, ModelingError, Part, Plane, Rectangle, Shell, Sketch, Sphere,
-                     Spline, ThreePointArc, Z, blend, extrude, fill, network, ruled, stitch, surface, surface_fillet)
+from smlibpy import (Axis, Box, Circle, CenterArc, Cylinder, Line, ModelingError, Part, Plane, Rectangle, Shell, Sketch,
+                     Sphere, Spline, ThreePointArc, Vector, Z, blend, extrude, fill, network, ruled, stitch, surface,
+                     surface_fillet)
 from smlibpy._kernel import ext, k
 
 
@@ -596,3 +598,277 @@ def test_guides_of_u4_u5_u6():
                           ("stitch", "surfaces/stitch"), ("Shell.flipped", "surfaces/Shell"),
                           ("Face.extended", "selection/Face"), ("Face.untrimmed", "selection/Face")):
         assert discovery.guide_for(discovery.find_method(method)).key == guide
+
+
+# ---------------------------------------------------------------------- U7: push
+
+
+def _top(part):
+    return part.faces().sort_by(Axis.Z)[-1]
+
+
+def _z_at(face, x, y):
+    """The height of a face over (x, y), along a vertical ray from below."""
+    hits = face.raycast((x, y, -100), (0, 0, 1))
+    assert hits, (x, y)
+    return hits[-1].point.z
+
+
+def test_push_moves_the_point_exactly_and_nothing_else():
+    box = Box(60, 40, 20)
+    top = _top(box)
+    p = box.push(top, (0, 0, 10), by=5, radius=15)
+    f = _top(p)
+    assert p.is_valid() and len(p.faces()) == 6
+    assert f.geom_type == "bspline"
+    assert f.distance_to((0, 0, 15)) < 1e-9
+    assert p.bbox().max.z == pytest.approx(15, abs=1e-9)
+    # a cubic bump of radius 15: 500 more (5 times 10 by 10)
+    assert p.volume == pytest.approx(48500, abs=1e-6)
+    # unchanged beyond the radius, and the edges stay
+    assert _z_at(f, 20, 0) == pytest.approx(10, abs=1e-12)
+    assert _z_at(f, 0, 16) == pytest.approx(10, abs=1e-12)
+    for e in f.edges():
+        assert all(abs(e.point_at(t).z - 10) < 1e-12 for t in (0, 0.3, 0.5, 0.8))
+        assert max(f.distance_to(e.point_at(t)) for t in (0.1, 0.5, 0.9)) < 1e-9
+    # the other faces stay planes; the box does not change
+    assert sum(g.geom_type == "plane" for g in p.faces()) == 5
+    assert box.volume == pytest.approx(48000)
+
+
+def test_push_to_a_point_with_a_normal():
+    box = Box(60, 40, 20)
+    p = box.push(_top(box), (5, 3, 10), to=(5, 3, 13), normal=(0.2, 0, 1), radius=10)
+    f = _top(p)
+    assert f.distance_to((5, 3, 13)) < 1e-9
+    n = f.normal_at((5, 3, 13))
+    assert n.dot(Vector(0.2, 0, 1).normalized()) == pytest.approx(1, abs=1e-9)
+    # every face of the box, its surface's normal along the outward one or against it
+    for f in box.faces():
+        n = f.normal_at()
+        tilted = (n + Vector(0.1, 0.1, 0.1)).normalized()
+        p = box.push(f, f.center(), by=3, radius=6, normal=tilted)
+        g = p.faces().filter(lambda h: h.geom_type == "bspline")[0]
+        assert p.volume > box.volume + 40 and p.is_valid()
+        assert g.normal_at(f.center() + n * 3).dot(tilted) == pytest.approx(1, abs=1e-9)
+    # by a vector, and pulling in (a dent)
+    q = box.push(_top(box), (0, 0, 10), by=(0, 0, -4), radius=12)
+    assert q.bbox().max.z == pytest.approx(10) and _top(q).distance_to((0, 0, 6)) < 1e-9
+    assert q.volume < 48000
+
+
+def test_push_continuity_at_the_edges_it_reaches():
+    box = Box(60, 40, 20)
+    g1 = box.push(_top(box), (0, 0, 10), by=5, radius=30)
+    g2 = box.push(_top(box), (0, 0, 10), by=5, radius=30, continuity="G2")
+    g0 = box.push(_top(box), (0, 0, 10), by=5, radius=30, continuity="G0")
+    assert g1.volume == pytest.approx(49833.333333, abs=1e-4)
+    assert g2.volume == pytest.approx(49500, abs=1e-4)
+    assert g0.is_valid() and g1.is_valid() and g2.is_valid()
+    # G1 and G2 keep the top's tangent plane along its edges: level there
+    for p in (g1, g2):
+        f = _top(p)
+        for y in (-19.999, 19.999):
+            assert f.normal_at((0, y, 10)).z > 0.9999
+
+
+def test_push_refuses_to_move_a_hole_and_shrinks_by_default():
+    part = Box(60, 40, 20) - Cylinder(4, 40).translate(10, 0, 0)
+    top = part.faces().filter(lambda f: f.geom_type == "plane").sort_by(Axis.Z)[-1]
+    with pytest.raises(ValueError, match="reaches an edge of the face"):
+        part.push(top, (0, 0, 10), by=3, radius=8)
+    ok = part.push(top, (0, 0, 10), by=3, radius=5)
+    auto = part.push(top, (0, 0, 10), by=3)
+    for p in (ok, auto):
+        assert p.is_valid()
+        hole = p.faces().filter(lambda f: f.geom_type == "cylinder")[0]
+        f = p.faces().filter(lambda f: f.geom_type == "bspline")[0]
+        assert f.distance_to((0, 0, 13)) < 1e-9
+        rim = [e for e in hole.edges() if e.center().z > 0]
+        assert rim and max(f.distance_to(e.point_at(t)) for e in rim for t in (0, 0.25, 0.5, 0.75)) < 1e-9
+
+
+def test_push_a_cylinder_across_its_quarter_turn_stays_smooth():
+    c = Cylinder(10, 40)
+    side = c.faces().filter(lambda f: f.geom_type == "cylinder")[0]
+    p = c.push(side, (0, 10, 5), by=2, radius=6)
+    f = p.faces().filter(lambda f: f.geom_type == "bspline")[0]
+    assert p.is_valid()
+    assert f.distance_to((0, 12, 5)) < 1e-9 and p.bbox().max.y == pytest.approx(12, abs=1e-9)
+    assert p.volume == pytest.approx(12599.44, abs=0.01)
+    # the cylinder's B-spline is only C0 in its control points at the quarter turn (y axis): the
+    # normals turn smoothly across it (no crease)
+    steps = []
+    prev = None
+    for i in range(-40, 41):
+        a = math.radians(90 + i * 0.05)
+        q = Vector(*f._f.closest_point((14 * math.cos(a), 14 * math.sin(a), 6))[0])
+        n = f.normal_at(q)
+        if prev is not None:
+            steps.append(math.degrees(math.acos(min(1.0, n.dot(prev)))))
+        prev = n
+    assert max(steps) < 3 * sorted(steps)[len(steps) // 2] + 1e-6
+    # away from the change it is still the cylinder
+    assert f.distance_to((10, 0, -15)) < 1e-9 and f.distance_to((0, -10, 15)) < 1e-9
+
+
+def test_push_a_sphere_and_a_sheet():
+    s = Sphere(10)
+    f0 = s.faces()[0]
+    at = Vector(f0._f.closest_point((7.0710678, 7.0710678, 0))[0])
+    p = s.push(f0, at, by=-1.5, radius=4)
+    assert p.is_valid() and p.faces()[0].distance_to(at * (8.5 / 10)) < 1e-9
+    assert p.volume == pytest.approx(4178.0, abs=0.01)
+    sheet = surface([[(x, y, 2 * math.sin(x / 10) * math.cos(y / 15)) for y in range(0, 61, 10)] for x in range(0, 61, 10)])
+    f = sheet.faces()[0]
+    at = Vector(f._f.closest_point((30, 30, 0))[0])
+    out = sheet.push(f, at, by=(0, 0, 5), radius=12, normal=(1, 0, 1))
+    assert isinstance(out, Shell) and not isinstance(out, Part)
+    g = out.faces()[0]
+    assert g.distance_to(at + Vector(0, 0, 5)) < 1e-9
+    assert g.normal_at(at + Vector(0, 0, 5)).dot(Vector(1, 0, 1).normalized()) == pytest.approx(1, abs=1e-9)
+    # a sheet's edges stay
+    for e in f.edges():
+        assert max(g.distance_to(e.point_at(t)) for t in (0.2, 0.5, 0.8)) < 1e-9
+
+
+def test_push_survives_a_copy_and_the_native_format(tmp_path):
+    from smlibpy import load, save
+
+    p = Box(60, 40, 20).push(_top(Box(60, 40, 20)), (0, 0, 10), by=5, radius=15)
+    path = tmp_path / "pushed.smb"
+    save(p, path)
+    back = load(path)
+    back = back[0] if isinstance(back, list) else back
+    assert back.bbox().max.z == pytest.approx(15, abs=1e-9)
+    assert back.volume == pytest.approx(48500, abs=1e-6)
+    # a copy of the face keeps its bump too (not taken for a plane: K7)
+    assert _top(back).to_shell().bbox().max.z == pytest.approx(15, abs=1e-9)
+
+
+def test_push_errors():
+    box = Box(60, 40, 20)
+    top = _top(box)
+    with pytest.raises(ValueError, match="not both"):
+        box.push(top, (0, 0, 10), by=1, to=(0, 0, 12))
+    with pytest.raises(ValueError, match="give the move"):
+        box.push(top, (0, 0, 10))
+    with pytest.raises(ValueError, match="continuity"):
+        box.push(top, (0, 0, 10), by=1, continuity="G3")
+    with pytest.raises(ValueError, match="radius"):
+        box.push(top, (0, 0, 10), by=1, radius=0)
+    with pytest.raises(ValueError, match="not a face of this part"):
+        box.push(_top(Box(5, 5, 5).translate(100, 0, 0)), (100, 0, 2.5), by=1)
+    with pytest.raises(TypeError, match="must be a Face"):
+        box.push(box.edges()[0], (0, 0, 10), by=1)
+    with pytest.raises(ValueError, match="on an edge of the face"):
+        box.push(top, (30, 0, 10), by=1)
+    with pytest.raises(ValueError, match="same side|tilts"):
+        box.push(top, (0, 0, 10), by=1, normal=(0, 0, -1))
+    # a face of an earlier version of the part is found by its place
+    moved = box.push(top, (0, 0, 10), by=1, radius=5)
+    assert moved.push(top.owner.faces().sort_by(Axis.X)[0], (-30, 0, 0), by=1, radius=5).is_valid()
+
+
+# -------------------------------------------------------------- U8: warp and flatten
+
+
+def test_warp_raises_a_region_by_the_height():
+    box = Box(60, 40, 20)
+    top = _top(box)
+    vols = {}
+    for cont in ("G2", "G1", "crease"):
+        w = box.warp(top, Rectangle(20, 16).on(top), 4, continuity=cont)
+        assert w.is_valid()
+        assert w.bbox().max.z == pytest.approx(14, abs=1e-9)
+        f = _top(w)
+        # the change stays inside the region (a rectangle here)
+        assert _z_at(f, 25, 15) == pytest.approx(10, abs=1e-12)
+        assert _z_at(f, 10.5, 0) == pytest.approx(10, abs=1e-12)
+        assert _z_at(f, 0, 0) > 13.8
+        vols[cont] = w.volume
+        if cont == "G2":
+            assert _z_at(f, 0, 0) == pytest.approx(14, abs=1e-9)
+    assert vols["G2"] == pytest.approx(48148.027, abs=1e-3)
+    assert vols["G2"] < vols["G1"] < vols["crease"]
+    # sinking a round region (a polygon of the circle's points), and by a vector
+    w = box.warp(top, Circle(8).on(top), -3)
+    assert w.bbox().min.z == pytest.approx(-10) and _top(w).distance_to((0, 0, 7)) < 1e-9
+    pts = [(-10, -8, 10), (10, -8, 10), (10, 8, 10), (-10, 8, 10)]
+    assert box.warp(top, pts, (0, 0, 4)).volume == pytest.approx(vols["G2"], abs=1e-6)
+
+
+def test_warp_a_cylinder_and_a_sheet():
+    c = Cylinder(10, 40)
+    side = c.faces().filter(lambda f: f.geom_type == "cylinder")[0]
+    outline = c.project(Rectangle(10, 12).on(Plane.XZ.offset(-30)).faces()[0].outer_wire(), (0, 1, 0))
+    assert len(outline) > 0
+    near = [(10 * math.cos(math.radians(a)), 10 * math.sin(math.radians(a)), z) for a, z in ((60, -6), (120, -6), (120, 6), (60, 6))]
+    w = c.warp(side, near, 3)
+    assert w.is_valid() and w.bbox().max.y == pytest.approx(13, abs=1e-9)
+    f = w.faces().filter(lambda f: f.geom_type == "bspline")[0]
+    assert f.distance_to((10, 0, -15)) < 1e-9
+    sheet = surface([[(x, y, 0.02 * (x - 20) ** 2) for y in range(0, 41, 10)] for x in range(0, 41, 10)])
+    g = sheet.faces()[0]
+    region = [Vector(*g._f.closest_point((x, y, 0))[0]) for x, y in ((12, 12), (28, 12), (28, 28), (12, 28))]
+    out = sheet.warp(g, region, (0, 0, 2))
+    assert isinstance(out, Shell)
+    lift = max(out.faces()[0].raycast((x, y, 50), (0, 0, -1))[0].point.z - 0.02 * (x - 20) ** 2
+               for x in range(14, 27) for y in range(14, 27))
+    assert lift == pytest.approx(2, abs=1e-3)
+
+
+def test_flatten_presses_a_region_onto_a_plane():
+    box = Box(60, 40, 20)
+    top = _top(box)
+    fl = box.flatten(top, Rectangle(20, 16).on(top), Plane.XY.offset(8))
+    f = _top(fl)
+    assert fl.is_valid()
+    assert fl.volume == pytest.approx(47577.5, abs=1e-6)
+    for x, y in ((0, 0), (-6, 0), (6, 4), (0, -4)):
+        assert _z_at(f, x, y) == pytest.approx(8, abs=1e-12)
+    assert _z_at(f, 25, 15) == pytest.approx(10, abs=1e-12)
+    # a bumpy sheet flat over the region
+    sheet = surface([[(x, y, 3 * math.sin(x / 9) * math.cos(y / 11)) for y in range(0, 61, 5)] for x in range(0, 61, 5)])
+    g = sheet.faces()[0]
+    region = [Vector(*g._f.closest_point((x, y, 0))[0]) for x, y in ((20, 20), (40, 20), (40, 40), (20, 40))]
+    out = sheet.flatten(g, region, Plane.XY)
+    h = out.faces()[0]
+    for x, y in ((30, 30), (25, 25), (34, 33)):
+        hits = h.raycast((x, y, 50), (0, 0, -1))
+        assert hits[0].point.z == pytest.approx(0, abs=1e-9)
+    assert max(h.distance_to(e.point_at(t)) for e in g.edges() for t in (0.1, 0.5, 0.9)) < 1e-9
+
+
+def test_warp_and_flatten_errors():
+    box = Box(60, 40, 20)
+    top = _top(box)
+    holed = Box(60, 40, 20) - Cylinder(4, 40).translate(10, 0, 0)
+    holed_top = holed.faces().filter(lambda f: f.geom_type == "plane").sort_by(Axis.Z)[-1]
+    with pytest.raises(ValueError, match="reaches an edge of the face"):
+        holed.warp(holed_top, Rectangle(30, 16).translate(5, 0).on(holed_top), 3)
+    with pytest.raises(ValueError, match="reaches an edge of the face"):
+        holed.flatten(holed_top, Rectangle(30, 16).translate(5, 0).on(holed_top), Plane.XY.offset(8))
+    assert holed.warp(holed_top, Rectangle(14, 12).translate(-5, 0).on(holed_top), 3).is_valid()
+    with pytest.raises(ValueError, match="does not lie on the face"):
+        box.warp(top, Rectangle(10, 10).on(Plane.XY.offset(15)), 4)
+    with pytest.raises(ValueError, match="not closed"):
+        box.warp(top, Line((0, 0, 10), (5, 0, 10)), 4)
+    with pytest.raises(ValueError, match="continuity"):
+        box.warp(top, Rectangle(10, 10).on(top), 4, continuity="G3")
+    with pytest.raises(ValueError, match="nothing to flatten"):
+        box.flatten(top, Rectangle(10, 10).on(top), Plane.XY.offset(10))
+    with pytest.raises(TypeError, match="region"):
+        box.warp(top, 5, 4)
+
+
+def test_guides_of_u7_u8():
+    from smlibpy.mcp import discovery
+
+    for method, guide in (("Part.push", "surfaces/push"), ("Shell.push", "surfaces/push"), ("Part.warp", "surfaces/warp"),
+                          ("Shell.warp", "surfaces/warp"), ("Part.flatten", "surfaces/flatten"),
+                          ("Shell.flatten", "surfaces/flatten")):
+        assert discovery.guide_for(discovery.find_method(method)).key == guide
+    for query, key in (("dent in the lid", "push"), ("a bump on a face", "push"), ("raise a region of a face", "warp"),
+                       ("flatten a region onto a plane", "flatten")):
+        assert key in [e.key.split("/")[-1].split(".")[-1] for _, e in discovery.search(query, 6)], query

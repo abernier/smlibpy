@@ -21,6 +21,7 @@
 #include "fill.h"
 #include "fit.h"
 #include "measure.h"
+#include "shape_edit.h"
 #include "sheetmetal.h"
 #include "step_build.h"
 #include "stitch.h"
@@ -668,6 +669,27 @@ val network_surface(val u, val v, double tolerance)
     });
 }
 
+// ---------------------------------------------------------------- ext: local edits of a face
+// A copy of the body (the caller's) whose face's point `at` moved by `by` (its normal there `normal`, []: kept).
+uintptr_t push_face(uintptr_t b, uintptr_t f, val at, val by, val normal, double radius, int continuity, bool shrink)
+{
+    return guard([&] {
+        return ptr(smlibpy::push_face(brep(b), face(f), numbers(at), numbers(by), numbers(normal), radius, continuity, shrink));
+    });
+}
+// A copy of the body (the caller's) whose face is raised by `by` over a region (points x, y, z, ... on the face).
+uintptr_t warp_face(uintptr_t b, uintptr_t f, val region, val by, int continuity)
+{
+    return guard([&] { return ptr(smlibpy::warp_face(brep(b), face(f), numbers(region), numbers(by), continuity)); });
+}
+// A copy of the body (the caller's) whose face is pressed onto a plane inside a region.
+uintptr_t flatten_face(uintptr_t b, uintptr_t f, val region, val origin, val normal, int continuity)
+{
+    return guard([&] {
+        return ptr(smlibpy::flatten_face(brep(b), face(f), numbers(region), numbers(origin), numbers(normal), continuity));
+    });
+}
+
 // items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
 std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
 {
@@ -813,6 +835,9 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__untrim_face", &untrim_face);
     function("ext__fill_loop", &fill_loop);
     function("ext__network_surface", &network_surface);
+    function("ext__push_face", &push_face);
+    function("ext__warp_face", &warp_face);
+    function("ext__flatten_face", &flatten_face);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);

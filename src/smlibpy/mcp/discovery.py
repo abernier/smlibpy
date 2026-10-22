@@ -88,6 +88,7 @@ SYNONYMS = {
     "twist": ["twist"], "twisted": ["twist"], "tapered": ["taper"],
     "curl": ["bend"], "wrap": ["bend"], "warp": ["Lattice", "bend", "twist"], "free": ["Lattice"],
     "lattice": ["Lattice"], "morph": ["Lattice"], "cage": ["Lattice"], "ffd": ["Lattice"], "sculpt": ["Lattice"],
+    "dent": ["push"], "dimple": ["push"], "bump": ["push", "warp"], "bulge": ["push", "warp"], "recess": ["warp"],
     "defeature": ["remove_fillets", "remove_faces"], "defeaturing": ["remove_fillets", "remove_faces"],
     "simplify": ["remove_fillets", "remove_faces"], "suppress": ["remove_faces", "remove_fillets"],
     "fillets": ["fillets", "remove_fillets"], "unfillet": ["remove_fillets"], "sharp": ["remove_fillets"],

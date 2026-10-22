@@ -9,6 +9,7 @@
 
 class SmBrep;
 class SmEdge;
+class SmExtent2d;
 class SmFace;
 
 namespace smlibpy {
@@ -25,5 +26,9 @@ SmBrep* extend_face(const SmFace* face, double distance, const std::vector<SmEdg
 // over the face's parameter rectangle (a plane's own rectangle is arbitrary). The sheet's normal
 // follows the face's outward normal. Owned by the caller.
 SmBrep* untrim_face(const SmFace* face);
+
+// The rectangle in the face's surface parameters the face lies in: for a plane the smallest one around
+// the face's edges (a plane's own rectangle is arbitrary), for other surfaces the face's UV domain.
+SmExtent2d face_parameter_box(const SmFace* face);
 
 }  // namespace smlibpy

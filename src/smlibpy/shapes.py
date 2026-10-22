@@ -3306,6 +3306,87 @@ class Part(_Body):
         return draft_faces(self, faces, angle, neutral_plane)
 
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
+    # -- local edits of a face (smlibpy.shaping) -----------------------------
+    def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
+             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Part:
+        """Push or pull a face at a point: a smooth dent or bump, local to the point, its edges in place.
+
+        Args:
+            face: A face of the part.
+            at: The point of the face that moves (a point off the face: the face's point nearest to it).
+            by: How far it moves: a distance along the face's outward normal there (positive: out of the
+                part, a bump; negative: a dent), or a vector.
+            to: Where it moves to, instead of ``by``.
+            normal: The face's normal at the moved point (its tangent plane turns to it). Default: as it
+                was there.
+            radius: How far from the point the face changes, along the face (a square around the point
+                along the surface's two directions, blended in smoothly: curvature continuous). Default:
+                up to the face's nearest edge, smaller where that would still move an edge.
+            continuity: How the face stays joined to its neighbours where the change reaches its border:
+                ``"G0"`` (its edges stay), ``"G1"`` (default; also its tangent planes along them) or
+                ``"G2"`` (also its curvature).
+
+        The point moves exactly, the face's edges not at all: an edit that would move one (a hole's edge,
+        a border cut across the surface, within ``radius`` of the point) raises ``ValueError``; take a
+        smaller radius or a point farther from it. The face becomes a B-spline surface; a plane, cylinder
+        or sphere stays exactly what it was away from the change.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
+
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Part:
+        """Raise or sink a region of a face: a smooth bump over an outline drawn on the face.
+
+        Args:
+            face: A face of the part.
+            region: The outline on the face: a closed Wire (on a curved face, :meth:`project` one onto
+                it), a Sketch or Face placed on the face (its outline), or the corner points of a
+                polygon on the face.
+            by: How far the region rises at its highest point: a distance along the face's outward
+                normal at the region's middle (positive: out of the part; negative: a recess), or a
+                vector.
+            continuity: How the change meets the rest of the face at the region's border: ``"G2"``
+                (default; curvature continuous), ``"G1"`` (tangent) or ``"crease"`` (a sharp border).
+
+        The face changes only near the region, within the rectangle around it along the surface's two
+        directions (the region itself for a rectangle drawn along them); the highest point lies near the
+        region's middle (at it, for a region symmetric along both directions, with ``"G2"``). Where that
+        rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
+
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Part:
+        """Press a region of a face onto a plane: a flat area (a seat, a pad, a label area) on a curved
+        face, blended into the rest of it.
+
+        Args:
+            face: A face of the part.
+            region: The outline on the face, as for :meth:`warp`.
+            plane: The plane (or a planar face) the region is pressed onto, along its normal.
+            continuity: How the flat area meets the rest of the face: ``"G2"`` (default), ``"G1"`` or
+                ``"crease"``.
+
+        Inside the region the face lies in the plane, but for a border where it blends into the rest
+        (3/16 of the region's width with ``"G2"``, 2/16 with ``"G1"``, 1/16 with ``"crease"``); outside
+        the rectangle around the region (along the surface's two directions) it does not change. Where
+        that rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.flatten(self, face, region, plane, continuity), "flatten")
+
     def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
              partial: bool = False) -> Part:
         """Fold this sheet along a line on its top or bottom face (see :func:`smlibpy.fold`)."""
@@ -3762,6 +3843,28 @@ class Shell(_Body):
             raise ValueError(f"extend: the sheet has {len(faces)} faces; extend one of them with "
                              f"sheet.faces()[i].extended(...)")
         return self._like(_extended_face(faces[0], distance, sides, continuity, "extend"))
+
+    def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
+             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Shell:
+        """Push or pull a face of the sheet at a point: see :meth:`Part.push` (``by`` as a distance moves
+        along the face's normal). Returns a new sheet; a Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
+
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Shell:
+        """Raise or sink a region of a face of the sheet: see :meth:`Part.warp`. Returns a new sheet; a
+        Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
+
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Shell:
+        """Press a region of a face of the sheet onto a plane: see :meth:`Part.flatten`. Returns a new
+        sheet; a Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.flatten(self, face, region, plane, continuity), "flatten")
 
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())

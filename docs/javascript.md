@@ -573,6 +573,13 @@ export class Part extends _Body {
     }): DraftAnalysis;
     partingLine(direction: Axis | VectorLike): ShapeList<Wire>;
     draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part;
+    push(face: Face, at: VectorLike, options?: PushOptions): Part;
+    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+        continuity?: string;
+    }): Part;
+    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+        continuity?: string;
+    }): Part;
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
     flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
     bends(options?: {
@@ -594,8 +601,22 @@ export class Shell extends _Body {
         sides?: Edge | Iterable<Edge> | null;
         continuity?: string;
     }): this;
+    push(face: Face, at: VectorLike, options?: PushOptions): Shell;
+    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+        continuity?: string;
+    }): Shell;
+    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+        continuity?: string;
+    }): Shell;
     fuse(...others: unknown[]): Shell;
     toString(): string;
+}
+export interface PushOptions {
+    by?: number | VectorLike | null;
+    to?: VectorLike | null;
+    normal?: VectorLike | null;
+    radius?: number | null;
+    continuity?: string;
 }
 export interface ExtrudeOptions {
     both?: boolean;

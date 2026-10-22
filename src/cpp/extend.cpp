@@ -452,6 +452,13 @@ SmBrep* untrim_face(const SmFace* face)
     return sheet(std::move(owned), domain, center, normal);
 }
 
+SmExtent2d face_parameter_box(const SmFace* face)
+{
+    if (!face || !face->GetSurface())
+        throw std::invalid_argument("face_parameter_box: no face");
+    return SM_CAST_PTR(SmPlane, face->GetSurface()) != nullptr ? tight_box(face) : face->GetUVDomain();
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON

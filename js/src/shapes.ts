@@ -42,6 +42,7 @@ import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import { ruled } from './surfaces.ts'
+import { _checked, _flatten, _push, _warp } from './shaping.ts'
 import {
   type Bend,
   type FlangeOptions,
@@ -3729,6 +3730,76 @@ export class Part extends _Body {
     return draftFaces(this, faces, angle, neutralPlane)
   }
 
+  // -- local edits of a face (the logic is in the shaping module) ---------------------------
+  /**
+   * Push or pull a face at a point: a smooth dent or bump, local to the point, its edges in place.
+   *
+   * The point moves exactly, the face's edges not at all: an edit that would move one (a hole's
+   * edge, a border cut across the surface, within `radius` of the point) throws a RangeError; take a
+   * smaller radius or a point farther from it. The face becomes a B-spline surface; a plane, cylinder
+   * or sphere stays exactly what it was away from the change.
+   *
+   * @param face A face of the part.
+   * @param at The point of the face that moves (a point off the face: the face's point nearest to it).
+   * @param options `by`: how far it moves: a distance along the face's outward normal there
+   *   (positive: out of the part, a bump; negative: a dent), or a vector. `to`: where it moves to,
+   *   instead of `by`. `normal`: the face's normal at the moved point (default: as it was there).
+   *   `radius`: how far from the point the face changes, along the face (a square around the point
+   *   along the surface's two directions, blended in smoothly; default: up to the face's nearest edge,
+   *   smaller where that would still move an edge). `continuity`: how the face stays joined to its
+   *   neighbours where the change reaches its border: `'G0'` (its edges stay), `'G1'` (default; also
+   *   its tangent planes along them) or `'G2'` (also its curvature).
+   * @returns A new part (this one does not change).
+   */
+  push(face: Face, at: VectorLike, options: PushOptions = {}): Part {
+    _opts('Part.push', options)
+    return _checked(this, _push(this, face, at, options.by ?? null, options.to ?? null, options.normal ?? null, options.radius ?? null,
+      options.continuity ?? 'G1'), 'push')
+  }
+
+  /**
+   * Raise or sink a region of a face: a smooth bump over an outline drawn on the face.
+   *
+   * The face changes only near the region, within the rectangle around it along the surface's two
+   * directions (the region itself for a rectangle drawn along them); the highest point lies near the
+   * region's middle (at it, for a region symmetric along both directions, with `'G2'`). Where that
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   *
+   * @param face A face of the part.
+   * @param region The outline on the face: a closed Wire (on a curved face, `project` one onto it), a
+   *   Sketch or Face placed on the face (its outline), or the corner points of a polygon on the face.
+   * @param by How far the region rises at its highest point: a distance along the face's outward
+   *   normal at the region's middle (positive: out of the part; negative: a recess), or a vector.
+   * @param options `continuity`: how the change meets the rest of the face at the region's border:
+   *   `'G2'` (default; curvature continuous), `'G1'` (tangent) or `'crease'` (a sharp border).
+   * @returns A new part (this one does not change).
+   */
+  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Part {
+    _opts('Part.warp', options)
+    return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
+  }
+
+  /**
+   * Press a region of a face onto a plane: a flat area (a seat, a pad, a label area) on a curved face,
+   * blended into the rest of it.
+   *
+   * Inside the region the face lies in the plane, but for a border where it blends into the rest
+   * (3/16 of the region's width with `'G2'`, 2/16 with `'G1'`, 1/16 with `'crease'`); outside the
+   * rectangle around the region (along the surface's two directions) it does not change. Where that
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   *
+   * @param face A face of the part.
+   * @param region The outline on the face, as for `warp`.
+   * @param plane The plane (or a planar face) the region is pressed onto, along its normal.
+   * @param options `continuity`: how the flat area meets the rest of the face: `'G2'` (default),
+   *   `'G1'` or `'crease'`.
+   * @returns A new part (this one does not change).
+   */
+  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Part {
+    _opts('Part.flatten', options)
+    return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
+  }
+
   // -- sheet metal (the logic is in the sheetmetal module) ----------------------------------
   /** Fold this sheet along a line on its top or bottom face (see `fold`). */
   fold(line: Axis | Edge, angle: number, options: FoldOptions): Part {
@@ -4207,6 +4278,28 @@ export class Shell extends _Body {
     return this._like(_extendedFace(faces[0], distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
   }
 
+  /** Push or pull a face of the sheet at a point: see `Part.push` (`by` as a distance moves along the
+   * face's normal). Returns a new sheet; a Sketch's comes back as a Shell. */
+  push(face: Face, at: VectorLike, options: PushOptions = {}): Shell {
+    _opts('Shell.push', options)
+    return _checked(this, _push(this, face, at, options.by ?? null, options.to ?? null, options.normal ?? null, options.radius ?? null,
+      options.continuity ?? 'G1'), 'push')
+  }
+
+  /** Raise or sink a region of a face of the sheet: see `Part.warp`. Returns a new sheet; a Sketch's
+   * comes back as a Shell. */
+  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Shell {
+    _opts('Shell.warp', options)
+    return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
+  }
+
+  /** Press a region of a face of the sheet onto a plane: see `Part.flatten`. Returns a new sheet; a
+   * Sketch's comes back as a Shell. */
+  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Shell {
+    _opts('Shell.flatten', options)
+    return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
+  }
+
   /** Union with other sheets (Python's `+`). */
   fuse(...others: unknown[]): Shell {
     return this._like(_held(this._copyBrep(), (h) => {
@@ -4217,6 +4310,20 @@ export class Shell extends _Body {
   override toString(): string {
     return `${_typeName(this)}(${k.brep_face_count(this._brep)} faces, area=${_formatG(this.area)})`
   }
+}
+
+/** How `Part.push` and `Shell.push` move the point (see `Part.push`). */
+export interface PushOptions {
+  /** How far the point moves: a distance along the face's outward normal there, or a vector. */
+  by?: number | VectorLike | null
+  /** Where the point moves to, instead of `by`. */
+  to?: VectorLike | null
+  /** The face's normal at the moved point (default: as it was there). */
+  normal?: VectorLike | null
+  /** How far from the point the face changes (default: up to the face's nearest edge). */
+  radius?: number | null
+  /** `'G0'`, `'G1'` (default) or `'G2'`: how the face stays joined to its neighbours. */
+  continuity?: string
 }
 
 /** How a sketch is extruded. */

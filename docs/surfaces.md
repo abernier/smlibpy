@@ -217,6 +217,37 @@ wall = (Box(20, 20, 20) - Cylinder(4, 40)).faces().filter(lambda f: f.geom_type 
 print(round(wall.untrimmed().area, 2))                        # 1005.31 = 2 pi 4 40
 ```
 
+## Shaping faces: push, warp, flatten
+
+Three local edits change one face of a part or a sheet and leave its edges where they are (an
+edit that would move one raises `ValueError`): `push` moves a point of the face, exactly, with a
+smooth dent or bump around it; `warp` raises or sinks a region drawn on the face; `flatten` presses
+a region onto a plane. The face becomes a B-spline surface: its own surface plus the change,
+exactly, so a plane or a cylinder stays exactly what it was away from the edit:
+
+```python
+lid = Box(60, 40, 6)
+top = lid.faces().sort_by(Axis.Z)[-1]
+dented = lid.push(top, (15, 0, 3), by=-1.5, radius=10)            # 1.5 deep, 10 around
+print(round(dented.volume, 2), dented.is_valid())                  # 14333.33 True
+pad = lid.warp(top, Rectangle(20, 16).translate(-15, 0).on(top), 2)  # a raised pad, 2 at its top
+print(round(pad.bbox().max.z, 9))                                  # 5.0
+dome = surface([[(x, y, 8 - 0.01 * ((x - 20) ** 2 + (y - 20) ** 2)) for y in range(0, 41, 5)] for x in range(0, 41, 5)])
+face = dome.faces()[0]
+seat = [face.raycast((x, y, 50), (0, 0, -1))[0].point for x, y in ((15, 15), (25, 15), (25, 25), (15, 25))]
+flat = dome.flatten(face, seat, Plane.XY.offset(7.5))              # flat at z 7.5 inside the seat
+print(round(flat.faces()[0].raycast((20, 20, 50), (0, 0, -1))[0].point.z, 9))  # 7.5
+```
+
+`push` takes the move as `by` (a distance along the face's normal, or a vector) or `to` (a point),
+`normal` (the face's normal there afterwards), `radius` (how far along the face it changes; default:
+up to the nearest edge) and `continuity` (`"G0"`, `"G1"`, `"G2"`: how the face stays joined to its
+neighbours where the change reaches its border). A region for `warp` and `flatten` is a closed wire
+on the face (on a curved face, `project` an outline onto it), a sketch placed on the face, or polygon
+points; the change stays within the rectangle around the region along the face's two directions, and
+`continuity` (`"G2"`, `"G1"`, `"crease"`) sets how it meets the rest of the face. Unlike a `Lattice`
+(`deform`), which moves the whole part, these touch one face only, and the point or region exactly.
+
 ## Curves as NURBS
 
 `edge.nurbs()` gives the degree, knots, control points and weights of any edge (arcs as exact

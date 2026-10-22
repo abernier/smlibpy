@@ -45,3 +45,5 @@ void bind_stitch(py::module_ m);
 void bind_extend(py::module_ m);
 // Surfaces bounded by curves: fills and curve networks (fill.cpp).
 void bind_fill(py::module_ m);
+// Local edits of a face's surface: push, warp, flatten (shape_edit.cpp).
+void bind_shape_edit(py::module_ m);

@@ -100,4 +100,5 @@ PYBIND11_MODULE(_core, m)
     bind_stitch(m.attr("ext").cast<py::module_>());
     bind_extend(m.attr("ext").cast<py::module_>());
     bind_fill(m.attr("ext").cast<py::module_>());
+    bind_shape_edit(m.attr("ext").cast<py::module_>());
 }

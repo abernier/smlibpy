@@ -1,6 +1,17 @@
-# Lane U: release-note fragment (batch 1: U2, U3; batch 2: U4, U5, U6)
+# Lane U: release-note fragment (batch 1: U2, U3; batch 2: U4, U5, U6; batch 3: U7, U8)
 
 ## Fixed
+
+- U7, U8 fix nothing scripts could reach before (they add local edits of faces). Two defects of the
+  NLib code the kernel compiles out, which `warp` and `flatten` now use, are fixed in smlibpy's copy
+  (src/cpp/nlib_shape.cpp, marked `smlibpy patch`): `N_PtsAreInPolygon` counted both edges at a vertex
+  less than `NL_MTOL` above a row's ray, so a row through two vertices of the region's polygon came out
+  as outside it (a warp over a circle r 8 sank its ring and left its middle: 1.18 deep instead of 3);
+  `N_SrfShapeFlatten` read its inside flags one control point off, so a flattened region was shifted
+  by a control point. And the kernel's `N_SrfFuncMultiplySrf` (compiled in) loses its accuracy where
+  the knots of its two splines lie close together (spans 4e-4 apart: control points at 1e11, a
+  flattened dome 1e11 high): the edits move their change's knots onto the surface's within a quarter
+  span and check every result against the surface plus the change.
 
 - Bridges between sheets no longer twist (U2). The kernel's edge-to-edge blend
   (`SmBrep::CreateEdgeEdgeBlend`, behind `SmApiCreateBlendPrimitive`) turns the second edge twice
@@ -111,6 +122,38 @@
   `stitch`, `Shell`, `generic`, `selection/Face`, SKILL.md updated; ai/todo/surfaces.md #9, #10,
   #12 marked fixed.
 
+- `Part.push(face, at, *, by=None, to=None, normal=None, radius=None, continuity="G1")`, also on
+  `Shell` (smlibwasm: `push(face, at, { by, to, normal, radius, continuity })`): push or pull a face
+  at a point, a smooth dent or bump local to it, the face's edges in place (U7). The point moves
+  exactly (`by` a distance along the normal or a vector, or `to` a point), its normal is the one asked
+  or as before, and the face changes within `radius` of the point along its surface (default: up to
+  the nearest edge, halved while an edge would still move); `continuity` holds the face's border G0,
+  G1 or G2 where the change reaches it. The face becomes its own surface (an analytic one's exact
+  B-spline) plus a cubic B-spline change on knots of its own, added exactly (through the weight
+  function on rational surfaces, so a cylinder does not crease at its quarter turns); an edit that
+  would move an edge raises `ValueError`. Measured: `Box(60, 40, 20)` top pushed 5 at the middle,
+  radius 15: z 15 exactly, volume 48500, z 10 beyond the radius, the other five faces planes; a
+  cylinder r 10 pushed 2 at its quarter turn: y 12 exactly, normals turning smoothly across it; a box
+  with a hole: refused with radius 8 (the hole's edge would move 0.07), done with 5 or by default; the
+  bump survives `save`/`load` and `to_shell` (K7 keeps it from being taken for a plane). 2 to 12 ms.
+- `Part.warp(face, region, by, *, continuity="G2")` and `Part.flatten(face, region, plane, *,
+  continuity="G2")`, also on `Shell` (smlibwasm: `warp(face, region, by, { continuity })`,
+  `flatten(face, region, plane, { continuity })`) (U8): raise or sink a region of a face drawn as a
+  closed wire, a sketch or face on it, or polygon points (by exactly `by` at its highest point), or
+  press it onto a plane (exactly flat inside it but for a blend of 3/16, 2/16 or 1/16 of its width
+  for G2, G1, crease). The change stays within the rectangle around the region along the face's
+  directions; `continuity` `"G2"`, `"G1"` or `"crease"` at its border. The profiles come from NLib's
+  region warp and flattening (compiled out of the kernel; seven functions copied into
+  src/cpp/nlib_shape.cpp, renamed `smlibpy_N_...`), shaped on a plane over the face's parameters and
+  added to the face exactly. Measured: a box top, a 20 x 16 region raised 4: z 14 at its middle,
+  48148.03; sunk 3 over `Circle(8)`: z 7 at the middle; flattened onto z 8: z 8 for |x| <= 6.25, |y|
+  <= 5, 47577.5; a cylinder's region across its quarter turn raised 3: y 13 exactly.
+- Search (MCP `list_methods`): "dent", "dimple", "bump", "bulge" and "recess" find `push` and `warp`.
+- Docs: docs/surfaces.md (Shaping faces: push, warp, flatten), docs/kernel.md (two rows of the
+  robustness table), third_party/patches/README.md (Compiled-out functions), NOTICE, the API section
+  of docs/javascript.md; skill references `surfaces/push`, `surfaces/warp`, `surfaces/flatten`,
+  SKILL.md updated.
+
 ## Behaviour changes
 
 U2, U3 (batch 1): none that break scripts: every change adds a function, a method or a keyword.
@@ -157,6 +200,22 @@ U4, U6 add functions and methods only. `stitch` (U5) changes what scripts get ba
 - `from smlibpy import *` brings in `fill`, `network` and `StitchReport` (as `blend` in batch 1:
   a script's own variable of that name hides the function for the rest of the script).
 
+U7, U8 add methods only (`push`, `warp`, `flatten` on `Part` and `Shell`; on a `Sketch` they return a
+`Shell`, as its edited face no longer lies in its plane). One thing to know for MCP users: the search
+for "warp the part" now finds `Part.warp` (a region of one face) before `Lattice` (the whole part);
+"free-form deformation" and "morph" still find `Lattice`:
+
+```python
+bar = Box(60, 40, 20)
+top = bar.faces().sort_by(Axis.Z)[-1]
+# before: no local edits; a Lattice moved the whole part (every face became a B-spline)
+lat = Lattice(bar, 3)
+lat.move((1, 1, 2), (0, 0, 2))
+pillow = lat.apply(bar)
+# after: one face, one region, exactly; the other faces stay as they are
+raised = bar.warp(top, Rectangle(20, 16).on(top), 2)
+```
+
 ## Not done
 
 - `blend` of closed edges (the round edge of a tube): refused with a `ValueError`. Bridging two
@@ -196,4 +255,19 @@ U4, U6 add functions and methods only. `stitch` (U5) changes what scripts get ba
 - The guards the plan lists for `SmApiCreateOffsetSurface` (absolute 1e-3 fit) and
   `SmEdge::GetContinuity` (ignores its angle) are not wired here: nothing in this lane calls them
   (the offset belongs to the sheet-offset item, continuity is measured by smlibpy itself).
-
+- `flatten(..., side=...)` (the plan's option to flatten only where the face lies above or below the
+  plane): not done. NLib's side test moves the control points on that side, which is not the part of
+  the face on that side: on a bumpy sheet it pushed points below the plane further down (-0.45 to
+  -0.59) and left the flattened area off the plane (-0.13). A face's height clipped at the plane is
+  not a spline, so it cannot be added exactly either.
+- `Shell.bead(face, path, height, width)` (NLib's polyline warp, "later" in the plan): not done.
+- A push at or next to an edge of the face, a cylinder's or sphere's seam included, is refused (the
+  edges stay where they are); a point at a pole or a cone's tip too. The push's region is a square of
+  the face's two directions, not a circle.
+- The warp's profile is NLib's (a rational bell over the region's box); its highest point lies at the
+  region's middle only for regions symmetric along both directions of the face with `"G2"` (with
+  `"G1"` and `"crease"` it can lie a little off it). Faces of offset surfaces cannot be shaped
+  (`ValueError`).
+- The plan's knot removal after a warp (1e-6 of the size) is not done: the change is added exactly on
+  its own knots, so the face's B-spline grows (a box top raised over a region: 20 x 20 control points;
+  a cylinder's warp is rational of degree 5 x 4 through the weight function).

@@ -1,6 +1,7 @@
 // tests/test_lane_U.py: lane U of the kernel plan (phase 1): blends between sheet edges (U2),
 // trimming sheets with curves on them and imprinting curves on parts (U3); fills and curve networks
-// (U4), stitch with its tolerance, report and normals (U5), extending and untrimming faces (U6).
+// (U4), stitch with its tolerance, report and normals (U5), extending and untrimming faces (U6);
+// pushing a face at a point (U7), warping and flattening a region of a face (U8).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -34,6 +35,8 @@ import {
   surfaceFillet,
 } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
+import { Face } from '../src/shapes.ts'
+import { fromSmb, toSmb } from '../src/exporters.ts'
 import { approx } from './_approx.ts'
 
 const free = (body: Shell | Part) => body.edges().filter((e) => e.faces().length === 1)
@@ -487,4 +490,238 @@ test('network runs through its curves', () => {
   assert.throws(() => network(us, [vs[0]]), /at least two/)
   assert.throws(() => network(us, [vs[0], vs[1], vs[2].translate(0, 0, 1)]), /do not cross/)
   assert.throws(() => network(us, [vs[0], Spline(...[-3, 0, 5, 10].map((y) => [5, y, h(5, y)] as [number, number, number])), vs[2]]), /past the outer/)
+})
+
+// ---------------------------------------------------------------------- U7: push
+
+const topOf = (part: Part | Shell): Face => part.faces().sortBy(Axis.Z).at(-1)!
+
+/** The height of a face over (x, y), along a vertical ray from below. */
+function zAt(face: Face, x: number, y: number): number {
+  const hits = face.raycast([x, y, -100], [0, 0, 1])
+  assert.ok(hits.length > 0, `${x}, ${y}`)
+  return hits[hits.length - 1].point.z
+}
+
+test('push moves the point exactly and nothing else', () => {
+  const box = Box(60, 40, 20)
+  const top = topOf(box)
+  const p = box.push(top, [0, 0, 10], { by: 5, radius: 15 })
+  const f = topOf(p)
+  assert.ok(p.isValid())
+  assert.equal(p.faces().length, 6)
+  assert.equal(f.geomType, 'bspline')
+  assert.ok(f.distanceTo([0, 0, 15]) < 1e-9)
+  approx(p.bbox().max.z, 15, 0, 1e-9)
+  approx(p.volume, 48500, 0, 1e-6)
+  approx(zAt(f, 20, 0), 10, 0, 1e-12)
+  approx(zAt(f, 0, 16), 10, 0, 1e-12)
+  for (const e of f.edges()) {
+    for (const t of [0, 0.3, 0.5, 0.8]) assert.ok(Math.abs(e.pointAt(t).z - 10) < 1e-12)
+    for (const t of [0.1, 0.5, 0.9]) assert.ok(f.distanceTo(e.pointAt(t)) < 1e-9)
+  }
+  assert.equal(p.faces().filter((g) => g.geomType === 'plane').length, 5)
+  approx(box.volume, 48000)
+})
+
+test('push to a point with a normal', () => {
+  const box = Box(60, 40, 20)
+  const p = box.push(topOf(box), [5, 3, 10], { to: [5, 3, 13], normal: [0.2, 0, 1], radius: 10 })
+  const f = topOf(p)
+  assert.ok(f.distanceTo([5, 3, 13]) < 1e-9)
+  approx(f.normalAt([5, 3, 13]).dot(new Vector(0.2, 0, 1).normalized()), 1, 0, 1e-9)
+  for (const face of box.faces()) {
+    const n = face.normalAt()
+    const tilted = n.add(new Vector(0.1, 0.1, 0.1)).normalized()
+    const r = box.push(face, face.center(), { by: 3, radius: 6, normal: tilted })
+    const g = r.faces().filter((h) => h.geomType === 'bspline')[0]
+    assert.ok(r.volume > box.volume + 40 && r.isValid())
+    approx(g.normalAt(face.center().add(n.mul(3))).dot(tilted), 1, 0, 1e-9)
+  }
+  const q = box.push(topOf(box), [0, 0, 10], { by: [0, 0, -4], radius: 12 })
+  approx(q.bbox().max.z, 10)
+  assert.ok(topOf(q).distanceTo([0, 0, 6]) < 1e-9)
+  assert.ok(q.volume < 48000)
+})
+
+test('push continuity at the edges it reaches', () => {
+  const box = Box(60, 40, 20)
+  const g1 = box.push(topOf(box), [0, 0, 10], { by: 5, radius: 30 })
+  const g2 = box.push(topOf(box), [0, 0, 10], { by: 5, radius: 30, continuity: 'G2' })
+  const g0 = box.push(topOf(box), [0, 0, 10], { by: 5, radius: 30, continuity: 'G0' })
+  approx(g1.volume, 49833.333333, 0, 1e-4)
+  approx(g2.volume, 49500, 0, 1e-4)
+  assert.ok(g0.isValid() && g1.isValid() && g2.isValid())
+  for (const p of [g1, g2]) {
+    const f = topOf(p)
+    for (const y of [-19.999, 19.999]) assert.ok(f.normalAt([0, y, 10]).z > 0.9999)
+  }
+})
+
+test('push refuses to move a hole and shrinks by default', () => {
+  const part = Box(60, 40, 20).cut(Cylinder(4, 40).translate(10, 0, 0))
+  const top = part.faces().filter((f) => f.geomType === 'plane').sortBy(Axis.Z).at(-1)!
+  assert.throws(() => part.push(top, [0, 0, 10], { by: 3, radius: 8 }), /reaches an edge of the face/)
+  for (const p of [part.push(top, [0, 0, 10], { by: 3, radius: 5 }), part.push(top, [0, 0, 10], { by: 3 })]) {
+    assert.ok(p.isValid())
+    const hole = p.faces().filter((f) => f.geomType === 'cylinder')[0]
+    const f = p.faces().filter((g) => g.geomType === 'bspline')[0]
+    assert.ok(f.distanceTo([0, 0, 13]) < 1e-9)
+    const rim = hole.edges().filter((e) => e.center().z > 0)
+    assert.ok(rim.length > 0)
+    for (const e of rim) for (const t of [0, 0.25, 0.5, 0.75]) assert.ok(f.distanceTo(e.pointAt(t)) < 1e-9)
+  }
+})
+
+test('push a cylinder across its quarter turn stays smooth', () => {
+  const c = Cylinder(10, 40)
+  const side = c.faces().filter((f) => f.geomType === 'cylinder')[0]
+  const p = c.push(side, [0, 10, 5], { by: 2, radius: 6 })
+  const f = p.faces().filter((g) => g.geomType === 'bspline')[0]
+  assert.ok(p.isValid())
+  assert.ok(f.distanceTo([0, 12, 5]) < 1e-9)
+  approx(p.bbox().max.y, 12, 0, 1e-9)
+  approx(p.volume, 12599.44, 0, 0.01)
+  const steps: number[] = []
+  let prev: Vector | null = null
+  for (let i = -40; i <= 40; i++) {
+    const a = ((90 + i * 0.05) * Math.PI) / 180
+    const [q] = k.face_closest_point(f._f, [14 * Math.cos(a), 14 * Math.sin(a), 6]) as [[number, number, number], number]
+    const n = f.normalAt(q)
+    if (prev) steps.push((Math.acos(Math.min(1, n.dot(prev))) * 180) / Math.PI)
+    prev = n
+  }
+  const sorted = [...steps].sort((a, b) => a - b)
+  assert.ok(Math.max(...steps) < 3 * sorted[Math.floor(steps.length / 2)] + 1e-6)
+  assert.ok(f.distanceTo([10, 0, -15]) < 1e-9 && f.distanceTo([0, -10, 15]) < 1e-9)
+})
+
+test('push a sphere and a sheet', () => {
+  const s = Sphere(10)
+  const f0 = s.faces()[0]
+  const at = new Vector((k.face_closest_point(f0._f, [7.0710678, 7.0710678, 0]) as [[number, number, number], number])[0])
+  const p = s.push(f0, at, { by: -1.5, radius: 4 })
+  assert.ok(p.isValid() && p.faces()[0].distanceTo(at.mul(8.5 / 10)) < 1e-9)
+  approx(p.volume, 4178.0, 0, 0.01)
+  const rows = [0, 10, 20, 30, 40, 50, 60].map((x) => [0, 10, 20, 30, 40, 50, 60].map((y) => [x, y, 2 * Math.sin(x / 10) * Math.cos(y / 15)] as [number, number, number]))
+  const sheet = surface(rows)
+  const f = sheet.faces()[0]
+  const a = new Vector((k.face_closest_point(f._f, [30, 30, 0]) as [[number, number, number], number])[0])
+  const out = sheet.push(f, a, { by: [0, 0, 5], radius: 12, normal: [1, 0, 1] })
+  assert.ok(out instanceof Shell && !(out instanceof Part))
+  const g = out.faces()[0]
+  assert.ok(g.distanceTo(a.add(new Vector(0, 0, 5))) < 1e-9)
+  approx(g.normalAt(a.add(new Vector(0, 0, 5))).dot(new Vector(1, 0, 1).normalized()), 1, 0, 1e-9)
+  for (const e of f.edges()) for (const t of [0.2, 0.5, 0.8]) assert.ok(g.distanceTo(e.pointAt(t)) < 1e-9)
+})
+
+test('push survives a copy and the native format', () => {
+  const p = Box(60, 40, 20).push(topOf(Box(60, 40, 20)), [0, 0, 10], { by: 5, radius: 15 })
+  const back = fromSmb(toSmb(p)) as Part
+  approx(back.bbox().max.z, 15, 0, 1e-9)
+  approx(back.volume, 48500, 0, 1e-6)
+  approx(topOf(back).toShell().bbox().max.z, 15, 0, 1e-9)
+})
+
+test('push errors', () => {
+  const box = Box(60, 40, 20)
+  const top = topOf(box)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, to: [0, 0, 12] }), /not both/)
+  assert.throws(() => box.push(top, [0, 0, 10]), /give the move/)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, continuity: 'G3' }), /continuity/)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, radius: 0 }), /radius/)
+  assert.throws(() => box.push(topOf(Box(5, 5, 5).translate(100, 0, 0)), [100, 0, 2.5], { by: 1 }), /not a face of this part/)
+  assert.throws(() => box.push(box.edges()[0] as unknown as Face, [0, 0, 10], { by: 1 }), TypeError)
+  assert.throws(() => box.push(top, [30, 0, 10], { by: 1 }), /on an edge of the face/)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, normal: [0, 0, -1] }), /same side|tilts/)
+  assert.throws(() => box.push(top, [0, 0, 10], { by: 1, nope: 1 } as never), TypeError)
+  const moved = box.push(top, [0, 0, 10], { by: 1, radius: 5 })
+  assert.ok(moved.push(box.faces().sortBy(Axis.X)[0], [-30, 0, 0], { by: 1, radius: 5 }).isValid())
+})
+
+// -------------------------------------------------------------- U8: warp and flatten
+
+test('warp raises a region by the height', () => {
+  const box = Box(60, 40, 20)
+  const top = topOf(box)
+  const vols: Record<string, number> = {}
+  for (const cont of ['G2', 'G1', 'crease']) {
+    const w = box.warp(top, Rectangle(20, 16).on(top), 4, { continuity: cont })
+    assert.ok(w.isValid())
+    approx(w.bbox().max.z, 14, 0, 1e-9)
+    const f = topOf(w)
+    approx(zAt(f, 25, 15), 10, 0, 1e-12)
+    approx(zAt(f, 10.5, 0), 10, 0, 1e-12)
+    assert.ok(zAt(f, 0, 0) > 13.8)
+    vols[cont] = w.volume
+    if (cont === 'G2') approx(zAt(f, 0, 0), 14, 0, 1e-9)
+  }
+  approx(vols.G2, 48148.027, 0, 1e-3)
+  assert.ok(vols.G2 < vols.G1 && vols.G1 < vols.crease)
+  const w = box.warp(top, Circle(8).on(top), -3)
+  approx(w.bbox().min.z, -10)
+  assert.ok(topOf(w).distanceTo([0, 0, 7]) < 1e-9)
+  const pts: [number, number, number][] = [[-10, -8, 10], [10, -8, 10], [10, 8, 10], [-10, 8, 10]]
+  approx(box.warp(top, pts, [0, 0, 4]).volume, vols.G2, 0, 1e-6)
+})
+
+test('warp a cylinder and a sheet', () => {
+  const c = Cylinder(10, 40)
+  const side = c.faces().filter((f) => f.geomType === 'cylinder')[0]
+  const near = ([[60, -6], [120, -6], [120, 6], [60, 6]] as [number, number][]).map(
+    ([a, z]) => [10 * Math.cos((a * Math.PI) / 180), 10 * Math.sin((a * Math.PI) / 180), z] as [number, number, number])
+  const w = c.warp(side, near, 3)
+  assert.ok(w.isValid())
+  approx(w.bbox().max.y, 13, 0, 1e-9)
+  assert.ok(w.faces().filter((f) => f.geomType === 'bspline')[0].distanceTo([10, 0, -15]) < 1e-9)
+  const rows = [0, 10, 20, 30, 40].map((x) => [0, 10, 20, 30, 40].map((y) => [x, y, 0.02 * (x - 20) ** 2] as [number, number, number]))
+  const sheet = surface(rows)
+  const g = sheet.faces()[0]
+  const region = ([[12, 12], [28, 12], [28, 28], [12, 28]] as [number, number][]).map(
+    ([x, y]) => new Vector((k.face_closest_point(g._f, [x, y, 0]) as [[number, number, number], number])[0]))
+  const out = sheet.warp(g, region, [0, 0, 2])
+  assert.ok(out instanceof Shell)
+  let lift = -Infinity
+  for (let x = 14; x <= 26; x++) for (let y = 14; y <= 26; y++) lift = Math.max(lift, out.faces()[0].raycast([x, y, 50], [0, 0, -1])[0].point.z - 0.02 * (x - 20) ** 2)
+  approx(lift, 2, 0, 1e-3)
+})
+
+test('flatten presses a region onto a plane', () => {
+  const box = Box(60, 40, 20)
+  const top = topOf(box)
+  const fl = box.flatten(top, Rectangle(20, 16).on(top), Plane.XY.offset(8))
+  const f = topOf(fl)
+  assert.ok(fl.isValid())
+  approx(fl.volume, 47577.5, 0, 1e-6)
+  for (const [x, y] of [[0, 0], [-6, 0], [6, 4], [0, -4]]) approx(zAt(f, x, y), 8, 0, 1e-12)
+  approx(zAt(f, 25, 15), 10, 0, 1e-12)
+  const rows: [number, number, number][][] = []
+  for (let x = 0; x <= 60; x += 5) {
+    const row: [number, number, number][] = []
+    for (let y = 0; y <= 60; y += 5) row.push([x, y, 3 * Math.sin(x / 9) * Math.cos(y / 11)])
+    rows.push(row)
+  }
+  const sheet = surface(rows)
+  const g = sheet.faces()[0]
+  const region = ([[20, 20], [40, 20], [40, 40], [20, 40]] as [number, number][]).map(
+    ([x, y]) => new Vector((k.face_closest_point(g._f, [x, y, 0]) as [[number, number, number], number])[0]))
+  const out = sheet.flatten(g, region, Plane.XY)
+  const h = out.faces()[0]
+  for (const [x, y] of [[30, 30], [25, 25], [34, 33]]) approx(h.raycast([x, y, 50], [0, 0, -1])[0].point.z, 0, 0, 1e-9)
+  for (const e of g.edges()) for (const t of [0.1, 0.5, 0.9]) assert.ok(h.distanceTo(e.pointAt(t)) < 1e-9)
+})
+
+test('warp and flatten errors', () => {
+  const box = Box(60, 40, 20)
+  const top = topOf(box)
+  const holed = Box(60, 40, 20).cut(Cylinder(4, 40).translate(10, 0, 0))
+  const holedTop = holed.faces().filter((f) => f.geomType === 'plane').sortBy(Axis.Z).at(-1)!
+  assert.throws(() => holed.warp(holedTop, Rectangle(30, 16).translate(5, 0).on(holedTop), 3), /reaches an edge of the face/)
+  assert.throws(() => holed.flatten(holedTop, Rectangle(30, 16).translate(5, 0).on(holedTop), Plane.XY.offset(8)), /reaches an edge of the face/)
+  assert.ok(holed.warp(holedTop, Rectangle(14, 12).translate(-5, 0).on(holedTop), 3).isValid())
+  assert.throws(() => box.warp(top, Rectangle(10, 10).on(Plane.XY.offset(15)), 4), /does not lie on the face/)
+  assert.throws(() => box.warp(top, Line([0, 0, 10], [5, 0, 10]), 4), /not closed/)
+  assert.throws(() => box.warp(top, Rectangle(10, 10).on(top), 4, { continuity: 'G3' }), /continuity/)
+  assert.throws(() => box.flatten(top, Rectangle(10, 10).on(top), Plane.XY.offset(10)), /nothing to flatten/)
+  assert.throws(() => box.warp(top, 5, 4), TypeError)
 })
