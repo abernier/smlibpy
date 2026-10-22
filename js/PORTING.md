@@ -13,7 +13,10 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
    - bind_topology.cpp: SmPyLib's methods of Brep, Face, Edge, Vertex, Curve and Surface as
      functions, `<class>_<method>` (`brep_faces(b)` for `b.faces()`, `curve_evaluate(c, t)`).
    - bind_smlibpy.cpp: smlibpy's C++ as `<submodule>__<name>` (`ext__curve_data`,
-     `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy`.
+     `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy` (SmPyLib's), `ext__poly_arrays`,
+     `ext__mesh_first_hits`, `ext__body_first_hits`; bind_drawing.cpp: `ext__hidden_lines`;
+     bind_mesh_tools.cpp: `ext__mesh_nearest_points`, `ext__crease_normals`,
+     `ext__decimate_triangles`, `ext__repair_triangles`, `ext__brep_from_triangles`.
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
      message is the one Python's RuntimeError carries.
@@ -124,9 +127,13 @@ the Python code works around a kernel defect, so does the TypeScript.
   step_import.ts put the faces' colors and names back on a body read from a file); `shaping.ts`:
   `_push`, `_warp`, `_flatten`, `_checked` (the push, warp and flatten of Part and Shell), `_ownFace`
   (sheet_edit.ts takes a sheet's faces with it); `sheet_edit.ts`: `_matchEdge`, `_mergeFaces` (Shell's
-  `matchEdge` and `mergeFaces`); `mesh.ts`: `_rayTriangles`,
-  `faceMeshes` (shapes.ts casts rays with them), `_tessellate` (render.ts), `_coloredMesh`,
-  `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
+  `matchEdge` and `mergeFaces`); `mesh.ts`: `_rayTriangles`, `faceMeshes`, `_rays`,
+  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; render.ts takes `_tessellate`),
+  `_levels` (shapes.ts slices parts with it), `_deviation` (its test), `_coloredMesh`,
+  `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them);
+  `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
+  `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
+  `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
   (its test); `face_edit.ts`: `moveFaces`, `offsetFaces`, `_wallThicknesses`, `shellWalls`
   (shapes.ts: Part.moveFaces, Part.offsetFaces, shell's `walls`).

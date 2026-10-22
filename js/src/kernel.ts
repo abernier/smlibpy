@@ -37,8 +37,8 @@ module.init()
  */
 export type Signature = readonly (string | readonly [string, unknown])[]
 
-// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp and
-// bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
+// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp, bind_drawing.cpp,
+// bind_mesh_tools.cpp and bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
 const OWN: Record<string, Signature> = {
   'ext.curve_data': ['curve', ['nurbs', true]],
   'ext.surface_data': ['surface', ['nurbs', true]],
@@ -175,6 +175,15 @@ const OWN: Record<string, Signature> = {
   'ext.grid_deviation': ['face', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0]],
   'ext.round_edges': ['brep', 'edges', 'radii', 'sections', ['radii2', []], ['faces', []], ['law', []], ['continuity', 1],
     ['thumbweight', 1.0], ['tolerance_factor', 4.0], ['mitre', false]],
+  'ext.poly_arrays': ['poly', ['face_varying_normals', false], ['brep', null]],
+  'ext.mesh_first_hits': ['vertices', 'triangles', 'origins', 'directions'],
+  'ext.body_first_hits': ['brep', 'vertices', 'triangles', 'owners', 'origins', 'directions', 'tolerance', 'mesh_tolerance'],
+  'ext.hidden_lines': ['brep', 'plane_point', 'plane_normal', ['seams', false], ['smooth_edges', false]],
+  'ext.mesh_nearest_points': ['vertices', 'triangles', 'points'],
+  'ext.crease_normals': ['vertices', 'triangles', 'crease_angle'],
+  'ext.decimate_triangles': ['vertices', 'triangles', 'fraction', ['feature_angle', 30.0], ['keep_boundary', true]],
+  'ext.repair_triangles': ['vertices', 'triangles', ['clean', true], ['fill', true]],
+  'ext.brep_from_triangles': ['vertices', 'triangles', ['merge_coplanar', true], ['max_faces', 0]],
   'sheetmetal.bend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length'],
   'sheetmetal.unbend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length',
     ['anchor', null]],
@@ -465,6 +474,8 @@ export class BrepHandle extends Handle {
   merged: { parts: Any[]; placement: Float64Array; cells: Any[][] | null } | null = null
   /** For a cell of a merged part: the parts it lies in. */
   sources: Any[] | null = null
+  /** The meshes rays are cast against, by purpose (a body's Brep does not change once wrapped). */
+  meshes = new Map<string, Any>()
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

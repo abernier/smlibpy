@@ -18,6 +18,7 @@ import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
 import { Mesh } from './mesh.ts'
 import * as regions from './regions.ts'
 import { Edge, Face, Part, type ShapeList, Sketch, Vertex, Wire, _Body, _canonicalCurve, _list, _typeName } from './shapes.ts'
+import { DrawingView } from './drawing.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
 type Any = any
@@ -801,14 +802,14 @@ function _edge(c: _Curve): Edge {
 }
 
 /** Points along an edge in its direction (uniform in the kernel parameter). */
-function _edgePoints(e: Edge, n: number): V3[] {
+export function _edgePoints(e: Edge, n: number): V3[] {
   const [t0, t1] = e._range()
   const cv = e._curve()
   const pts = _linspace(t0, t1, n + 1).map((t) => _v3(k.curve_evaluate(cv, t)))
   return e._rev ? pts.reverse() : pts
 }
 
-function _samplesFor(e: Edge): number {
+export function _samplesFor(e: Edge): number {
   const kind = e.geomType
   if (kind === 'line') return 1
   if (kind === 'circle' || kind === 'ellipse') return 64
@@ -1083,9 +1084,10 @@ export function exportDxf(shapes: unknown, path: string, options: DxfWriteOption
  * points, knots and weights. Circular B-splines (the edges of sections) are written as ARC and
  * CIRCLE, straight ones as LINE. A shape's name becomes its layer. `curves: 'arcs'` writes splines
  * and ellipses as LINE and ARC within `tolerance` (`Edge.toArcs`), for software that reads only
- * lines and arcs.
+ * lines and arcs. The views of `drawingViews` go on the layers VISIBLE and HIDDEN, the hidden lines
+ * dashed (the linetype DASHED: 3 mm dashes, 1.5 mm gaps).
  *
- * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge` or an array of them.
+ * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge`, `DrawingView` or an array of them.
  */
 export function toDxf(shapes: unknown, options: DxfWriteOptions = {}): string {
   _opts('toDxf', options)
@@ -1116,10 +1118,11 @@ function _dxf(shapes: unknown, options: DxfWriteOptions, what: string): string {
     return [_dot(d, xDir) * f, _dot(d, yDir) * f]
   }
   const w = new _Writer()
+  w.dash = [3.0 * f, 1.5 * f]
   for (const item of items) {
     for (let loop of item.loops) {
       if (curves === 'arcs') loop = loop.flatMap((e) => _asArcs(e, tolerance))
-      for (const ent of _mergeArcs(loop.map((e) => _entity(e, local, n, f)))) w.entity(item.layer, ent)
+      for (const ent of _mergeArcs(loop.map((e) => _entity(e, local, n, f)))) w.entity(item.layer, ent, item.linetype)
     }
   }
   return w.text(code, !['inch', 'in', 'ft'].includes(unit))
@@ -1135,12 +1138,18 @@ interface _Item {
   layer: string
   loops: Edge[][]
   plane: Plane | null // the plane of a sketch or face
+  linetype?: string
 }
 
 function _drawable(shapes: unknown, what: string): _Item[] {
   const out: _Item[] = []
   const loopsOf = (faces: Face[]) => faces.flatMap((f) => [...f.wires()].map((w) => [...w.edges()]))
   const add = (s: unknown): void => {
+    if (s instanceof DrawingView) {
+      out.push({ layer: 'VISIBLE', loops: [...s.visible].map((e) => [e]), plane: Plane.XY })
+      out.push({ layer: 'HIDDEN', loops: [...s.hidden].map((e) => [e]), plane: Plane.XY, linetype: 'DASHED' })
+      return
+    }
     if (s instanceof Part) {
       throw new TypeError(
         `${what} writes 2D shapes, not a Part; write part.section(plane) for a cross-section or the edges of part.outline(plane) for a view`,
@@ -1207,7 +1216,7 @@ interface _Ent {
   data: Any
 }
 
-function _entity(e: Edge, local: (p: ArrayLike<number>) => P2, n: V3, f: number): _Ent {
+export function _entity(e: Edge, local: (p: ArrayLike<number>) => P2, n: V3, f: number): _Ent {
   const kind = e.geomType
   if (kind === 'line') return { kind: 'LINE', data: { a: local(e.start.toArray()), b: local(e.end.toArray()) } }
   if (kind === 'circle') {
@@ -1408,7 +1417,8 @@ const _H: Record<string, string> = {
 /** An AutoCAD 2000 DXF: header, tables, blocks, entities and objects, with handles. */
 class _Writer {
   handle = 0xff
-  layers = new Map<string, string>()
+  layers = new Map<string, string>() // name -> linetype
+  dash: [number, number] = [3.0, 1.5] // the DASHED linetype: dash and gap, in the file's unit
   readonly entities: string[] = []
   lo: P2 = [Infinity, Infinity]
   hi: P2 = [-Infinity, -Infinity]
@@ -1423,8 +1433,8 @@ class _Writer {
     this.hi = [Math.max(this.hi[0], hi[0]), Math.max(this.hi[1], hi[1])]
   }
 
-  entity(layer: string, ent: _Ent): void {
-    if (!this.layers.has(layer)) this.layers.set(layer, '')
+  entity(layer: string, ent: _Ent, linetype = 'Continuous'): void {
+    if (!this.layers.has(layer)) this.layers.set(layer, linetype)
     const d = ent.data
     const tags = ['0', ent.kind, '5', this._next(), '330', _H.MODEL, '100', 'AcDbEntity', '8', layer]
     if (ent.kind === 'LINE') {
@@ -1457,12 +1467,13 @@ class _Writer {
   text(insunits: number, metric: boolean): string {
     const ok = Number.isFinite(this.lo[0]) && Number.isFinite(this.lo[1])
     const [lo, hi]: [P2, P2] = ok ? [this.lo, this.hi] : [[0, 0], [0, 0]]
-    if (!this.layers.has('0')) this.layers = new Map([['0', ''], ...this.layers])
+    if (!this.layers.has('0')) this.layers = new Map([['0', 'Continuous'], ...this.layers])
     const layerTags: string[] = []
-    for (const name of this.layers.keys()) {
+    for (const [name, linetype] of this.layers) {
       layerTags.push('0', 'LAYER', '5', this._next(), '330', _H.LAYER, '100', 'AcDbSymbolTableRecord')
-      layerTags.push('100', 'AcDbLayerTableRecord', '2', name, '70', '0', '62', '7', '6', 'Continuous')
+      layerTags.push('100', 'AcDbLayerTableRecord', '2', name, '70', '0', '62', '7', '6', linetype || 'Continuous')
     }
+    const dashed = [...this.layers.values()].includes('DASHED') ? this._next() : null
     const seed = (this.handle + 1).toString(16).toUpperCase()
     const center: P2 = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0]
     const height = Math.max(hi[1] - lo[1], (hi[0] - lo[0]) / 1.5, 1.0) * 1.1
@@ -1474,6 +1485,12 @@ class _Writer {
     ]) {
       lt.push('0', 'LTYPE', '5', _H[key], '330', _H.LTYPE, '100', 'AcDbSymbolTableRecord')
       lt.push('100', 'AcDbLinetypeTableRecord', '2', name, '70', '0', '3', text, '72', '65', '73', '0', '40', '0.0')
+    }
+    if (dashed !== null) {
+      const [dash, gap] = this.dash
+      lt.push('0', 'LTYPE', '5', dashed, '330', _H.LTYPE, '100', 'AcDbSymbolTableRecord', '100', 'AcDbLinetypeTableRecord')
+      lt.push('2', 'DASHED', '70', '0', '3', 'Dashed __ __ __', '72', '65', '73', '2', '40', _num(dash + gap))
+      lt.push('49', _num(dash), '74', '0', '49', _num(-gap), '74', '0')
     }
     const parts = [
       _section('HEADER', [
@@ -1495,7 +1512,7 @@ class _Writer {
           '43', '0.0', '44', '0.0', '50', '0.0', '51', '0.0', '71', '0', '72', '100', '73', '1', '74', '3',
           '75', '0', '76', '0', '77', '0', '78', '0',
         ]),
-        ..._table('LTYPE', 3, lt),
+        ..._table('LTYPE', dashed === null ? 3 : 4, lt),
         ..._table('LAYER', this.layers.size, layerTags),
         ..._table('STYLE', 1, [
           '0', 'STYLE', '5', _H.STYLE_STANDARD, '330', _H.STYLE, '100', 'AcDbSymbolTableRecord',

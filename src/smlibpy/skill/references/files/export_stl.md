@@ -3,13 +3,14 @@
 Writes shapes as one triangle mesh to an STL file, for 3D printing and mesh tools.
 
 ## Signature
-`export_stl(shapes, path, *, tolerance=None, angle=15.0, ascii=False)`
+`export_stl(shapes, path, *, tolerance=None, angle=15.0, ascii=False, max_edge=None)`
 
 - `shapes`: a `Part`, `Shell`, `Sketch`, `Face`, `Mesh`, or a list of them.
 - `tolerance`: the largest distance between the mesh and the exact surface, in mm. The default
   is 0.1 % of each body's bbox diagonal.
 - `angle`: the largest angle in degrees between neighbouring triangles on curved faces.
 - `ascii`: `False` (default) writes binary STL. `True` writes text that is 4.6 times larger.
+- `max_edge`: the longest edge a triangle may have (default: no limit), as in `tessellate`.
 
 ## Returns
 `None`. Binary file: an 80-byte header (`smlibpy binary STL`), the triangle count, then

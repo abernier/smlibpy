@@ -899,10 +899,12 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
 
     Every curve is written exactly: LINE, ARC, CIRCLE, ELLIPSE, or SPLINE with the kernel's
     control points, knots and weights. Circular B-splines (the edges of sections) are written as
-    ARC and CIRCLE, straight ones as LINE. A shape's name becomes its layer.
+    ARC and CIRCLE, straight ones as LINE. A shape's name becomes its layer. The views of
+    :func:`drawing_views` go on the layers VISIBLE and HIDDEN, the hidden lines dashed (the
+    linetype DASHED: 3 mm dashes, 1.5 mm gaps).
 
     Args:
-        shapes: A ``Sketch``, ``Face``, ``Wire``, ``Edge`` or a list of them.
+        shapes: A ``Sketch``, ``Face``, ``Wire``, ``Edge``, ``DrawingView`` or a list of them.
         path: The file to write.
         unit: Unit of the file: ``"mm"`` (default), ``"cm"``, ``"m"``, ``"um"``, ``"inch"`` or
             ``"ft"``. The model (in mm) is converted to it and ``$INSUNITS`` says so.
@@ -948,12 +950,13 @@ def _dxf(shapes: Any, unit: str, plane: Plane | None, what: str) -> str:
         return np.array([d @ x_dir, d @ y_dir]) * f
 
     w = _Writer()
+    w.dash = (3.0 * f, 1.5 * f)
     for item in items:
         for loop in item.loops:
             if curves == "arcs":
                 loop = [p for e in loop for p in _as_arcs(e, float(tolerance))]
             for ent in _merge_arcs([_entity(e, local, n, f) for e in loop]):
-                w.entity(item.layer, ent)
+                w.entity(item.layer, ent, item.linetype)
     return w.text(code, unit not in ("inch", "in", "ft"))
 
 
@@ -969,15 +972,21 @@ class _Item:
     layer: str
     loops: list[list[Edge]]
     plane: Plane | None  # the plane of a sketch or face
+    linetype: str = "Continuous"
 
 
 def _drawable(shapes: Any, what: str = "export_dxf") -> list[_Item]:
+    from .drawing import DrawingView
     from .mesh import Mesh
     from .shapes import Part, Vertex
 
     out: list[_Item] = []
 
     def add(s: Any) -> None:
+        if isinstance(s, DrawingView):  # (a tuple: before the lists)
+            out.append(_Item("VISIBLE", [[e] for e in s.visible], Plane.XY))
+            out.append(_Item("HIDDEN", [[e] for e in s.hidden], Plane.XY, "DASHED"))
+            return
         if isinstance(s, Part):
             raise TypeError(f"{what} writes 2D shapes, not a Part; write part.section(plane) for a cross-section "
                             "or the edges of part.outline(plane) for a view")
@@ -1234,7 +1243,8 @@ class _Writer:
 
     def __init__(self) -> None:
         self.handle = 0xFF
-        self.layers: dict[str, str] = {}
+        self.layers: dict[str, str] = {}  # name -> linetype
+        self.dash = (3.0, 1.5)  # the DASHED linetype: dash and gap, in the file's unit
         self.entities: list[str] = []
         self.lo = np.full(2, np.inf)
         self.hi = np.full(2, -np.inf)
@@ -1247,9 +1257,9 @@ class _Writer:
         self.lo = np.minimum(self.lo, lo)
         self.hi = np.maximum(self.hi, hi)
 
-    def entity(self, layer: str, ent: _Ent) -> None:
+    def entity(self, layer: str, ent: _Ent, linetype: str = "Continuous") -> None:
         if layer not in self.layers:
-            self.layers[layer] = ""
+            self.layers[layer] = linetype
         d = ent.data
         tags = ["0", ent.kind, "5", self._next(), "330", _H["MODEL"], "100", "AcDbEntity", "8", layer]
         if ent.kind == "LINE":
@@ -1284,11 +1294,12 @@ class _Writer:
         ok = np.all(np.isfinite(self.lo))
         lo, hi = (self.lo, self.hi) if ok else (np.zeros(2), np.zeros(2))
         if "0" not in self.layers:
-            self.layers = {"0": "", **self.layers}
+            self.layers = {"0": "Continuous", **self.layers}
         layer_tags: list[str] = []
-        for name in self.layers:
+        for name, linetype in self.layers.items():
             layer_tags += ["0", "LAYER", "5", self._next(), "330", _H["LAYER"], "100", "AcDbSymbolTableRecord",
-                           "100", "AcDbLayerTableRecord", "2", name, "70", "0", "62", "7", "6", "Continuous"]
+                           "100", "AcDbLayerTableRecord", "2", name, "70", "0", "62", "7", "6", linetype or "Continuous"]
+        dashed = self._next() if "DASHED" in self.layers.values() else None
         seed = f"{self.handle + 1:X}"
         center = (lo + hi) / 2.0
         height = max(float(hi[1] - lo[1]), float(hi[0] - lo[0]) / 1.5, 1.0) * 1.1
@@ -1297,6 +1308,11 @@ class _Writer:
                                 ("LT_CONTINUOUS", "Continuous", "Solid line")):
             lt += ["0", "LTYPE", "5", _H[key], "330", _H["LTYPE"], "100", "AcDbSymbolTableRecord",
                    "100", "AcDbLinetypeTableRecord", "2", name, "70", "0", "3", text, "72", "65", "73", "0", "40", "0.0"]
+        if dashed is not None:
+            dash, gap = self.dash
+            lt += ["0", "LTYPE", "5", dashed, "330", _H["LTYPE"], "100", "AcDbSymbolTableRecord",
+                   "100", "AcDbLinetypeTableRecord", "2", "DASHED", "70", "0", "3", "Dashed __ __ __", "72", "65",
+                   "73", "2", "40", _num(dash + gap), "49", _num(dash), "74", "0", "49", _num(-gap), "74", "0"]
         parts = [
             _section("HEADER", [
                 "9", "$ACADVER", "1", "AC1015",
@@ -1316,7 +1332,7 @@ class _Writer:
                     "17", "0.0", "27", "0.0", "37", "0.0", "40", _num(height), "41", "1.5", "42", "50.0",
                     "43", "0.0", "44", "0.0", "50", "0.0", "51", "0.0", "71", "0", "72", "100", "73", "1", "74", "3",
                     "75", "0", "76", "0", "77", "0", "78", "0"]),
-                *_table("LTYPE", 3, lt),
+                *_table("LTYPE", 3 if dashed is None else 4, lt),
                 *_table("LAYER", len(self.layers), layer_tags),
                 *_table("STYLE", 1, [
                     "0", "STYLE", "5", _H["STYLE_STANDARD"], "330", _H["STYLE"], "100", "AcDbSymbolTableRecord",

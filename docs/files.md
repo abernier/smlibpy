@@ -12,10 +12,11 @@ control. All of them accept a single shape or a list.
 | OpenCASCADE (`.brep`) | `export_brep` | exact B-rep for OpenCASCADE, build123d, CadQuery and FreeCAD; no names or colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those), one body |
 | SMLib part file (`.smp`) | `save` | the kernel's part container: exact bodies and curves with their names and colors |
-| DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
-| glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
+| DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves, drawing views; exact |
+| SVG (`.svg`) | `export_svg` | 2D drawings: drawing views (hidden lines dashed), curves; at true size |
+| glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | indexed triangles with normals, edges as lines, colors, names |
 | STL (`.stl`) | `export_stl` | triangles |
-| OBJ (`.obj`) | `export_obj` | triangles |
+| OBJ (`.obj`) | `export_obj` | triangles with normals |
 
 ```python
 from smlibpy import *
@@ -178,11 +179,33 @@ farther from its face than 1e-3 of the body's size, or whose face boundary does 
 ### Meshes
 
 `tolerance` is the largest distance between mesh and true surface (default: 0.1 % of the
-part's size); `angle` limits the angle between neighbouring triangles on curved faces.
+part's size); `angle` limits the angle between neighbouring triangles on curved faces;
+`max_edge` the length of the triangles' edges (default: no limit).
 
 glTF is defined in meters: `export_glb` and `export_gltf` keep the positions in millimeters
 and scale the scene's root node by 0.001, so viewers that respect units show the part at its
 real size. STL and OBJ have no units and hold the millimeter values.
+
+Meshes are computed in double precision. STL and glTF store float32 (7 digits): glTF positions
+are kept relative to the middle of each shape, whose node moves them there, so a part 1 km from
+the origin keeps its shape in glTF (in STL its points are off by up to 0.03 mm there); OBJ writes
+12 digits. glTF materials hold colors linear, as the format defines them: the sRGB colors of
+`colored("#7c93b5")` are converted, so viewers show the color asked for.
+
+glTF and OBJ keep the mesh's normals, those of the exact surface: edges stay sharp where faces
+meet at an angle, and curved faces shade smooth. OBJ names the normal of each corner
+(`f 3//7 ...`, each distinct normal written once); glTF writes each distinct pair of a point and
+its normal once and the triangles as indices into them (16-bit, 32-bit above 65 535 pairs), about
+a third of the corners:
+
+```python
+from smlibpy.exporters import gltf_document
+
+doc, _ = gltf_document(Box(60, 40, 8) - Cylinder(4, 10), edges=False)
+prim = doc["meshes"][0]["primitives"][0]
+print(doc["accessors"][prim["attributes"]["POSITION"]]["count"],
+      doc["accessors"][prim["indices"]]["count"])        # 152 432: 152 corners for 144 triangles
+```
 
 ## Reading files
 
@@ -357,6 +380,28 @@ files, and of the solids written above it reads 553 of 557 back (99 % with the v
 written with within 4e-6, all within 1e-4); the check refuses 4, whose edges the bridge rebuilds
 running backwards, and a body whose curves on faces lie far from its edges (a swept spring) can
 come back with gaps it refuses.
+
+## Drawings
+
+`drawing_views` makes the views of a part for a 2D drawing: front, top, side and the others,
+each with its visible lines and its hidden lines, laid out next to each other in the XY plane in
+first-angle (ISO) or third-angle (ASME) projection. `export_dxf` writes them on the layers
+VISIBLE and HIDDEN, the hidden lines dashed; `export_svg` writes an SVG that prints at true size:
+
+```python
+part = Box(40, 30, 20) - Cylinder(6, 40)
+views = drawing_views(part)                         # front, top below it, left to its right
+print([(v.name, len(v.visible), len(v.hidden)) for v in views])
+# [('front', 4, 2), ('top', 5, 0), ('left', 4, 2)]: the bore is hidden from the front and the side
+export_dxf(views, "part.dxf")
+export_svg(views, "part.svg")
+seen, hidden = part.outline(Plane.XZ, hidden=True)  # one view, in the plane it looks through
+```
+
+The lines come from the kernel's hidden curve removal, exact: edges and the contours of curved
+faces, split where they pass behind the part. Each line is drawn once (the back edges of a box
+seen from the front lie under its front edges and are left out), edges seen end-on and seams of
+round faces are not drawn, and `tangent_edges=True` adds the tangent lines of fillets.
 
 ## DXF
 

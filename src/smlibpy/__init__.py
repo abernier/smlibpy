@@ -53,6 +53,7 @@ from .iges_import import from_iges, import_iges
 from .dxf import export_dxf, from_dxf, from_dxf_wires, import_dxf, import_dxf_wires, to_dxf
 from .usd import export_usd, from_usd, import_usd, to_usd
 from .occt import export_brep, from_brep, import_brep, to_brep
+from .drawing import DrawingView, drawing_views, export_svg, to_svg
 from .render import diff_images, render
 from .viewer import show
 from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surface, ruled, stitch, surface,
@@ -100,7 +101,8 @@ __all__ = [
     # files in memory
     "to_step", "from_step", "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb",
     "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
-    "from_brep",
+    "from_brep", "to_svg",
+    "drawing_views", "DrawingView", "export_svg",
     "show", "render", "diff_images",
     # errors
     "ModelingError", "KernelError",

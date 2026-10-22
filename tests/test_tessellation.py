@@ -165,6 +165,19 @@ def test_the_angle_tolerance_of_the_faces_decides():
     assert off_surface(transition, Mesh._from_poly(poly)) <= 2 * tol
 
 
+def gltf_triangles(doc, buf, prim):
+    """The corners of a glTF primitive's triangles ((n, 3, 3), relative to its node), through its
+    indices."""
+    acc = doc["accessors"][prim["attributes"]["POSITION"]]
+    view = doc["bufferViews"][acc["bufferView"]]
+    pos = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3).astype(float)
+    iacc = doc["accessors"][prim["indices"]]
+    iview = doc["bufferViews"][iacc["bufferView"]]
+    kind = np.uint16 if iacc["componentType"] == 5123 else np.uint32
+    index = np.frombuffer(buf, kind, iacc["count"], iview["byteOffset"])
+    return pos[index].reshape(-1, 3, 3)
+
+
 def test_exports_and_renderer_take_the_halved_mesh(tmp_path):
     from smlibpy.render import _Scene
 
@@ -174,9 +187,7 @@ def test_exports_and_renderer_take_the_halved_mesh(tmp_path):
     export_stl(bar, path)
     assert import_stl(path).volume == pytest.approx(mesh.volume, rel=1e-6)
     doc, buf = gltf_document(bar, edges=False)
-    acc = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
-    view = doc["bufferViews"][acc["bufferView"]]
-    tris = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3, 3).astype(float)
+    tris = gltf_triangles(doc, buf, doc["meshes"][0]["primitives"][0])
     assert len(tris) == len(mesh)
     assert np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])).sum() / 6 == pytest.approx(mesh.volume)
     assert _Scene([bar], None, "native").bodies[0].mesh.volume == pytest.approx(mesh.volume)
@@ -241,9 +252,8 @@ def test_exports_take_the_turned_mesh_of_a_face(tmp_path):
     side = loft([Rectangle(50, 50), Circle(13).on(Plane.XY.offset(54))]).faces()[0]  # surface normal points in
     mesh = side.mesh()
     doc, buf = gltf_document(side, edges=False)
-    acc = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
-    view = doc["bufferViews"][acc["bufferView"]]
-    tris = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3, 3).astype(float)
+    tris = gltf_triangles(doc, buf, doc["meshes"][0]["primitives"][0])
+    tris += doc["nodes"][0].get("translation", [0, 0, 0])  # (positions are relative to the node)
     assert np.allclose(tris, mesh.vertices[mesh.triangles], atol=1e-4)
     path = tmp_path / "side.stl"
     export_stl(side, path)
@@ -332,8 +342,14 @@ def test_mesh_booleans_on_any_mesh(tmp_path):
     diff = sa - sb
     assert diff.is_closed() and diff.volume == pytest.approx(sa.volume - (sa & sb).volume, rel=1e-6)
     assert diff.volume == pytest.approx((a - b).volume, rel=1e-2)  # (the cylinder's facets cut its corners)
-    # (the kernel gives the result no normals: they come from the triangles, not all (0, 0, 1))
-    assert diff.normals is None and (a.mesh() - b.mesh()).normals is None
+    # (the kernel gives the result no normals: meshes without normals give a result without; with
+    # them, each triangle takes those of the operand's triangle it lies on, turned in a cut)
+    assert diff.normals is None
+    cut = a.mesh() - b.mesh()
+    p = cut.vertices[cut.triangles]
+    wall = (np.linalg.norm(p[..., :2], axis=2) < 6.01).all(axis=1) & (np.abs(cut.triangle_normals[:, 2]) < 1e-9)
+    inward = -p[wall][..., :2] / np.linalg.norm(p[wall][..., :2], axis=2, keepdims=True)
+    assert wall.sum() > 20 and np.abs(np.einsum("ijk,ijk->ij", cut.normals[wall][..., :2], inward) - 1).max() < 1e-6
     tet = Mesh([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)])
     assert (tet & tet).volume == pytest.approx(1 / 6)
     with pytest.raises(ValueError, match="triangles"):

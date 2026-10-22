@@ -126,4 +126,9 @@ PYBIND11_MODULE(_core, m)
     bind_sheet_edit(m.attr("ext").cast<py::module_>());
     bind_part_files(m.attr("ext").cast<py::module_>());
     bind_occt_files(m.attr("ext").cast<py::module_>());
+    bind_poly_arrays(m.attr("ext").cast<py::module_>());
+    bind_rays(m.attr("ext").cast<py::module_>());
+    bind_hidden_lines(m.attr("ext").cast<py::module_>());
+    bind_mesh_tools(m.attr("ext").cast<py::module_>());
+    bind_poly_ray_intersection(m);
 }

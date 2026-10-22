@@ -8,6 +8,7 @@ IGES      ``.igs``, ``.iges`` (solids and trimmed surfaces)    read
 SMLib     ``.smb`` (exact native kernel format, one body)      read/write
 SMLib     ``.smp`` (part file: bodies and curves, named)       read/write
 DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
+SVG       ``.svg`` (2D drawings: views, curves)                write
 glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
 OBJ       ``.obj``                                             write
@@ -199,9 +200,13 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         from .occt import export_brep
 
         export_brep(shapes, p, **kwargs)
+    elif ext == ".svg":
+        from .drawing import export_svg
+
+        export_svg(shapes, p, **kwargs)
     else:
-        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .usda or "
-                         ".brep")
+        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, "
+                         ".usda or .brep")
 
 
 def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None,
@@ -235,16 +240,17 @@ def to_step(shapes: Any, *, unit: str = "mm", name: str | None = None, assembly:
 
     return _step_text(_step_items(shapes), "", unit=unit, name=name, assembly=assembly)
 
-
-def _meshes(shapes: Any, tolerance: float | None, angle: float, what: str = "this writer") -> list[tuple[Any, Mesh]]:
+def _meshes(shapes: Any, tolerance: float | None, angle: float, what: str = "this writer",
+            max_edge: float | None = None) -> list[tuple[Any, Mesh]]:
     out = []
     for it in _items(shapes, faces=True, what=what):  # a face is meshed itself, facing out of its part
-        out.append((it, it if isinstance(it, Mesh) else tessellate(it, tolerance, angle)))
+        out.append((it, it if isinstance(it, Mesh) else tessellate(it, tolerance, angle, max_edge=max_edge)))
     return out
 
 
-def _stl(shapes: Any, tolerance: float | None, angle: float, ascii: bool, what: str) -> bytes:
-    meshes = [m for _, m in _meshes(shapes, tolerance, angle, what)]
+def _stl(shapes: Any, tolerance: float | None, angle: float, ascii: bool, what: str,
+         max_edge: float | None = None) -> bytes:
+    meshes = [m for _, m in _meshes(shapes, tolerance, angle, what, max_edge)]
     if not meshes:
         raise ValueError(f"{what}: nothing to write")
     tris = np.concatenate([m.vertices[m.triangles] for m in meshes]).astype(np.float32)
@@ -264,17 +270,19 @@ def _stl(shapes: Any, tolerance: float | None, angle: float, ascii: bool, what: 
     return b"smlibpy binary STL".ljust(80, b" ") + struct.pack("<I", len(tris)) + rec.tobytes()
 
 
-def to_stl(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, ascii: bool = False) -> bytes:
+def to_stl(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, ascii: bool = False,
+           max_edge: float | None = None) -> bytes:
     """The bytes of an STL file of the shapes' triangles (binary unless ``ascii``, then the
-    file's ASCII text as bytes). ``tolerance`` is the maximum deviation, as in
-    :func:`export_stl`."""
-    return _stl(shapes, tolerance, angle, ascii, "to_stl")
+    file's ASCII text as bytes). ``tolerance`` is the maximum deviation and ``max_edge`` the
+    longest edge a triangle may have, as in :func:`export_stl`."""
+    return _stl(shapes, tolerance, angle, ascii, "to_stl", max_edge)
 
 
 def export_stl(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
-               ascii: bool = False) -> None:
-    """Triangle mesh export (binary unless ``ascii``). ``tolerance`` is the maximum deviation."""
-    data = _stl(shapes, tolerance, angle, ascii, "export_stl")
+               ascii: bool = False, max_edge: float | None = None) -> None:
+    """Triangle mesh export (binary unless ``ascii``). ``tolerance`` is the maximum deviation,
+    ``max_edge`` the longest edge a triangle may have (see :func:`tessellate`)."""
+    data = _stl(shapes, tolerance, angle, ascii, "export_stl", max_edge)
     with open(os.fspath(path), "wb") as fh:
         fh.write(data)
 
@@ -319,34 +327,83 @@ def _weld(corner_positions: np.ndarray) -> Mesh:
     return Mesh(uniq, inverse.reshape(-1, 3))
 
 
-def _obj(shapes: Any, tolerance: float | None, angle: float, what: str) -> str:
+def _obj(shapes: Any, tolerance: float | None, angle: float, what: str, max_edge: float | None = None) -> str:
     lines = ["# smlibpy"]
     offset = 1
-    for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle, what)):
+    normal_offset = 1
+    for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle, what, max_edge)):
         lines.append(f"o {getattr(item, 'name', None) or f'part_{i + 1}'}")
-        lines.extend(f"v {x:.9g} {y:.9g} {z:.9g}" for x, y, z in m.vertices)
-        lines.extend(f"f {a + offset} {b + offset} {c + offset}" for a, b, c in m.triangles)
+        # (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
+        lines.extend(f"v {x:.12g} {y:.12g} {z:.12g}" for x, y, z in m.vertices)
+        normals, corner = _corner_normals(m)
+        lines.extend(f"vn {x:.6g} {y:.6g} {z:.6g}" for x, y, z in normals)
+        c = corner.reshape(-1, 3) + normal_offset
+        lines.extend(f"f {a + offset}//{na} {b + offset}//{nb} {cc + offset}//{nc}"
+                     for (a, b, cc), (na, nb, nc) in zip(m.triangles.tolist(), c.tolist()))
         offset += len(m.vertices)
+        normal_offset += len(normals)
     return "\n".join(lines) + "\n"
 
 
-def to_obj(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0) -> str:
+def to_obj(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, max_edge: float | None = None) -> str:
     """The text of a Wavefront OBJ file of the shapes (one object per part), as
     :func:`export_obj` writes it."""
-    return _obj(shapes, tolerance, angle, "to_obj")
+    return _obj(shapes, tolerance, angle, "to_obj", max_edge)
 
 
-def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0) -> None:
-    """Wavefront OBJ export (one object per part)."""
-    text = _obj(shapes, tolerance, angle, "export_obj")
+def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
+               max_edge: float | None = None) -> None:
+    """Wavefront OBJ export (one object per part), with the mesh's normals: each corner names
+    its normal (``f v//vn``), so edges stay sharp where the faces meet at an angle and curved
+    faces shade smooth. ``max_edge`` is the longest edge a triangle may have."""
+    text = _obj(shapes, tolerance, angle, "export_obj", max_edge)
     with open(os.fspath(path), "w") as fh:
         fh.write(text)
+
+
+def _corner_normals(m: Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """The distinct unit normals of a mesh's corners ((k, 3), float32) and, per triangle corner,
+    which of them it has ((m, 3)): the mesh's normals, or each triangle's own."""
+    if m.normals is not None:
+        n = m.normals.reshape(-1, 3).astype(np.float32)
+    else:
+        n = np.repeat(m.triangle_normals, 3, axis=0).astype(np.float32)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    # (to 7 decimals: normals the kernel computed a hair apart are one; -0 is 0)
+    n = np.round((n / np.where(ln > 0, ln, 1)).astype(np.float32), 7) + np.float32(0.0)
+    if not len(n):
+        return n.reshape(0, 3), np.zeros((0, 3), dtype=np.int64)
+    unique, inverse = np.unique(n, axis=0, return_inverse=True)
+    return unique, inverse.reshape(-1, 3)
+
+
+def _indexed_corners(m: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A mesh as glTF takes it: one entry per distinct (point, normal) pair of its corners, the
+    points ((k, 3) float64) and normals ((k, 3) float32), and three indices per triangle."""
+    normals, corner = _corner_normals(m)
+    key = np.stack([m.triangles.reshape(-1), corner.reshape(-1)], axis=1)
+    if not len(key):
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int64)
+    pairs, inverse = np.unique(key, axis=0, return_inverse=True)
+    return m.vertices[pairs[:, 0]], normals[pairs[:, 1]], inverse.reshape(-1)
 
 
 # -----------------------------------------------------------------------------
 # glTF 2.0
 # -----------------------------------------------------------------------------
 _DEFAULT_COLORS = ["#7c93b5", "#d9925a", "#79ad73", "#c97878", "#9d87c7", "#d4b45a", "#6bb3b3", "#b08e6c"]
+
+
+def _linear_rgb(color: Any) -> tuple[float, float, float]:
+    """A color as glTF's ``baseColorFactor`` takes it: the sRGB values that colors are given in
+    (``"#7c93b5"``, ``(124, 147, 181)``) turned linear, so viewers show the color asked for (glTF
+    stores linear values and viewers encode them as sRGB for the screen)."""
+
+    def linear(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = to_rgb(color)
+    return linear(r), linear(g), linear(b)
 
 
 def _edge_polylines(item: Any, angle: float = 5.0) -> list[np.ndarray]:
@@ -390,12 +447,19 @@ def _curve_points(item: Any) -> list[np.ndarray]:
     return out
 
 
+def _centre(points: np.ndarray) -> np.ndarray:
+    """The middle of the box around points ((n, 3); the origin for none)."""
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    return (p.min(axis=0) + p.max(axis=0)) / 2 if len(p) else np.zeros(3)
+
+
 def _fmt_num(v: float) -> str:
     return f"{v:,.6g}".replace(",", "\u2009")
 
 
 def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
-                        edge_color: Any = "#1f2328") -> tuple[dict[str, Any], bytes, str]:
+                        edge_color: Any = "#1f2328",
+                        max_edge: float | None = None) -> tuple[dict[str, Any], bytes, str]:
     """glTF JSON, binary buffer and a one-line summary for any mix of shapes."""
     from .shapes import Edge, Face, Part, Shell, Sketch, Vertex, Wire, _Body
 
@@ -428,7 +492,7 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         return len(accessors) - 1
 
     def material(color: Any, lines: bool = False) -> int:
-        r, g, b = to_rgb(color)
+        r, g, b = _linear_rgb(color)
         m: dict[str, Any] = {"pbrMetallicRoughness": {"baseColorFactor": [r, g, b, 1.0],
                                                       "metallicFactor": 0.0 if lines else 0.05,
                                                       "roughnessFactor": 1.0 if lines else 0.55}}
@@ -437,8 +501,9 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         materials.append(m)
         return len(materials) - 1
 
-    def line_prim(polylines: list[np.ndarray], mat: int) -> dict[str, Any]:
-        segs = np.concatenate([np.stack([pl[:-1], pl[1:]], axis=1).reshape(-1, 3) for pl in polylines]).astype(np.float32)
+    def line_prim(polylines: list[np.ndarray], mat: int, centre: np.ndarray) -> dict[str, Any]:
+        segs = np.concatenate([np.stack([pl[:-1], pl[1:]], axis=1).reshape(-1, 3) for pl in polylines])
+        segs = (segs - centre).astype(np.float32)
         return {"attributes": {"POSITION": add_accessor(segs, "VEC3", 5126, 34962, True)}, "material": mat, "mode": 1}
 
     items = _flatten_all(shapes)
@@ -447,40 +512,50 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
     for i, item in enumerate(items):
         name = getattr(item, "name", None) or f"{type(item).__name__.lower()}_{i + 1}"
         prims: list[dict[str, Any]] = []
+        # Positions are float32 in glTF (7 digits): each node holds them relative to the middle of
+        # its shape and moves them there by its translation (a double), so a part far from the
+        # origin keeps its shape.
+        centre = np.zeros(3)
         if isinstance(item, (Edge, Wire)):
-            prims.append(line_prim(_curve_points(item), material(getattr(item, "color", None) or "#d9480f", True)))
+            points = _curve_points(item)
+            centre = _centre(np.concatenate(points))
+            prims.append(line_prim(points, material(getattr(item, "color", None) or "#d9480f", True), centre))
         elif isinstance(item, Vertex):
-            pts = np.array([item.point.to_tuple()], dtype=np.float32)
+            centre = np.array(item.point.to_tuple(), dtype=np.float64)
+            pts = np.zeros((1, 3), dtype=np.float32)
             prims.append({"attributes": {"POSITION": add_accessor(pts, "VEC3", 5126, 34962, True)},
                           "material": material("#d9480f", True), "mode": 0})
         else:
             body = item.to_shell() if isinstance(item, Face) else item
             # a face is meshed itself, facing out of its part; its copy gives the edges
-            m, face_colors = (body, None) if isinstance(body, Mesh) else _colored_mesh(item, tolerance, angle)
+            m, face_colors = (body, None) if isinstance(body, Mesh) else _colored_mesh(item, tolerance, angle, max_edge)
             own = item.color if isinstance(item, Face) else None
             color = own or getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
             color_index += 1
-            pos = m.vertices[m.triangles].reshape(-1, 3).astype(np.float32)
-            if m.normals is not None:
-                nrm = m.normals.reshape(-1, 3).astype(np.float32)
-            else:
-                nrm = np.repeat(m.triangle_normals, 3, axis=0).astype(np.float32)
-            ln = np.linalg.norm(nrm, axis=1, keepdims=True)
-            nrm = nrm / np.where(ln > 0, ln, 1)
-            # faces of their own color: a primitive per color, the others in the body's (kernel plan T5)
+            centre = _centre(m.vertices)
+            # faces of their own color: a primitive per color, the others in the body's (kernel plan T5);
+            # each with every distinct (point, normal) pair of its corners once, and its triangles as indices
             for rgb, sel in _color_groups(face_colors, len(m.triangles), to_rgb(color)):
-                corners = np.repeat(sel, 3)
-                prims.append({"attributes": {"POSITION": add_accessor(pos[corners], "VEC3", 5126, 34962, True),
-                                             "NORMAL": add_accessor(nrm[corners], "VEC3", 5126, 34962)},
+                piece = m if sel.all() else Mesh(m.vertices, m.triangles[sel], None if m.normals is None else m.normals[sel])
+                points, nrm, index = _indexed_corners(piece)
+                pos = (points - centre).astype(np.float32)
+                wide = len(pos) > 65535
+                prims.append({"attributes": {"POSITION": add_accessor(pos, "VEC3", 5126, 34962, True),
+                                             "NORMAL": add_accessor(nrm, "VEC3", 5126, 34962)},
+                              "indices": add_accessor(index.astype(np.uint32 if wide else np.uint16), "SCALAR",
+                                                      5125 if wide else 5123, 34963),
                               "material": material(rgb), "mode": 4})
             if edges and isinstance(body, _Body):
                 lines = _edge_polylines(body)
                 if lines:
                     if edge_mat is None:
                         edge_mat = material(edge_color, True)
-                    prims.append(line_prim(lines, edge_mat))
+                    prims.append(line_prim(lines, edge_mat, centre))
         meshes.append({"name": name, "primitives": prims})
-        nodes.append({"mesh": len(meshes) - 1, "name": name})
+        node: dict[str, Any] = {"mesh": len(meshes) - 1, "name": name}
+        if centre.any():
+            node["translation"] = [float(x) for x in centre]
+        nodes.append(node)
 
     doc = {
         "asset": {"version": "2.0", "generator": "smlibpy"},
@@ -542,11 +617,12 @@ def gltf_document(shapes: Any, **kwargs: Any) -> tuple[dict[str, Any], bytes]:
 
 
 def to_glb(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
-           edge_color: Any = "#1f2328") -> bytes:
+           edge_color: Any = "#1f2328", max_edge: float | None = None) -> bytes:
     """The bytes of a binary glTF (GLB) file of the shapes, with colors, names and (optionally)
     the B-rep edges as lines, as :func:`export_glb` writes it (Z-up in millimeters under a root
     node that turns it upright and scales it to meters)."""
-    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color)
+    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                             max_edge=max_edge)
     _z_up(doc, meters=True)
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * (-len(js) % 4)
@@ -557,14 +633,15 @@ def to_glb(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, 
 
 
 def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
-               edges: bool = True, edge_color: Any = "#1f2328") -> None:
+               edges: bool = True, edge_color: Any = "#1f2328", max_edge: float | None = None) -> None:
     """Binary glTF export with colors, names and (optionally) the B-rep edges as lines.
 
     glTF is Y-up and measured in meters; the model is written Z-up in millimeters as
     modeled, under a root node that turns it upright and scales it by 0.001, so viewers
-    show it at its real size.
+    show it at its real size. Triangles are indexed: each distinct corner (a point with its
+    normal) is written once. ``max_edge`` is the longest edge a triangle may have.
     """
-    data = to_glb(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color)
+    data = to_glb(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color, max_edge=max_edge)
     with open(os.fspath(path), "wb") as fh:
         fh.write(data)
 

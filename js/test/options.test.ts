@@ -62,6 +62,8 @@ function call(name: string, options: Record<string, unknown>): unknown {
   const samples: Record<string, () => Any> = {
     Part: () => Box(10, 10, 10),
     Face: () => Box(10, 10, 10).faces()[0],
+    Shape: () => Box(10, 10, 10), // (methods of every shape: Python's Shape)
+    Mesh: () => Box(10, 10, 10).mesh(),
     Shell: () => Box(10, 10, 10).faces()[0].toShell(),
     Sketch: () => Rectangle(10, 10),
     Profile: () => new Profile(),

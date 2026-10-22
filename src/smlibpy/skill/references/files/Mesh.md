@@ -1,11 +1,13 @@
 # Mesh / tessellate
 
 `tessellate` turns an exact shape into an indexed triangle mesh. `Mesh` is that mesh: plain
-NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
+NumPy arrays, used for STL/OBJ/glTF, render and quick measurements. Meshes from elsewhere (scans,
+STL files) are measured, cut, thinned out, repaired and turned into faceted parts with the
+methods below.
 
 ## Signatures
-`tessellate(shape, tolerance=None, angle=15.0)`
-`shape.mesh(tolerance=None, angle=15.0)`: the same thing as a method.
+`tessellate(shape, tolerance=None, angle=15.0, *, max_edge=None)`
+`shape.mesh(tolerance=None, angle=15.0, *, max_edge=None)`: the same thing as a method.
 `Mesh(vertices, triangles, normals=None)`: build a mesh by hand.
 
 - `shape`: a `Part`, `Shell`, `Sketch`, `Face` or `ShapeList`. A `ShapeList` is merged into one
@@ -13,19 +15,31 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 - `tolerance`: the largest mesh-to-surface distance in mm. Default: 0.1 % of the bbox diagonal.
 - `angle`: the largest angle in degrees between neighbouring triangles on curved faces.
 - Both must be positive: `ValueError: tessellate: tolerance and angle must be positive`.
+- `max_edge`: the longest edge a triangle may have (default: no limit), for evenly sized
+  triangles. `Box(100, 100, 2) - Cylinder(5, 10)` at tolerance 0.1: 144 triangles with edges of
+  100; `max_edge=10`: 706, all under 13. With it every face is meshed by the kernel's grid: a
+  part with a twisted face (below) gets a `RuntimeWarning` saying how far off the grid is
+  (`Box(10, 10, 40).twist(90)` at 0.01 with `max_edge=5`: about 0.13; `max_edge=1` is close
+  enough and warns no more).
 
 ## Fields
 | Field | Type | Meaning |
 |---|---|---|
-| `vertices` | `(n, 3)` float64 | positions, shared between triangles of one body |
+| `vertices` | `(n, 3)` float64 | positions, shared between triangles of one body; double precision also far from the origin |
 | `triangles` | `(m, 3)` int64 | vertex indices, counterclockwise seen from outside |
-| `normals` | `(m, 3, 3)` float32 or `None` | unit corner normals of the exact surface. `None` for `import_stl` and hand-built meshes |
+| `normals` | `(m, 3, 3)` float32 or `None` | unit corner normals of the exact surface (at the apex of a cone, the normal of the surface beside the corner). `None` for `import_stl` and hand-built meshes |
 | `triangle_normals` | `(m, 3)` | computed from the winding |
 | `len(m)` | int | number of triangles |
 | `area`, `volume` | float | from the triangles |
-| `bbox()`, `center()` | | `center()` is the **bbox center**, not the centroid |
+| `bbox()`, `center()` | | `center()` is the **bbox center**; an empty mesh raises `ValueError: an empty mesh has no bounding box` |
+| `mass_properties(density=1.0)`, `centroid` | `MassProperties`, `Vector` | of what a closed mesh encloses, exact for its triangles (see `mass_properties`) |
+| `section(plane)`, `slices(step, axis=Z)` | `ShapeList[Wire]`, list of them | where a plane cuts the triangles, chained into loops (see `Mesh-section`, `slices`) |
+| `decimate(fraction)`, `decimate(triangles=n)`, `decimate(tolerance=t)` | `Mesh` | fewer triangles, closed meshes stay closed (see `decimate`) |
+| `fill_holes()`, `repaired()` | `Mesh`, `(Mesh, dict)` | holes closed; also merged points, triangles turned outward (see `repaired`) |
+| `to_part(max_faces=5000)`, `Part.from_mesh(mesh)` | `Part` | a faceted part, for exact Booleans and STEP (see `to_part`) |
 | `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
 | `raycast(origin, direction)` | list of `Hit` | where a ray meets the triangles, nearest first (see `raycast`) |
+| `raycast_many(origins, directions)` | list of `Hit` or `None` | the first hit of each of many rays, by the kernel's ray tracer (see `raycast`) |
 | `m1 + m2`, `m1 - m2`, `m1 & m2` | `Mesh` | mesh Booleans, see below |
 | `translate`, `rotate`, `mirror`, `scale`, `moved` | `Mesh` | a moved copy, as for shapes (normals turn along; a mirrored mesh still faces outward) |
 
@@ -63,6 +77,9 @@ the kernel's triangles unchanged.
 STL files from elsewhere); with exact parts, do the Boolean on the parts and mesh the result
 (exact, and the mesh then follows the tolerance).
 
+- The result's triangles take the corner normals of the operand triangles they lie on (turned
+  on the inside of a cut): it shades as its operands do. Meshes without normals (`import_stl`,
+  `Mesh(...)`) give a result without.
 - smlibpy checks every result (closed, a volume the operation can give) and raises
   `ModelingError: mesh union: the kernel's mesh Boolean returned a volume of 0, where 8000 to
   9685.51 is possible; ...` where the kernel fails. It still does for some meshes (a slanted
@@ -94,4 +111,5 @@ print(round(m.volume, 2), round(solid.volume, 2), round(m.area, 2), round(solid.
 ```
 
 ## Related
-`export_stl`, `import_stl`, `export_glb`, `export_obj`, `export_usd`, `raycast`, `render`.
+`export_stl`, `import_stl`, `export_glb`, `export_obj`, `export_usd`, `raycast`, `render`,
+`mass_properties`, `Mesh-section`, `slices`, `decimate`, `repaired`, `to_part`.

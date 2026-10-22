@@ -7,6 +7,8 @@ part: `contains` and `classify`, not the parity of the hits.
 ## Signature
 `shape.raycast(origin, direction) -> list[Hit]` on `Part`, `Shell`, `Sketch`, `Face` and `Mesh`.
 `shape.raycast(axis)`: the ray from the axis origin along its direction.
+`shape.raycast_many(origins, directions) -> list[Hit | None]` on `Part`, `Shell`, `Sketch` and
+`Mesh`: the first hit of each of many rays (see below).
 
 - `origin`: where the ray starts. Points behind it are not hits.
 - `direction`: a vector or an axis; its length does not matter.
@@ -41,9 +43,26 @@ A list of `Hit`, nearest first, `[]` when the ray misses. A `Hit` is a named tup
 - A ray costs about 0.05 ms on a part of a few faces (only faces whose box the ray crosses are
   intersected).
 
+## Many rays: raycast_many
+For height maps, depth images, visibility and sampling. `origins` is an `(n, 3)` array or a list
+of points, `directions` one direction for all of them (a vector or an axis) or one per origin.
+The result has one entry per ray: the `Hit` that `raycast` gives first, or `None` for a miss.
+
+- A `Mesh`: the kernel's ray tracer sorts the triangles into a grid once per call, then a ray
+  costs about 0.01 ms (250 000 triangles: 0.8 s to build, `raycast` takes 36 ms a ray there).
+  The hits are those of `raycast`, triangle and normal included.
+- A body: the rays go through a mesh of it (made once per body at 1e-4 of its size), and each
+  hit is moved onto the exact face the mesh says the ray meets first (0.02 to 0.05 ms a ray;
+  a plate with 144 holes: 0.05 ms, `raycast` 1 ms). Where that face is missed there, the ray is
+  cast exactly. The points are exact (1e-12), like `raycast`'s.
+- Give all the rays in one call: each call builds the tracer again.
+- A ray that grazes a curved face (within 1e-4 of the body's size of its outline) can come out a
+  miss, where `raycast` finds where it touches.
+
 ## Errors
 - `TypeError: raycast takes an origin and a direction, or an axis`: a point without a direction.
-- `ValueError: raycast: the direction must not be zero`.
+- `ValueError: raycast: the direction must not be zero` (`raycast_many: ...` likewise).
+- `ValueError: raycast_many: give one direction for all origins, or one for each (2 for 3)`.
 
 ## Example
 ```python
@@ -69,6 +88,13 @@ print(hits[1].distance - hits[0].distance)                # 2.0
 
 hit = Sphere(10).mesh(0.01).raycast((3, 0, 50), (0, 0, -1))[0]   # a mesh: a point on a triangle
 print(round(hit.point.z, 3), hit.triangle is not None)   # 9.536 True (exact: 9.539)
+
+# a height map: one ray down per grid point
+xs, ys = np.meshgrid(np.linspace(-20, 20, 81), np.linspace(-15, 15, 61))
+origins = np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, 50.0)])
+hits = part.raycast_many(origins, (0, 0, -1))
+height = np.array([h.point.z if h else np.nan for h in hits]).reshape(xs.shape)
+print(np.nanmax(height), np.isnan(height).sum())          # 10.0 and the rays through the hole
 ```
 
 ## Related

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Iterator
+from typing import Any, Iterator
 
 from . import _core as k
 
@@ -62,8 +62,9 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
 class BrepHandle:
     """Owns one kernel Brep and frees it with the last reference. ``sound`` records how far
     the body was found a sound solid (0: not checked; the levels are in shapes.py),
-    ``props`` its integrated mass properties, ``tags`` the tags of its faces and edges
-    (``ext.topology_tags``) and ``shells`` its shells (``ext.brep_shells``), each read once. A body made by
+    ``props`` its integrated mass properties, ``meshes`` the meshes rays are cast against (by
+    purpose), ``tags`` the tags of its faces and edges (``ext.topology_tags``) and ``shells`` its
+    shells (``ext.brep_shells``), each read once. A body made by
     ``Part.merge`` (or a copy of one) has ``merged``: the parts it was merged from, the placement
     it was moved by since, and its cells' sources once found; a cell of one has ``sources``: the
     parts it lies in (kernel plan B15).
@@ -76,7 +77,7 @@ class BrepHandle:
     anything measures it. ``named()`` and ``colored()`` wrap the same handle (kernel plan T8): its
     caches serve both bodies, and a measure of one stores its trims for both."""
 
-    __slots__ = ("brep", "sound", "props", "tags", "shells", "merged", "sources", "__weakref__")
+    __slots__ = ("brep", "sound", "props", "meshes", "tags", "shells", "merged", "sources", "__weakref__")
 
     def __init__(self, brep: "k.Brep"):
         if brep is None:
@@ -84,6 +85,7 @@ class BrepHandle:
         self.brep = brep
         self.sound = 0
         self.props = None
+        self.meshes: dict[str, Any] = {}
         self.tags = None
         self.shells = None
         self.merged = None

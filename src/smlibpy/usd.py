@@ -32,7 +32,8 @@ _BINARY = {
 }
 
 
-def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float, what: str) -> list[tuple[Any, ...]]:
+def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float, what: str,
+               max_edge: float | None = None) -> list[tuple[Any, ...]]:
     from .exporters import _DEFAULT_COLORS, _items
     from .mesh import Mesh, _colored_mesh
 
@@ -54,7 +55,7 @@ def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float, w
         if mesh:
             # faces of their own color: a color per triangle (displayColor "uniform"), the others in the
             # body's (kernel plan T5)
-            m, colors = _colored_mesh(it, tolerance, angle)
+            m, colors = _colored_mesh(it, tolerance, angle, max_edge)
             per = None if colors is None else np.where(np.isnan(colors), np.array(rgb), colors).ravel().tolist()
             items.append((b, name, rgb, *_mesh_arrays(m), per))
         else:
@@ -67,8 +68,9 @@ def _mesh_arrays(m: Any) -> tuple[list[float], list[int], list[float] | None]:
     return m.vertices.ravel().tolist(), m.triangles.ravel().tolist(), normals
 
 
-def _usd_text(shapes: Any, mesh: bool, tolerance: float | None, angle: float, materials: bool, what: str) -> str:
-    items, keep = _usd_items(shapes, mesh, tolerance, angle, what)
+def _usd_text(shapes: Any, mesh: bool, tolerance: float | None, angle: float, materials: bool, what: str,
+              max_edge: float | None = None) -> str:
+    items, keep = _usd_items(shapes, mesh, tolerance, angle, what, max_edge)
     if not items:
         raise ValueError(f"{what}: nothing to write")
     with kernel_call(what):
@@ -78,14 +80,14 @@ def _usd_text(shapes: Any, mesh: bool, tolerance: float | None, angle: float, ma
 
 
 def to_usd(shapes: Any, *, mesh: bool = True, tolerance: float | None = None, angle: float = 15.0,
-           materials: bool = False) -> str:
+           materials: bool = False, max_edge: float | None = None) -> str:
     """The text of a USD file (``.usda``) of parts, sheets and meshes, as :func:`export_usd` writes
     it; the keywords as there."""
-    return _usd_text(shapes, mesh, tolerance, angle, materials, "to_usd")
+    return _usd_text(shapes, mesh, tolerance, angle, materials, "to_usd", max_edge)
 
 
 def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, tolerance: float | None = None,
-               angle: float = 15.0, materials: bool = False) -> None:
+               angle: float = 15.0, materials: bool = False, max_edge: float | None = None) -> None:
     """Write parts, sheets and meshes to a USD file (``.usda``, or ``.usd`` as text).
 
     Each body becomes a ``BrepArray`` prim under ``/World``, its exact B-rep with its name and
@@ -96,8 +98,8 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
         shapes: Parts, sheets, faces and meshes (or lists of them). Meshes become ``Mesh`` prims.
             An empty body (no faces, edges or points) raises ``ValueError``; edges, wires and
             vertices raise ``TypeError`` (write curves with :func:`export_step`).
-        mesh: Write the ``Mesh`` prim of each body; ``tolerance`` and ``angle`` as in
-            :func:`tessellate`. ``False`` writes the exact B-reps alone, for usd-brep and Omniverse,
+        mesh: Write the ``Mesh`` prim of each body; ``tolerance``, ``angle`` and ``max_edge`` as
+            in :func:`tessellate`. ``False`` writes the exact B-reps alone, for usd-brep and Omniverse,
             which draw ``BrepArray`` prims themselves and would show each body twice.
         materials: Also give each color a ``Material`` (a ``UsdPreviewSurface`` of that color under
             ``/World/Looks``) bound to the prims of that color, which Omniverse and other renderers
@@ -107,7 +109,7 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
     ext_ = os.path.splitext(p)[1].lower()
     if ext_ in _BINARY:
         raise ValueError(f"export_usd writes text USD (.usda, .usd), not {ext_}: {_BINARY[ext_]}")
-    text = _usd_text(shapes, mesh, tolerance, angle, materials, "export_usd")
+    text = _usd_text(shapes, mesh, tolerance, angle, materials, "export_usd", max_edge)
     with open(p, "w", encoding="utf-8") as fh:
         fh.write(text)
 

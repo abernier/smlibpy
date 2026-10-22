@@ -393,7 +393,9 @@ export abstract class Shape {
     abstract bbox(): BoundBox;
     abstract center(): Vector;
     distanceTo(other: VectorLike | Shape): number;
-    mesh(tolerance?: number | null, angle?: number): Mesh;
+    mesh(tolerance?: number | null, angle?: number, options?: {
+        maxEdge?: number | null;
+    }): Mesh;
     show(options?: Record<string, unknown>): unknown;
     export(path: string, options?: Record<string, unknown>): void;
     toString(): string;
@@ -733,6 +735,8 @@ export class Part extends _Body {
     split(plane: Plane | Face | Shell | ShapeList<Face>): Part;
     imprint(tool: Part | Shell | Face | ShapeList<Face>): Part;
     section(plane?: Plane | Face): Sketch;
+    slices(step: number, axis?: Axis | VectorLike): Sketch[];
+    static fromMesh(mesh: Mesh, maxFaces?: number): Part;
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
     bend(angle: number, options?: BendOptions): Part;
@@ -1295,20 +1299,34 @@ export class Mesh {
     get volume(): number;
     bbox(): BoundBox;
     center(): Vector;
+    get centroid(): Vector;
+    massProperties(density?: number): MassProperties;
     moved(location: Location): Mesh;
     translate(x?: number | VectorLike, y?: number, z?: number): Mesh;
     rotate(axis?: Axis, angle?: number): Mesh;
     mirror(plane?: Plane | Face | Axis | ShapeList<Face>): Mesh;
     scale(factor: number | VectorLike, center?: VectorLike): Mesh;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
+    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[];
     isClosed(): boolean;
+    section(plane?: Plane | Face): ShapeList<Wire>;
+    slices(step: number, axis?: Axis | VectorLike): ShapeList<Wire>[];
+    decimate(fraction?: number | null, options?: {
+        triangles?: number | null;
+        tolerance?: number | null;
+    }): Mesh;
+    fillHoles(): Mesh;
+    repaired(): [Mesh, Record<string, number>];
+    toPart(maxFaces?: number): Part;
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
     intersect(other: Mesh): Mesh;
     export(path: string, options?: Record<string, unknown>): void;
     toString(): string;
 }
-export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number): Mesh;
+export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number, options?: {
+    maxEdge?: number | null;
+}): Mesh;
 ```
 
 ### Files
@@ -1325,6 +1343,7 @@ export function toStep(shapes: unknown, options?: StepExportOptions): string;
 export interface MeshOptions {
     tolerance?: number | null;
     angle?: number;
+    maxEdge?: number | null;
 }
 export function toStl(shapes: unknown, options?: MeshOptions & {
     ascii?: boolean;
@@ -1434,6 +1453,28 @@ export function importDxf(path: string, options?: DxfReadOptions): Sketch;
 export function fromDxf(data: string | Uint8Array, options?: DxfReadOptions): Sketch;
 export function exportDxf(shapes: unknown, path: string, options?: DxfWriteOptions): void;
 export function toDxf(shapes: unknown, options?: DxfWriteOptions): string;
+export class DrawingView {
+    readonly name: string;
+    readonly direction: Vector;
+    readonly visible: ShapeList<Edge>;
+    readonly hidden: ShapeList<Edge>;
+    constructor(name: string, direction: Vector, visible: ShapeList<Edge>, hidden: ShapeList<Edge>);
+    bbox(): BoundBox;
+    toString(): string;
+}
+export interface DrawingViewsOptions {
+    projection?: string;
+    hidden?: boolean;
+    tangentEdges?: boolean;
+    gap?: number | null;
+}
+export function drawingViews(part: _Body, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
+export interface SvgOptions {
+    margin?: number | null;
+    stroke?: number | null;
+}
+export function toSvg(shapes: unknown, options?: SvgOptions): string;
+export function exportSvg(shapes: unknown, path: string, options?: SvgOptions): void;
 export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;

@@ -7,7 +7,9 @@ and edges, for laser cutting, CNC, 2D CAD and drawings. `export(shapes, "x.dxf")
 ## Signature
 `export_dxf(shapes, path, *, unit="mm", plane=None, curves="exact", tolerance=0.01)`
 
-- `shapes`: a `Sketch`, a planar `Face` or sheet, a `Wire`, an `Edge`, or a list of them.
+- `shapes`: a `Sketch`, a planar `Face` or sheet, a `Wire`, an `Edge`, the views of
+  `drawing_views`, or a list of them. Views go on the layers `VISIBLE` and `HIDDEN`; the hidden
+  layer has the linetype `DASHED` (3 mm dashes, 1.5 mm gaps, in the file's unit).
 - `unit`: `"mm"` (default), `"cm"`, `"m"`, `"um"`, `"inch"` (or `"in"`), `"ft"`. The model (mm) is
   converted and `$INSUNITS` declared: a 50.8 mm rectangle is 2 wide in an inch file and reads
   back as 50.8 mm.

@@ -13,9 +13,10 @@ to and read from memory (`to_step`, `from_step`, ...: `in_memory.md`).
 | SMLib `.smb` | `save` | `load` | exact geometry; B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those | **one** | no | no | none (mm) |
 | SMLib part `.smp` | `save` | `load` | as `.smb`, and curves (edges, wires) | many, merged parts with their cells | yes | yes | none (mm) |
 | DXF `.dxf` | `export_dxf` | `import_dxf` → `Sketch`, `import_dxf_wires` → `Wire`s | exact 2D curves: LINE, ARC, CIRCLE, ELLIPSE, SPLINE | 2D only, no `Part` | names become layers | no | mm or `unit=` (converted on export), `$INSUNITS` converted to mm on import |
+| SVG `.svg` | `export_svg` | no | 2D lines: lines and circular arcs exact, other curves as polylines | 2D only (views of `drawing_views`, edges, sketches) | no | black lines, hidden ones dashed | mm (prints at true size) |
 | STL `.stl` | `export_stl` | `import_stl` → `Mesh` | triangles, float32 | merged into one mesh | no | no | none |
 | glTF `.glb` `.gltf` | `export_glb`, `export_gltf` | no | triangles + edge lines | one node per shape | yes | yes | meters (a root node scales the mm by 0.001) |
-| OBJ `.obj` | `export_obj` | no | triangles, no normals | one object per shape | yes | no | none |
+| OBJ `.obj` | `export_obj` | no | triangles with normals | one object per shape | yes | no | none |
 | PNG | `render` | `diff_images` compares two | a picture | | | yes | |
 | HTML | `show` | | an interactive viewer | | | yes | |
 
@@ -39,7 +40,9 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.smp
   for a page to open.
 - **Check it yourself: `render(..., view="sheet")`**, a technical drawing, then read the PNG.
 - **Laser cutting, CNC, 2D CAD, drawings: DXF** with `export_dxf` (a sketch, `part.section(plane)`,
-  text). A part is not 2D: write a section of it.
+  text). A part is not 2D: write a section of it, or its views.
+- **A drawing of a part (front, top and side views, hidden lines dashed): `drawing_views`**,
+  written with `export_dxf` (layers VISIBLE and HIDDEN) or `export_svg`.
 - **A 2D outline from someone else: DXF** with `import_dxf`, then `extrude` or `revolve`. Pick the
   outline's layers with `layers=`.
 - **A model from an older CAD system or a surface modeler: IGES** with `import_iges` (read

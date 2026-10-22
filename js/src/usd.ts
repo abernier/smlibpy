@@ -27,7 +27,7 @@ const BINARY: Record<string, string> = {
 }
 
 /** How a USD file is written: `mesh` (default true) writes a Mesh prim (`<name>_mesh`) of each body,
- * which is what USD viewers draw, with `tolerance` and `angle` as in `tessellate`; false writes the
+ * which is what USD viewers draw, with `tolerance`, `angle` and `maxEdge` as in `tessellate`; false writes the
  * exact B-reps alone, for usd-brep and Omniverse, which draw BrepArray prims themselves and would
  * show each body twice. `materials` (default false) also gives each color a Material (a
  * UsdPreviewSurface of that color under /World/Looks) bound to the prims of that color, which
@@ -38,6 +38,7 @@ export interface UsdExportOptions {
   tolerance?: number | null
   angle?: number
   materials?: boolean
+  maxEdge?: number | null
 }
 
 function _meshArrays(m: Mesh): [Float64Array, Uint32Array, Float32Array | null] {
@@ -63,7 +64,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions, what: string): An
     if (options.mesh ?? true) {
       // faces of their own color: a color per triangle (displayColor "uniform"), the others in the
       // body's (kernel plan T5)
-      const [m, colors] = _coloredMesh(it as Part | Shell, options.tolerance ?? null, options.angle ?? 15)
+      const [m, colors] = _coloredMesh(it as Part | Shell, options.tolerance ?? null, options.angle ?? 15, options.maxEdge ?? null)
       const per = colors === null ? null : Float64Array.from(colors, (c, i) => (Number.isNaN(c) ? rgb[i % 3] : c))
       items.push([(it as Any)._brep, name, rgb, ..._meshArrays(m), per])
     } else {

@@ -829,7 +829,7 @@ def _corner_curvatures(mesh: Any, source: Any, count: int) -> tuple[np.ndarray, 
     if poly is None or source is None:
         return missing, missing
     r = ext.poly_curvatures(poly)
-    faces = np.asarray(poly.to_numpy_arrays(face_varying_normals=True)["faces"], dtype=np.int64)
+    faces = np.asarray(ext.poly_arrays(poly, False)["faces"], dtype=np.int64)
     tris, corner = _triangulate(faces)
     k1, k2 = np.asarray(r["k1"]), np.asarray(r["k2"])
     if len(tris) != count or len(k1) != corner.max(initial=-1) + 1:

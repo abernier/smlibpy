@@ -114,6 +114,27 @@ print(abs(side - 1.5 * m * 10**2) / side < 1e-9)  # True
 print(round(mp.radii_of_gyration[0], 6))         # 7.071068: 10 / sqrt(2) about the axis
 ```
 
+## Meshes
+
+`mesh.mass_properties(density=1.0) -> MassProperties` and `mesh.centroid` give the same for
+what a closed mesh encloses (a scan, an STL file), exact for its triangles: each spans a
+tetrahedron with a point near the mesh, and their integrals add up. No `accuracy`: the mesh is
+what it is. The numbers are those of the mesh, not of the surface it was made from (a box with a
+bore meshed at 0.01: volume 21740.18, exact 21738.05).
+
+- An open mesh raises `ModelingError: mass_properties: the mesh is open (3 open edges), so it
+  encloses no volume; close it first: mesh.fill_holes() or mesh.repaired()`.
+- A mesh that faces inward (negative volume) raises `ModelingError`; `repaired()` turns it.
+- An empty mesh raises `ValueError: an empty mesh has no mass properties`.
+- `mesh.center()` is the middle of the bounding box, `mesh.centroid` the center of mass.
+
+```python
+scan = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)   # or import_stl("part.stl")
+mp = scan.mass_properties(density=7.85e-3)
+print(round(mp.mass, 2), scan.centroid)                  # 170.66 Vector(0, 0, 0)
+print(np.round(np.diag(mp.inertia), 1))                  # [19659.2 30649.2 38931. ]
+```
+
 ## Related
 
-`measures` (volume, area, center), `generic` (accuracy), `is_valid`
+`measures` (volume, area, center), `generic` (accuracy), `is_valid`, `files/Mesh`
