@@ -158,7 +158,9 @@ point's pull nearer to it but never confine it, and raise the degree of the exac
 moved by 5, the middle point of the top of a 7 x 7 x 2 lattice around `Box(60, 40, 20)` lifts
 the middle of the top by 0.49 and a place 25 mm from it still by 0.014. Faces the map leaves in
 place (the bottom here) keep their type. A lattice is therefore the tool for overall shape, not
-for a bump on one face: model such a bump directly. A point moved past its neighbours would fold
+for a bump on one face: push or warp that face instead (`Part.push`, `Part.warp`, see
+[Shaping faces](surfaces.md#shaping-faces-push-warp-flatten)), which changes it near a point or
+within a region and leaves the other faces as they are. A point moved past its neighbours would fold
 the part onto itself; `apply` refuses that with an error.
 
 ```python

@@ -41,7 +41,8 @@ and the rest of the box less, down to nothing at the corners; corners move fully
 concentrate a point's pull nearer to it but never confine it (moved by 5, the middle top point
 of a 7 x 7 x 2 lattice on `Box(60, 40, 20)` lifts the middle by 0.49 and a place 25 mm away by
 0.014) and raise the degree. Use lattices for overall shape (bulge, taper, twist a layer, soft
-tops); for a bump on one face, model it directly. `lat.apply` also takes edges, wires and points
+tops); for a bump or dent on one face, use `Part.push` or `Part.warp` (`surfaces/push`,
+`surfaces/warp`), which change that face alone. `lat.apply` also takes edges, wires and points
 (see `deform/curves`).
 
 ## Gotchas

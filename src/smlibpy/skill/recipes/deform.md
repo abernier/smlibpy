@@ -19,11 +19,13 @@ Deform when a simple part gets a smooth overall change and its features should g
 | a path that follows a deformed part (a rail along a twisted bar, a pipe along a bent plate) | deform the path's `Wire` with the same call, then `sweep` | sampling points and fitting a spline |
 
 Model directly when:
-- the result needs analytic faces downstream (a bent or twisted face is a B-spline; a tube
-  with several bends along a drawn path is easier as `sweep`),
+- the result needs analytic faces downstream (a twisted side face is a B-spline, and so is any
+  face whose exact image is not a plane, cylinder or cone; a tube with several bends along a drawn
+  path is easier as `sweep`),
 - the result will be offset outward (`offset()` usually fails on deformed parts),
 - the change is local (a boss, a pocket, a bump on one face): Booleans keep everything else
-  exact, and a `Lattice` is global (every point of it moves the whole box),
+  exact, a smooth bump or dent on one face is `Part.push` or `Part.warp` (`surfaces/push`,
+  `surfaces/warp`), and a `Lattice` is global (every point of it moves the whole box),
 - a feature must keep its exact shape: add it after the deformation.
 
 ## Order of operations

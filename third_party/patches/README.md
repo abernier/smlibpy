@@ -162,13 +162,20 @@ build:
   repros, against OpenCASCADE) are as before: right, except one exclusive or that raises `ModelingError`.
   AddressSanitizer reports nothing for them; it never takes the crashing path itself (its allocator lays
   memory out the same way every run), so the null read was located with lldb in the normal build.
+- The curve intersection's solution filter (`SmCurve.cpp`, `sm_FilterSolution`): 16 writes and 137
+  reads of `.brep` files and 1500 fuzzed ones (truncated, tokens and lines swapped, deleted or
+  replaced) report nothing under AddressSanitizer; before, usd-brep's `extrusion.brep` with its
+  extrusion direction zeroed read past the stack array when the kernel checked it. No result of
+  either test suite changed (the value read decided only a tangent's direction where the first
+  derivative is zero).
 - Both test suites pass.
 
 Defects that remain in the kernel, and what smlibpy does about them:
 
 - Crashes and loops in the feature executive's patching (`ai/todo/features.md`, 37):
   `smlibpy.defeature` runs each step of `remove_fillets`, `remove_faces` and `surface_fillet` in
-  a forked copy first (smlibwasm: in a probe worker with a kernel of its own).
+  another process (a forked copy, or a helper process; smlibwasm: a probe worker with a kernel of
+  its own), whose result comes back as an exact copy.
 - The extended offset mode still crashes on some imported parts (raw kernel calls, shell and two
   offsets per process): crescendo part 52 in 24 of 40 processes, where `ImprintIntersections` goes
   on after `SmBrep::MakeEdgeInFaceWithVU` has connected only the start of a closed Edge (its
@@ -179,9 +186,26 @@ Defects that remain in the kernel, and what smlibpy does about them:
   null pointer in `SmBezierAux2d::BuildPolarBox` (half of the runs of part 81). `shell`, `offset`
   and `thicken` run their kernel steps only in a forked copy (smlibwasm: the probe worker), so
   these raise `ModelingError`.
-- Booleans in which the seam of a cylinder, cone or sphere lies in a tangent plane of the other
-  operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the site
-  is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
+- Booleans in which the seam of a cylinder, cone, sphere or torus runs tangent to a face of the
+  other operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the
+  site is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
+  smlibpy finds such seams and turns the operand that owns the seam about its axis first
+  (`src/cpp/seams.cpp`, in `ext.boolean`) where it is a body of revolution; a seam of another
+  body, a torus' outer equator and seams on B-spline faces keep the defect.
+- Found with AddressSanitizer and the fuzz run of the kernel plan, not located or not fixed: the
+  extended offset mode reads a ProtoEdge that `SplitIntersectingProtoEdges` deleted
+  (`SmProtoEdge::GetOverlappingPEGroup` from `ResolveOverlappingProtoEdges`, depending on memory
+  layout; `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` crashes its
+  process in about 1 to 3 runs of 100); the all-edge fillet of `Cone(3, 0, 10).rotate(Y, 90) -
+  Cone(1.5, 0, 8).rotate(X, 90).translate(0, 1, 0)` writes freed memory in
+  `SmLoopuse::CollectEdgeuses` from `SmMerge::BooleanPostProcess` inside the fillet executive (the
+  normal build raises `SM_ERR_NULL_POINTER`); `(Box(20, 16, 4) - Sphere(6).rotate(X,
+  90).translate(1.4007, 0, -1.5863)) & Torus(6, 2.5).rotate(Y, 90).translate(7.5, 0, 10.5)` kills
+  the process (the WebAssembly build traps); the Boolean of the meshes of two internally tangent
+  cylinders at a fine tolerance (`tessellate(...) & tessellate(...)`) kills it too;
+  `SmApiBooleanWithCurves` returns common edges that `BooleanPostProcess` deleted (smlibpy does
+  not call it). `SmBSplineSurface::CreateHelicalSweep` keeps a pointer to an `NL_SURFACE` on its
+  own stack; nothing calls it, and `tests/test_lane_U.py` fails if something starts to.
 - `SmBrep::Point3DClassify` takes the region from one ray along +X, and once a tight bounding box
   (or `ComputePreciseProperties`) has run on a body, `BrepPointSolve` can find no face along +X
   where the ray crosses one. `ext.classify_points` lets rays in other directions vote;
@@ -282,7 +306,9 @@ When an upstream release fixes a defect:
    must still pass; for the planar Boolean,
    `tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash` must still pass; for
    the error reports, `tests/test_lane_WN.py::test_kernel_errors_say_where_the_kernel_gave_up`
-   (with upstream's header in a release build the trace is empty).
+   (with upstream's header in a release build the trace is empty); for the curve intersection's
+   filter, `tests/test_lane_IX.py::test_brep_check_of_a_curve_with_zero_tangent` must pass under
+   AddressSanitizer (the unpatched kernel aborts in it).
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory, `smlibpy_patch_sources` and `smlibpy_patch_headers`

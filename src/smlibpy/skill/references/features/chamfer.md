@@ -36,7 +36,8 @@ A new `Part`. Removed volume per straight 90° edge: `length² / 2 * edge length
 add material. Circular edges (hole rims, cylinder ends) work: a hole rim chamfer is a
 countersink-like bevel. The bevel of a full circle between faces around one axis (a plane at
 right angles to it, a cylinder or a cone, or the straight faces of a revolve: shafts, holes,
-turned parts) is an **exact cone** (a `"revolution"` face): `Cylinder(2, 5)` with both rims 1 is
+turned parts) is an **exact cone** (a `"cone"` face; its edge on a plane end face is a circle, its
+edge on a cylinder a fitted B-spline): `Cylinder(2, 5)` with both rims 1 is
 52.3598776, exactly `pi*20 - 2*2*pi*(2 - 1/3)*0.5`. smlibpy cuts it (fills it at a concave rim)
 with the solid of revolution of the bevel's line; the kernel bevels the other edges, and a
 circle where that solid would take other material (a flange just below the rim).

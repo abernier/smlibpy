@@ -100,6 +100,8 @@
 - **Reproduce:** `print(CenterArc((0, 0), 10, 0, 0).length)`
 
 ### 12. `EllipticalArc`: arcs that pass through angle 0 raise KernelError
+- **Fixed (checked 2026-10-22):** `EllipticalArc((0, 0), 20, 10, -90, 90)` is the arc through angle
+  0 (48.442 long); 0.4.0 gives the same.
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, scripts `07-ellipticalarc.py`, `08-ellipse-across-zero.py`
 - **What happens:** `EllipticalArc((0,0), 20, 10, -90, 90)`, `(350, 10)`, `(270, 450)`,
   `(359, 1)` raise `KernelError: EllipticalArc failed (SM_ERR)`. The code adds a full
@@ -214,12 +216,16 @@
 - **Expected:** `ValueError` for both, naming the cause.
 
 ### 21. `Spline(tangents=...)`: malformed input gives IndexError / TypeError
+- **Partly fixed (kernel plan C8):** a list whose length is neither 2 nor the number of points
+  raises `ValueError` ("tangents are (start, end) or one per point"); `tangents=(1, 0)` still raises
+  `TypeError`.
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, script `03-spline-tangents.py`
 - **What happens:** `tangents=((1, 0),)` -> `IndexError: tuple index out of range`;
   `tangents=(1, 0)` -> `TypeError: 'int' object is not iterable`.
 - **Expected:** `ValueError: tangents must be a pair (start, end)`.
 
 ### 22. `Part.bbox()` of a body swept along a helix is about 0.1 mm too large (analysis domain)
+- **Fixed (0.5.0, checked 2026-10-22):** `max.x` is 8.5004 (0.4.0: 9.116).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, scripts `14-helix-profile-orientation.py`, `15-helix-start-cap.py`
 - **What happens:** `sweep(Rectangle(1, 2), Helix(4, 12, 8)).bbox().max.x` is 9.116; the
   radial extent is 8.5 (start cap vertices at x 7.5 and 8.5). Probably the kernel's loose

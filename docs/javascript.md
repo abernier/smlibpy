@@ -62,12 +62,12 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.9 MB | 2.6 MB | 7.8 MB |
+| The kernel, `smlibwasm.wasm` | 2.2 MB | 3.1 MB | 9.2 MB |
 | Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 87 kB |
-| The library | 0.31 MB | 0.36 MB | 1.3 MB |
+| The library | 0.48 MB | 0.55 MB | 1.9 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
 | The dictionary of WOFF2 fonts (Brotli's) | 59 kB | 60 kB | 79 kB |
-| **Together** | **2.3 MB** | **3.1 MB** | **9.4 MB** |
+| **Together** | **2.8 MB** | **3.8 MB** | **11.4 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -169,10 +169,10 @@ applies. The differences come from the language:
   narrows.
 - **Files**: in Node, `exportStep(shapes, path)`, `importStep(path)` and the other path functions
   write and read files as smlibpy's do; `show(part)` opens the viewer in the browser. Every format
-  also has functions for files in memory (`toStep`, `fromStep`, ..., and `toFile`/`fromFile` by
-  the file's name), which Python has no need for. `fromUsd(text, { resolve })` gets the layers and
-  files a stage references from `resolve(asset, from)`, where `importUsd(path)` and Python's
-  `import_usd` read them from disk.
+  also has functions for files in memory (`toStep`, `fromStep`, ..., as Python's `to_step`,
+  `from_step`), and `toFile`/`fromFile` pick the format by the file's name.
+  `fromUsd(text, { resolve })` gets the layers and files a stage references from
+  `resolve(asset, from)`, where `importUsd(path)` and Python's `import_usd` read them from disk.
 - **The kernel itself**: `@classcad/smlibwasm/kernel` is Python's `smlibpy._core`, see
   [below](#the-raw-kernel-layer).
 

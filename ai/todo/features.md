@@ -41,6 +41,8 @@
 - **Workaround:** loft the outside, subtract a loft of the inside.
 
 ### 10. `sweep` along a helix: the profile rolls about the path (~30° per turn)
+- **Fixed (kernel plan S3):** the profile keeps its attitude to the helix axis (`up=`, the default
+  along helices): the sections measure 2.0001 x 1.0039; volume 756.3655.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, scripts `12-sweep-helix.py`, `14-sweep-helix-roll.py`
 - **What happens:** a `Rectangle(2, 1)` swept along `Helix(pitch=5, height=30, radius=10)`:
   the section at 90° of each turn measures (radial × axial) 2.11×1.25, 2.19×2.04, 1.59×2.22,
@@ -149,6 +151,8 @@
   the Breps still used (read in `SmEdge::CalculateBoundingBox` and `~SmEdgeuse`; `Ventil.stp`).
   `third_party/patches/SMLib/src/SmProtoTopology.cpp` deletes them without it; AddressSanitizer
   then reports nothing for all 30 kernel steps on `Ventil.stp`.
+- **Isolated (kernel plan N1):** the steps run only in another process (a fork or a helper process),
+  whose result comes back as an exact copy; they no longer run a second time in the user's process.
 - **Session:** `2026-10-13_02-00-00_defeature-draft`, scripts `12-simplify.py`, `18-hard-parts.py`
 - **What happens (patched kernel, AddressSanitizer):**
   - `SmTopologyIntersector::FixGaps` → `SmBrep::CombineCoincidentVertices` deletes topology that
@@ -212,6 +216,8 @@
 
 ### 5. `extrude(taper=...)`: closing tapers silently shorten the solid; 90° gives an empty invalid body
 - **Fixed:** a taper that closes the profile before the end raises ModelingError; |taper| >= 90 raises ValueError.
+- **Extended (kernel plan S9):** a hole that widens across the region before the end raises too:
+  `(Circle(10) - Circle(8)).extrude(10, taper=10)` was 5.67 high without an error.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `03-taper-limits.py`
 - **What happens:** `Rectangle(20, 20).extrude(10, taper=56)` ends at z 6.745 (a pyramid), no
   error. `taper=90` → `is_valid()` False, volume 0, no error. `taper=100` behaves like 80.
@@ -239,6 +245,8 @@
   angle), or offers a `start`/`seam` option. Fix the docs/parts.md example.
 
 ### 13. `sweep`: self-intersecting results pass `is_valid()`
+- **Partly fixed (kernel plan S8):** a profile that reaches across the axis of a single arc path
+  raises `ModelingError`. Coils that overlap along a helix are still not detected.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, scripts `12-sweep-helix.py`, `16-sweep-edge-cases.py`
 - **What happens:** `sweep(Circle(3), Helix(pitch=5, height=30, radius=10))` (coils overlap)
   and `sweep(Circle(12), CenterArc((0, 0), 10, 0, 90))` return valid bodies whose volume is
@@ -307,12 +315,16 @@
 ## LOW
 
 ### 7. `extrude`: `taper` ignores `direction`, and open curves ignore `taper`
+- **Partly (kernel plan S14):** a direction in the sketch plane raises `ValueError`, also with a
+  taper. A taper still ignores any other direction, and open curves still ignore `taper`.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, scripts `02-taper.py`, `05-open-and-errors.py`
 - **What happens:** `Rectangle(20,20).extrude(10, taper=5, direction=(1,0,1))` extrudes straight
   along the normal; `extrude(Line(...), 3, taper=5)` returns an untapered Shell. No warning.
 - **Expected:** a `ValueError` for unsupported combinations.
 
 ### 8. `extrude(taper<0)`: the side faces come out split
+- **Fixed (kernel plan S9):** tapers of profiles with sharp corners are straight extrusions with
+  drafted walls: `Rectangle(30, 30).extrude(10, taper=-8)` has 6 plane faces, the same volume.
 - **Session:** `2026-10-12_21-26-06_features-extrude-revolve`, script `02-taper.py`
 - **What happens:** `Rectangle(30, 30).extrude(10, taper=-8)` has 14 faces (6 expected);
   valid, volume exact. Face counts used as checks are off.
@@ -336,6 +348,8 @@
   parallel to it).
 
 ### 19. `Shell` has no `is_valid()`
+- **Partly (kernel plan T4):** `Shell.check()` reports the kernel's validity tests (gaps, loops,
+  pointers); there is still no `Shell.is_valid()`.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, script `03-loft-odd.py`
 - **What happens:** `loft([...open curves])` returns a Shell; `shell.is_valid()` →
   `AttributeError`. Results of loft/sweep/extrude/revolve of open curves cannot be checked the
@@ -348,6 +362,8 @@
 - **Expected:** `ValueError: radius must be positive`.
 
 ### 22. `fillet(continuity="G2", fullness>=1.5)` fails with the radius message
+- **Message changed (kernel plan F8):** the error names the corner the kernel could not build ("the
+  kernel could not build the corner at (20, 15, -10) ..."); fullness 1.5 and 2.0 still fail.
 - **Session:** `2026-10-12_21-37-11_features-fillet-chamfer`, script `02-fillet-variants.py`
 - **What happens:** a box edge r5 G2 with fullness 1.5 or 2.0 → "the radius may be too large"; the
   docstring gives no range. 0.5 to 1.2 work. `fullness` is silently ignored for circular fillets.
@@ -361,6 +377,9 @@
   The plan and common CAD usage expect distance-distance and distance-angle forms. Feature gap, not a bug.
 
 ### 28. `shell(outward=True)` rounds the outer edges, `offset` keeps them sharp
+- **Fixed (kernel plan O12):** `shell(..., corners="sharp")` gives `offset`'s sharp outer edges
+  (43625.0), `corners="round"` the rounded ones (42707.04), and `info()["corners"]` says which a
+  shell got; the docstring says how the default picks.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, scripts `01-shell-basic.py`, `05-offset.py`
 - **What happens:** `Box(80,50,30).shell(2.5, outward=True)` has rounded outer edges (r 2.5,
   32 faces, vol 42707.04), while `Box.offset(2.5)` is sharp (43625). Neither docstring says

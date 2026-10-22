@@ -21,11 +21,11 @@
 //     three and fails on more; the other corners skip their patch and would leave a hole).
 //     (Set-back corners, SmFilletCorner::SetSetBackDist, are not offered: every set-back corner read
 //     freed memory in SmCurveClassification::MergeInterval, and with that fixed the bodies came out
-//     open, the kernel's own test case too: ai/plan/release-notes/FO.md, F10.)
+//     open, the kernel's own test case too: third_party/patches/README.md.)
 //
 // (SM_API asks for the executive's global merge before SetFilletParameters, which turns it off
 // again. Turning it on for real changed no near-limit result measured and broke chamfers and G2
-// fillets of a box with a hole, so it stays off here as well: ai/plan/release-notes/FO.md, F7.)
+// fillets of a box with a hole, so it stays off here as well: third_party/patches/README.md.)
 
 #include "kernel.h"
 #include "fillet.h"

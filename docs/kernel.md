@@ -13,8 +13,9 @@ smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL/U
        ├─ ext            smlibpy's own C++: exact geometry and topology access, transforms,
        │                 sweeps with all options, error-controlled integration of mass
        │                 properties and curve lengths, body splitting, surfaces fitted to
-       │                 point clouds, point classification and distances, USD files
-       │                 (usd-brep's conversion and stage composition, without OpenUSD)
+       │                 point clouds, point classification and distances, hidden lines,
+       │                 mesh tools, USD and OpenCASCADE files (usd-brep's conversion, stage
+       │                 composition and OCCT bridge, without OpenUSD or OpenCASCADE)
        ├─ SmPyLib        NVIDIA's pybind11 bindings of SM_API (without the USD parts)
        ├─ SM_API         NVIDIA's C-style API over the kernel
        └─ SMLib          the kernel: geometry, topology, Booleans, fillets, sweeps, healing
@@ -22,13 +23,14 @@ smlibpy (Python)         shapes, selections, sketches, features, STEP/glTF/STL/U
 
 The kernel sources come in as a git submodule (`third_party/usd-brep`) and are compiled
 with CMake into a single, self-contained Python extension. The submodule stays as published.
-Kernel defects that smlibpy cannot work around from outside are fixed in copies of ten kernel
-source files in `third_party/patches`, which the build compiles in place of the originals:
-fillet removal that removed nothing, reads and writes of freed memory in Booleans, fillets and
-the offset code behind `shell`, `offset` and `thicken`, a plane test that flattened B-spline
-faces with a bump, a seam check that leaked on every STEP import, and bounding boxes that
-reached past the ends of an edge. Its README lists every change and what it was measured to
-change. Where smlibpy needs more than the published bindings offer, its own C++ module
+Kernel defects that smlibpy cannot work around from outside are fixed in copies of fourteen
+kernel source files and one header in `third_party/patches`, which the build uses in place of
+the originals: fillet removal that removed nothing, reads and writes of freed memory in
+Booleans, fillets and the offset code behind `shell`, `offset` and `thicken`, a crash of the
+planar Boolean, a plane test that flattened B-spline faces with a bump, a seam check that leaked
+on every STEP import, bounding boxes that reached past the ends of an edge, a read past a stack
+array in the curve intersection, and error reports that release builds compiled out. Its README
+lists every change and what it was measured to change. Where smlibpy needs more than the published bindings offer, its own C++ module
 (`src/cpp/ext.cpp`) calls the kernel directly.
 
 ## Accuracy
@@ -174,6 +176,18 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A Boolean of a solid and a sheet returns a "Part" that is no solid (the sheet imprinted, or the piece of the sheet) | `part + sheet` and `part - sheet` raise `TypeError`; `sheet & part` and `sheet - part` trim the sheet and check the pieces lie on it; `split` takes sheets (the kernel's `SM_BO_SLICE`, which no binding names: both sides, checked to add up to the part, a free-form sheet that ends inside the part extended first) |
 | Attributes on faces and edges go through Booleans, fillets, shells and copies (`SmAttribute`), but a merge keeps only the surviving object's | smlibpy's marks (`ShapeList.new`, `derived_from`) take the union of both, and come back from the forked offset steps alongside the `.smb` copy (which holds no attributes) |
 | The validity check `sm_AssertValid` does nothing in release builds | `check()` calls `SmBrep::AssertValid` itself (compiled in every build), which names the face, edge or vertex, the test and the gap |
+| The fillet geometry asked a missing boundary curve whether it was degenerate (`SmFilletGeom::MakeFaceBrep`), and the rollover read the surface of a side face it had not found (`SmFilletSolver::CreateCliffRollOverSideFG`): both killed the process (an all-edge chamfer and an all-edge fillet of Boolean parts) | patched (`third_party/patches`): the fillet fails, and the error names the edge |
+| The solution filter of the curve intersection (`sm_FilterSolution`) evaluated the curves with their first derivative only and read the second where the first is zero, past its stack array (reached from the seam check of `SmBrep::AssertValid`) | patched: it evaluates the second derivative too |
+| A body moved with a matrix that is no similarity (a scale that differs between the axes, a shear) has only B-spline faces and edges, and its first measure stores refitted trim curves in it (the volume of a stretched cylinder 6.8e-7 off) | recognizes planes, cylinders, cones, surfaces of revolution and extrusion and lines on a copy right after the transform (`ConvertCurvesToAnalytics`), kept only where every face and edge lies within 1e-9 of the size of the old one |
+| The bend volume's exact surfaces (`SmBendVolume::MakeExactBSpline1stOutSurface`) put bend cylinders at the axis point and sample the surface's parameter box, not the face, so deformed faces are fitted B-splines | samples the exact map on each face and edge and builds planes, cylinders, cones, lines and circles where the image is one (`src/cpp/deform_analytic.cpp`), with trims rebuilt within 1e-8, else the fit |
+| The sheet-metal unbend fits the edges of a bend zone within 1e-4 (a hole across a bend became 3 arcs and 2 B-splines, 1.8e-5 off its circle) | takes the kernel's exact lines and arcs where it has them, else a fit within 1e-7 that keeps the curve's parameters, and makes the flat pattern's outline of lines, arcs and circles |
+| SM_API's projection of a body onto a plane keeps only the visible half of what the hidden-curve removal (`SmHCR`) computes, and SmHCR's seam and smooth-edge flags turned a cylinder's front rim hidden | `outline(hidden=True)` calls SmHCR itself, filters seams and tangent edges by geometry, and drops edges seen end-on, slivers and hidden pieces under visible lines |
+| `SmApiBooleanWithCurves` hands out the common edges of a merge after `BooleanPostProcess` deleted some of them (AddressSanitizer: freed edges in its result) | is not used; `ShapeList.joining` selects the edges where two bodies meet by exact classification |
+| A torus whose seam lies on its outer equator (OpenCASCADE's O-rings) gave a seam window from -359.99999999999994 to 0, which `SmEllipse::AdjustSTEPInterval` refuses | lets the window start at 0 (the importer and the builder) |
+| The STEP builder gives each face its surface's whole parameter domain, so the kernel's search for a point inside a face missed narrow torus strips (`SmApiFaceInternalPoint` failed on valid imports) | narrows each face's domain to its trims once the body is built, in the directions the face takes less than half of |
+| The part file's assembly reader and writer (`SmBrepData::WriteAssemblyToDB`, `ReadAssemblyFromDB`) are empty, and its binary writer writes each value of a Boolean tree twice | `.smp` files hold bodies and curves, with names and colors as attributes on copies; no placements or trees |
+| usd-brep's OpenCASCADE bridge read cavities inside out and wrote inner shells reversed, turned re-aligned cylinder and cone frames by a quarter turn in u, wrote no curves on analytic faces and no edges at poles, wrote clockwise wires on concave faces, put free sheets in one shell and doubled vertices at loop joints | fixed in smlibpy's copy (`src/cpp/occt`, marked `smlibpy:`); the writer checks the model for what OpenCASCADE's check refuses before it returns |
+| The kernel's ray tracer (`SmRayTracer`) hits triangles, not faces | `raycast_many` traces through a mesh made once per body and moves each hit onto the exact face, and casts exactly where the face is missed there |
 
 ## Known kernel limitations
 
@@ -181,6 +195,23 @@ From usd-brep's own list of known issues and from smlibpy's own testing, the one
 matter here:
 
 - `heal` may report success without repairing everything; check `is_valid()` afterwards.
+- A union can return its first operand unchanged although the other reaches out of it, and no
+  check catches it yet (`(Cylinder(5, 5) + Box(20, 4, 16).rotate(X, 90).translate(0, -3, -0.5)) +
+  Cylinder(2, 12).translate(2, -2.3693, 3.5)`: 1358.54, right 1446.61). Compare the volume with the
+  operands' where it matters.
+- Some Booleans still kill the process: `(Box(20, 16, 4) - Sphere(6).rotate(X, 90).translate(1.4007,
+  0, -1.5863)) & Torus(6, 2.5).rotate(Y, 90).translate(7.5, 0, 10.5)` is the one known case. Batch
+  runs over unknown inputs set `smlibpy.defeature.GUARD_BOOLEANS = True` (below).
+- The kernel's Boolean of meshes (`Mesh` `+ - &`) kills the process for the meshes of two internally
+  tangent cylinders at a fine tolerance.
+- 2D Booleans of faces hundreds of times their size apart can come out wrong where faces share
+  edges (a unit square fused to its neighbour, with a third square 1000 away).
+- `Part.section` cuts with the kernel's plane section, which fits its curves to B-spline faces
+  within about 2e-3 (`intersection_curves` with a plane is closer, 9e-6); `distance_to` of a point
+  can miss the nearest point of a folded B-spline face; `raycast` can miss a hit next to a
+  cylinder's seam.
+- Sweeps along helices of more than about 60 turns fail in the kernel's sweep (`Helix` itself
+  takes any number).
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - A Boolean in which the faces cross along a curve tangent to a seam can still return a valid
   body of the wrong volume where smlibpy cannot turn the seam away: the seam of a part that is

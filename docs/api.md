@@ -22,6 +22,8 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.shapes.ShapeList
 ::: smlibpy.shapes.Shape
 ::: smlibpy.shapes.MassProperties
+::: smlibpy.shapes.SectionProperties
+::: smlibpy.shapes.Problem
 
 ## Geometry
 
@@ -34,6 +36,10 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.geometry.BoundBox
 ::: smlibpy.geometry.Hit
 ::: smlibpy.geometry.Nurbs
+::: smlibpy.geometry.NurbsSurface
+::: smlibpy.geometry.ClosestPoints
+::: smlibpy.geometry.Curvature
+::: smlibpy.geometry.Continuity
 ::: smlibpy.align.Align
 
 ## Parts
@@ -90,6 +96,9 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.step_import.read_step
 ::: smlibpy.step_import.from_step_model
 ::: smlibpy.step_import.StepModel
+::: smlibpy.step_import.StepFrame
+::: smlibpy.step_import.StepCurve
+::: smlibpy.step_import.StepPoint
 ::: smlibpy.iges_import.import_iges
 ::: smlibpy.iges_import.from_iges
 ::: smlibpy.dxf.import_dxf
@@ -106,6 +115,10 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.occt.to_brep
 ::: smlibpy.occt.import_brep
 ::: smlibpy.occt.from_brep
+
+## Drawings
+
+::: smlibpy.drawing
 
 ## Viewer
 

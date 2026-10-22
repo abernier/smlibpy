@@ -175,6 +175,8 @@
 - **Expected:** `ValueError` with the valid views; reject a zero direction and a zero size.
 
 ### 14. `Mesh.center()` is the bbox center, `Shape.center()` the centroid
+- **Partly (kernel plan M11):** `Mesh.centroid` (and `Mesh.mass_properties`) give the centroid of
+  what a closed mesh encloses; `Mesh.center()` stays the box center.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `16-mesh-measures.py`
 - **What happens:** `Cone(10, 0, 20).center()` z = -5 (the centroid), and
   `Cone(10, 0, 20).mesh().center()` z = 0 (the bbox center).
