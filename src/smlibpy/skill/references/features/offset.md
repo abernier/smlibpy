@@ -47,9 +47,9 @@ are convex). An L-block shrunk by 1: 2097.1976 round, 2092.0 sharp (the inner ed
 - smlibpy checks the result: a valid solid in the grown box (sharp: as far as the part's edges and
   corners can move, from the angles between their faces; round: `distance`), faces that meet
   (gaps below 1e-3 of the volume), a volume that went the right way; a refused sharp result is
-  tried once more, a kernel error is not. The kernel runs in a forked copy of the process (Linux, macOS): a crash or a step
-  longer than `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this
-  process goes on.
+  tried once more, a kernel error is not. The kernel runs in another process (a forked copy on Linux and macOS, a helper
+  process on Windows; see `parts/guards`): a crash or a step longer than
+  `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this process goes on.
 - The input part must be valid: otherwise `ModelingError: offset: the part is not a valid
   solid (...)`.
 

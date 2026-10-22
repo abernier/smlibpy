@@ -7,6 +7,7 @@
 
 import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { _identity } from './geometry.ts'
+import type { BytesLike } from './_bytes.ts'
 import { type Face, Part, Shell, _list, type ShapeList } from './shapes.ts'
 import { type IgesModel, interpret, parse } from './iges_reader.ts'
 import { _buildBody, _kernelVolume, _label, _reading, _text } from './step_import.ts'
@@ -233,7 +234,7 @@ function _bodies(text: string, heal: boolean, strict: boolean): [(Part | Shell)[
  * left out with a warning that names it and the reason; `strict: true` throws a `ModelingError`
  * instead. A file none of whose bodies can be read throws.
  */
-export function fromIges(data: string | Uint8Array, options: IgesImportOptions = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromIges(data: string | BytesLike, options: IgesImportOptions = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromIges', options)
   const { heal = true, strict = false } = options
   const [found, skipped] = _bodies(_text(data, 'fromIges'), heal, strict)
@@ -242,6 +243,7 @@ export function fromIges(data: string | Uint8Array, options: IgesImportOptions =
       throw new ModelingError(`import IGES: nothing in the file could be read: ${skipped.slice(0, 3).join('; ')}${skipped.length > 3 ? '; ...' : ''}`)
     throw new ModelingError('the IGES file holds no solids or surfaces')
   }
+  for (const body of found) body._h.imported = true // (read from a file: its fillets run in the probe worker)
   const out = _list(found)
   return out.length === 1 ? out[0] : out
 }

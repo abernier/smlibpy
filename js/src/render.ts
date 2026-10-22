@@ -14,11 +14,11 @@
 // Images are flat typed arrays, row by row from the top left, three numbers (red, green, blue)
 // per pixel; points and segments are flat arrays of x, y, z.
 
-import { _opts, ext } from './kernel.ts'
-import { BoundBox, Plane, Vector, _formatG } from './geometry.ts'
+import { _opts, ext, k as kernel } from './kernel.ts'
+import { BoundBox, Plane, Vector, type VectorLike, _formatG } from './geometry.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, _coloredMesh, _tessellate, _triangleColors, _triangulate, tessellate } from './mesh.ts'
-import { Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
+import { type ColorLike, Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
 import { _withOptions } from './curves.ts'
 import { _DEFAULT_COLORS, _curvePoints, _edgePolylines, _flattenAll, _fs } from './exporters.ts'
 import { StepModel } from './step_import.ts'
@@ -302,6 +302,40 @@ export class ImageDiff {
 }
 
 // -------------------------------------------------------------------------------- public functions
+/** What `render` draws: parts, sketches, sheets, faces, edges, wires and vertices, meshes, a read
+ * STEP file (`readStep`), or lists of them (an array, a ShapeList, a Set; also nested). */
+export type Renderable = Shape | Mesh | StepModel | (Iterable<Renderable> & object)
+
+/** A camera of `render` (see `RenderOptions.view`): a view's name, `{ azimuth, elevation }` in
+ * degrees, `{ direction, up }`, or the direction from the model towards the camera. (Any string
+ * type-checks, as names come from variables too; the names are checked when it renders.) */
+export type RenderView =
+  | 'iso'
+  | 'front'
+  | 'back'
+  | 'left'
+  | 'right'
+  | 'top'
+  | 'bottom'
+  | (string & {})
+  | VectorLike
+  | { azimuth?: number; elevation?: number }
+  | { direction: VectorLike; up?: VectorLike | null }
+
+/** A point of `render`'s options: a Vector, `[x, y, z]`, or the center of a shape or box. */
+export type RenderPoint = VectorLike | Shape | BoundBox
+
+/** A marker of `render` (see `RenderOptions.markers`): a point, `[point, label]`,
+ * `[point, label, color]` or `{ position, label, color }`. */
+export type RenderMarker =
+  | RenderPoint
+  | readonly [RenderPoint, string]
+  | readonly [RenderPoint, string, ColorLike | null]
+  | { position: RenderPoint; label?: string; color?: ColorLike | null }
+
+/** The kinds of curvature `render` maps (see `RenderOptions.curvature`). */
+export type CurvatureKind = 'mean' | 'gaussian' | 'max' | 'min' | (string & {})
+
 /** The options of `render`. */
 export interface RenderOptions {
   /** Also write the PNG to this file (Node). */
@@ -321,7 +355,7 @@ export interface RenderOptions {
    *
    * Views are never mirrored.
    */
-  view?: unknown
+  view?: RenderView | 'sheet'
   /** Width and height in pixels (default [800, 600]). */
   size?: readonly [number, number]
   /** Draw the edges of faces in the shaded view (hidden edges stay hidden). */
@@ -333,7 +367,7 @@ export interface RenderOptions {
   /** Factor on the scale that fits the shapes (2 shows half as much). */
   zoom?: number
   /** A point that lands in the middle of the picture. */
-  lookAt?: unknown
+  lookAt?: RenderPoint | null
   /** The frame of an earlier render of the same view and size (its `Picture.frame`, or the
    * picture itself): scale and middle stay the same, so pictures of a changed model compare
    * pixel by pixel (`diffImages`). Overrides `zoom` and `lookAt`. */
@@ -353,27 +387,34 @@ export interface RenderOptions {
    * the top view above the front view, the view from the right to its right.
    * `{ projection, side: "left" | "right", iso: boolean }` picks the side view or leaves the
    * corner empty. */
-  drawing?: unknown
+  drawing?: boolean | 'first-angle' | 'third-angle' | (string & {}) | { projection?: string; side?: string; iso?: boolean } | null
   /** Several shaded views in one picture: `true` (top, iso, front, right), a list of 4 views
    * (2 x 2) or of 2 views side by side. Named ortho views share one scale; the others fit
    * themselves. `drawing` wins over `sheet`. */
-  sheet?: unknown
+  sheet?: boolean | readonly (RenderView | null)[] | null
   /** Cut at a plane and leave out what is on the positive side of its normal: a `Plane`, a
    * planar face, `[origin, normal]` or `{ origin, normal, cap }`. The picture keeps the framing
    * of the whole model. */
-  section?: unknown
+  section?:
+    | Plane
+    | Face
+    | readonly [Face]
+    | readonly [RenderPoint, VectorLike]
+    | { origin: RenderPoint; normal: VectorLike; cap?: boolean }
+    | false
+    | null
   /** Fill the cut faces of closed bodies, hatched at 45 degrees (neighbouring bodies alternate
    * the direction); bores and pockets stay open. `false` leaves the cut open and shows the
    * inside walls shaded darker. */
   cap?: boolean
   /** Shapes drawn in signal colors: faces and bodies orange, edges red. Faces, edges, wires,
    * parts, vertices or selections (`part.edges().concave()`). */
-  highlight?: unknown
+  highlight?: Shape | Mesh | readonly (Shape | Mesh | readonly (Shape | Mesh)[])[] | null
   /** Points; the face closest to each point is highlighted. */
-  highlightAt?: unknown
+  highlightAt?: VectorLike | Iterable<RenderPoint> | null
   /** Crosshairs with labels, drawn on top: points `[x, y, z]`, `[point, label]` (or
    * `[point, label, color]`), or `{ position, label, color }`. */
-  markers?: unknown
+  markers?: VectorLike | { position: RenderPoint; label?: string; color?: ColorLike | null } | Iterable<RenderMarker> | null
   /** Measurement overlay: the size of the bounding box (`"60 X 54 X 34"`), the axes as seen in
    * the view (an axis pointing into the screen is left out) and a scale bar of a round length. */
   annotate?: boolean
@@ -388,13 +429,13 @@ export interface RenderOptions {
    * stripes around the light, the black share of each, and the direction of the light lines
    * (`"vertical"` or `"horizontal"` on the screen, or a world direction). Surfaces that curve
    * along the light lines show none; turn the direction for them. */
-  zebra?: unknown
+  zebra?: boolean | { stripes?: number; width?: number; direction?: 'vertical' | 'horizontal' | (string & {}) | VectorLike } | null
   /** A curvature map of the exact surfaces: `"mean"`, `"gaussian"`, `"max"` or `"min"` (the
    * principal curvatures). Blue is concave, white flat, red convex (a sphere of radius R has 1/R
    * everywhere); a legend gives the range in 1/mm (1/mm^2 for Gaussian).
    * `{ kind: "mean", range: 0.2 }` (or `[lo, hi]`) fixes the range; by default it spans the
    * values on the shapes. */
-  curvature?: unknown
+  curvature?: CurvatureKind | { kind?: CurvatureKind; range?: number | readonly [number, number] | null } | false | null
 }
 
 /**
@@ -408,6 +449,8 @@ export interface RenderOptions {
  *   bodies and curves, and marks its coordinate systems and named points.
  * @returns A `Picture`: the PNG file contents (`data`), with `pixels` and `frame`.
  */
+export function render(...shapes: Renderable[]): Picture
+export function render(...args: [...shapes: Renderable[], options: RenderOptions]): Picture
 export function render(...args: unknown[]): Picture {
   const { items, options } = _withOptions<RenderOptions>(args)
   _opts('render', options)
@@ -498,7 +541,7 @@ export function render(...args: unknown[]): Picture {
  * @returns An `ImageDiff`: the number, share and bounding box of the changed pixels, and a picture
  *   of the difference (changed pixels red on a faded gray of `b`).
  */
-export function diffImages(a: unknown, b: unknown, tolerance = 0): ImageDiff {
+export function diffImages(a: Picture | ImageLike | Uint8Array | ArrayBuffer | string, b: Picture | ImageLike | Uint8Array | ArrayBuffer | string, tolerance = 0): ImageDiff {
   const pa = _pixelsOf(a)
   const pb = _pixelsOf(b)
   if (pa.width !== pb.width || pa.height !== pb.height) {

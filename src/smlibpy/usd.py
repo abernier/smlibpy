@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ._kernel import KernelError, ext, kernel_call
+from ._kernel import KernelError, _traced, ext, kernel_call
 from .colors import to_rgb
 
 __all__ = ["export_usd", "import_usd", "to_usd", "from_usd"]
@@ -231,7 +231,7 @@ def _stage(root: str, text: str, read: Callable[[str, str], Any], heal: bool, un
             stage = ext.usd_stage(layers, heal, check, placement, per_unit, partial)
     except KernelError as e:
         # (the body that could not be built, and why, in the message)
-        raise KernelError(e.operation, e.detail, e.status, _built_hint(e.detail, e.status)) from e.__cause__
+        raise _traced(KernelError(e.operation, e.detail, e.status, _built_hint(e.detail, e.status)), e) from e.__cause__
     found = stage["bodies"]
     if not found:
         if stage["skipped"]:

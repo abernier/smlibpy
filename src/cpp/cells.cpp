@@ -197,6 +197,7 @@ std::vector<std::vector<SmBrep*>> void_shells(const SmBrep* brep) { return shell
 void bind_cells(py::module_ m)
 {
     m.def("region_shells", &smlibpy::region_shells, py::arg("brep"), py::return_value_policy::take_ownership,
+          py::call_guard<smlibpy::NoGil>(),
           "Per closed region of a body that is not a cavity (the cells of a merged part), the solids inside its "
           "shells: the outer shell's first, then its cavities' (the caller's).");
     m.def("void_shells", &smlibpy::void_shells, py::arg("brep"), py::return_value_policy::take_ownership,

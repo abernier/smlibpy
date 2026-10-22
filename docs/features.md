@@ -231,10 +231,11 @@ Faces that meet smoothly, such as a wall and the round next to it, need one thic
 
 With openings, walls that do not fit into the part (measured across it from each face) raise a
 `ModelingError` before the kernel runs; results whose faces do not meet, or that have no cavity
-where no wall reaches, raise one too. `shell`, `offset` and `thicken` run the kernel in a forked
-copy of the process (Linux, macOS), so a crash of its offset code raises a `ModelingError` too,
-and this process goes on. A step that takes longer than `smlibpy.defeature.GUARD_SECONDS` (20 s)
-is stopped; raise it for large parts.
+where no wall reaches, raise one too. `shell`, `offset` and `thicken` run the kernel in another
+process (a forked copy on Linux and macOS, a helper process on Windows), so a crash of its offset
+code raises a `ModelingError` too, and this process goes on. A step that takes longer than
+`smlibpy.defeature.GUARD_SECONDS` (20 s) is stopped; raise it for large parts (see
+[Steps in another process](kernel.md#steps-in-another-process)).
 
 ## Offset
 
@@ -526,8 +527,9 @@ print(len(plain.faces()), round(plain.volume, 6))   # 6 24000.0
 On parts made here the result is exact: the faces are extended, planes stay planes and
 cylinders cylinders. On imported parts the kernel cannot take out every detail; both methods
 then raise a `ModelingError` that says which, and `partial=True` keeps those and takes out the
-rest. On Linux and macOS the kernel first works in a forked copy of the process, so the rare
-crash or endless loop in its patching code only drops that step.
+rest. The kernel's steps run in another process (a forked copy on Linux and macOS, a helper
+process on Windows), so the rare crash or endless loop in its patching code only drops that step,
+and Ctrl-C stops it.
 
 ## Repair and conversion
 

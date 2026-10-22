@@ -40,6 +40,9 @@ check `is_valid()` after each step and fix the step that broke it.
 can). `KernelError` (a `ModelingError`) carries the kernel status (`SM_ERR`, `SM_ERR_INVALID_INPUT`,
 `SM_ERR_AXIS_INSIDE_FACE`, `SM_ERR_BAD_INTERSECTIONS`) and a hint; the hint is a guess, except
 that `SM_ERR_INVALID_INPUT` from a fillet or chamfer means no size works for that selection.
+Its `trace` says where the kernel gave up, for a bug report: the kernel's failures during the call,
+the last ones last (`'SM_ERR_INVALID_INPUT at SmFilletExecutive.cpp:1909 (CreateFilletCorners)'`, ...,
+`'... (SmApiFilletEdges)'`); do not branch on it, it changes with the kernel.
 `ValueError`/`TypeError` mean a wrong argument (a radius or length that is not positive, a zero
 thickness or angle, a `(start, end)` radius where it cannot hold). Shell, offset and thicken run
 the kernel in a forked copy of the process (Linux, macOS): a crash there is a `ModelingError`

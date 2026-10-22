@@ -1,0 +1,14 @@
+# Leaks of the kernel that tools/sanitize/run.py does not count: a text that the leak's report
+# (its allocation stack) contains, one per line after its reason. Remove a line when the leak is
+# fixed.
+
+# SmPrimitiveCreation::CreateSweepAlongPlanarPath (sweeps along mitered planar paths) copies the
+# profile curves for each path segment (PositionProfileCurves) and the path curve
+# (SweepProfilesAlongPath) and never deletes the copies: about 10 kB a sweep. CreateCurveSweep
+# works on copies of its own (SmApiCreateCurveSweep says so), so the copies can be deleted after it.
+PositionProfileCurves
+SweepProfilesAlongPath
+
+# SmProtoTopologyManager::CreateProtoEdge copies the curve of a ProtoEdge that some Booleans do not
+# take into the result (150 bytes, now and then).
+SmProtoTopologyManager::CreateProtoEdge

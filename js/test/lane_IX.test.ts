@@ -806,7 +806,7 @@ test('imported cylinders are written as cylinders', () => {
 })
 
 // -- I12: curves, points and coordinate systems --------------------------------------------------------------
-function _wireframeItems(): unknown[] {
+function _wireframeItems(): Any[] {
   const spline = Spline([
     [0, 0, 0],
     [5, 5, 2],
@@ -925,7 +925,7 @@ test('exportStep assembly puts wireframe with its body', () => {
 
 test('exportStep still refuses what it cannot write', () => {
   assert.throws(() => toStep(tessellate(Box(1, 1, 1))), (e: unknown) => e instanceof TypeError && /cannot write a Mesh to STEP/.test(e.message))
-  assert.throws(() => toStep(new Location([1, 2, 3])), (e: unknown) => e instanceof TypeError && /cannot write a Location to STEP/.test(e.message))
+  assert.throws(() => toStep(new Location([1, 2, 3]) as never), (e: unknown) => e instanceof TypeError && /cannot write a Location to STEP/.test(e.message))
 })
 
 // -- I13: the uncertainty ------------------------------------------------------------------------------------
@@ -1360,7 +1360,7 @@ test('iges files it does not read', () => {
 // biome-ignore lint: the shapes read back are checked by their properties
 type Any = any
 
-function _partItems(): unknown[] {
+function _partItems(): Any[] {
   const bracket = Box(20, 10, 6).cut(Cylinder(2, 10)).named('Größe bracket').colored('steelblue')
   const cells = Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0)).named('cells')
   const sheet = Rectangle(6, 4).named('plate').colored([0.1, 0.8, 0.2])
@@ -1423,11 +1423,11 @@ test('save and load part files', () => {
   exportFile(items.slice(0, 1), join(dir, 'b.smp'))
   save(items, join(dir, 'c.smp'), { ascii: false })
   for (const name of ['a.smp', 'c.smp']) {
-    const back = load(join(dir, name))
+    const back = load(join(dir, name)) as Any
     assert.equal(back.length, 5)
     assert.equal(back[0].name, 'Größe bracket')
   }
-  assert.equal(load(join(dir, 'b.smp')).name, 'Größe bracket') // (one item: the shape itself)
+  assert.equal((load(join(dir, 'b.smp')) as Any).name, 'Größe bracket') // (one item: the shape itself)
   assert.throws(() => save([items[0], items[2]], join(dir, 'x.smb')), /save them to an .smp file/)
   assert.throws(
     () => save(items[1], join(dir, 'x.smb')),
@@ -1438,7 +1438,7 @@ test('save and load part files', () => {
 test('part files written by both ports and by smlib', { skip: !existsSync(_USD_FILES) }, () => {
   // tests/data/parts.smp and parts_binary.smp were written by smlibpy
   for (const name of ['parts.smp', 'parts_binary.smp']) {
-    const back = load(join(_DATA, name))
+    const back = load(join(_DATA, name)) as Any
     assert.deepEqual(
       back.map((x: Any) => x.constructor.name),
       ['Part', 'Edge', 'Wire', 'Part'],
@@ -1450,10 +1450,10 @@ test('part files written by both ports and by smlib', { skip: !existsSync(_USD_F
     approx(back[3].volume, (4 / 3) * Math.PI * 8, 1e-9)
     approx(back[2].length, 5 + 2 * Math.PI, 1e-12)
   }
-  const two = load(`${_PT}ssi_plncyl1.smp`)
+  const two = load(`${_PT}ssi_plncyl1.smp`) as Any
   assert.equal(two.length, 2)
   assert.ok(two.every((b: unknown) => b instanceof Part || b instanceof Shell))
-  const curves = load(`${_PT}cci_bug_rhino1.smp`)
+  const curves = load(`${_PT}cci_bug_rhino1.smp`) as Any
   assert.deepEqual(
     curves.map((x: Any) => x.constructor.name),
     ['Edge', 'Edge'],
@@ -1687,7 +1687,7 @@ const _MIXED: [string, string][] = [
 for (const [name, said] of _MIXED) {
   test(`body of mixed dimension says what else it holds (${name})`, { skip: !existsSync(_USD_FILES) }, () => {
     // 0.4 gave a Part whose isValid() was false, from .smb and USD alike, and said nothing
-    const [body, loaded] = warnings(() => load(join(_USD_FILES, 'usd_TestFiles', `${name}.smb`)))
+    const [body, loaded] = warnings(() => load(join(_USD_FILES, 'usd_TestFiles', `${name}.smb`)) as Part | Shell)
     assert.deepEqual(loaded, [`load: the body ${said}`])
     const text = warnings(() => toUsd(body.named('x'), { mesh: false }))[0]
     const [back, read] = warnings(() => fromUsd(text) as Part)
@@ -1715,7 +1715,7 @@ test('writers of bodies name what they cannot write', () => {
   )
   assert.throws(() => toStl([Box(1, 1, 1), vertex]), /toStl writes parts, sheets, faces and meshes, not a Vertex: exportStep writes points/)
   assert.throws(() => toObj(new Wire([edge])), /toObj writes parts, sheets, faces and meshes, not a Wire/)
-  assert.throws(() => toUsd(new _Location()), /not a Location/)
+  assert.throws(() => toUsd(new _Location() as never), /not a Location/)
 })
 
 

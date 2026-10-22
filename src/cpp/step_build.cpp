@@ -995,7 +995,9 @@ Value seam_problems(SmBrep* brep, bool fix, const std::vector<long>* only)
 
 void bind_step_build(py::module_& m)
 {
-    m.def("inverted_faces", [](SmBrep* brep) { return smlibpy::to_python(smlibpy::inverted_faces(brep)); },
+    m.def("inverted_faces", [](SmBrep* brep) {
+        return smlibpy::to_python(smlibpy::without_gil([&] { return smlibpy::inverted_faces(brep); }));
+    },
           py::arg("brep"),
           "Indices of faces whose oriented trim curves enclose a negative area in the parameter plane: loops "
           "that run the wrong way round for the face's orientation.");
@@ -1008,7 +1010,8 @@ void bind_step_build(py::module_& m)
         if (!only.is_none())
             for (py::handle h : only)
                 indices.push_back(py::cast<long>(h));
-        return smlibpy::to_python(smlibpy::seam_problems(brep, fix, only.is_none() ? nullptr : &indices));
+        const std::vector<long>* subset = only.is_none() ? nullptr : &indices;
+        return smlibpy::to_python(smlibpy::without_gil([&] { return smlibpy::seam_problems(brep, fix, subset); }));
     }, py::arg("brep"), py::arg("fix") = false, py::arg("only") = py::none(),
           "Faces of periodic surfaces whose seam no edge runs along, or edges cross: [{face, missing, crossed}] "
           "('u', 'v' or 'both'). fix=True has the kernel add the seams (in place); only= limits both to these face "
@@ -1026,8 +1029,8 @@ void bind_step_build(py::module_& m)
           "(u0, u1, v0, v1) where that lies inside the surface's (used by the IGES importer for untrimmed surfaces).");
     m.def("build_brep", [](py::handle faces, py::handle edges, bool solid, bool reversed, bool mirrored,
                            py::object voids) {
-        return smlibpy::build_brep(smlibpy::to_value(faces), smlibpy::to_value(edges), solid, reversed, mirrored,
-                                   smlibpy::to_value(voids));
+        const smlibpy::Value f = smlibpy::to_value(faces), e = smlibpy::to_value(edges), v = smlibpy::to_value(voids);
+        return smlibpy::without_gil([&] { return smlibpy::build_brep(f, e, solid, reversed, mirrored, v); });
     }, py::arg("faces"), py::arg("edges"), py::arg("solid"), py::arg("reversed") = false,
           py::arg("mirrored") = false, py::arg("voids") = py::list(), py::return_value_policy::take_ownership,
           "Build a Brep from neutral face/edge data (used by the STEP importer). voids: [(faces, reversed)], the "

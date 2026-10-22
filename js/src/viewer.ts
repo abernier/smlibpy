@@ -2,7 +2,7 @@
 // gives the page itself, for an iframe in a browser app. Rendering uses three.js (loaded from a
 // CDN).
 
-import { _base64, _fs, _zUp, gltfDocumentMixed } from './exporters.ts'
+import { type ShapesLike, _base64, _fs, _zUp, gltfDocumentMixed } from './exporters.ts'
 import { _withOptions } from './curves.ts'
 import { _opts } from './kernel.ts'
 
@@ -198,6 +198,8 @@ export interface PageOptions {
  * @param args Parts, sketches, faces, edges, wires, meshes, or lists of them, and last the options
  *   (see `PageOptions`).
  */
+export function htmlPage(...shapes: ShapesLike[]): string
+export function htmlPage(...args: [...shapes: ShapesLike[], options: PageOptions]): string
 export function htmlPage(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<PageOptions>(args)
   _opts('htmlPage', options)
@@ -244,6 +246,8 @@ function _builtin(name: string): Any {
  * @param args The shapes, and last the options (see `ShowOptions`).
  * @returns The path of the page.
  */
+export function show(...shapes: ShapesLike[]): string
+export function show(...args: [...shapes: ShapesLike[], options: ShowOptions]): string
 export function show(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<ShowOptions>(args)
   _opts('show', options)
@@ -251,7 +255,7 @@ export function show(...args: unknown[]): string {
   let { path = null } = options
   if (!_builtin('node:fs')) throw new Error('show needs Node.js to write the page and open a browser; in a browser app, show htmlPage(...) in an iframe')
   const fs = _fs()
-  const page = htmlPage(shapes, { title, tolerance, angle, edges })
+  const page = htmlPage(shapes as ShapesLike[], { title, tolerance, angle, edges })
   if (path == null) {
     const os = _builtin('node:os')
     const nodePath = _builtin('node:path')

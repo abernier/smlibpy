@@ -5,17 +5,20 @@
 // A browser starts a worker only while the thread that creates it runs its event loop. A step that
 // waits for its probe does not, and the code that removes fillets mostly runs from the package's
 // import on without a pause: so in a browser the supervisor starts here, when the package is
-// imported, before the kernel loads (kernel.ts imports this module first). It holds no kernel; it
+// imported, before the kernel loads (index.ts imports this module first). It holds no kernel; it
 // starts a probe worker when the first step comes. In Node workers start at any time, and the
 // supervisor starts with the first step.
 
+// Bundlers build each worker from the `new Worker(new URL(...))` they find, with the modules it
+// imports, and refuse a worker that comes back to itself: so the kernel's modules, which the probe
+// worker imports, do not import this one, and the names of the workers are in _threads.ts.
+
+import { PROBE_NAME, SUPERVISOR_NAME, _nodeWorker } from './_threads.ts'
+
+export { PROBE_NAME, SUPERVISOR_NAME, _workerArgv } from './_threads.ts'
+
 // biome-ignore lint: a Web Worker or a Node worker thread
 type Any = any
-
-/** The names of the supervisor and the probe workers in a browser (they start no supervisor of
- * their own). */
-export const SUPERVISOR_NAME = 'smlibwasm-guard'
-export const PROBE_NAME = 'smlibwasm-probe'
 
 let supervisor: Any = null // the supervisor, while it lives
 let noWorker: string | null = null // why there is no probe worker here, once known
@@ -39,39 +42,32 @@ export function _probeSupervisor(): Any {
   const threads = (globalThis as Any).process?.getBuiltinModule?.('node:worker_threads')
   try {
     if (threads) {
-      // (the TypeScript of the repository, or the package's JavaScript)
-      const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
-      const url = new URL(`./_defeature_supervisor${suffix}`, import.meta.url)
+      // (the TypeScript of the repository, or the package's JavaScript; relative to `here`, not to
+      // import.meta.url itself, which bundlers for the browser take for files to bundle: all of the
+      // package's files, for a name they cannot read)
+      const here = import.meta.url
+      const suffix = here.endsWith('.ts') ? '.ts' : '.js'
+      const url = new URL('./_defeature_supervisor' + suffix, here)
       // A worker whose module is missing (a bundle that left it out) fails only once it loads, while
       // the first step waits for it: so the files are looked for first.
       const fs = (globalThis as Any).process.getBuiltinModule('node:fs')
       for (const name of ['_defeature_supervisor', '_defeature_worker']) {
-        const file = new URL(`./${name}${suffix}`, import.meta.url)
+        const file = new URL('./' + name + suffix, here)
         if (file.protocol === 'file:' && !fs.existsSync(file)) {
-          noWorker = `no probe worker (${name}${suffix} is missing next to ${new URL('.', import.meta.url).pathname})`
+          noWorker = `no probe worker (${name}${suffix} is missing next to ${new URL('./', here).pathname})`
           missing = true
           return null
         }
       }
-      const argv = _workerArgv((globalThis as Any).process.execArgv ?? [])
-      let worker: Any
-      try {
-        worker = new threads.Worker(url, { execArgv: argv })
-      } catch (e) {
-        // Node refuses options that apply to a whole process, which some runners pass on (`node
-        // --test` gives its test processes --stack-trace-limit, --secure-heap and others): without
-        // those.
-        const refused = /invalid execArgv flags: (.*)$/.exec((e as Error).message)?.[1].split(', ') ?? []
-        if ((e as Any).code !== 'ERR_WORKER_INVALID_EXEC_ARGV' || !refused.length) throw e
-        worker = new threads.Worker(url, { execArgv: argv.filter((a) => !refused.includes(a)) })
-      }
+      const worker = _nodeWorker(threads, url)
       worker.unref() // (an idle supervisor does not keep Node running)
       worker.on('error', () => lost(worker))
       worker.on('exit', () => lost(worker))
       supervisor = worker
     } else {
-      // (written as bundlers recognise a worker, which they then bundle)
-      const worker = new Worker(new URL('./_defeature_supervisor.js', import.meta.url), { type: 'module', name: SUPERVISOR_NAME })
+      // (written as bundlers recognise a worker, which they then bundle: the options too, literally,
+      // as SUPERVISOR_NAME)
+      const worker = new Worker(new URL('./_defeature_supervisor.js', import.meta.url), { type: 'module', name: 'smlibwasm-guard' })
       worker.onerror = () => lost(worker)
       supervisor = worker
     }
@@ -99,19 +95,6 @@ function whyNoWorker(): string | null {
   const threads = (globalThis as Any).process?.getBuiltinModule?.('node:worker_threads')
   if (!threads && typeof Worker === 'undefined') return 'no Worker'
   return null
-}
-
-/** Node's options for a worker: this process's, but not those that run code given on the
- * command line (`node -e`, `--input-type`), which a worker inherits and which keep it from
- * starting. */
-export function _workerArgv(argv: readonly string[]): string[] {
-  const out: string[] = []
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    if (['-e', '--eval', '-p', '--print', '--input-type'].includes(a)) i++ // (and its value)
-    else if (!/^--(eval|print|input-type)=/.test(a)) out.push(a)
-  }
-  return out
 }
 
 /** A supervisor that failed or ended on its own: the next step starts a new one. */

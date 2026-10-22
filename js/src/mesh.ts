@@ -354,7 +354,7 @@ export class Mesh {
    * the triangle's normal and its index `triangle`). As `Part.raycast`, on the triangles instead
    * of the exact faces.
    */
-  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit<null>[] {
     let o: Vector
     let d: Vector
     if (origin instanceof Axis && direction == null) {
@@ -373,7 +373,7 @@ export class Mesh {
     const [ts, tris] = _rayTriangles(o, d, this.vertices, this.triangles, tol)
     const normals = this.triangleNormals
     const order = Array.from(ts.keys()).sort((i, j) => ts[i] - ts[j] || tris[i] - tris[j])
-    const out: Hit[] = []
+    const out: Hit<null>[] = []
     for (const i of order) {
       const t = ts[i]
       if (out.length && t - out[out.length - 1].distance <= 1e-9 * Math.max(size, 1)) continue // (through an edge or a corner: one hit)
@@ -393,7 +393,7 @@ export class Mesh {
    * triangles) and then takes about 0.01 ms a ray, where `raycast` tests every triangle: give all
    * the rays in one call.
    */
-  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[] {
+  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit<null> | null)[] {
     const [o, d] = _rays(origins, directions, 'raycastMany')
     const n = o.length / 3
     if (!n || !this.triangles.length) return Array.from({ length: n }, () => null)
@@ -407,7 +407,7 @@ export class Mesh {
       for (let j = 0; j < 3; j++) start[3 * i + j] = o[3 * i + j] - d[3 * i + j] * tol[i]
     }
     const r = kernelCall('raycastMany', () => ext.mesh_first_hits(this.vertices, this.triangles, start, d))
-    const out: (Hit | null)[] = []
+    const out: (Hit<null> | null)[] = []
     for (let i = 0; i < n; i++) {
       const tri = r.triangles[i]
       if (tri < 0) {
@@ -416,7 +416,7 @@ export class Mesh {
       }
       const t = Math.max(r.t[i] - tol[i], 0)
       const point = new Vector(o[3 * i] + d[3 * i] * t, o[3 * i + 1] + d[3 * i + 1] * t, o[3 * i + 2] + d[3 * i + 2] * t)
-      out.push(new Hit(point, t, new Vector(r.normals[3 * i], r.normals[3 * i + 1], r.normals[3 * i + 2]), null, tri))
+      out.push(new Hit<null>(point, t, new Vector(r.normals[3 * i], r.normals[3 * i + 1], r.normals[3 * i + 2]), null, tri))
     }
     return out
   }

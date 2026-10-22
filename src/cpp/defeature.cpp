@@ -467,7 +467,7 @@ void bind_defeature(py::module_& root)
           "the others ('sharp') and the number of edges without seams ('edges').");
 
     m.def("remove_fillet_faces", [](const SmBrep* brep, const std::vector<SmFace*>& faces, double tolerance) {
-        smlibpy::FilletsRemoved r = smlibpy::remove_fillet_faces(brep, faces, tolerance);
+        smlibpy::FilletsRemoved r = smlibpy::without_gil([&] { return smlibpy::remove_fillet_faces(brep, faces, tolerance); });
         py::dict d;
         d["brep"] = owned(r.brep);
         py::list flags;
@@ -480,7 +480,7 @@ void bind_defeature(py::module_& root)
           "copy or None if nothing was removed, 'removed': one flag per face}.");
 
     m.def("defeature", [](const SmBrep* brep, const std::vector<std::vector<SmFace*>>& groups, const std::string& rebuild) {
-        const smlibpy::Defeatured r = smlibpy::defeature(brep, groups, rebuild);
+        const smlibpy::Defeatured r = smlibpy::without_gil([&] { return smlibpy::defeature(brep, groups, rebuild); });
         py::dict d;
         d["added"] = r.added;
         d["applied"] = r.applied;

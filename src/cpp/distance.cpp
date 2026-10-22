@@ -363,7 +363,7 @@ NearestPoints nearest_curve_points(const SmBrep* body, const SmCurve* curve, dou
 void bind_distance(py::module_ m)
 {
     m.def("nearest_points", [](const SmBrep* a, const SmBrep* b, const std::vector<double>& near_a) {
-        const smlibpy::NearestPoints r = smlibpy::nearest_points(a, b, near_a);
+        const smlibpy::NearestPoints r = smlibpy::without_gil([&] { return smlibpy::nearest_points(a, b, near_a); });
         py::dict out;
         out["a"] = py::make_tuple(r.a[0], r.a[1], r.a[2]);
         out["b"] = py::make_tuple(r.b[0], r.b[1], r.b[2]);

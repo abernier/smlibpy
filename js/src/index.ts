@@ -8,6 +8,9 @@
 //     plate = plate.cut(GridLocations(60, 40, 2, 2).mul(Cylinder(4, 10)))
 //     const step = toStep(plate)
 
+// (first: in a browser it starts defeature's probe worker while the kernel loads, see there)
+import './_guard.ts'
+
 export const version = '0.4.0'
 
 // geometry
@@ -83,7 +86,7 @@ export { GridLocations, HexLocations, Locations, PolarLocations } from './locati
 // operations
 export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, swing, thicken } from './operations.ts'
 // removing fillets and faces: the time limit of a kernel step
-export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
+export { GUARD_BOOLEANS, GUARD_SECONDS, setGuardBooleans, setGuardSeconds } from './defeature.ts'
 // deformations
 export { Lattice, bend, taper, twist, unroll } from './deform.ts'
 // surfaces
@@ -98,10 +101,12 @@ export {
   exportObj,
   exportStep,
   exportStl,
+  fromFile,
   importStl,
   load,
   save,
   fromSmb,
+  toFile,
   toSmb,
   fromSmp,
   toSmp,
@@ -129,5 +134,21 @@ export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdIm
 export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
-// errors and warnings
-export { KernelError, ModelingError, setWarningHandler } from './kernel.ts'
+// errors, warnings and memory
+export { KernelError, ModelingError } from './_errors.ts'
+export { memoryUsage, scope, setWarningHandler, type MemoryUsage } from './kernel.ts'
+// the types of options, selections and results, to name them in an app's own code
+export type { Matrix, Movable, XYZ } from './geometry.ts'
+export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, SortKey } from './shapes.ts'
+export type { Coordinates } from './profiles.ts'
+export type { CornerOptions, PlacementOptions, PolygonOptions, TrapezoidOptions } from './sketches.ts'
+export type { TextOptions } from './text.ts'
+export type { Contour, PairAdjustment, Point, Segment } from './font.ts'
+export type { ExtrudeFunctionOptions, SweepOptions } from './operations.ts'
+export type { BendOptions, LatticeIndex, LatticeLayers, RangeOptions, TaperOptions, TwistOptions } from './deform.ts'
+export type { DraftAnalysis, FaceDraft } from './draft.ts'
+export type { BendAllowanceOptions, DevelopedLengthOptions, FlangeOptions, FoldOptions, UnfoldOptions } from './sheetmetal.ts'
+export type { GltfOptions, MeshOptions, ShapesLike, StepExportOptions } from './exporters.ts'
+export type { BytesLike } from './_bytes.ts'
+export type { DxfReadOptions, DxfWriteOptions } from './dxf.ts'
+export type { CurvatureKind, RenderMarker, RenderPoint, RenderView, Renderable } from './render.ts'

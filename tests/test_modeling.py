@@ -396,8 +396,10 @@ def test_cells_of_inserts_that_touch_the_part_around_them():
 
 def test_cells_must_fill_the_part(monkeypatch):
     # The cells add up to the merged part, or cells() raises: here region_shells leaves the cavity out.
+    import smlibpy.defeature
     import smlibpy.shapes
 
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)  # (in this process, which sees the call replaced)
     m = Box(10, 10, 10).merge(Box(2, 2, 2))
     shells = smlibpy.shapes.ext.region_shells
     monkeypatch.setattr(smlibpy.shapes.ext, "region_shells", lambda b: [s[:1] for s in shells(b)])

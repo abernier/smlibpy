@@ -2,6 +2,7 @@
 #pragma once
 
 #include "SmPyCommon.h"
+#include "kernel_lock.h"
 
 // smlibpy additions to the upstream bindings, registered as `_core.ext`.
 void bind_smlibpy_ext(py::module_ m);
@@ -103,3 +104,9 @@ void bind_hidden_lines(py::module_ m);
 void bind_mesh_tools(py::module_ m);
 // PolyBrep.ray_intersection with its hit polygon tied to the mesh (mesh_tools.cpp; SmPyLib's raised for every hit).
 void bind_poly_ray_intersection(py::module_ m);
+// The kernel's error trace: where it gave up (trace.cpp).
+void bind_kernel_trace(py::module_ m);
+// Freeing the caches kernel queries left on a body (caches.cpp).
+void bind_caches(py::module_ m);
+// SmPyLib's long kernel calls again, with the GIL let go while the kernel works (nogil.cpp).
+void bind_nogil(py::module_ m);

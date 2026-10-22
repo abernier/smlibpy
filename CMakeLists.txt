@@ -24,7 +24,8 @@ endif()
 option(SMLIBPY_USE_TBB "Use oneTBB for the parallel parts of the kernel" OFF)
 
 # Patched copies of a few kernel sources are compiled in place of the originals:
-# third_party/patches/<dir>/src/<file> replaces source/<dir>/src/<file> of usd-brep. What each
+# third_party/patches/<dir>/src/<file> replaces source/<dir>/src/<file> of usd-brep, and
+# third_party/patches/<dir>/inc/<file> is included instead of source/<dir>/inc/<file>. What each
 # one fixes, and how to drop it, is in third_party/patches/README.md.
 set(SMLIBPY_PATCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patches")
 function(smlibpy_patch_sources sources_var dir)
@@ -44,6 +45,21 @@ function(smlibpy_patch_sources sources_var dir)
   endforeach()
   set(${sources_var} ${sources} PARENT_SCOPE)
 endfunction()
+# Patched copies of kernel headers: third_party/patches/<dir>/inc/<file> is found before
+# source/<dir>/inc/<file> by every file that includes it, the kernel's, SmPyLib's and smlibpy's
+# (the directory comes first in the include path of the target and of everything that links it).
+function(smlibpy_patch_headers target dir)
+  file(GLOB patched CONFIGURE_DEPENDS "${SMLIBPY_PATCH_DIR}/${dir}/inc/*.h")
+  foreach(file ${patched})
+    get_filename_component(name "${file}" NAME)
+    if(NOT EXISTS "${USD_BREP_DIR}/source/${dir}/inc/${name}")
+      message(FATAL_ERROR "${file} must replace a kernel header source/${dir}/inc/${name}")
+    endif()
+  endforeach()
+  if(patched)
+    target_include_directories(${target} BEFORE PUBLIC "${SMLIBPY_PATCH_DIR}/${dir}/inc")
+  endif()
+endfunction()
 
 # ---------------------------------------------------------------------------
 # Kernel (SMLib) and its C-style wrapper (SM_API), both static so the Python
@@ -62,6 +78,7 @@ else()
   smlibpy_patch_sources(SMLIB_SOURCES SMLib)
   add_library(smlib STATIC ${SMLIB_SOURCES})
   target_include_directories(smlib PUBLIC "${USD_BREP_DIR}/source/SMLib/inc")
+  smlibpy_patch_headers(smlib SMLib)
   # Same defines as the upstream release configuration (premake5.lua).
   target_compile_definitions(smlib PUBLIC NOMINMAX SM_GRAPHICS_CALLBACKS=1 $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:NDEBUG>)
 
@@ -75,6 +92,7 @@ else()
   smlibpy_patch_sources(SM_API_SOURCES SM_API)
   add_library(sm_api STATIC ${SM_API_SOURCES})
   target_include_directories(sm_api PUBLIC "${USD_BREP_DIR}/source/SM_API/inc")
+  smlibpy_patch_headers(sm_api SM_API)
   # PUBLIC: everything is linked statically into one module, so consumers must not see
   # __declspec(dllimport) declarations on Windows.
   target_compile_definitions(sm_api PUBLIC SM_API_EXPORTS)
@@ -106,6 +124,12 @@ else()
     export(TARGETS smlib sm_api FILE "${CMAKE_BINARY_DIR}/smlibpy-kernel.cmake")
     return()
   endif()
+endif()
+
+# Upstream's kernel tests against this kernel (tools/oracles/prog_test.py runs them).
+option(SMLIBPY_PROG_TEST "Build usd-brep's prog_test_app against the patched kernel" OFF)
+if(SMLIBPY_PROG_TEST AND NOT EMSCRIPTEN)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/tools/oracles/prog_test.cmake")
 endif()
 
 # ---------------------------------------------------------------------------

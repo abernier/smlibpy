@@ -27,6 +27,7 @@ import {
   type StepFile,
 } from './step_reader.ts'
 import { _fs } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -908,6 +909,7 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
     _warn(`${_op()}: ${_label(body)} is not a valid solid (${broken[0]}); heal and stitching could not repair it`)
   if (body.name) result.name = body.name
   if (body.color !== null) result.color = body.color
+  result._h.imported = true // (read from a file: its fillets run in the probe worker)
   return result
 }
 
@@ -1531,7 +1533,7 @@ export class StepModel {
  *
  * `readStep` for the contents in memory (in the browser too); see `readStep`.
  */
-export function fromStepModel(data: string | Uint8Array, options: { heal?: boolean; strict?: boolean } = {}): StepModel {
+export function fromStepModel(data: string | BytesLike, options: { heal?: boolean; strict?: boolean } = {}): StepModel {
   _opts('fromStepModel', options)
   const { heal = true, strict = false } = options
   const sf = parse(_text(data, 'fromStepModel'))
@@ -1670,14 +1672,14 @@ function _trimmedEdge(basis: Any, trims: Any[], sense: boolean): Edge | null {
 // -------------------------------------------------------------------------------- importStep
 /** The text of STEP file contents: bytes are Latin-1, as Python reads the file, and line ends
  * become "\n" (Python's universal newlines). */
-export function _text(data: string | Uint8Array, caller = 'fromStep'): string {
+export function _text(data: string | BytesLike, caller = 'fromStep'): string {
   let text: string
+  const bytes = _asBytes(data)
   if (typeof data === 'string') text = data
-  else if (ArrayBuffer.isView(data) || (data as unknown) instanceof ArrayBuffer) {
-    const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data as ArrayBuffer)
+  else if (bytes !== null) {
     text = ''
     for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  } else throw new TypeError(`${caller} takes the file's contents: a string or a Uint8Array`)
+  } else throw new TypeError(`${caller} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer)`)
   return text.replace(/\r\n?/g, '\n')
 }
 
@@ -1696,7 +1698,7 @@ export function _text(data: string | Uint8Array, caller = 'fromStep'): string {
  * `strict: true` throws a `ModelingError` for it instead. A file none of whose bodies can be read
  * throws.
  */
-export function fromStep(data: string | Uint8Array, options: { heal?: boolean; strict?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromStep(data: string | BytesLike, options: { heal?: boolean; strict?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromStep', options)
   const { heal = true, strict = false } = options
   const sf = parse(_text(data))

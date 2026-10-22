@@ -11,12 +11,14 @@
 // In memory everywhere: toDxf (a string), fromDxf and fromDxfWires (a string or the file's
 // bytes). With file paths in Node: exportDxf, importDxf and importDxfWires.
 
-import { ModelingError, _opts, _warn, ext, k } from './kernel.ts'
+import { ModelingError, _opts, _warn, ext, k, scope } from './kernel.ts'
 import { type Matrix, Plane, _formatG, _identity, _matmul } from './geometry.ts'
 import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
 import { Mesh } from './mesh.ts'
 import * as regions from './regions.ts'
+import type { ShapesLike } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 import { Edge, Face, Part, type ShapeList, Sketch, Vertex, Wire, _Body, _canonicalCurve, _list, _typeName } from './shapes.ts'
 import { DrawingView } from './drawing.ts'
 
@@ -928,13 +930,14 @@ function _deBoor(poles: V3[], weights: number[] | null, knots: number[], deg: nu
 }
 
 /** The drawing's text: a string as it is, the bytes of a file decoded. */
-function _text(data: string | Uint8Array, what: string): string {
+function _text(data: string | BytesLike, what: string): string {
   if (typeof data === 'string') {
     if (data.startsWith('AutoCAD Binary DXF')) throw new RangeError(`${what}: a binary DXF; save the drawing as ASCII DXF`)
     return data
   }
-  if (data instanceof Uint8Array) return _readText(data, what)
-  throw new TypeError(`${what} reads a DXF drawing as a string or bytes (a Uint8Array), not ${_typeName(data)}`)
+  const bytes = _asBytes(data)
+  if (bytes !== null) return _readText(bytes, what)
+  throw new TypeError(`${what} reads a DXF drawing as a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
 }
 
 function _fileText(path: string, what: string): string {
@@ -953,8 +956,9 @@ export function importDxfWires(path: string, options: DxfReadOptions = {}): Shap
   return _wires(_fileText(path, 'importDxfWires'), options, 'importDxfWires')
 }
 
-/** `importDxfWires` of a drawing in memory: the text of a DXF file, or its bytes. */
-export function fromDxfWires(data: string | Uint8Array, options: DxfReadOptions = {}): ShapeList<Wire> {
+/** `importDxfWires` of a drawing in memory: the text of a DXF file, or its bytes (a Uint8Array or
+ * an ArrayBuffer). */
+export function fromDxfWires(data: string | BytesLike, options: DxfReadOptions = {}): ShapeList<Wire> {
   _opts('fromDxfWires', options)
   return _wires(_text(data, 'fromDxfWires'), options, 'fromDxfWires')
 }
@@ -979,14 +983,19 @@ function _wires(text: string, options: DxfReadOptions, what: string): ShapeList<
  * or outlines that branch.
  */
 export function importDxf(path: string, options: DxfReadOptions = {}): Sketch {
-  _opts('importDxf', options)
-  return _sketch(_fileText(path, 'importDxf'), options, 'importDxf', 'importDxfWires')
+  return scope(() => {
+    _opts('importDxf', options)
+    return _sketch(_fileText(path, 'importDxf'), options, 'importDxf', 'importDxfWires')
+  })
 }
 
-/** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes. */
-export function fromDxf(data: string | Uint8Array, options: DxfReadOptions = {}): Sketch {
-  _opts('fromDxf', options)
-  return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')
+/** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes (a Uint8Array or an
+ * ArrayBuffer). */
+export function fromDxf(data: string | BytesLike, options: DxfReadOptions = {}): Sketch {
+  return scope(() => {
+    _opts('fromDxf', options)
+    return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')
+  })
 }
 
 function _sketch(text: string, options: DxfReadOptions, what: string, wiresName: string): Sketch {
@@ -1067,11 +1076,15 @@ function _sketch(text: string, options: DxfReadOptions, what: string, wiresName:
 // =============================================================================
 // exportDxf (and toDxf in memory)
 // =============================================================================
+/** What a DXF file can hold, as `exportDxf` and `toDxf` take it: shapes, the views of
+ * `drawingViews`, or lists of them. */
+export type DxfShapesLike = ShapesLike | DrawingView | (Iterable<DxfShapesLike> & object)
+
 /**
  * Write sketches, faces, wires and edges to a DXF drawing (AutoCAD 2000, AC1015) at `path`
  * (Node). See `toDxf`.
  */
-export function exportDxf(shapes: unknown, path: string, options: DxfWriteOptions = {}): void {
+export function exportDxf(shapes: DxfShapesLike, path: string, options: DxfWriteOptions = {}): void {
   _opts('exportDxf', options)
   const text = _dxf(shapes, options, 'exportDxf')
   _fs('exportDxf').writeFileSync(path, text, 'utf8')
@@ -1089,7 +1102,7 @@ export function exportDxf(shapes: unknown, path: string, options: DxfWriteOption
  *
  * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge`, `DrawingView` or an array of them.
  */
-export function toDxf(shapes: unknown, options: DxfWriteOptions = {}): string {
+export function toDxf(shapes: DxfShapesLike, options: DxfWriteOptions = {}): string {
   _opts('toDxf', options)
   return _dxf(shapes, options, 'toDxf')
 }

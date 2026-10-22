@@ -155,6 +155,7 @@ def _body(brep: Any, name: str | None, color: Any, what: str, stacklevel: int = 
     dump = ext.brep_dump(brep, False)
     solid = any(not r["infinite"] and not r["void"] for r in dump["regions"])
     body = (Part if solid else Shell)._wrap(brep, name=name, color=color)
+    body._h.imported = True  # (read from a file: its fillets run in another process)
     parts, extra, loose = _components(dump, solid)
     if parts and not dump["faces"]:
         warnings.warn(f"{what}: {_label(name)} has no faces, only {' and '.join(parts)}: it is read as a Shell "

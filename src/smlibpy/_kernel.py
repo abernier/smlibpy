@@ -28,7 +28,15 @@ class KernelError(ModelingError):
 
     ``operation`` names the smlibpy call, ``status`` the kernel status code
     (e.g. ``SM_ERR_INVALID_INPUT``) and ``hint`` a suggestion when one is known.
+    ``trace`` says where the kernel gave up: the failures it reported during the call, oldest
+    first, at most the last 48, as ``"SM_ERR at SmFilletExecutive.cpp:1603 (DoFillet)"``. It
+    ends with the chain from the deepest function that failed to the kernel's API function;
+    what comes before are errors the kernel recovered from. Empty where the error did not come
+    from a kernel function. For bug reports: the sites change with the kernel.
     """
+
+    #: Where the kernel gave up (see the class); set by :func:`kernel_call`.
+    trace: tuple[str, ...] = ()
 
     def __init__(self, operation: str, detail: str, status: str | None = None, hint: str | None = None):
         self.operation = operation
@@ -48,7 +56,9 @@ _STATUS_RE = re.compile(r"(SM_[A-Z0-9_]+)")
 
 @contextlib.contextmanager
 def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
-    """Turn kernel ``RuntimeError``\\ s into :class:`KernelError` with context."""
+    """Turn kernel ``RuntimeError``\\ s into :class:`KernelError` with context, and the kernel's
+    failures during the call into its ``trace``."""
+    ext.clear_kernel_trace()
     try:
         yield
     except KernelError:
@@ -56,7 +66,24 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
     except RuntimeError as e:
         text = str(e)
         m = _STATUS_RE.search(text)
-        raise KernelError(operation, text, m.group(1) if m else None, hint) from e
+        error = KernelError(operation, text, m.group(1) if m else None, hint)
+        error.trace = _trace_of(e)
+        raise error from e
+
+
+def _trace_of(e: BaseException) -> tuple[str, ...]:
+    """The kernel trace of a failed kernel call: the one another process sent with it
+    (``_kernel_trace``, see ``smlibpy._guard``), else this thread's."""
+    sent = getattr(e, "_kernel_trace", None)
+    if sent is not None:
+        return tuple(sent)
+    return tuple(ext.kernel_trace()[0])
+
+
+def _traced(error: KernelError, cause: BaseException) -> KernelError:
+    """``error`` with the trace of ``cause`` (a KernelError raised again with another hint)."""
+    error.trace = getattr(cause, "trace", ())
+    return error
 
 
 class BrepHandle:
@@ -64,7 +91,9 @@ class BrepHandle:
     the body was found a sound solid (0: not checked; the levels are in shapes.py),
     ``props`` its integrated mass properties, ``meshes`` the meshes rays are cast against (by
     purpose), ``tags`` the tags of its faces and edges (``ext.topology_tags``) and ``shells`` its
-    shells (``ext.brep_shells``), each read once. A body made by
+    shells (``ext.brep_shells``), each read once; ``imported`` whether it was read from a file or
+    made from such a body (its fillets run in another process, see
+    ``smlibpy.defeature.GUARD_SECONDS``). A body made by
     ``Part.merge`` (or a copy of one) has ``merged``: the parts it was merged from, the placement
     it was moved by since, and its cells' sources once found; a cell of one has ``sources``: the
     parts it lies in (kernel plan B15).
@@ -77,7 +106,8 @@ class BrepHandle:
     anything measures it. ``named()`` and ``colored()`` wrap the same handle (kernel plan T8): its
     caches serve both bodies, and a measure of one stores its trims for both."""
 
-    __slots__ = ("brep", "sound", "props", "meshes", "tags", "shells", "merged", "sources", "__weakref__")
+    __slots__ = ("brep", "sound", "props", "meshes", "tags", "shells", "merged", "sources", "imported",
+                 "__weakref__")
 
     def __init__(self, brep: "k.Brep"):
         if brep is None:
@@ -90,6 +120,7 @@ class BrepHandle:
         self.shells = None
         self.merged = None
         self.sources = None
+        self.imported = False
 
     def __del__(self) -> None:
         b, self.brep = getattr(self, "brep", None), None  # (none: __init__ raised)

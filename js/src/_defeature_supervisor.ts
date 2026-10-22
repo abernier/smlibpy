@@ -9,8 +9,6 @@
 //
 // Messages: a job (see _defeature_worker.ts), which goes on to the probe worker, or `{ kill: true }`.
 
-import { PROBE_NAME } from './_guard.ts'
-
 // biome-ignore lint: a Web Worker or a Node worker thread
 type Any = any
 
@@ -21,13 +19,16 @@ let probe: Any = null // the probe worker, while it lives
 function start(): Any {
   let worker: Any
   if (threads) {
-    // (the TypeScript of the repository, or the package's JavaScript)
-    worker = new threads.Worker(new URL(import.meta.url.endsWith('.ts') ? './_defeature_worker.ts' : './_defeature_worker.js', import.meta.url))
+    // (the TypeScript of the repository, or the package's JavaScript; relative to `here`, not to
+    // import.meta.url itself, which bundlers for the browser would take for files to bundle)
+    const here = import.meta.url
+    worker = new threads.Worker(new URL(here.endsWith('.ts') ? './_defeature_worker.ts' : './_defeature_worker.js', here))
     worker.on('error', () => lost(worker))
     worker.on('exit', () => lost(worker))
   } else {
-    // (written as bundlers recognise a worker, which they then bundle)
-    worker = new Worker(new URL('./_defeature_worker.js', import.meta.url), { type: 'module', name: PROBE_NAME })
+    // (written as bundlers recognise a worker, which they then bundle: the options too, literally,
+    // as _threads.ts's PROBE_NAME)
+    worker = new Worker(new URL('./_defeature_worker.js', import.meta.url), { type: 'module', name: 'smlibwasm-probe' })
     worker.onerror = () => lost(worker)
   }
   return worker

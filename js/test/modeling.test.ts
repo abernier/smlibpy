@@ -41,6 +41,7 @@ import {
 import { approx, leggauss, same } from './_approx.ts'
 import { Box as _Box, Rectangle as _Rectangle, Sphere as _Sphere, merge as _merge } from '../src/index.ts'
 import { ext, setWarningHandler } from '../src/kernel.ts'
+import { setGuardSeconds } from '../src/defeature.ts'
 
 const PI = Math.PI
 
@@ -483,10 +484,12 @@ test('cells must fill the part', () => {
     for (const x of s.slice(1)) ext.delete_brep(x)
     return s.slice(0, 1)
   })
+  const guard = setGuardSeconds(0) // (in this kernel, which has the call replaced, not in the probe worker)
   try {
     assert.throws(() => m.cells(), (e: Error) => e instanceof ModelingError && /cells: the cells add up to a volume of 1008, the part has 1000/.test(e.message))
   } finally {
     ext.region_shells = shells
+    setGuardSeconds(guard)
   }
 })
 

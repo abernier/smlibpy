@@ -25,6 +25,8 @@ def test_is_valid_needs_a_positive_volume():
     # a profile across the axis, revolved by the kernel directly: a "manifold" body of volume 0
     curves = Rectangle(10, 10).on(Plane.front).faces()[0].outer_wire()._copy_curves()
     inside_out = Part._wrap(k.rotational_sweep(curves, (0, 0, 0), (0, 0, 1), 360.0, cap_ends=True))
+    for c in curves:  # (the sweep copies them)
+        k.ext.delete_curve(c)
     with pytest.warns(RuntimeWarning, match="do not meet exactly"):  # its faces overlap: no volume to speak of
         assert inside_out._brep.is_manifold_solid() and inside_out.volume <= 1e-6
     assert not inside_out.is_valid()
@@ -91,8 +93,11 @@ def test_shell_walls_are_measured_across_the_part():
 
 
 def test_shell_and_offset_results_are_checked(monkeypatch):
+    import smlibpy.defeature
     import smlibpy.shapes
 
+    # (the kernel calls replaced below run in this process: a helper process would not see them)
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)
     box = Box(40, 30, 20)
     shell_brep = k.shell_brep
     # the kernel giving the part back unchanged (it did, for walls that left no cavity)
@@ -615,7 +620,9 @@ def test_shell_offset_and_thicken_run_the_kernel_in_a_copy_of_the_process(monkey
     import smlibpy.shapes
 
     if not hasattr(os, "fork"):
-        pytest.skip("no fork: the kernel runs in this process")
+        pytest.skip("no fork: the kernel runs in a helper process (tests/test_lane_WN.py)")
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_PROCESS", "fork")  # (the copy sees the kernel calls replaced)
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 20.0)  # (also where the run turns the guard off)
     box = Box(20, 20, 20)
     shelled = box.shell(2, box.faces().top())
     assert shelled.volume == approx(8000 - 16 * 16 * 18) and shelled.is_valid()

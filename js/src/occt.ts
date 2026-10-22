@@ -13,6 +13,7 @@
 import { _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { Mesh } from './mesh.ts'
 import { type Part, type Shell, ShapeList, _typeName } from './shapes.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 import { _body, _fs, _items } from './exporters.ts'
 import { _repr } from './step_reader.ts'
 
@@ -122,9 +123,11 @@ export function importBrep(path: string, options: BrepImportOptions = {}): Part 
 
 /** The bodies of an OpenCASCADE .brep file's contents (the text of an ASCII file, or the bytes of
  * either kind), as `importBrep` reads a file; the options as there. */
-export function fromBrep(data: string | Uint8Array, options: BrepImportOptions = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromBrep(data: string | BytesLike, options: BrepImportOptions = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromBrep', options)
-  if (typeof data !== 'string' && !(data instanceof Uint8Array))
-    throw new TypeError(`fromBrep reads the contents of a .brep file as a Uint8Array or a string, not ${_typeName(data)}`)
-  return _read(data, options, 'fromBrep')
+  const bytes = typeof data === 'string' ? data : _asBytes(data)
+  if (bytes === null) {
+    throw new TypeError(`fromBrep reads the contents of a .brep file as a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  }
+  return _read(bytes, options, 'fromBrep')
 }

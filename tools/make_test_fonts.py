@@ -1,6 +1,6 @@
 """Build the small fonts of tests/data, whose glyphs have known exact areas.
 
-    python tools/make_test_fonts.py        (needs fontTools)
+    python tools/make_test_fonts.py        (needs fontTools; the WOFF2 files need brotli or Node.js)
 
 test-quadratic.ttf (TrueType, 1000 units per em, cap height 700, a kern table):
     H   rectangle 50..650 x 0..700 (clockwise, the TrueType sense of outlines)
@@ -21,7 +21,22 @@ test-cubic.otf (CFF, 1000 units per em, cap height 700, GPOS kerning):
     U   the rectangle of H drawn by a local subroutine
     kerning H O: -30
 
+test-seac.otf (CFF, 1000 units per em, cap height 700), accents built with seac:
+    A       rectangle 50..650 x 0..700;  grave  rectangle 0..100 x 0..100;  tilde  0..200 x 0..80
+    Agrave  endchar with a width: A, and grave moved by (300, 750)
+    Atilde  endchar without a width (the private dict's default): A, and tilde moved by (250, 760)
+
+test-variable.otf (CFF2, a variable font of an axis wght 400..900, default 400) from three masters:
+    H   rectangle 50..650 x 0..700 at 400, 50..750 at 700 (a narrow master at 900 for H only, so H
+        has other regions than O and S and selects its item variation data with vsindex)
+    O   the circle of test-cubic.otf, radius 300 (hole 150) at 400 and 330 (hole 120) at 700
+    S   the smooth loop of test-cubic.otf, moved by 20 at 700
+    Its default instance is the 400 master: test-variable.otf draws what that master draws.
+
 test-quadratic.woff is test-quadratic.ttf in a WOFF container; test-fonts.ttc holds both fonts.
+test-quadratic.woff2 is test-quadratic.ttf in a WOFF2 container with transformed glyf, loca and
+hmtx tables (its left side bearings are the glyphs' xMin, X has the overlap flag);
+test-quadratic-plain.woff2 the same without transforms; test-cubic.woff2 test-cubic.otf.
 """
 
 from __future__ import annotations
@@ -35,6 +50,35 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables._g_l_y_f import GlyphComponent
 from fontTools.ttLib.ttCollection import TTCollection
+
+
+def _brotli_through_node() -> None:
+    """fontTools writes WOFF2 with the brotli module; without it, Node's zlib stands in."""
+    import subprocess
+    import sys
+    import types
+
+    try:
+        import brotli  # noqa: F401
+        return
+    except ImportError:
+        pass
+    run = (
+        "const z=require('zlib');const c=[];process.stdin.on('data',d=>c.push(d)).on('end',()=>"
+        "process.stdout.write(z.brotli{}Sync(Buffer.concat(c){})))"
+    )
+    font = (",{params:{[z.constants.BROTLI_PARAM_QUALITY]:11,"
+            "[z.constants.BROTLI_PARAM_MODE]:z.constants.BROTLI_MODE_FONT}}")
+
+    def node(code: str, data: bytes) -> bytes:
+        return subprocess.run(["node", "-e", code], input=data, stdout=subprocess.PIPE, check=True).stdout
+
+    module = types.ModuleType("brotli")
+    module.MODE_FONT = 2  # type: ignore[attr-defined]
+    module.compress = lambda data, **_: node(run.format("Compress", font), data)  # type: ignore[attr-defined]
+    module.decompress = lambda data: node(run.format("Decompress", ""), data)  # type: ignore[attr-defined]
+    module.error = Exception  # type: ignore[attr-defined]
+    sys.modules["brotli"] = module
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "data"
 KAPPA = 0.5522847498307936
@@ -192,6 +236,117 @@ def _smooth_loop() -> T2CharString:
     return pen.getCharString()
 
 
+def _cff_font(path: Path, names: list[str], cmap: dict[int, str], charstrings: dict, family: str, **private) -> None:
+    fb = FontBuilder(1000, isTTF=False)
+    fb.setupGlyphOrder(names)
+    fb.setupCharacterMap(cmap)
+    fb.setupCFF(family.replace(" ", "") + "-Regular", {"FullName": family}, charstrings, private)
+    metrics = {name: (700, 0) for name in names}
+    metrics["space"] = (300, 0)
+    fb.setupHorizontalMetrics(metrics)
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({"familyName": family, "styleName": "Regular"})
+    fb.setupOS2(sTypoAscender=800, sTypoDescender=-200, usWinAscent=800, usWinDescent=200, sCapHeight=700,
+                sxHeight=500, version=4)
+    fb.setupPost()
+    fb.save(str(path))
+
+
+def seac_font(path: Path) -> None:
+    names = [".notdef", "space", "A", "grave", "tilde", "Agrave", "Atilde"]
+    cs = {}
+    for name in (".notdef", "space"):
+        cs[name] = T2CharStringPen(0, None).getCharString()
+    for name, box in (("A", (50, 0, 650, 700)), ("grave", (0, 0, 100, 100)), ("tilde", (0, 0, 200, 80))):
+        pen = T2CharStringPen(700, None)
+        rect(pen, *box, clockwise=False)
+        cs[name] = pen.getCharString()
+    # seac: [width] adx ady bchar achar endchar, the characters by their StandardEncoding codes
+    cs["Agrave"] = T2CharString(program=[700, 300, 750, ord("A"), 0o301, "endchar"])  # 0301: grave
+    cs["Atilde"] = T2CharString(program=[250, 760, ord("A"), 0o304, "endchar"])  # 0304: tilde
+    _cff_font(path, names, {ord(" "): "space", ord("A"): "A", ord("`"): "grave", ord("~"): "tilde",
+                            0xC0: "Agrave", 0xC3: "Atilde"}, cs, "Smlibpy Test Seac",
+              defaultWidthX=700, nominalWidthX=0)
+
+
+def variable_font(path: Path) -> None:
+    from fontTools.designspaceLib import AxisDescriptor, DesignSpaceDocument, SourceDescriptor
+    from fontTools.varLib import build
+
+    def circle(pen, r, ccw, cx=350, cy=350):
+        k = KAPPA * r
+        if ccw:
+            pts = [(cx + r, cy), (cx + r, cy + k), (cx + k, cy + r), (cx, cy + r), (cx - k, cy + r), (cx - r, cy + k),
+                   (cx - r, cy), (cx - r, cy - k), (cx - k, cy - r), (cx, cy - r), (cx + k, cy - r), (cx + r, cy - k)]
+        else:
+            pts = [(cx + r, cy), (cx + r, cy - k), (cx + k, cy - r), (cx, cy - r), (cx - k, cy - r), (cx - r, cy - k),
+                   (cx - r, cy), (cx - r, cy + k), (cx - k, cy + r), (cx, cy + r), (cx + k, cy + r), (cx + r, cy + k)]
+        pen.moveTo(pts[0])
+        for i in range(4):
+            pen.curveTo(pts[3 * i + 1], pts[3 * i + 2], pts[(3 * i + 3) % 12])
+        pen.closePath()
+
+    def master(right: int, radii: tuple[int, int] | None, shift: int, only_h: bool = False) -> TTFont:
+        names = [".notdef", "space", "H", "O", "S"]
+        cs = {}
+        for name in (".notdef", "space"):
+            cs[name] = T2CharStringPen(0, None).getCharString()
+        pen = T2CharStringPen(700, None)
+        rect(pen, 50, 0, right, 700, clockwise=False)
+        cs["H"] = pen.getCharString()
+        if not only_h:
+            pen = T2CharStringPen(700, None)
+            circle(pen, radii[0], True)
+            circle(pen, radii[1], False)
+            cs["O"] = pen.getCharString()
+            loop = _smooth_loop()
+            loop.decompile()
+            prog = list(loop.program)
+            prog[1] += shift  # (the first rmoveto's dx, after the width)
+            cs["S"] = T2CharString(program=prog)
+        else:
+            names = [".notdef", "space", "H"]
+        fb = FontBuilder(1000, isTTF=False)
+        fb.setupGlyphOrder(names)
+        fb.setupCharacterMap({ord(" "): "space", **{ord(c): c for c in names if len(c) == 1}})
+        fb.setupCFF("SmlibpyTestVariable-Regular", {"FullName": "Smlibpy Test Variable"}, cs, {})
+        fb.setupHorizontalMetrics({name: (300 if name == "space" else 700, 0) for name in names})
+        fb.setupHorizontalHeader(ascent=800, descent=-200)
+        fb.setupNameTable({"familyName": "Smlibpy Test Variable", "styleName": "Regular"})
+        fb.setupOS2(sTypoAscender=800, sTypoDescender=-200, usWinAscent=800, usWinDescent=200, sCapHeight=700,
+                    sxHeight=500, version=4)
+        fb.setupPost()
+        return fb.font
+
+    doc = DesignSpaceDocument()
+    axis = AxisDescriptor()
+    axis.tag, axis.name, axis.minimum, axis.default, axis.maximum = "wght", "Weight", 400, 400, 900
+    doc.addAxis(axis)
+    for weight, font in ((400, master(650, (300, 150), 0)), (700, master(750, (330, 120), 20)),
+                         (900, master(600, None, 0, only_h=True))):
+        src = SourceDescriptor()
+        src.font, src.location, src.styleName = font, {"Weight": weight}, str(weight)
+        doc.addSource(src)
+    vf, _model, _ = build(doc)
+    vf.save(str(path))
+
+
+def woff2_fonts() -> None:
+    _brotli_through_node()
+    from fontTools.ttLib import woff2
+
+    tt = TTFont(OUT / "test-quadratic.ttf")
+    glyf, hmtx = tt["glyf"], tt["hmtx"]
+    for name in tt.getGlyphOrder():  # left side bearings at xMin, so that hmtx is transformed
+        hmtx[name] = (hmtx[name][0], getattr(glyf[name], "xMin", 0))
+    glyf["X"].flags[0] |= 0x40  # (OVERLAP_SIMPLE: the overlap bitmap)
+    tt.save(OUT / "_tmp.ttf")
+    woff2.compress(str(OUT / "_tmp.ttf"), str(OUT / "test-quadratic.woff2"), transform_tables={"glyf", "loca", "hmtx"})
+    (OUT / "_tmp.ttf").unlink()
+    woff2.compress(str(OUT / "test-quadratic.ttf"), str(OUT / "test-quadratic-plain.woff2"), transform_tables=set())
+    woff2.compress(str(OUT / "test-cubic.otf"), str(OUT / "test-cubic.woff2"))
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     quadratic_font(OUT / "test-quadratic.ttf")
@@ -202,6 +357,9 @@ def main() -> None:
     ttc = TTCollection()
     ttc.fonts = [TTFont(OUT / "test-quadratic.ttf"), TTFont(OUT / "test-cubic.otf")]
     ttc.save(OUT / "test-fonts.ttc")
+    seac_font(OUT / "test-seac.otf")
+    variable_font(OUT / "test-variable.otf")
+    woff2_fonts()
     for p in sorted(OUT.glob("test-*")):
         print(p.name, p.stat().st_size)
 

@@ -17,7 +17,7 @@
 //
 // The kernel does the geometry (SMLib's space bend and unbend); see src/cpp/sheetmetal.cpp.
 
-import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import { Axis, BoundBox, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _mergedLines, _take, _typeName } from './shapes.ts'
 import { CenterArc, Line, ThreePointArc, _mod, _withOptions } from './curves.ts'
@@ -1678,34 +1678,36 @@ export function unfold(part: Part, options: UnfoldOptions = {}): Part {
  * bounding box starts at the origin.
  */
 export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPattern {
-  _opts('flatPattern', options)
-  const { kFactor = null, fixed = null } = options
-  const u = _unfold(part, kFactor, fixed, 'flatPattern')
-  const flat = u.part
-  const thickness = u.thickness
-  const basePlane = u.base.plane
-  const nBase = basePlane.zDir
-  if (thickness === null) throw new ModelingError('flatPattern: the part is not a sheet (no face opposite the largest face)')
-  const frame = new Plane(basePlane.origin, _longSide(flat, new Plane(basePlane.origin, null, nBase)), nBase.neg())
-  const toXy = frame.location.inverse()
-  let laid = flat.moved(toXy)
-  const shift = new Location(_edgeBox(laid).min.neg())
-  laid = laid.moved(shift)
-  const place = shift.mul(toXy)
-  const t = Number(thickness)
-  const outline = _cutContour(laid, _tol(laid))
-  if (Math.abs(outline.area * t - _volume(laid)) > 1e-6 * _volume(laid)) {
-    throw new ModelingError(
-      `flatPattern: the outline encloses ${_formatG(outline.area, 9)}, the flat part is ${_formatG(_volume(laid) / t, 9)} in area; the part is not a flat sheet`,
-    )
-  }
-  const patternBends: Bend[] = []
-  for (const [g, start, direction, inside, kf] of u.bends) {
-    const p0 = place.mul(start)
-    const p1 = place.mul(start.add(direction.mul(g.length)))
-    const up = place.rotateVector(inside).z > 0
-    const line = Line(new Vector(p0.x, p0.y, 0.0), new Vector(p1.x, p1.y, 0.0))
-    patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), kf, _r(g.length), null, line, up ? 'up' : 'down'))
-  }
-  return new FlatPattern(laid, outline, patternBends, _r(t), u.kFactor)
+  return scope(() => {
+    _opts('flatPattern', options)
+    const { kFactor = null, fixed = null } = options
+    const u = _unfold(part, kFactor, fixed, 'flatPattern')
+    const flat = u.part
+    const thickness = u.thickness
+    const basePlane = u.base.plane
+    const nBase = basePlane.zDir
+    if (thickness === null) throw new ModelingError('flatPattern: the part is not a sheet (no face opposite the largest face)')
+    const frame = new Plane(basePlane.origin, _longSide(flat, new Plane(basePlane.origin, null, nBase)), nBase.neg())
+    const toXy = frame.location.inverse()
+    let laid = flat.moved(toXy)
+    const shift = new Location(_edgeBox(laid).min.neg())
+    laid = laid.moved(shift)
+    const place = shift.mul(toXy)
+    const t = Number(thickness)
+    const outline = _cutContour(laid, _tol(laid))
+    if (Math.abs(outline.area * t - _volume(laid)) > 1e-6 * _volume(laid)) {
+      throw new ModelingError(
+        `flatPattern: the outline encloses ${_formatG(outline.area, 9)}, the flat part is ${_formatG(_volume(laid) / t, 9)} in area; the part is not a flat sheet`,
+      )
+    }
+    const patternBends: Bend[] = []
+    for (const [g, start, direction, inside, kf] of u.bends) {
+      const p0 = place.mul(start)
+      const p1 = place.mul(start.add(direction.mul(g.length)))
+      const up = place.rotateVector(inside).z > 0
+      const line = Line(new Vector(p0.x, p0.y, 0.0), new Vector(p1.x, p1.y, 0.0))
+      patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), kf, _r(g.length), null, line, up ? 'up' : 'down'))
+    }
+    return new FlatPattern(laid, outline, patternBends, _r(t), u.kFactor)
+  })
 }

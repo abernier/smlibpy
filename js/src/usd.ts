@@ -9,9 +9,11 @@
 
 import { _opts, _warn, ext, k, KernelError, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
+import { _traced } from './_errors.ts'
 import { Mesh, _coloredMesh } from './mesh.ts'
 import { Part, Shell, ShapeList, _typeName } from './shapes.ts'
-import { _DEFAULT_COLORS, _body, _fs, _items } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
+import { type ShapesLike, _DEFAULT_COLORS, _body, _fs, _items } from './exporters.ts'
 import { _MM_PER_UNIT } from './step.ts'
 import { _repr } from './step_reader.ts'
 
@@ -80,7 +82,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions, what: string): An
  * what USD viewers draw; meshes Mesh prims. The stage is in millimeters (metersPerUnit 0.001) with
  * Z up.
  */
-export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
+export function toUsd(shapes: ShapesLike, options: UsdExportOptions = {}): string {
   _opts('toUsd', options)
   return _usdText(shapes, options, 'toUsd')
 }
@@ -92,7 +94,7 @@ function _usdText(shapes: unknown, options: UsdExportOptions, what: string): str
 }
 
 /** Write parts, sheets and meshes to a USD file (.usda, or .usd as text); see `toUsd`. */
-export function exportUsd(shapes: unknown, path: string, options: UsdExportOptions = {}): void {
+export function exportUsd(shapes: ShapesLike, path: string, options: UsdExportOptions = {}): void {
   _opts('exportUsd', options)
   const p = String(path)
   const dot = p.lastIndexOf('.')
@@ -130,8 +132,11 @@ export interface UsdReadOptions extends UsdImportOptions {
 
 type Layers = [string, string, Record<string, string>, Record<string, string>][]
 
-function _text(data: string | Uint8Array): string {
-  return typeof data === 'string' ? data : new TextDecoder('utf-8').decode(data)
+function _text(data: string | BytesLike, what = 'fromUsd'): string {
+  if (typeof data === 'string') return data
+  const bytes = _asBytes(data)
+  if (bytes === null) throw new TypeError(`${what} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  return new TextDecoder('utf-8').decode(bytes)
 }
 
 /** The layers of the stage whose root layer is `text` (named `root`): it and every layer the layers
@@ -195,7 +200,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   } catch (e) {
     if (!(e instanceof KernelError)) throw e
     // (the body that could not be built, and why, in the message)
-    const error = new KernelError(e.operation, e.detail, e.status, _builtHint(e.detail, e.status))
+    const error = _traced(new KernelError(e.operation, e.detail, e.status, _builtHint(e.detail, e.status)), e.trace)
     ;(error as Any).cause = (e as Any).cause
     throw error
   }
@@ -239,7 +244,7 @@ function _builtHint(detail: string, status: string | null): string {
  * and B-spline edges that are lines or circular arcs exactly (usd-brep and Omniverse write every edge
  * as a B-spline) as lines and circles.
  */
-export function fromUsd(data: string | Uint8Array, options: UsdReadOptions = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromUsd(data: string | BytesLike, options: UsdReadOptions = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromUsd', options)
   const resolve = options.resolve
   const read = (asset: string, from: string): [string, string | Uint8Array] | string | null => {

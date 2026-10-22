@@ -115,7 +115,8 @@ omniSolid schema), with the exact surfaces and curves, its name and its color, u
 in a stage in millimeters with Z up. usd-brep, its usdview plugin and Omniverse read them as
 solids. Other USD viewers draw only meshes, so each body also gets a `Mesh` prim
 (`<name>_mesh`); `mesh=False` leaves it out, for the tools that draw the B-rep themselves and
-would show the body twice. The test suite checks the files with NVIDIA's validator and OpenUSD.
+would show the body twice. The test suite checks the files with the BrepArray rules of NVIDIA's
+validator (usd-brep's `brep_validator`, through `tools/oracles/usd_validator.py`) and with OpenUSD.
 A prim's name is the body's name with every character but ASCII letters, digits and `_` as
 `_` (`"Größe"` is the prim `Gr__e`); the name itself is the prim's `displayName`, which
 viewers show and `import_usd` gives back. Faces and edges keep their types: planes, cylinders,

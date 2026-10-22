@@ -10,9 +10,11 @@ that are engraved into a part or stand out of it.
 - `size`: the height of the capital letters in mm (the nominal height of technical lettering):
   `Text("H", 10)` is exactly 10 tall. Not the font's em size (13.96 mm at size 10 for the
   default font).
-- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font) or `.woff` file, or the `bytes` of
-  one (an upload, a font from a package's data; read once per contents). Default: Lato
-  Regular, bundled (263 characters: Latin-1, Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`).
+- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font), `.woff` or `.woff2` file, the
+  `bytes` of one (an upload, a font from a package's data; read once per contents), or a `Font`
+  from `load_font(path)` (read once). Default: Lato Regular, bundled (263 characters: Latin-1,
+  Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`). No other package is needed: WOFF2 web fonts, CFF accents
+  built with seac, and variable CFF2 fonts (their default instance) are read too.
 - `align`: where the *layout box* sits: from the start to the end of the longest line (advance
   widths, not ink) and from the baseline of the last line to the cap height of the first.
   One `Align` (or string) for x and y, or one per axis.
@@ -89,6 +91,7 @@ cylinder, cut the text prism together with a skin of the wall:
 - `ValueError: Text: nothing to draw: the text is empty or only spaces`.
 - `ValueError: Text: control characters cannot be drawn: U+0009`.
 - `ValueError: Text: .../README.md: not a TrueType or OpenType font`; `FileNotFoundError: no font file '...'`.
+- `ValueError: Text: .../font.woff2: a damaged WOFF2 file (the compressed data runs past the end of the file)` (a cut-off download).
 - `ValueError: Text: the text is 98.7969 mm long but the path only 7.85398 mm; use a smaller size or a longer path`.
 - `ValueError: Text: the path must lie in the XY plane; draw it there and place the text with .on()`.
 - `ValueError: Text: a text along a path has one line; leave out the line breaks`.

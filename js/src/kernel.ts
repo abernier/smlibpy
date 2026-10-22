@@ -1,4 +1,7 @@
-// The bridge to the WebAssembly module (js/wasm, built by `npm run wasm`).
+// The bridge to the WebAssembly module (js/wasm, built by `npm run wasm`), and the package's entry
+// `@classcad/smlibwasm/kernel`: the raw kernel layer, Python's `smlibpy._core`, for calls smlibwasm
+// does not wrap. Like `smlibpy._core` it is no stable API: names, parameters and results follow
+// SmPyLib's bindings (usd-brep's Python bindings of the kernel), and can change with them.
 //
 // Kernel objects are not garbage collected by the module itself: they are numbers, their address
 // in the module's memory. smlibwasm wraps every Brep, standalone curve, surface and mesh it creates
@@ -9,24 +12,41 @@
 import createSmlib from '../wasm/smlibwasm.mjs'
 import { SIGNATURES } from './signatures.ts'
 import { OPTIONS } from './_options.ts'
-// (first: in a browser it starts defeature's probe worker while the module loads, see there)
-import './_guard.ts'
+import { KernelError, ModelingError, _crashes, _traced } from './_errors.ts'
+import { _createModule } from './_loader.ts'
+
+export { KernelError, ModelingError }
 
 // biome-ignore lint: the module's functions take and return what their binding says
 type Any = any
 
 /**
  * The module's functions as Python's `smlibpy._core` has them: the kernel's calls at the top
- * (`k.create_box`), smlibpy's own C++ under its submodule (`k.ext.curve_data`,
- * `k.deform.map_points`), enums as objects of numbers (`k.BooleanOp.UNION`), and the queries of
- * Breps, faces, edges and vertices as functions (`k.brep_faces(b)` for Python's `b.faces()`).
+ * (`k.create_box`, `k.intersect_surfaces`), smlibpy's own C++ under its submodule
+ * (`k.ext.curve_data`, `k.deform.map_points`), enums as objects of numbers (`k.BooleanOp.UNION`,
+ * `k.ContinuityType.G1`), and the queries of Breps, faces, edges and vertices as functions
+ * (`k.brep_faces(b)` for Python's `b.faces()`).
+ *
+ * Every function SmPyLib binds for Python's module level is here, with Python's parameters and
+ * defaults (`k.create_partial_cylinder([0, 0, 0], 10, 20, 0, 90)`, keywords in a trailing object:
+ * `k.boolean_union(a, b, { post_process: false })`), and every method of its classes
+ * (`k.brep_area(b)`, `k.poly_ray_intersection(mesh, ...)`). Most are SmPyLib's own code, compiled
+ * into the module (`k.smpylib.<name>` and `k.smpylib.<Class>.<method>` have them all); those
+ * smlibwasm calls itself have bindings of their own, with the same names, parameters and results.
+ * Kernel objects are numbers (0: none), points `[x, y, z]`, lists of numbers Float64Arrays,
+ * Python's tuples arrays and its dicts plain objects; a result that is a new Brep, curve or surface
+ * is the caller's, to free with `k.ext.delete_brep` (or to hand to a `BrepHandle`, ...). Not here:
+ * SmPyLib's USD functions, the constructors of its classes and its value classes (Vec3, Vec2,
+ * Axis2Placement: arrays, and `{origin, x, y}` from `k.Axis2Placement`).
  */
 export interface Kernel {
   [name: string]: Any
 }
 
-/** The module itself (its file system is `module.FS`). */
-export const module: Any = await createSmlib()
+/** The module itself (its file system is `module.FS`), loaded from the file next to its loader,
+ * or from where `init` (init.ts) said. (defeature's probe worker imports this module: it imports
+ * no module that starts a worker, see _guard.ts) */
+export const module: Any = await _createModule(createSmlib)
 module.init()
 
 /**
@@ -111,6 +131,7 @@ const OWN: Record<string, Signature> = {
   'ext.curve_on_surface': ['surface', 'uv', 'tolerance'],
   'ext.inverted_faces': ['brep'],
   'ext.loop_areas': ['brep'],
+  'ext.drop_caches': ['brep'],
   'ext.seam_problems': ['brep', ['fix', false], ['only', null]],
   'ext.poly_face_indices': ['poly', 'brep'],
   'ext.surface_derivatives': ['surface', 'uv'],
@@ -212,7 +233,50 @@ const OWN: Record<string, Signature> = {
 }
 
 export const k: Kernel = namespaced(module, { ...SIGNATURES, ...OWN })
+/** (the signatures of smlibpy's own functions; lane_WN.test.ts holds those SmPyLib has too to SmPyLib's) */
+export const _OWN: Record<string, Signature> = OWN
 export const ext: Any = k.ext
+
+// SmPyLib's own bindings, compiled into the module (js/cpp/smpylib.cpp): a table of its functions
+// (`create_box`) and of its classes' methods (`Brep.area`), each with its parameters (its py::arg
+// list; a method's object first, `self`), which smpylib__call(i, args) calls; and its enums. They
+// are `k.smpylib.<name>` and `k.smpylib.<Class>.<method>`, and `k.<name>` and `k.<class>_<method>`
+// where the module's own bindings have none.
+const SMPYLIB_TABLE: [string, Signature][] = JSON.parse(module.smpylib__table())
+const SMPYLIB_ENUMS: Record<string, Record<string, number>> = JSON.parse(module.smpylib__enums())
+// (the prefix of each class's methods, as the module's own bindings name them: brep_faces)
+const _CLASS_PREFIX: Record<string, string> = {
+  Object: 'object', Brep: 'brep', Face: 'face', Edge: 'edge', Vertex: 'vertex', Curve: 'curve', BSplineCurve: 'bspline_curve',
+  Line: 'line', Circle: 'circle', Surface: 'surface', PolyBrep: 'poly', PolyVertex: 'poly_vertex', PolyEdge: 'poly_edge',
+  PolyFace: 'poly_face',
+}
+const _smpylibSigs: Record<string, Signature> = {}
+{
+  const smpylib: Any = (k.smpylib = {})
+  // (functions first: where a method has the name of a function, `face_area` and Face.area, k has
+  // the function, as Python's module does)
+  const entries = SMPYLIB_TABLE.map((entry, i) => [entry, i] as const)
+  for (const [[name, params], i] of [...entries.filter(([[n]]) => !n.includes('.')), ...entries.filter(([[n]]) => n.includes('.'))]) {
+    const dot = name.indexOf('.')
+    const cls = dot > 0 ? name.slice(0, dot) : null
+    const prefix = cls === null ? '' : `${_CLASS_PREFIX[cls] ?? cls.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toLowerCase()}_`
+    // (a method's object is named as the module's own bindings name it: brep, face, poly)
+    const sig: Signature = params.map((p) => (p === 'self' ? prefix.slice(0, -1) : p))
+    const flat = cls === null ? name : `${prefix}${name.slice(dot + 1)}`
+    _smpylibSigs[flat] ??= sig
+    const call = keywords(flat, restoring(module, (...args: Any[]) => module.smpylib__call(i, args), flat), sig)
+    if (cls === null) smpylib[name] = call
+    else (smpylib[cls] ??= {})[name.slice(dot + 1)] = call
+    if (!(flat in k)) k[flat] = call
+  }
+  for (const [name, values] of Object.entries(SMPYLIB_ENUMS)) k[name] ??= { ...values }
+}
+
+/** SmPyLib's parameters of each function and method it binds (its py::arg lists), under the names
+ * `k` has them (`create_box`, `brep_area`); lane_WN.test.ts holds the module's own bindings to them. */
+export function _smpylibSignatures(): Record<string, Signature> {
+  return _smpylibSigs
+}
 
 // `a__b` is `b` of the submodule `a`; `Enum_VALUE` (a number) is `VALUE` of the enum `Enum`.
 // Functions with a signature take Python's defaults and keywords; every function restores the
@@ -220,12 +284,13 @@ export const ext: Any = k.ext
 function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
   const out: Kernel = {}
   for (const name of Object.keys(m)) {
+    if (name.startsWith('smpylib__')) continue // (SmPyLib's table: read where k is made)
     const value = m[name]
     const sub = name.indexOf('__')
     if (sub > 0 && typeof value === 'function') {
       const [space, fn] = [name.slice(0, sub), name.slice(sub + 2)]
       const sig = signatures[`${space}.${fn}`]
-      const call = restoring(m, value)
+      const call = restoring(m, value, `${space}.${fn}`)
       ;(out[space] ??= {})[fn] = sig ? keywords(`${space}.${fn}`, call, sig) : call
       continue
     }
@@ -239,7 +304,7 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
       continue
     }
     const sig = signatures[name]
-    const call = restoring(m, value)
+    const call = restoring(m, value, name)
     out[name] = sig ? keywords(name, call, sig) : call
   }
   return out
@@ -251,18 +316,68 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
  * through the call's own code, which would have released its stack (embind does that only for
  * some calls). Without this every failure kept 16 to 900 bytes of the 4 MB stack (a trap
  * several KB), and failures are normal: a raycast tries every face, operations retry. After
- * about 240,000 failures every call failed.
+ * about 240,000 failures every call failed. A C++ exception that leaves the call becomes the
+ * error the bindings of smlibpy's own C++ make of theirs (`_cppError`); a trap is counted, and
+ * the first warns (`_crashed`).
  */
-function restoring(m: Any, fn: (...args: Any[]) => Any): (...args: Any[]) => Any {
+function restoring(m: Any, fn: (...args: Any[]) => Any, name: string): (...args: Any[]) => Any {
   return (...args: Any[]) => {
     const sp = m.stackSave()
     try {
       return fn(...args)
     } catch (e) {
       m.stackRestore(sp)
-      throw e
+      if (_isTrap(e)) _crashed(name, e as Error)
+      throw _cppError(m, e)
     }
   }
+}
+
+/**
+ * Counts a trap of the kernel call `name` (memoryUsage().crashes) and warns at the first. A trap
+ * leaves the kernel's memory as the crash left it: no destructor ran, and what the kernel wrote
+ * through the broken pointer before the trap stays. Natively such a crash ends smlibpy's
+ * process (or the copy of it a guarded step runs in); here the module goes on, so the warning
+ * says that its results may be wrong from now on. Traps in normal use are rare but real: the
+ * extended offset mode of a shell of a filleted box crashed now and then with "function signature
+ * mismatch", a call through a broken pointer.
+ */
+function _crashed(name: string, e: Error): void {
+  _crashes.count++
+  _crashes.last = e.message
+  if (_crashes.count === 1 && _crashes.next !== null) {
+    _warn(`the kernel crashed in ${name} (${e.message}), and its memory may be damaged: ${_crashes.next}`)
+  }
+}
+
+/**
+ * A C++ exception that left a binding of the kernel (`guard` in js/cpp/common.h catches those of
+ * smlibpy's own C++) as the error `guard` makes of it: an Error saying SM_ERR_OUT_OF_MEMORY for
+ * std::bad_alloc (the memory is used up), a RangeError for the exceptions Python makes a
+ * ValueError of, an Error with its message otherwise. It reaches JavaScript as a
+ * WebAssembly.Exception, which is no Error and has no message, and would hold its C++ object until
+ * freed: `exception_info` throws it back into C++, which tells its type and frees it. Anything
+ * else stays as it is.
+ */
+function _cppError(m: Any, e: unknown): unknown {
+  const Exception = typeof WebAssembly === 'undefined' ? undefined : (WebAssembly as Any).Exception // (not in TypeScript's lib yet)
+  if (typeof Exception !== 'function' || !(e instanceof Exception)) return e
+  const sp = m.stackSave()
+  let info: [string, string] | null = null
+  try {
+    info = m.runtime__exception_info(() => {
+      throw e
+    })
+  } catch {
+    return e // (no C++ exception)
+  } finally {
+    m.stackRestore(sp)
+  }
+  if (info === null) return e
+  const [kind, what] = info
+  if (kind === 'memory') return new Error(`SM_ERR_OUT_OF_MEMORY: the kernel ran out of memory (${what})`)
+  if (kind === 'value') return new RangeError(what)
+  return new Error(what)
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -308,38 +423,7 @@ function keywords(name: string, fn: (...args: Any[]) => Any, sig: Signature): (.
 }
 
 // -------------------------------------------------------------------------------- errors
-/** A modeling operation cannot be done (for example a fillet radius that does not fit). */
-export class ModelingError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ModelingError'
-  }
-}
-
-/**
- * An SMLib operation failed.
- *
- * `operation` names the smlibwasm call, `status` the kernel status code (e.g.
- * `SM_ERR_INVALID_INPUT`) and `hint` a suggestion when one is known.
- */
-export class KernelError extends ModelingError {
-  readonly operation: string
-  readonly status: string | null
-  readonly detail: string
-  readonly hint: string | null
-
-  constructor(operation: string, detail: string, status: string | null = null, hint: string | null = null) {
-    let msg = `${operation} failed`
-    if (status) msg += ` (${status})`
-    if (hint) msg += `: ${hint}`
-    super(msg)
-    this.name = 'KernelError'
-    this.operation = operation
-    this.status = status
-    this.detail = detail
-    this.hint = hint
-  }
-}
+// (ModelingError and KernelError: _errors.ts, a module without the kernel)
 
 const STATUS_RE = /(SM_[A-Z0-9_]+)/
 
@@ -357,38 +441,146 @@ export function _isRuntimeError(e: unknown): e is Error {
 
 /**
  * A trap of the WebAssembly module: the kernel crashed (read memory it should not have, called
- * through a broken pointer). Natively such kernel defects mostly go unnoticed and the operation
- * fails or returns a broken body; here the call stops. The module stays usable (what the call had
- * allocated is lost), so a trap is a failed kernel call.
+ * through a broken pointer). The call stops, and the module answers the next one, but on memory as
+ * the crash left it (no destructor ran, what the call had allocated is lost, and what it wrote
+ * through a broken pointer stays): a trap is a failed kernel call whose error says so, it is
+ * counted (`memoryUsage().crashes`), and the first warns that results may be wrong from then on.
+ * Steps that retry (shell, offset, the defeaturing steps) stop at a trap rather than go on on that
+ * memory.
  */
 function _isTrap(e: unknown): boolean {
   return typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
 }
 
-/** Runs `fn`; a failure of the kernel becomes a KernelError with context. */
+/** The kernel status of memory that is used up. */
+const OUT_OF_MEMORY = 'SM_ERR_OUT_OF_MEMORY'
+/** Bytes in a megabyte, as the messages count them. */
+const MB = 2 ** 20
+
+/**
+ * What a trap says. The kernel uses some memory it asked for without looking whether it got it,
+ * and crashes there when the module's memory is used up: a trap after an allocation failed, or
+ * with the memory all but at its limit, is the kernel running out of memory.
+ */
+export function _crashText(message: string, usage: { heap: number; limit: number; failed: boolean } | null): string {
+  if (usage !== null && (usage.failed || usage.limit - usage.heap < 64 * MB)) {
+    return `${OUT_OF_MEMORY}: the kernel crashed when it ran out of memory (${message})`
+  }
+  return `the kernel crashed (${message})`
+}
+
+/** The module's memory as the binding tells it (null where it cannot). */
+function _usage(): { used: number; heap: number; limit: number; failed: boolean } | null {
+  try {
+    return k.runtime.memory_usage()
+  } catch {
+    return null
+  }
+}
+
+/** The hint of a KernelError for memory that is used up. */
+function _outOfMemoryHint(): string {
+  const usage = _usage()
+  const numbers = usage === null ? '' : ` (${Math.round(usage.used / MB)} MB in use, at most ${Math.round(usage.limit / MB)} MB)`
+  return `the kernel ran out of memory${numbers}: dispose() parts you no longer need, or let the event loop run so that the garbage collector frees them`
+}
+
+/** The hint of a KernelError for a crash of the kernel (`hint`: the operation's own). */
+function _crashHint(message: string, hint: string | null): string {
+  const crash = `the kernel crashed (${message}), and its memory may be damaged: load the module again before relying on its results (a KernelWorker does so by itself)`
+  return hint ? `${crash}; ${hint}` : crash
+}
+
+/** How often this kernel crashed so far (memoryUsage().crashes): a step that retries stops once
+ * the count goes up, rather than go on on the memory the crash left. */
+export function _crashCount(): number {
+  return _crashes.count
+}
+
+/** The KernelError of `operation` for the last crash of this kernel, for a step that saw it only by
+ * the count (its error was caught on the way, by a check). */
+export function _crashError(operation: string, hint: string | null = null): KernelError {
+  const message = _crashes.last ?? 'a trap'
+  return new KernelError(operation, `the kernel crashed (${message})`, null, _crashHint(message, hint))
+}
+
+/** Runs `fn`; a failure of the kernel becomes a KernelError with context. Memory that is used up
+ * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`; a crash of the kernel (a
+ * trap) says so before `hint`. */
 export function kernelCall<T>(operation: string, fn: () => T, hint: string | null = null): T {
+  ext.clear_kernel_trace()
   try {
     return fn()
   } catch (e) {
     if (e instanceof KernelError || !_isRuntimeError(e)) throw e
-    const text = _isTrap(e) ? `the kernel crashed (${(e as Error).message})` : (e as Error).message
+    const trap = _isTrap(e)
+    const text = trap ? _crashText((e as Error).message, _usage()) : (e as Error).message
     const m = STATUS_RE.exec(text)
-    const error = new KernelError(operation, text, m ? m[1] : null, hint)
+    const status = m ? m[1] : null
+    const why = status === OUT_OF_MEMORY ? _outOfMemoryHint() : trap ? _crashHint((e as Error).message, hint) : hint
+    const error = _traced(new KernelError(operation, text, status, why), trap ? [] : _traceOf(e))
     ;(error as Any).cause = e
     throw error
   }
+}
+
+/** The kernel trace of a failed kernel call: the one a probe worker sent with it (`_kernelTrace`,
+ * see defeature.ts), else this thread's (Python's `_trace_of`). */
+export function _traceOf(e: unknown): readonly string[] {
+  const sent = (e as Any)?._kernelTrace
+  if (Array.isArray(sent)) return sent.map(String)
+  return ext.kernel_trace()[0] as string[]
+}
+
+// -------------------------------------------------------------------------------- memory
+/** What the kernel's memory holds, in bytes (see `memoryUsage`). */
+export interface MemoryUsage {
+  /** What the kernel's objects take: the bytes its allocator has handed out and not got back. */
+  readonly used: number
+  /** The module's memory: it grows when the kernel needs more, up to `limit`, and never shrinks. */
+  readonly heap: number
+  /** What the module's memory can grow to: 4 GB (less 64 kB), as far as a 32-bit WebAssembly
+   * module reaches. */
+  readonly limit: number
+  /** The kernel objects (bodies, curves, surfaces, meshes) that JavaScript holds and that are not
+   * freed yet: neither disposed nor garbage collected. A count, not bytes. */
+  readonly handles: number
+  /** The times the kernel crashed (a trap of the module) since it was loaded. After a crash its
+   * memory may be damaged, and what it computes may be wrong: the first crash warns, and an app
+   * that goes on loads the module again (reloads the page) or models in a KernelWorker, which
+   * starts a new kernel after one. A count, not bytes. */
+  readonly crashes: number
+}
+
+/**
+ * What the kernel's memory holds, in bytes: what its objects take (`used`), how far the module's
+ * memory has grown (`heap`) and how far it can grow (`limit`, 4 GB). Each body, mesh and curve
+ * lives there until it is disposed or garbage collected; a kernel call that finds the memory used
+ * up fails with a KernelError of status SM_ERR_OUT_OF_MEMORY. Also how many kernel objects
+ * JavaScript holds (`handles`) and how often the kernel crashed (`crashes`), after which its memory
+ * may be damaged. The module of each thread (a page, a worker) has its own memory. (A
+ * JavaScript-only function: smlibpy's kernel shares the memory of its process, which a crash
+ * ends.)
+ */
+export function memoryUsage(): MemoryUsage {
+  const { used, heap, limit } = k.runtime.memory_usage()
+  return { used, heap, limit, handles: live, crashes: _crashes.count }
 }
 
 // -------------------------------------------------------------------------------- handles
 // What is freed once a handle is garbage collected: the kernel object's kind and number (never
 // the handle itself, which would keep it alive).
 const freed = new FinalizationRegistry<[string, number]>(([kind, p]) => {
+  live--
   try {
     free(kind, p)
   } catch {
     // (the module may be gone)
   }
 })
+
+/** The handles that own a kernel object (see MemoryUsage.handles). */
+let live = 0
 
 function free(kind: string, p: number): void {
   if (kind === 'brep') ext.delete_brep(p)
@@ -399,14 +591,20 @@ function free(kind: string, p: number): void {
 
 let handles = 0
 
-abstract class Handle {
+/** The owner of a kernel object: it frees the object when it is garbage collected, or at once with
+ * `dispose()` (BrepHandle, CurveHandle, SurfaceHandle, PolyHandle). */
+export abstract class Handle {
   protected _p: number
   private readonly _kind: string
 
   constructor(kind: string, p: number) {
     this._kind = kind
     this._p = p
-    if (p) freed.register(this, [kind, p], this)
+    if (p) {
+      freed.register(this, [kind, p], this)
+      live++
+      if (scopes.length) scopes[scopes.length - 1].push(this)
+    }
   }
 
   /** A number that tells handles apart for as long as they live (their kernel objects' numbers
@@ -419,6 +617,7 @@ abstract class Handle {
     if (!p) throw new Error('the kernel object was disposed')
     this._p = 0
     freed.unregister(this)
+    live--
     return p
   }
 
@@ -433,12 +632,101 @@ abstract class Handle {
     if (!p) return
     this._p = 0
     freed.unregister(this)
+    live--
     free(this._kind, p)
   }
 
   [Symbol.dispose](): void {
     this.dispose()
   }
+}
+
+// -------------------------------------------------------------------------------- scopes
+/** The handles made in each scope that runs (innermost last). */
+const scopes: Handle[][] = []
+
+/**
+ * Runs `fn` and frees every kernel object (body, curve, surface, mesh) made while it runs that its
+ * result does not hold, at once: the parts, sketches, faces and meshes `fn` returns (also in
+ * arrays, ShapeLists, Maps, Sets and plain objects) stay, everything else it made, named or not
+ * (the operands of a chain such as `Box(...).cut(Cylinder(...)).fillet(...)`, a step's
+ * intermediates), is disposed when `fn` returns. Objects made before the scope stay as they are.
+ * Where `fn` throws, what it made is freed (what the error holds stays) and the error goes on.
+ *
+ * The garbage collector frees kernel objects only between tasks of the event loop, so a loop that
+ * builds without returning to the event loop keeps every object until it ends: `scope` keeps such
+ * a loop's memory flat. Scopes nest: what an inner scope returns belongs to the outer one.
+ *
+ * `fn` must return its result, not a promise (a scope cannot see what an async function makes after
+ * its first `await`): a promise is a TypeError, and nothing is freed. Do not keep objects that `fn`
+ * makes anywhere but in its result (in a variable outside, a cache): they are disposed, and using
+ * them is a TypeError. (A JavaScript-only function: Python frees each kernel object with its last
+ * reference.)
+ */
+export function scope<T>(fn: () => T): T {
+  if (typeof fn !== 'function') throw new TypeError(`scope takes a function, not ${fn === null ? 'null' : typeof fn}`)
+  const made: Handle[] = []
+  scopes.push(made)
+  let result: T
+  try {
+    result = fn()
+  } catch (e) {
+    scopes.pop()
+    _freeExcept(made, e)
+    throw e
+  }
+  scopes.pop()
+  if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as Any).then === 'function') {
+    // (an async function goes on making objects after its first await: nothing is freed)
+    if (scopes.length) scopes[scopes.length - 1].push(...made)
+    throw new TypeError('scope takes a function that returns its result, not a promise: an async function goes on after its first await, where the scope cannot follow it')
+  }
+  _freeExcept(made, result)
+  return result
+}
+
+/** Disposes the handles of `made` that `kept` does not reach; those it reaches go to the scope
+ * around, if any. */
+function _freeExcept(made: Handle[], kept: unknown): void {
+  const reached = _reachable(kept)
+  const outer = scopes.length ? scopes[scopes.length - 1] : null
+  for (const h of made) {
+    if (!h.alive) continue
+    if (reached.has(h)) outer?.push(h)
+    else h.dispose()
+  }
+}
+
+/** The handles a value holds: through its own properties, the items of arrays, Maps and Sets (not
+ * through functions, whose closures cannot be seen, or typed arrays). */
+export function _reachable(value: unknown): Set<Handle> {
+  const out = new Set<Handle>()
+  const seen = new Set<object>()
+  const todo: unknown[] = [value]
+  while (todo.length) {
+    const v = todo.pop()
+    if (v === null || typeof v !== 'object' || seen.has(v)) continue
+    seen.add(v)
+    if (v instanceof Handle) {
+      out.add(v)
+      continue
+    }
+    if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || v instanceof Promise || v instanceof WeakMap || v instanceof WeakSet) continue
+    if (typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer) continue
+    if (v instanceof Map) {
+      for (const [key, x] of v) todo.push(key, x)
+      continue
+    }
+    if (v instanceof Set) {
+      for (const x of v) todo.push(x)
+      continue
+    }
+    for (const key of Reflect.ownKeys(v)) {
+      const d = Object.getOwnPropertyDescriptor(v, key)
+      if (d !== undefined && 'value' in d && d.value !== null && typeof d.value === 'object') todo.push(d.value)
+    }
+  }
+  return out
 }
 
 /**
@@ -452,7 +740,8 @@ export function _disposed(what: string): TypeError {
 /**
  * Owns one kernel Brep and frees it with the last reference. `sound` records how far the body was
  * found a sound solid (0: not checked; the levels are in shapes.ts), `props` its integrated mass
- * properties.
+ * properties, `imported` whether it was read from a file or made from such a body (its fillets run
+ * in the probe worker, see GUARD_SECONDS).
  *
  * No operation changes a body's faces, edges and vertices or their geometry once it is wrapped, but
  * measuring it stores refitted trim curves in its Brep (the first area, volume or tight box of a
@@ -476,6 +765,7 @@ export class BrepHandle extends Handle {
   sources: Any[] | null = null
   /** The meshes rays are cast against, by purpose (a body's Brep does not change once wrapped). */
   meshes = new Map<string, Any>()
+  imported = false
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

@@ -4,14 +4,17 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { _traced } from './_errors.ts'
 import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG } from './geometry.ts'
 import { solve, spread } from './_linalg.ts'
 import { Line, ThreePointArc, _basis } from './curves.ts'
 import {
   Edge,
+  type EdgesLike,
   Face,
   type ChamferOptions,
+  type FacesLike,
   type FilletOptions,
   type FilletRadius,
   Part,
@@ -28,6 +31,7 @@ import {
   _requireSolid,
   _revolveAxisAngle,
   _typeName,
+  _withCurves,
 } from './shapes.ts'
 
 // biome-ignore lint: shapes of any kind
@@ -77,6 +81,8 @@ export interface ExtrudeFunctionOptions {
  * An open curve extrudes into a surface (a Shell), along `direction` (an axis or a vector) or the
  * normal of the curve's plane.
  */
+export function extrude(profile: Sketch | Face | ShapeList<Sketch | Face>, amount: number, options?: ExtrudeFunctionOptions): Part
+export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options?: ExtrudeFunctionOptions): Part | Shell
 export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options: ExtrudeFunctionOptions = {}): Part | Shell {
   _opts('extrude', options)
   const { both = false, taper = 0, direction = null, corners = 'sharp' } = options
@@ -101,18 +107,22 @@ export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, a
  *
  * An open curve revolves into a surface of revolution (a Shell).
  */
+export function revolve(profile: Sketch | Face | ShapeList<Sketch | Face>, axis?: Axis | null, angle?: number): Part
+export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis?: Axis | null, angle?: number): Part | Shell
 export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis: Axis | null = null, angle = 360): Part | Shell {
-  const w = _openCurve(profile)
-  if (w !== null) {
-    const [ax, a] = _revolveAxisAngle(axis ?? Z, angle)
-    const b = kernelCall(
-      'revolve',
-      () => _freed(w._copyCurves(), (curves) => k.rotational_sweep(curves, ax.origin.toArray(), ax.direction.toArray(), Number(a), { cap_ends: false })),
-      'the axis must not cross the curve',
-    )
-    return _analyticRevolve<Shell>(b, Shell)
-  }
-  return _asSketch(profile).revolve(axis, angle)
+  return scope(() => {
+    const w = _openCurve(profile)
+    if (w !== null) {
+      const [ax, a] = _revolveAxisAngle(axis ?? Z, angle)
+      const b = kernelCall(
+        'revolve',
+        () => _freed(w._copyCurves(), (curves) => k.rotational_sweep(curves, ax.origin.toArray(), ax.direction.toArray(), Number(a), { cap_ends: false })),
+        'the axis must not cross the curve',
+      )
+      return _analyticRevolve<Shell>(b, Shell)
+    }
+    return _asSketch(profile).revolve(axis, angle)
+  })
 }
 
 /** Outer loop and holes of a loft section. */
@@ -226,6 +236,9 @@ function _sectionNormal(section: unknown): Vector | null {
   return new Vector(directions[2])
 }
 
+/** Options of `loft`. */
+export type LoftOptions = { ruled?: boolean; smooth?: boolean; startTangent?: Axis | VectorLike | null; endTangent?: Axis | VectorLike | null; closed?: boolean }
+
 /**
  * A solid through a sequence of cross sections, or a surface through open curves.
  *
@@ -245,61 +258,62 @@ function _sectionNormal(section: unknown): Vector | null {
  *   direction the loft reaches the last section in. `closed`: run on from the last section through the
  *   first again, smoothly (three sections or more): a ring without ends.
  */
-export function loft(
-  sections: readonly unknown[],
-  options: { ruled?: boolean; smooth?: boolean; startTangent?: Axis | VectorLike | null; endTangent?: Axis | VectorLike | null; closed?: boolean } = {},
-): Part | Shell {
-  _opts('loft', options)
-  const { ruled = false, smooth = true, startTangent = null, endTangent = null, closed = false } = options
-  if (sections.length < 2) throw new RangeError('loft needs at least two sections')
-  const ends = _loftEnds(sections, startTangent, endTangent, closed, ruled)
-  const opened = sections.map(_openCurve)
-  if (opened.every((w) => w !== null) && ends !== null) {
-    const wires = opened as Wire[]
-    const counts = wires.map((w) => w.edges().length)
-    const curves = wires.flatMap((w) => w._copyCurves())
-    return _freed(curves, () => ends.skin(curves, counts, ends.degree(sections.length, ruled, smooth), false, 'curves should run in the same direction'))
-  }
-  if (opened.every((w) => w !== null)) {
-    // One skin for single curves and chains alike, so that ruled and smooth hold for both (the
-    // kernel's skin surface has no degree). With the default degree it is the same surface as that
-    // skin.
-    const wires = opened as Wire[]
-    const counts = wires.map((w) => w.edges().length)
-    const curves = wires.flatMap((w) => w._copyCurves())
-    const degree = ruled ? 1 : Math.min(smooth ? 3 : 2, sections.length - 1)
-    try {
-      return kernelCall('loft', () => Shell._wrap(k.create_skin_primitive(counts, curves, degree, false)), 'curves should run in the same direction')
-    } finally {
-      for (const c of curves) ext.delete_curve(c)
+export function loft(sections: readonly (Sketch | Face | ShapeList<Sketch | Face>)[], options?: LoftOptions): Part
+export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options?: LoftOptions): Part | Shell
+export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options: LoftOptions = {}): Part | Shell {
+  return scope(() => {
+    _opts('loft', options)
+    const { ruled = false, smooth = true, startTangent = null, endTangent = null, closed = false } = options
+    if (sections.length < 2) throw new RangeError('loft needs at least two sections')
+    const ends = _loftEnds(sections, startTangent, endTangent, closed, ruled)
+    const opened = sections.map(_openCurve)
+    if (opened.every((w) => w !== null) && ends !== null) {
+      const wires = opened as Wire[]
+      const counts = wires.map((w) => w.edges().length)
+      const curves = wires.flatMap((w) => w._copyCurves())
+      return _freed(curves, () => ends.skin(curves, counts, ends.degree(sections.length, ruled, smooth), false, 'curves should run in the same direction'))
     }
-  }
-  if (opened.some((w) => w !== null)) throw new RangeError('loft sections must be all closed (solid) or all open (surface)')
-  const loops = sections.map(_sectionLoops)
-  const degree = ends !== null ? ends.degree(sections.length, ruled, smooth) : ruled ? 1 : Math.min(smooth ? 3 : 2, sections.length - 1)
-  let result = _loftSolid(
-    loops.map(([outer]) => outer),
-    degree,
-    ends,
-  )
-  const holes = loops.map(([, h]) => h)
-  if (holes.some((h) => h.length)) {
-    if (new Set(holes.map((h) => h.length)).size !== 1) {
-      throw new RangeError('loft: every section needs the same number of holes (a hole runs through the whole loft)')
-    }
-    for (const first of holes[0]) {
-      const chain = [first]
-      for (const hs of holes.slice(1)) {
-        // the hole of the next section nearest to this one
-        const c = chain[chain.length - 1].center()
-        let best = hs[0]
-        for (const w of hs.slice(1)) if (w.center().distanceTo(c) < best.center().distanceTo(c)) best = w
-        chain.push(best)
+    if (opened.every((w) => w !== null)) {
+      // One skin for single curves and chains alike, so that ruled and smooth hold for both (the
+      // kernel's skin surface has no degree). With the default degree it is the same surface as that
+      // skin.
+      const wires = opened as Wire[]
+      const counts = wires.map((w) => w.edges().length)
+      const curves = wires.flatMap((w) => w._copyCurves())
+      const degree = ruled ? 1 : Math.min(smooth ? 3 : 2, sections.length - 1)
+      try {
+        return kernelCall('loft', () => Shell._wrap(k.create_skin_primitive(counts, curves, degree, false)), 'curves should run in the same direction')
+      } finally {
+        for (const c of curves) ext.delete_curve(c)
       }
-      result = result.cut(_loftSolid(chain, degree, ends))
     }
-  }
-  return result
+    if (opened.some((w) => w !== null)) throw new RangeError('loft sections must be all closed (solid) or all open (surface)')
+    const loops = sections.map(_sectionLoops)
+    const degree = ends !== null ? ends.degree(sections.length, ruled, smooth) : ruled ? 1 : Math.min(smooth ? 3 : 2, sections.length - 1)
+    let result = _loftSolid(
+      loops.map(([outer]) => outer),
+      degree,
+      ends,
+    )
+    const holes = loops.map(([, h]) => h)
+    if (holes.some((h) => h.length)) {
+      if (new Set(holes.map((h) => h.length)).size !== 1) {
+        throw new RangeError('loft: every section needs the same number of holes (a hole runs through the whole loft)')
+      }
+      for (const first of holes[0]) {
+        const chain = [first]
+        for (const hs of holes.slice(1)) {
+          // the hole of the next section nearest to this one
+          const c = chain[chain.length - 1].center()
+          let best = hs[0]
+          for (const w of hs.slice(1)) if (w.center().distanceTo(c) < best.center().distanceTo(c)) best = w
+          chain.push(best)
+        }
+        result = result.cut(_loftSolid(chain, degree, ends))
+      }
+    }
+    return result
+  })
 }
 
 function _pathEdges(path: unknown): Edge[] {
@@ -1012,156 +1026,160 @@ export interface SweepOptions {
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
  */
+export function sweep(profile: Sketch | Face | ShapeList<Sketch | Face>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part
+export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options: SweepOptions = {}): Part | Shell {
-  _opts('sweep', options)
-  const { orient = true, translational = false } = options
-  let sharpCorners = options.sharpCorners ?? null
-  let edges = _pathEdges(path)
-  let law = _frameLaw(options.up ?? null, options.twist ?? 0, orient, translational)
-  const grow = _scaleLaw(options.scale ?? null)
-  const planar = _isPlanarPath(edges)
-  if ((law === null || law.mode === 'rmf') && orient && !translational && !planar) {
-    // (along a helix the profile keeps its attitude to the axis: the base of a twist too)
-    const axis = _helixAxis(edges)
-    if (axis !== null) law = new _Law('up', axis, law !== null ? law.twist : () => 0, law !== null)
-  }
-  const w = _openCurve(profile)
-  if (w !== null) {
-    // an open profile sweeps into a surface (also along a closed edge: only solids come out inside
-    // out there)
-    if (edges.length !== 1) throw new RangeError('surface sweeps need a single-edge path')
-    if (law !== null) return _framedSurface(w, edges[0], law, grow)
-    // (about the center of its box, which the kernel puts on the path)
-    const open = grow === null ? w : w.scale(grow(0), w.bbox().center)
-    const pc = edges[0]._copyCurve()
-    const curves = open._copyCurves()
-    let b: number
-    try {
-      const rules = grow === null ? [] : _scaleCurves(pc, [0, 1], (f) => grow(f) / grow(0))
-      b = _freed(rules, () =>
-        kernelCall('sweep', () => ext.curve_sweep(curves, pc, false, true, orient, translational, rules[0] ?? null, rules[1] ?? null)),
-      )
-    } finally {
-      ext.delete_curve(pc)
-      for (const c of curves) ext.delete_curve(c)
+  return scope(() => {
+    _opts('sweep', options)
+    const { orient = true, translational = false } = options
+    let sharpCorners = options.sharpCorners ?? null
+    let edges = _pathEdges(path)
+    let law = _frameLaw(options.up ?? null, options.twist ?? 0, orient, translational)
+    const grow = _scaleLaw(options.scale ?? null)
+    const planar = _isPlanarPath(edges)
+    if ((law === null || law.mode === 'rmf') && orient && !translational && !planar) {
+      // (along a helix the profile keeps its attitude to the axis: the base of a twist too)
+      const axis = _helixAxis(edges)
+      if (axis !== null) law = new _Law('up', axis, law !== null ? law.twist : () => 0, law !== null)
     }
-    return Shell._wrap(b)
-  }
-  const sk = _asSketch(profile)
-  if (edges.length === 1 && law === null && grow === null) {
-    const out = _analyticSweep(sk, edges[0], orient && !translational)
-    if (out !== null) return out
-  }
-  const closed = edges[0].start.isClose(edges[edges.length - 1].end, 1e-6 * Math.max(1, edges[0].length))
-  const tangentClosure = closed && _norm3(_sub3(_tangent(edges[edges.length - 1], 1), _tangent(edges[0], 0))) <= 1e-6
-  // the pieces a path was swept in before 0.5.0: its edges, or the halves of a closed edge
-  const whole = edges.length === 1 && edges[0].isClosed ? edges[0] : null
-  const pieces = whole !== null ? _halves(whole) : edges
-  const halved = edges.length === 1 && edges[0].isClosed && (planar || !tangentClosure)
-  // The kernel sweeps a profile along a closed single-edge path inside out (it caps the ends where
-  // they meet); along the same path in two halves it works.
-  if (halved) edges = pieces
-  const asked = sharpCorners
-  if (sharpCorners === null) sharpCorners = planar && law === null && grow === null
-  let mitreError: ModelingError | null = null
-  if (sharpCorners && edges.length > 1) {
-    if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
-    if (law !== null) throw new RangeError("sweep: mitered corners keep the profile square to the path's plane; up and twist need sharpCorners false")
-    if (grow !== null) throw new RangeError("sweep: mitered corners keep the profile's size; scale needs sharpCorners false")
-    try {
-      return _mitredSweep(sk, edges, closed, orient && !translational)
-    } catch (err) {
-      if (!(err instanceof ModelingError) || asked) throw err
-      mitreError = err // (arcs that meet at a corner: the kernel's planar-path sweep gives no solid)
+    const w = _openCurve(profile)
+    if (w !== null) {
+      // an open profile sweeps into a surface (also along a closed edge: only solids come out inside
+      // out there)
+      if (edges.length !== 1) throw new RangeError('surface sweeps need a single-edge path')
+      if (law !== null) return _framedSurface(w, edges[0], law, grow)
+      // (about the center of its box, which the kernel puts on the path)
+      const open = grow === null ? w : w.scale(grow(0), w.bbox().center)
+      const pc = edges[0]._copyCurve()
+      const curves = open._copyCurves()
+      let b: number
+      try {
+        const rules = grow === null ? [] : _scaleCurves(pc, [0, 1], (f) => grow(f) / grow(0))
+        b = _freed(rules, () =>
+          kernelCall('sweep', () => ext.curve_sweep(curves, pc, false, true, orient, translational, rules[0] ?? null, rules[1] ?? null)),
+        )
+      } finally {
+        ext.delete_curve(pc)
+        for (const c of curves) ext.delete_curve(c)
+      }
+      return Shell._wrap(b)
     }
-  }
-  const t0 = _tangent(edges[0], 0)
-  let [axes, anchor] = _profileFrame(sk, t0)
-  const local = sk._transformed(_inverse(_placement(axes, anchor)))
-  if (orient && !translational) axes = axes.map(_turn(axes[2], t0)) as Axes
-  if (law !== null && closed) {
-    const turn = ((law.twist(1) - law.twist(0)) * 180) / Math.PI
-    if (!_comesRound(local, turn)) {
+    const sk = _asSketch(profile)
+    if (edges.length === 1 && law === null && grow === null) {
+      const out = _analyticSweep(sk, edges[0], orient && !translational)
+      if (out !== null) return out
+    }
+    const closed = edges[0].start.isClose(edges[edges.length - 1].end, 1e-6 * Math.max(1, edges[0].length))
+    const tangentClosure = closed && _norm3(_sub3(_tangent(edges[edges.length - 1], 1), _tangent(edges[0], 0))) <= 1e-6
+    // the pieces a path was swept in before 0.5.0: its edges, or the halves of a closed edge
+    const whole = edges.length === 1 && edges[0].isClosed ? edges[0] : null
+    const pieces = whole !== null ? _halves(whole) : edges
+    const halved = edges.length === 1 && edges[0].isClosed && (planar || !tangentClosure)
+    // The kernel sweeps a profile along a closed single-edge path inside out (it caps the ends where
+    // they meet); along the same path in two halves it works.
+    if (halved) edges = pieces
+    const asked = sharpCorners
+    if (sharpCorners === null) sharpCorners = planar && law === null && grow === null
+    let mitreError: ModelingError | null = null
+    if (sharpCorners && edges.length > 1) {
+      if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
+      if (law !== null) throw new RangeError("sweep: mitered corners keep the profile square to the path's plane; up and twist need sharpCorners false")
+      if (grow !== null) throw new RangeError("sweep: mitered corners keep the profile's size; scale needs sharpCorners false")
+      try {
+        return _mitredSweep(sk, edges, closed, orient && !translational)
+      } catch (err) {
+        if (!(err instanceof ModelingError) || asked) throw err
+        mitreError = err // (arcs that meet at a corner: the kernel's planar-path sweep gives no solid)
+      }
+    }
+    const t0 = _tangent(edges[0], 0)
+    let [axes, anchor] = _profileFrame(sk, t0)
+    const local = sk._transformed(_inverse(_placement(axes, anchor)))
+    if (orient && !translational) axes = axes.map(_turn(axes[2], t0)) as Axes
+    if (law !== null && closed) {
+      const turn = ((law.twist(1) - law.twist(0)) * 180) / Math.PI
+      if (!_comesRound(local, turn)) {
+        throw new RangeError(
+          `sweep: along a closed path the profile must come round into itself; twisted by ${_formatG(turn)} degrees it does not (twist by whole turns, or by a turn of its symmetry)`,
+        )
+      }
+    }
+    if (grow !== null && closed && !(Math.abs(grow(0) - grow(1)) <= 1e-9 * Math.max(Math.abs(grow(0)), Math.abs(grow(1))))) {
       throw new RangeError(
-        `sweep: along a closed path the profile must come round into itself; twisted by ${_formatG(turn)} degrees it does not (twist by whole turns, or by a turn of its symmetry)`,
+        `sweep: along a closed path the profile must come round into itself; scaled from ${_formatG(grow(0))} to ${_formatG(grow(1))} it does not (end with the scale it starts with)`,
       )
     }
-  }
-  if (grow !== null && closed && !(Math.abs(grow(0) - grow(1)) <= 1e-9 * Math.max(Math.abs(grow(0)), Math.abs(grow(1))))) {
-    throw new RangeError(
-      `sweep: along a closed path the profile must come round into itself; scaled from ${_formatG(grow(0))} to ${_formatG(grow(1))} it does not (end with the scale it starts with)`,
-    )
-  }
-  const hint = "the profile may be too large for the path's curvature"
-  let out: Part
-  try {
-    out = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint, law, grow)
-  } catch (err) {
-    if (!(err instanceof ModelingError)) throw err
-    if (mitreError !== null) throw mitreError
-    if (law !== null && law.explicit) throw err
-    if (law !== null) {
-      // (an implicit law, a helix's axis, that the kernel cannot sweep: its own frame, as before 0.5.0)
-      let back: Part
-      try {
-        back = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint, null, grow)
-      } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
-        throw err
-      }
-      if (!_round(sk, anchor)) {
-        _warn(`sweep: the profile could not keep its attitude to the helix's axis (${err.message}); it turns about the path as the kernel's frame turns it`)
-      }
-      return back
-    }
-    if (pieces.length < 2) throw _bendError(err, local, edges, hint)
-    if (closed) {
-      // A closed path the kernel cannot sweep carried along (the fuse where the halves of a loop
-      // closed with a kink cross fails for some loops) is swept as before 0.5.0; a round profile
-      // also turned about its center (the same profile, its seam elsewhere: the fuse goes for most
-      // loops where it failed with the seam where it was).
-      let out: Part | null = null
-      try {
-        out = grow !== null ? null : _formerSweep(sk, anchor, pieces, orient, translational, hint)
-      } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
-      }
-      if (out === null && _round(sk, anchor)) {
-        const tries: [Edge[], number][] = SEAM_TURNS.map((angle) => [edges, angle])
-        // (a loop closed with a kink also split elsewhere than halfway: the same body)
-        if (halved && !tangentClosure && whole !== null) for (const at of [0.4, 0.6]) tries.push([_halves(whole, at), 0])
-        for (const [split, angle] of tries) {
-          try {
-            const turned = angle ? local.rotate(new Axis([0, 0, 0], [0, 0, 1]), angle) : local
-            out = _carriedSweep(sk, turned, split, axes, anchor, halved, tangentClosure, translational, hint, null, grow)
-            break
-          } catch (e) {
-            if (!(e instanceof ModelingError)) throw e
-          }
-        }
-      }
-      if (out === null) throw _bendError(err, local, edges, hint)
-      return out
-    }
-    // An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet polyline
-    // joined into one curve fails at random) is swept edge by edge, each edge turned afresh, as
-    // before the profile was carried along.
+    const hint = "the profile may be too large for the path's curvature"
     let out: Part
     try {
-      out = _afreshSweep(local, edges, axes, orient, translational, hint, grow)
-    } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
-      throw _bendError(err, local, edges, hint)
+      out = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint, law, grow)
+    } catch (err) {
+      if (!(err instanceof ModelingError)) throw err
+      if (mitreError !== null) throw mitreError
+      if (law !== null && law.explicit) throw err
+      if (law !== null) {
+        // (an implicit law, a helix's axis, that the kernel cannot sweep: its own frame, as before 0.5.0)
+        let back: Part
+        try {
+          back = _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint, null, grow)
+        } catch (e) {
+          if (!(e instanceof ModelingError)) throw e
+          throw err
+        }
+        if (!_round(sk, anchor)) {
+          _warn(`sweep: the profile could not keep its attitude to the helix's axis (${err.message}); it turns about the path as the kernel's frame turns it`)
+        }
+        return back
+      }
+      if (pieces.length < 2) throw _bendError(err, local, edges, hint)
+      if (closed) {
+        // A closed path the kernel cannot sweep carried along (the fuse where the halves of a loop
+        // closed with a kink cross fails for some loops) is swept as before 0.5.0; a round profile
+        // also turned about its center (the same profile, its seam elsewhere: the fuse goes for most
+        // loops where it failed with the seam where it was).
+        let out: Part | null = null
+        try {
+          out = grow !== null ? null : _formerSweep(sk, anchor, pieces, orient, translational, hint)
+        } catch (e) {
+          if (!(e instanceof ModelingError)) throw e
+        }
+        if (out === null && _round(sk, anchor)) {
+          const tries: [Edge[], number][] = SEAM_TURNS.map((angle) => [edges, angle])
+          // (a loop closed with a kink also split elsewhere than halfway: the same body)
+          if (halved && !tangentClosure && whole !== null) for (const at of [0.4, 0.6]) tries.push([_halves(whole, at), 0])
+          for (const [split, angle] of tries) {
+            try {
+              const turned = angle ? local.rotate(new Axis([0, 0, 0], [0, 0, 1]), angle) : local
+              out = _carriedSweep(sk, turned, split, axes, anchor, halved, tangentClosure, translational, hint, null, grow)
+              break
+            } catch (e) {
+              if (!(e instanceof ModelingError)) throw e
+            }
+          }
+        }
+        if (out === null) throw _bendError(err, local, edges, hint)
+        return out
+      }
+      // An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet polyline
+      // joined into one curve fails at random) is swept edge by edge, each edge turned afresh, as
+      // before the profile was carried along.
+      let out: Part
+      try {
+        out = _afreshSweep(local, edges, axes, orient, translational, hint, grow)
+      } catch (e) {
+        if (!(e instanceof ModelingError)) throw e
+        throw _bendError(err, local, edges, hint)
+      }
+      if (!_round(sk, anchor)) {
+        _warn(`sweep: the profile could not be carried along the path (${err.message}); each of its ${edges.length} edges was swept turned to its own start instead, so the profile turns where they meet`)
+      }
+      return out
     }
-    if (!_round(sk, anchor)) {
-      _warn(`sweep: the profile could not be carried along the path (${err.message}); each of its ${edges.length} edges was swept turned to its own start instead, so the profile turns where they meet`)
+    if (mitreError !== null) {
+      _warn(`sweep: the corners of this planar path cannot be mitered (${mitreError.message}); it was swept piece by piece instead, as with sharpCorners false`)
     }
     return out
-  }
-  if (mitreError !== null) {
-    _warn(`sweep: the corners of this planar path cannot be mitered (${mitreError.message}); it was swept piece by piece instead, as with sharpCorners false`)
-  }
-  return out
+  })
 }
 
 /** A profile swept along a single line as an extrusion, along a single arc (or circle) as a revolve:
@@ -1234,7 +1252,7 @@ function _bendError(err: ModelingError, local: Sketch, edges: Edge[], hint: stri
   const p = e.pointAt(t)
   const g = (v: number) => _formatG(v, 4)
   const detail = `the path bends with a radius of ${g(r)} at (${g(p.x)}, ${g(p.y)}, ${g(p.z)}) (Edge.minRadius), and the profile reaches ${g(reach)} from the path`
-  if (err instanceof KernelError) return new KernelError(err.operation, err.detail, err.status, err.hint ? `${err.hint}: ${detail}` : detail)
+  if (err instanceof KernelError) return _traced(new KernelError(err.operation, err.detail, err.status, err.hint ? `${err.hint}: ${detail}` : detail), err.trace)
   return new ModelingError(`${err.message}: ${detail}`)
 }
 
@@ -1788,18 +1806,24 @@ function _swungSolid(loop: Wire, outline: Wire, reach: number, hint: string): Pa
 
 /** Round edges of the part they belong to (see `Part.fillet`), or corners of the sketch they
  * belong to: `fillet(s.vertices().concave(), 2)` (see `Sketch.fillet`). */
-export function fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part | Sketch {
+export function fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part
+export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sketch
+export function fillet(edges: EdgesLike | Vertex | readonly Vertex[], radius: FilletRadius, options?: FilletOptions): Part | Sketch
+export function fillet(edges: EdgesLike | Vertex | readonly Vertex[], radius: FilletRadius, options: FilletOptions = {}): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.fillet(radius as number, edges as Iterable<Vertex>)
-  return _ownerPart(edges).fillet(edges, radius, options)
+  return _ownerPart(edges).fillet(edges as EdgesLike, radius, options)
 }
 
 /** Bevel edges of the part they belong to (see `Part.chamfer`), or corners of the sketch they
  * belong to (see `Sketch.chamfer`). */
-export function chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part | Sketch {
+export function chamfer(edges: EdgesLike, length: number, options?: ChamferOptions): Part
+export function chamfer(vertices: Vertex | readonly Vertex[], length: number): Sketch
+export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: number, options?: ChamferOptions): Part | Sketch
+export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: number, options: ChamferOptions = {}): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.chamfer(length, edges as Iterable<Vertex>)
-  return _ownerPart(edges).chamfer(edges, length, options)
+  return _ownerPart(edges).chamfer(edges as EdgesLike, length, options)
 }
 
 /** The sketch that vertices belong to (null if the items are not vertices). */
@@ -1824,7 +1848,7 @@ function _ownerPart(items: unknown): Part {
 export function shell(
   part: Part,
   thickness: number,
-  openings: unknown = null,
+  openings: FacesLike | null = null,
   options: { outward?: boolean; corners?: string | null; walls?: unknown } = {},
 ): Part {
   _opts('shell', options)
@@ -1861,6 +1885,9 @@ export function mirror<S extends Shape>(shape: S, plane: Plane | Face | Axis | S
 }
 
 /** Cut a part with a plane or along a sheet (see `Part.split`). */
+export function split(part: Part, plane: Plane | Face | Shell, keep: 'both'): [Part, Part]
+export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below'): Part
+export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below' | 'both'): Part | [Part, Part]
 export function split(part: Part, plane: Plane | Face | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
   return keep === 'both' ? part.split(plane, 'both') : part.split(plane, keep)
 }
@@ -1874,7 +1901,7 @@ export function merge(...parts: (Part | Iterable<Part>)[]): Part {
   for (const p of parts) flat.push(...(p instanceof Part || !(Symbol.iterator in Object(p)) ? [p] : Array.from(p as Iterable<Part>)))
   if (flat.length < 2) throw new RangeError(`merge needs two or more parts, got ${flat.length}`)
   if (!(flat[0] instanceof Part)) throw new TypeError(`merge takes parts, not a ${_typeName(flat[0])}`)
-  return flat[0].merge(...flat.slice(1))
+  return flat[0].merge(...(flat.slice(1) as Part[])) // (Part.merge checks them)
 }
 
 /** Cross-section of a part (see `Part.section`). */

@@ -1226,7 +1226,7 @@ void bind_smlibpy_ext(py::module_ m)
           "Exact definition of a surface: kind, NURBS data and analytic parameters for planes, "
           "cylinders, cones, spheres and tori.");
     m.def("brep_dump", [](const SmBrep* brep, bool geometry) {
-        return smlibpy::to_python(smlibpy::brep_dump(brep, geometry));
+        return smlibpy::to_python(smlibpy::without_gil([&] { return smlibpy::brep_dump(brep, geometry); }));
     }, py::arg("brep"), py::arg("geometry") = true,
           "Topology (regions, shells, faces with both faceuses and their loops, edges, vertices) "
           "and optionally exact geometry of a Brep as plain Python data.");
@@ -1238,7 +1238,7 @@ void bind_smlibpy_ext(py::module_ m)
 
     m.def("copy_with_map", [](const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<SmEdge*>& edges,
                               const std::vector<SmVertex*>& vertices) {
-        const smlibpy::CopyMap r = smlibpy::copy_with_map(brep, faces, edges, vertices);
+        const smlibpy::CopyMap r = smlibpy::without_gil([&] { return smlibpy::copy_with_map(brep, faces, edges, vertices); });
         const auto ref = py::return_value_policy::reference;
         return py::make_tuple(py::cast(r.brep, py::return_value_policy::take_ownership), owned_list(r.faces, ref),
                               owned_list(r.edges, ref), owned_list(r.vertices, ref));
@@ -1251,7 +1251,8 @@ void bind_smlibpy_ext(py::module_ m)
           "Apply a row-major 4x4 matrix to a Brep in place (rigid, scaling and mirroring).");
     m.def("boolean", [](SmBrep* brep1, SmBrep* brep2, SmBooleanOperationType operation, bool non_manifold,
                         bool imprinting) {
-        return smlibpy::boolean(brep1, brep2, static_cast<int>(operation), non_manifold, imprinting);
+        return smlibpy::without_gil(
+            [&] { return smlibpy::boolean(brep1, brep2, static_cast<int>(operation), non_manifold, imprinting); });
     }, py::arg("brep1"), py::arg("brep2"), py::arg("operation"), py::arg("non_manifold") = false,
           py::arg("imprinting") = false, py::return_value_policy::reference,
           "k.boolean (k.non_manifold_boolean with `non_manifold`, k.boolean_with_options(imprinting=True) with "
@@ -1268,7 +1269,7 @@ void bind_smlibpy_ext(py::module_ m)
                 throw std::invalid_argument("expected points with three coordinates");
             flat.insert(flat.end(), p.begin(), p.end());
         }
-        return smlibpy::to_python(smlibpy::classify_points(brep, flat, tolerance));
+        return smlibpy::to_python(smlibpy::without_gil([&] { return smlibpy::classify_points(brep, flat, tolerance); }));
     }, py::arg("brep"), py::arg("points"), py::arg("tolerance") = 0.0,
           "Where each point lies relative to a body (SmBrep::Point3DClassify), within `tolerance` (0: the "
           "body's own): per point (where, index, cell), `where` one of 'inside', 'outside', 'face', 'edge', "
@@ -1287,9 +1288,11 @@ void bind_smlibpy_ext(py::module_ m)
     m.def("face_from_surface", &smlibpy::face_from_surface, py::arg("surface"), py::return_value_policy::take_ownership,
           "A sheet Brep with one face covering the whole (copied) surface.");
     m.def("combine", &smlibpy::combine, py::arg("breps"), py::return_value_policy::take_ownership,
+          py::call_guard<smlibpy::NoGil>(),
           "Copy all faces of several Breps into one new Brep without Booleans (for disjoint bodies).");
     m.def("separate_bodies", [](const SmBrep* brep) {
-        return owned_list(smlibpy::separate_bodies(brep), py::return_value_policy::take_ownership);
+        return owned_list(smlibpy::without_gil([&] { return smlibpy::separate_bodies(brep); }),
+                          py::return_value_policy::take_ownership);
     }, py::arg("brep"), "Split a copy of a Brep into one Brep per connected body.");
 
     m.def("delete_brep", &smlibpy::delete_brep, py::arg("brep"), "Free a Brep. Every handle into it becomes invalid.");
@@ -1297,7 +1300,7 @@ void bind_smlibpy_ext(py::module_ m)
           "Free a standalone curve (curves owned by a Brep are left alone).");
     m.def("delete_surface", &smlibpy::delete_surface, py::arg("surface"),
           "Free a standalone surface (surfaces owned by a Brep are left alone).");
-    m.def("delete_polybrep", &smlibpy::delete_polybrep, py::arg("poly"));
+    m.def("delete_polybrep", &smlibpy::delete_polybrep, py::arg("poly"), py::call_guard<smlibpy::NoGil>());
 
     m.def("copy_curve", &smlibpy::copy_curve, py::arg("curve"), py::return_value_policy::take_ownership,
           "Standalone copy of a curve (also of a curve owned by an edge).");
@@ -1323,7 +1326,7 @@ void bind_smlibpy_ext(py::module_ m)
         return smlibpy::to_python(smlibpy::face_properties(face, accuracy));
     }, py::arg("face"), py::arg("accuracy") = 1e-8);
     m.def("brep_properties", [](const SmBrep* brep, double accuracy, double density) {
-        return smlibpy::to_python(smlibpy::brep_properties(brep, accuracy, density));
+        return smlibpy::to_python(smlibpy::without_gil([&] { return smlibpy::brep_properties(brep, accuracy, density); }));
     }, py::arg("brep"), py::arg("accuracy") = 1e-8, py::arg("density") = 1.0,
        "Area, volume, mass and moments (about the bounding box centre, see 'origin').");
 
@@ -1338,6 +1341,7 @@ void bind_smlibpy_ext(py::module_ m)
     m.def("curve_sweep", &smlibpy::curve_sweep, py::arg("profile"), py::arg("path"), py::arg("cap_ends") = true,
           py::arg("center") = true, py::arg("orient") = false, py::arg("translational") = false,
           py::arg("scale_reference") = nullptr, py::arg("scale_curve") = nullptr, py::return_value_policy::take_ownership,
+          py::call_guard<smlibpy::NoGil>(),
           "Sweep profile curves along a path with all SmSweepOptions. Profile and path are copied, not consumed. "
           "With `center` the bounding-box centre of all profile curves travels along the path; otherwise the "
           "start point of the first curve does.");

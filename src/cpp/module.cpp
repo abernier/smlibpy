@@ -10,6 +10,8 @@
 #include "SmPyCommon.h"
 #include "ext.h"
 #include "curve_tools.h"
+#include "kernel_lock.h"
+#include "trace.h"
 
 #include <SmApiGeneral.h>
 
@@ -38,6 +40,7 @@ PYBIND11_MODULE(_core, m)
     SmApiCreateContext();
     install_sm_error_callback();
     smlibpy::init_kernel_limits();
+    smlibpy::install_kernel_trace();  // (in place of SmPyLib's trail: KernelError.trace)
 
     // The upstream bindings look themselves up by their own module name (for example to
     // raise TessellationError), so make that name resolve to this module.
@@ -131,4 +134,12 @@ PYBIND11_MODULE(_core, m)
     bind_hidden_lines(m.attr("ext").cast<py::module_>());
     bind_mesh_tools(m.attr("ext").cast<py::module_>());
     bind_poly_ray_intersection(m);
+    bind_kernel_trace(m.attr("ext").cast<py::module_>());
+    bind_caches(m.attr("ext").cast<py::module_>());
+
+    // Threads: every entry point takes one kernel lock, and the long ones let the GIL go while the
+    // kernel works (kernel_lock.cpp; SmPyLib's long calls are bound again for that, nogil.cpp).
+    bind_nogil(m);
+    smlibpy::lock_kernel_entries(m);
+    smlibpy::bind_kernel_lock(m.attr("ext").cast<py::module_>());
 }

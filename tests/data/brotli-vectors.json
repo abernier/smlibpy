@@ -1,0 +1,80 @@
+{
+ "about": "Brotli streams of node:zlib (the reference encoder, google/brotli) and what they hold: tests/test_lane_WN.py and js/test/lane_WN.test.ts decode them",
+ "vectors": [
+  {
+   "name": "empty",
+   "brotli": "Ow==",
+   "length": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "name": "one byte",
+   "brotli": "AwCAeAM=",
+   "length": 1,
+   "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+  },
+  {
+   "name": "text: dictionary words and their transforms",
+   "brotli": "G+0AAKwOeJOlntnmLoAQ9rWWVEVhTURlRqdBFHR2FhJag7C4yKmyN563nQ6U3zX5gYXTTLogN6Vddsvh2NeQvr7HRRm8vNFtQjL2m30InGgyEtAGkcmQcB3RYUStyA99Qp5gSoiEa4DqGbG1TGLmlbbQpM0ree7lTXbrvJq9PQk=",
+   "length": 238,
+   "sha256": "bad337e0c801304fa0753bfd85d4743da5a11f0a70084932981150b700083175"
+  },
+  {
+   "name": "text at quality 5",
+   "brotli": "oh0AgEBkc/kaNfGbi28lsjAMD/Bvt5D7+6zslKGIlCgQslo5N58dV6Gkg9UTI5rV1DMoHE4gk/mFpzoEgGskdb50xTMT2/xy1WMvoFpGjIiQIxE6PkKwU4X+kPsvhr//+ayKyrOp/NiW2TJTyybgyy2p5h/BOtmNHxZJLUlrz475JeWnwbXyMX96YT8fV9R3KA0=",
+   "length": 238,
+   "sha256": "bad337e0c801304fa0753bfd85d4743da5a11f0a70084932981150b700083175"
+  },
+  {
+   "name": "UTF-8 text, small window",
+   "brotli": "oRgQwG+kjmrY7gbf1y7Vl/KVqMHixozwnRDSpnYfM962sa96RLwOhz5BiU4vopRlJsKyjFluKjgmBUsVJfznQ6yuPRqqJ8O90cH48jxvJ2qSvNW/r8RLB8M80hUtPNduGg0=",
+   "length": 516,
+   "sha256": "c990d9a5eaab30e562102010f3d1ec807b81b79865813fcee29192e2c3607e72"
+  },
+  {
+   "name": "repeats: overlapping copies",
+   "brotli": "E7cLABypUV/M7gbmGeoUun2DA/NcWwMYUpcucmCeE0OtyA3mDazoBJAPoA+sFtSOGIu6YfO8A/H3AYAQKegErzn8sWylPVoe7j8vLbeGi/3tqzpxPe1vX4TGWAVlZMsTThUb/dn28rajQr033ZzfshUW/eb8AgmYEg1S0J2BeK7aGa+OD87PKp3x6vj4617azIf7D2VwTsVYxeaNpEvNwXx3/bpJqTmY764fxY7KYXt5QyRASyYlGq5gIl/rTTfnlxDma93J+vQUDT9rl+Pjj7EIr+Gcal9+oBp31w9MgYzcgZdkBnm3np5AB9qj5eH+09yk7sDHiYuN/mx7eXegO1mfnnyQq3Y64Itmyq3hYn/7dsCiJdMdShbqvXK4QQxiEIMYxCAGMYhBDGIQX55PIolcpCo3qYtDFAGlkY905Sd9CQgmpCyiylR8mUtCOAHlJK5sJSd7KYgmrLwklavU5C4NcYoqkLTylZ78ZSBBwYWSVTSZSSALSQovkJzFk53k5SBF0YWTt2QvNw==",
+   "length": 3000,
+   "sha256": "74ec0db612f4326a3ec9547ddb89554ef4c2403193b40b860271d74664e28ba4"
+  },
+  {
+   "name": "noise: a stored meta-block",
+   "brotli": "i5WAmEyK/KyH3uoT/zUx/g9iBxKs7M+9EJ5+NOQRzSUGt73c0dW+CVYmqGJMylDfjjN2kmpM15lat5ZmkjwWl4Z0S3MUxTMe2Zqe7j96ZKGuOzGeAEjGxG5dgkFK10iYD+CvcizTSTh0xl0Aaxv9R5OX5rj5QTp+ZMmB8ceB6mOV43ZWvubfLj5XDCKp0DyNSS+ZpOrpPq4e0lVPsRzYWkaceY7uc/sTlaYpm8SVDeV5btPBKOZTGDgQw8SUA2jQcS44KZmUT6gf2hv9I0IWsG+tCA8AHn4P/FAnNlJ3g/q1mChIy8B/Frm+DxxROEKjjtqK3IEhpIOHxvyesOFT6n/g9e/djAm0FZoI9APZ1wtwGoQNVzVsyMfsXNKKgyCShhhFAitRTof8h5To7u6PAw==",
+   "length": 300,
+   "sha256": "7bb158fb389b199b4dd73491edf9786e5b530bec8b842bce0be670321480e41b"
+  },
+  {
+   "name": "a font",
+   "brotli": "G1MEAB6H6TZOdsbg4LNJEkG035fVM+8A+O0BADhEyUGVqGhgUEA6ezL788k2v/8BwltP3eTHMLUQx1piXZQ+UASBryU4lmcYeCDZtopBMupz2aUtPbduFWjgrGzwomWDhs56bWbEaGzedmDLYR/FC8S72Lhr/5mdZ1ufeZs0nhippmjIkx238SqIcIvW+bq4jmp0333g+OnOv0LcQ/99O44eVL/yV/JxtL2okIrD8TqpO+YObDl9WCtdiLb4/pUvrrWUfBO39nmYn/xL0RGjBYKn+nX7cVOT8U9E/gf++q/p9R+wHcVv6VVkCRDksjKaWi0xtHhJAAAaCDTQUNZUIQGAJBTp87irlkKGDWBSAqXVdrxGLn0IENXpVZSkV4n+pFcTtYu7SMhoKQu0VJiLhupKCqXpZltqdUWUppltYctnu/e8TGUCUBvUltVXqAOgkSojzLbeKZfc9VAYSrqeXpUZ1qyq2dC0Or36/3RSr1zH8z2CUOViNQ3jbs3hkdH2qF4FDBWvY0Tr1rVr9+w5MjZ+u3r1t6WVrgcc0DXFbjr9uPthJJks4ZoJMGAYF7PyWK8BG/UWzSTOTnf7h7OOOBz9a75VqR3p+dhooExJEzk2UqqglllSepU3Te6hTqDSlZGUHoBASyHUBkmufB6FkQKE1giQ1NFaFkU9ob9OcmXS2JxlB/bv2Xr4zBMH5N+e1H0wZdsbZBdY5oD99tjqsDNKy+1wzHGlJU7YYrujtjhuj22W2mEXofttyYEkkxqcvOl+hhpunCFG6KmXYQ==",
+   "length": 1108,
+   "sha256": "b2d3387472fb6e6f22cc1b2b85b24b1967cebad54ee721f3dacab71c97617bb9"
+  },
+  {
+   "name": "a font at quality 1",
+   "brotli": "jykCAICqqqrqn0TNwj0zPDIjHNLTIQIgF/OMCM9DOGRmmGc4BEAGgCdABmR45iEDwiMOBgkJnmnhbunukO4RBh7mkOG3uOTFITPBjwmQAHnJUyZAAuQpDwmRCQkJmQCelzgk+CETIC+Zh4DMc3oc8pCuvt+JP7nrGMaY9r0Fg8FgsHi4vh1D8HBYwYng3JjocZIzSftfECDCDgYXllfP20vvrr4BmQfuFOuuzxd5AfIJKJRrrbs78dZHUAsgmYrnlmYPvMfALpCpVDw3/NVsA31gqlIPtk/9AJAnQOqe19hgWO+DEQDjtc2iK768BzUFjNfdbZ/jnAYZB6wNt+69vLmcB+Mh8Mjf3Ar4zh8wTwDzCCDwbGby2+3RhQPE+A2w/3fsH3o/TYD5S3FEGCiA1wKGpedhKAbY5utJ0AU04qUxwggGY5jV2wG1QjDVnnQYwnTzPMicX1Bks9ksYOHw4DAsugndpM+W3AIdJilhsafO/RXCSt6YEMPoSLdimFwHRjiEwsRikRx5HK3pgbxCjhseFPqn/qzfgn5VSwIaUlARwmAYkzDQ7xwhwRw5bnGfB3R4imCDaqvd/qjS0UTUVo7a/b/ICW9RDce5nk5EE7ZyBiPSGfiZ8JL0b6G0VVu1M/EN8XgolExmpNBznF7PcVRbJe/1uPO5TvZESqcrnQsh58dMnRYcnSUtStIf7BUXhhrh+PBj0XRFj4Ff6lb1tS+pQU9rJkA9lwLn3ozBglEMKVgwraex+RJqX4gPXCbC+w/UM1uiAKX+A4uWMQSZeKsUht4DTDK7aCHE0WCQAQ8T3y4G8zBCipN2+23FUa6t1mvVdb9lrXlbgbXSdEsNN6gW8165WXMbrFKnRpV1fFpYrOGxRYDFCk1cSjRwCahSJI9HmSY1XBr0JmEwCRbh52E9g81FLjHLHEnOkh4=",
+   "length": 1108,
+   "sha256": "b2d3387472fb6e6f22cc1b2b85b24b1967cebad54ee721f3dacab71c97617bb9"
+  },
+  {
+   "name": "metadata, skipped",
+   "brotli": "LAFhYmMD",
+   "length": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "name": "cut short",
+   "brotli": "G+0AAKwOeJOlntnmLoAQ9rWWVEVhTURlRqdBFHR2FhJag7C4yKmyN563nQ6U3zX5gYXTTLogN6Vddsvh2NeQvr7HRRm8vNFtQjL2m30InGgyEtAGkcmQcB3RYUStyA99Qp5gSoiEa4DqGbG1TGLmlbbQpM0ree7lTQ==",
+   "error": true
+  },
+  {
+   "name": "a window size that is reserved (large-window Brotli)",
+   "brotli": "EQA=",
+   "error": true
+  },
+  {
+   "name": "padding bits that are not zero",
+   "brotli": "uw==",
+   "error": true
+  }
+ ]
+}

@@ -31,7 +31,7 @@ test('native roundtrip', () => {
   const p = plate()
   const path = join(tmpPath(), 'plate.smb')
   save(p, path)
-  const back = load(path)
+  const back = load(path) as Part
   approx(back.volume, p.volume, 1e-12)
 })
 
@@ -94,7 +94,7 @@ for (const [name, make] of cones) {
     const cone = make()
     const path = join(tmpPath(), 'cone.step')
     exportStep(cone, path)
-    approx(load(path).volume, cone.volume, 1e-6)
+    approx((load(path) as Part).volume, cone.volume, 1e-6)
   })
 }
 

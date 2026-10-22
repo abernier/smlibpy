@@ -11,13 +11,13 @@ from __future__ import annotations
 import math
 import numbers
 import warnings
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Literal, Sequence, TypeVar, overload
 
 import numpy as np
 
-from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
+from ._kernel import BrepHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
-from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _analytic_revolve, _as_plane,
+from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire, _analytic_revolve, _as_plane,
                      _flatten_edges, _flatten_faces, _freed, _require_solid, _revolve_axis_angle)
 
 __all__ = [
@@ -75,6 +75,17 @@ def _curve_direction(w: Wire) -> Vector:
     return Vector(0, 0, 1)
 
 
+_S = TypeVar("_S", bound=Shape)
+
+
+# (the overloads tell type checkers what a sketch or face gives: a Part; smlibwasm's TypeScript has
+# the same)
+@overload
+def extrude(profile: Sketch | Face, amount: float, *, both: bool = ..., taper: float = ...,
+            direction: Axis | VectorLike | None = ..., corners: str = ...) -> Part: ...
+@overload
+def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = ..., taper: float = ...,
+            direction: Axis | VectorLike | None = ..., corners: str = ...) -> Part | Shell: ...
 def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool = False, taper: float = 0.0,
             direction: Axis | VectorLike | None = None, corners: str = "sharp") -> Part | Shell:
     """Extrude a sketch, a planar face or a closed wire into a solid (see :meth:`Sketch.extrude`).
@@ -95,6 +106,10 @@ def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool =
     return _as_sketch(profile).extrude(amount, both=both, taper=taper, direction=direction, corners=corners)
 
 
+@overload
+def revolve(profile: Sketch | Face, axis: Axis | None = ..., angle: float = ...) -> Part: ...
+@overload
+def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = ..., angle: float = ...) -> Part | Shell: ...
 def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = None, angle: float = 360.0) -> Part | Shell:
     """Revolve a sketch about an axis into a solid (see :meth:`Sketch.revolve`).
 
@@ -219,6 +234,14 @@ def _section_normal(section: Any) -> Vector | None:
     return Vector(*vt[2])
 
 
+@overload
+def loft(sections: Sequence[Sketch | Face], *, ruled: bool = ..., smooth: bool = ...,
+         start_tangent: Axis | VectorLike | None = ..., end_tangent: Axis | VectorLike | None = ...,
+         closed: bool = ...) -> Part: ...
+@overload
+def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = ..., smooth: bool = ...,
+         start_tangent: Axis | VectorLike | None = ..., end_tangent: Axis | VectorLike | None = ...,
+         closed: bool = ...) -> Part | Shell: ...
 def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False, smooth: bool = True,
          start_tangent: Axis | VectorLike | None = None, end_tangent: Axis | VectorLike | None = None,
          closed: bool = False) -> Part | Shell:
@@ -848,10 +871,22 @@ def _joined(chain: list[Edge]) -> Edge:
             ext.delete_curve(c)
 
 
-def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = True, translational: bool = False,
+@overload
+def sweep(profile: Sketch | Face, path: Edge | Wire, *, orient: bool = ..., translational: bool = ...,
+          sharp_corners: bool | None = ..., up: Axis | VectorLike | str | None = ...,
+          twist: float | Callable[[float], float] = ...,
+          scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = ...) -> Part: ...
+@overload
+def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bool = ..., translational: bool = ...,
+          sharp_corners: bool | None = ..., up: Axis | VectorLike | str | None = ...,
+          twist: float | Callable[[float], float] = ...,
+          scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = ...
+          ) -> Part | Shell: ...
+def sweep(profile: Sketch | Face | Wire | Edge, path: Edge | Wire, *, orient: bool = True, translational: bool = False,
           sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
           twist: float | Callable[[float], float] = 0.0,
-          scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None) -> Part:
+          scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None
+          ) -> Part | Shell:
     """Sweep a profile along a path.
 
     The profile is moved so that the center of its box (along the axes of its plane) sits at the
@@ -1123,7 +1158,8 @@ def _bend_error(err: ModelingError, local: Sketch, edges: list[Edge], hint: str)
     detail = (f"the path bends with a radius of {r:.4g} at ({p.x:.4g}, {p.y:.4g}, {p.z:.4g}) (Edge.min_radius), and "
               f"the profile reaches {reach:.4g} from the path")
     if isinstance(err, KernelError):
-        return KernelError(err.operation, err.detail, err.status, f"{err.hint}: {detail}" if err.hint else detail)
+        return _traced(KernelError(err.operation, err.detail, err.status, f"{err.hint}: {detail}" if err.hint else detail),
+                       err)
     return ModelingError(f"{err}: {detail}")
 
 
@@ -1614,6 +1650,10 @@ def _swung_solid(loop: Wire, outline: Wire, reach: float, hint: str) -> Part:
     return _require_solid(Part._wrap(shell._copy_brep()), "swing", hint)
 
 
+@overload
+def fillet(edges: Vertex | Sequence[Vertex], radius: float) -> Sketch: ...
+@overload
+def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part: ...
 def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part | Sketch:
     """Round edges of the part they belong to (see :meth:`Part.fillet`), or corners of the
     sketch they belong to: ``fillet(s.vertices().concave(), 2)`` (see :meth:`Sketch.fillet`)."""
@@ -1623,6 +1663,10 @@ def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **
     return _owner_part(edges).fillet(edges, radius, **kwargs)
 
 
+@overload
+def chamfer(edges: Vertex | Sequence[Vertex], length: float) -> Sketch: ...
+@overload
+def chamfer(edges: Any, length: float, **kwargs: Any) -> Part: ...
 def chamfer(edges: Any, length: float, **kwargs: Any) -> Part | Sketch:
     """Bevel edges of the part they belong to (see :meth:`Part.chamfer`), or corners of the
     sketch they belong to (see :meth:`Sketch.chamfer`)."""
@@ -1660,7 +1704,18 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
     return part.shell(thickness, openings, outward=outward, corners=corners, walls=walls)
 
 
-def offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: float, **kwargs: Any) -> Any:
+@overload
+def offset(shape: Sketch, distance: float, **kwargs: Any) -> Sketch: ...
+@overload
+def offset(shape: Part, distance: float, **kwargs: Any) -> Part: ...
+@overload
+def offset(shape: Shell | Face, distance: float, **kwargs: Any) -> Shell: ...
+@overload
+def offset(shape: Wire, distance: float, **kwargs: Any) -> Wire: ...
+@overload
+def offset(shape: Edge, distance: float, **kwargs: Any) -> Edge: ...
+def offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: float,
+           **kwargs: Any) -> Part | Sketch | Shell | Wire | Edge:
     """Grow or shrink a part or a sketch by ``distance`` (also ``corners``: for a part
     ``"sharp" | "round"``, see :meth:`Part.offset`; for a sketch ``"round" | "sharp" | "chamfer"``,
     see :meth:`Sketch.offset`), move a sheet or a face along its normals (:meth:`Shell.offset`,
@@ -1672,12 +1727,16 @@ def offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: float, *
     return shape.offset(distance, **kwargs)
 
 
-def mirror(shape: Shape, plane: Plane = Plane.XZ) -> Any:
+def mirror(shape: _S, plane: Plane = Plane.XZ) -> _S:
     """A mirrored copy of a shape."""
     return shape.mirror(plane)
 
 
-def split(part: Part, plane: Plane | Face | Shell, keep: str = "above") -> Any:
+@overload
+def split(part: Part, plane: Plane | Face | Shell, keep: Literal["both"]) -> tuple[Part, Part]: ...
+@overload
+def split(part: Part, plane: Plane | Face | Shell, keep: Literal["above", "below"] = ...) -> Part: ...
+def split(part: Part, plane: Plane | Face | Shell, keep: str = "above") -> Part | tuple[Part, Part]:
     """Cut a part with a plane or along a sheet (see :meth:`Part.split`)."""
     return part.split(plane, keep)
 

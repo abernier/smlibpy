@@ -888,7 +888,7 @@ py::object tessellate_py(SmBrep* brep, double chord_height_tol, double curve_ang
     o.max_aspect_ratio = max_aspect_ratio;
     o.algorithm = algorithm;
     o.allow_partial = allow_partial;
-    smlibpy::Tessellation t = smlibpy::tessellate(brep, o);
+    smlibpy::Tessellation t = smlibpy::without_gil([&] { return smlibpy::tessellate(brep, o); });
     if (t.status != SM_SUCCESS)
     {
         try
@@ -937,7 +937,7 @@ void bind_tessellate(py::module_ m)
           "revolution, edges whose middle is off the face by more than the chord height are split onto it. The "
           "report (return_report=True) names the algorithm used.");
     m.def("poly_face_indices", [](SmPolyBrep* poly, SmBrep* brep) {
-        const std::vector<int32_t> out = smlibpy::poly_face_indices(poly, brep);
+        const std::vector<int32_t> out = smlibpy::without_gil([&] { return smlibpy::poly_face_indices(poly, brep); });
         return py::array_t<int32_t>(static_cast<py::ssize_t>(out.size()), out.data());
     }, py::arg("poly"), py::arg("brep"),
           "For each polygon of poly.to_numpy_arrays(), the index of the face of brep (in brep.get_faces() order) "

@@ -7,7 +7,7 @@
 // semi-angle 0 are written as cylinders, and cones of negative semi-angle about the reversed axis, so that
 // what is written is in the schema's ranges; edges on lines, and on curves that are approximated, are
 // written with their curve trimmed to the edge; lines, circles and ellipses are written as the schema's
-// analytic curves (all marked "smlibpy:").
+// analytic curves; loops whose UV curves do not close are written without them (all marked "smlibpy:").
 
 /******************************************************************//**
 * FILE NAME --- SmuConvert.cpp
@@ -1884,6 +1884,46 @@ SmStatus BrepAppend_SMLibToUsdBrep
                                                                                                             : UsdBrepSolidTokens->opposite);  //      usd faceuse:orientationType has no notSet value. defaults to opposite
               }  // end Faceuses
 
+            // smlibpy: the loops whose UV curves do not meet head to tail as they are written (each
+            // whole, reversed where the edgeuse runs against its edge), such as the loop of a sphere's
+            // face that runs up and down its seam and leaves the poles out. usd-brep's validator wants
+            // them closed (BA.763, to 1e-6); such a loop is written without UV curves, which the reader
+            // rebuilds from the 3D curves. (SMLib's own bodies carry no UV curves; a body read from a
+            // file and checked carries those of SmBrep::AssertValid.)
+            std::vector<bool> sLoopUVOpen(lNumLoops, false);
+            for (uint32_t jj = 0; jj < lNumLoops; ++jj)
+              {
+                const SmLoopData & rLoopData = pBrepData_ii->m_vLoops[jj] ;
+                if (rLoopData.m_lLoopType != 0 || rLoopData.m_lNumEU == 0
+                    || rLoopData.m_lStartEU + rLoopData.m_lNumEU > lNumEdgeuses)
+                  { continue; }
+                std::vector<std::pair<SmPoint3d, SmPoint3d>> sEnds;
+                bool bAllCurves = true;
+                for (ULONG ee = rLoopData.m_lStartEU; ee < rLoopData.m_lStartEU + rLoopData.m_lNumEU; ++ee)
+                  {
+                    const SmEUData & rEUData = pBrepData_ii->m_vEdgeuses[ee] ;
+                    if (rEUData.m_lEUType != 0)
+                      { continue; }
+                    SmCurve * pUVCurve = rEUData.m_lUVCurve < pBrepData_ii->m_vUVCurves.GetSize()
+                                             ? pBrepData_ii->m_vUVCurves[rEUData.m_lUVCurve] : NULL ;
+                    if (SM_CAST_PTR(SmBSplineCurve, pUVCurve) == NULL)
+                      { bAllCurves = false; break; }  // (a loop with a curve missing is not checked)
+                    SmPoint3d sStart, sEnd;
+                    pUVCurve->GetEnds(sStart, sEnd);
+                    sEnds.emplace_back(rEUData.m_bOrientation == TRUE ? std::make_pair(sStart, sEnd)
+                                                                      : std::make_pair(sEnd, sStart));
+                  }
+                if (!bAllCurves)
+                  { continue; }
+                for (size_t ee = 0; ee < sEnds.size(); ++ee)
+                  {
+                    const SmPoint3d & rEnd  = sEnds[ee].second;
+                    const SmPoint3d & rNext = sEnds[(ee + 1) % sEnds.size()].first;
+                    if (std::hypot(rEnd.x - rNext.x, rEnd.y - rNext.y) > 1e-6)
+                      { sLoopUVOpen[jj] = true; break; }
+                  }
+              }
+
             // Faces and Face->Surfaces
             for (uint32_t jj = 0; jj < lNumFaces; ++jj)
               {
@@ -1970,7 +2010,8 @@ SmStatus BrepAppend_SMLibToUsdBrep
                              SM_ERR,
                              _T("BrepAppend_SMLibToUsdBrep: face loop index is out of bounds"));
                     sLoopExportsUVCurves[lLoopIndex] =
-                        tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceNurbAPI;
+                        tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceNurbAPI
+                        && !sLoopUVOpen[lLoopIndex];  // smlibpy: (see sLoopUVOpen)
                   }
 
                 // face range - must match the UV conventions declared by each surface API's schema:

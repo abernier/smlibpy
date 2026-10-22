@@ -335,7 +335,7 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, radius2: 
         The blend, a sheet (:class:`Shell`) whose edges along its length lie on the two surfaces;
         with ``trim`` the two faces, cut back, and the blend between them as one sheet.
     """
-    from .defeature import _guarded
+    from ._guard import isolated
 
     fa, fb = _one_face(a, "a"), _one_face(b, "b")
     if not radius > 0 or not math.isfinite(radius):
@@ -358,10 +358,10 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, radius2: 
     # (on copies: the kernel changes the surfaces it blends, and a second blend of the same
     # surfaces then fails)
     ca, cb = fa.to_shell(), fb.to_shell()
-    sa, sb = ca.faces()[0]._f.surface(), cb.faces()[0]._f.surface()
     with kernel_call("surface_fillet", hint):
-        brep = _guarded("surface_fillet", lambda: k.surface_surface_fillet(
-            sa, sb, radius1=r1, radius2=r2, tolerance=tolerance, xsect_type=2 if shape == "round" else 0))
+        # (in another process: the kernel's blend code can crash or loop)
+        brep = isolated("surface_fillet", _surface_fillet_step, ca.faces()[0]._f, cb.faces()[0]._f, r1, r2, tolerance,
+                        2 if shape == "round" else 0)
     if brep is None:
         raise ModelingError(f"surface_fillet: the kernel made no blend; {hint}")
     shell = Shell._wrap(brep)
@@ -479,6 +479,12 @@ def _free_face(e: Any, name: str) -> Face:
     if len(faces) != 1 or isinstance(e._owner, Part):
         raise ValueError(f"blend: {name} lies between two faces; take an edge on a sheet's border (used by one face)")
     return faces[0]
+
+
+def _surface_fillet_step(a: Any, b: Any, r1: float, r2: float, tolerance: float, xsect: int = 2) -> Any:
+    """The kernel's blend of the surfaces of two faces (isolated): ``xsect`` 2 round, 0 a chamfer."""
+    return k.surface_surface_fillet(a.surface(), b.surface(), radius1=r1, radius2=r2, tolerance=tolerance,
+                                    xsect_type=xsect)
 
 
 def _one_face(x: Any, name: str) -> Face:

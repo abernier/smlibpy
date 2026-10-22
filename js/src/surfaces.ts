@@ -4,10 +4,10 @@
 // lofting an *open* curve gives a surface (a Shell) instead of a solid. This module adds surfaces
 // through point grids, ruled surfaces and stitching.
 
-import { KernelError, ModelingError, _isRuntimeError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _isRuntimeError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import { Vector, _vec, type VectorLike } from './geometry.ts'
 import { Edge, Face, Part, Shell, Wire, _bodies, _continuity, _curvesOf, _t, _typeName } from './shapes.ts'
-import { _guarded, _smb } from './defeature.ts'
+import { _isolatedValue, _smb } from './defeature.ts'
 import { _withOptions } from './curves.ts'
 
 export function _shellOfSurface(srf: number): Shell {
@@ -292,26 +292,28 @@ type StitchPiece = Shell | Face | Part | Iterable<unknown>
 export function stitch(...args: [...StitchPiece[], StitchOptions & { report: true }]): [Part | Shell, StitchReport]
 export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell
 export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell | [Part | Shell, StitchReport] {
-  const { items, options } = _withOptions<StitchOptions>(args)
-  _opts('stitch', options)
-  const bodies = _bodies(items)
-  if (!bodies.length) throw new RangeError('nothing to stitch')
-  const tolerance = options.tolerance ?? null
-  if (tolerance !== null && !(tolerance > 0 && Number.isFinite(tolerance))) {
-    throw new RangeError(`stitch: the tolerance must be a positive distance, got ${tolerance}`)
-  }
-  const b = kernelCall('stitch', () => ext.combine(bodies.map((x) => x._brep)))
-  const shell = Shell._wrap(b)
-  const size = shell.bbox().diagonal
-  const gap = tolerance !== null ? Number(tolerance) : Math.max(size * 1e-4, 1e-7)
-  const r = kernelCall('stitch', () => ext.stitch_faces(shell._brep, gap), 'the pieces may not meet within the tolerance')
-  let body: Part | Shell = shell
-  if (r.open === 0) {
-    const part = Part._wrap(shell._copyBrep())
-    if (part._solidProblem() === null) body = part
-  }
-  if (!options.report) return body
-  return [body, new StitchReport(r.sewn, r.open, Math.max(r.vertex_gap, r.edge_gap), r.turned, r.tolerance)]
+  return scope(() => {
+    const { items, options } = _withOptions<StitchOptions>(args)
+    _opts('stitch', options)
+    const bodies = _bodies(items)
+    if (!bodies.length) throw new RangeError('nothing to stitch')
+    const tolerance = options.tolerance ?? null
+    if (tolerance !== null && !(tolerance > 0 && Number.isFinite(tolerance))) {
+      throw new RangeError(`stitch: the tolerance must be a positive distance, got ${tolerance}`)
+    }
+    const b = kernelCall('stitch', () => ext.combine(bodies.map((x) => x._brep)))
+    const shell = Shell._wrap(b)
+    const size = shell.bbox().diagonal
+    const gap = tolerance !== null ? Number(tolerance) : Math.max(size * 1e-4, 1e-7)
+    const r = kernelCall('stitch', () => ext.stitch_faces(shell._brep, gap), 'the pieces may not meet within the tolerance')
+    let body: Part | Shell = shell
+    if (r.open === 0) {
+      const part = Part._wrap(shell._copyBrep())
+      if (part._solidProblem() === null) body = part
+    }
+    if (!options.report) return body
+    return [body, new StitchReport(r.sewn, r.open, Math.max(r.vertex_gap, r.edge_gap), r.turned, r.tolerance)]
+  })
 }
 
 /**
@@ -343,39 +345,49 @@ export function surfaceFillet(
   radius: number,
   options: { radius2?: number | null; shape?: string; sides?: readonly [number, number]; trim?: boolean } = {},
 ): Shell {
-  _opts('surfaceFillet', options)
-  const sides = options.sides ?? [1, 1]
-  const shape = options.shape ?? 'round'
-  const radius2 = options.radius2 ?? null
-  const fa = _oneFace(a, 'a')
-  const fb = _oneFace(b, 'b')
-  if (!(radius > 0) || !Number.isFinite(radius)) throw new RangeError(`surfaceFillet: the radius must be positive, got ${radius}`)
-  if (shape !== 'round' && shape !== 'chamfer') throw new RangeError(`surfaceFillet: shape is "round" or "chamfer", got ${JSON.stringify(shape)}`)
-  if (radius2 !== null) {
-    if (shape !== 'chamfer') throw new RangeError('surfaceFillet: radius2 is for chamfers (shape: "chamfer"); a round blend has one radius')
-    if (!(radius2 > 0) || !Number.isFinite(radius2)) throw new RangeError(`surfaceFillet: radius2 must be positive, got ${radius2}`)
-  }
-  if (sides.length !== 2 || sides.some((x) => x !== 1 && x !== -1)) throw new RangeError(`surfaceFillet: sides must be two of 1 and -1, got ${JSON.stringify(sides)}`)
-  // (the kernel's sides are those of each surface's own normal, which a face may turn around)
-  const r1 = radius * sides[0] * (fa._naturalIsOutward() ? 1 : -1)
-  const r2 = (radius2 ?? radius) * sides[1] * (fb._naturalIsOutward() ? 1 : -1)
-  const size = Math.max(fa.bbox().union(fb.bbox()).diagonal, radius, radius2 ?? 0)
-  const tolerance = Math.max(1e-7 * size, 1e-9)
-  const hint = 'the surfaces may not meet, or not leave room for the radius on those sides'
-  // (on copies: the kernel changes the surfaces it blends, and a second blend of the same surfaces
-  // then fails)
-  const ca = fa.toShell()
-  const cb = fb.toShell()
-  const sa = k.face_surface(ca.faces()[0]._f)
-  const sb = k.face_surface(cb.faces()[0]._f)
-  const kw = { radius1: r1, radius2: r2, tolerance, xsect_type: shape === 'round' ? 2 : 0 }
-  const brep: number = kernelCall('surfaceFillet', () =>
-    _guarded('surfaceFillet', () => k.surface_surface_fillet(sa, sb, kw), () => ({ op: 'surface_fillet', bodies: [_smb(ca), _smb(cb)], options: kw })), hint)
-  if (!brep) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
-  const shell = Shell._wrap(brep)
-  if (!shell.faces().length) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
-  if (options.trim) return _trimmedFillet(fa, fb, shell, Math.max(1e-5 * size, 1e-7))
-  return shell
+  return scope(() => {
+    _opts('surfaceFillet', options)
+    const sides = options.sides ?? [1, 1]
+    const shape = options.shape ?? 'round'
+    const radius2 = options.radius2 ?? null
+    const fa = _oneFace(a, 'a')
+    const fb = _oneFace(b, 'b')
+    if (!(radius > 0) || !Number.isFinite(radius)) throw new RangeError(`surfaceFillet: the radius must be positive, got ${radius}`)
+    if (shape !== 'round' && shape !== 'chamfer') throw new RangeError(`surfaceFillet: shape is "round" or "chamfer", got ${JSON.stringify(shape)}`)
+    if (radius2 !== null) {
+      if (shape !== 'chamfer') throw new RangeError('surfaceFillet: radius2 is for chamfers (shape: "chamfer"); a round blend has one radius')
+      if (!(radius2 > 0) || !Number.isFinite(radius2)) throw new RangeError(`surfaceFillet: radius2 must be positive, got ${radius2}`)
+    }
+    if (sides.length !== 2 || sides.some((x) => x !== 1 && x !== -1)) throw new RangeError(`surfaceFillet: sides must be two of 1 and -1, got ${JSON.stringify(sides)}`)
+    // (the kernel's sides are those of each surface's own normal, which a face may turn around)
+    const r1 = radius * sides[0] * (fa._naturalIsOutward() ? 1 : -1)
+    const r2 = (radius2 ?? radius) * sides[1] * (fb._naturalIsOutward() ? 1 : -1)
+    const size = Math.max(fa.bbox().union(fb.bbox()).diagonal, radius, radius2 ?? 0)
+    const tolerance = Math.max(1e-7 * size, 1e-9)
+    const hint = 'the surfaces may not meet, or not leave room for the radius on those sides'
+    // (on copies: the kernel changes the surfaces it blends, and a second blend of the same surfaces
+    // then fails)
+    const ca = fa.toShell()
+    const cb = fb.toShell()
+    const kw = { radius1: r1, radius2: r2, tolerance, xsect_type: shape === 'round' ? 2 : 0 }
+    // (in the probe worker: the kernel's blend code can crash or loop)
+    const brep: number = kernelCall(
+      'surfaceFillet',
+      () =>
+        _isolatedValue(
+          'surfaceFillet',
+          () => k.surface_surface_fillet(k.face_surface(ca.faces()[0]._f), k.face_surface(cb.faces()[0]._f), kw),
+          () => ({ op: 'surface_fillet', bodies: [_smb(ca), _smb(cb)], options: kw }),
+          { trap: true },
+        ),
+      hint,
+    )
+    if (!brep) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
+    const shell = Shell._wrap(brep)
+    if (!shell.faces().length) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
+    if (options.trim) return _trimmedFillet(fa, fb, shell, Math.max(1e-5 * size, 1e-7))
+    return shell
+  })
 }
 
 /** The faces of a surface fillet cut back to its long edges, sewn to it into one sheet. */

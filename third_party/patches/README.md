@@ -5,8 +5,10 @@ smlibpy builds the SMLib kernel from the usd-brep submodule (`third_party/usd-br
 smlibpy cannot work around from outside. Fixed copies of those files live here, and
 `CMakeLists.txt` compiles each one in place of the original:
 `third_party/patches/<dir>/src/<file>` replaces `third_party/usd-brep/source/<dir>/src/<file>`
-(`<dir>` is `SMLib` or `SM_API`). The configure step stops if a copy has no original of that
-name.
+(`<dir>` is `SMLib` or `SM_API`). A header, `third_party/patches/<dir>/inc/<file>`, comes before
+`source/<dir>/inc` in the include path of the kernel and of everything built with it (SmPyLib,
+smlibpy's C++, the WebAssembly module), so every file that includes it gets the copy. The
+configure step stops if a copy has no original of that name.
 
 Each copy is the upstream file with its notices unchanged, a notice at the top saying what was
 changed and why (Apache License 2.0, section 4(b)), and every change marked
@@ -18,6 +20,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 
 | File | Change | Defect |
 |---|---|---|
+| `SMLib/inc/SmMessages.h` | In release builds, `SER`, `SER_MSG`, `SERN`, `SERN_MSG`, `SERZ`, `SER_DELETE`, `SER_DELETE_ALL_PARTS`, `NER`, `NER_MSG`, `NERN`, `AERS`, `AERS_MSG`, `AERN` and `AERN_MSG` report the failure they return to the kernel's error callback (`smos_InvokeErrorCallback`, with the file, the line and the function), as debug builds do through `smos_ErrorMessage`, without its formatting | Release builds compiled the error trace out: these macros only returned, so the callback that SmPyLib installs to collect a trail heard of nothing, and every kernel error said only `SM_ERR at <binding>.cpp`. smlibpy's own callback (`src/cpp/trace.cpp`, in place of SmPyLib's trail, which kept the first 4 kB where the failing chain comes last) keeps the last 48 failures: `KernelError.trace` |
 | `SMLib/src/SmVertex.cpp` | `SmVertex::GetVertexuseOfFace` tests the face again | The face test was commented out together with the composite-face branch ("Remove Composite"), so the function returned the vertexuse of whichever face came first. `SmFilletRemoval` read its corner parameters from the wrong faces and removed nothing: upstream's known issue "`remove_fillet` removes nothing and reports success". Also feeds surface fitting through vertices (`SmFace.cpp`), UV boxes of loops (`SmLoopuse.cpp`), curve classification (`SmCurveClass.cpp`) and `SmVertex::HasParallelFaces`. |
 | `SMLib/src/SmVertex.cpp` | `SmVertex::GetLoopOfFace` tests the face again (its face pointer is no longer set only in debug builds) | Same as above: it returned the loop of whichever face came first. Used by point classification (`SmPointClassification`, `SmPointClass.cpp`). |
 | `SMLib/src/SmProtoTopology.cpp` | `SmProtoTopologyManager::~SmProtoTopologyManager` cuts the links between ProtoVertices and ProtoEdges before deleting them | It deleted the ProtoEdges first; a ProtoVertex that still listed one then wrote into it (`SmProtoEdge::RemoveProtoVertex` from `~SmProtoVertex`). A write into freed memory at the end of every Boolean, found with AddressSanitizer on `Box(40, 30, 20) - Cylinder(5, 40)`. |
@@ -135,10 +138,20 @@ build:
   cylinder and 100 imports grew a process by 16.7 MB, now by less than 0.5 MB (the WebAssembly build:
   2000 checks 28 MB, now 0.6 MB). AddressSanitizer reports nothing for `tests/test_step_import.py`
   (which runs the seam repairs of `SplitAtSeam` on the curves handed over), `tests/test_io.py`,
-  `tests/test_tessellation.py` and `tests/test_measure.py` (121 passed). LeakSanitizer does not run
-  on macOS arm64; the heap statistics stand in for it. Over 449 STEP files (611 bodies) of the
+  `tests/test_tessellation.py` and `tests/test_measure.py` (121 passed). LeakSanitizer did not run
+  then (Apple's clang has none on macOS arm64); the heap statistics stood in for it. Over 449 STEP files (611 bodies) of the
   classcad-mcp corpus, no volume, face count, validity or error changed with the seam and the
   random-number changes.
+- The error reports (`SmMessages.h`): a failed call's `KernelError.trace` ends with the chain from
+  the deepest failing kernel function to the API function (crossing holes: `IntersectTopology`,
+  `IntersectInsertRelate`, `ManifoldBoolean`, `SmApiBoolean`; a fillet the kernel has no corner for:
+  `CreateFilletCorners`, `DoFillet`, `SmApiFilletEdges`), in both builds. Reporting costs a call
+  on the failure paths only: the Python suite took 74.2 and 75.6 s against 73.6 and 75.1 s before
+  (two runs each), and the kernel reported 1769 failures in it (in 21597 kernel calls of the test
+  process; most are errors it recovers from); the WebAssembly module is 7.82 MB, 188 kB more
+  (1.85 MB with brotli, 46 kB more). No result changed (both suites, the parity files of
+  `tools/parity.py`), and AddressSanitizer reports nothing for `test_defeature`, `test_guards`,
+  `test_draft`, `test_io` and `test_lane_WN`.
 - The tight box: a USD file with such line edges reads back with `bbox()` of +-5, as the box is
   (`tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges`, which also checks that
   smlibpy no longer writes such files).
@@ -204,20 +217,33 @@ Defects that remain in the kernel, and what smlibpy does about them:
 
 ## Checking with AddressSanitizer
 
-Configure a separate build directory with
-`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`
-(and `-DSKBUILD=ON`, which keeps its `_core` module in the build directory rather than writing it
-over the one in `src/smlibpy`), put its `_core` module next to a copy of `src/smlibpy`, and run
-the Python binary itself (on macOS not through `env` or `timeout`, which drop the `DYLD_`
-variables) with
-`DYLD_INSERT_LIBRARIES=$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)` and
-`ASAN_OPTIONS=detect_leaks=0:strip_env=0` (`strip_env=0` keeps the sanitizer in the worker
-processes of the MCP session tests); add `quarantine_size_mb=8192` where freed memory is read
-long after it was freed. LeakSanitizer does not run on macOS arm64: malloc zone statistics
-(`malloc_zone_statistics`), macOS `leaks` and resident-memory bounds stand in for it. With the
-guard on, a defect in a forked copy shows as "the kernel crashed (signal 6 ...)" and its report
-goes to stderr; `GUARD_SECONDS = 0` runs every step in the process, so the first report ends the
-run.
+`tools/sanitize/run.py` does it (and CI's "Checks" workflow runs it every night on Linux):
+configure a separate build directory with
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON -DCMAKE_CXX_FLAGS="-fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer"`
+(`-DSKBUILD=ON` keeps its `_core` module in the build directory rather than writing it over the
+one in `src/smlibpy`; `-fsanitize-recover=address` lets a run go on after a report), build it, and
+run `python tools/sanitize/run.py --build <dir> [tests]` (by default `tests/test_defeature.py`,
+`test_guards.py`, `test_draft.py` and `test_io.py`). It puts the module next to a copy of
+`src/smlibpy`, preloads the sanitizer's runtime (`LD_PRELOAD`; on macOS
+`DYLD_INSERT_LIBRARIES`, for which it runs the Python binary itself, not a wrapper such as `env`
+or `timeout`, which drop the `DYLD_` variables), runs every kernel step in the test process
+(`GUARD_SECONDS = 0`), and reads the reports: a memory error fails the run unless
+`tools/sanitize/known.txt` names it, and so does a leak of the kernel or of smlibpy's C++ unless
+`tools/sanitize/leaks.txt` names it. LeakSanitizer runs on Linux and, on macOS, with LLVM's clang
+(`-DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++`); Apple's clang has none, and there
+`--no-leaks` checks memory errors only (malloc zone statistics, macOS `leaks` and resident-memory
+bounds stand in for the leak check). With the guard on, a defect in a forked copy shows as "the
+kernel crashed (signal 6 ...)" and its report goes to stderr; add `quarantine_size_mb=8192` to
+`ASAN_OPTIONS` where freed memory is read long after it was freed.
+
+The first runs of this check (LLVM 21 on macOS arm64) found what the two lists hold: a
+heap-buffer-overflow in `SmCurveClassification::FindInterval` from `sm_FixProblemsBySqueezing` in
+the extended offset mode's merge (the steps of
+`tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail`), and leaks in
+`SmPrimitiveCreation::CreateSweepAlongPlanarPath` (the copies of the profile and path of each
+segment, about 10 kB a mitered sweep) and `SmProtoTopologyManager::CreateProtoEdge`; neither is
+patched yet. It also found smlibpy's own leak of the curves it handed the kernel's sweeps, skins
+and offset profiles, which copy them (fixed).
 
 ## Dropping a patch
 
@@ -254,11 +280,13 @@ When an upstream release fixes a defect:
    the `ManifoldBoolean` change, nothing for the loops of
    `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel`, which
    must still pass; for the planar Boolean,
-   `tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash` must still pass.
+   `tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash` must still pass; for
+   the error reports, `tests/test_lane_WN.py::test_kernel_errors_say_where_the_kernel_gave_up`
+   (with upstream's header in a release build the trace is empty).
 4. Remove the row from the table above.
 
-When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can
-go too.
+When the last copy is gone, this directory, `smlibpy_patch_sources` and `smlibpy_patch_headers`
+in `CMakeLists.txt` can go too.
 
 ## Compiled-out functions
 

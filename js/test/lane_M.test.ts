@@ -212,7 +212,7 @@ test('outline with hidden lines', () => {
   approx(total(visible), 80 + 10 * Math.PI)
   approx(total(hidden), 10 * Math.PI)
   let box = Box(40, 30, 10)
-  box = box.fillet(box.edges().groupBy(Z).at(-1), 3)
+  box = box.fillet(box.edges().groupBy(Z).at(-1)!, 3)
   approx(total(box.outline(Plane.XY, { tangentEdges: true })) - total(box.outline(Plane.XY)), 2 * 34 + 2 * 24)
   assert.throws(() => (box.outline as Any)(Plane.XY, { tangent_edges: true }), TypeError)
 })

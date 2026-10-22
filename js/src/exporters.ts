@@ -24,16 +24,44 @@ import { Axis, Location, Plane, Vector } from './geometry.ts'
 import { Mesh, _coloredMesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
 import { _stepItems, _stepText, writeStep } from './step.ts'
-import { importStep } from './step_import.ts'
-import { importIges } from './iges_import.ts'
-import { exportDxf, importDxf } from './dxf.ts'
-import { exportSvg } from './drawing.ts'
-import { exportUsd, importUsd } from './usd.ts'
-import { exportBrep, importBrep } from './occt.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
+import { type StepCurve, type StepFrame, type StepModel, type StepPoint, fromStep, importStep } from './step_import.ts'
+import { fromIges, importIges } from './iges_import.ts'
+import { exportDxf, fromDxf, importDxf, toDxf } from './dxf.ts'
+import { exportSvg, toSvg } from './drawing.ts'
+import { exportUsd, fromUsd, importUsd, toUsd } from './usd.ts'
+import { exportBrep, fromBrep, importBrep, toBrep } from './occt.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
 type Any = any
-type NodeFs = typeof import('node:fs')
+
+/** The functions of Node's file system (node:fs) the package uses, as it uses them: written out
+ * here rather than taken from Node's types, so that the package's declarations type-check in a
+ * project without them (a browser app). */
+interface NodeFs {
+  readFileSync(path: string): Uint8Array
+  writeFileSync(path: string, data: string | Uint8Array, encoding?: 'utf8'): void
+  openSync(path: string, flags: string, mode?: number): number
+  closeSync(fd: number): void
+}
+
+/** Shapes as the exporters, `htmlPage` and `show` take them: parts, sheets, sketches, faces, edges,
+ * wires, meshes, or lists of them (an array, a ShapeList, a Set; also nested). */
+export type ShapesLike = Shape | Mesh | (Iterable<ShapesLike> & object)
+
+/** What a STEP file can hold, as `exportStep` and `toStep` take it: shapes (also edges, wires and
+ * vertices: curves and points), points as Vectors, coordinate systems as Planes, named and colored
+ * `StepCurve`s, `StepPoint`s and `StepFrame`s, a whole `StepModel`, or lists of them. */
+export type StepItemsLike =
+  | Shape
+  | Mesh
+  | Vector
+  | Plane
+  | StepCurve
+  | StepPoint
+  | StepFrame
+  | StepModel
+  | (Iterable<StepItemsLike> & object)
 
 /**
  * Node's file system (node:fs), for the functions that read and write files. It is looked up
@@ -147,6 +175,7 @@ export function _body(brep: number, name: string | null, color: [number, number,
   const dump: _Dump = ext.brep_dump(brep, false)
   const solid = dump.regions.some((r) => !r.infinite && !r.void)
   const body = solid ? Part._wrap(brep, { name, color }) : Shell._wrap(brep, { name, color })
+  body._h.imported = true // (read from a file: its fillets run in the probe worker)
   const [parts, extra, loose] = _components(dump, solid)
   if (parts.length && !dump.faces.length) {
     _warn(`${what}: ${_label(name)} has no faces, only ${parts.join(' and ')}: it is read as a Shell without faces, whose edges() are its curves`)
@@ -160,7 +189,7 @@ export function _body(brep: number, name: string | null, color: [number, number,
 }
 
 /** Write shapes to `path`; the format follows the file extension (Python's `export`). */
-export function exportFile(shapes: unknown, path: string, options: Record<string, Any> = {}): void {
+export function exportFile(shapes: ShapesLike, path: string, options: Record<string, Any> = {}): void {
   const p = String(path)
   const ext_ = _splitext(p)[1].toLowerCase()
   if (ext_ === '.step' || ext_ === '.stp') exportStep(shapes, p, options)
@@ -176,6 +205,66 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
     exportBrep(shapes, p)
   } else if (ext_ === '.svg') exportSvg(shapes, p, options)
   else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda or .brep`)
+}
+
+/**
+ * The contents of a file of the shapes, in memory, the format picked from the file's name as
+ * `exportFile` picks it from a path: the text of a STEP (`.step`, `.stp`), glTF (`.gltf`), OBJ
+ * (`.obj`), DXF (`.dxf`), SVG (`.svg`), USD (`.usda`, `.usd`) or OpenCASCADE (`.brep`) file, the
+ * bytes (a Uint8Array) of an STL, GLB or SMLib (`.smb`, `.smp`) file. The options are those of the
+ * format's function (`toStep`, `toStl`, ...).
+ *
+ * In a browser, `new Blob([toFile(part, 'part.step')])` is the file to download.
+ */
+export function toFile(shapes: ShapesLike, name: string, options: Record<string, Any> = {}): string | Uint8Array {
+  const ext_ = _splitext(String(name))[1].toLowerCase()
+  if (ext_ === '.step' || ext_ === '.stp') return toStep(shapes, options)
+  if (ext_ === '.stl') return toStl(shapes, options)
+  if (ext_ === '.glb') return toGlb(shapes, options)
+  if (ext_ === '.gltf') return toGltf(shapes, options)
+  if (ext_ === '.obj') return toObj(shapes, options)
+  if (ext_ === '.smb') return toSmb(shapes, options)
+  if (ext_ === '.smp') return toSmp(shapes, options)
+  if (ext_ === '.dxf') return toDxf(shapes, options)
+  if (ext_ === '.svg') return toSvg(shapes, options)
+  if (ext_ === '.usda' || ext_ === '.usd') return toUsd(shapes, options)
+  if (ext_ === '.usdc' || ext_ === '.usdz') throw new RangeError(`toFile writes text USD (.usda, .usd), not ${ext_}`)
+  if (ext_ === '.brep') {
+    _opts('toBrep', options)
+    return toBrep(shapes)
+  }
+  throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda or .brep`)
+}
+
+/**
+ * Read a file's contents in memory, picking the format from the file's name, as `load` does from a
+ * path: STEP (`.step`, `.stp`), IGES (`.igs`, `.iges`), USD (`.usda`), OpenCASCADE (`.brep`) and
+ * SMLib (`.smb`, `.smp`) give exact parts, DXF (`.dxf`) a
+ * `Sketch` of the drawing's outlines, STL a `Mesh`. `data` is the file's text or its bytes (a
+ * Uint8Array or an ArrayBuffer, as `await file.arrayBuffer()` gives them for an
+ * `<input type="file">`); of `name`, the file's name or path, only the extension counts.
+ *
+ * A STEP file with one body gives that part, one with several a `ShapeList`. A native file comes
+ * back as a `Part` when its body encloses a volume, as a `Shell` when it does not. The layers a USD
+ * file names (subLayers, references, payloads) are not read: `fromUsd` reads them with its
+ * `resolve` option.
+ */
+export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> | Shape | ShapeList<Shape> {
+  const ext_ = _splitext(String(name))[1].toLowerCase()
+  if (ext_ === '.step' || ext_ === '.stp' || ext_ === '.p21') return fromStep(data)
+  if (ext_ === '.stl') return fromStl(data)
+  if (ext_ === '.dxf') return fromDxf(data)
+  if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return fromUsd(data)
+  const given = typeof data === 'string' ? data : _asBytes(data)
+  if (given === null) throw new TypeError(`fromFile reads a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  const bytes: string | Uint8Array = given
+  if (ext_ === '.igs' || ext_ === '.iges') return fromIges(bytes)
+  if (ext_ === '.brep') return fromBrep(bytes)
+  if (ext_ === '.smp') return fromSmp(bytes)
+  if (ext_ !== '.smb') {
+    throw new RangeError(`unknown file type '${ext_}'; fromFile reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`)
+  }
+  return fromSmb(data)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -201,14 +290,14 @@ export interface StepExportOptions {
  * `StepFrame` give them names and colors, and a `StepModel` (from `readStep`) is written whole.
  * `readStep` reads them back.
  */
-export function exportStep(shapes: unknown, path: string, options: StepExportOptions = {}): void {
+export function exportStep(shapes: StepItemsLike, path: string, options: StepExportOptions = {}): void {
   _opts('exportStep', options)
   writeStep(_stepItems(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
 
 /** The text of a STEP AP214 file of the shapes (see `exportStep`). Without a file the product is
  * called "part" unless `name` says otherwise. */
-export function toStep(shapes: unknown, options: StepExportOptions = {}): string {
+export function toStep(shapes: StepItemsLike, options: StepExportOptions = {}): string {
   _opts('toStep', options)
   return _stepText(_stepItems(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
@@ -329,7 +418,7 @@ function _meshes(shapes: unknown, tolerance: number | null, angle: number, what 
 }
 
 /** A triangle mesh in STL (binary unless `ascii`). `tolerance` is the maximum deviation. */
-export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean } = {}): Uint8Array {
+export function toStl(shapes: ShapesLike, options: MeshOptions & { ascii?: boolean } = {}): Uint8Array {
   _opts('toStl', options)
   return _stl(shapes, options, 'toStl')
 }
@@ -382,7 +471,7 @@ function _stl(shapes: unknown, options: MeshOptions & { ascii?: boolean }, what:
 
 /** Triangle mesh export to an STL file (binary unless `ascii`). `tolerance` is the maximum
  * deviation, `maxEdge` the longest edge a triangle may have (see `tessellate`). */
-export function exportStl(shapes: unknown, path: string, options: MeshOptions & { ascii?: boolean } = {}): void {
+export function exportStl(shapes: ShapesLike, path: string, options: MeshOptions & { ascii?: boolean } = {}): void {
   _opts('exportStl', options)
   const fs = _fs()
   fs.writeFileSync(String(path), _stl(shapes, options, 'exportStl'))
@@ -395,16 +484,17 @@ export function importStl(path: string): Mesh {
 }
 
 /** A mesh from the contents of an STL file (binary or ASCII; a string is the text of an ASCII
- * file). */
-export function fromStl(data: string | Uint8Array): Mesh {
-  return _readStl(_bytes(data), null)
+ * file; bytes are a Uint8Array or an ArrayBuffer, see `BytesLike`). */
+export function fromStl(data: string | BytesLike): Mesh {
+  return _readStl(_bytes(data, 'fromStl'), null)
 }
 
-function _bytes(data: string | Uint8Array | ArrayBuffer): Uint8Array {
+/** The bytes of a file's contents in memory (a string: its UTF-8 bytes). */
+function _bytes(data: string | BytesLike, what: string): Uint8Array {
   if (typeof data === 'string') return new TextEncoder().encode(data)
-  if (data instanceof ArrayBuffer) return new Uint8Array(data)
-  if (!ArrayBuffer.isView(data)) throw new TypeError(`expected a string or a Uint8Array, not ${_typeName(data)}`)
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  const bytes = _asBytes(data)
+  if (bytes === null) throw new TypeError(`${what} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  return bytes
 }
 
 // Python's str.splitlines and str.split (ASCII text)
@@ -601,7 +691,7 @@ function _aheapsort(t: Int32Array, start: number, n: number, cmp: (i: number, j:
 /** Wavefront OBJ text of the shapes (one object per part), with the mesh's normals: each corner
  * names its normal (`f v//vn`), so edges stay sharp where the faces meet at an angle and curved
  * faces shade smooth. `maxEdge` is the longest edge a triangle may have. */
-export function toObj(shapes: unknown, options: MeshOptions = {}): string {
+export function toObj(shapes: ShapesLike, options: MeshOptions = {}): string {
   _opts('toObj', options)
   return _obj(shapes, options, 'toObj')
 }
@@ -709,7 +799,7 @@ function _indexedCorners(m: Mesh): [Float64Array, Float32Array, Uint32Array] {
 }
 
 /** Wavefront OBJ export (one object per part; see `toObj`). */
-export function exportObj(shapes: unknown, path: string, options: MeshOptions = {}): void {
+export function exportObj(shapes: ShapesLike, path: string, options: MeshOptions = {}): void {
   _opts('exportObj', options)
   const fs = _fs()
   fs.writeFileSync(String(path), _obj(shapes, options, 'exportObj'))
@@ -995,7 +1085,7 @@ export function gltfDocument(shapes: unknown, options: GltfOptions = {}): [Any, 
  * glTF is Y-up and measured in meters; the model is written Z-up in millimeters as modeled, under
  * a root node that turns it upright and scales it by 0.001, so viewers show it at its real size.
  */
-export function toGlb(shapes: unknown, options: GltfOptions = {}): Uint8Array {
+export function toGlb(shapes: ShapesLike, options: GltfOptions = {}): Uint8Array {
   _opts('toGlb', options)
   const [doc, buf] = gltfDocument(shapes, options)
   _zUp(doc, true)
@@ -1028,14 +1118,14 @@ export function toGlb(shapes: unknown, options: GltfOptions = {}): Uint8Array {
  * glTF is Y-up and measured in meters; the model is written Z-up in millimeters as modeled, under
  * a root node that turns it upright and scales it by 0.001, so viewers show it at its real size.
  */
-export function exportGlb(shapes: unknown, path: string, options: GltfOptions = {}): void {
+export function exportGlb(shapes: ShapesLike, path: string, options: GltfOptions = {}): void {
   _opts('exportGlb', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toGlb(shapes, options))
 }
 
 /** glTF JSON of the shapes with the buffer embedded as a data URI (in meters, like `toGlb`). */
-export function toGltf(shapes: unknown, options: GltfOptions = {}): string {
+export function toGltf(shapes: ShapesLike, options: GltfOptions = {}): string {
   _opts('toGltf', options)
   const [doc, buf] = gltfDocument(shapes, options)
   _zUp(doc, true)
@@ -1044,7 +1134,7 @@ export function toGltf(shapes: unknown, options: GltfOptions = {}): string {
 }
 
 /** glTF export with the buffer embedded as a data URI (in meters, like `exportGlb`). */
-export function exportGltf(shapes: unknown, path: string, options: GltfOptions = {}): void {
+export function exportGltf(shapes: ShapesLike, path: string, options: GltfOptions = {}): void {
   _opts('exportGltf', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toGltf(shapes, options))
@@ -1118,7 +1208,7 @@ function _oneBody(shapes: unknown, what: string): _Body {
 /** The contents of an SMLib native `.smb` file of one body (exact; ASCII unless `ascii` is false).
  * Reading it back gives the same geometry; B-spline faces that are exactly planes, cylinders, cones,
  * spheres or surfaces of revolution come back as those (`toNurbs()` does not survive). */
-export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
+export function toSmb(shapes: ShapesLike, options: { ascii?: boolean } = {}): Uint8Array {
   _opts('toSmb', options)
   const { ascii = true } = options
   const body = _oneBody(shapes, 'toSmb')
@@ -1131,14 +1221,15 @@ export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8
   }
 }
 
-/** The body of an SMLib native `.smb` file's contents: a Part when it encloses a volume (a merged
- * part with its cells too, and a broken solid, whose `isValid()` is false), a Shell when it does
- * not. */
-export function fromSmb(data: string | Uint8Array): Part | Shell {
+/** The body of an SMLib native `.smb` file's contents (its text, or its bytes: a Uint8Array or an
+ * ArrayBuffer): a Part when it encloses a volume (a merged part with its cells too, and a broken
+ * solid, whose `isValid()` is false), a Shell when it does not. */
+export function fromSmb(data: string | BytesLike): Part | Shell {
+  const bytes = _bytes(data, 'fromSmb')
   const name = _tmpName()
   let b: number
   try {
-    module.FS.writeFile(name, _bytes(data))
+    module.FS.writeFile(name, bytes)
     b = kernelCall('load', () => k.read_brep_from_file(name, null, false))
   } finally {
     _unlink(name)
@@ -1195,7 +1286,7 @@ function _smp(shapes: unknown, ascii: boolean, what: string): Uint8Array {
  * colors, a wire as a `Wire`. ASCII unless `ascii` is false; the binary form is bit-exact, the ASCII
  * form keeps the geometry to 16 decimals.
  */
-export function toSmp(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
+export function toSmp(shapes: ShapesLike, options: { ascii?: boolean } = {}): Uint8Array {
   _opts('toSmp', options)
   return _smp(shapes, options.ascii ?? true, 'toSmp')
 }
@@ -1206,10 +1297,9 @@ export function toSmp(shapes: unknown, options: { ascii?: boolean } = {}): Uint8
  * volume) or `Shell`, named and colored as written, curves as `Edge` and `Wire`; a file of another
  * SMLib program gives its loose surfaces as sheets of one face each.
  */
-export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape> {
-  const found: [number | null, number | null, string, Float64Array | null, number][] = kernelCall('fromSmp', () =>
-    ext.part_items(_bytes(data)),
-  )
+export function fromSmp(data: string | BytesLike): Shape | ShapeList<Shape> {
+  const bytes = _bytes(data, 'fromSmp')
+  const found: [number | null, number | null, string, Float64Array | null, number][] = kernelCall('fromSmp', () => ext.part_items(bytes))
   const out: (Shape | Edge[])[] = []
   const wires = new Map<number, Edge[]>()
   for (const [brep, curve, name, color, wire] of found) {
@@ -1231,7 +1321,7 @@ export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape> {
  * and curves with their names and colors to an `.smp` part file (see `toSmp`); any other extension
  * writes `.smb`.
  */
-export function save(shapes: unknown, path: string, options: { ascii?: boolean } = {}): void {
+export function save(shapes: ShapesLike, path: string, options: { ascii?: boolean } = {}): void {
   _opts('save', options)
   const fs = _fs()
   const p = String(path)
@@ -1260,7 +1350,7 @@ export function save(shapes: unknown, path: string, options: { ascii?: boolean }
  * names, colors and curves (see `fromSmp`). A body that also holds wire edges, points or faces outside
  * its solid comes with a warning.
  */
-export function load(path: string): Any {
+export function load(path: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> | Shape | ShapeList<Shape> {
   const p = String(path)
   const ext_ = _splitext(p)[1].toLowerCase()
   if (ext_ === '.step' || ext_ === '.stp' || ext_ === '.p21') return importStep(p)

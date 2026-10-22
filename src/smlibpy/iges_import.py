@@ -230,5 +230,7 @@ def _result(found: list[Any], skipped: list[str]) -> Any:
             raise ModelingError(f"import IGES: nothing in the file could be read: {'; '.join(skipped[:3])}"
                                 + ("; ..." if len(skipped) > 3 else ""))
         raise ModelingError("the IGES file holds no solids or surfaces")
+    for body in found:
+        body._h.imported = True  # (read from a file: its fillets run in another process)
     out = ShapeList(found)
     return out[0] if len(out) == 1 else out

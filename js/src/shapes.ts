@@ -5,7 +5,8 @@
 // them and can be passed back to operations on that body
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
-import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { _traced } from './_errors.ts'
 import {
   TOLERANCE,
   Axis,
@@ -39,11 +40,21 @@ import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { toRgb } from './colors.ts'
 import { EllipticalArc, Line, ThreePointArc, _arcCurve, _basisDers, _filletWire, _span } from './curves.ts'
 import { Mesh, _levels, _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate } from './mesh.ts'
-import { show } from './viewer.ts'
+import { type ShowOptions, show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
 import { visiblePieces, wrap as _wrap } from './_face_curves.ts'
-import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
+import {
+  GUARD_BOOLEANS,
+  type _Job,
+  _isolated,
+  _isolatedValue,
+  _smb,
+  _smbOf,
+  filletFaces,
+  removeFaces as _removeFaces,
+  removeFillets as _removeFillets,
+} from './defeature.ts'
 import {
   type BendOptions,
   type TaperOptions,
@@ -154,6 +165,14 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
 
 /** A color: a CSS name ("steelblue"), "#4682b4", or [r, g, b] (0..1 or 0..255). */
 export type ColorLike = string | readonly number[]
+
+/** Edges as the operations on edges take them (`fillet`, `chamfer`): an edge, a face or a wire
+ * (their edges), or a list of them (an array, a ShapeList, a Set; also nested). */
+export type EdgesLike = Edge | Face | Wire | (Iterable<EdgesLike> & object)
+
+/** Faces as the operations on faces take them (`shell`, `removeFaces`, `draft`): a face, or a list
+ * of faces (an array, a ShapeList, a Set; also nested). */
+export type FacesLike = Face | (Iterable<FacesLike> & object)
 
 /** Metadata a body carries: a name (exporters, the viewer) and a display color. */
 export interface BodyOptions {
@@ -270,8 +289,8 @@ export abstract class Shape {
     return tessellate(this, tolerance, angle, options)
   }
 
-  /** Show the shape in the viewer (see `show`). */
-  show(options: Record<string, unknown> = {}): unknown {
+  /** Show the shape in the viewer (see `show`); returns the path of the page. */
+  show(options: ShowOptions = {}): string {
     return show(this, options)
   }
 
@@ -831,7 +850,7 @@ export class ShapeList<T = Shape> extends Array<T> {
   }
 
   /** Every shape placed onto a plane or face (see `Shape.on`). */
-  on(target: unknown): ShapeList<T> {
+  on(target: Plane | Face | Location | ShapeList<Face> | Sketch): ShapeList<T> {
     const loc = _asPlane(target).location
     return _list(this.map((s) => (s as Any).moved(loc) as T))
   }
@@ -984,7 +1003,7 @@ export function _putFaceAttrs(brep: number, colors: readonly Any[], names: reado
 
 /** What a kernel step in a probe worker carries of a body besides its `.smb` copy: the tags of its
  * faces and edges and its faces' colors and names (`.smb` files hold none). */
-function _carried(brep: number): Any[] {
+export function _carried(brep: number): Any[] {
   return [...ext.topology_tags(brep), ext.face_attrs(brep)]
 }
 
@@ -2905,8 +2924,8 @@ export class Face extends Shape {
   }
 
   /** The body this face belongs to. */
-  get owner(): _Body | null {
-    return this._owner
+  get owner(): Part | Shell | null {
+    return this._owner as Part | Shell | null // (every body is one of them)
   }
 
   /**
@@ -3187,7 +3206,7 @@ export class Face extends Shape {
   }
 
   /** Where a ray meets this face, nearest first (see `Part.raycast`). */
-  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit<Face>[] {
     return _raycast([this], origin, direction, this.bbox())
   }
 
@@ -3450,9 +3469,12 @@ export class _Body extends Shape {
     return k.brep_copy(this._brep)
   }
 
-  /** A body of the same type and metadata around `brep`. */
+  /** A body of the same type and metadata around `brep` (made from this one: read from a file if
+   * this one was). */
   _like(brep: number): this {
-    return (this.constructor as typeof _Body)._wrap.call(this.constructor as Any, brep, { name: this.name, color: this.color }) as this
+    const b = (this.constructor as typeof _Body)._wrap.call(this.constructor as Any, brep, { name: this.name, color: this.color }) as this
+    b._h.imported = this._h.imported
+    return b
   }
 
   /** A body of the same type and metadata around the same Brep, which is not copied: its faces,
@@ -3636,7 +3658,7 @@ export class _Body extends Shape {
    * ray sees first; `hits.length` is odd from inside a closed part, except where the ray grazes a
    * face (to test a point, use `Part.contains`).
    */
-  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit<Face>[] {
     return _raycast(this.faces(), origin, direction, this._looseBox())
   }
 
@@ -3653,7 +3675,7 @@ export class _Body extends Shape {
    * where `raycast` finds where it grazes the surface. Give all the rays in one call: the tracer is
    * built once per call (0.2 s for a mesh of 20 000 triangles), then a ray takes 0.02 to 0.05 ms.
    */
-  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[] {
+  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit<Face> | null)[] {
     const [o, d] = _rays(origins, directions, 'raycastMany')
     const n = o.length / 3
     if (!n) return []
@@ -3664,7 +3686,7 @@ export class _Body extends Shape {
     const tol = 1e-9 * Math.max(box.diagonal, 1e-9, far)
     const r = kernelCall('raycastMany', () => ext.body_first_hits(this._brep, vertices, triangles, owners, o, d, tol, meshTol))
     const faces = this.faces()
-    const out: (Hit | null)[] = []
+    const out: (Hit<Face> | null)[] = []
     for (let i = 0; i < n; i++) {
       const found = r.found[i]
       if (found === 0) out.push(null)
@@ -3685,6 +3707,23 @@ export class _Body extends Shape {
       }
     }
     return out
+  }
+
+  /**
+   * Free what the kernel keeps from earlier queries of this body: the caches that `bbox()`,
+   * `distanceTo()`, `closestPoint()`, `raycast()` and `mesh()` leave on its curves, its surfaces
+   * and the body itself (evaluation grids, trimmed-surface data, spatial trees). The body does not
+   * change, nor do its faces and edges; a later query builds what it needs again.
+   *
+   * The kernel keeps these caches as long as the body lives, and they can outweigh the body: on a
+   * holed, filleted box of 129 KB, `bbox()` left 41 KB, `mesh()` 754 KB and `distanceTo()` 799 KB
+   * (smlibpy, natively). A query that finds them is about 1.2 times as fast (twice for
+   * `closestPoint()` after `distanceTo()`); Booleans gain nothing from them. Compact bodies that
+   * are kept but no longer queried, such as the copies of a large pattern after they were
+   * measured or exported: the module's memory (4 GB at most) is shared by all of them.
+   */
+  compact(): void {
+    ext.drop_caches(this._brep)
   }
 
   // -- geometric queries --------------------------------------------------------------------
@@ -4085,7 +4124,7 @@ function _surfaceContacts(part: _Body, tool: _Body): { beside: boolean; tangent:
 function _crashed(e: KernelError, name: string): KernelError {
   const crash = _crashNote(e, name)
   if (crash === null) return e
-  const error = new KernelError(e.operation, e.detail, e.status, `${crash}, a defect of the kernel rather than of the part`)
+  const error = _traced(new KernelError(e.operation, e.detail, e.status, `${crash}, a defect of the kernel rather than of the part`), e.trace)
   ;(error as Any).cause = e
   return error
 }
@@ -4524,7 +4563,7 @@ function _raycast(
   box: BoundBox,
   onePerPoint = true,
   meshes = new Map<unknown, Mesh[]>(), // a body -> its faces' meshes (for faces the kernel cannot intersect; rays of one body can share them)
-): Hit[] {
+): Hit<Face>[] {
   let o: Vector
   let d: Vector
   if (origin instanceof Axis && direction == null) {
@@ -4545,7 +4584,7 @@ function _raycast(
   reach += 1e-3 * size
   if (reach <= 0) return [] // the body is behind the start
   const tol = 1e-9 * Math.max(size, o.length)
-  const hits: Hit[] = []
+  const hits: Hit<Face>[] = []
   kernelCall('raycast', () => {
     const ray: number = k.create_line_segment(o.toArray(), o.add(d.mul(reach)).toArray())
     try {
@@ -4578,7 +4617,7 @@ function _raycast(
   })
   hits.sort((a, b) => a.distance - b.distance)
   if (!onePerPoint) return hits
-  const out: Hit[] = []
+  const out: Hit<Face>[] = []
   for (const h of hits) { // through an edge or a vertex: one hit
     const last = out[out.length - 1]
     if (!last || h.distance - last.distance > 10 * tol || h.point.sub(last.point).length > 10 * tol) out.push(h)
@@ -5202,17 +5241,20 @@ export class Part extends _Body {
    * A result whose volume is less than that of the largest part, or more than that of all parts
    * together, is wrong: `ModelingError`.
    */
-  merge(...others: unknown[]): Part {
+  merge(...others: (Part | Iterable<Part>)[]): Part {
     const tools = _bodies(others, 'merge')
     if (!tools.length) throw new RangeError('merge needs another part')
     for (const t of tools) {
       if (!(t instanceof Part) || t instanceof Sketch) throw new TypeError(`merge takes parts, not a ${_typeName(t)}`)
     }
-    const b = _held(this._copyBrep(), (h) => {
-      for (const t of tools) {
-        kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), 'the parts may only touch along an edge or at a point')
-      }
-    })
+    const hint = 'the parts may only touch along an edge or at a point'
+    const local = (): number =>
+      _held(this._copyBrep(), (h) => {
+        for (const t of tools) kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), hint)
+      })
+    const b = GUARD_BOOLEANS
+      ? _isolated('merge', local, () => ({ op: 'boolean', bodies: [this, ...tools].map(_smb), tags: [this, ...tools].map((b) => _carried(b._brep)), operation: k.BooleanOp.MERGE, nonManifold: true }), hint)
+      : local()
     const merged = Part._wrap(b, { name: this.name, color: this.color })
     const problem = _mergeProblem(merged, [this, ...(tools as Part[])])
     if (problem !== null) {
@@ -5241,63 +5283,71 @@ export class Part extends _Body {
    * the names joined by `&` ("steel&brass" where a steel and a brass part overlap), the color of the
    * last of them that has one; the merged part's own name and color where none of them has one. The
    * kernel keeps no record of the parts: smlibwasm classifies a point inside each cell against them.
+   *
+   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): it crashed on some merges,
+   * which throw a KernelError now.
    */
   cells(): ShapeList<Part> {
-    const d = ext.brep_dump(this._brep, false)
-    if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
-    const regions: number[][] = kernelCall('cells', () => ext.region_shells(this._brep))
-    const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
-    let sources: Part[][] | null = null
-    try {
-      sources = _cellSources(this, solids)
-    } catch (e) {
-      if (!(e instanceof ModelingError) && !(e instanceof RangeError)) throw e // (the cells still come, named as the merged part)
-    }
-    const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
-    const out = new ShapeList<Part>()
-    for (const [outer, ...cavities] of solids) {
-      let part: Part
+    return scope(() => {
+      const d = ext.brep_dump(this._brep, false)
+      if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
+      // (in the probe worker: the kernel's stitcher crashed on some merges)
+      const regions: number[][] = kernelCall('cells', () =>
+        _isolatedValue('cells', () => ext.region_shells(this._brep) as number[][], () => ({ op: 'region_shells', bodies: [_smb(this)], tags: [_carried(this._brep)] })),
+      )
+      const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
+      let sources: Part[][] | null = null
       try {
-        part = cavities.length ? outer.cut(cavities) : outer
+        sources = _cellSources(this, solids)
       } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
-        // (the cut's own hint is about tools, which the user did not give)
-        const why = e instanceof KernelError ? (e.status ? `the kernel's cut failed (${e.status})` : "the kernel's cut failed") : "the kernel's cut returned no sound solid"
-        const gap = 1e-6 * Math.max(outer._extent(), 1)
-        const insert = cavities.find((c) => outer.distanceTo(c) <= gap)
-        let where = touching
-        if (insert !== undefined) {
-          const c = insert._looseBox().center
-          where = `the insert at (${_formatG(c.x, 4)}, ${_formatG(c.y, 4)}, ${_formatG(c.z, 4)}) touches the part around it at a point or along a line: move it off the wall or into it`
+        if (!(e instanceof ModelingError) && !(e instanceof RangeError)) throw e // (the cells still come, named as the merged part)
+      }
+      const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
+      const out = new ShapeList<Part>()
+      for (const [outer, ...cavities] of solids) {
+        let part: Part
+        try {
+          part = cavities.length ? outer.cut(cavities) : outer
+        } catch (e) {
+          if (!(e instanceof ModelingError)) throw e
+          // (the cut's own hint is about tools, which the user did not give)
+          const why = e instanceof KernelError ? (e.status ? `the kernel's cut failed (${e.status})` : "the kernel's cut failed") : "the kernel's cut returned no sound solid"
+          const gap = 1e-6 * Math.max(outer._extent(), 1)
+          const insert = cavities.find((c) => outer.distanceTo(c) <= gap)
+          let where = touching
+          if (insert !== undefined) {
+            const c = insert._looseBox().center
+            where = `the insert at (${_formatG(c.x, 4)}, ${_formatG(c.y, 4)}, ${_formatG(c.z, 4)}) touches the part around it at a point or along a line: move it off the wall or into it`
+          }
+          throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${why}); ${where}`)
         }
-        throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${why}); ${where}`)
+        let problem: string | null
+        try {
+          part._props() // measured for the sum below, so that the check sees the gaps too
+          problem = part._solidProblem()
+        } catch (e) {
+          if (!(e instanceof KernelError)) throw e
+          problem = 'a body whose volume cannot be integrated'
+        }
+        if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
+        if (sources !== null) {
+          part._h.sources = sources[out.length]
+          ;[part.name, part.color] = _sourceLabel(sources[out.length], this.name, this.color)
+        }
+        out.push(part)
       }
-      let problem: string | null
-      try {
-        part._props() // measured for the sum below, so that the check sees the gaps too
-        problem = part._solidProblem()
-      } catch (e) {
-        if (!(e instanceof KernelError)) throw e
-        problem = 'a body whose volume cannot be integrated'
+      // The cells fill the part: a cell that kept another inside it counts that one twice (an insert
+      // of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers, imported parts)
+      // integrate a little differently in the part and in its cells: by up to about their gaps.
+      const p = this._props()
+      const whole = Number(p.volume)
+      const total = out.reduce((sum, c) => sum + Number(c._props().volume), 0)
+      const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...out.map((c) => Number(c._props().gaps))))
+      if (!(Math.abs(total - whole) <= slack * Math.abs(whole))) {
+        throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
       }
-      if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
-      if (sources !== null) {
-        part._h.sources = sources[out.length]
-        ;[part.name, part.color] = _sourceLabel(sources[out.length], this.name, this.color)
-      }
-      out.push(part)
-    }
-    // The cells fill the part: a cell that kept another inside it counts that one twice (an insert
-    // of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers, imported parts)
-    // integrate a little differently in the part and in its cells: by up to about their gaps.
-    const p = this._props()
-    const whole = Number(p.volume)
-    const total = out.reduce((sum, c) => sum + Number(c._props().volume), 0)
-    const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...out.map((c) => Number(c._props().gaps))))
-    if (!(Math.abs(total - whole) <= slack * Math.abs(whole))) {
-      throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
-    }
-    return out
+      return out
+    })
   }
 
   // -- points -------------------------------------------------------------------------------
@@ -5342,69 +5392,71 @@ export class Part extends _Body {
 
   // -- booleans -----------------------------------------------------------------------------
   _boolean(others: unknown, op: number, name: string): Part {
-    const tools = _bodies(others, name)
-    for (const t of tools) {
-      if (t instanceof Sketch || !(t instanceof Part || t instanceof Shell)) {
-        const extra = t instanceof Sketch ? '; extrude it first' : ''
-        throw new TypeError(`cannot ${name} a ${_typeName(t)} with a Part${extra}`)
-      }
-    }
-    if (!tools.every((t) => t instanceof Part)) {
-      // A sheet encloses no volume: the kernel's Boolean of a part and a sheet imprints the sheet
-      // or keeps a piece of it, in a body that is no solid.
-      if (op === k.BooleanOp.INTERSECTION && tools.length === 1) return (tools[0] as Shell).intersect(this) as Any // the piece of the sheet inside the part
-      const kind = _typeName(tools.find((t) => !(t instanceof Part)))
-      throw new TypeError(
-        `cannot ${name} a ${kind} with a Part: a sheet encloses no volume; to split the part along it use part.split(sheet), ` +
-          `to cut its outline into the part's faces part.imprint(sheet), to trim the sheet sheet - part or sheet & part`,
-      )
-    }
-    const parts = tools as Part[]
-    let result: Part | null = null
-    let failure: KernelError | null = null
-    let problem: string | null = null
-    try {
-      result = this._like(this._runBoolean(parts, op, name))
-      problem = this._booleanProblem(result, parts, op)
-    } catch (e) {
-      if (!(e instanceof KernelError)) throw e
-      result = null
-      failure = e
-      problem = null
-    }
-    if (result !== null && problem === null) return result
-    if (parts.length === 1) {
-      const retry = this._nurbsRetry(parts, op, name)
-      if (retry !== null) return retry
-    } else {
-      // Tools that overlap each other (two holes side by side) can fail one after the other where
-      // the combined tool works: combine them first.
-      try {
-        const combine = op === k.BooleanOp.INTERSECTION ? k.BooleanOp.INTERSECTION : k.BooleanOp.UNION
-        const combined = parts[0]._like(parts[0]._runBoolean(parts.slice(1), combine, name))
-        if (k.brep_face_count(combined._brep) === 0 && op === k.BooleanOp.INTERSECTION) return this._like(combined._copyBrep()) // the tools have nothing in common
-        if (combined._solidProblem() === null) {
-          const retry = this._like(this._runBoolean([combined], op, name))
-          if (this._booleanProblem(retry, [combined], op) === null) return retry
+    return scope(() => {
+      const tools = _bodies(others, name)
+      for (const t of tools) {
+        if (t instanceof Sketch || !(t instanceof Part || t instanceof Shell)) {
+          const extra = t instanceof Sketch ? '; extrude it first' : ''
+          throw new TypeError(`cannot ${name} a ${_typeName(t)} with a Part${extra}`)
         }
+      }
+      if (!tools.every((t) => t instanceof Part)) {
+        // A sheet encloses no volume: the kernel's Boolean of a part and a sheet imprints the sheet
+        // or keeps a piece of it, in a body that is no solid.
+        if (op === k.BooleanOp.INTERSECTION && tools.length === 1) return (tools[0] as Shell).intersect(this) as Any // the piece of the sheet inside the part
+        const kind = _typeName(tools.find((t) => !(t instanceof Part)))
+        throw new TypeError(
+          `cannot ${name} a ${kind} with a Part: a sheet encloses no volume; to split the part along it use part.split(sheet), ` +
+            `to cut its outline into the part's faces part.imprint(sheet), to trim the sheet sheet - part or sheet & part`,
+        )
+      }
+      const parts = tools as Part[]
+      let result: Part | null = null
+      let failure: KernelError | null = null
+      let problem: string | null = null
+      try {
+        result = this._like(this._runBoolean(parts, op, name))
+        problem = this._booleanProblem(result, parts, op)
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
+        result = null
+        failure = e
+        problem = null
       }
-      const retry = this._nurbsRetry(parts, op, name)
-      if (retry !== null) return retry
-    }
-    const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
-    if (broken.length) {
-      const which = broken[0] === this ? 'the part' : 'a tool'
-      throw new ModelingError(`${name}: ${which} is not a valid solid (${broken[0]._solidProblem()}); check isValid() of the operands and fix the step that broke them`)
-    }
-    const hint = this._booleanHint(parts, op, name, failure)
-    if (failure !== null) {
-      const error = new KernelError(failure.operation, failure.detail, failure.status, hint)
-      ;(error as Any).cause = failure
-      throw error
-    }
-    throw new ModelingError(`${name}: the kernel returned a result that is ${problem}; ${hint}`)
+      if (result !== null && problem === null) return result
+      if (parts.length === 1) {
+        const retry = this._nurbsRetry(parts, op, name)
+        if (retry !== null) return retry
+      } else {
+        // Tools that overlap each other (two holes side by side) can fail one after the other where
+        // the combined tool works: combine them first.
+        try {
+          const combine = op === k.BooleanOp.INTERSECTION ? k.BooleanOp.INTERSECTION : k.BooleanOp.UNION
+          const combined = parts[0]._like(parts[0]._runBoolean(parts.slice(1), combine, name))
+          if (k.brep_face_count(combined._brep) === 0 && op === k.BooleanOp.INTERSECTION) return this._like(combined._copyBrep()) // the tools have nothing in common
+          if (combined._solidProblem() === null) {
+            const retry = this._like(this._runBoolean([combined], op, name))
+            if (this._booleanProblem(retry, [combined], op) === null) return retry
+          }
+        } catch (e) {
+          if (!(e instanceof KernelError)) throw e
+        }
+        const retry = this._nurbsRetry(parts, op, name)
+        if (retry !== null) return retry
+      }
+      const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
+      if (broken.length) {
+        const which = broken[0] === this ? 'the part' : 'a tool'
+        throw new ModelingError(`${name}: ${which} is not a valid solid (${broken[0]._solidProblem()}); check isValid() of the operands and fix the step that broke them`)
+      }
+      const hint = this._booleanHint(parts, op, name, failure)
+      if (failure !== null) {
+        const error = _traced(new KernelError(failure.operation, failure.detail, failure.status, hint), failure.trace)
+        ;(error as Any).cause = failure
+        throw error
+      }
+      throw new ModelingError(`${name}: the kernel returned a result that is ${problem}; ${hint}`)
+    })
   }
 
   /** What a Boolean that failed says, from what the operands show (kernel plan B19): that the kernel
@@ -5462,9 +5514,13 @@ export class Part extends _Body {
   }
 
   _runBoolean(tools: readonly _Body[], op: number, name: string): number {
-    return _held(this._copyBrep(), (h) => {
-      for (const t of tools) kernelCall(name, () => _combine(h, t, op), 'the operands may touch only in a degenerate way, or an operand is broken')
-    })
+    const hint = 'the operands may touch only in a degenerate way, or an operand is broken'
+    const local = (): number =>
+      _held(this._copyBrep(), (h) => {
+        for (const t of tools) kernelCall(name, () => _combine(h, t, op), hint)
+      })
+    if (!GUARD_BOOLEANS) return local()
+    return _isolated(name, local, () => ({ op: 'boolean', bodies: [this, ...tools].map(_smb), tags: [this, ...tools].map((b) => _carried(b._brep)), operation: op, nonManifold: false }), hint)
   }
 
   /** What is wrong with a Boolean result, or null. An empty result is right where the operands
@@ -5686,7 +5742,7 @@ export class Part extends _Body {
       if (!(e instanceof KernelError) || propagate) throw e
       const better = _runOnHint(sel, what)
       if (better === null) throw e
-      const error = new KernelError(e.operation, e.detail, e.status, better)
+      const error = _traced(new KernelError(e.operation, e.detail, e.status, better), e.trace)
       ;(error as Any).cause = e
       throw error
     }
@@ -5812,8 +5868,12 @@ export class Part extends _Body {
    *
    * A round the kernel cannot build throws a KernelError naming the corner or edge its fillet code
    * could not build, where it recorded one.
+   *
+   * The kernel step of a part read from a file (`fromStep`, `fromSmb`, `fromUsd`) or made from one
+   * runs in the probe worker (see GUARD_SECONDS): the kernel's fillet code crashed on some imported
+   * parts.
    */
-  fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
+  fillet(edges: EdgesLike, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
     const { continuity = null, fullness = 1.0, propagate = true, corners = 'patch' } = options
     this._requireValid('fillet')
@@ -5851,34 +5911,45 @@ export class Part extends _Body {
     const cont = _continuity(continuity)
     const hint = 'the radius may be too large for the selected edges'
     const section = cont === null ? 1 : 2 // circular, or a blend curve
+    const isolate = this._h.imported // (read from a file: in the probe worker, see _roundEdges)
     const attempt = (factor: number): Part => {
       const [h, kedges] = this._withEdges(sel)
-      Part._rounding(
-        'fillet',
-        () => {
-          if (varying) {
-            _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(varying.start)], [section], {
-              law: [Number(varying.start), Number(varying.end)],
-              continuity: cont || 1,
-              toleranceFactor: factor,
-              mitre,
-            })
-          } else if (perEdge) {
-            _roundEdges('fillet', hint, h.brep, kedges, sel, perEdge, new Array(kedges.length).fill(section), {
-              continuity: cont || 1,
-              thumbweight: fullness,
-              toleranceFactor: factor,
-              mitre,
-            })
-          } else {
-            _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(radius)], [section], { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor, mitre })
-          }
-        },
-        hint,
-        sel,
-        propagate,
-      )
-      const result = this._like(_take(h))
+      let out = 0
+      try {
+        Part._rounding(
+          'fillet',
+          () => {
+            if (varying) {
+              out = _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(varying.start)], [section], {
+                law: [Number(varying.start), Number(varying.end)],
+                continuity: cont || 1,
+                toleranceFactor: factor,
+                mitre,
+                isolate,
+              })
+            } else if (perEdge) {
+              out = _roundEdges('fillet', hint, h.brep, kedges, sel, perEdge, new Array(kedges.length).fill(section), {
+                continuity: cont || 1,
+                thumbweight: fullness,
+                toleranceFactor: factor,
+                mitre,
+                isolate,
+              })
+            } else {
+              out = _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(radius)], [section], { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor, mitre, isolate })
+            }
+          },
+          hint,
+          sel,
+          propagate,
+        )
+      } catch (e) {
+        h.dispose()
+        throw e
+      }
+      // (a step that ran in this kernel rounded the copy h holds: h gives it up; one from the probe
+      // worker is a Brep of its own, and h frees its copy)
+      const result = this._like(out === h.brep ? _take(h) : (h.dispose(), out))
       this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend')
       return result
     }
@@ -5904,7 +5975,7 @@ export class Part extends _Body {
    * with a corner face, "mitre" runs the bevels on until they meet (the corners of three bevelled
    * convex edges and no other edge).
    */
-  chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part {
+  chamfer(edges: EdgesLike, length: number, options: ChamferOptions = {}): Part {
     _opts('Part.chamfer', options)
     const { length2 = null, angle = null, reference = null, propagate = true, corners = 'patch' } = options
     this._requireValid('chamfer')
@@ -5983,43 +6054,54 @@ export class Part extends _Body {
       // the kernel's bevels of the edges sel[i], i in keep
       const edges = keep.map((i) => sel[i])
       const rs = keep.map((i) => radii[i])
+      const isolate = this._h.imported // (read from a file: in the probe worker, see _roundEdges)
       const attempt = (factor: number): Part => {
-        let h: BrepHandle
-        if (two) {
-          const [copy, kfaces, kedges] = ext.copy_with_map(
-            this._brep,
-            keep.map((i) => firsts[i]),
-            this._ownEdges(edges),
-            [],
-          )
-          h = new BrepHandle(copy)
-          Part._rounding(
-            'chamfer',
-            () => _roundEdges('chamfer', hint, h.brep, [...kedges], edges, rs, [0], { radii2: keep.map((i) => radii2[i]), faces: [...kfaces], toleranceFactor: factor, mitre }),
-            hint,
-            edges,
-            propagate,
-          )
-        } else {
-          let kedges: number[]
-          ;[h, kedges] = this._withEdges(edges)
-          Part._rounding(
-            'chamfer',
-            () => {
-              if (rs.every((r) => Math.abs(r - rs[0]) < 1e-12)) {
-                _roundEdges('chamfer', hint, h.brep, kedges, edges, [rs[0]], [0], { toleranceFactor: factor, mitre })
-              } else {
-                // per-edge radii with a linear cross-section, in one call: a call per edge replaces
-                // the edges next to it, and the next call would use freed edges
-                _roundEdges('chamfer', hint, h.brep, kedges, edges, rs, new Array(kedges.length).fill(0), { toleranceFactor: factor, mitre })
-              }
-            },
-            hint,
-            edges,
-            propagate,
-          )
+        let h: BrepHandle | null = null
+        let out = 0
+        try {
+          if (two) {
+            const [copy, kfaces, kedges] = ext.copy_with_map(
+              this._brep,
+              keep.map((i) => firsts[i]),
+              this._ownEdges(edges),
+              [],
+            )
+            h = new BrepHandle(copy)
+            Part._rounding(
+              'chamfer',
+              () => (out = _roundEdges('chamfer', hint, copy, [...kedges], edges, rs, [0], { radii2: keep.map((i) => radii2[i]), faces: [...kfaces], toleranceFactor: factor, mitre, isolate })),
+              hint,
+              edges,
+              propagate,
+            )
+          } else {
+            const [withEdges, kedges] = this._withEdges(edges)
+            h = withEdges
+            const brep = withEdges.brep
+            Part._rounding(
+              'chamfer',
+              () => {
+                if (rs.every((r) => Math.abs(r - rs[0]) < 1e-12)) {
+                  out = _roundEdges('chamfer', hint, brep, kedges, edges, [rs[0]], [0], { toleranceFactor: factor, mitre, isolate })
+                } else {
+                  // per-edge radii with a linear cross-section, in one call: a call per edge replaces
+                  // the edges next to it, and the next call would use freed edges
+                  out = _roundEdges('chamfer', hint, brep, kedges, edges, rs, new Array(kedges.length).fill(0), { toleranceFactor: factor, mitre, isolate })
+                }
+              },
+              hint,
+              edges,
+              propagate,
+            )
+          }
+        } catch (e) {
+          h?.dispose()
+          throw e
         }
-        const result = this._like(_take(h))
+        const held = h as BrepHandle
+        // (a step that ran in this kernel bevelled the copy h holds: h gives it up; one from the probe
+        // worker is a Brep of its own, and h frees its copy)
+        const result = this._like(out === held.brep ? _take(held) : (held.dispose(), out))
         this._checkVolumeChange(
           result,
           edges,
@@ -6200,7 +6282,7 @@ export class Part extends _Body {
    * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
    * raises it for large parts).
    */
-  shell(thickness: number, openings: unknown = null, options: { outward?: boolean; corners?: string | null; walls?: unknown } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: unknown } = {}): Part {
     _opts('Part.shell', options)
     const outward = options.outward ?? false
     const corners = options.corners ?? null
@@ -6281,7 +6363,7 @@ export class Part extends _Body {
       if (openings.includes(f._f)) continue
       let p: Vector
       let n: Vector
-      let hits: Hit[]
+      let hits: Hit<Face>[]
       try {
         const [[u0, v0], [u1, v1]] = k.face_uv_domain(f._f)
         let u = 0.5 * (u0 + u1)
@@ -6671,7 +6753,8 @@ export class Part extends _Body {
    * result. An attempt in the mode of the one before runs only when that one's result was refused,
    * within _RETRY_SECONDS: the kernel fails the same way again, and only its extended mode, which
    * depends on memory layout, ever gave a better result. A step that crashed the kernel (a trap, or
-   * a crash in the probe worker) or did not finish ends the attempts. */
+   * a crash in the probe worker) or did not finish ends the attempts, and so does a crash of this
+   * kernel while a result is checked (its memory may be damaged). */
   _checked(
     name: string,
     attempts: readonly [boolean, () => Part][],
@@ -6690,6 +6773,7 @@ export class Part extends _Body {
     const wide = wider === null ? null : (): number => (margin ??= 1e-6 * Math.max(box.diagonal, 1) + wider())
     const before = Number(this._props(1e-4).volume)
     const start = Date.now()
+    const crashes = _crashCount()
     let error: KernelError | null = null
     let refused: string | null = null
     let last: [boolean, boolean] | null = null // the mode of the attempt before, and whether it failed
@@ -6702,12 +6786,18 @@ export class Part extends _Body {
         if (!(e instanceof KernelError)) throw e
         // a trap: the kernel crashed here, and its memory may be damaged
         if (typeof WebAssembly !== 'undefined' && (e as Any).cause instanceof WebAssembly.RuntimeError) throw _crashed(e, name)
+        if (_crashCount() > crashes) throw e
         error = e
         last = [mode, true]
         continue
       }
       last = [mode, false]
       const why = _offsetProblem(result, box, tol, before, smaller, wide) ?? (problem ? problem(result, mode) : null)
+      if (_crashCount() > crashes) {
+        // (the kernel crashed in a check, which took that for a refusal)
+        result.dispose()
+        throw _crashError(name, hint)
+      }
       if (why === null) return result
       refused ??= why
       result.dispose()
@@ -6734,25 +6824,27 @@ export class Part extends _Body {
   split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'both'): [Part, Part]
   split(plane: Plane | Face | Shell | ShapeList<Face>): Part
   split(plane: Plane | Face | Shell | ShapeList<Face>, keep: string = 'above'): Part | [Part, Part] {
-    let tool: unknown = plane
-    if (tool instanceof ShapeList) tool = tool.one()
-    if (tool instanceof Face && !tool.isPlanar) return this._splitBySheet(tool.toShell(), keep, !tool._naturalIsOutward())
-    if (tool instanceof Shell && !(tool instanceof Sketch)) return this._splitBySheet(tool, keep, false)
-    const pl = _asPlane(tool as Any)
-    if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
-    if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
-    this._requireValid('split')
-    // Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut leaves the
-    // body open).
-    const bb = this.bbox()
-    const size = 4 * (bb.diagonal + bb.center.distanceTo(pl.origin)) + 1
-    const side = keep === 'above' ? pl : pl.flipped()
-    const halfspace = Box(size, size, size)
-      .translate(0, 0, size / 2)
-      .moved(new Plane(pl.project(bb.center), side.xDir, side.zDir).location)
-    const kept = kernelCall('split', () => this.intersect(halfspace))
-    if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
-    return kept
+    return scope(() => {
+      let tool: unknown = plane
+      if (tool instanceof ShapeList) tool = tool.one()
+      if (tool instanceof Face && !tool.isPlanar) return this._splitBySheet(tool.toShell(), keep, !tool._naturalIsOutward())
+      if (tool instanceof Shell && !(tool instanceof Sketch)) return this._splitBySheet(tool, keep, false)
+      const pl = _asPlane(tool as Any)
+      if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
+      if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
+      this._requireValid('split')
+      // Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut leaves the
+      // body open).
+      const bb = this.bbox()
+      const size = 4 * (bb.diagonal + bb.center.distanceTo(pl.origin)) + 1
+      const side = keep === 'above' ? pl : pl.flipped()
+      const halfspace = Box(size, size, size)
+        .translate(0, 0, size / 2)
+        .moved(new Plane(pl.project(bb.center), side.xDir, side.zDir).location)
+      const kept = kernelCall('split', () => this.intersect(halfspace))
+      if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
+      return kept
+    })
   }
 
   /**
@@ -7121,7 +7213,7 @@ export class Part extends _Body {
   /** The part with fillets taken out and their edges sharp again: `faces` (fillet faces of this
    * part), or all fillets up to `maxRadius`. With `partial` the fillets the kernel cannot take
    * out stay. See the defeature module. */
-  removeFillets(faces: unknown = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+  removeFillets(faces: FacesLike | null = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
     _opts('Part.removeFillets', options)
     return _removeFillets(this, faces, options)
   }
@@ -7129,7 +7221,7 @@ export class Part extends _Body {
   /** The part with `faces` (a hole, a boss, a pocket) cut out and the gap closed by the faces
    * around it. With `partial` the features the kernel cannot close stay. See the defeature
    * module. */
-  removeFaces(faces: unknown, options: { partial?: boolean } = {}): Part {
+  removeFaces(faces: FacesLike, options: { partial?: boolean } = {}): Part {
     _opts('Part.removeFaces', options)
     return _removeFaces(this, faces, options)
   }
@@ -7168,7 +7260,7 @@ export class Part extends _Body {
    *   normal points out of the part: the top face drafts for a mold that moves up, the bottom face
    *   for one that moves down (use `Plane.XY` there).
    */
-  draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part {
+  draft(faces: FacesLike, angle: number, neutralPlane: Plane | Face): Part {
     return draftFaces(this, faces, angle, neutralPlane)
   }
 
@@ -7610,6 +7702,16 @@ function _distanceToEdge(e: Edge, p: Vector): number {
   return e.distanceTo(p)
 }
 
+/** `fn(curves)` for kernel curves (copies) that the kernel call in `fn` copies (SmPyLib's "Pure"
+ * calls: the sweeps, offset profiles, skins): they are freed once it is done. */
+export function _withCurves<T>(curves: number[], fn: (curves: number[]) => T): T {
+  try {
+    return fn(curves)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
 /** Release a handle's Brep to a new owner. */
 /** The closed regions of a body that are not cavities (numbered as `ext.region_shells` numbers
  * them), grouped across the faces two of them share: the touching cells of a merged part form one
@@ -7931,11 +8033,14 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
     }
     if (!(e instanceof KernelError) || e.status !== 'SM_ERR_INVALID_INPUT') throw e
     const where: string | undefined = (e as Any)._where
-    const error = new KernelError(
-      e.operation,
-      e.detail,
-      e.status,
-      where ? `the kernel cannot round the selection as given, at any size: it could not build ${where}; select fewer edges there` : _ROUND_SELECTION_HINT,
+    const error = _traced(
+      new KernelError(
+        e.operation,
+        e.detail,
+        e.status,
+        where ? `the kernel cannot round the selection as given, at any size: it could not build ${where}; select fewer edges there` : _ROUND_SELECTION_HINT,
+      ),
+      e.trace,
     )
     ;(error as Any).cause = e
     throw error
@@ -7994,10 +8099,12 @@ function _roundFailure(record: Any, edges: readonly Edge[]): string | null {
 }
 
 /**
- * Round `kedges` of `brep` (a copy; `edges` are this part's edges they are) in place with
- * `ext.round_edges` (the kernel's fillet executive, as `k.fillet_edges` and its siblings drive it). A
- * failure throws a KernelError whose hint begins with the corner or edge the executive names
- * (`_where`, see `_roundFailure`), then `hint`.
+ * Round `kedges` of `brep` (a copy; `edges` are this part's edges they are) with `ext.round_edges`
+ * (the kernel's fillet executive, as `k.fillet_edges` and its siblings drive it), in place; with
+ * `isolate` (a part read from a file: the kernel's fillet code crashed on some), in the probe worker,
+ * which gives back a new Brep (see GUARD_SECONDS). Returns the Brep that holds the result: `brep`, or
+ * the one from the probe worker, which is the caller's. A failure throws a KernelError whose hint
+ * begins with the corner or edge the executive names (`_where`, see `_roundFailure`), then `hint`.
  */
 function _roundEdges(
   operation: string,
@@ -8015,16 +8122,29 @@ function _roundEdges(
     thumbweight?: number
     toleranceFactor?: number
     mitre?: boolean
+    isolate?: boolean
   } = {},
-): void {
-  const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0, mitre = false } = options
-  const record = kernelCall(
-    operation,
-    () => ext.round_edges(brep, [...kedges], radii.map(Number), sections.map(Number), radii2.map(Number), [...faces], law.map(Number), continuity, thumbweight, toleranceFactor, mitre),
-    hint,
-  )
+): number {
+  const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0, mitre = false, isolate = false } = options
+  const args = [radii.map(Number), sections.map(Number), radii2.map(Number), [...faces], law.map(Number), continuity, thumbweight, toleranceFactor, mitre] as const
+  const here = (): { brep: number; record: Any } => ({ brep, record: kernelCall(operation, () => ext.round_edges(brep, [...kedges], ...args), hint) })
+  const { brep: out, record } = isolate
+    ? kernelCall(
+        operation,
+        () =>
+          _isolatedValue<{ brep: number; record: Any }>(operation, here, () => ({
+            op: 'round_edges',
+            bodies: [_smbOf(brep)],
+            tags: [_carried(brep)],
+            edges: Array.from(ext.edge_indices(brep, [...kedges]) as ArrayLike<number>, Number),
+            args: [args[0], args[1], args[2], Array.from(ext.face_indices(brep, [...faces]) as ArrayLike<number>, Number), ...args.slice(4)],
+          })),
+        hint,
+      )
+    : here()
   const status = record.status
-  if (status == null) return
+  if (status == null) return out
+  if (out !== brep) ext.delete_brep(out) // (the probe worker's copy of a failed round)
   const where = _roundFailure(record, edges)
   const detail = `${operation} failed: ${status}` + (record.comment ? ` (${record.comment})` : '')
   const error = new KernelError(operation, detail, status, where ? `the kernel could not build ${where}; ${hint}` : hint)
@@ -8436,7 +8556,7 @@ export class Shell extends _Body {
   }
 
   /** Union with other sheets (Python's `+`). */
-  fuse(...others: unknown[]): Shell {
+  fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell {
     return this._like(_held(this._copyBrep(), (h) => {
       for (const t of _bodies(others)) kernelCall('fuse', () => _combine(h, t, k.BooleanOp.UNION))
     }))
@@ -8538,7 +8658,9 @@ export class Sketch extends Shell {
   _loops: Any = null
 
   override _like(brep: number): this {
-    return Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+    const s = Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+    s._h.imported = this._h.imported
+    return s
   }
 
   /** The sketch turned over: its faces and its plane face the other way (an extrusion then grows to
@@ -8922,22 +9044,22 @@ export class Sketch extends Shell {
   }
 
   /** The union with other sketches (Python's `+`). */
-  override fuse(...others: unknown[]): Sketch {
+  override fuse(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.UNION, 'fuse')
   }
 
   /** The region less other sketches (Python's `-`). */
-  override cut(...others: unknown[]): Sketch {
+  override cut(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.DIFFERENCE, 'cut')
   }
 
   /** The region common to this and other sketches (Python's `&`). */
-  override intersect(...others: unknown[]): Sketch {
+  override intersect(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.INTERSECTION, 'intersect')
   }
 
   /** The region in exactly one of the sketches (Python's `^`). */
-  xor(...others: unknown[]): Sketch {
+  xor(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.EXCLUSIVE_OR, 'xor')
   }
 
@@ -9035,7 +9157,7 @@ export class Sketch extends Shell {
       try {
         b = kernelCall(
           'offset',
-          () => k.create_offset_profile(wire._copyCurves(), distance, { offset_type: side, round_corners: round }),
+          () => _withCurves(wire._copyCurves(), (curves) => k.create_offset_profile(curves, distance, { offset_type: side, round_corners: round })),
           'the offset may collapse the region',
         )
       } catch (e) {

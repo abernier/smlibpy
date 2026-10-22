@@ -677,6 +677,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         result.name = body.name
     if body.color is not None:
         result.color = body.color
+    result._h.imported = True  # (read from a file: its fillets run in another process)
     return result
 
 

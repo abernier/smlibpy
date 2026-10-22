@@ -17,10 +17,26 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
      `ext__mesh_first_hits`, `ext__body_first_hits`; bind_drawing.cpp: `ext__hidden_lines`;
      bind_mesh_tools.cpp: `ext__mesh_nearest_points`, `ext__crease_normals`,
      `ext__decimate_triangles`, `ext__repair_triangles`, `ext__brep_from_triangles`.
+   - bind_runtime.cpp: the module itself, `runtime__memory_usage` (`memoryUsage()`) and
+     `runtime__exception_info`, which tells kernel.ts what a C++ exception is.
+   - smpylib.cpp: SmPyLib's own binders (SmPy*.cpp but USD's and the borrowed-geometry check),
+     compiled as they are against a stand-in for pybind11 (pyshim/pybind11/pybind11.h): every
+     function and class method SmPyLib binds for Python is an entry of a table that
+     `smpylib__call(i, args)` calls, and `smpylib__table()` lists with SmPyLib's py::arg names and
+     defaults (`smpylib__enums()` its enums). kernel.ts makes them `k.<name>` and
+     `k.<class>_<method>` where the hand-written bindings have none (`k.smpylib` has them all), and
+     lane_WN.test.ts holds the hand-written bindings' signatures to SmPyLib's. A kernel call
+     smlibwasm comes to use needs no new binding; one it uses often may get a hand-written one
+     (the same name, parameters and results).
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
-     message is the one Python's RuntimeError carries.
-2. **The kernel layer** (js/src/kernel.ts): `k` is Python's `smlibpy._core`: `k.create_box`,
+     message is the one Python's RuntimeError carries. A C++ exception becomes the error Python
+     gets: `guard` (common.h) catches those of smlibpy's C++; those of the kernel's bindings
+     leave the module as a WebAssembly.Exception, which kernel.ts turns into the same error
+     (`_cppError`); std::bad_alloc is an Error saying SM_ERR_OUT_OF_MEMORY (Python's
+     MemoryError).
+2. **The kernel layer** (js/src/kernel.ts, also the package's entry `@classcad/smlibwasm/kernel`,
+   no stable API, like `smlibpy._core`): `k` is Python's `smlibpy._core`: `k.create_box`,
    `k.ext.curve_data`, `k.BooleanOp.UNION`, `k.brep_faces`. Functions take Python's defaults
    and keywords from their signature (signatures.ts for the kernel's calls, the table in
    kernel.ts for smlibpy's own): `k.fillet_edges(b, edges, { radius: 2, xsect_type: 2 })`.
@@ -71,7 +87,9 @@ the Python code works around a kernel defect, so does the TypeScript.
 - **Errors.** `ValueError` and `IndexError` -> `RangeError`; `TypeError` -> `TypeError`;
   `ModelingError` and `KernelError` are smlibwasm's classes (kernel.ts). `kernel_call` is
   `kernelCall(operation, () => ..., hint)`. `except (KernelError, ValueError)` is
-  `catch (e) { if (!(e instanceof KernelError || e instanceof RangeError)) throw e }`.
+  `catch (e) { if (!(e instanceof KernelError || e instanceof RangeError)) throw e }`. A
+  KernelError made again with another hint keeps its cause's trace: Python's
+  `_traced(KernelError(...), cause)` is `_traced(new KernelError(...), cause.trace)` (_errors.ts).
   `warnings.warn` is `_warn(message)` (kernel.ts).
 - **numpy** becomes plain arrays and small helpers (_linalg.ts: `eigh3`, `spread` for
   numpy's SVD of point sets, `det3`). Matrices are geometry.ts's `Matrix`, a Float64Array of
@@ -101,9 +119,12 @@ the Python code works around a kernel defect, so does the TypeScript.
     `toObj`, `toDxf`, `toUsd`, `toBrep`: `string`; `toSmb(shapes, { ascii })` and `toSmp(shapes, { ascii })`
     (the kernel's own formats: one body; bodies and curves with names and colors): `Uint8Array`;
     `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
-    `fromSmp(data)`, `fromUsd(data)`, `fromIges(data)`, `fromBrep(data)` take a `string` or `Uint8Array`. `fromUsd`
-    (and Python's `from_usd`) takes the layers a stage names (subLayers, references, payloads) from
-    its `resolve` option, where `importUsd` reads the files.
+    `fromSmp(data)`, `fromUsd(data)`, `fromIges(data)`, `fromBrep(data)` take a `string` or bytes
+    (`BytesLike`: a `Uint8Array`, an `ArrayBuffer` or another view of one; `_bytes.ts`'s `_asBytes`
+    makes the `Uint8Array`), as `loadFont` and the `Font` constructor do. `toFile(shapes, name,
+    options)` and `fromFile(data, name)` are the in-memory `exportFile` and `load`, by the extension
+    of `name`. `fromUsd` (and Python's `from_usd`) takes the layers a stage names (subLayers,
+    references, payloads) from its `resolve` option, where `importUsd` reads the files.
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
@@ -134,20 +155,83 @@ the Python code works around a kernel defect, so does the TypeScript.
   `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
   `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
   `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
-  blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
-  (its test); `face_edit.ts`: `moveFaces`, `offsetFaces`, `_wallThicknesses`, `shellWalls`
+  blends surfaces in it), `_smbOf`, `_isolated` and `_isolatedValue` (shapes.ts runs shell,
+  offset, thicken, cells, opt-in Booleans and the fillets of imported parts in them), `_spill`
+  (its test); `shapes.ts`: `_carried` (defeature.ts sends the tags and face attributes of the bodies
+  of a step with it); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it),
+  `_crashCount` and `_crashError` (`Part._checked` stops at a crash of the kernel); `_errors.ts`:
+  `_crashes` (the crashes of this thread's kernel, which worker.ts reads without the kernel);
+  `_inflate.ts`: `inflate` and `ZlibError` (font.ts reads WOFF tables, _brotli.ts its dictionary),
+  `_Bits`, `_prefixCode`, `_single`, `_Output` (_brotli.ts decodes with them); `_brotli.ts`:
+  `decompress` (font.ts reads WOFF2 files); `_bytes.ts`: `_asBytes`; `face_edit.ts`: `moveFaces`, `offsetFaces`, `_wallThicknesses`, `shellWalls`
   (shapes.ts: Part.moveFaces, Part.offsetFaces, shell's `walls`).
-- **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
-  a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
-  which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and
-  workers of a cross-origin isolated page; on a browser's main thread the step runs directly).
-  A supervisor worker without a kernel (`_defeature_supervisor.ts`, started by `_guard.ts`)
-  starts the probe workers and terminates one that takes too long: a browser cannot start a
-  worker from a thread that waits, so there `_guard.ts` starts the supervisor when the package is
-  imported. Python's `_isolated` (shell, offset and thicken: the step runs only in the forked copy,
-  and its body comes back as `.smb`) is `_isolated(what, work, job, hint)`: the probe worker hands
-  the body's `.smb` contents, or the step's error, back through a SharedArrayBuffer, a piece at a
-  time, while the caller waits with `Atomics.wait`; a trap there is the crash of the copy.
+- **Fonts.** font.ts and font.py are the same reader without dependencies: sfnt, TTC, WOFF (zlib:
+  Python's module, `_inflate.ts` here, also in browsers) and WOFF2 (Brotli: `_brotli.py` and
+  `_brotli.ts`, the same decoder, with RFC 7932's dictionary from `src/smlibpy/_brotli_dictionary.bin`,
+  which `scripts/fonts.mjs` packs into `_brotli_dictionary.ts`); glyf, CFF (seac accents) and CFF2
+  (the default instance). Neither uses fontTools.
+- **The kernel's guard.** Python runs a step that can crash or loop in another process
+  (`smlibpy._guard.isolated(what, fn, *args)`: a forked copy, or a helper process that gets the
+  bodies as `.smb`); here `_isolatedValue(what, work, job)` runs it in a probe worker
+  (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying which step
+  (`op`) with which faces and edges (by index), and waits for it with `Atomics.wait` (Node, and
+  workers of a cross-origin isolated page; on a browser's main thread `work()` runs directly).
+  The worker hands the step's value back through a SharedArrayBuffer, a piece at a time: JSON in
+  which each body is `{ $body: i }`, then the bodies' `.smb` files; or the step's error (its name
+  and message). A trap there is the crash of the copy. Neither side ever runs the step twice.
+  `_isolated(what, work, job, hint)` is the same for a step that makes one body, its kernel errors
+  a KernelError of `what` with `hint`. A supervisor worker without a kernel
+  (`_defeature_supervisor.ts`, started by `_guard.ts`) starts the probe workers and terminates one
+  that takes too long: a browser cannot start a worker from a thread that waits, so there
+  `_guard.ts` starts the supervisor when the package is imported. Python's `GUARD_PROCESS` has no
+  counterpart (the probe worker is the only way here); `GUARD_BOOLEANS` is `setGuardBooleans`.
+  `BrepHandle.imported` (both languages) marks bodies read from files and those made from them
+  (`_like`; across a `KernelWorker` too): their fillets and chamfers run guarded.
+  The bodies cross with the tags of their faces and edges and their faces' colors and names, which
+  `.smb` files do not hold (kernel plan T3, T5): the job's `tags` (shapes.ts's `_carried`) and the
+  `marks` of the worker's answer; Python writes them as JSON beside each `.smb` file.
+
+- **Entries without the kernel.** `@classcad/smlibwasm/worker` (worker.ts) and
+  `@classcad/smlibwasm/init` (init.ts) load no kernel of their own: statically they import only
+  geometry.ts, _errors.ts (`ModelingError`, `KernelError`, which kernel.ts re-exports),
+  _threads.ts and _loader.ts, and the package's other modules with `import()` once a value needs them; worker.ts
+  makes and reads bodies with shapes.ts's `_Body._wrap`, `Edge._of`, `Vertex._of` and `Wire._raw`.
+  kernel.ts makes the module through _loader.ts (`_createModule`), with the options `init` was
+  given. Bundlers build every `new Worker(new URL('...', import.meta.url))` with what it imports:
+  the kernel's modules (which defeature's probe worker imports) import neither _guard.ts nor
+  index.ts, worker options are literal, and no `new URL(..., import.meta.url)` names its file by an
+  expression (lane_WN.test.ts checks all three).
+- **Types.** Public signatures say what they take and give, as precisely as the code checks it
+  (`EdgesLike` for edges, `ShapesLike` for what the exporters take, `RenderOptions` with typed
+  fields), not `unknown`; a free function whose result depends on its input's type has overloads
+  (`extrude(sketch)` is a `Part`), and Python's has the same `@overload`s. Option and selection
+  types are exported from index.ts (`export type`). `npm run build` leaves the internal names out of
+  the published declarations (scripts/declarations.mjs, by the `_` of their names rather than
+  `@internal` tags): a public signature must not name an internal type (it would stay, and the API
+  reference leaves out a constructor that takes one), nor a module of Node's (`NodeFs` in
+  exporters.ts is written out). lane_WN.test.ts type-checks an app against the declarations with
+  `skipLibCheck: false` and no Node types.
+- **Crashes of the kernel.** A trap is counted (`memoryUsage().crashes`) and warns once; its
+  KernelError says "the kernel crashed". Code that retries on a KernelError stops when the count went
+  up during the attempt (`_crashCount()`), and a step run here with `_isolatedValue(..., { trap:
+  true })` throws a `_KernelFault` whose `here` is true, which the defeaturing loops pass on rather
+  than drop. Python has nothing to port: a crash ends its process, or the copy of it.
+- **Python only.** The kernel lock and the GIL (src/cpp/kernel_lock.cpp, nogil.cpp): every entry
+  point of `_core` takes one lock and the long ones let the GIL go, so that other Python threads
+  run while the kernel works. The WebAssembly module runs on one thread (a `KernelWorker` has a
+  kernel of its own), so the port has nothing to take. `ext.drop_caches` and `compact()` are in
+  both.
+- **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
+  `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
+  file comes from), the files in memory (`toStep`, `fromStep`, ..., `toFile`, `fromFile`: Python
+  reads and writes paths), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
+  of its kernel; Python's kernel shares its process's, which a crash ends) and `scope(fn)` (frees the kernel objects `fn` made and does not
+  return: the garbage collector frees them only between tasks, Python's reference counting at
+  their last reference). They follow the house style but have no smlibpy counterpart and no entry
+  in `_options.ts`. The port's own temporaries are freed the same way: the public functions that
+  make intermediate bodies or curves (Booleans, `split`, `cells`, the sketch constructors, `Text`,
+  `sweep`, `loft`, `revolve`, `fromDxf`, `stitch`, `flatPattern`, `surfaceFillet`) run their
+  bodies in `scope`, so a call leaves only what it returns, as in Python.
 
 ## Status
 
