@@ -700,6 +700,13 @@ export class Shell extends _Body {
     intersect(...others: unknown[]): Shell;
     toString(): string;
 }
+export interface PushOptions {
+    by?: number | VectorLike | null;
+    to?: VectorLike | null;
+    normal?: VectorLike | null;
+    radius?: number | null;
+    continuity?: string;
+}
 export interface ExtrudeOptions {
     both?: boolean;
     taper?: number;
@@ -707,6 +714,7 @@ export interface ExtrudeOptions {
     corners?: 'sharp' | 'round';
 }
 export class Sketch extends Shell {
+    flipped(): this;
     get plane(): Plane;
     fuse(...others: unknown[]): Sketch;
     cut(...others: unknown[]): Sketch;
@@ -1038,18 +1046,61 @@ export class Lattice {
 ### Surfaces
 
 ```ts
-export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: {
+export class FitReport {
+    readonly maxDistance: number;
+    readonly rmsDistance: number;
+    readonly distances: number[];
+    constructor(maxDistance: number, rmsDistance: number, distances: number[]);
+}
+type SurfaceOptions = {
     interpolate?: boolean;
     controls?: number | readonly [number, number] | null;
     smoothing?: number;
-}): Shell;
+    report?: boolean;
+};
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options: SurfaceOptions & {
+    report: true;
+}): [Shell, FitReport];
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: SurfaceOptions): Shell;
+export function nurbsSurface(points: readonly (readonly VectorLike[])[] | NurbsSurfaceData, knots?: readonly [
+    readonly number[],
+    readonly number[]
+] | null, degrees?: number | readonly [number, number] | null, weights?: readonly (readonly number[])[] | null): Shell;
 export function ruled(a: Edge | Wire, b: Edge | Wire): Shell;
-export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | {
+export class StitchReport {
+    readonly sewnEdges: number;
+    readonly openEdges: number;
+    readonly maxGap: number;
+    readonly turnedFaces: number;
+    readonly tolerance: number;
+    constructor(sewnEdges: number, openEdges: number, maxGap: number, turnedFaces: number, tolerance: number);
+}
+type StitchOptions = {
     tolerance?: number | null;
-})[]): Part | Shell;
+    report?: boolean;
+};
+export function stitch(...args: [
+    ...StitchPiece[],
+    StitchOptions & {
+        report: true;
+    }
+]): [Part | Shell, StitchReport];
+export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell;
 export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: {
+    radius2?: number | null;
+    shape?: string;
     sides?: readonly [number, number];
+    trim?: boolean;
 }): Shell;
+export function blend(edgeA: Edge, edgeB: Edge, options?: {
+    continuity?: string | number;
+    tension?: number | readonly [number, number];
+    join?: boolean;
+}): Shell;
+export function fill(boundary: Edge | Wire | Iterable<Edge | Wire>, options?: {
+    tangent?: boolean;
+}): Shell;
+export function network(u: Iterable<Edge | Wire>, v: Iterable<Edge | Wire>): Shell;
 ```
 
 ### Sheet metal

@@ -258,3 +258,14 @@ When an upstream release fixes a defect:
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can
 go too.
+
+## Compiled-out functions
+
+Some kernel functions sit in `#if NLIB_UNUSED` blocks, which nothing defines. Where smlibpy needs one,
+it is copied into its own C++ (`src/cpp`), not patched here, renamed with a `smlibpy_` prefix so that it
+cannot clash with the kernel should a later release compile it in:
+
+| File | Functions | Changes |
+|---|---|---|
+| `src/cpp/nlib_shape.cpp` | `N_SrfShapeRegionWarp`, `N_SrfShapeFlatten` and what they call (`N_SrfShapeCreateRatBasis`, `N_SrfShapeRemoveKnots`, `N_BasisSplitNLongestSpans`, `N_SrfFuncEvalRatBasis`, `N_PtsAreInPolygon`) from `NL_SrfShape.cpp`, `NL_BasisAdv.cpp`, `NL_FuncsAdv.cpp`, `NL_FrameBasic.cpp` | `N_PtsAreInPolygon` counted both edges at a vertex less than `NL_MTOL` above a row's ray (a row through two vertices of the polygon came out as outside it); `N_SrfShapeFlatten` read the inside flags one control point off. Used by `warp` and `flatten` (`src/cpp/shape_edit.cpp`). |
+

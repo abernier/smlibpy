@@ -52,6 +52,9 @@
   two lines.
 
 ### 9. `stitch`: `tolerance` does not do what the docstring says; with it the result is a sewn Shell, not a Part
+- **Fixed (kernel plan U5):** stitch runs SmApiStitchAdvanced from the body's tolerance up to `tolerance`
+  (default 1e-4 of the size) and returns a Part when the result is sewn shut: the reproduction gives a
+  valid Part of 1010 with `tolerance=0.2`, and a Shell with 8 free edges without one.
 - **Session:** `2026-10-12_21-33-28_surfaces-stitch`, scripts `02-gaps.py`, `03-gap-scale.py`, `04-gap-limit.py`, `05-tolerance-workaround.py`
 - **What happens:** the first step (`stitch_into_solid`) ignores `tolerance` and closes gaps up to
   about 0.35 % of the bbox diagonal (10 mm cube: 0.06 yes, 0.07 no; 1 mm cube: 0.005 yes, 0.01 no).
@@ -71,6 +74,9 @@
 - **Workaround:** `stitch(stitch(pieces, tolerance=t))`.
 
 ### 10. `stitch`: gaps are hidden in tolerances; the "valid" Part has faces away from their edges
+- **Fixed (kernel plan U5):** gaps wider than `tolerance` stay open, and `stitch(..., report=True)`
+  reports the widest gap closed (`max_gap` 0.5 for the cube below with `tolerance=1`); `volume` warns
+  that the faces do not meet.
 - **Session:** `2026-10-12_21-33-28_surfaces-stitch`, scripts `05-tolerance-workaround.py`, `06-gap-body.py`
 - **What happens:** a cube whose top face floats 0.5 mm above the side faces, stitched with
   `tolerance=1` (and stitched again): `is_valid()` True, volume 1050 (face at z 5.5), but all vertices
@@ -100,6 +106,9 @@
   (kernel plan B12, B14).
 
 ### 12. `stitch`: an open result keeps mixed face normals; `thicken` of it silently gives volume 0
+- **Fixed (kernel plan U5):** an open result's faces are turned to agree with the first piece's
+  (SmStitch::UnifyNormals along sewn edges): the reproduction thickens to 190.0, valid. `flipped()`
+  turns a sheet over.
 - **Session:** `2026-10-12_21-26-09_surfaces-workflow`, scripts `07-cover-normals.py`, `08-cover-oriented.py`, `09-repro-normals.py`
 - **What happens:** when the pieces close, the Part has consistent outward normals whatever the
   input. When they do not close, the Shell keeps each face's input normal. `thicken` of such a

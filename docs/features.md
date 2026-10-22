@@ -328,6 +328,23 @@ patch = marked.faces().derived_from(pad).one()     # the 12 x 8 patch
 
 A fillet across a split line removes it again; imprint after rounding.
 
+The tool can also be curves (edges or wires), which split the faces along them: a region of a
+face of its own, to color, draft or select. With a direction the curves are moved along it onto
+the part first, and split the faces they meet first (the side facing them); `nearest=False`
+splits every face they cross. Without one they must lie on the faces already
+(`intersection_curves`, `project`):
+
+```python
+plate = Box(60, 40, 10)
+label = plate.imprint(Rectangle(30, 10).edges().translate(0, 0, 20), (0, 0, -1))
+print(len(plate.faces()), len(label.faces()), label.volume == plate.volume)   # 6 7 True
+area = label.faces().filter(lambda f: f.center().z > 4.9).sort_by(lambda f: f.area).first
+print(round(area.area, 6))                         # 300.0
+
+through = plate.imprint(Circle(5).edges().translate(0, 0, 20), (0, 0, -1), nearest=False)
+print(len(through.faces()))                        # 8: the top and the bottom face split
+```
+
 ## Cells
 
 `merge` makes one part of several, as for models of several materials whose meshes must match

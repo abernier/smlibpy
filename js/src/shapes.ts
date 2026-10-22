@@ -45,7 +45,10 @@ import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces
 import { _wallThicknesses, moveFaces as _moveFaces, offsetFaces as _offsetFaces, shellWalls } from './face_edit.ts'
 import { sweep as _sweep, swing as _swing } from './operations.ts'
 import { Box } from './parts.ts'
-import { Polygon } from './sketches.ts'
+import { ruled } from './surfaces.ts'
+import { _checked, _flatten, _push, _warp } from './shaping.ts'
+import { _matchEdge, _mergeFaces } from './sheet_edit.ts'
+import { Polygon, Rectangle } from './sketches.ts'
 import {
   type Bend,
   type FlangeOptions,
@@ -2982,6 +2985,63 @@ export class Face extends Shape {
     return this.toShell().offset(distance)
   }
 
+  /**
+   * The pieces of this face cut along curves that lie on it, as the faces of a new sheet.
+   *
+   * @param curves Edges or wires on the face (see `Shell.trim`): each runs from border to border,
+   *   or closes a loop.
+   *
+   * The face's own body does not change: to split the faces of a part where they are, use
+   * `Part.imprint`; of a sheet, `Shell.trim` with `keep` `'split'`.
+   */
+  split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face> {
+    return this.toShell().trim(curves, 'split').faces()
+  }
+
+  /** A copy of this face, turned over: a sheet of one face whose normal points the other way (see
+   * `Shell.flipped`). */
+  flipped(): Shell {
+    return this.toShell().flipped()
+  }
+
+  /**
+   * The whole surface this face lies on, as a sheet of one face: its holes and cut borders are gone.
+   *
+   * A cylindrical face cut out of a box comes back as the whole cylinder the cut left it on (its
+   * full height and all around), a B-spline face as its whole surface. A plane has no border of its
+   * own: it comes back as the smallest rectangle around the face, along the plane's own directions.
+   * The sheet's normal follows this face's (`normalAt`).
+   */
+  untrimmed(): Shell {
+    return Shell._wrap(kernelCall('untrimmed', () => ext.untrim_face(this._f)))
+  }
+
+  /**
+   * The face's surface grown past its sides, as a sheet of one face: to make a sheet reach across a
+   * part before cutting or splitting it with it, or to give a blend room.
+   *
+   * @param distance How far past each side, measured along the surface (across the middle of the
+   *   side).
+   * @param options `sides`: edges of this face: grow past the sides they lie on only (default: past
+   *   every side that can grow). `continuity`: how the surface goes on: `'natural'` (default) as it
+   *   is (a plane stays the plane, a cylinder or sphere the same cylinder or sphere, a B-spline
+   *   surface follows its own polynomials), `'G1'` straight on along its tangents, `'G2'` bending on
+   *   with the curvature it has at the side.
+   *
+   * The sides are those of the face's surface rectangle, along its parameter directions: the four
+   * edges of a box's face or of a sheet from `surface`, the two ends of a cylinder along its axis.
+   * Trims (holes, a border cut at a slant) are dropped: the result is the rectangle, grown. A side
+   * where the surface closes around (a full cylinder, around it) or shrinks to a point (a sphere's
+   * pole, a cone's tip) cannot grow: it is left out by default, and naming its edge throws a
+   * RangeError; so does an edge that does not run along a side.
+   *
+   * @returns A sheet of one face, its normal following this face's (`normalAt`).
+   */
+  extended(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+    _opts('Face.extended', options)
+    return Shell._wrap(_extendedFace(this, distance, options.sides ?? null, options.continuity ?? 'natural', 'extended'))
+  }
+
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
     return this.toSketch().extrude(amount, options)
@@ -3229,12 +3289,43 @@ export class _Body extends Shape {
   }
 
   // -- geometric queries --------------------------------------------------------------------
-  /** The curves where this body's surface meets another body's surface, each one once. */
-  intersectionCurves(other: _Body): ShapeList<Edge> {
-    const [curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, other._brep))
+  /**
+   * The curves where this body's surface meets another body's surface, each one once.
+   *
+   * `other` is a Part, Shell or Sketch, a face (the face itself, bounded by its edges), or a `Plane`
+   * (unbounded: where it cuts this body's faces, as `Part.section` cuts a part). Bodies that do not
+   * meet, apart or one inside the other, give an empty list.
+   */
+  intersectionCurves(other: _Body | Face | Plane): ShapeList<Edge> {
+    if (other instanceof Plane) {
+      // (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane, fits
+      // its curves to B-spline faces within 2e-3 only)
+      const box = this._looseBox()
+      const middle = box.center.sub(other.zDir.mul(box.center.sub(other.origin).dot(other.zDir)))
+      if (box.center.sub(middle).length > box.diagonal / 2 + 1e-6 * Math.max(1, box.diagonal)) return _list([])
+      const span = 2 * box.diagonal + 1
+      other = Rectangle(span, span).on(new Plane(middle, other.xDir, other.zDir))
+    }
+    if (other instanceof Face) other = other.toShell()
+    if (!(other instanceof _Body)) {
+      throw new TypeError(`intersectionCurves takes a body (Part, Shell, Sketch), a face or a plane, not a ${_typeName(other)}`)
+    }
+    const body = other
+    const a = this._looseBox()
+    const b = body._looseBox()
+    const tol = 1e-6 * Math.max(1, a.union(b).diagonal)
+    if (_disjoint(a, b, tol)) return _list([])
+    let curves: number[]
+    try {
+      ;[curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, body._brep))
+    } catch (e) {
+      // (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
+      if (e instanceof KernelError && _bodyDistance(this, body) > tol) return _list([])
+      throw e
+    }
     // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
     // borders twice (also reversed).
-    return _distinctCurves(curves, 1e-6 * Math.max(1, this._looseBox().union(other._looseBox()).diagonal))
+    return _distinctCurves(curves, tol)
   }
 
   /** Silhouette curves on the body as seen along `direction` (an axis or a vector). */
@@ -5990,27 +6081,49 @@ export class Part extends _Body {
   }
 
   /**
-   * The part with its faces split where a tool crosses them: split lines for drafts, patches for
-   * the loads and supports of a simulation, regions to color. Nothing is added
-   * or taken away: the volume stays.
+   * The part with its faces split where a tool crosses them, without changing its shape: split
+   * lines for drafts, patches for the loads and supports of a simulation, regions of a face of their
+   * own to color, draft or select (a label area, a parting line, a seal track). Nothing is added or
+   * taken away: the volume stays.
    *
-   * `tool` is a part (the faces are split where its surface crosses them), a sheet or a face that
-   * crosses faces of the part, or a sketch (or a planar face) lying on a face of the part, whose
-   * outline is cut into that face (keep its region within the face: where it reaches past the
-   * face's edges, the neighbouring faces can get split lines close to them).
+   * @param tool A part (the faces are split where its surface crosses them), a sheet or a face that
+   *   crosses faces of the part, or a sketch (or a planar face) lying on a face of the part, whose
+   *   outline is cut into that face (keep its region within the face: where it reaches past the
+   *   face's edges, the neighbouring faces can get split lines close to them). Or curves: edges or
+   *   wires, which without a direction must lie on the part's faces (`intersectionCurves`,
+   *   `project`).
+   * @param direction For curves only: move them along this direction (an axis or a vector) onto the
+   *   part first, where they cross its faces as they move (an outline projected onto them). Only
+   *   ahead of the curves: a part behind them is not reached.
+   * @param options `nearest`: with a direction, split only the faces the projection meets first: the
+   *   side of the part facing the curves (default `true`). `false` splits every face the projection
+   *   crosses, also on the far side (a box's top and bottom face).
    *
    * The pieces of the part's faces that lie inside a tool part, or inside the sketch's region,
    * descend from the tool: `part.imprint(tool).faces().derivedFrom(tool)` selects them. A fillet or
-   * chamfer across a split line removes it again.
+   * chamfer across a split line removes it again. A curve across the seam of a closed face (a
+   * cylinder's) gives a face on each side of the seam.
    *
    * ModelingError where the tool crosses no face of the part, and where the kernel's result is no
    * longer the part (another volume, or a broken body).
    */
-  imprint(tool: Part | Shell | Face | ShapeList<Face>): Part {
-    if (tool instanceof ShapeList) tool = tool.one()
-    if (!(tool instanceof Part || tool instanceof Shell || tool instanceof Face)) {
-      throw new TypeError(`imprint takes a part, a sheet, a face or a sketch, not a ${_typeName(tool)}`)
+  imprint(
+    tool: Part | Shell | Face | ShapeList<Face> | Edge | Wire | Iterable<Edge | Wire>,
+    direction: Axis | VectorLike | null = null,
+    options: { nearest?: boolean } = {},
+  ): Part {
+    _opts('Part.imprint', options)
+    const curves = _asCurves(tool)
+    if (curves !== null) return this._imprintedCurves(curves, direction, options.nearest ?? true)
+    if (direction != null) {
+      throw new TypeError('imprint: direction moves curves onto the part; a part, a sheet, a face or a sketch is imprinted where it is')
     }
+    let given: unknown = tool
+    if (given instanceof ShapeList) given = given.one()
+    if (!(given instanceof Part || given instanceof Shell || given instanceof Face)) {
+      throw new TypeError(`imprint takes a part, a sheet, a face, a sketch or curves (edges or wires), not a ${_typeName(given)}`)
+    }
+    tool = given
     this._requireValid('imprint')
     let region: Part | null = tool instanceof Part ? tool : null
     let result: Part | null
@@ -6161,6 +6274,29 @@ export class Part extends _Body {
     const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...parts.map((x) => Number(x.gaps))))
     if (Math.min(...volumes) <= slack * whole || !(Math.abs(volumes[0] + volumes[1] - whole) <= slack * whole)) return null
     return [out[0], out[1]]
+  }
+
+  /** `imprint` of curves: the part with its faces split along them (moved along `direction` onto
+   * the part first, where one is given). */
+  _imprintedCurves(tool: Edge | Wire | (Edge | Wire)[], direction: Axis | VectorLike | null, nearest: boolean): Part {
+    let edges = _curvesOf(tool, 'imprint')
+    if (direction != null) {
+      const d = _direction(direction, 'imprint')
+      edges = _sweptOnto(this, edges, d)
+      if (nearest) edges = edges.filter((e) => _seenAlong(this, e, d))
+      if (!edges.length) throw new ModelingError('imprint: the curves, moved along the direction, miss the part')
+    }
+    const before = this.faces().length
+    const out = this._like(_trimWithCurves(this, edges, new Vector(), 2, 'imprint'))
+    if (out.faces().length <= before) {
+      throw new ModelingError('imprint: the curves split no face: each must run across a face from border to border, or close a loop on it')
+    }
+    let problem = out._solidProblem()
+    if (problem === null && Math.abs(out.volume - this.volume) > 1e-6 * Math.max(Math.abs(this.volume), 1e-12)) {
+      problem = `of another volume (${_formatG(out.volume)} instead of ${_formatG(this.volume)})`
+    }
+    if (problem !== null) throw new ModelingError(`imprint: the kernel returned a body that is ${problem}`)
+    return out
   }
 
   /**
@@ -6360,6 +6496,76 @@ export class Part extends _Body {
    */
   offsetFaces(faces: unknown, distance: number): Part {
     return _offsetFaces(this, faces, distance)
+  }
+
+  // -- local edits of a face (the logic is in the shaping module) ---------------------------
+  /**
+   * Push or pull a face at a point: a smooth dent or bump, local to the point, its edges in place.
+   *
+   * The point moves exactly, the face's edges not at all: an edit that would move one (a hole's
+   * edge, a border cut across the surface, within `radius` of the point) throws a RangeError; take a
+   * smaller radius or a point farther from it. The face becomes a B-spline surface; a plane, cylinder
+   * or sphere stays exactly what it was away from the change.
+   *
+   * @param face A face of the part.
+   * @param at The point of the face that moves (a point off the face: the face's point nearest to it).
+   * @param options `by`: how far it moves: a distance along the face's outward normal there
+   *   (positive: out of the part, a bump; negative: a dent), or a vector. `to`: where it moves to,
+   *   instead of `by`. `normal`: the face's normal at the moved point (default: as it was there).
+   *   `radius`: how far from the point the face changes, along the face (a square around the point
+   *   along the surface's two directions, blended in smoothly; default: up to the face's nearest edge,
+   *   smaller where that would still move an edge). `continuity`: how the face stays joined to its
+   *   neighbours where the change reaches its border: `'G0'` (its edges stay), `'G1'` (default; also
+   *   its tangent planes along them) or `'G2'` (also its curvature).
+   * @returns A new part (this one does not change).
+   */
+  push(face: Face, at: VectorLike, options: PushOptions = {}): Part {
+    _opts('Part.push', options)
+    return _checked(this, _push(this, face, at, options.by ?? null, options.to ?? null, options.normal ?? null, options.radius ?? null,
+      options.continuity ?? 'G1'), 'push')
+  }
+
+  /**
+   * Raise or sink a region of a face: a smooth bump over an outline drawn on the face.
+   *
+   * The face changes only near the region, within the rectangle around it along the surface's two
+   * directions (the region itself for a rectangle drawn along them); the highest point lies near the
+   * region's middle (at it, for a region symmetric along both directions, with `'G2'`). Where that
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   *
+   * @param face A face of the part.
+   * @param region The outline on the face: a closed Wire (on a curved face, `project` one onto it), a
+   *   Sketch or Face placed on the face (its outline), or the corner points of a polygon on the face.
+   * @param by How far the region rises at its highest point: a distance along the face's outward
+   *   normal at the region's middle (positive: out of the part; negative: a recess), or a vector.
+   * @param options `continuity`: how the change meets the rest of the face at the region's border:
+   *   `'G2'` (default; curvature continuous), `'G1'` (tangent) or `'crease'` (a sharp border).
+   * @returns A new part (this one does not change).
+   */
+  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Part {
+    _opts('Part.warp', options)
+    return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
+  }
+
+  /**
+   * Press a region of a face onto a plane: a flat area (a seat, a pad, a label area) on a curved face,
+   * blended into the rest of it.
+   *
+   * Inside the region the face lies in the plane, but for a border where it blends into the rest
+   * (3/16 of the region's width with `'G2'`, 2/16 with `'G1'`, 1/16 with `'crease'`); outside the
+   * rectangle around the region (along the surface's two directions) it does not change. Where that
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   *
+   * @param face A face of the part.
+   * @param region The outline on the face, as for `warp`.
+   * @param plane The plane (or a planar face) the region is pressed onto, along its normal.
+   * @param options `continuity`: how the flat area meets the rest of the face: `'G2'` (default),
+   *   `'G1'` or `'crease'`.
+   * @returns A new part (this one does not change).
+   */
+  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Part {
+    _opts('Part.flatten', options)
+    return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
   }
 
   // -- sheet metal (the logic is in the sheetmetal module) ----------------------------------
@@ -7168,6 +7374,28 @@ function _requireMitredCorners(operation: string, edges: readonly Edge[]): void 
   }
 }
 
+/** The brep of `Face.extended`. */
+function _extendedFace(face: Face, distance: number, sides: Edge | Iterable<Edge> | null, continuity: string, what: string): number {
+  const d = Number(distance)
+  if (!(d > 0 && Number.isFinite(d))) throw new RangeError(`${what}: the distance must be positive, got ${distance}`)
+  const kinds: Record<string, number> = { natural: 0, g1: 1, g2: 2 }
+  const level = typeof continuity === 'string' ? kinds[continuity.toLowerCase()] : undefined
+  if (level === undefined) throw new RangeError(`${what}: continuity is "natural", "G1" or "G2", got '${continuity}'`)
+  let edges: Edge[] = []
+  if (sides !== null) {
+    edges = sides instanceof Edge ? [sides] : Array.from(sides as Iterable<Edge>)
+    if (!edges.length || !edges.every((e) => e instanceof Edge)) throw new TypeError(`${what}: sides are edges of the face`)
+    const own = new Set(face.edges(true).map((e) => e._identity()))
+    if (edges.some((e) => !own.has(e._identity()))) throw new RangeError(`${what}: an edge in sides does not bound the face`)
+  }
+  try {
+    return kernelCall(what, () => ext.extend_face(face._f, d, edges.map((e) => e._e), level), 'try a shorter distance, or continuity G1')
+  } catch (e) {
+    if (e instanceof RangeError) throw new RangeError(e.message.replace('extend_face:', `${what}:`))
+    throw e
+  }
+}
+
 export function _continuity(c: number | string | null | undefined): number | null {
   if (c == null) return null
   if (typeof c === 'string') c = Number.parseInt(c.toUpperCase().replace(/^G+/, ''), 10)
@@ -7190,6 +7418,84 @@ export function _flattenFaces(items: unknown): Face[] {
   const out: Face[] = []
   for (const it of items) out.push(..._flattenFaces(it))
   return out
+}
+
+/** The edges of curves given as edges, wires or lists of them. */
+/** `tool` as curves where it is curves (an edge, a wire, or a list of them, none empty), else null (a
+ * body, a face, a list of faces, anything else). */
+function _asCurves(tool: unknown): Edge | Wire | (Edge | Wire)[] | null {
+  if (tool instanceof Edge || tool instanceof Wire) return tool
+  if (tool === null || typeof tool !== 'object' || tool instanceof Face || tool instanceof _Body || tool instanceof Vertex) return null
+  if (typeof (tool as Any)[Symbol.iterator] !== 'function') return null
+  const items = [...(tool as Iterable<unknown>)]
+  return items.length && items.every((x) => x instanceof Edge || x instanceof Wire) ? (items as (Edge | Wire)[]) : null
+}
+
+export function _curvesOf(items: unknown, what: string): Edge[] {
+  if (items instanceof Face || items instanceof _Body || items instanceof Vertex) {
+    throw new TypeError(`${what} takes curves (edges or wires), not a ${_typeName(items)}`)
+  }
+  let edges: Edge[]
+  try {
+    edges = _flattenEdges(items)
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e
+    throw new TypeError(`${what} takes curves (edges or wires), not a ${_typeName(items)}`)
+  }
+  if (!edges.length) throw new RangeError(`${what}: no curves`)
+  return edges
+}
+
+/** A copy of the body with its faces trimmed by curves that lie on them (ext.trim_with_curves):
+ * trimType 0 keeps the side of `point`, 2 splits. */
+function _trimWithCurves(body: _Body, edges: readonly Edge[], point: Vector, trimType: number, what: string): number {
+  let box = body.bbox()
+  for (const e of edges) box = box.union(e.bbox())
+  const tol = Math.max(1e-5 * box.diagonal, 1e-7)
+  const curves = edges.map((e) => e._copyCurve())
+  try {
+    return kernelCall(what, () => ext.trim_with_curves(body._brep, curves, point.toArray(), trimType, tol),
+      'the curves may cross each other, or run along an edge of the faces')
+  } catch (e) {
+    if (!(e instanceof RangeError) || !e.message.includes('does not lie')) throw e
+    throw new RangeError(`${what}: the curves must lie on the faces (within ${_formatG(tol, 2)}); move them onto them with project()`)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
+/** Where curves moved along `d` cross the body's faces: the curves where the surface they sweep
+ * meets the body (exact where the kernel's projection, project(), is within 4e-4). */
+function _sweptOnto(body: _Body, edges: readonly Edge[], d: Vector): Edge[] {
+  const box = body.bbox()
+  const out: Edge[] = []
+  for (const e of edges) {
+    const reach = 2 * (box.diagonal + e.center().sub(box.center).length) + 1
+    const sweep = ruled(e, e.translate(d.mul(reach)))
+    if (_disjoint(box, sweep.bbox())) continue
+    try {
+      out.push(...body.intersectionCurves(sweep))
+    } catch (err) {
+      // (the kernel's intersection fails where there is none)
+      if (!(err instanceof KernelError)) throw err
+      if (body.distanceTo(sweep) > 1e-7 * reach) continue
+      throw err
+    }
+  }
+  return out
+}
+
+/** True when a curve on the body is what rays along `d` meet first (at most of three points: a ray
+ * can miss a face where it passes a seam). */
+function _seenAlong(body: _Body, edge: Edge, d: Vector): boolean {
+  const reach = 2 * body.bbox().diagonal + 1
+  let seen = 0
+  for (const t of [0.25, 0.5, 0.75]) {
+    const m = edge.pointAt(t)
+    const hits = body.raycast(m.sub(d.mul(reach)), d)
+    if (hits.length > 0 && hits[0].point.sub(m).length <= 1e-5 * reach) seen += 1
+  }
+  return seen >= 2
 }
 
 /** Python's message for what is no list, and what an `undefined` mostly is in code ported from
@@ -7268,6 +7574,151 @@ export class Shell extends _Body {
     return result
   }
 
+  /**
+   * Cut the sheet along curves that lie on it, and keep one side, or both as faces of their own.
+   *
+   * @param curves Edges or wires on the sheet: where two sheets meet (`intersectionCurves`), the
+   *   long edges of a `surfaceFillet`, curves projected onto the sheet (`project`). A curve may run
+   *   across several faces of the sheet. Each one runs from border to border, or closes a loop (a
+   *   hole or an outline).
+   * @param keep A point on the side to keep, or near it (not on a curve): the faces it reaches
+   *   without crossing a curve are kept. `'split'` keeps both sides, as faces of their own.
+   * @returns The trimmed sheet (a new one; this one does not change).
+   *
+   * To cut along a direction instead (a hole through a curved panel), project the outline first:
+   * `sheet.trim(sheet.project(Circle(5).edges()[0], [0, 0, -1]), [0, 0, 0])` keeps the disk.
+   */
+  trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): this {
+    const split = typeof keep === 'string'
+    if (split && keep !== 'split') throw new RangeError(`trim: keep is a point on the side to keep, or "split"; got '${keep}'`)
+    const point = split ? new Vector() : _vec(keep as VectorLike)
+    const edges = _curvesOf(curves, 'trim')
+    const before = this.area
+    const n = this.faces().length
+    const out = this._like(_trimWithCurves(this, edges, point, split ? 2 : 0, 'trim'))
+    const after = out.faces().length ? out.area : 0
+    const tol = 1e-4 * Math.max(before, 1e-12)
+    if (split) {
+      if (out.faces().length <= n || Math.abs(after - before) > tol) {
+        throw new ModelingError('trim: the curves do not split the sheet: each must run across a face from border to border, or close a loop on it')
+      }
+    } else if (!out.faces().length) {
+      throw new ModelingError('trim: nothing is left; the point lies on no side the curves cut off')
+    } else if (!(after < before - tol)) {
+      throw new ModelingError('trim: the curves do not cut the sheet in two: each must run across a face from border to border, or close a loop on it')
+    }
+    return out
+  }
+
+  /**
+   * The sheet turned over: a copy whose faces' normals all point the other way.
+   *
+   * `thicken` then grows to the other side, and the `sides` of `surfaceFillet` count from the new
+   * normals. A sheet that encloses a volume (the face of a whole sphere) faces outward whichever
+   * way its surface runs: it cannot be turned over (RangeError).
+   */
+  flipped(): this {
+    const out = this._like(kernelCall('flipped', () => ext.flip_faces(this._brep)))
+    const before = this.faces()
+    const after = out.faces()
+    for (let i = 0; i < Math.min(before.length, after.length); i++) {
+      const p = before[i].interiorPoint()
+      if (!(before[i].normalAt(p).dot(after[i].normalAt(p)) < 0)) {
+        throw new RangeError('flipped: the sheet encloses a volume; its faces point out of it whichever way their surfaces run')
+      }
+    }
+    return out
+  }
+
+  /**
+   * The sheet (of one face) grown past its sides: see `Face.extended`.
+   *
+   * @param distance How far past each side, measured along the surface.
+   * @param options `sides`: edges of the sheet: grow past the sides they lie on only (default: every
+   *   side that can grow). `continuity`: `'natural'` (default), `'G1'` or `'G2'`.
+   * @returns A new sheet; this one does not change. For a sheet of several faces, extend one of its
+   *   faces (`sheet.faces()[i].extended(...)`).
+   */
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): this {
+    _opts('Shell.extend', options)
+    const faces = this.faces()
+    if (faces.length !== 1) {
+      throw new RangeError(`extend: the sheet has ${faces.length} faces; extend one of them with sheet.faces()[i].extended(...)`)
+    }
+    return this._like(_extendedFace(faces[0], distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
+  }
+
+  /**
+   * The sheet with an edge moved onto a curve: the edge runs along `target` from end to end,
+   * exactly, and its face bends to follow, smoothly, near the edge only. To close a gap between two
+   * sheets before `stitch`, match one sheet's edge to the other's; to give a sheet a styling line,
+   * match it to that curve.
+   *
+   * @param edge An edge of the sheet, a whole side of its face.
+   * @param target The curve to run along (an edge, or a wire whose edges join end to end), either way
+   *   round; its ends are where the edge's ends go.
+   * @param options `extent`: how far into the face the change reaches: a part of the face's
+   *   parameter range across from the edge (above 0, below 1; default 0.25). The face meets the rest
+   *   of itself there with continuous derivatives (up to its degree less one).
+   *
+   * Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next to it
+   * bend near those ends, and the faces on the other side of those edges follow them the same way.
+   * Every face that changes must be bounded by the four sides of its surface (as `surface`, `loft`,
+   * `ruled`, `fill` and `network` make them; no holes, no trimmed borders) and the edge a whole side
+   * of it, else RangeError. The faces become B-splines (planes too).
+   *
+   * @returns A new sheet; this one does not change. A Sketch's comes back as a Shell.
+   */
+  matchEdge(edge: Edge, target: Edge | Wire, options: { extent?: number } = {}): Shell {
+    _opts('Shell.matchEdge', options)
+    const b = _matchEdge(this, edge, target, options.extent ?? 0.25)
+    return this instanceof Sketch ? Shell._wrap(b, { name: this.name, color: this.color }) : this._like(b)
+  }
+
+  /**
+   * The sheet with two faces made one: one surface over both, where they share a whole side, such
+   * as the halves of a sheet split along a curve of its surface, or patches built through the same
+   * curves. The joint's knot goes where the faces meet smoothly enough (within the sheet's
+   * tolerance), so a split sheet comes back as it was.
+   *
+   * @param a A face of the sheet, bounded by the four sides of its surface (no holes, no trimmed
+   *   borders).
+   * @param b Another such face, sharing one whole side with `a` (and no other).
+   *
+   * The joined surface must reproduce both faces (within the sheet's tolerance), else RangeError:
+   * faces whose parameters run at different speeds along the shared side, or whose normals point to
+   * opposite sides, are not merged. The merged face's normal is `a`'s.
+   *
+   * @returns A new sheet with one face less; this one does not change. A Sketch's comes back as a
+   *   Shell.
+   */
+  mergeFaces(a: Face, b: Face): Shell {
+    const out = _mergeFaces(this, a, b)
+    return this instanceof Sketch ? Shell._wrap(out._copyBrep(), { name: this.name, color: this.color }) : this._like(out._copyBrep())
+  }
+
+  /** Push or pull a face of the sheet at a point: see `Part.push` (`by` as a distance moves along the
+   * face's normal). Returns a new sheet; a Sketch's comes back as a Shell. */
+  push(face: Face, at: VectorLike, options: PushOptions = {}): Shell {
+    _opts('Shell.push', options)
+    return _checked(this, _push(this, face, at, options.by ?? null, options.to ?? null, options.normal ?? null, options.radius ?? null,
+      options.continuity ?? 'G1'), 'push')
+  }
+
+  /** Raise or sink a region of a face of the sheet: see `Part.warp`. Returns a new sheet; a Sketch's
+   * comes back as a Shell. */
+  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Shell {
+    _opts('Shell.warp', options)
+    return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
+  }
+
+  /** Press a region of a face of the sheet onto a plane: see `Part.flatten`. Returns a new sheet; a
+   * Sketch's comes back as a Shell. */
+  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Shell {
+    _opts('Shell.flatten', options)
+    return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
+  }
+
   /** Union with other sheets (Python's `+`). */
   fuse(...others: unknown[]): Shell {
     return this._like(_held(this._copyBrep(), (h) => {
@@ -7328,6 +7779,20 @@ export class Shell extends _Body {
   }
 }
 
+/** How `Part.push` and `Shell.push` move the point (see `Part.push`). */
+export interface PushOptions {
+  /** How far the point moves: a distance along the face's outward normal there, or a vector. */
+  by?: number | VectorLike | null
+  /** Where the point moves to, instead of `by`. */
+  to?: VectorLike | null
+  /** The face's normal at the moved point (default: as it was there). */
+  normal?: VectorLike | null
+  /** How far from the point the face changes (default: up to the face's nearest edge). */
+  radius?: number | null
+  /** `'G0'`, `'G1'` (default) or `'G2'`: how the face stays joined to its neighbours. */
+  continuity?: string
+}
+
 /** How a sketch is extruded. */
 export interface ExtrudeOptions {
   /** Extrude the amount to both sides of the sketch. */
@@ -7358,6 +7823,14 @@ export class Sketch extends Shell {
 
   override _like(brep: number): this {
     return Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+  }
+
+  /** The sketch turned over: its faces and its plane face the other way (an extrusion then grows to
+   * the other side). */
+  override flipped(): this {
+    const out = super.flipped()
+    out._plane = this._plane.flipped()
+    return out
   }
 
   static _fromWires(wires: readonly Wire[], plane: Plane | null = null): Sketch {

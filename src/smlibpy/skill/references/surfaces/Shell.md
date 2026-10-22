@@ -20,13 +20,24 @@ solid from a sheet, test `isinstance(x, Part)`.
 - `center()`: area centroid.
 - `thicken(thickness)` → `Part` (see below). The module function `thicken(shell_or_face, t)` is
   the same and also takes a `Face`.
+- `trim(curves, keep)` → Shell: cut along curves that lie on the sheet, keep the side of a point
+  or (`"split"`) both sides as faces (see `trim`).
+- `flipped()` → Shell: the sheet turned over, every face's normal reversed (a Sketch's plane too).
+  A sheet that encloses a volume (a whole sphere's face) raises `ValueError`: its faces point out
+  whichever way.
+- `extend(distance, sides=None, continuity="natural")` → Shell: a sheet of one face grown past its
+  sides (see `extend`).
+- `match_edge(edge, target, extent=0.25)` → Shell: an edge moved onto a curve, its face bending
+  to follow near the edge only (see `match_edge`): close a gap before `stitch`.
+- `merge_faces(a, b)` → Shell: two faces that share a whole side made one face on one surface
+  (see `merge_faces`).
 - `heal()` → Shell, or a `Part` where the healed faces close around a volume: repairs
   tolerances and topology of a sewn shell (it turned a sewn but non-manifold stitch result into
   a manifold one). It does **not** sew separate faces; use `stitch` for that.
 - `check()`: what the kernel's validity checks find wrong (see `analysis/check`).
 - `to_nurbs()`, `translate`, `rotate`, `mirror`, `scale`, `moved`, `on`, `named`, `colored`:
   return a Shell.
-- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body)`,
+- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body, face or plane)`,
   `project(curve, direction)`, `silhouette`, `outline`: work on sheets.
 - `show(path=..., open_browser=False)` writes the HTML viewer; `export("x.step" / ".stl" /
   ".glb")`, `mesh()`, `save`/`load` all take Shells; `import_step` of a sheet gives a Shell.
@@ -43,8 +54,8 @@ Missing on purpose: `volume`, `is_valid`, `solids`, `mass_properties`, `fillet`,
 
 - `t > 0` adds material on the normal side, `t < 0` on the other side. Check the normal first:
   `shell.faces()[0].normal_at(point)`. The normal rule of each source is in `surface`, `ruled`;
-  `stitch` makes normals outward only when it closes into a Part (an open stitched Shell keeps
-  the input normals); `mirror` flips them.
+  `stitch` makes normals outward when it closes into a Part, and makes an open result's normals
+  agree with its first piece's; `flipped()` turns a sheet over.
 - All faces of a multi-face Shell must agree: a floor (normal +Z) and a wall whose normal points
   away from the floor raise `ModelingError: thicken: the kernel returned a body that is not a
   closed, manifold solid; ...`.
@@ -73,7 +84,8 @@ them with `revolve`/`loft`.
 - `part + sheet` and `part - sheet` raise `TypeError` (they returned invalid "Parts"): to split
   the part along the sheet use `part.split(sheet)`, to cut the sheet's lines into the part's
   faces `part.imprint(sheet)`.
-- The tools must be parts: `sheet - Rectangle(4, 4)` raises `TypeError`.
+- The tools must be parts: `sheet - Rectangle(4, 4)` raises `TypeError`. To trim with curves that
+  lie on the sheet (where another sheet crosses it, a projected outline), use `trim`.
 
 ## Example
 ```python
@@ -93,4 +105,4 @@ print(round(rest.area + disc.area - saddle.area, 6))             # 0.0
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves
+`surface`, `nurbs_surface`, `ruled`, `stitch`, `trim`, `blend`, `fill`, `network`, `extend`, `match_edge`, `merge_faces`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves

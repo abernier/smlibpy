@@ -73,3 +73,17 @@ void bind_curve_ops(py::module_ m);
 void bind_curve_edit(py::module_ m);
 // Curves projected onto faces, lifted from their parameter planes and iso curves (curve_project.cpp).
 void bind_curve_project(py::module_ m);
+// Blend surfaces between two free edges of sheets (blend.cpp).
+void bind_blend(py::module_ m);
+// Trimming and splitting faces with curves on them (trim.cpp).
+void bind_trim(py::module_ m);
+// Sewing faces, turning faces over (stitch.cpp).
+void bind_stitch(py::module_ m);
+// Extending a face's surface, untrimming a face (extend.cpp).
+void bind_extend(py::module_ m);
+// Surfaces bounded by curves: fills and curve networks (fill.cpp).
+void bind_fill(py::module_ m);
+// Local edits of a face's surface: push, warp, flatten (shape_edit.cpp).
+void bind_shape_edit(py::module_ m);
+// Matching sheet edges to curves, merging faces, surfaces from NURBS data, distances (sheet_edit.cpp).
+void bind_sheet_edit(py::module_ m);

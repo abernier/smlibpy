@@ -116,4 +116,11 @@ PYBIND11_MODULE(_core, m)
     bind_curve_ops(m.attr("ext").cast<py::module_>());
     bind_curve_edit(m.attr("ext").cast<py::module_>());
     bind_curve_project(m.attr("ext").cast<py::module_>());
+    bind_blend(m.attr("ext").cast<py::module_>());
+    bind_trim(m.attr("ext").cast<py::module_>());
+    bind_stitch(m.attr("ext").cast<py::module_>());
+    bind_extend(m.attr("ext").cast<py::module_>());
+    bind_fill(m.attr("ext").cast<py::module_>());
+    bind_shape_edit(m.attr("ext").cast<py::module_>());
+    bind_sheet_edit(m.attr("ext").cast<py::module_>());
 }

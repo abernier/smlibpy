@@ -152,6 +152,7 @@ box = Box(20, 20, 20)
 pipe = Cylinder(4, 40).rotate(X, 30)
 
 box.intersection_curves(pipe)               # where the surfaces cross, as edges
+box.intersection_curves(Plane.XY.offset(5)) # where a plane cuts the faces ([] where nothing meets)
 Sphere(10).silhouette((0, 0, 1))            # outline seen along a direction
 box.project(CenterArc((0, 0, 30), 5, 0, 360), (0, 0, -1))   # curve onto the faces below
 box.outline(Plane.XZ)                       # edges projected to a plane

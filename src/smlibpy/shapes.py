@@ -2701,6 +2701,63 @@ class Face(Shape):
         (see :meth:`Shell.offset`)."""
         return self.to_shell().offset(distance)
 
+    def split(self, curves: Edge | Wire | Iterable[Edge | Wire]) -> ShapeList[Face]:
+        """The pieces of this face cut along curves that lie on it, as the faces of a new sheet.
+
+        Args:
+            curves: Edges or wires on the face (see :meth:`Shell.trim`): each runs from border to
+                border, or closes a loop.
+
+        The face's own body does not change: to split the faces of a part where they are, use
+        :meth:`Part.imprint`; of a sheet, :meth:`Shell.trim` with ``keep="split"``.
+        """
+        return self.to_shell().trim(curves, "split").faces()
+
+    def flipped(self) -> Shell:
+        """A copy of this face, turned over: a sheet of one face whose normal points the other way
+        (see :meth:`Shell.flipped`)."""
+        return self.to_shell().flipped()
+
+    def untrimmed(self) -> Shell:
+        """The whole surface this face lies on, as a sheet of one face: its holes and cut borders
+        are gone.
+
+        A cylindrical face cut out of a box comes back as the whole cylinder the cut left it on (its
+        full height and all around), a B-spline face as its whole surface. A plane has no border of
+        its own: it comes back as the smallest rectangle around the face, along the plane's own
+        directions. The sheet's normal follows this face's (:meth:`normal_at`).
+        """
+        with kernel_call("untrimmed"):
+            b = ext.untrim_face(self._f)
+        return Shell._wrap(b)
+
+    def extended(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
+                 continuity: str = "natural") -> Shell:
+        """The face's surface grown past its sides, as a sheet of one face: to make a sheet reach
+        across a part before cutting or splitting it with it, or to give a blend room.
+
+        Args:
+            distance: How far past each side, measured along the surface (across the middle of the
+                side).
+            sides: Edges of this face: grow past the sides they lie on only. Default: past every side
+                that can grow.
+            continuity: How the surface goes on: ``"natural"`` (default) as it is (a plane stays the
+                plane, a cylinder or sphere the same cylinder or sphere, a B-spline surface follows
+                its own polynomials), ``"G1"`` straight on along its tangents, ``"G2"`` bending on
+                with the curvature it has at the side.
+
+        The sides are those of the face's surface rectangle, along its parameter directions: the
+        four edges of a box's face or of a sheet from :func:`~smlibpy.surface`, the two ends of a
+        cylinder along its axis. Trims (holes, a border cut at a slant) are dropped: the result is
+        the rectangle, grown. A side where the surface closes around (a full cylinder, around it) or
+        shrinks to a point (a sphere's pole, a cone's tip) cannot grow: it is left out by default,
+        and naming its edge raises ``ValueError``; so does an edge that does not run along a side.
+
+        Returns:
+            A sheet of one face, its normal following this face's (:meth:`normal_at`).
+        """
+        return Shell._wrap(_extended_face(self, distance, sides, continuity, "extended"))
+
     def extrude(self, amount: float, **kwargs: Any) -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
         return self.to_sketch().extrude(amount, **kwargs)
@@ -2901,13 +2958,44 @@ class _Body(Shape):
         return _raycast(self.faces(), origin, direction, self._loose_box())
 
     # -- geometric queries ----------------------------------------------------
-    def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
-        """The curves where this body's surface meets another body's surface, each one once."""
-        with kernel_call("intersection curves"):
-            curves, _ = k.intersect_breps(self._brep, other._brep)
+    def intersection_curves(self, other: _Body | Face | Plane) -> ShapeList[Edge]:
+        """The curves where this body's surface meets another body's surface, each one once.
+
+        ``other`` is a Part, Shell or Sketch, a face (the face itself, bounded by its edges), or a
+        :class:`Plane` (unbounded: where it cuts this body's faces, as :meth:`Part.section` cuts a
+        part). Bodies that do not meet, apart or one inside the other, give an empty list.
+        """
+        if isinstance(other, Plane):
+            # (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane,
+            # fits its curves to B-spline faces within 2e-3 only)
+            from .sketches import Rectangle
+
+            box = self._loose_box()
+            middle = box.center - other.z_dir * (box.center - other.origin).dot(other.z_dir)
+            if (box.center - middle).length > box.diagonal / 2 + 1e-6 * max(1.0, box.diagonal):
+                return ShapeList()
+            span = 2.0 * box.diagonal + 1.0
+            other = Rectangle(span, span).on(Plane(middle, other.x_dir, other.z_dir))
+        if isinstance(other, Face):
+            other = other.to_shell()
+        if not isinstance(other, _Body):
+            raise TypeError(f"intersection_curves takes a body (Part, Shell, Sketch), a face or a plane, not a "
+                            f"{type(other).__name__}")
+        a, b = self._loose_box(), other._loose_box()
+        tol = 1e-6 * max(1.0, a.union(b).diagonal)
+        if _disjoint(a, b, tol):
+            return ShapeList()
+        try:
+            with kernel_call("intersection curves"):
+                curves, _ = k.intersect_breps(self._brep, other._brep)
+        except KernelError:
+            # (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
+            if _body_distance(self, other) > tol:
+                return ShapeList()
+            raise
         # Where faces of the two bodies lie in one plane, the kernel hands out curves on their
         # borders twice (also reversed).
-        return _distinct_curves(curves, 1e-6 * max(1.0, self._loose_box().union(other._loose_box()).diagonal))
+        return _distinct_curves(curves, tol)
 
     def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
         """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
@@ -5430,28 +5518,46 @@ class Part(_Body):
             raise ModelingError(f"split: nothing of the part lies {keep} the plane")
         return kept
 
-    def imprint(self, tool: Part | Shell | Face | Sketch) -> Part:
-        """The part with its faces split where a tool crosses them: split lines for drafts,
-        patches for the loads and supports of a simulation, regions to color. Nothing is added
-        or taken away: the volume stays.
+    def imprint(self, tool: Part | Shell | Face | Sketch | Edge | Wire | Iterable[Edge | Wire],
+                direction: Axis | VectorLike | None = None, *, nearest: bool = True) -> Part:
+        """The part with its faces split where a tool crosses them, without changing its shape: split
+        lines for drafts, patches for the loads and supports of a simulation, regions of a face of
+        their own to color, draft or select (a label area, a parting line, a seal track). Nothing
+        is added or taken away: the volume stays.
 
-        ``tool`` is a part (the faces are split where its surface crosses them), a sheet or a
-        face that crosses faces of the part, or a sketch (or a planar face) lying on a face of
-        the part, whose outline is cut into that face (keep its region within the face: where
-        it reaches past the face's edges, the neighbouring faces can get split lines close to
-        them).
+        Args:
+            tool: A part (the faces are split where its surface crosses them), a sheet or a face
+                that crosses faces of the part, or a sketch (or a planar face) lying on a face of
+                the part, whose outline is cut into that face (keep its region within the face:
+                where it reaches past the face's edges, the neighbouring faces can get split lines
+                close to them). Or curves: edges or wires, which without a direction must lie on the
+                part's faces (:meth:`intersection_curves`, :meth:`project`).
+            direction: For curves only: move them along this direction (an axis or a vector) onto
+                the part first, where they cross its faces as they move (an outline projected onto
+                them). Only ahead of the curves: a part behind them is not reached.
+            nearest: With a direction, split only the faces the projection meets first: the side of
+                the part facing the curves (default). ``False`` splits every face the projection
+                crosses, also on the far side (a box's top and bottom face).
 
         The pieces of the part's faces that lie inside a tool part, or inside the sketch's
         region, descend from the tool: ``part.imprint(tool).faces().derived_from(tool)``
-        selects them. A fillet or chamfer across a split line removes it again.
+        selects them. A fillet or chamfer across a split line removes it again. A curve across
+        the seam of a closed face (a cylinder's) gives a face on each side of the seam.
 
         ``ModelingError`` where the tool crosses no face of the part, and where the kernel's
         result is no longer the part (another volume, or a broken body).
         """
+        curves = _as_curves(tool)
+        if curves is not None:
+            return self._imprinted_curves(curves, direction, nearest)
+        if direction is not None:
+            raise TypeError("imprint: direction= moves curves onto the part; a part, a sheet, a face or a sketch is "
+                            "imprinted where it is")
         if isinstance(tool, ShapeList):
             tool = tool.one()
         if not isinstance(tool, (Part, Shell, Face)):
-            raise TypeError(f"imprint takes a part, a sheet, a face or a sketch, not a {type(tool).__name__}")
+            raise TypeError(f"imprint takes a part, a sheet, a face, a sketch or curves (edges or wires), not a "
+                            f"{type(tool).__name__}")
         self._require_valid("imprint")
         region: Part | None = tool if isinstance(tool, Part) else None
         if isinstance(tool, Part):
@@ -5574,6 +5680,29 @@ class Part(_Body):
         if min(volumes) <= slack * whole or not abs(sum(volumes) - whole) <= slack * whole:
             return None
         return out[0], out[1]
+
+    def _imprinted_curves(self, tool: Any, direction: Axis | VectorLike | None, nearest: bool) -> Part:
+        """:meth:`imprint` of curves: the part with its faces split along them (moved along
+        ``direction`` onto the part first, where one is given)."""
+        edges = _curves_of(tool, "imprint")
+        if direction is not None:
+            d = _direction(direction, "imprint")
+            edges = _swept_onto(self, edges, d)
+            if nearest:
+                edges = [e for e in edges if _seen_along(self, e, d)]
+            if not edges:
+                raise ModelingError("imprint: the curves, moved along the direction, miss the part")
+        before = len(self.faces())
+        out = self._like(_trim_with_curves(self, edges, Vector(), 2, "imprint"))
+        if len(out.faces()) <= before:
+            raise ModelingError("imprint: the curves split no face: each must run across a face from border to "
+                                "border, or close a loop on it")
+        problem = out._solid_problem()
+        if problem is None and abs(out.volume - self.volume) > 1e-6 * max(abs(self.volume), 1e-12):
+            problem = f"of another volume ({out.volume:.6g} instead of {self.volume:.6g})"
+        if problem is not None:
+            raise ModelingError(f"imprint: the kernel returned a body that is {problem}")
+        return out
 
     def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
         """The cross-section of the part in a plane, as a sketch. Of a part made by :meth:`merge`,
@@ -5769,6 +5898,87 @@ class Part(_Body):
         return offset_faces(self, faces, distance)
 
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
+    # -- local edits of a face (smlibpy.shaping) -----------------------------
+    def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
+             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Part:
+        """Push or pull a face at a point: a smooth dent or bump, local to the point, its edges in place.
+
+        Args:
+            face: A face of the part.
+            at: The point of the face that moves (a point off the face: the face's point nearest to it).
+            by: How far it moves: a distance along the face's outward normal there (positive: out of the
+                part, a bump; negative: a dent), or a vector.
+            to: Where it moves to, instead of ``by``.
+            normal: The face's normal at the moved point (its tangent plane turns to it). Default: as it
+                was there.
+            radius: How far from the point the face changes, along the face (a square around the point
+                along the surface's two directions, blended in smoothly: curvature continuous). Default:
+                up to the face's nearest edge, smaller where that would still move an edge.
+            continuity: How the face stays joined to its neighbours where the change reaches its border:
+                ``"G0"`` (its edges stay), ``"G1"`` (default; also its tangent planes along them) or
+                ``"G2"`` (also its curvature).
+
+        The point moves exactly, the face's edges not at all: an edit that would move one (a hole's edge,
+        a border cut across the surface, within ``radius`` of the point) raises ``ValueError``; take a
+        smaller radius or a point farther from it. The face becomes a B-spline surface; a plane, cylinder
+        or sphere stays exactly what it was away from the change.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
+
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Part:
+        """Raise or sink a region of a face: a smooth bump over an outline drawn on the face.
+
+        Args:
+            face: A face of the part.
+            region: The outline on the face: a closed Wire (on a curved face, :meth:`project` one onto
+                it), a Sketch or Face placed on the face (its outline), or the corner points of a
+                polygon on the face.
+            by: How far the region rises at its highest point: a distance along the face's outward
+                normal at the region's middle (positive: out of the part; negative: a recess), or a
+                vector.
+            continuity: How the change meets the rest of the face at the region's border: ``"G2"``
+                (default; curvature continuous), ``"G1"`` (tangent) or ``"crease"`` (a sharp border).
+
+        The face changes only near the region, within the rectangle around it along the surface's two
+        directions (the region itself for a rectangle drawn along them); the highest point lies near the
+        region's middle (at it, for a region symmetric along both directions, with ``"G2"``). Where that
+        rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
+
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Part:
+        """Press a region of a face onto a plane: a flat area (a seat, a pad, a label area) on a curved
+        face, blended into the rest of it.
+
+        Args:
+            face: A face of the part.
+            region: The outline on the face, as for :meth:`warp`.
+            plane: The plane (or a planar face) the region is pressed onto, along its normal.
+            continuity: How the flat area meets the rest of the face: ``"G2"`` (default), ``"G1"`` or
+                ``"crease"``.
+
+        Inside the region the face lies in the plane, but for a border where it blends into the rest
+        (3/16 of the region's width with ``"G2"``, 2/16 with ``"G1"``, 1/16 with ``"crease"``); outside
+        the rectangle around the region (along the surface's two directions) it does not change. Where
+        that rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+
+        Returns:
+            A new part (this one does not change).
+        """
+        from . import shaping
+
+        return shaping.checked(self, shaping.flatten(self, face, region, plane, continuity), "flatten")
+
     def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
              partial: bool = False) -> Part:
         """Fold this sheet along a line on its top or bottom face (see :func:`smlibpy.fold`)."""
@@ -6455,6 +6665,30 @@ def _require_mitred_corners(operation: str, edges: Sequence[Edge]) -> None:
             f"other edge, and the selection has none (round all three edges of a corner)")
 
 
+def _extended_face(face: Face, distance: float, sides: Any, continuity: str, what: str) -> Any:
+    """The brep of :meth:`Face.extended`."""
+    d = float(distance)
+    if not (d > 0 and math.isfinite(d)):
+        raise ValueError(f"{what}: the distance must be positive, got {distance}")
+    kinds = {"natural": 0, "g1": 1, "g2": 2}
+    level = kinds.get(continuity.lower()) if isinstance(continuity, str) else None
+    if level is None:
+        raise ValueError(f'{what}: continuity is "natural", "G1" or "G2", got {continuity!r}')
+    edges: list[Edge] = []
+    if sides is not None:
+        edges = [sides] if isinstance(sides, Edge) else list(sides)
+        if not edges or not all(isinstance(e, Edge) for e in edges):
+            raise TypeError(f"{what}: sides are edges of the face")
+        own = {e._identity() for e in face.edges(seams=True)}
+        if any(e._identity() not in own for e in edges):
+            raise ValueError(f"{what}: an edge in sides does not bound the face")
+    try:
+        with kernel_call(what, "try a shorter distance, or continuity G1"):
+            return ext.extend_face(face._f, d, [e._e for e in edges], level)
+    except ValueError as e:
+        raise ValueError(str(e).replace("extend_face:", f"{what}:", 1)) from None
+
+
 def _continuity(c: int | str | None) -> int | None:
     if c is None:
         return None
@@ -6483,6 +6717,87 @@ def _flatten_faces(items: Any) -> list[Face]:
     for it in items:
         out.extend(_flatten_faces(it))
     return out
+
+
+def _as_curves(tool: Any) -> list[Edge | Wire] | Edge | Wire | None:
+    """``tool`` as curves where it is curves (an edge, a wire, or a list of them, none empty), else
+    None (a body, a face, a list of faces, anything else)."""
+    if isinstance(tool, (Edge, Wire)):
+        return tool
+    if isinstance(tool, (Face, _Body, Vertex, str, bytes)) or not isinstance(tool, Iterable):
+        return None
+    items = list(tool)
+    if items and all(isinstance(x, (Edge, Wire)) for x in items):
+        return items
+    return None
+
+
+def _curves_of(items: Any, what: str) -> list[Edge]:
+    """The edges of curves given as edges, wires or lists of them."""
+    if isinstance(items, (Face, _Body, Vertex)):
+        raise TypeError(f"{what} takes curves (edges or wires), not a {type(items).__name__}")
+    try:
+        edges = _flatten_edges(items)
+    except TypeError:
+        raise TypeError(f"{what} takes curves (edges or wires), not a {type(items).__name__}") from None
+    if not edges:
+        raise ValueError(f"{what}: no curves")
+    return edges
+
+
+def _trim_with_curves(body: _Body, edges: Sequence[Edge], point: Vector, trim_type: int, what: str) -> Any:
+    """A copy of the body with its faces trimmed by curves that lie on them (ext.trim_with_curves):
+    trim_type 0 keeps the side of ``point``, 2 splits."""
+    box = body.bbox()
+    for e in edges:
+        box = box.union(e.bbox())
+    tol = max(1e-5 * box.diagonal, 1e-7)
+    curves = [e._copy_curve() for e in edges]
+    try:
+        with kernel_call(what, "the curves may cross each other, or run along an edge of the faces"):
+            return ext.trim_with_curves(body._brep, curves, point.to_tuple(), trim_type, tol)
+    except ValueError as e:
+        if "does not lie" not in str(e):
+            raise
+        raise ValueError(f"{what}: the curves must lie on the faces (within {tol:.2g}); move them onto them with "
+                         f"project()") from None
+    finally:
+        for c in curves:
+            ext.delete_curve(c)
+
+
+def _swept_onto(body: _Body, edges: Sequence[Edge], d: Vector) -> list[Edge]:
+    """Where curves moved along ``d`` cross the body's faces: the curves where the surface they
+    sweep meets the body (exact where the kernel's projection, project(), is within 4e-4)."""
+    from .surfaces import ruled
+
+    box = body.bbox()
+    out: list[Edge] = []
+    for e in edges:
+        reach = 2.0 * (box.diagonal + (e.center() - box.center).length) + 1.0
+        sweep = ruled(e, e.translate(d * reach))
+        if _disjoint(box, sweep.bbox()):
+            continue
+        try:
+            out.extend(body.intersection_curves(sweep))
+        except KernelError:
+            # (the kernel's intersection fails where there is none)
+            if body.distance_to(sweep) > 1e-7 * reach:
+                continue
+            raise
+    return out
+
+
+def _seen_along(body: _Body, edge: Edge, d: Vector) -> bool:
+    """True when a curve on the body is what rays along ``d`` meet first (at most of three points:
+    a ray can miss a face where it passes a seam)."""
+    reach = 2.0 * body.bbox().diagonal + 1.0
+    seen = 0
+    for t in (0.25, 0.5, 0.75):
+        m = edge.point_at(t)
+        hits = body.raycast(m - d * reach, d)
+        seen += bool(hits) and (hits[0].point - m).length <= 1e-5 * reach
+    return seen >= 2
 
 
 class Shell(_Body):
@@ -6563,6 +6878,162 @@ class Shell(_Body):
                                 f"{hint}")
         return result
 
+    def trim(self, curves: Edge | Wire | Iterable[Edge | Wire], keep: VectorLike | str) -> Shell:
+        """Cut the sheet along curves that lie on it, and keep one side, or both as faces of their own.
+
+        Args:
+            curves: Edges or wires on the sheet: where two sheets meet (:meth:`intersection_curves`),
+                the long edges of a :func:`~smlibpy.surface_fillet`, curves projected onto the sheet
+                (:meth:`project`). A curve may run across several faces of the sheet. Each one runs
+                from border to border, or closes a loop (a hole or an outline).
+            keep: A point on the side to keep, or near it (not on a curve): the faces it reaches
+                without crossing a curve are kept. ``"split"`` keeps both sides, as faces of their
+                own.
+
+        Returns:
+            The trimmed sheet (a new one; this one does not change).
+
+        To cut along a direction instead (a hole through a curved panel), project the outline
+        first: ``sheet.trim(sheet.project(Circle(5).edges(), (0, 0, -1)), keep=(0, 0, 0))`` keeps
+        the disk.
+        """
+        split = isinstance(keep, str)
+        if split and keep != "split":
+            raise ValueError(f'trim: keep is a point on the side to keep, or "split"; got {keep!r}')
+        point = Vector() if split else _vec(keep)
+        edges = _curves_of(curves, "trim")
+        before = self.area
+        n = len(self.faces())
+        b = _trim_with_curves(self, edges, point, 2 if split else 0, "trim")
+        out = self._like(b)
+        after = out.area if out.faces() else 0.0
+        tol = 1e-4 * max(before, 1e-12)
+        if split:
+            if len(out.faces()) <= n or abs(after - before) > tol:
+                raise ModelingError("trim: the curves do not split the sheet: each must run across a face from "
+                                    "border to border, or close a loop on it")
+        elif not out.faces():
+            raise ModelingError("trim: nothing is left; the point lies on no side the curves cut off")
+        elif not after < before - tol:
+            raise ModelingError("trim: the curves do not cut the sheet in two: each must run across a face from "
+                                "border to border, or close a loop on it")
+        return out
+
+    def flipped(self) -> Shell:
+        """The sheet turned over: a copy whose faces' normals all point the other way.
+
+        :meth:`thicken` then grows to the other side, and the ``sides`` of
+        :func:`~smlibpy.surface_fillet` count from the new normals. A sheet that encloses a volume
+        (the face of a whole sphere) faces outward whichever way its surface runs: it cannot be
+        turned over (``ValueError``).
+        """
+        with kernel_call("flipped"):
+            b = ext.flip_faces(self._brep)
+        out = self._like(b)
+        for before, after in zip(self.faces(), out.faces()):
+            p = before.interior_point()
+            if not before.normal_at(p).dot(after.normal_at(p)) < 0:
+                raise ValueError("flipped: the sheet encloses a volume; its faces point out of it whichever way "
+                                 "their surfaces run")
+        return out
+
+    def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
+               continuity: str = "natural") -> Shell:
+        """The sheet (of one face) grown past its sides: see :meth:`Face.extended`.
+
+        Args:
+            distance: How far past each side, measured along the surface.
+            sides: Edges of the sheet: grow past the sides they lie on only. Default: every side that
+                can grow.
+            continuity: ``"natural"`` (default), ``"G1"`` or ``"G2"``.
+
+        Returns:
+            A new sheet; this one does not change. For a sheet of several faces, extend one of its
+            faces (``sheet.faces()[i].extended(...)``).
+        """
+        faces = self.faces()
+        if len(faces) != 1:
+            raise ValueError(f"extend: the sheet has {len(faces)} faces; extend one of them with "
+                             f"sheet.faces()[i].extended(...)")
+        return self._like(_extended_face(faces[0], distance, sides, continuity, "extend"))
+
+    def match_edge(self, edge: Edge, target: Edge | Wire, *, extent: float = 0.25) -> Shell:
+        """The sheet with an edge moved onto a curve: the edge runs along ``target`` from end to end,
+        exactly, and its face bends to follow, smoothly, near the edge only. To close a gap between two
+        sheets before :func:`~smlibpy.stitch`, match one sheet's edge to the other's; to give a sheet a
+        styling line, match it to that curve.
+
+        Args:
+            edge: An edge of the sheet, a whole side of its face.
+            target: The curve to run along (an edge, or a wire whose edges join end to end), either
+                way round; its ends are where the edge's ends go.
+            extent: How far into the face the change reaches: a part of the face's parameter range
+                across from the edge (above 0, below 1; default 0.25). The face meets the rest of
+                itself there with continuous derivatives (up to its degree less one).
+
+        Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next
+        to it bend near those ends, and the faces on the other side of those edges follow them the
+        same way. Every face that changes must be bounded by the four sides of its surface (as
+        :func:`~smlibpy.surface`, ``loft``, :func:`~smlibpy.ruled`, :func:`~smlibpy.fill` and
+        :func:`~smlibpy.network` make them; no holes, no trimmed borders) and the edge a whole side
+        of it, else ``ValueError``. The faces become B-splines (planes too).
+
+        Returns:
+            A new sheet; this one does not change. A Sketch's comes back as a Shell.
+        """
+        from . import sheet_edit
+
+        b = sheet_edit.match_edge(self, edge, target, extent)
+        return Shell._wrap(b, name=self.name, color=self.color) if isinstance(self, Sketch) else self._like(b)
+
+    def merge_faces(self, a: Face, b: Face) -> Shell:
+        """The sheet with two faces made one: one surface over both, where they share a whole side,
+        such as the halves of a sheet split along a curve of its surface, or patches built through
+        the same curves. The joint's knot goes where the faces meet smoothly enough (within the
+        sheet's tolerance), so a split sheet comes back as it was.
+
+        Args:
+            a: A face of the sheet, bounded by the four sides of its surface (no holes, no trimmed
+                borders).
+            b: Another such face, sharing one whole side with ``a`` (and no other).
+
+        The joined surface must reproduce both faces (within the sheet's tolerance), else
+        ``ValueError``: faces whose parameters run at different speeds along the shared side, or
+        whose normals point to opposite sides, are not merged. The merged face's normal is
+        ``a``'s.
+
+        Returns:
+            A new sheet with one face less; this one does not change. A Sketch's comes back as a
+            Shell.
+        """
+        from . import sheet_edit
+
+        out = sheet_edit.merge_faces(self, a, b)
+        return Shell._wrap(out._copy_brep(), name=self.name, color=self.color) if isinstance(self, Sketch) \
+            else self._like(out._copy_brep())
+
+    def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
+             normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Shell:
+        """Push or pull a face of the sheet at a point: see :meth:`Part.push` (``by`` as a distance moves
+        along the face's normal). Returns a new sheet; a Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.push(self, face, at, by, to, normal, radius, continuity), "push")
+
+    def warp(self, face: Face, region: Any, by: float | VectorLike, *, continuity: str = "G2") -> Shell:
+        """Raise or sink a region of a face of the sheet: see :meth:`Part.warp`. Returns a new sheet; a
+        Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.warp(self, face, region, by, continuity), "warp")
+
+    def flatten(self, face: Face, region: Any, plane: Plane | Face, *, continuity: str = "G2") -> Shell:
+        """Press a region of a face of the sheet onto a plane: see :meth:`Part.flatten`. Returns a new
+        sheet; a Sketch's comes back as a Shell."""
+        from . import shaping
+
+        return shaping.checked(self, shaping.flatten(self, face, region, plane, continuity), "flatten")
+
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())
         for t in _bodies(other):
@@ -6640,6 +7111,13 @@ class Sketch(Shell):
 
     def _like(self, brep: Any) -> Sketch:
         return Sketch._wrap(brep, self._plane, name=self.name, color=self.color)
+
+    def flipped(self) -> Sketch:
+        """The sketch turned over: its faces and its plane face the other way (an extrusion then
+        grows to the other side)."""
+        out = super().flipped()
+        out._plane = self._plane.flipped()
+        return out
 
     @classmethod
     def _from_wires(cls, wires: Sequence[Wire], plane: Plane | None = None) -> Sketch:

@@ -321,7 +321,7 @@ def test_mcp_session_deforms_and_finds_the_guides():
     finally:
         s.close()
     for query, key in [("twist a bar", "twist"), ("bend a tube into a U", "bend"), ("taper the grip", "taper"),
-                       ("free-form deformation with a cage", "Lattice"), ("warp the part", "Lattice"),
+                       ("free-form deformation with a cage", "Lattice"), ("warp the part", "warp"),
                        ("morph a shape", "Lattice")]:
         assert key in [e.key.split("/")[-1].split(".")[-1] for _, e in discovery.search(query, 6)], query
     assert discovery.guide("deform/generic") is not None and discovery.guide("recipes/deform") is not None

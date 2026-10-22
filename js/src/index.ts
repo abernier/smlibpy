@@ -68,7 +68,7 @@ export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
 // deformations
 export { Lattice, bend, taper, twist } from './deform.ts'
 // surfaces
-export { ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
+export { FitReport, StitchReport, blend, fill, network, nurbsSurface, ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
 // sheet metal
 export { Bend, FlatPattern, bendAllowance, bendDeduction, developedLength, flange, flatPattern, fold, unfold } from './sheetmetal.ts'
 // files, viewer, pictures

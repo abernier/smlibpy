@@ -114,11 +114,15 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
-  holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
+  holds the copies of a Boolean's operands with it), `_curvesOf` (surfaces.ts takes `fill`'s
+  curves with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `WHOLE_TURN` (parts.ts makes
-  sectors whole within it, as revolve), `_offsetProblem` and
-  `_intersectionProblem` (their tests), `_putFaceAttrs` (defeature.ts and step_import.ts put the
-  faces' colors and names back on a body read from a file); `mesh.ts`: `_rayTriangles`,
+  sectors whole within it, as revolve), `_asPlane` (shaping.ts takes `flatten`'s plane with it),
+  `_offsetProblem` and `_intersectionProblem` (their tests), `_putFaceAttrs` (defeature.ts and
+  step_import.ts put the faces' colors and names back on a body read from a file); `shaping.ts`:
+  `_push`, `_warp`, `_flatten`, `_checked` (the push, warp and flatten of Part and Shell), `_ownFace`
+  (sheet_edit.ts takes a sheet's faces with it); `sheet_edit.ts`: `_matchEdge`, `_mergeFaces` (Shell's
+  `matchEdge` and `mergeFaces`); `mesh.ts`: `_rayTriangles`,
   `faceMeshes` (shapes.ts casts rays with them), `_tessellate` (render.ts), `_coloredMesh`,
   `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`

@@ -4,45 +4,55 @@ Sews faces and sheets along their common edges. Returns a `Part` when the result
 valid solid, otherwise a `Shell`.
 
 ## Signature
-`stitch(*pieces, tolerance=None)`
+`stitch(*pieces, tolerance=None, report=False)`
 
 - `pieces`: any mix of `Shell`s (from `surface`, `ruled`, `loft`, `extrude` of curves, ...),
   `Sketch`es (`make_face`), `Face`s (`part.faces()` works directly, no `to_shell()` needed),
   `Part`s, and lists or nested lists of them. `stitch(a, b, c)`, `stitch([a, b, c])` and
   `stitch(a, [b, c])` are the same.
-- `tolerance`: see Gaps. Leave it at `None`.
+- `tolerance`: the widest gap to close (default 1e-4 of the size of all pieces together). Edges
+  and vertices further apart stay open. Edges that meet closely are sewn first, looser ones after
+  them, doubling up to the tolerance.
+- `report`: `True` returns `(body, report)`, a `StitchReport`: `sewn_edges`, `open_edges` (free
+  edges left), `max_gap` (the widest gap closed, 0 where the pieces met exactly), `turned_faces`,
+  `tolerance` (the widest one looked for).
 
 ## Returns
 - `Part` when every edge is shared by two faces and the body is a valid solid. Face normals are
   made consistent and outward, whatever their direction in the input (`normal_at()` of every
-  face points out, volume positive).
-- `Shell` otherwise. **A failed close is not an error.** Always check
-  `isinstance(result, Part)`.
-- An open `Shell` result keeps **each face's input normal**; nothing is unified. A Shell with
-  mixed normals does not thicken (`ModelingError` or `KernelError`). Orient the pieces before
-  stitching when the result stays open and will be thickened (see `generic`).
+  face points out, volume positive). Also across T-junctions (one long edge against two short
+  ones): the bottom and sides of `Box(20, 10, 10)` with the tops of two `Box(10, 10, 10)` give a
+  valid Part of 2000.
+- `Shell` otherwise. **A failed close is not an error.** Check `isinstance(result, Part)`, or
+  `report.open_edges`.
+- An open `Shell` has its normals made to agree: each connected piece keeps the normal of its
+  first face (in the order given), and the faces sewn to it are turned to match
+  (`report.turned_faces`). Such a Shell thickens: floor (normal +Z) and wall (normal away from the
+  floor) stitched give `thicken(1)` = 190 (the floor's side), wall first: 210.
 
 ## Finding what did not close
 Free edges are edges with one face:
 
 ```python
-free = [e for e in block.edges() if len(e.faces()) == 1]
+body, report = stitch(pieces, report=True)
+print(report.open_edges, report.max_gap)
+free = [e for e in body.edges() if len(e.faces()) == 1]
 ```
 
-0 free edges and a `Shell` means sewn shut but not a valid solid (see Gaps). Print
-`e.center()` of the free edges to see where the hole is. Duplicate faces or three faces on one
-edge also give a `Shell` with free edges, without an error.
+Print `e.center()` of the free edges to see where the hole is. Duplicate faces or three faces on
+one edge also give a `Shell` with free edges, without an error.
 
 ## Gaps
-stitch joins the topology; it **never moves geometry**. Gaps end up inside the tolerances.
+stitch joins the topology; it **never moves geometry**. A gap it closes ends up inside the
+tolerances, so it only closes gaps up to `tolerance`:
 
-- Without `tolerance`, gaps up to about 0.35 % of the bbox diagonal close (10 mm cube: a top
-  face 0.06 off closes, 0.07 does not). `tolerance` cannot make this stricter.
-- For larger gaps, `tolerance` ≥ gap sews the edges but returns a `Shell` (0 free edges, not
-  manifold). `stitch(that_shell)` then gives a `Part`.
-- Such a Part is "valid" and keeps the gap: a cube with its top face 0.5 mm too high stitched
-  with `tolerance=1` has volume 1050 (face at z 5.5) but `bbox()` and vertices at z 5.0. STEP
-  export keeps the broken body.
+- Default (1e-4 of the size): a box of 10 mm closes gaps up to 0.0017. The faces of a
+  `Box(200, 100, 100)` each moved by up to 0.03 along each axis: with `tolerance=1e-4` nothing is
+  sewn (26 free edges, a Shell; before 0.5.0 a "valid" Part); with `tolerance=0.2` a valid Part,
+  `max_gap` 0.085.
+- Five faces of `Box(10, 10, 10)` and the top 0.1 too high: without a tolerance a Shell with 8
+  free edges; with `tolerance=0.2` a valid Part (`max_gap` 0.1), its volume 1010 (the top face
+  stays at z 5.1 while its edges are at 5.0): `volume` warns that the faces do not meet.
 
 Do not fix gaps with tolerance. Build the pieces so they meet exactly: make neighbouring faces
 from the **same curves** (an edge of one face is the curve of the next, as in the example).
@@ -57,7 +67,12 @@ from the **same curves** (an edge of one face is the curve of the next, as in th
 
 ## Errors
 - `ValueError: nothing to stitch`: empty input.
+- `ValueError: stitch: the tolerance must be a positive distance`.
 - Everything else comes back as a `Shell` instead of an error (see Returns).
+
+Before 0.5.0 `tolerance` was ignored for closed bodies (gaps up to 0.35 % of the diagonal were
+closed whatever it was), a body sewn shut with it came back as a `Shell`, and open results kept
+mixed normals. Scripts that relied on the old closing of larger gaps pass `tolerance=`.
 
 ## Example
 Freeform top, four ruled walls down to z = 0 and a flat bottom, closed into a solid. The walls
@@ -84,4 +99,4 @@ print(block.is_valid(), round(block.volume, 2), len(block.faces()))   # True 239
 The volume matches the integral of h over the rectangle (23997.27).
 
 ## Related
-`surface`, `ruled`, `make_face`, `Face.to_shell`, `Shell`, `Shell.heal`, `generic`
+`surface`, `ruled`, `make_face`, `fill`, `Face.to_shell`, `Shell` (`flipped`), `Shell.heal`, `generic`
