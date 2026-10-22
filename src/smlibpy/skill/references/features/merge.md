@@ -38,8 +38,10 @@ One `Part` that holds every cell:
 - `ValueError: merge needs two or more parts, got 1` (`merge(...)`), `ValueError: merge needs
   another part` (`part.merge()`).
 - `ModelingError: merge: the kernel returned a result of volume ..., less than that of the largest
-  part (...)`: the kernel merged wrongly, as where a seam of a cylinder or sphere lies tangent to
-  the other part. Turn that part about its axis or move it a little.
+  part (...)`: the kernel merged wrongly, as where a seam of a part lies tangent to another part
+  and cannot be turned away. `merge` turns a cylinder, cone or sphere about its axis itself where
+  its seam would touch the other part, but only while it merges two solids (the first two parts):
+  merge such a part first, or move it a little.
 
 ## Example
 ```python

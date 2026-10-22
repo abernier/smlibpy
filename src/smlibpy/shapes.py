@@ -1750,6 +1750,37 @@ def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
     return any(a.max[i] < b.min[i] - tol or b.max[i] < a.min[i] - tol for i in range(3))
 
 
+def _round_faces(body: _Body) -> list[tuple[Vector, Vector, BoundBox]]:
+    """The cylinders and cones of a body: a point of the axis, its direction, the face's loose box."""
+    out = []
+    for f in body._brep.faces():
+        info = ext.surface_data(f.surface(), False)
+        if info["kind"] in ("cylinder", "cone"):
+            pl = info["placement"]
+            lo, hi = f.bounding_box(False)
+            out.append((Vector(pl["origin"]), Vector(pl["z_dir"]).normalized(), BoundBox(lo, hi)))
+    return out
+
+
+def _parallel_rounds(part: _Body, tool: _Body) -> bool:
+    """Whether a cylinder or cone of the tool lies parallel to one of the part, off its axis, where
+    the boxes of the two faces overlap: a tool beside an earlier hole or boss, whose faces cross
+    that one's along lines (kernel plan B10)."""
+    mine = _round_faces(part)
+    if not mine:
+        return False
+    for o, d, box in _round_faces(tool):
+        for o2, d2, box2 in mine:
+            if d.cross(d2).length > 1e-9:
+                continue
+            off = (o2 - o) - d * (o2 - o).dot(d)  # from one axis to the other
+            if off.length <= 1e-9 * (1.0 + box.diagonal + box2.diagonal):
+                continue  # on one axis: they cross along circles, if at all
+            if not _disjoint(box, box2, 1e-6 * (box.diagonal + box2.diagonal)):
+                return True
+    return False
+
+
 def _can_cover(tools: Sequence[Part], part: Part) -> bool:
     """Whether tools can cover a part, so that a cut by them can leave nothing: together they
     hold at least its volume, and their boxes span its box. Necessary, not sufficient; the
@@ -2427,7 +2458,11 @@ class Part(_Body):
             result, failure, problem = None, e, None
         if result is not None and problem is None:
             return result
-        if len(tools) > 1:
+        if len(tools) == 1:
+            retry = self._nurbs_retry(tools, op, name)
+            if retry is not None:
+                return retry
+        else:
             # Tools that overlap each other (two holes side by side) can fail one after the
             # other where the combined tool works: combine them first.
             try:
@@ -2441,6 +2476,9 @@ class Part(_Body):
                         return retry
             except KernelError:
                 pass
+            retry = self._nurbs_retry(tools, op, name)
+            if retry is not None:
+                return retry
         broken = [x for x in (self, *tools) if x._solid_problem() is not None]
         if broken:
             which = "the part" if broken[0] is self else "a tool"
@@ -2452,6 +2490,23 @@ class Part(_Body):
         if failure is not None:
             raise KernelError(failure.operation, failure.detail, failure.status, hint) from failure
         raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
+
+    def _nurbs_retry(self, tools: Sequence[Part], op: Any, name: str) -> Part | None:
+        """The Boolean again with a NURBS copy of each tool that has a cylinder or cone parallel
+        to one of the part (or of an earlier tool), off its axis, where their faces overlap: a
+        tool beside an earlier hole or boss (kernel plan B10). The kernel fails there with the
+        analytic tool and gets the right body with the NURBS one, whose faces come back analytic.
+        None where no tool is such a tool, or the retry fails or is wrong too."""
+        nurbs = [any(_parallel_rounds(x, t) for x in (self, *tools[:i])) for i, t in enumerate(tools)]
+        if not any(nurbs):
+            return None
+        try:
+            retry = self._like(self._run_boolean([t.to_nurbs() if n else t for t, n in zip(tools, nurbs)], op, name))
+            if self._boolean_problem(retry, tools, op) is not None or _volume_problem(retry, self, tools, op):
+                return None
+        except KernelError:
+            return None
+        return retry
 
     def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
         h = BrepHandle(self._copy_brep())
@@ -3370,6 +3425,21 @@ def _same_region(a: Face, b: Face) -> bool:
             and abs(a.area - b.area) <= 1e-6 * max(a.area, b.area) and a.center().distance_to(b.center()) <= tol)
 
 
+def _volume_problem(result: Part, part: Part, tools: Sequence[Part], op: Any) -> bool:
+    """Whether the volume of a Boolean's result lies outside the bounds the operands' set (within
+    1e-3): a union holds the largest body and no more than all; an intersection no more than the
+    smallest; a difference no more than the part, and no less than the tools can take of it. The
+    volumes are integrated as precisely as ``volume`` asks, so that they are there when it asks."""
+    v = float(result._props()["volume"]) if result._brep.face_count() else 0.0
+    a = float(part._props()["volume"])
+    b = [float(t._props()["volume"]) for t in tools]
+    if op == k.BooleanOp.UNION:
+        return not max(a, *b) * (1 - 1e-3) <= v <= (a + sum(b)) * (1 + 1e-3)
+    if op == k.BooleanOp.INTERSECTION:
+        return not v <= min(a, *b) * (1 + 1e-3)
+    return not a - sum(b) - 1e-3 * a <= v <= a * (1 + 1e-3)
+
+
 def _merge_problem(merged: Part, parts: Sequence[Part]) -> str | None:
     """What is wrong with the result of a merge, or None. Its volume, that of the union, lies
     between that of the largest part and that of all parts together (within 1e-3); a result
@@ -3393,8 +3463,9 @@ def _merge_problem(merged: Part, parts: Sequence[Part]) -> str | None:
 
 def _combine(h: BrepHandle, tool: _Body, op: Any, non_manifold: bool = False) -> None:
     """Combine a copy of a tool into the Brep a handle owns (``ext.boolean``). The kernel changes
-    that Brep and deletes the copy when it succeeds, and keeps both when it fails: the handles
-    hold them until then and free them on a failure."""
+    that Brep (or gives a new one in its place, where it turned a seam) and deletes the copy when
+    it succeeds, and keeps both when it fails: the handles hold them until then and free them on
+    a failure."""
     th = BrepHandle(tool._copy_brep())
     h.brep = ext.boolean(h.brep, th.brep, op, non_manifold)
     _take(th)

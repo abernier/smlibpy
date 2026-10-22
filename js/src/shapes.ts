@@ -2065,6 +2065,37 @@ export function _disjoint(a: BoundBox, b: BoundBox, tol = 1e-9): boolean {
   return [0, 1, 2].some((i) => amax[i] < bmin[i] - tol || bmax[i] < amin[i] - tol)
 }
 
+/** The cylinders and cones of a body: a point of the axis, its direction, the face's loose box. */
+function _roundFaces(body: _Body): [Vector, Vector, BoundBox][] {
+  const out: [Vector, Vector, BoundBox][] = []
+  for (const f of k.brep_faces(body._brep) as number[]) {
+    const info = ext.surface_data(k.face_surface(f), false)
+    if (info.kind === 'cylinder' || info.kind === 'cone') {
+      const [lo, hi] = k.face_bounding_box(f, false)
+      out.push([new Vector(info.placement.origin), new Vector(info.placement.z_dir).normalized(), new BoundBox(lo, hi)])
+    }
+  }
+  return out
+}
+
+/** Whether a cylinder or cone of the tool lies parallel to one of the part, off its axis, where the
+ * boxes of the two faces overlap: a tool beside an earlier hole or boss, whose faces cross that
+ * one's along lines (kernel plan B10). */
+export function _parallelRounds(part: _Body, tool: _Body): boolean {
+  const mine = _roundFaces(part)
+  if (!mine.length) return false
+  for (const [o, d, box] of _roundFaces(tool)) {
+    for (const [o2, d2, box2] of mine) {
+      if (d.cross(d2).length > 1e-9) continue
+      const w = o2.sub(o)
+      const off = w.sub(d.mul(w.dot(d))) // from one axis to the other
+      if (off.length <= 1e-9 * (1 + box.diagonal + box2.diagonal)) continue // on one axis: they cross along circles, if at all
+      if (!_disjoint(box, box2, 1e-6 * (box.diagonal + box2.diagonal))) return true
+    }
+  }
+  return false
+}
+
 /** Whether tools can cover a part, so that a cut by them can leave nothing: together they hold at
  * least its volume, and their boxes span its box. Necessary, not sufficient; the volumes are the
  * quick ones, with a margin of 1e-3. */
@@ -2789,7 +2820,10 @@ export class Part extends _Body {
       problem = null
     }
     if (result !== null && problem === null) return result
-    if (parts.length > 1) {
+    if (parts.length === 1) {
+      const retry = this._nurbsRetry(parts, op, name)
+      if (retry !== null) return retry
+    } else {
       // Tools that overlap each other (two holes side by side) can fail one after the other where
       // the combined tool works: combine them first.
       try {
@@ -2803,6 +2837,8 @@ export class Part extends _Body {
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
       }
+      const retry = this._nurbsRetry(parts, op, name)
+      if (retry !== null) return retry
     }
     const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
     if (broken.length) {
@@ -2817,6 +2853,24 @@ export class Part extends _Body {
       throw error
     }
     throw new ModelingError(`${name}: the kernel returned a result that is ${problem}; ${hint}`)
+  }
+
+  /** The Boolean again with a NURBS copy of each tool that has a cylinder or cone parallel to one
+   * of the part (or of an earlier tool), off its axis, where their faces overlap: a tool beside an
+   * earlier hole or boss (kernel plan B10). The kernel fails there with the analytic tool and gets
+   * the right body with the NURBS one, whose faces come back analytic. Null where no tool is such a
+   * tool, or the retry fails or is wrong too. */
+  _nurbsRetry(tools: readonly Part[], op: number, name: string): Part | null {
+    const nurbs = tools.map((t, i) => [this as Part, ...tools.slice(0, i)].some((x) => _parallelRounds(x, t)))
+    if (!nurbs.some(Boolean)) return null
+    try {
+      const retry = this._like(this._runBoolean(tools.map((t, i) => (nurbs[i] ? t.toNurbs() : t)), op, name))
+      if (this._booleanProblem(retry, tools, op) !== null || _volumeProblem(retry, this, tools, op)) return null
+      return retry
+    } catch (e) {
+      if (!(e instanceof KernelError)) throw e
+      return null
+    }
   }
 
   _runBoolean(tools: readonly _Body[], op: number, name: string): number {
@@ -3815,11 +3869,25 @@ function _sameRegion(a: Face, b: Face): boolean {
   )
 }
 
+/** Whether the volume of a Boolean's result lies outside the bounds the operands' set (within 1e-3):
+ * a union holds the largest body and no more than all; an intersection no more than the smallest; a
+ * difference no more than the part, and no less than the tools can take of it. The volumes are
+ * integrated as precisely as `volume` asks, so that they are there when it asks. */
+function _volumeProblem(result: Part, part: Part, tools: readonly Part[], op: number): boolean {
+  const v = k.brep_face_count(result._brep) ? (result._props().volume as number) : 0
+  const a = part._props().volume as number
+  const b = tools.map((t) => t._props().volume as number)
+  const sum = b.reduce((x, y) => x + y, 0)
+  if (op === k.BooleanOp.UNION) return !(Math.max(a, ...b) * (1 - 1e-3) <= v && v <= (a + sum) * (1 + 1e-3))
+  if (op === k.BooleanOp.INTERSECTION) return !(v <= Math.min(a, ...b) * (1 + 1e-3))
+  return !(a - sum - 1e-3 * a <= v && v <= a * (1 + 1e-3))
+}
+
 /** What is wrong with the result of a merge, or null. Its volume, that of the union, lies between
  * that of the largest part and that of all parts together (within 1e-3); a result outside that is
  * wrong. The volumes are integrated as precisely as `volume` asks (it costs about as much as a
  * coarse integration), so that they are there when `volume` and `cells()` ask. */
-function _mergeProblem(merged: Part, parts: Part[]): string | null {
+export function _mergeProblem(merged: Part, parts: Part[]): string | null {
   let volumes: number[]
   try {
     volumes = parts.map((p) => p._props().volume as number)
@@ -3842,12 +3910,13 @@ function _mergeProblem(merged: Part, parts: Part[]): string | null {
 }
 
 /** Combine a copy of a tool into the Brep a handle owns (`ext.boolean`). The kernel changes that
- * Brep and deletes the copy when it succeeds, and keeps both when it fails: the handles hold them
- * until then and free them on a failure. */
+ * Brep (or gives a new one in its place, where it turned a seam) and deletes the copy when it
+ * succeeds, and keeps both when it fails: the handles hold them until then and free them on a
+ * failure. */
 function _combine(h: BrepHandle, tool: _Body, op: number, nonManifold = false): void {
   const th = new BrepHandle(tool._copyBrep())
   try {
-    ext.boolean(h.brep, th.brep, op, nonManifold) // the result is h's Brep, changed
+    h.brep = ext.boolean(h.brep, th.brep, op, nonManifold)
     th.release()
   } finally {
     th.dispose()

@@ -376,7 +376,10 @@ def test_overlapping_parallel_holes_in_one_cut():
     assert plate.is_valid()
 
 
-def test_boolean_errors_say_what_to_do():
+def test_boolean_errors_say_what_to_do(monkeypatch):
+    # (a tool beside an earlier hole: the retry with a NURBS copy of the tool gets it right, kernel
+    # plan B10; the hint is for where that fails too)
+    monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
     with pytest.raises(KernelError, match="combine the tools first"):
         Box(40, 40, 10) - Cylinder(6, 30) - Cylinder(3, 30).translate(8, 0, 0)
     with pytest.raises(ModelingError, match="touch only along an edge"):
@@ -401,9 +404,11 @@ def test_empty_boolean_results_where_they_are_right():
     assert len((Sphere(5) - [Box(10, 10, 5).translate(0, 0, 2.5), Box(10, 10, 5).translate(0, 0, -2.5)]).faces()) == 0
 
 
-def test_an_empty_cut_needs_tools_that_can_cover_the_part():
+def test_an_empty_cut_needs_tools_that_can_cover_the_part(monkeypatch):
     # A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of
-    # the same pair, which confirmed the empty cut, is the whole part. Both were accepted.
+    # the same pair, which confirmed the empty cut, is the whole part. Both were accepted. (The
+    # retry with a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.)
+    monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
     holed = Sphere(20) - Cylinder(6, 60)
     with pytest.raises(ModelingError, match="empty"):
         holed - Cylinder(3, 60).translate(8, 0, 0)  # was Part(0 faces), no error
@@ -465,20 +470,23 @@ def test_chains_of_booleans_integrate_nothing(monkeypatch):
     assert p.volume == approx(200 * 200 * 10 - 60 * math.pi * 4 * 10 + 1000, rel=1e-9) and len(measured) == 2
 
 
-@pytest.mark.xfail(strict=True, reason="kernel plan B6: a primitive's seam line in a tangent plane of the other operand")
 @pytest.mark.parametrize("cut, exact", [
     (lambda: (Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0), 24299.258668),
     (lambda: Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3),
      6931.747603),
 ], ids=["groove pin", "cross holes"])
 def test_holes_tangent_to_a_seam(cut, exact):
-    assert cut().volume == approx(exact, rel=1e-7)  # 24331.7029 and 7057.1895, both valid
+    # The seam of the second hole lies in a plane tangent to the first (kernel plan B6): the kernel
+    # gave valid bodies of 24331.7029 and 7057.1895. That hole is turned about its axis first now.
+    assert cut().volume == approx(exact, rel=1e-7)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="reads the process's memory with ps")
 def test_failed_booleans_free_their_operands():
     # The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.6 MB
-    # per failed cut. In a process of its own, so that what other tests left does not count.
+    # per failed cut. In a process of its own, so that what other tests left does not count. (A
+    # cross hole touching the first one inside at a point; the cut beside an earlier parallel hole
+    # used here before is right now, kernel plan B10.)
     code = """
 import gc, os
 from smlibpy import *
@@ -486,9 +494,10 @@ def rss():
     return int(os.popen(f"ps -o rss= -p {os.getpid()}").read()) / 1024
 def fail():
     try:
-        Box(40, 30, 20) - Cylinder(3, 40).translate((-5, 0, 0)) - Cylinder(3, 40)
+        Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
     except KernelError:
-        pass
+        return
+    raise SystemExit("the cut did not fail")
 for _ in range(10):
     fail()
 gc.collect()
@@ -508,11 +517,14 @@ def test_booleans_that_read_freed_kernel_memory_raise():
     # Each of these read freed memory in the kernel and killed the process (exit 139); in a
     # process of their own, so that a crash fails the test rather than the run.
     # Crossing holes whose seams lie tangent to the other hole: SplitIntersectingProtoEdges split a
-    # ProtoEdge it had just deleted (now: SM_ERR_BAD_INTERSECTIONS). A flat end cap tangent to a
-    # sphere: the Boolean deleted a Shell that Faces still used (DeleteFaces), and BooleanPostProcess
-    # read it. The extended shell of a rotated box: BooleanPostProcess read a deleted Vertex, in
-    # about one call of a hundred; the kernel's shell itself, 100 times (shell() measures the walls
-    # first and runs the kernel in a copy of the process, so it would not reach or show this).
+    # ProtoEdge it had just deleted (now: SM_ERR_BAD_INTERSECTIONS from the kernel's own Boolean).
+    # smlibpy turns the hole whose seam that is about its axis first (kernel plan B6), and gets them
+    # right: the cut 6931.7476, the union 2199.2258 and the intersection 62.721 (by integration
+    # 62.720958; OpenCASCADE 62.7209). A flat end cap tangent to a sphere: the Boolean deleted a
+    # Shell that Faces still used (DeleteFaces), and BooleanPostProcess read it. The extended shell
+    # of a rotated box: BooleanPostProcess read a deleted Vertex, in about one call of a hundred; the
+    # kernel's shell itself, 100 times (shell() measures the walls first and runs the kernel in a
+    # copy of the process, so it would not reach or show this).
     code = """
 import warnings
 warnings.simplefilter("ignore")
@@ -524,26 +536,33 @@ for z in (3, 3.1):
     h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
     cases += [lambda h2=h2: Box(20, 20, 20) - h1 - h2, lambda h2=h2: Box(20, 20, 20) - [h1, h2],
               lambda h2=h2: h1 + h2, lambda h2=h2: h1 & h2, lambda h2=h2: h1.merge(h2)]
+for z in (3, 3.1):  # the kernel's own Boolean, seams as they are
+    h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+    for a, op in ((Box(20, 20, 20) - h1, k.BooleanOp.DIFFERENCE), (h1, k.BooleanOp.UNION), (h1, k.BooleanOp.INTERSECTION)):
+        cases.append(lambda a=a, h2=h2, op=op: k.boolean(a._copy_brep(), h2._copy_brep(), operation=op))
 cases.append(lambda: Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504))
 box = Box(40, 30, 10).rotate(X, 45)
 opening = box.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1]
-cases += [lambda: Part._wrap(k.shell_brep(box._brep, -10, extended_offset=True, faces_to_shell=[opening._f]))] * 100
+cases += [lambda: k.shell_brep(box._brep, -10, extended_offset=True, faces_to_shell=[opening._f])] * 100
 for case in cases:
     try:
-        case()
-        print("ok", flush=True)
+        r = case()
+        print(f"ok:{r.volume:.3f}" if isinstance(r, Part) else "ok", flush=True)
     except KernelError:
         print("KernelError", flush=True)
     except ModelingError:
         print("ModelingError", flush=True)
-    except RuntimeError:  # (the kernel's shell, called directly)
+    except RuntimeError:  # (the kernel's own calls)
         print("failed", flush=True)
 """
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} cases"
     out = run.stdout.split()
-    assert out[:11] == ["KernelError"] * 11  # the crossing holes and the end cap
-    assert len(out) == 111 and set(out[11:]) <= {"ok", "failed"}  # the shells: some fail, none crash
+    holes = ["ok:6931.748", "ok:6931.748", "ok:2199.226", "ok:62.721", "ok:2199.226"]
+    assert out[:10] == holes * 2  # were KernelError (and exit 139 before that)
+    assert out[10:16] == ["failed"] * 6  # the kernel's own Boolean of the same holes
+    assert out[16] == "KernelError"  # the end cap
+    assert len(out) == 117 and set(out[17:]) <= {"ok", "failed"}  # the shells: some fail, none crash
     assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
         14.137072, rel=1e-6)  # the same pair's intersection works
 
@@ -622,11 +641,17 @@ def test_shell_offset_and_thicken_run_the_kernel_in_a_copy_of_the_process(monkey
 def test_a_merge_that_loses_volume_raises():
     # A sphere whose seam lies tangent to the cylinder: the kernel's merge came out smaller than the
     # cut cylinder (518.314 against 566.559; right: 586.443), and cells() of it crashed the process.
+    # merge() turns the sphere about its axis first now (kernel plan B6) and gets it right; the
+    # kernel's own merge, seams as they are, is still wrong, and the check refuses it.
     pin = Cylinder(2.5, 30).rotate(Y, 90) - Cone(2.5, 6, 6).rotate(Y, 90).translate(15, 0.6687, -3.5)
-    with pytest.raises(ModelingError, match="less than that of the largest part"):
-        pin.merge(Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5))
+    sphere = Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5)
+    raw = Part._wrap(k.non_manifold_boolean(pin._copy_brep(), sphere._copy_brep(), operation=k.BooleanOp.MERGE))
+    assert "less than that of the largest part" in shapes._merge_problem(raw, [pin, sphere])
+    merged = pin.merge(sphere)
+    assert merged.volume == approx(586.443229, rel=1e-6)  # OpenCASCADE
+    assert sum(c.volume for c in merged.cells()) == approx(586.443229, rel=1e-6)
     right = pin.merge(Sphere(2).translate(0, -0.5, 2.5))  # the sphere not turned
-    assert right.volume == approx(586.443229, rel=1e-6)  # OpenCASCADE
+    assert right.volume == approx(586.443229, rel=1e-6)
     assert sum(c.volume for c in right.cells()) == approx(586.443229, rel=1e-6)
 
 

@@ -18,6 +18,7 @@
 #include "face_draft.h"
 #include "fit.h"
 #include "measure.h"
+#include "seams.h"
 #include "sheetmetal.h"
 #include "step_build.h"
 #include "surface_eval.h"
@@ -57,8 +58,9 @@ val copy_with_map(uintptr_t b, val faces, val edges, val vertices)
 }
 
 void transform_brep(uintptr_t b, val matrix) { guard([&] { smlibpy::transform_brep(brep(b), numbers(matrix)); }); }
-// As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
-// the caller's (and the kernel's Boolean mark is cleared).
+// As k.boolean: on success the result is brep1, changed, or a Brep in its place (brep1 deleted)
+// where a seam was turned, and brep2 is deleted; on failure both stay the caller's, as they were
+// (and the kernel's Boolean mark is cleared).
 uintptr_t boolean(uintptr_t brep1, uintptr_t brep2, int operation, bool non_manifold, bool imprinting)
 {
     return guard([&] { return ptr(smlibpy::boolean(brep(brep1), brep(brep2), operation, non_manifold, imprinting)); });
@@ -77,6 +79,25 @@ val classify_points(uintptr_t b, val points, double tolerance)
             flat.insert(flat.end(), p.begin(), p.end());
         }
         return to_js(smlibpy::classify_points(brep(b), flat, tolerance));
+    });
+}
+// Per point where a seam of a touches a face of b tangentially: [edge, face, [x, y, z]].
+val seam_contacts(uintptr_t a, uintptr_t b, double tolerance)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& c : smlibpy::seam_contacts(brep(a), brep(b), tolerance))
+        {
+            val point = val::array();
+            for (double x : c.point)
+                point.call<void>("push", x);
+            val item = val::array();
+            item.call<void>("push", static_cast<double>(c.edge));
+            item.call<void>("push", static_cast<double>(c.face));
+            item.call<void>("push", point);
+            out.call<void>("push", item);
+        }
+        return out;
     });
 }
 val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
@@ -747,6 +768,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__poly_from_triangles", &poly_from_triangles);
     function("ext__triangulate_poly", &triangulate_poly);
     function("ext__region_shells", &region_shells);
+    function("ext__seam_contacts", &seam_contacts);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);

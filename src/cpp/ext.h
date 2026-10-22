@@ -31,6 +31,8 @@ void bind_tessellate(py::module_ m);
 void bind_fit(py::module_ m);
 // The cells of a non-manifold body (cells.cpp).
 void bind_cells(py::module_ m);
+// Seams tangent to the other operand of a Boolean (seams.cpp).
+void bind_seams(py::module_ m);
 // The nearest points of two bodies (distance.cpp).
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).

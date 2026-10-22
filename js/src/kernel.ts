@@ -88,6 +88,7 @@ const OWN: Record<string, Signature> = {
   'ext.poly_from_triangles': ['vertices', 'triangles'],
   'ext.triangulate_poly': ['poly'],
   'ext.region_shells': ['brep'],
+  'ext.seam_contacts': ['a', 'b', ['tolerance', 0.0]],
   'ext.usd_text': ['items', ['up_axis', 'Z'], ['meters_per_unit', 0.001]],
   'ext.usd_read': ['text', ['heal', false]],
   'ext.usd_assets': ['text'],
@@ -382,6 +383,16 @@ export class BrepHandle extends Handle {
   get brep(): number {
     if (!this._p) throw _disposed('body')
     return this._p
+  }
+
+  /** Holds another Brep in place of its own, which the kernel deleted (as Python's `h.brep = ...`):
+   * `ext.boolean` can give its result as a new Brep. */
+  set brep(brep: number) {
+    if (brep === this._p) return
+    if (!brep) throw new KernelError('kernel', 'operation returned no body')
+    freed.unregister(this)
+    this._p = brep
+    freed.register(this, ['brep', brep], this)
   }
 }
 

@@ -57,7 +57,10 @@ void transform_brep(SmBrep* brep, const std::vector<double>& matrix);
 // the kernel as it was when it fails: SmMerge marks the shared context as doing a Boolean and clears
 // the mark only on its way out of a success (while it is set, the kernel builds no surface caches).
 // As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
-// the caller's. `operation`: SM_BO_UNION, SM_BO_DIFFERENCE, SM_BO_INTERSECTION or SM_BO_MERGE.
+// the caller's. Where the faces of the two cross along a curve tangent to a seam of a body of
+// revolution (seams.h), that body is turned about its axis first, on copies: then the result is a
+// Brep of its own, and brep1 and brep2 are deleted. `operation`: SM_BO_UNION, SM_BO_DIFFERENCE,
+// SM_BO_INTERSECTION or SM_BO_MERGE.
 SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, bool imprinting = false);
 // Where each point (x, y, z, x, y, z, ...) lies relative to a body, within `tolerance` (0: the
 // body's own; SmBrep::Point3DClassify): per point (where, index, cell). `where` is "inside",
