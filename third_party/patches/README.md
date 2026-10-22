@@ -5,8 +5,10 @@ smlibpy builds the SMLib kernel from the usd-brep submodule (`third_party/usd-br
 smlibpy cannot work around from outside. Fixed copies of those files live here, and
 `CMakeLists.txt` compiles each one in place of the original:
 `third_party/patches/<dir>/src/<file>` replaces `third_party/usd-brep/source/<dir>/src/<file>`
-(`<dir>` is `SMLib` or `SM_API`). The configure step stops if a copy has no original of that
-name.
+(`<dir>` is `SMLib` or `SM_API`). A header, `third_party/patches/<dir>/inc/<file>`, comes before
+`source/<dir>/inc` in the include path of the kernel and of everything built with it (SmPyLib,
+smlibpy's C++, the WebAssembly module), so every file that includes it gets the copy. The
+configure step stops if a copy has no original of that name.
 
 Each copy is the upstream file with its notices unchanged, a notice at the top saying what was
 changed and why (Apache License 2.0, section 4(b)), and every change marked
@@ -18,6 +20,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 
 | File | Change | Defect |
 |---|---|---|
+| `SMLib/inc/SmMessages.h` | In release builds, `SER`, `SER_MSG`, `SERN`, `SERN_MSG`, `SERZ`, `SER_DELETE`, `SER_DELETE_ALL_PARTS`, `NER`, `NER_MSG`, `NERN`, `AERS`, `AERS_MSG`, `AERN` and `AERN_MSG` report the failure they return to the kernel's error callback (`smos_InvokeErrorCallback`, with the file, the line and the function), as debug builds do through `smos_ErrorMessage`, without its formatting | Release builds compiled the error trace out: these macros only returned, so the callback that SmPyLib installs to collect a trail heard of nothing, and every kernel error said only `SM_ERR at <binding>.cpp`. smlibpy's own callback (`src/cpp/trace.cpp`, in place of SmPyLib's trail, which kept the first 4 kB where the failing chain comes last) keeps the last 48 failures: `KernelError.trace` |
 | `SMLib/src/SmVertex.cpp` | `SmVertex::GetVertexuseOfFace` tests the face again | The face test was commented out together with the composite-face branch ("Remove Composite"), so the function returned the vertexuse of whichever face came first. `SmFilletRemoval` read its corner parameters from the wrong faces and removed nothing: upstream's known issue "`remove_fillet` removes nothing and reports success". Also feeds surface fitting through vertices (`SmFace.cpp`), UV boxes of loops (`SmLoopuse.cpp`), curve classification (`SmCurveClass.cpp`) and `SmVertex::HasParallelFaces`. |
 | `SMLib/src/SmVertex.cpp` | `SmVertex::GetLoopOfFace` tests the face again (its face pointer is no longer set only in debug builds) | Same as above: it returned the loop of whichever face came first. Used by point classification (`SmPointClassification`, `SmPointClass.cpp`). |
 | `SMLib/src/SmProtoTopology.cpp` | `SmProtoTopologyManager::~SmProtoTopologyManager` cuts the links between ProtoVertices and ProtoEdges before deleting them | It deleted the ProtoEdges first; a ProtoVertex that still listed one then wrote into it (`SmProtoEdge::RemoveProtoVertex` from `~SmProtoVertex`). A write into freed memory at the end of every Boolean, found with AddressSanitizer on `Box(40, 30, 20) - Cylinder(5, 40)`. |
@@ -100,6 +103,16 @@ build:
   then (Apple's clang has none on macOS arm64); the heap statistics stood in for it. Over 449 STEP files (611 bodies) of the
   classcad-mcp corpus, no volume, face count, validity or error changed with the seam and the
   random-number changes.
+- The error reports (`SmMessages.h`): a failed call's `KernelError.trace` ends with the chain from
+  the deepest failing kernel function to the API function (crossing holes: `IntersectTopology`,
+  `IntersectInsertRelate`, `ManifoldBoolean`, `SmApiBoolean`; a fillet the kernel has no corner for:
+  `CreateFilletCorners`, `DoFillet`, `SmApiFilletEdges`), in both builds. Reporting costs a call
+  on the failure paths only: the Python suite took 74.2 and 75.6 s against 73.6 and 75.1 s before
+  (two runs each), and the kernel reported 1769 failures in it (in 21597 kernel calls of the test
+  process; most are errors it recovers from); the WebAssembly module is 7.82 MB, 188 kB more
+  (1.85 MB with brotli, 46 kB more). No result changed (both suites, the parity files of
+  `tools/parity.py`), and AddressSanitizer reports nothing for `test_defeature`, `test_guards`,
+  `test_draft`, `test_io` and `test_lane_WN`.
 - The tight box: a USD file with such line edges reads back with `bbox()` of +-5, as the box is
   (`tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges`, which also checks that
   smlibpy no longer writes such files).
@@ -181,8 +194,10 @@ When an upstream release fixes a defect:
    `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass; for the
    seam check, `tests/test_step_import.py::test_seam_checks_on_import_free_their_curves` must still
    pass and AddressSanitizer report nothing for `tests/test_step_import.py`; for the tight box,
-   `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass.
+   `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass; for
+   the error reports, `tests/test_lane_WN.py::test_kernel_errors_say_where_the_kernel_gave_up`
+   (with upstream's header in a release build the trace is empty).
 4. Remove the row from the table above.
 
-When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can
-go too.
+When the last copy is gone, this directory, `smlibpy_patch_sources` and `smlibpy_patch_headers`
+in `CMakeLists.txt` can go too.

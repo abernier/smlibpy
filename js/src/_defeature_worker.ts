@@ -180,7 +180,11 @@ async function onJob(job: Any): Promise<void> {
       if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) outcome = CRASHED
       else {
         outcome = FAILED
-        const error = e instanceof Error ? { name: e.name, message: e.message } : { name: 'Error', message: String(e) }
+        const error: Record<string, unknown> = e instanceof Error ? { name: e.name, message: e.message } : { name: 'Error', message: String(e) }
+        // (with the kernel's trace: a KernelError's, a kernel function's failure this kernel's)
+        const trace = (e as { trace?: unknown } | null)?.trace
+        if (e instanceof Error && Array.isArray(trace)) error.trace = trace
+        else if (e instanceof Error && e.constructor === Error) error.trace = loaded.ext.kernel_trace()[0]
         bytes = new TextEncoder().encode(JSON.stringify(error))
       }
     }

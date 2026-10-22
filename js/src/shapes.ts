@@ -6,6 +6,7 @@
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
 import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { _traced } from './_errors.ts'
 import {
   TOLERANCE,
   Axis,
@@ -2845,7 +2846,7 @@ export class Part extends _Body {
       const hint =
         'the operands may touch only along an edge, at a point or tangentially (move one so they overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools first and apply them at once: part.cut(tool1.fuse(tool2)))'
       if (failure !== null) {
-        const error = new KernelError(failure.operation, failure.detail, failure.status, hint)
+        const error = _traced(new KernelError(failure.operation, failure.detail, failure.status, hint), failure.trace)
         ;(error as Any).cause = failure
         throw error
       }
@@ -3947,7 +3948,7 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
     return kernelCall(operation, fn, hint)
   } catch (e) {
     if (!(e instanceof KernelError) || e.status !== 'SM_ERR_INVALID_INPUT') throw e
-    const error = new KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT)
+    const error = _traced(new KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT), e.trace)
     ;(error as Any).cause = e
     throw error
   }

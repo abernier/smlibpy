@@ -63,6 +63,14 @@ change. Where smlibpy needs more than the published bindings offer, its own C++ 
   files back with OpenCASCADE and checks validity and volume.
 - **STEP import** rebuilds every face on its exact surface and keeps the file's topology,
   so faces share edges and vertices instead of being stitched by tolerance.
+- **The builds differ in the last bits.** The native build for arm64 (macOS, Linux on ARM) lets
+  the compiler contract `a * b + c` into one instruction (FMA), which rounds once instead of
+  twice; x86_64 builds and smlibwasm's WebAssembly do not. Volumes then differ by about 1e-9 of
+  their value, and now and then a step that is close to a tolerance in the kernel succeeds in one
+  build and fails in the other: all-edge fillets of usd-brep's `vase1.smb` and `vase3.smb` succeed
+  on arm64 and fail in smlibwasm, and in a native build without the contraction
+  (`-ffp-contract=off`), where the kernel's drop of a corner's guess point onto the filleted edge
+  finds not one point. `tools/parity.py` lists the known cases.
 
 ## Robustness work in smlibpy
 
@@ -108,6 +116,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A failed Boolean keeps both operands and leaves the context marked as doing a Boolean (it then builds no surface caches) | holds the operands' copies until the kernel takes them and clears the mark (`ext.boolean`) |
 | The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, and handed out an extended surface after deleting it, and the process crashed now and then | patches the three sites (`third_party/patches`), and runs the kernel steps in another process, whose body comes back as an exact copy (see "Steps in another process" below) |
 | shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
+| Release builds compile the kernel's error reports out (`SER` and the other failure macros of `SmMessages.h` only return), so every failure said only `SM_ERR at <binding>` | patched (`SmMessages.h`): each failure is reported to the error callback, which keeps the last 48; `KernelError.trace` (see "Where the kernel gave up" below) |
+| usd-brep's conversion writes the UV curves of a loop that runs up and down a sphere's seam (no edges at its poles), which do not close (usd-brep's validator: BA.763) | writes such loops without UV curves, which a reader rebuilds from the 3D curves |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below) and writes a line edge as a B-spline over SMLib's unbounded line (2.5 km long), and trusts the arrays and values of a file it reads (a malformed array, a sphere whose refDirection is its axis or a weight of 0 crashes it; a cylinder axis of length 0 gives a wrong body) | writes such cones as cylinders or turned around and line edges as long as the edges; checks every array, reference and value (the rules of usd-brep's validator) before converting, and checks each body from other software with the kernel (`SmBrep::AssertValid`) before anything measures it |
 
 ## Known kernel limitations
@@ -135,6 +145,29 @@ matter here:
   own), so a crash raises `ModelingError` and this process goes on, and it tries a mode again only
   after a result it refused, not after an error. A step longer than
   `smlibpy.defeature.GUARD_SECONDS` (20 s) is stopped.
+
+## Where the kernel gave up
+
+A `KernelError` names the smlibpy call, the kernel's status and a hint. Its `trace` says where in
+the kernel the call failed: the failures the kernel reported during the call, oldest first, the
+last 48 of them, as `"SM_ERR at SmFilletExecutive.cpp:1603 (DoFillet)"` (the status, the kernel's
+file and line, its function). It ends with the chain from the deepest function that failed to
+the kernel's API function; what comes before are errors the kernel recovered from (a step it
+tried another way). Steps in another process bring theirs back.
+
+```python
+try:
+    Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+except KernelError as e:
+    print(e.status)       # SM_ERR_BAD_INTERSECTIONS
+    print(e.trace[-3:])   # (... (IntersectTopology)', '... SmMerge.cpp:2698 (ManifoldBoolean)', '... (SmApiBoolean)')
+```
+
+The trace is for bug reports and for maintainers: it changes with the kernel, and the builds can
+give up in different places (smlibwasm gives up on the holes above in `SmMerge::MakeFaceuse`,
+with `SM_ERR`). The raw layer reads it with `ext.kernel_trace()` (the entries and how many there
+were since `ext.clear_kernel_trace()`). Reporting a failure costs a function call on the kernel's
+error paths only; the test suites take as long as before.
 
 ## Steps in another process
 
@@ -190,6 +223,8 @@ kernel, its patches or the modelling code. Each one runs locally the same way:
 | Upstream's tests of its Python bindings, against `smlibpy._core` | `python tools/oracles/smpylib_tests.py` | a test that fails, but for those of the `usd` submodule, which smlibpy builds without |
 | Upstream's 200 `.smb` test files | `python tools/oracles/smb_files.py` | a file whose kind, face count, volume, validity or mesh differs from `tools/oracles/smb_files.json` |
 | Crash loops: the calls that crashed the kernel (O1, O4 of the kernel plan), again and again in fresh processes with the guard off | `python tools/oracles/crash_loops.py --runs 20` | a crash of a case not marked known (two still crash now and then, contained by the guard: their rates are printed) |
+| NVIDIA's BrepArray validator (usd-brep's `brep_validator`, 191 rules) on USD files, without OpenUSD: upstream's rule checker on a shim of the `pxr` calls it makes (`tools/oracles/usd_shim`). The test suites run it on what `export_usd` and `toUsd` write | `python tools/oracles/usd_validator.py FILE.usda ...` | a rule a file fails (the tests leave out BA.465, control points in the body's box, for bodies read from other software: upstream's own files fail it) |
+| smlibwasm against smlibpy: the text of the writers smlibwasm has its own copy of (STEP, USD, DXF, OBJ, glTF, STL) for the same bodies, and the numbers of some modelling steps, with the known differences of the builds (`KNOWN`) | `python tools/parity.py [--update]` writes or checks `tests/data/parity`; `js/test/lane_WN.test.ts` compares smlibwasm with it | text that differs but for numbers to 1e-9, a number off by more than 1e-7 of it, a count or an error that differs, a known difference that went away |
 
 The fuzz run's invariants: every result is a valid body within its box's volume;
 |A u B| + |A n B| = |A| + |B|, |A - B| = |A| - |A n B| and the cells of `A.merge(B)` add up to

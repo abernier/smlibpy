@@ -28,7 +28,15 @@ class KernelError(ModelingError):
 
     ``operation`` names the smlibpy call, ``status`` the kernel status code
     (e.g. ``SM_ERR_INVALID_INPUT``) and ``hint`` a suggestion when one is known.
+    ``trace`` says where the kernel gave up: the failures it reported during the call, oldest
+    first, at most the last 48, as ``"SM_ERR at SmFilletExecutive.cpp:1603 (DoFillet)"``. It
+    ends with the chain from the deepest function that failed to the kernel's API function;
+    what comes before are errors the kernel recovered from. Empty where the error did not come
+    from a kernel function. For bug reports: the sites change with the kernel.
     """
+
+    #: Where the kernel gave up (see the class); set by :func:`kernel_call`.
+    trace: tuple[str, ...] = ()
 
     def __init__(self, operation: str, detail: str, status: str | None = None, hint: str | None = None):
         self.operation = operation
@@ -48,7 +56,9 @@ _STATUS_RE = re.compile(r"(SM_[A-Z0-9_]+)")
 
 @contextlib.contextmanager
 def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
-    """Turn kernel ``RuntimeError``\\ s into :class:`KernelError` with context."""
+    """Turn kernel ``RuntimeError``\\ s into :class:`KernelError` with context, and the kernel's
+    failures during the call into its ``trace``."""
+    ext.clear_kernel_trace()
     try:
         yield
     except KernelError:
@@ -56,7 +66,24 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
     except RuntimeError as e:
         text = str(e)
         m = _STATUS_RE.search(text)
-        raise KernelError(operation, text, m.group(1) if m else None, hint) from e
+        error = KernelError(operation, text, m.group(1) if m else None, hint)
+        error.trace = _trace_of(e)
+        raise error from e
+
+
+def _trace_of(e: BaseException) -> tuple[str, ...]:
+    """The kernel trace of a failed kernel call: the one another process sent with it
+    (``_kernel_trace``, see ``smlibpy._guard``), else this thread's."""
+    sent = getattr(e, "_kernel_trace", None)
+    if sent is not None:
+        return tuple(sent)
+    return tuple(ext.kernel_trace()[0])
+
+
+def _traced(error: KernelError, cause: BaseException) -> KernelError:
+    """``error`` with the trace of ``cause`` (a KernelError raised again with another hint)."""
+    error.trace = getattr(cause, "trace", ())
+    return error
 
 
 class BrepHandle:

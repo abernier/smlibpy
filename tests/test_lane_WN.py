@@ -1,6 +1,7 @@
 """Lane WN of the kernel plan: isolated kernel steps (N1), memory (N2), the fuzz harness (N3), the typings of
-the free functions (W11), the API reference of the bodies (W12), and fonts without fontTools: WOFF2 (Brotli), CFF2
-and accents built with seac (W13)."""
+the free functions (W11), the API reference of the bodies (W12), fonts without fontTools: WOFF2 (Brotli), CFF2
+and accents built with seac (W13); NVIDIA's validator on smlibpy's USD files (N4), the golden files of the parity
+test of smlibwasm (N5, W16), the kernel's error trace (N6) and the C library's random numbers (N7)."""
 
 import _thread
 import math
@@ -691,3 +692,259 @@ def test_new_fonts_against_an_independent_reader():
             pen = AreaPen(gs)
             gs[glyph].draw(pen)
             assert sum(_segment_area(s) for c in f.outline(gid) for s in c) == approx(pen.value, rel=1e-12, abs=1e-9)
+
+
+
+# == N6: where the kernel gave up (KernelError.trace) ====================================================
+_TRACE_ENTRY = __import__("re").compile(r"^SM_[A-Z_]+ at \w+\.cpp:\d+( \(.+\))?$")
+
+
+def _crossing_holes():
+    return Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+
+
+def _raw_fillet(brep=None):
+    brep = brep or Box(10, 10, 10)._copy_brep()
+    try:
+        k.fillet_edges(brep, brep.edges(), radius=50.0)  # (a kernel function's own RuntimeError)
+    finally:
+        ext.delete_brep(brep)
+
+
+def test_kernel_errors_say_where_the_kernel_gave_up():
+    # Release builds compiled the kernel's error reports out (SER and friends only returned), so a
+    # KernelError said "SM_ERR at <binding>" and no more. Kernel patch K11 (SmMessages.h) reports
+    # each failure to the error callback; the trail keeps the last 48, the failing chain at its end.
+    with pytest.raises(KernelError) as e:
+        _crossing_holes()
+    trace = e.value.trace
+    assert isinstance(trace, tuple) and all(_TRACE_ENTRY.match(t) for t in trace), trace
+    assert trace[-1].startswith("SM_ERR_BAD_INTERSECTIONS at SmApiBrep.cpp:") and trace[-1].endswith("(SmApiBoolean)")
+    assert any(t.endswith("(IntersectTopology)") for t in trace)  # (where kernel patch K1 stops it)
+    # the message and the detail are as they were (the trace is its own field)
+    assert e.value.status == "SM_ERR_BAD_INTERSECTIONS" and e.value.detail.startswith("SmApiBoolean failed:")
+    assert "Kernel trace" not in e.value.detail and "SmTopologyIntersector" not in str(e.value)
+    # a selection the kernel cannot round: raised again with its hint, with the trace of the first
+    p = Box(10, 5, 20) - Cone(4, 5, 20)
+    with pytest.raises(KernelError, match="cannot round the selection") as e:
+        p.fillet(p.edges(), 0.5)
+    assert [t.split(" at ")[0] for t in e.value.trace] == ["SM_ERR_INVALID_INPUT"] * 3
+    assert e.value.trace[0].endswith("(CreateFilletCorners)") and e.value.trace[-1].endswith("(SmApiFilletEdges)")
+    # errors that did not come from a kernel function have none
+    assert KernelError("probe", "detail").trace == ()
+    with pytest.raises(ModelingError) as e:
+        Box(10, 10, 10).fillet(Box(10, 10, 10).edges(), 6)  # (smlibpy's own check)
+    assert getattr(e.value, "trace", ()) == ()
+
+
+def test_the_kernel_trace_keeps_the_last_failures():
+    ext.clear_kernel_trace()
+    assert ext.kernel_trace() == ([], 0)
+    (Box(40, 30, 20) - Cylinder(5, 40)).volume  # (no failure on the way)
+    assert ext.kernel_trace() == ([], 0)
+    with pytest.raises(RuntimeError, match="SmApiFilletEdges failed: SM_ERR"):
+        _raw_fillet()
+    entries, n = ext.kernel_trace()
+    assert n == len(entries) == 4 and entries[-1].endswith("(SmApiFilletEdges)")
+    chain = list(entries)
+    breps = [Box(10, 10, 10)._copy_brep() for _ in range(19)]  # (smlibpy's calls clear the trace: kernel_call)
+    ext.clear_kernel_trace()
+    for brep in breps:
+        with pytest.raises(RuntimeError):
+            _raw_fillet(brep)
+    entries, n = ext.kernel_trace()
+    assert n == 76 and len(entries) == 48 and entries == (chain * 12)[-48:]  # (the first 28 dropped)
+    ext.clear_kernel_trace()
+    assert ext.kernel_trace() == ([], 0)
+
+
+def test_the_kernel_trace_comes_back_from_another_process(mode):
+    # A step in another process (smlibpy._guard): its KernelError, or the kernel function's own error
+    # that kernel_call turns into one here, comes with the trace of the kernel there.
+    with pytest.raises(KernelError) as e:
+        isolated("probe", _crossing_holes)
+    assert e.value.trace and e.value.trace[-1].endswith("(SmApiBoolean)")
+    ext.clear_kernel_trace()
+    with pytest.raises(KernelError) as e:
+        with shapes.kernel_call("probe"):
+            isolated("probe", _raw_fillet)
+    assert len(e.value.trace) == 4 and e.value.trace[-1].endswith("(SmApiFilletEdges)")
+    assert ext.kernel_trace() == ([], 0)  # (this process's kernel did not fail)
+
+
+# == N7: the kernel leaves the C library's random numbers alone =============================================
+@pytest.mark.skipif(os.name == "nt", reason="the C library of the Python process is not the kernel's on Windows")
+def test_inner_shell_classification_leaves_rand_alone():
+    # SmFace::GetPointsInFace and SmShell::IsInnerShellOf reseeded the process-wide rand() from the
+    # clock (srand(time(NULL))), so the points their rays start from changed from second to second
+    # and every other user of rand() was reseeded. Kernel patch K10: a generator of their own.
+    import ctypes
+
+    libc = ctypes.CDLL(None)
+    libc.rand.restype = ctypes.c_int
+    libc.srand(42)
+    expected = [libc.rand() for _ in range(6)]
+    libc.srand(42)
+    first = [libc.rand() for _ in range(3)]
+    void = Box(20, 20, 20) - Box(10, 10, 10)  # (a cavity: which shell is inside which)
+    apart = (Box(5, 5, 5) + Box(5, 5, 5).translate((20, 0, 0))).solids()
+    assert first + [libc.rand() for _ in range(3)] == expected
+    assert void.volume == approx(7000) and len(void.solids()) == 1 and len(apart) == 2
+
+
+# == N4: NVIDIA's BrepArray validator on what export_usd writes =============================================
+USD_VALIDATOR = TOOLS / "oracles" / "usd_validator.py"
+USD_SAMPLES = TOOLS.parent / "third_party" / "usd-brep" / "TestFiles"
+
+
+def _validated(*paths) -> dict:
+    """{file name: {code: count}} of NVIDIA's BrepArray rules (tools/oracles/usd_validator.py, in a
+    process of its own: its pxr is a shim of OpenUSD's)."""
+    import collections
+    import json
+    import subprocess
+    import sys
+
+    run = subprocess.run([sys.executable, "-I", str(USD_VALIDATOR), "--json", *map(str, paths)], capture_output=True,
+                         text=True, timeout=600)
+    assert run.returncode in (0, 1), run.stderr
+    return {os.path.basename(f): dict(collections.Counter(c for c, _ in r["issues"])) for f, r in json.loads(run.stdout).items()}
+
+
+@pytest.mark.skipif(not USD_SAMPLES.is_dir(), reason="usd-brep's test files are not checked out")
+def test_the_usd_validator_finds_what_its_own_files_break():
+    # Calibration of the shim: upstream's file for each rule fails that rule, its good files pass.
+    files = sorted((USD_SAMPLES / "brep_validator").glob("Test_BA_*.usda"))
+    found = _validated(*files, *(USD_SAMPLES / "brep_validator" / n for n in ("Cube.usda", "cubeWithVoid.usda",
+                                                                               "nonManifoldCubes.usda", "CubeBrepArray.usda")))
+    assert len(files) > 100
+    for f in files:
+        rule = "BA." + f.name.split("_")[2]
+        assert rule in found[f.name], (f.name, found[f.name])
+    assert [found[n] for n in ("Cube.usda", "cubeWithVoid.usda", "nonManifoldCubes.usda", "CubeBrepArray.usda")] == [{}] * 4
+
+
+def test_usd_files_smlibpy_writes_pass_nvidias_validator(tmp_path):
+    # docs/files.md said the test suite checked the files with NVIDIA's validator; nothing did. Its
+    # rules on what export_usd writes: analytic and NURBS faces, cavities, cells, sheets, text, a part
+    # far from the origin and a tiny one, several bodies with meshes.
+    rounded = Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)
+    bodies = {
+        "box": Box(10, 20, 30), "ball": Sphere(5), "ring": Torus(10, 3), "cone": Cone(5, 2, 10), "rounded": rounded,
+        "countersunk": Box(30, 30, 10) - Cone(6, 3, 3).translate((0, 0, 3.5)) - Cylinder(3, 10),
+        "cup": Box(30, 30, 30).shell(2, Box(30, 30, 30).faces().top()), "void": Box(10, 10, 10) - Sphere(2),
+        "cells": Box(10, 10, 10).merge(Sphere(4).translate((0, 0, 5))), "slanted": Box(20, 20, 20) - Cylinder(3, 40).rotate(X, 30),
+        "far": Box(10, 10, 10).translate((1e6, 0, 0)), "tiny": Box(0.01, 0.01, 0.01), "text": extrude(Text("Ab", 10), 2),
+        "sheet": surface([[(x * 10, y * 10, 3 * ((x - 2) ** 2 - (y - 2) ** 2) / 4) for x in range(5)] for y in range(5)]),
+        "loft": loft([Circle(5), Rectangle(6, 6).moved(Location((0, 0, 10)))]), "spring": sweep(Circle(0.5).moved(Location((5, 0, 0), (90, 0, 0))), Helix(5, 3, 12)),
+        "nurbs_ball": Sphere(5).to_nurbs(), "nurbs_void": (Box(10, 10, 10) - Sphere(2)).to_nurbs(),
+        "nurbs_rounded": rounded.to_nurbs(),
+    }
+    for name, body in bodies.items():
+        export_usd(body.named(name), tmp_path / f"{name}.usda", mesh=False)
+    export_usd([Box(10, 10, 10).named("a"), Sphere(3).translate((20, 0, 0)).named("b")], tmp_path / "two.usda")
+    found = _validated(*sorted(tmp_path.glob("*.usda")))
+    assert found == {f"{n}.usda": {} for n in [*bodies, "two"]}
+
+
+@pytest.mark.skipif(not USD_SAMPLES.is_dir(), reason="usd-brep's test files are not checked out")
+def test_usd_files_smlibpy_writes_again_pass_nvidias_validator(tmp_path):
+    # Bodies read from other writers' files and written again, and a box read with analytic line edges:
+    # the rules but BA.465 (control points in the body's box), which upstream's own files fail (rational
+    # NURBS) and which the plan exempts for them. A body read and checked (SmBrep::AssertValid) carries
+    # UV curves; the loop of a sphere's face up and down its seam does not close in them, which BA.763
+    # wants: such loops are written without UV curves (read back the same).
+    from test_io import _line_edges
+
+    for name in ("Cube.usda", "cubeWithVoid.usda", "nonManifoldCubes.usda", "Cone_SmConnect_Brep.usda", "mouse.usda"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # (mouse.usda: gaps of 2e-3)
+            body = import_usd(USD_SAMPLES / "brep_validator" / name)
+        export_usd(body, tmp_path / name, mesh=False)
+        again = import_usd(tmp_path / name)
+        assert again.volume == approx(body.volume, rel=1e-9) and len(again.faces()) == len(body.faces())
+    export_usd(Box(10, 10, 10), tmp_path / "box.usda", mesh=False)
+    (tmp_path / "lines.usda").write_text(_line_edges((tmp_path / "box.usda").read_text()))
+    export_usd(import_usd(tmp_path / "lines.usda"), tmp_path / "Lines_again.usda", mesh=False)
+    found = _validated(*(tmp_path / n for n in ("Cube.usda", "cubeWithVoid.usda", "nonManifoldCubes.usda",
+                                               "Cone_SmConnect_Brep.usda", "mouse.usda", "Lines_again.usda")))
+    assert {n: {c: k for c, k in codes.items() if c != "BA.465"} for n, codes in found.items()} == {n: {} for n in found}
+    assert found["Cone_SmConnect_Brep.usda"] == {"BA.465": 1} and found["mouse.usda"] == {"BA.465": 1}
+
+
+def test_usd_files_of_names_and_empty_parts_against_the_validator(tmp_path):
+    # Names outside ASCII and empty parts (kernel plan X3 and X10, another lane's): what this branch
+    # does is an xfail; once they are refused or written well, the file must pass.
+    try:
+        export_usd(Cylinder(4, 8).named("Größe 部品"), tmp_path / "name.usda", mesh=False)
+    except UnicodeDecodeError:
+        pytest.xfail("X3: a name outside ASCII breaks export_usd")
+    assert _validated(tmp_path / "name.usda") == {"name.usda": {}}
+    empty = Box(10, 10, 10) & Box(10, 10, 10).translate((30, 0, 0))
+    try:
+        export_usd(empty, tmp_path / "empty.usda", mesh=False)
+    except ModelingError:
+        return  # (X10: refused)
+    found = _validated(tmp_path / "empty.usda")
+    if found["empty.usda"] == {"BA.025": 1, "BA.030": 1, "BA.035": 1, "BA.701": 1}:
+        pytest.xfail("X10: an empty part is written with an inverted extent and no shell")
+    assert found == {"empty.usda": {}}
+
+
+# == N5, W16: the golden files of smlibwasm's parity test (tools/parity.py) =================================
+def test_the_parity_golden_files_are_current():
+    # js/test/lane_WN.test.ts compares smlibwasm's writers and results with these files: they must be
+    # what smlibpy makes now (python tools/parity.py --update writes them).
+    import subprocess
+    import sys
+
+    parity = _tool("parity.py")
+    # (in a process of its own: its steps include fillets of imported parts and the cases of KNOWN)
+    run = subprocess.run([sys.executable, str(TOOLS / "parity.py")], capture_output=True, text=True, timeout=600)
+    assert run.returncode == 0, run.stdout + run.stderr
+    golden = __import__("json").loads((parity.GOLDEN / "golden.json").read_text())
+    assert set(golden["known"]) == set(parity.KNOWN) and golden["platform"] == "darwin-arm64"
+    # W16: the vase fillets that the native arm64 build makes and smlibwasm cannot; also a part of the
+    # fuzz run's divergences. Both come from the arm64 build's contraction of a * b + c.
+    if parity.FMA and "vase1 fillet" in golden["cases"]:
+        assert golden["cases"]["vase1 fillet"]["valid"] and golden["cases"]["vase1 fillet"]["faces"] == 51
+    assert all(parity.KNOWN[n]["fma"] for n in ("vase1 fillet", "vase3 fillet", "cone cylinder merge"))
+
+
+def test_the_parity_comparison_tells_numbers_from_text():
+    parity = _tool("parity.py")
+    a = "FILE_NAME('a.step','2026-10-22T12:00:00',(''),(''),'smlibpy','x','');\n#3=POINT((1.0,2.000000000000001));"
+    b = "FILE_NAME('','2026-10-22T12:00:09',(''),(''),'smlibwasm','x','');\n#3=POINT((1.0,1.9999999999999998));"
+    assert parity.same_text(a, b) is None
+    assert parity.same_text(a, b.replace("1.9999999999999998", "2.001")) == "number 2: 2.000000000000001 against 2.001"
+    assert parity.same_text(a, b.replace("POINT", "PLANE")).startswith("text")
+    assert parity.same_value({"v": 1.0, "n": 3}, {"v": 1.00000001, "n": 3}) is None
+    assert parity.same_value({"v": 1.0, "n": 3}, {"v": 1.0, "n": 4}) == ".n: 3 against 4"
+    assert parity.same_value({"error": "KernelError"}, {"volume": 3.0}).startswith(": keys")
+
+
+
+# == fillets of parts read from files, with the guard off (found by AddressSanitizer in this batch) =========
+def test_fillets_of_imported_parts_keep_their_body_with_the_guard_off(monkeypatch, tmp_path):
+    # With GUARD_SECONDS = 0, or where no helper process starts, the step of a part read from a file
+    # ran in this process and returned the copy that the step's handle still held: the handle freed
+    # the result's body with itself (AddressSanitizer: reads of freed memory in brep_measure and
+    # CalculateTightBoundingBox, from all-edge fillets of usd-brep's vase1.smb; a crash of the
+    # process in a run of the whole suite).
+    import gc
+
+    monkeypatch.setattr(defeature, "GUARD_SECONDS", 0)
+    save(Box(10, 10, 10), tmp_path / "box.smb")
+    part = load(tmp_path / "box.smb")
+    assert part._h.imported
+    freed = []
+    real = ext.delete_brep
+    monkeypatch.setattr(ext, "delete_brep", lambda b: (freed.append(b), real(b))[1])
+    rounded = part.fillet(part.edges(), 1)
+    chamfered = part.chamfer(part.faces().top()[0].edges(), 1)
+    gc.collect()
+    assert not any(b is rounded._h.brep or b is chamfered._h.brep for b in freed)
+    box = Box(10, 10, 10)
+    assert rounded.volume == approx(box.fillet(box.edges(), 1).volume, rel=1e-9)
+    assert chamfered.volume == approx(box.chamfer(box.faces().top()[0].edges(), 1).volume, rel=1e-9)
+    assert rounded.is_valid() and chamfered.is_valid()

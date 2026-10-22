@@ -83,7 +83,9 @@ the Python code works around a kernel defect, so does the TypeScript.
 - **Errors.** `ValueError` and `IndexError` -> `RangeError`; `TypeError` -> `TypeError`;
   `ModelingError` and `KernelError` are smlibwasm's classes (kernel.ts). `kernel_call` is
   `kernelCall(operation, () => ..., hint)`. `except (KernelError, ValueError)` is
-  `catch (e) { if (!(e instanceof KernelError || e instanceof RangeError)) throw e }`.
+  `catch (e) { if (!(e instanceof KernelError || e instanceof RangeError)) throw e }`. A
+  KernelError made again with another hint keeps its cause's trace: Python's
+  `_traced(KernelError(...), cause)` is `_traced(new KernelError(...), cause.trace)` (_errors.ts).
   `warnings.warn` is `_warn(message)` (kernel.ts).
 - **numpy** becomes plain arrays and small helpers (_linalg.ts: `eigh3`, `spread` for
   numpy's SVD of point sets, `det3`). Matrices are geometry.ts's `Matrix`, a Float64Array of

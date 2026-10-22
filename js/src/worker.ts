@@ -27,7 +27,7 @@
 //     const part = await cad.call('plate', [80, 3, 6], { timeout: 10_000 })
 
 import { Axis, BoundBox, Hit, Location, Nurbs, Plane, Vector } from './geometry.ts'
-import { KernelError, ModelingError, _crashes } from './_errors.ts'
+import { KernelError, ModelingError, _crashes, _traced } from './_errors.ts'
 import { _nodeWorker } from './_threads.ts'
 import type { Face } from './shapes.ts'
 
@@ -542,6 +542,7 @@ function _errorData(e: unknown): ErrorData {
     const value = (e as Any)[key]
     if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) out[key] = value
   }
+  if (e instanceof KernelError) out.trace = [...e.trace]
   return out
 }
 
@@ -551,6 +552,7 @@ function _error(data: ErrorData, prefix: string | null = null): Error {
   let e: Error
   if (data.kind === 'KernelError' && prefix === null) {
     e = new KernelError(String(data.operation), String(data.detail ?? ''), (data.status as string | null) ?? null, (data.hint as string | null) ?? null)
+    if (Array.isArray(data.trace)) _traced(e as KernelError, data.trace.map(String))
   } else if (data.kind === 'ModelingError') e = new ModelingError(message)
   else if (data.kind === 'TypeError') e = new TypeError(message)
   else if (data.kind === 'RangeError') e = new RangeError(message)

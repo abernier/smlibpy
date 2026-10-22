@@ -8,6 +8,7 @@
 //   mesh.cpp           meshes as arrays
 
 #include "common.h"
+#include "trace.h"
 
 #include <SmApiGeneral.h>
 
@@ -19,7 +20,8 @@ static void init()
     if (!done)
     {
         SmApiCreateContext();
-        install_sm_error_callback();  // the kernel's messages go to the trail errors report
+        install_sm_error_callback();       // SmPyLib's trail, which the next line takes the place of:
+        smlibpy::install_kernel_trace();  // the kernel's failures (KernelError.trace)
         done = true;
     }
 }

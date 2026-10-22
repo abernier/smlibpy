@@ -273,10 +273,12 @@ export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, 
     const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0))
     pieces.reduce((at, p) => (bytes.set(p, at), at + p.length), 0)
     if (outcome === _FAILED) {
-      const { name, message } = JSON.parse(new TextDecoder().decode(bytes))
+      const { name, message, trace } = JSON.parse(new TextDecoder().decode(bytes))
       if (name === 'TypeError') throw new TypeError(message)
       if (name === 'RangeError') throw new RangeError(message)
-      throw new Error(String(message))
+      const error = new Error(String(message))
+      if (Array.isArray(trace)) (error as Any)._kernelTrace = trace // (kernelCall makes it the KernelError's trace)
+      throw error
     }
     return _decoded(bytes) as R
   }

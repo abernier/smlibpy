@@ -3,7 +3,9 @@
 // kernel steps whose result comes back from the probe worker (N1), scope() and the port's own
 // temporaries (W9), memory regressions (N2) and the fuzz harness (N3); crashes of the kernel
 // (W10), the package's typings (W11) and the API reference (W12); WOFF2, CFF2 and seac fonts
-// (W13), files in memory (W14) and the raw kernel layer with all of SmPyLib's calls (W15).
+// (W13), files in memory (W14) and the raw kernel layer with all of SmPyLib's calls (W15);
+// NVIDIA's validator on toUsd's files (N4), the parity with smlibpy's golden files and the docs'
+// examples (N5, W16), and the kernel's error trace (N6).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -20,6 +22,8 @@ import type * as Models from './lane_WN_models.ts'
 import { Axis, Circle, Cone, GridLocations, Polygon, Polyline, Rectangle, Slot, Sphere, Text, X, Y, Z, extrude, fromSmb, loft, revolve, scope, setGuardBooleans, setGuardSeconds, surfaceFillet, sweep, Line, toSmb } from '../src/index.ts'
 import { plate } from './lane_WN_models.ts'
 import { approx } from './_approx.ts'
+import { pathToFileURL } from 'node:url'
+import { Ellipse, fromUsd, importDxf, importStep, split, toDxf, toGltf, toObj, toStep, toStl, toUsd } from '../src/index.ts'
 
 const WORKER = new URL('./lane_WN_worker.ts', import.meta.url)
 const SRC = new URL('../src/', import.meta.url)
@@ -1440,4 +1444,375 @@ test('@classcad/smlibwasm/kernel is an entry of the package, with its declaratio
   for (const name of ['BrepHandle', 'CurveHandle', 'KernelError', 'ModelingError', 'PolyHandle', 'SurfaceHandle', 'ext', 'k', 'kernelCall', 'memoryUsage', 'module', 'scope', 'setWarningHandler']) {
     assert.ok((out.keys as string[]).includes(name), name)
   }
+})
+
+
+// ================================================================================ N6: where the kernel gave up
+const TRACE_ENTRY = /^SM_[A-Z_]+ at \w+\.cpp:\d+( \(.+\))?$/
+
+function rawFillet(b: number = Box(10, 10, 10)._copyBrep()): void {
+  try {
+    k.fillet_edges(b, k.brep_edges(b), { radius: 50 }) // (a kernel function's own Error)
+  } finally {
+    ext.delete_brep(b)
+  }
+}
+
+test('kernel errors say where the kernel gave up: KernelError.trace (N6)', () => {
+  // Release builds compiled the kernel's error reports out: a KernelError said "SM_ERR at
+  // <binding>" and no more. Kernel patch K11 (SmMessages.h) reports each failure; the trail keeps
+  // the last 48, the failing chain at its end.
+  assert.throws(() => Cylinder(3, 40).translate(0, 3, 0).fuse(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), (e: unknown) => {
+    assert.ok(e instanceof KernelError)
+    assert.ok(Object.isFrozen(e.trace) && e.trace.length > 0 && e.trace.every((t) => TRACE_ENTRY.test(t)), String(e.trace))
+    // (the WebAssembly kernel gives up in SmMerge::MakeFaceuse where the native one stops in
+    // IntersectTopology: SM_ERR where Python has SM_ERR_BAD_INTERSECTIONS)
+    assert.match(e.trace.at(-1) as string, /^SM_ERR(_BAD_INTERSECTIONS)? at SmApiBrep\.cpp:\d+ \(SmApiBoolean\)$/)
+    assert.ok(!/Kernel trace/.test(e.detail) && !/SmApiBrep/.test(e.message))
+    return true
+  })
+  // a selection the kernel cannot round: thrown again with its hint, with the first one's trace
+  const p = Box(10, 5, 20).cut(Cone(4, 5, 20))
+  assert.throws(() => p.fillet(p.edges(), 0.5), (e: unknown) => {
+    assert.ok(e instanceof KernelError && /cannot round the selection/.test(e.message))
+    assert.deepEqual(e.trace.map((t) => t.split(' at ')[0]), ['SM_ERR_INVALID_INPUT', 'SM_ERR_INVALID_INPUT', 'SM_ERR_INVALID_INPUT'])
+    assert.match(e.trace[0], /\(CreateFilletCorners\)$/)
+    assert.match(e.trace[2], /\(SmApiFilletEdges\)$/)
+    return true
+  })
+  assert.deepEqual(new KernelError('probe', 'detail').trace, [])
+  assert.throws(() => Box(10, 10, 10).fillet(Box(10, 10, 10).edges(), 6), (e: unknown) => e instanceof ModelingError && !(e instanceof KernelError))
+})
+
+test('the kernel trace keeps the last failures (N6)', () => {
+  ext.clear_kernel_trace()
+  assert.deepEqual(ext.kernel_trace(), [[], 0])
+  void Box(40, 30, 20).cut(Cylinder(5, 40)).volume // (no failure on the way)
+  assert.deepEqual(ext.kernel_trace(), [[], 0])
+  assert.throws(() => rawFillet(), /SmApiFilletEdges failed: SM_ERR/)
+  const [chain, n] = ext.kernel_trace() as [string[], number]
+  assert.equal(n, 4)
+  assert.match(chain[3], /\(SmApiFilletEdges\)$/)
+  const breps = Array.from({ length: 19 }, () => Box(10, 10, 10)._copyBrep()) // (kernelCall clears the trace)
+  ext.clear_kernel_trace()
+  for (const b of breps) assert.throws(() => rawFillet(b))
+  const [entries, m] = ext.kernel_trace() as [string[], number]
+  assert.equal(m, 76)
+  assert.deepEqual(entries, Array.from({ length: 12 }, () => chain).flat().slice(-48)) // (the first 28 dropped)
+  ext.clear_kernel_trace()
+})
+
+test('the kernel trace comes back from a probe worker and from a KernelWorker (N6)', async () => {
+  const old = setGuardBooleans(true)
+  try {
+    assert.throws(() => Cylinder(3, 40).translate(0, 3, 0).fuse(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), (e: unknown) => {
+      assert.ok(e instanceof KernelError && e.trace.length > 0 && /\(SmApiBoolean\)$/.test(e.trace.at(-1) as string), String((e as KernelError).trace))
+      return true
+    })
+    assert.deepEqual(ext.kernel_trace(), [[], 0]) // (this kernel did not run the Boolean)
+  } finally {
+    setGuardBooleans(old)
+  }
+  const cad = new KernelWorker<typeof Models>(WORKER)
+  try {
+    await assert.rejects(cad.call('crossingHoles', []), (e: unknown) => {
+      assert.ok(e instanceof KernelError && Object.isFrozen(e.trace) && /\(SmApiBoolean\)$/.test(e.trace.at(-1) as string), String(e))
+      return true
+    })
+  } finally {
+    cad.terminate()
+  }
+})
+
+// ================================================================================ W16: the vase fillets
+test('the vase fillets that the native arm64 build makes fail here, and say where (W16)', () => {
+  // usd-brep's vase1.smb and vase3.smb: smlibpy (macOS arm64) rounds all their edges; here the kernel
+  // finds not one point where it drops a corner's guess onto the filleted edge. The cause is the native
+  // build's contraction of a * b + c into one instruction: built without it (-ffp-contract=off), the
+  // native kernel fails the same way and reads the vase with this build's volume to the last digit.
+  const folder = new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/Fillet/', import.meta.url)
+  for (const name of ['vase1', 'vase3']) {
+    const vase = fromSmb(readFileSync(new URL(`${name}.smb`, folder))) as Part
+    assert.throws(() => vase.fillet(vase.edges(), 0.2), (e: unknown) => {
+      assert.ok(e instanceof KernelError && e.status === 'SM_ERR')
+      const chain = e.trace.slice(-6).map((t) => /\((\w+)\)$/.exec(t)?.[1])
+      assert.deepEqual(chain, ['LoadInitialValues', 'RailEdgeuseIntersect', 'CalcRailIntEdgeuse', 'CalcCornerVertGeom', 'DoFillet', 'SmApiFilletEdges'])
+      return true
+    })
+  }
+  approx((fromSmb(readFileSync(new URL('vase1.smb', folder))) as Part).volume, 1103972.4296165158, 1e-12)
+})
+
+// ================================================================================ N5: parity with smlibpy's golden files
+const PARITY = new URL('../../tests/data/parity/', import.meta.url)
+const NUMBER = /[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?/g
+
+/** tools/parity.py's `normalized`: no writer's name, no file name or time in a STEP header. */
+function normalized(text: string): string {
+  return text.replaceAll('smlibwasm', 'smlibpy').replace(/FILE_NAME\('[^']*','[^']*'/, "FILE_NAME('',''")
+}
+
+/** tools/parity.py's `same_text`: null, or where two texts differ (numbers to `tolerance`). */
+function sameText(a: string, b: string, tolerance = 1e-9): string | null {
+  a = normalized(a)
+  b = normalized(b)
+  const [ta, tb] = [a.split(NUMBER), b.split(NUMBER)]
+  const [na, nb] = [a.match(NUMBER) ?? [], b.match(NUMBER) ?? []]
+  if (ta.length !== tb.length || ta.some((x, i) => x !== tb[i]) || na.length !== nb.length) {
+    let i = 0
+    while (i < Math.min(ta.length, tb.length) && ta[i] === tb[i]) i++
+    return `text ${JSON.stringify(ta[i] ?? '')} against ${JSON.stringify(tb[i] ?? '')} (piece ${i})`
+  }
+  for (let i = 0; i < na.length; i++) {
+    const [u, v] = [Number(na[i]), Number(nb[i])]
+    if (Math.abs(u - v) > tolerance * Math.max(1, Math.abs(u), Math.abs(v))) return `number ${i}: ${na[i]} against ${nb[i]}`
+  }
+  return null
+}
+
+/** tools/parity.py's `same_value`: numbers to `rel` of their size (at least 1e-9), integers and the rest exactly. */
+function sameValue(a: unknown, b: unknown, rel = 1e-7, at = ''): string | null {
+  if (typeof a === 'number' && typeof b === 'number') {
+    if (Number.isInteger(a) && Number.isInteger(b)) return a === b ? null : `${at}: ${a} against ${b}`
+    return Math.abs(a - b) <= 1e-9 + rel * Math.max(Math.abs(a), Math.abs(b)) ? null : `${at}: ${a} against ${b}`
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return `${at}: ${a.length} items against ${b.length}`
+    for (let i = 0; i < a.length; i++) {
+      const d = sameValue(a[i], b[i], rel, `${at}[${i}]`)
+      if (d !== null) return d
+    }
+    return null
+  }
+  if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+    const [ka, kb] = [Object.keys(a).sort(), Object.keys(b).sort()]
+    if (ka.join() !== kb.join()) return `${at}: keys ${ka} against ${kb}`
+    for (const key of ka) {
+      const d = sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key], rel, `${at}.${key}`)
+      if (d !== null) return d
+    }
+    return null
+  }
+  return a === b ? null : `${at}: ${JSON.stringify(a)} against ${JSON.stringify(b)}`
+}
+
+/** A file outside the repository, beside it or one of its parents (tools/parity.py's `_beside`). */
+function beside(relative: string): string | null {
+  let dir = fileURLToPath(new URL('../../', import.meta.url))
+  for (;;) {
+    const up = join(dir, '..')
+    if (up === dir) return null
+    dir = up
+    try {
+      readFileSync(join(dir, relative), { flag: 'r' })
+      return join(dir, relative)
+    } catch {
+      // (not here)
+    }
+  }
+}
+
+const parityBody = (b: Part) => {
+  const box = b.bbox()
+  return { volume: b.volume, area: b.area, faces: b.faces().length, edges: b.edges().length, valid: b.isValid(), bbox: [...box.min.toArray(), ...box.max.toArray()] }
+}
+const paritySketch = (s: Sketch) => ({ area: s.area, faces: s.faces().length })
+const parityPlate = () => {
+  const p = Box(80, 60, 10)
+  return p.fillet(p.edges().parallelTo(Z), 8).cut(GridLocations(60, 40, 2, 2).mul(Cylinder(4, 10)))
+}
+
+/** tools/parity.py's `cases()`, made with smlibwasm under the same names. */
+const PARITY_CASES: Record<string, () => unknown> = {
+  plate: () => {
+    const p = parityPlate()
+    return { ...parityBody(p), triangles: p.mesh().length, concave: p.edges().concave().length, top: p.faces().top()[0].area }
+  },
+  'rounded box': () => parityBody(Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)),
+  'chamfered box': () => parityBody(Box(20, 20, 20).chamfer(Box(20, 20, 20).faces().top()[0].edges(), 2)),
+  cup: () => parityBody(Box(30, 30, 30).shell(2, Box(30, 30, 30).faces().top())),
+  offset: () => parityBody(Box(10, 10, 10).offset(2)),
+  split: () => ({ volumes: split(Box(10, 10, 10).rotate(X, 30), Plane.XY, 'both').map((p) => p.volume) }),
+  loft: () => parityBody(loft([Circle(5), Rectangle(6, 6).moved(new Location([0, 0, 10]))])),
+  twist: () => parityBody(Box(20, 20, 100).twist(90)),
+  cells: () => ({ volumes: Box(10, 10, 10).merge(Sphere(4).translate(0, 0, 5)).cells().map((c) => c.volume).sort((a, b) => a - b) }),
+  void: () => ({
+    volume: Box(20, 20, 20).cut(Box(10, 10, 10)).volume,
+    solids: Box(20, 20, 20).cut(Box(10, 10, 10)).solids().length,
+    apart: Box(5, 5, 5).fuse(Box(5, 5, 5).translate(20, 0, 0)).solids().map((s) => s.volume).sort((a, b) => a - b),
+  }),
+  'remove fillets': () => parityBody(Box(20, 20, 20).fillet(Box(20, 20, 20).edges().parallelTo(Z), 3).removeFillets()),
+  xor: () => {
+    const abc = Circle(5).xor(Circle(5).translate(4, 0)).xor(Circle(5).translate(2, 4))
+    const t = Polygon([-20, -20], [20, -20], [0, 20])
+    return { xor: paritySketch(abc.xor(t)), and: paritySketch(abc.intersect(t)), cut: paritySketch(abc.cut(t)), txor: paritySketch(t.xor(abc)) }
+  },
+  text: () => paritySketch(Text('Ab', 10)),
+  'cone cylinder merge': () => {
+    const { volume, faces, valid } = parityBody(Cone(3, 0, 4).rotate(X, 90).merge(Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)))
+    return { volume, faces, valid }
+  },
+  'vase1 fillet': () => {
+    const p = fromSmb(readFileSync(new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/Fillet/vase1.smb', import.meta.url))) as Part
+    return parityBody(p.fillet(p.edges(), 0.2))
+  },
+  'vase3 fillet': () => {
+    const p = fromSmb(readFileSync(new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/Fillet/vase3.smb', import.meta.url))) as Part
+    return parityBody(p.fillet(p.edges(), 0.2))
+  },
+  'dxf 19': () => {
+    const d = importDxf(beside('classcad/data/Test/Input/BugReporting/CAD-3602/yon002k7.dxf') as string)
+    return { area: Math.round(d.area * 1e4) / 1e4, faces: d.faces().length, holes: d.faces().map((f) => f.innerWires().length).sort((a, b) => a - b) }
+  },
+  'valve convexity': () => {
+    const v = importStep(beside('models/solid/Ventil.stp') as string) as Part
+    return { convex: v.edges().convex().length, concave: v.edges().concave().length, smooth: v.edges().smooth().length }
+  },
+}
+const PARITY_FILES: Record<string, string> = { 'dxf 19': 'classcad/data/Test/Input/BugReporting/CAD-3602/yon002k7.dxf', 'valve convexity': 'models/solid/Ventil.stp' }
+
+test("smlibwasm's results are smlibpy's, but for the known divergences, which are as known (N5)", () => {
+  const golden = JSON.parse(readFileSync(new URL('golden.json', PARITY), 'utf8'))
+  assert.deepEqual(Object.keys(PARITY_CASES).sort(), Object.keys(golden.cases).sort())
+  const ran: string[] = []
+  for (const [name, make] of Object.entries(PARITY_CASES)) {
+    if (name in PARITY_FILES && beside(PARITY_FILES[name]) === null) continue // (a file this checkout has not beside it)
+    let got: unknown
+    try {
+      got = scope(make)
+    } catch (e) {
+      got = { error: (e as Error).name, status: (e as KernelError).status ?? null }
+    }
+    const known = golden.known[name]
+    const want = known ? known.wasm : golden.cases[name]
+    const d = sameValue(got, want, 1e-7, name)
+    assert.equal(d, null, `${d}${known ? ` (a known divergence: ${known.why})` : ''}`)
+    if (known) assert.notEqual(sameValue(got, golden.cases[name], 1e-7, name), null, `${name} now agrees with smlibpy: take it out of tools/parity.py's KNOWN`)
+    ran.push(name)
+  }
+  assert.ok(ran.length >= 16, ran.join(', '))
+})
+
+test("the file writers write smlibpy's files: STEP, USD, DXF, OBJ, glTF, STL (N5)", () => {
+  // The writers of the port are hand-written copies of smlibpy's; only Python's tests read the files
+  // back with OpenCASCADE. The same bodies (read from the same .smb files) must give smlibpy's text,
+  // but for the writer's name and the time.
+  const read = (name: string) => readFileSync(new URL(name, PARITY), 'utf8')
+  const plate = (fromSmb(readFileSync(new URL('plate.smb', PARITY))) as Part).named('plate').colored([0.8, 0.3, 0.2])
+  const ball = (fromSmb(readFileSync(new URL('ball.smb', PARITY))) as Part).named('ball')
+  const box = Box(30, 20, 10).named('box').colored('steelblue')
+  const sketch = Rectangle(40, 20, { fillet: 3 }).cut(Circle(4)).cut(Polygon([10, -5], [15, -5], [12, 5]))
+    .fuse(Ellipse(6, 3).translate(35, 0)).fuse(Text('S', 10).translate(-35, 0))
+  const files: Record<string, string> = {
+    'parts.step': toStep([plate, ball], { name: 'parts' }),
+    'parts.usda': toUsd([plate, ball], { mesh: false }),
+    'sketch.dxf': toDxf(sketch),
+    'box.obj': toObj(box),
+    'box.stl': new TextDecoder().decode(toStl(box, { ascii: true })),
+    'box.usda': toUsd(box),
+  }
+  for (const [name, text] of Object.entries(files)) assert.equal(sameText(text, read(name)), null, name)
+  assert.equal(sameValue(JSON.parse(normalized(toGltf(box))), JSON.parse(normalized(read('box.gltf'))), 1e-9), null, 'box.gltf')
+  // (and the comparison sees a difference: a number, a word)
+  assert.match(sameText(files['parts.step'].replace('CARTESIAN_POINT', 'CARTESIAN_POINTS'), read('parts.step')) as string, /^text/)
+  assert.match(sameText(files['box.obj'].replace(/\b15\b/, '15.001'), read('box.obj')) as string, /^number/)
+})
+
+// ================================================================================ N5: the examples of the docs run
+/** The ```js blocks of a page. */
+function jsBlocks(page: string): string[] {
+  return [...readFileSync(page, 'utf8').matchAll(/```js\n([^]*?)```/g)].map((m) => m[1])
+}
+
+test('the JavaScript examples of docs/javascript.md and js/README.md run, and print what they say (N5)', () => {
+  const docs = fileURLToPath(new URL('../../docs/javascript.md', import.meta.url))
+  const readme = fileURLToPath(new URL('../README.md', import.meta.url))
+  const src = (name: string) => JSON.stringify(new URL(name, SRC).href)
+  const pkg = (code: string) => code
+    .replace(/'@classcad\/smlibwasm\/(worker|init|kernel)'/g, (_, entry) => src(`${entry}.ts`))
+    .replaceAll("'@classcad/smlibwasm'", src('index.ts'))
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-docs-'))
+  writeFileSync(join(dir, 'three.mjs'), 'class Thing { constructor(...a) { this.args = a; this.rotation = {} } add() {} setAttribute() {} setFromPoints() { return this } }\n' +
+    'export const BufferGeometry = Thing, BufferAttribute = Thing, Group = Thing, Mesh = Thing, MeshStandardMaterial = Thing, LineSegments = Thing, LineBasicMaterial = Thing\n')
+  const font = JSON.stringify(fileURLToPath(new URL('../../src/smlibpy/fonts/Lato-Regular.ttf', import.meta.url)))
+  // what a block takes from the page around it (an app's values), by a line of it; null: not run here
+  const context: [string, string | null][] = [
+    ['// vite.config.js', null], // (a bundler's configuration)
+    ["locateFile: (file) => `https://cdn.example.com", null], // (from a CDN: init's own tests load it from elsewhere)
+    ["import * as THREE from 'three'", 'const scene = { add() {} }\n'],
+    ['await file.arrayBuffer()', `const file = { name: 'bracket.step', arrayBuffer: async () => new TextEncoder().encode(toStep(Box(10, 10, 10))).buffer }\n`],
+    ["fetch('/fonts/inter.woff2')", `const fetch = async () => ({ arrayBuffer: async () => (await import('node:fs')).readFileSync(${font}) })\n`],
+    ['for (const width of widths)', 'const widths = [30, 40], params = 5, model = (h) => Box(10, 10, h)\n'],
+    ['// models.js', null], // (with the worker's: below)
+    ['// cad.worker.js', null],
+    ['// main.js', null],
+  ]
+  const blocks = [...jsBlocks(docs), ...jsBlocks(readme)]
+  let ran = 0
+  for (const block of blocks) {
+    const entry = context.find(([line]) => block.includes(line))
+    if (entry && entry[1] === null) continue
+    const code = `import * as __smlibwasm from ${src('index.ts')}\nObject.assign(globalThis, __smlibwasm)\n` +
+      (entry?.[1] ?? '') + pkg(block).replace("'three'", JSON.stringify(pathToFileURL(join(dir, 'three.mjs')).href))
+    const out = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120_000 })
+    assert.equal(out.status, 0, `${block}\n${out.stderr}`)
+    // what a console.log(...) // value says it prints
+    const said = [...block.matchAll(/console\.log\(.*\) \/\/ (.*)$/gm)].map((m) => m[1].replace(/\.\.\.$/, ''))
+    const printed = out.stdout.trim().split('\n')
+    said.forEach((s, i) => assert.ok(printed[i]?.startsWith(s), `${block}\nprinted ${printed[i]}, the page says ${s}`))
+    ran++
+  }
+  // the worker's three files, as an app has them: models.js, cad.worker.js and main.js
+  const named = (first: string) => pkg(blocks.find((b) => b.startsWith(first)) as string)
+  writeFileSync(join(dir, 'models.js'), named('// models.js'))
+  writeFileSync(join(dir, 'cad.worker.js'), named('// cad.worker.js'))
+  writeFileSync(join(dir, 'main.mjs'), `import { _nodeWorker } from ${src('_threads.ts')}\nimport { getBuiltinModule } from 'node:process'\n` +
+    `globalThis.Worker = class { constructor(url) { return _nodeWorker(getBuiltinModule('node:worker_threads'), url) } }\n` +
+    named('// main.js') + '\nconsole.log(JSON.stringify({ volume: part.volume, weight }))\ncad.terminate()\n')
+  const out = spawnSync(process.execPath, [join(dir, 'main.mjs')], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(out.status, 0, out.stderr)
+  const { volume, weight } = JSON.parse(out.stdout.trim().split('\n').at(-1) as string)
+  approx(weight, volume * 7.85e-3, 1e-12)
+  approx(volume, 80 * 60 * 10 - (4 - Math.PI) * 6 * 6 * 10 - 6 * Math.PI * 9 * 10, 1e-9)
+  assert.ok(ran >= 7, `${ran} blocks ran`)
+})
+
+// ================================================================================ N4: NVIDIA's validator on toUsd's files
+/** A Python of 3.10 or later (usd-brep's validator needs it), or null. */
+function python(): string | null {
+  for (const exe of [process.env.SMLIBPY_PYTHON, 'python3', 'python'].filter(Boolean) as string[]) {
+    const out = spawnSync(exe, ['-c', 'import sys; print(sys.version_info >= (3, 10))'], { encoding: 'utf8' })
+    if (out.status === 0 && out.stdout.trim() === 'True') return exe
+  }
+  return null
+}
+
+test("toUsd's files pass NVIDIA's BrepArray validator (N4)", (t) => {
+  const exe = python()
+  if (exe === null) return t.skip('no Python 3.10 or later for usd-brep validator (tools/oracles/usd_validator.py)')
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-usd-'))
+  const rounded = Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)
+  const bodies: Record<string, Part | Shell> = {
+    box: Box(10, 20, 30), ball: Sphere(5), cone: Cone(5, 2, 10), rounded, void: Box(10, 10, 10).cut(Sphere(2)),
+    cup: Box(30, 30, 30).shell(2, Box(30, 30, 30).faces().top()), cells: Box(10, 10, 10).merge(Sphere(4).translate(0, 0, 5)),
+    far: Box(10, 10, 10).translate(1e6, 0, 0), tiny: Box(0.01, 0.01, 0.01), text: extrude(Text('Ab', 10), 2), nurbs: rounded.toNurbs(),
+  }
+  for (const [name, body] of Object.entries(bodies)) writeFileSync(join(dir, `${name}.usda`), toUsd(body.named(name), { mesh: false }))
+  writeFileSync(join(dir, 'two.usda'), toUsd([Box(10, 10, 10).named('a'), Sphere(3).translate(20, 0, 0).named('b')]))
+  // usd-brep's own files read and written again: the loop of the void's sphere face runs up and down
+  // its seam, and its UV curves (which the check on reading leaves) do not close (BA.763): written
+  // without them, and read back the same
+  const samples = new URL('../../third_party/usd-brep/TestFiles/brep_validator/', import.meta.url)
+  for (const name of ['cubeWithVoid', 'nonManifoldCubes']) {
+    const body = fromUsd(readFileSync(new URL(`${name}.usda`, samples), 'utf8')) as Part
+    const text = toUsd(body, { mesh: false })
+    writeFileSync(join(dir, `re_${name}.usda`), text)
+    approx((fromUsd(text) as Part).volume, body.volume, 1e-9)
+  }
+  const files = readdirSync(dir).map((f) => join(dir, f))
+  const out = spawnSync(exe, ['-I', fileURLToPath(new URL('../../tools/oracles/usd_validator.py', import.meta.url)), '--json', ...files], { encoding: 'utf8', timeout: 600_000 })
+  assert.ok(out.status === 0 || out.status === 1, out.stderr)
+  const found = Object.fromEntries(Object.entries(JSON.parse(out.stdout) as Record<string, { breps: number; issues: [string, string][] }>)
+    .map(([f, r]) => [f.split(/[\\/]/).at(-1), r.issues.map(([code]) => code)]))
+  assert.deepEqual(found, Object.fromEntries([...Object.keys(bodies), 'two', 're_cubeWithVoid', 're_nonManifoldCubes'].map((n) => [`${n}.usda`, []])))
 })

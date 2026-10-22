@@ -1,0 +1,259 @@
+{
+ "platform": "darwin-arm64",
+ "cases": {
+  "plate": {
+   "volume": 45440.00000000003,
+   "area": 12755.964473723096,
+   "faces": 14,
+   "edges": 32,
+   "valid": true,
+   "bbox": [
+    -40.0,
+    -30.000000000000004,
+    -5.000000000000001,
+    40.0,
+    30.000000000000004,
+    5.000000000000008
+   ],
+   "triangles": 668,
+   "concave": 0,
+   "top": 4543.999999999995
+  },
+  "rounded box": {
+   "volume": 7572.61935858613,
+   "area": 2080.778684233844,
+   "faces": 26,
+   "edges": 48,
+   "valid": true,
+   "bbox": [
+    -10.000000000000009,
+    -10.000000000000009,
+    -10.000000000000009,
+    10.000000000000009,
+    10.000000000000009,
+    10.000000000000009
+   ]
+  },
+  "chamfered box": {
+   "volume": 7850.666666666668,
+   "area": 2299.6467529817255,
+   "faces": 10,
+   "edges": 20,
+   "valid": true,
+   "bbox": [
+    -10.0,
+    -10.0,
+    -10.0,
+    10.0,
+    10.0,
+    10.0
+   ]
+  },
+  "cup": {
+   "volume": 8072.000000000001,
+   "area": 8312.000000000002,
+   "faces": 11,
+   "edges": 24,
+   "valid": true,
+   "bbox": [
+    -15.0,
+    -15.0,
+    -15.0,
+    15.0,
+    15.0,
+    15.0
+   ]
+  },
+  "offset": {
+   "volume": 2744.000000000001,
+   "area": 1176.0000000000002,
+   "faces": 6,
+   "edges": 12,
+   "valid": true,
+   "bbox": [
+    -7.000000000000001,
+    -7.0,
+    -7.0,
+    7.000000000000002,
+    7.000000000000002,
+    7.0
+   ]
+  },
+  "split": {
+   "volumes": [
+    499.99999999999886,
+    499.99999999999955
+   ]
+  },
+  "loft": {
+   "volume": 508.52973769528876,
+   "area": 378.877141360001,
+   "faces": 6,
+   "edges": 12,
+   "valid": true,
+   "bbox": [
+    -5.0,
+    -5.0,
+    0.0,
+    5.0,
+    5.0,
+    10.000000000000002
+   ]
+  },
+  "twist": {
+   "volume": 39999.99990742195,
+   "area": 8832.777970891397,
+   "faces": 6,
+   "edges": 12,
+   "valid": true,
+   "bbox": [
+    -14.142135623730951,
+    -14.14213562373095,
+    -50.000000000000014,
+    14.142135623730951,
+    14.14213562373095,
+    50.00000000000001
+   ]
+  },
+  "cells": {
+   "volumes": [
+    134.04128655316447,
+    134.04128655316455,
+    865.9587134468356
+   ]
+  },
+  "void": {
+   "volume": 7000.000000000001,
+   "solids": 1,
+   "apart": [
+    125.00000000000001,
+    125.00000000000003
+   ]
+  },
+  "remove fillets": {
+   "volume": 8000.000000000001,
+   "area": 2400.0,
+   "faces": 6,
+   "edges": 12,
+   "valid": true,
+   "bbox": [
+    -10.0,
+    -10.0,
+    -10.0,
+    10.0,
+    10.0,
+    10.0
+   ]
+  },
+  "xor": {
+   "xor": {
+    "area": 689.4601836602554,
+    "faces": 4
+   },
+   "and": {
+    "area": 110.53981633974475,
+    "faces": 4
+   },
+   "cut": {
+    "area": 0,
+    "faces": 0
+   },
+   "txor": {
+    "area": 689.4601836602554,
+    "faces": 4
+   }
+  },
+  "text": {
+   "area": 56.28492531491527,
+   "faces": 2
+  },
+  "cone cylinder merge": {
+   "volume": 149.1926689941786,
+   "faces": 7,
+   "valid": false
+  },
+  "vase1 fillet": {
+   "volume": 1103933.6863466757,
+   "area": 128715.05266223373,
+   "faces": 51,
+   "edges": 112,
+   "valid": true,
+   "bbox": [
+    -47.343013896846195,
+    -53.801741773611205,
+    -76.20000000000005,
+    104.49301826485646,
+    72.85174177361128,
+    76.20000000000007
+   ]
+  },
+  "vase3 fillet": {
+   "volume": 1103548.9306200354,
+   "area": 127112.86450481966,
+   "faces": 51,
+   "edges": 112,
+   "valid": true,
+   "bbox": [
+    -75.91834563355675,
+    -63.326741773611175,
+    -76.20000000000003,
+    75.918345633007,
+    63.32674177361122,
+    76.20000000000002
+   ]
+  },
+  "dxf 19": {
+   "area": 56008.2611,
+   "faces": 3,
+   "holes": [
+    0,
+    0,
+    7
+   ]
+  },
+  "valve convexity": {
+   "convex": 65,
+   "concave": 20,
+   "smooth": 66
+  }
+ },
+ "known": {
+  "vase1 fillet": {
+   "fma": true,
+   "wasm": {
+    "error": "KernelError",
+    "status": "SM_ERR"
+   },
+   "why": "W16: the all-edge fillet of usd-brep's vase1.smb. Without the contraction the kernel's drop of a corner's guess point onto the filleted edge finds not one point (SmFilletStandardSolver.cpp:558, LoadInitialValues, from CalcCornerVertGeom), and the fillet fails"
+  },
+  "vase3 fillet": {
+   "fma": true,
+   "wasm": {
+    "error": "KernelError",
+    "status": "SM_ERR"
+   },
+   "why": "W16: as vase1"
+  },
+  "cone cylinder merge": {
+   "fma": true,
+   "wasm": {
+    "volume": 145.98511223791584,
+    "faces": 7,
+    "valid": false
+   },
+   "why": "the fuzz run's csg-153: a cylinder whose axis touches the cone's base circle; both results are invalid bodies (OpenCASCADE: 150.26185 for the union)"
+  },
+  "dxf 19": {
+   "fma": false,
+   "wasm": {
+    "area": 55817.336,
+    "faces": 2,
+    "holes": [
+     0,
+     8
+    ]
+   },
+   "why": "ai/todo/files.md #19: the kernel nests the same 10 B-spline loops differently in the two builds; both are wrong (one face with 9 holes, about 55732.3)"
+  }
+ }
+}

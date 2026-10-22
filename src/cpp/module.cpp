@@ -9,6 +9,7 @@
 
 #include "SmPyCommon.h"
 #include "ext.h"
+#include "trace.h"
 
 #include <SmApiGeneral.h>
 
@@ -36,6 +37,7 @@ PYBIND11_MODULE(_core, m)
 
     SmApiCreateContext();
     install_sm_error_callback();
+    smlibpy::install_kernel_trace();  // (in place of SmPyLib's trail: KernelError.trace)
 
     // The upstream bindings look themselves up by their own module name (for example to
     // raise TessellationError), so make that name resolve to this module.
@@ -95,4 +97,5 @@ PYBIND11_MODULE(_core, m)
     bind_cells(m.attr("ext").cast<py::module_>());
     bind_distance(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
+    bind_kernel_trace(m.attr("ext").cast<py::module_>());
 }

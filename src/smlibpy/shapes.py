@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 
 import numpy as np
 
-from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
+from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
 from .geometry import (TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction,
                        _vec)
 
@@ -2468,7 +2468,7 @@ class Part(_Body):
                 "overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools "
                 "first and apply them at once: part - (tool1 + tool2))")
         if failure is not None:
-            raise KernelError(failure.operation, failure.detail, failure.status, hint) from failure
+            raise _traced(KernelError(failure.operation, failure.detail, failure.status, hint), failure) from failure
         raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
 
     def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
@@ -2826,7 +2826,10 @@ class Part(_Body):
         if self._h.imported:
             from ._guard import isolated
 
-            return isolated(what, _round_step, what, hint, h.brep, kedges, call)
+            result = isolated(what, _round_step, what, hint, h.brep, kedges, call)
+            # (a step that ran in this process, with GUARD_SECONDS = 0 or without a helper process,
+            # rounded the copy h holds: h must give it up, or it frees the result with itself)
+            return _take(h) if result is h.brep else result
         _round_step(what, hint, h.brep, kedges, call)
         return _take(h)
 
@@ -3502,7 +3505,7 @@ def _round_call(operation: str, hint: str) -> Iterator[None]:
     except KernelError as e:
         if e.status != "SM_ERR_INVALID_INPUT":
             raise
-        raise KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT) from e
+        raise _traced(KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT), e) from e
 
 
 def _continuity(c: int | str | None) -> int | None:

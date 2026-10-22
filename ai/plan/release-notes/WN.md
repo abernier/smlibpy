@@ -590,3 +590,127 @@ Items W13 (both languages), W14 (smlibwasm; `Text` taking a `Font` in both) and 
   as in the hand-written bindings). Results are not wrapped: new kernel objects are numbers the
   caller frees, and calls that consume their arguments (`boolean_union`) consume them, as their
   docstrings say.
+
+# Lane WN, batch 5: NVIDIA's validator on smlibpy's USD files (N4), parity with smlibpy (N5), where the kernel gave up (N6), the C library's rand() (N7), the vase fillets (W16)
+
+Commit on `fix/kr-WN`; kernel plan items N4, N5, N6, N7 and W16.
+
+## Fixed
+
+- Both: a `KernelError` said only where the binding called the kernel ("SmApiFilletEdges failed:
+  SM_ERR (1001) at SmPyFillets.cpp:81"): release builds compiled the kernel's error reports out
+  (`SER` and the other failure macros only returned). Kernel patch K11
+  (`third_party/patches/SMLib/inc/SmMessages.h`, the first patched header: `CMakeLists.txt` puts
+  `third_party/patches/<dir>/inc` before the kernel's own headers) reports each failure to the
+  error callback, and `KernelError.trace` lists the last 48: the failing chain from the deepest
+  kernel function to the API function, after the errors the kernel recovered from (N6).
+- Both: USD files of bodies read from another program's file (and checked, X6) failed NVIDIA's
+  validator: `SmBrep::AssertValid` leaves UV curves on the body, and the loop of a sphere's face
+  that runs up and down its seam (no edges at its poles) does not close in them (BA.763;
+  usd-brep's own `cubeWithVoid.usda` and `Cone_SmConnect_Brep.usda`, read and written again;
+  they passed before X6). Such loops are written without UV curves
+  (`src/cpp/usd/SmuConvert.cpp`), which readers rebuild; they read back the same. Found by the
+  validator gate (N4).
+- Python: a fillet or chamfer of a part read from a file, with `GUARD_SECONDS = 0` or where no
+  helper process starts, freed the body of its result: the step ran in this process and returned
+  the copy that the step's handle still held, which freed it with itself (AddressSanitizer: reads
+  of freed memory in `brep_measure` and `CalculateTightBoundingBox`; the whole suite crashed once
+  in the parity test's all-edge fillet of `vase1.smb`). From batch 2 (fillets of imported parts
+  isolated, F2); smlibwasm's port took the copy and was right.
+- docs/files.md said the test suite checks the USD files with NVIDIA's validator; nothing did.
+  Now it does (N4).
+- N7 (K10, the kernel no longer reseeds the process-wide `rand()` from the clock) was done with
+  I2 in P0 (90677eb); this batch adds its test (Python: the C library's `rand()` sequence goes on
+  across a void Boolean and `solids()` of two bodies).
+
+## New
+
+- Python `KernelError.trace`, TS `KernelError.trace` (a frozen array): where the kernel gave up,
+  as `"SM_ERR_BAD_INTERSECTIONS at SmTopologyIntersector.cpp:2185 (IntersectTopology)"`; `()`/`[]`
+  where the error did not come from a kernel function (or the kernel crashed). It comes back
+  from smlibpy's other process (`smlibpy._guard`), from smlibwasm's probe worker and from a
+  `KernelWorker`, and survives the errors raised again with another hint (fillets the kernel
+  cannot round, Booleans). docs/kernel.md "Where the kernel gave up"; skill `features/generic`,
+  `parts/guards`.
+- Raw layer, both: `ext.kernel_trace()` (the entries and how many there were since the last
+  clear), `ext.clear_kernel_trace()`. `kernel_call`/`kernelCall` clear it when they start.
+  C++: `src/cpp/trace.cpp` (shared), `js/cpp/bind_trace.cpp`.
+- `tools/oracles/usd_validator.py`: usd-brep's `brep_validator` (191 BrepArray rules) on `.usda`
+  files without OpenUSD, on a shim of the `pxr` calls it makes (`tools/oracles/usd_shim`, about
+  400 lines; calibrated: each of upstream's `Test_BA_xxx` files fails its rule, the good ones
+  pass). Both suites run it on what `export_usd`/`toUsd` write: 19 kinds of bodies (analytic,
+  NURBS, cavities, cells, sheets, text, sweeps, lofts, 1e6 from the origin, 0.01 small, several
+  bodies with meshes), upstream's files read and written again, and a box read with analytic line
+  edges. The JS test needs a Python 3.10 (`SMLIBPY_PYTHON`, else `python3`) and skips without.
+- `tools/parity.py` and `tests/data/parity`: the text of smlibpy's writers (STEP, USD, DXF, OBJ,
+  glTF, STL) for bodies read from `.smb` files, and the numbers of 18 modelling steps, which
+  `js/test/lane_WN.test.ts` compares with smlibwasm (text token by token, numbers to 1e-9;
+  results to 1e-7, counts and errors exactly), with the known divergences of the builds and why
+  (`KNOWN`). `python tools/parity.py --update` writes them; the Python suite checks they are
+  current. The writers agree to the byte but for their names.
+- The ```js examples of docs/javascript.md and js/README.md run in the JS suite (with an app's
+  values where a block takes them, a stand-in for `three`; the worker example as its three
+  files), and print what their comments say.
+- W16: the vase fillets' failure in smlibwasm is traced (`SmFilletStandardSolver.cpp:558`,
+  `LoadInitialValues`, from `CalcCornerVertGeom`: the drop of a corner's guess point onto the
+  filleted edge finds not one point) and explained: the native arm64 build contracts `a * b + c`
+  into FMA instructions. A native build with `-ffp-contract=off` fails both fillets the same way,
+  reads `vase1.smb` with smlibwasm's volume to the last digit (1103972.4296165158; FMA:
+  ...174), and gives the fuzz run's cone/cylinder merge smlibwasm's 145.98511 (FMA: 149.19267;
+  OpenCASCADE: 150.26185 for the union). docs/kernel.md "Accuracy" and docs/javascript.md say so.
+
+## Behaviour changes
+
+- Both: `KernelError.detail` no longer ends in ". Kernel trace: ..." where the kernel raised with
+  its `ERR` messages (smlibpy's callback takes the place of SmPyLib's trail, which nothing feeds
+  now); those sites are in `trace`, with every other failing site. The message (`str(e)`) and
+  `status` are unchanged.
+
+  ```python
+  # before
+  if "SmFilletExecutive" in e.detail: ...
+  # after
+  if any("SmFilletExecutive" in t for t in e.trace): ...
+  ```
+- Both: `export_usd`/`toUsd` write no UV curves for a loop whose UV curves do not close (only
+  bodies read from other files and checked carry UV curves at all). Readers rebuild them; a script
+  that read the `brep:curveUv` arrays of such a file finds `vertexCount` 0 there.
+- Raw layer: the kernel's error callback is smlibpy's (`src/cpp/trace.cpp`), installed after
+  SmPyLib's; code that installed its own with `smos_SetErrorCallback` (C++) replaces it.
+- smlibwasm: the module is larger by the calls the failure macros make: 7.82 MB, 188 kB more
+  (1.85 MB with brotli, 46 kB more); the size table of docs/javascript.md and js/README.md say so.
+
+## Not done
+
+- N4: no CI step with the real `usd-brep[validation]` (OpenUSD and NVIDIA's asset validator): its
+  wheels are for Python 3.12 on Linux and Windows and could not run here. The shim runs the same
+  rule code (upstream's `brep_validator.py`) everywhere, but not the asset validator's general USD
+  rules. BA.465 (control points in the body's box) is left out for bodies read from other files,
+  which upstream's own files fail (as the plan says). Names outside ASCII (X3) and empty parts
+  (X10) belong to another lane: the gate's test is an xfail on this branch (UnicodeDecodeError;
+  an empty part written with an inverted extent: BA.025/030/035/701) and checks the files once
+  they are refused or written well.
+- N5: 18 modelling steps, not the 100 of the review's probe (the JS suite is a port of the Python
+  suite with the same numbers). The golden files are made on darwin-arm64; other platforms compare
+  within the tolerances (not run here). The cases that need files beside the repository (DXF #19,
+  the valve's convexity) run where those are. glTF is compared as JSON (Python and JavaScript
+  format JSON differently).
+- N6: no per-site hints (Not planned). `SE`/`SE_MSG` (errors the kernel ignores on purpose) and
+  `AER`/`AER_MSG` (boolean asserts) do not report. The trace is per thread; on Windows the
+  kernel keeps its callback per thread, and `clear_kernel_trace()` installs it on the calling
+  thread. Overhead: measured as suite times (Python) and module size; smlibwasm's suite time was
+  not compared.
+- W16: not fixed. The WebAssembly build cannot contract; compiling the native kernel with
+  `-ffp-contract=off` would make Python on arm64 fail the vase fillets too. Over the fuzz seeds 7
+  and 8 it removed 15 of the 19 smlibpy/smlibwasm divergences of the baseline and added 8 others
+  (the six operations of csg-8-124 after its first Boolean, which that build makes and smlibwasm
+  refuses, and slice-7-402): libm and other differences remain. Left as a decision; the cases are
+  in `tools/parity.py`'s `KNOWN`. That x86_64 builds behave like smlibwasm in these cases is
+  expected (their default target has no FMA) but not verified.
+- N7: `SM_DEFINED_HASH_ORDER` was not attempted (10 `static_assert`s in 4 files). No JS test of
+  the C library's random state (the module's C library is its own; K10 is shared C++).
+- `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` (24 extended-mode
+  offset steps in one process, the known issue #2 family) crashed the process in 1 of 100 runs
+  of its steps at HEAD and 3 of 100 (and 1 of 30) with this batch: the use of freed memory
+  depends on the heap's layout, which the trace callback changes (it no longer makes a string
+  per error report). Not caused by the callback, which writes only into its own ring.

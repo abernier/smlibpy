@@ -62,12 +62,12 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.8 MB | 2.6 MB | 7.6 MB |
+| The kernel, `smlibwasm.wasm` | 1.9 MB | 2.6 MB | 7.8 MB |
 | Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 87 kB |
 | The library | 0.31 MB | 0.36 MB | 1.3 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
 | The dictionary of WOFF2 fonts (Brotli's) | 59 kB | 60 kB | 79 kB |
-| **Together** | **2.2 MB** | **3.1 MB** | **9.2 MB** |
+| **Together** | **2.3 MB** | **3.1 MB** | **9.4 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -154,7 +154,14 @@ applies. The differences come from the language:
   `atPoint(point)`, since `at` takes an index; Python's `list[-1]` is `list.at(-1)` or
   `list.last`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
-  exported.
+  exported. A `KernelError`'s `trace` says where the kernel gave up, as in Python
+  ([the kernel](kernel.md#where-the-kernel-gave-up)).
+- **Results** agree with smlibpy's to about 1e-9 of their value: the native arm64 build rounds
+  `a * b + c` once (FMA), the WebAssembly build twice. Now and then a step close to a tolerance
+  in the kernel succeeds in one and fails in the other (all-edge fillets of usd-brep's
+  `vase1.smb`: smlibpy on arm64 rounds them; smlibwasm cannot, nor can a native build without
+  FMA); `tools/parity.py` lists the known cases. The file writers write smlibpy's files to the
+  byte but for the writer's name.
 - **Types**: the free functions say what they give (`extrude(sketch, 3)` is a `Part`, an open curve
   a `Part | Shell`; `split(part, plane, 'both')` two parts), `render`, `show` and `htmlPage` check
   their options (`{ veiw: 'top' }` does not compile), and the types of options and selections can
@@ -1591,6 +1598,7 @@ export class KernelError extends ModelingError {
     readonly status: string | null;
     readonly detail: string;
     readonly hint: string | null;
+    readonly trace: readonly string[];
     constructor(operation: string, detail: string, status?: string | null, hint?: string | null);
 }
 export interface MemoryUsage {

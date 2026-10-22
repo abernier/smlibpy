@@ -12,7 +12,7 @@
 import createSmlib from '../wasm/smlibwasm.mjs'
 import { SIGNATURES } from './signatures.ts'
 import { OPTIONS } from './_options.ts'
-import { KernelError, ModelingError, _crashes } from './_errors.ts'
+import { KernelError, ModelingError, _crashes, _traced } from './_errors.ts'
 import { _createModule } from './_loader.ts'
 
 export { KernelError, ModelingError }
@@ -423,6 +423,7 @@ export function _crashError(operation: string, hint: string | null = null): Kern
  * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`; a crash of the kernel (a
  * trap) says so before `hint`. */
 export function kernelCall<T>(operation: string, fn: () => T, hint: string | null = null): T {
+  ext.clear_kernel_trace()
   try {
     return fn()
   } catch (e) {
@@ -432,10 +433,18 @@ export function kernelCall<T>(operation: string, fn: () => T, hint: string | nul
     const m = STATUS_RE.exec(text)
     const status = m ? m[1] : null
     const why = status === OUT_OF_MEMORY ? _outOfMemoryHint() : trap ? _crashHint((e as Error).message, hint) : hint
-    const error = new KernelError(operation, text, status, why)
+    const error = _traced(new KernelError(operation, text, status, why), trap ? [] : _traceOf(e))
     ;(error as Any).cause = e
     throw error
   }
+}
+
+/** The kernel trace of a failed kernel call: the one a probe worker sent with it (`_kernelTrace`,
+ * see defeature.ts), else this thread's (Python's `_trace_of`). */
+export function _traceOf(e: unknown): readonly string[] {
+  const sent = (e as Any)?._kernelTrace
+  if (Array.isArray(sent)) return sent.map(String)
+  return ext.kernel_trace()[0] as string[]
 }
 
 // -------------------------------------------------------------------------------- memory

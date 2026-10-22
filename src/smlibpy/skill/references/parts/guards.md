@@ -39,8 +39,8 @@ parts made from them; Booleans with `GUARD_BOOLEANS`.
   smlibpy.defeature.GUARD_SECONDS sets the limit`.
 - Ctrl-C during a guarded step stops it at once (`KeyboardInterrupt`); during any other kernel
   call it waits until the call returns.
-- Errors and warnings of the step itself (`KernelError` with its status and hint, `ValueError`)
-  are raised here as there.
+- Errors and warnings of the step itself (`KernelError` with its status, hint and `trace` of the
+  kernel there, `ValueError`) are raised here as there.
 - A frozen application (no Python to start the helper with), or a helper that does not start
   within 30 s, runs the steps in this process (a `RuntimeWarning` says so once).
 

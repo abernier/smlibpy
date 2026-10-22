@@ -184,22 +184,30 @@ def _result(packed: Any, files: list[str], loaded: dict[int, Any] | None = None)
 
 
 def _error(e: BaseException) -> dict[str, Any]:
-    """An error of the other process, as it crosses."""
+    """An error of the other process, as it crosses (with the kernel's trace: KernelError.trace)."""
     if isinstance(e, KernelError):
-        return {"kernel": [e.operation, e.detail, e.status, e.hint]}
-    return {"type": type(e).__name__, "builtin": type(e) is getattr(builtins, type(e).__name__, None),
+        return {"kernel": [e.operation, e.detail, e.status, e.hint], "trace": list(e.trace)}
+    sent = {"type": type(e).__name__, "builtin": type(e) is getattr(builtins, type(e).__name__, None),
             "modeling": isinstance(e, ModelingError), "text": str(e)}
+    if type(e) is RuntimeError:  # (a kernel function's failure, which kernel_call turns into a KernelError)
+        sent["trace"] = list(ext.kernel_trace()[0])
+    return sent
 
 
 def _raise(what: str, where: str, sent: dict[str, Any]) -> None:
     """Raises the error of the other process here."""
     if "kernel" in sent:
-        raise KernelError(*sent["kernel"])
+        error = KernelError(*sent["kernel"])
+        error.trace = tuple(sent.get("trace", ()))
+        raise error
     if sent["modeling"]:
         raise ModelingError(sent["text"])
     error = getattr(builtins, sent["type"], None) if sent["builtin"] else None
     if isinstance(error, type) and issubclass(error, Exception):
-        raise error(sent["text"])
+        raised = error(sent["text"])
+        if "trace" in sent:
+            raised._kernel_trace = sent["trace"]  # type: ignore[attr-defined]
+        raise raised
     raise ModelingError(f"{what}: {sent['type']} in {where}: {sent['text']}")
 
 
