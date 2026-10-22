@@ -59,7 +59,12 @@ class _Builder:
 
     # -- edges -----------------------------------------------------------------
     def edge_spec(self, ei: int) -> dict[str, Any]:
-        """The exact curve of edge ``ei`` from its start to its end vertex."""
+        """The exact curve of edge ``ei`` from its start to its end vertex, with the ids of those
+        vertices (``v0``, ``v1``: build_brep makes one kernel vertex per file vertex)."""
+        e = self.b.edges[ei]
+        return dict(self._edge_curve(ei), v0=int(e["v0"]), v1=int(e["v1"]))
+
+    def _edge_curve(self, ei: int) -> dict[str, Any]:
         e = self.b.edges[ei]
         c = self.b.curves[e["curve"]]
         p0 = self.P(self.b.vertices[e["v0"]])
@@ -402,11 +407,12 @@ def _add_seams(bld: _Builder, f: dict[str, Any], srf: dict[str, Any], seam_id: i
     if kind not in ("cylinder", "cone", "sphere", "torus"):
         return None
     specs = bld.specs
-    circles, points = [], []
+    circles, points, point_ids = [], [], []
     for loop in f["loops"]:
         if not loop.get("edges"):
             if "vertex" in loop:
                 points.append(bld.P(bld.b.vertices[loop["vertex"]]))
+                point_ids.append(int(loop["vertex"]))
             continue
         if len(loop["edges"]) != 1:
             return None
@@ -475,6 +481,12 @@ def _add_seams(bld: _Builder, f: dict[str, Any], srf: dict[str, Any], seam_id: i
         seam = {"kind": "line", "p0": pa, "p1": pb}
     else:
         seam = _arc_spec(o if kind == "sphere" else o + sdir * srf["major"], pa, pb, into)
+    # the seam runs between the vertices of the circles (or the apex or pole) it joins
+    seam["v0"] = int(bld.b.edges[ea]["v0"])
+    if len(circles) == 2:
+        seam["v1"] = int(bld.b.edges[circles[1][0]]["v0"])
+    elif points:
+        seam["v1"] = point_ids[0]
     specs.update(moved)
     specs[seam_id] = seam
     bld.pinned.update(ei for ei, _ in circles)

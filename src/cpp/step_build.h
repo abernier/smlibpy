@@ -16,7 +16,8 @@ namespace smlibpy {
 // faces: [{"surface": spec, "same_sense": bool, "free_seam": bool, "loops": [{"edges": [(edge_id, forward)]} |
 // {"vertex": point}]}] ("free_seam": the face, on a B-spline surface closed on itself, has no seam edge of its own
 // and may lie across the surface's seam, which is then moved off it)
-// edges: {edge_id: curve spec running from the edge's start to its end vertex}
+// edges: {edge_id: curve spec running from the edge's start to its end vertex, with "v0" and "v1" the ids of those
+// vertices in the file, where it has them: edges that name the same vertex share it}
 // voids: [(faces, reversed)]: cavities of a solid (STEP BREP_WITH_VOIDS), each a void region inside the solid's
 // region ("reversed" as for the solid's faces); none or empty for none.
 // The caller owns the result.

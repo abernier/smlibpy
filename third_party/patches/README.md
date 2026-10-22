@@ -34,6 +34,10 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::DoExtendedOffset` fails when two of the faces whose surfaces it extends use one surface, or a face uses a surface that belongs to another face | `ReplaceSurface()` gives the surface's owner face the new surface, not the face it is called for, and the extension deleted for the one face was handed out again, from the executive's table of extensions, for the other (AddressSanitizer: a read of freed memory in `GetCreateExtendedSurface`). `(Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)).shell(2.4, <the face at x = 3>)` crashed in every run, and the WebAssembly build trapped. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails | It was kept (a leak), unlike after a failed stitch. Code reading; not seen in the runs measured. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
+| `SMLib/src/SmFace.cpp` | `SmFace::HasSeamProblem` hands the seam curve it makes over to the caller's classification instead of copying it (in the classification it builds, and from the face properties it runs when called without them) | `SmCurveClassification::operator=` deep-copies a curve its source owns; the function assigned and then disowned the source, so the original curve belonged to nobody: 3.4 KB per call on a cylinder, 4.8 KB on a sphere, 12.7 KB on a torus, 8.3 KB per `heal_brep` of a cylinder with a sphere. smlibpy checks the seams of every body it imports from STEP. The copy also kept a pointer into the lost original (its UV curve, which `SplitAtSeam` reads), so the original could not just be freed. |
+| `SMLib/src/SmFace.cpp` | `SmFace::GetPointsInFace` dithers its sample points with a generator of its own, seeded the same each call | It seeded the process-wide `rand()` from the clock, so its points, and the inner-shell classification that rays from them, changed from run to run (and every other user of `rand()` was reseeded). |
+| `SMLib/src/SmShell.cpp` | `SmShell::IsInnerShellOf` takes the ray directions from wire and vertex shells from a generator of its own, seeded the same each call | As above (`srand(time(NULL))`). |
+| `SMLib/src/SmCurve.cpp` | `SmCurve::CalculateTightBoundingBox` adds the knots of a B-spline only where they lie in the interval asked for | It added the last knot (and the tangent breaks) wherever they were: the tight box of an edge whose curve runs past the edge reached the curve's end. A box whose line edges a USD file had written over SMLib's unbounded line interval (-1234567 to 1234567) read back with `bbox()` reaching 1234560, in its edges, faces and every body made from it (the WebAssembly build reached that code only now and then and gave the right box). |
 | `SMLib/src/SmPlane.cpp` | `SmPlane::IsNurbSurfacePlane` also requires every control point to be the candidate plane's point at its Greville abscissae, and takes rational surfaces only with equal weights | With `HIGHER_ORDER_USE_ANALYTICS` (`SmPlane.h`) the test compared the surface with the plane at 13 fixed parameters only. A B-spline face parameterized like a plane with a bump between them was taken for a plane, and every copy that adds analytic surfaces flattened it: `SmBrep::CopyFaces` (`Face.to_shell`), the `.smb` reader, the offset code (`Shell.thicken`) and tessellation. Of 40 random single-pole bumps, `to_shell()` flattened 10. |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
@@ -86,6 +90,19 @@ build:
   `.smb` round trip (top at 2.2222, not 0) and `thicken(2)` (7212.841, not 7200.0), and its mesh is
   no longer flat; B-spline faces that are planes (`Box(...).to_nurbs()`) still come back as planes
   from `.smb`. `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` checks it.
+- The seam check: `ext.seam_problems` on a cylinder, a sphere and a torus, `heal_brep` and STEP
+  imports of a box with a hole leave the heap as it was (malloc zone statistics; before: 3408, 4848
+  and 12672 bytes per call, 8256 per `heal_brep`, 3408 per import); 1000 checks of a torus with a
+  cylinder and 100 imports grew a process by 16.7 MB, now by less than 0.5 MB (the WebAssembly build:
+  2000 checks 28 MB, now 0.6 MB). AddressSanitizer reports nothing for `tests/test_step_import.py`
+  (which runs the seam repairs of `SplitAtSeam` on the curves handed over), `tests/test_io.py`,
+  `tests/test_tessellation.py` and `tests/test_measure.py` (121 passed). LeakSanitizer does not run
+  on macOS arm64; the heap statistics stand in for it. Over 449 STEP files (611 bodies) of the
+  classcad-mcp corpus, no volume, face count, validity or error changed with the seam and the
+  random-number changes.
+- The tight box: a USD file with such line edges reads back with `bbox()` of +-5, as the box is
+  (`tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges`, which also checks that
+  smlibpy no longer writes such files).
 - Both test suites pass.
 
 Defects that remain in the kernel (crashes and loops in the feature executive's patching) are
@@ -124,7 +141,10 @@ When an upstream release fixes a defect:
    `DoExtendedOffset`), nothing for the steps of
    `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` and the plain shell of
    crescendo part 40 (with `quarantine_size_mb=8192`); for the plane test,
-   `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass.
+   `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass; for the
+   seam check, `tests/test_step_import.py::test_seam_checks_on_import_free_their_curves` must still
+   pass and AddressSanitizer report nothing for `tests/test_step_import.py`; for the tight box,
+   `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can

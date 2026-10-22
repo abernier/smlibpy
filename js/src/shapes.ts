@@ -552,19 +552,22 @@ export class ShapeList<T = Shape> extends Array<T> {
   /** Edges on outside corners (material angle below 180 degrees), and the outside corners of a
    * sketch (vertices where the region's angle is below 180 degrees). */
   convex(): ShapeList<T> {
-    return this.filter((s) => _convexity(s) === 'convex')
+    const kinds = _convexities(this)
+    return this.filter((_, i) => kinds[i] === 'convex')
   }
 
   /** Edges on inside corners (material angle above 180 degrees), and the inside corners of a
    * sketch. */
   concave(): ShapeList<T> {
-    return this.filter((s) => _convexity(s) === 'concave')
+    const kinds = _convexities(this)
+    return this.filter((_, i) => kinds[i] === 'concave')
   }
 
   /** Edges where two faces meet tangentially, such as the borders of a fillet, and the vertices
    * of a sketch where two edges meet tangentially. */
   smooth(): ShapeList<T> {
-    return this.filter((s) => _convexity(s) === 'smooth')
+    const kinds = _convexities(this)
+    return this.filter((_, i) => kinds[i] === 'smooth')
   }
 
   /** Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry (with
@@ -705,10 +708,48 @@ export class ShapeList<T = Shape> extends Array<T> {
   }
 }
 
-function _convexity(s: unknown): string | null {
-  if (s instanceof Edge) return s.convexity
-  if (s instanceof Vertex && s._owner instanceof Sketch) return s.convexity
-  return null
+/** The convexity of each edge, and of each corner of a sketch (null for other shapes), with one
+ * kernel call for the edges of each body. */
+function _convexities(items: readonly unknown[]): (string | null)[] {
+  const edges = items.filter((s): s is Edge => s instanceof Edge)
+  const angles = new Map<Edge, number | null>()
+  _outerAngles(edges).forEach((a, i) => angles.set(edges[i], a))
+  return items.map((s) => {
+    if (s instanceof Edge) {
+      const a = angles.get(s) ?? null
+      return a !== null ? _angleKind(a) : s._probedConvexity()
+    }
+    if (s instanceof Vertex && s._owner instanceof Sketch) return s.convexity
+    return null
+  })
+}
+
+/** The kernel's outer angle of each edge in degrees (`ext.edge_angles`: above 180 at a convex
+ * edge), one call per body; null where the kernel cannot tell (an edge that does not lie between
+ * two faces of a solid, a standalone curve). */
+function _outerAngles(edges: readonly Edge[]): (number | null)[] {
+  const out: (number | null)[] = edges.map(() => null)
+  const bodies = new Map<_Body, number[]>()
+  edges.forEach((e, i) => {
+    if (e._e && e._owner !== null) {
+      const idx = bodies.get(e._owner)
+      if (idx) idx.push(i)
+      else bodies.set(e._owner, [i])
+    }
+  })
+  for (const [owner, idx] of bodies) {
+    const angles: (number | null)[] = ext.edge_angles(owner._brep, idx.map((i) => edges[i]._e))
+    idx.forEach((i, j) => {
+      out[i] = angles[j] ?? null
+    })
+  }
+  return out
+}
+
+/** The convexity of an edge with this outer angle (degrees): smooth within half a degree of 180,
+ * as the faces' normals are within half a degree. */
+function _angleKind(outer: number): string {
+  return Math.abs(outer - 180) < 0.5 ? 'smooth' : outer > 180 ? 'convex' : 'concave'
 }
 
 /** The shapes, each once (by `_identity()`). */
@@ -961,9 +1002,30 @@ export class Edge extends Shape {
   }
 
   /** "convex" for an outside corner (material angle below 180 degrees), "concave" for an inside
-   * corner, "smooth" where the faces meet tangentially. Edges with a single face count as
-   * convex. */
+   * corner, "smooth" where the faces meet tangentially (within half a degree). Taken at the middle
+   * of the edge. Edges with a single face count as convex. */
   get convexity(): string {
+    const a = _outerAngles([this])[0]
+    return a !== null ? _angleKind(a) : this._probedConvexity()
+  }
+
+  /** The angle between the two faces of the edge through the material, in degrees, at the middle
+   * of the edge: 90 at the edges of a box, 270 at the inside corner of an L, 180 where the faces
+   * meet tangentially. RangeError for an edge that does not lie between two faces. */
+  get dihedralAngle(): number {
+    const a = _outerAngles([this])[0]
+    if (a !== null) return 360 - a
+    const fs: number[] = this._e ? k.edge_faces(this._e) : []
+    if (fs.length !== 2) throw new RangeError('dihedralAngle: the edge does not lie between two faces')
+    const p = this.center()
+    const turn = new Face(this._owner, fs[0]).normalAt(p).angleTo(new Face(this._owner, fs[1]).normalAt(p))
+    return this._probedConvexity() === 'concave' ? 180 + turn : 180 - turn
+  }
+
+  /** The convexity from the faces' normals and a step into face 1, for edges the kernel's outer
+   * angle does not cover (an edge of a sheet, an inner edge of a merged part). On edges that lie
+   * off their faces by more than the step (imported bodies) the step can read noise. */
+  _probedConvexity(): string {
     if (!this._e) return 'convex'
     const fs: number[] = k.edge_faces(this._e)
     if (fs.length !== 2) return 'convex'
@@ -2836,21 +2898,26 @@ export class Part extends _Body {
 
   /** The selected edges without seams and tangent (smooth) edges, which cannot be rounded. */
   _sharpEdges(edges: unknown, operation: string): Edge[] {
-    const sel = _flattenEdges(edges)
+    const sel = _flattenEdges(edges).filter((e) => !e.isSeam)
+    const angles = _outerAngles(sel)
     const out: Edge[] = []
-    for (const e of sel) {
-      if (e.isSeam) continue
-      const fs = e.faces()
-      if (fs.length === 2) {
-        const p = e.center()
-        try {
-          if (fs[0].normalAt(p).angleTo(fs[1].normalAt(p)) < 0.5) continue
-        } catch (err) {
-          if (!(err instanceof KernelError || _isValueError(err))) throw err
+    sel.forEach((e, i) => {
+      const a = angles[i]
+      if (a !== null) {
+        if (_angleKind(a) === 'smooth') return
+      } else {
+        const fs = e.faces()
+        if (fs.length === 2) {
+          const p = e.center()
+          try {
+            if (fs[0].normalAt(p).angleTo(fs[1].normalAt(p)) < 0.5) return
+          } catch (err) {
+            if (!(err instanceof KernelError || _isValueError(err))) throw err
+          }
         }
       }
       out.push(e)
-    }
+    })
     if (!out.length) throw new RangeError(`${operation}: the selection holds only seam or smooth edges, nothing to ${operation}`)
     return out
   }
@@ -2961,7 +3028,7 @@ export class Part extends _Body {
       throw new KernelError(what, `kernel result is ${problem}`, null, `the ${shape !== 'chamfer' ? 'radius' : 'length'} may be too large for the selected edges (it is ${_formatG(size, 4)})`)
     }
     if (before === null || after === null) return
-    const convex = edges.map((e) => e.convexity === 'convex')
+    const convex = _convexities(edges).map((kind) => kind === 'convex')
     const grows = after > before * (1 + 1e-3)
     if ((convex.every(Boolean) && grows) || (!convex.some(Boolean) && after < before * (1 - 1e-3))) {
       throw new KernelError(what, 'kernel result failed the volume check', null, 'the size is too large for the selected edges')

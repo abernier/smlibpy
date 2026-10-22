@@ -88,7 +88,11 @@ STEP, USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF file th
 outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
 a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors (the meshes
 beside them are skipped); a merged part
-(see [cells](features.md#cells)) comes back with its cells.
+(see [cells](features.md#cells)) comes back with its cells, from `.usda` and `.smb` alike. The
+stage is read as USD composes it (its `subLayers` and the files its prims reference, relative to
+the file), each body placed by the transforms of its prims and in millimeters (`metersPerUnit`,
+`upAxis` turned to Z up; a stage that says neither is read as it is), and bodies from other
+software are checked by the kernel before they are measured.
 
 ### STEP
 

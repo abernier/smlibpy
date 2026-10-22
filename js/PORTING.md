@@ -94,7 +94,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
     `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
     `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
-    `fromUsd(data)` take a `string` or `Uint8Array`.
+    `fromUsd(data)` take a `string` or `Uint8Array`. `fromUsd` takes the layers a stage names
+    (subLayers, references, payloads) from its `resolve` option, where Python and `importUsd` read
+    the files (an option only smlibwasm has: `JS_ONLY` in tools/gen_js_options.py).
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
@@ -108,7 +110,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
-  `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
+  `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units` with it); `step_import.ts`: `StepModel` (render.ts draws it);
   `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`,
   `_translation`, `_reflection`, `_scaling` (the matrices of a move; mesh.ts moves meshes with
   them);

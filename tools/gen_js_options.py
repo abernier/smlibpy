@@ -43,6 +43,11 @@ ALIASES = {
 # Functions whose **kwargs Python passes on to another function, which checks them.
 FORWARDS = {"export_gltf": "smlibpy.exporters.gltf_document_mixed"}
 
+# Options only smlibwasm has: fromUsd reads text in memory, so the layers a USD file names
+# (subLayers, references, payloads) come from a function of the caller's, where Python (and
+# importUsd) read the files.
+JS_ONLY = {"fromUsd": ["resolve"]}
+
 HEADER = """\
 // Generated from smlibpy's signatures by tools/gen_js_options.py: do not edit. Run it after
 // changing a public signature (tests/test_js_options.py fails while this file is behind).
@@ -133,7 +138,7 @@ def table() -> dict[str, tuple[int, list[str]]]:
             if e is not None:
                 if name in ALIASES and name.startswith("to"):
                     e = (e[0] - 1, e[1])  # (no path)
-                out[name] = e
+                out[name] = (e[0], e[1] + JS_ONLY.get(name, []))
             continue
         e = entry(obj)
         if e is not None:

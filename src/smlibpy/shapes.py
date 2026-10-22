@@ -432,17 +432,17 @@ class ShapeList(list[T]):
     def convex(self) -> ShapeList[T]:
         """Edges on outside corners (material angle below 180 degrees), and the outside
         corners of a sketch (vertices where the region's angle is below 180 degrees)."""
-        return ShapeList(s for s in self if _convexity(s) == "convex")
+        return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "convex")
 
     def concave(self) -> ShapeList[T]:
         """Edges on inside corners (material angle above 180 degrees), and the inside
         corners of a sketch."""
-        return ShapeList(s for s in self if _convexity(s) == "concave")
+        return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "concave")
 
     def smooth(self) -> ShapeList[T]:
         """Edges where two faces meet tangentially, such as the borders of a fillet, and the
         vertices of a sketch where two edges meet tangentially."""
-        return ShapeList(s for s in self if _convexity(s) == "smooth")
+        return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "smooth")
 
     def fillets(self, max_radius: float | None = None) -> ShapeList[T]:
         """Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry
@@ -572,12 +572,42 @@ class ShapeList(list[T]):
         return f"ShapeList({list.__repr__(self)})"
 
 
-def _convexity(s: Any) -> str | None:
-    if isinstance(s, Edge):
-        return s.convexity
-    if isinstance(s, Vertex) and isinstance(s._owner, Sketch):
-        return s.convexity
-    return None
+def _convexities(items: Sequence[Any]) -> list[str | None]:
+    """The convexity of each edge, and of each corner of a sketch (None for other shapes), with
+    one kernel call for the edges of each body."""
+    edges = [s for s in items if isinstance(s, Edge)]
+    angles = {id(e): a for e, a in zip(edges, _outer_angles(edges))}
+    out: list[str | None] = []
+    for s in items:
+        if isinstance(s, Edge):
+            a = angles[id(s)]
+            out.append(_angle_kind(a) if a is not None else s._probed_convexity())
+        elif isinstance(s, Vertex) and isinstance(s._owner, Sketch):
+            out.append(s.convexity)
+        else:
+            out.append(None)
+    return out
+
+
+def _outer_angles(edges: Sequence[Edge]) -> list[float | None]:
+    """The kernel's outer angle of each edge in degrees (``ext.edge_angles``: above 180 at a
+    convex edge), one call per body; None where the kernel cannot tell (an edge that does not
+    lie between two faces of a solid, a standalone curve)."""
+    out: list[float | None] = [None] * len(edges)
+    bodies: dict[int, tuple[Any, list[int]]] = {}
+    for i, e in enumerate(edges):
+        if e._e is not None and e._owner is not None:
+            bodies.setdefault(id(e._owner), (e._owner, []))[1].append(i)
+    for owner, idx in bodies.values():
+        for i, a in zip(idx, ext.edge_angles(owner._brep, [edges[i]._e for i in idx])):
+            out[i] = a
+    return out
+
+
+def _angle_kind(outer: float) -> str:
+    """The convexity of an edge with this outer angle (degrees): smooth within half a degree of
+    180, as the faces' normals are within half a degree."""
+    return "smooth" if abs(outer - 180.0) < 0.5 else "convex" if outer > 180.0 else "concave"
 
 
 def _unique(items: Iterable[T]) -> ShapeList[T]:
@@ -798,8 +828,31 @@ class Edge(Shape):
     @property
     def convexity(self) -> str:
         """``"convex"`` for an outside corner (material angle below 180 degrees), ``"concave"``
-        for an inside corner, ``"smooth"`` where the faces meet tangentially. Edges with a
-        single face count as convex."""
+        for an inside corner, ``"smooth"`` where the faces meet tangentially (within half a
+        degree). Taken at the middle of the edge. Edges with a single face count as convex."""
+        a = _outer_angles([self])[0]
+        return _angle_kind(a) if a is not None else self._probed_convexity()
+
+    @property
+    def dihedral_angle(self) -> float:
+        """The angle between the two faces of the edge through the material, in degrees, at the
+        middle of the edge: 90 at the edges of a box, 270 at the inside corner of an L, 180
+        where the faces meet tangentially. ``ValueError`` for an edge that does not lie between
+        two faces."""
+        a = _outer_angles([self])[0]
+        if a is not None:
+            return 360.0 - a
+        if self._e is None or len(self._e.faces()) != 2:
+            raise ValueError("dihedral_angle: the edge does not lie between two faces")
+        f1, f2 = (Face(self._owner, f) for f in self._e.faces())
+        p = self.center()
+        turn = f1.normal_at(p).angle_to(f2.normal_at(p))
+        return 180.0 + turn if self._probed_convexity() == "concave" else 180.0 - turn
+
+    def _probed_convexity(self) -> str:
+        """The convexity from the faces' normals and a step into face 1, for edges the kernel's
+        outer angle does not cover (an edge of a sheet, an inner edge of a merged part). On edges
+        that lie off their faces by more than the step (imported bodies) the step can read noise."""
         if self._e is None:
             return "convex"
         fs = self._e.faces()
@@ -2483,13 +2536,13 @@ class Part(_Body):
 
     def _sharp_edges(self, edges: Any, operation: str) -> list[Edge]:
         """The selected edges without seams and tangent (smooth) edges, which cannot be rounded."""
-        sel = _flatten_edges(edges)
+        sel = [e for e in _flatten_edges(edges) if not e.is_seam]
         out = []
-        for e in sel:
-            if e.is_seam:
-                continue
-            fs = e.faces()
-            if len(fs) == 2:
+        for e, a in zip(sel, _outer_angles(sel)):
+            if a is not None:
+                if _angle_kind(a) == "smooth":
+                    continue
+            elif len(fs := e.faces()) == 2:
                 p = e.center()
                 try:
                     if fs[0].normal_at(p).angle_to(fs[1].normal_at(p)) < 0.5:
@@ -2597,7 +2650,7 @@ class Part(_Body):
                               f"selected edges (it is {size:.4g})")
         if before is None or after is None:
             return
-        convex = [e.convexity == "convex" for e in edges]
+        convex = [kind == "convex" for kind in _convexities(edges)]
         grows = after > before * (1 + 1e-3)
         if all(convex) and grows or not any(convex) and after < before * (1 - 1e-3):
             raise KernelError(what, "kernel result failed the volume check", None,

@@ -64,6 +64,12 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold);
 // (-1 off the boundary); `cell` the closed region that is not a cavity holding the point,
 // numbered as region_shells numbers them (-1 outside, in a cavity and on the boundary).
 Value classify_points(const SmBrep* brep, const std::vector<double>& points, double tolerance);
+// The outer angle of each edge in degrees (SmEdge::CalcOuterAngle at the middle of its interval):
+// the angle between its two faces through the region outside the body, above 180 at a convex edge,
+// below at a concave one, 180 where the faces meet tangentially. None where the kernel cannot tell:
+// an edge that does not lie between two faces of a solid (a seam, an edge of a sheet, an inner edge
+// of a merged part).
+Value edge_angles(const SmBrep* brep, const std::vector<SmEdge*>& edges);
 // Faces of a Brep copied into a new Brep (no merge, no stitching).
 SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces);
 // A sheet Brep with one face covering the whole (copied) surface.

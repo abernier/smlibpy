@@ -1,5 +1,6 @@
 // tests/test_step_import.py
 import { test } from 'node:test'
+import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -34,6 +35,7 @@ import {
 } from '../src/index.ts'
 import { toHex } from '../src/colors.ts'
 import { _pyRepr } from '../src/step.ts'
+import { KernelError, k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
 function tmpPath(): string {
@@ -1096,4 +1098,133 @@ test('fromStepModel reads in memory what readStep reads from a file', () => {
     assert.ok(model.points[0].equals(fromFile.points[0]))
   }
   assert.throws(() => fromStepModel(42 as unknown as string), (e: unknown) => e instanceof TypeError && /fromStepModel takes/.test(e.message))
+})
+
+// -- edges off their faces, faces that share nothing, shared vertices, seam checks -------------------
+/** A STEP text with the origin of every PLANE moved by `shift` along x, y and z, its edges and
+ * vertices left where they are: edges that lie off their faces, as low-precision writers leave them. */
+function planesMoved(text: string, shift: number): string {
+  const axes = new Set(Array.from(text.matchAll(/=PLANE\('',#(\d+)\)/g), (m) => m[1]))
+  const origins = new Set(Array.from(text.matchAll(/#(\d+)=AXIS2_PLACEMENT_3D\('',#(\d+),/g)).filter((m) => axes.has(m[1])).map((m) => m[2]))
+  return text.replace(/#(\d+)=CARTESIAN_POINT\('',\(([^)]*)\)\);/g, (all, id, xyz) =>
+    origins.has(id) ? `#${id}=CARTESIAN_POINT('',(${xyz.split(',').map((c: string) => f(Number(c) + shift)).join(',')}));` : all,
+  )
+}
+
+test('step edges off their faces keep their convexity', () => {
+  // The edges of an L-shaped block whose planes lie 6e-4 off its edges (the valve body's edges lie
+  // 6.6e-4 off theirs): the convexity was read from two steps of 1e-4 x the length into a face,
+  // which the gap swamped, and 9 of its 21 edges came out the wrong way. The kernel's outer angle
+  // (SmEdge::CalcOuterAngle) does not look at the faces' distances.
+  const block = Box(20, 20, 20).cut(Box(20, 20, 20).translate([10, 10, 10]))
+  const moved = fromStep(planesMoved(toStep(block), 6e-4)) as Part
+  assert.ok(moved.isValid())
+  assert.deepEqual(moved.edges().map((e) => e.convexity).sort(), block.edges().map((e) => e.convexity).sort())
+  assert.equal(moved.edges().concave().length, 3)
+  assert.equal(moved.edges().convex().length, 18)
+  assert.deepEqual(moved.edges().concave().map((e) => Math.round(e.dihedralAngle * 1e6) / 1e6), [270, 270, 270])
+  // a box: 90 degrees through the material; a rounded edge's borders meet tangentially
+  const box = Box(10, 10, 10)
+  assert.deepEqual([...new Set(box.edges().map((e) => Math.round(e.dihedralAngle * 1e9) / 1e9))], [90])
+  const rounded = box.fillet(box.edges().parallelTo(Z), 2)
+  assert.equal(rounded.edges().smooth().length, 8)
+  assert.ok(rounded.edges().smooth().every((e) => Math.abs(e.dihedralAngle - 180) < 1e-6))
+  // where the kernel cannot tell (both sides of the edge the same kind of region): as before
+  const merged = Box(10, 10, 10).merge(Box(10, 10, 10).translate([10, 0, 0]))
+  assert.equal(merged.edges().convex().length, merged.edges().length)
+  const sheet = box.faces().top()[0].toShell()
+  assert.deepEqual(sheet.edges().map((e) => e.convexity), ['convex', 'convex', 'convex', 'convex'])
+  assert.throws(() => sheet.edges()[0].dihedralAngle, (e: unknown) => e instanceof RangeError && /does not lie between two faces/.test(e.message))
+})
+
+/** A STEP text in which no two faces share an edge or a vertex: each ORIENTED_EDGE gets an
+ * EDGE_CURVE and VERTEX_POINTs of its own, the points moved by up to `gap`. */
+function unshared(text: string, gap: number): string {
+  const [head, rest] = text.split('DATA;\n', 2)
+  const [data, tail] = rest.split('ENDSEC;', 2)
+  const ents = new Map(Array.from(data.matchAll(/#(\d+)=(.*?);\n/gs), (m) => [m[1], m[2]] as [string, string]))
+  const order = [...ents.keys()]
+  const added: [number, string][] = []
+  let next = Math.max(...order.map(Number)) + 1
+  let count = 0
+  const add = (s: string): number => {
+    added.push([next, s])
+    return next++
+  }
+  const copied = (v: string): number => {
+    const p = ents.get(v)!.match(/VERTEX_POINT\('',#(\d+)\)/)![1]
+    const xyz = ents.get(p)!.match(/CARTESIAN_POINT\('.*?',\((.*)\)\)/)![1].split(',').map(Number)
+    const moved = xyz.map((c, j) => c + (gap * (((count * 7 + j * 3) % 5) - 2)) / 2)
+    count++
+    return add(`VERTEX_POINT('',#${add(`CARTESIAN_POINT('',(${moved.map((c) => c.toExponential(12).toUpperCase()).join(',')}))`)})`)
+  }
+  for (const i of order) {
+    const m = ents.get(i)!.match(/ORIENTED_EDGE\('',\*,\*,#(\d+),(\.[TF]\.)\)/)
+    if (!m) continue
+    const [, v1, v2, c, sense] = ents.get(m[1])!.match(/EDGE_CURVE\('',#(\d+),#(\d+),#(\d+),(\.[TF]\.)\)/)!
+    const a = copied(v1)
+    const b = v1 === v2 ? a : copied(v2)
+    ents.set(i, `ORIENTED_EDGE('',*,*,#${add(`EDGE_CURVE('',#${a},#${b},#${c},${sense})`)},${m[2]})`)
+  }
+  const body = order.map((i) => `#${i}=${ents.get(i)};\n`).join('') + added.map(([i, s]) => `#${i}=${s};\n`).join('')
+  return `${head}DATA;\n${body}ENDSEC;${tail}`
+}
+
+test('faces of an import whose faces share nothing throw', () => {
+  // Faces that share no edges, with vertex points up to 1e-3 off (low-precision writers): copying
+  // one out of the body fell back to copying the body and removing the other faces, the removal
+  // failed, and deleting the copy then read low memory here (natively the process died). Now such a
+  // copy is kept, never freed, and the call throws KernelError.
+  const part = fromStep(unshared(toStep(Box(20, 10, 10).cut(Cylinder(3, 20))), 1e-3)) as Part
+  assert.ok(part instanceof Part && !part.isValid())
+  for (const face of part.faces()) assert.throws(() => face.toShell(), (e: unknown) => e instanceof KernelError && /copy face failed/.test(e.message))
+  approx(Box(10, 10, 10).cut(Cylinder(2, 20)).volume, 1000 - Math.PI * 40, 1e-9) // the kernel still works
+})
+
+test('step import makes one vertex per file vertex', () => {
+  // The builder started each new edge without the file's vertices, and the kernel made a vertex for
+  // every vertexuse a loop had not linked yet: a rounded box came back with 48 vertices for the
+  // file's 24, its corners each twice, and 48 links in its loops between edges that end and start at
+  // different vertices.
+  const box = Box(40, 30, 20)
+  const rounded = box.fillet(box.edges(), 3)
+  const text = toStep(rounded)
+  assert.equal(text.split('VERTEX_POINT(').length - 1, 24)
+  const back = fromStep(text) as Part
+  assert.equal(back.vertices().length, 24)
+  assert.ok(back.isValid())
+  approx(back.volume, rounded.volume, 1e-12)
+  let broken = 0
+  for (const face of back.faces())
+    for (const loop of k.face_boundary_loops(face._f) as [number, boolean][][])
+      loop.forEach(([e, fwd], i) => {
+        const [e2, fwd2] = loop[(i + 1) % loop.length]
+        const [s1, t1] = k.edge_vertices(e)
+        const [s2, t2] = k.edge_vertices(e2)
+        if ((fwd ? t1 : s1) !== (fwd2 ? s2 : t2)) broken++
+      })
+  assert.equal(broken, 0)
+})
+
+test('seam checks on import free their curves', () => {
+  // The kernel's seam check (SmFace::HasSeamProblem), which every STEP import runs on every body,
+  // copied the seam curve it made and lost the original: 2.9 KB per cylinder, more per torus, each
+  // call (2000 checks of a torus and a cylinder took 28 MB). In a process of its own, so that what
+  // other tests left does not count.
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { Cylinder, Torus } from '${src}index.ts'
+    import { ext } from '${src}kernel.ts'
+    const ring = Torus(10, 2).fuse(Cylinder(3, 30))
+    for (let i = 0; i < 50; i++) ext.seam_problems(ring._brep)
+    globalThis.gc()
+    const before = process.memoryUsage().rss
+    for (let i = 0; i < 2000; i++) ext.seam_problems(ring._brep)
+    globalThis.gc()
+    console.log(Math.round((process.memoryUsage().rss - before) / 1048576))
+  `
+  const run = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
+  assert.equal(run.status, 0, run.stderr)
+  const grown = Number(run.stdout.trim())
+  assert.ok(grown < 5, `2000 seam checks took ${grown} MB`) // was 28 MB
 })

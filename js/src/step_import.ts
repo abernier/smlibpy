@@ -175,8 +175,14 @@ class _Builder {
   }
 
   // -- edges --------------------------------------------------------------------------------
-  /** The exact curve of edge `ei` from its start to its end vertex. */
+  /** The exact curve of edge `ei` from its start to its end vertex, with the ids of those vertices
+   * (`v0`, `v1`: build_brep makes one kernel vertex per file vertex). */
   edgeSpec(ei: number): Any {
+    const e = this.b.edges[ei]
+    return { ...this._edgeCurve(ei), v0: Math.trunc(e.v0), v1: Math.trunc(e.v1) }
+  }
+
+  _edgeCurve(ei: number): Any {
     const e = this.b.edges[ei]
     const c = this.b.curves[e.curve]
     const p0 = this.P(this.b.vertices[e.v0])
@@ -613,9 +619,13 @@ function _addSeams(bld: _Builder, f: FaceData, srf: Any, seamId: number): [LoopD
   const specs = bld.specs
   const circles: [number, boolean][] = []
   const points: V[] = []
+  const pointIds: number[] = []
   for (const loop of f.loops) {
     if (!loop.edges?.length) {
-      if ('vertex' in loop) points.push(bld.P(bld.b.vertices[loop.vertex as number]))
+      if ('vertex' in loop) {
+        points.push(bld.P(bld.b.vertices[loop.vertex as number]))
+        pointIds.push(Math.trunc(loop.vertex as number))
+      }
       continue
     }
     if (loop.edges.length !== 1) return null
@@ -676,6 +686,10 @@ function _addSeams(bld: _Builder, f: FaceData, srf: Any, seamId: number): [LoopD
   let seam: Any
   if (kind === 'cylinder' || kind === 'cone') seam = { kind: 'line', p0: pa, p1: pb }
   else seam = _arcSpec(kind === 'sphere' ? o : _add(o, _mul(sdir, srf.major)), pa, pb, into)
+  // the seam runs between the vertices of the circles (or the apex or pole) it joins
+  seam.v0 = Math.trunc(bld.b.edges[ea].v0)
+  if (circles.length === 2) seam.v1 = Math.trunc(bld.b.edges[circles[1][0]].v0)
+  else if (points.length) seam.v1 = pointIds[0]
   for (const [ei, c] of moved) specs.set(ei, c)
   specs.set(seamId, seam)
   for (const [ei] of circles) bld.pinned.add(ei)

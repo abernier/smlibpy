@@ -41,11 +41,11 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.6 MB | 2.3 MB | 6.6 MB |
+| The kernel, `smlibwasm.wasm` | 1.7 MB | 2.4 MB | 6.7 MB |
 | Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
 | The library | 0.22 MB | 0.27 MB | 1.0 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **1.9 MB** | **2.6 MB** | **7.8 MB** |
+| **Together** | **2.0 MB** | **2.7 MB** | **7.9 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -425,6 +425,7 @@ export class Edge extends Shape {
     get isClosed(): boolean;
     get isSeam(): boolean;
     get convexity(): string;
+    get dihedralAngle(): number;
     isConvex(): boolean;
     get direction(): Vector;
     get radius(): number;
@@ -1097,12 +1098,17 @@ export interface UsdExportOptions {
 }
 export function toUsd(shapes: unknown, options?: UsdExportOptions): string;
 export function exportUsd(shapes: unknown, path: string, options?: UsdExportOptions): void;
-export function fromUsd(data: string | Uint8Array, options?: {
+export interface UsdImportOptions {
     heal?: boolean;
-}): Part | Shell | ShapeList<Part | Shell>;
-export function importUsd(path: string, options?: {
-    heal?: boolean;
-}): Part | Shell | ShapeList<Part | Shell>;
+    units?: string | null;
+    placement?: boolean;
+    check?: boolean;
+}
+export interface UsdReadOptions extends UsdImportOptions {
+    resolve?: ((asset: string, from: string) => string | Uint8Array | null | undefined) | null;
+}
+export function fromUsd(data: string | Uint8Array, options?: UsdReadOptions): Part | Shell | ShapeList<Part | Shell>;
+export function importUsd(path: string, options?: UsdImportOptions): Part | Shell | ShapeList<Part | Shell>;
 ```
 
 ### Pictures and the viewer

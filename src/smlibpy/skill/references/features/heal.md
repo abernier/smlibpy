@@ -7,8 +7,9 @@ Runs the kernel's B-rep healer on a copy of a part or shell.
 
 ## Returns
 A new body of the same type. What the healer does: adjusts tolerances to measured gaps,
-merges coincident vertices, removes degenerate pieces, repairs periodic seams. It does not
-close real gaps, refit curves or rebuild faces.
+removes degenerate pieces, repairs periodic seams. It does not merge vertices that lie on top of
+each other (`import_step` makes one vertex per vertex of the file), close real gaps, refit curves
+or rebuild faces.
 
 ## When to call it
 - On data from outside: an imported STEP whose `is_valid()` is False, or that fails in a later

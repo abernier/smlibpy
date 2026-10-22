@@ -725,3 +725,165 @@ and the facet checks in `src/cpp/tessellate.cpp`, bound in both builds. The rest
   (`len((a & b).faces()) > 0`, seconds on parts of many faces) is replaced by `a.contains(...)` of a
   point of the other body (B11).
 - Breaks scripts: no (distances only come out right).
+
+## Group TIX: topology, STEP and USD/SMB files
+
+**T1 · Edge convexity from the kernel's angle between the faces; Edge.dihedral_angle** (both)
+- Now: `Edge.convexity`, `ShapeList.convex()/concave()/smooth()`, the smooth-edge filter of
+  `fillet`/`chamfer` and the volume check of rounds take the kernel's outer angle of the edge
+  (`SmEdge::CalcOuterAngle` at the middle of the edge's interval, new `ext.edge_angles(brep, edges)`,
+  one call per body for a whole list): smooth within 0.5 degrees of 180, convex above, concave
+  below. New `Edge.dihedral_angle` (`dihedralAngle`): the angle through the material, 90 at a box
+  edge, 270 at the inside corner of an L, 180 where the faces meet tangentially; `ValueError`
+  (`RangeError`) for an edge that does not lie between two faces. Where the kernel cannot tell
+  (both sides of the edge face the same kind of region: the edges of a sheet, the inner edges of a
+  merged part) the old reading of the faces decides, as before. Python and smlibwasm agree on the
+  valve body (65 convex, 20 concave, 66 smooth). 734 edges take 2 ms (1.2 s before).
+- Before: the convexity was read from two steps of 1e-4 x the edge length into one face; on
+  imported bodies whose edges lie off their faces by more than that (the valve body: 6.6e-4 at a
+  sliver face) the two distances tie and the answer was noise: the four mirror-symmetric edges of
+  the valve read concave, concave, convex, convex in Python and concave, convex, concave, concave
+  in smlibwasm (the kernel: 230.74 degrees, convex, for all four); an L-shaped block whose planes a
+  file puts 6e-4 off its edges had 9 of 21 edges the wrong way round. `part.edges().concave()` then
+  selected the wrong edges, silently.
+- Breaks scripts: only those that relied on the wrong selections of imported parts. Generated
+  parts give the same answers as before.
+
+**T2 · Copying a face out of a body whose faces share nothing raises instead of crashing** (both)
+- Now: `ext.copy_faces` (`Face.to_shell`, `Face.translate/rotate/...`, `to_sketch`, `extrude`) and
+  `ext.combine` never delete a body that `SmBrep::CopyFaces` or `SmBrep::RemoveFaces` failed on;
+  they keep it for the life of the process and raise `KernelError` ("copy face failed (SM_ERR)").
+  The kernel goes on working.
+- Before: the face of an imported STEP body whose faces share no edges and whose vertex points
+  are up to 1e-3 off (low-precision writers) killed the process on `to_shell()` (exit 139:
+  `SmBrep::~SmBrep` read through a null pointer after a failed `RemoveFaces`; AddressSanitizer
+  confirms it is that and no earlier memory error). smlibwasm raised `KernelError` already but
+  freed the broken body, reading low memory.
+- Breaks scripts: no. Each such failure keeps the failed copy in memory (one body).
+
+**I1 · STEP import makes one kernel vertex per vertex of the file** (both)
+- Now: the edge specs carry the file's vertex ids; `build_brep` starts a new edge at the vertices
+  already made for them (`SmBrepConstructor::StartEdge` with existing vertices) and glues what the
+  constructor still made twice (a seam on a B-spline face meeting a vertex again further round the
+  loop) with `SmBrep::GlueVertices`. A rounded box written to STEP and read back has its 24
+  vertices (48 before, with 48 broken links between edges in its loops); the valve body has the
+  file's 102 (106, 8 broken links); crescendo part 100 its 20 (26). Over 449 STEP files (611
+  bodies) of the classcad-mcp corpus, bodies with coincident vertices went from 48 to 4 (594 pairs
+  to 92; the 4 left: a file that itself has duplicate vertices, and three surface models of
+  separate shells), broken loop links from 1185 to 4; no volume, face count, validity or error
+  changed. Of the 10 imported parts whose all-edge fillets crashed (F2 made them raise), part 125
+  now rounds (valid, 431.27), parts 100 and 124 fail later in the fillet (the radius), the others
+  as after F2. The heal guide no longer says `heal()` merges coincident vertices (it does not).
+- Breaks scripts: those that counted vertices of imported parts (they now match the file).
+
+**I2 · STEP import, the seam check and the healer no longer leak** (both)
+- Now: kernel patch K6 (copy of `SmFace.cpp`): `SmFace::HasSeamProblem` hands the seam curve it
+  makes to the caller's classification instead of copying it and losing the original (also from
+  the face properties it runs when called alone, whose classification would otherwise take the
+  curve with it). `ext.seam_problems`, `import_step`, `heal_brep` and `Part.heal` leave the heap
+  as it was. AddressSanitizer reports nothing for the STEP, USD, mesh and measure tests (which
+  repair seams with `SplitAtSeam`, the user of the curve handed over). K10 rides along (copy of
+  `SmShell.cpp`, and `SmFace.cpp`): the inner-shell test samples points and rays with a generator
+  of its own with a fixed seed instead of reseeding the process-wide `rand()` from the clock.
+- Before: 3408 bytes per seam check of a cylinder, 4848 of a sphere, 12672 of a torus (each
+  periodic face direction), 3408 per import of a box with a hole, 8256 per `heal_brep` or
+  `Part.heal` of a cylinder with a sphere, forever (smlibwasm: 2000 checks took 28 MB); the
+  inner-shell classification changed from run to run.
+- Breaks scripts: no.
+
+**X1 · Bad values in a USD file raise ValueError instead of crashing, hanging or misimporting** (both)
+- Now: before the conversion, every value of a BrepArray is checked against usd-brep's validator
+  rules that the conversion relies on: finite numbers (BA.660), positive tolerances (BA.010),
+  weights (BA.350/410/440/654) and radii (BA.481/501/521/522/531/551/552; a cone's radius may be
+  0), directions of some length, axis and refDirection not parallel (BA.482-484 and the like),
+  ranges the right way round (BA.155/160/235), a cone's semiAngle below 90 degrees, edges no
+  edgeuse uses (BA.582) and empty bodies. The `ValueError` (`RangeError`) names the prim, the
+  body, the face or edge and the rule: `usd: the BrepArray "/World/ball" is malformed: body 0,
+  face 0: the axis and the refDirection are parallel (BA.482-484)`. Directions are made unit and
+  a refDirection nearly at right angles (within 0.06 degrees) to its axis is made exactly so;
+  more than that is refused. Cones of semiAngle 0 or below read as before (usd-brep's own writer
+  writes them).
+- Before: a sphere whose refDirection was its axis (or 0) crashed the process in `import_usd`; a
+  surface weight of 0 crashed `mesh()` later; a torus axis of 0 hung `volume` (smlibwasm 60 s);
+  a cylinder axis of 0 gave 748.27 for 785.40, an edge weight of 0 or a control point of nan 500
+  for 1000, a cone axis of (0, 0, -2) 496.58 for 408.41, all reporting valid. `docs/kernel.md`
+  said a malformed file could not crash smlibpy.
+- Breaks scripts: files with such values no longer read; they gave wrong bodies.
+
+**X2 · import_usd places bodies as the stage has them, in millimeters, and composes the stage** (both)
+- Now: `import_usd(path, *, heal=False, units=None, placement=True, check=True)` (`fromUsd(data,
+  { heal, units, placement, check, resolve })`, `importUsd(path, { heal, units, placement, check
+  })`):
+  - Placement: each body gets the `xformOp` transforms of its prim and of the prims above it
+    (`translate`, `scale`, `rotateX/Y/Z`, the six `rotateXYZ` kinds, `orient`, `transform`,
+    `translateX..`, `scaleX..`, `!invert!`, `!resetXformStack!`, in `xformOpOrder`, the last
+    applied first), and a stage whose `upAxis` is `"Y"` is turned to Z up (+90 degrees about X).
+    `placement=False` leaves each body where its prim has it (no transforms, no up axis).
+  - Units: lengths come out in millimeters from the stage's `metersPerUnit` (0.01: x10). A stage
+    that says nothing is read as it is (millimeters, and Z up); this differs from USD, which takes
+    centimeters and Y up then, and keeps usd-brep's unit cubes (no `metersPerUnit`) at 1 mm.
+    `units="mm" | "cm" | "m" | "um" | "inch"` replaces the stage's unit.
+  - Composition: `subLayers` (the stronger first), `references` and `payload` (to a prim of
+    another file, its `defaultPrim` when no path is given, or of the same stage) are read, the
+    referencing prim's own opinions winning; Python and `importUsd` read the files relative to the
+    file that names them (text USD only), `fromUsd` takes them from `resolve(asset, from)`.
+    Prims that are `class`, inactive (`active = false`) or only an `over` hold no bodies, nor do
+    their children. A file that is not read is named in a warning, or in the error when no bodies
+    are left; references that go round in a circle raise. Not composed: inherits, specializes,
+    variant sets.
+  - Names: a body is named after its prim as before, but by its prim's path (`/Scene/A/body`) where
+    two prims of the stage have one name.
+  - The plan's repro (`/World` translated by 100, `metersPerUnit = 0.01`) gives x 950..1050 mm.
+- Before: only the BrepArray arrays were read: every body at its prim's local origin, in the
+  file's raw units, Y-up stages left Y up, without a word; references, payloads and sublayers gave
+  "holds no BrepArray prims"; abstract and inactive prims were imported; equal leaf names
+  collided.
+- Exactly where bodies land now: files that smlibpy wrote (millimeters, Z up, no transforms) and
+  files without `metersPerUnit`, `upAxis` and `xformOp`s (usd-brep's test files) read exactly as
+  before. Files with `metersPerUnit` other than 0.001 come out scaled to millimeters, files with
+  `upAxis = "Y"` turned to Z up, bodies under prims with `xformOp`s moved to where USD puts them.
+- Breaks scripts: those that read such files and compensated by hand (scaling, moving or turning
+  the bodies themselves), and those that looked bodies up by a leaf name two prims share.
+
+**X4 · Line edges are written as long as the edges; such files read back with the right box** (both)
+- Now: the USD writer trims a line (SMLib's lines run over -1234567..1234567), and a curve it
+  approximates, to the edge before writing it; kernel patch K8 (copy of `SmCurve.cpp`):
+  `SmCurve::CalculateTightBoundingBox` adds the knots of a B-spline only where they lie in the
+  interval asked for. A box read with BrepCurve3dLineAPI edges is written with control points
+  within +-5 and reads back with `bbox()` +-5; a file written the old way reads back with +-5 too.
+  usd-brep's validator passes the re-exports (RevitWallHealerCrash's included: max edge control
+  point 12445.9, within its extent).
+- Before: each line edge was written as a B-spline 2.5 km long (control points at 1234572;
+  validator BA.365), and natively `bbox()` of the body read back, of its edges and faces and of
+  everything made from it reached (1234560, 1234560, 1234560); smlibwasm gave +-5 for the same file.
+- Breaks scripts: no.
+
+**X6 · Bodies from other software are checked by the kernel before anything measures them** (both)
+- Now: each body of a BrepArray that smlibpy did not write (`customData` source other than
+  "smlibpy") is checked with `SmBrep::AssertValid` (all tests) right after it is built, before
+  anything measures it (`is_valid()` and the kernel's integration change a broken body). A gap
+  between its faces, edges and vertices of more than 1e-3 of its size, one that is not a number,
+  or an edge whose curve runs back against it raises `ValueError`: `usd: body 0 of the BrepArray
+  "/culprit" is broken: the kernel finds a gap of 377 (0.033 of its size) at face 5: Gap between
+  edge endPoints exceeds tolerance; such a body measures and meshes wrong (turn the check off to
+  read it as it is)`. Smaller gaps, and reports without a size, give a `RuntimeWarning` (`_warn`).
+  `check=False` skips the check. usd-brep's validator files 440 (weight 0, BA.440), 465, 310, 315,
+  365, 582 (orphan edge, BA.582), 763, 764 and `empty.usda` are refused; its good files read as
+  before, `mouse.usda` with a warning of gaps up to 0.002 (1.2e-4 of its size). The check takes
+  milliseconds on such bodies (80 ms on the Revit wall); on a 361-hole plate it would take 2 s, which
+  is why smlibpy's own files are not checked.
+- Before: those files imported as Parts that said they were valid: a unit cube of volume 0.5 (1.0
+  once `is_valid()` had run), a box reaching 100 away, a body that did not mesh, STEP export
+  failing on "non-finite number"; 763/764 and `empty.usda` as empty Shells.
+- Breaks scripts: `RevitWallHealerCrash.usda` (usd-brep's file of a broken wall, loops 377 apart)
+  now raises; `import_usd(..., check=False)` reads it as before. `tests/test_io.py` and
+  `js/test/io.test.ts` were changed to expect that.
+
+**X8 · A merged part saved as .smb loads as a Part with its cells** (both)
+- Now: `load()` / `fromSmb` give a Part when the body encloses a volume (one cell or more, as
+  `import_usd` decides), a Shell when it does not. A merged part comes back with its 2 cells and
+  volume 2000.
+- Before: any body whose `is_valid()` was False came back as a Shell, so every merged part (never
+  valid by design) lost its cells and volume.
+- Breaks scripts: a broken solid saved as `.smb` (invalid, but enclosing a volume) now loads as a
+  Part whose `is_valid()` is False, where it was a Shell.

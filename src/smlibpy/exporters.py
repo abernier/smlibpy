@@ -400,7 +400,9 @@ def load(path: str | os.PathLike[str]) -> Any:
     drawing's outlines, STL a :class:`Mesh`.
 
     A STEP file with one body gives that part, one with several a :class:`ShapeList`. A
-    native file that encloses no volume comes back as a :class:`Shell`.
+    native file comes back as a :class:`Part` when its body encloses a volume (a merged part with
+    its cells too, and a broken solid, whose ``is_valid()`` is False), as a :class:`Shell` when it
+    does not.
     """
     from .shapes import Part, Shell
 
@@ -425,7 +427,7 @@ def load(path: str | os.PathLike[str]) -> Any:
         raise FileNotFoundError(os.fspath(path))
     with kernel_call("load"):
         b = k.read_brep_from_file(os.fspath(path), None, False)
-    part = Part._wrap(b)
-    if not part.is_valid():
-        return Shell._wrap(part._copy_brep())
-    return part
+    # a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
+    regions = ext.brep_dump(b, False)["regions"]
+    solid = any(not r["infinite"] and not r["void"] for r in regions)
+    return (Part if solid else Shell)._wrap(b)

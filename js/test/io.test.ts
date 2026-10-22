@@ -1,5 +1,6 @@
 // tests/test_io.py
 import { test } from 'node:test'
+import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,10 +8,13 @@ import { join } from 'node:path'
 import { Box, Cone, Cylinder, GridLocations, Part, Sphere, Spline, Torus, Z, loft, Circle, Rectangle, render } from '../src/index.ts'
 import { exportGlb, exportGltf, exportStep, exportStl, fromSmb, fromStl, importStl, load, save, toGlb, toGltf, toObj, toSmb, toStl } from '../src/exporters.ts'
 import { approx } from './_approx.ts'
-import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { Shell, ShapeList, merge as _merge, surface as _surface } from '../src/index.ts'
 import { exportFile } from '../src/exporters.ts'
 import { exportUsd, fromUsd, importUsd, toUsd } from '../src/usd.ts'
+import { setWarningHandler } from '../src/kernel.ts'
+import { _pyRepr as f } from '../src/step.ts'
+import { Align } from '../src/index.ts'
 
 function tmpPath(): string {
   return mkdtempSync(join(tmpdir(), 'smlibwasm-io-'))
@@ -29,6 +33,18 @@ test('native roundtrip', () => {
   save(p, path)
   const back = load(path)
   approx(back.volume, p.volume, 1e-12)
+})
+
+test('native files keep merged parts', () => {
+  // A merged part is no valid solid by design (Part.merge); load took that for a sheet and gave a
+  // Shell without cells or volume. It decides by what the body encloses, as importUsd does.
+  const merged = Box(10, 10, 10).merge(Box(10, 10, 10).translate([10, 0, 0]))
+  const back = fromSmb(toSmb(merged)) as Part
+  assert.ok(back instanceof Part)
+  assert.equal(back.cells().length, 2)
+  approx(back.volume, 2000, 1e-9)
+  const sheet = fromSmb(toSmb(Box(10, 10, 10).faces().top()[0].toShell()))
+  assert.ok(sheet instanceof Shell && !(sheet instanceof Part))
 })
 
 test('stl roundtrip', () => {
@@ -220,9 +236,8 @@ test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's
   // RangeError that names what is wrong, none crashes
   const good: Record<string, number> = {
     'Cube.usda': 1, 'CubeBrepArray.usda': 2, 'sphere_nurbs.usda': 1, 'cubeWithVoid.usda': 1, 'mouse.usda': 1,
-    'RevitWallHealerCrash.usda': 1, 'Cone_SmConnect_Brep.usda': 1,
+    'Cone_SmConnect_Brep.usda': 1,
   }
-  const openFaces = new Set(['RevitWallHealerCrash.usda']) // reads, but its faces leave gaps (2.4 of its volume): not valid
   const files: string[] = []
   const walk = (d: string): void => {
     for (const n of readdirSync(d)) {
@@ -237,20 +252,308 @@ test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's
     const text = readFileSync(f, 'utf8')
     if (!text.includes('def BrepArray') || text.startsWith('version https://git-lfs')) continue
     const name = f.slice(f.lastIndexOf('/') + 1)
-    if (name in good) {
-      const bodies = fromUsd(text)
-      const list = bodies instanceof ShapeList ? Array.from(bodies) : [bodies]
-      assert.equal(list.length, good[name], name)
-      assert.ok(list.every((b) => (b as Part).isValid() !== openFaces.has(name)), name)
-      seen += 1
-    } else {
-      try {
-        fromUsd(text)
-      } catch (e) {
-        if (!(e instanceof RangeError)) throw e
+    const said: string[] = []
+    setWarningHandler((m) => said.push(m))
+    try {
+      if (name in good) {
+        const bodies = fromUsd(text)
+        const list = bodies instanceof ShapeList ? Array.from(bodies) : [bodies]
+        assert.equal(list.length, good[name], name)
+        assert.ok(list.every((b) => (b as Part).isValid()), name)
+        // (the mouse's faces leave gaps of 2e-3: noted)
+        assert.equal(said.some((m) => m.includes('gap of 0.00199')), name === 'mouse.usda', name)
+        seen += 1
+      } else {
+        try {
+          fromUsd(text)
+        } catch (e) {
+          if (!(e instanceof RangeError)) throw e
+        }
       }
+    } finally {
+      setWarningHandler((m) => console.warn(m))
     }
   }
   assert.equal(seen, Object.keys(good).length)
+  // its wall whose faces leave gaps of 377 (the healer crashed on it) is refused, and read with the
+  // check off
+  const revit = readFileSync(join(USD_SAMPLES, 'usd_TestFiles', 'RevitWallHealerCrash.usda'), 'utf8')
+  assert.throws(() => fromUsd(revit), /is broken: the kernel finds a gap of 377 .0.033 of its size/)
+  assert.ok(!(fromUsd(revit, { check: false }) as Part).isValid())
+})
+
+test("usd refuses the validator's broken bodies", { skip: !existsSync(USD_SAMPLES) && "usd-brep's test files are not checked out" }, () => {
+  // usd-brep's validator files whose bodies are geometrically broken imported as Parts that said
+  // they were valid: a unit cube of volume 0.5 (a surface weight of 0), one whose box reached 100
+  // away, one that did not mesh. The value rules and the kernel's check (SmBrep::AssertValid, before
+  // anything measures the body) refuse them, naming the body, the entity and the rule.
+  const refused: Record<string, RegExp> = {
+    'Test_BA_440_Non_positive_NURBS_surface_weights.usda': /body 0, face 0: its NURBS surface has a weight of 0, not positive .BA.440/,
+    'Test_BA_582_Orphan_edge_not_referenced_by_any_edgeuse.usda': /1 of the edges are used by no edgeuse .BA.582/,
+    'Test_BA_465_Surface_NURBS_control_point_containment.usda': /body 0 of the BrepArray "\/World\/brepArray" is broken: the kernel finds/,
+    'Test_BA_310_Vertex_position_containment.usda': /is broken: the kernel finds a gap of 171 .* at vertex 0/,
+    'Test_BA_365_Edge_NURBS_control_point_containment.usda': /is broken: the kernel finds an edge of length/,
+    'Test_BA_763_UV_trim_curves_do_not_close_loop.usda': /is broken: the kernel finds a gap of 0.1 /,
+    'Test_BA_764_Zero_length_UV_trim_curve.usda': /is broken: the kernel finds a gap of 1 /,
+    'empty.usda': /body 0 is empty/,
+    'Test_BA_155_Invalid_U_range_order.usda': /body 0, face 0: its range in u is empty or the wrong way round .BA.155/,
+    'Test_BA_235_Invalid_edge_range_order.usda': /body 0, edge 0: its range is the wrong way round .BA.235/,
+  }
+  for (const [name, message] of Object.entries(refused)) assert.throws(() => importUsd(join(USD_SAMPLES, 'brep_validator', name)), message, name)
+  // bodies that are only types the validator dislikes read as they are
+  const typed = importUsd(join(USD_SAMPLES, 'brep_validator', 'Test_BA_076_Invalid_region_attribute_data_types.usda')) as ShapeList<Part>
+  assert.deepEqual(typed.map((b) => Math.round(b.volume * 1e9) / 1e9), [1, 1])
+})
+
+/** The text with the first value of an array attribute replaced. */
+function mutated(text: string, attribute: string, value: string): string {
+  const m = new RegExp(`(\\] |\\[\\] )${attribute.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} = \\[`).exec(text)!
+  const start = m.index + m[0].length
+  const item = /^(\([^)]*\)|[^,\]]+)/.exec(text.slice(start))!
+  return text.slice(0, start) + value + text.slice(start + item[0].length)
+}
+
+test('usd values the conversion cannot take throw', () => {
+  // One bad number of a BrepArray trapped usd-brep's conversion here (natively it crashed: a sphere
+  // whose refDirection is its axis), broke the meshing later (a weight of 0), hung the volume (a torus
+  // axis of length 0) or gave a wrong body that said it was valid (a cylinder axis of 0, an edge
+  // weight of 0, a control point that is not a number). Now each throws a RangeError naming the body,
+  // the face or edge and the validator's rule; a cone axis of length 2 is made unit (it gave 496.58).
+  // In a process of its own, so that a trap or a hang fails the test rather than the run.
+  const exported: Record<string, string> = {}
+  const shapes: [string, () => Part][] = [
+    ['ball', () => Sphere(5)], ['ring', () => Torus(10, 2)], ['tube', () => Cylinder(5, 10)], ['cube', () => Box(10, 10, 10)],
+    ['cone', () => Cone(5, 2, 10)], ['loft', () => loft([Rectangle(20, 20), Circle(8).translate([0, 0, 20])]) as Part],
+  ]
+  for (const [name, make] of shapes) exported[name] = toUsd(make().named(name), { mesh: false })
+  const cases: [string, string, string, string][] = [
+    ['ball', 'brep:surface:sphere:refDirection', '(0, 0, 1)', 'face 0: the axis and the refDirection are parallel (BA.482-484)'],
+    ['ball', 'brep:surface:sphere:refDirection', '(0, 0, 0)', 'face 0: the refDirection has no length'],
+    ['loft', 'brep:surface:nurb:weights', '0', 'its NURBS surface has a weight of 0, not positive (BA.440)'],
+    ['ring', 'brep:surface:torus:axis', '(0, 0, 0)', 'face 0: the axis has no length (BA.523-525)'],
+    ['tube', 'brep:surface:cylinder:axis', '(0, 0, 0)', 'the axis has no length (BA.502-504)'],
+    ['tube', 'brep:surface:cylinder:radius', '0', "the cylinder's radius is 0, not positive (BA.501)"],
+    ['cube', 'brep:edge3dNurb:curve3d:nurb:weights', '0', 'body 0, edge 0: its NURBS curve has a weight of 0, not positive (BA.350)'],
+    ['cube', 'brep:edge3dNurb:curve3d:nurb:controlVertices', '(nan, 0, 0)', 'brep:edge3dNurb:curve3d:nurb:controlVertices[0] is not a finite number (BA.660)'],
+    ['cube', 'brep:intersectTol3d', '0', 'body 0: brep:intersectTol3d is 0, not positive (BA.010)'],
+    ['cube', 'edge:range', 'inf', 'edge:range[0] is not a finite number (BA.660)'],
+  ]
+  const dir = tmpPath()
+  cases.forEach(([name, attribute, value], i) => writeFileSync(join(dir, `case${i}.usda`), mutated(exported[name], attribute, value)))
+  writeFileSync(join(dir, 'long.usda'), mutated(exported.cone, 'brep:surface:cone:axis', '(0, 0, -2)'))
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { importUsd } from '${src}index.ts'
+    for (let i = 0; i < ${cases.length}; i++) {
+      try {
+        importUsd(${JSON.stringify(dir)} + '/case' + i + '.usda').volume
+        console.log('read')
+      } catch (e) {
+        console.log(e.message)
+      }
+    }
+    const cone = importUsd(${JSON.stringify(join(dir, 'long.usda'))})
+    console.log(cone.isValid(), cone.volume.toFixed(3))
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(run.status, 0, run.stdout + run.stderr)
+  const lines = run.stdout.split('\n')
+  cases.forEach(([name, , , message], i) => {
+    assert.ok(lines[i].startsWith(`usd: the BrepArray "/World/${name}" is malformed: `) && lines[i].includes(message), lines[i])
+  })
+  assert.equal(lines[cases.length], `true ${Cone(5, 2, 10).volume.toFixed(3)}`)
+})
+
+function placed(text: string, options = {}): number[] {
+  const box = (fromUsd(text, options) as Part).bbox()
+  return [...box.min.toArray(), ...box.max.toArray()].map((c) => Math.round(c * 1e6) / 1e6 + 0)
+}
+
+/** The text with xformOps on /World. */
+function ops(text: string, op: string, order: string): string {
+  return text.replace('def Xform "World"\n{\n', `def Xform "World"\n{\n${op}    uniform token[] xformOpOrder = [${order}]\n`)
+}
+
+test('usd bodies are placed as the stage has them', () => {
+  // fromUsd read the bodies' arrays alone: the transforms of their prims and of the prims above
+  // them, the stage's metersPerUnit and upAxis were left out, so assemblies fell onto their origins
+  // and sizes were off by 10 or 1000, without a word.
+  const text = toUsd(Box(10, 10, 10), { mesh: false })
+  const moved = ops(text, '    double3 xformOp:translate = (100, 0, 0)\n', '"xformOp:translate"').replace('metersPerUnit = 0.001', 'metersPerUnit = 0.01')
+  assert.deepEqual(placed(moved), [950, -50, -50, 1050, 50, 50]) // was [-5, -5, -5, 5, 5, 5]
+  assert.deepEqual(placed(moved, { placement: false }), [-50, -50, -50, 50, 50, 50])
+  assert.deepEqual(placed(moved, { units: 'mm' }), [95, -5, -5, 105, 5, 5])
+  // the kinds of xformOps, applied the last first; a Y-up stage turned to Z up
+  const corner = toUsd(Box(10, 20, 30, { align: Align.MIN }), { mesh: false })
+  assert.deepEqual(placed(corner.replace('upAxis = "Z"', 'upAxis = "Y"')), [0, -30, 0, 10, 0, 20])
+  const cases: [string, string, number[]][] = [
+    ['    float xformOp:rotateX = 90\n', '"xformOp:rotateX"', [0, -30, 0, 10, 0, 20]],
+    ['    float3 xformOp:rotateXYZ = (90, 0, 90)\n', '"xformOp:rotateXYZ"', [0, 0, 0, 30, 10, 20]],
+    ['    float3 xformOp:rotateZYX = (90, 0, 90)\n', '"xformOp:rotateZYX"', [-20, -30, 0, 0, 0, 10]],
+    ['    quatf xformOp:orient = (0.70710678, 0, 0, 0.70710678)\n', '"xformOp:orient"', [-20, 0, 0, 0, 10, 30]],
+    ['    double3 xformOp:translate = (100, 0, 0)\n    float xformOp:rotateZ = 90\n', '"xformOp:translate", "xformOp:rotateZ"', [80, 0, 0, 100, 10, 30]],
+    ['    float3 xformOp:scale = (2, 1, 3)\n', '"xformOp:scale"', [0, 0, 0, 20, 20, 90]],
+    ['    matrix4d xformOp:transform = ( (0, 1, 0, 0), (-1, 0, 0, 0), (0, 0, 1, 0), (5, 6, 7, 1) )\n', '"xformOp:transform"', [-15, 6, 7, 5, 16, 37]],
+    ['    double3 xformOp:translate:pivot = (5, 0, 0)\n    float xformOp:rotateZ = 180\n',
+      '"xformOp:translate:pivot", "xformOp:rotateZ", "!invert!xformOp:translate:pivot"', [0, -20, 0, 10, 0, 30]],
+  ]
+  for (const [op, order, box] of cases) assert.deepEqual(placed(ops(corner, op, order)), box, order)
+  // a transform under another; !resetXformStack! drops those above
+  const nested = corner.replace('    def BrepArray "body"', '    double3 xformOp:translate = (0, 0, 100)\n    uniform token[] xformOpOrder = ["xformOp:translate"]\n    def BrepArray "body"')
+  assert.deepEqual(placed(nested), [0, 0, 100, 10, 20, 130])
+  const reset = nested.replace('        uniform token[] face:surfaceType', '        uniform token[] xformOpOrder = ["!resetXformStack!"]\n        uniform token[] face:surfaceType')
+  assert.deepEqual(placed(reset), [0, 0, 0, 10, 20, 30])
+})
+
+test('usd stages compose references and layers', () => {
+  // References, payloads and subLayers were not read ("holds no BrepArray prims"), and abstract,
+  // inactive and over-only prims came in as bodies. importUsd reads the files the stage names;
+  // fromUsd takes them from resolve.
+  const box = toUsd(Box(10, 10, 10), { mesh: false })
+  const head = '#usda 1.0\n(\n    metersPerUnit = 0.001\n    upAxis = "Z"\n)\n'
+  const scene = `${head}def Xform "Scene"
+{
+    def Xform "A" (
+        prepend references = @./parts/box.usda@</World>
+    )
+    {
+        double3 xformOp:translate = (0, 50, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "B" (
+        prepend payload = @parts/box.usda@
+    )
+    {
+        double3 xformOp:translate = (0, -50, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+    def Xform "C" (
+        active = false
+        references = @./parts/box.usda@</World>
+    )
+    {
+    }
+    class Xform "D" (
+        references = @./parts/box.usda@</World>
+    )
+    {
+    }
+    def Xform "E" (
+        references = </Scene/A>
+    )
+    {
+        double3 xformOp:translate = (0, 0, 50)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+over "Nothing"
+{
+    def BrepArray "body"
+    {
+    }
+}
+`
+  const dir = tmpPath()
+  mkdirSync(join(dir, 'parts'))
+  writeFileSync(join(dir, 'parts', 'box.usda'), box)
+  writeFileSync(join(dir, 'scene.usda'), scene)
+  const check = (bodies: ShapeList<Part>) => {
+    // (two prims named "body": named by their paths)
+    assert.deepEqual(bodies.map((b) => b.name), ['/Scene/A/body', '/Scene/B/body', '/Scene/E/body'])
+    assert.deepEqual(bodies.map((b) => b.bbox().center.toArray()), [[0, 50, 0], [0, -50, 0], [0, 0, 50]])
+  }
+  check(importUsd(join(dir, 'scene.usda')) as ShapeList<Part>)
+  const asked: string[] = []
+  check(fromUsd(scene, { resolve: (asset, from) => (asked.push(`${from}|${asset}`), asset.endsWith('box.usda') ? box : null) }) as ShapeList<Part>)
+  assert.deepEqual(asked, ['|./parts/box.usda', '|parts/box.usda'])
+  // a stage of sublayers: the stronger one's opinion wins
+  writeFileSync(join(dir, 'box.usda'), box)
+  writeFileSync(join(dir, 'moved.usda'), `${head}over "World"\n{\n    double3 xformOp:translate = (7, 0, 0)\n    uniform token[] xformOpOrder = ["xformOp:translate"]\n}\n`)
+  writeFileSync(join(dir, 'stack.usda'), '#usda 1.0\n(\n    subLayers = [\n        @./moved.usda@,\n        @./box.usda@\n    ]\n)\n')
+  assert.deepEqual((importUsd(join(dir, 'stack.usda')) as Part).bbox().center.toArray(), [7, 0, 0])
+  // what cannot be read is named: in a warning, or in the error when no bodies are left
+  assert.throws(() => fromUsd(scene), /no BrepArray prims .bodies.; the reference .\/parts\/box.usda was not read .no resolve option was given/)
+  writeFileSync(join(dir, 'missing.usda'), `${head}def Xform "S" (\n    references = @./gone.usda@</World>\n)\n{\n}\n`)
+  assert.throws(() => importUsd(join(dir, 'missing.usda')), /no BrepArray prims .bodies.; the reference .\/gone.usda was not read .there is no file/)
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    const half = scene.replace('parts/box.usda@</World>\n    )\n    {\n        double3 xformOp:translate = (0, 50', 'gone.usda@</World>\n    )\n    {\n        double3 xformOp:translate = (0, 50')
+    writeFileSync(join(dir, 'half.usda'), half)
+    assert.equal((importUsd(join(dir, 'half.usda')) as Part).name, 'body') // (B's; A, and E through A, have none)
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+  assert.ok(said.some((m) => /the reference .\/gone.usda was not read/.test(m)), said.join())
+  assert.throws(() => fromUsd(`${head}def Xform "L" (\n    references = </L>\n)\n{\n}\n`), /references go round in a circle/)
+})
+
+/** A smlibwasm box's BrepArray with its edges as BrepCurve3dLineAPI lines (as usd-brep and
+ * OpenCASCADE's bridge write them), from its two-point NURBS edges. */
+function lineEdges(text: string): string {
+  const cvs = /edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n/.exec(text)![1]
+  const points = Array.from(cvs.matchAll(/\(([^)]*)\)/g), (m) => m[1].split(',').map(Number))
+  const origins: string[] = []
+  const directions: string[] = []
+  for (let i = 0; i < points.length; i += 2) {
+    const [a, b] = [points[i], points[i + 1]]
+    const d = b.map((y, k) => y - a[k])
+    const n = Math.hypot(...d)
+    origins.push(`(${a.map(f).join(', ')})`)
+    directions.push(`(${d.map((c) => f(c / n)).join(', ')})`)
+  }
+  return text
+    .replace(/ {8}uniform \w+\[\] brep:edge3dNurb:[^\n]*\n/g, '')
+    .replaceAll('"BrepCurve3dNurbAPI:edge3dNurb"', '"BrepCurve3dLineAPI:edge3dLine"')
+    .replaceAll('"BrepCurve3dNurbAPI"', '"BrepCurve3dLineAPI"')
+    .replace(
+      '        uniform double[] edge:range',
+      `        uniform point3d[] brep:edge3dLine:curve3d:line:origin = [${origins.join(', ')}]\n        uniform vector3d[] brep:edge3dLine:curve3d:line:direction = [${directions.join(', ')}]\n        uniform double[] edge:range`,
+    )
+}
+
+test('usd line edges are written as long as the edges', () => {
+  // A body read with analytic line edges keeps SMLib's lines, whose interval is unbounded: they were
+  // written as B-splines 2.5 km long (control points at 1234572; usd-brep's validator: BA.365). Read
+  // back, the kernel's tight box of such an edge took in the knots past its end
+  // (SmCurve::CalculateTightBoundingBox, patched; natively bbox reached 1234560).
+  const box = fromUsd(lineEdges(toUsd(Box(10, 10, 10), { mesh: false }))) as Part
+  assert.deepEqual(box.edges().map((e) => e.geomType), Array(12).fill('line'))
+  approx(box.volume, 1000, 1e-9)
+  const text = toUsd(box, { mesh: false })
+  const cvs = /edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n/.exec(text)![1]
+  approx(Math.max(...Array.from(cvs.matchAll(/-?[\d.e+-]+/g), (m) => Math.abs(Number(m[0])))), 5, 1e-9) // was 1234572
+  const back = fromUsd(text) as Part
+  back.bbox().max.toArray().forEach((c) => approx(c, 5, 1e-9))
+  // such a file as it was written before: the box of the body read back is its own
+  const pts = Array.from(cvs.matchAll(/\(([^)]*)\)/g), (m) => m[1].split(',').map(Number))
+  const far: string[] = []
+  for (let i = 0; i < pts.length; i += 2) {
+    const [a, b] = [pts[i], pts[i + 1]]
+    const d = b.map((y, k) => (y - a[k]) / 10)
+    far.push(`(${a.map((x, k) => f(x - 1234567 * d[k])).join(', ')})`, `(${a.map((x, k) => f(x + 1234567 * d[k])).join(', ')})`)
+  }
+  const old = text
+    .replace(/(edge3dNurb:curve3d:nurb:knots = \[)[^\]]*/, (_, s: string) => s + Array(12).fill('-1234567, -1234567, 1234567, 1234567').join(', '))
+    .replace(cvs, far.join(', '))
+  ;(fromUsd(old) as Part).bbox().max.toArray().forEach((c) => approx(c, 5, 1e-9))
+})
+
+test('usd bodies that other writers left gaps in', () => {
+  // The kernel's check runs on bodies smlibwasm did not write: a vertex moved off its edges by more
+  // than 1e-3 of the body's size is refused, a smaller gap noted; check: false reads it.
+  const theirs = toUsd(Box(10, 10, 10), { mesh: false }).replace('string source = "smlibpy"', 'string source = "theirs"')
+  const [x, y, z] = /brep:vertexPoint:point:position = \[\(([^)]*)\)/.exec(theirs)![1].split(',').map(Number)
+  const far = mutated(theirs, 'brep:vertexPoint:point:position', `(${f(x)}, ${f(y)}, ${f(z + 0.5)})`)
+  assert.throws(() => fromUsd(far), /is broken: the kernel finds a gap of 0.5 \(0.0\d+ of its size\) at vertex 0/)
+  approx((fromUsd(far, { check: false }) as Part).volume, 1000, 1e-6)
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    fromUsd(mutated(theirs, 'brep:vertexPoint:point:position', `(${f(x)}, ${f(y)}, ${f(z + 0.004)})`))
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+  assert.ok(said.some((m) => m.includes('the kernel finds a gap of 0.004 ')), said.join())
 })
 

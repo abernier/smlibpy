@@ -22,7 +22,7 @@ const _UNITS: Record<string, string> = {
 }
 const _INCH = 25.4
 /** millimeters per declared unit */
-const _MM_PER_UNIT = new Map<string, number>([
+export const _MM_PER_UNIT = new Map<string, number>([
   ['mm', 1.0],
   ['cm', 10.0],
   ['m', 1000.0],

@@ -867,8 +867,9 @@ export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8
   }
 }
 
-/** The body of an SMLib native `.smb` file's contents: a Part, or a Shell when it encloses no
- * volume. */
+/** The body of an SMLib native `.smb` file's contents: a Part when it encloses a volume (a merged
+ * part with its cells too, and a broken solid, whose `isValid()` is false), a Shell when it does
+ * not. */
 export function fromSmb(data: string | Uint8Array): Part | Shell {
   const name = _tmpName()
   let b: number
@@ -878,13 +879,10 @@ export function fromSmb(data: string | Uint8Array): Part | Shell {
   } finally {
     _unlink(name)
   }
-  const part = Part._wrap(b)
-  if (!part.isValid()) {
-    const shell = Shell._wrap(part._copyBrep())
-    part.dispose()
-    return shell
-  }
-  return part
+  // a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
+  const regions: { infinite: boolean; void: boolean }[] = ext.brep_dump(b, false).regions
+  const solid = regions.some((r) => !r.infinite && !r.void)
+  return solid ? Part._wrap(b) : Shell._wrap(b)
 }
 
 /** Write a body to SMLib's native `.smb` format (exact; see `toSmb`). */
@@ -898,8 +896,9 @@ export function save(shapes: unknown, path: string, options: { ascii?: boolean }
  * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), USD (`.usda`) and
  * SMLib (`.smb`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's outlines, STL a `Mesh`.
  *
- * A STEP file with one body gives that part, one with several a `ShapeList`. A native file that
- * encloses no volume comes back as a `Shell`.
+ * A STEP file with one body gives that part, one with several a `ShapeList`. A native file comes
+ * back as a `Part` when its body encloses a volume (a merged part with its cells too, and a broken
+ * solid, whose `isValid()` is false), as a `Shell` when it does not.
  */
 export function load(path: string): Any {
   const p = String(path)

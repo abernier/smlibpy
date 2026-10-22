@@ -79,6 +79,7 @@ val classify_points(uintptr_t b, val points, double tolerance)
         return to_js(smlibpy::classify_points(brep(b), flat, tolerance));
     });
 }
+val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
 uintptr_t face_from_surface(uintptr_t s) { return guard([&] { return ptr(smlibpy::face_from_surface(smjs::surface(s))); }); }
 uintptr_t combine(val breps) { return guard([&] { return ptr(smlibpy::combine(pointers<SmBrep>(breps))); }); }
@@ -647,6 +648,58 @@ val usd_read(std::string text, bool heal)
     });
 }
 
+// The assets a .usda text names (subLayers, references, payloads), each once, as written.
+val usd_assets(std::string text)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const std::string& a : smlibpy::usd_assets(text))
+            out.call<void>("push", a);
+        return out;
+    });
+}
+
+// {bodies: [[brep, name, [r, g, b] or null]], warnings, unresolved} of a stage whose layers are
+// [[id, text, {asset: id}, {asset: why not read}]], the root first; the Breps are the caller's.
+val usd_stage(val layers, bool heal, bool check, bool placement, double units)
+{
+    return guard([&] {
+        auto strings = [](val o) {
+            std::map<std::string, std::string> out;
+            val keys = val::global("Object").call<val>("keys", o);
+            const unsigned n = keys["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i)
+            {
+                const std::string k = keys[i].as<std::string>();
+                out[k] = o[k].as<std::string>();
+            }
+            return out;
+        };
+        std::vector<smlibpy::UsdLayer> in;
+        const unsigned n = layers["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+        {
+            val l = layers[i];
+            in.push_back(smlibpy::UsdLayer{l[0].as<std::string>(), l[1].as<std::string>(), strings(l[2]), strings(l[3])});
+        }
+        smlibpy::UsdReadOptions options;
+        options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
+        val bodies = val::array(), warnings = val::array(), unresolved = val::array();
+        for (auto& item : stage.items)
+            bodies.call<void>("push", items(ptr(item.brep), item.name, item.color.empty() ? val::null() : float64(item.color)));
+        for (const std::string& w : stage.warnings)
+            warnings.call<void>("push", w);
+        for (const std::string& u : stage.unresolved)
+            unresolved.call<void>("push", u);
+        val out = val::object();
+        out.set("bodies", bodies);
+        out.set("warnings", warnings);
+        out.set("unresolved", unresolved);
+        return out;
+    });
+}
+
 EMSCRIPTEN_BINDINGS(smlib_smlibpy)
 {
     function("ext__curve_data", &curve_data);
@@ -660,6 +713,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__transform_brep", &transform_brep);
     function("ext__boolean", &boolean);
     function("ext__classify_points", &classify_points);
+    function("ext__edge_angles", &edge_angles);
     function("ext__copy_faces", &copy_faces);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);
@@ -695,6 +749,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__region_shells", &region_shells);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
+    function("ext__usd_assets", &usd_assets);
+    function("ext__usd_stage", &usd_stage);
     function("ext__face_measure", &face_measure);
     function("ext__nearest_points", &nearest_points);
     function("ext__curve_length", &curve_length);

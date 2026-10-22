@@ -4,8 +4,9 @@
 // Changed for smlibpy: only the conversions between Breps and UsdBrepArrayData (lines 1-1390, 1600-2461 and
 // 2777-4242 of the original); the ones that read or write USD prims and stages (BrepAppend_SMLibToUsd,
 // BrepMove_UsdToSMLib*, CreateSm*_FromUsd*) left out; includes of OpenUSD replaced by pxr_lite.h. Cones of
-// semi-angle 0 are written as cylinders, and cones of negative semi-angle about the reversed axis (both
-// marked "smlibpy:"), so that what is written is in the schema's ranges.
+// semi-angle 0 are written as cylinders, and cones of negative semi-angle about the reversed axis, so that
+// what is written is in the schema's ranges; edges on lines, and on curves that are approximated, are
+// written with their curve trimmed to the edge (all marked "smlibpy:").
 
 /******************************************************************//**
 * FILE NAME --- SmuConvert.cpp
@@ -2173,6 +2174,24 @@ SmStatus BrepAppend_SMLibToUsdBrep
                 // edge curve
                 SmCurve        * pEdgeCurve    = pEdge->GetCurve() ;
                 SmBSplineCurve * pBSplineCurve = NULL ;
+                // smlibpy: a line, or a curve that is approximated below, that runs past the edge is written
+                // trimmed to it. SMLib's lines (B-splines in SMLib, written as they are) run over an
+                // unbounded interval (+-1234567): each line edge of a body read from a file with analytic
+                // lines was written as a B-spline 2.5 km long (BA.365), and a body read back from that had a
+                // tight box of 1.2e6. (Trimming keeps a line's parameters, and the approximation is made to
+                // keep them.)
+                SmCurve        * pTrimmedCurve = NULL ;
+                SmObjDelete      sCleanTrimmedCurve ;
+                const SmExtent1d sNaturalInterval = pEdgeCurve->GetNaturalInterval() ;
+                if(   (pEdgeCurve->GetType() == SmLine_TYPE || !pEdgeCurve->IsKindOf(SmBSplineCurve_TYPE))
+                   && (   sNaturalInterval.GetMin() < rEdgeData.m_vInterval.GetMin()
+                       || sNaturalInterval.GetMax() > rEdgeData.m_vInterval.GetMax())
+                   && pEdgeCurve->Copy(*(pEdgeCurve->GetContext()), pTrimmedCurve) == SM_SUCCESS && pTrimmedCurve)
+                  {
+                    sCleanTrimmedCurve.SetObj(pTrimmedCurve) ;
+                    if(pTrimmedCurve->Trim(rEdgeData.m_vInterval) == SM_SUCCESS)
+                      { pEdgeCurve = pTrimmedCurve ; }
+                  }
                 SmObjDelete      sCleanBSplineCurve; // when pBSplineCurve is a approximation or copy of pEdgeCurve, clean up memory when done
           
                 // for now - force every curve to be a BSplineCurve for USD - later may add support for other curve types

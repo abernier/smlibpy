@@ -5,7 +5,8 @@
 // Faces get exact analytic or NURBS surfaces, edges exact curves that span exactly the
 // edge from its start to its end vertex. Topology is assembled with SmBrepConstructor;
 // edges shared by two faces (or used twice by one face, as seams are) are created once and
-// passed to the second use, so the result needs no tolerance-based stitching.
+// passed to the second use, and so are the file's vertices, so the result needs no
+// tolerance-based stitching.
 
 #include "kernel.h"
 #include "step_build.h"
@@ -578,10 +579,29 @@ smlibpy::Value drop_slits(const SmSurface* srf, const smlibpy::Value& f, const s
     return dropped ? loops : smlibpy::Value();
 }
 
+// What the constructor has made of the file's edges and vertices, by id.
+struct Made
+{
+    std::unordered_map<long, SmEdge*> edges;
+    std::unordered_map<long, SmVertex*> vertices;
+
+    // the vertex made for the file vertex an edge spec names at "v0" or "v1" (none: not made yet)
+    SmVertex* vertex(const smlibpy::Value& spec, const char* end) const
+    {
+        if (!spec.has(end))
+            return nullptr;
+        auto it = vertices.find(static_cast<long>(spec[end].num()));
+        return it == vertices.end() ? nullptr : it->second;
+    }
+};
+
 // The faces of one shell, into the shell the constructor has open. Edges already made (by this
-// shell or an earlier one) are used again.
+// shell or an earlier one) are used again, and so are vertices: a new edge starts and ends at the
+// vertices made for its file vertices ("v0", "v1" of its spec). The constructor makes a vertex only
+// where a loop ends, for each vertexuse not linked to one yet, and a vertex whose edges were first
+// made in different loops came out once per loop (a part with 20 vertices in the file had 26).
 void add_faces(SmBrepConstructor& bc, const smlibpy::Value& faces, const smlibpy::Value& edges, bool reversed,
-               bool mirrored, std::unordered_map<long, SmEdge*>& made)
+               bool mirrored, Made& made)
 {
     for (const smlibpy::Value& f : faces.list())
     {
@@ -621,32 +641,74 @@ void add_faces(SmBrepConstructor& bc, const smlibpy::Value& faces, const smlibpy
             // loops run counterclockwise around the face normal (STEP convention)
             if (!bc.StartLoop((same != mirrored) ? SM_OT_SAME : SM_OT_OPPOSITE))
                 throw std::runtime_error("SmBrepConstructor::StartLoop failed");
+            std::vector<std::pair<SmEdge*, const smlibpy::Value*>> fresh;  // edges new in this loop
             for (const smlibpy::Value& use : loop["edges"].list())
             {
                 long id = static_cast<long>(use.at(0).num());
                 SmOrientType o = use.at(1).boolean() ? SM_OT_SAME : SM_OT_OPPOSITE;
-                auto it = made.find(id);
-                if (it != made.end())
+                auto it = made.edges.find(id);
+                if (it != made.edges.end())
                 {
                     if (!bc.StartEdge(o, it->second, nullptr, nullptr))
                         throw std::runtime_error("SmBrepConstructor::StartEdge failed");
                     check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
                     continue;
                 }
-                SmEdge* e = bc.StartEdge(o, nullptr, nullptr, nullptr);
+                // (the vertices at the start and the end of the curve: StartEdge takes them in the
+                // loop's direction and turns them round for an edge used against it)
+                const smlibpy::Value& spec = edges[std::to_string(id)];
+                SmEdge* e = bc.StartEdge(o, nullptr, made.vertex(spec, "v0"), made.vertex(spec, "v1"));
                 if (!e)
                     throw std::runtime_error("SmBrepConstructor::StartEdge failed");
-                SmCurve* c = make_edge_curve(edges[std::to_string(id)]);
+                SmCurve* c = make_edge_curve(spec);
                 check(bc.SetEdgeCurve(c, FALSE), "SmBrepConstructor::SetEdgeCurve");
                 SmExtent1d ivl = c->GetNaturalInterval();
                 check(bc.SetLimits(SmVertexNode(ivl.GetMin()), SmVertexNode(ivl.GetMax())),
                       "SmBrepConstructor::SetLimits");
                 check(bc.EndEdge(), "SmBrepConstructor::EndEdge");
-                made[id] = e;
+                made.edges[id] = e;
+                fresh.emplace_back(e, &spec);
             }
             check(bc.EndLoop(), "SmBrepConstructor::EndLoop");
+            // the loop has its vertices now: those of the file's vertices are used again
+            for (const auto& [e, spec] : fresh)
+                for (const auto& [end, v] : {std::make_pair("v0", e->GetStartVertex()), std::make_pair("v1", e->GetEndVertex())})
+                    if (spec->has(end) && v)
+                        made.vertices.emplace(static_cast<long>((*spec)[end].num()), v);
         }
         check(bc.EndFace(), "SmBrepConstructor::EndFace");
+    }
+}
+
+// One kernel vertex for each file vertex. Within a loop the constructor links the vertexuses of
+// neighbouring edges only; a seam on a B-spline face, which meets the same vertex again further
+// round the loop, still came out with a second vertex there (3 in the valve body's 102). Those are
+// glued to the first (SmBrep::GlueVertices keeps it and widens its tolerance by the distance).
+void glue_file_vertices(SmBrep* brep, const smlibpy::Value& edges, const Made& made)
+{
+    std::vector<long> ids;  // (in order: the vertex that stays must not depend on hashing)
+    for (const auto& entry : made.edges)
+        ids.push_back(entry.first);
+    std::sort(ids.begin(), ids.end());
+    std::unordered_map<long, SmVertex*> first;
+    for (long id : ids)
+    {
+        const SmEdge* e = made.edges.at(id);
+        const smlibpy::Value& spec = edges[std::to_string(id)];
+        for (const char* end : {"v0", "v1"})
+        {
+            SmVertex* have = end[1] == '0' ? e->GetStartVertex() : e->GetEndVertex();
+            if (!spec.has(end) || !have)
+                continue;
+            auto [it, fresh] = first.emplace(static_cast<long>(spec[end].num()), have);
+            SmVertex* want = it->second;
+            if (fresh || want == have)
+                continue;
+            check(brep->GlueVertices(want, have), "SmBrep::GlueVertices");
+            for (auto& entry : first)  // (a vertex the constructor made for two file vertices is gone too)
+                if (entry.second == have)
+                    entry.second = want;
+        }
     }
 }
 
@@ -664,7 +726,7 @@ SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool sol
             throw std::runtime_error("SmBrepConstructor::StartRegion failed");
         SmShell *outer = nullptr, *inner = nullptr;
         check(bc.StartShell(outer, inner), "SmBrepConstructor::StartShell");
-        std::unordered_map<long, SmEdge*> made;
+        Made made;
         add_faces(bc, faces, edges, reversed, mirrored, made);
         check(bc.EndShell(FALSE), "SmBrepConstructor::EndShell");
         if (solid)
@@ -685,6 +747,7 @@ SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool sol
                 cavity->SetIsVoid(TRUE);
             }
         check(bc.EndBrep(), "SmBrepConstructor::EndBrep");
+        glue_file_vertices(brep, edges, made);
     }
     catch (...)
     {

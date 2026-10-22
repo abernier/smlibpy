@@ -3,6 +3,9 @@
 // USD files of exact bodies (`smlibpy._core.ext`):
 //
 //   usd_text(items, up_axis, meters_per_unit)   the .usda text of a stage of bodies (and meshes)
+//   usd_assets(text)                            the layers a .usda text names (subLayers, references)
+//   usd_stage(layers, heal, check, placement, units)
+//                                               the bodies of a stage, placed, in millimeters
 //   usd_read(text, heal)                        the bodies of the BrepArray prims of a .usda text
 //
 // NVIDIA's usd-brep stores B-reps in USD as BrepArray prims (its omniSolid schema): one prim holds
@@ -14,6 +17,7 @@
 // (the table below), with the applied API schemas it declares. Binary USD (.usdc, .usdz) is not read.
 
 #include "kernel.h"
+#include "ext_shared.h"
 #include "usd.h"
 
 #include "SmuConvert.h"
@@ -21,6 +25,9 @@
 #include "UsdBrepTokens.h"
 
 #include <SmApiGeneral.h>
+#include <SmAssertArray.h>
+#include <SmEdgeuse.h>
+#include <SmLoop.h>
 
 #include <algorithm>
 #include <array>
@@ -29,7 +36,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -537,15 +546,63 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
 }
 
 // -- reading ---------------------------------------------------------------------------------------
-// .usda as far as BrepArray prims need it: prims (def, over, class) with their properties and child
-// prims; values of numbers, strings, tuples and lists. Metadata, dictionaries, variant sets and
-// relationships are skipped.
+// .usda as far as the bodies of a stage need it: prims (def, over, class) with their properties, the
+// metadata that decides what a prim is (active, references, payload, customData's source) and their
+// child prims; the layer's metadata (defaultPrim, metersPerUnit, upAxis, subLayers); values of
+// numbers, strings, tuples and lists. Other metadata, dictionaries, variant sets and relationships are
+// skipped, and so are the values of properties that nothing reads (those of meshes).
 struct Val
 {
     enum K { NUM, STR, LIST, OTHER } k = OTHER;
     double n = 0.0;
-    std::string s;
+    std::string s;           // STR, and the word of an OTHER (true, false, None)
     std::vector<Val> items;  // LIST, and tuples (OTHER with items)
+};
+
+// A reference or payload: the prim `path` ("": the layer's defaultPrim) of the layer at `asset`
+// ("": the layer stack it is written in).
+struct Arc
+{
+    std::string asset, path;
+    bool operator==(const Arc& o) const { return asset == o.asset && path == o.path; }
+};
+
+struct PrimSpec
+{
+    std::string specifier, type, name;
+    std::string source;  // customData's source ("smlibpy" in the files smlibpy writes)
+    int active = -1;     // -1: not said, 0: false, 1: true
+    std::vector<Arc> references, payloads, deleted;
+    std::map<std::string, Val> props;
+    std::vector<std::unique_ptr<PrimSpec>> children;
+
+    const PrimSpec* child(const std::string& n) const
+    {
+        for (const auto& c : children)
+            if (c->name == n)
+                return c.get();
+        return nullptr;
+    }
+};
+
+// One .usda text and what the caller found for the assets it names (smlibpy::UsdLayer).
+struct Layer
+{
+    std::string id;
+    std::vector<std::unique_ptr<PrimSpec>> roots;
+    double meters_per_unit = 0.0;  // 0: not said
+    std::string up_axis, default_prim;
+    std::vector<std::string> sublayers;
+    const std::map<std::string, std::string>* links = nullptr;    // asset -> id of the layer read for it
+    const std::map<std::string, std::string>* missing = nullptr;  // asset -> why none was read
+
+    const PrimSpec* root(const std::string& n) const
+    {
+        for (const auto& c : roots)
+            if (c->name == n)
+                return c.get();
+        return nullptr;
+    }
 };
 
 class Parser
@@ -553,18 +610,14 @@ class Parser
 public:
     explicit Parser(const std::string& text) : t_(text) {}
 
-    struct Prim
-    {
-        std::string type, name;
-        std::map<std::string, Val> props;
-    };
-    std::vector<Prim> brep_arrays;
+    // the assets the layer names: subLayers, references and payloads, each once, in order
+    std::vector<std::string> assets;
 
-    void layer()
+    void layer(Layer& out)
     {
         skip_space();
         if (peek_char() == '(')
-            skip_group();
+            layer_metadata(out);
         while (true)
         {
             skip_space();
@@ -572,7 +625,7 @@ public:
                 return;
             std::string w = word();
             if (w == "def" || w == "over" || w == "class")
-                prim();
+                out.roots.push_back(prim(w));
             else
                 fail("a prim (def, over or class)");
         }
@@ -646,7 +699,37 @@ private:
         fail("the end of a string");
     }
 
-    // A balanced group from the bracket here to its partner, strings and comments respected.
+    // an asset path, @...@ or @@@...@@@ (for paths that hold an @)
+    std::string asset()
+    {
+        skip_space();
+        const bool triple = t_.compare(i_, 3, "@@@") == 0;
+        const std::string end = triple ? "@@@" : "@";
+        if (peek_char() != '@')
+            fail("an asset path (@...@)");
+        i_ += end.size();
+        const size_t s = i_, e = t_.find(end, s);
+        if (e == std::string::npos)
+            fail("the end of an asset path");
+        i_ = e + end.size();
+        return t_.substr(s, e - s);
+    }
+
+    // a prim path, <...>
+    std::string prim_path()
+    {
+        skip_space();
+        if (peek_char() != '<')
+            fail("a prim path (<...>)");
+        const size_t s = ++i_, e = t_.find('>', s);
+        if (e == std::string::npos)
+            fail("the end of a prim path");
+        i_ = e + 1;
+        return t_.substr(s, e - s);
+    }
+
+    // A balanced group from the bracket here to its partner, strings, comments, paths and assets
+    // respected.
     void skip_group()
     {
         skip_space();
@@ -667,17 +750,12 @@ private:
             }
             if (c == '<')  // a path: may hold brackets of its own ([variant selections])
             {
-                while (i_ < t_.size() && t_[i_] != '>')
-                    ++i_;
-                ++i_;
+                prim_path();
                 continue;
             }
             if (c == '@')
             {
-                ++i_;
-                while (i_ < t_.size() && t_[i_] != '@')
-                    ++i_;
-                ++i_;
+                asset();
                 continue;
             }
             if (c == '(' || c == '[' || c == '{')
@@ -731,12 +809,18 @@ private:
             v.s = string_literal();
             return v;
         }
-        if (c == '<' || c == '@')
+        if (c == '<')
         {
-            skip_group_like_path();
+            prim_path();
+            return v;
+        }
+        if (c == '@')
+        {
+            asset();
             return v;
         }
         std::string w = word();
+        v.s = w;
         if (const char point = decimal_point(); point != '.')
             std::replace(w.begin(), w.end(), '.', point);
         const char* b = w.c_str();
@@ -747,34 +831,215 @@ private:
         return v;  // (true, false, None and other words: OTHER)
     }
 
-    void skip_group_like_path()
+    // a value nothing reads, passed over without building it
+    void skip_value()
     {
-        char close = peek_char() == '<' ? '>' : '@';
-        ++i_;
-        while (i_ < t_.size() && t_[i_] != close)
-            ++i_;
-        ++i_;
+        skip_space();
+        const char c = peek_char();
+        if (c == '[' || c == '(' || c == '{')
+            skip_group();
+        else if (c == '"' || c == '\'')
+            string_literal();
+        else if (c == '<')
+            prim_path();
+        else if (c == '@')
+            asset();
+        else
+            word();
     }
 
-    void prim()
+    void note_asset(const std::string& a)
     {
-        Prim p;
+        if (!a.empty() && std::find(assets.begin(), assets.end(), a) == assets.end())
+            assets.push_back(a);
+    }
+
+    // references or payloads: None, one, or a list; each @asset@<path> (either may be left out),
+    // with a layer offset or customData in brackets after it
+    std::vector<Arc> arcs()
+    {
+        std::vector<Arc> out;
         skip_space();
-        if (peek_char() != '"' && peek_char() != '\'')
-            p.type = word();
-        p.name = string_literal();
-        skip_space();
-        if (peek_char() == '(')
-            skip_group();
+        const bool list = peek_char() == '[';
+        if (list)
+            ++i_;
+        while (true)
+        {
+            skip_space();
+            if (list && peek_char() == ']')
+            {
+                ++i_;
+                break;
+            }
+            if (std::isalpha(static_cast<unsigned char>(peek_char())))  // None
+            {
+                word();
+                if (!list)
+                    break;
+                continue;
+            }
+            Arc a;
+            if (peek_char() == '@')
+                note_asset(a.asset = asset());
+            skip_space();
+            if (peek_char() == '<')
+                a.path = prim_path();
+            skip_space();
+            if (peek_char() == '(')
+                skip_group();
+            out.push_back(a);
+            if (!list)
+                break;
+            skip_space();
+            if (peek_char() == ',')
+                ++i_;
+            else if (peek_char() != ']')
+                fail("',' or ']' in a list of references");
+        }
+        return out;
+    }
+
+    void layer_metadata(Layer& out)
+    {
+        ++i_;  // (
+        while (true)
+        {
+            skip_space();
+            if (i_ >= t_.size())
+                fail("')' at the end of the layer's metadata");
+            if (peek_char() == ')')
+            {
+                ++i_;
+                return;
+            }
+            if (peek_char() == '"' || peek_char() == '\'')  // the layer's doc
+            {
+                string_literal();
+                continue;
+            }
+            const std::string w = word();
+            skip_space();
+            if (peek_char() != '=')
+                continue;
+            ++i_;
+            if (w == "subLayers")
+            {
+                for (const Arc& a : arcs())
+                    if (!a.asset.empty())
+                        out.sublayers.push_back(a.asset);
+            }
+            else if (w == "metersPerUnit" || w == "upAxis" || w == "defaultPrim")
+            {
+                const Val v = value();
+                if (w == "metersPerUnit" && (v.k != Val::NUM || !(v.n > 0) || !std::isfinite(v.n)))
+                    throw std::invalid_argument("usd: the layer's metersPerUnit is not a positive number");
+                if (w == "metersPerUnit")
+                    out.meters_per_unit = v.n;
+                else if (w == "upAxis")
+                    out.up_axis = v.s;
+                else
+                    out.default_prim = v.s;
+            }
+            else
+                skip_value();
+        }
+    }
+
+    // customData = { ... }: its source, if it says one
+    void custom_data(PrimSpec& p)
+    {
         skip_space();
         if (peek_char() != '{')
-            fail("'{' after the prim \"" + p.name + "\"");
+            return skip_value();
         ++i_;
         while (true)
         {
             skip_space();
             if (i_ >= t_.size())
-                fail("'}' at the end of the prim \"" + p.name + "\"");
+                fail("'}' at the end of a dictionary");
+            if (peek_char() == '}')
+            {
+                ++i_;
+                return;
+            }
+            word();  // the type
+            if (peek_char() == '[')
+                skip_group();
+            const std::string name = word();
+            skip_space();
+            if (peek_char() != '=')
+                fail("'=' in a dictionary");
+            ++i_;
+            const Val v = value();
+            if (name == "source" && v.k == Val::STR)
+                p.source = v.s;
+        }
+    }
+
+    void prim_metadata(PrimSpec& p)
+    {
+        static const std::set<std::string> list_ops = {"prepend", "append", "add", "delete", "reorder"};
+        ++i_;  // (
+        while (true)
+        {
+            skip_space();
+            if (i_ >= t_.size())
+                fail("')' at the end of the metadata of the prim \"" + p.name + "\"");
+            if (peek_char() == ')')
+            {
+                ++i_;
+                return;
+            }
+            if (peek_char() == '"' || peek_char() == '\'')  // the prim's doc
+            {
+                string_literal();
+                continue;
+            }
+            std::string w = word(), op;
+            if (list_ops.count(w))
+                op = w, w = word();
+            skip_space();
+            if (peek_char() != '=')
+                continue;
+            ++i_;
+            if (w == "references" || w == "payload")
+            {
+                std::vector<Arc> a = arcs();
+                std::vector<Arc>& to = op == "delete" ? p.deleted : w == "references" ? p.references : p.payloads;
+                to.insert(to.end(), a.begin(), a.end());
+            }
+            else if (w == "active")
+            {
+                const Val v = value();
+                p.active = v.s == "false" || (v.k == Val::NUM && v.n == 0) ? 0 : 1;
+            }
+            else if (w == "customData")
+                custom_data(p);
+            else
+                skip_value();
+        }
+    }
+
+    std::unique_ptr<PrimSpec> prim(const std::string& specifier)
+    {
+        auto p = std::make_unique<PrimSpec>();
+        p->specifier = specifier;
+        skip_space();
+        if (peek_char() != '"' && peek_char() != '\'')
+            p->type = word();
+        p->name = string_literal();
+        skip_space();
+        if (peek_char() == '(')
+            prim_metadata(*p);
+        skip_space();
+        if (peek_char() != '{')
+            fail("'{' after the prim \"" + p->name + "\"");
+        ++i_;
+        while (true)
+        {
+            skip_space();
+            if (i_ >= t_.size())
+                fail("'}' at the end of the prim \"" + p->name + "\"");
             if (peek_char() == '}')
             {
                 ++i_;
@@ -782,7 +1047,7 @@ private:
             }
             std::string w = word();
             if (w == "def" || w == "over" || w == "class")
-                prim();
+                p->children.push_back(prim(w));
             else if (w == "variantSet")
             {
                 string_literal();
@@ -792,13 +1057,12 @@ private:
                 skip_group();
             }
             else
-                property(w, p);
+                property(w, *p);
         }
-        if (p.type == "BrepArray")
-            brep_arrays.push_back(std::move(p));
+        return p;
     }
 
-    void property(std::string w, Prim& p)
+    void property(std::string w, PrimSpec& p)
     {
         static const std::set<std::string> qualifiers = {"custom", "uniform", "varying", "prepend", "append",
                                                          "delete", "add", "reorder", "config"};
@@ -811,7 +1075,7 @@ private:
             if (peek_char() == '=')
             {
                 ++i_;
-                value();
+                skip_value();
             }
             skip_space();
             if (peek_char() == '(')
@@ -830,21 +1094,23 @@ private:
         }
         std::string name = word();
         skip_space();
-        Val v;
-        bool has = false;
+        // what is read: the arrays of a BrepArray (or of a prim that may compose onto one), and
+        // the transforms of every prim
+        const bool plain = name.find(".timeSamples") == std::string::npos && name.find(".connect") == std::string::npos &&
+                           name.find(".spline") == std::string::npos;
+        const bool wanted = plain && (p.type == "BrepArray" || p.type.empty() || name == "xformOpOrder" ||
+                                      name.compare(0, 8, "xformOp:") == 0);
         if (peek_char() == '=')
         {
             ++i_;
-            v = value();
-            has = true;
+            if (wanted)
+                p.props[name] = value();
+            else
+                skip_value();
         }
         skip_space();
         if (peek_char() == '(')
             skip_group();
-        const bool plain = name.find(".timeSamples") == std::string::npos && name.find(".connect") == std::string::npos &&
-                           name.find(".spline") == std::string::npos;
-        if (has && plain)
-            p.props[name] = std::move(v);
     }
 };
 
@@ -907,11 +1173,18 @@ void read_field(const Field& f, const Val& v, UsdBrepArrayData& a)
 }
 
 // -- checking ---------------------------------------------------------------------------------------
+// Where each body's faces, edges, wire edges and edgeuses start in the arrays (check() finds them).
+struct Layout
+{
+    std::vector<uint64_t> face, edge, wire, edgeuse;  // per body
+    uint64_t faces = 0, edges = 0, wires = 0;         // of all bodies
+};
+
 // usd-brep's conversion trusts the arrays of a BrepArray: wrong sizes, indices out of range or unknown
 // tokens make it read past their ends (its own test files for its validator crash it). This pass
 // counts the topology and geometry of each body the way UsdBrepArraySpans::SetStartsAndCountsForBrepIndex
 // does, with every access checked, and says what is wrong ("" when nothing is).
-std::string check(const UsdBrepArrayData& a)
+std::string check(const UsdBrepArrayData& a, Layout& layout)
 {
     using pxr::UsdBrepCurveTokens;
     using pxr::UsdBrepSolidTokens;
@@ -948,6 +1221,8 @@ std::string check(const UsdBrepArrayData& a)
 
     for (uint64_t b = 0; b < breps; ++b)
     {
+        layout.face.push_back(face), layout.edge.push_back(edge), layout.wire.push_back(wire);
+        layout.edgeuse.push_back(edgeuse);
         const uint64_t R = a.m_sBrepRegionCountArray[b];
         if (R > LIMIT || short_of(a.m_sRegionShellCountArray.size(), region + R) ||
             short_of(a.m_sRegionTypeArray.size(), region + R))
@@ -976,6 +1251,8 @@ std::string check(const UsdBrepArrayData& a)
         }
         if (FU > LIMIT || WE > LIMIT || FU % 2 != 0)
             return bad("shell:faceuseCount does not add up to two faceuses per face");
+        if (FU == 0 && WE == 0 && SP == 0)
+            return bad("body " + std::to_string(b) + " is empty (it has no faces, wire edges or points)");
         if (short_of(a.m_sShell_PointPositionArray.size(), shellPoint + SP))
             return bad("shell point positions are missing");
         const uint64_t F = FU / 2;
@@ -1196,6 +1473,9 @@ std::string check(const UsdBrepArrayData& a)
         region += R, shell += S, shellPoint += SP, faceuse += FU, face += F, loop += L, edgeuse += EU, edge += E;
         wire += WE, vertex += V, vertexPoint += V;
     }
+    if (a.m_sEdgeCurveTypeArray.size() > edge)
+        return bad(std::to_string(a.m_sEdgeCurveTypeArray.size() - edge) + " of the edges are used by no edgeuse (BA.582)");
+    layout.faces = face, layout.edges = edge, layout.wires = wire;
     // the analytic geometry, all bodies together
     auto three = [&](uint64_t n, std::initializer_list<size_t> sizes) {
         for (size_t s : sizes)
@@ -1232,6 +1512,746 @@ std::string check(const UsdBrepArrayData& a)
     return "";
 }
 
+
+// The values of a BrepArray that check() found sound in its shape, against the rules of usd-brep's
+// validator that the conversion relies on (their codes in brackets): numbers that are not finite,
+// tolerances, weights and radii that are not positive, ranges the wrong way round, directions of
+// length 0 and frames whose axis and reference direction are parallel. The conversion takes them as
+// they are: a sphere whose refDirection was its axis crashed it, a weight of 0 crashed the meshing
+// later, and a cylinder axis of length 0, an edge weight of 0 or a cone axis of length 2 gave bodies
+// of the wrong volume that said they were valid. Directions are made unit, and a reference direction
+// that is nearly at right angles to its axis is made exactly so (frames of the conversion are not
+// orthonormalized, and the surface turned about the reference direction instead). Says what is wrong,
+// with the body, the face or edge and the rule ("" when nothing is).
+std::string check_values(UsdBrepArrayData& a, const Layout& layout)
+{
+    using pxr::UsdBrepCurveTokens;
+    using pxr::UsdBrepSurfaceTokens;
+    // (body b's face, edge, ... f: the body and its own number of it)
+    auto at = [](const std::vector<uint64_t>& starts, uint64_t i, const char* what) {
+        const auto b = std::upper_bound(starts.begin(), starts.end(), i) - starts.begin() - 1;
+        return "body " + std::to_string(b) + ", " + what + " " + std::to_string(i - starts[b]) + ": ";
+    };
+    auto g = [](double x) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.6g", x);
+        return std::string(buf);
+    };
+    // every floating-point array (but the extent, which no body is built from)
+    for (const Field& f : fields())
+    {
+        if (!std::strcmp(f.name, "brep:extent"))
+            continue;
+        const size_t n = f.size(a);
+        for (size_t i = 0; i < n; ++i)
+        {
+            bool finite = true;
+            if (f.d)
+                finite = std::isfinite((a.*f.d)[i]);
+            else if (f.d2)
+                finite = std::isfinite((a.*f.d2)[i][0]) && std::isfinite((a.*f.d2)[i][1]);
+            else if (f.d3)
+                finite = std::isfinite((a.*f.d3)[i][0]) && std::isfinite((a.*f.d3)[i][1]) && std::isfinite((a.*f.d3)[i][2]);
+            if (!finite)
+                return std::string(f.name) + "[" + std::to_string(i) + "] is not a finite number (BA.660)";
+        }
+    }
+    for (size_t b = 0; b < a.m_sBrepRegionCountArray.size(); ++b)
+        if (!(a.m_sBrepXSectTol3dArray[b] > 0))
+            return "body " + std::to_string(b) + ": brep:intersectTol3d is " + g(a.m_sBrepXSectTol3dArray[b]) +
+                   ", not positive (BA.010)";
+    // the weights of a NURBS block, [first, first + n), all positive
+    auto weights = [&](const VtArray<double>& w, uint64_t first, uint64_t n, const char* rule) -> std::string {
+        for (uint64_t i = first; i < first + n && i < w.size(); ++i)
+            if (!(w[i] > 0))
+                return "a weight of " + g(w[i]) + ", not positive (" + rule + ")";
+        return "";
+    };
+    // a positive radius; a direction of some length, made unit
+    auto positive = [&](double r, const char* what, const char* rule) -> std::string {
+        return r > 0 ? "" : std::string(what) + " is " + g(r) + ", not positive (" + rule + ")";
+    };
+    auto unit = [&](GfVec3d& v, const char* what, const char* rule) -> std::string {
+        const double len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (!(len > 1e-12))
+            return std::string(what) + " has no length (" + rule + ")";
+        v = GfVec3d(v[0] / len, v[1] / len, v[2] / len);
+        return "";
+    };
+    // an axis and a reference direction, made unit and at right angles
+    auto frame = [&](GfVec3d& axis, GfVec3d& ref, const char* rules) -> std::string {
+        if (std::string e = unit(axis, "the axis", rules); !e.empty())
+            return e;
+        if (std::string e = unit(ref, "the refDirection", rules); !e.empty())
+            return e;
+        const double c = axis[0] * ref[0] + axis[1] * ref[1] + axis[2] * ref[2];
+        if (std::fabs(c) > 1e-3)  // (more than 0.06 degrees off)
+            return std::fabs(c) > 1 - 1e-9 ? std::string("the axis and the refDirection are parallel (") + rules + ")"
+                                           : "the axis and the refDirection are " +
+                                                 g(std::acos(std::max(-1.0, std::min(1.0, c))) * 180.0 / SM_PI) +
+                                                 " degrees apart, not at right angles (" + rules + ")";
+        ref = GfVec3d(ref[0] - c * axis[0], ref[1] - c * axis[1], ref[2] - c * axis[2]);
+        return unit(ref, "the refDirection", rules);
+    };
+
+    // faces: their ranges and surfaces
+    uint64_t sphere = 0, plane = 0, cylinder = 0, cone = 0, torus = 0, nurb = 0, nurb_cv = 0;
+    for (uint64_t f = 0; f < layout.faces; ++f)
+    {
+        std::string e;
+        const GfVec2d lo = a.m_sFaceRangeArray[2 * f], hi = a.m_sFaceRangeArray[2 * f + 1];
+        if (!(lo[0] < hi[0]))
+            e = "its range in u is empty or the wrong way round (BA.155)";
+        else if (!(lo[1] < hi[1]))
+            e = "its range in v is empty or the wrong way round (BA.160)";
+        const TfToken& t = a.m_sFaceSurfaceTypeArray[f];
+        if (!e.empty())
+            ;
+        else if (t == UsdBrepSurfaceTokens->brepSurfaceNurbAPI)
+        {
+            const uint64_t n = static_cast<uint64_t>(a.m_sFace_SurfaceNurb_UVertexCountArray[nurb]) *
+                               a.m_sFace_SurfaceNurb_VVertexCountArray[nurb];
+            if (!(e = weights(a.m_sFace_SurfaceNurb_WeightsArray, nurb_cv, n, "BA.440")).empty())
+                e = "its NURBS surface has " + e;
+            ++nurb, nurb_cv += n;
+        }
+        else if (t == UsdBrepSurfaceTokens->brepSurfaceSphereAPI)
+        {
+            const uint64_t i = sphere++;
+            if ((e = positive(a.m_sFace_SurfaceSphere_RadiusArray[i], "the sphere's radius", "BA.481")).empty())
+                e = frame(a.m_sFace_SurfaceSphere_AxisArray[i], a.m_sFace_SurfaceSphere_RefDirectionArray[i],
+                          "BA.482-484");
+        }
+        else if (t == UsdBrepSurfaceTokens->brepSurfacePlaneAPI)
+        {
+            const uint64_t i = plane++;
+            e = frame(a.m_sFace_SurfacePlane_AxisArray[i], a.m_sFace_SurfacePlane_RefDirectionArray[i], "BA.491-493");
+        }
+        else if (t == UsdBrepSurfaceTokens->brepSurfaceCylinderAPI)
+        {
+            const uint64_t i = cylinder++;
+            if ((e = positive(a.m_sFace_SurfaceCylinder_RadiusArray[i], "the cylinder's radius", "BA.501")).empty())
+                e = frame(a.m_sFace_SurfaceCylinder_AxisArray[i], a.m_sFace_SurfaceCylinder_RefDirectionArray[i],
+                          "BA.502-504");
+        }
+        else if (t == UsdBrepSurfaceTokens->brepSurfaceConeAPI)
+        {
+            // (a semi-angle of 0 or below is read: the conversion turns a negative one round, and
+            // usd-brep's own writer has written them)
+            const uint64_t i = cone++;
+            const double angle = a.m_sFace_SurfaceCone_SemiAngleArray[i];
+            if (!(a.m_sFace_SurfaceCone_RadiusArray[i] >= 0))
+                e = "the cone's radius is " + g(a.m_sFace_SurfaceCone_RadiusArray[i]) + ", below 0 (BA.511)";
+            else if (!(std::fabs(angle) < SM_PI / 2))
+                e = "the cone's semiAngle is " + g(angle) + ", 90 degrees or more: no cone (BA.515)";
+            else
+                e = frame(a.m_sFace_SurfaceCone_AxisArray[i], a.m_sFace_SurfaceCone_RefDirectionArray[i], "BA.512-514");
+        }
+        else if (t == UsdBrepSurfaceTokens->brepSurfaceTorusAPI)
+        {
+            const uint64_t i = torus++;
+            if ((e = positive(a.m_sFace_SurfaceTorus_MajorRadiusArray[i], "the torus' majorRadius", "BA.521")).empty() &&
+                (e = positive(a.m_sFace_SurfaceTorus_MinorRadiusArray[i], "the torus' minorRadius", "BA.522")).empty())
+                e = frame(a.m_sFace_SurfaceTorus_AxisArray[i], a.m_sFace_SurfaceTorus_RefDirectionArray[i], "BA.523-525");
+        }
+        if (!e.empty())
+            return at(layout.face, f, "face") + e;
+    }
+
+    // edges and wire edges: their ranges and curves
+    struct Curves
+    {
+        const VtArray<TfToken>& types;
+        VtArray<double>& ranges;
+        VtArray<GfVec3d>&circle_axis, &circle_ref;
+        VtArray<double>& circle_radius;
+        VtArray<GfVec3d>& line_direction;
+        VtArray<GfVec3d>&ellipse_axis, &ellipse_ref;
+        VtArray<double>&ellipse_x, &ellipse_y;
+        const VtArray<uint32_t>& nurb_counts;
+        const VtArray<double>& nurb_weights;
+        const char* weight_rule;
+        const std::vector<uint64_t>& starts;
+        uint64_t count;
+        const char* what;
+    };
+    const Curves all[] = {
+        {a.m_sEdgeCurveTypeArray, a.m_sEdgeRangeArray, a.m_sEdge_CurveCircle_AxisArray, a.m_sEdge_CurveCircle_RefDirectionArray,
+         a.m_sEdge_CurveCircle_RadiusArray, a.m_sEdge_CurveLine_DirectionArray, a.m_sEdge_CurveEllipse_AxisArray,
+         a.m_sEdge_CurveEllipse_RefDirectionArray, a.m_sEdge_CurveEllipse_XRadiusArray, a.m_sEdge_CurveEllipse_YRadiusArray,
+         a.m_sEdge_CurveNurb_VertexCountArray, a.m_sEdge_CurveNurb_WeightsArray, "BA.350", layout.edge, layout.edges, "edge"},
+        {a.m_sWireEdgeCurveTypeArray, a.m_sWireEdgeRangeArray, a.m_sWireEdge_CurveCircle_AxisArray,
+         a.m_sWireEdge_CurveCircle_RefDirectionArray, a.m_sWireEdge_CurveCircle_RadiusArray, a.m_sWireEdge_CurveLine_DirectionArray,
+         a.m_sWireEdge_CurveEllipse_AxisArray, a.m_sWireEdge_CurveEllipse_RefDirectionArray, a.m_sWireEdge_CurveEllipse_XRadiusArray,
+         a.m_sWireEdge_CurveEllipse_YRadiusArray, a.m_sWireEdge_CurveNurb_VertexCountArray, a.m_sWireEdge_CurveNurb_WeightsArray,
+         "BA.654", layout.wire, layout.wires, "wire edge"},
+    };
+    for (const Curves& c : all)
+    {
+        uint64_t circle = 0, line = 0, ellipse = 0, nurb = 0, nurb_cv = 0;
+        for (uint64_t e = 0; e < c.count; ++e)
+        {
+            std::string err;
+            if (!(c.ranges[2 * e] <= c.ranges[2 * e + 1]))
+                err = "its range is the wrong way round (BA.235)";
+            const TfToken& t = c.types[e];
+            if (!err.empty())
+                ;
+            else if (t == UsdBrepCurveTokens->brepCurve3dNurbAPI)
+            {
+                const uint64_t n = c.nurb_counts[nurb++];
+                if (!(err = weights(c.nurb_weights, nurb_cv, n, c.weight_rule)).empty())
+                    err = "its NURBS curve has " + err;
+                nurb_cv += n;
+            }
+            else if (t == UsdBrepCurveTokens->brepCurve3dCircleAPI)
+            {
+                const uint64_t i = circle++;
+                if ((err = positive(c.circle_radius[i], "the circle's radius", "BA.531")).empty())
+                    err = frame(c.circle_axis[i], c.circle_ref[i], "BA.532-534");
+            }
+            else if (t == UsdBrepCurveTokens->brepCurve3dLineAPI)
+                err = unit(c.line_direction[line++], "the line's direction", "BA.541");
+            else if (t == UsdBrepCurveTokens->brepCurve3dEllipseAPI)
+            {
+                const uint64_t i = ellipse++;
+                if ((err = positive(c.ellipse_x[i], "the ellipse's xRadius", "BA.551")).empty() &&
+                    (err = positive(c.ellipse_y[i], "the ellipse's yRadius", "BA.552")).empty())
+                    err = frame(c.ellipse_axis[i], c.ellipse_ref[i], "BA.553-555");
+            }
+            if (!err.empty())
+                return at(c.starts, e, c.what) + err;
+        }
+    }
+
+    // the UV curves of the edgeuses (a count of 0: none)
+    uint64_t uv_cv = 0;
+    for (uint64_t u = 0; u < a.m_sEdgeuse_CurveNurb_VertexCountArray.size(); ++u)
+    {
+        const uint64_t n = a.m_sEdgeuse_CurveNurb_VertexCountArray[u];
+        if (std::string err = weights(a.m_sEdgeuse_CurveNurb_WeightsArray, uv_cv, n, "BA.410"); !err.empty())
+            return at(layout.edgeuse, u, "edgeuse") + "its UV curve has " + err;
+        uv_cv += n;
+    }
+    return "";
+}
+
+
+// -- composing a stage -------------------------------------------------------------------------------
+// What USD's composition does for the bodies of a stage, in part: the layer stack (a layer and its
+// subLayers, the stronger first), references and payloads (to a prim of another layer, or of the same
+// layer stack; weaker than the prim's own opinions), prims of the same path in several layers (the
+// strongest opinion of each property wins) and the transforms of the prims down to each body. Abstract
+// (class) prims, prims that are only overs and inactive prims hold no bodies, nor do their children.
+// Inherits, specializes and variant sets are not composed.
+using Path = std::vector<std::string>;
+
+std::string path_text(const Path& p)
+{
+    std::string s;
+    for (const std::string& n : p)
+        s += "/" + n;
+    return s.empty() ? "/" : s;
+}
+
+// a prim path as names (variant selections, {set=name}, left out)
+Path parse_path(const std::string& s)
+{
+    Path out;
+    std::string n;
+    int braces = 0;
+    for (char c : s + "/")
+    {
+        if (c == '{')
+            ++braces;
+        else if (c == '}')
+            --braces;
+        else if (braces)
+            continue;
+        else if (c == '/')
+        {
+            if (!n.empty())
+                out.push_back(n);
+            n.clear();
+        }
+        else
+            n += c;
+    }
+    return out;
+}
+
+// A 4 x 4 matrix, row by row, for column vectors (p' = M p): the translation in the last column.
+using Matrix = std::array<double, 16>;
+
+Matrix identity()
+{
+    Matrix m{};
+    m[0] = m[5] = m[10] = m[15] = 1.0;
+    return m;
+}
+
+Matrix mul(const Matrix& a, const Matrix& b)
+{
+    Matrix m{};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+            for (int k = 0; k < 4; ++k)
+                m[r * 4 + c] += a[r * 4 + k] * b[k * 4 + c];
+    return m;
+}
+
+Matrix inverse(const Matrix& m)
+{
+    // Gauss-Jordan with partial pivoting
+    Matrix a = m, inv = identity();
+    for (int c = 0; c < 4; ++c)
+    {
+        int p = c;
+        for (int r = c + 1; r < 4; ++r)
+            if (std::fabs(a[r * 4 + c]) > std::fabs(a[p * 4 + c]))
+                p = r;
+        if (!(std::fabs(a[p * 4 + c]) > 1e-300))
+            throw std::invalid_argument("usd: an xformOp that is inverted (!invert!) has no inverse");
+        for (int k = 0; k < 4; ++k)
+            std::swap(a[c * 4 + k], a[p * 4 + k]), std::swap(inv[c * 4 + k], inv[p * 4 + k]);
+        const double d = a[c * 4 + c];
+        for (int k = 0; k < 4; ++k)
+            a[c * 4 + k] /= d, inv[c * 4 + k] /= d;
+        for (int r = 0; r < 4; ++r)
+            if (r != c)
+            {
+                const double f = a[r * 4 + c];
+                for (int k = 0; k < 4; ++k)
+                    a[r * 4 + k] -= f * a[c * 4 + k], inv[r * 4 + k] -= f * inv[c * 4 + k];
+            }
+    }
+    return inv;
+}
+
+Matrix rotation(int axis, double degrees)
+{
+    const double t = degrees * SM_PI / 180.0, c = std::cos(t), s = std::sin(t);
+    Matrix m = identity();
+    const int i = (axis + 1) % 3, j = (axis + 2) % 3;  // the plane turned: (y, z), (z, x) or (x, y)
+    m[i * 4 + i] = c, m[i * 4 + j] = -s, m[j * 4 + i] = s, m[j * 4 + j] = c;
+    return m;
+}
+
+// The matrix of one xformOp of the prim at `where`: its kind (translate, scale, rotateX, rotateXYZ,
+// orient, transform, ...) and its value.
+Matrix op_matrix(const std::string& kind, const Val& v, const std::string& where)
+{
+    auto numbers = [&](size_t n) {
+        std::vector<double> out;
+        if (n == 1 && v.k == Val::NUM)
+            return std::vector<double>{v.n};
+        if (v.items.size() != n)
+            throw std::invalid_argument("usd: the xformOp:" + kind + " of " + where + " does not hold " + std::to_string(n) + " numbers");
+        for (const Val& x : v.items)
+        {
+            if (x.k != Val::NUM || !std::isfinite(x.n))
+                throw std::invalid_argument("usd: the xformOp:" + kind + " of " + where + " holds something that is not a finite number");
+            out.push_back(x.n);
+        }
+        return out;
+    };
+    Matrix m = identity();
+    if (kind == "translate" || kind == "translateX" || kind == "translateY" || kind == "translateZ")
+    {
+        const std::vector<double> t = kind.size() == 9 ? numbers(3) : numbers(1);
+        for (int k = 0; k < 3; ++k)
+            m[k * 4 + 3] = kind.size() == 9 ? t[k] : (kind[9] - 'X' == k ? t[0] : 0.0);
+        return m;
+    }
+    if (kind == "scale" || kind == "scaleX" || kind == "scaleY" || kind == "scaleZ")
+    {
+        const std::vector<double> s = kind.size() == 5 ? numbers(3) : numbers(1);
+        for (int k = 0; k < 3; ++k)
+            m[k * 5] = kind.size() == 5 ? s[k] : (kind[5] - 'X' == k ? s[0] : 1.0);
+        return m;
+    }
+    if (kind == "rotateX" || kind == "rotateY" || kind == "rotateZ")
+        return rotation(kind[6] - 'X', numbers(1)[0]);
+    if (kind.size() == 9 && kind.compare(0, 6, "rotate") == 0)  // rotateXYZ ...: the first axis turns first
+    {
+        const std::vector<double> a = numbers(3);
+        for (int k = 0; k < 3; ++k)
+        {
+            const int axis = kind[6 + k] - 'X';
+            if (axis < 0 || axis > 2)
+                throw std::invalid_argument("usd: " + where + " has an xformOp:" + kind + ", which is not read");
+            m = mul(rotation(axis, a[axis]), m);
+        }
+        return m;
+    }
+    if (kind == "orient")  // a quaternion (real, i, j, k)
+    {
+        std::vector<double> q = numbers(4);
+        const double len = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        if (!(len > 0))
+            throw std::invalid_argument("usd: the xformOp:orient of " + where + " is not a rotation (a quaternion of length 0)");
+        const double w = q[0] / len, x = q[1] / len, y = q[2] / len, z = q[3] / len;
+        const double r[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+                             2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+                             2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 4 + j] = r[i * 3 + j];
+        return m;
+    }
+    if (kind == "transform")  // a matrix4d for row vectors: the translation in the last row
+    {
+        if (v.items.size() != 4)
+            throw std::invalid_argument("usd: the xformOp:transform of " + where + " is not a 4 x 4 matrix");
+        for (int r = 0; r < 4; ++r)
+        {
+            if (v.items[r].items.size() != 4)
+                throw std::invalid_argument("usd: the xformOp:transform of " + where + " is not a 4 x 4 matrix");
+            for (int c = 0; c < 4; ++c)
+            {
+                const Val& x = v.items[r].items[c];
+                if (x.k != Val::NUM || !std::isfinite(x.n))
+                    throw std::invalid_argument("usd: the xformOp:transform of " + where + " holds something that is not a finite number");
+                m[c * 4 + r] = x.n;
+            }
+        }
+        return m;
+    }
+    throw std::invalid_argument("usd: " + where + " has an xformOp:" + kind + ", a kind of transform that is not read");
+}
+
+// A prim of the stage as one layer stack has it: `spec` at `path` in `layer`.
+struct Site
+{
+    size_t stack;
+    const Layer* layer;
+    Path path;
+    const PrimSpec* spec;
+};
+
+// A BrepArray prim of the stage, its properties composed.
+struct BodyPrim
+{
+    std::string path, leaf, source;
+    std::map<std::string, const Val*> props;
+    Matrix world;
+};
+
+class Composer
+{
+public:
+    Composer(const std::vector<Layer>& layers, smlibpy::UsdStage& out) : layers_(layers), out_(out)
+    {
+        for (const Layer& l : layers_)
+            by_id_[l.id] = &l;
+    }
+
+    // the BrepArray prims of the stage whose root layer is layers[0], in the order of the stage
+    std::vector<BodyPrim> bodies()
+    {
+        const size_t root = stack_of(&layers_[0]);
+        Path names;  // the root prims of all layers of the stack, in order
+        for (const Layer* l : stacks_[root])
+            for (const auto& p : l->roots)
+                if (std::find(names.begin(), names.end(), p->name) == names.end())
+                    names.push_back(p->name);
+        std::vector<BodyPrim> out;
+        for (const std::string& n : names)
+        {
+            std::vector<std::pair<size_t, Path>> chain;
+            visit(expand(local(root, {n}), chain), {n}, identity(), out);
+        }
+        return out;
+    }
+
+private:
+    const std::vector<Layer>& layers_;
+    smlibpy::UsdStage& out_;
+    std::map<std::string, const Layer*> by_id_;
+    std::vector<std::vector<const Layer*>> stacks_;
+    std::map<const Layer*, size_t> stack_index_;
+
+    // the layer the asset names, as the caller read it for `from` (none: noted as unresolved)
+    const Layer* linked(const Layer* from, const std::string& asset, const std::string& what)
+    {
+        if (from->links)
+            if (auto it = from->links->find(asset); it != from->links->end())
+                if (auto l = by_id_.find(it->second); l != by_id_.end())
+                    return l->second;
+        std::string why = "it was not read";
+        if (from->missing)
+            if (auto m = from->missing->find(asset); m != from->missing->end())
+                why = m->second;
+        const std::string note = "the " + what + " " + asset + " was not read (" + why + ")";
+        if (std::find(out_.unresolved.begin(), out_.unresolved.end(), note) == out_.unresolved.end())
+            out_.unresolved.push_back(note);
+        return nullptr;
+    }
+
+    // the layer stack of a layer: it and its subLayers, the stronger first, each once
+    size_t stack_of(const Layer* root)
+    {
+        if (auto it = stack_index_.find(root); it != stack_index_.end())
+            return it->second;
+        std::vector<const Layer*> stack;
+        std::function<void(const Layer*, int)> add = [&](const Layer* l, int depth) {
+            if (std::find(stack.begin(), stack.end(), l) != stack.end())
+                return;
+            if (depth > 32)
+                throw std::invalid_argument("usd: the subLayers go deeper than 32 layers (do they go round in a circle?)");
+            stack.push_back(l);
+            for (const std::string& s : l->sublayers)
+                if (const Layer* sub = linked(l, s, "subLayer"))
+                    add(sub, depth + 1);
+        };
+        add(root, 0);
+        stacks_.push_back(stack);
+        return stack_index_[root] = stacks_.size() - 1;
+    }
+
+    // the prim at `path` in each layer of a stack that has one
+    std::vector<Site> local(size_t stack, const Path& path)
+    {
+        std::vector<Site> out;
+        for (const Layer* l : stacks_[stack])
+        {
+            const PrimSpec* p = path.empty() ? nullptr : l->root(path[0]);
+            for (size_t k = 1; p && k < path.size(); ++k)
+                p = p->child(path[k]);
+            if (p)
+                out.push_back(Site{stack, l, path, p});
+        }
+        return out;
+    }
+
+    // the sites of a prim with those its references and payloads bring in (weaker), and theirs
+    std::vector<Site> expand(std::vector<Site> sites, std::vector<std::pair<size_t, Path>>& chain)
+    {
+        std::vector<Arc> deleted;
+        for (const Site& s : sites)
+            deleted.insert(deleted.end(), s.spec->deleted.begin(), s.spec->deleted.end());
+        const size_t own = sites.size();
+        for (int payloads = 0; payloads < 2; ++payloads)  // references, then payloads
+            for (size_t k = 0; k < own; ++k)
+            {
+                const Site s = sites[k];
+                for (const Arc& arc : payloads ? s.spec->payloads : s.spec->references)
+                {
+                    if (std::find(deleted.begin(), deleted.end(), arc) != deleted.end())
+                        continue;
+                    const char* what = payloads ? "payload" : "reference";
+                    size_t stack = s.stack;
+                    if (!arc.asset.empty())
+                    {
+                        const Layer* l = linked(s.layer, arc.asset, what);
+                        if (!l)
+                            continue;
+                        stack = stack_of(l);
+                    }
+                    const Layer* root = stacks_[stack][0];
+                    const Path target = arc.path.empty() ? Path{root->default_prim} : parse_path(arc.path);
+                    if (target.empty() || target[0].empty())
+                    {
+                        out_.unresolved.push_back(std::string("the ") + what + " " + arc.asset + " of " + path_text(s.path) +
+                                                  " names no prim, and its layer has no defaultPrim");
+                        continue;
+                    }
+                    for (const auto& c : chain)
+                        if (c.first == stack && c.second == target)
+                            throw std::invalid_argument("usd: the references go round in a circle at " + path_text(target) +
+                                                        (arc.asset.empty() ? "" : " of " + arc.asset));
+                    if (chain.size() > 32)
+                        throw std::invalid_argument("usd: the references go deeper than 32 prims");
+                    std::vector<Site> brought = local(stack, target);
+                    if (brought.empty())
+                    {
+                        out_.unresolved.push_back(std::string("the ") + what + " " + arc.asset + path_text(target) + " of " +
+                                                  path_text(s.path) + " names a prim its layer does not have");
+                        continue;
+                    }
+                    chain.emplace_back(stack, target);
+                    brought = expand(brought, chain);
+                    chain.pop_back();
+                    sites.insert(sites.end(), brought.begin(), brought.end());
+                }
+            }
+        return sites;
+    }
+
+    void visit(const std::vector<Site>& sites, const Path& path, const Matrix& parent, std::vector<BodyPrim>& out)
+    {
+        // the strongest opinion of each: specifier (def or class over over), type, active, source,
+        // properties
+        std::string specifier = "over", type, source;
+        int active = -1;
+        std::map<std::string, const Val*> props;
+        for (const Site& s : sites)
+        {
+            const PrimSpec& p = *s.spec;
+            if (specifier == "over" && p.specifier != "over")
+                specifier = p.specifier;
+            if (type.empty())
+                type = p.type;
+            if (active < 0)
+                active = p.active;
+            if (source.empty())
+                source = p.source;
+            for (const auto& [name, v] : p.props)
+                props.emplace(name, &v);
+        }
+        if (specifier != "def" || active == 0)  // a class, an over of nothing, inactive: no bodies
+            return;
+        const std::string where = path_text(path);
+        if (path.size() > 256)
+            throw std::invalid_argument("usd: the prims nest deeper than 256 at " + where + " (do references go round in a circle?)");
+        Matrix world = parent;
+        if (auto order = props.find("xformOpOrder"); order != props.end())
+        {
+            Matrix local = identity();
+            for (const Val& token : order->second->items)
+            {
+                std::string op = token.s;
+                if (op == "!resetXformStack!")
+                {
+                    world = identity(), local = identity();
+                    continue;
+                }
+                const bool invert = op.compare(0, 8, "!invert!") == 0;
+                if (invert)
+                    op = op.substr(8);
+                auto v = props.find(op);
+                if (v == props.end())
+                {
+                    out_.warnings.push_back(where + " lists " + op + " in its xformOpOrder but has no value for it (time "
+                                            "samples are not read): it is taken as no move");
+                    continue;
+                }
+                const size_t colon = op.find(':', 8);
+                const std::string kind = op.substr(8, colon == std::string::npos ? std::string::npos : colon - 8);
+                const Matrix m = op_matrix(kind, *v->second, where);
+                local = mul(local, invert ? inverse(m) : m);
+            }
+            world = mul(world, local);
+        }
+        if (type == "BrepArray")
+            out.push_back(BodyPrim{where, path.back(), source, props, world});
+        Path names;
+        for (const Site& s : sites)
+            for (const auto& c : s.spec->children)
+                if (std::find(names.begin(), names.end(), c->name) == names.end())
+                    names.push_back(c->name);
+        for (const std::string& n : names)
+        {
+            std::vector<Site> children;
+            for (const Site& s : sites)
+                if (const PrimSpec* c = s.spec->child(n))
+                {
+                    Path p = s.path;
+                    p.push_back(n);
+                    children.push_back(Site{s.stack, s.layer, p, c});
+                }
+            Path child = path;
+            child.push_back(n);
+            std::vector<std::pair<size_t, Path>> chain;
+            visit(expand(children, chain), child, world, out);
+        }
+    }
+};
+
+// -- checking a body -----------------------------------------------------------------------------------
+// The kernel's own check of a body read from a file (SmBrep::AssertValid, all its tests), which takes
+// a few milliseconds where measuring the body would change it. Returns what it found ("" nothing);
+// `refuse` when a gap between the body's faces, edges and vertices is not a number or is more than
+// 1e-3 of the body's size: usd-brep's validator files with such gaps gave a unit cube of volume 0.5, a
+// box whose bounding box reached 100 away, a body that did not mesh, all reporting valid. Smaller gaps
+// (other writers' tolerances) and reports that have no size are noted.
+std::string kernel_check(SmBrep* brep, bool& refuse)
+{
+    refuse = false;
+    SmAssertArray reports;
+    brep->AssertValid(&reports, SM_LEVEL_2);
+    if (reports.GetSize() == 0)
+        return "";
+    SmExtent3d box;
+    brep->CalculateBoundingBox(box, FALSE, FALSE, FALSE);
+    const double size = box.GetSize().Length();
+    SmTArray<SmFace*> faces;
+    SmTArray<SmEdge*> edges;
+    SmTArray<SmVertex*> vertices;
+    brep->GetFaces(faces);
+    brep->GetEdges(edges);
+    brep->GetVertices(vertices);
+    auto index = [](const auto& list, const void* p) -> long {
+        for (ULONG i = 0; i < list.GetSize(); ++i)
+            if (list[i] == p)
+                return static_cast<long>(i);
+        return -1;
+    };
+    // where a report is: the edge, face or vertex its owner is or belongs to
+    auto where = [&](const SmAssertReport* r) -> std::string {
+        const void* o = r->m_pOwner;
+        if (!o)
+            return "";
+        long i = -1;
+        const char* what = "";
+        switch (r->m_lOwnerType)
+        {
+        case SmEdgeuse_TYPE: i = index(edges, static_cast<const SmEdgeuse*>(o)->GetEdge()), what = "edge"; break;
+        case SmEdge_TYPE: i = index(edges, o), what = "edge"; break;
+        case SmLoop_TYPE: i = index(faces, static_cast<const SmLoop*>(o)->GetFace()), what = "face"; break;
+        case SmFace_TYPE: i = index(faces, o), what = "face"; break;
+        case SmVertex_TYPE: i = index(vertices, o), what = "vertex"; break;
+        default: return "";
+        }
+        return i < 0 ? "" : std::string(" at ") + what + " " + std::to_string(i);
+    };
+    auto g = [](double x) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.3g", x);
+        return std::string(buf);
+    };
+    const SmAssertReport* worst = nullptr;
+    double gap = 0.0;
+    std::vector<std::string> kinds;
+    for (ULONG i = 0; i < reports.GetSize(); ++i)
+    {
+        const SmAssertReport* r = reports[i];
+        const std::string name = r->m_pName ? r->m_pName : "";
+        if (!name.empty() && std::find(kinds.begin(), kinds.end(), name) == kinds.end())
+            kinds.push_back(name);
+        if (name == "Bad Edge Length" && r->m_dValue != SM_UNDEF_DOUBLE && !(r->m_dValue >= 0))
+        {
+            // (an edge whose curve runs back against it: usd-brep's validator file with a control point
+            // moved out of the edge, read back with a box 100 too large and the wrong volume)
+            refuse = true;
+            return "the kernel finds an edge of length " + g(r->m_dValue) + where(r) + ": its curve does not run from its "
+                   "start to its end";
+        }
+        // (gaps in space; those in the parameter planes are not lengths)
+        const bool spatial = name == "Bad Gap" || name == "Edge/Edge Gap" || name == "Bad Vertex Gap";
+        if (!spatial || r->m_dValue == SM_UNDEF_DOUBLE)
+            continue;
+        if (!std::isfinite(r->m_dValue))
+        {
+            worst = r, gap = r->m_dValue;
+            break;
+        }
+        if (r->m_dValue > gap)
+            worst = r, gap = r->m_dValue;
+    }
+    if (worst)
+    {
+        const std::string message = worst->m_pMessage ? worst->m_pMessage : worst->m_pName;
+        refuse = !std::isfinite(gap) || !(size > 0) || !std::isfinite(size) || gap > 1e-3 * size;
+        return "the kernel finds a gap of " + g(gap) + (std::isfinite(gap) && size > 0 ? " (" + g(gap / size) + " of its size)" : "") +
+               where(worst) + ": " + message;
+    }
+    std::string list;
+    for (size_t k = 0; k < kinds.size() && k < 3; ++k)
+        list += (k ? ", " : "") + kinds[k];
+    return "the kernel reports " + std::to_string(reports.GetSize()) + " problems with it (" + list + (kinds.size() > 3 ? ", ..." : "") + ")";
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -1266,81 +2286,163 @@ std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_ax
     return out;
 }
 
-std::vector<UsdItem> usd_read(const std::string& text, bool heal)
+// the text of a layer, as Parser takes it
+void check_text(const std::string& text, const std::string& id)
 {
+    const std::string of = id.empty() ? "" : " (" + id + ")";
     if (text.compare(0, 8, "PXR-USDC") == 0)
-        throw std::invalid_argument("usd: this is binary USD (.usdc), which is not read: convert it to text with "
+        throw std::invalid_argument("usd: this is binary USD (.usdc)" + of + ", which is not read: convert it to text with "
                                     "usdcat (usdcat in.usdc -o out.usda)");
     if (text.compare(0, 2, "PK") == 0)
-        throw std::invalid_argument("usd: this is a USD package (.usdz), which is not read: unzip it and read its "
+        throw std::invalid_argument("usd: this is a USD package (.usdz)" + of + ", which is not read: unzip it and read its "
                                     ".usda (or convert its .usdc with usdcat)");
     if (text.compare(0, 5, "#usda") != 0)
-        throw std::invalid_argument("usd: not a .usda text (it does not start with #usda)");
+        throw std::invalid_argument("usd: not a .usda text" + of + " (it does not start with #usda)");
+}
+
+std::vector<std::string> usd_assets(const std::string& text)
+{
+    check_text(text, "");
     Parser parser(text);
-    parser.layer();
+    Layer layer;
+    parser.layer(layer);
+    return parser.assets;
+}
+
+UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& options)
+{
+    if (layers.empty())
+        throw std::invalid_argument("usd: no layer to read");
+    UsdStage out;
+    std::vector<Layer> parsed(layers.size());
+    for (size_t i = 0; i < layers.size(); ++i)
+    {
+        check_text(layers[i].text, i ? layers[i].id : "");
+        Parser parser(layers[i].text);
+        parsed[i].id = layers[i].id;
+        parsed[i].links = &layers[i].links;
+        parsed[i].missing = &layers[i].missing;
+        parser.layer(parsed[i]);
+    }
+    std::vector<BodyPrim> prims = Composer(parsed, out).bodies();
+
+    // the stage's units and up axis: millimeters, Z up (a stage that says neither is taken as it is)
+    const Layer& root = parsed[0];
+    if (!(options.units >= 0) || !std::isfinite(options.units))
+        throw std::invalid_argument("usd: the units must be a positive number of millimeters per unit");
+    const double mm = options.units > 0 ? options.units : root.meters_per_unit > 0 ? root.meters_per_unit * 1000.0 : 1.0;
+    Matrix stage = identity();
+    for (int k = 0; k < 3; ++k)
+        stage[k * 5] = mm;
+    if (options.placement && root.up_axis == "Y")
+        stage = mul(stage, rotation(0, 90.0));  // (y up turned to z up)
+    else if (options.placement && !root.up_axis.empty() && root.up_axis != "Z")
+        out.warnings.push_back("the stage's upAxis is \"" + root.up_axis + "\", which is not Y or Z: it is taken as Z");
+
+    // a body is named after its prim, or its prim's path where two prims have one name
+    std::map<std::string, int> leaves;
+    for (const BodyPrim& p : prims)
+        ++leaves[p.leaf];
     std::unordered_map<std::string, const Field*> by_name;
     for (const Field& f : fields())
         by_name[f.name] = &f;
-    std::vector<UsdItem> out;
     try
     {
-        for (const Parser::Prim& prim : parser.brep_arrays)
+        for (const BodyPrim& prim : prims)
         {
             UsdBrepArrayData a;
-            a.m_sPrimPath = pxr::SdfPath("/" + prim.name);
+            a.m_sPrimPath = pxr::SdfPath(prim.path);
             std::vector<double> color;
             for (const auto& [name, v] : prim.props)
             {
                 auto it = by_name.find(name);
                 if (it != by_name.end())
-                    read_field(*it->second, v, a);
-                else if (name == "extent" && v.k == Val::LIST && v.items.size() >= 2)
+                    read_field(*it->second, *v, a);
+                else if (name == "extent" && v->k == Val::LIST && v->items.size() >= 2)
                 {
-                    auto lo = tuple<3>(v.items[0], name), hi = tuple<3>(v.items[1], name);
+                    auto lo = tuple<3>(v->items[0], name), hi = tuple<3>(v->items[1], name);
                     a.m_sBrepArray_BBox = pxr::GfRange3f(pxr::GfVec3f(lo[0], lo[1], lo[2]), pxr::GfVec3f(hi[0], hi[1], hi[2]));
                 }
-                else if (name == "primvars:displayColor" && v.k == Val::LIST && !v.items.empty() && v.items[0].items.size() == 3)
+                else if (name == "primvars:displayColor" && v->k == Val::LIST && !v->items.empty() && v->items[0].items.size() == 3)
                 {
-                    auto c = tuple<3>(v.items[0], name);
+                    auto c = tuple<3>(v->items[0], name);
                     color.assign(c.begin(), c.end());
                 }
             }
-            if (std::string problem = check(a); !problem.empty())
-                throw std::invalid_argument("usd: the BrepArray \"" + prim.name + "\" is malformed: " + problem);
+            Layout layout;
+            std::string problem = check(a, layout);
+            if (problem.empty())
+                problem = check_values(a, layout);
+            if (!problem.empty())
+                throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+            const Matrix place = mul(stage, options.placement ? prim.world : identity());
+            bool moved = false;
+            for (int k = 0; k < 16; ++k)
+                moved = moved || std::fabs(place[k] - identity()[k]) > 1e-15;
+            std::vector<double> rows(16);  // (transform_brep takes a matrix for row vectors)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    rows[r * 4 + c] = place[c * 4 + r];
             const uint32_t count = a.TotalBrepCount();
             UsdBrepArraySpans spans;
             for (uint32_t i = 0; i < count; ++i)
             {
                 pxr::usd_diagnostics().clear();
                 if (!spans.SetStartsAndCountsForBrepIndex(a, i, FALSE, TRUE))
-                    throw std::invalid_argument("usd: the BrepArray \"" + prim.name + "\" is malformed (body " +
+                    throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed (body " +
                                                 std::to_string(i) + ")" +
                                                 (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
                 SmBrep* brep = nullptr;
                 SmPyErrorTrail::clear();
-                SmStatus st = SMU_BrepConvert::BrepMove_OneUsdBrepToSMLib(ctx(), a, spans, i, brep, heal ? TRUE : FALSE);
+                SmStatus st = SMU_BrepConvert::BrepMove_OneUsdBrepToSMLib(ctx(), a, spans, i, brep, options.heal ? TRUE : FALSE);
                 if (st != SM_SUCCESS || !brep)
                 {
                     delete brep;
-                    throw std::runtime_error("usd: body " + std::to_string(i) + " of the BrepArray \"" + prim.name +
+                    throw std::runtime_error("usd: body " + std::to_string(i) + " of the BrepArray \"" + prim.path +
                                              "\" could not be built (" + sm_status_name(st) + ")" +
                                              (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
                 }
                 UsdItem item;
                 item.brep = brep;
-                item.name = count == 1 || i == 0 ? prim.name : prim.name + "_" + std::to_string(i);
+                const std::string name = leaves[prim.leaf] > 1 ? prim.path : prim.leaf;
+                item.name = count == 1 || i == 0 ? name : name + "_" + std::to_string(i);
                 item.color = color;
-                out.push_back(std::move(item));
+                out.items.push_back(std::move(item));
+                // the kernel's check, before anything measures the body (smlibpy's own files are not
+                // checked: what it writes, its kernel has built)
+                if (options.check && prim.source != "smlibpy")
+                {
+                    bool refuse = false;
+                    const std::string found = kernel_check(brep, refuse);
+                    const std::string body = "body " + std::to_string(i) + " of the BrepArray \"" + prim.path + "\"";
+                    if (refuse)
+                        throw std::invalid_argument("usd: " + body + " is broken: " + found +
+                                                    "; such a body measures and meshes wrong (turn the check off to read it "
+                                                    "as it is)");
+                    if (!found.empty())
+                        out.warnings.push_back(body + ": " + found + "; it may not mesh or measure exactly");
+                }
+                if (moved)
+                    transform_brep(brep, rows);
             }
         }
     }
     catch (...)
     {
-        for (UsdItem& item : out)
+        for (UsdItem& item : out.items)
             delete item.brep;
         throw;
     }
     return out;
+}
+
+std::vector<UsdItem> usd_read(const std::string& text, bool heal)
+{
+    UsdReadOptions options;
+    options.heal = heal;
+    options.placement = false;
+    options.units = 1.0;
+    return usd_stage({UsdLayer{"", text, {}, {}}}, options).items;
 }
 
 }  // namespace smlibpy
@@ -1381,5 +2483,37 @@ void bind_usd_files(py::module_ m)
         return out;
     }, py::arg("text"), py::arg("heal") = false,
        "The bodies of the BrepArray prims of a .usda text: [(brep, name, (r, g, b) or None)].");
+    m.def("usd_assets", &smlibpy::usd_assets, py::arg("text"),
+          "The assets a .usda text names (subLayers, references, payloads), each once, as written.");
+    m.def("usd_stage", [](const py::list& layers, bool heal, bool check, bool placement, double units) {
+        std::vector<smlibpy::UsdLayer> in;
+        for (const auto& o : layers)
+        {
+            auto t = o.cast<py::tuple>();
+            smlibpy::UsdLayer l;
+            l.id = t[0].cast<std::string>();
+            l.text = t[1].cast<std::string>();
+            l.links = t[2].cast<std::map<std::string, std::string>>();
+            l.missing = t[3].cast<std::map<std::string, std::string>>();
+            in.push_back(std::move(l));
+        }
+        smlibpy::UsdReadOptions options;
+        options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
+        py::list bodies;
+        for (auto& item : stage.items)
+            bodies.append(py::make_tuple(py::cast(item.brep, py::return_value_policy::take_ownership), item.name,
+                                         item.color.empty() ? py::object(py::none()) : py::cast(item.color)));
+        py::dict out;
+        out["bodies"] = bodies;
+        out["warnings"] = py::cast(stage.warnings);
+        out["unresolved"] = py::cast(stage.unresolved);
+        return out;
+    }, py::arg("layers"), py::arg("heal") = false, py::arg("check") = true, py::arg("placement") = true,
+       py::arg("units") = 0.0,
+       "The bodies of a stage: layers are (id, text, {asset: id of the layer read for it}, {asset: why none was "
+       "read}), the root first. {'bodies': [(brep, name, (r, g, b) or None)], 'warnings': [...], 'unresolved': "
+       "[...]}; the bodies placed (placement: the prims' transforms and the up axis) and in millimeters (units: "
+       "millimeters per unit, 0: the stage's metersPerUnit).");
 }
 #endif  // SMLIBPY_PYTHON

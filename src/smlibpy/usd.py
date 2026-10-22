@@ -12,6 +12,7 @@ written or read: OpenUSD's ``usdcat`` converts between text and ``.usdc``, ``usd
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any
 
 from ._kernel import ext, kernel_call
@@ -82,24 +83,56 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
         fh.write(text)
 
 
-def import_usd(path: str | os.PathLike[str], *, heal: bool = False) -> Any:
+def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str | None = None, placement: bool = True,
+               check: bool = True) -> Any:
     """Read the bodies of the ``BrepArray`` prims of a USD text file (``.usda``, ``.usd``).
 
     Returns a single :class:`~smlibpy.Part` (or :class:`~smlibpy.Shell` for a body that encloses
     no volume) when the file holds one body, otherwise a :class:`~smlibpy.ShapeList` of them,
-    named and colored as their prims. Lengths are taken as they are (smlibpy writes millimeters).
-    ``heal`` runs the kernel's import healer on them. A malformed BrepArray raises a
-    ``ValueError`` that says what is wrong.
+    named and colored as their prims (a body whose prim's name another prim has too is named by
+    its prim's path).
+
+    The file is read as USD composes it: its ``subLayers`` and the files its prims reference
+    (``references``, ``payload``) are read too, relative to the file that names them (text USD
+    only); prims that are abstract (``class``), inactive (``active = false``) or only ``over``
+    hold no bodies. A reference that cannot be read is named in a warning.
+
+    Args:
+        heal: Run the kernel's import healer on the bodies.
+        units: The stage's unit, ``"mm"``, ``"cm"``, ``"m"``, ``"um"`` or ``"inch"``, in place of
+            its ``metersPerUnit``. ``None`` takes the stage's ``metersPerUnit``; a stage that has
+            none is taken as millimeters (USD itself takes centimeters then). Lengths come out in
+            millimeters.
+        placement: Place the bodies as the stage does: the transforms (``xformOp``) of their prims
+            and of the prims above them, and a stage whose ``upAxis`` is ``"Y"`` turned to Z up.
+            ``False`` leaves each body where its prim has it.
+        check: Check each body with the kernel before anything measures it (bodies smlibpy wrote are
+            not checked): a body whose faces, edges and vertices leave gaps of more than 1e-3 of its
+            size raises ``ValueError``, smaller gaps give a warning.
+
+    A malformed ``BrepArray`` raises a ``ValueError`` that says what is wrong, in which body, face
+    or edge, with the rule of usd-brep's validator it breaks.
     """
     from .shapes import Part, Shell, ShapeList
 
-    with open(os.fspath(path), "rb") as fh:
+    per_unit = 0.0
+    if units is not None:
+        from .step import _MM_PER_UNIT
+
+        if units not in _MM_PER_UNIT:
+            raise ValueError(f"unknown unit {units!r}; use mm, cm, m, um or inch")
+        per_unit = _MM_PER_UNIT[units]
+    root = os.path.abspath(os.fspath(path))
+    with open(root, "rb") as fh:
         data = fh.read()
-    text = data.decode("utf-8", "replace")
     with kernel_call("import_usd"):
-        found = ext.usd_read(text, heal)
+        stage = ext.usd_stage(_layers(root, data.decode("utf-8", "replace")), heal, check, placement, per_unit)
+    found = stage["bodies"]
     if not found:
-        raise ValueError("the USD file holds no BrepArray prims (bodies)")
+        raise ValueError("the USD file holds no BrepArray prims (bodies)"
+                         + "".join(f"; {note}" for note in stage["unresolved"]))
+    for note in stage["warnings"] + stage["unresolved"]:
+        warnings.warn(f"import_usd: {note}", RuntimeWarning, stacklevel=2)
     out = ShapeList()
     for brep, name, color in found:
         # a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
@@ -107,3 +140,43 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False) -> Any:
         solid = any(not r["infinite"] and not r["void"] for r in regions)
         out.append((Part if solid else Shell)._wrap(brep, name=name, color=tuple(color) if color else None))
     return out[0] if len(out) == 1 else out
+
+
+def _layers(root: str, text: str) -> list[tuple[str, str, dict[str, str], dict[str, str]]]:
+    """The layers of the stage whose root layer is ``text`` (the file ``root``): it and every layer
+    the layers name (subLayers, references, payloads), each read once, a relative path taken from
+    the directory of the layer that names it. Per layer (id, text, {asset: id of the layer read for
+    it}, {asset: why none was read})."""
+    layers: dict[str, tuple[str, dict[str, str], dict[str, str]]] = {}
+    todo = [(root, text)]
+    while todo:
+        id_, body = todo.pop()
+        if id_ in layers:
+            continue
+        links: dict[str, str] = {}
+        missing: dict[str, str] = {}
+        layers[id_] = (body, links, missing)
+        with kernel_call("import_usd"):
+            assets = ext.usd_assets(body)
+        for asset in assets:
+            if "://" in asset or "[" in asset:
+                missing[asset] = "it is not a file path"
+                continue
+            target = os.path.normpath(os.path.join(os.path.dirname(id_), asset))
+            if target in layers:
+                links[asset] = target
+                continue
+            try:
+                with open(target, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                missing[asset] = f"there is no file {target}"
+                continue
+            if not data.startswith(b"#usda"):
+                missing[asset] = "it is binary USD, which is not read" if data[:8] == b"PXR-USDC" or data[:2] == b"PK" \
+                    else "it is not a .usda text"
+                continue
+            links[asset] = target
+            todo.append((target, data.decode("utf-8", "replace")))
+    order = [root] + [k for k in layers if k != root]
+    return [(k, *layers[k]) for k in order]

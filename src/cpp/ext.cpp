@@ -731,6 +731,40 @@ Value classify_points(const SmBrep* brep, const std::vector<double>& points, dou
     return out;
 }
 
+Value edge_angles(const SmBrep* brep, const std::vector<SmEdge*>& edges)
+{
+    if (!brep)
+        throw std::invalid_argument("brep is None");
+    Value out = Value::make_list();
+    for (SmEdge* e : edges)
+    {
+        if (!e || e->GetBrep() != brep)
+            throw std::invalid_argument("edge_angles: an edge is not one of the body's");
+        SmTArray<SmFace*> faces;
+        e->GetFaces(faces);
+        const SmExtent1d ivl = e->GetInterval();
+        double angle = 0.0;
+        // CalcOuterAngle answers SM_ERR_WARNING (and an obtuse angle) where both sides of the edge
+        // face the same kind of region: the edges of a sheet, the inner edges of a merged part.
+        if (faces.GetSize() == 2 && faces[0] != faces[1] && e->IsManifold() &&
+            e->CalcOuterAngle(0.5 * (ivl.GetMin() + ivl.GetMax()), angle) == SM_SUCCESS && std::isfinite(angle))
+            out.push(val(angle * 180.0 / SM_PI));
+        else
+            out.push(Value());
+    }
+    return out;
+}
+
+// Breps that are never freed: SmBrep::RemoveFaces can fail half way and leave a body whose
+// destructor reads through a null pointer (the faces of an imported body that share no edges, with
+// vertex points up to 1e-3 off: AddressSanitizer, SmBrep::~SmBrep). A body that CopyFaces or
+// RemoveFaces failed on is put here instead of deleted; it lives as long as the process.
+static void keep_forever(SmBrep* brep)
+{
+    static std::vector<SmBrep*> kept;
+    kept.push_back(brep);
+}
+
 SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
 {
     SmTArray<SmFace*> list;
@@ -740,7 +774,7 @@ SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
     SmStatus st = const_cast<SmBrep*>(brep)->CopyFaces(list, out, nullptr, FALSE);
     if (st == SM_SUCCESS)
         return out;
-    delete out;
+    keep_forever(out);
     // CopyFaces builds each face again from its trimming curves, which fails for some
     // imported faces (bounded by B-spline edges that meet within the file's tolerance):
     // copy the whole body and delete the other faces, which keeps the edges as they are.
@@ -761,7 +795,7 @@ SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
     }
     if (removed != SM_SUCCESS)
     {
-        delete copy;
+        keep_forever(copy);
         check(st, "SmBrep::CopyFaces");
     }
     return copy;
@@ -797,7 +831,7 @@ SmBrep* combine(const std::vector<SmBrep*>& breps)
             st = SM_SUCCESS;
         if (st != SM_SUCCESS)
         {
-            delete out;
+            keep_forever(out);
             check(st, "SmBrep::CopyFaces");
         }
     }
@@ -1098,6 +1132,13 @@ void bind_smlibpy_ext(py::module_ m)
           "body's own): per point (where, index, cell), `where` one of 'inside', 'outside', 'face', 'edge', "
           "'vertex'; `index` the face, edge or vertex in the Brep's order (-1 off the boundary); `cell` the "
           "closed region that is not a cavity holding the point, in region_shells order (-1 if none).");
+    m.def("edge_angles", [](const SmBrep* brep, const std::vector<SmEdge*>& edges) {
+        return smlibpy::to_python(smlibpy::edge_angles(brep, edges));
+    }, py::arg("brep"), py::arg("edges"),
+          "The outer angle of each edge of a body in degrees (SmEdge::CalcOuterAngle at the middle of the edge): "
+          "above 180 at a convex edge, below at a concave one, 180 where the faces meet tangentially; None "
+          "where the edge does not lie between two faces of a solid (a seam, an edge of a sheet, an inner edge "
+          "of a merged part).");
 
     m.def("copy_faces", &smlibpy::copy_faces, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
           "Copy faces of a Brep into a new Brep (no merge, no stitching).");
