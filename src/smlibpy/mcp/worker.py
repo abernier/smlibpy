@@ -311,6 +311,8 @@ class _Worker:
             d["bbox"] = {"min": [_r(c, size) for c in bb.min.to_tuple()],
                          "max": [_r(c, size) for c in bb.max.to_tuple()]}
             if isinstance(obj, Part):
+                with contextlib.suppress(Exception):
+                    obj._props()  # the volume's integration first: is_valid() then reuses it
                 d["valid"] = bool(obj.is_valid())
                 d["volume"] = _r(obj.volume)
             if isinstance(obj, (Part, Shell, Sketch, Face)):

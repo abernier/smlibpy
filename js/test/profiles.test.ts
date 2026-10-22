@@ -441,6 +441,24 @@ test('Booleans of faces that touch at a point', () => {
   approx(p.xor(q).area, 178.254975, 0, 1e-5)
 })
 
+test('touching faces far from the rest are checked to their own size', () => {
+  // Unit squares that touch at corners, and one 1000 away: the check of the face-by-face route took
+  // its tolerance from the loose box of the faces' planes (an area of 4.8), and passed a union whose
+  // square had become a sliver of 0.2778 by the far one (4.2778 for 5). A face that could not be
+  // measured escaped as a plain Error.
+  let squares = Rectangle(1, 1).translate(1000.5, 0.5)
+  for (const [i, j] of [[0, 0], [0, 3], [1, 0], [1, 1], [4, 1]]) squares = squares.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
+  approx(squares.area, 6)
+  raises(
+    () => {
+      let more = Rectangle(1, 1).translate(1000.5, 0.5)
+      for (const [i, j] of [[0, 2], [3, 2], [3, 3], [4, 1], [4, 3]]) more = more.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
+    },
+    ModelingError,
+    /touch each other at a point/,
+  )
+})
+
 test('empty results and operand errors', () => {
   const empty = Rectangle(10, 10).cut(Rectangle(20, 20))
   assert.equal(empty.faces().length, 0)

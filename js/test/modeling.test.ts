@@ -20,6 +20,7 @@ import {
   Rectangle,
   RegularPolygon,
   RoundedRectangle,
+  Shell,
   Slot,
   Sphere,
   Spline,
@@ -241,6 +242,11 @@ test('sweep carries the profile along a 3D path', () => {
   assert.ok(ring.isValid() && ring.faces().length === 4)
   approx(ring.volume, 4 * loop.length, 1e-4)
   approx((sweep(Circle(2), loop) as Part).volume, 4 * PI * loop.length, 1e-7) // (in two halves, as before)
+  // an open profile along a closed edge sweeps into a surface in one go (it was split into halves and
+  // refused: "surface sweeps need a single-edge path")
+  const band = sweep(Line([0, 0, 0], [4, 0, 0]), Circle(20).edges().at(0)!)
+  assert.ok(band instanceof Shell)
+  approx(band.area, 2 * PI * 20 * 4, 1e-6)
 })
 
 test('a disjoint sketch union', () => {
@@ -430,6 +436,23 @@ test('cells must fill the part', () => {
   }
 })
 
+test('cells of parts whose faces meet within a tolerance', () => {
+  // A pin with fitted chamfers in a block: the faces leave gaps of about 2e-6 of the volume, so the
+  // part and its cells integrate differently by about as much (444.61541 against 444.61629). cells()
+  // threw that they did not add up, and section() and cellAt() with it.
+  const pin = Cylinder(3, 10)
+  const m = Box(8, 8, 5).merge(pin.chamfer(pin.edges(), 1))
+  const cells = m.cells()
+  assert.equal(cells.length, 4)
+  approx(cells.reduce((sum, c) => sum + c.volume, 0), 444.61629, 1e-7)
+  approx(m.cellAt([0, 0, 0])!.volume, 45 * PI)
+  const xy = m.section(Plane.XY)
+  assert.equal(xy.faces().length, 2)
+  approx(xy.area, 64)
+  const wide = Cylinder(10, 20)
+  assert.equal(Box(30, 30, 10).merge(wide.chamfer(wide.edges(), 3)).cells().length, 4)
+})
+
 test('section of a merged part has every cell', () => {
   const m = _merge(_Box(40, 40, 20), Cylinder(6, 30))
   const xy = m.section(Plane.XY) // was 1 face, 1486.903: the insert's disc was dropped
@@ -448,4 +471,7 @@ test('section of a merged part has every cell', () => {
   assert.equal(mid.length, 1)
   approx(mid[0].area, 1600)
   assert.throws(() => m.split(Plane.XZ), (e: Error) => e instanceof ModelingError && /split: the part is not a valid solid/.test(e.message)) // was KernelError: split failed
+  // an insert that touches the part along a line has no cells (a wrong sketch of 370 for 400 before)
+  const touching = _Box(20, 20, 20).merge(Cylinder(3, 10).rotate(X, 90).translate(7, 0, 0))
+  assert.throws(() => touching.section(Plane.XY), (e: Error) => e instanceof ModelingError && /^section: cells: /.test(e.message))
 })

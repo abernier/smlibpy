@@ -21,8 +21,8 @@ whose faces meet.
 ## What valid means
 
 Every edge has exactly two faces, the faces close up, the bounding box is finite, the
-enclosed volume is positive, and the faces meet. The volume is a quick, coarse integration
-(or the measured one, if the part was measured before): it decides the sign, it is no
+enclosed volume is positive, and the faces meet. `is_valid()` integrates the volume coarsely
+(or takes the measured one, if the part was measured before): it decides the sign, it is no
 measure. The same integration measures the gaps between the faces: it integrates the volume
 with three fields, which agree only for faces that meet. Inside-out bodies, bodies without
 volume and bodies whose faces leave gaps that make the volume uncertain by 1e-2 of its value
@@ -43,10 +43,12 @@ Booleans raise `ModelingError` for a result that is not closed, for an empty res
 operands cannot explain (a cut whose tools hold less volume than the part, or do not span its
 box) and for an intersection that reaches out of an operand (the kernel can return the whole
 part). The volume of a Boolean result costs up to twice the Boolean and is integrated only
-when `is_valid()` is called, or when the next feature checks its input. Revolve, sweep, loft,
+when `is_valid()` is called; a chain of Booleans integrates nothing. Revolve, sweep, loft,
 extrude with taper and thicken check their result and raise instead of returning an
-inside-out or volume-less body; fillet, chamfer, shell and offset refuse an invalid input
-part. A fuse of two boxes touching along an edge raises.
+inside-out or volume-less body; fillet, chamfer, shell and offset refuse an input part that is
+inside out or without volume by the kernel's quick integration (and one whose faces leave gaps,
+once it was measured: the gap measure costs 3 to 6 times as much on curved parts, so only
+`is_valid()` and `volume` pay for it). A fuse of two boxes touching along an edge raises.
 
 So `is_valid()` is necessary but not enough. Also check:
 

@@ -400,14 +400,12 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
     edges = _path_edges(path)
     w = _open_curve(profile)
     if w is not None:
-        # an open profile sweeps into a surface
-        if len(edges) == 1 and edges[0].is_closed:
-            # (the kernel sweeps along a closed single-edge path inside out; in two halves it works)
-            edges = _halves(edges[0])
-        pc = edges[0]._copy_curve()
-        curves = w._copy_curves()
+        # an open profile sweeps into a surface (also along a closed edge: only solids come out
+        # inside out there)
         if len(edges) != 1:
             raise ValueError("surface sweeps need a single-edge path")
+        pc = edges[0]._copy_curve()
+        curves = w._copy_curves()
         try:
             with kernel_call("sweep"):
                 b = ext.curve_sweep(curves, pc, False, True, orient, translational, None, None)

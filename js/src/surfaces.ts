@@ -133,7 +133,7 @@ export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | { tol
     'the pieces may not meet within the tolerance',
   )
   const part = Part._wrap(shell._copyBrep())
-  if (part.isValid()) return part
+  if (part._solidProblem() === null) return part
   return shell
 }
 

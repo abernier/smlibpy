@@ -268,7 +268,7 @@ NearestPoints nearest_points(const SmBrep* a, const SmBrep* b, const std::vector
     out.a[0] = sa.p.x, out.a[1] = sa.p.y, out.a[2] = sa.p.z;
     out.b[0] = sb.p.x, out.b[1] = sb.p.y, out.b[2] = sb.p.z;
     out.distance = distance;
-    out.settled = out.converged ? 0.0 : gained;
+    out.gain = out.converged ? 0.0 : gained;
     return out;
 }
 
@@ -284,12 +284,12 @@ void bind_distance(py::module_ m)
         py::dict out;
         out["a"] = py::make_tuple(r.a[0], r.a[1], r.a[2]);
         out["b"] = py::make_tuple(r.b[0], r.b[1], r.b[2]);
-        out["distance"] = r.distance, out["converged"] = r.converged, out["settled"] = r.settled;
+        out["distance"] = r.distance, out["converged"] = r.converged, out["gain"] = r.gain;
         out["steps"] = r.steps;
         return out;
     }, py::arg("a"), py::arg("b"), py::arg("near_a"),
           "The nearest points of two bodies from a point near the first: closest points in turn, and Newton's "
-          "method on the parameters of the faces and edges they lie on. {a, b, distance, converged, settled "
+          "method on the parameters of the faces and edges they lie on. {a, b, distance, converged, gain "
           "(what the last step gained when it did not converge), steps}.");
 }
 #endif  // SMLIBPY_PYTHON

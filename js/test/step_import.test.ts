@@ -1174,7 +1174,8 @@ test('faces of an import whose faces share nothing throw', () => {
   // Faces that share no edges, with vertex points up to 1e-3 off (low-precision writers): copying
   // one out of the body fell back to copying the body and removing the other faces, the removal
   // failed, and deleting the copy then read low memory here (natively the process died). Now such a
-  // copy is kept, never freed, and the call throws KernelError.
+  // copy is kept, never freed, and the call throws KernelError. (A check of parity with smlibpy: the
+  // module did not trap on that read, so this passed before as well; the crash is tested natively.)
   const part = fromStep(unshared(toStep(Box(20, 10, 10).cut(Cylinder(3, 20))), 1e-3)) as Part
   assert.ok(part instanceof Part && !part.isValid())
   for (const face of part.faces()) assert.throws(() => face.toShell(), (e: unknown) => e instanceof KernelError && /copy face failed/.test(e.message))

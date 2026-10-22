@@ -1058,7 +1058,7 @@ export class _Scene {
       else if (item instanceof Part) {
         pieces = [...item.solids()]
         if (!pieces.length) pieces = [item]
-        closed = item.isValid()
+        closed = item._solidProblem() === null
       } else if (item instanceof Solidish || item instanceof Face) [pieces, closed] = [[item], false]
       else return
       this.items.push(item)

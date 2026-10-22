@@ -657,20 +657,25 @@ static const SmRegion* voted_region(const SmBrep* brep, const SmPoint3d& point, 
     return best->first;
 }
 
-SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold)
+SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, bool imprinting)
 {
     if (!brep1 || !brep2)
         throw std::invalid_argument("brep is None");
     if (operation != SM_BO_UNION && operation != SM_BO_DIFFERENCE && operation != SM_BO_INTERSECTION &&
         operation != SM_BO_MERGE)
         throw std::invalid_argument("operation: expected UNION, DIFFERENCE, INTERSECTION or MERGE (BooleanOp)");
+    if (non_manifold && imprinting)
+        throw std::invalid_argument("non_manifold and imprinting: one or the other");
     const auto op = static_cast<SmBooleanOperationType>(operation);
     SmBrep* result = nullptr;
-    const SmStatus st = non_manifold ? SmApiNonManifoldBoolean(brep1, brep2, op, result)
-                                     : SmApiBoolean(brep1, brep2, op, result);
+    // (the imprint as k.boolean_with_options takes it by default: post-processed, brep2 deleted)
+    const SmStatus st =
+        non_manifold ? SmApiNonManifoldBoolean(brep1, brep2, op, result)
+        : imprinting ? SmApiBooleanWithOptions(brep1, brep2, op, FALSE, TRUE, TRUE, FALSE, FALSE, result)
+                     : SmApiBoolean(brep1, brep2, op, result);
     if (st != SM_SUCCESS)  // SmMerge clears the mark only on its way out of a success
         SmApiGetOrCreateContext()->SetDoingBoolean(FALSE);
-    check(st, non_manifold ? "SmApiNonManifoldBoolean" : "SmApiBoolean");
+    check(st, non_manifold ? "SmApiNonManifoldBoolean" : imprinting ? "SmApiBooleanWithOptions" : "SmApiBoolean");
     return result;
 }
 
@@ -1110,13 +1115,14 @@ void bind_smlibpy_ext(py::module_ m)
 
     m.def("transform_brep", &smlibpy::transform_brep, py::arg("brep"), py::arg("matrix"),
           "Apply a row-major 4x4 matrix to a Brep in place (rigid, scaling and mirroring).");
-    m.def("boolean", [](SmBrep* brep1, SmBrep* brep2, SmBooleanOperationType operation, bool non_manifold) {
-        return smlibpy::boolean(brep1, brep2, static_cast<int>(operation), non_manifold);
+    m.def("boolean", [](SmBrep* brep1, SmBrep* brep2, SmBooleanOperationType operation, bool non_manifold,
+                        bool imprinting) {
+        return smlibpy::boolean(brep1, brep2, static_cast<int>(operation), non_manifold, imprinting);
     }, py::arg("brep1"), py::arg("brep2"), py::arg("operation"), py::arg("non_manifold") = false,
-          py::return_value_policy::reference,
-          "k.boolean (or k.non_manifold_boolean with `non_manifold`) that leaves the kernel as it was when it "
-          "fails: on success the result is brep1, changed, and brep2 is deleted; on failure both stay the "
-          "caller's.");
+          py::arg("imprinting") = false, py::return_value_policy::reference,
+          "k.boolean (k.non_manifold_boolean with `non_manifold`, k.boolean_with_options(imprinting=True) with "
+          "`imprinting`) that leaves the kernel as it was when it fails: on success the result is brep1, "
+          "changed, and brep2 is deleted; on failure both stay the caller's.");
     m.def("classify_points", [](const SmBrep* brep, const std::vector<std::vector<double>>& points, double tolerance) {
         std::vector<double> flat;
         flat.reserve(points.size() * 3);

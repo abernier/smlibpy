@@ -3,6 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import ts from 'typescript'
+import { runInNewContext } from 'node:vm'
 import * as api from '../src/index.ts'
 import { Align, Axis, Box, Lattice, Profile, Rectangle, fold, offset } from '../src/index.ts'
 import { OPTIONS } from '../src/_options.ts'
@@ -35,6 +36,11 @@ test('an option spelled as in Python, a typo or a number for the options is a Ty
   assert.equal(Box(10, 10, 10, { align: 'min' } as Any).bbox().min.x, 0)
   approx(Box(10, 10, 10, undefined).volume, 1000, 1e-9)
   approx(Rectangle(20, 10, { fillet: 3 }).area, 200 - (4 - Math.PI) * 9, 1e-9)
+  // and so does an object literal of another realm (an iframe, node:vm), but not a class instance
+  const foreign = (code: string): Any => runInNewContext(code)
+  assert.equal(Box(10, 10, 10, foreign("({ align: ['min', 'min', 'min'] })")).bbox().min.x, 0)
+  approx(Rectangle(20, 10, foreign('({ fillet: 1 })')).area, 200 - (4 - Math.PI), 1e-9)
+  assert.throws(() => (Box as Any)(10, 10, 10, new Axis([0, 0, 0], [0, 0, 1])), /Box\(\) takes 3 positional arguments but 4 were given/)
 })
 
 /** The function or method `name` of the table, called with the options `options` after as many

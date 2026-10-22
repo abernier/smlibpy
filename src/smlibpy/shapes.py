@@ -59,6 +59,13 @@ _GAPS = 1e-5
 # thickness 1.1e-3.
 _BROKEN_GAPS = 1e-2
 
+# How far a body was found a sound solid (BrepHandle.sound, see Part._solid_problem): the
+# closed, manifold result of a Boolean of sound operands, which the next Boolean takes as sound
+# and nothing else does; closed, manifold and of positive volume by the kernel's coarse
+# integration (the checks of operations); and that with the gaps between its faces measured
+# (is_valid()).
+_TRUSTED, _CHECKED, _SOUND = 1, 2, 3
+
 # Fillet corners take two edges whose directions differ by less than this (degrees) for edges
 # that run into each other tangentially: the kernel's default tangency tolerance.
 _FILLET_TANGENT_DEG = 10.0
@@ -1764,23 +1771,47 @@ def _can_cover(tools: Sequence[Part], part: Part) -> bool:
 
 
 def _intersection_problem(result: Part, operands: Sequence[Part]) -> str | None:
-    """Whether points of an intersection's surface lie outside one of its operands. Checked
-    where that is likely: the result has as many faces as an operand (one given back
-    unchanged), or its box reaches out of an operand's. The kernel can take a tool beside an
-    earlier hole in a curved part, or a corner box of an imported pulley, as containing the part,
-    and return all of it."""
-    n = result._brep.face_count()
+    """Whether points of an intersection's surface lie outside one of its operands. The kernel
+    can take a tool beside an earlier hole in a curved part, or a corner box of an imported
+    pulley, as containing the part, and return all of it. Points beyond an operand's loose box
+    are outside it; the points are classified where the result may be an operand given back
+    unchanged (as many faces and the same vertices). (Loose boxes ignore trimming: the result of
+    a split, the part and a half-space box, often reaches out of the half-space box's.)"""
     box = result._loose_box()
     tol = 1e-6 * box.diagonal + 1e-5
-    if all(x._brep.face_count() != n and x._loose_box().contains(box.min, tol) and x._loose_box().contains(box.max, tol)
-           for x in operands):
-        return None
-    points = _surface_points(result)
     near = max(1e-4 * box.diagonal, 1e-5)  # the new edges are fitted, to about 2e-5
+    problem = "partly outside an operand (the kernel took one operand for inside the other)"
+    points: list[tuple[float, float, float]] | None = None
+    for x in operands:
+        xb = x._loose_box()
+        if not (xb.contains(box.min, tol) and xb.contains(box.max, tol)):
+            points = points or _surface_points(result)
+            if not all(xb.contains(p, near) for p in points):
+                return problem
+    n = result._brep.face_count()
+    if not any(x._brep.face_count() == n and _same_vertices(result, x, tol) for x in operands):
+        return None
+    points = points or _surface_points(result)
     for x in operands:
         if any(where == "outside" for where, _, _ in x._classify(points, near)):
-            return "partly outside an operand (the kernel took one operand for inside the other)"
+            return problem
     return None
+
+
+def _same_vertices(a: _Body, b: _Body, tol: float) -> bool:
+    """Whether two bodies have as many vertices and each vertex of ``a`` lies near one of ``b``
+    (within ``tol``, or up to 4 ``tol``: cells of a grid; for the quick test of a body given back
+    unchanged, where too many is safe)."""
+    pa = [v.point() for v in a._brep.vertices()]
+    pb = [v.point() for v in b._brep.vertices()]
+    if len(pa) != len(pb):
+        return False
+    def grid(points: list[Any]) -> list[list[int]]:
+        return np.floor(np.asarray(points, dtype=float).reshape(-1, 3) / tol).astype(np.int64).tolist()
+
+    cells = {tuple(c) for c in grid(pb)}
+    around = [(i, j, m) for i in (0, -1, 1) for j in (0, -1, 1) for m in (0, -1, 1)]
+    return all(any((c[0] + i, c[1] + j, c[2] + m) in cells for i, j, m in around) for c in grid(pa))
 
 
 def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smaller: bool | None) -> str | None:
@@ -1922,7 +1953,7 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
         with kernel_call("distance_to"):
             r = ext.nearest_points(x._brep, y._brep, tuple(float(c) for c in p))
         if r["distance"] < best:
-            best, unsettled = r["distance"], r["settled"]
+            best, unsettled = r["distance"], r["gain"]
     scale = max(ab.diagonal, bb.diagonal, 1.0)
     if unsettled > 1e-9 * scale:
         import warnings
@@ -2204,34 +2235,38 @@ class Part(_Body):
         revolved about an axis through it, is not valid; nor is one whose faces leave gaps that
         make its volume uncertain by 1e-2 of its value or more.)
         """
-        return self._solid_problem() is None
+        return self._solid_problem(gaps=True) is None
 
-    def _solid_problem(self, volume: float | None = None) -> str | None:
+    def _solid_problem(self, volume: float | None = None, gaps: bool = False) -> str | None:
         """Why this is not a sound solid (``"empty"``, ``"inside out (negative volume)"``,
-        ``"open between its faces, ..."``, ...), or None. The volume is integrated coarsely,
-        with the gaps between the faces (or ``volume``, which the caller integrated anyway, is
-        used, and the gaps only if the part was measured): this catches broken bodies, not
-        small errors. A body found sound is not checked again."""
-        if self._h.sound:
+        ``"open between its faces, ..."``, ...), or None: this catches broken bodies, not small
+        errors. The checks of operations take the sign of the kernel's coarse volume (or of
+        ``volume``, which the caller integrated anyway), and the gaps between the faces only if
+        the part was measured: the gap measure costs 3 to 6 times as much on curved bodies.
+        With ``gaps`` (``is_valid()``) the part is measured. A body found sound is not checked
+        again."""
+        if self._h.sound >= (_SOUND if gaps else _CHECKED):
             return None
         problem = self._shape_problem()
+        measured = None
         if problem is None:
-            gaps = None
-            if volume is None or self._h.props is not None:
-                try:
-                    p = self._props(1e-4) if volume is None else self._h.props  # measured already, or now
-                except KernelError:
-                    return "a body whose volume cannot be integrated"
-                volume = float(p["volume"]) if volume is None else volume
-                gaps = float(p["gaps"])
+            try:
+                measured = self._props(1e-4) if gaps else self._h.props  # measured now, or already
+                if measured is not None:
+                    volume = float(measured["volume"])
+                elif volume is None:
+                    volume = float(self._kernel_props(1e-3)["volume"])
+            except KernelError:
+                return "a body whose volume cannot be integrated"
             tiny = 1e-9 * self._extent() ** 3
             if volume < -tiny:
                 problem = "inside out (negative volume)"
             elif not volume > tiny:  # also a NaN volume
                 problem = "without volume"
-            elif gaps is not None and not gaps < _BROKEN_GAPS:
-                problem = f"open between its faces, so that its volume is uncertain by {gaps:.1e} of its value"
-        self._h.sound = problem is None
+            elif measured is not None and not measured["gaps"] < _BROKEN_GAPS:
+                problem = (f"open between its faces, so that its volume is uncertain by {measured['gaps']:.1e} "
+                           f"of its value")
+        self._h.sound = 0 if problem is not None else _SOUND if measured is not None else _CHECKED
         return problem
 
     def _shape_problem(self) -> str | None:
@@ -2312,13 +2347,23 @@ class Part(_Body):
                 part = outer.cut(cavities) if cavities else outer
             except ModelingError as e:
                 raise ModelingError(f"cells: the cells inside a cell could not be cut out of it ({e}); {touching}") from e
-            if not part.is_valid():
-                raise ModelingError(f"cells: a cell is not a sound solid ({part._solid_problem()})")
+            try:
+                part._props()  # measured for the sum below, so that the check sees the gaps too
+                problem = part._solid_problem()
+            except KernelError:
+                problem = "a body whose volume cannot be integrated"
+            if problem is not None:
+                raise ModelingError(f"cells: a cell is not a sound solid ({problem})")
             out.append(part)
-        # The cells fill the part: a cell that kept another inside it counts that one twice.
-        whole = float(self._props()["volume"])
+        # The cells fill the part: a cell that kept another inside it counts that one twice (an
+        # insert of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers,
+        # imported parts) integrate a little differently in the part and in its cells: by up
+        # to about their gaps.
+        p = self._props()
+        whole = float(p["volume"])
         total = sum(float(c._props()["volume"]) for c in out)
-        if not abs(total - whole) <= 1e-6 * abs(whole):
+        slack = max(1e-6, 10 * max([float(p["gaps"])] + [float(c._props()["gaps"]) for c in out]))
+        if not abs(total - whole) <= slack * abs(whole):
             raise ModelingError(f"cells: the cells add up to a volume of {total:.10g}, the part has {whole:.10g}; "
                                 f"{touching}")
         return out
@@ -2421,13 +2466,16 @@ class Part(_Body):
         apart from each other)."""
         if result._brep.face_count() != 0:
             problem = result._shape_problem()
-            if problem is None and all(x._solid_problem() is None for x in (self, *tools)):
+            if problem is None and all(x._h.sound >= _TRUSTED or x._solid_problem() is None for x in (self, *tools)):
                 # Closed and manifold, from sound operands. Its volume, which costs up to twice
-                # the Boolean, is not integrated here; is_valid() (and the next feature) does.
-                # The result is not taken as sound: it can be inside out or leave a face out.
+                # the Boolean, is not integrated here, so that a chain of Booleans integrates
+                # nothing: the next Boolean trusts it. is_valid() and the next feature check it
+                # (it can be inside out or leave a face out).
                 if op == k.BooleanOp.INTERSECTION:
-                    return _intersection_problem(result, [self, *tools])
-                return None
+                    problem = _intersection_problem(result, [self, *tools])
+                if problem is None:
+                    result._h.sound = _TRUSTED
+                return problem
             return problem or result._solid_problem()
         if op == k.BooleanOp.UNION:
             return "empty"
@@ -2686,9 +2734,9 @@ class Part(_Body):
             edges: Edges of this part (a selection, a single edge, or faces whose edges
                 to round).
             radius: Fillet radius. A ``(start, end)`` tuple varies the radius linearly
-                along each edge (circular rounds only, not on closed edges or on edges that
-                run into each other tangentially). A list with one radius per edge rounds
-                edges differently.
+                along each edge (where they differ: circular rounds only, not on closed edges
+                or on edges that run into each other tangentially). A list with one radius
+                per edge rounds edges differently.
             continuity: ``None`` for a circular fillet. ``"G2"`` or ``"G3"`` make a
                 curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
@@ -2698,7 +2746,7 @@ class Part(_Body):
         given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
         if any(not r > 0 for r in given):
             raise ValueError("fillet: the radius must be positive")
-        if isinstance(radius, tuple) and len(radius) == 2 and continuity is not None:
+        if isinstance(radius, tuple) and len(radius) == 2 and continuity is not None and given[0] != given[1]:
             # the kernel makes a ruled chamfer of it, not tangent to the faces
             raise ValueError("fillet: a (start, end) radius makes circular rounds only; continuity needs a "
                              "constant radius")
@@ -2784,6 +2832,13 @@ class Part(_Body):
         """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
 
         The walls grow inward (the outside keeps its size) unless ``outward`` is true.
+
+        Walls that do not fit into the part (measured across it from each face), and results
+        the kernel gets wrong (faces that do not meet, no cavity, the part given back, a closed
+        shell of the wrong volume), raise :class:`ModelingError`. The kernel step runs in a
+        forked copy of the process (Linux, macOS), so that a crash of its offset code raises
+        ``ModelingError`` too, and it is stopped after ``smlibpy.defeature.GUARD_SECONDS``
+        (20 s): raise that for large parts.
         """
         from .defeature import _isolated
 
@@ -2953,7 +3008,12 @@ class Part(_Body):
 
     def offset(self, distance: float) -> Part:
         """Grow (positive) or shrink (negative) the part by ``distance`` everywhere (0 gives an
-        equal copy)."""
+        equal copy).
+
+        Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) raise
+        :class:`ModelingError`. The kernel step runs in a forked copy of the process (Linux,
+        macOS) and is stopped after ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for
+        :meth:`shell`."""
         from .defeature import _isolated
 
         self._require_valid("offset")
@@ -3042,7 +3102,12 @@ class Part(_Body):
         if not self._brep.is_manifold_solid():
             # The kernel sections the whole body, where a face between two cells bounds both: the
             # region of a cell inside another was dropped, or the section failed.
-            cells = self.cells()
+            try:
+                cells = self.cells()
+            except KernelError:
+                raise
+            except ModelingError as e:
+                raise ModelingError(f"section: {e}") from e
             if len(cells) > 1:
                 regions: list[Face] = []
                 for cell in cells:
@@ -3406,7 +3471,11 @@ class Shell(_Body):
     def thicken(self, thickness: float, *, both: bool = False) -> Part:
         """Turn the sheet into a solid of ``thickness`` (along the face normals; a negative
         thickness grows against them). With ``both`` the solid is ``thickness`` thick in
-        total, half of it to each side of the sheet."""
+        total, half of it to each side of the sheet.
+
+        The kernel step runs in a forked copy of the process (Linux, macOS), so that a crash of
+        its offset code raises :class:`ModelingError`, and is stopped after
+        ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`Part.shell`."""
         d = float(thickness)
         if d == 0:
             raise ValueError("thicken: the thickness must not be zero")
@@ -3558,11 +3627,17 @@ class Sketch(Shell):
                     ext.delete_brep(x)
             else:
                 b = pieces[0]
+            # The kernel changes a and deletes b when it succeeds with a region, and keeps both when
+            # it fails or the region is empty: the handles hold them until then.
+            ha, hb = BrepHandle(a), BrepHandle(b)
             try:
                 with kernel_call(name):
-                    result = self._like(k.boolean_2d(a, b, operation=op))  # consumes a and b
-                if self._boolean2d_plausible(tools, result, op):
-                    return result
+                    made = k.boolean_2d(ha.brep, hb.brep, operation=op)
+                if made is not None:
+                    _take(ha), _take(hb)
+                    result = self._like(made)  # (a, changed)
+                    if self._boolean2d_plausible(tools, result, op):
+                        return result
             except KernelError:
                 pass
         else:
@@ -3645,6 +3720,34 @@ class Sketch(Shell):
             for g in t._face_sketches():
                 other.append(g)
                 owner.append(n)
+
+        def wrong() -> ModelingError:
+            return ModelingError(f"{name}: the sketches have faces that touch each other at a point, as at "
+                                 f"{_fmt_point(contact)}, and the kernel's planar Boolean gives a wrong region there "
+                                 f"(checked against the overlaps of the faces); move one of the shapes that make "
+                                 f"those faces a little, so that no two faces meet at a single point")
+
+        box = self.bbox()  # (the loose boxes of planar faces can be far larger than the faces)
+        for t in tools:
+            box = box.union(t.bbox())
+        ref = box.center
+
+        def measure(sketches: Iterable[Sketch]) -> np.ndarray:
+            total = np.zeros(4)
+            with kernel_call(name):
+                for s in sketches:
+                    for f in s.faces():
+                        a = f.area
+                        total += (a, *((f.center() - ref) * a).to_tuple())
+            return total
+
+        try:
+            areas = [float(measure([f])[0]) for f in own] + [float(measure([g])[0]) for g in other]
+        except KernelError:
+            raise wrong() from None
+        # The areas to 1e-7 of the operands' (the kernel's own are exact to about 1e-12 on lines and
+        # 1e-10 on arcs), the first moments to that times the size.
+        tol = 1e-7 * sum(areas) + 1e-12
         common: dict[tuple[int, int], Sketch] = {}
         for i, f in enumerate(own):
             for j, g in enumerate(other):
@@ -3652,22 +3755,18 @@ class Sketch(Shell):
                     piece = f._boolean2d_with([g], k.BooleanOp2D.INTERSECTION, name, split=False)
                     if piece._brep.face_count():
                         common[i, j] = piece
-        box = self._loose_box()
-        for t in tools:
-            box = box.union(t._loose_box())
-        ref = box.center
-        tol = 1e-7 * box.diagonal**2 + 1e-12
-
-        def measure(sketches: Iterable[Sketch]) -> np.ndarray:
-            total = np.zeros(4)
-            for s in sketches:
-                for f in s.faces():
-                    a = f.area
-                    total += (a, *((f.center() - ref) * a).to_tuple())
-            return total
+        try:
+            # (an overlap larger than one of its two faces is wrong)
+            if any(measure([piece])[0] > min(areas[i], areas[len(own) + j]) + tol for (i, j), piece in common.items()):
+                raise wrong()
+        except KernelError:
+            raise wrong() from None
 
         def holds(result: Sketch, want: np.ndarray) -> bool:
-            got = measure([result])
+            try:
+                got = measure([result])
+            except KernelError:  # a face of the result is broken: it does not hold
+                return False
             return abs(got[0] - want[0]) <= tol and float(np.linalg.norm(got[1:] - want[1:])) <= tol * box.diagonal
 
         def first(ways: list[Callable[[], Sketch]], want: np.ndarray) -> Sketch:
@@ -3678,10 +3777,7 @@ class Sketch(Shell):
                     continue
                 if holds(result, want):
                     return result
-            raise ModelingError(f"{name}: the sketches have faces that touch each other at a point, as at "
-                                f"{_fmt_point(contact)}, and the kernel's planar Boolean gives a wrong region there "
-                                f"(checked against the overlaps of the faces); move one of the shapes that make "
-                                f"those faces a little, so that no two faces meet at a single point")
+            raise wrong()
 
         def assembled(pieces: list[Sketch]) -> Sketch:
             # Pieces that do not overlap, joined by unions so that they share their vertices as
@@ -3727,22 +3823,28 @@ class Sketch(Shell):
                                [common[i, j] for j in js]))
             return out
 
-        if op == k.BooleanOp2D.INTERSECTION:
-            return assembled(list(common.values()))
-        if op == k.BooleanOp2D.DIFFERENCE:
-            return assembled(mine())
-        whole = measure([self]) + measure(tools) - measure(common.values())
-        if op == k.BooleanOp2D.UNION:
-            tool = tools[0] if len(tools) == 1 else self._combined(list(tools))
-            return first([lambda: self._boolean2d_with(tools, op, name, split=False),
-                          lambda: assembled(mine() + other),
-                          lambda: self._slab_or_empty(tool, op, name)], whole)
-        # exclusive or: what is in one sketch only, from either side
-        theirs = []
-        for j, g in enumerate(other):
-            iis = [i for (i, b) in common if b == j]
-            theirs.append(cut(g, [self], [own[i] for i in iis], [common[i, j] for i in iis]))
-        return first([lambda: assembled(mine() + theirs)], whole - measure(common.values()))
+        def run() -> Sketch:
+            if op == k.BooleanOp2D.INTERSECTION:
+                return assembled(list(common.values()))
+            if op == k.BooleanOp2D.DIFFERENCE:
+                return assembled(mine())
+            whole = measure([self]) + measure(tools) - measure(common.values())
+            if op == k.BooleanOp2D.UNION:
+                tool = tools[0] if len(tools) == 1 else self._combined(list(tools))
+                return first([lambda: self._boolean2d_with(tools, op, name, split=False),
+                              lambda: assembled(mine() + other),
+                              lambda: self._slab_or_empty(tool, op, name)], whole)
+            # exclusive or: what is in one sketch only, from either side
+            theirs = []
+            for j, g in enumerate(other):
+                iis = [i for (i, b) in common if b == j]
+                theirs.append(cut(g, [self], [own[i] for i in iis], [common[i, j] for i in iis]))
+            return first([lambda: assembled(mine() + theirs)], whole - measure(common.values()))
+
+        try:
+            return run()
+        except KernelError:  # a face that cannot be measured, or a kernel call outside the ways
+            raise wrong() from None
 
     def _boolean2d_plausible(self, tools: list[Sketch], result: Sketch, op: Any) -> bool:
         """A cheap check of a union or exclusive or: its area is at least the larger operand's

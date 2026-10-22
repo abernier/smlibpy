@@ -147,7 +147,7 @@ def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None
         if not is_solid:
             k.stitch_into_shell(shell._brep, gap)
     part = Part._wrap(shell._copy_brep())
-    if part.is_valid():
+    if part._solid_problem() is None:
         return part
     return shell
 

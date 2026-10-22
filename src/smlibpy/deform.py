@@ -34,7 +34,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from ._kernel import BrepHandle, KernelError, ModelingError, k, kernel_call
+from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, VectorLike, X, Y, Z, _vec
 
 __all__ = ["twist", "taper", "bend", "Lattice", "MAX_DEGREE"]
@@ -137,7 +137,7 @@ def _imprint(shape: Any, origin: np.ndarray, normal: np.ndarray) -> Any:
     h, th = BrepHandle(shape._copy_brep()), BrepHandle(tool._copy_brep())  # the kernel keeps both if it fails
     with kernel_call("deform: split the faces at the end of the range",
                      "move start or end away from edges and faces of the part, or deform the whole part"):
-        h.brep = k.boolean_with_options(h.brep, th.brep, operation=k.BooleanOp.UNION, imprinting=True)
+        h.brep = ext.boolean(h.brep, th.brep, k.BooleanOp.UNION, imprinting=True)  # (clears the kernel's mark)
     _take(th)
     return shape._like(_take(h))
 

@@ -662,7 +662,7 @@ class _Scene:
                 pieces, closed = [item], item.is_closed()
             elif isinstance(item, Part):
                 pieces = list(item.solids()) or [item]
-                closed = item.is_valid()
+                closed = item._solid_problem() is None
             elif isinstance(item, (Solidish, Face)):
                 pieces, closed = [item], False
             else:

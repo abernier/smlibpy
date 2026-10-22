@@ -154,6 +154,9 @@ been checked, not assumed.
 - Status (phase 1): done, 3d1d3aa: no unchecked `sound`; `is_valid()` integrates at 1e-4 with
   the gaps. The gap threshold is 1e-2, not 1e-3 (a sound unfolded bend measures 1.1e-3,
   imported parts up to 6.3e-4); the opt-in strict check by tight boxes is not done (N3).
+  Review: `sound` is a level (a Boolean of sound operands, trusted by the next Boolean only; the
+  kernel's coarse sign, for the checks of operations; the gaps measured, for `is_valid()`), so
+  chains of Booleans, feature inputs, sweeps and imports cost what they did on origin/next.
 - Wrong: `_boolean_problem` (`shapes.py:2176-2189`) sets `sound = True` for any closed,
   manifold result of sound operands, and `is_valid()` then returns the cached flag.
   `is_valid()` also ignores the gap measure, which only drives a RuntimeWarning. Examples:
@@ -205,7 +208,9 @@ been checked, not assumed.
 - Status (phase 1): done, a19b674 (group Bcrash): K1 as planned, plus
   `SM_ERR_BAD_INTERSECTIONS` when solutions are left and a patched `IntersectTopology` that
   fails on it (leaving the loop alone gave valid bodies of the wrong volume). All reproductions
-  raise KernelError; ASan clean.
+  raise KernelError; ASan clean. wasm takes another path there: the cuts, fuses and merges raise
+  plain `SM_ERR`, and the intersection of the two holes gives the right 62.721 (both tests say
+  so).
 - Wrong: in the patched `SmProtoTopology.cpp`, `sm_WhichPVToCombine` (486-513) dereferences
   NULL ProtoVertices, line 6811 passes `pPE1` where `pPE2` belongs, and lines 6862-6868
   delete an edge the solution loop still uses. Cut, fuse, intersection and `Part.merge` of
@@ -273,7 +278,9 @@ been checked, not assumed.
 
 **B7 · P0 · Failed Booleans leak both operand copies** · `infra-bool-fail-leak` · small · both
 - Status (phase 1): done, 3d1d3aa: `ext.boolean` clears DoingBoolean on failure, and every
-  Boolean holds its copies in handles; 100 failing cuts +7.6 MB instead of +52.9 MB.
+  Boolean holds its copies in handles; 100 failing cuts +7.6 MB instead of +52.9 MB. Review:
+  deform's imprint goes through `ext.boolean(imprinting=True)`, and `boolean_2d` operands are
+  held in handles too.
 - Wrong: on failure the kernel keeps both operands (`SmApiBrep.h:42-56`: pBrep2 is deleted
   only on success), but `_run_boolean` passes raw copies that no handle owns. One failed cut
   leaks about 0.6 MB on a small part (581.9 KB measured; raw kernel 583.5 KB, 6.4 KB when
@@ -294,7 +301,8 @@ been checked, not assumed.
 
 **B8 · P0 · cells() double-counts inserts that touch at a point or along a line** · `fuzz-cells-point-contact` · small · both
 - Status (phase 1): done, a19b674: `region_shells` splits shells at edges used exactly twice,
-  and `cells()` checks the sum (1e-6); point contacts are right, line contacts raise.
+  and `cells()` checks the sum (1e-6); point contacts are right, line contacts raise. Review:
+  the sum check allows 10 times the gaps between the faces (fitted chamfers, imported parts).
 - Wrong: `region_shells` (`cells.cpp:72-108`) returns one joined shell when an insert touches
   the housing at a point or a line, and `cells()` then cuts no cavity. The cells sum to more
   than the part; a tangent `Cylinder(4,10)` gives an outer cell of 8502.655 inside a box of
@@ -437,7 +445,7 @@ cause; no process deaths.
 
 **F3 · P0 · Variable radius with continuity gives a ruled chamfer** · `fillet-variable-blend-is-chamfer` · small · both
 - Status (phase 1): done, f1edb4f: ValueError/RangeError for a (start, end) radius with
-  continuity.
+  continuity (review: only where start and end differ; (2, 2) makes the blend).
 - Wrong: `fillet(edges, (start, end), continuity='G1'|'G2'|'G3')` returns the ruled variable
   chamfer, not tangent to its faces, silently; fullness is ignored. The cause lies in the
   kernel's variable-radius plus blend-curve path and is not identified.
@@ -656,7 +664,8 @@ wherever the geometry is analytic.
 **S1 · P0 · Non-planar multi-edge sweeps turn the profile at joints** · `sweep-3d-path-joints-and-closed` · medium · both
 - Status (phase 1): done, de5795c (group SCUMA): tangent edges joined (`ext.join_curves`),
   frames carried across corners (read off a swept ribbon along twisted pieces), closed
-  non-planar paths swept once and stitched.
+  non-planar paths swept once and stitched. Review: open profiles along a closed edge are swept
+  in one go again (they were halved and refused).
 - Wrong: each piece is re-oriented by the smallest rotation from the sketch normal to that
   edge's start tangent (`operations.py:209-218, 262, 293-294`), not by carrying the frame
   along the path. A non-round profile turns by up to 90 deg at a joint; the body stays valid
@@ -749,7 +758,9 @@ scale with the model.
 **C1 · P0 · 2D & and - are wrong for faces that touch at vertices** · `curve-2d-boolean-multiface` · small · both
 - Status (phase 1): done, de5795c: face-by-face Booleans checked by area and first moments
   against an OpenCASCADE oracle (560 random results: 230 wrong before, 0 after); the kernel's
-  xor is never run on touching operands.
+  xor is never run on touching operands. Review: the check's tolerance comes from the operands'
+  area (it came from the loose box of the faces' planes, and passed a sliver for a unit square
+  1000 from another), and faces that cannot be measured raise the contact error.
 - Wrong: `boolean_2d` misclassifies a face of the left operand that the tool's boundary does
   not cross, when that face touches the operand's other faces at vertices (as xor results
   do). The wasm gives different wrong values (54.9061 and 55.6337). The order matters

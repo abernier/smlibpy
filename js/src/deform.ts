@@ -22,7 +22,7 @@
 // The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmTransform) and a
 // Bezier volume for lattices and tapers.
 
-import { BrepHandle, KernelError, ModelingError, _opts, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -177,7 +177,7 @@ function _imprint(shape: Deformable, origin: V3, normal: V3): Deformable {
     const b = _held(shape._copyBrep(), (h) =>
       kernelCall(
         'deform: split the faces at the end of the range',
-        () => k.boolean_with_options(h.brep, th.brep, { operation: k.BooleanOp.UNION, imprinting: true }),
+        () => ext.boolean(h.brep, th.brep, k.BooleanOp.UNION, { imprinting: true }), // (clears the kernel's mark)
         'move start or end away from edges and faces of the part, or deform the whole part',
       ),
     )

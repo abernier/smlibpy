@@ -118,7 +118,7 @@ soon as they are copied out, and mesh Booleans build one from the arrays when th
 ## Running off the main thread
 
 Every call is synchronous and runs on the thread that imported the package, so on a page's main
-thread a long call (a fine mesh of a large part, a shell that fails after many attempts) freezes
+thread a long call (a fine mesh of a large part, the shell of a large part) freezes
 the page until it returns. The package runs unchanged in a Web Worker, or a Node
 `worker_threads` worker, each with a kernel of its own. Bodies move between kernels exactly as the
 contents of `.smb` files, meshes as their typed arrays, which `postMessage` can transfer:
@@ -151,11 +151,11 @@ a kernel of its own, on copies of the bodies, as smlibpy runs it first in a fork
 process. A step that crashes the kernel there or takes longer than `GUARD_SECONDS` (20 s;
 `setGuardSeconds(seconds)` sets it, `0` turns the probe off) is dropped, as in Python, and the
 kernel the call runs on is left alone: SMLib's patching code loops for good on some parts (the
-outer round of the enclosure example). The kernel steps of `shell`, `offset` and `thicken` run only
-in the probe worker, whose body comes back as an exact copy (`.smb`): the kernel's offset code can
-read memory it has freed, and the kernel the call runs on never runs it. The probe waits for its worker with `Atomics.wait`, which
-Node allows on every thread and browsers only in workers of a cross-origin isolated page (one
-served with `Cross-Origin-Opener-Policy: same-origin` and
+outer round of the enclosure example). The kernel steps of `shell`, `offset` and `thicken` run
+only in the probe worker, whose body comes back as an exact copy (`.smb`): the kernel's offset
+code can read memory it has freed, and the kernel the call runs on never runs it. The probe waits
+for its worker with `Atomics.wait`, which Node allows on every thread and browsers only in workers
+of a cross-origin isolated page (one served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
 isolation, the steps run directly, and a step that loops does not come back: remove fillets and
 faces in a worker. There the package starts a small worker of its own when it is imported (a
@@ -164,7 +164,9 @@ probe worker, with the kernel, for the first step. The two are the package's
 `_defeature_supervisor.js` and `_defeature_worker.js`, loaded as
 `new Worker(new URL('./_defeature_supervisor.js', import.meta.url))`, which bundlers recognise. A
 probe worker that does not start within 30 s is given up, with a warning, and the steps run
-directly.
+directly. Where the two files are missing (a bundle that left them out), Node says so at the first
+step and runs the steps directly; a browser finds out only when the worker fails to load, so its
+first step waits those 30 s.
 
 ## API
 

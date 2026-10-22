@@ -318,6 +318,21 @@ def test_booleans_of_faces_that_touch_at_a_point():
     assert (p ^ q).area == approx(178.254975, abs=1e-5)
 
 
+def test_touching_faces_far_from_the_rest_are_checked_to_their_own_size():
+    # Unit squares that touch at corners, and one 1000 away: the check of the face-by-face route took
+    # its tolerance from the loose box of the faces' planes (an area of 4.8), and passed a union
+    # whose square had become a sliver of 0.2778 by the far one (4.2778 for 5). A face that could
+    # not be measured escaped as a bare RuntimeError.
+    squares = Rectangle(1, 1).translate(1000.5, 0.5)
+    for i, j in [(0, 0), (0, 3), (1, 0), (1, 1), (4, 1)]:
+        squares = squares + Rectangle(1, 1).translate(i + 0.5, j + 0.5)
+    assert squares.area == approx(6)
+    squares = Rectangle(1, 1).translate(1000.5, 0.5)
+    with pytest.raises(ModelingError, match="touch each other at a point"):
+        for i, j in [(0, 2), (3, 2), (3, 3), (4, 1), (4, 3)]:
+            squares = squares + Rectangle(1, 1).translate(i + 0.5, j + 0.5)
+
+
 def test_empty_results_and_operand_errors():
     empty = Rectangle(10, 10) - Rectangle(20, 20)
     assert len(empty.faces()) == 0

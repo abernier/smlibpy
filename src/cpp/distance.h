@@ -15,7 +15,7 @@ struct NearestPoints
 {
     double a[3] = {}, b[3] = {};  // on the first body and on the second
     double distance = 0.0;
-    double settled = 0.0;  // how much the last step still gained (0 once the points settle)
+    double gain = 0.0;  // how much the last step still gained (0 once the points settle)
     bool converged = false;
     long steps = 0;
 };

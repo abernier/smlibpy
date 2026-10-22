@@ -913,6 +913,7 @@ def test_step_import_makes_one_vertex_per_file_vertex(tmp_path):
     assert broken == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="reads the process's memory with ps")
 def test_seam_checks_on_import_free_their_curves(tmp_path):
     # The kernel's seam check (SmFace::HasSeamProblem), which every STEP import runs on every body,
     # copied the seam curve it made and lost the original: 3.4 KB per cylinder, 12.7 KB per torus,

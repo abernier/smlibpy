@@ -441,9 +441,8 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   let edges = _pathEdges(path)
   const w = _openCurve(profile)
   if (w !== null) {
-    // an open profile sweeps into a surface
-    // (the kernel sweeps along a closed single-edge path inside out; in two halves it works)
-    if (edges.length === 1 && edges[0].isClosed) edges = _halves(edges[0])
+    // an open profile sweeps into a surface (also along a closed edge: only solids come out inside
+    // out there)
     if (edges.length !== 1) throw new RangeError('surface sweeps need a single-edge path')
     const pc = edges[0]._copyCurve()
     const curves = w._copyCurves()

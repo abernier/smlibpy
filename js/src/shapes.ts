@@ -83,6 +83,14 @@ const _GAPS = 1e-5
 // thickness 1.1e-3.
 const _BROKEN_GAPS = 1e-2
 
+// How far a body was found a sound solid (BrepHandle.sound, see Part._solidProblem): the closed,
+// manifold result of a Boolean of sound operands, which the next Boolean takes as sound and nothing
+// else does; closed, manifold and of positive volume by the kernel's coarse integration (the checks
+// of operations); and that with the gaps between its faces measured (isValid()).
+const _TRUSTED = 1
+const _CHECKED = 2
+const _SOUND = 3
+
 // Fillet corners take two edges whose directions differ by less than this (degrees) for edges that
 // run into each other tangentially: the kernel's default tangency tolerance.
 const _FILLET_TANGENT_DEG = 10.0
@@ -2057,8 +2065,6 @@ export function _disjoint(a: BoundBox, b: BoundBox, tol = 1e-9): boolean {
   return [0, 1, 2].some((i) => amax[i] < bmin[i] - tol || bmax[i] < amin[i] - tol)
 }
 
-/** The tools in groups whose members' boxes do not overlap (so that each group can go into one
- * Boolean); empty tools are left out. */
 /** Whether tools can cover a part, so that a cut by them can leave nothing: together they hold at
  * least its volume, and their boxes span its box. Necessary, not sufficient; the volumes are the
  * quick ones, with a margin of 1e-3. */
@@ -2078,21 +2084,46 @@ function _canCover(tools: readonly Part[], part: Part): boolean {
   return hull.contains(box.min, tol) && hull.contains(box.max, tol)
 }
 
-/** Whether points of an intersection's surface lie outside one of its operands. Checked where that
- * is likely: the result has as many faces as an operand (one given back unchanged), or its box
- * reaches out of an operand's. The kernel can take a tool beside an earlier hole in a curved part,
- * or a corner box of an imported pulley, as containing the part, and return all of it. */
-function _intersectionProblem(result: Part, operands: readonly Part[]): string | null {
-  const n = k.brep_face_count(result._brep)
+/** Whether points of an intersection's surface lie outside one of its operands. The kernel can
+ * take a tool beside an earlier hole in a curved part, or a corner box of an imported pulley, as
+ * containing the part, and return all of it. Points beyond an operand's loose box are outside it;
+ * the points are classified where the result may be an operand given back unchanged (as many faces
+ * and the same vertices). (Loose boxes ignore trimming: the result of a split, the part and a
+ * half-space box, often reaches out of the half-space box's.) */
+export function _intersectionProblem(result: Part, operands: readonly Part[]): string | null {
   const box = result._looseBox()
   const tol = 1e-6 * box.diagonal + 1e-5
-  if (operands.every((x) => k.brep_face_count(x._brep) !== n && x._looseBox().contains(box.min, tol) && x._looseBox().contains(box.max, tol))) return null
-  const points = _surfacePoints(result)
   const near = Math.max(1e-4 * box.diagonal, 1e-5) // the new edges are fitted, to about 2e-5
+  const problem = 'partly outside an operand (the kernel took one operand for inside the other)'
+  let points: number[][] | null = null
   for (const x of operands) {
-    if (x._classify(points, near).some(([where]) => where === 'outside')) return 'partly outside an operand (the kernel took one operand for inside the other)'
+    const xb = x._looseBox()
+    if (!(xb.contains(box.min, tol) && xb.contains(box.max, tol))) {
+      points ??= _surfacePoints(result)
+      if (!points.every((p) => xb.contains(p, near))) return problem
+    }
+  }
+  const n = k.brep_face_count(result._brep)
+  if (!operands.some((x) => k.brep_face_count(x._brep) === n && _sameVertices(result, x, tol))) return null
+  points ??= _surfacePoints(result)
+  for (const x of operands) {
+    if (x._classify(points, near).some(([where]) => where === 'outside')) return problem
   }
   return null
+}
+
+/** Whether two bodies have as many vertices and each vertex of `a` lies near one of `b` (within
+ * `tol`, or up to 4 `tol`: cells of a grid; for the quick test of a body given back unchanged,
+ * where too many is safe). */
+function _sameVertices(a: _Body, b: _Body, tol: number): boolean {
+  const cellsOf = (body: _Body): number[][] =>
+    (k.brep_vertices(body._brep) as number[]).map((v) => (k.vertex_point(v) as number[]).map((c) => Math.floor(c / tol)))
+  const pa = cellsOf(a)
+  const pb = cellsOf(b)
+  if (pa.length !== pb.length) return false
+  const cells = new Set(pb.map((c) => c.join(',')))
+  const around = [0, -1, 1].flatMap((i) => [0, -1, 1].flatMap((j) => [0, -1, 1].map((m) => [i, j, m])))
+  return pa.every((c) => around.some(([i, j, m]) => cells.has(`${c[0] + i},${c[1] + j},${c[2] + m}`)))
 }
 
 /** What is wrong with the result of a shell or an offset (see `Part._checked`), or null. */
@@ -2144,6 +2175,8 @@ function _surfacePoints(body: _Body): number[][] {
   return points.map((p) => Array.from(p))
 }
 
+/** The tools in groups whose members' boxes do not overlap (so that each group can go into one
+ * Boolean); empty tools are left out. */
 function _disjointBatches<B extends _Body>(tools: readonly B[]): B[][] {
   const items: [B, number[]][] = []
   for (const t of tools) {
@@ -2226,7 +2259,7 @@ function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
     const r = kernelCall('distanceTo', () => ext.nearest_points(x._brep, y._brep, start))
     if (r.distance < best) {
       best = r.distance
-      unsettled = r.settled
+      unsettled = r.gain
     }
   }
   const scale = Math.max(ab.diagonal, bb.diagonal, 1)
@@ -2551,36 +2584,35 @@ export class Part extends _Body {
    * uncertain by 1e-2 of its value or more.)
    */
   isValid(): boolean {
-    return this._solidProblem() === null
+    return this._solidProblem(null, true) === null
   }
 
   /** Why this is not a sound solid ("empty", "inside out (negative volume)", "open between its
-   * faces, ...", ...), or null. The volume is integrated coarsely, with the gaps between the faces
-   * (or `volume`, which the caller integrated anyway, is used, and the gaps only if the part was
-   * measured): this catches broken bodies, not small errors. A body found sound is not checked
-   * again. */
-  _solidProblem(volume: number | null = null): string | null {
-    if (this._h.sound) return null
+   * faces, ...", ...), or null: this catches broken bodies, not small errors. The checks of
+   * operations take the sign of the kernel's coarse volume (or of `volume`, which the caller
+   * integrated anyway), and the gaps between the faces only if the part was measured: the gap
+   * measure costs 3 to 6 times as much on curved bodies. With `gaps` (`isValid()`) the part is
+   * measured. A body found sound is not checked again. */
+  _solidProblem(volume: number | null = null, gaps = false): string | null {
+    if (this._h.sound >= (gaps ? _SOUND : _CHECKED)) return null
     let problem = this._shapeProblem()
+    let measured: Any = null
     if (problem === null) {
-      let gaps: number | null = null
-      if (volume === null || this._h.props != null) {
-        let p: Any
-        try {
-          p = volume === null ? this._props(1e-4) : this._h.props // measured already, or now
-        } catch (e) {
-          if (!(e instanceof KernelError)) throw e
-          return 'a body whose volume cannot be integrated'
-        }
-        if (volume === null) volume = Number(p.volume)
-        gaps = Number(p.gaps)
+      try {
+        measured = gaps ? this._props(1e-4) : this._h.props // measured now, or already
+        if (measured != null) volume = Number(measured.volume)
+        else if (volume === null) volume = Number(this._kernelProps(1e-3).volume)
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        return 'a body whose volume cannot be integrated'
       }
+      const v = volume as number
       const tiny = 1e-9 * this._extent() ** 3
-      if (volume < -tiny) problem = 'inside out (negative volume)'
-      else if (!(volume > tiny)) problem = 'without volume' // also a NaN volume
-      else if (gaps !== null && !(gaps < _BROKEN_GAPS)) problem = `open between its faces, so that its volume is uncertain by ${_formatE(gaps, 1)} of its value`
+      if (v < -tiny) problem = 'inside out (negative volume)'
+      else if (!(v > tiny)) problem = 'without volume' // also a NaN volume
+      else if (measured != null && !(measured.gaps < _BROKEN_GAPS)) problem = `open between its faces, so that its volume is uncertain by ${_formatE(measured.gaps, 1)} of its value`
     }
-    this._h.sound = problem === null
+    this._h.sound = problem !== null ? 0 : measured != null ? _SOUND : _CHECKED
     return problem
   }
 
@@ -2669,13 +2701,25 @@ export class Part extends _Body {
         if (!(e instanceof ModelingError)) throw e
         throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${e.message}); ${touching}`)
       }
-      if (!part.isValid()) throw new ModelingError(`cells: a cell is not a sound solid (${part._solidProblem()})`)
+      let problem: string | null
+      try {
+        part._props() // measured for the sum below, so that the check sees the gaps too
+        problem = part._solidProblem()
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        problem = 'a body whose volume cannot be integrated'
+      }
+      if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
       out.push(part)
     }
-    // The cells fill the part: a cell that kept another inside it counts that one twice.
-    const whole: number = this._props().volume
-    const total = out.reduce((sum, c) => sum + (c._props().volume as number), 0)
-    if (!(Math.abs(total - whole) <= 1e-6 * Math.abs(whole))) {
+    // The cells fill the part: a cell that kept another inside it counts that one twice (an insert
+    // of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers, imported parts)
+    // integrate a little differently in the part and in its cells: by up to about their gaps.
+    const p = this._props()
+    const whole = Number(p.volume)
+    const total = out.reduce((sum, c) => sum + Number(c._props().volume), 0)
+    const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...out.map((c) => Number(c._props().gaps))))
+    if (!(Math.abs(total - whole) <= slack * Math.abs(whole))) {
       throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
     }
     return out
@@ -2787,12 +2831,14 @@ export class Part extends _Body {
   _booleanProblem(result: Part, tools: readonly Part[], op: number): string | null {
     if (k.brep_face_count(result._brep) !== 0) {
       const problem = result._shapeProblem()
-      if (problem === null && [this as Part, ...tools].every((x) => x._solidProblem() === null)) {
+      if (problem === null && [this as Part, ...tools].every((x) => x._h.sound >= _TRUSTED || x._solidProblem() === null)) {
         // Closed and manifold, from sound operands. Its volume, which costs up to twice the
-        // Boolean, is not integrated here; isValid() (and the next feature) does. The result is
-        // not taken as sound: it can be inside out or leave a face out.
-        if (op === k.BooleanOp.INTERSECTION) return _intersectionProblem(result, [this as Part, ...tools])
-        return null
+        // Boolean, is not integrated here, so that a chain of Booleans integrates nothing: the next
+        // Boolean trusts it. isValid() and the next feature check it (it can be inside out or leave
+        // a face out).
+        const found = op === k.BooleanOp.INTERSECTION ? _intersectionProblem(result, [this as Part, ...tools]) : null
+        if (found === null) result._h.sound = _TRUSTED
+        return found
       }
       return problem ?? result._solidProblem()
     }
@@ -3059,8 +3105,8 @@ export class Part extends _Body {
    *
    * @param edges Edges of this part (a selection, a single edge, or faces whose edges to round).
    * @param radius Fillet radius. `{ start, end }` varies the radius linearly along each edge
-   *   (circular rounds only, not on closed edges or on edges that run into each other
-   *   tangentially). An array with one radius per edge rounds edges differently.
+   *   (where they differ: circular rounds only, not on closed edges or on edges that run into each
+   *   other tangentially). An array with one radius per edge rounds edges differently.
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
@@ -3070,7 +3116,7 @@ export class Part extends _Body {
     const list = Array.isArray(radius) || ArrayBuffer.isView(radius) ? Array.from(radius as ArrayLike<number>, Number) : null
     const given = varying ? [varying.start, varying.end].map(Number) : list ?? [Number(radius)]
     if (given.some((r) => !(r > 0))) throw new RangeError('fillet: the radius must be positive')
-    if (varying && continuity != null) {
+    if (varying && continuity != null && given[0] !== given[1]) {
       // the kernel makes a ruled chamfer of it, not tangent to the faces
       throw new RangeError('fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius')
     }
@@ -3169,6 +3215,13 @@ export class Part extends _Body {
    * Hollow the part out to walls of `thickness`, removing the `openings` faces.
    *
    * The walls grow inward (the outside keeps its size) unless `outward` is true.
+   *
+   * Walls that do not fit into the part (measured across it from each face), and results the
+   * kernel gets wrong (faces that do not meet, no cavity, the part given back, a closed shell of the
+   * wrong volume), throw a ModelingError. The kernel step runs in the probe worker (a kernel of its
+   * own; on a page's main thread in this one), so that a crash of its offset code throws a
+   * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
+   * raises it for large parts).
    */
   shell(thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
     _opts('Part.shell', options)
@@ -3366,7 +3419,11 @@ export class Part extends _Body {
   }
 
   /** Grow (positive) or shrink (negative) the part by `distance` everywhere (0 gives an equal
-   * copy). */
+   * copy).
+   *
+   * Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) throw a
+   * ModelingError. The kernel step runs in the probe worker and is stopped after `GUARD_SECONDS`
+   * (20 s), as for `shell`. */
   offset(distance: number): Part {
     this._requireValid('offset')
     const d = Number(distance)
@@ -3466,7 +3523,13 @@ export class Part extends _Body {
     if (!k.brep_is_manifold_solid(this._brep)) {
       // The kernel sections the whole body, where a face between two cells bounds both: the region
       // of a cell inside another was dropped, or the section failed.
-      const cells = this.cells()
+      let cells: ShapeList<Part>
+      try {
+        cells = this.cells()
+      } catch (e) {
+        if (!(e instanceof ModelingError) || e instanceof KernelError) throw e
+        throw new ModelingError(`section: ${e.message}`)
+      }
       if (cells.length > 1) {
         const regions: Face[] = []
         for (const cell of cells) {
@@ -3862,7 +3925,10 @@ export class Shell extends _Body {
 
   /** Turn the sheet into a solid of `thickness` (along the face normals; a negative thickness
    * grows against them). With `both` the solid is `thickness` thick in total, half of it to each
-   * side of the sheet. */
+   * side of the sheet.
+   *
+   * The kernel step runs in the probe worker, so that a crash of its offset code throws a
+   * ModelingError, and is stopped after `GUARD_SECONDS` (20 s), as for `Part.shell`. */
   thicken(thickness: number, options: { both?: boolean } = {}): Part {
     _opts('Shell.thicken', options)
     const d = Number(thickness)
@@ -4013,11 +4079,23 @@ export class Sketch extends Shell {
       } else {
         b = pieces[0] as number
       }
+      // The kernel changes a and deletes b when it succeeds with a region, and keeps both when it
+      // fails or the region is empty: the handles hold them until then.
+      const ha = new BrepHandle(a as number)
+      const hb = new BrepHandle(b)
       try {
-        const result = kernelCall(name, () => this._like(k.boolean_2d(a, b, { operation: op }))) // consumes a and b
-        if (this._boolean2dPlausible(tools, result, op)) return result
+        const made: number = kernelCall(name, () => k.boolean_2d(ha.brep, hb.brep, { operation: op }))
+        if (made) {
+          ha.release()
+          hb.release()
+          const result = this._like(made) // (a, changed)
+          if (this._boolean2dPlausible(tools, result, op)) return result
+        }
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
+      } finally {
+        ha.dispose()
+        hb.dispose()
       }
     } else {
       for (const x of [a, ...pieces]) if (x !== null) ext.delete_brep(x)
@@ -4102,6 +4180,41 @@ export class Sketch extends Shell {
         owner.push(n)
       }
     })
+    const wrong = (): ModelingError =>
+      new ModelingError(
+        `${name}: the sketches have faces that touch each other at a point, as at ${_fmtPoint(contact)}, and the kernel's planar Boolean gives a wrong region there (checked against the overlaps of the faces); move one of the shapes that make those faces a little, so that no two faces meet at a single point`,
+      )
+    let box = this.bbox() // (the loose boxes of planar faces can be far larger than the faces)
+    for (const t of tools) box = box.union(t.bbox())
+    const ref = box.center
+    const measure = (sketches: Iterable<Sketch>): number[] =>
+      kernelCall(name, () => {
+        const total = [0, 0, 0, 0]
+        for (const s of sketches) {
+          for (const f of s.faces()) {
+            const a = f.area
+            const m = f.center().sub(ref).mul(a)
+            total[0] += a
+            total[1] += m.x
+            total[2] += m.y
+            total[3] += m.z
+          }
+        }
+        return total
+      })
+    // (a face that cannot be measured: the kernel's regions are wrong)
+    const measured = <T>(fn: () => T): T => {
+      try {
+        return fn()
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        throw wrong()
+      }
+    }
+    const areas = measured(() => [...own, ...other].map((f) => measure([f])[0]))
+    // The areas to 1e-7 of the operands' (the kernel's own are exact to about 1e-12 on lines and
+    // 1e-10 on arcs), the first moments to that times the size.
+    const tol = 1e-7 * areas.reduce((sum, a) => sum + a, 0) + 1e-12
     const common = new Map<string, [number, number, Sketch]>()
     own.forEach((f, i) => {
       other.forEach((g, j) => {
@@ -4112,28 +4225,18 @@ export class Sketch extends Shell {
       })
     })
     const pairs = [...common.values()]
-    let box = this._looseBox()
-    for (const t of tools) box = box.union(t._looseBox())
-    const ref = box.center
-    const tol = 1e-7 * box.diagonal ** 2 + 1e-12
+    // (an overlap larger than one of its two faces is wrong)
+    if (measured(() => pairs.some(([i, j, piece]) => measure([piece])[0] > Math.min(areas[i], areas[own.length + j]) + tol))) throw wrong()
 
-    const measure = (sketches: Iterable<Sketch>): number[] => {
-      const total = [0, 0, 0, 0]
-      for (const s of sketches) {
-        for (const f of s.faces()) {
-          const a = f.area
-          const m = f.center().sub(ref).mul(a)
-          total[0] += a
-          total[1] += m.x
-          total[2] += m.y
-          total[3] += m.z
-        }
-      }
-      return total
-    }
     const minus = (a: number[], b: number[]): number[] => a.map((x, i) => x - b[i])
     const holds = (result: Sketch, want: number[]): boolean => {
-      const got = minus(measure([result]), want)
+      let got: number[]
+      try {
+        got = minus(measure([result]), want)
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        return false // a face of the result is broken: it does not hold
+      }
       return Math.abs(got[0]) <= tol && Math.hypot(got[1], got[2], got[3]) <= tol * box.diagonal
     }
     const first = (ways: Array<() => Sketch>, want: number[]): Sketch => {
@@ -4147,9 +4250,7 @@ export class Sketch extends Shell {
         }
         if (holds(result, want)) return result
       }
-      throw new ModelingError(
-        `${name}: the sketches have faces that touch each other at a point, as at ${_fmtPoint(contact)}, and the kernel's planar Boolean gives a wrong region there (checked against the overlaps of the faces); move one of the shapes that make those faces a little, so that no two faces meet at a single point`,
-      )
+      throw wrong()
     }
     // Pieces that do not overlap, joined by unions so that they share their vertices as the
     // kernel's own regions do (pieces that merely lie side by side do not extrude).
@@ -4197,27 +4298,30 @@ export class Sketch extends Shell {
         return cut(f, whole, js.map((j) => other[j]), js.map((j) => common.get(`${i},${j}`)![2]))
       })
 
-    if (op === k.BooleanOp2D.INTERSECTION) return assembled(pairs.map(([, , p]) => p))
-    if (op === k.BooleanOp2D.DIFFERENCE) return assembled(mine())
-    const operands = measure([this, ...tools])
-    const whole = minus(operands, measure(pairs.map(([, , p]) => p)))
-    if (op === k.BooleanOp2D.UNION) {
-      const tool = tools.length === 1 ? tools[0] : this._combined(tools)
-      return first(
-        [
-          () => this._boolean2dWith(tools, op, name, false),
-          () => assembled([...mine(), ...other]),
-          () => this._slabOrEmpty(tool, op, name),
-        ],
-        whole,
-      )
+    const run = (): Sketch => {
+      if (op === k.BooleanOp2D.INTERSECTION) return assembled(pairs.map(([, , p]) => p))
+      if (op === k.BooleanOp2D.DIFFERENCE) return assembled(mine())
+      const operands = measure([this, ...tools])
+      const whole = minus(operands, measure(pairs.map(([, , p]) => p)))
+      if (op === k.BooleanOp2D.UNION) {
+        const tool = tools.length === 1 ? tools[0] : this._combined(tools)
+        return first(
+          [
+            () => this._boolean2dWith(tools, op, name, false),
+            () => assembled([...mine(), ...other]),
+            () => this._slabOrEmpty(tool, op, name),
+          ],
+          whole,
+        )
+      }
+      // exclusive or: what is in one sketch only, from either side
+      const theirs = other.map((g, j) => {
+        const is = pairs.filter(([, b]) => b === j).map(([i]) => i)
+        return cut(g, [this], is.map((i) => own[i]), is.map((i) => common.get(`${i},${j}`)![2]))
+      })
+      return first([() => assembled([...mine(), ...theirs])], minus(whole, measure(pairs.map(([, , p]) => p))))
     }
-    // exclusive or: what is in one sketch only, from either side
-    const theirs = other.map((g, j) => {
-      const is = pairs.filter(([, b]) => b === j).map(([i]) => i)
-      return cut(g, [this], is.map((i) => own[i]), is.map((i) => common.get(`${i},${j}`)![2]))
-    })
-    return first([() => assembled([...mine(), ...theirs])], minus(whole, measure(pairs.map(([, , p]) => p))))
+    return measured(run) // (a face that cannot be measured, or a kernel call outside the ways)
   }
 
   /** A cheap check of a union or exclusive or: its area is at least the larger operand's (minus

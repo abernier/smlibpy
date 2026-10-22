@@ -958,7 +958,7 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
       () => k.sheetmetal.unbend(work._brep, g.angle, g.radius, kFactor, sheet, g.origin.toArray(), g.axis.toArray(), g.mid.toArray(), g.length, anchor),
       hint,
     )
-    work._h.sound = false
+    work._h.sound = 0 // changed in place: checked again below
     if (stayed === 0) throw new ModelingError(`${what}: the fixed face is not on either side of a bend; ${hint}`)
     // Where the bend's strip lies now: from the neutral fiber at the end that stayed, half the
     // allowance into the strip. Later unbends (farther from the fixed face) do not move it.
@@ -996,7 +996,6 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
   if (!_volumeAgrees(work, expected, volume)) {
     throw new ModelingError(`${what}: the unfolded part has the volume ${_formatG(_volume(work), 9)}, expected ${_formatG(expected, 9)}; ${hint}`)
   }
-  work._h.sound = true
   return { part: work, base: baseFace, bends: done, thickness, kFactor }
 }
 

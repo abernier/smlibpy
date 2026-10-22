@@ -10,6 +10,7 @@ import pytest
 from pytest import approx
 
 from smlibpy import *
+from smlibpy import shapes
 from smlibpy._kernel import k
 from smlibpy.shapes import Part
 
@@ -211,7 +212,8 @@ def test_rounds_that_crashed_the_kernel_raise():
     # edge per kernel call, with edges taken before the first call replaced it: exit 139.
     # The two halves of a box edge that a cone touches tangentially: the kernel has no corner for
     # where they meet, went on, and called corner methods on what it held in the corner's place
-    # (exit 139 at any radius). The same for all edges of upstream's revolution_mold.smb.
+    # (exit 139 at any radius). The same for all edges of upstream's revolution_mold.smb, where the
+    # submodule's test files are checked out.
     mold = Path(__file__).resolve().parent.parent / "third_party/usd-brep/TestFiles/pt_TestFiles/Solids/revolution_mold.smb"
     code = f"""
 import warnings
@@ -221,8 +223,11 @@ p = RegularPolygon(10, 6).extrude(10)
 print(len(p.chamfer(p.edges(), 1).faces()), flush=True)
 p = Box(10, 5, 20) - Cone(4, 5, 20)
 halves = p.edges().filter(lambda e: abs(e.center().x - 5) < 1e-6 and abs(e.center().z - 10) < 1e-6)
-mold = load({str(mold)!r})
-for make in (lambda: p.fillet(halves, 0.1), lambda: p.fillet(halves, 0.02), lambda: mold.fillet(mold.edges(), 0.2)):
+makes = [lambda: p.fillet(halves, 0.1), lambda: p.fillet(halves, 0.02)]
+if {mold.is_file()!r}:
+    mold = load({str(mold)!r})
+    makes.append(lambda: mold.fillet(mold.edges(), 0.2))
+for make in makes:
     try:
         make()
         print("ok", flush=True)
@@ -231,7 +236,7 @@ for make in (lambda: p.fillet(halves, 0.1), lambda: p.fillet(halves, 0.02), lamb
 """
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, f"exit {run.returncode} after {run.stdout.split()}"
-    assert run.stdout.split() == ["38"] + ["SM_ERR_INVALID_INPUT"] * 3
+    assert run.stdout.split() == ["38"] + ["SM_ERR_INVALID_INPUT"] * (3 if mold.is_file() else 2)
     p = RegularPolygon(10, 6).extrude(10)
     hexagon = p.chamfer(p.edges(), 1)
     assert hexagon.is_valid() and hexagon.volume == approx(2516.827500047, rel=1e-9)  # OpenCASCADE
@@ -250,6 +255,10 @@ def test_a_variable_radius_runs_along_each_edge_on_its_own():
     for continuity in ("G1", "G2", "G3"):  # gave the ruled chamfer (173.3333 removed), not a blend
         with pytest.raises(ValueError, match="circular rounds only"):
             box.fillet(edge, (2, 6), continuity=continuity)
+    # a constant one makes the blend, as the plain radius does
+    vertical = box.edges().parallel_to(Z)
+    blend = box.fillet(vertical, 2, continuity="G2").volume
+    assert box.fillet(vertical, (2, 2), continuity="G2").volume == approx(blend, rel=1e-9)
     # A closed edge: the radius rose to 2.9 and fell back to 1 at the seam.
     cylinder = Cylinder(10, 20)
     rim = cylinder.edges().circles().sort_by(Z)[-1]
@@ -403,12 +412,24 @@ def test_an_empty_cut_needs_tools_that_can_cover_the_part():
     assert (Sphere(20) - [Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume == approx(28160.608174, rel=1e-8)
 
 
-def test_an_intersection_may_give_an_operand_back_when_the_other_contains_it():
+def test_an_intersection_may_give_an_operand_back_when_the_other_contains_it(monkeypatch):
     box = Box(10, 10, 10)
     assert (box & Box(20, 20, 20)).volume == approx(1000)
     assert (box & Box(10, 10, 20)).volume == approx(1000)  # faces shared
     assert (Sphere(5) & Box(20, 20, 20)).volume == approx(4 / 3 * math.pi * 125)
     assert (Box(30, 30, 30) & Sphere(20)).volume == approx((Sphere(20) & Box(30, 30, 30)).volume)
+    # A body given back unchanged is classified against the other operand: a box whose corners lie
+    # outside a sphere, though inside its box.
+    sphere, cube = Sphere(10), Box(14, 14, 14)
+    assert shapes._intersection_problem(Part._wrap(cube._copy_brep()), [cube, sphere]) is not None
+    # A split keeps the part's face count and loose box, but not its vertices: not classified.
+    classified = []
+    classify = Part._classify
+    monkeypatch.setattr(Part, "_classify", lambda self, *a: classified.append(1) or classify(self, *a))
+    coil = sweep(Circle(1.2), Helix(pitch=6, height=48, radius=10))
+    kept = coil.split(Plane.XY.offset(1.2))
+    assert kept.volume == approx(coil.volume - (coil - kept).volume)
+    assert classified == []
 
 
 def test_boolean_results_are_checked_when_asked():
@@ -428,6 +449,22 @@ def test_boolean_results_are_checked_when_asked():
     assert (Box(20, 20, 20) - Cylinder(5, 30)).is_valid()
 
 
+def test_chains_of_booleans_integrate_nothing(monkeypatch):
+    # A Boolean of sound operands is trusted by the next Boolean; is_valid() integrates when asked.
+    # When each result was integrated (with its gaps) as the next operand, 100 cuts took 5 times as
+    # long.
+    measured = []
+    measure = shapes.ext.brep_measure
+    monkeypatch.setattr(shapes.ext, "brep_measure", lambda *a: measured.append(1) or measure(*a))
+    p = Box(200, 200, 10)
+    for i in range(60):
+        p = p - Cylinder(2, 20).translate(-90 + 20 * (i % 10), -90 + 20 * (i // 10), 0)
+    p = p + Box(10, 10, 10).translate(0, 0, 10)
+    assert measured == []
+    assert p.is_valid() and len(measured) == 1
+    assert p.volume == approx(200 * 200 * 10 - 60 * math.pi * 4 * 10 + 1000, rel=1e-9) and len(measured) == 2
+
+
 @pytest.mark.xfail(strict=True, reason="kernel plan B6: a primitive's seam line in a tangent plane of the other operand")
 @pytest.mark.parametrize("cut, exact", [
     (lambda: (Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0), 24299.258668),
@@ -438,6 +475,7 @@ def test_holes_tangent_to_a_seam(cut, exact):
     assert cut().volume == approx(exact, rel=1e-7)  # 24331.7029 and 7057.1895, both valid
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="reads the process's memory with ps")
 def test_failed_booleans_free_their_operands():
     # The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.6 MB
     # per failed cut. In a process of its own, so that what other tests left does not count.
@@ -472,22 +510,24 @@ def test_booleans_that_read_freed_kernel_memory_raise():
     # Crossing holes whose seams lie tangent to the other hole: SplitIntersectingProtoEdges split a
     # ProtoEdge it had just deleted (now: SM_ERR_BAD_INTERSECTIONS). A flat end cap tangent to a
     # sphere: the Boolean deleted a Shell that Faces still used (DeleteFaces), and BooleanPostProcess
-    # read it. The shell of a rotated box: BooleanPostProcess read a deleted Vertex, in one call of
-    # four or so (40 calls).
+    # read it. The extended shell of a rotated box: BooleanPostProcess read a deleted Vertex, in
+    # about one call of a hundred; the kernel's shell itself, 100 times (shell() measures the walls
+    # first and runs the kernel in a copy of the process, so it would not reach or show this).
     code = """
 import warnings
 warnings.simplefilter("ignore")
 from smlibpy import *
+from smlibpy._kernel import k
 h1 = Cylinder(3, 40).translate(0, 3, 0)
 cases = []
 for z in (3, 3.1):
     h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
-    cases += [lambda: Box(20, 20, 20) - h1 - h2, lambda: Box(20, 20, 20) - [h1, h2], lambda: h1 + h2,
-              lambda: h1 & h2, lambda: h1.merge(h2)]
+    cases += [lambda h2=h2: Box(20, 20, 20) - h1 - h2, lambda h2=h2: Box(20, 20, 20) - [h1, h2],
+              lambda h2=h2: h1 + h2, lambda h2=h2: h1 & h2, lambda h2=h2: h1.merge(h2)]
 cases.append(lambda: Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504))
 box = Box(40, 30, 10).rotate(X, 45)
 opening = box.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1]
-cases += [lambda: box.shell(10, opening)] * 40
+cases += [lambda: Part._wrap(k.shell_brep(box._brep, -10, extended_offset=True, faces_to_shell=[opening._f]))] * 100
 for case in cases:
     try:
         case()
@@ -496,12 +536,14 @@ for case in cases:
         print("KernelError", flush=True)
     except ModelingError:
         print("ModelingError", flush=True)
+    except RuntimeError:  # (the kernel's shell, called directly)
+        print("failed", flush=True)
 """
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} cases"
     out = run.stdout.split()
     assert out[:11] == ["KernelError"] * 11  # the crossing holes and the end cap
-    assert len(out) == 51
+    assert len(out) == 111 and set(out[11:]) <= {"ok", "failed"}  # the shells: some fail, none crash
     assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
         14.137072, rel=1e-6)  # the same pair's intersection works
 

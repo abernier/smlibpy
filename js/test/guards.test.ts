@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import {
   Align,
   Axis,
@@ -11,6 +12,7 @@ import {
   Cone,
   Cylinder,
   GridLocations,
+  Helix,
   Hole,
   KernelError,
   Location,
@@ -34,9 +36,9 @@ import {
   surface,
   sweep,
 } from '../src/index.ts'
-import { k } from '../src/kernel.ts'
+import { ext, k } from '../src/kernel.ts'
 import { setGuardSeconds } from '../src/defeature.ts'
-import { _offsetProblem } from '../src/shapes.ts'
+import { _intersectionProblem, _offsetProblem } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
 
 // biome-ignore lint: test helpers
@@ -342,17 +344,23 @@ test('rounds that crashed the kernel throw', () => {
   // edge per kernel call, with edges taken before the first call replaced it (natively the process
   // died). The two halves of a box edge that a cone touches tangentially: the kernel has no corner
   // for where they meet, went on, and called corner methods on what it held in the corner's place
-  // (the module trapped at any radius). The same for all edges of upstream's revolution_mold.smb.
+  // (the module trapped at any radius). The same for all edges of upstream's revolution_mold.smb,
+  // where the submodule's test files are checked out.
   const src = new URL('../src/', import.meta.url).href
   const mold = new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/Solids/revolution_mold.smb', import.meta.url).pathname
+  const withMold = existsSync(mold)
   const code = `
     import { Box, Cone, RegularPolygon, load } from '${src}index.ts'
     let p = RegularPolygon(10, 6).extrude(10)
     const out = [String(p.chamfer(p.edges(), 1).faces().length)]
     p = Box(10, 5, 20).cut(Cone(4, 5, 20))
     const halves = p.edges().filter((e) => Math.abs(e.center().x - 5) < 1e-6 && Math.abs(e.center().z - 10) < 1e-6)
-    const mold = load(${JSON.stringify(mold)})
-    for (const make of [() => p.fillet(halves, 0.1), () => p.fillet(halves, 0.02), () => mold.fillet(mold.edges(), 0.2)]) {
+    const makes = [() => p.fillet(halves, 0.1), () => p.fillet(halves, 0.02)]
+    if (${withMold}) {
+      const mold = load(${JSON.stringify(mold)})
+      makes.push(() => mold.fillet(mold.edges(), 0.2))
+    }
+    for (const make of makes) {
       try {
         make()
         out.push('ok')
@@ -364,7 +372,7 @@ test('rounds that crashed the kernel throw', () => {
   `
   const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
   assert.equal(run.status, 0, run.stderr)
-  assert.deepEqual(run.stdout.trim().split(' '), ['38', ...Array(3).fill('SM_ERR_INVALID_INPUT')])
+  assert.deepEqual(run.stdout.trim().split(' '), ['38', ...Array(withMold ? 3 : 2).fill('SM_ERR_INVALID_INPUT')])
   const p = RegularPolygon(10, 6).extrude(10)
   const hexagon = p.chamfer(p.edges(), 1)
   assert.ok(hexagon.isValid())
@@ -384,6 +392,9 @@ test('a variable radius runs along each edge on its own', () => {
     // gave the ruled chamfer (173.3333 removed), not a blend
     throwsMatching(() => box.fillet(edge, { start: 2, end: 6 }, { continuity }), RangeError, /circular rounds only/)
   }
+  // a constant one makes the blend, as the plain radius does
+  const vertical = box.edges().parallelTo(Z)
+  approx(box.fillet(vertical, { start: 2, end: 2 }, { continuity: 'G2' }).volume, box.fillet(vertical, 2, { continuity: 'G2' }).volume, 1e-9)
   // A closed edge: the radius rose to 2.9 and fell back to 1 at the seam.
   const cylinder = Cylinder(10, 20)
   const rim = cylinder.edges().circles().sortBy(Z).last
@@ -532,6 +543,26 @@ test('an intersection may give an operand back when the other contains it', () =
   approx(box.intersect(Box(10, 10, 20)).volume, 1000) // faces shared
   approx(Sphere(5).intersect(Box(20, 20, 20)).volume, (4 / 3) * PI * 125)
   approx(Box(30, 30, 30).intersect(Sphere(20)).volume, Sphere(20).intersect(Box(30, 30, 30)).volume)
+  // A body given back unchanged is classified against the other operand: a box whose corners lie
+  // outside a sphere, though inside its box.
+  const sphere = Sphere(10)
+  const cube = Box(14, 14, 14)
+  assert.notEqual(_intersectionProblem(Part._wrap(cube._copyBrep()), [cube, sphere]), null)
+  // A split keeps the part's face count and loose box, but not its vertices: not classified.
+  let classified = 0
+  const classify = Part.prototype._classify
+  Part.prototype._classify = function (this: Part, ...args: Any[]) {
+    classified++
+    return classify.apply(this, args as Any)
+  }
+  try {
+    const coil = sweep(Circle(1.2), Helix(6, 48, 10)) as Part
+    const kept = coil.split(Plane.XY.offset(1.2))
+    approx(kept.volume, coil.volume - coil.cut(kept).volume)
+    assert.equal(classified, 0)
+  } finally {
+    Part.prototype._classify = classify
+  }
 })
 
 test('Boolean results are checked when asked', () => {
@@ -549,15 +580,40 @@ test('Boolean results are checked when asked', () => {
   assert.ok(Box(20, 20, 20).cut(Cylinder(5, 30)).isValid())
 })
 
+test('chains of Booleans integrate nothing', () => {
+  // A Boolean of sound operands is trusted by the next Boolean; isValid() integrates when asked. When
+  // each result was integrated (with its gaps) as the next operand, 100 cuts took 5 times as long.
+  let measured = 0
+  const measure = ext.brep_measure
+  ext.brep_measure = (...args: Any[]) => {
+    measured++
+    return measure(...args)
+  }
+  try {
+    let p = Box(200, 200, 10)
+    for (let i = 0; i < 60; i++) p = p.cut(Cylinder(2, 20).translate(-90 + 20 * (i % 10), -90 + 20 * Math.floor(i / 10), 0))
+    p = p.fuse(Box(10, 10, 10).translate(0, 0, 10))
+    assert.equal(measured, 0)
+    assert.ok(p.isValid())
+    assert.equal(measured, 1)
+    approx(p.volume, 200 * 200 * 10 - 60 * PI * 4 * 10 + 1000, 1e-9)
+    assert.equal(measured, 2)
+  } finally {
+    ext.brep_measure = measure
+  }
+})
+
 const seamHoles: [string, () => Part, number][] = [
   ['groove pin', () => Box(30, 30, 30).cut(Cylinder(5, 60)).cut(Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)), 24299.258668],
   ['cross holes', () => Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0)).cut(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), 6931.747603],
 ]
 for (const [name, cut, exact] of seamHoles) {
   // kernel plan B6: a primitive's seam line in a tangent plane of the other operand (24364.1472 and
-  // 7057.1895 here, both valid)
-  test(`holes tangent to a seam: ${name}`, { todo: 'kernel plan B6' }, () => {
-    approx(cut().volume, exact, 1e-7)
+  // 6994.4685 here, both valid). Expected to be wrong, as Python's strict xfail: once it is right,
+  // this fails, to be turned into a test of the right volume.
+  test(`holes tangent to a seam: ${name} (still wrong)`, () => {
+    const volume = cut().volume
+    assert.ok(Math.abs(volume - exact) > 1e-7 * exact, `${volume}: kernel plan B6 is fixed; test for ${exact} here`)
   })
 }
 
@@ -600,27 +656,33 @@ test('Booleans that read freed kernel memory throw', () => {
   // Each of these read freed memory in the kernel (natively the process died). Crossing holes whose
   // seams lie tangent to the other hole: SplitIntersectingProtoEdges split a ProtoEdge it had just
   // deleted. A flat end cap tangent to a sphere: the Boolean deleted a Shell that Faces still used,
-  // and the module trapped. The shell of a rotated box: BooleanPostProcess read a deleted Vertex.
-  // In a process of its own, so that a trap does not leave this one's kernel damaged.
+  // and the module trapped. The extended shell of a rotated box: BooleanPostProcess read a deleted
+  // Vertex, natively in about one call of a hundred; the kernel's shell itself, 100 times (shell()
+  // measures the walls first and runs the kernel in the probe worker, so it would not reach or show
+  // this). In a process of its own, so that a trap does not leave this one's kernel damaged.
   const src = new URL('../src/', import.meta.url).href
   const code = `
-    import { Axis, Box, Cylinder, Sphere, X, Y } from '${src}index.ts'
+    import { Axis, Box, Cylinder, Part, Sphere, X, Y } from '${src}index.ts'
+    import { k } from '${src}kernel.ts'
     const h1 = Cylinder(3, 40).translate(0, 3, 0)
     const cases = []
     for (const z of [3, 3.1]) {
       const h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
-      cases.push(() => Box(20, 20, 20).cut(h1).cut(h2), () => Box(20, 20, 20).cut([h1, h2]), () => h1.fuse(h2), () => h1.merge(h2))
+      cases.push(() => Box(20, 20, 20).cut(h1).cut(h2), () => Box(20, 20, 20).cut([h1, h2]), () => h1.fuse(h2),
+        () => h1.intersect(h2), () => h1.merge(h2))
     }
     cases.push(() => Sphere(1.5).rotate(Y, 90).cut(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)))
     const box = Box(40, 30, 10).rotate(X, 45)
     const opening = box.faces().sortBy(new Axis([0, 0, 0], [0, -1, 1])).at(-1)
-    for (let i = 0; i < 40; i++) cases.push(() => box.shell(10, opening))
+    for (let i = 0; i < 100; i++) {
+      cases.push(() => Part._wrap(k.shell_brep(box._brep, -10, { extended_offset: true, faces_to_shell: [opening._f] })))
+    }
     const out = cases.map((c) => {
       try {
-        c()
-        return 'ok'
+        const r = c()
+        return r.isValid() ? 'ok:' + r.volume.toFixed(3) : 'ok'
       } catch (e) {
-        return /crashed/.test(e.message + (e.detail ?? '')) ? 'crashed' : e.constructor.name
+        return /crashed/.test(e.message + (e.detail ?? '')) || e instanceof WebAssembly.RuntimeError ? 'crashed' : e.constructor.name
       }
     })
     console.log(out.join(' '))
@@ -628,8 +690,12 @@ test('Booleans that read freed kernel memory throw', () => {
   const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
   assert.equal(run.status, 0, run.stderr)
   const out = run.stdout.trim().split(' ')
-  assert.deepEqual(out.slice(0, 9), Array(9).fill('KernelError')) // the end cap, the last, trapped
-  assert.equal(out.length, 49)
+  // The intersection of the crossing holes is right here (OpenCASCADE: 62.7209), where smlibpy's
+  // native kernel raises KernelError (SM_ERR_BAD_INTERSECTIONS): the two builds take different paths
+  // through the curve intersector there. The others raise plain SM_ERR here.
+  const holes = ['KernelError', 'KernelError', 'KernelError', 'ok:62.721', 'KernelError']
+  assert.deepEqual(out.slice(0, 11), [...holes, ...holes, 'KernelError']) // the end cap, the last, trapped
+  assert.equal(out.length, 111)
   assert.ok(!out.includes('crashed'), out.join(' '))
   approx(Sphere(1.5).rotate(Y, 90).intersect(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume, 14.137072, 1e-6)
 })

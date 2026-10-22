@@ -641,7 +641,7 @@ def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any],
         try:
             with kernel_call("import STEP: cavities"):
                 part = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
-            if part.is_valid() and abs(part.volume - expected) <= 1e-6 * max(abs(outer.volume), 1.0):
+            if part._solid_problem() is None and abs(part.volume - expected) <= 1e-6 * max(abs(outer.volume), 1.0):
                 return part
         except (KernelError, ModelingError):
             pass
@@ -679,7 +679,7 @@ def _with_seams(body: Any) -> Any:
         with kernel_call("import STEP: seams"):
             ext.seam_problems(fixed._brep, True, lacking)
         # a sheet cannot be checked for closure: it keeps the kernel's seams
-        if not isinstance(fixed, Part) or (fixed.is_valid() and _positive(fixed)):
+        if not isinstance(fixed, Part) or (fixed._solid_problem() is None and _positive(fixed)):
             return fixed
     except KernelError:
         pass
@@ -787,7 +787,7 @@ def _turned(links: dict[int, list[tuple[int, bool]]]) -> list[int] | None:
 
 def _sound(part: Any) -> bool:
     try:
-        return bool(part.is_valid()) and part._kernel_props(1e-4)["volume"] > 0
+        return part._solid_problem() is None and part._kernel_props(1e-4)["volume"] > 0
     except KernelError:
         return False
 

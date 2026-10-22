@@ -870,7 +870,7 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
     let part: Part | null = null
     try {
       part = kernelCall('import STEP: cavities', () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids))))
-      if (part.isValid() && Math.abs(part.volume - expected) <= 1e-6 * Math.max(Math.abs(outer.volume), 1.0)) return part
+      if (part._solidProblem() === null && Math.abs(part.volume - expected) <= 1e-6 * Math.max(Math.abs(outer.volume), 1.0)) return part
     } catch (e) {
       if (!(e instanceof ModelingError)) throw e // (a KernelError is one)
     }
@@ -910,7 +910,7 @@ function _withSeams<B extends Part | Shell>(body: B): B {
     fixed = copy
     kernelCall('import STEP: seams', () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
     // (a sheet cannot be checked for closure: it takes the kernel's seams)
-    if (!(copy instanceof Part) || (copy.isValid() && _positive(copy))) {
+    if (!(copy instanceof Part) || (copy._solidProblem() === null && _positive(copy))) {
       body.dispose()
       return copy
     }
@@ -1031,7 +1031,7 @@ function _turned(links: Map<number, [number, boolean][]>): number[] | null {
 
 function _sound(part: Part): boolean {
   try {
-    return Boolean(part.isValid()) && part._kernelProps(1e-4).volume > 0
+    return part._solidProblem() === null && part._kernelProps(1e-4).volume > 0
   } catch (e) {
     if (e instanceof KernelError) return false
     throw e

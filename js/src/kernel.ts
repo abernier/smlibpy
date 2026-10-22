@@ -49,7 +49,7 @@ const OWN: Record<string, Signature> = {
   'ext.vertex_indices': ['brep', 'vertices'],
   'ext.copy_with_map': ['brep', ['faces', []], ['edges', []], ['vertices', []]],
   'ext.transform_brep': ['brep', 'matrix'],
-  'ext.boolean': ['brep1', 'brep2', 'operation', ['non_manifold', false]],
+  'ext.boolean': ['brep1', 'brep2', 'operation', ['non_manifold', false], ['imprinting', false]],
   'ext.classify_points': ['brep', 'points', ['tolerance', 0.0]],
   'ext.edge_angles': ['brep', 'edges'],
   'ext.nearest_points': ['a', 'b', 'near_a'],
@@ -184,7 +184,9 @@ function restoring(m: Any, fn: (...args: Any[]) => Any): (...args: Any[]) => Any
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   if (v === null || typeof v !== 'object') return false
   const proto = Object.getPrototypeOf(v)
-  return proto === Object.prototype || proto === null
+  // (also an object literal of another realm, whose Object.prototype is another: from an iframe,
+  // node:vm or a test runner; not an instance of a class, such as a Vector, or an array)
+  return proto === null || (Object.getPrototypeOf(proto) === null && Object.prototype.toString.call(v) === '[object Object]')
 }
 
 /**
@@ -364,12 +366,12 @@ export function _disposed(what: string): TypeError {
 }
 
 /**
- * Owns one kernel Brep and frees it with the last reference. `sound` records that the body was
- * found a sound solid, `props` its integrated mass properties (a body's Brep does not change
- * once wrapped).
+ * Owns one kernel Brep and frees it with the last reference. `sound` records how far the body was
+ * found a sound solid (0: not checked; the levels are in shapes.ts), `props` its integrated mass
+ * properties (a body's Brep does not change once wrapped).
  */
 export class BrepHandle extends Handle {
-  sound = false
+  sound = 0
   props: Any = null
 
   constructor(brep: number) {

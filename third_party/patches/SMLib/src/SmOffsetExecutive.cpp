@@ -1,16 +1,19 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmOffsetExecutive.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-13. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-22. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmOffsetExecutive::RemoveExcessFaces forgets the faces it removes, and their edgeuses, in the
 //   executive's relations (m_vEUToEU, m_vFUToF, m_vEToF, m_vVToF, m_vBlendToFaces). RemoveFaces
 //   deletes them, and what DoExtendedOffset does afterwards read them from the relations after they
 //   were freed: the side walls of lamina edges (BuildSideWallOfEdgeuse) and the merge
 //   (PiecewiseMerge). A sheet whose offset collapses (a half cylinder of radius 10 thickened by
 //   -12) read freed memory natively and trapped in WebAssembly. Found with AddressSanitizer.
-//   SmOffsetExecutive::DoExtendedOffset fails when two faces it extends use one surface, which its
-//   extension of the faces' surfaces cannot handle: an extension it deleted was handed out again
-//   and read (AddressSanitizer: shells of two cones fused at an angle crashed in every run).
+//   SmOffsetExecutive::DoExtendedOffset fails when two faces it extends use one surface, or a face
+//   uses a surface that belongs to another face, which its extension of the faces' surfaces cannot
+//   handle: an extension it deleted was handed out again and read (AddressSanitizer: shells of two
+//   cones fused at an angle crashed in every run).
 //   SmOffsetExecutive::ShellBrep deletes the offset body when ReplaceImplicitOffsets fails.
+// The original notices follow unchanged.
+//
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 

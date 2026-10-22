@@ -59,9 +59,9 @@ val copy_with_map(uintptr_t b, val faces, val edges, val vertices)
 void transform_brep(uintptr_t b, val matrix) { guard([&] { smlibpy::transform_brep(brep(b), numbers(matrix)); }); }
 // As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
 // the caller's (and the kernel's Boolean mark is cleared).
-uintptr_t boolean(uintptr_t brep1, uintptr_t brep2, int operation, bool non_manifold)
+uintptr_t boolean(uintptr_t brep1, uintptr_t brep2, int operation, bool non_manifold, bool imprinting)
 {
-    return guard([&] { return ptr(smlibpy::boolean(brep(brep1), brep(brep2), operation, non_manifold)); });
+    return guard([&] { return ptr(smlibpy::boolean(brep(brep1), brep(brep2), operation, non_manifold, imprinting)); });
 }
 val classify_points(uintptr_t b, val points, double tolerance)
 {
@@ -212,7 +212,7 @@ val nearest_points(uintptr_t a, uintptr_t b, val near_a)
         const smlibpy::NearestPoints r = smlibpy::nearest_points(brep(a), brep(b), numbers(near_a));
         val d = val::object();
         d.set("a", vec3(SmVector3d(r.a[0], r.a[1], r.a[2]))), d.set("b", vec3(SmVector3d(r.b[0], r.b[1], r.b[2])));
-        d.set("distance", r.distance), d.set("converged", r.converged), d.set("settled", r.settled);
+        d.set("distance", r.distance), d.set("converged", r.converged), d.set("gain", r.gain);
         d.set("steps", static_cast<double>(r.steps));
         return d;
     });

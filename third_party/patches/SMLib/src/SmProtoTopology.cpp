@@ -1,6 +1,6 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmProtoTopology.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-13. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-22. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmProtoTopologyManager::~SmProtoTopologyManager cuts the links between ProtoVertices and
 //   ProtoEdges before it deletes them. It deleted the ProtoEdges first, and a ProtoVertex that
 //   still listed one wrote into it (SmProtoEdge::RemoveProtoVertex): a write into freed memory

@@ -198,6 +198,10 @@ def test_sweep_carries_the_profile_along_a_3d_path():
     ring = sweep(Rectangle(4, 1), loop)
     assert ring.is_valid() and len(ring.faces()) == 4 and ring.volume == pytest.approx(4 * loop.length, rel=1e-4)
     assert sweep(Circle(2), loop).volume == pytest.approx(4 * math.pi * loop.length, rel=1e-7)  # (in two halves, as before)
+    # an open profile along a closed edge sweeps into a surface in one go (it was split into halves
+    # and refused: "surface sweeps need a single-edge path")
+    band = sweep(Line((0, 0, 0), (4, 0, 0)), Circle(20).edges()[0])
+    assert isinstance(band, Shell) and band.area == pytest.approx(2 * math.pi * 20 * 4, rel=1e-6)
 
 
 def _unit(v):
@@ -361,6 +365,21 @@ def test_cells_must_fill_the_part(monkeypatch):
         m.cells()
 
 
+def test_cells_of_parts_whose_faces_meet_within_a_tolerance():
+    # A pin with fitted chamfers in a block: the faces leave gaps of about 2e-6 of the volume, so the
+    # part and its cells integrate differently by about as much (444.61541 against 444.61629).
+    # cells() raised that they did not add up, and section() and cell_at() with it.
+    pin = Cylinder(3, 10)
+    m = Box(8, 8, 5).merge(pin.chamfer(pin.edges(), 1))
+    cells = m.cells()
+    assert len(cells) == 4 and sum(c.volume for c in cells) == approx(444.61629, rel=1e-7)
+    assert m.cell_at((0, 0, 0)).volume == approx(45 * math.pi)
+    xy = m.section(Plane.XY)
+    assert len(xy.faces()) == 2 and xy.area == approx(64)
+    wide = Cylinder(10, 20)
+    assert len(Box(30, 30, 10).merge(wide.chamfer(wide.edges(), 3)).cells()) == 4
+
+
 def test_section_of_a_merged_part_has_every_cell():
     m = merge(Box(40, 40, 20), Cylinder(6, 30))
     xy = m.section(Plane.XY)  # was 1 face, 1486.903: the insert's disc was dropped
@@ -376,3 +395,7 @@ def test_section_of_a_merged_part_has_every_cell():
     assert [f.area for f in stack.section(Plane.XY.offset(10)).faces()] == [approx(1600)]
     with pytest.raises(ModelingError, match="split: the part is not a valid solid"):
         m.split(Plane.XZ)  # was KernelError: split failed
+    # an insert that touches the part along a line has no cells (a wrong sketch of 370 for 400 before)
+    touching = Box(20, 20, 20).merge(Cylinder(3, 10).rotate(X, 90).translate(7, 0, 0))
+    with pytest.raises(ModelingError, match="^section: cells: "):
+        touching.section(Plane.XY)

@@ -741,7 +741,7 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
         with kernel_call(what, hint):
             stayed = k.sheetmetal.unbend(work._brep, g.angle, g.radius, k_factor, thickness, g.origin.to_tuple(),
                                          g.axis.to_tuple(), g.mid.to_tuple(), g.length, anchor)
-        work._h.sound = False
+        work._h.sound = 0  # changed in place: checked again below
         if stayed == 0:
             raise ModelingError(f"{what}: the fixed face is not on either side of a bend; {hint}")
         # Where the bend's strip lies now: from the neutral fiber at the end that stayed, half the
@@ -776,7 +776,6 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
     if not _volume_agrees(work, expected, volume):
         raise ModelingError(f"{what}: the unfolded part has the volume {_volume(work):.9g}, expected {expected:.9g}; "
                             f"{hint}")
-    work._h.sound = True
     return _Unfolded(work, base_face, done, thickness, k_factor)
 
 

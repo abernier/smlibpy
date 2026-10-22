@@ -25,10 +25,11 @@ It is the distance between **surfaces**, not between volumes:
 | bodies touching or crossing | 0.0 |
 | one body inside the other, or in a hole | the clearance to the surface (a sphere r2 in a box 10: 3.0) |
 
-So a non-zero distance does not mean "apart": one body may lie inside the other. Above 0 the
-surfaces do not cross, so one point of the other body's surface decides:
-`a.contains(b.faces()[0].interior_point())` (see `classify`). An intersection,
-`len((a & b).faces()) > 0`, tells as well but takes seconds on parts of many faces.
+So a non-zero distance does not mean "apart": one body may lie inside the other, either one.
+Above 0 the surfaces do not cross, so a point of each body's surface decides, in both directions:
+`a.contains(b.faces()[0].interior_point()) or b.contains(a.faces()[0].interior_point())` (see
+`classify`; a sphere r2 in a box 10 is inside the box, the box not inside the sphere). An
+intersection, `len((a & b).faces()) > 0`, tells as well but takes seconds on parts of many faces.
 
 `closest_point` of a point inside returns the nearest surface point
 (`(1, 2, 3)` in a 10 mm box gives `(1, 2, 5)`). For the center of a sphere it returns one of
@@ -64,10 +65,11 @@ print(a.distance_to((0, 0, 30)))         # 25.0
 print(a.closest_point((0, 0, 30)))       # Vector(0, 0, 5)
 print(a.distance_to((1, 2, 3)))          # 2.0: inside the box, distance to its surface
 
-# overlap check: distance_to cannot tell nested from apart, a point of the other body can
+# overlap check: distance_to cannot tell nested from apart, a point of each body can
 inner = Sphere(2)
 print(a.distance_to(inner))              # 3.0 although the sphere is inside
-print(a.contains(inner.faces()[0].interior_point()))   # True: inside, not apart
+nested = lambda p, q: p.contains(q.faces()[0].interior_point()) or q.contains(p.faces()[0].interior_point())
+print(nested(a, inner), nested(inner, a))   # True True: one inside the other, either way round
 
 c1, c2 = Cylinder(5, 20), Cylinder(3, 20).translate(20, 0, 0)
 print(c1.distance_to(c2))                # 12.0: parallel cylinders

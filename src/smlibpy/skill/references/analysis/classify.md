@@ -27,7 +27,8 @@ to keep, and which cell of a merged part holds a point.
   along a face or passes through an edge counts wrongly: from outside `Cylinder(5, 20)` the ray
   from (-10, 5, 0) along X touches the side once (odd, "inside"), and a point in the material
   whose ray is tangent to a hole counts 2 hits ("outside").
-- About 0.01 ms per point on a small part, 0.2 ms on a plate of 200 faces.
+- About 0.03 ms per point on a small part, 0.3 ms on a plate of 50 faces and 0.6 ms on one of
+  100 (points off the surface take several rays, each tested against the faces).
 
 ## Example
 ```python

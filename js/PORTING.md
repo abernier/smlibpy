@@ -46,7 +46,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_opts('Part.fold', options)` (kernel.ts), against `_options.ts`, which
   `tools/gen_js_options.py` makes from Python's signatures (run it after changing one;
   tests/test_js_options.py and js/test/options.test.ts fail until then). Constructors of parts,
-  sketches and patterns pass `arguments.length` too.
+  sketches and patterns pass `arguments.length` too. An options object is a plain object, also
+  one of another realm (an iframe, `node:vm`); an instance of a class is not.
 - **Properties** stay properties (getters): `edge.length`, `face.area`, `part.volume`,
   `face.geomType`, `list.first`. Methods stay methods.
 - **Operators** become methods:
@@ -110,14 +111,14 @@ the Python code works around a kernel defect, so does the TypeScript.
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
-  `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units` with it); `step_import.ts`: `StepModel` (render.ts draws it);
-  `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`,
-  `_translation`, `_reflection`, `_scaling` (the matrices of a move; mesh.ts moves meshes with
-  them);
-  `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them), `_tessellate`
-  (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it),
-  `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill` (its test);
-  `shapes.ts`: `_offsetProblem` (its test).
+  `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
+  with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
+  holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
+  `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
+  `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
+  rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
+  blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
+  (its test).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
   a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
   which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and

@@ -19,10 +19,16 @@ export const PROBE_NAME = 'smlibwasm-probe'
 
 let supervisor: Any = null // the supervisor, while it lives
 let noWorker: string | null = null // why there is no probe worker here, once known
+let missing = false // because its files are missing
 
 /** Why no probe worker can run here (null: it can, or it may not be known yet). */
 export function _noProbe(): string | null {
   return noWorker
+}
+
+/** Whether the probe worker's files are missing (a bundle that left them out). */
+export function _probeMissing(): boolean {
+  return missing
 }
 
 /** The supervisor, started on first use; null where no probe worker can run. */
@@ -34,7 +40,19 @@ export function _probeSupervisor(): Any {
   try {
     if (threads) {
       // (the TypeScript of the repository, or the package's JavaScript)
-      const url = new URL(import.meta.url.endsWith('.ts') ? './_defeature_supervisor.ts' : './_defeature_supervisor.js', import.meta.url)
+      const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
+      const url = new URL(`./_defeature_supervisor${suffix}`, import.meta.url)
+      // A worker whose module is missing (a bundle that left it out) fails only once it loads, while
+      // the first step waits for it: so the files are looked for first.
+      const fs = (globalThis as Any).process.getBuiltinModule('node:fs')
+      for (const name of ['_defeature_supervisor', '_defeature_worker']) {
+        const file = new URL(`./${name}${suffix}`, import.meta.url)
+        if (file.protocol === 'file:' && !fs.existsSync(file)) {
+          noWorker = `no probe worker (${name}${suffix} is missing next to ${new URL('.', import.meta.url).pathname})`
+          missing = true
+          return null
+        }
+      }
       const argv = _workerArgv((globalThis as Any).process.execArgv ?? [])
       let worker: Any
       try {

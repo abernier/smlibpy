@@ -23,8 +23,11 @@ Booleans and cells:
   seeded fuzz runs (2,338 operations) silent wrong Booleans fell from 2.6 % to 0.9 %.
 - `is_valid()` checks Boolean results (B2). They were marked sound when made, so a result of
   volume -776.5, or an intersection of two cylinders larger than its operand, was valid.
-  `is_valid()` now integrates a result once when asked, and is also False for a body whose faces
-  leave gaps that make its volume uncertain by 1e-2 or more. Features refuse such bodies.
+  `is_valid()` now integrates a body once when asked, and is also False for a body whose faces
+  leave gaps that make its volume uncertain by 1e-2 or more. The checks inside operations stay as
+  cheap as they were: a feature takes the sign of the kernel's coarse volume (and the gaps once the
+  body was measured, by `is_valid()` or `volume`), and the next Boolean trusts the result of a
+  Boolean of sound operands, so a chain of Booleans integrates nothing.
 - A cut that the kernel wrongly returns empty, and an intersection that returns a whole operand,
   raise `ModelingError` (B3). `(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0,
   0)` returned `Part(0 faces)` and its `&` the whole holed sphere (29089.8; right: 929.188). The
@@ -36,7 +39,8 @@ Booleans and cells:
 - `cells()` of an insert that touches the part around it at a point is right (B8):
   `Box(20, 20, 20).merge(Sphere(4).translate(6, 0, 0)).cells()` is [7731.917, 268.083], not
   [8000.0, 268.083]. An insert touching along a line raises, and `cells()` checks that the cells
-  add up to the part.
+  add up to the part (within the gaps between its faces, by which fitted chamfers and imported
+  faces make the part and its cells integrate differently).
 - `section()` of a merged part has a region for every cell the plane cuts (B9): the insert's disc
   was dropped (1486.903 instead of 1600), and some planes raised `KernelError`.
 
@@ -45,8 +49,9 @@ Fillets and chamfers:
 - A chamfer of an edge whose faces change their angle along it raises `ModelingError` (F4): the
   setback followed the angle (from 1 to 3 along the edge where a tilted cylinder meets a plate).
   Round such edges with `fillet`.
-- A `(start, end)` radius with `continuity` raises `ValueError` (F3): the kernel made a ruled
-  chamfer, not a blend, for G1, G2 and G3 alike.
+- A `(start, end)` radius whose ends differ, with `continuity`, raises `ValueError` (F3): the
+  kernel made a ruled chamfer, not a blend, for G1, G2 and G3 alike. A constant one, `(2, 2)`,
+  makes the blend, as `2` does.
 - A `(start, end)` radius on a closed edge, or on selected edges that run into each other
   tangentially, raises `ValueError` (F5): the kernel bent the radii (on a cylinder's rim it rose
   to 2.90 and fell back to 1 within the last 3 % of the edge).
@@ -58,8 +63,9 @@ Shell, offset and defeaturing:
   (O2). `(Box(20, 20, 10) - Cylinder(3, 20)).shell(4)` returned the plate itself. Closed shells
   of two imported parts came out near the part's own volume; they now have their cavity.
 - `shell` measures walls across the part, not along the world axes (O4): `Box(40, 30, 10)`
-  turned by 10 or 45 degrees and shelled by 6 gave a valid 10992.0, with no room for two walls. With openings,
-  walls that do not fit raise before the kernel runs; closed shells are checked on their result.
+  turned by 10 or 45 degrees and shelled by 6 gave a valid 10992.0, with no room for two walls.
+  With openings, walls that do not fit raise before the kernel runs; closed shells are checked on
+  their result.
 - `remove_faces` keeps the face its rounds enclose (O5): removing the rounds around a box's top
   gave the box 2 lower (3200.0 instead of 4000.0), and a boss whose rim round alone was selected
   came back 1 lower.
@@ -76,7 +82,8 @@ Sweeps, lofts and sketches:
 - `loft` of single open curves takes `ruled` and `smooth` (S5); both were ignored.
 - 2D Booleans of sketches whose faces touch each other at a point (the faces of `^`) are right or
   raise `ModelingError` (C1). The kernel's planar Boolean misclassified whole faces: against
-  OpenCASCADE, 230 of 560 random results were wrong, now none.
+  OpenCASCADE, 230 of 560 random results were wrong, now none. Each result is checked to 1e-7 of
+  the operands' area, also where a face lies 1000 times its size away.
 
 Surfaces, meshes and measuring:
 
@@ -106,6 +113,9 @@ Topology and files:
   right too.
 - Bodies from other software in a USD file are checked by the kernel before they are measured
   (X6), and bad values are refused (X1): broken bodies imported as valid Parts of the wrong volume.
+  Gaps between faces beyond 1e-3 of the body's size are refused; smaller gaps, and the kernel's
+  other reports (loops turned the wrong way, ...), warn (`RuntimeWarning`), also for usd-brep's own
+  sample files that read silently before; `check=False` reads the bodies without the check.
 - A merged part saved as `.smb` loads with its cells (X8); it came back as a Shell.
 
 smlibwasm (wasm):
@@ -113,6 +123,7 @@ smlibwasm (wasm):
 - Misspelt or Python-spelt options and extra arguments raise `TypeError` (W5): `p.bends({
   k_factor: 0.3 })` used the default K-factor, `Rectangle(20, 10, { filet: 3 })` and
   `Rectangle(20, 10, 3)` dropped the 3. The error names the right key ("did you mean 'kFactor'?").
+  Object literals of another realm (an iframe, `node:vm`) are options as well.
 - `ShapeList.at(point)` raises `TypeError` (W6); it returned the first shape. Use
   `atPoint(point)`.
 - Faces, edges and vertices of a disposed body raise `TypeError` (W4); they answered with another
@@ -122,7 +133,9 @@ smlibwasm (wasm):
 
 - Booleans of crossing holes whose seams lie tangent to the other hole, such as `Box(20, 20, 20)
   - Cylinder(3, 40).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)`, raise
-  `KernelError` (`SM_ERR_BAD_INTERSECTIONS`) instead of killing the process (B4).
+  `KernelError` (`SM_ERR_BAD_INTERSECTIONS`, or `SM_ERR` for some) instead of killing the process
+  (B4). wasm: they raise `SM_ERR`, and the intersection of the two holes gives the right 62.721
+  where smlibpy raises: the two builds take different paths through the curve intersector there.
 - A cut by a flat end cap tangent to a sphere raises `KernelError` instead of killing the process,
   `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` no longer crashes about one run in four, and
   `cells()` no longer crashes on a merge the kernel got wrong (B5).
@@ -153,7 +166,9 @@ smlibwasm (wasm):
 ### Leaks
 
 - A failed Boolean no longer keeps both operands (B7): about 0.6 MB each time; 100 failing cuts
-  now take 7.6 MB instead of 52.9 MB (Node: 3 MB instead of 42 MB).
+  now take 7.6 MB instead of 52.9 MB (Node: 3 MB instead of 42 MB). Nor does it leave the
+  kernel's mark that a Boolean is running, which keeps the kernel from building surface caches;
+  also for the imprints of `deform`. 2D Booleans free their operands' copies when the kernel fails.
 - STEP import, the seam check and `heal` no longer leak 3 to 13 KB per round face (I2): 1000
   seam checks and 100 imports grew a process by 16.7 MB, now by less than 0.5 MB.
 - Meshes no longer keep the kernel's mesh (W3). In smlibwasm every mesh held it until the garbage
@@ -171,8 +186,8 @@ What can break existing scripts. Most of these scripts were getting wrong result
 | a cut the kernel returns empty, an intersection that gives an operand back (B3) | `ModelingError` ("a result that is empty", "partly outside an operand") | an empty Part, or the whole part |
 | `merge` (B5) | `ModelingError` when the result holds less than its largest part or more than all parts | a part of the wrong volume |
 | `cells()` (B8) | `ModelingError` for an insert touching along a line, or cells that do not add up to the part | a cell bigger than the part |
-| `is_valid()` and every feature's input check (B2) | False / `ModelingError` for bodies whose faces leave gaps of 1e-2 of the volume | True |
-| `fillet(edges, (s, e), continuity=...)` (F3) | `ValueError` (wasm: `RangeError`) | a ruled chamfer |
+| `is_valid()` (B2) | False for bodies whose faces leave gaps of 1e-2 of the volume (features refuse them once they were measured) | True |
+| `fillet(edges, (s, e), continuity=...)` with `s != e` (F3) | `ValueError` (wasm: `RangeError`) | a ruled chamfer |
 | `fillet` with a `(s, e)` radius, `s != e`, on a closed edge or on selected edges that meet tangentially (F5) | `ValueError` (`RangeError`) | bent radii |
 | `chamfer` of an edge whose angle changes along it (F4) | `ModelingError` | a bevel of the wrong size |
 | `shell`, `offset`, `thicken` (O2, O4) | `ModelingError` for results with gaps, without a cavity, of the wrong volume, and for walls that do not fit across the part; messages add "(it built ...)" | such bodies |
@@ -181,10 +196,10 @@ What can break existing scripts. Most of these scripts were getting wrong result
 | `import_usd` of malformed values or of broken bodies from other software (X1, X6) | `ValueError` naming the prim, body, entity and rule; `check=False` reads broken bodies as they are | a crash, or a wrong valid body |
 | wasm: unknown options, extra arguments, `at(point)`, sub-shapes of disposed bodies (W4, W5, W6) | `TypeError` | ignored, or another shape |
 
-Examples that now raise: usd-brep's `RevitWallHealerCrash.usda` (a gap of 377 between its edges), the shell
-guide's old rounded box (an opening whose rim meets its neighbours tangentially; the guide was
-changed), open shells of parts with a region thinner than two walls (also where the kernel
-managed), and an imported part whose closed shell took 30 s and had no cavity.
+Examples that now raise: usd-brep's `RevitWallHealerCrash.usda` (a gap of 377 between its
+edges), the shell guide's old rounded box (an opening whose rim meets its neighbours tangentially;
+the guide was changed), open shells of parts with a region thinner than two walls (also where the
+kernel managed), and an imported part whose closed shell took 30 s and had no cavity.
 
 ### Changed geometry
 
@@ -197,7 +212,9 @@ managed), and an imported part whose closed shell took 30 s and had no cavity.
   centered symmetric profiles, single edges and paths that start along X, Y or Z, and planar paths
   with mitered corners.
 - Meshes of spheres with whole poles get a few more triangles (`Sphere(10).mesh()`: 3596 for
-  3584), and bodies whose free-form faces the grid missed are halved (M2).
+  3584), and so do tori and other surfaces of revolution whose triangle edges strayed beyond the
+  tolerance (`Torus(20, 5).mesh(0.05)`: 4736 for 4096, now within 0.05 where it was 0.055 off);
+  bodies whose free-form faces the grid missed are halved (M2).
 - STEP imports have the file's vertices (I1): vertex counts of imported parts change; no volume,
   face count or validity changed over 449 files.
 - `import_usd` (X2): files with `metersPerUnit` other than 0.001 come out in millimeters, Y-up
@@ -219,8 +236,14 @@ managed), and an imported part whose closed shell took 30 s and had no cavity.
 
 - `.smb` (X8): a merged part loads as a `Part` with its cells (it was a `Shell`); so does a broken
   solid, as a `Part` whose `is_valid()` is False.
-- `split()` of a merged part raises `ModelingError` ("the part is not a valid solid"), not
-  `KernelError`; `except KernelError` alone no longer catches it.
+- `ModelingError`, not `KernelError`, where smlibpy now finds the problem itself, so that `except
+  KernelError` alone no longer catches it: `split()` of a merged part, and of any part that is not
+  a valid solid ("the part is not a valid solid"); `shell` of a part with a region thinner than
+  two walls (`(Box(40, 30, 5) + Box(3, 30, 20).translate(0, 0, 12.5)).shell(2, <bottom>)`: "two
+  walls of 2 do not fit into the part", was `shell failed (SM_ERR)`); a cell of `cells()` whose
+  inner cells cannot be cut out of it.
+- `section()` of a merged part whose insert touches it along a line raises `ModelingError`
+  ("section: cells: ..."); it returned a wrong sketch (370 for 400).
 - `ValueError` (wasm: `RangeError`), not `ModelingError`: F3, F5, the USD checks (X1, X6),
   `classify` with a tolerance of 0 or less, `Edge.dihedral_angle` of an edge that does not lie
   between two faces.
@@ -233,14 +256,30 @@ managed), and an imported part whose closed shell took 30 s and had no cavity.
 
 - `merge` integrates the volumes of its parts and result to check them (a plate with nine pins: 8
   to 24 ms); `volume` of the result is then free. `cells()` checks its sum (29 to 39 ms).
-- `is_valid()` on a fresh Boolean result integrates once (0.3 ms on a small part, 55 ms on a plate
-  of 206 faces).
+- `is_valid()` integrates a body once, with the gaps between its faces (0.5 ms on a small part,
+  55 ms on a plate of 206 faces; on curved bodies 3 to 6 times the kernel's own integration: 75 ms
+  for the gear example, 0.6 s for an imported housing). Chains of Booleans, the input checks of
+  features, sweeps, lofts and imports take the kernel's coarse volume as before: 100 holes cut one
+  by one take 0.34 s (wasm 0.45 s), as they did.
+- `split()` checks that the part is valid (the coarse volume) and classifies points of its result
+  only where the result may be the part given back unchanged: the spring example takes about
+  what it did (0.16 s).
 - 2D Booleans of sketches whose faces touch at a point take 2 to 18 ms (1.5 to 3 ms before).
-- `shell`, `offset` and `thicken` fork and pass the body as `.smb`: about 1 ms per step on small
-  parts. Over 154 imported parts, shells and offsets took 591 s instead of 1687 s (fewer repeats).
+- `shell`, `offset` and `thicken` fork and pass the body as `.smb`: about 7 ms per step on macOS
+  (an open shell of a box 4 to 12 ms, a thickened face 1 to 6 ms). A closed shell runs a second
+  offset for its volume check, in a fork of its own: about twice the time (a filleted box 68 to
+  130 ms). Over 154 imported parts, shells and offsets took 591 s instead of 1687 s (fewer
+  repeats).
+- Meshes are checked against their surfaces (M2): meshing takes up to twice as long where the
+  triangles do not change (`Sphere(10).mesh(0.01)` 54 to 96 ms, the gear example's default mesh
+  32 to 50 ms).
 - wasm: each guarded step runs twice (probe, then for real), as in Python, and the probe worker
-  holds a second kernel. Bundles must include `_defeature_supervisor.js` and
-  `_defeature_worker.js`. The `.wasm` is 6.73 MB (gzip 2.35 MB, brotli 1.67 MB).
+  holds a second kernel: in Node the first shell takes about 90 ms instead of 13 (the worker and
+  its kernel start), and `removeFillets` about 1.8 times as long. Bundles must include
+  `_defeature_supervisor.js` and `_defeature_worker.js`: where they are missing, Node says so at
+  the first step and runs the steps directly; a browser finds out only when the worker fails to
+  load, and its first step waits 30 s for it. The `.wasm` is 6.73 MB (gzip 2.35 MB, brotli
+  1.67 MB).
 
 ## New
 
@@ -248,7 +287,7 @@ managed), and an imported part whose closed shell took 30 s and had no cavity.
   outside) or `("on", the vertex, edge or face)`; `Part.contains(point)` and
   `Part.cell_at(point)` (wasm: `classify`, `contains`, `cellAt`) (B11). Use them instead of the
   parity of `raycast` hits, which miscounts grazing rays; the guide `analysis/classify` covers
-  them.
+  them, and the MCP's search for "inside" or "outside" now finds it (it found `raycast`).
 - `Edge.dihedral_angle` (wasm: `dihedralAngle`): the angle between the faces through the
   material, 90 at a box edge, 270 at an inside corner (T1).
 - `Mesh.translate`, `rotate`, `mirror`, `scale` and `moved` return moved copies; normals turn
@@ -263,15 +302,17 @@ managed), and an imported part whose closed shell took 30 s and had no cavity.
 - wasm: `GUARD_SECONDS` and `setGuardSeconds(seconds)` (W2), and a section "Running off the main
   thread" in the JavaScript docs.
 - Kernel-level functions for those who call the kernel directly: `ext.classify_points`,
-  `ext.boolean` (frees its operands on failure), `ext.edge_angles`, `ext.join_curves`,
+  `ext.boolean` (clears the kernel's Boolean mark and leaves both operands to the caller on
+  failure; also non-manifold and imprinting), `ext.edge_angles`, `ext.join_curves`,
   `ext.nearest_points`, `ext.usd_stage` and `ext.usd_assets`.
 - Kernel patches: smlibpy now builds ten kernel source files from patched copies
   (`third_party/patches`; seven are new in this release, and two of the older three have new
-  changes), each change confirmed with AddressSanitizer: Boolean topology (`SmProtoTopology.cpp`, `SmTopologyIntersector.cpp`,
-  `SmMerge.cpp`), fillets (`SmFilletExecutive.cpp`), the offset code (`SmOffsetExecutive.cpp`),
-  plane recognition (`SmPlane.cpp`), the seam check and inner-shell test (`SmFace.cpp`,
-  `SmShell.cpp`) and tight bounding boxes (`SmCurve.cpp`). The README there lists every change and
-  what it was measured to change.
+  changes), each change that ran in the cases measured confirmed with AddressSanitizer (the
+  cleanup in `ShellBrep` is from reading the code): Boolean topology (`SmProtoTopology.cpp`,
+  `SmTopologyIntersector.cpp`, `SmMerge.cpp`), fillets (`SmFilletExecutive.cpp`), the offset
+  code (`SmOffsetExecutive.cpp`), plane recognition (`SmPlane.cpp`), the seam check and
+  inner-shell test (`SmFace.cpp`, `SmShell.cpp`) and tight bounding boxes (`SmCurve.cpp`). The
+  README there lists every change and what it was measured to change.
 
 For contributors: smlibwasm's option table (`js/src/_options.ts`) is generated from Python's
 signatures. After adding or renaming a keyword in Python, run `python tools/gen_js_options.py`;
@@ -300,6 +341,14 @@ signatures. After adding or renaming a keyword in Python, run `python tools/gen_
   opened by `shell` (O3).
 - USD: inherits, specializes and variant sets are not composed; names with non-ASCII characters
   (X3) and analytic line, circle and ellipse edges (X5) are not done.
+- 2D Booleans of sketches whose faces lie hundreds of times their size from other faces can still
+  come out wrong without an error where faces share edges: a unit square fused to its neighbour,
+  with a third square 1000 away, became a sliver by the far one, in 15 of 60 random lattices of
+  unit squares. That is the kernel's planar Boolean itself; where faces touch at a point, the
+  checked route raises instead (C1).
+- A 2D union of two exclusive-or sketches whose faces touch at points (one of 40 random cases
+  checked against OpenCASCADE) crashes the process in about 3 runs of 8, in the 3D Booleans of
+  slabs that the checked route (C1) falls back to; not located.
 - A face copy that the kernel fails on stays in memory for the life of the process (T2).
 - Fillet sizes are still checked at the middle of each edge, and radius laws along whole chains
   of edges need more work (F8).

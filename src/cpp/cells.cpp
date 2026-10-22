@@ -13,9 +13,9 @@
 //
 // An insert that touches the outer boundary at a point or along a line joins its shell to the
 // outer one, which the kernel then keeps as one shell. Its faces fall apart into the outer
-// boundary and the insert's again where the faces are split at edges the shell uses other than
-// twice (the line of contact is used four times) and at lone vertices (the point of contact). The
-// group with the largest box is the outer boundary, the others are cavities.
+// boundary and the insert's again when they are grouped across the edges the shell uses exactly
+// twice: the line of contact is used four times, and at a point of contact no edge joins the two.
+// The group with the largest box is the outer boundary, the others are cavities.
 #include "kernel.h"
 #include "cells.h"
 

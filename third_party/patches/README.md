@@ -132,8 +132,9 @@ Defects that remain in the kernel, and what smlibpy does about them:
 Configure a separate build directory with
 `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`
 (and `-DSKBUILD=ON`, which keeps its `_core` module in the build directory rather than writing it
-over the one in `src/smlibpy`), put its `_core` module next to a copy of `src/smlibpy`, and run the Python binary itself (on
-macOS not through `env` or `timeout`, which drop the `DYLD_` variables) with
+over the one in `src/smlibpy`), put its `_core` module next to a copy of `src/smlibpy`, and run
+the Python binary itself (on macOS not through `env` or `timeout`, which drop the `DYLD_`
+variables) with
 `DYLD_INSERT_LIBRARIES=$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)` and
 `ASAN_OPTIONS=detect_leaks=0:strip_env=0` (`strip_env=0` keeps the sanitizer in the worker
 processes of the MCP session tests); add `quarantine_size_mb=8192` where freed memory is read

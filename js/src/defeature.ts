@@ -23,7 +23,7 @@ import { BrepHandle, ModelingError, _warn, ext, k, kernelCall, module } from './
 import { _formatG } from './geometry.ts'
 import { type Edge, Face, type Part, ShapeList, type _Body, _flattenFaces } from './shapes.ts'
 import { toSmb } from './exporters.ts'
-import { _giveUp, _noProbe, _probeSupervisor } from './_guard.ts'
+import { _giveUp, _noProbe, _probeMissing, _probeSupervisor } from './_guard.ts'
 
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
@@ -112,10 +112,22 @@ const _PIECE_BYTES = 1 << 20
 /** Seconds a new probe worker may take to load its kernel and start the first step. */
 const _START_SECONDS = 30.0
 
+let _toldMissing = false
+
+/** The probe worker's supervisor (see `_probeSupervisor`); says once when its files are missing. */
+function _supervisor(what: string): Any {
+  const supervisor = _probeSupervisor()
+  if (supervisor === null && _probeMissing() && !_toldMissing) {
+    _toldMissing = true
+    _warn(`${what}: ${_noProbe()}; the kernel steps of removeFillets, removeFaces, surfaceFillet, shell, offset and thicken run in this kernel, without a time limit`)
+  }
+  return supervisor
+}
+
 /** Runs the job in the probe worker; throws a _KernelFault if it takes longer than `limit` seconds
  * or crashes the kernel there. Returns at once where there is no probe worker. */
 function _probe(what: string, job: () => _Job, limit: number): void {
-  const supervisor = _probeSupervisor()
+  const supervisor = _supervisor(what)
   if (supervisor === null) return
   const j = job()
   const state = new Int32Array(new SharedArrayBuffer(4))
@@ -150,7 +162,7 @@ function _probe(what: string, job: () => _Job, limit: number): void {
  */
 export function _isolated(what: string, work: () => number, job: () => _Job, hint: string | null = null): number {
   const limit = Number(GUARD_SECONDS)
-  const supervisor = limit > 0 ? _probeSupervisor() : null
+  const supervisor = limit > 0 ? _supervisor(what) : null
   if (supervisor === null) return work()
   const j = job()
   const state = new Int32Array(new SharedArrayBuffer(8))
