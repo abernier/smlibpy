@@ -123,19 +123,26 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
   `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
   rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
-  blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
-  (its test).
-- **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
-  a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
-  which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and
-  workers of a cross-origin isolated page; on a browser's main thread the step runs directly).
-  A supervisor worker without a kernel (`_defeature_supervisor.ts`, started by `_guard.ts`)
-  starts the probe workers and terminates one that takes too long: a browser cannot start a
-  worker from a thread that waits, so there `_guard.ts` starts the supervisor when the package is
-  imported. Python's `_isolated` (shell, offset and thicken: the step runs only in the forked copy,
-  and its body comes back as `.smb`) is `_isolated(what, work, job, hint)`: the probe worker hands
-  the body's `.smb` contents, or the step's error, back through a SharedArrayBuffer, a piece at a
-  time, while the caller waits with `Atomics.wait`; a trap there is the crash of the copy.
+  blends surfaces in it), `_smbOf`, `_isolated` and `_isolatedValue` (shapes.ts runs shell,
+  offset, thicken, cells, opt-in Booleans and the fillets of imported parts in them), `_spill`
+  (its test); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it).
+- **The kernel's guard.** Python runs a step that can crash or loop in another process
+  (`smlibpy._guard.isolated(what, fn, *args)`: a forked copy, or a helper process that gets the
+  bodies as `.smb`); here `_isolatedValue(what, work, job)` runs it in a probe worker
+  (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying which step
+  (`op`) with which faces and edges (by index), and waits for it with `Atomics.wait` (Node, and
+  workers of a cross-origin isolated page; on a browser's main thread `work()` runs directly).
+  The worker hands the step's value back through a SharedArrayBuffer, a piece at a time: JSON in
+  which each body is `{ $body: i }`, then the bodies' `.smb` files; or the step's error (its name
+  and message). A trap there is the crash of the copy. Neither side ever runs the step twice.
+  `_isolated(what, work, job, hint)` is the same for a step that makes one body, its kernel errors
+  a KernelError of `what` with `hint`. A supervisor worker without a kernel
+  (`_defeature_supervisor.ts`, started by `_guard.ts`) starts the probe workers and terminates one
+  that takes too long: a browser cannot start a worker from a thread that waits, so there
+  `_guard.ts` starts the supervisor when the package is imported. Python's `GUARD_PROCESS` has no
+  counterpart (the probe worker is the only way here); `GUARD_BOOLEANS` is `setGuardBooleans`.
+  `BrepHandle.imported` (both languages) marks bodies read from files and those made from them
+  (`_like`; across a `KernelWorker` too): their fillets and chamfers run guarded.
 
 - **Entries without the kernel.** `@classcad/smlibwasm/worker` (worker.ts) and
   `@classcad/smlibwasm/init` (init.ts) load no kernel of their own: statically they import only
@@ -149,9 +156,14 @@ the Python code works around a kernel defect, so does the TypeScript.
   expression (lane_WN.test.ts checks all three).
 - **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
   `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
-  file comes from) and `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB; Python's
-  kernel shares its process's). They follow the house style but have no smlibpy counterpart and
-  no entry in `_options.ts`.
+  file comes from), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB; Python's
+  kernel shares its process's) and `scope(fn)` (frees the kernel objects `fn` made and does not
+  return: the garbage collector frees them only between tasks, Python's reference counting at
+  their last reference). They follow the house style but have no smlibpy counterpart and no entry
+  in `_options.ts`. The port's own temporaries are freed the same way: the public functions that
+  make intermediate bodies or curves (Booleans, `split`, `cells`, the sketch constructors, `Text`,
+  `sweep`, `loft`, `revolve`, `fromDxf`, `stitch`, `flatPattern`, `surfaceFillet`) run their
+  bodies in `scope`, so a call leaves only what it returns, as in Python.
 
 ## Status
 

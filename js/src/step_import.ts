@@ -854,6 +854,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   }
   if (body.name) result.name = body.name
   if (body.color !== null) result.color = body.color
+  result._h.imported = true // (read from a file: its fillets run in the probe worker)
   return result
 }
 

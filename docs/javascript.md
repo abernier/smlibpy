@@ -151,10 +151,39 @@ applies. The differences come from the language:
 ## Memory
 
 Every body lives in the kernel's memory, which the JavaScript garbage collector does not see. A
-body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
-`using part = ...`) frees it at once, which keeps memory flat in long loops. The faces, edges and
-vertices of a disposed body go with it: using them throws a `TypeError`. Edges and wires of their
-own (`Line`, `Polyline`, ...) have `dispose()` too.
+body's kernel object is freed when the body is garbage collected, and the collector frees such
+objects only between tasks of the event loop: a loop that builds parts without returning to the
+event loop (a parametric regeneration, an optimiser, a batch) keeps every body it made until it
+ends, named or not. `part.dispose()` (or `using part = ...`) frees one body at once. The faces,
+edges and vertices of a disposed body go with it: using them throws a `TypeError`. Edges and wires
+of their own (`Line`, `Polyline`, ...) have `dispose()` too.
+
+Disposing the result is not enough in such a loop: the operands of a chain such as
+`Box(30, 20, 10).cut(Cylinder(4, 20)).fillet(...)` (the box, the cylinder, the cut) have no name to
+dispose them by. `scope(fn)` runs `fn` and disposes, when it returns, every kernel object it made
+that its result does not hold; what the result holds (parts, sketches, faces, meshes, also in
+arrays, ShapeLists, Maps, Sets and plain objects) stays. 400 regenerations of that chain grew the
+kernel's memory from 64 to 191 MB, and to 133 MB with each result disposed; in `scope` it stays at
+64 MB:
+
+```js
+for (const width of widths) {
+  const volume = scope(() => {
+    const c = Box(width, 20, 10).cut(Cylinder(4, 20))
+    return c.fillet(c.edges().filter((e) => e.center().z > 4), 2).volume
+  })
+}
+// in a three.js app: rebuild a mesh and keep only its arrays
+const mesh = scope(() => model(params).mesh())
+```
+
+Objects made before the scope stay as they are; scopes nest (what an inner scope returns belongs to
+the outer one); where `fn` throws, what it made is freed. `fn` must return its result, not a
+promise (an async function goes on after its first `await`, where the scope cannot follow it), and
+must not keep what it makes anywhere but in its result: a body stored in a variable outside is
+disposed with the rest. smlibwasm frees its own intermediates the same way (the tools and refused
+results of Booleans, the half space of `split`, the curves of sketches and text, the cells of a
+merge), so a call leaves behind only what it returns.
 
 A mesh (`part.mesh()`, `tessellate`) is its arrays: the kernel's mesh it is made from is freed as
 soon as they are copied out, and mesh Booleans build one from the arrays when they need it.
@@ -163,14 +192,14 @@ soon as they are copied out, and mesh Booleans build one from the arrays when th
 The kernel's memory can grow to 4 GB, as far as a 32-bit WebAssembly module reaches (a browser
 may stop it earlier), and it never shrinks; each thread's kernel has its own. `memoryUsage()`
 tells how much of it the kernel's objects take (`used`), how far it has grown (`heap`) and how far
-it can grow (`limit`), in bytes. A call that finds it used up fails with a `KernelError` of status
-`SM_ERR_OUT_OF_MEMORY` that says how much is in use: dispose of parts no longer needed, or let the
-event loop run, since the garbage collector frees the kernel objects of bodies that are gone only
-between tasks.
+it can grow (`limit`), in bytes, and how many kernel objects JavaScript holds that are not freed
+yet (`handles`). A call that finds it used up fails with a `KernelError` of status
+`SM_ERR_OUT_OF_MEMORY` that says how much is in use: dispose of parts no longer needed, use
+`scope`, or let the event loop run.
 
 ```js
-const { used, limit } = memoryUsage()
-if (used > 0.8 * limit) console.warn(`the kernel holds ${(used / 2 ** 20).toFixed(0)} MB`)
+const { used, limit, handles } = memoryUsage()
+if (used > 0.8 * limit) console.warn(`the kernel holds ${(used / 2 ** 20).toFixed(0)} MB in ${handles} objects`)
 ```
 
 ## Running off the main thread
@@ -240,14 +269,17 @@ mesh's arrays (`{ vertices: mesh.vertices, ... }`) never loads it. In Node, give
 running. webpack 5 bundles the worker as it is; Vite with `worker: { format: 'es' }` in its config
 (Vite 7; Vite 4 stalls on the package's own workers inside yours).
 
-`removeFillets`, `removeFaces` and `surfaceFillet` run each kernel step first in a probe worker,
-a kernel of its own, on copies of the bodies, as smlibpy runs it first in a forked copy of its
-process. A step that crashes the kernel there or takes longer than `GUARD_SECONDS` (20 s;
-`setGuardSeconds(seconds)` sets it, `0` turns the probe off) is dropped, as in Python, and the
-kernel the call runs on is left alone: SMLib's patching code loops for good on some parts (the
-outer round of the enclosure example). The kernel steps of `shell`, `offset` and `thicken` run
-only in the probe worker, whose body comes back as an exact copy (`.smb`): the kernel's offset
-code can read memory it has freed, and the kernel the call runs on never runs it. The probe waits
+The kernel steps that can crash or loop run in a probe worker, a kernel of its own, on copies of
+the bodies, as smlibpy runs them in another process: those of `removeFillets`, `removeFaces`,
+`surfaceFillet`, `shell`, `offset`, `thicken` and `cells()`, fillets and chamfers of parts read from
+files (`fromStep`, `fromSmb`, `fromUsd` and the parts made from them) and, after
+`setGuardBooleans(true)`, every Boolean. What the step made comes back as an exact copy (`.smb`),
+and the kernel the call runs on never runs the step: the kernel's offset code can read memory it
+has freed, and SMLib's patching code loops for good on some parts (the outer round of the
+enclosure example). A step that crashes the kernel there or takes longer than `GUARD_SECONDS`
+(20 s; `setGuardSeconds(seconds)` sets it, `0` turns the probe off) fails with a `ModelingError`
+(`removeFillets` and `removeFaces` drop it and go on), and the kernel the call runs on is left
+alone. The probe waits
 for its worker with `Atomics.wait`, which Node allows on every thread and browsers only in workers
 of a cross-origin isolated page (one served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
@@ -918,6 +950,8 @@ export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
 export function thicken(surface: Shell | Face, thickness: number): Part;
 export let GUARD_SECONDS: number;
+export let GUARD_BOOLEANS: boolean;
+export function setGuardBooleans(on: boolean): boolean;
 export function setGuardSeconds(seconds: number): number;
 ```
 
@@ -1309,8 +1343,10 @@ export interface MemoryUsage {
     readonly used: number;
     readonly heap: number;
     readonly limit: number;
+    readonly handles: number;
 }
 export function memoryUsage(): MemoryUsage;
+export function scope<T>(fn: () => T): T;
 export function setWarningHandler(handler: (message: string) => void): void;
 ```
 

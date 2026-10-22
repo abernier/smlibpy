@@ -882,7 +882,9 @@ export function fromSmb(data: string | Uint8Array): Part | Shell {
   // a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
   const regions: { infinite: boolean; void: boolean }[] = ext.brep_dump(b, false).regions
   const solid = regions.some((r) => !r.infinite && !r.void)
-  return solid ? Part._wrap(b) : Shell._wrap(b)
+  const body = solid ? Part._wrap(b) : Shell._wrap(b)
+  body._h.imported = true // (read from a file: its fillets run in the probe worker)
+  return body
 }
 
 /** Write a body to SMLib's native `.smb` format (exact; see `toSmb`). */

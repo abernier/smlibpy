@@ -108,6 +108,12 @@ else()
   endif()
 endif()
 
+# Upstream's kernel tests against this kernel (tools/oracles/prog_test.py runs them).
+option(SMLIBPY_PROG_TEST "Build usd-brep's prog_test_app against the patched kernel" OFF)
+if(SMLIBPY_PROG_TEST AND NOT EMSCRIPTEN)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/tools/oracles/prog_test.cmake")
+endif()
+
 # ---------------------------------------------------------------------------
 # WebAssembly (Emscripten): the JavaScript module of js/ instead of the Python extension.
 # ---------------------------------------------------------------------------

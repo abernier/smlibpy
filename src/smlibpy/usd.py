@@ -138,7 +138,9 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
         # a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
         regions = ext.brep_dump(brep, False)["regions"]
         solid = any(not r["infinite"] and not r["void"] for r in regions)
-        out.append((Part if solid else Shell)._wrap(brep, name=name, color=tuple(color) if color else None))
+        body = (Part if solid else Shell)._wrap(brep, name=name, color=tuple(color) if color else None)
+        body._h.imported = True  # (read from a file: its fillets run in another process)
+        out.append(body)
     return out[0] if len(out) == 1 else out
 
 

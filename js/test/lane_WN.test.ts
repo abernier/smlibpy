@@ -1,15 +1,20 @@
 // Lane WN of the kernel plan (phase 1): the worker entry (W2), loader options and bundlers (W7),
-// out-of-memory and C++ exception errors (W8), the three.js conversion of docs/javascript.md.
+// out-of-memory and C++ exception errors (W8), the three.js conversion of docs/javascript.md;
+// kernel steps whose result comes back from the probe worker (N1), scope() and the port's own
+// temporaries (W9), memory regressions (N2) and the fuzz harness (N3).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Box, Cylinder, KernelError, Location, Mesh, ModelingError, Part, Plane, Shell, ShapeList, Sketch, Vector, memoryUsage } from '../src/index.ts'
 import { _crashText, ext, k, kernelCall } from '../src/kernel.ts'
 import { KernelWorker, expose } from '../src/worker.ts'
 import { init } from '../src/init.ts'
 import type * as Models from './lane_WN_models.ts'
+import { Axis, Circle, Cone, GridLocations, Polygon, Polyline, Rectangle, Slot, Sphere, Text, X, Y, Z, extrude, fromSmb, loft, revolve, scope, setGuardBooleans, setGuardSeconds, surfaceFillet, sweep, Line, toSmb } from '../src/index.ts'
 import { plate } from './lane_WN_models.ts'
 
 const WORKER = new URL('./lane_WN_worker.ts', import.meta.url)
@@ -27,7 +32,7 @@ function run(code: string, timeout = 120_000): Record<string, unknown> {
 // ================================================================================ W8: memory, C++ exceptions
 test('memoryUsage: what the kernel holds, how far its memory grew and how far it can grow (W8)', () => {
   const before = memoryUsage()
-  assert.deepEqual(Object.keys(before).sort(), ['heap', 'limit', 'used'])
+  assert.deepEqual(Object.keys(before).sort(), ['handles', 'heap', 'limit', 'used'])
   assert.equal(before.limit, 4 * 1024 * MB - 65536) // (4 GB less one page: as far as wasm32 reaches)
   assert.equal(before.heap % 65536, 0)
   assert.ok(before.used > 0 && before.used <= before.heap && before.heap <= before.limit)
@@ -152,7 +157,9 @@ test('init: the kernel from another place, from its bytes, from a compiled modul
     console.log(JSON.stringify(out))`)
   assert.deepEqual(located, { asked: ['smlibwasm.wasm'], volume: 5497.3452 })
   const bytes = run(`
-    import { readFileSync, readdirSync } from 'node:fs'
+    import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
     import { init } from ${src('init.ts')}
     const out = {}
     const { Box, Cylinder } = await init({ wasmBinary: readFileSync(${wasm}) })
@@ -160,7 +167,9 @@ test('init: the kernel from another place, from its bytes, from a compiled modul
     console.log(JSON.stringify(out))`)
   assert.deepEqual(bytes, { volume: 5497.3452 })
   const compiled = run(`
-    import { readFileSync, readdirSync } from 'node:fs'
+    import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
     import { init } from ${src('init.ts')}
     const out = {}
     const wasmModule = await WebAssembly.compile(readFileSync(${wasm}))
@@ -521,3 +530,327 @@ test('docs: the three.js conversion gives each corner the exact normal; shared v
 
 // biome-ignore lint: values of the worker, as they come
 type Any = any
+
+// ================================================================================ N1: results from the probe worker
+/** `fn` with the kernel functions `names` of `space` (k, ext, k.defeature) counted; the counts. */
+function counting(space: Record<string, unknown>, names: string[], fn: () => void): Record<string, number> {
+  const counts: Record<string, number> = Object.fromEntries(names.map((n) => [n, 0]))
+  const saved = names.map((n) => space[n])
+  names.forEach((n, i) => {
+    const real = saved[i] as (...args: unknown[]) => unknown
+    space[n] = (...args: unknown[]) => {
+      counts[n]++
+      return real(...args)
+    }
+  })
+  try {
+    fn()
+  } finally {
+    names.forEach((n, i) => {
+      space[n] = saved[i]
+    })
+  }
+  return counts
+}
+
+test('defeaturing runs each kernel step once, in the probe worker, and gets its result back (N1)', () => {
+  // The guard ran each step in the probe worker first and then again in this kernel: now the
+  // worker's result (its body as .smb, the rest as JSON) comes back, and this kernel runs no step.
+  let volumes: number[] = []
+  const counts = counting(k.defeature, ['defeature', 'remove_fillet_faces'], () => {
+    const box = Box(20, 20, 20)
+    const rounded = box.fillet(box.edges().filter((e) => e.center().z > 9), 3)
+    const plain = rounded.removeFillets(rounded.faces().fillets())
+    const hole = Box(20, 20, 10).cut(Cylinder(3, 10))
+    const filled = hole.removeFaces(hole.faces().cylinders())
+    volumes = [plain.volume, plain.faces().length, filled.volume]
+  })
+  assert.deepEqual(counts, { defeature: 0, remove_fillet_faces: 0 })
+  assert.ok(Math.abs(volumes[0] - 8000) < 1e-6 && volumes[1] === 6 && Math.abs(volumes[2] - 4000) < 1e-6, String(volumes))
+  // without the probe, here
+  const guard = setGuardSeconds(0)
+  try {
+    const box = Box(20, 20, 20)
+    const rounded = box.fillet(box.edges().filter((e) => e.center().z > 9), 3)
+    const again = counting(k.defeature, ['defeature', 'remove_fillet_faces'], () => rounded.removeFillets(rounded.faces().fillets()))
+    assert.ok(again.defeature + again.remove_fillet_faces >= 1)
+  } finally {
+    setGuardSeconds(guard)
+  }
+})
+
+test('surfaceFillet and cells() run the kernel in the probe worker (N1)', () => {
+  let area = 0
+  const blends = counting(k, ['surface_surface_fillet'], () => {
+    area = surfaceFillet(Rectangle(40, 40).faces()[0], Rectangle(40, 40).on(Plane.XZ).faces()[0], 5).area
+  })
+  assert.equal(blends.surface_surface_fillet, 0)
+  assert.ok(Math.abs(area - (Math.PI / 2) * 5 * 40) < 1e-6 * area)
+  let cells: number[] = []
+  const stitched = counting(ext, ['region_shells'], () => {
+    cells = Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0)).cells().map((c) => c.volume)
+  })
+  assert.equal(stitched.region_shells, 0)
+  assert.deepEqual(cells.map((v) => Math.round(v * 1e6) / 1e6).sort(), [500, 500, 500])
+})
+
+test('setGuardBooleans(true) runs every Boolean in the probe worker (N1)', () => {
+  const here = counting(ext, ['boolean'], () => Box(10, 10, 10).cut(Cylinder(2, 20)))
+  assert.ok(here.boolean >= 1) // (off by default)
+  assert.throws(() => setGuardBooleans(1 as unknown as boolean), TypeError)
+  const old = setGuardBooleans(true)
+  assert.equal(old, false)
+  try {
+    let v: number[] = []
+    const there = counting(ext, ['boolean'], () => {
+      const cut = Box(10, 10, 10).cut(Cylinder(2, 20))
+      const fused = Box(10, 10, 10).fuse(Sphere(3).translate(5, 5, 5))
+      const merged = Box(10, 10, 10).merge(Box(4, 4, 4).translate(5, 5, 5))
+      v = [cut.volume, Number(cut.isValid()), fused.volume, merged.volume, merged.cells().length]
+    })
+    assert.equal(there.boolean, 0)
+    const expect = [1000 - Math.PI * 4 * 10, 1, 1000 + (7 / 8) * (4 / 3) * Math.PI * 27, 1000 + 64 - 8, 3]
+    v.forEach((x, i) => assert.ok(Math.abs(x - expect[i]) < 1e-6 * Math.max(1, expect[i]), `${v} ${expect}`))
+    // an error there is thrown here
+    assert.throws(() => Sphere(1.5).rotate(Y, 90).cut(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)), (e: unknown) => e instanceof KernelError && /cut failed/.test(e.message))
+  } finally {
+    setGuardBooleans(old)
+  }
+})
+
+test('fillets and chamfers of parts read from files run in the probe worker (N1)', () => {
+  const made = Box(20, 20, 20).cut(Cylinder(4, 30))
+  assert.equal(made._h.imported, false)
+  const part = fromSmb(toSmb(made, { ascii: false })) as Part
+  assert.equal(part._h.imported, true)
+  const moved = part.cut(Box(4, 4, 30).translate(10, 10, 0)).translate(1, 2, 3)
+  assert.equal(moved._h.imported, true) // (made from it)
+  let rounded: Part | null = null
+  let beveled: Part | null = null
+  const there = counting(k, ['fillet_edges'], () => {
+    rounded = moved.fillet(moved.edges().filter((e) => e.center().z > 11 && e.geomType === 'line'), 1)
+    beveled = moved.chamfer(moved.edges().circles().filter((e) => e.center().z > 11), 0.5)
+  })
+  assert.equal(there.fillet_edges, 0)
+  assert.ok(rounded!.isValid() && beveled!.isValid() && rounded!.volume < moved.volume && beveled!.volume < moved.volume)
+  assert.equal(rounded!._h.imported, true)
+  const own = made.translate(1, 2, 3).cut(Box(4, 4, 30).translate(11, 12, 3))
+  let same = 0
+  const here = counting(k, ['fillet_edges'], () => {
+    same = own.fillet(own.edges().filter((e) => e.center().z > 11 && e.geomType === 'line'), 1).volume
+  })
+  assert.equal(here.fillet_edges, 1) // (a part made here: in this kernel)
+  assert.ok(Math.abs(same - rounded!.volume) < 1e-9 * same)
+})
+
+test('KernelWorker: a part read from a file stays one over there and back (N1)', async () => {
+  const worker = new KernelWorker<typeof Models>(WORKER)
+  try {
+    const part = fromSmb(toSmb(Box(10, 10, 10), { ascii: false })) as Part
+    const back = (await worker.call('echo', [part])) as Part
+    assert.equal(back._h.imported, true)
+    const own = (await worker.call('echo', [Box(10, 10, 10)])) as Part
+    assert.equal(own._h.imported, false)
+  } finally {
+    worker.terminate()
+  }
+})
+
+// ================================================================================ W9: scope() and the port's temporaries
+test('memoryUsage().handles counts the kernel objects JavaScript holds (W9)', () => {
+  const before = memoryUsage().handles
+  const a = Box(10, 10, 10)
+  const b = Cylinder(2, 20)
+  assert.equal(memoryUsage().handles, before + 2)
+  a.dispose()
+  a.dispose() // (once)
+  assert.equal(memoryUsage().handles, before + 1)
+  b.dispose()
+  assert.equal(memoryUsage().handles, before)
+})
+
+test('scope frees what its function made and does not return, at once (W9)', () => {
+  const outside = Box(50, 50, 50)
+  const regen = () => {
+    const c = Box(30, 20, 10).cut(Cylinder(4, 20)) // (the box and the cylinder are never named)
+    void outside.cut(Sphere(3)) // (a result nobody keeps)
+    return c.fillet(c.edges().filter((e) => e.center().z > 4 && e.geomType === 'line'), 2)
+  }
+  const expected = regen().volume
+  const before = memoryUsage()
+  const part = scope(regen)
+  assert.equal(memoryUsage().handles, before.handles + 1) // the result, nothing else
+  assert.ok(part.isValid() && Math.abs(part.volume - expected) < 1e-9 * expected)
+  assert.ok(outside.isValid()) // (made before the scope)
+  part.dispose()
+  assert.equal(memoryUsage().handles, before.handles)
+})
+
+test('scope keeps what its result reaches: arrays, ShapeLists, Maps, Sets, objects, faces (W9)', () => {
+  const before = memoryUsage().handles
+  const out = scope(() => {
+    const a = Box(1, 1, 1)
+    const b = Box(2, 2, 2)
+    const c = Box(3, 3, 3)
+    const d = Box(4, 4, 4)
+    const e = Sphere(5)
+    void Box(6, 6, 6) // (not returned)
+    const edge = Line([0, 0, 0], [10, 0, 0]) // (a standalone curve)
+    return { list: [a, new ShapeList(b)], map: new Map([['c', c]]), set: new Set([d]), face: e.faces()[0], edge }
+  })
+  assert.equal(memoryUsage().handles, before + 6)
+  assert.ok(Math.abs(out.face.area - 4 * Math.PI * 25) < 1e-6 * 314 && out.face.owner!._h.alive)
+  assert.equal((out.list[0] as Part).volume, 1)
+  assert.ok(Math.abs(out.edge.length - 10) < 1e-12)
+})
+
+test('scopes nest; an error frees what the scope made; a promise is a TypeError (W9)', async () => {
+  const before = memoryUsage().handles
+  const kept = scope(() => {
+    const inner = scope(() => {
+      void Box(1, 1, 1)
+      return Box(2, 2, 2)
+    })
+    assert.equal(memoryUsage().handles, before + 1) // (the inner result, now the outer scope's)
+    void inner.translate(1, 0, 0)
+    return Box(3, 3, 3)
+  })
+  assert.equal(memoryUsage().handles, before + 1) // the inner result was not returned by the outer scope
+  kept.dispose()
+  assert.throws(
+    () =>
+      scope(() => {
+        Box(1, 1, 1).cut(Cylinder(1, 3))
+        throw new RangeError('stop')
+      }),
+    { name: 'RangeError', message: 'stop' },
+  )
+  assert.equal(memoryUsage().handles, before)
+  assert.throws(() => scope(async () => Box(1, 1, 1)), TypeError)
+  assert.throws(() => scope(null as unknown as () => void), TypeError)
+  // an object kept outside its scope's result is disposed: using it is a TypeError
+  let leaked: Part | null = null
+  scope(() => {
+    leaked = Box(5, 5, 5)
+    return null
+  })
+  assert.throws(() => leaked!.volume, (e: unknown) => e instanceof TypeError && /was disposed/.test((e as Error).message))
+  await Promise.resolve()
+})
+
+test('a synchronous loop in scope() stays flat; disposing only the result did not (W9)', () => {
+  // The finding's loop: the garbage collector frees kernel objects only between tasks, so 400
+  // synchronous regenerations grew the module's memory from 64 to 191 MB, and to 133 MB when each
+  // result was disposed (its box, cylinder and cut stayed until the loop ended).
+  const regen = () => {
+    const c = Box(30, 20, 10).cut(Cylinder(4, 20))
+    return c.fillet(c.edges().filter((e) => e.center().z > 4 && e.geomType === 'line'), 2)
+  }
+  const before = memoryUsage()
+  let total = 0
+  for (let i = 0; i < 100; i++) total += scope(() => regen().volume)
+  const after = memoryUsage()
+  assert.equal(after.handles, before.handles)
+  assert.ok(after.used - before.used < 512 * 1024, `${after.used - before.used} bytes kept`)
+  assert.ok(Math.abs(total / 100 - regen().volume) < 1e-9)
+  const held = memoryUsage().handles
+  for (let i = 0; i < 20; i++) regen().dispose()
+  assert.equal(memoryUsage().handles - held, 20 * 3) // (each: the box, the cylinder and the cut, until the garbage collector runs)
+})
+
+test('the port frees its own temporaries: sketches, Booleans it refused, split, cells, sweep, text (W9)', () => {
+  const part = Box(40, 30, 20).cut(Cylinder(5, 40))
+  const cases: [string, () => unknown][] = [
+    ['Polygon', () => Polygon([0, 0], [10, 0], [5, 8])],
+    ['Slot', () => Slot(20, 5)],
+    ['Text', () => Text('Hi', 10)],
+    ['split', () => part.split(Plane.XY)],
+    ['split both', () => part.split(Plane.XY, 'both')],
+    ['cells', () => part.merge(Box(10, 10, 10).translate(60, 0, 0)).cells()],
+    ['sweep', () => sweep(Circle(1), Line([0, 0, 0], [0, 0, 10]))],
+    ['empty cut', () => part.cut(Box(100, 100, 100))],
+    ['cut, tools combined', () => part.cut(Cylinder(3, 40).translate(2, 0, 0), Cylinder(3, 40).translate(-2, 0, 0))],
+  ]
+  for (const [name, make] of cases) {
+    make() // (warm up)
+    const before = memoryUsage().handles
+    const result = make()
+    const made = memoryUsage().handles - before
+    // what the result holds, and the operands the case makes itself (a box, its move and the merge; a circle and a line; a box; two cylinders and their moves)
+    const own = { cells: 3, sweep: 2, 'empty cut': 1, 'cut, tools combined': 4 }[name] ?? 0
+    const held = Array.isArray(result) ? result.length : 1
+    assert.equal(made, held + own, `${name}: ${made} kernel objects for ${held} in the result and ${own} operands`)
+  }
+  void GridLocations
+  void Z
+})
+
+// ================================================================================ N2: memory
+test('sweeps, skins and offset profiles free the curves they hand the kernel (N2)', () => {
+  // The kernel's sweeps, skins and offset profiles copy the curves they are given ("Pure" in
+  // SmPyLib): the copies the port made for them were never freed (a revolve of a rectangle left its
+  // four lines each call). Found by the leak check (tools/sanitize/run.py).
+  const cases: [string, () => unknown, number][] = [
+    ['revolve', () => Rectangle(5, 5).translate(10, 0).revolve(new Axis([0, 0, 0], [0, 1, 0])), 0],
+    ['taper', () => Rectangle(10, 10).extrude(5, { taper: 5 }), 0],
+    ['offset', () => Rectangle(10, 10).offset(1), 0],
+    ['loft', () => loft([Rectangle(10, 10), Circle(4).moved(new Location([0, 0, 10]))]), 0],
+    ['open extrude', () => extrude(Line([0, 0, 0], [10, 0, 0]), 5), 0],
+    ['open revolve', () => revolve(Line([5, 0, 0], [5, 0, 10])), 0],
+    // (the kernel's own sweep along a mitered path keeps its copies: tools/sanitize/leaks.txt)
+    ['mitered sweep', () => sweep(Circle(1).on(Plane.YZ), Polyline([0, 0, 0], [20, 0, 0], [20, 20, 0])), 16000],
+  ]
+  for (const [name, make, limit] of cases) {
+    scope(() => {
+      make()
+    })
+    const before = memoryUsage().used
+    for (let i = 0; i < 50; i++) {
+      scope(() => {
+        make()
+      })
+    }
+    const perCall = (memoryUsage().used - before) / 50
+    assert.ok(perCall <= limit, `${name}: ${perCall} bytes a call`)
+  }
+})
+
+// ================================================================================ N3: the fuzz runner
+test('the fuzz run\'s WebAssembly runner runs cases and says what each operation gave (N3)', () => {
+  // tools/fuzz/run_wasm.ts runs the cases of a fuzz run in smlibwasm, with the parameters the
+  // smlibpy run resolved, one JSON line per operation; the driver (run_wasm.py) compares them.
+  const dir = mkdtempSync(join(tmpdir(), 'fuzz-'))
+  const cases = [
+    { id: 'csg-0-1', kind: 'csg', A: ['box', 20, 20, 20], B: ['tr', ['cyl', 4, 30], 5, 0, 0] },
+    { id: 'slice-0-2', kind: 'slice', base: ['cut', ['box', 10, 10, 10], ['sph', 4]], axis: 'Z', at: 1.5, tilt: 30 },
+    { id: 'offset-0-3', kind: 'offset', base: ['box', 10, 10, 10], frac: 0.1 },
+  ]
+  writeFileSync(join(dir, 'cases.json'), JSON.stringify(cases))
+  writeFileSync(join(dir, 'resolved.json'), JSON.stringify({ 'offset-0-3': { d: 0.5 } }))
+  const runner = fileURLToPath(new URL('../../tools/fuzz/run_wasm.ts', import.meta.url))
+  const out = spawnSync(process.execPath, [runner, join(dir, 'cases.json'), join(dir, 'resolved.json'), '0'], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(out.status, 0, out.stderr)
+  const lines = out.stdout.trim().split('\n').map((l) => JSON.parse(l))
+  const recs: Record<string, Record<string, Record<string, unknown>>> = {}
+  for (const m of lines) if (m.rec && !m.rec.start) (recs[m.id] ??= {})[m.rec.op] = m.rec
+  assert.deepEqual(lines.filter((m) => m.case_done).map((m) => m.id), ['csg-0-1', 'slice-0-2', 'offset-0-3'])
+  const csg = recs['csg-0-1']
+  assert.ok(Math.abs((csg.D.v as number) - (8000 - Math.PI * 16 * 20)) < 1e-6 && csg.M.ncells === 4)
+  assert.ok(Math.abs((csg.U.v as number) + (csg.I.v as number) - (csg.A.v as number) - (csg.B.v as number)) < 1e-6)
+  const sl = recs['slice-0-2']
+  assert.ok(Math.abs((sl.above.v as number) + (sl.below.v as number) - (sl.base.v as number)) < 1e-6 * 1000)
+  const off = recs['offset-0-3']
+  // (the offset of a box extends its faces: sharp edges; and back again the box)
+  assert.ok(off.O.ok && off.O2.ok && Math.abs((off.O.v as number) - 11 ** 3) < 1e-6 && Math.abs((off.O2.v as number) - 1000) < 1e-6)
+})
+
+test('cells() of a merge that crashes the kernel\'s stitcher throw (N1)', () => {
+  // Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() reads a null
+  // polar box (SmBezierAux2d::BuildPolarBox) on this merge; smlibwasm trapped. It runs in the probe
+  // worker now, and the kernel the call runs on is left alone.
+  const m = Cone(3, 0, 4).rotate(X, 90).merge(Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3))
+  // (smlibpy's merge holds 149.19267, this one 145.98511: a divergence the fuzz run lists too)
+  assert.ok(m.volume > 113.0973 && m.volume < 150.7964)
+  assert.throws(() => m.cells(), (e: unknown) => e instanceof KernelError && /cells failed/.test(e.message) && /the kernel crashed/.test(e.detail))
+  assert.ok(Math.abs(Box(30, 20, 10).cut(Cylinder(4, 20)).volume - 5497.3452) < 1e-3) // (this kernel goes on)
+})

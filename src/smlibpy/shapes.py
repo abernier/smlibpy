@@ -1572,8 +1572,11 @@ class _Body(Shape):
         return self._brep.copy()
 
     def _like(self, brep: Any) -> Any:
-        """A body of the same type and metadata around ``brep``."""
-        return type(self)._wrap(brep, name=self.name, color=self.color)
+        """A body of the same type and metadata around ``brep`` (made from this one: read from a
+        file if this one was)."""
+        b = type(self)._wrap(brep, name=self.name, color=self.color)
+        b._h.imported = self._h.imported
+        return b
 
     # -- metadata (returns copies; shapes are immutable) ----------------------
     def named(self, name: str) -> Any:
@@ -2319,11 +2322,20 @@ class Part(_Body):
         for t in tools:
             if not isinstance(t, Part) or isinstance(t, Sketch):
                 raise TypeError(f"merge takes parts, not a {type(t).__name__}")
-        h = BrepHandle(self._copy_brep())
-        for t in tools:
-            with kernel_call("merge", "the parts may only touch along an edge or at a point"):
-                _combine(h, t, k.BooleanOp.MERGE, non_manifold=True)
-        merged = Part._wrap(_take(h), name=self.name, color=self.color)
+        from . import defeature
+
+        if defeature.GUARD_BOOLEANS:
+            from ._guard import isolated
+
+            brep = isolated("merge", _boolean_step, "merge", self._brep, [t._brep for t in tools], k.BooleanOp.MERGE,
+                            True)
+        else:
+            h = BrepHandle(self._copy_brep())
+            for t in tools:
+                with kernel_call("merge", "the parts may only touch along an edge or at a point"):
+                    _combine(h, t, k.BooleanOp.MERGE, non_manifold=True)
+            brep = _take(h)
+        merged = Part._wrap(brep, name=self.name, color=self.color)
         problem = _merge_problem(merged, [self, *tools])
         if problem is not None:
             raise ModelingError(f"merge: the kernel returned a result {problem}; a seam of one part that lies "
@@ -2332,12 +2344,18 @@ class Part(_Body):
 
     def cells(self) -> ShapeList[Part]:
         """The cells of a part made by :meth:`merge`, each as a part of its own (every closed region
-        of the body; a cavity is not a cell). A part that is one solid: ``[itself]``."""
+        of the body; a cavity is not a cell). A part that is one solid: ``[itself]``.
+
+        The kernel's stitcher runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): it
+        crashed on some merges, which raise :class:`KernelError` now."""
         d = ext.brep_dump(self._brep, False)
         if sum(1 for r in d["regions"] if not r["infinite"] and not r["void"]) <= 1:
             return ShapeList([self])
+        from ._guard import isolated
+
         with kernel_call("cells"):
-            regions = ext.region_shells(self._brep)
+            # (in another process: the kernel's stitcher crashed on some merges)
+            regions = isolated("cells", _region_shells_step, self._brep)
         solids = [[Part._wrap(b, name=self.name, color=self.color) for b in shells] for shells in regions]
         touching = ("an insert that touches the part around it at a point or along a line can do this: move it "
                     "off the wall or into it")
@@ -2454,6 +2472,12 @@ class Part(_Body):
         raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
 
     def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
+        from . import defeature
+
+        if defeature.GUARD_BOOLEANS:
+            from ._guard import isolated
+
+            return isolated(name, _boolean_step, name, self._brep, [t._brep for t in tools], op, False)
         h = BrepHandle(self._copy_brep())
         for t in tools:
             with kernel_call(name, "the operands may touch only in a degenerate way, or an operand is broken"):
@@ -2741,6 +2765,10 @@ class Part(_Body):
                 curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
+
+        The kernel step of a part read from a file (``import_step``, ``load``, ``import_usd``) or
+        made from one runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): the
+        kernel's fillet code crashed on some imported parts.
         """
         self._require_valid("fillet")
         given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
@@ -2763,21 +2791,23 @@ class Part(_Body):
             self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
         h, kedges = self._with_edges(sel)
         cont = _continuity(continuity)
-        with _round_call("fillet", "the radius may be too large for the selected edges"):
-            if isinstance(radius, tuple) and len(radius) == 2:
-                k.variable_radius_fillet(h.brep, kedges, start_radius=float(radius[0]), end_radius=float(radius[1]),
-                                         xsect_type=1 if cont is None else 2, continuity=cont or 1)
-            elif isinstance(radius, (list, np.ndarray)):
-                radii = [float(r) for r in radius]
-                if len(radii) != len(kedges):
-                    raise ValueError(f"{len(radii)} radii for {len(kedges)} edges")
-                xs = [k.FilletXSect.BLEND if cont else k.FilletXSect.CIRCULAR] * len(kedges)
-                k.fillet_edges_per_edge(h.brep, kedges, radii, xs, continuity=cont or 1, thumbweight=fullness)
-            elif cont is None:
-                k.fillet_edges(h.brep, kedges, radius=float(radius))
-            else:
-                k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
-        result = self._like(_take(h))
+        if isinstance(radius, tuple) and len(radius) == 2:
+            call: tuple[str, tuple[Any, ...], dict[str, Any]] = (
+                "variable_radius_fillet", (), {"start_radius": float(radius[0]), "end_radius": float(radius[1]),
+                                               "xsect_type": 1 if cont is None else 2, "continuity": cont or 1})
+        elif isinstance(radius, (list, np.ndarray)):
+            radii = [float(r) for r in radius]
+            if len(radii) != len(kedges):
+                raise ValueError(f"{len(radii)} radii for {len(kedges)} edges")
+            xs = [int(k.FilletXSect.BLEND if cont else k.FilletXSect.CIRCULAR)] * len(kedges)
+            call = ("fillet_edges_per_edge", (radii, xs), {"continuity": cont or 1, "thumbweight": fullness})
+        elif cont is None:
+            call = ("fillet_edges", (), {"radius": float(radius)})
+        else:
+            call = ("fillet_edges", (), {"radius": float(radius), "xsect_type": 2, "continuity": cont,
+                                         "thumbweight": fullness})
+        result = self._like(self._rounded(h, kedges, "fillet", "the radius may be too large for the selected edges",
+                                          call))
         if isinstance(radius, tuple) and len(radius) == 2:
             sizes = [max(float(radius[0]), float(radius[1]))] * len(sel)
         elif isinstance(radius, (list, np.ndarray)):
@@ -2786,6 +2816,19 @@ class Part(_Body):
             sizes = [float(radius)] * len(sel)
         self._check_volume_change(result, sel, "fillet", sizes, "circular" if cont is None else "blend")
         return result
+
+    def _rounded(self, h: BrepHandle, kedges: list[Any], what: str, hint: str,
+                 call: tuple[str, tuple[Any, ...], dict[str, Any]]) -> Any:
+        """The Brep of a fillet or chamfer: the kernel's ``call`` (its name, arguments after the
+        edges, keywords) on the copy ``h`` holds, whose edges ``kedges`` are. The step of a part
+        read from a file runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): the
+        kernel's fillet code crashed on some imported parts."""
+        if self._h.imported:
+            from ._guard import isolated
+
+            return isolated(what, _round_step, what, hint, h.brep, kedges, call)
+        _round_step(what, hint, h.brep, kedges, call)
+        return _take(h)
 
     def chamfer(self, edges: Any, length: float) -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces.
@@ -2817,14 +2860,14 @@ class Part(_Body):
             else:
                 radii.append(length)
         h, kedges = self._with_edges(sel)
-        with _round_call("chamfer", "the length may be too large for the selected edges"):
-            if all(abs(r - radii[0]) < 1e-12 for r in radii):
-                k.fillet_edges(h.brep, kedges, radius=radii[0], xsect_type=0)
-            else:
-                # per-edge radii with a linear cross-section, in one call: a call per edge
-                # replaces the edges next to it, and the next call would use freed edges
-                k.fillet_edges_per_edge(h.brep, kedges, radii, [k.FilletXSect.LINEAR] * len(kedges))
-        result = self._like(_take(h))
+        if all(abs(r - radii[0]) < 1e-12 for r in radii):
+            call: tuple[str, tuple[Any, ...], dict[str, Any]] = ("fillet_edges", (), {"radius": radii[0], "xsect_type": 0})
+        else:
+            # per-edge radii with a linear cross-section, in one call: a call per edge replaces the
+            # edges next to it, and the next call would use freed edges
+            call = ("fillet_edges_per_edge", (radii, [int(k.FilletXSect.LINEAR)] * len(kedges)), {})
+        result = self._like(self._rounded(h, kedges, "chamfer", "the length may be too large for the selected edges",
+                                          call))
         self._check_volume_change(result, sel, "chamfer", [float(length)] * len(sel), "chamfer")
         return result
 
@@ -2835,12 +2878,12 @@ class Part(_Body):
 
         Walls that do not fit into the part (measured across it from each face), and results
         the kernel gets wrong (faces that do not meet, no cavity, the part given back, a closed
-        shell of the wrong volume), raise :class:`ModelingError`. The kernel step runs in a
-        forked copy of the process (Linux, macOS), so that a crash of its offset code raises
-        ``ModelingError`` too, and it is stopped after ``smlibpy.defeature.GUARD_SECONDS``
-        (20 s): raise that for large parts.
+        shell of the wrong volume), raise :class:`ModelingError`. The kernel step runs in
+        another process (a forked copy on Linux and macOS, a helper process on Windows), so that a
+        crash of its offset code raises ``ModelingError`` too, and it is stopped after
+        ``smlibpy.defeature.GUARD_SECONDS`` (20 s): raise that for large parts.
         """
-        from .defeature import _isolated
+        from ._guard import isolated
 
         self._require_valid("shell")
         if not abs(float(thickness)) > 0:
@@ -2856,22 +2899,14 @@ class Part(_Body):
 
         def offset_volume(extended: bool) -> float:
             if extended not in offsets:
-                def work() -> Any:
-                    with kernel_call("shell"):
-                        return k.offset_brep(self._brep, d, extended_offset=extended)
-
-                off = Part._wrap(_isolated("shell", work))
+                off = Part._wrap(isolated("shell", _offset_step, "shell", None, self._brep, d, extended))
                 offsets[extended] = float(off._props(1e-4)["volume"]) if off._brep.face_count() else 0.0
             return offsets[extended]
 
         def attempt(extended: bool) -> Part:
-            def work() -> Any:
-                with kernel_call("shell", hint):
-                    return k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces)
-
-            # In a copy of the process: the kernel's offset code can crash, mostly in its extended
-            # mode, which depends on memory layout.
-            return self._like(_isolated("shell", work))
+            # In another process: the kernel's offset code can crash, mostly in its extended mode,
+            # which depends on memory layout.
+            return self._like(isolated("shell", _shell_step, hint, self._brep, d, extended, list(faces)))
 
         def problem(result: Part, extended: bool) -> str | None:
             return self._shell_problem(result, d, faces, rays, extended, offset_volume)
@@ -3011,24 +3046,20 @@ class Part(_Body):
         equal copy).
 
         Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) raise
-        :class:`ModelingError`. The kernel step runs in a forked copy of the process (Linux,
-        macOS) and is stopped after ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for
-        :meth:`shell`."""
-        from .defeature import _isolated
+        :class:`ModelingError`. The kernel step runs in another process (a forked copy on Linux and
+        macOS, a helper process on Windows) and is stopped after
+        ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`shell`."""
+        from ._guard import isolated
 
         self._require_valid("offset")
         d = float(distance)
         if d == 0:
             return self._like(self._copy_brep())
 
-        def work() -> Any:
-            with kernel_call("offset"):
-                return k.offset_brep(self._brep, d)
-
         def attempt() -> Part:
             # (always the extended mode, which depends on memory layout and can crash: it runs in
-            # a copy of the process)
-            return self._like(_isolated("offset", work))
+            # another process)
+            return self._like(isolated("offset", _offset_step, "offset", None, self._brep, d, True))
 
         return self._checked("offset", [(True, attempt), (True, attempt)], grow=max(d, 0.0), smaller=d < 0)
 
@@ -3356,6 +3387,17 @@ def _distance_to_edge(e: Edge, p: Vector) -> float:
     return e.distance_to(p)
 
 
+@contextlib.contextmanager
+def _curve_copies(curves: list[Any]) -> Iterator[list[Any]]:
+    """Kernel curves (copies) for a kernel call that copies what it is given (SmPyLib's "Pure"
+    calls: the sweeps, offset profiles, skins), freed once the call is done."""
+    try:
+        yield curves
+    finally:
+        for c in curves:
+            ext.delete_curve(c)
+
+
 def _take(h: BrepHandle) -> Any:
     """Release a handle's Brep to a new owner."""
     b, h.brep = h.brep, None
@@ -3389,6 +3431,49 @@ def _merge_problem(merged: Part, parts: Sequence[Part]) -> str | None:
     if whole > sum(volumes) * (1 + 1e-3):
         return f"of volume {whole:.6g}, more than that of all parts together ({sum(volumes):.6g})"
     return None
+
+
+# -- kernel steps that run in another process (smlibpy._guard.isolated) -------------------
+def _offset_step(what: str, hint: str | None, brep: Any, d: float, extended: bool) -> Any:
+    with kernel_call(what, hint):
+        return k.offset_brep(brep, d, extended_offset=extended)
+
+
+def _shell_step(hint: str, brep: Any, d: float, extended: bool, faces: list[Any]) -> Any:
+    with kernel_call("shell", hint):
+        return k.shell_brep(brep, d, extended_offset=extended, faces_to_shell=faces)
+
+
+def _thicken_step(hint: str, brep: Any, d: float) -> Any:
+    with kernel_call("thicken", hint):
+        return k.shell_brep(brep, d, create_solid=True)
+
+
+def _region_shells_step(brep: Any) -> Any:
+    return ext.region_shells(brep)
+
+
+def _boolean_step(name: str, brep: Any, tools: list[Any], op: Any, non_manifold: bool) -> Any:
+    """A copy of ``brep`` combined with copies of ``tools`` one after the other."""
+    h = BrepHandle(brep.copy())
+    hint = ("the parts may only touch along an edge or at a point" if non_manifold else
+            "the operands may touch only in a degenerate way, or an operand is broken")
+    for t in tools:
+        with kernel_call(name, hint):
+            th = BrepHandle(t.copy())
+            h.brep = ext.boolean(h.brep, th.brep, op, non_manifold)
+            _take(th)
+    return _take(h)
+
+
+def _round_step(what: str, hint: str, brep: Any, kedges: list[Any], call: tuple[str, tuple[Any, ...], dict[str, Any]]) -> Any:
+    """Rounds ``kedges`` of ``brep`` (changed in place, and returned)."""
+    name, args, keywords = call
+    if name == "fillet_edges_per_edge":  # (the cross-sections cross as numbers)
+        args = (args[0], [k.FilletXSect(x) for x in args[1]], *args[2:])
+    with _round_call(what, hint):
+        getattr(k, name)(brep, kedges, *args, **keywords)
+    return brep
 
 
 def _combine(h: BrepHandle, tool: _Body, op: Any, non_manifold: bool = False) -> None:
@@ -3473,9 +3558,9 @@ class Shell(_Body):
         thickness grows against them). With ``both`` the solid is ``thickness`` thick in
         total, half of it to each side of the sheet.
 
-        The kernel step runs in a forked copy of the process (Linux, macOS), so that a crash of
-        its offset code raises :class:`ModelingError`, and is stopped after
-        ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`Part.shell`."""
+        The kernel step runs in another process (a forked copy on Linux and macOS, a helper
+        process on Windows), so that a crash of its offset code raises :class:`ModelingError`, and
+        is stopped after ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`Part.shell`."""
         d = float(thickness)
         if d == 0:
             raise ValueError("thicken: the thickness must not be zero")
@@ -3485,16 +3570,14 @@ class Shell(_Body):
         if both:
             # one side, then the other, fused: the two halves share the sheet
             return self.thicken(d / 2) + self.thicken(-d / 2)
-        from .defeature import _isolated
-
-        def work() -> Any:
-            with kernel_call("thicken", hint):
-                return k.shell_brep(self._brep, d, create_solid=True)
+        from ._guard import isolated
 
         # (the kernel's extended offset mode, which depends on memory layout and can crash: it runs
-        # in a copy of the process)
-        b = _isolated("thicken", work)
-        return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+        # in another process)
+        b = isolated("thicken", _thicken_step, hint, self._brep, d)
+        part = _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+        part._h.imported = self._h.imported
+        return part
 
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())
@@ -3528,7 +3611,9 @@ class Sketch(Shell):
         return s
 
     def _like(self, brep: Any) -> Sketch:
-        return Sketch._wrap(brep, self._plane, name=self.name, color=self.color)
+        s = Sketch._wrap(brep, self._plane, name=self.name, color=self.color)
+        s._h.imported = self._h.imported
+        return s
 
     @classmethod
     def _from_wires(cls, wires: Sequence[Wire], plane: Plane | None = None) -> Sketch:
@@ -3959,8 +4044,9 @@ class Sketch(Shell):
         reference = abs(_loop_area(wire))
         for side in (k.OffsetType.LEFT, k.OffsetType.RIGHT):
             try:
-                with kernel_call("offset", "the offset may collapse the region"):
-                    b = k.create_offset_profile(wire._copy_curves(), distance, offset_type=side, round_corners=round)
+                with kernel_call("offset", "the offset may collapse the region"), \
+                        _curve_copies(wire._copy_curves()) as curves:
+                    b = k.create_offset_profile(curves, distance, offset_type=side, round_corners=round)
             except KernelError:
                 if not grow:
                     continue
@@ -4049,8 +4135,7 @@ class Sketch(Shell):
         parts = []
         for f in self.faces():
             loops = f.wires()
-            curves = loops[0]._copy_curves()
-            with kernel_call("extrude", hint):
+            with kernel_call("extrude", hint), _curve_copies(loops[0]._copy_curves()) as curves:
                 outer = k.draft_sweep(curves, float(amount), float(taper))
             part = _require_solid(Part._wrap(outer), "extrude", hint)
             n = self._plane.z_dir * (1.0 if amount > 0 else -1.0)
@@ -4063,8 +4148,8 @@ class Sketch(Shell):
                 # A hole runs the other way round than the outline; the kernel sweeps a loop
                 # along the side its orientation gives, so turn it like the outline. The
                 # hole widens where the outline narrows.
-                with kernel_call("extrude", hint):
-                    hole = Part._wrap(k.draft_sweep(w.reversed()._copy_curves(), float(amount), -float(taper)))
+                with kernel_call("extrude", hint), _curve_copies(w.reversed()._copy_curves()) as curves:
+                    hole = Part._wrap(k.draft_sweep(curves, float(amount), -float(taper)))
                 part = part - _require_solid(hole, "extrude", hint)
             parts.append(part)
         result = parts[0]
@@ -4098,9 +4183,11 @@ class Sketch(Shell):
         with kernel_call("revolve", hint):
             for f in self.faces():
                 loops = f.wires()
-                piece = Part._wrap(k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True))
+                with _curve_copies(loops[0]._copy_curves()) as curves:
+                    piece = Part._wrap(k.rotational_sweep(curves, o, d, float(angle), cap_ends=True))
                 for w in loops[1:]:
-                    piece = piece - Part._wrap(k.rotational_sweep(w._copy_curves(), o, d, float(angle), cap_ends=True))
+                    with _curve_copies(w._copy_curves()) as curves:
+                        piece = piece - Part._wrap(k.rotational_sweep(curves, o, d, float(angle), cap_ends=True))
                 result = piece if result is None else result + piece
         if result is None:
             raise ValueError("empty sketch")

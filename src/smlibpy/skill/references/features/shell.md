@@ -57,9 +57,9 @@ bosses work too.
 - smlibpy checks every result: a valid solid in the part's box, faces that meet (gaps below
   1e-3 of the volume), a volume that drops (inward), and a cavity where no wall reaches. It
   tries the kernel's plain mode, then its extended mode, and that once more only when its
-  result was refused. The kernel runs in a forked copy of the process (Linux, macOS): a crash
-  or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there,
-  and this process goes on.
+  result was refused. The kernel runs in another process (a forked copy on Linux and macOS, a
+  helper process on Windows; see `parts/guards`): a crash or a step longer than
+  `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this process goes on.
 - Check: `volume` drops (inward) and `bbox()` stays the same; compare with outer minus inner.
 
 ## Errors

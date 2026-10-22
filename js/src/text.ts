@@ -1,6 +1,6 @@
 // Text: lettering as a sketch with the exact outlines of a font.
 
-import { _opts, k } from './kernel.ts'
+import { _opts, k, scope } from './kernel.ts'
 import { Align, type AlignLike, _one } from './align.ts'
 import { type Contour, type Font, FontError, type Point, type Segment, _repr, loadFont } from './font.ts'
 import { Plane, _formatG } from './geometry.ts'
@@ -54,52 +54,54 @@ export interface TextOptions {
  * not have, a font that cannot be read, or a path the text does not fit on.
  */
 export function Text(text: string, size: number, options: TextOptions = {}): Sketch {
-  _opts('Text', options, arguments.length)
-  const font = options.font ?? null
-  const align: AlignLike = options.align === undefined ? Align.CENTER : options.align
-  const spacing = options.spacing ?? 0.0
-  const lineSpacing = options.lineSpacing ?? 1.6
-  const kerning = options.kerning ?? true
-  const path = options.path ?? null
-  if (typeof text !== 'string') throw new TypeError(`Text: the text must be a string, not ${_typeName(text)}`)
-  if (!(typeof size === 'number' && Number.isFinite(size) && size > 0)) {
-    throw new RangeError(`Text: size must be a positive number (the height of capital letters in mm), got ${_reprValue(size)}`)
-  }
-  if (!(Number.isFinite(lineSpacing) && lineSpacing > 0)) {
-    throw new RangeError(`Text: lineSpacing must be positive (a multiple of size), got ${_reprValue(lineSpacing)}`)
-  }
-  let f: Font
-  try {
-    f = loadFont(font)
-  } catch (e) {
-    if (e instanceof FontError) throw new RangeError(`Text: ${e.message}`)
-    throw e
-  }
-  const lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
-  const chars = [...text]
-  const bad = _sortedSet(chars.filter((c) => {
-    const o = c.codePointAt(0) as number
-    return (o < 32 && c !== '\r' && c !== '\n') || (0x7f <= o && o < 0xa0)
-  }))
-  if (bad.length) throw new RangeError(`Text: control characters cannot be drawn: ${bad.map((c) => `U+${_hex4(c)}`).join(', ')}`)
-  const missing = _sortedSet(chars.filter((c) => c !== '\r' && c !== '\n' && f.glyphIndex(c) === null))
-  if (missing.length) {
-    const shown = missing
-      .slice(0, 8)
-      .map((c) => `${_repr(c)} (U+${_hex4(c)})`)
-      .join(', ')
-    throw new RangeError(
-      `Text: the font ${f.name} has no glyph for ${shown}; pass font: with a font that has ${missing.length === 1 ? 'it' : 'them'}`,
-    )
-  }
-  const scale = size / f.capHeight
-  const laid = lines.map((line) => _layout(f, line, scale, Number(spacing), Boolean(kerning)))
-  if (!laid.some((line) => line.glyphs.some(([g]) => _hasInk(f, g)))) {
-    throw new RangeError('Text: nothing to draw: the text is empty or only spaces')
-  }
-  const [ax, ay] = _alignment(align)
-  const placed = path !== null ? _alongPath(f, laid, path, size, ax, ay) : _straight(laid, size, lineSpacing, ax, ay)
-  return _sketch(f, placed, scale)
+  return scope(() => {
+    _opts('Text', options, arguments.length)
+    const font = options.font ?? null
+    const align: AlignLike = options.align === undefined ? Align.CENTER : options.align
+    const spacing = options.spacing ?? 0.0
+    const lineSpacing = options.lineSpacing ?? 1.6
+    const kerning = options.kerning ?? true
+    const path = options.path ?? null
+    if (typeof text !== 'string') throw new TypeError(`Text: the text must be a string, not ${_typeName(text)}`)
+    if (!(typeof size === 'number' && Number.isFinite(size) && size > 0)) {
+      throw new RangeError(`Text: size must be a positive number (the height of capital letters in mm), got ${_reprValue(size)}`)
+    }
+    if (!(Number.isFinite(lineSpacing) && lineSpacing > 0)) {
+      throw new RangeError(`Text: lineSpacing must be positive (a multiple of size), got ${_reprValue(lineSpacing)}`)
+    }
+    let f: Font
+    try {
+      f = loadFont(font)
+    } catch (e) {
+      if (e instanceof FontError) throw new RangeError(`Text: ${e.message}`)
+      throw e
+    }
+    const lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')
+    const chars = [...text]
+    const bad = _sortedSet(chars.filter((c) => {
+      const o = c.codePointAt(0) as number
+      return (o < 32 && c !== '\r' && c !== '\n') || (0x7f <= o && o < 0xa0)
+    }))
+    if (bad.length) throw new RangeError(`Text: control characters cannot be drawn: ${bad.map((c) => `U+${_hex4(c)}`).join(', ')}`)
+    const missing = _sortedSet(chars.filter((c) => c !== '\r' && c !== '\n' && f.glyphIndex(c) === null))
+    if (missing.length) {
+      const shown = missing
+        .slice(0, 8)
+        .map((c) => `${_repr(c)} (U+${_hex4(c)})`)
+        .join(', ')
+      throw new RangeError(
+        `Text: the font ${f.name} has no glyph for ${shown}; pass font: with a font that has ${missing.length === 1 ? 'it' : 'them'}`,
+      )
+    }
+    const scale = size / f.capHeight
+    const laid = lines.map((line) => _layout(f, line, scale, Number(spacing), Boolean(kerning)))
+    if (!laid.some((line) => line.glyphs.some(([g]) => _hasInk(f, g)))) {
+      throw new RangeError('Text: nothing to draw: the text is empty or only spaces')
+    }
+    const [ax, ay] = _alignment(align)
+    const placed = path !== null ? _alongPath(f, laid, path, size, ax, ay) : _straight(laid, size, lineSpacing, ax, ay)
+    return _sketch(f, placed, scale)
+  })
 }
 
 // =============================================================================

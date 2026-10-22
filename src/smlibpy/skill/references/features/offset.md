@@ -28,9 +28,9 @@ cylinder r6 h12. Holes shrink when the part grows and grow when it shrinks. Sphe
   stay sharp. A sharp-edged outer skin is `part.offset(t) - part`.
 - smlibpy checks the result: a valid solid in the grown box, faces that meet (gaps below 1e-3 of
   the volume), a volume that went the right way; a refused result is tried once more, a kernel
-  error is not. The kernel runs in a forked copy of the process (Linux, macOS): a crash or a step
-  longer than `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this
-  process goes on.
+  error is not. The kernel runs in another process (a forked copy on Linux and macOS, a helper
+  process on Windows; see `parts/guards`): a crash or a step longer than
+  `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this process goes on.
 - The input part must be valid: otherwise `ModelingError: offset: the part is not a valid
   solid (...)`.
 

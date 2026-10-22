@@ -62,7 +62,7 @@ export { GridLocations, HexLocations, Locations, PolarLocations } from './locati
 // operations
 export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, thicken } from './operations.ts'
 // removing fillets and faces: the time limit of a kernel step
-export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
+export { GUARD_BOOLEANS, GUARD_SECONDS, setGuardBooleans, setGuardSeconds } from './defeature.ts'
 // deformations
 export { Lattice, bend, taper, twist } from './deform.ts'
 // surfaces
@@ -105,4 +105,4 @@ export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLi
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors, warnings and memory
 export { KernelError, ModelingError } from './_errors.ts'
-export { memoryUsage, setWarningHandler, type MemoryUsage } from './kernel.ts'
+export { memoryUsage, scope, setWarningHandler, type MemoryUsage } from './kernel.ts'

@@ -96,8 +96,8 @@ build:
   cylinder and 100 imports grew a process by 16.7 MB, now by less than 0.5 MB (the WebAssembly build:
   2000 checks 28 MB, now 0.6 MB). AddressSanitizer reports nothing for `tests/test_step_import.py`
   (which runs the seam repairs of `SplitAtSeam` on the curves handed over), `tests/test_io.py`,
-  `tests/test_tessellation.py` and `tests/test_measure.py` (121 passed). LeakSanitizer does not run
-  on macOS arm64; the heap statistics stand in for it. Over 449 STEP files (611 bodies) of the
+  `tests/test_tessellation.py` and `tests/test_measure.py` (121 passed). LeakSanitizer did not run
+  then (Apple's clang has none on macOS arm64); the heap statistics stood in for it. Over 449 STEP files (611 bodies) of the
   classcad-mcp corpus, no volume, face count, validity or error changed with the seam and the
   random-number changes.
 - The tight box: a USD file with such line edges reads back with `bbox()` of +-5, as the box is
@@ -129,20 +129,33 @@ Defects that remain in the kernel, and what smlibpy does about them:
 
 ## Checking with AddressSanitizer
 
-Configure a separate build directory with
-`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"`
-(and `-DSKBUILD=ON`, which keeps its `_core` module in the build directory rather than writing it
-over the one in `src/smlibpy`), put its `_core` module next to a copy of `src/smlibpy`, and run
-the Python binary itself (on macOS not through `env` or `timeout`, which drop the `DYLD_`
-variables) with
-`DYLD_INSERT_LIBRARIES=$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)` and
-`ASAN_OPTIONS=detect_leaks=0:strip_env=0` (`strip_env=0` keeps the sanitizer in the worker
-processes of the MCP session tests); add `quarantine_size_mb=8192` where freed memory is read
-long after it was freed. LeakSanitizer does not run on macOS arm64: malloc zone statistics
-(`malloc_zone_statistics`), macOS `leaks` and resident-memory bounds stand in for it. With the
-guard on, a defect in a forked copy shows as "the kernel crashed (signal 6 ...)" and its report
-goes to stderr; `GUARD_SECONDS = 0` runs every step in the process, so the first report ends the
-run.
+`tools/sanitize/run.py` does it (and CI's "Checks" workflow runs it every night on Linux):
+configure a separate build directory with
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON -DCMAKE_CXX_FLAGS="-fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer"`
+(`-DSKBUILD=ON` keeps its `_core` module in the build directory rather than writing it over the
+one in `src/smlibpy`; `-fsanitize-recover=address` lets a run go on after a report), build it, and
+run `python tools/sanitize/run.py --build <dir> [tests]` (by default `tests/test_defeature.py`,
+`test_guards.py`, `test_draft.py` and `test_io.py`). It puts the module next to a copy of
+`src/smlibpy`, preloads the sanitizer's runtime (`LD_PRELOAD`; on macOS
+`DYLD_INSERT_LIBRARIES`, for which it runs the Python binary itself, not a wrapper such as `env`
+or `timeout`, which drop the `DYLD_` variables), runs every kernel step in the test process
+(`GUARD_SECONDS = 0`), and reads the reports: a memory error fails the run unless
+`tools/sanitize/known.txt` names it, and so does a leak of the kernel or of smlibpy's C++ unless
+`tools/sanitize/leaks.txt` names it. LeakSanitizer runs on Linux and, on macOS, with LLVM's clang
+(`-DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++`); Apple's clang has none, and there
+`--no-leaks` checks memory errors only (malloc zone statistics, macOS `leaks` and resident-memory
+bounds stand in for the leak check). With the guard on, a defect in a forked copy shows as "the
+kernel crashed (signal 6 ...)" and its report goes to stderr; add `quarantine_size_mb=8192` to
+`ASAN_OPTIONS` where freed memory is read long after it was freed.
+
+The first runs of this check (LLVM 21 on macOS arm64) found what the two lists hold: a
+heap-buffer-overflow in `SmCurveClassification::FindInterval` from `sm_FixProblemsBySqueezing` in
+the extended offset mode's merge (the steps of
+`tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail`), and leaks in
+`SmPrimitiveCreation::CreateSweepAlongPlanarPath` (the copies of the profile and path of each
+segment, about 10 kB a mitered sweep) and `SmProtoTopologyManager::CreateProtoEdge`; neither is
+patched yet. It also found smlibpy's own leak of the curves it handed the kernel's sweeps, skins
+and offset profiles, which copy them (fixed).
 
 ## Dropping a patch
 

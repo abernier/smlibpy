@@ -344,6 +344,9 @@ export interface MemoryUsage {
   /** What the module's memory can grow to: 4 GB (less 64 kB), as far as a 32-bit WebAssembly
    * module reaches. */
   readonly limit: number
+  /** The kernel objects (bodies, curves, surfaces, meshes) that JavaScript holds and that are not
+   * freed yet: neither disposed nor garbage collected. A count, not bytes. */
+  readonly handles: number
 }
 
 /**
@@ -356,19 +359,23 @@ export interface MemoryUsage {
  */
 export function memoryUsage(): MemoryUsage {
   const { used, heap, limit } = k.runtime.memory_usage()
-  return { used, heap, limit }
+  return { used, heap, limit, handles: live }
 }
 
 // -------------------------------------------------------------------------------- handles
 // What is freed once a handle is garbage collected: the kernel object's kind and number (never
 // the handle itself, which would keep it alive).
 const freed = new FinalizationRegistry<[string, number]>(([kind, p]) => {
+  live--
   try {
     free(kind, p)
   } catch {
     // (the module may be gone)
   }
 })
+
+/** The handles that own a kernel object (see MemoryUsage.handles). */
+let live = 0
 
 function free(kind: string, p: number): void {
   if (kind === 'brep') ext.delete_brep(p)
@@ -386,7 +393,11 @@ abstract class Handle {
   constructor(kind: string, p: number) {
     this._kind = kind
     this._p = p
-    if (p) freed.register(this, [kind, p], this)
+    if (p) {
+      freed.register(this, [kind, p], this)
+      live++
+      if (scopes.length) scopes[scopes.length - 1].push(this)
+    }
   }
 
   /** A number that tells handles apart for as long as they live (their kernel objects' numbers
@@ -399,6 +410,7 @@ abstract class Handle {
     if (!p) throw new Error('the kernel object was disposed')
     this._p = 0
     freed.unregister(this)
+    live--
     return p
   }
 
@@ -413,12 +425,101 @@ abstract class Handle {
     if (!p) return
     this._p = 0
     freed.unregister(this)
+    live--
     free(this._kind, p)
   }
 
   [Symbol.dispose](): void {
     this.dispose()
   }
+}
+
+// -------------------------------------------------------------------------------- scopes
+/** The handles made in each scope that runs (innermost last). */
+const scopes: Handle[][] = []
+
+/**
+ * Runs `fn` and frees every kernel object (body, curve, surface, mesh) made while it runs that its
+ * result does not hold, at once: the parts, sketches, faces and meshes `fn` returns (also in
+ * arrays, ShapeLists, Maps, Sets and plain objects) stay, everything else it made, named or not
+ * (the operands of a chain such as `Box(...).cut(Cylinder(...)).fillet(...)`, a step's
+ * intermediates), is disposed when `fn` returns. Objects made before the scope stay as they are.
+ * Where `fn` throws, what it made is freed (what the error holds stays) and the error goes on.
+ *
+ * The garbage collector frees kernel objects only between tasks of the event loop, so a loop that
+ * builds without returning to the event loop keeps every object until it ends: `scope` keeps such
+ * a loop's memory flat. Scopes nest: what an inner scope returns belongs to the outer one.
+ *
+ * `fn` must return its result, not a promise (a scope cannot see what an async function makes after
+ * its first `await`): a promise is a TypeError, and nothing is freed. Do not keep objects that `fn`
+ * makes anywhere but in its result (in a variable outside, a cache): they are disposed, and using
+ * them is a TypeError. (A JavaScript-only function: Python frees each kernel object with its last
+ * reference.)
+ */
+export function scope<T>(fn: () => T): T {
+  if (typeof fn !== 'function') throw new TypeError(`scope takes a function, not ${fn === null ? 'null' : typeof fn}`)
+  const made: Handle[] = []
+  scopes.push(made)
+  let result: T
+  try {
+    result = fn()
+  } catch (e) {
+    scopes.pop()
+    _freeExcept(made, e)
+    throw e
+  }
+  scopes.pop()
+  if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof (result as Any).then === 'function') {
+    // (an async function goes on making objects after its first await: nothing is freed)
+    if (scopes.length) scopes[scopes.length - 1].push(...made)
+    throw new TypeError('scope takes a function that returns its result, not a promise: an async function goes on after its first await, where the scope cannot follow it')
+  }
+  _freeExcept(made, result)
+  return result
+}
+
+/** Disposes the handles of `made` that `kept` does not reach; those it reaches go to the scope
+ * around, if any. */
+function _freeExcept(made: Handle[], kept: unknown): void {
+  const reached = _reachable(kept)
+  const outer = scopes.length ? scopes[scopes.length - 1] : null
+  for (const h of made) {
+    if (!h.alive) continue
+    if (reached.has(h)) outer?.push(h)
+    else h.dispose()
+  }
+}
+
+/** The handles a value holds: through its own properties, the items of arrays, Maps and Sets (not
+ * through functions, whose closures cannot be seen, or typed arrays). */
+export function _reachable(value: unknown): Set<Handle> {
+  const out = new Set<Handle>()
+  const seen = new Set<object>()
+  const todo: unknown[] = [value]
+  while (todo.length) {
+    const v = todo.pop()
+    if (v === null || typeof v !== 'object' || seen.has(v)) continue
+    seen.add(v)
+    if (v instanceof Handle) {
+      out.add(v)
+      continue
+    }
+    if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || v instanceof Promise || v instanceof WeakMap || v instanceof WeakSet) continue
+    if (typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer) continue
+    if (v instanceof Map) {
+      for (const [key, x] of v) todo.push(key, x)
+      continue
+    }
+    if (v instanceof Set) {
+      for (const x of v) todo.push(x)
+      continue
+    }
+    for (const key of Reflect.ownKeys(v)) {
+      const d = Object.getOwnPropertyDescriptor(v, key)
+      if (d !== undefined && 'value' in d && d.value !== null && typeof d.value === 'object') todo.push(d.value)
+    }
+  }
+  return out
 }
 
 /**
@@ -432,11 +533,13 @@ export function _disposed(what: string): TypeError {
 /**
  * Owns one kernel Brep and frees it with the last reference. `sound` records how far the body was
  * found a sound solid (0: not checked; the levels are in shapes.ts), `props` its integrated mass
- * properties (a body's Brep does not change once wrapped).
+ * properties (a body's Brep does not change once wrapped), `imported` whether it was read from a
+ * file or made from such a body (its fillets run in the probe worker, see GUARD_SECONDS).
  */
 export class BrepHandle extends Handle {
   sound = 0
   props: Any = null
+  imported = false
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

@@ -59,11 +59,14 @@ The functions, classes, checks and error messages are smlibpy's, so
 ## Memory
 
 Every body lives in the kernel's memory, which the JavaScript garbage collector does not see. A
-body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
-`using part = ...`) frees it at once, which keeps memory flat in long loops. The faces, edges and
-vertices of a disposed body go with it. A mesh is its arrays: the kernel's mesh is freed once
-they are copied out. The kernel's memory can grow to 4 GB; `memoryUsage()` tells how much it holds,
-and a call that finds it used up fails with a `KernelError` of status `SM_ERR_OUT_OF_MEMORY`.
+body's kernel object is freed when the body is garbage collected, which happens only between tasks
+of the event loop; `part.dispose()` (or `using part = ...`) frees it at once. The faces, edges and
+vertices of a disposed body go with it. In a loop that does not return to the event loop, run each
+step in `scope(() => ...)`: it frees every kernel object the step made that its result does not
+hold, also the unnamed operands of a chain such as `Box(...).cut(Cylinder(...))`, which keeps the
+loop's memory flat. A mesh is its arrays: the kernel's mesh is freed once they are copied out. The
+kernel's memory can grow to 4 GB; `memoryUsage()` tells how much it holds, and a call that finds it
+used up fails with a `KernelError` of status `SM_ERR_OUT_OF_MEMORY`.
 
 ## Running off the main thread
 

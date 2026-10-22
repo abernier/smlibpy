@@ -168,7 +168,7 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     Returns:
         The blend, a sheet (:class:`Shell`) whose edges along its length lie on the two surfaces.
     """
-    from .defeature import _guarded
+    from ._guard import isolated
 
     fa, fb = _one_face(a, "a"), _one_face(b, "b")
     if not radius > 0 or not math.isfinite(radius):
@@ -184,16 +184,21 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     # (on copies: the kernel changes the surfaces it blends, and a second blend of the same
     # surfaces then fails)
     ca, cb = fa.to_shell(), fb.to_shell()
-    sa, sb = ca.faces()[0]._f.surface(), cb.faces()[0]._f.surface()
     with kernel_call("surface_fillet", hint):
-        brep = _guarded("surface_fillet", lambda: k.surface_surface_fillet(
-            sa, sb, radius1=r1, radius2=r2, tolerance=tolerance, xsect_type=2))
+        # (in another process: the kernel's blend code can crash or loop)
+        brep = isolated("surface_fillet", _surface_fillet_step, ca.faces()[0]._f, cb.faces()[0]._f, r1, r2, tolerance)
     if brep is None:
         raise ModelingError(f"surface_fillet: the kernel made no blend; {hint}")
     shell = Shell._wrap(brep)
     if not shell.faces():
         raise ModelingError(f"surface_fillet: the kernel made no blend; {hint}")
     return shell
+
+
+def _surface_fillet_step(a: Any, b: Any, r1: float, r2: float, tolerance: float) -> Any:
+    """The kernel's blend of the surfaces of two faces (isolated)."""
+    return k.surface_surface_fillet(a.surface(), b.surface(), radius1=r1, radius2=r2, tolerance=tolerance,
+                                    xsect_type=2)
 
 
 def _one_face(x: Any, name: str) -> Face:

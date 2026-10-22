@@ -33,16 +33,35 @@ type Any = any
 export const TANGENCY = 2.0
 
 /**
- * Seconds the kernel may take for one step. Where JavaScript can wait for another thread (Node,
- * and Web Workers of a cross-origin isolated page), the kernel first does the work in a probe
- * worker, a kernel of its own, on copies of the bodies: if it crashes there or takes longer than
- * this, a ModelingError says so and this kernel is left alone (SMLib's patching and Boolean code
- * can crash or loop on some parts). The steps of defeaturing and `surfaceFillet` then run again
- * here; those of `shell`, `offset` and `thicken` run only there, and their result comes back as an
- * exact copy. `0` runs the kernel directly, as on a browser's main thread,
- * where a step that loops does not come back. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
+ * Seconds the kernel may take for one step that can crash or loop. Where JavaScript can wait for
+ * another thread (Node, and Web Workers of a cross-origin isolated page), such steps run in a probe
+ * worker, a kernel of its own, on copies of the bodies: if the kernel crashes there or takes longer
+ * than this, a ModelingError says so and this kernel is left alone (SMLib's patching, offset and
+ * Boolean code can crash or loop on some parts). This kernel never runs the step itself: what the
+ * step made comes back as an exact copy (binary `.smb`). The steps are those of `removeFillets`,
+ * `removeFaces`, `surfaceFillet`, `shell`, `offset`, `thicken` and `Part.cells()`, fillets and
+ * chamfers of parts read from files (STEP, `.smb`, USD) and, with GUARD_BOOLEANS, Booleans. `0`
+ * runs the kernel directly, as on a browser's main thread, where a step that loops does not come
+ * back. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
  */
 export let GUARD_SECONDS = 20.0
+
+/**
+ * Whether every Boolean (`fuse`, `cut`, `intersect`, `merge`) runs in the probe worker too, as the
+ * steps of GUARD_SECONDS (off by default: the bodies go there and back as `.smb`). For long batch
+ * runs over unknown inputs, where a crash of the kernel must not end the run. Python's
+ * `GUARD_BOOLEANS`; `setGuardBooleans` sets it.
+ */
+export let GUARD_BOOLEANS = false
+
+/** Sets GUARD_BOOLEANS (Python's `smlibpy.defeature.GUARD_BOOLEANS = on`); returns the value it
+ * had. */
+export function setGuardBooleans(on: boolean): boolean {
+  if (typeof on !== 'boolean') throw new TypeError(`setGuardBooleans: on must be true or false, got ${typeof on}`)
+  const old = GUARD_BOOLEANS
+  GUARD_BOOLEANS = on
+  return old
+}
 
 /** Sets GUARD_SECONDS (Python's `smlibpy.defeature.GUARD_SECONDS = seconds`); returns the value it
  * had. */
@@ -77,6 +96,8 @@ export type _Job = { op: string; bodies: Uint8Array[]; [argument: string]: unkno
  * this kernel will do; a step that takes too long or crashes there becomes a _KernelFault, and the
  * step is dropped as smlibpy drops one in its forked copy. Without a probe worker (a browser's
  * main thread) a trap of the WebAssembly module here (the kernel crashed) becomes the _KernelFault.
+ * Superseded by `_isolatedValue`, which brings the worker's result back instead of doing the step
+ * again here.
  */
 export function _guarded<R>(what: string, work: () => R, job: (() => _Job) | null = null): R {
   const limit = Number(GUARD_SECONDS)
@@ -94,6 +115,21 @@ export function _guarded<R>(what: string, work: () => R, job: (() => _Job) | nul
 /** The contents of an .smb file of a body, for the probe worker (binary: exact). */
 export function _smb(body: _Body): Uint8Array {
   return toSmb(body, { ascii: false })
+}
+
+/** The contents of an .smb file of a kernel Brep (binary: exact). */
+export function _smbOf(brep: number): Uint8Array {
+  const name = `/tmp/smlibwasm-job-${++_results}.smb`
+  try {
+    kernelCall('save', () => k.brep_write_to_file(brep, name, false))
+    return module.FS.readFile(name) as Uint8Array
+  } finally {
+    try {
+      module.FS.unlink(name)
+    } catch {
+      // (not written)
+    }
+  }
 }
 
 /** The indices of faces in their body, for the probe worker. */
@@ -119,7 +155,7 @@ function _supervisor(what: string): Any {
   const supervisor = _probeSupervisor()
   if (supervisor === null && _probeMissing() && !_toldMissing) {
     _toldMissing = true
-    _warn(`${what}: ${_noProbe()}; the kernel steps of removeFillets, removeFaces, surfaceFillet, shell, offset and thicken run in this kernel, without a time limit`)
+    _warn(`${what}: ${_noProbe()}; the kernel steps that can crash (of removeFillets, removeFaces, surfaceFillet, shell, offset, thicken and cells) run in this kernel, without a time limit`)
   }
   return supervisor
 }
@@ -152,18 +188,49 @@ function _probe(what: string, job: () => _Job, limit: number): void {
 }
 
 /**
- * The body (a kernel Brep) `work()` makes, made by the probe worker (a kernel of its own, see
- * GUARD_SECONDS) from exact copies of the bodies (`job`) and read back from an exact copy (a
- * binary .smb file). This kernel never runs the step: one that crashes the kernel there or does
- * not finish is a _KernelFault, and the kernel error it fails with there is thrown here, as a
- * KernelError of `what` with `hint`. For the kernel's offset code (its extended mode above all),
- * which reads memory it has freed. Python's `_isolated`, which uses a forked copy of its process.
- * Without a probe worker (a browser's main thread), or with GUARD_SECONDS = 0, `work()` runs here.
+ * The body (a kernel Brep) `work()` makes, made by the probe worker from `job` (see `_isolatedValue`);
+ * the kernel error it fails with there is thrown here as a KernelError of `what` with `hint`.
  */
 export function _isolated(what: string, work: () => number, job: () => _Job, hint: string | null = null): number {
+  try {
+    return _isolatedValue(what, work, job)
+  } catch (e) {
+    if (e instanceof _KernelFault) throw e // (a crash, or a step that did not finish)
+    return kernelCall(
+      what,
+      () => {
+        throw e
+      },
+      hint,
+    )
+  }
+}
+
+/**
+ * What `work()` returns, made by the probe worker (a kernel of its own, see GUARD_SECONDS) from
+ * exact copies of the bodies (`job`): its value, whose bodies (kernel Breps, also in arrays and
+ * objects) come back as exact copies (binary .smb files), owned by the caller. This kernel never
+ * runs the step: one that crashes the kernel there or does not finish is a _KernelFault, and the
+ * error it fails with there is thrown here (a TypeError or RangeError as itself, a failure of the
+ * kernel as an Error with its message, as the kernel's bindings throw it). Python's
+ * `smlibpy._guard.isolated`. Without a probe worker (a browser's main thread), or with
+ * GUARD_SECONDS = 0, `work()` runs here; with `trap`, a trap there (the kernel crashed) is a
+ * _KernelFault, as in the probe worker.
+ */
+export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, options: { trap?: boolean } = {}): R {
   const limit = Number(GUARD_SECONDS)
   const supervisor = limit > 0 ? _supervisor(what) : null
-  if (supervisor === null) return work()
+  const here = (): R => {
+    try {
+      return work()
+    } catch (e) {
+      if (options.trap && typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) {
+        throw new _KernelFault(what, `the kernel crashed (${e.message})`, 'the module stays usable')
+      }
+      throw e
+    }
+  }
+  if (supervisor === null) return here()
   const j = job()
   const state = new Int32Array(new SharedArrayBuffer(8))
   const data = new Uint8Array(new SharedArrayBuffer(_PIECE_BYTES))
@@ -172,8 +239,8 @@ export function _isolated(what: string, work: () => number, job: () => _Job, hin
   Atomics.wait(state, 0, _QUEUED, _START_SECONDS * 1000)
   if (Atomics.load(state, 0) === _QUEUED) {
     _giveUp(`the probe worker did not start within ${_formatG(_START_SECONDS)} s`)
-    _warn(`${what}: ${_noProbe()}; the kernel steps of shell, offset and thicken run in this kernel from now on`)
-    return work()
+    _warn(`${what}: ${_noProbe()}; the kernel steps that can crash run in this kernel from now on`)
+    return here()
   }
   const deadline = Date.now() + limit * 1000
   const pieces: Uint8Array[] = []
@@ -198,16 +265,40 @@ export function _isolated(what: string, work: () => number, job: () => _Job, hin
     const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0))
     pieces.reduce((at, p) => (bytes.set(p, at), at + p.length), 0)
     if (outcome === _FAILED) {
-      const message = String(JSON.parse(new TextDecoder().decode(bytes)).message)
-      return kernelCall(
-        what,
-        () => {
-          throw new Error(message)
-        },
-        hint,
-      )
+      const { name, message } = JSON.parse(new TextDecoder().decode(bytes))
+      if (name === 'TypeError') throw new TypeError(message)
+      if (name === 'RangeError') throw new RangeError(message)
+      throw new Error(String(message))
     }
-    return _loaded(bytes)
+    return _decoded(bytes) as R
+  }
+}
+
+/** The value of a step's result (see `make` in _defeature_worker.ts), its bodies read back (and
+ * freed again if that fails). */
+function _decoded(bytes: Uint8Array): unknown {
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true)
+  const { value, sizes } = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as { value: unknown; sizes: number[] }
+  const starts: number[] = []
+  sizes.reduce((at, n) => (starts.push(at), at + n), 4 + length)
+  const loaded = new Map<number, number>()
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk)
+    if (v !== null && typeof v === 'object') {
+      const i = (v as { $body?: number }).$body
+      if (typeof i === 'number') {
+        if (!loaded.has(i)) loaded.set(i, _loaded(bytes.subarray(starts[i], starts[i] + sizes[i])))
+        return loaded.get(i)
+      }
+      return Object.fromEntries(Object.entries(v).map(([key, x]) => [key, walk(x)]))
+    }
+    return v
+  }
+  try {
+    return walk(value)
+  } catch (e) {
+    for (const brep of loaded.values()) ext.delete_brep(brep)
+    throw e
   }
 }
 
@@ -405,12 +496,12 @@ function _filletBound(b: _Blends, faces: readonly Face[]): number {
 function _executive(what: string, body: Part, groups: readonly (readonly Face[])[], rebuild: string): [Part | null, boolean] {
   let res: Any
   try {
-    res = _guarded(what, () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild), () => ({
-      op: 'defeature',
-      bodies: [_smb(body)],
-      groups: groups.map((g) => _indices(body, g)),
-      rebuild,
-    }))
+    res = _isolatedValue(
+      what,
+      () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild),
+      () => ({ op: 'defeature', bodies: [_smb(body)], groups: groups.map((g) => _indices(body, g)), rebuild }),
+      { trap: true },
+    )
   } catch (e) {
     if (e instanceof _KernelFault) return [null, true]
     throw e
@@ -459,11 +550,12 @@ function _removePass(
       triedA.add(key(edge))
       let res: Any
       try {
-        res = _guarded('removeFillets', () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)), () => ({
-          op: 'remove_fillet_faces',
-          bodies: [_smb(body)],
-          faces: _indices(body, edge),
-        }))
+        res = _isolatedValue(
+          'removeFillets',
+          () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)),
+          () => ({ op: 'remove_fillet_faces', bodies: [_smb(body)], faces: _indices(body, edge) }),
+          { trap: true },
+        )
       } catch (e) {
         if (!(e instanceof _KernelFault)) throw e
         faulted.add(key(edge))
@@ -655,12 +747,12 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
   for (const rebuild of ['extend', 'planar_cap']) {
     let res: Any
     try {
-      res = _guarded('removeFaces', () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild), () => ({
-        op: 'defeature',
-        bodies: [_smb(body)],
-        groups: [_indices(body, group)],
-        rebuild,
-      }))
+      res = _isolatedValue(
+        'removeFaces',
+        () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild),
+        () => ({ op: 'defeature', bodies: [_smb(body)], groups: [_indices(body, group)], rebuild }),
+        { trap: true },
+      )
     } catch (e) {
       if (!(e instanceof _KernelFault)) throw e
       why = why || e.reason

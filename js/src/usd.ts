@@ -173,7 +173,9 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
     const regions: { infinite: boolean; void: boolean }[] = ext.brep_dump(brep, false).regions
     const solid = regions.some((r) => !r.infinite && !r.void)
     const c = color ? (Array.from(color) as [number, number, number]) : null
-    out.push(solid ? Part._wrap(brep, { name, color: c }) : Shell._wrap(brep, { name, color: c }))
+    const body = solid ? Part._wrap(brep, { name, color: c }) : Shell._wrap(brep, { name, color: c })
+    body._h.imported = true // (read from a file: its fillets run in the probe worker)
+    out.push(body)
   }
   return out.length === 1 ? out[0] : out
 }

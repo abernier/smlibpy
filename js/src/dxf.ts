@@ -11,7 +11,7 @@
 // In memory everywhere: toDxf (a string), fromDxf and fromDxfWires (a string or the file's
 // bytes). With file paths in Node: exportDxf, importDxf and importDxfWires.
 
-import { ModelingError, _opts, _warn, ext, k } from './kernel.ts'
+import { ModelingError, _opts, _warn, ext, k, scope } from './kernel.ts'
 import { type Matrix, Plane, _formatG, _identity, _matmul } from './geometry.ts'
 import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
@@ -971,14 +971,18 @@ function _wires(text: string, options: DxfReadOptions, what: string): ShapeList<
  * or outlines that branch.
  */
 export function importDxf(path: string, options: DxfReadOptions = {}): Sketch {
-  _opts('importDxf', options)
-  return _sketch(_fileText(path, 'importDxf'), options, 'importDxf', 'importDxfWires')
+  return scope(() => {
+    _opts('importDxf', options)
+    return _sketch(_fileText(path, 'importDxf'), options, 'importDxf', 'importDxfWires')
+  })
 }
 
 /** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes. */
 export function fromDxf(data: string | Uint8Array, options: DxfReadOptions = {}): Sketch {
-  _opts('fromDxf', options)
-  return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')
+  return scope(() => {
+    _opts('fromDxf', options)
+    return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')
+  })
 }
 
 function _sketch(text: string, options: DxfReadOptions, what: string, wiresName: string): Sketch {

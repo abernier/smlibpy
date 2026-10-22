@@ -5,7 +5,7 @@
 // them and can be passed back to operations on that body
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
-import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -36,7 +36,17 @@ import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
-import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
+import {
+  GUARD_BOOLEANS,
+  type _Job,
+  _isolated,
+  _isolatedValue,
+  _smb,
+  _smbOf,
+  filletFaces,
+  removeFaces as _removeFaces,
+  removeFillets as _removeFillets,
+} from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
@@ -1816,9 +1826,12 @@ export class _Body extends Shape {
     return k.brep_copy(this._brep)
   }
 
-  /** A body of the same type and metadata around `brep`. */
+  /** A body of the same type and metadata around `brep` (made from this one: read from a file if
+   * this one was). */
   _like(brep: number): this {
-    return (this.constructor as typeof _Body)._wrap.call(this.constructor as Any, brep, { name: this.name, color: this.color }) as this
+    const b = (this.constructor as typeof _Body)._wrap.call(this.constructor as Any, brep, { name: this.name, color: this.color }) as this
+    b._h.imported = this._h.imported
+    return b
   }
 
   /** Frees the kernel's body now, not when the garbage collector gets to it. Faces, edges and
@@ -2666,11 +2679,14 @@ export class Part extends _Body {
     for (const t of tools) {
       if (!(t instanceof Part) || t instanceof Sketch) throw new TypeError(`merge takes parts, not a ${_typeName(t)}`)
     }
-    const b = _held(this._copyBrep(), (h) => {
-      for (const t of tools) {
-        kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), 'the parts may only touch along an edge or at a point')
-      }
-    })
+    const hint = 'the parts may only touch along an edge or at a point'
+    const local = (): number =>
+      _held(this._copyBrep(), (h) => {
+        for (const t of tools) kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), hint)
+      })
+    const b = GUARD_BOOLEANS
+      ? _isolated('merge', local, () => ({ op: 'boolean', bodies: [this, ...tools].map(_smb), operation: k.BooleanOp.MERGE, nonManifold: true }), hint)
+      : local()
     const merged = Part._wrap(b, { name: this.name, color: this.color })
     const problem = _mergeProblem(merged, [this, ...(tools as Part[])])
     if (problem !== null) {
@@ -2685,44 +2701,52 @@ export class Part extends _Body {
   /**
    * The cells of a part made by `merge`, each as a part of its own (every closed region of the
    * body; a cavity is not a cell). A part that is one solid: `[itself]`.
+   *
+   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): it crashed on some merges,
+   * which throw a KernelError now.
    */
   cells(): ShapeList<Part> {
-    const d = ext.brep_dump(this._brep, false)
-    if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
-    const regions: number[][] = kernelCall('cells', () => ext.region_shells(this._brep))
-    const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
-    const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
-    const out = new ShapeList<Part>()
-    for (const [outer, ...cavities] of solids) {
-      let part: Part
-      try {
-        part = cavities.length ? outer.cut(cavities) : outer
-      } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
-        throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${e.message}); ${touching}`)
+    return scope(() => {
+      const d = ext.brep_dump(this._brep, false)
+      if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
+      // (in the probe worker: the kernel's stitcher crashed on some merges)
+      const regions: number[][] = kernelCall('cells', () =>
+        _isolatedValue('cells', () => ext.region_shells(this._brep) as number[][], () => ({ op: 'region_shells', bodies: [_smb(this)] })),
+      )
+      const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
+      const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
+      const out = new ShapeList<Part>()
+      for (const [outer, ...cavities] of solids) {
+        let part: Part
+        try {
+          part = cavities.length ? outer.cut(cavities) : outer
+        } catch (e) {
+          if (!(e instanceof ModelingError)) throw e
+          throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${e.message}); ${touching}`)
+        }
+        let problem: string | null
+        try {
+          part._props() // measured for the sum below, so that the check sees the gaps too
+          problem = part._solidProblem()
+        } catch (e) {
+          if (!(e instanceof KernelError)) throw e
+          problem = 'a body whose volume cannot be integrated'
+        }
+        if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
+        out.push(part)
       }
-      let problem: string | null
-      try {
-        part._props() // measured for the sum below, so that the check sees the gaps too
-        problem = part._solidProblem()
-      } catch (e) {
-        if (!(e instanceof KernelError)) throw e
-        problem = 'a body whose volume cannot be integrated'
+      // The cells fill the part: a cell that kept another inside it counts that one twice (an insert
+      // of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers, imported parts)
+      // integrate a little differently in the part and in its cells: by up to about their gaps.
+      const p = this._props()
+      const whole = Number(p.volume)
+      const total = out.reduce((sum, c) => sum + Number(c._props().volume), 0)
+      const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...out.map((c) => Number(c._props().gaps))))
+      if (!(Math.abs(total - whole) <= slack * Math.abs(whole))) {
+        throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
       }
-      if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
-      out.push(part)
-    }
-    // The cells fill the part: a cell that kept another inside it counts that one twice (an insert
-    // of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers, imported parts)
-    // integrate a little differently in the part and in its cells: by up to about their gaps.
-    const p = this._props()
-    const whole = Number(p.volume)
-    const total = out.reduce((sum, c) => sum + Number(c._props().volume), 0)
-    const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...out.map((c) => Number(c._props().gaps))))
-    if (!(Math.abs(total - whole) <= slack * Math.abs(whole))) {
-      throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
-    }
-    return out
+      return out
+    })
   }
 
   // -- points -------------------------------------------------------------------------------
@@ -2767,62 +2791,68 @@ export class Part extends _Body {
 
   // -- booleans -----------------------------------------------------------------------------
   _boolean(others: unknown, op: number, name: string): Part {
-    const tools = _bodies(others, name)
-    for (const t of tools) {
-      if (t instanceof Sketch || !(t instanceof Part || t instanceof Shell)) {
-        const extra = t instanceof Sketch ? '; extrude it first' : ''
-        throw new TypeError(`cannot ${name} a ${_typeName(t)} with a Part${extra}`)
-      }
-    }
-    if (!tools.every((t) => t instanceof Part)) return this._like(this._runBoolean(tools, op, name)) // sheets: imprint or trim, unchecked
-    const parts = tools as Part[]
-    let result: Part | null = null
-    let failure: KernelError | null = null
-    let problem: string | null = null
-    try {
-      result = this._like(this._runBoolean(parts, op, name))
-      problem = this._booleanProblem(result, parts, op)
-    } catch (e) {
-      if (!(e instanceof KernelError)) throw e
-      result = null
-      failure = e
-      problem = null
-    }
-    if (result !== null && problem === null) return result
-    if (parts.length > 1) {
-      // Tools that overlap each other (two holes side by side) can fail one after the other where
-      // the combined tool works: combine them first.
-      try {
-        const combine = op === k.BooleanOp.INTERSECTION ? k.BooleanOp.INTERSECTION : k.BooleanOp.UNION
-        const combined = parts[0]._like(parts[0]._runBoolean(parts.slice(1), combine, name))
-        if (k.brep_face_count(combined._brep) === 0 && op === k.BooleanOp.INTERSECTION) return this._like(combined._copyBrep()) // the tools have nothing in common
-        if (combined._solidProblem() === null) {
-          const retry = this._like(this._runBoolean([combined], op, name))
-          if (this._booleanProblem(retry, [combined], op) === null) return retry
+    return scope(() => {
+      const tools = _bodies(others, name)
+      for (const t of tools) {
+        if (t instanceof Sketch || !(t instanceof Part || t instanceof Shell)) {
+          const extra = t instanceof Sketch ? '; extrude it first' : ''
+          throw new TypeError(`cannot ${name} a ${_typeName(t)} with a Part${extra}`)
         }
+      }
+      if (!tools.every((t) => t instanceof Part)) return this._like(this._runBoolean(tools, op, name)) // sheets: imprint or trim, unchecked
+      const parts = tools as Part[]
+      let result: Part | null = null
+      let failure: KernelError | null = null
+      let problem: string | null = null
+      try {
+        result = this._like(this._runBoolean(parts, op, name))
+        problem = this._booleanProblem(result, parts, op)
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
+        result = null
+        failure = e
+        problem = null
       }
-    }
-    const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
-    if (broken.length) {
-      const which = broken[0] === this ? 'the part' : 'a tool'
-      throw new ModelingError(`${name}: ${which} is not a valid solid (${broken[0]._solidProblem()}); check isValid() of the operands and fix the step that broke them`)
-    }
-    const hint =
-      'the operands may touch only along an edge, at a point or tangentially (move one so they overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools first and apply them at once: part.cut(tool1.fuse(tool2)))'
-    if (failure !== null) {
-      const error = new KernelError(failure.operation, failure.detail, failure.status, hint)
-      ;(error as Any).cause = failure
-      throw error
-    }
-    throw new ModelingError(`${name}: the kernel returned a result that is ${problem}; ${hint}`)
+      if (result !== null && problem === null) return result
+      if (parts.length > 1) {
+        // Tools that overlap each other (two holes side by side) can fail one after the other where
+        // the combined tool works: combine them first.
+        try {
+          const combine = op === k.BooleanOp.INTERSECTION ? k.BooleanOp.INTERSECTION : k.BooleanOp.UNION
+          const combined = parts[0]._like(parts[0]._runBoolean(parts.slice(1), combine, name))
+          if (k.brep_face_count(combined._brep) === 0 && op === k.BooleanOp.INTERSECTION) return this._like(combined._copyBrep()) // the tools have nothing in common
+          if (combined._solidProblem() === null) {
+            const retry = this._like(this._runBoolean([combined], op, name))
+            if (this._booleanProblem(retry, [combined], op) === null) return retry
+          }
+        } catch (e) {
+          if (!(e instanceof KernelError)) throw e
+        }
+      }
+      const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
+      if (broken.length) {
+        const which = broken[0] === this ? 'the part' : 'a tool'
+        throw new ModelingError(`${name}: ${which} is not a valid solid (${broken[0]._solidProblem()}); check isValid() of the operands and fix the step that broke them`)
+      }
+      const hint =
+        'the operands may touch only along an edge, at a point or tangentially (move one so they overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools first and apply them at once: part.cut(tool1.fuse(tool2)))'
+      if (failure !== null) {
+        const error = new KernelError(failure.operation, failure.detail, failure.status, hint)
+        ;(error as Any).cause = failure
+        throw error
+      }
+      throw new ModelingError(`${name}: the kernel returned a result that is ${problem}; ${hint}`)
+    })
   }
 
   _runBoolean(tools: readonly _Body[], op: number, name: string): number {
-    return _held(this._copyBrep(), (h) => {
-      for (const t of tools) kernelCall(name, () => _combine(h, t, op), 'the operands may touch only in a degenerate way, or an operand is broken')
-    })
+    const hint = 'the operands may touch only in a degenerate way, or an operand is broken'
+    const local = (): number =>
+      _held(this._copyBrep(), (h) => {
+        for (const t of tools) kernelCall(name, () => _combine(h, t, op), hint)
+      })
+    if (!GUARD_BOOLEANS) return local()
+    return _isolated(name, local, () => ({ op: 'boolean', bodies: [this, ...tools].map(_smb), operation: op, nonManifold: false }), hint)
   }
 
   /** What is wrong with a Boolean result, or null. An empty result is right where the operands
@@ -3107,6 +3137,10 @@ export class Part extends _Body {
    * @param radius Fillet radius. `{ start, end }` varies the radius linearly along each edge
    *   (where they differ: circular rounds only, not on closed edges or on edges that run into each
    *   other tangentially). An array with one radius per edge rounds edges differently.
+   *
+   * The kernel step of a part read from a file (`fromStep`, `fromSmb`, `fromUsd`) or made from one
+   * runs in the probe worker (see GUARD_SECONDS): the kernel's fillet code crashed on some imported
+   * parts.
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
@@ -3131,35 +3165,61 @@ export class Part extends _Body {
     }
     const [h, kedges] = this._withEdges(sel)
     const cont = _continuity(continuity)
-    _roundCall(
-      'fillet',
-      () => {
-        if (varying) {
-          k.variable_radius_fillet(h.brep, kedges, {
-            start_radius: Number(varying.start),
-            end_radius: Number(varying.end),
-            xsect_type: cont === null ? 1 : 2,
-            continuity: cont || 1,
-          })
-        } else if (list) {
-          if (list.length !== kedges.length) throw new RangeError(`${list.length} radii for ${kedges.length} edges`)
-          const xs = new Array(kedges.length).fill(cont ? k.FilletXSect.BLEND : k.FilletXSect.CIRCULAR)
-          k.fillet_edges_per_edge(h.brep, kedges, list, xs, { continuity: cont || 1, thumbweight: fullness })
-        } else if (cont === null) {
-          k.fillet_edges(h.brep, kedges, { radius: Number(radius) })
-        } else {
-          k.fillet_edges(h.brep, kedges, { radius: Number(radius), xsect_type: 2, continuity: cont, thumbweight: fullness })
-        }
-      },
-      'the radius may be too large for the selected edges',
-    )
-    const result = this._like(_take(h))
+    let call: _RoundCall
+    if (varying) {
+      call = [
+        'variable_radius_fillet',
+        [{ start_radius: Number(varying.start), end_radius: Number(varying.end), xsect_type: cont === null ? 1 : 2, continuity: cont || 1 }],
+      ]
+    } else if (list) {
+      if (list.length !== kedges.length) throw new RangeError(`${list.length} radii for ${kedges.length} edges`)
+      const xs = new Array(kedges.length).fill(cont ? k.FilletXSect.BLEND : k.FilletXSect.CIRCULAR)
+      call = ['fillet_edges_per_edge', [list, xs, { continuity: cont || 1, thumbweight: fullness }]]
+    } else if (cont === null) {
+      call = ['fillet_edges', [{ radius: Number(radius) }]]
+    } else {
+      call = ['fillet_edges', [{ radius: Number(radius), xsect_type: 2, continuity: cont, thumbweight: fullness }]]
+    }
+    const result = this._like(this._rounded(h, kedges, 'fillet', 'the radius may be too large for the selected edges', call))
     let sizes: number[]
     if (varying) sizes = new Array(sel.length).fill(Math.max(varying.start, varying.end))
     else if (list) sizes = list
     else sizes = new Array(sel.length).fill(Number(radius))
     this._checkVolumeChange(result, sel, 'fillet', sizes, cont === null ? 'circular' : 'blend')
     return result
+  }
+
+  /** The Brep of a fillet or chamfer: the kernel's `call` (its name and the arguments after the
+   * edges) on the copy `h` holds, whose edges `kedges` are. The step of a part read from a file runs
+   * in the probe worker (see GUARD_SECONDS): the kernel's fillet code crashed on some imported
+   * parts. */
+  _rounded(h: BrepHandle, kedges: number[], what: string, hint: string, call: _RoundCall): number {
+    const [name, args] = call
+    const local = (): number => {
+      _roundCall(what, () => k[name](h.brep, kedges, ...args), hint)
+      return _take(h)
+    }
+    if (!this._h.imported) return local()
+    try {
+      return _isolatedValue<number>(what, local, () => ({
+        op: 'round',
+        bodies: [_smbOf(h.brep)],
+        edges: Array.from(ext.edge_indices(h.brep, kedges) as ArrayLike<number>, Number),
+        call: name,
+        args,
+      }))
+    } catch (e) {
+      // (a failure of the kernel there, as the kernel's bindings throw it; a crash or a step that
+      // did not finish is a ModelingError already)
+      if (_isRuntimeError(e) && !(e instanceof ModelingError)) {
+        return _roundCall(what, () => {
+          throw e
+        }, hint)
+      }
+      throw e
+    } finally {
+      h.dispose() // (the copy, unless the step ran here and took it)
+    }
   }
 
   /**
@@ -3193,20 +3253,12 @@ export class Part extends _Body {
       }
     }
     const [h, kedges] = this._withEdges(sel)
-    _roundCall(
-      'chamfer',
-      () => {
-        if (radii.every((r) => Math.abs(r - radii[0]) < 1e-12)) {
-          k.fillet_edges(h.brep, kedges, { radius: radii[0], xsect_type: 0 })
-        } else {
-          // per-edge radii with a linear cross-section, in one call: a call per edge replaces
-          // the edges next to it, and the next call would use freed edges
-          k.fillet_edges_per_edge(h.brep, kedges, radii, new Array(kedges.length).fill(k.FilletXSect.LINEAR))
-        }
-      },
-      'the length may be too large for the selected edges',
-    )
-    const result = this._like(_take(h))
+    // (per-edge radii with a linear cross-section, in one call: a call per edge replaces the edges
+    // next to it, and the next call would use freed edges)
+    const call: _RoundCall = radii.every((r) => Math.abs(r - radii[0]) < 1e-12)
+      ? ['fillet_edges', [{ radius: radii[0], xsect_type: 0 }]]
+      : ['fillet_edges_per_edge', [radii, new Array(kedges.length).fill(k.FilletXSect.LINEAR)]]
+    const result = this._like(this._rounded(h, kedges, 'chamfer', 'the length may be too large for the selected edges', call))
     this._checkVolumeChange(result, sel, 'chamfer', new Array(sel.length).fill(Number(length)), 'chamfer')
     return result
   }
@@ -3497,21 +3549,23 @@ export class Part extends _Body {
   split(plane: Plane | Face, keep: 'both'): [Part, Part]
   split(plane: Plane | Face): Part
   split(plane: Plane | Face, keep: string = 'above'): Part | [Part, Part] {
-    const pl = _asPlane(plane)
-    if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
-    if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
-    this._requireValid('split')
-    // Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut leaves the
-    // body open).
-    const bb = this.bbox()
-    const size = 4 * (bb.diagonal + bb.center.distanceTo(pl.origin)) + 1
-    const side = keep === 'above' ? pl : pl.flipped()
-    const halfspace = Box(size, size, size)
-      .translate(0, 0, size / 2)
-      .moved(new Plane(pl.project(bb.center), side.xDir, side.zDir).location)
-    const kept = kernelCall('split', () => this.intersect(halfspace))
-    if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
-    return kept
+    return scope(() => {
+      const pl = _asPlane(plane)
+      if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
+      if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
+      this._requireValid('split')
+      // Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut leaves the
+      // body open).
+      const bb = this.bbox()
+      const size = 4 * (bb.diagonal + bb.center.distanceTo(pl.origin)) + 1
+      const side = keep === 'above' ? pl : pl.flipped()
+      const halfspace = Box(size, size, size)
+        .translate(0, 0, size / 2)
+        .moved(new Plane(pl.project(bb.center), side.xDir, side.zDir).location)
+      const kept = kernelCall('split', () => this.intersect(halfspace))
+      if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
+      return kept
+    })
   }
 
   /**
@@ -3785,6 +3839,16 @@ function _distanceToEdge(e: Edge, p: Vector): number {
   return e.distanceTo(p)
 }
 
+/** `fn(curves)` for kernel curves (copies) that the kernel call in `fn` copies (SmPyLib's "Pure"
+ * calls: the sweeps, offset profiles, skins): they are freed once it is done. */
+export function _withCurves<T>(curves: number[], fn: (curves: number[]) => T): T {
+  try {
+    return fn(curves)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
 /** Release a handle's Brep to a new owner. */
 export function _take(h: BrepHandle): number {
   return h.release()
@@ -3858,6 +3922,9 @@ function _combine(h: BrepHandle, tool: _Body, op: number, nonManifold = false): 
 // for one it cannot round, or has no corner for the way the selected edges meet at a vertex.
 const _ROUND_SELECTION_HINT =
   'the kernel cannot round the selection as given, at any size: an edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a way it has no corner for (such as the two halves of an edge that another face touches tangentially); select fewer edges there'
+
+/** A kernel call of a fillet or chamfer: the function's name and its arguments after the edges. */
+type _RoundCall = [string, unknown[]]
 
 /** `kernelCall` for fillets and chamfers, with the hint for a selection the kernel cannot round. */
 function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
@@ -3983,7 +4050,9 @@ export class Sketch extends Shell {
   _loops: Any = null
 
   override _like(brep: number): this {
-    return Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+    const s = Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+    s._h.imported = this._h.imported
+    return s
   }
 
   static _fromWires(wires: readonly Wire[], plane: Plane | null = null): Sketch {
@@ -4443,7 +4512,7 @@ export class Sketch extends Shell {
       try {
         b = kernelCall(
           'offset',
-          () => k.create_offset_profile(wire._copyCurves(), distance, { offset_type: side, round_corners: round }),
+          () => _withCurves(wire._copyCurves(), (curves) => k.create_offset_profile(curves, distance, { offset_type: side, round_corners: round })),
           'the offset may collapse the region',
         )
       } catch (e) {
@@ -4520,8 +4589,7 @@ export class Sketch extends Shell {
     const parts: Part[] = []
     for (const f of this.faces()) {
       const loops = f.wires()
-      const curves = loops[0]._copyCurves()
-      const outer = kernelCall('extrude', () => k.draft_sweep(curves, Number(amount), Number(taper)), hint)
+      const outer = kernelCall('extrude', () => _withCurves(loops[0]._copyCurves(), (curves) => k.draft_sweep(curves, Number(amount), Number(taper))), hint)
       let part = _requireSolid(Part._wrap(outer), 'extrude', hint)
       const n = this._plane.zDir.mul(amount > 0 ? 1 : -1)
       const o = this._plane.origin
@@ -4535,7 +4603,9 @@ export class Sketch extends Shell {
         // A hole runs the other way round than the outline; the kernel sweeps a loop along the
         // side its orientation gives, so turn it like the outline. The hole widens where the
         // outline narrows.
-        const hole = Part._wrap(kernelCall('extrude', () => k.draft_sweep(w.reversed()._copyCurves(), Number(amount), -Number(taper)), hint))
+        const hole = Part._wrap(
+          kernelCall('extrude', () => _withCurves(w.reversed()._copyCurves(), (curves) => k.draft_sweep(curves, Number(amount), -Number(taper))), hint),
+        )
         part = part.cut(_requireSolid(hole, 'extrude', hint))
       }
       parts.push(part)
@@ -4573,8 +4643,9 @@ export class Sketch extends Shell {
         let out: Part | null = null
         for (const f of this.faces()) {
           const loops = f.wires()
-          let piece = Part._wrap(k.rotational_sweep(loops[0]._copyCurves(), o, d, Number(angle), { cap_ends: true }))
-          for (const w of loops.slice(1)) piece = piece.cut(Part._wrap(k.rotational_sweep(w._copyCurves(), o, d, Number(angle), { cap_ends: true })))
+          const swept = (w: Wire): Part => Part._wrap(_withCurves(w._copyCurves(), (curves) => k.rotational_sweep(curves, o, d, Number(angle), { cap_ends: true })))
+          let piece = swept(loops[0])
+          for (const w of loops.slice(1)) piece = piece.cut(swept(w))
           out = out === null ? piece : out.fuse(piece)
         }
         return out

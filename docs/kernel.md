@@ -106,7 +106,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A merge in which a part's seam lies tangent to another part can lose volume, and the stitcher behind `cells()` then crashed on it | `merge` raises when its result holds less than its largest part or more than all parts together, and `cells()` checks that the cells add up to the part |
 | A section of a merged part drops cells, or fails | `section` cuts each cell and puts their regions side by side |
 | A failed Boolean keeps both operands and leaves the context marked as doing a Boolean (it then builds no surface caches) | holds the operands' copies until the kernel takes them and clears the mark (`ext.boolean`) |
-| The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, and handed out an extended surface after deleting it, and the process crashed now and then | patches the three sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
+| The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, and handed out an extended surface after deleting it, and the process crashed now and then | patches the three sites (`third_party/patches`), and runs the kernel steps in another process, whose body comes back as an exact copy (see "Steps in another process" below) |
 | shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below) and writes a line edge as a B-spline over SMLib's unbounded line (2.5 km long), and trusts the arrays and values of a file it reads (a malformed array, a sphere whose refDirection is its axis or a weight of 0 crashes it; a cylinder axis of length 0 gives a wrong body) | writes such cones as cylinders or turned around and line edges as long as the edges; checks every array, reference and value (the rules of usd-brep's validator) before converting, and checks each body from other software with the kernel (`SmBrep::AssertValid`) before anything measures it |
 
@@ -131,10 +131,79 @@ matter here:
   bordered by fillets; shell first, then round the rim.
 - The offset code behind `shell`, `offset` and `thicken` depends on memory layout in its extended
   mode: the same call can fail, succeed or crash (filleted boxes still crash it now and then).
-  smlibpy runs it in a forked copy of the process (Linux, macOS; smlibwasm: in a kernel of its
+  smlibpy runs it in another process (a forked copy on Linux and macOS, a helper process on Windows; smlibwasm: in a kernel of its
   own), so a crash raises `ModelingError` and this process goes on, and it tries a mode again only
   after a result it refused, not after an error. A step longer than
   `smlibpy.defeature.GUARD_SECONDS` (20 s) is stopped.
+
+## Steps in another process
+
+The kernel can crash (read or write memory it has freed) or loop on some inputs, and nothing stops
+a kernel call from outside: Python handles Ctrl-C only once the call has returned. smlibpy runs the
+kernel steps known to crash or loop in another process and waits for them there, at most
+`smlibpy.defeature.GUARD_SECONDS` (20 s):
+
+- the steps of `remove_fillets` and `remove_faces` (SMLib's patching code loops or crashes on some
+  parts), `surface_fillet`, `shell`, `offset` and `thicken` (the offset code), and `Part.cells()`
+  (the stitcher);
+- fillets and chamfers of parts read from files (`import_step`, `load`, `import_usd`) and of the
+  parts made from them: the fillet code crashed on 10 of 479 imported parts before it was patched;
+- every Boolean (`+`, `-`, `&`, `merge`) once `smlibpy.defeature.GUARD_BOOLEANS = True` (off by
+  default), for long batch runs over unknown inputs.
+
+The step's result comes back as an exact copy (the kernel's binary `.smb` for bodies, anything else
+pickled), and this process never runs the step itself. A step that crashes the kernel there raises
+`ModelingError: <step>: the kernel crashed (signal 11, in a copy of this process); this process is
+fine`, one that takes longer than `GUARD_SECONDS` `ModelingError: <step>: the kernel did not finish
+within 20 s`, and Ctrl-C stops the step at once (`KeyboardInterrupt`); errors and warnings of the
+step are raised here as they were raised there. Ctrl-C does not stop a kernel call that runs in
+this process (any other step): it waits until the call returns.
+
+`smlibpy.defeature.GUARD_PROCESS` says where the steps run: `"fork"`, a forked copy of the process
+per step (Linux, macOS; about 1.5 ms); `"helper"`, one helper process for the session, started with
+the first step and again after one crashed it or ran too long, which gets the bodies as `.smb`
+files (Windows, and processes that must not fork); `"auto"` (the default), a fork where the system
+can fork and the helper elsewhere. A frozen application, or a helper that does not start, runs the
+steps in its own process, as `GUARD_SECONDS = 0` does (with a warning, once). smlibwasm runs the
+same steps in a probe worker, a kernel of its own (`setGuardSeconds`, `setGuardBooleans`).
+
+```python
+# not run
+import smlibpy.defeature
+
+smlibpy.defeature.GUARD_SECONDS = 120      # large imported parts
+smlibpy.defeature.GUARD_BOOLEANS = True    # a batch over STEP files that must not end on a crash
+smlibpy.defeature.GUARD_PROCESS = "helper" # an application that must not fork
+```
+
+## Checks of the kernel
+
+Besides the test suites, the "Checks" workflow (`.github/workflows/checks.yml`) runs slower checks
+of the kernel every night, on demand, and the fuzz run also on pull requests that change the
+kernel, its patches or the modelling code. Each one runs locally the same way:
+
+| Check | Command | What fails it |
+|---|---|---|
+| Fuzz: seeded random models (Booleans, fillets, chamfers, shells, offsets, slices) of primitives placed flush, touching, centred or on a face, each in a forked process, through smlibpy and, with `--wasm`, smlibwasm on the same parameters | `python tools/fuzz/fuzz.py [--seed N] [--wasm]` | a crash of the kernel whose signature (the kernel functions at the top of its stack, from gdb or lldb) `tools/fuzz/baseline.json` does not know; any hang; for the seeds 7 and 8 (the regression corpus) a result that breaks an invariant, crashes or diverges between smlibpy and smlibwasm where the baseline's runs did not; a share of such results more than 0.3 points above the baseline's |
+| AddressSanitizer and LeakSanitizer over the tests of the guarded and patched kernel code, every kernel step in the test process | `python tools/sanitize/run.py --build build-asan` (third_party/patches/README.md says how to build it) | a memory error not in `tools/sanitize/known.txt`; a leak of the kernel or smlibpy's C++ not in `tools/sanitize/leaks.txt` |
+| Upstream's kernel tests (usd-brep `prog_test`, 17 suites) against the patched kernel | configure with `-DSMLIBPY_PROG_TEST=ON`, then `python tools/oracles/prog_test.py` | a suite that does not pass |
+| Upstream's tests of its Python bindings, against `smlibpy._core` | `python tools/oracles/smpylib_tests.py` | a test that fails, but for those of the `usd` submodule, which smlibpy builds without |
+| Upstream's 200 `.smb` test files | `python tools/oracles/smb_files.py` | a file whose kind, face count, volume, validity or mesh differs from `tools/oracles/smb_files.json` |
+| Crash loops: the calls that crashed the kernel (O1, O4 of the kernel plan), again and again in fresh processes with the guard off | `python tools/oracles/crash_loops.py --runs 20` | a crash of a case not marked known (two still crash now and then, contained by the guard: their rates are printed) |
+
+The fuzz run's invariants: every result is a valid body within its box's volume;
+|A u B| + |A n B| = |A| + |B|, |A - B| = |A| - |A n B| and the cells of `A.merge(B)` add up to
+|A u B| (1e-6); fillets, chamfers, shells and offsets of a single primitive have the exact volume
+(2e-6), a shell removes volume, `offset(d).offset(-d)` of a primitive is the primitive; the parts
+of a slice add up to the body. A new failure is made smaller (the edges a fillet rounds, the
+openings of a shell) and written as a pytest file (`repro/` in the output directory, an artifact
+of the workflow). Seeds 7 and 8 take about 55 s each language on an M-series Mac. A few Booleans
+of seed 8 come out differently from run to run, so the baseline (per platform:
+`--update-baseline --repeat 3` writes this platform's) unites three runs, and a new failure of a
+known seed counts only if two more runs repeat it. Two crash sites are known and not fixed
+(`KNOWN_CRASHES` in `tools/fuzz/fuzz.py`): the stitcher's ray behind `cells()`
+(`SmBezierAux2d::BuildPolarBox`) and the extended offset mode's merge on filleted boxes
+(`SmEdge::CalculateBoundingBox`); smlibpy runs both steps in another process.
 
 ## Building the kernel
 

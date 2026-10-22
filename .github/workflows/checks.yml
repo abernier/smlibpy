@@ -1,0 +1,150 @@
+name: Checks
+
+# The slower checks of the kernel (CI's jobs run the test suites): the sanitizer and leak run
+# (tools/sanitize), upstream's kernel tests and test files and the crash loops (tools/oracles),
+# nightly and on demand; the fuzz run (tools/fuzz) also on pull requests that touch the kernel or
+# the modelling code, and once a week on the AddressSanitizer build. docs/kernel.md, "Checks of the
+# kernel", says what each one does.
+on:
+  schedule:
+    - cron: "23 2 * * *"  # nightly
+    - cron: "41 3 * * 0"  # weekly: also the fuzz run on the AddressSanitizer build
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/cpp/**"
+      - "js/cpp/**"
+      - "third_party/patches/**"
+      - "CMakeLists.txt"
+      - "src/smlibpy/shapes.py"
+      - "src/smlibpy/operations.py"
+      - "src/smlibpy/defeature.py"
+      - "src/smlibpy/_guard.py"
+      - "js/src/shapes.ts"
+      - "js/src/operations.ts"
+      - "js/src/defeature.ts"
+      - "tools/fuzz/**"
+
+env:
+  EMSDK_VERSION: 6.0.12
+
+jobs:
+  fuzz:
+    # seeds 7 and 8 (the regression corpus of tools/fuzz/baseline.json) and today's date as a seed;
+    # smlibwasm on the same cases on Linux
+    name: fuzz / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build and install
+        run: pip install -v ".[test]"
+      - name: gdb (the crash signatures)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y gdb
+      - uses: actions/setup-node@v7.0.0
+        if: runner.os == 'Linux'
+        with:
+          node-version: 24
+      - uses: actions/cache@v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}
+      - name: The WebAssembly module
+        if: runner.os == 'Linux'
+        run: |
+          [ -d ~/emsdk ] || git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+          sh js/scripts/build-wasm.sh
+          (cd js && npm ci)
+      - name: Fuzz
+        run: python tools/fuzz/fuzz.py --seed 7 --seed 8 --seed 0 --budget 360 --out fuzz-out ${{ runner.os == 'Linux' && '--wasm' || '' }}
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: fuzz-${{ matrix.os }}
+          path: fuzz-out
+
+  sanitizers:
+    # AddressSanitizer and LeakSanitizer over the tests of the kernel's guarded and patched code,
+    # with every kernel step in the test process; weekly also the fuzz seeds 7 and 8
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Tools
+        run: |
+          pip install numpy pytest pybind11 ninja
+          sudo apt-get install -y llvm
+      - name: Build with AddressSanitizer
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer" \
+            -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" -DPython_EXECUTABLE="$(which python)"
+          cmake --build build-asan
+      - name: Tests under the sanitizers
+        env:
+          ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+        run: python tools/sanitize/run.py --build build-asan
+      - name: Fuzz under the sanitizers (weekly)
+        if: github.event.schedule == '41 3 * * 0' || github.event_name == 'workflow_dispatch'
+        env:
+          ASAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+        run: python tools/sanitize/run.py --build build-asan --fuzz -- --seed 7 --seed 8 --out fuzz-asan-out
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: fuzz-asan
+          path: fuzz-asan-out
+          if-no-files-found: ignore
+
+  oracles:
+    # upstream's checks of the kernel, against the kernel as smlibpy builds it
+    if: github.event_name != 'pull_request'
+    name: oracles / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build (the module in src/smlibpy, and prog_test_app)
+        run: |
+          pip install numpy pytest pybind11 ninja
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSMLIBPY_PROG_TEST=ON \
+            -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" -DPython_EXECUTABLE="$(which python)"
+          cmake --build build
+      - name: Upstream's kernel tests (prog_test, 17 suites)
+        run: python tools/oracles/prog_test.py --app build/prog_test_app
+      - name: Upstream's tests of its Python bindings (SmPyLib)
+        run: python tools/oracles/smpylib_tests.py
+      - name: Upstream's .smb test files
+        env:
+          PYTHONPATH: src
+        run: python tools/oracles/smb_files.py
+      - name: Crash loops (the inputs that crashed the kernel, in fresh processes)
+        run: python tools/oracles/crash_loops.py --runs 20

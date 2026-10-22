@@ -14,16 +14,13 @@ fillets or holes were taken out, down for concave fillets and bosses).
 
 from __future__ import annotations
 
-import json
 import math
 import os
-import shutil
-import tempfile
-import time
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
 
-from ._kernel import KernelError, ModelingError, k, kernel_call
+from ._guard import _KernelFault, _how, _wait, isolated
+from ._kernel import KernelError, ModelingError, k
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Part, ShapeList
@@ -34,32 +31,42 @@ __all__ = ["fillet_faces", "remove_fillets", "remove_faces"]
 #: tangentially: the edge is a rail of a fillet.
 TANGENCY = 2.0
 
-#: Seconds the kernel may take for one step. On Linux and macOS the kernel first does the work
-#: in a forked copy of the process: if it crashes there or takes longer than this, a
-#: ``ModelingError`` says so and this process is left alone (SMLib's patching and Boolean code
-#: can crash or loop on some parts). The steps of defeaturing and ``surface_fillet`` then run
-#: again here; those of ``shell``, ``offset`` and ``thicken`` run only there, and their result
-#: comes back as an exact copy. ``0`` runs the kernel directly, as on Windows.
+#: Seconds the kernel may take for one step that can crash or loop. Such steps run in another
+#: process (see GUARD_PROCESS): if the kernel crashes there or takes longer than this, a
+#: ``ModelingError`` says so and this process is left alone (SMLib's patching, offset and
+#: Boolean code can crash or loop on some parts). This process never runs the step itself: what
+#: the step made comes back as an exact copy (the kernel's binary ``.smb``). Ctrl-C stops such a
+#: step at once; a kernel call that runs in this process can be stopped only by ending the
+#: process. The steps are those of :func:`remove_fillets`, :func:`remove_faces`,
+#: ``surface_fillet``, ``shell``, ``offset``, ``thicken`` and ``Part.cells()``, fillets and
+#: chamfers of parts read from files (STEP, ``.smb``, USD) and, with GUARD_BOOLEANS, Booleans.
+#: ``0`` runs the kernel in this process.
 GUARD_SECONDS = 20.0
+
+#: Where the guarded steps run: ``"fork"``, a forked copy of this process per step (Linux,
+#: macOS); ``"helper"``, one helper process for the session that gets the bodies as ``.smb``
+#: files (for Windows, and for processes that must not fork); ``"auto"``, a fork where the
+#: system can fork and the helper elsewhere. Without either (a frozen application) the steps run
+#: in this process.
+GUARD_PROCESS = "auto"
+
+#: Run every Boolean (``+``, ``-``, ``&``, ``merge``) in another process too, as the steps above
+#: (off by default: a fork costs about 1.5 ms, the helper process copies the bodies). For long
+#: batch runs over unknown inputs, where a crash of the kernel must not end the run.
+GUARD_BOOLEANS = False
 
 _D = k.defeature
 R = TypeVar("R")
 _VOLUMES: dict[int, tuple[Any, float]] = {}  # id of a body's handle -> (handle, volume)
 
 
-class _KernelFault(ModelingError):
-    """The kernel crashed or did not finish in the forked copy; ``reason`` says which."""
-
-    def __init__(self, what: str, reason: str, hint: str):
-        self.reason = reason
-        super().__init__(f"{what}: {reason}; {hint}")
-
-
 def _guarded(what: str, work: Callable[[], R]) -> R:
     """``work()``, after a forked copy of the process has run it to the end (see GUARD_SECONDS).
     The kernel is deterministic, and the copy starts from the same memory, so it does what
     this process will do; not always where the kernel reads memory it has freed, since the two
-    processes reuse freed memory differently (ai/todo/features.md, 37)."""
+    processes reuse freed memory differently (ai/todo/features.md, 37). Superseded by
+    ``smlibpy._guard.isolated``, which brings the copy's result back instead of running the step
+    again here."""
     limit = float(GUARD_SECONDS)
     if not limit > 0 or not hasattr(os, "fork"):
         return work()
@@ -77,86 +84,26 @@ def _guarded(what: str, work: Callable[[], R]) -> R:
     return work()
 
 
-def _wait(what: str, pid: int, limit: float) -> int:
-    """The exit code of the forked copy ``pid``; a _KernelFault if it crashed or did not finish
-    within ``limit`` seconds (it is stopped then)."""
-    deadline = time.monotonic() + limit
-    pause = 0.001
-    while True:
-        try:
-            done, status = os.waitpid(pid, os.WNOHANG)
-            if done:
-                break
-            if time.monotonic() > deadline:
-                raise _KernelFault(what, f"the kernel did not finish within {limit:g} s",
-                                   "smlibpy.defeature.GUARD_SECONDS sets the limit")
-            time.sleep(pause)
-        except BaseException:  # (also Ctrl-C, which stops the copy)
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-            raise
-        pause = min(pause * 2, 0.05)
-    if os.WIFSIGNALED(status):
-        raise _KernelFault(what, f"the kernel crashed (signal {os.WTERMSIG(status)}, in a copy of this process)",
-                           "this process is fine")
-    return os.WEXITSTATUS(status)
-
-
 def _isolated(what: str, work: Callable[[], Any]) -> Any:
-    """The body (a kernel Brep) ``work()`` makes, made in a forked copy of the process and read
-    back from an exact copy (a binary .smb file); see GUARD_SECONDS. This process never runs the
-    step: one that crashes the kernel or does not finish there is a _KernelFault, and the error
-    ``work()`` raises there is raised here. For the kernel's offset code (its extended mode above
-    all), which reads memory it has freed in ways that depend on where things lie in memory, so
-    that running it again here could crash where the copy came through. Without fork (Windows),
-    or with GUARD_SECONDS = 0, ``work()`` runs here."""
-    limit = float(GUARD_SECONDS)
-    if not limit > 0 or not hasattr(os, "fork"):
+    """The body (a kernel Brep) ``work()`` makes, made in another process and read back from an
+    exact copy (``smlibpy._guard.isolated``). ``work`` may be a closure: where the steps run in the
+    helper process, which takes functions of modules only, it runs here."""
+    if _how(GUARD_PROCESS) == "helper" and "<" in getattr(work, "__qualname__", "<"):
         return work()
-    folder = tempfile.mkdtemp(prefix="smlibpy-")
-    body, error = os.path.join(folder, "body.smb"), os.path.join(folder, "error.json")
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
-            pid = os.fork()
-        if pid == 0:  # pragma: no cover - the child
-            code = 0
-            try:
-                b = work()
-                if b is None:
-                    raise KernelError(what, "the kernel returned no body")
-                b.write_to_file(body, False)
-            except BaseException as e:
-                code = 3
-                if isinstance(e, KernelError):
-                    sent: dict[str, Any] = {"kernel": [e.operation, e.detail, e.status, e.hint]}
-                else:
-                    sent = {"type": type(e).__name__, "text": str(e), "modeling": isinstance(e, ModelingError),
-                            "runtime": isinstance(e, RuntimeError)}
-                try:
-                    with open(error, "w") as f:
-                        json.dump(sent, f)
-                except BaseException:
-                    pass
-            os._exit(code)
-        if _wait(what, pid, limit) == 0 and os.path.exists(body):
-            with kernel_call(what):
-                return k.read_brep_from_file(body, None, False)
-        try:
-            with open(error) as f:
-                sent = json.load(f)
-        except (OSError, ValueError):
-            raise ModelingError(f"{what}: the kernel step failed in a copy of this process") from None
-        if "kernel" in sent:
-            raise KernelError(*sent["kernel"])
-        if sent["modeling"]:
-            raise ModelingError(sent["text"])
-        if sent["runtime"]:  # a kernel error, as the bindings raise it
-            with kernel_call(what):
-                raise RuntimeError(sent["text"])
-        raise ModelingError(f"{what}: {sent['type']} in a copy of this process: {sent['text']}")
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
+    b = isolated(what, work)
+    if b is None:
+        raise KernelError(what, "the kernel returned no body")
+    return b
+
+
+def _defeature_step(brep: Any, groups: list[list[Any]], rebuild: str) -> dict[str, Any]:
+    """The feature executive's step (isolated)."""
+    return _D.defeature(brep, groups, rebuild)  # type: ignore[no-any-return]
+
+
+def _fillet_removal_step(brep: Any, faces: list[Any]) -> dict[str, Any]:
+    """The fillet removal's step (isolated)."""
+    return _D.remove_fillet_faces(brep, faces)  # type: ignore[no-any-return]
 
 
 # =============================================================================
@@ -341,7 +288,7 @@ def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) ->
     """The executive's patched copy of ``body`` without ``groups`` (None if it failed), and
     whether the kernel crashed or hung."""
     try:
-        res = _guarded(what, lambda: _D.defeature(body._brep, [[f._f for f in g] for g in groups], rebuild))
+        res = isolated(what, _defeature_step, body._brep, [[f._f for f in g] for g in groups], rebuild)
     except _KernelFault:
         return None, True
     return (None if res["brep"] is None else body._like(res["brep"])), False
@@ -373,7 +320,7 @@ def _remove_pass(part: Part, faces: list[Face], origin: dict[Any, Face], b: _Ble
         if edge and key(edge) not in tried_a and key(edge) not in faulted:
             tried_a.add(key(edge))
             try:
-                res = _guarded("remove_fillets", lambda: _D.remove_fillet_faces(body._brep, [f._f for f in edge]))
+                res = isolated("remove_fillets", _fillet_removal_step, body._brep, [f._f for f in edge])
             except _KernelFault:
                 faulted.add(key(edge))
                 res = {"brep": None}
@@ -542,7 +489,7 @@ def _close(body: Part, group: list[Face]) -> tuple[Part | None, str]:
     why = ""
     for rebuild in ("extend", "planar_cap"):
         try:
-            res = _guarded("remove_faces", lambda: _D.defeature(body._brep, [[f._f for f in group]], rebuild))
+            res = isolated("remove_faces", _defeature_step, body._brep, [[f._f for f in group]], rebuild)
         except _KernelFault as e:
             why = why or e.reason
             continue

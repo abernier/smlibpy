@@ -1,0 +1,1265 @@
+{
+ "pt_TestFiles/Boolean/BoltMBox1.smb": {
+  "faces": 31,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1025844.111576
+ },
+ "pt_TestFiles/Boolean/BoltMBox2.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 90700846.498245
+ },
+ "pt_TestFiles/Boolean/extrudeHoles1.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 78996.292711
+ },
+ "pt_TestFiles/Boolean/extrudeHoles2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Defeature/LShape_I.smb": {
+  "faces": 25,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 240700.108439
+ },
+ "pt_TestFiles/Defeature/LShape_II.smb": {
+  "faces": 25,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 240700.108439
+ },
+ "pt_TestFiles/Defeature/Platte.smb": {
+  "faces": 122,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1311471.858862
+ },
+ "pt_TestFiles/Defeature/brep1.smb": {
+  "faces": 16,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 719.724799
+ },
+ "pt_TestFiles/Defeature/defillet.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 8.814775
+ },
+ "pt_TestFiles/Defeature/extrusion.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 591.835791
+ },
+ "pt_TestFiles/Defeature/flathead_screw_top.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 101.153125
+ },
+ "pt_TestFiles/Defeature/inset_cube.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 7.0
+ },
+ "pt_TestFiles/Defeature/inset_cube_1x1fillet.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 6.98
+ },
+ "pt_TestFiles/Defeature/inset_cube_1x2fillet.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 6.96
+ },
+ "pt_TestFiles/Defeature/inset_cube_1x3fillet.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 6.94
+ },
+ "pt_TestFiles/Defeature/inset_cube_3x1fillet.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 6.94
+ },
+ "pt_TestFiles/Endcap.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/0311.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 20178295245.319546
+ },
+ "pt_TestFiles/Fillet/2cyls_on_box.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1858715.237952
+ },
+ "pt_TestFiles/Fillet/6_sided_corner.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 500.0
+ },
+ "pt_TestFiles/Fillet/Heart.smb": {
+  "faces": 4,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 326.225668
+ },
+ "pt_TestFiles/Fillet/bague.smb": {
+  "faces": 4,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 225.668887
+ },
+ "pt_TestFiles/Fillet/blade_fillet_fails.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 559948.760246
+ },
+ "pt_TestFiles/Fillet/blade_hub.smb": {
+  "faces": 12,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/blade_hub_1.smb": {
+  "faces": 43,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 13864.930232
+ },
+ "pt_TestFiles/Fillet/blade_hub_2.smb": {
+  "faces": 30,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 12399.559064
+ },
+ "pt_TestFiles/Fillet/blade_hub_3.smb": {
+  "faces": 46,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 13013.302404
+ },
+ "pt_TestFiles/Fillet/bolt.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 208879.656957
+ },
+ "pt_TestFiles/Fillet/bottle.smb": {
+  "faces": 16,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 11.066834
+ },
+ "pt_TestFiles/Fillet/box1x1x2.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2.0
+ },
+ "pt_TestFiles/Fillet/box_diff_3cyls.smb": {
+  "faces": 13,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3123766.970196
+ },
+ "pt_TestFiles/Fillet/box_diff_cyl.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 950.912615
+ },
+ "pt_TestFiles/Fillet/box_diff_cyl_big_rad.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1529494.032065
+ },
+ "pt_TestFiles/Fillet/box_extrusion1.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3737.387329
+ },
+ "pt_TestFiles/Fillet/box_extrusion2.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3800.121857
+ },
+ "pt_TestFiles/Fillet/box_on_box.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 133.0
+ },
+ "pt_TestFiles/Fillet/box_w_slot.smb": {
+  "faces": 27,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 0.680743
+ },
+ "pt_TestFiles/Fillet/brepForFillet1.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1560.0
+ },
+ "pt_TestFiles/Fillet/brepForFillet2.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3616.411473
+ },
+ "pt_TestFiles/Fillet/brick.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 294967.152
+ },
+ "pt_TestFiles/Fillet/cap1.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/caps_coons.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/caps_nside.smb": {
+  "faces": 6,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/case_ext.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/case_int.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/cliff_1.smb": {
+  "faces": 43,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 13864.930232
+ },
+ "pt_TestFiles/Fillet/cliff_2.smb": {
+  "faces": 30,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 12399.559064
+ },
+ "pt_TestFiles/Fillet/cliff_3.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 253591.010104
+ },
+ "pt_TestFiles/Fillet/cliff_4.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 209463.86133
+ },
+ "pt_TestFiles/Fillet/cone_34.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 252384.457406
+ },
+ "pt_TestFiles/Fillet/coons_01_03_29.smb": {
+  "faces": 4,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/corner_box.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 456.171297
+ },
+ "pt_TestFiles/Fillet/crown.smb": {
+  "faces": 13,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 88.371961
+ },
+ "pt_TestFiles/Fillet/cube_sphere2.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 26.048029
+ },
+ "pt_TestFiles/Fillet/cyl_cyl_219.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2986.02952
+ },
+ "pt_TestFiles/Fillet/cyl_cyl_2191.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2984.70868
+ },
+ "pt_TestFiles/Fillet/cyl_cyl_shell.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/cyl_on_box.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 134.817477
+ },
+ "pt_TestFiles/Fillet/cyl_on_box1.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1402.12386
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_fillet.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 133.744468
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_fillet1.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 133.744468
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_fillet2.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1088.517688
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_hole.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 4819172.091491
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_tan_hole.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1685084.953039
+ },
+ "pt_TestFiles/Fillet/cyl_on_box_w_tan_hole2.smb": {
+  "faces": 13,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3560509.994108
+ },
+ "pt_TestFiles/Fillet/cyl_sphere.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 269.3916
+ },
+ "pt_TestFiles/Fillet/eg1_srf1.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/eg1_srf2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/ext_w_hole.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 234.248572
+ },
+ "pt_TestFiles/Fillet/extrusion0206.smb": {
+  "faces": 4,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 9755.253241
+ },
+ "pt_TestFiles/Fillet/extrusion0210.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 781.942602
+ },
+ "pt_TestFiles/Fillet/extrusion1002.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 4539.210049
+ },
+ "pt_TestFiles/Fillet/fillet0114.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 43416.117805
+ },
+ "pt_TestFiles/Fillet/fillet0227.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 289438095408.7046
+ },
+ "pt_TestFiles/Fillet/fillet1010.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 347499.989165
+ },
+ "pt_TestFiles/Fillet/fillet1017.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 591203.637923
+ },
+ "pt_TestFiles/Fillet/fillet1018.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 314072.841289
+ },
+ "pt_TestFiles/Fillet/fillet1019.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 59314.645225
+ },
+ "pt_TestFiles/Fillet/filleted_box.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 991.415927
+ },
+ "pt_TestFiles/Fillet/knife.smb": {
+  "faces": 4,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2917.066881
+ },
+ "pt_TestFiles/Fillet/l_shaped_box.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 375.0
+ },
+ "pt_TestFiles/Fillet/letter_g.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 580.362092
+ },
+ "pt_TestFiles/Fillet/loft_brick.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 28933.546434
+ },
+ "pt_TestFiles/Fillet/nurb_box.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 900.0
+ },
+ "pt_TestFiles/Fillet/nurb_box1.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3802.790917
+ },
+ "pt_TestFiles/Fillet/nurb_cone.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 213.721408
+ },
+ "pt_TestFiles/Fillet/nurb_nurb_1.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/nurb_nurb_2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/nurb_plane_w_notch1.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/nurb_plane_w_notch2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/nurb_sph_1.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/nurb_sph_2.smb": {
+  "faces": 1,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 33.510322
+ },
+ "pt_TestFiles/Fillet/open_shell.smb": {
+  "faces": 6,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/rollover_corner.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 722078.090947
+ },
+ "pt_TestFiles/Fillet/shell_fillet.smb": {
+  "faces": 3,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/shell_fillet2.smb": {
+  "faces": 3,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/sphere_dif_box.smb": {
+  "faces": 6,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/sphere_diff_3cylinders.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 169497.317495
+ },
+ "pt_TestFiles/Fillet/sphere_plane.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/test1.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 811.400606
+ },
+ "pt_TestFiles/Fillet/test4.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 645.193895
+ },
+ "pt_TestFiles/Fillet/test5.smb": {
+  "faces": 4,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/test6.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 349.51327
+ },
+ "pt_TestFiles/Fillet/test7.smb": {
+  "faces": 6,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/test8.smb": {
+  "faces": 2,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Fillet/test9.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 430.474809
+ },
+ "pt_TestFiles/Fillet/tilt_cyl_on_box.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1393240.516508
+ },
+ "pt_TestFiles/Fillet/torii_fillet.smb": {
+  "faces": 13,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3937.44269
+ },
+ "pt_TestFiles/Fillet/torii_unioned.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 8905.312129
+ },
+ "pt_TestFiles/Fillet/vase.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 615795.654033
+ },
+ "pt_TestFiles/Fillet/vase1.smb": {
+  "faces": 19,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1103972.429617
+ },
+ "pt_TestFiles/Fillet/vase2.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1104218.350632
+ },
+ "pt_TestFiles/Fillet/vase3.smb": {
+  "faces": 19,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1103585.435695
+ },
+ "pt_TestFiles/Mouse.smb": {
+  "faces": 4,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 141.575796
+ },
+ "pt_TestFiles/Platform.smb": {
+  "error": "KernelError"
+ },
+ "pt_TestFiles/Shell/ShellBrep_983.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1101.109067
+ },
+ "pt_TestFiles/Shell/problemShell.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell1.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell10.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 604684.080081
+ },
+ "pt_TestFiles/Shell/problemShell11.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 868153.218889
+ },
+ "pt_TestFiles/Shell/problemShell12.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 662977.12227
+ },
+ "pt_TestFiles/Shell/problemShell13.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 662977.12227
+ },
+ "pt_TestFiles/Shell/problemShell14.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell15.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 305595.644506
+ },
+ "pt_TestFiles/Shell/problemShell16.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 458248.796363
+ },
+ "pt_TestFiles/Shell/problemShell17.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 662977.12227
+ },
+ "pt_TestFiles/Shell/problemShell18.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 93542.823667
+ },
+ "pt_TestFiles/Shell/problemShell19.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 93542.823667
+ },
+ "pt_TestFiles/Shell/problemShell2.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell20.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell21.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell22.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1369925.521068
+ },
+ "pt_TestFiles/Shell/problemShell23.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1494500.2368
+ },
+ "pt_TestFiles/Shell/problemShell3.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 190499.619
+ },
+ "pt_TestFiles/Shell/problemShell4.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 205925.919505
+ },
+ "pt_TestFiles/Shell/problemShell5.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 432251.908518
+ },
+ "pt_TestFiles/Shell/problemShell6.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 415216316.940025
+ },
+ "pt_TestFiles/Shell/problemShell7.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 91499931634.3166
+ },
+ "pt_TestFiles/Shell/problemShell8.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 868153.218889
+ },
+ "pt_TestFiles/Shell/problemShell9.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 868153.218889
+ },
+ "pt_TestFiles/SmallBox.smb": {
+  "error": "KernelError"
+ },
+ "pt_TestFiles/Solids/InsetCone.smb": {
+  "faces": 2,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 230961.569731
+ },
+ "pt_TestFiles/Solids/InsetTaperedExtrude.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 509413.337484
+ },
+ "pt_TestFiles/Solids/OffsetBoxCylOnCorner.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 871130.929133
+ },
+ "pt_TestFiles/Solids/OffsetBoxCylOnCorner_edited.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 871130.929133
+ },
+ "pt_TestFiles/Solids/OffsetBoxCylOnCorner_healed.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 871130.929133
+ },
+ "pt_TestFiles/Solids/OffsetBoxSphOnCorner.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1197773.536509
+ },
+ "pt_TestFiles/Solids/OffsetBoxWithBoss.smb": {
+  "faces": 8,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 492744.867276
+ },
+ "pt_TestFiles/Solids/boolean_trees_result.smb": {
+  "faces": 15,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1268.62395
+ },
+ "pt_TestFiles/Solids/box.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1000.0
+ },
+ "pt_TestFiles/Solids/cylinder.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 785.398163
+ },
+ "pt_TestFiles/Solids/extrusion.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 591.835791
+ },
+ "pt_TestFiles/Solids/extrusion2.smb": {
+  "faces": 26,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2278.943891
+ },
+ "pt_TestFiles/Solids/extrusion_old.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 700.411196
+ },
+ "pt_TestFiles/Solids/fillet_cut.smb": {
+  "faces": 3,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1256.637061
+ },
+ "pt_TestFiles/Solids/fillet_ts.smb": {
+  "faces": 9,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/l_shape_with_boss.smb": {
+  "faces": 10,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 756.283185
+ },
+ "pt_TestFiles/Solids/mouse_1.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/mouse_2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/mouse_3.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/mouse_4.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/mouse_5.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/nurb_fillet.smb": {
+  "faces": 20,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1252.270239
+ },
+ "pt_TestFiles/Solids/off_extrusion.smb": {
+  "faces": 11,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 591.835791
+ },
+ "pt_TestFiles/Solids/offset_bracket2.smb": {
+  "faces": 59,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 5575.097418
+ },
+ "pt_TestFiles/Solids/offset_bracket_box.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 54112.5
+ },
+ "pt_TestFiles/Solids/plane.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/Solids/pyramid.smb": {
+  "faces": 5,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 983422.166575
+ },
+ "pt_TestFiles/Solids/revolution.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1062.19
+ },
+ "pt_TestFiles/Solids/revolution2.smb": {
+  "faces": 26,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 3122.737265
+ },
+ "pt_TestFiles/Solids/revolution_360.smb": {
+  "faces": 29,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 31783.713831
+ },
+ "pt_TestFiles/Solids/revolution_mold.smb": {
+  "faces": 33,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 100912.976165
+ },
+ "pt_TestFiles/Solids/sphere.smb": {
+  "faces": 1,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 523.598776
+ },
+ "pt_TestFiles/Tess/nurby_box_cyl_sphere.smb": {
+  "faces": 9,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2831.426851
+ },
+ "pt_TestFiles/Tess/tess_20_2_80_0.smb": {
+  "faces": 10,
+  "type": "Shell"
+ },
+ "pt_TestFiles/box_with_large_fillet.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 862.654825
+ },
+ "pt_TestFiles/cone.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/disk.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/ellips_ts2.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/plane_circ.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/plane_square.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/sphere.smb": {
+  "faces": 1,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 523.598776
+ },
+ "pt_TestFiles/surf_extrude.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/surf_rev.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/surf_sphere150.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "pt_TestFiles/torus.smb": {
+  "faces": 1,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 4934.802201
+ },
+ "pt_TestFiles/toruswvy.smb": {
+  "faces": 1,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 4698.535746
+ },
+ "pt_TestFiles/vase_rev.smb": {
+  "faces": 1,
+  "type": "Shell"
+ },
+ "usd_TestFiles/box.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 1000.0
+ },
+ "usd_TestFiles/box_with_attached_wire_edge.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1000.0
+ },
+ "usd_TestFiles/box_with_attached_wire_edge_and_detached_wire_edge.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1000.0
+ },
+ "usd_TestFiles/box_with_detached_sheet.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1000.0
+ },
+ "usd_TestFiles/box_with_large_fillet.smb": {
+  "faces": 7,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 862.654825
+ },
+ "usd_TestFiles/box_with_second_box_with_one_loop_vertex.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2000.0
+ },
+ "usd_TestFiles/box_with_second_seven_face_box.smb": {
+  "faces": 13,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2000.0
+ },
+ "usd_TestFiles/box_with_two_vertex_shells.smb": {
+  "faces": 6,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1000.0
+ },
+ "usd_TestFiles/boxes_all.smb": {
+  "faces": 50,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 1788.0
+ },
+ "usd_TestFiles/boxes_share_one_edge.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": false,
+  "volume": 2000.0
+ },
+ "usd_TestFiles/boxes_share_one_vertex.smb": {
+  "faces": 12,
+  "mesh": true,
+  "type": "Part",
+  "valid": true,
+  "volume": 2000.0
+ },
+ "usd_TestFiles/wire_edge.smb": {
+  "faces": 0,
+  "type": "Shell"
+ }
+}

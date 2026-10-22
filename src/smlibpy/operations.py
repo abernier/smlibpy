@@ -17,7 +17,7 @@ import numpy as np
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
 from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _as_plane, _flatten_edges, _flatten_faces,
-                     _require_solid, _revolve_axis_angle)
+                     _curve_copies, _require_solid, _revolve_axis_angle)
 
 __all__ = [
     "extrude",
@@ -83,16 +83,12 @@ def extrude(profile: Sketch | Face | Wire | Edge, amount: float, *, both: bool =
     w = _open_curve(profile)
     if w is not None:
         d = _direction(direction, "extrude") if direction is not None else _curve_direction(w)
-        curves = w._copy_curves()
-        start = 0.0
         if both:
             w = w.translate(-d * abs(amount))
-            curves = w._copy_curves()
             amount = 2 * abs(amount)
         sign = 1.0 if amount > 0 else -1.0
-        with kernel_call("extrude"):
+        with kernel_call("extrude"), _curve_copies(w._copy_curves()) as curves:
             b = k.linear_sweep(curves, (d * sign).to_tuple(), abs(float(amount)), cap_ends=False)
-        del start
         return Shell._wrap(b)
     return _as_sketch(profile).extrude(amount, both=both, taper=taper, direction=direction)
 
@@ -105,9 +101,8 @@ def revolve(profile: Sketch | Face | Wire | Edge, axis: Axis | None = None, angl
     w = _open_curve(profile)
     if w is not None:
         ax, angle = _revolve_axis_angle(axis if axis is not None else Z, angle)
-        with kernel_call("revolve", "the axis must not cross the curve"):
-            b = k.rotational_sweep(w._copy_curves(), ax.origin.to_tuple(), ax.direction.to_tuple(), float(angle),
-                                   cap_ends=False)
+        with kernel_call("revolve", "the axis must not cross the curve"), _curve_copies(w._copy_curves()) as curves:
+            b = k.rotational_sweep(curves, ax.origin.to_tuple(), ax.direction.to_tuple(), float(angle), cap_ends=False)
         return Shell._wrap(b)
     return _as_sketch(profile).revolve(axis, angle)
 
@@ -139,7 +134,7 @@ def _loft_solid(loops: Sequence[Wire], degree: int) -> Part:
         curves.extend(c)
         counts.append(len(c))
     hint = "sections should be closed, ordered and not intersect each other"
-    with kernel_call("loft", hint):
+    with kernel_call("loft", hint), _curve_copies(curves):
         b = k.create_skin_primitive(counts, curves, degree, True)
     return _require_solid(Part._wrap(b), "loft", hint)
 
@@ -440,7 +435,7 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
             with kernel_call("sweep", hint):
                 b = k.sweep_along_planar_path(curves, path_curves, move_profile=True)
         finally:
-            for c in curves:
+            for c in curves + path_curves:
                 ext.delete_curve(c)
         return _require_solid(Part._wrap(b), "sweep", hint)
     t0 = _tangent(edges[0], 0.0)

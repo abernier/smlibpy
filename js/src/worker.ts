@@ -560,7 +560,7 @@ function _error(data: ErrorData, prefix: string | null = null): Error {
 
 // ================================================================================ values
 /** Bodies, as they cross: the contents of a binary .smb file and what the file does not hold. */
-type BodyData = { type: 'Part' | 'Shell' | 'Sketch'; smb: Uint8Array; name: string | null; color: unknown; plane: number[][] | null }
+type BodyData = { type: 'Part' | 'Shell' | 'Sketch'; smb: Uint8Array; name: string | null; color: unknown; plane: number[][] | null; imported?: boolean }
 
 /** A value as a message: `value`, `bodies` (each body once, which the value refers to by its
  * place) and whether it needs the package (the kernel) to be read. */
@@ -618,7 +618,7 @@ async function _encode(value: unknown): Promise<Packet> {
       const smb: Uint8Array = pkg.toSmb(b, { ascii: false })
       const p = type === 'Sketch' ? b.plane : null
       const plane = p === null ? null : [p.origin.toArray(), p.xDir.toArray(), p.zDir.toArray()]
-      at = bodies.push({ type, smb, name: b.name ?? null, color: b.color ?? null, plane }) - 1
+      at = bodies.push({ type, smb, name: b.name ?? null, color: b.color ?? null, plane, imported: b._h.imported === true }) - 1
       places.set(b, at)
       transfer.push(smb.buffer as ArrayBuffer)
     }
@@ -695,7 +695,9 @@ async function _decode(data: { value: unknown; bodies: BodyData[]; package: bool
     const read = pkg.fromSmb(b.smb)
     const Cls = b.type === 'Sketch' ? pkg.Sketch : b.type === 'Part' ? pkg.Part : pkg.Shell
     const plane = b.plane === null ? undefined : new Plane(b.plane[0], b.plane[1], b.plane[2])
-    return Cls._wrap(read._h.release(), { name: b.name, color: b.color, plane })
+    const out = Cls._wrap(read._h.release(), { name: b.name, color: b.color, plane })
+    out._h.imported = b.imported === true // (read from a file over there, or made from such a body)
+    return out
   })
   const dec = (v: Any): unknown => {
     if (v === null || typeof v !== 'object' || _passes(v)) return v

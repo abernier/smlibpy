@@ -6,7 +6,7 @@
 // `chamfer` (bevel every corner by this length). Outlines that are awkward as combinations of
 // shapes are drawn with `Profile`.
 
-import { _opts, ext, k, kernelCall } from './kernel.ts'
+import { _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import { Arc2, Complex, Corner, GeometryError, Line2, ONE, assemble, cis, cx, degrees, describe, fmt, radians, signedArea, simplify, type Seg } from './_planar.ts'
 import { Align, _one, alignmentOffset, type AlignLike } from './align.ts'
 import { CenterArc, Line, Polyline, _pts, _withOptions } from './curves.ts'
@@ -172,25 +172,27 @@ export interface PolygonOptions extends CornerOptions {
  * corner with that radius, `chamfer` bevels every corner by that length.
  */
 export function Polygon(...args: (VectorLike | readonly VectorLike[] | PolygonOptions)[]): Sketch {
-  const { items, options } = _withOptions<PolygonOptions>(args)
-  _opts('Polygon', options)
-  const { fillet = 0.0, chamfer = 0.0 } = options
-  const align = _align(options, null)
-  const pts = _pts(items)
-  if (pts.length < 3) throw new RangeError('a polygon needs at least three points')
-  if (!(fillet || chamfer)) {
-    const w = Polyline(...pts, { close: true })
-    return _fromCurves(w._copyCurves(), align, false)
-  }
-  if (pts.some((p: Vector) => Math.abs(p.z) > 1e-9 * Math.max(1.0, Math.abs(p.x), Math.abs(p.y)))) {
-    throw new RangeError('Polygon: corner options need 2D points (z = 0); place the sketch with .on(plane)')
-  }
-  const s = _polygonSketch(
-    'Polygon',
-    pts.map((p) => cx(p.x, p.y)),
-    { fillet, chamfer },
-  )
-  return _aligned(s, align, false)
+  return scope(() => {
+    const { items, options } = _withOptions<PolygonOptions>(args)
+    _opts('Polygon', options)
+    const { fillet = 0.0, chamfer = 0.0 } = options
+    const align = _align(options, null)
+    const pts = _pts(items)
+    if (pts.length < 3) throw new RangeError('a polygon needs at least three points')
+    if (!(fillet || chamfer)) {
+      const w = Polyline(...pts, { close: true })
+      return _fromCurves(w._copyCurves(), align, false)
+    }
+    if (pts.some((p: Vector) => Math.abs(p.z) > 1e-9 * Math.max(1.0, Math.abs(p.x), Math.abs(p.y)))) {
+      throw new RangeError('Polygon: corner options need 2D points (z = 0); place the sketch with .on(plane)')
+    }
+    const s = _polygonSketch(
+      'Polygon',
+      pts.map((p) => cx(p.x, p.y)),
+      { fillet, chamfer },
+    )
+    return _aligned(s, align, false)
+  })
 }
 
 /**
@@ -205,26 +207,28 @@ export function RegularPolygon(
   sides: number,
   options: { inscribed?: boolean } & CornerOptions & PlacementOptions = {},
 ): Sketch {
-  _opts('RegularPolygon', options, arguments.length)
-  const { inscribed = false, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
-  const align = _align(options, Align.CENTER)
-  if (sides < 3) throw new RangeError('a polygon needs at least three sides')
-  const r = inscribed ? radius / Math.cos(Math.PI / sides) : radius
-  const pts: [number, number][] = []
-  for (let i = 0; i < sides; i++) {
-    pts.push([r * Math.cos(radians(rotation) + (2 * Math.PI * i) / sides), r * Math.sin(radians(rotation) + (2 * Math.PI * i) / sides)])
-  }
-  if (fillet || chamfer) {
-    return _aligned(
-      _polygonSketch(
-        'RegularPolygon',
-        pts.map(([x, y]) => cx(x, y)),
-        { fillet, chamfer },
-      ),
-      align,
-    )
-  }
-  return _aligned(Polygon(...pts), align)
+  return scope(() => {
+    _opts('RegularPolygon', options, arguments.length)
+    const { inscribed = false, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
+    const align = _align(options, Align.CENTER)
+    if (sides < 3) throw new RangeError('a polygon needs at least three sides')
+    const r = inscribed ? radius / Math.cos(Math.PI / sides) : radius
+    const pts: [number, number][] = []
+    for (let i = 0; i < sides; i++) {
+      pts.push([r * Math.cos(radians(rotation) + (2 * Math.PI * i) / sides), r * Math.sin(radians(rotation) + (2 * Math.PI * i) / sides)])
+    }
+    if (fillet || chamfer) {
+      return _aligned(
+        _polygonSketch(
+          'RegularPolygon',
+          pts.map(([x, y]) => cx(x, y)),
+          { fillet, chamfer },
+        ),
+        align,
+      )
+    }
+    return _aligned(Polygon(...pts), align)
+  })
 }
 
 /**
@@ -236,15 +240,17 @@ export function RegularPolygon(
  * the three corners.
  */
 export function Triangle(width: number, height: number, options: { apex?: number | null } & CornerOptions & PlacementOptions = {}): Sketch {
-  _opts('Triangle', options, arguments.length)
-  const { apex = null, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
-  const align = _align(options, Align.CENTER)
-  if (!(width > 0 && height > 0)) throw new RangeError(`Triangle: width and height must be positive (got ${width}, ${height})`)
-  const a = apex == null ? width / 2 : Number(apex)
-  const xs = [0.0, width, a]
-  const cx0 = (Math.min(...xs) + Math.max(...xs)) / 2
-  const pts = [cx(-cx0, -height / 2), cx(width - cx0, -height / 2), cx(a - cx0, height / 2)]
-  return _aligned(_polygonSketch('Triangle', pts, { fillet, chamfer, rotation }), align)
+  return scope(() => {
+    _opts('Triangle', options, arguments.length)
+    const { apex = null, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
+    const align = _align(options, Align.CENTER)
+    if (!(width > 0 && height > 0)) throw new RangeError(`Triangle: width and height must be positive (got ${width}, ${height})`)
+    const a = apex == null ? width / 2 : Number(apex)
+    const xs = [0.0, width, a]
+    const cx0 = (Math.min(...xs) + Math.max(...xs)) / 2
+    const pts = [cx(-cx0, -height / 2), cx(width - cx0, -height / 2), cx(a - cx0, height / 2)]
+    return _aligned(_polygonSketch('Triangle', pts, { fillet, chamfer, rotation }), align)
+  })
 }
 
 /** The options of `Trapezoid`. */
@@ -262,56 +268,60 @@ export function Trapezoid(
   rightAngle: number | null | TrapezoidOptions = null,
   options: TrapezoidOptions = {},
 ): Sketch {
-  if (rightAngle !== null && typeof rightAngle === 'object') {
-    options = rightAngle
-    rightAngle = null
-  }
-  _opts('Trapezoid', options, arguments.length)
-  const { fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
-  const align = _align(options, Align.CENTER)
-  const ra = rightAngle == null ? leftAngle : rightAngle
-  for (const [name, ang] of [
-    ['leftAngle', leftAngle],
-    ['rightAngle', ra],
-  ] as const) {
-    if (!(0 < ang && ang < 180)) throw new RangeError(`Trapezoid: ${name} must be between 0 and 180 degrees (got ${ang})`)
-  }
-  if (!(width > 0 && height > 0)) throw new RangeError(`Trapezoid: width and height must be positive (got ${width}, ${height})`)
-  const dl = height / Math.tan(radians(leftAngle))
-  const dr = height / Math.tan(radians(ra))
-  if (dl + dr >= width) throw new RangeError('the sides cross below the given height')
-  const pts: [number, number][] = [
-    [-width / 2, -height / 2],
-    [width / 2, -height / 2],
-    [width / 2 - dr, height / 2],
-    [-width / 2 + dl, height / 2],
-  ]
-  if (fillet || chamfer || rotation) {
-    return _aligned(
-      _polygonSketch(
-        'Trapezoid',
-        pts.map(([x, y]) => cx(x, y)),
-        { fillet, chamfer, rotation },
-      ),
-      align,
-    )
-  }
-  return _aligned(Polygon(...pts), align)
+  return scope(() => {
+    if (rightAngle !== null && typeof rightAngle === 'object') {
+      options = rightAngle
+      rightAngle = null
+    }
+    _opts('Trapezoid', options, arguments.length)
+    const { fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
+    const align = _align(options, Align.CENTER)
+    const ra = rightAngle == null ? leftAngle : rightAngle
+    for (const [name, ang] of [
+      ['leftAngle', leftAngle],
+      ['rightAngle', ra],
+    ] as const) {
+      if (!(0 < ang && ang < 180)) throw new RangeError(`Trapezoid: ${name} must be between 0 and 180 degrees (got ${ang})`)
+    }
+    if (!(width > 0 && height > 0)) throw new RangeError(`Trapezoid: width and height must be positive (got ${width}, ${height})`)
+    const dl = height / Math.tan(radians(leftAngle))
+    const dr = height / Math.tan(radians(ra))
+    if (dl + dr >= width) throw new RangeError('the sides cross below the given height')
+    const pts: [number, number][] = [
+      [-width / 2, -height / 2],
+      [width / 2, -height / 2],
+      [width / 2 - dr, height / 2],
+      [-width / 2 + dl, height / 2],
+    ]
+    if (fillet || chamfer || rotation) {
+      return _aligned(
+        _polygonSketch(
+          'Trapezoid',
+          pts.map(([x, y]) => cx(x, y)),
+          { fillet, chamfer, rotation },
+        ),
+        align,
+      )
+    }
+    return _aligned(Polygon(...pts), align)
+  })
 }
 
 /** An obround slot `length` long overall (round ends included) and `width` wide, along X. For a
  * slot between two centers use `Stroke(Line(a, b), width)`; for one along an arc, `ArcSlot`. */
 export function Slot(length: number, width: number, options: PlacementOptions = {}): Sketch {
-  _opts('Slot', options, arguments.length)
-  const { rotation = 0.0 } = options
-  const align = _align(options, Align.CENTER)
-  if (length <= width) return Circle(width / 2, { align })
-  const r = width / 2
-  const a = length / 2 - r
-  const edges: Edge[] = [Line([-a, -r], [a, -r]), CenterArc([a, 0], r, -90, 180), Line([a, r], [-a, r]), CenterArc([-a, 0], r, 90, 180)]
-  let s = _fromCurves(Wire._raw(edges)._copyCurves(), Align.CENTER)
-  if (rotation) s = s.rotate(Z, rotation)
-  return _aligned(s, align)
+  return scope(() => {
+    _opts('Slot', options, arguments.length)
+    const { rotation = 0.0 } = options
+    const align = _align(options, Align.CENTER)
+    if (length <= width) return Circle(width / 2, { align })
+    const r = width / 2
+    const a = length / 2 - r
+    const edges: Edge[] = [Line([-a, -r], [a, -r]), CenterArc([a, 0], r, -90, 180), Line([a, r], [-a, r]), CenterArc([-a, 0], r, 90, 180)]
+    let s = _fromCurves(Wire._raw(edges)._copyCurves(), Align.CENTER)
+    if (rotation) s = s.rotate(Z, rotation)
+    return _aligned(s, align)
+  })
 }
 
 /**
@@ -320,34 +330,36 @@ export function Slot(length: number, width: number, options: PlacementOptions = 
  * The arc's center stays on the origin unless `align` is given.
  */
 export function ArcSlot(radius: number, width: number, angle: number, options: PlacementOptions = {}): Sketch {
-  _opts('ArcSlot', options, arguments.length)
-  const { rotation = 0.0 } = options
-  const align = _align(options, null)
-  if (!(radius > 0 && width > 0)) throw new RangeError(`ArcSlot: radius and width must be positive (got ${radius}, ${width})`)
-  const h = width / 2
-  if (h >= radius) {
-    throw new RangeError(`ArcSlot: a slot ${fmt(width)} wide needs a centerline radius above ${fmt(h)} (the inner edge would pass the center)`)
-  }
-  if (!(0 < angle && angle < 360)) throw new RangeError(`ArcSlot: the angle is between 0 and 360 degrees (got ${angle})`)
-  const caps = 2 * degrees(Math.asin(h / radius))
-  if (angle + caps >= 360 - 1e-9) {
-    throw new RangeError(
-      `ArcSlot: at radius ${fmt(radius)} and width ${fmt(width)} the round ends meet for angles above ${fmt(360 - caps)}; use a smaller angle, or a ring: Circle(r + w/2).cut(Circle(r - w/2))`,
-    )
-  }
-  const a0 = radians(rotation)
-  const sweep = radians(angle)
-  const a1 = a0 + sweep
-  const c0 = cis(a0).scale(radius)
-  const c1 = cis(a1).scale(radius)
-  const origin = cx(0.0, 0.0)
-  const loop: Seg[] = [
-    new Arc2(origin, radius + h, a0, sweep),
-    new Arc2(c1, h, a1, Math.PI),
-    new Arc2(origin, radius - h, a1, -sweep),
-    new Arc2(c0, h, a0 + Math.PI, Math.PI),
-  ]
-  return _aligned(build([[loop, []]], new Frame(Plane.XY), null, 'ArcSlot'), align, false)
+  return scope(() => {
+    _opts('ArcSlot', options, arguments.length)
+    const { rotation = 0.0 } = options
+    const align = _align(options, null)
+    if (!(radius > 0 && width > 0)) throw new RangeError(`ArcSlot: radius and width must be positive (got ${radius}, ${width})`)
+    const h = width / 2
+    if (h >= radius) {
+      throw new RangeError(`ArcSlot: a slot ${fmt(width)} wide needs a centerline radius above ${fmt(h)} (the inner edge would pass the center)`)
+    }
+    if (!(0 < angle && angle < 360)) throw new RangeError(`ArcSlot: the angle is between 0 and 360 degrees (got ${angle})`)
+    const caps = 2 * degrees(Math.asin(h / radius))
+    if (angle + caps >= 360 - 1e-9) {
+      throw new RangeError(
+        `ArcSlot: at radius ${fmt(radius)} and width ${fmt(width)} the round ends meet for angles above ${fmt(360 - caps)}; use a smaller angle, or a ring: Circle(r + w/2).cut(Circle(r - w/2))`,
+      )
+    }
+    const a0 = radians(rotation)
+    const sweep = radians(angle)
+    const a1 = a0 + sweep
+    const c0 = cis(a0).scale(radius)
+    const c1 = cis(a1).scale(radius)
+    const origin = cx(0.0, 0.0)
+    const loop: Seg[] = [
+      new Arc2(origin, radius + h, a0, sweep),
+      new Arc2(c1, h, a1, Math.PI),
+      new Arc2(origin, radius - h, a1, -sweep),
+      new Arc2(c0, h, a0 + Math.PI, Math.PI),
+    ]
+    return _aligned(build([[loop, []]], new Frame(Plane.XY), null, 'ArcSlot'), align, false)
+  })
 }
 
 /**
@@ -373,7 +385,9 @@ export function Stroke(path: Edge | Wire, width: number, options: { ends?: strin
  * `Hull(Circle(10), Pos(60, 0).mul(Circle(6)))` is a lever outline.
  */
 export function Hull(...items: unknown[]): Sketch {
-  return hull(items)
+  return scope(() => {
+    return hull(items)
+  })
 }
 
 /** The planar region inside a closed wire, minus the regions inside `holes`. */

@@ -22,3 +22,7 @@ js/LICENSE.usd-brep
 # The live view: built from app/ when a release is built, shipped in the package
 src/smlibpy/mcp/app/
 app/node_modules/
+
+# tools/fuzz/fuzz.py output
+fuzz-out/
+fuzz-asan-out/

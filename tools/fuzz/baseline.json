@@ -1,0 +1,97 @@
+{
+ "darwin-arm64": {
+  "crash_signatures": [],
+  "rates": {
+   "python": 1.272,
+   "wasm": 1.09
+  },
+  "seeds": {
+   "7": {
+    "cases": 410,
+    "divergence": {
+     "csg-7-101 I": "class error/ok",
+     "csg-7-22 I": "class error/ok",
+     "csg-7-26 D": "class ok/error",
+     "csg-7-26 I": "class ok/error",
+     "csg-7-26 U": "class ok/error",
+     "csg-7-82 I": "class error/ok",
+     "csg-7-97 I": "class error/ok",
+     "shell-7-311 S": "class ok/absent",
+     "shell-7-311 base": "class ok/error",
+     "slice-7-390 above": "volume 5.80689089/11.6137818",
+     "slice-7-390 below": "volume 1842.70203/1889.15715",
+     "slice-7-402 above": "class ok/silent"
+    },
+    "python_bad": {
+     "chamfer-7-230 C": "silent",
+     "chamfer-7-236 C": "silent",
+     "chamfer-7-253 C": "silent",
+     "csg-7-150 D": "silent",
+     "csg-7-155 A": "silent",
+     "csg-7-20 D": "silent",
+     "fillet-7-168 base": "silent",
+     "offset-7-333 O2": "silent",
+     "offset-7-348 base": "silent",
+     "slice-7-390 above": "silent"
+    },
+    "wasm_bad": {
+     "chamfer-7-230 C": "silent",
+     "chamfer-7-236 C": "silent",
+     "chamfer-7-253 C": "silent",
+     "csg-7-150 D": "silent",
+     "csg-7-155 A": "silent",
+     "csg-7-20 D": "silent",
+     "fillet-7-168 base": "silent",
+     "offset-7-333 O2": "silent",
+     "offset-7-348 base": "silent",
+     "slice-7-390 above": "silent",
+     "slice-7-402 above": "silent"
+    }
+   },
+   "8": {
+    "cases": 410,
+    "divergence": {
+     "csg-8-157 D": "class silent/ok",
+     "csg-8-23 E": "class silent/ok",
+     "csg-8-45 E": "class error/ok",
+     "csg-8-7 I": "class error/ok",
+     "offset-8-325 O": "class error/ok",
+     "offset-8-347 O": "class ok/error",
+     "offset-8-347 O2": "class error/absent"
+    },
+    "python_bad": {
+     "chamfer-8-220 C": "silent",
+     "chamfer-8-225 C": "silent",
+     "chamfer-8-232 C": "silent",
+     "chamfer-8-237 C": "silent",
+     "chamfer-8-240 C": "silent",
+     "chamfer-8-256 C": "silent",
+     "csg-8-110 D": "silent",
+     "csg-8-130 D": "silent",
+     "csg-8-157 D": "silent",
+     "csg-8-23 E": "silent",
+     "csg-8-85 E": "silent",
+     "csg-8-91 E": "silent",
+     "csg-8-91 I": "silent",
+     "csg-8-91 U": "silent",
+     "offset-8-340 base": "silent"
+    },
+    "wasm_bad": {
+     "chamfer-8-220 C": "silent",
+     "chamfer-8-225 C": "silent",
+     "chamfer-8-232 C": "silent",
+     "chamfer-8-237 C": "silent",
+     "chamfer-8-240 C": "silent",
+     "chamfer-8-256 C": "silent",
+     "csg-8-110 D": "silent",
+     "csg-8-130 D": "silent",
+     "csg-8-85 E": "silent",
+     "csg-8-91 E": "silent",
+     "csg-8-91 I": "silent",
+     "csg-8-91 U": "silent",
+     "offset-8-340 base": "silent"
+    }
+   }
+  }
+ }
+}

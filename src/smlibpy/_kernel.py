@@ -62,9 +62,11 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
 class BrepHandle:
     """Owns one kernel Brep and frees it with the last reference. ``sound`` records how far
     the body was found a sound solid (0: not checked; the levels are in shapes.py),
-    ``props`` its integrated mass properties (a body's Brep does not change once wrapped)."""
+    ``props`` its integrated mass properties (a body's Brep does not change once wrapped),
+    ``imported`` whether it was read from a file or made from such a body (its fillets run in
+    another process, see ``smlibpy.defeature.GUARD_SECONDS``)."""
 
-    __slots__ = ("brep", "sound", "props", "__weakref__")
+    __slots__ = ("brep", "sound", "props", "imported", "__weakref__")
 
     def __init__(self, brep: "k.Brep"):
         if brep is None:
@@ -72,6 +74,7 @@ class BrepHandle:
         self.brep = brep
         self.sound = 0
         self.props = None
+        self.imported = False
 
     def __del__(self) -> None:
         b, self.brep = getattr(self, "brep", None), None  # (none: __init__ raised)

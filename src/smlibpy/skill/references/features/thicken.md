@@ -34,8 +34,9 @@ The side is the face normal, so check it before you thicken:
   returned a body that is ...; the kernel cannot offset this sheet (closed grid surfaces and
   surfaces with a pole fail; build closed shapes with revolve, loft or extrude, or thicken less
   than the smallest concave radius)`.
-- The kernel runs in a forked copy of the process (Linux, macOS): a crash or a step longer than
-  `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there, and this process goes on.
+- The kernel runs in another process (a forked copy on Linux and macOS, a helper process on
+  Windows; see `parts/guards`): a crash or a step longer than `smlibpy.defeature.GUARD_SECONDS`
+  (20 s) raises `ModelingError` there, and this process goes on.
 - A `Part` has no `thicken`: `thicken(part, 1)` raises `TypeError: thicken takes a face or a
   sheet (Shell, Sketch), not a Part; use shell() or offset() for parts`.
 - `thickness=0`: `ValueError: thicken: the thickness must not be zero`.

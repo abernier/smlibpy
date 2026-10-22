@@ -430,4 +430,6 @@ def load(path: str | os.PathLike[str]) -> Any:
     # a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
     regions = ext.brep_dump(b, False)["regions"]
     solid = any(not r["infinite"] and not r["void"] for r in regions)
-    return (Part if solid else Shell)._wrap(b)
+    body = (Part if solid else Shell)._wrap(b)
+    body._h.imported = True  # (read from a file: its fillets run in another process)
+    return body
