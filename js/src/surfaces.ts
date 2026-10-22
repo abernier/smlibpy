@@ -4,10 +4,10 @@
 // lofting an *open* curve gives a surface (a Shell) instead of a solid. This module adds surfaces
 // through point grids, ruled surfaces and stitching.
 
-import { ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { Vector, _vec, type VectorLike } from './geometry.ts'
 import { Edge, Face, Part, Shell, Wire, _bodies, _t, _typeName } from './shapes.ts'
-import { _guarded } from './defeature.ts'
+import { _guarded, _smb } from './defeature.ts'
 import { _withOptions } from './curves.ts'
 
 export function _shellOfSurface(srf: number): Shell {
@@ -43,6 +43,7 @@ export function surface(
   points: readonly (readonly VectorLike[])[] | readonly VectorLike[],
   options: { interpolate?: boolean; controls?: number | readonly [number, number] | null; smoothing?: number } = {},
 ): Shell {
+  _opts('surface', options)
   if (_isCloud(points)) return _fit(points as readonly VectorLike[], options.controls ?? null, options.smoothing ?? 1e-2)
   if (options.controls != null) throw new RangeError('surface: controls are for clouds of points; a grid sets its own')
   const interpolate = options.interpolate ?? true
@@ -116,6 +117,7 @@ function _single(w: Wire): Edge {
  */
 export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | { tolerance?: number | null })[]): Part | Shell {
   const { items, options } = _withOptions<{ tolerance?: number | null }>(args)
+  _opts('stitch', options)
   const bodies = _bodies(items)
   if (!bodies.length) throw new RangeError('nothing to stitch')
   const b = kernelCall('stitch', () => ext.combine(bodies.map((x) => x._brep)))
@@ -149,6 +151,7 @@ export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | { tol
  * @returns The blend, a sheet whose edges along its length lie on the two surfaces.
  */
 export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options: { sides?: readonly [number, number] } = {}): Shell {
+  _opts('surfaceFillet', options)
   const sides = options.sides ?? [1, 1]
   const fa = _oneFace(a, 'a')
   const fb = _oneFace(b, 'b')
@@ -166,8 +169,9 @@ export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, 
   const cb = fb.toShell()
   const sa = k.face_surface(ca.faces()[0]._f)
   const sb = k.face_surface(cb.faces()[0]._f)
+  const kw = { radius1: r1, radius2: r2, tolerance, xsect_type: 2 }
   const brep: number = kernelCall('surfaceFillet', () =>
-    _guarded('surfaceFillet', () => k.surface_surface_fillet(sa, sb, { radius1: r1, radius2: r2, tolerance, xsect_type: 2 })), hint)
+    _guarded('surfaceFillet', () => k.surface_surface_fillet(sa, sb, kw), () => ({ op: 'surface_fillet', bodies: [_smb(ca), _smb(cb)], options: kw })), hint)
   if (!brep) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
   const shell = Shell._wrap(brep)
   if (!shell.faces().length) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)

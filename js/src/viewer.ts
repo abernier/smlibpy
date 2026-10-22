@@ -4,6 +4,7 @@
 
 import { _base64, _fs, _zUp, gltfDocumentMixed } from './exporters.ts'
 import { _withOptions } from './curves.ts'
+import { _opts } from './kernel.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
 type Any = any
@@ -199,6 +200,7 @@ export interface PageOptions {
  */
 export function htmlPage(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<PageOptions>(args)
+  _opts('htmlPage', options)
   const { title = 'smlibwasm', tolerance = null, angle = 12.0, edges = true, view = [1.0, -1.25, 0.75], margin = 1.1 } = options
   const [glb, summary] = _glbBytes(shapes, tolerance, angle, edges)
   const [vx, vy, vz] = Array.from(view, Number)
@@ -244,6 +246,7 @@ function _builtin(name: string): Any {
  */
 export function show(...args: unknown[]): string {
   const { items: shapes, options } = _withOptions<ShowOptions>(args)
+  _opts('show', options)
   const { title = 'smlibwasm', openBrowser = true, tolerance = null, angle = 12.0, edges = true } = options
   let { path = null } = options
   if (!_builtin('node:fs')) throw new Error('show needs Node.js to write the page and open a browser; in a browser app, show htmlPage(...) in an iframe')

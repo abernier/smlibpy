@@ -6,7 +6,7 @@
 // `chamfer` (bevel every corner by this length). Outlines that are awkward as combinations of
 // shapes are drawn with `Profile`.
 
-import { ext, k, kernelCall } from './kernel.ts'
+import { _opts, ext, k, kernelCall } from './kernel.ts'
 import { Arc2, Complex, Corner, GeometryError, Line2, ONE, assemble, cis, cx, degrees, describe, fmt, radians, signedArea, simplify, type Seg } from './_planar.ts'
 import { Align, _one, alignmentOffset, type AlignLike } from './align.ts'
 import { CenterArc, Line, Polyline, _pts, _withOptions } from './curves.ts'
@@ -102,6 +102,7 @@ function _polygonSketch(what: string, pts: readonly Complex[], options: CornerOp
  * then works on the turned outline.
  */
 export function Rectangle(width: number, height: number, options: CornerOptions & PlacementOptions = {}): Sketch {
+  _opts('Rectangle', options, arguments.length)
   const { fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   if (width <= 0 || height <= 0) throw new RangeError('rectangle sides must be positive')
@@ -131,6 +132,7 @@ export function Rectangle(width: number, height: number, options: CornerOptions 
 
 /** A rectangle with rounded corners; the same as `Rectangle(width, height, { fillet: radius })`. */
 export function RoundedRectangle(width: number, height: number, radius: number, options: { align?: AlignLike } = {}): Sketch {
+  _opts('RoundedRectangle', options, arguments.length)
   const align = _align(options, Align.CENTER)
   if (radius <= 0) return Rectangle(width, height, { align })
   if (2 * radius > Math.min(width, height) + 1e-12) throw new RangeError('corner radius is larger than half the shorter side')
@@ -139,6 +141,7 @@ export function RoundedRectangle(width: number, height: number, radius: number, 
 
 /** A disk of `radius`. */
 export function Circle(radius: number, options: { align?: AlignLike } = {}): Sketch {
+  _opts('Circle', options, arguments.length)
   const align = _align(options, Align.CENTER)
   if (radius <= 0) throw new RangeError('radius must be positive')
   const c: number = kernelCall('Circle', () => k.create_circle([0.0, 0.0, 0.0], Number(radius)))
@@ -148,6 +151,7 @@ export function Circle(radius: number, options: { align?: AlignLike } = {}): Ske
 /** An ellipse with semi-axes `xRadius` and `yRadius`, turned by `rotation` degrees about its
  * center. */
 export function Ellipse(xRadius: number, yRadius: number, options: PlacementOptions = {}): Sketch {
+  _opts('Ellipse', options, arguments.length)
   const { rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   if (!(xRadius > 0 && yRadius > 0)) throw new RangeError(`Ellipse: the radii must be positive (got ${xRadius}, ${yRadius})`)
@@ -169,6 +173,7 @@ export interface PolygonOptions extends CornerOptions {
  */
 export function Polygon(...args: (VectorLike | readonly VectorLike[] | PolygonOptions)[]): Sketch {
   const { items, options } = _withOptions<PolygonOptions>(args)
+  _opts('Polygon', options)
   const { fillet = 0.0, chamfer = 0.0 } = options
   const align = _align(options, null)
   const pts = _pts(items)
@@ -200,6 +205,7 @@ export function RegularPolygon(
   sides: number,
   options: { inscribed?: boolean } & CornerOptions & PlacementOptions = {},
 ): Sketch {
+  _opts('RegularPolygon', options, arguments.length)
   const { inscribed = false, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   if (sides < 3) throw new RangeError('a polygon needs at least three sides')
@@ -230,6 +236,7 @@ export function RegularPolygon(
  * the three corners.
  */
 export function Triangle(width: number, height: number, options: { apex?: number | null } & CornerOptions & PlacementOptions = {}): Sketch {
+  _opts('Triangle', options, arguments.length)
   const { apex = null, fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   if (!(width > 0 && height > 0)) throw new RangeError(`Triangle: width and height must be positive (got ${width}, ${height})`)
@@ -259,6 +266,7 @@ export function Trapezoid(
     options = rightAngle
     rightAngle = null
   }
+  _opts('Trapezoid', options, arguments.length)
   const { fillet = 0.0, chamfer = 0.0, rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   const ra = rightAngle == null ? leftAngle : rightAngle
@@ -294,6 +302,7 @@ export function Trapezoid(
 /** An obround slot `length` long overall (round ends included) and `width` wide, along X. For a
  * slot between two centers use `Stroke(Line(a, b), width)`; for one along an arc, `ArcSlot`. */
 export function Slot(length: number, width: number, options: PlacementOptions = {}): Sketch {
+  _opts('Slot', options, arguments.length)
   const { rotation = 0.0 } = options
   const align = _align(options, Align.CENTER)
   if (length <= width) return Circle(width / 2, { align })
@@ -311,6 +320,7 @@ export function Slot(length: number, width: number, options: PlacementOptions = 
  * The arc's center stays on the origin unless `align` is given.
  */
 export function ArcSlot(radius: number, width: number, angle: number, options: PlacementOptions = {}): Sketch {
+  _opts('ArcSlot', options, arguments.length)
   const { rotation = 0.0 } = options
   const align = _align(options, null)
   if (!(radius > 0 && width > 0)) throw new RangeError(`ArcSlot: radius and width must be positive (got ${radius}, ${width})`)
@@ -349,6 +359,7 @@ export function ArcSlot(radius: number, width: number, angle: number, options: P
  * makes a ring. The path stays where it is (in its plane).
  */
 export function Stroke(path: Edge | Wire, width: number, options: { ends?: string; corners?: string } = {}): Sketch {
+  _opts('Stroke', options, arguments.length)
   const { ends = 'round', corners = 'round' } = options
   return stroke(path, Number(width), ends, corners)
 }

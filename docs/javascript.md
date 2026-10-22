@@ -41,11 +41,11 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.6 MB | 2.3 MB | 6.5 MB |
+| The kernel, `smlibwasm.wasm` | 1.6 MB | 2.3 MB | 6.6 MB |
 | Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
 | The library | 0.22 MB | 0.27 MB | 1.0 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **1.9 MB** | **2.6 MB** | **7.7 MB** |
+| **Together** | **1.9 MB** | **2.6 MB** | **7.8 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -87,9 +87,15 @@ applies. The differences come from the language:
 - **Names** are camelCase: `parallel_to` is `parallelTo`, `mass_properties` is `massProperties`.
   Classes keep their names (`Box`, `Part`, `ShapeList`).
 - **Keyword arguments** become an options object at the end:
-  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`.
+  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`. Its keys are checked
+  as Python checks keywords: an unknown one is a `TypeError` that names the right one
+  (`{ k_factor: 0.3 }` copied from Python: "did you mean 'kFactor'?"), and so is a number where
+  the options go (`Rectangle(20, 10, 3)`).
 - **Operators** become methods: `a.fuse(b)`, `a.cut(b)` and `a.intersect(b)` for Python's `+`,
   `-` and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
+- **Lists**: a `ShapeList` is an Array. Python's selection by a point, `faces().at(point)`, is
+  `atPoint(point)`, since `at` takes an index; Python's `list[-1]` is `list.at(-1)` or
+  `list.last`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: in Node, `exportStep(shapes, path)`, `importStep(path)` and the other path functions
@@ -99,7 +105,62 @@ applies. The differences come from the language:
 
 Every body lives in the kernel's memory, which the JavaScript garbage collector does not see. A
 body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
-`using part = ...`) frees it at once, which keeps memory flat in long loops.
+`using part = ...`) frees it at once, which keeps memory flat in long loops. The faces, edges and
+vertices of a disposed body go with it: using them throws a `TypeError`. Edges and wires of their
+own (`Line`, `Polyline`, ...) have `dispose()` too.
+
+A mesh (`part.mesh()`, `tessellate`) is its arrays: the kernel's mesh it is made from is freed as
+soon as they are copied out, and mesh Booleans build one from the arrays when they need it.
+`mesh.dispose()` frees what a mesh still holds in the kernel; the mesh stays usable.
+
+## Running off the main thread
+
+Every call is synchronous and runs on the thread that imported the package, so on a page's main
+thread a long call (a fine mesh of a large part, a shell that fails after many attempts) freezes
+the page until it returns. The package runs unchanged in a Web Worker, or a Node
+`worker_threads` worker, each with a kernel of its own. Bodies move between kernels exactly as the
+contents of `.smb` files, meshes as their typed arrays, which `postMessage` can transfer:
+
+```js
+// worker.js
+import { Cylinder, fromSmb, toSmb } from '@classcad/smlibwasm'
+
+onmessage = ({ data }) => {
+  const part = fromSmb(data).cut(Cylinder(6, 20))
+  const mesh = part.mesh()
+  const reply = { smb: toSmb(part, { ascii: false }), vertices: mesh.vertices, triangles: mesh.triangles }
+  postMessage(reply, [reply.smb.buffer, reply.vertices.buffer, reply.triangles.buffer])
+}
+```
+
+```js
+// main.js
+import { Box, fromSmb, toSmb } from '@classcad/smlibwasm'
+
+const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
+worker.onmessage = ({ data }) => console.log(fromSmb(data.smb).volume, data.triangles.length / 3)
+worker.postMessage(toSmb(Box(40, 30, 10), { ascii: false }))
+```
+
+`worker.terminate()` stops a worker at once, whatever its kernel is doing.
+
+`removeFillets`, `removeFaces` and `surfaceFillet` run each kernel step first in a probe worker,
+a kernel of its own, on copies of the bodies, as smlibpy runs it first in a forked copy of its
+process. A step that crashes the kernel there or takes longer than `GUARD_SECONDS` (20 s;
+`setGuardSeconds(seconds)` sets it, `0` turns the probe off) is dropped, as in Python, and the
+kernel the call runs on is left alone: SMLib's patching code loops for good on some parts (the
+outer round of the enclosure example). The probe waits for its worker with `Atomics.wait`, which
+Node allows on every thread and browsers only in workers of a cross-origin isolated page (one
+served with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
+isolation, the steps run directly, and a step that loops does not come back: remove fillets and
+faces in a worker. There the package starts a small worker of its own when it is imported (a
+browser starts a worker only while the thread that creates it is not busy), which starts the
+probe worker, with the kernel, for the first step. The two are the package's
+`_defeature_supervisor.js` and `_defeature_worker.js`, loaded as
+`new Worker(new URL('./_defeature_supervisor.js', import.meta.url))`, which bundlers recognise. A
+probe worker that does not start within 30 s is given up, with a warning, and the steps run
+directly.
 
 ## API
 
@@ -286,6 +347,7 @@ export abstract class Shape {
 export class ShapeList<T = Shape> extends Array<T> {
     one(): T;
     get first(): T;
+    at(index: number): T | undefined;
     get last(): T;
     sortBy(key?: SortKey, reverse?: boolean): ShapeList<T>;
     filterBy(criterion: Axis | string | ((s: T) => boolean)): ShapeList<T>;
@@ -353,6 +415,7 @@ export class Vertex extends Shape {
 }
 export class Edge extends Shape {
     constructor(token?: symbol);
+    dispose(): void;
     get geomType(): string;
     get length(): number;
     get start(): Vector;
@@ -385,6 +448,7 @@ export class Wire extends Shape {
     constructor(edges: Edge | Wire | Iterable<Edge | Wire | Iterable<Edge | Wire>>, options?: {
         sort?: boolean;
     });
+    dispose(): void;
     edges(): ShapeList<Edge>;
     vertices(): ShapeList<Vertex>;
     wires(): ShapeList<Wire>;
@@ -748,6 +812,8 @@ export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' 
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
 export function thicken(surface: Shell | Face, thickness: number): Part;
+export let GUARD_SECONDS: number;
+export function setGuardSeconds(seconds: number): number;
 ```
 
 ### Deformations
@@ -892,6 +958,7 @@ export class Mesh {
     normals: Float32Array | null;
     constructor(vertices: ArrayLike<number>, triangles: ArrayLike<number>, normals?: ArrayLike<number> | null);
     get length(): number;
+    dispose(): void;
     get triangleNormals(): Float64Array;
     get area(): number;
     get volume(): number;

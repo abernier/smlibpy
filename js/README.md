@@ -30,7 +30,7 @@ The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, whi
 resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
 to the config. Node needs version 22.18 or later.
 
-A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel (6.5 MB uncompressed) and 0.3 MB for
+A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel (6.6 MB uncompressed) and 0.3 MB for
 the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
 
 ## From smlibpy to smlibwasm
@@ -41,9 +41,12 @@ The functions, classes, checks and error messages are smlibpy's, so
 - **Names** are camelCase: `parallel_to` is `parallelTo`, `mass_properties` is `massProperties`.
   Classes keep their names (`Box`, `Part`, `ShapeList`).
 - **Keyword arguments** become an options object at the end:
-  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`.
+  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`. An unknown key is a
+  `TypeError` that names the right one (`k_factor` copied from Python: `kFactor`).
 - **Operators** become methods: `a.fuse(b)`, `a.cut(b)`, `a.intersect(b)` for Python's `+`, `-`
   and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
+- **Lists**: Python's `faces().at(point)` is `atPoint(point)` (`at` takes an index), and
+  Python's `list[-1]` is `list.at(-1)` or `list.last`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: `toStep`, `toStl`, `toGlb`, `toDxf`, `toUsd` give the file's contents and `fromStep`,
@@ -55,7 +58,17 @@ The functions, classes, checks and error messages are smlibpy's, so
 
 Every body lives in the kernel's memory, which the JavaScript garbage collector does not see. A
 body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
-`using part = ...`) frees it at once, which keeps memory flat in long loops.
+`using part = ...`) frees it at once, which keeps memory flat in long loops. The faces, edges and
+vertices of a disposed body go with it. A mesh is its arrays: the kernel's mesh is freed once
+they are copied out.
+
+## Running off the main thread
+
+Calls are synchronous; on a page's main thread a long one freezes the page. The package runs
+unchanged in a Web Worker, with a kernel of its own; bodies move between kernels as `.smb`
+contents (`toSmb`, `fromSmb`). `removeFillets` and `removeFaces` stop a kernel step that loops
+after `GUARD_SECONDS` in Node and in workers of a cross-origin isolated page, not on a page's
+main thread. See [the docs](https://smlibpy.classcad.ch/docs/javascript#running-off-the-main-thread).
 
 ## Building from source
 

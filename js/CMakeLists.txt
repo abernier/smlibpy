@@ -24,6 +24,11 @@ set_target_properties(smlibwasm PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${SMLIBWASM_OUT_DIR}")
 
 # (WebAssembly exceptions: set on the kernel targets by the parent, see there)
+#
+# The stack: a call that throws (a kernel error becomes a JavaScript exception) or traps leaves
+# the stack pointer where it was inside the call, so js/src/kernel.ts saves it before every call
+# and restores it when the call throws (stackSave, stackRestore). The stack lies below the static
+# data (--stack-first), so that an overflow traps instead of overwriting that data.
 target_link_options(smlibwasm PRIVATE
   -lembind
   -fwasm-exceptions
@@ -35,5 +40,6 @@ target_link_options(smlibwasm PRIVATE
   -sINITIAL_MEMORY=64MB
   -sMAXIMUM_MEMORY=4GB
   -sSTACK_SIZE=4MB
+  -Wl,--stack-first
   -sFILESYSTEM=1
-  -sEXPORTED_RUNTIME_METHODS=FS)
+  -sEXPORTED_RUNTIME_METHODS=FS,stackSave,stackRestore)

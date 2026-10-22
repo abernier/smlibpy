@@ -11,7 +11,7 @@
 // In memory everywhere: toDxf (a string), fromDxf and fromDxfWires (a string or the file's
 // bytes). With file paths in Node: exportDxf, importDxf and importDxfWires.
 
-import { ModelingError, _warn, ext, k } from './kernel.ts'
+import { ModelingError, _opts, _warn, ext, k } from './kernel.ts'
 import { type Matrix, Plane, _formatG, _identity, _matmul } from './geometry.ts'
 import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
@@ -941,11 +941,13 @@ function _fileText(path: string, what: string): string {
  * curve ends meet. Closed chains come first, then open ones, each in drawing order.
  */
 export function importDxfWires(path: string, options: DxfReadOptions = {}): ShapeList<Wire> {
+  _opts('importDxfWires', options)
   return _wires(_fileText(path, 'importDxfWires'), options, 'importDxfWires')
 }
 
 /** `importDxfWires` of a drawing in memory: the text of a DXF file, or its bytes. */
 export function fromDxfWires(data: string | Uint8Array, options: DxfReadOptions = {}): ShapeList<Wire> {
+  _opts('fromDxfWires', options)
   return _wires(_text(data, 'fromDxfWires'), options, 'fromDxfWires')
 }
 
@@ -969,11 +971,13 @@ function _wires(text: string, options: DxfReadOptions, what: string): ShapeList<
  * or outlines that branch.
  */
 export function importDxf(path: string, options: DxfReadOptions = {}): Sketch {
+  _opts('importDxf', options)
   return _sketch(_fileText(path, 'importDxf'), options, 'importDxf', 'importDxfWires')
 }
 
 /** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes. */
 export function fromDxf(data: string | Uint8Array, options: DxfReadOptions = {}): Sketch {
+  _opts('fromDxf', options)
   return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')
 }
 
@@ -1060,6 +1064,7 @@ function _sketch(text: string, options: DxfReadOptions, what: string, wiresName:
  * (Node). See `toDxf`.
  */
 export function exportDxf(shapes: unknown, path: string, options: DxfWriteOptions = {}): void {
+  _opts('exportDxf', options)
   const text = _dxf(shapes, options, 'exportDxf')
   _fs('exportDxf').writeFileSync(path, text, 'utf8')
 }
@@ -1074,6 +1079,7 @@ export function exportDxf(shapes: unknown, path: string, options: DxfWriteOption
  * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge` or an array of them.
  */
 export function toDxf(shapes: unknown, options: DxfWriteOptions = {}): string {
+  _opts('toDxf', options)
   return _dxf(shapes, options, 'toDxf')
 }
 

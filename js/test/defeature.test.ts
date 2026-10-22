@@ -2,10 +2,12 @@
 // Part.removeFaces.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ModelingError, k } from '../src/kernel.ts'
+import { setGuardSeconds } from '../src/defeature.ts'
 import { BoundBox, Z } from '../src/geometry.ts'
 import { Align } from '../src/align.ts'
 import { type Face, Part, type ShapeList } from '../src/shapes.ts'
@@ -228,4 +230,43 @@ test('rounds and a hole taken out, a plane face refused', () => {
   const plain = holed.removeFaces(holed.faces().cylinders())
   approx(plain.volume, 24000, 1e-9)
   raises(() => rounded.removeFillets(rounded.faces().top()), ModelingError, /no fillets/)
+})
+
+// -- the guard: a probe worker with a time limit (smlibwasm; smlibpy forks its process) ---------
+test('a kernel step that does not finish is stopped after GUARD_SECONDS and dropped (smlibwasm)', () => {
+  // The kernel's fillet removal loops on the outer bottom round of the enclosure example (it ran
+  // for good, at full load, before the guard): in a process of its own, so that a hang fails the
+  // test instead of stopping the suite.
+  const src = new URL('../src/', import.meta.url).href
+  const examples = new URL('../examples/', import.meta.url).href
+  const code = `
+    import { setGuardSeconds } from '${src}defeature.ts'
+    import { model } from '${examples}enclosure.ts'
+    setGuardSeconds(1)
+    const box = model()[0]
+    const round = box.faces().fillets().filter((f) => f.center().z < 2 && f.geomType === 'cylinder').slice(0, 1)
+    try {
+      box.removeFillets(round)
+      console.log('removed')
+    } catch (e) {
+      console.log(e.name + ': ' + e.message)
+    }
+    console.log('kept', box.removeFillets(round, { partial: true }).volume === box.volume)
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(run.signal, null, 'the step was not stopped')
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /ModelingError: removeFillets: the kernel could not take out 1 of the 1 fillet faces/)
+  assert.match(run.stdout, /kept true/)
+})
+
+test('without the guard the kernel steps run directly (smlibwasm)', () => {
+  const old = setGuardSeconds(0)
+  try {
+    const rounded = box.fillet(box.edges(), 3)
+    approx(rounded.removeFillets().volume, 24000, 1e-9)
+  } finally {
+    setGuardSeconds(old)
+  }
+  raises(() => setGuardSeconds(-1), RangeError)
 })

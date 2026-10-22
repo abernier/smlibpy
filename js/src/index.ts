@@ -58,6 +58,8 @@ export { Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, To
 export { GridLocations, HexLocations, Locations, PolarLocations } from './locations.ts'
 // operations
 export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, thicken } from './operations.ts'
+// removing fillets and faces: the time limit of a kernel step
+export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
 // deformations
 export { Lattice, bend, taper, twist } from './deform.ts'
 // surfaces

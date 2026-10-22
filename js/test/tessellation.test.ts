@@ -10,6 +10,7 @@
 // normal points; where that is into the face's part, the mesh is turned.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,7 +40,7 @@ import {
 } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { gltfDocument } from '../src/exporters.ts'
-import { faceMeshes } from '../src/mesh.ts'
+import { _tessellate, faceMeshes } from '../src/mesh.ts'
 import * as render from '../src/render.ts'
 import { approx } from './_approx.ts'
 import { Box as _Box, Cylinder as _Cylinder, Mesh as _Mesh } from '../src/index.ts'
@@ -334,6 +335,43 @@ test('face meshes cut one tessellation by face', () => {
     meshes.reduce((n, m) => n + m.length, 0),
     tessellate(part, 0.005).length,
   )
+})
+
+test('a mesh is its arrays: the kernel mesh goes once they are copied out', () => {
+  const ball = Sphere(20).mesh(0.01)
+  assert.equal(ball._poly, null)
+  const block = Box(30, 30, 30).translate(20, 0, 0).mesh()
+  const cut = ball.cut(block) // (a mesh Boolean builds the kernel's meshes from the arrays)
+  assert.ok(cut.isClosed())
+  assert.ok(cut.volume < ball.volume)
+  assert.deepEqual([ball._poly, block._poly, cut._poly], [null, null, null])
+  // what keeps the tessellation's own mesh (the faces of its triangles, curvature maps) frees it
+  const kept = _tessellate(Box(10, 10, 10), null, 15, true)
+  assert.ok(kept._poly !== null && kept._poly.poly !== 0)
+  kept[Symbol.dispose]()
+  assert.equal(kept._poly, null)
+  kept.dispose() // (once is enough)
+  approx(kept.fuse(Box(10, 10, 10).translate(5, 0, 0).mesh()).volume, 1500, 1e-9)
+})
+
+test('meshes kept in a loop keep only their arrays (smlibwasm)', () => {
+  // Each mesh held its kernel mesh until the garbage collector freed it, which it does not do
+  // in a loop: 15 meshes of a sphere took 350 MB more (60 large ones ran out of memory). In a
+  // process of its own, so that what other tests left does not count.
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { Sphere } from '${src}index.ts'
+    const ball = Sphere(20)
+    const kept = []
+    for (let i = 0; i < 3; i++) kept.push(ball.mesh(0.01))
+    const before = process.memoryUsage().rss
+    for (let i = 0; i < 15; i++) kept.push(ball.mesh(0.01))
+    console.log(Math.round((process.memoryUsage().rss - before) / 1048576))
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(run.status, 0, run.stderr)
+  const grown = Number(run.stdout.trim())
+  assert.ok(grown < 150, `15 meshes took ${grown} MB`)
 })
 
 test('mesh Booleans on any mesh', () => {

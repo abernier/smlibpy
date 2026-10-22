@@ -5,7 +5,7 @@
 // kept: faces share their edges as they do in the file, so no stitching is needed. Bodies that
 // still come out invalid are healed.
 
-import { KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { type Location, type Matrix, Plane, Vector } from './geometry.ts'
 import { det3 } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line } from './curves.ts'
@@ -1216,6 +1216,7 @@ export class StepModel {
  * `readStep` for the contents in memory (in the browser too); see `readStep`.
  */
 export function fromStepModel(data: string | Uint8Array, options: { heal?: boolean } = {}): StepModel {
+  _opts('fromStepModel', options)
   const { heal = true } = options
   const sf = parse(_text(data, 'fromStepModel'))
   const bodies = _list(interpret(sf).map(([b, m]) => _buildBody(b, m, heal)))
@@ -1253,6 +1254,7 @@ export function fromStepModel(data: string | Uint8Array, options: { heal?: boole
  * `bodies`. `heal` as for `importStep` (default true).
  */
 export function readStep(path: string, options: { heal?: boolean } = {}): StepModel {
+  _opts('readStep', options)
   return fromStepModel(_fs().readFileSync(String(path)), options)
 }
 
@@ -1370,6 +1372,7 @@ function _text(data: string | Uint8Array, caller = 'fromStep'): string {
  * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true).
  */
 export function fromStep(data: string | Uint8Array, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('fromStep', options)
   const { heal = true } = options
   const sf = parse(_text(data))
   const bodies = interpret(sf)
@@ -1386,5 +1389,6 @@ export function fromStep(data: string | Uint8Array, options: { heal?: boolean } 
  * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true).
  */
 export function importStep(path: string, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('importStep', options)
   return fromStep(_fs().readFileSync(String(path)), options)
 }

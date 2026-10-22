@@ -17,7 +17,7 @@
 //
 // The kernel does the geometry (SMLib's space bend and unbend); see src/cpp/sheetmetal.cpp.
 
-import { BrepHandle, KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { Axis, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _mergedLines, _take, _typeName } from './shapes.ts'
 import { Line, _mod, _withOptions } from './curves.ts'
@@ -78,6 +78,7 @@ function _checkRadius(what: string, radius: number, _thickness: number): void {
  * `angle` is the bend angle in degrees (90 for an L), `radius` the inside radius.
  */
 export function bendAllowance(angle: number, options: BendAllowanceOptions): number {
+  _opts('bendAllowance', options)
   const { radius, thickness, kFactor = K_FACTOR } = options
   _checkValues('bendAllowance', angle, radius, thickness, kFactor)
   return _radians(angle) * (radius + kFactor * thickness)
@@ -89,6 +90,7 @@ export function bendAllowance(angle: number, options: BendAllowanceOptions): num
  * faces of the two legs meet (below 180 degrees).
  */
 export function bendDeduction(angle: number, options: BendAllowanceOptions): number {
+  _opts('bendDeduction', options)
   const { radius, thickness, kFactor = K_FACTOR } = options
   if (!(0.0 < Number(angle) && Number(angle) < 180.0)) {
     throw new RangeError(`bendDeduction: the angle must be above 0 and below 180 degrees (got ${String(angle)})`)
@@ -109,6 +111,7 @@ export function bendDeduction(angle: number, options: BendAllowanceOptions): num
  */
 export function developedLength(...args: [...legs: number[], options: DevelopedLengthOptions]): number {
   const { items: legs, options } = _withOptions<DevelopedLengthOptions>(args)
+  _opts('developedLength', options)
   const { angle = 90.0, radius, thickness, kFactor = K_FACTOR } = options
   if (legs.length < 2) throw new RangeError('developedLength: give at least two legs')
   const angles = typeof angle === 'number' ? new Array<number>(legs.length - 1).fill(Number(angle)) : Array.from(angle, Number)
@@ -462,6 +465,7 @@ export interface FoldOptions {
  * @returns The bent part: the bend faces are exact cylinders of `radius` and `radius + thickness`.
  */
 export function fold(part: Part, line: Axis | Edge, angle: number, options: FoldOptions): Part {
+  _opts('fold', options)
   let { radius, kFactor = K_FACTOR } = options
   const { fixed = null, partial = false } = options
   const what = 'bend'
@@ -628,6 +632,7 @@ export interface FlangeOptions {
  *   to 1 outside).
  */
 export function flange(part: Part, edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part {
+  _opts('flange', options)
   const { angle = 90.0, kFactor = K_FACTOR } = options
   let { radius } = options
   const what = 'flange'
@@ -1122,6 +1127,7 @@ export interface UnfoldOptions {
  * `flatPattern`.
  */
 export function unfold(part: Part, options: UnfoldOptions = {}): Part {
+  _opts('unfold', options)
   const { kFactor = K_FACTOR, fixed = null } = options
   return _unfold(part, kFactor, fixed, 'unfold').part
 }
@@ -1135,6 +1141,7 @@ export function unfold(part: Part, options: UnfoldOptions = {}): Part {
  * bounding box starts at the origin.
  */
 export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPattern {
+  _opts('flatPattern', options)
   const { kFactor = K_FACTOR, fixed = null } = options
   const u = _unfold(part, kFactor, fixed, 'flatPattern')
   const flat = u.part

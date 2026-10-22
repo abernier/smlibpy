@@ -12,14 +12,18 @@
 // fillets or holes were taken out, down for concave fillets and bosses).
 //
 // SMLib's patching and Boolean code can crash or loop on some parts. smlibpy runs each kernel
-// step first in a forked copy of the process (on Linux and macOS, see its GUARD_SECONDS), which
-// JavaScript cannot: the kernel runs directly, as smlibpy's does on Windows. A crash of the kernel
-// (a trap of the WebAssembly module, which stays usable) drops that step, as a crash in smlibpy's
-// copy does; a step that loops does not come back.
+// step first in a forked copy of the process (on Linux and macOS). JavaScript cannot fork; where
+// it can wait for another thread (Node, and Web Workers of a cross-origin isolated page), each
+// step runs first in a probe worker, a kernel of its own, on copies of the bodies (see
+// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does on
+// Windows: a crash of the kernel (a trap of the WebAssembly module) drops that step, but a step
+// that loops does not come back.
 
-import { BrepHandle, ModelingError, k } from './kernel.ts'
+import { BrepHandle, ModelingError, _warn, ext, k } from './kernel.ts'
 import { _formatG } from './geometry.ts'
-import { Face, type Part, ShapeList, _flattenFaces } from './shapes.ts'
+import { Face, type Part, ShapeList, type _Body, _flattenFaces } from './shapes.ts'
+import { toSmb } from './exporters.ts'
+import { _giveUp, _noProbe, _probeSupervisor } from './_guard.ts'
 
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
@@ -27,6 +31,25 @@ type Any = any
 /** Angle (degrees) between the normals of two faces along an edge below which the faces meet
  * tangentially: the edge is a rail of a fillet. */
 export const TANGENCY = 2.0
+
+/**
+ * Seconds the kernel may take for one step. Where JavaScript can wait for another thread (Node,
+ * and Web Workers of a cross-origin isolated page), the kernel first does the work in a probe
+ * worker, a kernel of its own, on copies of the bodies: if it crashes there or takes longer than
+ * this, a ModelingError says so and this kernel is left alone (SMLib's patching and Boolean code
+ * can crash or loop on some parts). `0` runs the kernel directly, as on a browser's main thread,
+ * where a step that loops does not come back. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
+ */
+export let GUARD_SECONDS = 20.0
+
+/** Sets GUARD_SECONDS (Python's `smlibpy.defeature.GUARD_SECONDS = seconds`); returns the value it
+ * had. */
+export function setGuardSeconds(seconds: number): number {
+  if (!(Number(seconds) >= 0)) throw new RangeError(`setGuardSeconds: the seconds must be 0 or more, got ${seconds}`)
+  const old = GUARD_SECONDS
+  GUARD_SECONDS = Number(seconds)
+  return old
+}
 
 const _D = k.defeature
 const _VOLUMES = new WeakMap<BrepHandle, number>() // a body's handle -> its volume
@@ -42,10 +65,20 @@ class _KernelFault extends ModelingError {
   }
 }
 
-/** `work()`. JavaScript cannot run it first in a forked copy of the process as smlibpy does on
- * Linux and macOS; a trap of the WebAssembly module (the kernel crashed) becomes a _KernelFault,
- * so that the step is dropped as smlibpy drops a step that crashed in its copy. */
-export function _guarded<R>(what: string, work: () => R): R {
+/** A kernel step for the probe worker (see _defeature_worker.ts): the step, the bodies it works on
+ * as the contents of .smb files, and its arguments, faces as their indices in their body. */
+export type _Job = { op: string; bodies: Uint8Array[]; [argument: string]: unknown }
+
+/**
+ * `work()`, after a probe worker has done the same kernel step (`job`) to the end (see
+ * GUARD_SECONDS). The kernel is deterministic and the worker works on exact copies, so it does what
+ * this kernel will do; a step that takes too long or crashes there becomes a _KernelFault, and the
+ * step is dropped as smlibpy drops one in its forked copy. Without a probe worker (a browser's
+ * main thread) a trap of the WebAssembly module here (the kernel crashed) becomes the _KernelFault.
+ */
+export function _guarded<R>(what: string, work: () => R, job: (() => _Job) | null = null): R {
+  const limit = Number(GUARD_SECONDS)
+  if (limit > 0 && job !== null) _probe(what, job, limit)
   try {
     return work()
   } catch (e) {
@@ -53,6 +86,50 @@ export function _guarded<R>(what: string, work: () => R): R {
       throw new _KernelFault(what, `the kernel crashed (${e.message})`, 'the module stays usable')
     }
     throw e
+  }
+}
+
+/** The contents of an .smb file of a body, for the probe worker (binary: exact). */
+export function _smb(body: _Body): Uint8Array {
+  return toSmb(body, { ascii: false })
+}
+
+/** The indices of faces in their body, for the probe worker. */
+export function _indices(body: _Body, faces: readonly Face[]): number[] {
+  return Array.from(ext.face_indices(body._brep, faces.map((f) => f._f)) as ArrayLike<number>, Number)
+}
+
+// The states of a job, as _defeature_worker.ts sets them.
+const _QUEUED = 0
+const _RUNNING = 1
+const _CRASHED = 3
+/** Seconds a new probe worker may take to load its kernel and start the first step. */
+const _START_SECONDS = 30.0
+
+/** Runs the job in the probe worker; throws a _KernelFault if it takes longer than `limit` seconds
+ * or crashes the kernel there. Returns at once where there is no probe worker. */
+function _probe(what: string, job: () => _Job, limit: number): void {
+  const supervisor = _probeSupervisor()
+  if (supervisor === null) return
+  const j = job()
+  const state = new Int32Array(new SharedArrayBuffer(4))
+  supervisor.postMessage({ ...j, state: state.buffer }, j.bodies.map((b) => b.buffer))
+  // (a new probe worker loads its kernel first)
+  Atomics.wait(state, 0, _QUEUED, _START_SECONDS * 1000)
+  if (Atomics.load(state, 0) === _QUEUED) {
+    _giveUp(`the probe worker did not start within ${_formatG(_START_SECONDS)} s`)
+    _warn(`${what}: ${_noProbe()}; the kernel steps of removeFillets, removeFaces and surfaceFillet run without a time limit from now on`)
+    return
+  }
+  Atomics.wait(state, 0, _RUNNING, limit * 1000)
+  const outcome = Atomics.load(state, 0)
+  if (outcome === _RUNNING) {
+    supervisor.postMessage({ kill: true })
+    throw new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
+  }
+  if (outcome === _CRASHED) {
+    supervisor.postMessage({ kill: true }) // (its kernel may be damaged)
+    throw new _KernelFault(what, 'the kernel crashed (in a probe worker, a kernel of its own)', 'this kernel is fine')
   }
 }
 
@@ -238,7 +315,12 @@ function _filletBound(b: _Blends, faces: readonly Face[]): number {
 function _executive(what: string, body: Part, groups: readonly (readonly Face[])[], rebuild: string): [Part | null, boolean] {
   let res: Any
   try {
-    res = _guarded(what, () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild))
+    res = _guarded(what, () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild), () => ({
+      op: 'defeature',
+      bodies: [_smb(body)],
+      groups: groups.map((g) => _indices(body, g)),
+      rebuild,
+    }))
   } catch (e) {
     if (e instanceof _KernelFault) return [null, true]
     throw e
@@ -287,7 +369,11 @@ function _removePass(
       triedA.add(key(edge))
       let res: Any
       try {
-        res = _guarded('removeFillets', () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)))
+        res = _guarded('removeFillets', () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)), () => ({
+          op: 'remove_fillet_faces',
+          bodies: [_smb(body)],
+          faces: _indices(body, edge),
+        }))
       } catch (e) {
         if (!(e instanceof _KernelFault)) throw e
         faulted.add(key(edge))
@@ -454,7 +540,12 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
   for (const rebuild of ['extend', 'planar_cap']) {
     let res: Any
     try {
-      res = _guarded('removeFaces', () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild))
+      res = _guarded('removeFaces', () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild), () => ({
+        op: 'defeature',
+        bodies: [_smb(body)],
+        groups: [_indices(body, group)],
+        rebuild,
+      }))
     } catch (e) {
       if (!(e instanceof _KernelFault)) throw e
       why = why || e.reason

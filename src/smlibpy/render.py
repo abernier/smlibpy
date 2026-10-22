@@ -633,7 +633,7 @@ class _Scene:
     def __init__(self, shapes: Any, tolerance: float | None, colors: str, fine: bool = False):
         from .colors import to_rgb
         from .exporters import _DEFAULT_COLORS, _curve_points, _edge_polylines, _flatten_all
-        from .mesh import Mesh, tessellate
+        from .mesh import Mesh, _tessellate
         from .shapes import Edge, Face, Part, Sketch, Wire, _Body as Solidish
 
         self.bodies: list[_Body] = []
@@ -672,7 +672,8 @@ class _Scene:
                 rgb = palette[len(self.bodies) % len(palette)] if colors == "distinct" else native
                 # zebra stripes and curvature maps follow the normals closely: finer triangles
                 source = piece.to_shell() if isinstance(piece, Face) and fine else piece
-                mesh = piece if isinstance(piece, Mesh) else tessellate(source, tolerance, 5.0 if fine else 15.0)
+                # (curvature maps need the tessellation's own mesh)
+                mesh = piece if isinstance(piece, Mesh) else _tessellate(source, tolerance, 5.0 if fine else 15.0, fine)
                 if isinstance(piece, Mesh):
                     segs = np.zeros((0, 2, 3))
                 elif isinstance(piece, Face):

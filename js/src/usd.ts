@@ -7,7 +7,7 @@
 // own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
 // OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
-import { ext, kernelCall } from './kernel.ts'
+import { _opts, ext, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Part, Shell, ShapeList } from './shapes.ts'
@@ -62,6 +62,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
  * Z up.
  */
 export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
+  _opts('toUsd', options)
   const items = _usdItems(shapes, options)
   if (!items.length) throw new RangeError('toUsd: nothing to write')
   return kernelCall('toUsd', () => ext.usd_text(items, 'Z', 0.001))
@@ -69,6 +70,7 @@ export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
 
 /** Write parts, sheets and meshes to a USD file (.usda, or .usd as text); see `toUsd`. */
 export function exportUsd(shapes: unknown, path: string, options: UsdExportOptions = {}): void {
+  _opts('exportUsd', options)
   const p = String(path)
   const dot = p.lastIndexOf('.')
   const ext_ = dot > Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) ? p.slice(dot).toLowerCase() : ''
@@ -84,6 +86,7 @@ export function exportUsd(shapes: unknown, path: string, options: UsdExportOptio
  * what is wrong.
  */
 export function fromUsd(data: string | Uint8Array, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('fromUsd', options)
   const text = typeof data === 'string' ? data : new TextDecoder('utf-8').decode(data)
   const found: [number, string, Float64Array | null][] = kernelCall('fromUsd', () => ext.usd_read(text, options.heal ?? false))
   if (!found.length) throw new RangeError('the USD file holds no BrepArray prims (bodies)')
@@ -100,5 +103,6 @@ export function fromUsd(data: string | Uint8Array, options: { heal?: boolean } =
 
 /** Read the bodies of the BrepArray prims of a USD text file (.usda, .usd); see `fromUsd`. */
 export function importUsd(path: string, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('importUsd', options)
   return fromUsd(_fs().readFileSync(String(path)), options)
 }

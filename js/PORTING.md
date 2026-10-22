@@ -22,7 +22,8 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
    and keywords from their signature (signatures.ts for the kernel's calls, the table in
    kernel.ts for smlibpy's own): `k.fillet_edges(b, edges, { radius: 2, xsect_type: 2 })`.
    Always go through this: the module itself does not check argument counts, a missing
-   argument arrives as 0.
+   argument arrives as 0. Every function restores the module's stack pointer when it throws
+   (a kernel error or a trap leaves it where the call had moved it).
 3. **smlibwasm** (js/src/*.ts): smlibpy's Python modules, one TypeScript module each, same
    file names (shapes.py -> shapes.ts, _regions.py -> _regions.ts).
 
@@ -41,6 +42,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   Keyword-only parameters (after `*`) become a trailing options object with camelCase keys:
   `fold(self, line, angle, *, radius, k_factor=0.44)` -> `fold(line, angle, { radius, kFactor })`.
   `**kwargs` passed on become an options object passed on. `*args` stay rest parameters.
+  A public function checks its options first, as Python checks keywords:
+  `_opts('Part.fold', options)` (kernel.ts), against `_options.ts`, which
+  `tools/gen_js_options.py` makes from Python's signatures (run it after changing one;
+  tests/test_js_options.py and js/test/options.test.ts fail until then). Constructors of parts,
+  sketches and patterns pass `arguments.length` too.
 - **Properties** stay properties (getters): `edge.length`, `face.area`, `part.volume`,
   `face.geomType`, `list.first`. Methods stay methods.
 - **Operators** become methods:
@@ -54,7 +60,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   - `==` -> `equals(other)`; `hash` -> `_identity()` (a string key); `repr` -> `toString()`
     (and Node's inspect).
 - **ShapeList** extends Array: `filter`, `slice` and `concat` return ShapeLists; `map`
-  returns a plain array. Python's `ShapeList.at(point)` is `atPoint(point)` (Array has `at`).
+  returns a plain array. Python's `ShapeList.at(point)` is `atPoint(point)` (Array has `at`,
+  which throws a TypeError for anything but an index).
   `new ShapeList(...shapes)` builds one; the internal helper is `_list(iterable)`.
 - **Errors.** `ValueError` and `IndexError` -> `RangeError`; `TypeError` -> `TypeError`;
   `ModelingError` and `KernelError` are smlibwasm's classes (kernel.ts). `kernel_call` is
@@ -71,7 +78,10 @@ the Python code works around a kernel defect, so does the TypeScript.
   `lattice.points[i][j][k]` is a point `[x, y, z]`; `layer(Z, -1)` is `[null, null, -1]`.
 - **Kernel objects** are numbers. Python's `id(kernel_object)` identity is the number.
   Owning handles (`BrepHandle`, `CurveHandle`, ...) free on garbage collection and have
-  `dispose()`; `_take(h)` releases one to a new owner.
+  `dispose()`; `_take(h)` releases one to a new owner. A face's, edge's or vertex's kernel
+  object (`_f`, `_e`, `_v`) is a getter that throws a TypeError once its body was disposed.
+  Meshes keep no PolyBrep (`_fromPoly` frees it once the arrays are copied), except where a
+  caller keeps the tessellation's own (`_tessellate(..., keep)`) and disposes it.
 - **Imports.** Modules import each other statically, also where Python imports inside a
   function to break a cycle. ES modules allow the cycles as long as no module uses another's
   exports while it is first evaluated: no top-level code that builds shapes.
@@ -94,8 +104,16 @@ the Python code works around a kernel defect, so does the TypeScript.
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
-  `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them); `defeature.ts`: `_guarded`
-  (surfaces.ts blends surfaces in it).
+  `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them), `_tessellate`
+  (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it).
+- **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
+  a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
+  which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and
+  workers of a cross-origin isolated page; on a browser's main thread the step runs directly).
+  A supervisor worker without a kernel (`_defeature_supervisor.ts`, started by `_guard.ts`)
+  starts the probe workers and terminates one that takes too long: a browser cannot start a
+  worker from a thread that waits, so there `_guard.ts` starts the supervisor when the package is
+  imported.
 
 ## Status
 

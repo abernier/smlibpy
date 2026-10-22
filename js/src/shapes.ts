@@ -5,7 +5,7 @@
 // them and can be passed back to operations on that body
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
-import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _warn, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -331,6 +331,13 @@ export class ShapeList<T = Shape> extends Array<T> {
   get first(): T {
     if (!this.length) throw new RangeError('empty selection')
     return this[0]
+  }
+
+  /** The shape at `index` (Array's `at`: a negative index counts from the end). Python's
+   * `at(point)` selects by a point; here that is `atPoint(point)`. */
+  override at(index: number): T | undefined {
+    if (typeof index !== 'number') throw new TypeError('ShapeList.at takes an index; select by a point with atPoint(point)')
+    return super.at(index)
   }
 
   get last(): T {
@@ -719,6 +726,12 @@ export function _unique<T>(items: Iterable<T>): ShapeList<T> {
   return out
 }
 
+/** The error for a face, edge or vertex of a body that `dispose()` freed: they went with it (the
+ * kernel's numbers of them point into freed memory). */
+function _ownerDisposed(what: string): TypeError {
+  return new TypeError(`the ${what}'s body was disposed: dispose() frees a body with its faces, edges and vertices; take them from a body that is still in use`)
+}
+
 function _directionOf(s: unknown): Vector | null {
   if (s instanceof Edge) return s._isStraight() ? s.direction : null
   if (s instanceof Face) return s.isPlanar ? s.normalAt() : null
@@ -730,7 +743,7 @@ function _directionOf(s: unknown): Vector | null {
 /** A point. Vertices of bodies come from `.vertices()`; `new Vertex(x, y, z)` makes one. */
 export class Vertex extends Shape {
   _owner: _Body | null = null
-  _v = 0
+  _kv = 0
   _p: Vector
 
   constructor(x: number | VectorLike = 0, y = 0, z = 0) {
@@ -741,8 +754,14 @@ export class Vertex extends Shape {
   static _of(owner: _Body | null, kvertex: number): Vertex {
     const v = new Vertex(k.vertex_point(kvertex))
     v._owner = owner
-    v._v = kvertex
+    v._kv = kvertex
     return v
+  }
+
+  /** The kernel vertex (0 for a point); a TypeError once its body was disposed. */
+  get _v(): number {
+    if (this._owner !== null && !this._owner._h.alive) throw _ownerDisposed('vertex')
+    return this._kv
   }
 
   get point(): Vector {
@@ -831,7 +850,7 @@ export class Vertex extends Shape {
  */
 export class Edge extends Shape {
   _owner: _Body | null = null
-  _e = 0
+  _ke = 0
   _c: CurveHandle | null = null
   _rev = false
   _cache: [number, number] | null = null
@@ -845,9 +864,15 @@ export class Edge extends Shape {
   static _of(owner: _Body | null, kedge: number, reversed = false): Edge {
     const e = new Edge(INTERNAL)
     e._owner = owner
-    e._e = kedge
+    e._ke = kedge
     e._rev = reversed
     return e
+  }
+
+  /** The kernel edge (0 for a standalone curve); a TypeError once its body was disposed. */
+  get _e(): number {
+    if (this._owner !== null && !this._owner._h.alive) throw _ownerDisposed('edge')
+    return this._ke
   }
 
   /** Wrap a new standalone kernel curve (takes ownership). */
@@ -855,6 +880,17 @@ export class Edge extends Shape {
     const e = new Edge(INTERNAL)
     e._c = new CurveHandle(curve)
     return e
+  }
+
+  /** Frees the kernel's curve of a standalone edge now, not when the garbage collector gets to
+   * it; the edges that share it (`reversed()`, wires made of the edge) cannot be used afterwards.
+   * An edge of a body belongs to the body: dispose the body. */
+  dispose(): void {
+    this._c?.dispose()
+  }
+
+  [Symbol.dispose](): void {
+    this.dispose()
   }
 
   // -- kernel access ------------------------------------------------------------------------
@@ -1057,7 +1093,7 @@ export class Edge extends Shape {
   reversed(): Edge {
     const e = new Edge(INTERNAL)
     e._owner = this._owner
-    e._e = this._e
+    e._ke = this._e
     e._c = this._c
     e._rev = !this._rev
     e._cache = this._cache
@@ -1217,6 +1253,7 @@ export class Wire extends Shape {
 
   constructor(edges: Edge | Wire | Iterable<Edge | Wire | Iterable<Edge | Wire>>, options: { sort?: boolean } = {}) {
     super()
+    _opts('Wire', options)
     const sort = options.sort ?? true
     const flat: Edge[] = []
     if (!(edges instanceof Edge || edges instanceof Wire) && !_isIterable(edges)) {
@@ -1237,6 +1274,16 @@ export class Wire extends Shape {
     const w = Object.create(Wire.prototype) as Wire
     w._edges = Object.freeze([...edges])
     return w
+  }
+
+  /** Frees the kernel's curves of the wire's standalone edges now (see `Edge.dispose`); the edges
+   * cannot be used afterwards, here or elsewhere. */
+  dispose(): void {
+    for (const e of this._edges) e.dispose()
+  }
+
+  [Symbol.dispose](): void {
+    this.dispose()
   }
 
   edges(): ShapeList<Edge> {
@@ -1439,14 +1486,20 @@ export function _fitPlane(points: readonly Vector[], closed = true): Plane {
 /** A bounded piece of a surface, belonging to a body (a part, shell or sketch). */
 export class Face extends Shape {
   readonly _owner: _Body | null
-  readonly _f: number
+  readonly _kf: number
   _info: Any = null
   _m: Any = null
 
   constructor(owner: _Body | null, kface: number) {
     super()
     this._owner = owner
-    this._f = kface
+    this._kf = kface
+  }
+
+  /** The kernel face; a TypeError once its body was disposed. */
+  get _f(): number {
+    if (this._owner !== null && !this._owner._h.alive) throw _ownerDisposed('face')
+    return this._kf
   }
 
   /** The body this face belongs to. */
@@ -2705,6 +2758,7 @@ export class Part extends _Body {
    *   array with one radius per edge rounds edges differently.
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
+    _opts('Part.fillet', options)
     const { continuity = null, fullness = 1.0 } = options
     this._requireValid('fillet')
     const varying = typeof radius === 'object' && !Array.isArray(radius) && !ArrayBuffer.isView(radius) ? (radius as { start: number; end: number }) : null
@@ -2793,6 +2847,7 @@ export class Part extends _Body {
    * The walls grow inward (the outside keeps its size) unless `outward` is true.
    */
   shell(thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+    _opts('Part.shell', options)
     const outward = options.outward ?? false
     this._requireValid('shell')
     if (!(Math.abs(Number(thickness)) > 0)) throw new RangeError('shell: the thickness must not be zero')
@@ -2960,6 +3015,7 @@ export class Part extends _Body {
    * part), or all fillets up to `maxRadius`. With `partial` the fillets the kernel cannot take
    * out stay. See the defeature module. */
   removeFillets(faces: unknown = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+    _opts('Part.removeFillets', options)
     return _removeFillets(this, faces, options)
   }
 
@@ -2967,12 +3023,14 @@ export class Part extends _Body {
    * around it. With `partial` the features the kernel cannot close stay. See the defeature
    * module. */
   removeFaces(faces: unknown, options: { partial?: boolean } = {}): Part {
+    _opts('Part.removeFaces', options)
     return _removeFaces(this, faces, options)
   }
 
   /** Draft angle of every face for the pull direction, with the faces grouped by whether they
    * release (see `DraftAnalysis`). */
   draftAnalysis(direction: Axis | VectorLike, options: { minAngle?: number } = {}): DraftAnalysis {
+    _opts('Part.draftAnalysis', options)
     return _draftAnalysis(this, direction, options)
   }
 
@@ -3010,26 +3068,31 @@ export class Part extends _Body {
   // -- sheet metal (the logic is in the sheetmetal module) ----------------------------------
   /** Fold this sheet along a line on its top or bottom face (see `fold`). */
   fold(line: Axis | Edge, angle: number, options: FoldOptions): Part {
+    _opts('Part.fold', options)
     return _fold(this, line, angle, options)
   }
 
   /** Add a flange along a straight outer edge of this sheet (see `flange`). */
   flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part {
+    _opts('Part.flange', options)
     return _flange(this, edge, length, options)
   }
 
   /** The bends of this sheet metal part (see `bends`). */
   bends(options: { kFactor?: number } = {}): Bend[] {
+    _opts('Part.bends', options)
     return _bends(this, options)
   }
 
   /** This sheet metal part unfolded flat (see `unfold`). */
   unfold(options: UnfoldOptions = {}): Part {
+    _opts('Part.unfold', options)
     return _unfold(this, options)
   }
 
   /** The flat pattern of this sheet metal part on XY (see `flatPattern`). */
   flatPattern(options: UnfoldOptions = {}): FlatPattern {
+    _opts('Part.flatPattern', options)
     return _flatPattern(this, options)
   }
 
@@ -3169,7 +3232,7 @@ export function _continuity(c: number | string | null | undefined): number | nul
 export function _flattenEdges(items: unknown): Edge[] {
   if (items instanceof Edge) return [items]
   if (items instanceof Face || items instanceof Wire) return [...items.edges()]
-  if (!_isIterable(items)) throw new TypeError(`'${_typeName(items)}' object is not iterable`)
+  if (!_isIterable(items)) throw new TypeError(_notIterable(items, 'edges'))
   const out: Edge[] = []
   for (const it of items) out.push(..._flattenEdges(it))
   return out
@@ -3177,10 +3240,18 @@ export function _flattenEdges(items: unknown): Edge[] {
 
 export function _flattenFaces(items: unknown): Face[] {
   if (items instanceof Face) return [items]
-  if (!_isIterable(items)) throw new TypeError(`'${_typeName(items)}' object is not iterable`)
+  if (!_isIterable(items)) throw new TypeError(_notIterable(items, 'faces'))
   const out: Face[] = []
   for (const it of items) out.push(..._flattenFaces(it))
   return out
+}
+
+/** Python's message for what is no list, and what an `undefined` mostly is in code ported from
+ * Python: an element taken with a negative index, which JavaScript lists do not have. */
+function _notIterable(items: unknown, what: string): string {
+  const message = `'${_typeName(items)}' object is not iterable`
+  if (items !== undefined) return message
+  return `${message}: no ${what} given (undefined); for the last of a list, list[-1] in Python, use list.at(-1) or list.last`
 }
 
 /** A sheet body: one or more faces that do not enclose a volume (surfaces). */
@@ -3207,6 +3278,7 @@ export class Shell extends _Body {
    * grows against them). With `both` the solid is `thickness` thick in total, half of it to each
    * side of the sheet. */
   thicken(thickness: number, options: { both?: boolean } = {}): Part {
+    _opts('Shell.thicken', options)
     const d = Number(thickness)
     if (d === 0) throw new RangeError('thicken: the thickness must not be zero')
     const hint =
@@ -3459,6 +3531,7 @@ export class Sketch extends Shell {
    * region throws ModelingError. `round: false` is the older spelling of `corners: "sharp"`.
    */
   offset(distance: number, options: { corners?: string; round?: boolean | null } = {}): Sketch {
+    _opts('Sketch.offset', options)
     let corners = options.corners ?? 'round'
     const round = options.round ?? null
     if (round !== null) corners = round ? 'round' : 'sharp'
@@ -3551,6 +3624,7 @@ export class Sketch extends Shell {
    * @param amount Distance along the sketch normal (negative goes the other way).
    */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
+    _opts('Sketch.extrude', options)
     const { both = false, taper = 0, direction = null } = options
     if (amount === 0) throw new RangeError('extrude amount must not be zero')
     this._requireRegion('extrude')
@@ -3677,6 +3751,7 @@ export class Sketch extends Shell {
 
   /** Sweep the region along a path. The sketch should sit at the start of the path. */
   sweep(path: Edge | Wire, options: { sharpCorners?: boolean | null } = {}): Part {
+    _opts('Sketch.sweep', options)
     return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null }) as Part
   }
 

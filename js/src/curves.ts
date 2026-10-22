@@ -3,7 +3,7 @@
 // All return an Edge (one curve) or a Wire (a chain). Points may be given as [x, y] (z = 0),
 // [x, y, z] or Vectors.
 
-import { ext, k, kernelCall } from './kernel.ts'
+import { _opts, ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { solve } from './_linalg.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
@@ -41,6 +41,7 @@ export function PolarLine(start: VectorLike, length: number, angle: number, plan
  * `Polyline([0, 0], [10, 0], [10, 5], { close: true })`. */
 export function Polyline(...args: (VectorLike | readonly VectorLike[] | { close?: boolean })[]): Wire {
   const { items, options } = _withOptions<{ close?: boolean }>(args)
+  _opts('Polyline', options)
   const pts = _pts(items)
   if (pts.length < 2) throw new RangeError('a polyline needs at least two points')
   if (options.close && !pts[0].isClose(pts[pts.length - 1])) pts.push(pts[0])
@@ -313,6 +314,7 @@ export function Spline(
   ...args: (VectorLike | readonly VectorLike[] | { tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean })[]
 ): Edge {
   const { items, options } = _withOptions<{ tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean }>(args)
+  _opts('Spline', options)
   const pts = _pts(items)
   const closed = options.closed ?? false
   if (pts.length < 2) throw new RangeError('a spline needs at least two points')
@@ -329,6 +331,7 @@ export function Spline(
 /** A Bézier curve (rational if `weights` are given) from its control points. */
 export function Bezier(...args: (VectorLike | readonly VectorLike[] | { weights?: readonly number[] | null })[]): Edge {
   const { items, options } = _withOptions<{ weights?: readonly number[] | null }>(args)
+  _opts('Bezier', options)
   const pts = _pts(items)
   if (pts.length < 2) throw new RangeError('a Bézier curve needs at least two control points')
   const p = pts.length - 1
@@ -350,6 +353,7 @@ export function Helix(
   radius: number,
   options: { center?: VectorLike; direction?: Axis | VectorLike; endRadius?: number | null; leftHanded?: boolean } = {},
 ): Edge {
+  _opts('Helix', options, arguments.length)
   const { center = [0, 0, 0], direction = [0, 0, 1], endRadius = null, leftHanded = false } = options
   if (pitch <= 0 || height <= 0 || radius <= 0) throw new RangeError('pitch, height and radius must be positive')
   const turns = height / pitch
@@ -364,6 +368,7 @@ export function Helix(
  * `FilletPolyline([0, 0], [10, 0], [10, 10], { radius: 2 })`. */
 export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | { radius: number; close?: boolean })[]): Wire {
   const { items, options } = _withOptions<{ radius: number; close?: boolean }>(args)
+  _opts('FilletPolyline', options)
   if (options.radius == null) throw new TypeError("FilletPolyline: missing the option 'radius'")
   return Polyline(...(items as VectorLike[]), { close: options.close ?? false }).fillet(options.radius)
 }

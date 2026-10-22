@@ -128,6 +128,12 @@ class PolyHandle:
     def __init__(self, poly: "k.PolyBrep"):
         self.poly = poly
 
+    def dispose(self) -> None:
+        """Free the PolyBrep now (it is freed with the last reference otherwise)."""
+        p, self.poly = self.poly, None
+        if p is not None:
+            ext.delete_polybrep(p)
+
     def __del__(self) -> None:
         p, self.poly = self.poly, None
         if p is not None and ext is not None:

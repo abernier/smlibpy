@@ -14,7 +14,7 @@ const SECTIONS = [
   ['Curves', ['curves']],
   ['Sketches and text', ['profiles', 'sketches', 'text', 'font']],
   ['Parts and patterns', ['parts', 'locations']],
-  ['Features', ['operations']],
+  ['Features', ['operations', 'defeature']],
   ['Deformations', ['deform']],
   ['Surfaces', ['surfaces']],
   ['Sheet metal', ['sheetmetal']],

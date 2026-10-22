@@ -4,7 +4,7 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { ext, k, kernelCall } from './kernel.ts'
+import { _opts, ext, k, kernelCall } from './kernel.ts'
 import { Axis, Plane, Vector, type VectorLike, Z, _direction } from './geometry.ts'
 import { spread } from './_linalg.ts'
 import {
@@ -73,6 +73,7 @@ export interface ExtrudeFunctionOptions {
  * normal of the curve's plane.
  */
 export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options: ExtrudeFunctionOptions = {}): Part | Shell {
+  _opts('extrude', options)
   const { both = false, taper = 0, direction = null } = options
   let w = _openCurve(profile)
   if (w !== null) {
@@ -149,6 +150,7 @@ function _loftSolid(loops: readonly Wire[], degree: number): Part {
  *   always give a quadratic one.
  */
 export function loft(sections: readonly unknown[], options: { ruled?: boolean; smooth?: boolean } = {}): Part | Shell {
+  _opts('loft', options)
   const { ruled = false, smooth = true } = options
   if (sections.length < 2) throw new RangeError('loft needs at least two sections')
   const opened = sections.map(_openCurve)
@@ -250,6 +252,7 @@ export interface SweepOptions {
  * @param path An edge, or a wire of connected edges.
  */
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options: SweepOptions = {}): Part | Shell {
+  _opts('sweep', options)
   const { orient = true, translational = false } = options
   let sharpCorners = options.sharpCorners ?? null
   let edges = _pathEdges(path)
@@ -362,13 +365,16 @@ function _ownerPart(items: unknown): Part {
 
 /** Hollow out a part (see `Part.shell`). */
 export function shell(part: Part, thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+  _opts('shell', options)
   return part.shell(thickness, openings, options)
 }
 
 /** Grow or shrink a part or a sketch by `distance` (for a sketch also the option
  * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`). */
 export function offset(shape: Part | Sketch, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch {
-  return shape instanceof Sketch ? shape.offset(distance, options) : shape.offset(distance)
+  if (shape instanceof Sketch) return shape.offset(distance, options)
+  _opts('Part.offset', options) // (a part's offset takes none)
+  return shape.offset(distance)
 }
 
 /** A mirrored copy of a shape. */

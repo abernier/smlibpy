@@ -15,6 +15,10 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
  *   (`Uint32Array`).
  * - `normals`: optional corner normals, three for each triangle (nine numbers per triangle,
  *   `Float32Array`), used for shading crisp CAD edges.
+ *
+ * A mesh is its arrays: the kernel's mesh it came from is freed once they are copied out, and mesh
+ * Booleans build one from the arrays when they need it. `dispose()` (or `using`) frees what a mesh
+ * still holds in the kernel at once.
  */
 export class Mesh {
   vertices: Float64Array
@@ -32,6 +36,19 @@ export class Mesh {
   /** The number of triangles (Python's `len(mesh)`). */
   get length(): number {
     return this.triangles.length / 3
+  }
+
+  /** Frees the kernel's copy of the mesh now, if it holds one (an internal tessellation can keep
+   * it). The arrays stay, and the mesh stays usable: a mesh Boolean builds the kernel's mesh from
+   * them again. */
+  dispose(): void {
+    const poly = this._poly
+    this._poly = null
+    poly?.dispose()
+  }
+
+  [Symbol.dispose](): void {
+    this.dispose()
   }
 
   // -- measures -----------------------------------------------------------------------------
@@ -110,21 +127,20 @@ export class Mesh {
 
   // -- mesh Booleans (kernel polygon Booleans) ----------------------------------------------
   /**
-   * The kernel's mesh of this one: from the tessellation, or built from the triangles (meshes read
-   * from files or made from arrays), stitched along the edges they share.
+   * A new kernel mesh of this one, for the caller to own: a copy of the tessellation's where the
+   * mesh keeps it, else built from the triangles, stitched along the edges they share.
    */
-  _polyBrep(): number {
-    if (this._poly !== null && this._poly.poly) return this._poly.poly
+  _kernelMesh(): number {
+    if (this._poly !== null && this._poly.poly) return k.poly_copy(this._poly.poly)
     if (!this.triangles.length) throw new RangeError('mesh Booleans need triangles: this mesh has none')
-    const poly: number = kernelCall('mesh', () => ext.poly_from_triangles(this.vertices, this.triangles), 'the mesh may have no triangle with an area')
-    this._poly = new PolyHandle(poly)
-    return poly
+    return kernelCall('mesh', () => ext.poly_from_triangles(this.vertices, this.triangles), 'the mesh may have no triangle with an area')
   }
 
   _bool(other: Mesh, op: number, name: string): Mesh {
     const r = kernelCall(`mesh ${name}`, () => {
-      const a = k.poly_copy(this._polyBrep())
-      const b = k.poly_copy(other._polyBrep())
+      // (the Boolean consumes its operands)
+      const a = this._kernelMesh()
+      const b = other._kernelMesh()
       const r = k.poly_boolean(a, b, op)
       ext.triangulate_poly(r) // (its polygons with holes: the mesh arrays take only outer loops)
       return r
@@ -247,27 +263,34 @@ export class Mesh {
   }
 
   // -- construction -------------------------------------------------------------------------
-  static _fromPoly(poly: number, normals = true): Mesh {
+  /** The mesh of a kernel PolyBrep, which it takes over: freed once the arrays are copied out, or
+   * kept with the mesh (`keep`, for what needs the tessellation's own mesh: the faces of its
+   * triangles, the curvature at its corners), which the caller then disposes. */
+  static _fromPoly(poly: number, normals = true, keep = false): Mesh {
     const handle = new PolyHandle(poly)
-    const arr = k.poly_mesh(poly, normals)
-    const pts = Float64Array.from(arr.points as Float32Array)
-    const [tris, cornerIdx] = _triangulate(arr.faces as Int32Array)
-    let n: Float32Array | null = null
-    if (normals) {
-      const cn = arr.normals as Float32Array
-      let max = -1
-      for (let i = 0; i < cornerIdx.length; i++) max = Math.max(max, cornerIdx[i])
-      if (cn.length / 3 === max + 1) {
-        n = new Float32Array(cornerIdx.length * 3)
-        for (let i = 0; i < cornerIdx.length; i++) {
-          const c = cornerIdx[i] * 3
-          n[i * 3] = cn[c]
-          n[i * 3 + 1] = cn[c + 1]
-          n[i * 3 + 2] = cn[c + 2]
+    try {
+      const arr = k.poly_mesh(poly, normals)
+      const pts = Float64Array.from(arr.points as Float32Array)
+      const [tris, cornerIdx] = _triangulate(arr.faces as Int32Array)
+      let n: Float32Array | null = null
+      if (normals) {
+        const cn = arr.normals as Float32Array
+        let max = -1
+        for (let i = 0; i < cornerIdx.length; i++) max = Math.max(max, cornerIdx[i])
+        if (cn.length / 3 === max + 1) {
+          n = new Float32Array(cornerIdx.length * 3)
+          for (let i = 0; i < cornerIdx.length; i++) {
+            const c = cornerIdx[i] * 3
+            n[i * 3] = cn[c]
+            n[i * 3 + 1] = cn[c + 1]
+            n[i * 3 + 2] = cn[c + 2]
+          }
         }
       }
+      return new Mesh(pts, tris, n, keep ? handle : null)
+    } finally {
+      if (!keep) handle.dispose()
     }
-    return new Mesh(pts, tris, n, handle)
   }
 
   /** Write the mesh to a file (stl, obj, glb, ...; see `exportFile`). */
@@ -370,47 +393,60 @@ export function _triangulate(faces: ArrayLike<number>): [Uint32Array, Uint32Arra
  * grid's triangles.
  */
 export function tessellate(shape: Shape | Iterable<Shape>, tolerance: number | null = null, angle = 15): Mesh {
+  return _tessellate(shape, tolerance, angle, false)
+}
+
+/** `tessellate`; with `keep`, the mesh keeps the kernel's mesh of the tessellation (for the faces
+ * of its triangles and the curvature at its corners), and the caller disposes it. */
+export function _tessellate(shape: Shape | Iterable<Shape>, tolerance: number | null, angle: number, keep: boolean): Mesh {
   if (shape instanceof ShapeList) return merge(shape.map((s) => tessellate(s as Shape, tolerance, angle)))
   let body: unknown = shape
   let turned = false
+  let copy: _Body | null = null
   if (body instanceof Face) {
     // A face is meshed as a copy in a sheet of its own, which faces where the face's surface
     // normal points: the mesh of a face whose surface normal points into its body is turned.
     turned = !body._naturalIsOutward()
-    body = body.toShell()
+    body = copy = body.toShell()
   }
-  if (!(body instanceof _Body)) throw new TypeError(`cannot tessellate a ${_typeName(body)}`)
-  const b = body
-  const tol = tolerance ?? Math.max(b.bbox().diagonal * 1e-3, 1e-6)
-  if (!(tol > 0) || !(angle > 0)) throw new RangeError('tessellate: tolerance and angle must be positive')
-  // (the kernel's own tessellate always uses the grid)
-  const poly = kernelCall(
-    'tessellate',
-    () =>
-      ext.tessellate(b._brep, {
-        chord_height_tolerance: Number(tol),
-        curve_angle_tolerance_deg: Number(angle),
-        surface_angle_tolerance_deg: Number(angle),
-      }),
-  )
-  const mesh = Mesh._fromPoly(poly)
-  if (turned) {
-    // the kernel's mesh behind it (for mesh Booleans) stays as it is
-    const t = mesh.triangles
-    for (let i = 0; i < t.length; i += 3) [t[i + 1], t[i + 2]] = [t[i + 2], t[i + 1]]
-    const nm = mesh.normals
-    if (nm !== null) {
-      for (let i = 0; i < nm.length; i += 9) {
-        for (let j = 0; j < 3; j++) {
-          const a = nm[i + 3 + j]
-          nm[i + 3 + j] = -nm[i + 6 + j]
-          nm[i + 6 + j] = -a
-          nm[i + j] = -nm[i + j]
+  try {
+    if (!(body instanceof _Body)) throw new TypeError(`cannot tessellate a ${_typeName(body)}`)
+    const b = body
+    const tol = tolerance ?? Math.max(b.bbox().diagonal * 1e-3, 1e-6)
+    if (!(tol > 0) || !(angle > 0)) throw new RangeError('tessellate: tolerance and angle must be positive')
+    // (the kernel's own tessellate always uses the grid)
+    const poly = kernelCall(
+      'tessellate',
+      () =>
+        ext.tessellate(b._brep, {
+          chord_height_tolerance: Number(tol),
+          curve_angle_tolerance_deg: Number(angle),
+          surface_angle_tolerance_deg: Number(angle),
+        }),
+    )
+    const mesh = Mesh._fromPoly(poly, true, keep)
+    if (turned) {
+      // (a kernel's mesh kept with it stays as it is)
+      const t = mesh.triangles
+      for (let i = 0; i < t.length; i += 3) [t[i + 1], t[i + 2]] = [t[i + 2], t[i + 1]]
+      const nm = mesh.normals
+      if (nm !== null) {
+        for (let i = 0; i < nm.length; i += 9) {
+          for (let j = 0; j < 3; j++) {
+            const a = nm[i + 3 + j]
+            nm[i + 3 + j] = -nm[i + 6 + j]
+            nm[i + 6 + j] = -a
+            nm[i + j] = -nm[i + j]
+          }
         }
       }
     }
+    return mesh
+  } finally {
+    // (a kept kernel's mesh refers into the Brep it was made from: the callers that keep it mesh
+    // bodies, not faces, and the garbage collector frees a copy then)
+    if (!keep) copy?.dispose()
   }
-  return mesh
 }
 
 /**
@@ -420,7 +456,15 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance: number | n
  * meet.
  */
 export function faceMeshes(shape: _Body | ShapeList<Shape>, tolerance: number | null = null, angle = 15): Mesh[] {
-  const mesh = tessellate(shape, tolerance, angle)
+  const mesh = _tessellate(shape, tolerance, angle, true)
+  try {
+    return _faceMeshes(shape, mesh)
+  } finally {
+    mesh.dispose()
+  }
+}
+
+function _faceMeshes(shape: _Body | ShapeList<Shape>, mesh: Mesh): Mesh[] {
   const poly = mesh._poly !== null ? mesh._poly.poly : 0
   const count = shape.faces().length
   if (!poly) return Array.from({ length: count }, () => new Mesh([], []))

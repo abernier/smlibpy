@@ -227,6 +227,25 @@ def test_face_meshes_cut_one_tessellation_by_face():
     assert sum(len(m.triangles) for m in meshes) == len(tessellate(part, 0.005).triangles)
 
 
+def test_a_mesh_is_its_arrays():
+    """The kernel mesh of a tessellation goes once its arrays are copied out; mesh Booleans build
+    one from the arrays, and what keeps the tessellation's own mesh frees it with dispose()."""
+    from smlibpy.mesh import _tessellate
+
+    ball = Sphere(20).mesh(0.01)
+    assert ball._poly is None
+    block = (Box(30, 30, 30).translate(20, 0, 0)).mesh()
+    cut = ball - block
+    assert cut.is_closed() and cut.volume < ball.volume
+    assert (ball._poly, block._poly, cut._poly) == (None, None, None)
+    kept = _tessellate(Box(10, 10, 10), None, 15.0, True)
+    assert kept._poly is not None and kept._poly.poly is not None
+    kept.dispose()
+    assert kept._poly is None
+    kept.dispose()  # (once is enough)
+    assert (kept + Box(10, 10, 10).translate(5, 0, 0).mesh()).volume == pytest.approx(1500, rel=1e-9)
+
+
 def test_mesh_booleans_on_any_mesh(tmp_path):
     a, b = Box(20, 20, 20), Cylinder(6, 40)
     for ma, mb in [(a.mesh(), b.mesh()), (Mesh(a.mesh().vertices, a.mesh().triangles), Mesh(b.mesh().vertices, b.mesh().triangles))]:

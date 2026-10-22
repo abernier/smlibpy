@@ -22,7 +22,7 @@
 // The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmTransform) and a
 // Bezier volume for lattices and tapers.
 
-import { KernelError, ModelingError, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _opts, k, kernelCall } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -338,6 +338,7 @@ export interface TwistOptions extends RangeOptions {
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell
 export function twist(shape: Deformable, angle: number, options: TwistOptions = {}): Deformable {
+  _opts('twist', options)
   const { axis = Z, start = null, end = null, tolerance = null } = options
   _checkShape(shape, 'twist')
   const a = _angle(angle, 'twist')
@@ -409,6 +410,7 @@ export interface TaperOptions extends RangeOptions {
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell
 export function taper(shape: Deformable, scale: number, options: TaperOptions = {}): Deformable {
+  _opts('taper', options)
   const { axis = Z, start = null, end = null, tolerance = null } = options
   _checkShape(shape, 'taper')
   if (!_isNumber(scale)) throw new TypeError('taper: scale must be a number')
@@ -527,6 +529,7 @@ export interface BendOptions extends RangeOptions {
 export function bend(shape: Part, angle: number, options?: BendOptions): Part
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell
 export function bend(shape: Deformable, angle: number, options: BendOptions = {}): Deformable {
+  _opts('bend', options)
   const { radius = null, plane = Plane.XZ, start = null, end = null, tolerance = null } = options
   _checkShape(shape, 'bend')
   const a = _angle(angle, 'bend')
@@ -618,6 +621,7 @@ export class Lattice {
    * @param options `margin`: grow the box by this much on every side (mm).
    */
   constructor(box: BoundBox | { bbox(): BoundBox }, counts: number | readonly number[] = 3, options: { margin?: number } = {}) {
+    _opts('Lattice', options)
     const margin = Number(options.margin ?? 0.0)
     const bb = box instanceof BoundBox ? box : box.bbox()
     const cs = typeof counts === 'number' ? [counts, counts, counts] : Array.from(counts, Number)
@@ -811,6 +815,7 @@ export class Lattice {
   apply(shape: Part, options?: { tolerance?: number | null }): Part
   apply(shape: Shell, options?: { tolerance?: number | null }): Shell
   apply(shape: Deformable, options: { tolerance?: number | null } = {}): Deformable {
+    _opts('Lattice.apply', options)
     _checkShape(shape, 'lattice')
     const plan = this._plan(shape, _tolerance(options.tolerance))
     _checkFolding(shape, plan.spec.pieces[0])

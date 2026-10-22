@@ -1,6 +1,6 @@
 // Text: lettering as a sketch with the exact outlines of a font.
 
-import { k } from './kernel.ts'
+import { _opts, k } from './kernel.ts'
 import { Align, type AlignLike, _one } from './align.ts'
 import { type Contour, type Font, FontError, type Point, type Segment, _repr, loadFont } from './font.ts'
 import { Plane, _formatG } from './geometry.ts'
@@ -54,6 +54,7 @@ export interface TextOptions {
  * not have, a font that cannot be read, or a path the text does not fit on.
  */
 export function Text(text: string, size: number, options: TextOptions = {}): Sketch {
+  _opts('Text', options, arguments.length)
   const font = options.font ?? null
   const align: AlignLike = options.align === undefined ? Align.CENTER : options.align
   const spacing = options.spacing ?? 0.0

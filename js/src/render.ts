@@ -14,10 +14,10 @@
 // Images are flat typed arrays, row by row from the top left, three numbers (red, green, blue)
 // per pixel; points and segments are flat arrays of x, y, z.
 
-import { ext, k as kernel } from './kernel.ts'
+import { _opts, ext, k as kernel } from './kernel.ts'
 import { BoundBox, Plane, Vector, _formatG } from './geometry.ts'
 import { toRgb } from './colors.ts'
-import { Mesh, _triangulate, tessellate } from './mesh.ts'
+import { Mesh, _tessellate, _triangulate, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
 import { _withOptions } from './curves.ts'
 import { _DEFAULT_COLORS, _curvePoints, _edgePolylines, _flattenAll, _fs } from './exporters.ts'
@@ -410,6 +410,7 @@ export interface RenderOptions {
  */
 export function render(...args: unknown[]): Picture {
   const { items, options } = _withOptions<RenderOptions>(args)
+  _opts('render', options)
   const {
     path = null,
     view = 'iso',
@@ -463,17 +464,20 @@ export function render(...args: unknown[]): Picture {
     legend: true,
   }
   const scene = new _Scene(shapes, tolerance, colors, Boolean(stripes || curv))
-  scene.addHighlights(highlight, highlightAt)
-  if (curv !== null) opts.curvature = [curv[0], ...scene.curvatureRange(curv[0], curv[1])]
-
   let used: Frame | null = null
   let img: _Img
-  if (drawing != null && drawing !== false) img = _drawing(scene, w, h, opts, drawing)
-  else if (sheet != null && sheet !== false) img = _sheet(scene, _sheetViews(sheet), w, h, opts)
-  else {
-    const cam = _Camera.of(view)
-    used = _frame(frame) ?? _fit(scene, cam, w, h, zoom, lookAt)
-    img = _view(scene, cam, w, h, opts, used)
+  try {
+    scene.addHighlights(highlight, highlightAt)
+    if (curv !== null) opts.curvature = [curv[0], ...scene.curvatureRange(curv[0], curv[1])]
+    if (drawing != null && drawing !== false) img = _drawing(scene, w, h, opts, drawing)
+    else if (sheet != null && sheet !== false) img = _sheet(scene, _sheetViews(sheet), w, h, opts)
+    else {
+      const cam = _Camera.of(view)
+      used = _frame(frame) ?? _fit(scene, cam, w, h, zoom, lookAt)
+      img = _view(scene, cam, w, h, opts, used)
+    }
+  } finally {
+    scene.dispose()
   }
   const pixels = _toBytes(img)
   const pic = new Picture(_png(pixels, w, h), { pixels, width: w, height: h }, used ? { ...used } : null)
@@ -1023,6 +1027,8 @@ export class _Scene {
   readonly hlPoints: Vec3[] = []
   readonly tolerance: number | null
   _axes: _AxisLine[] | null = null
+  /** What the scene made in the kernel: kept meshes, copies of faces (see `dispose`). */
+  readonly _made: { dispose(): void }[] = []
   readonly points: Float64Array
   readonly lo: Vec3
   readonly hi: Vec3
@@ -1060,7 +1066,10 @@ export class _Scene {
         const rgb = colors === 'distinct' ? palette[this.bodies.length % palette.length] : native
         // zebra stripes and curvature maps follow the normals closely: finer triangles
         const source = piece instanceof Face && fine ? piece.toShell() : piece
-        const mesh: Mesh = piece instanceof Mesh ? piece : tessellate(source, tolerance, fine ? 5.0 : 15.0)
+        if (source !== piece) this._made.push(source)
+        // (curvature maps need the tessellation's own mesh)
+        const mesh: Mesh = piece instanceof Mesh ? piece : _tessellate(source, tolerance, fine ? 5.0 : 15.0, fine)
+        if (mesh !== piece) this._made.push(mesh)
         let segs: Float64Array
         if (piece instanceof Mesh) segs = new Float64Array(0)
         else if (piece instanceof Face) segs = _segments(_curvePoints(piece))
@@ -1083,6 +1092,11 @@ export class _Scene {
     const plo = _boxOf(allp, Math.min)
     const phi = _boxOf(allp, Math.max)
     this.diagonal = _norm3([phi[0] - plo[0], phi[1] - plo[1], phi[2] - plo[2]]) || 1.0
+  }
+
+  /** Frees what the scene made in the kernel (the garbage collector would, much later). */
+  dispose(): void {
+    for (const m of this._made.splice(0).reverse()) m.dispose()
   }
 
   /** The range of a curvature map: the given one, or the values on the bodies; it always holds

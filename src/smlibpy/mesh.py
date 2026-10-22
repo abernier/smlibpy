@@ -23,6 +23,10 @@ class Mesh:
         triangles: ``(m, 3)`` int array of vertex indices (counterclockwise seen from outside).
         normals: optional ``(m, 3, 3)`` corner normals (one per triangle corner), used for
             shading crisp CAD edges.
+
+    A mesh is its arrays: the kernel's mesh it came from is freed once they are copied out, and
+    mesh Booleans build one from the arrays when they need it. :meth:`dispose` frees what a mesh
+    still holds in the kernel at once.
     """
 
     __slots__ = ("vertices", "triangles", "normals", "_poly")
@@ -61,23 +65,31 @@ class Mesh:
     def __len__(self) -> int:
         return len(self.triangles)
 
+    def dispose(self) -> None:
+        """Free the kernel's copy of the mesh now, if it holds one (an internal tessellation can
+        keep it). The arrays stay, and the mesh stays usable: a mesh Boolean builds the kernel's
+        mesh from them again."""
+        poly, self._poly = self._poly, None
+        if poly is not None:
+            poly.dispose()
+
     # -- mesh Booleans (kernel polygon Booleans) -------------------------------
-    def _poly_brep(self) -> Any:
-        """The kernel's mesh of this one: from the tessellation, or built from the triangles
-        (meshes read from files or made from arrays), stitched along the edges they share."""
+    def _kernel_mesh(self) -> Any:
+        """A new kernel mesh of this one, for the caller to own: a copy of the tessellation's
+        where the mesh keeps it, else built from the triangles, stitched along the edges they
+        share."""
         if self._poly is not None and self._poly.poly is not None:
-            return self._poly.poly
+            return self._poly.poly.copy()
         if not len(self.triangles):
             raise ValueError("mesh Booleans need triangles: this mesh has none")
         with kernel_call("mesh", "the mesh may have no triangle with an area"):
-            poly = ext.poly_from_triangles(self.vertices.ravel().tolist(), self.triangles.ravel().tolist())
-        self._poly = PolyHandle(poly)
-        return poly
+            return ext.poly_from_triangles(self.vertices.ravel().tolist(), self.triangles.ravel().tolist())
 
     def _bool(self, other: Mesh, op: Any, name: str) -> Mesh:
         with kernel_call(f"mesh {name}"):
-            a = self._poly_brep().copy()
-            b = other._poly_brep().copy()
+            # (the Boolean consumes its operands)
+            a = self._kernel_mesh()
+            b = other._kernel_mesh()
             r = k.poly_boolean(a, b, op)
             ext.triangulate_poly(r)  # (its polygons with holes: the mesh arrays take only outer loops)
         result = Mesh._from_poly(r, normals=False)  # (the kernel gives a Boolean's result no normals)
@@ -154,18 +166,25 @@ class Mesh:
 
     # -- construction ---------------------------------------------------------
     @classmethod
-    def _from_poly(cls, poly: Any, normals: bool = True) -> Mesh:
+    def _from_poly(cls, poly: Any, normals: bool = True, keep: bool = False) -> Mesh:
+        """The mesh of a kernel PolyBrep, which it takes over: freed once the arrays are copied
+        out, or kept with the mesh (``keep``, for what needs the tessellation's own mesh: the
+        faces of its triangles, the curvature at its corners), which the caller then disposes."""
         handle = PolyHandle(poly)
-        arr = poly.to_numpy_arrays(face_varying_normals=normals)
-        pts = np.asarray(arr["points"], dtype=np.float64)
-        faces = np.asarray(arr["faces"], dtype=np.int64)
-        tris, corner_idx = _triangulate(faces)
-        n = None
-        if normals:
-            cn = np.asarray(arr["normals"], dtype=np.float32)
-            if len(cn) == corner_idx.max(initial=-1) + 1:
-                n = cn[corner_idx]
-        return cls(pts, tris, n, handle)
+        try:
+            arr = poly.to_numpy_arrays(face_varying_normals=normals)
+            pts = np.asarray(arr["points"], dtype=np.float64)
+            faces = np.asarray(arr["faces"], dtype=np.int64)
+            tris, corner_idx = _triangulate(faces)
+            n = None
+            if normals:
+                cn = np.asarray(arr["normals"], dtype=np.float32)
+                if len(cn) == corner_idx.max(initial=-1) + 1:
+                    n = cn[corner_idx]
+            return cls(pts, tris, n, handle if keep else None)
+        finally:
+            if not keep:
+                handle.dispose()
 
     def export(self, path: str, **kwargs: Any) -> None:
         from .exporters import export
@@ -242,6 +261,13 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     its faces until every part is flat within the tolerance: more triangles, but within the
     tolerance. Other bodies get the grid's triangles.
     """
+    return _tessellate(shape, tolerance, angle, False)
+
+
+def _tessellate(shape: "Shape", tolerance: float | None, angle: float, keep: bool) -> Mesh:
+    """:func:`tessellate`; with ``keep``, the mesh keeps the kernel's mesh of the tessellation
+    (for the faces of its triangles and the curvature at its corners), and the caller disposes
+    it."""
     from .shapes import Face, ShapeList, _Body
 
     if isinstance(shape, ShapeList):
@@ -264,8 +290,8 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
         # the kernel's own tessellate (k.tessellate) always uses the grid
         poly = ext.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
                               curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))
-    mesh = Mesh._from_poly(poly)
-    if turned:  # the kernel's mesh behind it (for mesh Booleans) stays as it is
+    mesh = Mesh._from_poly(poly, keep=keep)
+    if turned:  # (a kernel's mesh kept with it stays as it is)
         mesh.triangles = mesh.triangles[:, [0, 2, 1]]
         if mesh.normals is not None:
             mesh.normals = -mesh.normals[:, [0, 2, 1]]
@@ -277,7 +303,14 @@ def face_meshes(shape: "Shape", tolerance: float | None = None, angle: float = 1
     one tessellation of the whole body. Faces of imported bodies that the kernel cannot
     mesh on their own (copied out of the body) get theirs this way, and the faces share
     the points where they meet."""
-    mesh = tessellate(shape, tolerance, angle)
+    mesh = _tessellate(shape, tolerance, angle, True)
+    try:
+        return _face_meshes(shape, mesh)
+    finally:
+        mesh.dispose()
+
+
+def _face_meshes(shape: "Shape", mesh: Mesh) -> list[Mesh]:
     poly = mesh._poly.poly if mesh._poly is not None else None
     count = len(shape.faces())
     if poly is None:

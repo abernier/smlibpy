@@ -15,7 +15,7 @@
 // pair that reads and writes files, which needs Node (`exportStep` and `importStep`, ..., and
 // `exportFile` and `load`, which pick the format by the file's extension).
 
-import { ext, k, kernelCall, module } from './kernel.ts'
+import { _opts, ext, k, kernelCall, module } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
@@ -95,12 +95,14 @@ export interface StepExportOptions {
 
 /** Exact B-rep export to STEP AP214. Names and colors of parts are kept. */
 export function exportStep(shapes: unknown, path: string, options: StepExportOptions = {}): void {
+  _opts('exportStep', options)
   writeStep(_items(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null })
 }
 
 /** The text of a STEP AP214 file of the shapes (see `exportStep`). Without a file the product is
  * called "part" unless `name` says otherwise. */
 export function toStep(shapes: unknown, options: StepExportOptions = {}): string {
+  _opts('toStep', options)
   return _stepText(_items(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null })
 }
 
@@ -220,6 +222,7 @@ function _meshes(shapes: unknown, tolerance: number | null, angle: number): [Sha
 
 /** A triangle mesh in STL (binary unless `ascii`). `tolerance` is the maximum deviation. */
 export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean } = {}): Uint8Array {
+  _opts('toStl', options)
   const { tolerance = null, angle = 15.0, ascii = false } = options
   const meshes = _meshes(shapes, tolerance, angle).map(([, m]) => m)
   let count = 0
@@ -267,6 +270,7 @@ export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean 
 /** Triangle mesh export to an STL file (binary unless `ascii`). `tolerance` is the maximum
  * deviation. */
 export function exportStl(shapes: unknown, path: string, options: MeshOptions & { ascii?: boolean } = {}): void {
+  _opts('exportStl', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toStl(shapes, options))
 }
@@ -483,6 +487,7 @@ function _aheapsort(t: Int32Array, start: number, n: number, cmp: (i: number, j:
 // ------------------------------------------------------------------------------------------ OBJ
 /** Wavefront OBJ text of the shapes (one object per part). */
 export function toObj(shapes: unknown, options: MeshOptions = {}): string {
+  _opts('toObj', options)
   const { tolerance = null, angle = 15.0 } = options
   const lines = ['# smlibwasm']
   let offset = 1
@@ -499,6 +504,7 @@ export function toObj(shapes: unknown, options: MeshOptions = {}): string {
 
 /** Wavefront OBJ export (one object per part). */
 export function exportObj(shapes: unknown, path: string, options: MeshOptions = {}): void {
+  _opts('exportObj', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toObj(shapes, options))
 }
@@ -735,6 +741,7 @@ export function gltfDocument(shapes: unknown, options: GltfOptions = {}): [Any, 
  * a root node that turns it upright and scales it by 0.001, so viewers show it at its real size.
  */
 export function toGlb(shapes: unknown, options: GltfOptions = {}): Uint8Array {
+  _opts('toGlb', options)
   const [doc, buf] = gltfDocument(shapes, options)
   _zUp(doc, true)
   const text = new TextEncoder().encode(JSON.stringify(doc))
@@ -767,12 +774,14 @@ export function toGlb(shapes: unknown, options: GltfOptions = {}): Uint8Array {
  * a root node that turns it upright and scales it by 0.001, so viewers show it at its real size.
  */
 export function exportGlb(shapes: unknown, path: string, options: GltfOptions = {}): void {
+  _opts('exportGlb', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toGlb(shapes, options))
 }
 
 /** glTF JSON of the shapes with the buffer embedded as a data URI (in meters, like `toGlb`). */
 export function toGltf(shapes: unknown, options: GltfOptions = {}): string {
+  _opts('toGltf', options)
   const [doc, buf] = gltfDocument(shapes, options)
   _zUp(doc, true)
   doc.buffers[0].uri = `data:application/octet-stream;base64,${_base64(buf)}`
@@ -781,6 +790,7 @@ export function toGltf(shapes: unknown, options: GltfOptions = {}): string {
 
 /** glTF export with the buffer embedded as a data URI (in meters, like `exportGlb`). */
 export function exportGltf(shapes: unknown, path: string, options: GltfOptions = {}): void {
+  _opts('exportGltf', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toGltf(shapes, options))
 }
@@ -841,6 +851,7 @@ function _unlink(name: string): void {
 /** The contents of an SMLib native `.smb` file of one body (exact and lossless; ASCII unless
  * `ascii` is false). */
 export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
+  _opts('toSmb', options)
   const { ascii = true } = options
   const items = _items(shapes)
   if (items.length !== 1) throw new RangeError('an .smb file holds one body; fuse the parts or save them separately')
@@ -877,6 +888,7 @@ export function fromSmb(data: string | Uint8Array): Part | Shell {
 
 /** Write a body to SMLib's native `.smb` format (exact and lossless). */
 export function save(shapes: unknown, path: string, options: { ascii?: boolean } = {}): void {
+  _opts('save', options)
   const fs = _fs()
   fs.writeFileSync(String(path), toSmb(shapes, options))
 }
