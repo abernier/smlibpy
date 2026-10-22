@@ -27,8 +27,10 @@ struct UsdItem
 
 // The .usda text of a stage: under /World, a BrepArray prim per item with a body (the exact B-rep),
 // and a Mesh prim per item with a mesh (for tools that do not read B-reps), named after the items.
-// up_axis "Y" or "Z"; meters_per_unit: 0.001 for millimetres.
-std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit);
+// up_axis "Y" or "Z"; meters_per_unit: 0.001 for millimetres. materials: a Material with a
+// UsdPreviewSurface of each color under /World/Looks, bound to the prims of the items of that color.
+std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit,
+                     bool materials = false);
 
 // The assets a .usda text names (its subLayers, the references and payloads of its prims), each once,
 // as written: the layers a caller reads for usd_stage.
@@ -56,7 +58,8 @@ struct UsdReadOptions
                              // throwing for the first one
 };
 
-// The bodies of a stage and what was noted on the way.
+// The bodies of a stage and what was noted on the way. A body's color is that of the material bound to
+// it (the diffuseColor of its UsdPreviewSurface), or else its prim's displayColor.
 struct UsdStage
 {
     std::vector<UsdItem> items;

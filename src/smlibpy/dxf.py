@@ -24,7 +24,7 @@ from ._kernel import ModelingError, ext
 from .geometry import Plane
 from .shapes import Edge, Face, ShapeList, Sketch, Wire, _canonical_curve, _Body
 
-__all__ = ["import_dxf", "import_dxf_wires", "export_dxf"]
+__all__ = ["import_dxf", "import_dxf_wires", "export_dxf", "to_dxf", "from_dxf", "from_dxf_wires"]
 
 #: Millimeters per drawing unit, by the code of ``$INSUNITS`` (0 is unitless).
 _INSUNITS_MM = {
@@ -45,11 +45,28 @@ _SKIPPED_SILENTLY = {"SEQEND", "VERTEX", "ATTRIB", "ATTDEF", "VIEWPORT", "ENDBLK
 # =============================================================================
 # Low level: group codes, sections, entities
 # =============================================================================
-def _read_text(path: str) -> str:
-    with open(path, "rb") as fh:
-        data = fh.read()
+def _file_text(path: str | os.PathLike[str]) -> str:
+    p = os.fspath(path)
+    if not os.path.exists(p):
+        raise FileNotFoundError(p)
+    with open(p, "rb") as fh:
+        return _read_text(fh.read(), p)
+
+
+def _data_text(data: Any, what: str) -> str:
+    """The text of a drawing in memory: its text, or the bytes of its file."""
+    if isinstance(data, str):
+        if data.startswith("AutoCAD Binary DXF"):
+            raise ValueError(f"{what}: a binary DXF; save the drawing as ASCII DXF")
+        return data
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return _read_text(bytes(data), what)
+    raise TypeError(f"{what} reads a DXF drawing as a str or bytes, not {type(data).__name__}")
+
+
+def _read_text(data: bytes, label: str) -> str:
     if data.startswith(b"AutoCAD Binary DXF"):
-        raise ValueError(f"{path}: a binary DXF; save the drawing as ASCII DXF")
+        raise ValueError(f"{label}: a binary DXF; save the drawing as ASCII DXF")
     for enc in ("utf-8-sig", "cp1252"):  # (utf-8-sig: a byte order mark is no part of the drawing)
         try:
             return data.decode(enc)
@@ -376,11 +393,8 @@ class _Drawing:
     layers: set[str]
 
 
-def _read(path: str | os.PathLike[str], unit: str | None) -> _Drawing:
-    p = os.fspath(path)
-    if not os.path.exists(p):
-        raise FileNotFoundError(p)
-    sections = _sections(_pairs(_read_text(p)))
+def _read(text: str, unit: str | None) -> _Drawing:
+    sections = _sections(_pairs(text))
     header = sections.get("HEADER", [])
     insunits = 0
     for i, (code, value) in enumerate(header):
@@ -723,8 +737,8 @@ def _fmt(p: np.ndarray) -> str:
     return "(" + ", ".join(f"{v:.6g}" for v in (p[:2] if abs(p[2]) < 1e-9 else p)) + ")"
 
 
-def _prepared(path: Any, layers: Any, unit: str | None, tolerance: float | None, what: str):
-    drawing = _read(path, unit)
+def _prepared(text: str, layers: Any, unit: str | None, tolerance: float | None, what: str):
+    drawing = _read(text, unit)
     curves = _layered(drawing, layers, what)
     tol = float(tolerance) if tolerance is not None else _default_tolerance(curves)
     if not tol > 0:
@@ -785,7 +799,17 @@ def import_dxf_wires(path: str | os.PathLike[str], *, layers: Iterable[str] | st
     The curves are read and joined like in :func:`import_dxf`; chains also stop where three or
     more curve ends meet. Closed chains come first, then open ones, each in drawing order.
     """
-    curves, chains, _, _, _ = _prepared(path, layers, unit, tolerance, "import_dxf_wires")
+    return _wires(_file_text(path), layers, unit, tolerance, "import_dxf_wires")
+
+
+def from_dxf_wires(data: str | bytes, *, layers: Iterable[str] | str | None = None, unit: str | None = None,
+                   tolerance: float | None = None) -> ShapeList[Wire]:
+    """:func:`import_dxf_wires` of a drawing in memory: the text of a DXF file, or its bytes."""
+    return _wires(_data_text(data, "from_dxf_wires"), layers, unit, tolerance, "from_dxf_wires")
+
+
+def _wires(text: str, layers: Any, unit: str | None, tolerance: float | None, what: str) -> ShapeList[Wire]:
+    curves, chains, _, _, _ = _prepared(text, layers, unit, tolerance, what)
     edges = [_edge(c) for c in curves]
     wires = [Wire._raw([edges[i].reversed() if r else edges[i] for i, r in ch.curves]) for ch in chains]
     closed = [w for w, ch in zip(wires, chains) if ch.closed]
@@ -812,13 +836,23 @@ def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | No
         ModelingError: Curves that do not close into loops (with their ends and layers), or
             outlines that branch.
     """
-    curves, chains, nodes, ends, tol = _prepared(path, layers, unit, tolerance, "import_dxf")
+    return _sketch(_file_text(path), layers, unit, tolerance, "import_dxf", "import_dxf_wires")
+
+
+def from_dxf(data: str | bytes, *, layers: Iterable[str] | str | None = None, unit: str | None = None,
+             tolerance: float | None = None) -> Sketch:
+    """:func:`import_dxf` of a drawing in memory: the text of a DXF file, or its bytes (an upload)."""
+    return _sketch(_data_text(data, "from_dxf"), layers, unit, tolerance, "from_dxf", "from_dxf_wires")
+
+
+def _sketch(text: str, layers: Any, unit: str | None, tolerance: float | None, what: str, wires: str) -> Sketch:
+    curves, chains, nodes, ends, tol = _prepared(text, layers, unit, tolerance, what)
     branches = [n for n, items in ends.items() if len(items) > 2]
     if branches:
         where = "; ".join(f"{len(ends[n])} curve ends at {_fmt(nodes[n])}" for n in branches[:5])
-        raise ModelingError(f"import_dxf: the outline branches ({where}); a loop needs exactly two curve ends at "
+        raise ModelingError(f"{what}: the outline branches ({where}); a loop needs exactly two curve ends at "
                             "each corner. Pick the layers of the outline with layers=[...], or read every curve "
-                            "with import_dxf_wires()")
+                            f"with {wires}()")
     open_chains = [ch for ch in chains if not ch.closed]
     if open_chains:
         loose = [n for n, items in ends.items() if len(items) == 1]
@@ -833,9 +867,9 @@ def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | No
                          f"layer {layer!r}" + (f" (the nearest other loose end is {gap:.3g} mm away)" if gap else ""))
         more = f" and {len(open_chains) - 5} more" if len(open_chains) > 5 else ""
         count = "1 chain of curves does" if len(open_chains) == 1 else f"{len(open_chains)} chains of curves do"
-        raise ModelingError(f"import_dxf: {count} not close: {'; '.join(parts)}{more}. Pick the layers of the outline with "
+        raise ModelingError(f"{what}: {count} not close: {'; '.join(parts)}{more}. Pick the layers of the outline with "
                             "layers=[...], join small gaps with tolerance=..., or read every curve with "
-                            "import_dxf_wires()")
+                            f"{wires}()")
     edges = [_edge(c) for c in curves]
     loops: list[list[Edge]] = [[edges[i].reversed() if r else edges[i] for i, r in ch.curves] for ch in chains]
     polys = []
@@ -848,11 +882,11 @@ def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | No
     span = float(np.ptp(z))
     size = max(float(np.max(np.ptp(np.vstack(polys), axis=0))), 1e-9)
     if span > 1e-7 * size:
-        raise ModelingError(f"import_dxf: the outlines are not in one plane parallel to XY (z from {z.min():.6g} to "
+        raise ModelingError(f"{what}: the outlines are not in one plane parallel to XY (z from {z.min():.6g} to "
                             f"{z.max():.6g}); a sketch needs a flat drawing")
     plane = Plane.XY if abs(float(z.mean())) <= 1e-9 * size else Plane.XY.offset(float(z.mean()))
     p = regions.plan(polys, "evenodd")
-    return regions.build(p, lambda i: [e._copy_curve() for e in loops[i]], plane, "import_dxf",
+    return regions.build(p, lambda i: [e._copy_curve() for e in loops[i]], plane, what,
                          "the loops must not cross themselves")
 
 
@@ -876,12 +910,24 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
             to it, otherwise the plane of the first sketch (a section in ``Plane.XZ`` is drawn in
             that plane's coordinates).
     """
+    text = _dxf(shapes, unit, plane, "export_dxf")
+    with open(os.fspath(path), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+def to_dxf(shapes: Any, *, unit: str = "mm", plane: Plane | None = None) -> str:
+    """The text of a DXF drawing (AutoCAD 2000, AC1015) of sketches, faces, wires and edges, as
+    :func:`export_dxf` writes it; ``unit`` and ``plane`` as there."""
+    return _dxf(shapes, unit, plane, "to_dxf")
+
+
+def _dxf(shapes: Any, unit: str, plane: Plane | None, what: str) -> str:
     if unit not in _UNITS:
         raise ValueError(f"unknown unit {unit!r}; use {_UNIT_NAMES}")
     mm_per_unit, code = _UNITS[unit]
-    items = _drawable(shapes)
+    items = _drawable(shapes, what)
     if not items:
-        raise ValueError("export_dxf: nothing to write")
+        raise ValueError(f"{what}: nothing to write")
     frame = _frame(items, plane)
     o = np.array(frame.origin.to_tuple())
     x_dir, y_dir, n = (np.array(v.to_tuple()) for v in (frame.x_dir, frame.y_dir, frame.z_dir))
@@ -896,7 +942,7 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
         for loop in item.loops:
             for ent in _merge_arcs([_entity(e, local, n, f) for e in loop]):
                 w.entity(item.layer, ent)
-    w.save(os.fspath(path), code, unit not in ("inch", "in", "ft"))
+    return w.text(code, unit not in ("inch", "in", "ft"))
 
 
 @dataclass
@@ -906,7 +952,7 @@ class _Item:
     plane: Plane | None  # the plane of a sketch or face
 
 
-def _drawable(shapes: Any) -> list[_Item]:
+def _drawable(shapes: Any, what: str = "export_dxf") -> list[_Item]:
     from .mesh import Mesh
     from .shapes import Part, Vertex
 
@@ -914,23 +960,23 @@ def _drawable(shapes: Any) -> list[_Item]:
 
     def add(s: Any) -> None:
         if isinstance(s, Part):
-            raise TypeError("export_dxf writes 2D shapes, not a Part; write part.section(plane) for a cross-section "
+            raise TypeError(f"{what} writes 2D shapes, not a Part; write part.section(plane) for a cross-section "
                             "or the edges of part.outline(plane) for a view")
         if isinstance(s, Mesh):
-            raise TypeError("export_dxf cannot write a Mesh")
+            raise TypeError(f"{what} cannot write a Mesh")
         if isinstance(s, Vertex):
-            raise TypeError("export_dxf writes curves; a Vertex has none")
+            raise TypeError(f"{what} writes curves; a Vertex has none")
         if isinstance(s, Sketch):
             out.append(_Item(_layer_name(s.name), [list(w.edges()) for f in s.faces() for w in f.wires()], s.plane))
         elif isinstance(s, _Body):
             faces = list(s.faces())
             if not all(f.is_planar for f in faces):
-                raise TypeError("export_dxf writes planar shapes; this surface is curved")
+                raise TypeError(f"{what} writes planar shapes; this surface is curved")
             out.append(_Item(_layer_name(s.name), [list(w.edges()) for f in faces for w in f.wires()],
                              faces[0].plane if faces else None))
         elif isinstance(s, Face):
             if not s.is_planar:
-                raise TypeError("export_dxf writes planar faces; this face is curved")
+                raise TypeError(f"{what} writes planar faces; this face is curved")
             out.append(_Item(_layer_name(getattr(s.owner, "name", None)), [list(w.edges()) for w in s.wires()], s.plane))
         elif isinstance(s, Wire):
             out.append(_Item("0", [list(s.edges())], None))
@@ -940,7 +986,7 @@ def _drawable(shapes: Any) -> list[_Item]:
             for t in s:
                 add(t)
         else:
-            raise TypeError(f"export_dxf cannot write a {type(s).__name__}")
+            raise TypeError(f"{what} cannot write a {type(s).__name__}")
 
     add(shapes)
     return [it for it in out if it.loops]
@@ -1215,7 +1261,7 @@ class _Writer:
             self._grow(P.min(axis=0), P.max(axis=0))
         self.entities.append("\n".join(tags))
 
-    def save(self, path: str, insunits: int, metric: bool) -> None:
+    def text(self, insunits: int, metric: bool) -> str:
         ok = np.all(np.isfinite(self.lo))
         lo, hi = (self.lo, self.hi) if ok else (np.zeros(2), np.zeros(2))
         if "0" not in self.layers:
@@ -1292,8 +1338,7 @@ class _Writer:
             ]),
             "0\nEOF\n",
         ]
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("\n".join(parts))
+        return "\n".join(parts)
 
 
 def _xy(code: int, p: np.ndarray) -> list[str]:

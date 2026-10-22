@@ -122,7 +122,12 @@
 ### 8. Unhelpful errors for shapes a format cannot hold
 - **Partly fixed:** `export_step` writes edges, wires, vertices and planes (as wireframe curves,
   points and coordinate systems; kernel plan I12) and says `TypeError: cannot write a Location to
-  STEP` for what it cannot write. The other formats still give the messages below.
+  STEP` for what it cannot write. `save`, `export_stl`, `export_obj` and `export_usd` say what they
+  write and what writes the rest (`TypeError: export_usd writes parts, sheets, faces and meshes, not
+  an Edge: export_step and export_dxf write curves, and so does save to an .smp file`; `save(mesh)`:
+  `TypeError: an .smb file holds an exact body, not a Mesh`), and `export_stl([])` says `export_stl:
+  nothing to write` (kernel plan X13, 2026-10-22). Still open: `export_glb([])` and `export_obj([])`
+  write empty files.
 - **Session:** `files-exact` scripts `04`, `08`, `10`; `files-mesh` script `12`
 - **What happens:** `save(mesh)` and `mesh.export("x.smb")` raise
   `AttributeError: 'Mesh' object has no attribute '_brep'`. `export_step(edge)`,
@@ -176,6 +181,10 @@
 - **Expected:** the same meaning for both, or another name (`bbox().center`).
 
 ### 15. `.smb` drops name and color; `docs/files.md` calls it "exact and lossless"
+- **Fixed (kernel plan X9, 2026-10-22):** SMLib part files (`save(shapes, "x.smp")`, `load`,
+  `to_smp`/`from_smp`) keep any number of bodies and curves with their names and colors (the
+  kernel's part container with `SM_AI_COLOR` and a name attribute). `.smb` itself still has no slot
+  for a name, and the docs say so.
 - **Docs fixed (kernel plan U1):** `docs/files.md`, the file guides and the docstrings no longer say "lossless": the geometry is exact, but B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those. Name and color are still dropped. Merged parts now come back with their cells (kernel plan X8).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `08-smb-save-load.py`
 - **What happens:** `load(save(...))` of a named, colored part gives `name None`, `color None`.

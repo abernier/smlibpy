@@ -18,13 +18,15 @@ Reads the bodies of the `BrepArray` prims of a USD text file: the exact B-reps t
   kernel cannot build), with a `RuntimeWarning` for each that says which and why, and returns the
   others (usd-brep's `allow_partial`). A file none of whose bodies can be read raises either way.
 
-`load("parts.usda")` does the same with the defaults.
+`load("parts.usda")` does the same with the defaults. `from_usd(data, *, ..., resolve=None)` reads USD
+text in memory (a `str` or `bytes`); the layers it names come from `resolve(asset, from_)`, which
+returns their text or bytes (or None).
 
 ## Returns
 One body: a `Part` (or a `Shell` for a body that encloses no volume). Several: a `ShapeList`
 of them, in the order of the stage, named after their prims (or the prim's `displayName`,
 where it has one: smlibpy writes the names that are no prim names there, `"Größe"`) and
-colored by their `primvars:displayColor`. A body whose prim's name another prim has too is
+colored by their material (below), or else by their `primvars:displayColor`. A body whose prim's name another prim has too is
 named by its prim's path (`/World/Left/Wheel`). A merged part comes back merged, with its cells. Lengths come out in
 millimeters (`metersPerUnit = 0.01` scales by 10), and each body is placed as the stage has it:
 the `xformOp` transforms of its prim and of the prims above it (`translate`, `scale`, the
@@ -41,6 +43,21 @@ the `xformOp` transforms of its prim and of the prims above it (`translate`, `sc
 - A file that cannot be read (not there, binary) is named in a `RuntimeWarning`, or in the
   `ValueError` when no bodies are left.
 - Not composed: inherits, specializes, variant sets.
+
+## Colors from materials
+- A body takes the color of the material bound to it (`UsdShadeMaterialBindingAPI`): the
+  `diffuseColor` of the `UsdPreviewSurface` its material's `outputs:surface` leads to (through
+  node graphs and connected material inputs; `0.18` grey where the shader sets none). The binding
+  is the one of a `GeomSubset` of `elementType = "brep"` that holds the body, else the prim's own,
+  else the nearest prim's above it; a binding with `bindMaterialAs = "strongerThanDescendants"`
+  wins over those below it. `material:binding:preview` comes before `material:binding`.
+- Omniverse materials are MDL; the usd-brep and Omniverse files that come with a
+  `UsdPreviewSurface` beside the MDL (as usd-brep's test materials do) give its color. A material
+  with no preview surface, or whose color comes from a texture, gives none: the prim's
+  `displayColor` stays.
+- The material layers are often referenced files: they are read like every reference (above).
+- Materials bound to faces (`GeomSubset`s of `elementType = "face"`) are not read: smlibpy has no
+  colors of faces.
 
 ## What is kept
 - Bodies written by `export_usd` come back with the same faces and face types, the same edges
@@ -71,6 +88,12 @@ the `xformOp` transforms of its prim and of the prims above it (`translate`, `sc
   `ValueError: usd: the BrepArray "/World/ball" is malformed: body 0, face 0: the axis and the
   refDirection are parallel (BA.482-484)`. Directions are made unit (a cone axis of length 2 read
   as a different cone before).
+- A solid that also holds wire edges, points or faces outside it (the schema allows mixed
+  dimensions) is a `Part` whose `is_valid()` is False; a `RuntimeWarning` names what else it holds
+  and how to get the solid alone: `import_usd: 'body' is a solid that also holds 1 wire edge (an
+  edge of no face), so is_valid() is False and modeling with it may fail; stitch(part.faces())
+  gives the solid alone` (faces outside it: `part.solids()` takes them apart). A body of curves
+  alone is a `Shell` without faces, whose `edges()` are its curves, also with a warning.
 - A body the kernel cannot build raises `KernelError: import_usd failed (SM_ERR_INVALID_INPUT):
   body 0 of the BrepArray "/World/c" could not be built; partial=True leaves such bodies out and
   reads the others`.

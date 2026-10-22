@@ -1,4 +1,4 @@
-# Lane IX: STEP import and export, USD, IGES import (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13; batch 3: X5, X7, I14)
+# Lane IX: STEP import and export, USD, IGES import, native and in-memory files (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13; batch 3: X5, X7, I14; batch 4: X9, X10, X11, X12, X13)
 
 Everything applies to smlibpy and smlibwasm alike unless marked. Codes are the plan's items
 (ai/plan/kernel-deep-dive.md). Corpus numbers: the 154 classcad-mcp parts and 294 other local
@@ -125,6 +125,49 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   such bodies out and reads the others` (smlibwasm: `partial: true`). (A sphere of radius 0, the
   finding's probe, is a `ValueError` naming the prim since X1; a cylinder face whose range turns 60
   radians still fails in the conversion.)
+
+- An empty body (a Boolean that left nothing) is no longer written to USD as an invalid prim (X10).
+  `export_usd(Box(1, 1, 1) & Box(1, 1, 1).translate(5, 0, 0), ...)` wrote, with `mesh=False`, a
+  `BrepArray` with the extent `(1e+20, ...), (-1e+20, ...)` and `region:shellCount = [0]` (usd-brep's
+  validator: BA.025, BA.030, BA.035, BA.701), and failed with `mesh=True` with `KernelError:
+  tessellate failed (SM_ERR)`; STL, OBJ and glTF failed alike. `export_usd`/`toUsd` now raise
+  `ValueError: export_usd: the Part is empty: it has no faces, edges or points to write (a Boolean that
+  left nothing?)` (with the body's name where it has one), and `tessellate` (so `export_stl`,
+  `export_obj`, `export_glb`, `mesh()`, `render`) `ValueError: tessellate: the Part is empty: it has no
+  faces to mesh`. (The reader's half, an empty `BrepArray` refused by `import_usd`'s check, was done
+  with X1: `body 0 is empty (it has no faces, wire edges or points)`.)
+- Bodies of mixed dimension say what else they hold (X13). A solid with wire edges, points (vertex
+  shells) or faces outside it (a detached sheet), which the omniSolid schema and SMLib allow, came
+  from `.smb` and USD as a `Part` whose `is_valid()` was False, without a word. `load`, `from_smb`,
+  `from_smp`, `import_usd` and `from_usd` now warn: `import_usd: 'x' is a solid that also holds 1
+  wire edge (an edge of no face), so is_valid() is False and modeling with it may fail;
+  stitch(part.faces()) gives the solid alone` (faces outside it: `part.solids() takes the faces
+  outside the solid apart`); a body of curves alone: `has no faces, only 1 wire edge (...): it is
+  read as a Shell without faces, whose edges() are its curves`. Checked on usd-brep's fixtures
+  (box_with_attached_wire_edge, ..._two_vertex_shells, ..._detached_sheet, wire_edge; the remedies
+  give valid solids); valid ones (box, box_with_second_seven_face_box, boxes_share_one_vertex) say
+  nothing.
+- The writers of bodies name what they cannot write (X13, ai/todo/files.md #8): `export_usd(edge)`
+  raised `TypeError: 'Edge' object is not iterable` (`'float' object ...` for a vertex), as did
+  `save`, `export_stl` and `export_obj`; now `TypeError: export_usd writes parts, sheets, faces and
+  meshes, not an Edge: export_step and export_dxf write curves, and so does save to an .smp file`
+  (`... not a Vertex: export_step writes points`; for `.smb`: `an .smb file holds one body, not an
+  Edge: save curves to an .smp file, ...`). `save(mesh)` raised `AttributeError: 'Mesh' object has no
+  attribute '_brep'`: now `TypeError: an .smb file holds an exact body, not a Mesh`. `export_stl([])`
+  raised numpy's `ValueError: need at least one array to concatenate`: now `export_stl: nothing to
+  write` (smlibwasm's `toStl([])` wrote an STL of no triangles: now the same error).
+- USD bodies take the color of the material bound to them (X12). usd-brep's and Omniverse's files
+  color bodies by binding materials, which `import_usd` skipped (every `rel`), so their bodies came
+  without a color; a prim of several bodies gave all of them its one `displayColor`. The reader now
+  follows `material:binding` (and `material:binding:preview` first) of a `GeomSubset` of
+  `elementType = "brep"`, the prim, or the prims above it (`bindMaterialAs =
+  "strongerThanDescendants"` honoured), to the material's `outputs:surface`, through node graphs
+  and connected inputs, to a `UsdPreviewSurface`'s `diffuseColor` (0.18 grey where it sets none),
+  with the materials composed like any prim (the materials of usd-brep's test files are in a
+  referenced layer, their paths mapped onto the referencing prim). usd-brep's CubeBrepArray gives
+  its two bodies (0.3, 0.15, 0.07) and (0.04, 0.22, 0.1), CubeBrepMaterials and CubeAllMaterials
+  (0.3, 0.15, 0.07) (0.4: no color). A material without a preview surface (MDL alone) or colored by
+  a texture leaves the `displayColor`.
 ## New
 
 - `import_step(path, *, heal=True, strict=False)` and `read_step(..., strict=False)`
@@ -207,6 +250,39 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   result).
 - smlibwasm: `IgesImportOptions`; `_reading`, `_label`, `_buildBody`, `_kernelVolume` and `_text`
   of `step_import.ts` are exported for `iges_import.ts`.
+
+- SMLib part files (`.smp`), X9 (ai/todo/files.md #15): `save(shapes, "x.smp")`, `load("x.smp")`,
+  `export(..., "x.smp")`, `to_smp(shapes, *, ascii=True) -> bytes` and `from_smp(data)` (smlibwasm:
+  `toSmp`, `fromSmp`, `save`/`load`/`exportFile` by the extension), and the MCP tool `save(format=
+  "smp")`. The kernel's own container (`SmBrepData::WritePartToDB`/`ReadPartFromDB`, in memory
+  through `SmDatabaseIOStream`; new `src/cpp/part_file.cpp`, `ext.part_bytes`/`ext.part_items` in
+  both builds): any number of exact bodies (parts with their cells, sheets, sketches, faces as
+  sheets), each with its name and color, and curves (an edge as one, a wire as its edges), in their
+  order. The color is the kernel's `SM_AI_COLOR` attribute (an `SmVector3dAttribute`, which SMLib's
+  tools read), the name, the place and the wire an attribute of smlibpy's (id `SM_AI_USER_3 +
+  1415`, characters and two numbers, none negative so that 64-bit and wasm32 builds read each
+  other's binary files); both go on copies and come off what is read, so nothing piles up on the
+  bodies (a file read and written again holds the same attributes; from the second writing on the
+  same bytes, the first reading having made B-spline trim curves that are lines lines, as `.smb`
+  reading does). ASCII (colors to 16 decimals) or binary (bit-exact); files of one port read in the
+  other (tests/data/parts.smp, parts_binary.smp); SMLib's own part files read too (pt_TestFiles: the
+  bodies of `ssi_plncyl1.smp`, the curves of `cci_bug_rhino1.smp`, loose surfaces as sheets).
+- Files in memory for Python (X11): `to_step`, `from_step`, `from_step_model`, `to_stl`, `from_stl`,
+  `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `from_dxf`, `from_dxf_wires`, `to_usd`, `from_usd`
+  (with `resolve(asset, from_)` for the layers the text names, as smlibwasm's `fromUsd`),
+  `from_iges`, `to_smb`, `from_smb`, `to_smp`, `from_smp`, with the keywords of the file functions
+  (a test checks that they match); text as `str`, binary formats as `bytes`; the readers take
+  `str` or `bytes`. The file functions are written around them (`export_stl` writes `to_stl`'s
+  bytes; the STEP writer's `_step_text`), so both give the same file. `Text(font=...)` and
+  `load_font(...)` take the bytes of a font file (cached per contents; `Font.path` is None for one),
+  as smlibwasm's did.
+- `export_usd(..., materials=True)` (`toUsd`/`exportUsd` `{ materials }`), X12: a `Material` with a
+  `UsdPreviewSurface` of each color under `/World/Looks` (one per color, named after its first body),
+  bound with `rel material:binding` to the `BrepArray` and `Mesh` prims of that color
+  (`MaterialBindingAPI` applied); `displayColor` stays. `import_usd` reads it back.
+  (`ext.usd_text(items, up_axis, meters_per_unit, materials=False)` in both builds.)
+- smlibwasm: `_body` of `exporters.ts` (a body read from a file, with the warnings above) is exported
+  for usd.ts.
 ## Behaviour changes
 
 - A STEP file with a body that cannot be read no longer raises: the other bodies come back, with a
@@ -319,6 +395,57 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   ```
 - The STEP builder's warnings and errors name the format they build for: unchanged for STEP
   (`import STEP: ...`); IGES solids say `import IGES: ...` and name the entity `solid 'x' (DE 57)`.
+
+- `tessellate` of an empty body raises `ValueError` (smlibwasm `RangeError`) where it raised
+  `KernelError: tessellate failed`; so do `export_stl`, `export_obj`, `export_glb`, `export_gltf`,
+  `mesh()`, `render` and `show` of one. `export_usd` of one raises `ValueError` where it wrote an
+  invalid file (`mesh=False`) or raised `KernelError`. `except KernelError` (or `RuntimeError`) does
+  not catch it:
+  ```python
+  try:
+      export_stl(result, "r.stl")
+  except (KernelError, ValueError):   # 0.4: except KernelError
+      ...
+  if result.faces():                  # or ask first
+      export_stl(result, "r.stl")
+  ```
+- The writers' `TypeError`s for edges, wires, vertices and meshes have new messages (they were
+  Python's own "'Edge' object is not iterable"); `save(mesh)` raises `TypeError`, not
+  `AttributeError`; `export_stl([])` says `export_stl: nothing to write`, and smlibwasm's `toStl([])`
+  throws it where it gave an empty STL. Code that matched the old messages matches the new ones:
+  ```python
+  except TypeError as e:   # 0.4: "'Edge' object is not iterable"
+      assert "not an Edge" in str(e)
+  ```
+- `import_usd` colors a body by the material bound to it where that material has a
+  `UsdPreviewSurface` color, which wins over the prim's `displayColor` (as USD renderers show it);
+  files of usd-brep and Omniverse with such materials give colors where 0.4 gave none, or another
+  color where a prim had both. The `displayColor` of such a prim is not read; to see it, remove the
+  binding from the text first:
+  ```python
+  part = import_usd("cube.usda")         # 0.4: color None (or the displayColor)
+  part.color                             # 0.5: (0.3, 0.15, 0.07), the bound material's
+  ```
+- `load` of an `.smb` file, `import_usd` and `from_usd` warn (`RuntimeWarning`) for a solid that also
+  holds wire edges, points or faces outside it, and for a body of curves alone. Scripts that turn
+  warnings into errors filter them:
+  ```python
+  warnings.filterwarnings("ignore", "load: .* also holds")
+  ```
+- `save(shapes, "x.smp")` writes an SMLib part file; 0.4 wrote an `.smb` file under that name (any
+  extension did), which `load` refused (`unknown file type '.smp'`). Save `.smb` files with
+  `.smb`. `export(..., "x.smp")` and `load("x.smp")` work where they raised `ValueError`; their
+  messages for unknown extensions list `.smp` (`export`'s also `.usda`).
+  ```python
+  save(part, "cache.smp")    # 0.4: an .smb file named .smp   0.5: a part file (name and color kept)
+  save(part, "cache.smb")    # the .smb file, as before
+  ```
+- `from smlibpy import *` brings `to_step`, `from_step`, `from_step_model`, `to_stl`, `from_stl`,
+  `to_obj`, `to_glb`, `to_gltf`, `to_smb`, `from_smb`, `to_smp`, `from_smp`, `to_dxf`, `from_dxf`,
+  `from_dxf_wires`, `to_usd`, `from_usd` and `from_iges` along: a script's own names of these are
+  shadowed by the import (or shadow it, defined after it).
+- The STEP, DXF and STL readers' private helpers changed shape (`dxf._read` takes text, not a path;
+  `step.write_step` writes `_step_text`'s text), which only code that called them notices.
 ## Not done
 
 - I6's wider coverage: reading `OFFSET_CURVE_3D` edges (the kernel's `SmOffsetCurve`) and edges
@@ -361,3 +488,22 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   wireframe-only files (curves and points; `read_step`'s counterpart for IGES does not exist).
   Form 0 ruled surfaces (equal arc lengths) are read as form 1 (equal parameters). No real file of
   114 parametric spline surfaces was at hand: they are checked with a constructed patch only.
+
+- X12: materials bound to faces (`GeomSubset`s of `elementType = "face"`) are not read, and none are
+  written: smlibpy has no colors of faces (kernel plan T5, lane BT). Collection-based bindings
+  (`material:binding:collection:...`), `material:binding:full`, MDL parameters and textures give no
+  color (MDL needs its renderer; usd-brep's test materials carry a `UsdPreviewSurface` beside it,
+  which is read). The meshes `export_usd` writes carry no `BrepSource` relationship to their bodies.
+- X13: a body of curves alone (`wire_edge`) is read as a `Shell` without faces (with a warning),
+  not as edges, and `export_usd` does not write edges as wire-edge `BrepArray`s (the plan's optional
+  part): smlibpy writes curves to STEP, DXF and `.smp`.
+- X9: `.smb` itself still holds no name or color (its format has a color slot that SMLib writes red
+  for none, and no name): `.smp` is the file that keeps them. The part file holds no assembly
+  placements (`SmBrepData::WriteAssemblyToDB`/`ReadAssemblyFromDB` are empty), no points and no
+  meshes; curves keep no names (smlibpy's edges have none; `StepCurve`s are refused like other
+  values). Boolean trees are neither written nor read; the kernel's binary writer writes each of
+  their values twice (`SmBrepData.cpp` 1758-1759), harmless while no trees are written, so not
+  patched.
+- X10: `export_step` of a list with an empty body among others still leaves it out silently (it
+  raises only when nothing is left); `export_glb([])` and `export_obj([])` still write empty files
+  (ai/todo/files.md #8).

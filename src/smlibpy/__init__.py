@@ -38,11 +38,13 @@ from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, Regul
                        Stroke, Trapezoid, Triangle, make_face)
 from .text import Text
 from ._kernel import KernelError, ModelingError
-from .exporters import export, export_glb, export_gltf, export_obj, export_step, export_stl, import_stl, load, save
-from .step_import import StepCurve, StepFrame, StepModel, StepPoint, import_step, read_step
-from .iges_import import import_iges
-from .dxf import export_dxf, import_dxf, import_dxf_wires
-from .usd import export_usd, import_usd
+from .exporters import (export, export_glb, export_gltf, export_obj, export_step, export_stl, from_smb, from_smp,
+                        from_stl, import_stl, load, save, to_glb, to_gltf, to_obj, to_smb, to_smp, to_step, to_stl)
+from .step_import import (StepCurve, StepFrame, StepModel, StepPoint, from_step, from_step_model, import_step,
+                          read_step)
+from .iges_import import from_iges, import_iges
+from .dxf import export_dxf, from_dxf, from_dxf_wires, import_dxf, import_dxf_wires, to_dxf
+from .usd import export_usd, from_usd, import_usd, to_usd
 from .render import diff_images, render
 from .viewer import show
 from .surfaces import ruled, stitch, surface, surface_fillet
@@ -82,6 +84,9 @@ __all__ = [
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
     "read_step", "StepModel", "StepFrame", "StepCurve", "StepPoint", "import_iges",
     "export_dxf", "import_dxf", "import_dxf_wires", "export_usd", "import_usd",
+    # files in memory
+    "to_step", "from_step", "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb",
+    "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges",
     "show", "render", "diff_images",
     # errors
     "ModelingError", "KernelError",

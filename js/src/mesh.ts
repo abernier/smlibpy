@@ -4,6 +4,7 @@ import { ModelingError, PolyHandle, ext, k, kernelCall } from './kernel.ts'
 import { Axis, BoundBox, Hit, Location, Plane, Vector, Z, _direction, _formatG, _vec, type Matrix, type VectorLike } from './geometry.ts'
 import { Face, ShapeList, _Body, _reflection, _scaling, _translation, _typeName, type Shape } from './shapes.ts'
 import { exportFile } from './exporters.ts'
+import { _repr } from './step_reader.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -494,6 +495,11 @@ export function _tessellate(shape: Shape | Iterable<Shape>, tolerance: number | 
   }
   try {
     if (!(body instanceof _Body)) throw new TypeError(`cannot tessellate a ${_typeName(body)}`)
+    if (k.brep_face_count(body._brep) === 0) {
+      // (the kernel's own message for it was "tessellate failed")
+      const name = body.name ? ` ${_repr(body.name)}` : ''
+      throw new RangeError(`tessellate: the ${_typeName(body)}${name} is empty: it has no faces to mesh (a Boolean that left nothing?)`)
+    }
     const b = body
     const tol = tolerance ?? Math.max(b.bbox().diagonal * 1e-3, 1e-6)
     if (!(tol > 0) || !(angle > 0)) throw new RangeError('tessellate: tolerance and angle must be positive')

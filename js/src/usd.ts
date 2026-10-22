@@ -7,12 +7,13 @@
 // own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
 // OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
-import { _opts, _warn, ext, KernelError, kernelCall } from './kernel.ts'
+import { _opts, _warn, ext, k, KernelError, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
-import { Part, Shell, ShapeList } from './shapes.ts'
-import { _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
+import { Part, Shell, ShapeList, _typeName } from './shapes.ts'
+import { _DEFAULT_COLORS, _body, _fs, _items } from './exporters.ts'
 import { _MM_PER_UNIT } from './step.ts'
+import { _repr } from './step_reader.ts'
 
 // biome-ignore lint: kernel results are plain JSON
 type Any = any
@@ -28,26 +29,38 @@ const BINARY: Record<string, string> = {
 /** How a USD file is written: `mesh` (default true) writes a Mesh prim (`<name>_mesh`) of each body,
  * which is what USD viewers draw, with `tolerance` and `angle` as in `tessellate`; false writes the
  * exact B-reps alone, for usd-brep and Omniverse, which draw BrepArray prims themselves and would
- * show each body twice. */
+ * show each body twice. `materials` (default false) also gives each color a Material (a
+ * UsdPreviewSurface of that color under /World/Looks) bound to the prims of that color, which
+ * Omniverse and other renderers use where they leave displayColor aside; `fromUsd` reads such
+ * bindings back. */
 export interface UsdExportOptions {
   mesh?: boolean
   tolerance?: number | null
   angle?: number
+  materials?: boolean
 }
 
 function _meshArrays(m: Mesh): [Float64Array, Uint32Array, Float32Array | null] {
   return [m.vertices, m.triangles, m.normals]
 }
 
-function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
+function _usdItems(shapes: unknown, options: UsdExportOptions, what: string): Any[] {
   const items: Any[] = []
-  _items(shapes).forEach((it, i) => {
+  _items(shapes, false, what).forEach((it, i) => {
     const color = (it as Any).color || _DEFAULT_COLORS[i % _DEFAULT_COLORS.length]
     const rgb = Array.from(toRgb(color), Number)
     const name = (it as Any).name || (it instanceof Mesh ? 'mesh' : 'body')
     if (it instanceof Mesh) {
       items.push([null, name, rgb, ..._meshArrays(it)])
-    } else if (options.mesh ?? true) {
+      return
+    }
+    const b = (it as Any)._brep
+    if (k.brep_face_count(b) === 0 && k.brep_edge_count(b) === 0 && k.brep_vertex_count(b) === 0) {
+      // (a BrepArray needs a shell, usd-brep's validator says, and a mesh of nothing fails)
+      const named = (it as Any).name ? ` ${_repr((it as Any).name)}` : ''
+      throw new RangeError(`${what}: the ${_typeName(it)}${named} is empty: it has no faces, edges or points to write (a Boolean that left nothing?)`)
+    }
+    if (options.mesh ?? true) {
       items.push([(it as Any)._brep, name, rgb, ..._meshArrays(tessellate(it, options.tolerance ?? null, options.angle ?? 15))])
     } else {
       items.push([(it as Any)._brep, name, rgb, null, null, null])
@@ -64,9 +77,13 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
  */
 export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
   _opts('toUsd', options)
-  const items = _usdItems(shapes, options)
-  if (!items.length) throw new RangeError('toUsd: nothing to write')
-  return kernelCall('toUsd', () => ext.usd_text(items, 'Z', 0.001))
+  return _usdText(shapes, options, 'toUsd')
+}
+
+function _usdText(shapes: unknown, options: UsdExportOptions, what: string): string {
+  const items = _usdItems(shapes, options, what)
+  if (!items.length) throw new RangeError(`${what}: nothing to write`)
+  return kernelCall(what, () => ext.usd_text(items, 'Z', 0.001, options.materials ?? false))
 }
 
 /** Write parts, sheets and meshes to a USD file (.usda, or .usd as text); see `toUsd`. */
@@ -76,7 +93,7 @@ export function exportUsd(shapes: unknown, path: string, options: UsdExportOptio
   const dot = p.lastIndexOf('.')
   const ext_ = dot > Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) ? p.slice(dot).toLowerCase() : ''
   if (ext_ in BINARY) throw new RangeError(`exportUsd writes text USD (.usda, .usd), not ${ext_}: ${BINARY[ext_]}`)
-  _fs().writeFileSync(p, toUsd(shapes, options))
+  _fs().writeFileSync(p, _usdText(shapes, options, 'exportUsd'))
 }
 
 /** How a USD stage is read: `heal` runs the kernel's import healer on the bodies; `units` is the
@@ -187,10 +204,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   const out = new ShapeList<Part | Shell>()
   for (const [brep, name, color] of found) {
     // a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
-    const regions: { infinite: boolean; void: boolean }[] = ext.brep_dump(brep, false).regions
-    const solid = regions.some((r) => !r.infinite && !r.void)
-    const c = color ? (Array.from(color) as [number, number, number]) : null
-    out.push(solid ? Part._wrap(brep, { name, color: c }) : Shell._wrap(brep, { name, color: c }))
+    out.push(_body(brep, name, color ? (Array.from(color) as [number, number, number]) : null, what))
   }
   return out.length === 1 ? out[0] : out
 }
@@ -211,7 +225,11 @@ function _builtHint(detail: string, status: string | null): string {
  * `resolve`; abstract (class), inactive and over-only prims hold no bodies. Lengths come out in
  * millimeters, the bodies placed as the stage has them (see `UsdImportOptions`). A malformed
  * BrepArray throws a RangeError that says what is wrong, in which body, face or edge, with the rule
- * of usd-brep's validator it breaks; a body the kernel cannot build a KernelError that names it.
+ * of usd-brep's validator it breaks; a body the kernel cannot build a KernelError that names it. A
+ * solid that also holds wire edges, points or faces outside it (which the schema allows) comes with a
+ * warning that names them: such a Part is not valid. A body's color is that of the material bound to
+ * it (the diffuseColor of the UsdPreviewSurface its material has, through a GeomSubset of bodies, the
+ * prim or a prim above it), or else its prim's displayColor.
  * Edges come back with the curves they had: lines, circles and ellipses that `toUsd` wrote as such,
  * and B-spline edges that are lines or circular arcs exactly (usd-brep and Omniverse write every edge
  * as a B-spline) as lines and circles.

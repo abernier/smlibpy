@@ -5,7 +5,8 @@ their edges, I6 one unreadable body, I7 assembly instances built once, I8 one in
 shell, I9 faces' parameter domains, I10 assemblies in export_step, X3 non-ASCII names in USD,
 I11 offset surfaces in export_step, I12 curves, points and coordinate systems in export_step,
 I13 the STEP uncertainty in any unit, X5 analytic edges in USD, X7 USD bodies that cannot be read,
-I14 IGES import.
+I14 IGES import, X9 SMLib part files (.smp) with names, colors and curves, X10 empty bodies, X11 files
+in memory, X12 USD material bindings, X13 bodies of mixed dimension.
 """
 
 import math
@@ -1219,3 +1220,385 @@ def test_iges_files_it_does_not_read(tmp_path):
         _read_iges(tmp_path, [_line((0, 0, 0), (1, 0, 0)) | {"status": "00000000"}])
     with pytest.raises(ValueError, match="load reads .step, .stp, .igs, .iges"):
         load(tmp_path / "c.xyz")
+
+
+
+# -- X9: SMLib part files (.smp) -------------------------------------------------------------------------
+def _part_items():
+    bracket = (Box(20, 10, 6) - Cylinder(2, 10)).named("Größe bracket").colored("steelblue")
+    cells = (Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0))).named("cells")
+    sheet = Rectangle(6, 4).named("plate").colored((0.1, 0.8, 0.2))
+    arc = CenterArc((0, 0), 3, 0, 90)
+    path = Wire([Line((0, 0, 0), (5, 0, 0)), CenterArc((5, 2, 0), 2, -90, 180)])
+    return [bracket, arc, cells, path, sheet]
+
+
+@pytest.mark.parametrize("ascii", [True, False])
+def test_part_file_keeps_bodies_names_colors_cells_and_curves(ascii):
+    # .smb holds one body without its name or color (ai/todo/files.md #15); the kernel's part container
+    # holds several, with attributes
+    items = _part_items()
+    back = from_smp(to_smp(items, ascii=ascii))
+    assert [type(x).__name__ for x in back] == ["Part", "Edge", "Part", "Wire", "Shell"]
+    bracket, arc, cells, path, sheet = back
+    assert bracket.name == "Größe bracket" and sheet.name == "plate" and cells.name == "cells"
+    rgb = (0.27450980392156865, 0.5098039215686274, 0.7058823529411765)
+    assert bracket.color == (pytest.approx(rgb[0], abs=1e-15), pytest.approx(rgb[1], abs=1e-15),
+                             pytest.approx(rgb[2], abs=1e-15))
+    if not ascii:  # (binary: bit-exact; ASCII: 16 decimals)
+        assert bracket.color == rgb
+    assert sheet.color == (0.1, 0.8, 0.2) and cells.color is None
+    assert bracket.volume == pytest.approx(items[0].volume, rel=1e-12) and bracket.is_valid()
+    assert len(cells.cells()) == 3 and cells.volume == pytest.approx(1500)
+    assert sheet.area == pytest.approx(24)
+    assert arc.geom_type == "circle" and arc.radius == pytest.approx(3) and arc.length == pytest.approx(1.5 * math.pi)
+    assert len(path.edges()) == 2 and path.length == pytest.approx(5 + 2 * math.pi)
+    assert [e.geom_type for e in path.edges()] == ["line", "circle"]
+
+
+def test_part_file_written_again_is_the_same():
+    # the attributes go on copies and come off what is read: nothing piles up on the bodies (the first
+    # reading makes B-spline trim curves that are lines lines, as for .smb files; then nothing changes)
+    once = to_smp(list(from_smp(to_smp(_part_items(), ascii=False))), ascii=False)
+    assert to_smp(list(from_smp(once)), ascii=False) == once
+    text = to_smp(_part_items()).decode()
+    again = to_smp(list(from_smp(to_smp(list(from_smp(text.encode())))))).decode()
+    count = r"(\d+) // Total number of attributes"
+    assert re.findall(count, again) == re.findall(count, text) == ["8"]
+
+
+def test_save_and_load_part_files(tmp_path):
+    items = _part_items()
+    save(items, tmp_path / "a.smp")
+    export(items[:1], tmp_path / "b.smp")
+    save(items, tmp_path / "c.smp", ascii=False)
+    for name in ("a.smp", "c.smp"):
+        back = load(tmp_path / name)
+        assert len(back) == 5 and back[0].name == "Größe bracket"
+    assert load(tmp_path / "b.smp").name == "Größe bracket"  # (one item: the shape itself)
+    with pytest.raises(ValueError, match="save them to an .smp file"):
+        save(items[:1] + items[2:3], tmp_path / "x.smb")
+    with pytest.raises(TypeError, match="an .smb file holds one body, not an Edge: save curves to an .smp file"):
+        save(items[1], tmp_path / "x.smb")
+
+
+def test_part_files_written_by_both_ports_and_by_smlib():
+    # tests/data/parts.smp and parts_binary.smp: written by smlibpy, read by smlibwasm too
+    for name in ("parts.smp", "parts_binary.smp"):
+        back = load(DATA / name)
+        assert [type(x).__name__ for x in back] == ["Part", "Edge", "Wire", "Part"]
+        assert back[0].name == "Größe" and back[0].color == (0.2, 0.4, 0.6) and back[0].volume == pytest.approx(480)
+        assert back[3].name == "ball" and back[3].volume == pytest.approx(4 / 3 * math.pi * 8, rel=1e-9)
+        assert back[2].length == pytest.approx(5 + 2 * math.pi)
+    # SMLib's own test files: two bodies of a surface intersection test, two curves
+    two = load(_PT / "ssi_plncyl1.smp")
+    assert len(two) == 2 and all(isinstance(b, (Part, Shell)) for b in two)
+    curves = load(_PT / "cci_bug_rhino1.smp")
+    assert [type(c).__name__ for c in curves] == ["Edge", "Edge"] and curves[1].length == pytest.approx(24)
+
+
+def test_part_file_errors():
+    with pytest.raises(TypeError, match="an .smp file holds exact bodies and curves, not a Mesh"):
+        to_smp(Box(1, 1, 1).mesh())
+    with pytest.raises(TypeError, match="not a Vertex: export_step writes points"):
+        to_smp(Box(1, 1, 1).vertices()[0])
+    with pytest.raises(ValueError, match="to_smp: nothing to write"):
+        to_smp([])
+    with pytest.raises(ValueError, match="this is no SMLib part file"):
+        from_smp(b"hello")
+
+
+# -- X10: empty bodies -----------------------------------------------------------------------------------
+def _empty():
+    return Box(1, 1, 1) & Box(1, 1, 1).translate(5, 0, 0)
+
+
+def test_empty_body_is_not_written_to_usd(tmp_path):
+    # mesh=True failed with "KernelError: tessellate failed", mesh=False wrote a BrepArray with an inverted
+    # 1e20 extent and no shell (usd-brep's validator: BA.025, BA.030, BA.035, BA.701)
+    empty = _empty()
+    assert len(empty.faces()) == 0
+    for mesh in (True, False):
+        with pytest.raises(ValueError, match="export_usd: the Part is empty: it has no faces, edges or points"):
+            export_usd(empty, tmp_path / "e.usda", mesh=mesh)
+    with pytest.raises(ValueError, match="to_usd: the Part 'gone' is empty"):
+        to_usd([Box(1, 1, 1), empty.named("gone")])
+    assert not (tmp_path / "e.usda").exists()
+
+
+def test_empty_body_has_no_mesh(tmp_path):
+    empty = _empty()
+    with pytest.raises(ValueError, match="tessellate: the Part is empty: it has no faces to mesh"):
+        tessellate(empty)
+    for write in (export_stl, export_obj, export_glb):
+        with pytest.raises(ValueError, match="is empty"):
+            write(empty, tmp_path / "e.bin")
+    with pytest.raises(ValueError, match="export_stl: nothing to write"):
+        export_stl([], tmp_path / "e.stl")
+
+
+# -- X11: files in memory --------------------------------------------------------------------------------
+def test_files_in_memory_are_the_files(tmp_path):
+    part = (Box(20, 10, 6) - Cylinder(2, 10)).named("bracket").colored("steelblue")
+    export_stl(part, tmp_path / "p.stl")
+    assert to_stl(part) == (tmp_path / "p.stl").read_bytes()
+    export_stl(part, tmp_path / "a.stl", ascii=True)
+    assert to_stl(part, ascii=True) == (tmp_path / "a.stl").read_bytes()
+    export_obj(part, tmp_path / "p.obj")
+    assert to_obj(part) == (tmp_path / "p.obj").read_text()
+    export_glb(part, tmp_path / "p.glb")
+    assert to_glb(part) == (tmp_path / "p.glb").read_bytes()
+    export_gltf(part, tmp_path / "p.gltf", edges=False)
+    assert to_gltf(part, edges=False) == (tmp_path / "p.gltf").read_text()
+    export_usd(part, tmp_path / "p.usda", materials=True)
+    assert to_usd(part, materials=True) == (tmp_path / "p.usda").read_text(encoding="utf-8")
+    save(part, tmp_path / "p.smb")
+    assert to_smb(part) == (tmp_path / "p.smb").read_bytes()
+    sketch = Rectangle(10, 5) - Circle(1)
+    export_dxf(sketch, tmp_path / "s.dxf")
+    assert to_dxf(sketch) == (tmp_path / "s.dxf").read_text(encoding="utf-8")
+    # STEP: the same file but for its name and time stamp
+    export_step(part, tmp_path / "part.step")
+    strip = lambda t: re.sub(r"FILE_NAME\(.*?\);", "", t)  # noqa: E731
+    assert strip(to_step(part)) == strip((tmp_path / "part.step").read_text())
+
+
+def test_reading_from_memory(tmp_path):
+    part = (Box(20, 10, 6) - Cylinder(2, 10)).named("bracket").colored("steelblue")
+    text = to_step([part, Sphere(2).translate(30, 0, 0)])
+    for data in (text, text.encode("latin-1"), text.replace("\n", "\r\n").encode("latin-1")):
+        a, b = from_step(data)
+        assert a.name == "bracket" and a.volume == pytest.approx(part.volume, rel=1e-9)
+    model = from_step_model(text)
+    assert len(model.bodies) == 2
+    mesh = from_stl(to_stl(part))
+    assert len(mesh.triangles) == len(tessellate(part).triangles)
+    assert len(from_stl(to_stl(part, ascii=True).decode()).triangles) == len(mesh.triangles)
+    assert from_smb(to_smb(part, ascii=False)).volume == pytest.approx(part.volume, rel=1e-12)
+    assert from_dxf(to_dxf(Rectangle(10, 5))).area == pytest.approx(50)
+    assert from_dxf(to_dxf(Rectangle(10, 5)).encode()).area == pytest.approx(50)
+    assert len(from_dxf_wires(to_dxf(Rectangle(10, 5)))) == 1
+    back = from_usd(to_usd(part).encode())
+    assert back.name == "bracket" and back.volume == pytest.approx(part.volume, rel=1e-12)
+    igs = (IGES / "block_brep.igs").read_bytes()
+    assert from_iges(igs).volume == pytest.approx(import_iges(IGES / "block_brep.igs").volume, rel=1e-12)
+    with pytest.raises(TypeError, match="from_step takes the file's contents: a str or bytes"):
+        from_step(42)
+    with pytest.raises(ValueError, match="not an STL file, or a truncated one$"):
+        from_stl(b"solid nothing\n")
+
+
+def test_from_usd_reads_the_layers_resolve_gives():
+    # the materials of usd-brep's cube are in a layer the file references
+    cube = (USD_FILES / "brep_validator" / "CubeBrepArray.usda").read_text()
+    asked = []
+
+    def resolve(asset, from_):
+        asked.append((asset, from_))
+        return (USD_FILES / "brep_validator" / asset).read_bytes()
+
+    a, b = from_usd(cube, resolve=resolve)
+    assert asked == [("../usd_TestFiles/Materials.usda", "")]
+    assert a.color == (0.3, 0.15, 0.07) and b.color == (0.04, 0.22, 0.1)
+    with pytest.warns(RuntimeWarning, match="the reference ../usd_TestFiles/Materials.usda was not read"):
+        a, b = from_usd(cube)
+    assert a.color is None
+
+
+def test_in_memory_functions_take_the_keywords_of_the_file_functions():
+    import inspect
+
+    def keywords(f):
+        return [p.name for p in inspect.signature(f).parameters.values() if p.kind == p.KEYWORD_ONLY]
+
+    pairs = [(to_step, export_step), (to_stl, export_stl), (to_obj, export_obj), (to_glb, export_glb),
+             (to_smb, save), (to_smp, save), (to_dxf, export_dxf), (to_usd, export_usd), (from_step, import_step),
+             (from_step_model, read_step), (from_dxf, import_dxf), (from_dxf_wires, import_dxf_wires),
+             (from_iges, import_iges)]
+    for mine, theirs in pairs:
+        assert keywords(mine) == keywords(theirs), mine.__name__
+    assert keywords(from_usd) == keywords(import_usd) + ["resolve"]
+
+
+def test_fonts_from_bytes(tmp_path):
+    from smlibpy.font import DEFAULT_FONT, load_font
+
+    data = DEFAULT_FONT.read_bytes()
+    font = load_font(data)
+    assert font is load_font(data) and font.path is None and font.name == load_font().name
+    assert Text("Hi 5", 5, font=data).area == pytest.approx(Text("Hi 5", 5).area, rel=1e-12)
+    woff = (DATA / "test-quadratic.woff").read_bytes()
+    assert load_font(woff).num_glyphs == load_font(DATA / "test-quadratic.woff").num_glyphs
+    with pytest.raises(ValueError, match="font data: not a font file"):
+        Text("A", 5, font=b"nothing")
+
+
+# -- X12: USD material bindings --------------------------------------------------------------------------
+def test_usd_bodies_take_the_color_of_their_material():
+    # usd-brep's test files bind MDL materials with a UsdPreviewSurface fallback, defined in a layer they
+    # reference; 0.4 read no color at all
+    d = USD_FILES / "brep_validator"
+    a, b = import_usd(d / "CubeBrepArray.usda")  # GeomSubsets of bodies
+    assert (a.color, b.color) == ((0.3, 0.15, 0.07), (0.04, 0.22, 0.1))
+    assert import_usd(d / "CubeBrepMaterials.usda").color == (0.3, 0.15, 0.07)  # the prim's own binding
+    assert import_usd(d / "CubeAllMaterials.usda").color == (0.3, 0.15, 0.07)
+    assert import_usd(d / "CubeFaceMaterials.usda").color is None  # (materials of faces only)
+
+
+_LOOKS = """
+    def Scope "Looks"
+    {
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Looks/Grey/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                token outputs:surface
+            }
+        }
+        def Material "Mdl"
+        {
+            token outputs:mdl:surface.connect = </World/Looks/Mdl/Shader.outputs:out>
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                token outputs:out
+            }
+        }
+        def Material "Graph"
+        {
+            color3f inputs:tint = (0.5, 0.25, 0.125)
+            token outputs:surface.connect = </World/Looks/Graph/Nodes.outputs:surface>
+            def NodeGraph "Nodes"
+            {
+                token outputs:surface.connect = </World/Looks/Graph/Nodes/Preview.outputs:surface>
+                def Shader "Preview"
+                {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor.connect = </World/Looks/Graph.inputs:tint>
+                    token outputs:surface
+                }
+            }
+        }
+    }
+"""
+
+
+def _bound(world: str = "", a: str = "", b: str = "") -> list:
+    """The colors of two bodies (red "a", green "b") of a stage with the materials above, the
+    relationships given added to /World and to the two prims."""
+    text = to_usd([Box(10, 10, 10).named("a").colored((1, 0, 0)), Box(5, 5, 5).translate(20, 0, 0).named("b")
+                   .colored((0, 1, 0))], mesh=False)
+    text = text.replace('def Xform "World"\n{\n', 'def Xform "World"\n{\n' + world + _LOOKS, 1)
+    for name, rel in (("a", a), ("b", b)):
+        text = re.sub(r'(def BrepArray "%s" \([^)]*\)\s*\{\n)' % name, lambda m: m.group(1) + rel, text, count=1)
+    return [s.color for s in from_usd(text)]
+
+
+def test_usd_material_bindings_as_usd_resolves_them():
+    red, green, blue, grey = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.18, 0.18, 0.18)
+    assert _bound() == [red, green]  # displayColor
+    assert _bound(a="rel material:binding = </World/Looks/Blue>\n") == [blue, green]
+    assert _bound(a="rel material:binding = <../Looks/Blue>\n") == [blue, green]  # (relative to the prim)
+    assert _bound(world="rel material:binding = </World/Looks/Blue>\n") == [blue, blue]  # from above
+    # the prim's own binding before the one above it, unless that one is stronger than descendants
+    assert _bound(world="rel material:binding = </World/Looks/Blue>\n",
+                  a="rel material:binding = </World/Looks/Grey>\n") == [grey, blue]  # (the preview's default)
+    assert _bound(world='rel material:binding = </World/Looks/Blue> (\n bindMaterialAs = "strongerThanDescendants"\n)\n',
+                  a="rel material:binding = </World/Looks/Grey>\n") == [blue, blue]
+    # the preview purpose before all purposes
+    assert _bound(a="rel material:binding = </World/Looks/Grey>\nrel material:binding:preview = </World/Looks/Blue>\n") \
+        == [blue, green]
+    assert _bound(a="rel material:binding = </World/Looks/Graph>\n") == [(0.5, 0.25, 0.125), green]  # node graph
+    assert _bound(a="rel material:binding = </World/Looks/Mdl>\n") == [red, green]  # MDL alone: displayColor
+    assert _bound(a="rel material:binding = </World/Looks/None>\n") == [red, green]  # no such material
+
+
+def test_usd_material_of_a_referenced_layer_is_mapped_onto_its_prim():
+    mats = ('#usda 1.0\n(\n    defaultPrim = "M"\n)\n\ndef Material "M"\n{\n    token outputs:surface.connect = '
+            '</M/S.outputs:surface>\n    def Shader "S"\n    {\n        uniform token info:id = "UsdPreviewSurface"\n'
+            '        color3f inputs:diffuseColor = (0.25, 0.5, 0.75)\n        token outputs:surface\n    }\n}\n')
+    text = to_usd(Box(10, 10, 10).named("a").colored((1, 0, 0)), mesh=False)
+    text = text.replace('def Xform "World"\n{\n', 'def Xform "World"\n{\n    def Scope "Looks"\n    {\n        def Material '
+                        '"Mat" (\n            prepend references = @lib/mats.usda@\n        )\n        {\n        }\n    }\n', 1)
+    text = re.sub(r'(def BrepArray "a" \([^)]*\)\s*\{\n)', lambda m: m.group(1) + "rel material:binding = "
+                  "</World/Looks/Mat>\n", text, count=1)
+    assert from_usd(text, resolve=lambda asset, from_: mats).color == (0.25, 0.5, 0.75)
+
+
+def test_export_usd_writes_materials(tmp_path):
+    a = Box(10, 10, 10).named("a").colored("steelblue")
+    b = Sphere(3).translate(20, 0, 0).named("b").colored("steelblue")
+    c = Cylinder(2, 5).translate(40, 0, 0).named("Looks").colored((1, 0, 0))
+    text = to_usd([a, b, c], materials=True)
+    assert text.count('def Material "') == 2  # (one per color)
+    assert 'def Material "a"' in text and 'def Material "Looks"' in text and 'def BrepArray "Looks_1"' in text
+    assert text.count('info:id = "UsdPreviewSurface"') == 2
+    assert text.count("rel material:binding = </World/Looks/a>") == 4  # (the BrepArrays and their meshes)
+    assert text.count('"MaterialBindingAPI"') == 6
+    back = from_usd(text)
+    assert back[1].color == back[0].color and back[2].color == (1.0, 0.0, 0.0) and back[2].name == "Looks"
+    assert back[0].color == pytest.approx((0.27450980392156865, 0.5098039215686274, 0.7058823529411765), abs=1e-15)
+    assert "Material" not in to_usd([a, b, c])  # (without materials: as before)
+
+
+# -- X13: bodies of mixed dimension ----------------------------------------------------------------------
+_MIXED = USD_FILES / "usd_TestFiles"
+
+
+@pytest.mark.parametrize("name, said", [
+    ("box_with_attached_wire_edge", "is a solid that also holds 1 wire edge (an edge of no face), so is_valid() is "
+                                    "False and modeling with it may fail; stitch(part.faces()) gives the solid alone"),
+    ("box_with_two_vertex_shells", "is a solid that also holds 2 points (vertices of no edge), so is_valid() is False "
+                                   "and modeling with it may fail; stitch(part.faces()) gives the solid alone"),
+    ("box_with_detached_sheet", "is a solid that also holds 1 face outside the solid (a sheet), so is_valid() is False "
+                                "and modeling with it may fail; part.solids() takes the faces outside the solid apart"),
+    ("wire_edge", "has no faces, only 1 wire edge (an edge of no face): it is read as a Shell without faces, whose "
+                  "edges() are its curves"),
+])
+def test_bodies_of_mixed_dimension_say_what_else_they_hold(tmp_path, name, said):
+    # 0.4 gave a Part whose is_valid() was False, from .smb and USD alike, and said nothing
+    with pytest.warns(RuntimeWarning) as caught:
+        body = load(_MIXED / f"{name}.smb")
+    assert _messages(caught) == [f"load: the body {said}"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        export_usd(body.named("x"), tmp_path / "x.usda", mesh=False)
+    with pytest.warns(RuntimeWarning) as caught:
+        back = import_usd(tmp_path / "x.usda")
+    assert _messages(caught) == [f"import_usd: 'x' {said}"]
+    if name == "box_with_attached_wire_edge":
+        assert not back.is_valid() and stitch(back.faces()).is_valid()
+
+
+def test_sound_bodies_say_nothing_more():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for name in ("box", "box_with_second_seven_face_box", "boxes_share_one_vertex"):
+            load(_MIXED / f"{name}.smb")
+
+
+def test_writers_of_bodies_name_what_they_cannot_write(tmp_path):
+    edge, vertex = Box(1, 1, 1).edges()[0], Box(1, 1, 1).vertices()[0]
+    # 0.4: "TypeError: 'Edge' object is not iterable" ("'float' object ..." for a vertex)
+    with pytest.raises(TypeError, match="export_usd writes parts, sheets, faces and meshes, not an Edge: export_step "
+                                        "and export_dxf write curves"):
+        export_usd(edge, tmp_path / "e.usda")
+    with pytest.raises(TypeError, match="export_stl writes parts, sheets, faces and meshes, not a Vertex: export_step "
+                                        "writes points"):
+        export_stl([Box(1, 1, 1), vertex], tmp_path / "v.stl")
+    with pytest.raises(TypeError, match="to_obj writes parts, sheets, faces and meshes, not a Wire"):
+        to_obj(Wire([edge]))
+    with pytest.raises(TypeError, match="not a Location"):
+        to_usd(Location())

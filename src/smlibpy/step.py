@@ -607,7 +607,18 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
                author: str = "", organization: str = "", assembly: bool = False) -> None:
     """Write bodies (parts and sheets), curves, points and coordinate systems
     (:class:`~smlibpy.StepCurve`, :class:`~smlibpy.StepPoint`, :class:`~smlibpy.StepFrame`) to a
-    STEP file.
+    STEP file (see :func:`_step_text`)."""
+    text = _step_text(bodies, path, unit=unit, name=name, author=author, organization=organization,
+                      assembly=assembly)
+    with open(path, "w", encoding="ascii") as fh:
+        fh.write(text)
+
+
+def _step_text(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str | None = None,
+               author: str = "", organization: str = "", assembly: bool = False) -> str:
+    """The text of a STEP file of bodies (parts and sheets), curves, points and coordinate systems
+    (:class:`~smlibpy.StepCurve`, :class:`~smlibpy.StepPoint`, :class:`~smlibpy.StepFrame`), for
+    the file ``path`` ("" for none: the product is called "part" unless ``name`` says otherwise).
 
     The model is in millimeters; with another ``unit`` the coordinates are converted to
     it, so the file holds the same part measured in that unit. With ``assembly`` each body
@@ -797,8 +808,7 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
         f"'smlibpy','smlibpy (SMLib kernel)','');",
         "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
     ]
-    with open(path, "w", encoding="ascii") as fh:
-        fh.write(w.text(header))
+    return w.text(header)
 
 
 def _product_name(path: str) -> str:

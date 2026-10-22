@@ -2,7 +2,8 @@
 //
 //   Format   Extension                                            Direction
 //   STEP     .step, .stp                                          read/write
-//   SMLib    .smb (exact native kernel format)                    read/write
+//   SMLib    .smb (exact native kernel format, one body)          read/write
+//   SMLib    .smp (part file: bodies and curves, named)           read/write
 //   DXF      .dxf (2D drawings: sketches, sections, curves)       read/write
 //   glTF     .glb, .gltf                                          write
 //   STL      .stl                                                 read/write
@@ -10,15 +11,16 @@
 //   USD      .usda, .usd (exact: BrepArray prims, as text)        read/write
 //
 // Every format has a pair that works in memory, in the browser and in Node (`toStep` and
-// `fromStep`, `toStl` and `fromStl`, `toGlb`, `toGltf`, `toObj`, `toSmb` and `fromSmb`, `toUsd` and
-// `fromUsd`), and a
+// `fromStep`, `toStl` and `fromStl`, `toGlb`, `toGltf`, `toObj`, `toSmb` and `fromSmb`, `toSmp` and
+// `fromSmp`, `toUsd` and `fromUsd`), and a
 // pair that reads and writes files, which needs Node (`exportStep` and `importStep`, ..., and
 // `exportFile` and `load`, which pick the format by the file's extension).
 
-import { _opts, ext, k, kernelCall, module } from './kernel.ts'
+import { _opts, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { toRgb } from './colors.ts'
+import { Axis, Location, Plane, Vector } from './geometry.ts'
 import { Mesh, tessellate } from './mesh.ts'
-import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
+import { Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
 import { _stepItems, _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
 import { importIges } from './iges_import.ts'
@@ -39,7 +41,7 @@ export function _fs(): NodeFs {
   const fs = typeof proc?.getBuiltinModule === 'function' ? proc.getBuiltinModule('node:fs') : undefined
   if (!fs) {
     throw new Error(
-      'reading and writing files needs Node.js (22.3 or later); elsewhere use the functions that work in memory (toStep, fromStep, toStl, fromStl, toGlb, toGltf, toObj, toDxf, fromDxf, toSmb, fromSmb)',
+      'reading and writing files needs Node.js (22.3 or later); elsewhere use the functions that work in memory (toStep, fromStep, toStl, fromStl, toGlb, toGltf, toObj, toDxf, fromDxf, toSmb, fromSmb, toSmp, fromSmp, toUsd, fromUsd)',
     )
   }
   return fs as NodeFs
@@ -61,14 +63,96 @@ function _isIterable(x: unknown): x is Iterable<unknown> {
 }
 
 /** The bodies and meshes of `shapes` (a shape, a mesh or nested lists of them); a face becomes a
- * sheet of its own, or stays a face with `faces`. */
-export function _items(shapes: unknown, faces = false): (Shape | Mesh)[] {
+ * sheet of its own, or stays a face with `faces`. Anything else throws a TypeError that says what
+ * `what` writes instead. */
+export function _items(shapes: unknown, faces = false, what = 'this writer'): (Shape | Mesh)[] {
   if (shapes instanceof _Body || shapes instanceof Mesh) return [shapes]
   if (shapes instanceof Face) return [faces ? shapes : shapes.toShell()]
-  if (!_isIterable(shapes)) throw new TypeError(`'${_typeName(shapes)}' object is not iterable`)
+  if (shapes instanceof Shape || !_isIterable(shapes) || _isValue(shapes)) throw new TypeError(_notWritable(shapes, what))
   const out: (Shape | Mesh)[] = []
-  for (const s of shapes) out.push(..._items(s, faces))
+  for (const s of shapes) out.push(..._items(s, faces, what))
   return out
+}
+
+function _isValue(x: unknown): boolean {
+  return x instanceof Vector || x instanceof Axis || x instanceof Location || x instanceof Plane
+}
+
+/** Why `what` cannot write `item` (an edge, a point, ...), and what can. */
+function _notWritable(item: unknown, what: string): string {
+  const name = _typeName(item)
+  const article = 'AEIOU'.includes(name.slice(0, 1).toUpperCase()) && name ? 'an' : 'a'
+  const smb = what === 'save' || what === 'toSmb'
+  const text = smb ? `an .smb file holds one body, not ${article} ${name}` : `${what} writes parts, sheets, faces and meshes, not ${article} ${name}`
+  if (item instanceof Edge || item instanceof Wire) {
+    return (
+      text +
+      (smb
+        ? ': save curves to an .smp file, which holds bodies and curves (or write them with exportStep or exportDxf)'
+        : ': exportStep and exportDxf write curves, and so does save to an .smp file')
+    )
+  }
+  if (item instanceof Vertex || item instanceof Vector) return `${text}: exportStep writes points`
+  return text
+}
+
+function _label(name: string | null | undefined): string {
+  return name ? `'${name}'` : 'the body'
+}
+
+type _Dump = {
+  regions: { infinite: boolean; void: boolean }[]
+  shells: { closed: boolean }[]
+  faces: { uses: { shell: number; loops: { edges: [number, boolean][]; vertex: number | null }[] }[] }[]
+  edges: { v0: number; v1: number }[]
+  vertices: unknown[]
+}
+
+/** What a body read from a file holds beside its faces: wire edges (edges no face uses), points
+ * (vertices no edge uses) and, in a solid, faces outside it (of shells that do not close): the
+ * parts of the note, whether it has wire edges or points, whether it has faces outside. */
+function _components(dump: _Dump, solid: boolean): [string[], boolean, boolean] {
+  const usedEdges = new Set<number>()
+  const usedVertices = new Set<number>()
+  let loose = 0
+  for (const f of dump.faces) {
+    for (const use of f.uses) {
+      for (const loop of use.loops) {
+        for (const [e] of loop.edges) usedEdges.add(e)
+        if (loop.vertex !== null && loop.vertex !== undefined) usedVertices.add(loop.vertex)
+      }
+    }
+    if (solid && f.uses.length && f.uses.every((u) => !dump.shells[u.shell].closed)) loose += 1
+  }
+  let wires = 0
+  for (let i = 0; i < dump.edges.length; i++) if (!usedEdges.has(i)) wires += 1
+  for (const e of dump.edges) usedVertices.add(e.v0).add(e.v1)
+  let points = 0
+  for (let i = 0; i < dump.vertices.length; i++) if (!usedVertices.has(i)) points += 1
+  const parts: string[] = []
+  if (wires) parts.push(wires > 1 ? `${wires} wire edges (edges of no face)` : '1 wire edge (an edge of no face)')
+  if (points) parts.push(points > 1 ? `${points} points (vertices of no edge)` : '1 point (a vertex of no edge)')
+  if (loose) parts.push(`${loose} face${loose > 1 ? 's' : ''} outside the solid (a sheet)`)
+  return [parts, wires > 0 || points > 0, loose > 0]
+}
+
+/** A body read from a file: a Part when it encloses a volume (one cell or more, see Part.merge),
+ * else a Shell, with a warning where it also holds wire edges, points or faces outside its solid (a
+ * Part that is then not valid), or holds no faces at all. */
+export function _body(brep: number, name: string | null, color: [number, number, number] | null, what: string): Part | Shell {
+  const dump: _Dump = ext.brep_dump(brep, false)
+  const solid = dump.regions.some((r) => !r.infinite && !r.void)
+  const body = solid ? Part._wrap(brep, { name, color }) : Shell._wrap(brep, { name, color })
+  const [parts, extra, loose] = _components(dump, solid)
+  if (parts.length && !dump.faces.length) {
+    _warn(`${what}: ${_label(name)} has no faces, only ${parts.join(' and ')}: it is read as a Shell without faces, whose edges() are its curves`)
+  } else if (parts.length && solid) {
+    const fix = loose ? 'part.solids() takes the faces outside the solid apart' : 'stitch(part.faces()) gives the solid alone'
+    _warn(`${what}: ${_label(name)} is a solid that also holds ${parts.join(' and ')}, so isValid() is false and modeling with it may fail; ${fix}`)
+  } else if (extra) {
+    _warn(`${what}: ${_label(name)} also holds ${parts.join(' and ')}`)
+  }
+  return body
 }
 
 /** Write shapes to `path`; the format follows the file extension (Python's `export`). */
@@ -80,10 +164,10 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
   else if (ext_ === '.glb') exportGlb(shapes, p, options)
   else if (ext_ === '.gltf') exportGltf(shapes, p, options)
   else if (ext_ === '.obj') exportObj(shapes, p, options)
-  else if (ext_ === '.smb') save(shapes, p, options)
+  else if (ext_ === '.smb' || ext_ === '.smp') save(shapes, p, options)
   else if (ext_ === '.dxf') exportDxf(shapes, p, options)
   else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
-  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda`)
+  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf or .usda`)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -226,9 +310,9 @@ export interface MeshOptions {
   angle?: number
 }
 
-function _meshes(shapes: unknown, tolerance: number | null, angle: number): [Shape | Mesh, Mesh][] {
+function _meshes(shapes: unknown, tolerance: number | null, angle: number, what = 'this writer'): [Shape | Mesh, Mesh][] {
   const out: [Shape | Mesh, Mesh][] = []
-  for (const it of _items(shapes, true)) {
+  for (const it of _items(shapes, true, what)) {
     // a face is meshed itself, facing out of its part
     out.push([it, it instanceof Mesh ? it : tessellate(it as Shape, tolerance, angle)])
   }
@@ -238,8 +322,13 @@ function _meshes(shapes: unknown, tolerance: number | null, angle: number): [Sha
 /** A triangle mesh in STL (binary unless `ascii`). `tolerance` is the maximum deviation. */
 export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean } = {}): Uint8Array {
   _opts('toStl', options)
+  return _stl(shapes, options, 'toStl')
+}
+
+function _stl(shapes: unknown, options: MeshOptions & { ascii?: boolean }, what: string): Uint8Array {
   const { tolerance = null, angle = 15.0, ascii = false } = options
-  const meshes = _meshes(shapes, tolerance, angle).map(([, m]) => m)
+  const meshes = _meshes(shapes, tolerance, angle, what).map(([, m]) => m)
+  if (!meshes.length) throw new RangeError(`${what}: nothing to write`)
   let count = 0
   for (const m of meshes) count += m.triangles.length / 3
   // corners and normals in single precision, as STL has them
@@ -287,7 +376,7 @@ export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean 
 export function exportStl(shapes: unknown, path: string, options: MeshOptions & { ascii?: boolean } = {}): void {
   _opts('exportStl', options)
   const fs = _fs()
-  fs.writeFileSync(String(path), toStl(shapes, options))
+  fs.writeFileSync(String(path), _stl(shapes, options, 'exportStl'))
 }
 
 /** Read an STL file (binary or ASCII) as a mesh. */
@@ -503,10 +592,14 @@ function _aheapsort(t: Int32Array, start: number, n: number, cmp: (i: number, j:
 /** Wavefront OBJ text of the shapes (one object per part). */
 export function toObj(shapes: unknown, options: MeshOptions = {}): string {
   _opts('toObj', options)
+  return _obj(shapes, options, 'toObj')
+}
+
+function _obj(shapes: unknown, options: MeshOptions, what: string): string {
   const { tolerance = null, angle = 15.0 } = options
   const lines = ['# smlibwasm']
   let offset = 1
-  _meshes(shapes, tolerance, angle).forEach(([item, m], i) => {
+  _meshes(shapes, tolerance, angle, what).forEach(([item, m], i) => {
     lines.push(`o ${(item as Any).name || `part_${i + 1}`}`)
     const v = m.vertices
     for (let j = 0; j < v.length; j += 3) lines.push(`v ${_pyG(v[j], 9)} ${_pyG(v[j + 1], 9)} ${_pyG(v[j + 2], 9)}`)
@@ -521,7 +614,7 @@ export function toObj(shapes: unknown, options: MeshOptions = {}): string {
 export function exportObj(shapes: unknown, path: string, options: MeshOptions = {}): void {
   _opts('exportObj', options)
   const fs = _fs()
-  fs.writeFileSync(String(path), toObj(shapes, options))
+  fs.writeFileSync(String(path), _obj(shapes, options, 'exportObj'))
 }
 
 // --------------------------------------------------------------------------------------- glTF 2.0
@@ -863,16 +956,25 @@ function _unlink(name: string): void {
   }
 }
 
+/** The one body of `shapes`, for an .smb file. */
+function _oneBody(shapes: unknown, what: string): _Body {
+  const items = _items(shapes, false, what)
+  if (items.length !== 1)
+    throw new RangeError(
+      'an .smb file holds one body; fuse the parts, save them separately, or save them to an .smp file (which holds several, with their names and colors)',
+    )
+  const body = items[0]
+  if (!(body instanceof _Body)) throw new TypeError(`an .smb file holds an exact body, not a ${_typeName(body)}`)
+  return body
+}
+
 /** The contents of an SMLib native `.smb` file of one body (exact; ASCII unless `ascii` is false).
  * Reading it back gives the same geometry; B-spline faces that are exactly planes, cylinders, cones,
  * spheres or surfaces of revolution come back as those (`toNurbs()` does not survive). */
 export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
   _opts('toSmb', options)
   const { ascii = true } = options
-  const items = _items(shapes)
-  if (items.length !== 1) throw new RangeError('an .smb file holds one body; fuse the parts or save them separately')
-  const body = items[0]
-  if (!(body instanceof _Body)) throw new TypeError(`cannot save a ${_typeName(body)} as an .smb file`)
+  const body = _oneBody(shapes, 'toSmb')
   const name = _tmpName()
   try {
     kernelCall('save', () => k.brep_write_to_file(body._brep, name, ascii))
@@ -894,27 +996,122 @@ export function fromSmb(data: string | Uint8Array): Part | Shell {
   } finally {
     _unlink(name)
   }
-  // a part when it encloses a volume (one cell or more, see Part.merge), else a sheet
-  const regions: { infinite: boolean; void: boolean }[] = ext.brep_dump(b, false).regions
-  const solid = regions.some((r) => !r.infinite && !r.void)
-  return solid ? Part._wrap(b) : Shell._wrap(b)
+  return _body(b, null, null, 'fromSmb')
 }
 
-/** Write a body to SMLib's native `.smb` format (exact; see `toSmb`). */
+/** The bytes of a part file of the bodies and curves of `shapes`. */
+function _smp(shapes: unknown, ascii: boolean, what: string): Uint8Array {
+  const items: [number | null, number | null, string | null, number[] | null, number][] = []
+  const curves: number[] = [] // (copies, freed once written)
+  let wires = 0
+  const add = (s: unknown): void => {
+    if (s instanceof Face) s = s.toShell()
+    if (s instanceof _Body) {
+      const c = (s as Any).color
+      items.push([s._brep, null, (s as Any).name || null, c ? Array.from(toRgb(c), Number) : null, -1])
+    } else if (s instanceof Edge) {
+      const c = s._copyCurve()
+      curves.push(c)
+      items.push([null, c, null, null, -1])
+    } else if (s instanceof Wire) {
+      for (const c of s._copyCurves()) {
+        curves.push(c)
+        items.push([null, c, null, null, wires])
+      }
+      wires += 1
+    } else if (s instanceof Mesh) {
+      throw new TypeError(`${what}: an .smp file holds exact bodies and curves, not a Mesh: write meshes with exportStl, exportObj or exportGlb`)
+    } else if (s instanceof Shape || !_isIterable(s) || _isValue(s)) {
+      const name = _typeName(s)
+      const article = name && 'AEIOU'.includes(name.slice(0, 1).toUpperCase()) ? 'an' : 'a'
+      const point = s instanceof Vertex || s instanceof Vector ? ': exportStep writes points' : ''
+      throw new TypeError(`${what}: an .smp file holds parts, sheets, faces, edges and wires, not ${article} ${name}${point}`)
+    } else {
+      for (const x of s) add(x)
+    }
+  }
+  try {
+    add(shapes)
+    if (!items.length) throw new RangeError(`${what}: nothing to write`)
+    return kernelCall(what, () => ext.part_bytes(items, ascii))
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
+/**
+ * The contents of an SMLib part file (`.smp`) of the shapes, as `save` writes it.
+ *
+ * A part file is the kernel's own container: any number of exact bodies (parts with their cells,
+ * sheets, sketches and faces as sheets), each with its name and color, and curves (an edge as one, a
+ * wire as its edges). `fromSmp` and `load` give them back in the same order, with their names and
+ * colors, a wire as a `Wire`. ASCII unless `ascii` is false; the binary form is bit-exact, the ASCII
+ * form keeps the geometry to 16 decimals.
+ */
+export function toSmp(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
+  _opts('toSmp', options)
+  return _smp(shapes, options.ascii ?? true, 'toSmp')
+}
+
+/**
+ * The bodies and curves of an SMLib part file's contents (`.smp`, ASCII or binary): a single shape
+ * when it holds one, otherwise a `ShapeList`. Bodies come back as `Part` (one that encloses a
+ * volume) or `Shell`, named and colored as written, curves as `Edge` and `Wire`; a file of another
+ * SMLib program gives its loose surfaces as sheets of one face each.
+ */
+export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape> {
+  const found: [number | null, number | null, string, Float64Array | null, number][] = kernelCall('fromSmp', () =>
+    ext.part_items(_bytes(data)),
+  )
+  const out: (Shape | Edge[])[] = []
+  const wires = new Map<number, Edge[]>()
+  for (const [brep, curve, name, color, wire] of found) {
+    if (brep !== null) out.push(_body(brep, name || null, color ? (Array.from(color) as [number, number, number]) : null, 'fromSmp'))
+    else if (wire >= 0 && wires.has(wire)) (wires.get(wire) as Edge[]).push(Edge._fromCurve(curve as number))
+    else if (wire >= 0) {
+      const edges = [Edge._fromCurve(curve as number)]
+      wires.set(wire, edges)
+      out.push(edges)
+    } else out.push(Edge._fromCurve(curve as number))
+  }
+  if (!out.length) throw new RangeError('the .smp file holds no bodies or curves')
+  const shapes = new ShapeList<Shape>(...out.map((x) => (Array.isArray(x) ? Wire._raw(x) : x)))
+  return shapes.length === 1 ? shapes[0] : shapes
+}
+
+/**
+ * Write shapes to SMLib's native files (exact): one body to an `.smb` file (see `toSmb`), or bodies
+ * and curves with their names and colors to an `.smp` part file (see `toSmp`); any other extension
+ * writes `.smb`.
+ */
 export function save(shapes: unknown, path: string, options: { ascii?: boolean } = {}): void {
   _opts('save', options)
   const fs = _fs()
-  fs.writeFileSync(String(path), toSmb(shapes, options))
+  const p = String(path)
+  if (_splitext(p)[1].toLowerCase() === '.smp') {
+    fs.writeFileSync(p, _smp(shapes, options.ascii ?? true, 'save'))
+    return
+  }
+  const body = _oneBody(shapes, 'save')
+  const name = _tmpName()
+  try {
+    kernelCall('save', () => k.brep_write_to_file(body._brep, name, options.ascii ?? true))
+    fs.writeFileSync(p, module.FS.readFile(name) as Uint8Array)
+  } finally {
+    _unlink(name)
+  }
 }
 
 /**
  * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), IGES (`.igs`, `.iges`),
- * USD (`.usda`) and SMLib (`.smb`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's
+ * USD (`.usda`) and SMLib (`.smb`, `.smp`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's
  * outlines, STL a `Mesh`.
  *
  * A STEP or IGES file with one body gives that part, one with several a `ShapeList`. A native file comes
  * back as a `Part` when its body encloses a volume (a merged part with its cells too, and a broken
- * solid, whose `isValid()` is false), as a `Shell` when it does not.
+ * solid, whose `isValid()` is false), as a `Shell` when it does not; a part file (`.smp`) with its
+ * names, colors and curves (see `fromSmp`). A body that also holds wire edges, points or faces outside
+ * its solid comes with a warning.
  */
 export function load(path: string): Any {
   const p = String(path)
@@ -924,6 +1121,17 @@ export function load(path: string): Any {
   if (ext_ === '.stl') return importStl(p)
   if (ext_ === '.dxf') return importDxf(p)
   if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return importUsd(p)
-  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .igs, .iges, .stl, .smb, .dxf and .usda`)
-  return fromSmb(_fs().readFileSync(p))
+  if (ext_ !== '.smb' && ext_ !== '.smp')
+    throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf and .usda`)
+  const data = _fs().readFileSync(p)
+  if (ext_ === '.smp') return fromSmp(data)
+  const name = _tmpName()
+  let b: number
+  try {
+    module.FS.writeFile(name, data)
+    b = kernelCall('load', () => k.read_brep_from_file(name, null, false))
+  } finally {
+    _unlink(name)
+  }
+  return _body(b, null, null, 'load')
 }

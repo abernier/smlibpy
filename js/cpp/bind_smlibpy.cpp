@@ -18,6 +18,7 @@
 #include "face_draft.h"
 #include "fit.h"
 #include "measure.h"
+#include "part_file.h"
 #include "sheetmetal.h"
 #include "step_build.h"
 #include "surface_eval.h"
@@ -624,7 +625,7 @@ val region_shells(uintptr_t b)
 }
 
 // items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
-std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
+std::string usd_text(val shapes, std::string up_axis, double meters_per_unit, bool materials)
 {
     return guard([&] {
         std::vector<smlibpy::UsdItem> in;
@@ -646,7 +647,7 @@ std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
                 item.normals = numbers(it[5]);
             in.push_back(std::move(item));
         }
-        return smlibpy::usd_text(in, up_axis, meters_per_unit);
+        return smlibpy::usd_text(in, up_axis, meters_per_unit, materials);
     });
 }
 
@@ -717,6 +718,47 @@ val usd_stage(val layers, bool heal, bool check, bool placement, double units, b
     });
 }
 
+// The contents of a part file (.smp, a Uint8Array) of items [brep or null, curve or null, name or null,
+// [r, g, b] or null, wire]: bodies and curves, each with its name and color.
+val part_bytes(val list, bool ascii)
+{
+    return guard([&] {
+        std::vector<smlibpy::PartItem> in;
+        const unsigned n = list["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+        {
+            val it = list[i];
+            smlibpy::PartItem item;
+            item.brep = maybe<SmBrep>(it[0]);
+            item.curve = maybe<SmCurve>(it[1]);
+            if (!none(it[2]))
+                item.name = it[2].as<std::string>();
+            if (!none(it[3]))
+                item.color = numbers(it[3]);
+            item.wire = static_cast<long>(it[4].as<double>());
+            in.push_back(std::move(item));
+        }
+        const std::string out = smlibpy::part_bytes(in, ascii);
+        return val::global("Uint8Array").new_(
+            typed_memory_view(out.size(), reinterpret_cast<const unsigned char*>(out.data())));
+    });
+}
+
+// [[brep or null, curve or null, name, [r, g, b] or null, wire]] of a part file's contents (a Uint8Array):
+// its bodies and curves, the caller's.
+val part_items(std::string data)
+{
+    return guard([&] {
+        val out = val::array();
+        for (auto& item : smlibpy::part_items(data))
+            out.call<void>("push", items(item.brep ? val(ptr(item.brep)) : val::null(),
+                                         item.curve ? val(ptr(item.curve)) : val::null(), item.name,
+                                         item.color.empty() ? val::null() : float64(item.color),
+                                         static_cast<double>(item.wire)));
+        return out;
+    });
+}
+
 EMSCRIPTEN_BINDINGS(smlib_smlibpy)
 {
     function("ext__curve_data", &curve_data);
@@ -771,6 +813,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);
     function("ext__usd_stage", &usd_stage);
+    function("ext__part_bytes", &part_bytes);
+    function("ext__part_items", &part_items);
     function("ext__face_measure", &face_measure);
     function("ext__nearest_points", &nearest_points);
     function("ext__curve_length", &curve_length);

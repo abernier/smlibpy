@@ -91,13 +91,15 @@ the Python code works around a kernel defect, so does the TypeScript.
 - **Imports.** Modules import each other statically, also where Python imports inside a
   function to break a cycle. ES modules allow the cycles as long as no module uses another's
   exports while it is first evaluated: no top-level code that builds shapes.
-- **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node:
+- **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node
+  (Python has the same pairs, `to_step`/`from_step` and so on, with `bytes` for `Uint8Array`):
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
-    `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
+    `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` and `toSmp(shapes, { ascii })`
+    (the kernel's own formats: one body; bodies and curves with names and colors): `Uint8Array`;
     `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
-    `fromUsd(data)` take a `string` or `Uint8Array`. `fromUsd` takes the layers a stage names
-    (subLayers, references, payloads) from its `resolve` option, where Python and `importUsd` read
-    the files (an option only smlibwasm has: `JS_ONLY` in tools/gen_js_options.py).
+    `fromSmp(data)`, `fromUsd(data)`, `fromIges(data)` take a `string` or `Uint8Array`. `fromUsd`
+    (and Python's `from_usd`) takes the layers a stage names (subLayers, references, payloads) from
+    its `resolve` option, where `importUsd` reads the files.
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no

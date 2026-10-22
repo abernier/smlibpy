@@ -78,13 +78,22 @@ Everything below is importable from `smlibpy` directly.
 
 ::: smlibpy.exporters
 ::: smlibpy.step_import.import_step
+::: smlibpy.step_import.from_step
 ::: smlibpy.step_import.read_step
+::: smlibpy.step_import.from_step_model
 ::: smlibpy.step_import.StepModel
+::: smlibpy.iges_import.import_iges
+::: smlibpy.iges_import.from_iges
 ::: smlibpy.dxf.import_dxf
+::: smlibpy.dxf.from_dxf
 ::: smlibpy.dxf.import_dxf_wires
+::: smlibpy.dxf.from_dxf_wires
 ::: smlibpy.dxf.export_dxf
+::: smlibpy.dxf.to_dxf
 ::: smlibpy.usd.export_usd
+::: smlibpy.usd.to_usd
 ::: smlibpy.usd.import_usd
+::: smlibpy.usd.from_usd
 
 ## Viewer
 

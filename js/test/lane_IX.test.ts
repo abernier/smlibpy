@@ -4,7 +4,8 @@
 // integration per shell, I9 faces' parameter domains, I10 assemblies in exportStep, X3 non-ASCII
 // names in USD, I11 offset surfaces in exportStep, I12 curves, points and coordinate systems in
 // exportStep, I13 the STEP uncertainty in any unit, X5 analytic edges in USD, X7 USD bodies that
-// cannot be read, I14 IGES import.
+// cannot be read, I14 IGES import, X9 SMLib part files (.smp) with names, colors and curves, X10 empty
+// bodies, X11 files in memory, X12 USD material bindings, X13 bodies of mixed dimension.
 import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -52,6 +53,26 @@ import {
   tessellate,
   toStep,
   toUsd,
+  Circle,
+  Rectangle,
+  DEFAULT_FONT,
+  Location as _Location,
+  Text,
+  exportFile,
+  exportGlb,
+  exportObj,
+  exportStl,
+  exportUsd,
+  fromSmb,
+  fromSmp,
+  fromStl,
+  loadFont,
+  save,
+  toGlb,
+  toObj,
+  toSmb,
+  toSmp,
+  toStl,
 } from '../src/index.ts'
 import { KernelError, ext, k } from '../src/kernel.ts'
 import { interpret, parse } from '../src/step_reader.ts'
@@ -1331,4 +1352,367 @@ test('iges files it does not read', () => {
   assert.throws(() => fromIges(text), /binary or compressed IGES/)
   assert.throws(() => fromIges(_iges([{ ..._line([0, 0, 0], [1, 0, 0]), status: '00000000' }])), /holds no solids or surfaces/)
   assert.throws(() => load('c.xyz'), /load reads .step, .stp, .igs, .iges/)
+})
+
+
+// -- X9: SMLib part files (.smp) -------------------------------------------------------------------------
+// biome-ignore lint: the shapes read back are checked by their properties
+type Any = any
+
+function _partItems(): unknown[] {
+  const bracket = Box(20, 10, 6).cut(Cylinder(2, 10)).named('Größe bracket').colored('steelblue')
+  const cells = Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0)).named('cells')
+  const sheet = Rectangle(6, 4).named('plate').colored([0.1, 0.8, 0.2])
+  const arc = CenterArc([0, 0], 3, 0, 90)
+  const path = new Wire([Line([0, 0, 0], [5, 0, 0]), CenterArc([5, 2, 0], 2, -90, 180)])
+  return [bracket, arc, cells, path, sheet]
+}
+
+for (const ascii of [true, false]) {
+  test(`part file keeps bodies, names, colors, cells and curves (ascii: ${ascii})`, () => {
+    // .smb holds one body without its name or color (ai/todo/files.md #15); the kernel's part container
+    // holds several, with attributes
+    const items = _partItems()
+    const back = fromSmp(toSmp(items, { ascii })) as ShapeList<Any>
+    assert.deepEqual(
+      back.map((x: Any) => x.constructor.name),
+      ['Part', 'Edge', 'Part', 'Wire', 'Shell'],
+    )
+    const [bracket, arc, cells, path, sheet] = back
+    assert.equal(bracket.name, 'Größe bracket')
+    assert.equal(sheet.name, 'plate')
+    assert.equal(cells.name, 'cells')
+    const rgb = [0.27450980392156865, 0.5098039215686274, 0.7058823529411765]
+    for (let i = 0; i < 3; i++) approx(bracket.color[i], rgb[i], 1e-15)
+    if (!ascii) assert.deepEqual(Array.from(bracket.color), rgb) // (binary: bit-exact; ASCII: 16 decimals)
+    assert.deepEqual(Array.from(sheet.color), [0.1, 0.8, 0.2])
+    assert.equal(cells.color, null)
+    approx(bracket.volume, (items[0] as Part).volume, 1e-12)
+    assert.ok(bracket.isValid())
+    assert.equal(cells.cells().length, 3)
+    approx(cells.volume, 1500, 1e-9)
+    approx(sheet.area, 24, 1e-9)
+    assert.equal(arc.geomType, 'circle')
+    approx(arc.radius, 3, 1e-12)
+    approx(arc.length, 1.5 * Math.PI, 1e-12)
+    assert.deepEqual(
+      path.edges().map((e: Edge) => e.geomType),
+      ['line', 'circle'],
+    )
+    approx(path.length, 5 + 2 * Math.PI, 1e-12)
+  })
+}
+
+test('part file written again is the same', () => {
+  // the attributes go on copies and come off what is read (the first reading makes B-spline trim
+  // curves that are lines lines, as for .smb files; then nothing changes)
+  const once = toSmp([...(fromSmp(toSmp(_partItems(), { ascii: false })) as ShapeList<Any>)], { ascii: false })
+  assert.deepEqual(toSmp([...(fromSmp(once) as ShapeList<Any>)], { ascii: false }), once)
+  const count = /(\d+) \/\/ Total number of attributes/
+  const text = new TextDecoder().decode(toSmp(_partItems()))
+  const again = new TextDecoder().decode(toSmp([...(fromSmp(toSmp([...(fromSmp(text) as ShapeList<Any>)])) as ShapeList<Any>)]))
+  assert.equal(count.exec(text)?.[1], '8')
+  assert.equal(count.exec(again)?.[1], '8')
+})
+
+test('save and load part files', () => {
+  const dir = tmpPath()
+  const items = _partItems()
+  save(items, join(dir, 'a.smp'))
+  exportFile(items.slice(0, 1), join(dir, 'b.smp'))
+  save(items, join(dir, 'c.smp'), { ascii: false })
+  for (const name of ['a.smp', 'c.smp']) {
+    const back = load(join(dir, name))
+    assert.equal(back.length, 5)
+    assert.equal(back[0].name, 'Größe bracket')
+  }
+  assert.equal(load(join(dir, 'b.smp')).name, 'Größe bracket') // (one item: the shape itself)
+  assert.throws(() => save([items[0], items[2]], join(dir, 'x.smb')), /save them to an .smp file/)
+  assert.throws(
+    () => save(items[1], join(dir, 'x.smb')),
+    (e: unknown) => e instanceof TypeError && /an .smb file holds one body, not an Edge: save curves to an .smp file/.test(e.message),
+  )
+})
+
+test('part files written by both ports and by smlib', { skip: !existsSync(_USD_FILES) }, () => {
+  // tests/data/parts.smp and parts_binary.smp were written by smlibpy
+  for (const name of ['parts.smp', 'parts_binary.smp']) {
+    const back = load(join(_DATA, name))
+    assert.deepEqual(
+      back.map((x: Any) => x.constructor.name),
+      ['Part', 'Edge', 'Wire', 'Part'],
+    )
+    assert.equal(back[0].name, 'Größe')
+    assert.deepEqual(Array.from(back[0].color), [0.2, 0.4, 0.6])
+    approx(back[0].volume, 480, 1e-9)
+    assert.equal(back[3].name, 'ball')
+    approx(back[3].volume, (4 / 3) * Math.PI * 8, 1e-9)
+    approx(back[2].length, 5 + 2 * Math.PI, 1e-12)
+  }
+  const two = load(`${_PT}ssi_plncyl1.smp`)
+  assert.equal(two.length, 2)
+  assert.ok(two.every((b: unknown) => b instanceof Part || b instanceof Shell))
+  const curves = load(`${_PT}cci_bug_rhino1.smp`)
+  assert.deepEqual(
+    curves.map((x: Any) => x.constructor.name),
+    ['Edge', 'Edge'],
+  )
+  approx(curves[1].length, 24, 1e-12)
+})
+
+test('part file errors', () => {
+  assert.throws(() => toSmp(Box(1, 1, 1).mesh()), /an .smp file holds exact bodies and curves, not a Mesh/)
+  assert.throws(() => toSmp(Box(1, 1, 1).vertices()[0]), /not a Vertex: exportStep writes points/)
+  assert.throws(() => toSmp([]), /toSmp: nothing to write/)
+  assert.throws(() => fromSmp(new TextEncoder().encode('hello')), (e: unknown) => e instanceof RangeError && /this is no SMLib part file/.test(e.message))
+})
+
+// -- X10: empty bodies -----------------------------------------------------------------------------------
+function _empty(): Part {
+  return Box(1, 1, 1).intersect(Box(1, 1, 1).translate(5, 0, 0))
+}
+
+test('empty body is not written to USD', () => {
+  // mesh: true failed with "tessellate failed", mesh: false wrote a BrepArray with an inverted 1e20
+  // extent and no shell (usd-brep's validator: BA.025, BA.030, BA.035, BA.701)
+  const empty = _empty()
+  assert.equal(empty.faces().length, 0)
+  for (const mesh of [true, false]) {
+    assert.throws(
+      () => toUsd(empty, { mesh }),
+      (e: unknown) => e instanceof RangeError && /toUsd: the Part is empty: it has no faces, edges or points/.test(e.message),
+    )
+  }
+  assert.throws(() => exportUsd([Box(1, 1, 1), empty.named('gone')], join(tmpPath(), 'e.usda')), /exportUsd: the Part 'gone' is empty/)
+})
+
+test('empty body has no mesh', () => {
+  const empty = _empty()
+  assert.throws(() => tessellate(empty), (e: unknown) => e instanceof RangeError && /tessellate: the Part is empty: it has no faces to mesh/.test(e.message))
+  for (const write of [toStl, toObj, toGlb]) assert.throws(() => write(empty), /is empty/)
+  assert.throws(() => toStl([]), /toStl: nothing to write/)
+})
+
+// -- X11: files in memory (smlibwasm had them; the file functions are now written around them) -------------
+test('in-memory functions give what the file functions write', () => {
+  const dir = tmpPath()
+  const part = Box(20, 10, 6).cut(Cylinder(2, 10)).named('bracket').colored('steelblue')
+  exportStl(part, join(dir, 'p.stl'))
+  assert.deepEqual(new Uint8Array(readFileSync(join(dir, 'p.stl'))), toStl(part))
+  exportObj(part, join(dir, 'p.obj'))
+  assert.equal(readFileSync(join(dir, 'p.obj'), 'utf-8'), toObj(part))
+  exportGlb(part, join(dir, 'p.glb'))
+  assert.deepEqual(new Uint8Array(readFileSync(join(dir, 'p.glb'))), toGlb(part))
+  exportUsd(part, join(dir, 'p.usda'), { materials: true })
+  assert.equal(readFileSync(join(dir, 'p.usda'), 'utf-8'), toUsd(part, { materials: true }))
+  save(part, join(dir, 'p.smb'))
+  assert.deepEqual(new Uint8Array(readFileSync(join(dir, 'p.smb'))), toSmb(part))
+  approx((fromSmb(toSmb(part, { ascii: false })) as Part).volume, part.volume, 1e-12)
+  assert.equal(fromStl(toStl(part)).triangles.length, tessellate(part).triangles.length)
+})
+
+test('fonts from bytes', () => {
+  const font = loadFont(DEFAULT_FONT)
+  assert.equal(font, loadFont(DEFAULT_FONT))
+  assert.equal(font.path, null)
+  approx(Text('Hi 5', 5, { font: DEFAULT_FONT }).area, Text('Hi 5', 5).area, 1e-12)
+  const woff = new Uint8Array(readFileSync(join(_DATA, 'test-quadratic.woff')))
+  assert.equal(loadFont(woff).numGlyphs, loadFont(join(_DATA, 'test-quadratic.woff')).numGlyphs)
+})
+
+// -- X12: USD material bindings --------------------------------------------------------------------------
+test('usd bodies take the color of their material', { skip: !existsSync(_USD_FILES) }, () => {
+  // usd-brep's test files bind MDL materials with a UsdPreviewSurface fallback, defined in a layer they
+  // reference; 0.4 read no color at all
+  const d = join(_USD_FILES, 'brep_validator')
+  const [a, b] = importUsd(join(d, 'CubeBrepArray.usda')) as ShapeList<Part>
+  assert.deepEqual([Array.from(a.color as number[]), Array.from(b.color as number[])], [
+    [0.3, 0.15, 0.07],
+    [0.04, 0.22, 0.1],
+  ])
+  assert.deepEqual(Array.from((importUsd(join(d, 'CubeBrepMaterials.usda')) as Part).color as number[]), [0.3, 0.15, 0.07])
+  assert.deepEqual(Array.from((importUsd(join(d, 'CubeAllMaterials.usda')) as Part).color as number[]), [0.3, 0.15, 0.07])
+  assert.equal((importUsd(join(d, 'CubeFaceMaterials.usda')) as Part).color, null) // (materials of faces only)
+  // fromUsd reads the referenced layer through resolve
+  const cube = readFileSync(join(d, 'CubeBrepArray.usda'), 'utf-8')
+  const asked: [string, string][] = []
+  const [c] = fromUsd(cube, {
+    resolve: (asset, from) => {
+      asked.push([asset, from])
+      return readFileSync(join(d, asset))
+    },
+  }) as ShapeList<Part>
+  assert.deepEqual(asked, [['../usd_TestFiles/Materials.usda', '']])
+  assert.deepEqual(Array.from(c.color as number[]), [0.3, 0.15, 0.07])
+})
+
+const _LOOKS = `
+    def Scope "Looks"
+    {
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Looks/Grey/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                token outputs:surface
+            }
+        }
+        def Material "Mdl"
+        {
+            token outputs:mdl:surface.connect = </World/Looks/Mdl/Shader.outputs:out>
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                token outputs:out
+            }
+        }
+        def Material "Graph"
+        {
+            color3f inputs:tint = (0.5, 0.25, 0.125)
+            token outputs:surface.connect = </World/Looks/Graph/Nodes.outputs:surface>
+            def NodeGraph "Nodes"
+            {
+                token outputs:surface.connect = </World/Looks/Graph/Nodes/Preview.outputs:surface>
+                def Shader "Preview"
+                {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor.connect = </World/Looks/Graph.inputs:tint>
+                    token outputs:surface
+                }
+            }
+        }
+    }
+`
+
+/** The colors of two bodies (red "a", green "b") of a stage with the materials above, the
+ * relationships given added to /World and to the two prims. */
+function _bound(world = '', a = '', b = ''): number[][] {
+  let text = toUsd([Box(10, 10, 10).named('a').colored([1, 0, 0]), Box(5, 5, 5).translate(20, 0, 0).named('b').colored([0, 1, 0])], {
+    mesh: false,
+  })
+  text = text.replace('def Xform "World"\n{\n', `def Xform "World"\n{\n${world}${_LOOKS}`)
+  for (const [name, rel] of [
+    ['a', a],
+    ['b', b],
+  ]) {
+    text = text.replace(new RegExp(`(def BrepArray "${name}" \\([^)]*\\)\\s*\\{\\n)`), (m) => m + rel)
+  }
+  return (fromUsd(text) as ShapeList<Part>).map((s) => Array.from(s.color as number[]))
+}
+
+test('usd material bindings as USD resolves them', () => {
+  const [red, green, blue, grey] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+    [0.18, 0.18, 0.18],
+  ]
+  assert.deepEqual(_bound(), [red, green]) // displayColor
+  assert.deepEqual(_bound('', 'rel material:binding = </World/Looks/Blue>\n'), [blue, green])
+  assert.deepEqual(_bound('', 'rel material:binding = <../Looks/Blue>\n'), [blue, green]) // (relative to the prim)
+  assert.deepEqual(_bound('rel material:binding = </World/Looks/Blue>\n'), [blue, blue]) // from above
+  // the prim's own binding before the one above it, unless that one is stronger than descendants
+  assert.deepEqual(_bound('rel material:binding = </World/Looks/Blue>\n', 'rel material:binding = </World/Looks/Grey>\n'), [grey, blue])
+  assert.deepEqual(
+    _bound('rel material:binding = </World/Looks/Blue> (\n bindMaterialAs = "strongerThanDescendants"\n)\n', 'rel material:binding = </World/Looks/Grey>\n'),
+    [blue, blue],
+  )
+  assert.deepEqual(_bound('', 'rel material:binding = </World/Looks/Grey>\nrel material:binding:preview = </World/Looks/Blue>\n'), [blue, green])
+  assert.deepEqual(_bound('', 'rel material:binding = </World/Looks/Graph>\n'), [[0.5, 0.25, 0.125], green]) // node graph
+  assert.deepEqual(_bound('', 'rel material:binding = </World/Looks/Mdl>\n'), [red, green]) // MDL alone: displayColor
+  assert.deepEqual(_bound('', 'rel material:binding = </World/Looks/None>\n'), [red, green]) // no such material
+})
+
+test('usd material of a referenced layer is mapped onto its prim', () => {
+  const mats =
+    '#usda 1.0\n(\n    defaultPrim = "M"\n)\n\ndef Material "M"\n{\n    token outputs:surface.connect = </M/S.outputs:surface>\n' +
+    '    def Shader "S"\n    {\n        uniform token info:id = "UsdPreviewSurface"\n        color3f inputs:diffuseColor = (0.25, 0.5, 0.75)\n' +
+    '        token outputs:surface\n    }\n}\n'
+  let text = toUsd(Box(10, 10, 10).named('a').colored([1, 0, 0]), { mesh: false })
+  text = text.replace(
+    'def Xform "World"\n{\n',
+    'def Xform "World"\n{\n    def Scope "Looks"\n    {\n        def Material "Mat" (\n            prepend references = @lib/mats.usda@\n        )\n        {\n        }\n    }\n',
+  )
+  text = text.replace(/(def BrepArray "a" \([^)]*\)\s*\{\n)/, (m) => `${m}rel material:binding = </World/Looks/Mat>\n`)
+  assert.deepEqual(Array.from((fromUsd(text, { resolve: () => mats }) as Part).color as number[]), [0.25, 0.5, 0.75])
+})
+
+test('toUsd writes materials', () => {
+  const a = Box(10, 10, 10).named('a').colored('steelblue')
+  const b = Sphere(3).translate(20, 0, 0).named('b').colored('steelblue')
+  const c = Cylinder(2, 5).translate(40, 0, 0).named('Looks').colored([1, 0, 0])
+  const text = toUsd([a, b, c], { materials: true })
+  const count = (s: string) => text.split(s).length - 1
+  assert.equal(count('def Material "'), 2) // (one per color)
+  assert.ok(text.includes('def Material "a"') && text.includes('def Material "Looks"') && text.includes('def BrepArray "Looks_1"'))
+  assert.equal(count('info:id = "UsdPreviewSurface"'), 2)
+  assert.equal(count('rel material:binding = </World/Looks/a>'), 4) // (the BrepArrays and their meshes)
+  assert.equal(count('"MaterialBindingAPI"'), 6)
+  const back = fromUsd(text) as ShapeList<Part>
+  assert.deepEqual(back[1].color, back[0].color)
+  assert.deepEqual(Array.from(back[2].color as number[]), [1, 0, 0])
+  assert.equal(back[2].name, 'Looks')
+  assert.ok(!toUsd([a, b, c]).includes('Material')) // (without materials: as before)
+})
+
+// -- X13: bodies of mixed dimension ----------------------------------------------------------------------
+const _MIXED: [string, string][] = [
+  [
+    'box_with_attached_wire_edge',
+    'is a solid that also holds 1 wire edge (an edge of no face), so isValid() is false and modeling with it may fail; stitch(part.faces()) gives the solid alone',
+  ],
+  [
+    'box_with_two_vertex_shells',
+    'is a solid that also holds 2 points (vertices of no edge), so isValid() is false and modeling with it may fail; stitch(part.faces()) gives the solid alone',
+  ],
+  [
+    'box_with_detached_sheet',
+    'is a solid that also holds 1 face outside the solid (a sheet), so isValid() is false and modeling with it may fail; part.solids() takes the faces outside the solid apart',
+  ],
+  ['wire_edge', 'has no faces, only 1 wire edge (an edge of no face): it is read as a Shell without faces, whose edges() are its curves'],
+]
+
+for (const [name, said] of _MIXED) {
+  test(`body of mixed dimension says what else it holds (${name})`, { skip: !existsSync(_USD_FILES) }, () => {
+    // 0.4 gave a Part whose isValid() was false, from .smb and USD alike, and said nothing
+    const [body, loaded] = warnings(() => load(join(_USD_FILES, 'usd_TestFiles', `${name}.smb`)))
+    assert.deepEqual(loaded, [`load: the body ${said}`])
+    const text = warnings(() => toUsd(body.named('x'), { mesh: false }))[0]
+    const [back, read] = warnings(() => fromUsd(text) as Part)
+    assert.deepEqual(read, [`fromUsd: 'x' ${said}`])
+    if (name === 'box_with_attached_wire_edge') {
+      assert.ok(!back.isValid())
+      assert.ok((stitch(back.faces()) as Part).isValid())
+    }
+  })
+}
+
+test('sound bodies say nothing more', { skip: !existsSync(_USD_FILES) }, () => {
+  for (const name of ['box', 'box_with_second_seven_face_box', 'boxes_share_one_vertex']) {
+    assert.deepEqual(warnings(() => load(join(_USD_FILES, 'usd_TestFiles', `${name}.smb`)))[1], [])
+  }
+})
+
+test('writers of bodies name what they cannot write', () => {
+  const edge = Box(1, 1, 1).edges()[0]
+  const vertex = Box(1, 1, 1).vertices()[0]
+  // 0.4: "TypeError: 'Edge' object is not iterable"
+  assert.throws(
+    () => toUsd(edge),
+    (e: unknown) => e instanceof TypeError && /toUsd writes parts, sheets, faces and meshes, not an Edge: exportStep and exportDxf write curves/.test(e.message),
+  )
+  assert.throws(() => toStl([Box(1, 1, 1), vertex]), /toStl writes parts, sheets, faces and meshes, not a Vertex: exportStep writes points/)
+  assert.throws(() => toObj(new Wire([edge])), /toObj writes parts, sheets, faces and meshes, not a Wire/)
+  assert.throws(() => toUsd(new _Location()), /not a Location/)
 })

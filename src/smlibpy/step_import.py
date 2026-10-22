@@ -27,7 +27,8 @@ from .shapes import Edge
 from .step_reader import (_BODY_ERRORS, BodyData, StepFile, _body_label, _failure, interpret, interpret_extras,
                           parse)
 
-__all__ = ["import_step", "read_step", "StepModel", "StepFrame", "StepCurve", "StepPoint"]
+__all__ = ["import_step", "read_step", "from_step", "from_step_model", "StepModel", "StepFrame", "StepCurve",
+           "StepPoint"]
 
 
 def _unit(v: np.ndarray) -> np.ndarray:
@@ -1131,11 +1132,33 @@ def read_step(path: str | os.PathLike[str], *, heal: bool = True, strict: bool =
     be read is left out with a warning and listed in ``skipped`` (``strict=True`` raises
     instead), as :func:`import_step` does.
     """
-    from .shapes import ShapeList
-
     with open(os.fspath(path), "r", encoding="latin-1") as fh:
         sf = parse(fh.read())
     found, skipped = _bodies(sf, heal, strict)
+    return _model(sf, found, skipped)
+
+
+def from_step_model(data: str | bytes, *, heal: bool = True, strict: bool = False) -> StepModel:
+    """Everything STEP file contents hold that smlibpy can use (the text, or the bytes of the
+    file): :func:`read_step` for contents in memory, such as an upload."""
+    sf = parse(_text(data, "from_step_model"))
+    found, skipped = _bodies(sf, heal, strict)
+    return _model(sf, found, skipped)
+
+
+def _text(data: Any, what: str) -> str:
+    """The text of STEP file contents (bytes as ISO 8859-1, as files are read), its lines ending in
+    a line feed (as a file opened as text gives them)."""
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        data = bytes(data).decode("latin-1")
+    elif not isinstance(data, str):
+        raise TypeError(f"{what} takes the file's contents: a str or bytes, not {type(data).__name__}")
+    return data.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _model(sf: StepFile, found: list[Any], skipped: list[str]) -> StepModel:
+    from .shapes import ShapeList
+
     model = StepModel(ShapeList(found), skipped=skipped)
     for item in interpret_extras(sf):
         name, product, color = item["name"], item["product"], item["color"]
@@ -1260,11 +1283,29 @@ def import_step(path: str | os.PathLike[str], *, heal: bool = True, strict: bool
     bodies are read. ``strict=True`` raises ``ModelingError`` for it instead. A file none of
     whose bodies can be read raises.
     """
-    from .shapes import ShapeList
-
     with open(os.fspath(path), "r", encoding="latin-1") as fh:
         sf = parse(fh.read())
     found, skipped = _bodies(sf, heal, strict)
+    return _result(found, skipped)
+
+
+def from_step(data: str | bytes, *, heal: bool = True, strict: bool = False) -> Any:
+    """Read the solids and surfaces of STEP file contents (the text, or the bytes of the file):
+    :func:`import_step` for contents in memory, such as an upload or the text of
+    :func:`~smlibpy.to_step`.
+
+    Returns a single :class:`~smlibpy.Part` (or :class:`~smlibpy.Shell`) when the contents hold
+    one body, otherwise a :class:`~smlibpy.ShapeList` of them; ``heal`` and ``strict`` as for
+    :func:`import_step`.
+    """
+    sf = parse(_text(data, "from_step"))
+    found, skipped = _bodies(sf, heal, strict)
+    return _result(found, skipped)
+
+
+def _result(found: list[Any], skipped: list[str]) -> Any:
+    from .shapes import ShapeList
+
     if not found:
         if skipped:
             raise ModelingError(f"import STEP: no body of the file could be read: {'; '.join(skipped[:3])}"

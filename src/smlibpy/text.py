@@ -29,7 +29,7 @@ def Text(
     text: str,
     size: float,
     *,
-    font: str | os.PathLike[str] | None = None,
+    font: str | os.PathLike[str] | bytes | None = None,
     align: AlignLike = Align.CENTER,
     spacing: float = 0.0,
     line_spacing: float = 1.6,
@@ -43,8 +43,9 @@ def Text(
         size: Height of the capital letters (H, E, T) in mm, the nominal height of technical
             lettering: ``Text("H", 10)`` is 10 mm tall. Round letters overshoot it by a few
             percent; descenders go below the baseline.
-        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``).
-            Default: the bundled Lato Regular.
+        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``), or
+            the bytes of such a file (an upload, a font from a package's data). Default: the
+            bundled Lato Regular.
         align: Placement of the text's layout box (from the start to the end of the longest line,
             and from the baseline of the last line to the cap height of the first). ``CENTER``
             centers it on the origin; ``MIN`` starts the text at x = 0 with the last baseline on

@@ -14,7 +14,7 @@ the format functions.
 | `.glb` | `export_glb` | `tolerance`, `angle`, `edges`, `edge_color` |
 | `.gltf` | `export_gltf` | `tolerance`, `angle`, `edges`, `edge_color` |
 | `.obj` | `export_obj` | `tolerance`, `angle` |
-| `.smb` | `save` | `ascii` |
+| `.smb`, `.smp` | `save` | `ascii` |
 | `.dxf` | `export_dxf` | `unit`, `plane` |
 
 - `shapes`: one shape or a list (nested lists are flattened). `path`: `str` or `pathlib.Path`.
@@ -30,16 +30,17 @@ the format functions.
   edges; a `Part` raises `TypeError` (write `part.section(plane)`).
 - `.stp` with `unit="inch"` writes the coordinates in inches (converted from mm, see
   `export_step`).
-- `.smb` holds one body. `export([a, b], "x.smb")` raises.
-- `Mesh.export` works for `.stl`, `.obj`, `.glb` and `.gltf`. For `.step` it raises `TypeError`,
-  for `.smb` it raises `AttributeError`.
+- `.smb` holds one body. `export([a, b], "x.smb")` raises; `export([a, b], "x.smp")` writes both,
+  with their names and colors (an SMLib part file).
+- `Mesh.export` works for `.stl`, `.obj`, `.glb` and `.gltf`. For `.step`, `.smb` and `.smp` it
+  raises `TypeError`.
 - No extension, or `.iges`, `.3mf` and other formats, raise `ValueError` before anything is
   written.
-- `load` is the reverse for `.step`/`.stp`, `.usda`, `.stl`, `.smb` and `.dxf` (a `Sketch`), and
+- `load` is the reverse for `.step`/`.stp`, `.usda`, `.stl`, `.smb`, `.smp` and `.dxf` (a `Sketch`), and
   reads IGES (`.igs`, `.iges`), which is not written. glTF and OBJ cannot be read back.
 
 ## Errors
-- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb or .dxf`.
+- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf or .usda`.
 - `TypeError: export_step() got an unexpected keyword argument 'tolerance'`: a mesh keyword
   argument used on an exact format, or the other way round.
 

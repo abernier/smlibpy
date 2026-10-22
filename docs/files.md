@@ -9,7 +9,8 @@ control. All of them accept a single shape or a list.
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors; curves, points and coordinate systems |
 | USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
-| SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those) |
+| SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those), one body |
+| SMLib part file (`.smp`) | `save` | the kernel's part container: exact bodies and curves with their names and colors |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
 | STL (`.stl`) | `export_stl` | triangles |
@@ -26,6 +27,20 @@ export_step(bracket, "bracket_inch.step", unit="inch")
 export_stl(bracket, "bracket.stl", tolerance=0.01)
 export_glb([bracket, cover], "assembly.glb")
 save(bracket, "bracket.smb")
+save([bracket, cover], "assembly.smp")   # both, with their names and colors
+```
+
+Every writer and reader has a twin that works in memory, for web services, notebooks and
+databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_usd`, `to_smb` and
+`to_smp` give the file's contents (text as `str`, binary formats as `bytes`), `from_step`,
+`from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`, `from_iges`, `from_smb`
+and `from_smp` read them, with the keywords of the file functions:
+
+```python
+step = to_step(bracket)                  # the text export_step writes
+print(from_step(step).name)              # bracket
+glb = to_glb([bracket, cover])           # bytes, e.g. an HTTP response
+print(len(from_smp(to_smp([bracket, cover], ascii=False))))   # 2
 ```
 
 ### STEP
@@ -96,6 +111,17 @@ The files are text (`.usda`). OpenUSD converts them: `usdcat out.usda -o out.usd
 show the parts at their real size, a 60 mm bracket 6 cm long in a scene measured in meters: zoom
 to it if the viewer does not.
 
+Omniverse and other renderers color parts by the materials bound to them and leave
+`displayColor` aside: `materials=True` also writes a `Material` of each color (a
+`UsdPreviewSurface`, under `/World/Looks`) and binds it to the prims of that color.
+`import_usd` reads such bindings back. Edges, wires and points are not written (a `TypeError`
+says which formats write curves), nor is an empty body, the result of a Boolean that left
+nothing (a `ValueError`; meshes of it fail alike, where 0.4 said `tessellate failed`).
+
+```python
+export_usd([bracket, cover], "assembly_looks.usda", materials=True)
+```
+
 ### Meshes
 
 `tolerance` is the largest distance between mesh and true surface (default: 0.1 % of the
@@ -118,10 +144,13 @@ bracket = load("bracket.step")   # exact, from any CAD system
 print(bracket.name, bracket.volume)
 ```
 
-STEP, IGES (`.igs`, `.iges`), USD (`.usda`) and SMLib's own `.smb` files give exact parts, a DXF
-file the sketch of its outlines; an STL file gives a `Mesh` (`import_stl`). `import_usd` reads the `BrepArray` prims of
-a USD text file, from smlibpy, usd-brep or Omniverse, with their names and colors (the meshes
-beside them are skipped); a merged part
+STEP, IGES (`.igs`, `.iges`), USD (`.usda`) and SMLib's own `.smb` and `.smp` files give exact
+parts (an `.smp` file its bodies with their names and colors, and its curves as edges and
+wires), a DXF file the sketch of its outlines; an STL file gives a `Mesh` (`import_stl`).
+`import_usd` reads the `BrepArray` prims of a USD text file, from smlibpy, usd-brep or Omniverse,
+with their names and colors: the color of the material bound to a body (the `diffuseColor` of
+its `UsdPreviewSurface`, through a `GeomSubset` of bodies, its prim or a prim above it), else its
+`displayColor` (the meshes beside them are skipped); a merged part
 (see [cells](features.md#cells)) comes back with its cells, from `.usda` and `.smb` alike. The
 stage is read as USD composes it (its `subLayers` and the files its prims reference, relative to
 the file), each body placed by the transforms of its prims and in millimeters (`metersPerUnit`,
@@ -130,7 +159,11 @@ software are checked by the kernel before they are measured. usd-brep and Omnive
 edge as a B-spline: those that are lines, and circles on faces of analytic surfaces, come back as
 lines and circles. A body that cannot be read raises an error that names it (`body 1 of the
 BrepArray "/World/ball" could not be built`); `import_usd(path, partial=True)` leaves such bodies
-out, with a warning each, and reads the others, as usd-brep's `allow_partial` does.
+out, with a warning each, and reads the others, as usd-brep's `allow_partial` does. A body
+that is a solid and also holds wire edges, points or faces outside it (the schema allows mixed
+dimensions; so do `.smb` files of other programs) comes with a warning that names them: such a
+part is not valid, and `stitch(part.faces())` (or, for faces outside it, `part.solids()`) gives
+the solid alone.
 
 ```python
 # not run

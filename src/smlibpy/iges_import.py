@@ -20,7 +20,7 @@ from .iges_reader import IgesModel, interpret, parse
 from .step_import import _build_body, _kernel_volume, _label, _reading
 from .step_reader import _BODY_ERRORS, BodyData, _failure
 
-__all__ = ["import_iges"]
+__all__ = ["import_iges", "from_iges"]
 
 
 def _one_face(model: IgesModel, i: int) -> BodyData:
@@ -207,11 +207,24 @@ def import_iges(path: str | os.PathLike[str], *, heal: bool = True, strict: bool
     is left out with a ``RuntimeWarning`` that names it and the reason; ``strict=True`` raises
     ``ModelingError`` instead. A file none of whose bodies can be read raises.
     """
-    from .shapes import ShapeList
-
     with open(os.fspath(path), "r", encoding="latin-1") as fh:
         text = fh.read()
     found, skipped = _bodies(text, heal, strict)
+    return _result(found, skipped)
+
+
+def from_iges(data: str | bytes, *, heal: bool = True, strict: bool = False) -> Any:
+    """Read the solids and surfaces of IGES file contents (the text, or the bytes of the file):
+    :func:`import_iges` for contents in memory; ``heal`` and ``strict`` as there."""
+    from .step_import import _text
+
+    found, skipped = _bodies(_text(data, "from_iges"), heal, strict)
+    return _result(found, skipped)
+
+
+def _result(found: list[Any], skipped: list[str]) -> Any:
+    from .shapes import ShapeList
+
     if not found:
         if skipped:
             raise ModelingError(f"import IGES: nothing in the file could be read: {'; '.join(skipped[:3])}"

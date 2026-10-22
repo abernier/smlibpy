@@ -66,13 +66,18 @@ geometry.setIndex(new THREE.BufferAttribute(mesh.triangles, 1))
 geometry.computeVertexNormals()
 ```
 
-Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj` and `toDxf` give a
-file's contents, and `fromStep`, `fromIges`, `fromStl` and `fromDxf` read them, from text or bytes:
+Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj`, `toDxf`, `toUsd`, `toSmb`
+and `toSmp` give a file's contents, and `fromStep`, `fromIges`, `fromStl`, `fromDxf`, `fromUsd`,
+`fromSmb` and `fromSmp` read them, from text or bytes (smlibpy has the same pairs: `to_step`,
+`from_step`, ...):
 
 ```js
 const part = fromStep(await file.text()) // a File from an <input type="file">
 const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
 ```
+
+`toSmp` writes SMLib's part file, which keeps several exact bodies with their names and colors,
+and curves; `fromSmp` reads it (and part files of other SMLib programs).
 
 `fromStepModel(data)` reads a STEP file with the coordinate systems, curves and points it holds
 besides its bodies (`readStep(path)` in Node); `toStep` writes them, a `StepModel` whole or
@@ -1029,6 +1034,10 @@ export function toSmb(shapes: unknown, options?: {
     ascii?: boolean;
 }): Uint8Array;
 export function fromSmb(data: string | Uint8Array): Part | Shell;
+export function toSmp(shapes: unknown, options?: {
+    ascii?: boolean;
+}): Uint8Array;
+export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape>;
 export function save(shapes: unknown, path: string, options?: {
     ascii?: boolean;
 }): void;
@@ -1113,6 +1122,7 @@ export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;
     angle?: number;
+    materials?: boolean;
 }
 export function toUsd(shapes: unknown, options?: UsdExportOptions): string;
 export function exportUsd(shapes: unknown, path: string, options?: UsdExportOptions): void;

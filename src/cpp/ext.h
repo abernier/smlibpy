@@ -35,3 +35,5 @@ void bind_cells(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// SMLib part files (.smp): bodies and curves with names and colors (part_file.cpp).
+void bind_part_files(py::module_ m);

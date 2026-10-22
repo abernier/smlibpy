@@ -79,6 +79,8 @@ export {
   save,
   fromSmb,
   toSmb,
+  fromSmp,
+  toSmp,
   fromStl,
   toGlb,
   toGltf,
