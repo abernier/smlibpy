@@ -8,6 +8,7 @@ import {
   Circle,
   Cone,
   Cylinder,
+  Ellipse,
   EllipticalArc,
   FilletPolyline,
   GridLocations,
@@ -39,7 +40,7 @@ import {
 } from '../src/index.ts'
 import { approx, leggauss, same } from './_approx.ts'
 import { Box as _Box, Rectangle as _Rectangle, Sphere as _Sphere, merge as _merge } from '../src/index.ts'
-import { ext } from '../src/kernel.ts'
+import { ext, setWarningHandler } from '../src/kernel.ts'
 
 const PI = Math.PI
 
@@ -247,6 +248,59 @@ test('sweep carries the profile along a 3D path', () => {
   const band = sweep(Line([0, 0, 0], [4, 0, 0]), Circle(20).edges().at(0)!)
   assert.ok(band instanceof Shell)
   approx(band.area, 2 * PI * 20 * 4, 1e-6)
+})
+
+/** Runs fn and gives back the warnings it made. */
+function warned<T>(fn: () => T): [T, string[]] {
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    return [fn(), said]
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+}
+
+test('sweep along kinked closed 3D paths', () => {
+  // Loops closed with a kink, Spline(...pts, pts[0]), through these symmetric points lie in a plane
+  // at 0, 1/4, 1/2 and 3/4 of their length: taken for planar, their halves went to the planar-path
+  // sweep, which gave no closed solid (ModelingError; valid before the profile was carried along).
+  // Now they are swept as 3D paths, the profile carried along the halves: area x length less the
+  // overlap of the ends where they cross at the kink (for the circle about tan(kink) x 2 r^3 / 3,
+  // the first moment of its inner half).
+  const cases = [[20, Rectangle(4, 1), 543.404104], [14, Circle(2), 1499.196379], [14, Rectangle(4, 1), 477.647314]] as const
+  for (const [ry, profile, volume] of cases) {
+    const pts = Array.from({ length: 8 }, (_, i) => {
+      const a = (i * PI) / 4
+      return [20 * Math.cos(a), ry * Math.sin(a), 6 * Math.sin(2 * a)]
+    })
+    const path = Spline(...pts, pts[0])
+    const [body, said] = warned(() => sweep(profile, path) as Part)
+    assert.deepEqual(said, [])
+    assert.ok(body.isValid())
+    approx(body.volume, volume, 1e-6)
+    const overlap = profile.area * path.length - body.volume
+    const kink = (path.tangentAt(0).angleTo(path.tangentAt(1)) * PI) / 180
+    if (profile.edges().at(0)!.geomType === 'circle') approx(overlap, (Math.tan(kink) * 2 * 2 ** 3) / 3, 0.03)
+    else assert.ok(overlap > 0 && overlap < (Math.tan(kink) * 1 * 4 ** 2) / 8) // at most with the long side in the bend
+  }
+})
+
+test('sweep edge by edge where the joined path fails', () => {
+  // The edges of this 3D fillet polyline are joined into one curve and swept in one go; the kernel
+  // cannot sweep a circle or an ellipse of this size along it (SM_ERR; the rectangle goes), which
+  // raised (a valid body before the profile was carried along). The edges are swept on their own
+  // then, each turned to its own start: a profile that is not round turns where they meet, and a
+  // warning says so.
+  const path = FilletPolyline([0, 0, 0], [13.2, 22.83, -20.78], [38.33, 52.89, -20.73], [38.66, 70.52, -34.06], { radius: 5 })
+  const [tube, quiet] = warned(() => sweep(Circle(2), path) as Part)
+  assert.deepEqual(quiet, [])
+  assert.ok(tube.isValid())
+  approx(tube.volume, 4 * PI * path.length, 1e-6)
+  const [oval, said] = warned(() => sweep(Ellipse(2, 1.5), path) as Part)
+  assert.ok(said.length === 1 && said[0].includes('could not be carried along the path'))
+  assert.ok(oval.isValid())
+  approx(oval.volume, 3 * PI * path.length, 1e-6)
 })
 
 test('a disjoint sketch union', () => {

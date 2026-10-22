@@ -9,11 +9,12 @@ the edges belong to.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any, Sequence
 
 import numpy as np
 
-from ._kernel import BrepHandle, KernelError, ext, k, kernel_call
+from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
 from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Wire, _as_plane, _flatten_edges, _flatten_faces,
                      _require_solid, _revolve_axis_angle)
@@ -386,7 +387,10 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
         rail = sweep(Rectangle(4, 2), Helix(pitch=10, height=40, radius=20))
 
     Edges of a path that meet tangentially are swept as one; at a corner of a path that is not
-    planar, the profile goes on turned by the smallest rotation from one tangent to the next.
+    planar, the profile goes on turned by the smallest rotation from one tangent to the next. Where
+    the kernel cannot sweep an open path of several edges so, each edge is swept on its own, turned
+    to its own start, and the pieces are fused (with a ``RuntimeWarning`` unless the profile is
+    round: it turns where the edges meet).
 
     Args:
         profile: A sketch (holes allowed), a planar face or a closed wire.
@@ -445,6 +449,29 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
     if orient and not translational:
         axes = _turn(axes[:, 2], t0) @ axes
     hint = "the profile may be too large for the path's curvature"
+    try:
+        return _carried_sweep(sk, local, edges, axes, anchor, halved, tangent_closure, translational, hint)
+    except ModelingError as err:
+        # An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet
+        # polyline joined into one curve fails at random) is swept edge by edge, each edge turned
+        # afresh, as before the profile was carried along. Not closed paths: fused so, the pieces
+        # of kinked loops crashed the kernel (4 of 60 random loops; carried, they raise).
+        if closed or len(edges) < 2:
+            raise
+        try:
+            out = _afresh_sweep(local, edges, axes, orient, translational, hint)
+        except ModelingError:
+            raise err from None
+        if not _round(sk, anchor):
+            warnings.warn(f"sweep: the profile could not be carried along the path ({err}); each of its "
+                          f"{len(edges)} edges was swept turned to its own start instead, so the profile turns "
+                          "where they meet", RuntimeWarning, stacklevel=2)
+        return out
+
+
+def _carried_sweep(sk: Sketch, local: Sketch, edges: list[Edge], axes: np.ndarray, anchor: np.ndarray, halved: bool,
+                   tangent_closure: bool, translational: bool, hint: str) -> Part:
+    """A profile carried along a path: tangent edges in one go, the frame carried across corners."""
     chains = [[e] for e in edges] if halved else _g1_chains(edges)
     if tangent_closure and len(chains) == 1 and _round(sk, anchor):
         # (a profile that turns into itself, as in two halves before: exact)
@@ -472,6 +499,24 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
     return out  # type: ignore[return-value]
 
 
+def _afresh_sweep(local: Sketch, pieces: list[Edge], axes: np.ndarray, orient: bool, translational: bool,
+                  hint: str) -> Part:
+    """The pieces swept on their own and fused, each turned afresh: by the smallest rotation from
+    the path's start tangent, either way along it, to the piece's own (the profile does not keep
+    its orientation where they meet; the way pieces were swept before the frame was carried)."""
+    t0 = _tangent(pieces[0], 0.0)
+    out: Part | None = None
+    for e in pieces:
+        turned = axes
+        if orient and not translational:
+            t = _tangent(e, 0.0)
+            turned = _turn(t0 if np.dot(t0, t) >= 0 else -t0, t) @ axes
+        piece = _swept(local, e, _placement(turned, e.point_at(0.0).to_tuple()), translational)
+        piece = _require_solid(piece, "sweep", hint)  # type: ignore[arg-type]
+        out = piece if out is None else out + piece
+    return out  # type: ignore[return-value]
+
+
 def _halves(edge: Edge) -> list[Edge]:
     """A closed edge as two edges, split halfway along it."""
     c = edge._copy_curve()
@@ -484,11 +529,15 @@ def _halves(edge: Edge) -> list[Edge]:
         ext.delete_curve(c)
 
 
-def _is_planar_path(edges: list[Edge]) -> bool:
-    pts = [e.point_at(t) for e in edges for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
-    import numpy as np
+# Where a path is tested for lying in a plane: its ends, and 16 points between them off the halves
+# and quarters. At 0, 1/4, 1/2 and 3/4 of a closed edge, symmetric 3D loops lie in a plane
+# (Spline(*pts, pts[0]) through (20 cos a, 20 sin a, 6 sin 2a)): taken for planar, their halves went
+# to the planar-path sweep, which gave no closed solid.
+_PLANARITY_SAMPLES = (0.0, 1.0) + tuple((i + 0.381966) / 16 for i in range(16))
 
-    a = np.array([p.to_tuple() for p in pts])
+
+def _is_planar_path(edges: list[Edge]) -> bool:
+    a = np.array([e.point_at(t).to_tuple() for e in edges for t in _PLANARITY_SAMPLES])
     a = a - a.mean(axis=0)
     s = np.linalg.svd(a, compute_uv=False)
     return bool(s[-1] <= 1e-7 * max(1.0, s[0]))

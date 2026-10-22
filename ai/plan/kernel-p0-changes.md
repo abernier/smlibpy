@@ -75,7 +75,10 @@ Sweeps, lofts and sketches:
 - Sweeps along 3D paths keep the profile's orientation (S1). Each edge turned the profile afresh,
   so a rectangle turned by 90 degrees at an arc-line joint and by 44 degrees at the closure of a
   closed loop. Tangent edges are now swept in one go, and at a corner the profile turns by the
-  smallest rotation from one tangent to the next.
+  smallest rotation from one tangent to the next. Where the kernel cannot sweep an open path so
+  (a circle or an ellipse along some 3D fillet polylines joined into one curve: `SM_ERR`), its
+  edges are swept on their own, each turned afresh as before, with a warning unless the profile
+  is round.
 - Asymmetric profiles sit on the path (S2): a triangle swept along `Line((0, 0, 0), (10, 10,
   10))` started 1.67 before the path. The center of the profile's box, in its own plane, now
   lies at the start of every single-edge and 3D path.
@@ -193,6 +196,7 @@ What can break existing scripts. Most of these scripts were getting wrong result
 | `shell`, `offset`, `thicken` (O2, O4) | `ModelingError` for results with gaps, without a cavity, of the wrong volume, and for walls that do not fit across the part; messages add "(it built ...)" | such bodies |
 | `shell`, `offset`, `thicken` steps longer than 20 s (O1) | `ModelingError` ("did not finish within 20 s"); raise `smlibpy.defeature.GUARD_SECONDS` for big parts | ran as long as they took |
 | 2D Booleans of faces touching at a point (C1) | `ModelingError` where no way gives a region that holds | a wrong region |
+| `sweep` along a 3D loop closed with a kink, `Spline(*pts, pts[0])` (S1) | `KernelError` ("fuse failed") for other loops than before: the halves, carried along, fuse at the kink in 9 sweeps that raised and fail in 12 that gave a body (of 120: 60 random loops, a circle and a rectangle along each; the 12 are circles) | a body for those 12 |
 | `import_usd` of malformed values or of broken bodies from other software (X1, X6) | `ValueError` naming the prim, body, entity and rule; `check=False` reads broken bodies as they are | a crash, or a wrong valid body |
 | wasm: unknown options, extra arguments, `at(point)`, sub-shapes of disposed bodies (W4, W5, W6) | `TypeError` | ignored, or another shape |
 
@@ -210,7 +214,11 @@ kernel managed), and an imported part whose closed shell took 30 s and had no ca
   sweep (other face counts). Asymmetric profiles on single oblique edges and on 3D paths move to
   their own box center on the path, by up to a third of the profile's size. Unchanged: round and
   centered symmetric profiles, single edges and paths that start along X, Y or Z, and planar paths
-  with mitered corners.
+  with mitered corners. Loops closed with a kink lose a different overlap where their ends cross
+  (the profile comes to the kink carried, not turned afresh): `Rectangle(4, 1)` along
+  `Spline(*pts, pts[0])` through (20 cos a, 14 sin a, 6 sin 2a) gives 477.6473 for 477.2653
+  (area x length 477.7180 less the halves' overlap at the kink, 0.0709 for 0.4529); circles give
+  the same volume.
 - Meshes of spheres with whole poles get a few more triangles (`Sphere(10).mesh()`: 3596 for
   3584), and so do tori and other surfaces of revolution whose triangle edges strayed beyond the
   tolerance (`Torus(20, 5).mesh(0.05)`: 4736 for 4096, now within 0.05 where it was 0.055 off);
@@ -331,6 +339,11 @@ signatures. After adding or renaming a keyword in Python, run `python tools/gen_
   copy.
 - Planar paths of several edges with mitered corners keep the kernel's anchor, which is right
   only for paths that start along X, Y or Z (S2). There is no `anchor=` option.
+- Loops closed with a kink are swept in two halves fused where the ends cross, and that fuse
+  fails for some loops (S1, see the table above). Swept the old way as a fallback (halves turned
+  afresh), 4 of 60 random loops crashed the process in the kernel's Boolean, so there is no
+  fallback for closed paths. Most planar loops closed with a kink fail in the kernel's mitered
+  planar-path sweep, as before.
 - wasm: on a page's main thread, and in pages that are not cross-origin isolated, kernel steps
   still run directly, so a step that loops does not return there. A general worker entry
   (`@classcad/smlibwasm/worker`) is not part of this release. The probe worker was checked in Node

@@ -70,6 +70,8 @@ A sweep moves a profile along a path. smlibpy puts the center of the profile's b
 start of the path and turns it to face along the path, so profiles are simply drawn in XY.
 Along a path of several edges the profile keeps its orientation: tangent edges are swept in one
 go, and at a corner of a 3D path it turns by the smallest rotation from one tangent to the next.
+Where the kernel cannot sweep an open path that way, each edge is swept on its own, turned to its
+own start, with a warning unless the profile is round.
 
 ```python
 path = Spline((0, 0, 0), (0, 20, 30), (40, 20, 50))

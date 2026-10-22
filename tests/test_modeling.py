@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -202,6 +203,45 @@ def test_sweep_carries_the_profile_along_a_3d_path():
     # and refused: "surface sweeps need a single-edge path")
     band = sweep(Line((0, 0, 0), (4, 0, 0)), Circle(20).edges()[0])
     assert isinstance(band, Shell) and band.area == pytest.approx(2 * math.pi * 20 * 4, rel=1e-6)
+
+
+def test_sweep_along_kinked_closed_3d_paths():
+    # Loops closed with a kink, Spline(*pts, pts[0]), through these symmetric points lie in a plane
+    # at 0, 1/4, 1/2 and 3/4 of their length: taken for planar, their halves went to the
+    # planar-path sweep, which gave no closed solid (ModelingError; valid before the profile was
+    # carried along). Now they are swept as 3D paths, the profile carried along the halves: area x
+    # length less the overlap of the ends where they cross at the kink (for the circle about
+    # tan(kink) x 2 r^3 / 3, the first moment of its inner half).
+    for ry, profile, volume in ((20, Rectangle(4, 1), 543.404104), (14, Circle(2), 1499.196379),
+                                (14, Rectangle(4, 1), 477.647314)):
+        pts = [(20 * math.cos(a), ry * math.sin(a), 6 * math.sin(2 * a)) for a in np.arange(8) * math.pi / 4]
+        path = Spline(*pts, pts[0])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            body = sweep(profile, path)
+        assert body.is_valid() and body.volume == pytest.approx(volume, rel=1e-6)
+        overlap = profile.area * path.length - body.volume
+        kink = math.radians(path.tangent_at(0).angle_to(path.tangent_at(1)))
+        if profile.edges()[0].geom_type == "circle":
+            assert overlap == pytest.approx(math.tan(kink) * 2 * 2 ** 3 / 3, rel=0.03)
+        else:
+            assert 0 < overlap < math.tan(kink) * 1 * 4 ** 2 / 8  # at most with the long side in the bend
+
+
+def test_sweep_edge_by_edge_where_the_joined_path_fails():
+    # The edges of this 3D fillet polyline are joined into one curve and swept in one go; the kernel
+    # cannot sweep a circle or an ellipse of this size along it (SM_ERR; the rectangle goes), which
+    # raised (a valid body before the profile was carried along). The edges are swept on their own
+    # then, each turned to its own start: a profile that is not round turns where they meet, and a
+    # warning says so.
+    path = FilletPolyline((0, 0, 0), (13.2, 22.83, -20.78), (38.33, 52.89, -20.73), (38.66, 70.52, -34.06), radius=5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tube = sweep(Circle(2), path)
+    assert tube.is_valid() and tube.volume == pytest.approx(4 * math.pi * path.length, rel=1e-6)
+    with pytest.warns(RuntimeWarning, match="could not be carried along the path"):
+        oval = sweep(Ellipse(2, 1.5), path)
+    assert oval.is_valid() and oval.volume == pytest.approx(3 * math.pi * path.length, rel=1e-6)
 
 
 def _unit(v):

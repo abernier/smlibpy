@@ -4,7 +4,7 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { _opts, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction } from './geometry.ts'
 import { spread } from './_linalg.ts'
 import { Line } from './curves.ts'
@@ -429,7 +429,10 @@ export interface SweepOptions {
  *     const rail = sweep(Rectangle(4, 2), Helix(10, 40, 20))
  *
  * Edges of a path that meet tangentially are swept as one; at a corner of a path that is not
- * planar, the profile goes on turned by the smallest rotation from one tangent to the next.
+ * planar, the profile goes on turned by the smallest rotation from one tangent to the next. Where
+ * the kernel cannot sweep an open path of several edges so, each edge is swept on its own, turned
+ * to its own start, and the pieces are fused (with a warning unless the profile is round: it turns
+ * where the edges meet).
  *
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
@@ -483,6 +486,30 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   const local = sk._transformed(_inverse(_placement(axes, anchor)))
   if (orient && !translational) axes = axes.map(_turn(axes[2], t0)) as Axes
   const hint = "the profile may be too large for the path's curvature"
+  try {
+    return _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint)
+  } catch (err) {
+    // An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet polyline
+    // joined into one curve fails at random) is swept edge by edge, each edge turned afresh, as
+    // before the profile was carried along. Not closed paths: fused so, the pieces of kinked loops
+    // crashed the kernel (4 of 60 random loops; carried, they raise).
+    if (!(err instanceof ModelingError) || closed || edges.length < 2) throw err
+    let out: Part
+    try {
+      out = _afreshSweep(local, edges, axes, orient, translational, hint)
+    } catch (e) {
+      if (!(e instanceof ModelingError)) throw e
+      throw err
+    }
+    if (!_round(sk, anchor)) {
+      _warn(`sweep: the profile could not be carried along the path (${err.message}); each of its ${edges.length} edges was swept turned to its own start instead, so the profile turns where they meet`)
+    }
+    return out
+  }
+}
+
+/** A profile carried along a path: tangent edges in one go, the frame carried across corners. */
+function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anchor: V3, halved: boolean, tangentClosure: boolean, translational: boolean, hint: string): Part {
   let runs = halved ? edges.map((e) => [e]) : _g1Chains(edges)
   if (tangentClosure && runs.length === 1 && _round(sk, anchor)) {
     // (a profile that turns into itself, as in two halves before: exact)
@@ -512,6 +539,24 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   return out as unknown as Part
 }
 
+/** The pieces swept on their own and fused, each turned afresh: by the smallest rotation from the
+ * path's start tangent, either way along it, to the piece's own (the profile does not keep its
+ * orientation where they meet; the way pieces were swept before the frame was carried). */
+function _afreshSweep(local: Sketch, pieces: Edge[], axes: Axes, orient: boolean, translational: boolean, hint: string): Part {
+  const t0 = _tangent(pieces[0], 0)
+  let out: Part | null = null
+  for (const e of pieces) {
+    let turned = axes
+    if (orient && !translational) {
+      const t = _tangent(e, 0)
+      turned = axes.map(_turn(_dot3(t0, t) >= 0 ? t0 : [-t0[0], -t0[1], -t0[2]], t)) as Axes
+    }
+    const piece = _requireSolid(_swept(local, e, _placement(turned, _point(e, 0)), translational) as Part, 'sweep', hint)
+    out = out === null ? piece : out.fuse(piece)
+  }
+  return out as unknown as Part
+}
+
 /** A closed edge as two edges, split halfway along it. */
 function _halves(edge: Edge): Edge[] {
   const c = edge._copyCurve()
@@ -525,8 +570,14 @@ function _halves(edge: Edge): Edge[] {
   }
 }
 
+// Where a path is tested for lying in a plane: its ends, and 16 points between them off the halves
+// and quarters. At 0, 1/4, 1/2 and 3/4 of a closed edge, symmetric 3D loops lie in a plane
+// (Spline(...pts, pts[0]) through (20 cos a, 20 sin a, 6 sin 2a)): taken for planar, their halves
+// went to the planar-path sweep, which gave no closed solid.
+const PLANARITY_SAMPLES = [0, 1, ...Array.from({ length: 16 }, (_, i) => (i + 0.381966) / 16)]
+
 function _isPlanarPath(edges: readonly Edge[]): boolean {
-  const pts = edges.flatMap((e) => [0, 0.25, 0.5, 0.75, 1].map((t) => e.pointAt(t).toArray() as number[]))
+  const pts = edges.flatMap((e) => PLANARITY_SAMPLES.map((t) => e.pointAt(t).toArray() as number[]))
   const s = spread(pts).values
   return s[s.length - 1] <= 1e-7 * Math.max(1, s[0])
 }

@@ -665,7 +665,13 @@ wherever the geometry is analytic.
 - Status (phase 1): done, de5795c (group SCUMA): tangent edges joined (`ext.join_curves`),
   frames carried across corners (read off a swept ribbon along twisted pieces), closed
   non-planar paths swept once and stitched. Review: open profiles along a closed edge are swept
-  in one go again (they were halved and refused).
+  in one go again (they were halved and refused). Review: paths are tested for planarity at 18
+  points per edge (symmetric 3D loops closed with a kink lay in a plane at the 5 points before
+  and went to the planar-path sweep: ModelingError); open paths whose joined sweep fails (circles
+  along 19 of 31 random 3D fillet polylines) go edge by edge, turned afresh, with a warning unless
+  the profile is round. Kinked closures still raise for other loops than before (circles along 12
+  of 60 random loops that swept; 9 sweeps that raised go now); the old way as a fallback crashed
+  the kernel's Boolean on 4 of the 60.
 - Wrong: each piece is re-oriented by the smallest rotation from the sketch normal to that
   edge's start tangent (`operations.py:209-218, 262, 293-294`), not by carrying the frame
   along the path. A non-round profile turns by up to 90 deg at a joint; the body stays valid

@@ -36,7 +36,11 @@ makes a surface (`Shell`).
   edges (a `FilletPolyline` in 3D) are one sweep, and at a corner it turns by the smallest
   rotation from one tangent to the next (`Rectangle(4, 2)` along
   `FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40), radius=8)` ends 2 wide in x
-  and 4 high, as it is carried along; it used to turn by 90 degrees at a joint).
+  and 4 high, as it is carried along; it used to turn by 90 degrees at a joint). Where the
+  kernel cannot sweep an open path's joined edges in one go (some circles and ellipses along 3D
+  `FilletPolyline`s), each edge is swept on its own, turned to its own start, and the pieces are
+  fused: a profile that is not round then turns where the edges meet, and a `RuntimeWarning`
+  says so.
 - On a `Helix` around Z starting at (r, 0, 0) the sketch x axis points radially at the start.
 
 ## Gotchas
@@ -44,6 +48,9 @@ makes a surface (`Shell`).
   the path by roughly 30° per turn (sections measure 2.11×1.25, then 1.59×2.22, ...). Circles
   do not care; thread and spring-band profiles do. Workaround: loft through copies of the
   profile placed along the helix with `x_dir` radial (example) — exact to 0.01%.
+- A loop closed with a kink (`Spline(*pts, pts[0])`, not `closed=True`) is swept in two halves
+  fused where its ends cross; for some loops that fuse fails (`KernelError`). A smoothly closed
+  spline (`closed=True`) has no kink.
 - Nothing checks self-intersection: a profile bigger than the path's bend radius, or a spring
   wire thicker than the pitch, returns `is_valid() == True` with a volume of area × length
   (too large). Keep profile radius < bend radius and wire diameter < pitch. Inside-out and
