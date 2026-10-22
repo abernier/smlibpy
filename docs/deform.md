@@ -150,11 +150,57 @@ lat.scale(lat.layer(X, 0), (1, 0.8, 1))   # narrow the -X end
 pillow = lat.apply(block)                 # or block.deform(lat)
 ```
 
-A point pulls the region around it: the middle point of the top layer of a 3 x 3 x 3
-lattice, moved by 8, lifts the middle of the top face by 2. Corner points move their corner
-fully. More points give more local control and higher degrees in the exact result. A point
-moved past its neighbours would fold the part onto itself; `apply` refuses that with an
-error.
+A lattice is a global map: every point pulls the whole box, most near itself, weighted by
+Bernstein polynomials. The middle point of the top layer of a 3 x 3 x 3 lattice, moved by 8,
+lifts the middle of the top face by 2 (8 * 1/2 * 1/2) and the rest of the top less, down to
+nothing at its corners; corner points move their corner fully. More points concentrate a
+point's pull nearer to it but never confine it, and raise the degree of the exact result:
+moved by 5, the middle point of the top of a 7 x 7 x 2 lattice around `Box(60, 40, 20)` lifts
+the middle of the top by 0.49 and a place 25 mm from it still by 0.014. Faces the map leaves in
+place (the bottom here) keep their type. A lattice is therefore the tool for overall shape, not
+for a bump on one face: model such a bump directly. A point moved past its neighbours would fold
+the part onto itself; `apply` refuses that with an error.
+
+```python
+lat = Lattice(Box(60, 40, 20), (7, 7, 2))
+lat.move((3, 3, -1), (0, 0, 5))           # the middle of the top layer up by 5
+print([round(lat.map((x, 0, 10)).z - 10, 4) for x in (0, 10, 20, 25)])   # [0.4883, 0.3429, 0.0837, 0.0139]
+```
+
+## Curves and points
+
+The deformations also take edges, wires and points, and move them exactly as they move a part.
+An edge comes back as an edge, a wire as a wire, a point as a `Vector` and a list of points as a
+list. Deform a path, then sweep along it, to keep a part and its path consistent:
+
+```python
+path = bend(Wire([Line((-50, 0, 0), (50, 0, 0))]), 90, radius=10)
+print([e.geom_type for e in path.edges()])          # ['line', 'circle', 'line']: an exact arc
+pipe = sweep(Circle(2), path)
+rail = twist(Line((10, 0, 0), (10, 0, 100)), 90)    # a quarter turn of a helix (within 1e-6)
+rim = taper(CenterArc((0, 0, 50), 10, 0, 360), 0.5, start=0, end=100)
+print(rim.geom_type, rim.radius)                    # circle 7.5: halfway, 3/4 of the size
+flat = unroll(Helix(pitch=100, height=40, radius=10), radius=10)
+print(flat.geom_type)                               # line: a helix unrolls straight
+```
+
+Every edge is split where it crosses `start` and `end`: a Wire gets an edge for every piece (a
+straight path bent in its middle is a line, an exact arc and a line), an Edge stays one edge
+(its pieces joined into one B-spline; pass `Wire([edge])` to keep them apart). Pieces whose image
+is a line or circle are exact lines and arcs, pieces under lattices and tapers exact B-splines,
+the others within `tolerance` of the exact image.
+
+Points map the same way, so a point of a part can be followed through a deformation. A point
+has no length along the axis: give twist and taper (and bend without a radius) the `start` and
+`end` of the part it belongs to; points before `start` stay, points beyond `end` move as the
+part's end does. `Lattice.map(point)` is the lattice's point map:
+
+```python
+bar = Box(100, 10, 10, align=(Align.MIN, Align.CENTER, Align.CENTER))
+tip = bend((100, 0, 0), 90, start=0, end=100)       # where bar.bend(90) puts the middle of its end
+print(tip)                                          # (63.662, 0, 63.662): radius 200 / pi
+print(twist([(10, 0, 0), (10, 0, 100)], 90, start=0, end=100))
+```
 
 ## Deform or model directly?
 

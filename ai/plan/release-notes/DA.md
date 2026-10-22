@@ -1,4 +1,4 @@
-# Lane DA: measuring and analysis, per-bend K-factors, analytic deformations, unrolling (A2, A3, A4, A5, A6, A7, D1, D2, D3, D4)
+# Lane DA: measuring and analysis, per-bend K-factors, analytic deformations, unrolling, flat patterns of holes across bends, deformed curves and points (A2, A3, A4, A5, A6, A7, D1, D2, D3, D4, D5, D6, D7)
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase names) alike.
 
@@ -50,6 +50,25 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
   to 109.922 with the leg in place, a 100 mm plate with a 270 degree curl (R10, t 2) to 151.271.
   K-factors per bend apply as for other bends. Bends up to 180 degrees with flat sheet on both
   sides still go through the kernel's unbend, unchanged.
+- A hole across a bend is one circle in the flat pattern again (D5). `flat_pattern(part).outline`
+  of a 100 x 40 x 2 plate folded (R2, 90 degrees) across a hole of r 4 had the hole as 3 arcs and
+  2 B-splines, 1.8e-5 off its circle (awkward for DXF and CAM, which treat splines as free
+  contours); it is one circle now (4 lines and 1 circle, area 4000 - 16 pi to 1e-12), and an
+  oblique cut across a bend is one line. In the outline, pieces that are lines or arcs within
+  1e-6 mm become lines and arcs, and arcs of one circle that follow each other become one arc
+  (a whole loop one circle); spline cutouts stay splines. The edges of the bend zone are fitted
+  within 1e-7 of the exact bend now (`src/cpp/sheetmetal.cpp`: the kernel's exact lines and arcs
+  where it has them, else deform.cpp's parameter-keeping fit, quintic, on the original's knots;
+  they were the kernel's approximations within 1e-4: 1.2e-6 off a line across a bend):
+  the hole's edges after a fold and an unfold are 5e-13 off its circle, with 25 control points
+  bent and 11 flat. The faces of the bend zone stay the kernel's 1e-4 fits (see Not done).
+- `unfold` and `flat_pattern` of a part with holes wholly inside a bend zone (two holes of r 6 in
+  an R20, 120 degree bend of a 200 x 60 x 3 plate) raised `ModelingError: unfold: the unfolded
+  part is 3.37494 deep across the fixed face` (a regression of the 0.5.0 work: 0.4.0 unfolded it,
+  with the holes as B-splines in the outline): the kernel's tight box of a fitted hole wall reaches
+  0.19 mm past its edges. The depth check, the flat pattern's placement and `FlatPattern.size`
+  measure the edges now: the outline is 4 lines and 2 circles (r 6 to 4e-9), the flat's bottom
+  at z = 0, its size 200 x 60 x 3 (the box said 3.375 deep).
 - The deform guides no longer teach `mass_properties(accuracy=1e-10)` for deformed parts (D4):
   `part.volume` is smlibpy's own integration (`measure.cpp`) and exact on them (a bar bent 90
   degrees: 10000.000000000002; the guides said 10003.546). docs/deform.md, the skill references
@@ -107,6 +126,32 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
   docs/deform.md (Exact results, Bend, Unroll), docs/sheet-metal.md (rolled parts, curls, bends
   over 180 degrees, limits), skill reference `deform/unroll`, updated `sheetmetal/unfold`, `bends`,
   `bend_allowance`, `generic`.
+- Edges, wires and points deform (D6): `twist`, `taper`, `bend`, `unroll` and `Lattice.apply` take
+  an `Edge` (result: an `Edge`), a `Wire` (a `Wire`), a point (a `Vector`, or 2 or 3 numbers;
+  result: a `Vector`) or a list of points (a list of `Vector`s), and move them exactly as they
+  move a part: deform a path and sweep along it, or follow a point of a part through a
+  deformation. Every edge is split where it crosses `start` and `end`; a `Wire` gets an edge for
+  every piece (`bend(Wire([Line((-50, 0, 0), (50, 0, 0))]), 90, radius=10)`: a line of 42.146,
+  an exact arc of r 10 and a line), an `Edge` stays one edge (its pieces joined into one
+  B-spline). Pieces whose image is a line or circle are exact lines and arcs (a circle about a
+  taper's axis stays a circle, a helix of 0.4 turn unrolls into a line), pieces under lattices
+  and tapers exact B-splines, the others (a line off a twist's axis: a helix) within
+  `tolerance`. Points have no length along the axis: twist, taper and bend without a radius need
+  `start` and `end` for them (`ValueError ... give start and end for points` otherwise); points
+  before `start` stay, points beyond `end` move as the part's end does. This is the plan's
+  public point map for every deformation (`Lattice.map(point)` was the only one); there is no
+  separate `map_point` function. C++: `_core.deform.deform_curve(curve, spec)` ->
+  `(curves, report)` (`src/cpp/deform.cpp`; the edges' fitter and analytic images, with the
+  curve split where it crosses the ends of the pieces), TypeScript `k.deform.deform_curve`;
+  `smlibpy::fit_curve_keeping_parameters` (deform.h), which sheet metal uses for D5. Docs:
+  docs/deform.md (Curves and points), skill reference `deform/curves`; `deform/generic`,
+  `twist`, `taper`, `bend`, `unroll`, `Lattice`, `recipes/deform` mention it.
+- The Lattice docs say what a lattice is (D7): a global map, every point of it pulls the whole
+  box (Bernstein weights; a 7 x 7 x 2 lattice's middle top point moved by 5 lifts the middle by
+  0.49 and a place 25 mm away by 0.014), more points concentrate the pull but never confine it;
+  the tool for overall shape, not for a bump on one face. They said "single points for local
+  ones; more points give more local control" (docs/deform.md, `deform/Lattice`, the `Lattice`
+  docstrings in both languages). Faces a lattice leaves in place keep their type (done with D2).
 - New exports: `ClosestPoints`, `Continuity`, `Curvature`, `NurbsSurface`, `SectionProperties`,
   `unroll` (TypeScript also `type KFactor`, `UnrollOptions`).
 
@@ -131,6 +176,13 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
 | `unfold`/`flat_pattern` of rolled parts, end bends, bends over 180 degrees | the flat part | `KernelError` / `ModelingError` |
 | `unfold(part, fixed=...)` of a rolled part (one bend, no flat) | `ValueError` (it unrolls about the bend's middle) | `KernelError` |
 | `bend_allowance(angle)` for 180 < angle < 360 | the allowance | `ValueError` |
+| `flat_pattern(...).outline` where pieces crossed a bend | lines, arcs and circles (fitted pieces within 1e-6 of a line or arc converted, arcs of one circle merged): a hole across a bend is 1 circle | arcs and B-splines: 3 arcs and 2 B-splines |
+| edges of a bend zone (`fold`, `flange`, `unfold`, `flat_pattern`) that cross it | quintic B-splines within 1e-7 of the exact bend (`Edge.nurbs()`: degree 5, 25 control points for a hole's arc), exact lines and arcs where the kernel makes them | the kernel's cubic approximations within 1e-4 (25 to 49 control points) |
+| `unfold`/`flat_pattern` of a part with holes inside a bend zone | the flat part and its outline | `ModelingError ... deep across the fixed face` (a regression of the 0.5.0 work only) |
+| `FlatPattern.part` placement and `FlatPattern.size` | by its edges: its bottom face at z = 0, `size.z` the thickness | by its box, which fitted faces could make deeper |
+| `twist`, `taper`, `bend`, `unroll`, `Lattice.apply` of an `Edge`, a `Wire` or points | the deformed edge, wire or points | `TypeError: expected a Part or a Shell` |
+| their `TypeError` for other inputs | `... expected a Part, a Shell, an Edge, a Wire or points, got ...` | `... expected a Part or a Shell, got ...` |
+| a lattice that folds the part | `... a point was moved past its neighbours. Move the points less` | `... Move the points less, or use more points for local changes` |
 
 Migration:
 
@@ -186,6 +238,32 @@ bent.faces().filter((f) => !f.isPlanar)   // select by shape, not by type
 bent.unfold({ kFactor: 0.44 })            // the old (0.44) numbers
 ```
 
+Flat patterns, deformed curves (D5, D6):
+
+```python
+# before: a hole across a bend came back as arcs and B-splines; scripts collected both
+hole_pieces = [e for e in pattern.outline.edges() if e.geom_type in ("circle", "bspline")]
+# now: one circle per hole (and lines for straight cuts); select circles
+holes = pattern.outline.edges().circles()
+
+# before: deforming an edge raised TypeError; scripts sampled the part instead
+try:
+    rail = twist(edge, 90)
+except TypeError:
+    rail = None
+# now it returns the twisted Edge; to keep refusing curves, check first
+if isinstance(edge, (Edge, Wire)):
+    ...
+```
+
+```javascript
+// a hole across a bend: one circle in the outline
+const holes = flatPattern(part).outline.edges().circles()
+// edges, wires and points deform (were TypeError)
+const path = bend(new Wire([Line([-50, 0, 0], [50, 0, 0])]), 90, { radius: 10 })
+const tip = twist([10, 0, 100], 90, { start: 0, end: 100 })
+```
+
 Rolled parts (D3):
 
 ```python
@@ -227,6 +305,27 @@ if any(b.angle > 180 for b in ring.bends()):
   needs flat sheet on at least one side of each; a rolled part unrolls about the middle of its
   bend (`fixed=` refused). Faces whose box reaches near the unroll axis fit slowly if their new
   analytic geometry cannot be trimmed (the fallback; not seen in the tests).
-- D7 (not this lane's item, partly done here): faces a lattice leaves in place keep their type
-  (D2's similarity copy); the wording about local control in docs/deform.md and Lattice.md is
-  unchanged.
+- D5: the faces of a bend zone (a hole's wall across a bend) stay the kernel's fits within 1e-4,
+  so the round trip keeps the volume to 2e-7 as before (7899.4672 for 7899.4690); its 1e-6 surface
+  fits cost up to twenty times as long (7.2 s instead of 0.34 s to unfold the R20 bend above),
+  and deform.cpp's surface fitter is not wired into sheet metal (it would have to keep the faces'
+  trims through the kernel's bend, as deform.cpp does for whole Breps). The outline's circles are
+  exact; the flat part's hole walls are the 1e-4 fits.
+- D5: a hole wholly inside a bend zone unfolds into the right flat pattern, but the unfolded
+  part's `is_valid()` is False ("open between its faces, so that its volume is uncertain by
+  2.0e-02"): the volume integrated with the x and y fields disagrees with the z field, so the
+  kernel's unbend probably leaves a hole wall whose trims do not follow its surface (not
+  investigated further). The same on the P0 base; origin/next called it valid only because
+  `is_valid` had no gap measure.
+  `FlatPattern.part.bbox()` of such parts is deeper than the sheet (the kernel's tight box of the
+  fitted wall); its edges and the outline are right.
+- D6: there is no `map_point` function per deformation; the deformation functions take points
+  (and `Lattice.map(point)` stays). Lattices are not checked for folding on curves and points.
+  An `Edge` that crosses `start` or `end` comes back as one joined B-spline (pass
+  `Wire([edge])` for exact lines and arcs).
+- D7: the pointer to a face push (U7's `Part.push`) is not in the docs: U7 is not on this
+  branch. The merge stage should add it where the Lattice sections of docs/deform.md and
+  `deform/Lattice` (and `recipes/deform`) now say "for a bump on one face, model it directly".
+  `SmBSplineSurface::DegreeReduction` (the plan's optional idea) is not used: the exact lattice
+  fit already takes the smallest degrees that reproduce the image (`fit_exact_surface` bisects
+  them), so a reduction could only approximate.

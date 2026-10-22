@@ -18,9 +18,9 @@
 // The kernel does the geometry (SMLib's space bend and unbend); see src/cpp/sheetmetal.cpp.
 
 import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
+import { Axis, BoundBox, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _mergedLines, _take, _typeName } from './shapes.ts'
-import { Line, _mod, _withOptions } from './curves.ts'
+import { CenterArc, Line, ThreePointArc, _mod, _withOptions } from './curves.ts'
 import { tessellate } from './mesh.ts'
 import { Box } from './parts.ts'
 import { type _Spec, _Plan, _imprint, _run } from './deform.ts'
@@ -356,9 +356,9 @@ export class FlatPattern {
     return _list(this.bends.filter((b) => b.line !== null).map((b) => b.line as Edge))
   }
 
-  /** Size of the blank: (length along X, width along Y, thickness). */
+  /** Size of the blank: (length along X, width along Y, thickness), measured on its edges. */
   get size(): Vector {
-    return this.part.bbox().size
+    return _edgeBox(this.part).size
   }
 
   /** Equal fields (Python's dataclass `==`). */
@@ -1349,8 +1349,7 @@ function _finish(
     thickness = _thicknessBehind(_planarFaces(work), baseFace.interiorPoint(), baseFace.normalAt(), _tol(work))
   }
   if (thickness !== null) {
-    const pl = baseFace.plane
-    const depth = work.moved(new Plane(pl.origin, null, pl.zDir).location.inverse()).bbox().size.z
+    const depth = _depth(work, baseFace.plane)
     if (Math.abs(depth - thickness) > _tol(work)) {
       throw new ModelingError(
         `${what}: the unfolded part is ${_formatG(depth)} deep across the fixed face, the sheet is ${_formatG(thickness)} thick: some of it is not a bend (only pairs of coaxial cylinder faces one thickness apart unfold); ${hint}`,
@@ -1362,6 +1361,20 @@ function _finish(
   }
   work._folds = [] // flat: no bends left
   return { part: work, base: baseFace, bends: done, thickness, kFactor: _commonK(done.map((d) => d[4]), kFactor) }
+}
+
+/** The box around a flat sheet's edges. (Its own box can be larger: the surface of a fitted face,
+ * such as the wall of a hole that crossed a bend, may reach past the face's edges, and the kernel's
+ * tight box samples the surface: 0.19 mm too deep for an R20 bend's hole.) */
+function _edgeBox(part: Part): BoundBox {
+  let box: BoundBox | null = null
+  for (const e of part.edges()) box = box === null ? e.bbox() : box.union(e.bbox())
+  return box === null ? part.bbox() : box
+}
+
+/** How deep a flat part is across a plane: the extent of its edges along the plane's normal. */
+function _depth(part: Part, plane: Plane): number {
+  return _edgeBox(part.moved(new Plane(plane.origin, null, plane.zDir).location.inverse())).size.z
 }
 
 /** Split boundary edges into closed loops, each ordered head to tail. */
@@ -1392,8 +1405,158 @@ function _loops(edges: readonly Edge[], tol: number): Edge[][] {
   return loops
 }
 
+/** How far a fitted piece of the cut contour may be from a line or an arc to become one (mm; 1e-9
+ * of the part's size for parts over 1 m). The edges of bend zones are fitted within 1e-7
+ * (sheetmetal.cpp), so a hole across a bend comes back from fold and unfold within this of its
+ * circle. */
+const _CONTOUR_TOLERANCE = 1e-6
+
+/** The angle (radians, signed: counterclockwise positive) an edge in the XY plane turns about
+ * `center`, and the largest step between its samples; null if it turns back. */
+function _turnAbout(e: Edge, center: Vector, n = 32): [number, number] | null {
+  let total = 0.0
+  let step = 0.0
+  let last: number | null = null
+  let sign = 0.0
+  for (let i = 0; i <= n; i++) {
+    const p = e.pointAt(i / n)
+    const a = Math.atan2(p.y - center.y, p.x - center.x)
+    if (last !== null) {
+      const d = _mod(a - last + Math.PI, 2 * Math.PI) - Math.PI
+      if (d * sign < 0) return null
+      if (d) sign = Math.sign(d)
+      total += d
+      step = Math.max(step, Math.abs(d))
+    }
+    last = a
+  }
+  return [total, step]
+}
+
+/** Whether an edge of the contour (in the XY plane) lies on the circle (center, radius). */
+function _onCircle(e: Edge, center: Vector, radius: number, tol: number, n = 32): boolean {
+  for (let i = 0; i <= n; i++) {
+    const p = e.pointAt(i / n)
+    if (!(Math.abs(Math.hypot(p.x - center.x, p.y - center.y) - radius) <= tol)) return false
+  }
+  return true
+}
+
+/** The arc of the circle (center, radius) parallel to the XY plane (at the height of `start`) from
+ * `start` turning by `turn` radians to `end`: through both ends exactly, or the whole circle from
+ * `start`. */
+function _arcOf(center: Vector, radius: number, start: Vector, end: Vector, turn: number, closed: boolean): Edge {
+  const a0 = Math.atan2(start.y - center.y, start.x - center.x)
+  if (closed) return CenterArc([center.x, center.y, start.z], radius, _degrees(a0), turn < 0 ? -360.0 : 360.0)
+  const am = a0 + turn / 2
+  const mid = new Vector(center.x + radius * Math.cos(am), center.y + radius * Math.sin(am), (start.z + end.z) / 2)
+  return ThreePointArc(start, mid, end)
+}
+
+/** A fitted (B-spline) piece of the cut contour as the line or arc it is within `tol`: on one of
+ * `circles` (those of the loop's exact arcs) first, else on the circle through three of its
+ * points. */
+function _asLineOrArc(e: Edge, circles: readonly [Vector, number][], tol: number): Edge {
+  if (e.geomType !== 'bspline' || e.length <= 10 * tol) return e
+  let a = e.start
+  let b = e.end
+  const chord = b.sub(a)
+  const pts: Vector[] = []
+  for (let i = 0; i <= 32; i++) pts.push(e.pointAt(i / 32))
+  if (chord.length > tol) {
+    const u = chord.normalized()
+    const along = pts.map((p) => p.sub(a).dot(u))
+    const straight = pts.every((p, i) => p.sub(a).sub(u.mul(along[i])).length <= tol)
+    const forward = along.every((t, i) => i === 0 || t >= along[i - 1] - tol)
+    if (straight && forward) return Line(a, b)
+  }
+  const candidates: [Vector, number][] = [...circles]
+  const closed = a.isClose(b, tol)
+  let m: Vector
+  if (closed) {
+    // the circle through three points spread along it
+    a = e.pointAt(1 / 3)
+    m = e.pointAt(2 / 3)
+    b = e.start
+  } else {
+    m = e.pointAt(0.5)
+  }
+  const ab = b.sub(a)
+  const am = m.sub(a)
+  const nz = ab.x * am.y - ab.y * am.x
+  if (Math.abs(nz) > tol * Math.max(ab.length, am.length, 1.0)) {
+    // the circle through start, middle and end (2D)
+    const ab2 = ab.x * ab.x + ab.y * ab.y
+    const am2 = am.x * am.x + am.y * am.y
+    const cx = a.x + (am.y * ab2 - ab.y * am2) / (2 * nz)
+    const cy = a.y + (ab.x * am2 - am.x * ab2) / (2 * nz)
+    candidates.push([new Vector(cx, cy, a.z), Math.hypot(a.x - cx, a.y - cy)])
+  }
+  for (const [center, radius] of candidates) {
+    if (!_onCircle(e, center, radius, tol)) continue
+    const turned = _turnAbout(e, center)
+    if (turned === null || !(Math.abs(turned[0]) > 1e-9) || turned[1] > Math.PI / 4) continue
+    return _arcOf(center, radius, e.start, e.end, turned[0], closed)
+  }
+  return e
+}
+
+/** A closed loop of the contour with arcs of one circle that follow each other merged into one arc
+ * (the whole loop into one circle). */
+function _mergedArcs(loop: readonly Edge[], tol: number): Edge[] {
+  const n = loop.length
+  if (n < 2) return [...loop]
+  const cs: ([Vector, number] | null)[] = loop.map((e) => (e.geomType === 'circle' ? [e.arcCenter, e.radius] : null))
+  const turns = loop.map((e, i) => {
+    const c = cs[i]
+    const turned = c !== null ? _turnAbout(e, c[0]) : null
+    return turned !== null ? turned[0] : 0.0
+  })
+  const same = (c1: [Vector, number] | null, c2: [Vector, number] | null): boolean =>
+    c1 !== null && c2 !== null && c1[0].isClose(c2[0], tol) && Math.abs(c1[1] - c2[1]) <= tol
+  // edge i and edge i + 1 are arcs of one circle turning the same way
+  const joins = (i: number): boolean => {
+    const j = (i + 1) % n
+    return same(cs[i], cs[j]) && turns[i] * turns[j] > 0
+  }
+  if (loop.every((_, i) => joins(i))) {
+    const [center, radius] = cs[0] as [Vector, number]
+    return [_arcOf(center, radius, loop[0].start, loop[0].start, turns.reduce((x, y) => x + y, 0), true)]
+  }
+  let first = 0
+  while (joins(first)) first++
+  first += 1 // a run starts here
+  const out: Edge[] = []
+  let run: number[] = []
+  for (let i = 0; i < n; i++) {
+    const idx = (first + i) % n
+    run.push(idx)
+    if (!joins(idx)) {
+      if (run.length === 1) out.push(loop[idx])
+      else {
+        const [center, radius] = cs[run[0]] as [Vector, number]
+        const turn = run.reduce((x, r) => x + turns[r], 0)
+        out.push(_arcOf(center, radius, loop[run[0]].start, loop[run[run.length - 1]].end, turn, false))
+      }
+      run = []
+    }
+  }
+  return out
+}
+
+/** A loop of the cut contour with its fitted pieces made the lines and arcs they are and arcs of one
+ * circle merged (a hole that crossed a bend: 3 arcs and 2 B-splines -> one circle). */
+function _cleanLoop(loop: readonly Edge[], tol: number): Edge[] {
+  const circles: [Vector, number][] = loop.filter((e) => e.geomType === 'circle').map((e) => [e.arcCenter, e.radius])
+  return _mergedArcs(
+    loop.map((e) => _asLineOrArc(e, circles, tol)),
+    tol,
+  )
+}
+
 /** The cutting contour at z = 0: the edges that only one bottom face of the flat uses (the others
- * are the edges of the bend zones), joined into loops, collinear pieces merged. */
+ * are the edges of the bend zones), joined into loops; fitted pieces that are lines or arcs within
+ * `_CONTOUR_TOLERANCE` made lines and arcs, arcs of one circle and collinear lines merged. */
 function _cutContour(laid: Part, tol: number): Sketch {
   const count = new Map<string, Edge[]>()
   for (const f of laid.faces()) {
@@ -1407,7 +1570,8 @@ function _cutContour(laid: Part, tol: number): Sketch {
     }
   }
   const boundary = [...count.values()].filter((es) => es.length === 1).map((es) => es[0])
-  const wires = _loops(boundary, tol).map((loop) => _mergedLines(Wire._raw(loop)))
+  const fit = Math.max(_CONTOUR_TOLERANCE, 1e-9 * laid._extent())
+  const wires = _loops(boundary, tol).map((loop) => _mergedLines(Wire._raw(_cleanLoop(loop, fit))))
   return kernelCall('flatPattern', () => Sketch._fromWires(wires, Plane.XY), 'the outline of the flat part could not be made into a sketch')
 }
 
@@ -1525,7 +1689,7 @@ export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPatter
   const frame = new Plane(basePlane.origin, _longSide(flat, new Plane(basePlane.origin, null, nBase)), nBase.neg())
   const toXy = frame.location.inverse()
   let laid = flat.moved(toXy)
-  const shift = new Location(laid.bbox().min.neg())
+  const shift = new Location(_edgeBox(laid).min.neg())
   laid = laid.moved(shift)
   const place = shift.mul(toXy)
   const t = Number(thickness)

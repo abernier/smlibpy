@@ -9,7 +9,9 @@ gyration. A7: a face the integration cannot converge on raises instead of runnin
 D1: K-factors per bend: as folded, by rule, by table. D2: deformations keep analytic faces where
 the exact image is a plane, cylinder or cone (a bent plate is sheet metal). D3: unroll, and
 unfolding rolled parts, bends at a free end and bends over 180 degrees. D4: part.volume of
-deformed parts.
+deformed parts. D5: holes across bends come back round (edges fitted within 1e-7) and the flat
+pattern's outline has them as circles. D6: edges, wires and points deform. D7: a lattice moves
+the whole box.
 """
 
 import math
@@ -683,3 +685,129 @@ def test_bend_allowance_takes_rolled_angles():
 def test_deformed_parts_measure_exactly():
     assert Box(100, 10, 10).bend(90).volume == approx(10000, rel=1e-12)
     assert round(Box(20, 20, 100).twist(90).volume, 3) == 40000.0
+
+
+# -- D5: holes across bends in the flat pattern ----------------------------------------------------
+def _plate(length: float, width: float, t: float) -> Part:
+    return Box(length, width, t, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+
+def test_a_hole_across_a_bend_is_one_circle_in_the_flat_pattern():
+    blank = _plate(100, 40, 2) - Cylinder(4, 10).translate(20, 0, 0)
+    bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)
+    pattern = flat_pattern(bracket)
+    kinds = sorted(e.geom_type for e in pattern.outline.edges())
+    assert kinds == ["circle", "line", "line", "line", "line"]  # was 3 arcs and 2 B-splines
+    (hole,) = pattern.outline.edges().circles()
+    assert hole.is_closed and hole.radius == approx(4, abs=1e-9)
+    assert (hole.arc_center - Vector(70, 20, 0)).length < 1e-9
+    assert pattern.outline.area == approx(4000 - 16 * math.pi, rel=1e-12)
+    # the hole's edges across the bend come back round: 1.85e-5 off before (fitted within 1e-4)
+    flat = bracket.unfold()
+    worst = 0.0
+    for e in flat.edges():
+        if e.geom_type == "bspline":
+            worst = max(worst, max(abs(math.hypot(q.x - 20, q.y) - 4) for q in (e.point_at(i / 64) for i in range(65))))
+    assert 0 < worst < 1e-7
+
+
+def test_holes_inside_a_bend_zone_unfold_into_a_flat_pattern():
+    # two holes wholly inside an R20 bend: the flat pattern raised "the unfolded part is 3.37494 deep"
+    # (the box of the fitted hole walls reaches past their edges)
+    blank = _plate(200, 60, 3) - Cylinder(6, 10).translate(10, -15, 0) - Cylinder(6, 10).translate(25, 15, 0)
+    part = fold(blank, Axis((20, 0, 3), (0, 1, 0)), 120, radius=20)
+    pattern = flat_pattern(part)
+    assert pattern.size.x == approx(200, abs=1e-9) and pattern.size.y == approx(60, abs=1e-9)
+    assert pattern.size.z == approx(3, abs=1e-6)  # (the part's box is 3.375 deep: its fitted hole walls)
+    holes = pattern.outline.edges().circles()
+    assert len(holes) == 2 and len(pattern.outline.edges()) == 6
+    centers = sorted((h.arc_center.x, h.arc_center.y) for h in holes)
+    assert centers[0] == approx((110, 15), abs=1e-6) and centers[1] == approx((125, 45), abs=1e-6)
+    assert all(h.radius == approx(6, abs=1e-6) for h in holes)
+    assert pattern.outline.area == approx(200 * 60 - 72 * math.pi, rel=1e-9)
+    edges = pattern.part.edges()
+    assert min(e.bbox().min.z for e in edges) == approx(0, abs=1e-12)  # the bottom at z = 0
+
+
+def test_fitted_lines_across_a_bend_and_free_shapes_in_the_flat_pattern():
+    # a corner cut at 45 degrees across the bend: lines in the outline (were 2 B-splines)
+    cut = fold(_plate(100, 40, 2) - Box(30, 30, 10).rotate(Z, 45).translate(20, 20, 0), Axis((20, 0, 2), (0, 1, 0)),
+               90, radius=2)
+    assert {e.geom_type for e in flat_pattern(cut).outline.edges()} == {"line"}
+    # a spline cutout stays a spline
+    region = make_face(Wire([Spline((-40, -5), (-30, 5), (-20, -5)), Line((-20, -5), (-40, -5))]))
+    part = fold(_plate(100, 40, 2) - region.extrude(10).translate(0, 0, -2), Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)
+    assert sorted(e.geom_type for e in flat_pattern(part).outline.edges()).count("bspline") == 1
+
+
+# -- D6: edges, wires and points -------------------------------------------------------------------
+def test_a_line_bent_in_its_middle_is_a_line_an_arc_and_a_line():
+    line = Line((-50, 0, 0), (50, 0, 0))
+    path = bend(Wire([line]), 90, radius=10)
+    assert [e.geom_type for e in path.edges()] == ["line", "circle", "line"]
+    a, arc, b = path.edges()
+    s = 5 * math.pi / 2  # half the bend's length: it is centered on the plane origin
+    assert a.length == approx(50 - s, rel=1e-12) and b.length == approx(50 - s, rel=1e-12)
+    assert arc.radius == approx(10, rel=1e-12) and arc.length == approx(10 * math.pi / 2, rel=1e-12)
+    assert (arc.arc_center - Vector(-s, 0, 10)).length < 1e-12
+    assert (path.end - Vector(10 - s, 0, 10 + 50 - s)).length < 1e-9
+    edge = bend(line, 90, radius=10)  # an Edge stays one edge: the pieces joined
+    assert isinstance(edge, Edge) and edge.length == approx(100, rel=1e-12)
+    assert (edge.end - path.end).length < 1e-9 and (edge.point_at(0.5) - path.point_at(0.5)).length < 1e-9
+    whole = bend(line, 90)  # the whole line: one exact arc
+    assert whole.geom_type == "circle" and whole.radius == approx(200 / math.pi, rel=1e-12)
+    # a closed wire stays closed, its edges split where they cross the range ends
+    ring = bend(Polyline((-50, -5, 0), (50, -5, 0), (50, 5, 0), (-50, 5, 0), close=True), 90, radius=10)
+    assert ring.is_closed and len(ring.edges()) == 8
+
+
+def test_twisted_tapered_unrolled_and_lattice_curves():
+    helix = twist(Line((10, 0, 0), (10, 0, 100)), 90)  # a quarter turn of a helix, within 1e-6
+    assert helix.geom_type == "bspline"
+    for i in range(11):
+        q = helix.point_at(i / 10)
+        assert math.hypot(q.x, q.y) == approx(10, abs=1e-6)
+        assert math.degrees(math.atan2(q.y, q.x)) == approx(0.9 * q.z, abs=1e-5)
+    rim = taper(CenterArc((0, 0, 50), 10, 0, 360), 0.5, start=0, end=100)  # the middle: 3/4 of the size
+    assert rim.geom_type == "circle" and rim.radius == approx(7.5, rel=1e-12)
+    flat = unroll(Helix(pitch=100, height=40, radius=10), radius=10)  # 0.4 turn: a straight line
+    assert flat.geom_type == "line" and flat.length == approx(math.hypot(40, 8 * math.pi), rel=1e-6)
+    lat = Lattice(Box(60, 40, 20), 3)
+    lat.move((1, 1, -1), (0, 0, 8))
+    lifted = lat.apply(Line((-30, 0, 10), (30, 0, 10)))  # exact: the lattice's image of the line
+    assert lifted.geom_type == "bspline"
+    assert max(lifted.distance_to(lat.map((x, 0, 10))) for x in np.linspace(-30, 30, 13)) < 1e-9
+    assert lifted.point_at(0.5).z == approx(12, abs=1e-9)  # 8 * 1/2 * 1/2 at the middle
+
+
+def test_points_deform_as_the_part_they_belong_to():
+    assert (twist((10, 0, 100), 90, start=0, end=100) - Vector(0, 10, 100)).length < 1e-12
+    moved = twist([(10, 0, 0), (10, 0, 50), Vector(10, 0, 150)], 90, start=0, end=100)
+    assert isinstance(moved, list) and len(moved) == 3
+    assert (moved[1] - Vector(10 / math.sqrt(2), 10 / math.sqrt(2), 50)).length < 1e-12
+    assert (moved[2] - Vector(0, 10, 150)).length < 1e-12  # beyond end: turned by the whole angle
+    bar = Box(100, 10, 10, align=(Align.MIN, Align.CENTER, Align.CENTER))
+    bent = bar.bend(90)  # the corner (100, 5, 5) where the bend moved it
+    corner = bend((100, 5, 5), 90, start=0, end=100)
+    assert min((v.point - corner).length for v in bent.vertices()) < 1e-9
+    assert (taper((10, 0, 100), 0.5, start=0, end=100) - Vector(5, 0, 100)).length < 1e-12
+    lat = Lattice(Box(60, 40, 20), 3)
+    lat.move((1, 1, -1), (0, 0, 8))
+    assert lat.apply((0, 0, 10)) == lat.map((0, 0, 10))
+    assert (unroll((10, 0, 0), radius=10, start=(1, 0, 0)) - Vector(10, 0, 0)).length < 1e-12
+    with pytest.raises(ValueError, match="give start and end for points"):
+        twist((10, 0, 100), 90)
+    with pytest.raises(TypeError, match="Part, a Shell, an Edge, a Wire or points"):
+        twist(Z, 90)
+
+
+# -- D7: a lattice is a global map -----------------------------------------------------------------
+def test_a_lattice_point_moves_the_whole_box():
+    lat = Lattice(Box(60, 40, 20), 3)
+    lat.move((1, 1, -1), (0, 0, 8))
+    assert lat.map((0, 0, 10)).z == approx(12, abs=1e-12)  # 8 * 1/2 * 1/2
+    # far from the point too: the top's corner region and the middle of the block move
+    assert lat.map((25, 15, 10)).z > 10.25 and lat.map((0, 0, 0)).z == approx(0.5, abs=1e-12)
+    assert lat.map((30, 20, 10)) == Vector(30, 20, 10)  # only the box's corners stay
+    pillow = lat.apply(Box(60, 40, 20))
+    assert sorted(f.geom_type for f in pillow.faces()).count("plane") == 5  # faces left in place keep their type

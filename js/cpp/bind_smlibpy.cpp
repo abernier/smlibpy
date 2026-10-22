@@ -449,6 +449,25 @@ val deform_brep(uintptr_t b, val spec)
     });
 }
 
+// [curves, report]: the segments of a curve sent through a deformation (the caller's)
+val deform_curve(uintptr_t c, val spec)
+{
+    return guard([&] {
+        const smlibpy::DeformedCurve r = smlibpy::deform_curve(smjs::curve(c), deform_spec(spec));
+        val curves = val::array();
+        for (SmCurve* curve : r.curves)
+            curves.call<void>("push", ptr(curve));
+        val report = val::object();
+        report.set("edges_kept", r.stats.edges_kept), report.set("edges_exact", r.stats.edges_exact);
+        report.set("edges_approximated", r.stats.edges_approximated), report.set("edges_analytic", r.stats.edges_analytic);
+        report.set("max_error", r.stats.max_error), report.set("max_degree", r.stats.max_degree);
+        val out = val::array();
+        out.call<void>("push", curves);
+        out.call<void>("push", report);
+        return out;
+    });
+}
+
 uintptr_t composite_brep(uintptr_t b, val spec) { return guard([&] { return ptr(smlibpy::composite_brep(brep(b), deform_spec(spec))); }); }
 
 val deviation(uintptr_t source, uintptr_t result, val spec, int samples)
@@ -774,6 +793,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("sheetmetal__unbend", &unbend);
 
     function("deform__deform_brep", &deform_brep);
+    function("deform__deform_curve", &deform_curve);
     function("deform__composite_brep", &composite_brep);
     function("deform__deviation", &deviation);
     function("deform__map_points", &map_points);

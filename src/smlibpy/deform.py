@@ -16,6 +16,14 @@ faces, edges and vertices::
     lat.move((1, 1, -1), (0, 0, 8))                  # lift the middle of the top
     pillow = lat.apply(block)
 
+Edges, wires and points deform the same way: an edge comes back as an edge, a wire as a wire
+(a straight path bent in its middle: a line, an exact arc and a line), a point as the point the
+map moves it to::
+
+    rail = bend(Line((-50, 0, 0), (50, 0, 0)), 90, radius=10)   # one edge: line, arc, line joined
+    path = bend(Wire([Line((-50, 0, 0), (50, 0, 0))]), 90, radius=10)  # three edges
+    tip = twist((10, 0, 100), 90, start=0, end=100)          # where the twist moves a point
+
 Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result
 has that geometry: a plate bent about an axis gets exact cylinders (so ``bends()``, ``unfold``
 and selections such as ``faces().cylinders()`` see them), a tapered cylinder an exact cone, the
@@ -58,14 +66,67 @@ def _bodies() -> tuple[Any, Any, Any]:
     return Part, Shell, Sketch
 
 
-def _check_shape(shape: Any, what: str) -> None:
+def _curves() -> tuple[Any, Any]:
+    from .shapes import Edge, Wire
+
+    return Edge, Wire
+
+
+class _Points:
+    """Points sent through a deformation: an ``(n, 3)`` array; ``one`` when a single point was
+    given (the result is then one Vector). ``bbox`` and ``_transformed`` as shapes have them."""
+
+    __slots__ = ("p", "one")
+
+    def __init__(self, p: np.ndarray, one: bool):
+        self.p, self.one = p, one
+
+    def bbox(self) -> BoundBox:
+        return BoundBox(tuple(self.p.min(axis=0)), tuple(self.p.max(axis=0)))
+
+    def _transformed(self, m: np.ndarray) -> _Points:
+        return _Points(self.p @ m[:3, :3].T + m[:3, 3], self.one)
+
+
+def _number(x: Any) -> bool:
+    return isinstance(x, (int, float, np.floating, np.integer)) and not isinstance(x, bool)
+
+
+def _as_points(shape: Any) -> _Points | None:
+    """A point (a Vector, or 2 or 3 numbers) or a list of them as points; None for anything else."""
+    if isinstance(shape, Vector):
+        return _Points(np.array([shape.to_tuple()], dtype=float), True)
+    if not isinstance(shape, (list, tuple, np.ndarray)) or len(shape) == 0:
+        return None
+    try:
+        if all(_number(x) for x in shape):
+            pts, one = np.array([_vec(shape).to_tuple()], dtype=float), True
+        else:
+            pts, one = np.array([_vec(x).to_tuple() for x in shape], dtype=float), False
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("points must have finite coordinates")
+    return _Points(pts, one)
+
+
+def _check_shape(shape: Any, what: str) -> Any:
+    """The shape a deformation works on: a Part or Shell (checked), an Edge or a Wire, or points
+    (as ``_Points``)."""
     Part, Shell, _ = _bodies()
+    Edge, Wire = _curves()
+    if isinstance(shape, (Edge, Wire)):
+        return shape
     if not isinstance(shape, (Part, Shell)):
-        raise TypeError(f"{what}: expected a Part or a Shell, got {type(shape).__name__}")
+        pts = _as_points(shape)
+        if pts is None:
+            raise TypeError(f"{what}: expected a Part, a Shell, an Edge, a Wire or points, got {type(shape).__name__}")
+        return pts
     if isinstance(shape, Part):
         shape._require_valid(what)
     elif shape._brep.face_count() == 0:
         raise ModelingError(f"{what}: the shape is empty")
+    return shape
 
 
 def _tolerance(tolerance: float | None) -> float:
@@ -101,8 +162,48 @@ def _perpendicular(d: np.ndarray) -> np.ndarray:
     return p / np.linalg.norm(p)
 
 
+def _curve_extent(shape: Any, origin: np.ndarray, d: np.ndarray) -> tuple[float, float]:
+    """The range of ``(p - origin) . d`` over the edges of an Edge or Wire: the extremes of 64
+    samples per edge, refined by golden-section search (a box of samples would be too small)."""
+    lo, hi = math.inf, -math.inf
+    g = (math.sqrt(5.0) - 1.0) / 2.0
+    for e in shape.edges():
+        c = e._curve()
+        t0, t1 = e._range()
+
+        def h(t: float) -> float:
+            return float(np.dot(np.array(c.evaluate(t), dtype=float) - origin, d))
+
+        n = 64
+        ts = [t0 + (t1 - t0) * i / n for i in range(n + 1)]
+        hs = [h(t) for t in ts]
+        for sign in (1.0, -1.0):
+            i = max(range(n + 1), key=lambda j: sign * hs[j])
+            a, b = ts[max(i - 1, 0)], ts[min(i + 1, n)]
+            best = sign * hs[i]
+            x1, x2 = b - g * (b - a), a + g * (b - a)
+            f1, f2 = sign * h(x1), sign * h(x2)
+            for _ in range(60):
+                if f1 > f2:
+                    b, x2, f2 = x2, x1, f1
+                    x1 = b - g * (b - a)
+                    f1 = sign * h(x1)
+                else:
+                    a, x1, f1 = x1, x2, f2
+                    x2 = a + g * (b - a)
+                    f2 = sign * h(x2)
+            best = max(best, f1, f2)
+            if sign > 0:
+                hi = max(hi, best)
+            else:
+                lo = min(lo, -best)
+    return lo, hi
+
+
 def _extent(shape: Any, origin: np.ndarray, d: np.ndarray) -> tuple[float, float]:
     """The range of ``(p - origin) . d`` over the shape (tight box in a frame along ``d``)."""
+    if isinstance(shape, _curves()):
+        return _curve_extent(shape, origin, d)
     for i in range(3):  # a world axis: the tight box directly
         if abs(abs(d[i]) - 1.0) < 1e-12:
             b = shape.bbox()
@@ -165,9 +266,10 @@ def _layout(shape: Any, origin: np.ndarray, d: np.ndarray, s: float, e: float, l
     unchanged before ``s``, ``inside`` from ``s`` to ``e``, ``after`` beyond."""
     eps = 1e-7 * max(1.0, hi - lo)
     cut_start, cut_end = s > lo + eps, e < hi - eps
-    if cut_start:
+    body = isinstance(shape, _bodies()[:2])  # curves are split by the C++, points mapped one by one
+    if cut_start and body:
         shape = _imprint(shape, origin + s * d, d)
-    if cut_end:
+    if cut_end and body:
         shape = _imprint(shape, origin + e * d, d)
     if not cut_start and not cut_end:
         return shape, {"axis": None, "pieces": [inside], "tolerance": tol}
@@ -183,8 +285,13 @@ def _range(shape: Any, origin: np.ndarray, d: np.ndarray, start: float | None, e
     if not (math.isfinite(s) and math.isfinite(e)):
         raise ValueError(f"{what}: start and end must be finite numbers")
     if not e > s:
+        if isinstance(shape, _Points) and (start is None or end is None):
+            raise ValueError(f"{what}: give start and end for points (the range of the part they belong to); "
+                             "points have no length along the axis to take it from")
         raise ValueError(f"{what}: end ({e:g}) must lie beyond start ({s:g})")
     if e <= lo or s >= hi:
+        if isinstance(shape, _Points):  # points before or beyond the range move with the map there
+            return s, e, lo, hi
         raise ModelingError(f"{what}: the range {s:g} to {e:g} does not reach the part, which spans {lo:g} to {hi:g} "
                             "(distances along the axis from its origin)")
     return s, e, lo, hi
@@ -192,6 +299,10 @@ def _range(shape: Any, origin: np.ndarray, d: np.ndarray, start: float | None, e
 
 def _run(plan: _Plan, what: str, source: Any) -> Any:
     """Send the shape through the map; check and return the result."""
+    if isinstance(plan.shape, _Points):
+        return _run_points(plan)
+    if isinstance(plan.shape, _curves()):
+        return _run_curves(plan, what)
     Part, Shell, Sketch = _bodies()
     spec = dict(plan.spec)
     spec.setdefault("max_degree", MAX_DEGREE)
@@ -220,6 +331,41 @@ def _run(plan: _Plan, what: str, source: Any) -> Any:
             raise ModelingError(f"{what}: the result is not a valid solid ({problem}); the deformation "
                                 "probably folds the part onto itself: deform less")
     return result
+
+
+def _run_points(plan: _Plan) -> Any:
+    """Points through the map: a Vector for one point, a list of Vectors for several."""
+    out = [Vector(*q) for q in k.deform.map_points(plan.spec, plan.shape.p.tolist())]
+    return out[0] if plan.shape.one else out
+
+
+def _run_curves(plan: _Plan, what: str) -> Any:
+    """An Edge or Wire through the map. Every edge is split where it crosses the ends of the
+    range; the segments are lines and arcs where their image is one, else exact or fitted
+    B-splines. An Edge comes back as one edge (the segments joined), a Wire with every segment
+    an edge of its own."""
+    Edge, Wire = _curves()
+    shape = plan.shape
+    spec = dict(plan.spec)
+    spec.setdefault("max_degree", MAX_DEGREE)
+    segments: list[Edge] = []
+    for e in shape.edges():
+        c = e._copy_curve()
+        try:
+            with kernel_call(what, "deform less, or use a larger tolerance"):
+                curves, report = k.deform.deform_curve(c, spec)
+        finally:
+            ext.delete_curve(c)
+        segments += [Edge._from_curve(x) for x in curves]  # (owned from here on)
+        if report["edges_approximated"] and report["max_error"] > 2 * spec["tolerance"]:
+            raise ModelingError(f"{what}: could not follow the deformation within the tolerance (off by "
+                                f"{report['max_error']:.2g} mm); use a larger tolerance or deform less")
+    if isinstance(shape, Wire):
+        return Wire._raw(segments)
+    if len(segments) == 1:
+        return segments[0]
+    with kernel_call(what, "deform the edge as a Wire([edge]) to keep its pieces as edges of their own"):
+        return Edge._from_curve(ext.join_curves([s._curve() for s in segments]))
 
 
 def _volume_problem(source: Any, volume: float, ratio: tuple[float, float]) -> str | None:
@@ -257,7 +403,7 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
     at ``end``.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         angle: the turn in degrees between ``start`` and ``end``, counterclockwise seen from
             the tip of ``axis`` (right-hand rule, like ``rotate``). May exceed 360.
         axis: the line to twist about (default the world Z axis through the origin).
@@ -267,9 +413,12 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
             the axis. What lies beyond ``end`` is turned by the whole ``angle``.
         tolerance: largest distance of the twisted faces from the exact twist (mm).
 
-    Returns a Part (a Shell for a shell). The volume does not change.
+    Returns a Part (a Shell for a shell). The volume does not change. An Edge gives an Edge, a
+    Wire a Wire (see :func:`bend`), a point a Vector, a list of points a list of Vectors; for
+    points, give ``start`` and ``end`` (the range of the part they belong to), since a point has
+    no length along the axis.
     """
-    _check_shape(shape, "twist")
+    shape = _check_shape(shape, "twist")
     a = _angle(angle, "twist")
     plan = _plan_twist(shape, a, axis, start, end, _tolerance(tolerance))
     return _run(plan, "twist", shape)
@@ -306,7 +455,7 @@ def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = Non
     ``start`` to ``scale`` at ``end``.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         scale: size of the cross-section at ``end`` relative to ``start`` (> 0): 0.5 halves
             it, 2 doubles it. Lines along the axis stay straight.
         axis: the line the cross-sections shrink toward (default the world Z axis).
@@ -316,9 +465,10 @@ def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = Non
             ends. What lies beyond ``end`` is scaled by ``scale`` across the axis.
         tolerance: only for faces whose exact image would exceed ``MAX_DEGREE`` (mm).
 
-    The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid.
+    The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid. Edges, wires
+    and points give edges, wires and points (see :func:`twist`).
     """
-    _check_shape(shape, "taper")
+    shape = _check_shape(shape, "taper")
     if isinstance(scale, bool) or not isinstance(scale, (int, float, np.floating, np.integer)):
         raise TypeError("taper: scale must be a number")
     f = float(scale)
@@ -345,6 +495,9 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
         s = lo if start is None else float(start)
         e = hi if end is None else float(end)
         if not e > s:
+            if isinstance(shape, _Points) and (start is None or end is None):
+                raise ValueError("bend: give radius, or start and end, for points (points have no length along "
+                                 "x_dir to take them from)")
             raise ValueError(f"bend: end ({e:g}) must lie beyond start ({s:g}) along the plane's x_dir")
         r = (e - s) / phi
     else:
@@ -365,7 +518,7 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
                                  f"need {length:g}; give only two of radius, start and end")
     if not (math.isfinite(s) and math.isfinite(e)):
         raise ValueError("bend: start and end must be finite numbers")
-    if e <= lo or s >= hi:
+    if (e <= lo or s >= hi) and not isinstance(shape, _Points):
         raise ModelingError(f"bend: the bend ({s:g} to {e:g} along x_dir from the plane origin) does not reach "
                             f"the part, which spans {lo:g} to {hi:g}")
     sigma = 1.0 if angle > 0 else -1.0
@@ -405,7 +558,7 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     bends up (toward +Z) about an axis parallel to Y.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         angle: how far the part turns, in degrees (positive: toward ``plane.y_dir``),
             less than 360.
         radius: the bend radius of the neutral layer. With ``radius`` and no ``start`` or
@@ -425,8 +578,14 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     :func:`smlibpy.bends` and :func:`smlibpy.unfold`; the K-factor its neutral layer gives
     (where it lies in the thickness) is kept with it. For sheet metal, :func:`smlibpy.fold`
     bends at a line with an inside radius and a K-factor, with flat legs on both sides.
+
+    Edges and wires bend too, into paths for sweeps: every edge is split where it crosses
+    ``start`` and ``end``, a line across the bend becomes an exact arc, and lines before and
+    after it stay lines. A Wire comes back with every piece an edge of its own (a straight path
+    bent in its middle: line, arc, line), an Edge as one edge (the pieces joined into one
+    B-spline; pass ``Wire([edge])`` to keep them apart). Points give points (see :func:`twist`).
     """
-    _check_shape(shape, "bend")
+    shape = _check_shape(shape, "bend")
     a = _angle(angle, "bend")
     if abs(a) >= 360:
         raise ValueError("bend: angle must be less than 360 degrees (a full turn would make the part touch "
@@ -450,12 +609,17 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
 # unroll
 # =============================================================================
 def _samples(shape: Any) -> np.ndarray:
-    """Points on a shape: its vertices, points along its edges and a grid inside its faces."""
+    """Points on a shape: its vertices, points along its edges and a grid inside its faces (the
+    points themselves for points)."""
+    if isinstance(shape, _Points):
+        return shape.p
     pts = [v.point.to_tuple() for v in shape.vertices()]
+    curve = isinstance(shape, _curves())
+    n = 32 if curve else 8
     for e in shape.edges():
-        pts += [e.point_at(t).to_tuple() for t in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0)]
+        pts += [e.point_at(i / n).to_tuple() for i in range(n + 1)]
     fractions = (0.05, 0.25, 0.5, 0.75, 0.95)
-    for f in shape.faces():
+    for f in [] if curve else shape.faces():
         (u0, v0), (u1, v1) = f._f.uv_domain()
         for a in fractions:
             for b in fractions:
@@ -471,6 +635,11 @@ def _reaches_half_plane(shape: Any, o: np.ndarray, d: np.ndarray, toward: np.nda
     within ``reach`` of the axis and ``along`` it."""
     from .sketches import Rectangle
 
+    if isinstance(shape, _Points):  # on the half-plane: across it within 1e-9, on its side of the axis
+        rel = shape.p - o
+        radial = rel - np.outer(rel @ d, d)
+        tol = 1e-9 * max(1.0, reach)
+        return bool(np.any((np.abs(radial @ np.cross(toward, d)) <= tol) & (radial @ toward >= -tol)))
     h0, h1 = along[0] - 1.0, along[1] + 1.0
     center = o + toward * (reach / 2) + d * ((h0 + h1) / 2)
     half = Rectangle(reach, h1 - h0).on(Plane(tuple(center), tuple(toward), tuple(np.cross(toward, d))))
@@ -538,8 +707,8 @@ def unroll(shape: Any, *, radius: float, axis: Axis = Z, start: VectorLike | Non
     cylinder, line or circle, and within ``tolerance`` elsewhere.
 
     Args:
-        shape: a Part (or a Shell) around the axis: it must not reach the axis and must cover
-            less than a full turn about it.
+        shape: a Part (or a Shell), an Edge, a Wire or points around the axis: it must not
+            reach the axis and must cover less than a full turn about it.
         radius: the radius of the neutral layer (mm, > 0).
         axis: the axis the part is rolled about (default the world Z axis).
         start: a direction across the axis: the line (at every distance from the axis) that
@@ -548,9 +717,10 @@ def unroll(shape: Any, *, radius: float, axis: Axis = Z, start: VectorLike | Non
             not reach the half-plane opposite it.
         tolerance: largest distance of fitted faces from the exact unroll (mm).
 
-    Returns a Part (a Shell for a shell).
+    Returns a Part (a Shell for a shell); an Edge, a Wire or points give an Edge, a Wire or
+    points (a helix about the axis unrolls at its own radius into a straight line).
     """
-    _check_shape(shape, "unroll")
+    shape = _check_shape(shape, "unroll")
     if isinstance(radius, bool) or not isinstance(radius, (int, float, np.floating, np.integer)):
         raise TypeError("unroll: radius must be a number")
     if not (math.isfinite(radius) and radius > 0):
@@ -590,8 +760,10 @@ class Lattice:
     Args:
         box: a BoundBox, or a shape whose bounding box is used.
         counts: points per direction, one int or three, 2 to 12. 2 moves the corners only (a
-            trilinear map), 3 adds the midpoints (default), more give finer control. The
-            degree of the exact result grows with the counts (see ``MAX_DEGREE``).
+            trilinear map), 3 adds the midpoints (default). Every point pulls the whole box
+            (Bernstein weights); more points concentrate a point's pull nearer to it without
+            confining it. The degree of the exact result grows with the counts (see
+            ``MAX_DEGREE``).
         margin: grow the box by this much on every side (mm).
     """
 
@@ -721,11 +893,14 @@ class Lattice:
 
         The result is exact unless a face's image needs a degree above ``MAX_DEGREE``; such
         faces are within ``tolerance``. Raises ``ModelingError`` when the lattice folds the
-        part onto itself (a point moved past its neighbours).
+        part onto itself (a point moved past its neighbours). An Edge or a Wire gives an Edge
+        or a Wire (exact B-splines; lines and arcs the map only moves stay lines and arcs),
+        points give points (as :meth:`map`); curves and points are not checked for folding.
         """
-        _check_shape(shape, "lattice")
+        shape = _check_shape(shape, "lattice")
         plan = self._plan(shape, _tolerance(tolerance))
-        _check_folding(shape, plan.spec["pieces"][0])
+        if isinstance(shape, _bodies()[:2]):
+            _check_folding(shape, plan.spec["pieces"][0])
         return _run(plan, "lattice", shape)
 
     def __repr__(self) -> str:
@@ -760,5 +935,4 @@ def _check_folding(shape: Any, piece: dict) -> None:
     if np.any(det <= 1e-6):
         w = p[int(np.argmin(det))]
         raise ModelingError(f"lattice: the lattice folds the part onto itself near ({w[0]:.4g}, {w[1]:.4g}, {w[2]:.4g}); "
-                            "a point was moved past its neighbours. Move the points less, or use more points for "
-                            "local changes")
+                            "a point was moved past its neighbours. Move the points less")

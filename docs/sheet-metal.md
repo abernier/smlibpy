@@ -172,7 +172,18 @@ print(round(hemmed.unfold().bbox().size.x, 4))  # 151.2708: 100 + 3 pi / 2 * (10
 ```
 
 The outline and the bend lines lie in the XY plane, ready for a 2D export for the cutter;
-`export_step(pattern.part, "blank.step")` writes the blank as a solid.
+`export_step(pattern.part, "blank.step")` writes the blank as a solid. The outline is made of
+lines, arcs and circles wherever the blank has them: a hole that crossed a bend comes back as
+one circle, an oblique cut across a bend as one line (the pieces of the bend zone are fitted,
+so they are recognized within 1e-6 mm and merged with their neighbours), while free shapes such
+as spline cutouts stay splines:
+
+```python
+blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN)) - Cylinder(4, 10).translate(20, 0, 0)
+bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)   # the hole crosses the bend
+outline = flat_pattern(bracket).outline
+print(sorted(e.geom_type for e in outline.edges()))               # 4 lines and one circle
+```
 
 ## Limits
 
@@ -184,6 +195,9 @@ The outline and the bend lines lie in the XY plane, ready for a 2D export for th
 - A bend at a free end of the sheet, a bend over 180 degrees and a rolled part must run the full
   width of the sheet next to them (no sheet beside the bend along its axis), and a part with more
   than one bend needs flat sheet on at least one side of each.
-- Holes and cutouts that cross a bend zone bend into NURBS surfaces (within 0.0001 mm).
-  Better cut them into the flat pattern's blank and bend after.
+- Holes and cutouts that cross a bend zone bend into NURBS surfaces (within 0.0001 mm); their
+  edges are within 0.0000001 mm, so the flat pattern's outline gets them back as the circles and
+  lines they were. Better cut them into the flat pattern's blank and bend after. A hole wholly
+  inside a bend zone unfolds into the right flat pattern, but the unfolded part's hole walls do
+  not quite meet its faces (`is_valid()` is False; the kernel's unbend of such a wall).
 - A corner without a bend radius does not unfold.

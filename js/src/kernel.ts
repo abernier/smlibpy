@@ -112,6 +112,7 @@ const OWN: Record<string, Signature> = {
   'sheetmetal.unbend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length',
     ['anchor', null]],
   'deform.deform_brep': ['brep', 'spec'],
+  'deform.deform_curve': ['curve', 'spec'],
   'deform.composite_brep': ['brep', 'spec'],
   'deform.deviation': ['source', 'result', 'spec', ['samples', 9]],
   'deform.map_points': ['spec', 'points'],

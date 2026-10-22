@@ -2,7 +2,8 @@
 
 `twist`, `taper`, `bend` and `Lattice` change a finished part as a whole: model it straight
 and simple, with the features that should follow the deformation, then deform it. The
-guides are `deform/generic`, `deform/twist`, `deform/taper`, `deform/bend`, `deform/Lattice`.
+guides are `deform/generic`, `deform/twist`, `deform/taper`, `deform/bend`, `deform/Lattice`;
+edges, wires and points deform too (`deform/curves`).
 
 ## Deform, or model the shape directly?
 
@@ -15,12 +16,14 @@ Deform when a simple part gets a smooth overall change and its features should g
 | bent handle, bracket, tube with holes or flats | model straight, drill and slot, then `bend` (the features bend along) | sweeping the profile along a path and cutting curved features afterwards |
 | tapered grip, leg, post, tool shank | `taper` (exact; fillets taper along) | `extrude(taper=...)` (only a profile, only a draft angle) |
 | pillow tops, ergonomic bodies, bulges | a rounded box and a `Lattice` | stitching free-form surfaces |
+| a path that follows a deformed part (a rail along a twisted bar, a pipe along a bent plate) | deform the path's `Wire` with the same call, then `sweep` | sampling points and fitting a spline |
 
 Model directly when:
 - the result needs analytic faces downstream (a bent or twisted face is a B-spline; a tube
   with several bends along a drawn path is easier as `sweep`),
 - the result will be offset outward (`offset()` usually fails on deformed parts),
-- the change is local (a boss, a pocket): Booleans keep everything else exact,
+- the change is local (a boss, a pocket, a bump on one face): Booleans keep everything else
+  exact, and a `Lattice` is global (every point of it moves the whole box),
 - a feature must keep its exact shape: add it after the deformation.
 
 ## Order of operations

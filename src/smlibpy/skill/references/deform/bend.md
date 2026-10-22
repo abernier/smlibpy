@@ -27,7 +27,8 @@ or `part.bend(angle, ...)`
 Before `start` the part stays; beyond `end` it goes on straight, turned by `angle`.
 
 ## Returns
-A `Part` (`Shell` for a shell or sketch), same faces (more when the section is inside the
+An `Edge`, `Wire` or point gives an `Edge`, `Wire` or `Vector` (a line across the bend: an exact
+arc; see `deform/curves`). A `Part` (`Shell` for a shell or sketch), same faces (more when the section is inside the
 part: the faces are split at its ends). Exact analytic faces where the image is analytic:
 planes across the bend become cylinders about the bend axis (lines across it circles), planes
 along it stay planes, slanted planes become cones; the legs keep their types (the U below:

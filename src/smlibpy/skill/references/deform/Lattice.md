@@ -34,17 +34,21 @@ only the top layer moves, the sides when only the middle of the top does) keep t
 the pillow below has 5 planes and a B-spline top.
 
 ## How points act
-A point pulls the region around it, weighted by Bernstein polynomials: moving the middle
-point of the top layer of a 3 x 3 x 3 lattice by 8 lifts the middle of the top face by
-8 * 1/2 * 1/2 = 2 (`lat.map((0, 0, 10))` -> `(0, 0, 12)`); corners move fully. Move whole
-layers for global changes (bulge, taper, twist a layer), single points for local ones; more
-points give more local control.
+A lattice is a **global** map: every point pulls the whole box, most near itself, weighted by
+Bernstein polynomials: moving the middle point of the top layer of a 3 x 3 x 3 lattice by 8
+lifts the middle of the top face by 8 * 1/2 * 1/2 = 2 (`lat.map((0, 0, 10))` -> `(0, 0, 12)`)
+and the rest of the box less, down to nothing at the corners; corners move fully. More points
+concentrate a point's pull nearer to it but never confine it (moved by 5, the middle top point
+of a 7 x 7 x 2 lattice on `Box(60, 40, 20)` lifts the middle by 0.49 and a place 25 mm away by
+0.014) and raise the degree. Use lattices for overall shape (bulge, taper, twist a layer, soft
+tops); for a bump on one face, model it directly. `lat.apply` also takes edges, wires and points
+(see `deform/curves`).
 
 ## Gotchas
 - `scale` of a single point does nothing (it scales about its own centroid); scale a layer.
 - The editing methods change the lattice; `lat.copy()` before trying variants.
 - Moving a point past its neighbours folds space: refused with `ModelingError: lattice:
-  the lattice folds the part onto itself near (x, y, z) ...`.
+  the lattice folds the part onto itself near (x, y, z) ... Move the points less`.
 - Space outside the box follows the same polynomial (no clamping): keep the part inside.
 - Higher counts raise the degree of the exact faces; curved parts in big lattices get large
   control nets. Use the fewest points that give the shape.

@@ -17,7 +17,9 @@ Scales the cross-sections of a part toward an axis, by a factor that changes eve
   primitives does).
 
 ## Returns
-A `Part` (`Shell` for a shell or sketch), same faces, edges and vertices. **Exact**: a
+An `Edge`, `Wire` or point gives an `Edge`, `Wire` or `Vector` (a circle about the axis stays a
+circle; see `deform/curves`). A `Part` (`Shell` for a shell or sketch), same faces, edges and
+vertices. **Exact**: a
 taper is a polynomial map, every face is its exact image. A cylinder about the axis becomes
 an exact cone (`geom_type == "cone"`, its rims circles; top radius exactly half for 0.5), a
 box a frustum of a pyramid with plane faces; other faces (fillets, off-axis holes) are exact

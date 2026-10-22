@@ -19,7 +19,9 @@ Turns every cross-section of a part about an axis, by an angle that grows evenly
   gives 3.8e-8 and 452 poles, 1e-8 gives 5.8e-10 and 836 poles; all within 0.02 s.
 
 ## Returns
-A `Part` (`Shell` for a shell or sketch), same faces, edges and vertices, same volume.
+A `Part` (`Shell` for a shell or sketch), same faces, edges and vertices, same volume. An
+`Edge`, `Wire` or point gives an `Edge`, `Wire` or `Vector` (a line off the axis: a helix; for
+points give `start` and `end`; see `deform/curves`).
 Before `start` the part is unchanged; beyond `end` it is turned rigidly by `angle`.
 
 ## Exactness

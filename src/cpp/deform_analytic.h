@@ -50,6 +50,8 @@ SurfaceImage surface_image(SmFace* face, const SmExtent2d& box, const Map& map, 
 // The exact image of an edge's curve when it is analytic: a moved copy, a line with the same
 // parameters, or a new line or circle. Null otherwise.
 CurveImage curve_image(SmEdge* edge, const Map& map, double tol);
+// The same for a curve over the interval `ivl` of its parameters (a standalone curve, deform_curve).
+CurveImage curve_image(const SmCurve* curve, const SmExtent1d& ivl, const Map& map, double tol);
 
 // Put new surfaces and curves (images with new parameters) into a Brep and build the trim
 // curves of the faces they touch again, dropping the edges onto the surfaces within `drop_tol`.

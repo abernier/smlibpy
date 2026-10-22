@@ -11,6 +11,8 @@
 #include <vector>
 
 class SmBrep;
+class SmBSplineCurve;
+class SmCurve;
 
 namespace smlibpy {
 
@@ -63,6 +65,14 @@ struct Deformed
     DeformStats stats;
 };
 
+// A curve sent through a deformation: one curve per piece of the deformation it crosses, in
+// order (the caller's), and what became of them.
+struct DeformedCurve
+{
+    std::vector<SmCurve*> curves;
+    DeformStats stats;
+};
+
 struct Deviation
 {
     double faces = 0.0, edges = 0.0, vertices = 0.0;
@@ -72,6 +82,16 @@ struct Deviation
 // where the composition is polynomial, within the spec's tolerance elsewhere), or to analytic
 // geometry where the exact image is a plane, cylinder, cone, line, circle or a moved copy.
 Deformed deform_brep(const SmBrep* brep, const DeformSpec& spec);
+// A copy of a curve (over its natural interval) sent through the deformation, split where it
+// crosses the ends of the pieces along the axis; every segment exact where the composition is
+// polynomial or analytic, within the spec's tolerance elsewhere.
+DeformedCurve deform_curve(const SmCurve* curve, const DeformSpec& spec);
+// A curve (a procedural one, such as the kernel's SmCrvInVolume of a sheet metal bend) fitted over
+// [t0, t1] within `tolerance`, keeping its parameters, on the knots of `base` (the original it
+// maps; the curve itself if null): exact where it is polynomial, quintic elsewhere. The caller's;
+// null when the fit misses the tolerance.
+SmBSplineCurve* fit_curve_keeping_parameters(const SmCurve* curve, const SmCurve* base, double t0, double t1,
+                                             double tolerance);
 // The kernel's exact procedural composition of a copy with the deformation, for checks.
 SmBrep* composite_brep(const SmBrep* brep, const DeformSpec& spec);
 // The largest distance between a deformed Brep and the exact deformation of its source.

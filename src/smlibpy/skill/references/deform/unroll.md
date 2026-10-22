@@ -19,7 +19,9 @@ must be developed flat.
 - `tolerance`: largest distance of fitted faces from the exact unroll (mm, default 1e-6).
 
 ## Returns
-A `Part` (`Shell` for a shell). Cylinders about the axis become exact planes, circles about it
+An `Edge`, `Wire` or point gives an `Edge`, `Wire` or `Vector` (a helix of less than one turn
+about the axis unrolls at its radius into a line; see `deform/curves`). A `Part` (`Shell` for a
+shell). Cylinders about the axis become exact planes, circles about it
 lines, faces through the axis planes; other faces (a hole in the ring) are NURBS within the
 tolerance. A ring segment of inside radius 50, thickness 2 and 270° unrolled at 51 is a plate
 of 6 planes, 51 * 3 pi / 2 = 240.33 long; its volume is kept when `radius` is the middle of the

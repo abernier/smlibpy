@@ -14,6 +14,14 @@
 //     lat.move([1, 1, -1], [0, 0, 8])                         // lift the middle of the top
 //     const pillow = lat.apply(block)
 //
+// Edges, wires and points deform the same way: an edge comes back as an edge, a wire as a wire (a
+// straight path bent in its middle: a line, an exact arc and a line), a point as the point the map
+// moves it to:
+//
+//     const rail = bend(Line([-50, 0, 0], [50, 0, 0]), 90, { radius: 10 })           // one edge: line, arc, line joined
+//     const path = bend(new Wire([Line([-50, 0, 0], [50, 0, 0])]), 90, { radius: 10 })  // three edges
+//     const tip = twist([10, 0, 100], 90, { start: 0, end: 100 })                      // where the twist moves a point
+//
 // Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result has
 // that geometry: a plate bent about an axis gets exact cylinders (so `bends()`, `unfold` and
 // selections such as `faces().cylinders()` see them), a tapered cylinder an exact cone, the turned
@@ -46,7 +54,7 @@ import {
   _vec,
 } from './geometry.ts'
 import { det3, mean3 } from './_linalg.ts'
-import { Part, Shell, Sketch, type _Body, _held, _typeName } from './shapes.ts'
+import { Edge, Part, Shell, Sketch, Wire, type _Body, _held, _typeName } from './shapes.ts'
 import { Box } from './parts.ts'
 import { Rectangle } from './sketches.ts'
 
@@ -59,6 +67,72 @@ export const MAX_DEGREE = 12
 
 /** A part or a shell (sketches deform into shells). */
 type Deformable = Part | Shell
+
+/** Points sent through a deformation; `one` when a single point was given (the result is then one
+ * Vector). `bbox` and `_transformed` as shapes have them. */
+class _Points {
+  p: V3[]
+  one: boolean
+
+  constructor(p: V3[], one: boolean) {
+    this.p = p
+    this.one = one
+  }
+
+  bbox(): BoundBox {
+    const lo: V3 = [Infinity, Infinity, Infinity]
+    const hi: V3 = [-Infinity, -Infinity, -Infinity]
+    for (const q of this.p) {
+      for (let i = 0; i < 3; i++) {
+        lo[i] = Math.min(lo[i], q[i])
+        hi[i] = Math.max(hi[i], q[i])
+      }
+    }
+    return new BoundBox(lo, hi)
+  }
+
+  /** The points moved by a 4 x 4 matrix (row-major, as `Location._m`). */
+  _transformed(m: ArrayLike<number>): _Points {
+    return new _Points(
+      this.p.map((q) => [
+        m[0] * q[0] + m[1] * q[1] + m[2] * q[2] + m[3],
+        m[4] * q[0] + m[5] * q[1] + m[6] * q[2] + m[7],
+        m[8] * q[0] + m[9] * q[1] + m[10] * q[2] + m[11],
+      ]),
+      this.one,
+    )
+  }
+}
+
+/** What a deformation works on: a part or shell, an edge or wire, or points. */
+type _Input = Deformable | Edge | Wire | _Points
+
+/** A point given as a Vector, an array or a typed array of 2 or 3 numbers. */
+function _isPointLike(x: unknown): boolean {
+  if (x instanceof Vector) return true
+  if (!(Array.isArray(x) || ArrayBuffer.isView(x))) return false
+  const a = x as ArrayLike<unknown>
+  if (a.length !== 2 && a.length !== 3) return false
+  for (let i = 0; i < a.length; i++) if (typeof a[i] !== 'number') return false
+  return true
+}
+
+/** A point (a Vector, or 2 or 3 numbers) or a list of them as points; null for anything else. */
+function _asPoints(shape: unknown): _Points | null {
+  let pts: V3[]
+  let one: boolean
+  if (_isPointLike(shape)) {
+    pts = [_vec(shape as VectorLike).toArray()]
+    one = true
+  } else if (Array.isArray(shape) && shape.length > 0 && shape.every(_isPointLike)) {
+    pts = shape.map((q) => _vec(q as VectorLike).toArray())
+    one = false
+  } else {
+    return null
+  }
+  if (!pts.every((q) => q.every(Number.isFinite))) throw new RangeError('points must have finite coordinates')
+  return new _Points(pts, one)
+}
 
 // ============================================================================= helpers
 // numpy's 3-vectors as [x, y, z], in numpy's order of operations.
@@ -97,12 +171,23 @@ function _isNumber(x: unknown): x is number {
   return typeof x === 'number'
 }
 
-function _checkShape(shape: unknown, what: string): asserts shape is Deformable {
+/** The shape a deformation works on: a Part or Shell (checked), an Edge or a Wire, or points (as
+ * `_Points`). */
+function _checkShape(shape: unknown, what: string): _Input {
+  if (shape instanceof Edge || shape instanceof Wire) return shape
   if (!(shape instanceof Part || shape instanceof Shell)) {
-    throw new TypeError(`${what}: expected a Part or a Shell, got ${_typeName(shape)}`)
+    const pts = _asPoints(shape)
+    if (pts === null) throw new TypeError(`${what}: expected a Part, a Shell, an Edge, a Wire or points, got ${_typeName(shape)}`)
+    return pts
   }
   if (shape instanceof Part) shape._requireValid(what)
   else if (k.brep_face_count(shape._brep) === 0) throw new ModelingError(`${what}: the shape is empty`)
+  return shape
+}
+
+/** A part or a shell (no curves or points). */
+function _isBody(shape: unknown): shape is Deformable {
+  return shape instanceof Part || shape instanceof Shell
 }
 
 function _tolerance(tolerance: number | null | undefined): number {
@@ -134,8 +219,56 @@ function _perpendicular(d: readonly number[]): V3 {
   return [p[0] / n, p[1] / n, p[2] / n]
 }
 
+/** The range of `(p - origin) . d` over the edges of an Edge or Wire: the extremes of 64 samples per
+ * edge, refined by golden-section search (a box of samples would be too small). */
+function _curveExtent(shape: Edge | Wire, origin: V3, d: V3): [number, number] {
+  let lo = Infinity
+  let hi = -Infinity
+  const g = (Math.sqrt(5.0) - 1.0) / 2.0
+  for (const e of shape.edges()) {
+    const c = e._curve()
+    const [t0, t1] = e._range()
+    const h = (t: number): number => _dot(_sub(new Vector(k.curve_evaluate(c, t)).toArray(), origin), d)
+    const n = 64
+    const ts: number[] = []
+    for (let i = 0; i <= n; i++) ts.push(t0 + ((t1 - t0) * i) / n)
+    const hs = ts.map(h)
+    for (const sign of [1.0, -1.0]) {
+      let i = 0
+      for (let j = 1; j <= n; j++) if (sign * hs[j] > sign * hs[i]) i = j
+      let a = ts[Math.max(i - 1, 0)]
+      let b = ts[Math.min(i + 1, n)]
+      let best = sign * hs[i]
+      let x1 = b - g * (b - a)
+      let x2 = a + g * (b - a)
+      let f1 = sign * h(x1)
+      let f2 = sign * h(x2)
+      for (let it = 0; it < 60; it++) {
+        if (f1 > f2) {
+          b = x2
+          x2 = x1
+          f2 = f1
+          x1 = b - g * (b - a)
+          f1 = sign * h(x1)
+        } else {
+          a = x1
+          x1 = x2
+          f1 = f2
+          x2 = a + g * (b - a)
+          f2 = sign * h(x2)
+        }
+      }
+      best = Math.max(best, f1, f2)
+      if (sign > 0) hi = Math.max(hi, best)
+      else lo = Math.min(lo, -best)
+    }
+  }
+  return [lo, hi]
+}
+
 /** The range of `(p - origin) . d` over the shape (tight box in a frame along `d`). */
-function _extent(shape: Deformable, origin: V3, d: V3): [number, number] {
+function _extent(shape: _Input, origin: V3, d: V3): [number, number] {
+  if (shape instanceof Edge || shape instanceof Wire) return _curveExtent(shape, origin, d)
   for (let i = 0; i < 3; i++) {
     // a world axis: the tight box directly
     if (Math.abs(Math.abs(d[i]) - 1.0) < 1e-12) {
@@ -214,13 +347,13 @@ export type _Fold = readonly [number[], number[], number, number]
 /** What a deformation does: the shape to send (the ends of the range split into its faces), the
  * spec of the kernel map, the bounds of the volume ratio and, for a bend, the record a sheet metal
  * bend keeps. */
-export class _Plan {
-  shape: Deformable
+export class _Plan<S extends _Input = Deformable> {
+  shape: S
   spec: _Spec
   volumeRatio: [number, number]
   fold: _Fold | null
 
-  constructor(shape: Deformable, spec: _Spec, volumeRatio: [number, number], fold: _Fold | null = null) {
+  constructor(shape: S, spec: _Spec, volumeRatio: [number, number], fold: _Fold | null = null) {
     this.shape = shape
     this.spec = spec
     this.volumeRatio = volumeRatio
@@ -230,8 +363,8 @@ export class _Plan {
 
 /** Split the faces at range ends inside the part and lay the maps out along the axis: unchanged
  * before `s`, `inside` from `s` to `e`, `after` beyond. */
-function _layout(
-  shape: Deformable,
+function _layout<S extends _Input>(
+  shape: S,
   origin: V3,
   d: V3,
   s: number,
@@ -241,24 +374,34 @@ function _layout(
   inside: Record<string, unknown>,
   after: Record<string, unknown>,
   tol: number,
-): [Deformable, _Spec] {
+): [S, _Spec] {
   const eps = 1e-7 * Math.max(1.0, hi - lo)
   const cutStart = s > lo + eps
   const cutEnd = e < hi - eps
-  if (cutStart) shape = _imprint(shape, _add(origin, _mul(s, d)), d)
-  if (cutEnd) shape = _imprint(shape, _add(origin, _mul(e, d)), d)
+  // (curves are split by the C++, points mapped one by one)
+  if (cutStart && _isBody(shape)) shape = _imprint(shape, _add(origin, _mul(s, d)), d) as S
+  if (cutEnd && _isBody(shape)) shape = _imprint(shape, _add(origin, _mul(e, d)), d) as S
   if (!cutStart && !cutEnd) return [shape, { axis: null, pieces: [inside], tolerance: tol }]
   const pieces = [{ kind: 'identity', hi: s }, { ...inside, hi: e }, after]
   return [shape, { axis: [...origin, ...d], pieces, tolerance: tol }]
 }
 
-function _range(shape: Deformable, origin: V3, d: V3, start: number | null | undefined, end: number | null | undefined, what: string): [number, number, number, number] {
+function _range(shape: _Input, origin: V3, d: V3, start: number | null | undefined, end: number | null | undefined, what: string): [number, number, number, number] {
   const [lo, hi] = _extent(shape, origin, d)
   const s = start == null ? lo : Number(start)
   const e = end == null ? hi : Number(end)
   if (!(Number.isFinite(s) && Number.isFinite(e))) throw new RangeError(`${what}: start and end must be finite numbers`)
-  if (!(e > s)) throw new RangeError(`${what}: end (${_formatG(e)}) must lie beyond start (${_formatG(s)})`)
+  if (!(e > s)) {
+    if (shape instanceof _Points && (start == null || end == null)) {
+      throw new RangeError(
+        `${what}: give start and end for points (the range of the part they belong to); points have no length along the axis to take it from`,
+      )
+    }
+    throw new RangeError(`${what}: end (${_formatG(e)}) must lie beyond start (${_formatG(s)})`)
+  }
   if (e <= lo || s >= hi) {
+    // points before or beyond the range move with the map there
+    if (shape instanceof _Points) return [s, e, lo, hi]
     throw new ModelingError(
       `${what}: the range ${_formatG(s)} to ${_formatG(e)} does not reach the part, which spans ${_formatG(lo)} to ${_formatG(hi)} (distances along the axis from its origin)`,
     )
@@ -267,7 +410,9 @@ function _range(shape: Deformable, origin: V3, d: V3, start: number | null | und
 }
 
 /** Send the shape through the map; check and return the result. */
-export function _run(plan: _Plan, what: string, source: Deformable): Deformable {
+export function _run(plan: _Plan<_Input>, what: string, source: _Input): Any {
+  if (plan.shape instanceof _Points) return _runPoints(plan.shape, plan.spec)
+  if (plan.shape instanceof Edge || plan.shape instanceof Wire) return _runCurves(plan.shape, plan.spec, what)
   const spec: Any = { ...plan.spec }
   if (!('max_degree' in spec)) spec.max_degree = MAX_DEGREE
   const shape = plan.shape
@@ -301,6 +446,46 @@ export function _run(plan: _Plan, what: string, source: Deformable): Deformable 
   return result
 }
 
+/** Points through the map: a Vector for one point, an array of Vectors for several. */
+function _runPoints(points: _Points, spec: _Spec): Vector | Vector[] {
+  const out = (k.deform.map_points(spec, points.p) as number[][]).map((q) => new Vector(q))
+  return points.one ? out[0] : out
+}
+
+/** An Edge or Wire through the map. Every edge is split where it crosses the ends of the range;
+ * the segments are lines and arcs where their image is one, else exact or fitted B-splines. An Edge
+ * comes back as one edge (the segments joined), a Wire with every segment an edge of its own. */
+function _runCurves(shape: Edge | Wire, plan: _Spec, what: string): Edge | Wire {
+  const spec: Any = { ...plan }
+  if (!('max_degree' in spec)) spec.max_degree = MAX_DEGREE
+  const segments: Edge[] = []
+  for (const e of shape.edges()) {
+    const c = e._copyCurve()
+    let curves: number[]
+    let report: Any
+    try {
+      ;[curves, report] = kernelCall(what, () => k.deform.deform_curve(c, spec), 'deform less, or use a larger tolerance')
+    } finally {
+      ext.delete_curve(c)
+    }
+    for (const x of curves) segments.push(Edge._fromCurve(x)) // (owned from here on)
+    if (report.edges_approximated && report.max_error > 2 * spec.tolerance) {
+      throw new ModelingError(
+        `${what}: could not follow the deformation within the tolerance (off by ${_formatG(report.max_error, 2)} mm); use a larger tolerance or deform less`,
+      )
+    }
+  }
+  if (shape instanceof Wire) return Wire._raw(segments)
+  if (segments.length === 1) return segments[0]
+  return Edge._fromCurve(
+    kernelCall(
+      what,
+      () => ext.join_curves(segments.map((x) => x._curve())),
+      'deform the edge as a new Wire([edge]) to keep its pieces as edges of their own',
+    ),
+  )
+}
+
 /** The volume of a deformed part lies between the smallest and the largest local volume change
  * of the map times the original volume. Catches broken bodies, not small errors. */
 function _volumeProblem(source: Part, volume: number, ratio: [number, number]): string | null {
@@ -328,7 +513,7 @@ export interface RangeOptions {
 }
 
 // ============================================================================= twist
-export function _planTwist(shape: Deformable, angle: number, axis: Axis, start: number | null | undefined, end: number | null | undefined, tol: number): _Plan {
+export function _planTwist<S extends _Input>(shape: S, angle: number, axis: Axis, start: number | null | undefined, end: number | null | undefined, tol: number): _Plan<S> {
   const o = axis.origin.toArray()
   const d = _unit(axis.direction, 'twist: axis')
   const [s, e, lo, hi] = _range(shape, o, d, start, end, 'twist')
@@ -349,7 +534,7 @@ export interface TwistOptions extends RangeOptions {
  *
  * Every cross-section turns by an angle that grows evenly from 0 at `start` to `angle` at `end`.
  *
- * @param shape A Part (or a Shell).
+ * @param shape A Part (or a Shell), an Edge, a Wire, or points (a point or an array of them).
  * @param angle The turn in degrees between `start` and `end`, counterclockwise seen from the tip
  *   of `axis` (right-hand rule, like `rotate`). May exceed 360.
  * @param options `axis`: the line to twist about (default the world Z axis through the origin).
@@ -359,21 +544,28 @@ export interface TwistOptions extends RangeOptions {
  *   `end` is turned by the whole `angle`. `tolerance`: largest distance of the twisted faces from
  *   the exact twist (mm).
  *
- * Returns a Part (a Shell for a shell). The volume does not change.
+ * Returns a Part (a Shell for a shell). The volume does not change. An Edge gives an Edge, a Wire a
+ * Wire (see `bend`), a point a Vector, an array of points an array of Vectors; for points, give
+ * `start` and `end` (the range of the part they belong to), since a point has no length along the
+ * axis.
  */
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell
-export function twist(shape: Deformable, angle: number, options: TwistOptions = {}): Deformable {
+export function twist(shape: Edge, angle: number, options?: TwistOptions): Edge
+export function twist(shape: Wire, angle: number, options?: TwistOptions): Wire
+export function twist(shape: VectorLike, angle: number, options?: TwistOptions): Vector
+export function twist(shape: readonly VectorLike[], angle: number, options?: TwistOptions): Vector[]
+export function twist(shape: unknown, angle: number, options: TwistOptions = {}): Any {
   _opts('twist', options)
   const { axis = Z, start = null, end = null, tolerance = null } = options
-  _checkShape(shape, 'twist')
+  const input = _checkShape(shape, 'twist')
   const a = _angle(angle, 'twist')
-  const plan = _planTwist(shape, a, axis, start, end, _tolerance(tolerance))
-  return _run(plan, 'twist', shape)
+  const plan = _planTwist(input, a, axis, start, end, _tolerance(tolerance))
+  return _run(plan, 'twist', input)
 }
 
 // ============================================================================= taper
-export function _planTaper(shape: Deformable, scale: number, axis: Axis, start: number | null | undefined, end: number | null | undefined, tol: number): _Plan {
+export function _planTaper<S extends _Input>(shape: S, scale: number, axis: Axis, start: number | null | undefined, end: number | null | undefined, tol: number): _Plan<S> {
   const o = axis.origin.toArray()
   const d = _unit(axis.direction, 'taper: axis')
   const [s, e, lo, hi] = _range(shape, o, d, start, end, 'taper')
@@ -421,7 +613,7 @@ export interface TaperOptions extends RangeOptions {
  * The cross-sections are scaled toward the axis by a factor that changes evenly from 1 at `start`
  * to `scale` at `end`.
  *
- * @param shape A Part (or a Shell).
+ * @param shape A Part (or a Shell), an Edge, a Wire, or points (a point or an array of them).
  * @param scale Size of the cross-section at `end` relative to `start` (> 0): 0.5 halves it, 2
  *   doubles it. Lines along the axis stay straight.
  * @param options `axis`: the line the cross-sections shrink toward (default the world Z axis).
@@ -431,32 +623,37 @@ export interface TaperOptions extends RangeOptions {
  *   scaled by `scale` across the axis. `tolerance`: only for faces whose exact image would exceed
  *   `MAX_DEGREE` (mm).
  *
- * The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid.
+ * The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid. Edges, wires and
+ * points give edges, wires and points (see `twist`).
  */
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell
-export function taper(shape: Deformable, scale: number, options: TaperOptions = {}): Deformable {
+export function taper(shape: Edge, scale: number, options?: TaperOptions): Edge
+export function taper(shape: Wire, scale: number, options?: TaperOptions): Wire
+export function taper(shape: VectorLike, scale: number, options?: TaperOptions): Vector
+export function taper(shape: readonly VectorLike[], scale: number, options?: TaperOptions): Vector[]
+export function taper(shape: unknown, scale: number, options: TaperOptions = {}): Any {
   _opts('taper', options)
   const { axis = Z, start = null, end = null, tolerance = null } = options
-  _checkShape(shape, 'taper')
+  const input = _checkShape(shape, 'taper')
   if (!_isNumber(scale)) throw new TypeError('taper: scale must be a number')
   const f = scale
   if (!(Number.isFinite(f) && f > 0)) throw new RangeError('taper: scale must be a positive number (1 keeps the size)')
   if (f === 1) throw new RangeError('taper: scale is 1; nothing to do')
-  const plan = _planTaper(shape, f, axis, start, end, _tolerance(tolerance))
-  return _run(plan, 'taper', shape)
+  const plan = _planTaper(input, f, axis, start, end, _tolerance(tolerance))
+  return _run(plan, 'taper', input)
 }
 
 // ============================================================================= bend
-export function _planBend(
-  shape: Deformable,
+export function _planBend<S extends _Input>(
+  shape: S,
   angle: number,
   radius: number | null | undefined,
   plane: Plane,
   start: number | null | undefined,
   end: number | null | undefined,
   tol: number,
-): _Plan {
+): _Plan<S> {
   const o = plane.origin.toArray()
   const xd = plane.xDir.toArray()
   const yd = plane.yDir.toArray()
@@ -469,7 +666,12 @@ export function _planBend(
   if (radius == null) {
     s = start == null ? lo : Number(start)
     e = end == null ? hi : Number(end)
-    if (!(e > s)) throw new RangeError(`bend: end (${_formatG(e)}) must lie beyond start (${_formatG(s)}) along the plane's xDir`)
+    if (!(e > s)) {
+      if (shape instanceof _Points && (start == null || end == null)) {
+        throw new RangeError('bend: give radius, or start and end, for points (points have no length along xDir to take them from)')
+      }
+      throw new RangeError(`bend: end (${_formatG(e)}) must lie beyond start (${_formatG(s)}) along the plane's xDir`)
+    }
     r = (e - s) / phi
   } else {
     r = Number(radius)
@@ -494,7 +696,7 @@ export function _planBend(
     }
   }
   if (!(Number.isFinite(s) && Number.isFinite(e))) throw new RangeError('bend: start and end must be finite numbers')
-  if (e <= lo || s >= hi) {
+  if ((e <= lo || s >= hi) && !(shape instanceof _Points)) {
     throw new ModelingError(
       `bend: the bend (${_formatG(s)} to ${_formatG(e)} along xDir from the plane origin) does not reach the part, which spans ${_formatG(lo)} to ${_formatG(hi)}`,
     )
@@ -541,7 +743,7 @@ export interface BendOptions extends RangeOptions {
  * material on the inside of the bend is compressed, material on the outside stretched. With the
  * default `Plane.XZ`, a part lying along X bends up (toward +Z) about an axis parallel to Y.
  *
- * @param shape A Part (or a Shell).
+ * @param shape A Part (or a Shell), an Edge, a Wire, or points (a point or an array of them).
  * @param angle How far the part turns, in degrees (positive: toward `plane.yDir`), less than 360.
  * @param options `radius`: the bend radius of the neutral layer; with `radius` and no `start` or
  *   `end`, the bend (length `radius * angle`) is centered on the plane origin; with one of them,
@@ -558,13 +760,23 @@ export interface BendOptions extends RangeOptions {
  * lines across it circles), so a bent plate is a sheet metal part to `bends` and `unfold`; the
  * K-factor its neutral layer gives (where it lies in the thickness) is kept with it. For sheet
  * metal, `fold` bends at a line with an inside radius and a K-factor, with flat legs on both sides.
+ *
+ * Edges and wires bend too, into paths for sweeps: every edge is split where it crosses `start` and
+ * `end`, a line across the bend becomes an exact arc, and lines before and after it stay lines. A
+ * Wire comes back with every piece an edge of its own (a straight path bent in its middle: line,
+ * arc, line), an Edge as one edge (the pieces joined into one B-spline; pass `new Wire([edge])` to
+ * keep them apart). Points give points (see `twist`).
  */
 export function bend(shape: Part, angle: number, options?: BendOptions): Part
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell
-export function bend(shape: Deformable, angle: number, options: BendOptions = {}): Deformable {
+export function bend(shape: Edge, angle: number, options?: BendOptions): Edge
+export function bend(shape: Wire, angle: number, options?: BendOptions): Wire
+export function bend(shape: VectorLike, angle: number, options?: BendOptions): Vector
+export function bend(shape: readonly VectorLike[], angle: number, options?: BendOptions): Vector[]
+export function bend(shape: unknown, angle: number, options: BendOptions = {}): Any {
   _opts('bend', options)
   const { radius = null, plane = Plane.XZ, start = null, end = null, tolerance = null } = options
-  _checkShape(shape, 'bend')
+  const input = _checkShape(shape, 'bend')
   const a = _angle(angle, 'bend')
   if (Math.abs(a) >= 360) {
     throw new RangeError('bend: angle must be less than 360 degrees (a full turn would make the part touch itself; revolve a profile for rings)')
@@ -574,19 +786,23 @@ export function bend(shape: Deformable, angle: number, options: BendOptions = {}
     if (!(Number.isFinite(radius) && radius > 0)) throw new RangeError('bend: radius must be a positive number')
   }
   if (!(plane instanceof Plane)) throw new TypeError('bend: plane must be a Plane (xDir along the part, yDir toward the inside of the bend)')
-  const plan = _planBend(shape, a, radius, plane, start, end, _tolerance(tolerance))
-  const result = _run(plan, 'bend', shape)
+  const plan = _planBend(input, a, radius, plane, start, end, _tolerance(tolerance))
+  const result = _run(plan, 'bend', input)
   if (result instanceof Part && plan.fold !== null) result._folds = [...result._folds, plan.fold]
   return result
 }
 
 // ============================================================================= unroll
-/** Points on a shape: its vertices, points along its edges and a grid inside its faces. */
-function _samples(shape: Deformable): V3[] {
+/** Points on a shape: its vertices, points along its edges and a grid inside its faces (the points
+ * themselves for points). */
+function _samples(shape: _Input): V3[] {
+  if (shape instanceof _Points) return shape.p
   const pts: V3[] = shape.vertices().map((v) => v.point.toArray())
-  for (const e of shape.edges()) for (const t of [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]) pts.push(e.pointAt(t).toArray())
+  const curve = shape instanceof Edge || shape instanceof Wire
+  const n = curve ? 32 : 8
+  for (const e of shape.edges()) for (let i = 0; i <= n; i++) pts.push(e.pointAt(i / n).toArray())
   const fractions = [0.05, 0.25, 0.5, 0.75, 0.95]
-  for (const f of shape.faces()) {
+  for (const f of curve ? [] : shape.faces()) {
     const [[u0, v0], [u1, v1]] = k.face_uv_domain(f._f)
     for (const a of fractions) {
       for (const b of fractions) {
@@ -604,7 +820,17 @@ function _samples(shape: Deformable): V3[] {
 
 /** Whether the shape touches the half-plane from the axis (`o`, `d`) toward `toward`, within
  * `reach` of the axis and `along` it. */
-function _reachesHalfPlane(shape: Deformable, o: V3, d: V3, toward: V3, reach: number, along: [number, number]): boolean {
+function _reachesHalfPlane(shape: _Input, o: V3, d: V3, toward: V3, reach: number, along: [number, number]): boolean {
+  if (shape instanceof _Points) {
+    // on the half-plane: across it within 1e-9, on its side of the axis
+    const side = _cross(toward, d)
+    const tol = 1e-9 * Math.max(1.0, reach)
+    return shape.p.some((q) => {
+      const rel = _sub(q, o)
+      const radial = _sub(rel, _mul(_dot(rel, d), d))
+      return Math.abs(_dot(radial, side)) <= tol && _dot(radial, toward) >= -tol
+    })
+  }
   const h0 = along[0] - 1.0
   const h1 = along[1] + 1.0
   const center = _add(_add(o, _mul(reach / 2, toward)), _mul((h0 + h1) / 2, d))
@@ -612,7 +838,7 @@ function _reachesHalfPlane(shape: Deformable, o: V3, d: V3, toward: V3, reach: n
   return shape.distanceTo(half) <= 1e-9 * Math.max(1.0, reach)
 }
 
-export function _planUnroll(shape: Deformable, radius: number, axis: Axis, start: VectorLike | null, tol: number): _Plan {
+export function _planUnroll<S extends _Input>(shape: S, radius: number, axis: Axis, start: VectorLike | null, tol: number): _Plan<S> {
   const o = axis.origin.toArray()
   const d = _unit(axis.direction, 'unroll: axis')
   const x0 = _perpendicular(d)
@@ -689,8 +915,8 @@ export interface UnrollOptions {
  * about the axis become planes, circles about it lines; the faces are exact where their image is a
  * plane, cone, cylinder, line or circle, and within `tolerance` elsewhere.
  *
- * @param shape A Part (or a Shell) around the axis: it must not reach the axis and must cover less
- *   than a full turn about it.
+ * @param shape A Part (or a Shell), an Edge, a Wire or points around the axis: it must not reach the
+ *   axis and must cover less than a full turn about it.
  * @param options `radius`: the radius of the neutral layer (mm, > 0). `axis`: the axis the part is
  *   rolled about (default the world Z axis). `start`: a direction across the axis: the line (at
  *   every distance from the axis) that stays in place; the unrolled part lies in the plane through
@@ -698,21 +924,26 @@ export interface UnrollOptions {
  *   must not reach the half-plane opposite it. `tolerance`: largest distance of fitted faces from
  *   the exact unroll (mm).
  *
- * Returns a Part (a Shell for a shell).
+ * Returns a Part (a Shell for a shell); an Edge, a Wire or points give an Edge, a Wire or points (a
+ * helix about the axis unrolls at its own radius into a straight line).
  */
 export function unroll(shape: Part, options: UnrollOptions): Part
 export function unroll(shape: Shell, options: UnrollOptions): Shell
-export function unroll(shape: Deformable, options: UnrollOptions): Deformable {
+export function unroll(shape: Edge, options: UnrollOptions): Edge
+export function unroll(shape: Wire, options: UnrollOptions): Wire
+export function unroll(shape: VectorLike, options: UnrollOptions): Vector
+export function unroll(shape: readonly VectorLike[], options: UnrollOptions): Vector[]
+export function unroll(shape: unknown, options: UnrollOptions): Any {
   _opts('unroll', options)
   const { radius, axis = Z, start = null, tolerance = null } = options ?? ({} as UnrollOptions)
-  _checkShape(shape, 'unroll')
+  const input = _checkShape(shape, 'unroll')
   if (!_isNumber(radius)) throw new TypeError('unroll: radius must be a number')
   if (!(Number.isFinite(radius) && radius > 0)) {
     throw new RangeError('unroll: radius must be a positive number (the radius of the layer that keeps its length)')
   }
   if (!(axis instanceof Axis)) throw new TypeError('unroll: axis must be an Axis')
-  const plan = _planUnroll(shape, radius, axis, start, _tolerance(tolerance))
-  return _run(plan, 'unroll', shape)
+  const plan = _planUnroll(input, radius, axis, start, _tolerance(tolerance))
+  return _run(plan, 'unroll', input)
 }
 
 // ============================================================================= lattice
@@ -786,8 +1017,9 @@ export class Lattice {
   /**
    * @param box A BoundBox, or a shape whose bounding box is used.
    * @param counts Points per direction, one number or three, 2 to 12. 2 moves the corners only (a
-   *   trilinear map), 3 adds the midpoints (default), more give finer control. The degree of the
-   *   exact result grows with the counts (see `MAX_DEGREE`).
+   *   trilinear map), 3 adds the midpoints (default). Every point pulls the whole box (Bernstein
+   *   weights); more points concentrate a point's pull nearer to it without confining it. The
+   *   degree of the exact result grows with the counts (see `MAX_DEGREE`).
    * @param options `margin`: grow the box by this much on every side (mm).
    */
   constructor(box: BoundBox | { bbox(): BoundBox }, counts: number | readonly number[] = 3, options: { margin?: number } = {}) {
@@ -971,7 +1203,7 @@ export class Lattice {
     return new Vector(k.deform.map_points({ pieces: [this._spec()] }, [_vec(point).toArray()])[0])
   }
 
-  _plan(shape: Deformable, tol: number): _Plan {
+  _plan<S extends _Input>(shape: S, tol: number): _Plan<S> {
     return new _Plan(shape, { axis: null, pieces: [this._spec()], tolerance: tol }, [0.0, Infinity])
   }
 
@@ -980,16 +1212,22 @@ export class Lattice {
    *
    * The result is exact unless a face's image needs a degree above `MAX_DEGREE`; such faces are
    * within `tolerance`. Throws a ModelingError when the lattice folds the part onto itself (a
-   * point moved past its neighbours).
+   * point moved past its neighbours). An Edge or a Wire gives an Edge or a Wire (exact B-splines;
+   * lines and arcs the map only moves stay lines and arcs), points give points (as `map`); curves
+   * and points are not checked for folding.
    */
   apply(shape: Part, options?: { tolerance?: number | null }): Part
   apply(shape: Shell, options?: { tolerance?: number | null }): Shell
-  apply(shape: Deformable, options: { tolerance?: number | null } = {}): Deformable {
+  apply(shape: Edge, options?: { tolerance?: number | null }): Edge
+  apply(shape: Wire, options?: { tolerance?: number | null }): Wire
+  apply(shape: VectorLike, options?: { tolerance?: number | null }): Vector
+  apply(shape: readonly VectorLike[], options?: { tolerance?: number | null }): Vector[]
+  apply(shape: unknown, options: { tolerance?: number | null } = {}): Any {
     _opts('Lattice.apply', options)
-    _checkShape(shape, 'lattice')
-    const plan = this._plan(shape, _tolerance(options.tolerance))
-    _checkFolding(shape, plan.spec.pieces[0])
-    return _run(plan, 'lattice', shape)
+    const input = _checkShape(shape, 'lattice')
+    const plan = this._plan(input, _tolerance(options.tolerance))
+    if (_isBody(input)) _checkFolding(input, plan.spec.pieces[0])
+    return _run(plan, 'lattice', input)
   }
 
   toString(): string {
@@ -1050,7 +1288,7 @@ function _checkFolding(shape: _Body, piece: Record<string, unknown>): void {
     if (at < 0) at = det.reduce((best, x, i) => (x < det[best] ? i : best), 0)
     const w = samples[at]
     throw new ModelingError(
-      `lattice: the lattice folds the part onto itself near (${_formatG(w[0], 4)}, ${_formatG(w[1], 4)}, ${_formatG(w[2], 4)}); a point was moved past its neighbours. Move the points less, or use more points for local changes`,
+      `lattice: the lattice folds the part onto itself near (${_formatG(w[0], 4)}, ${_formatG(w[1], 4)}, ${_formatG(w[2], 4)}); a point was moved past its neighbours. Move the points less`,
     )
   }
 }

@@ -6,7 +6,8 @@ result is again a closed solid with the same topology (`len(part.faces())` does 
 except where a range splits faces, see below). Holes, fillets and pockets deform with the part.
 Methods on `Part`: `part.twist(...)`, `part.taper(...)`, `part.bend(...)`,
 `part.unroll(radius=...)`, `part.deform(lattice)`; functions `twist(shape, ...)`, ... also
-take a `Shell` or `Sketch` (result: `Shell`).
+take a `Shell` or `Sketch` (result: `Shell`), an `Edge` or `Wire` (result: the same kind, a
+path for a sweep) and points (result: `Vector`s; see `deform/curves`).
 
 ## Exact or within a tolerance
 | Face or edge | Result |
@@ -95,5 +96,6 @@ prints `twist True 6 40000.0`, `bend True 6 10000.0`, `bend, neutral at the bott
 and 4 planes, the cone 1 cone and 2 planes, the pillow 5 planes and its B-spline top.
 
 ## Related
-`deform/twist`, `deform/taper`, `deform/bend`, `deform/unroll`, `deform/Lattice`, `recipes/deform`;
+`deform/twist`, `deform/taper`, `deform/bend`, `deform/unroll`, `deform/Lattice`, `deform/curves`,
+`recipes/deform`;
 `sweep` and `loft` (model the shape directly), `extrude(taper=...)`.

@@ -2,7 +2,9 @@
 // D1): nearest points and closest points, curvature, NURBS data and iso curves of faces, continuity
 // of edges and wires, section properties, inertia about points and axes, the integration's budget,
 // K-factors per bend. D2-D4: analytic faces of deformed parts (a bent plate is sheet metal), unroll,
-// unfolding rolled parts, curls and bends over 180 degrees, volumes of deformed parts.
+// unfolding rolled parts, curls and bends over 180 degrees, volumes of deformed parts. D5: holes
+// across bends in the flat pattern. D6: edges, wires and points deform. D7: a lattice moves the
+// whole box.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { KernelError, ext } from '../src/kernel.ts'
@@ -41,6 +43,7 @@ import {
 } from '../src/index.ts'
 import { bends, din6935 } from '../src/sheetmetal.ts'
 import { Lattice, ModelingError, bendAllowance, fromStep, toStep, unroll } from '../src/index.ts'
+import { Edge, bend, makeFace, taper, twist as twistShape } from '../src/index.ts'
 import { MAX_DEGREE, _planBend } from '../src/deform.ts'
 import { k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
@@ -759,4 +762,145 @@ test('bendAllowance takes rolled angles', () => {
 test('deformed parts measure exactly', () => {
   approx(Box(100, 10, 10).bend(90).volume, 10000, 1e-12)
   assert.equal(Number(Box(20, 20, 100).twist(90).volume.toFixed(3)), 40000)
+})
+
+// -- D5: holes across bends in the flat pattern ----------------------------------------------------
+const plate = (length: number, width: number, t: number) => Box(length, width, t, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+
+test('a hole across a bend is one circle in the flat pattern', () => {
+  const blank = plate(100, 40, 2).cut(Cylinder(4, 10).translate(20, 0, 0))
+  const bracket = fold(blank, new Axis([20, 0, 2], [0, 1, 0]), 90, { radius: 2 })
+  const pattern = flatPattern(bracket)
+  const kinds = pattern.outline.edges().map((e) => e.geomType).sort()
+  assert.deepEqual(kinds, ['circle', 'line', 'line', 'line', 'line']) // was 3 arcs and 2 B-splines
+  const [hole] = pattern.outline.edges().circles()
+  assert.ok(hole.isClosed)
+  near(hole.radius, 4, 1e-9)
+  assert.ok(hole.arcCenter.sub(new Vector(70, 20, 0)).length < 1e-9)
+  approx(pattern.outline.area, 4000 - 16 * Math.PI, 1e-12)
+  // the hole's edges across the bend come back round: 1.85e-5 off before (fitted within 1e-4)
+  let worst = 0
+  for (const e of bracket.unfold().edges()) {
+    if (e.geomType !== 'bspline') continue
+    for (let i = 0; i <= 64; i++) {
+      const q = e.pointAt(i / 64)
+      worst = Math.max(worst, Math.abs(Math.hypot(q.x - 20, q.y) - 4))
+    }
+  }
+  assert.ok(worst > 0 && worst < 1e-7, `${worst}`)
+})
+
+test('holes inside a bend zone unfold into a flat pattern', () => {
+  // two holes wholly inside an R20 bend: the flat pattern threw "the unfolded part is 3.37494 deep"
+  const blank = plate(200, 60, 3)
+    .cut(Cylinder(6, 10).translate(10, -15, 0))
+    .cut(Cylinder(6, 10).translate(25, 15, 0))
+  const part = fold(blank, new Axis([20, 0, 3], [0, 1, 0]), 120, { radius: 20 })
+  const pattern = flatPattern(part)
+  near(pattern.size.x, 200, 1e-9)
+  near(pattern.size.y, 60, 1e-9)
+  near(pattern.size.z, 3, 1e-6) // (the part's box is 3.375 deep: its fitted hole walls)
+  const holes = pattern.outline.edges().circles()
+  assert.equal(holes.length, 2)
+  assert.equal(pattern.outline.edges().length, 6)
+  const centers = holes.map((h) => [h.arcCenter.x, h.arcCenter.y]).sort((a, b) => a[0] - b[0])
+  near(centers[0][0], 110, 1e-6)
+  near(centers[0][1], 15, 1e-6)
+  near(centers[1][0], 125, 1e-6)
+  near(centers[1][1], 45, 1e-6)
+  for (const h of holes) near(h.radius, 6, 1e-6)
+  approx(pattern.outline.area, 200 * 60 - 72 * Math.PI, 1e-9)
+  near(Math.min(...pattern.part.edges().map((e) => e.bbox().min.z)), 0, 1e-12) // the bottom at z = 0
+})
+
+test('fitted lines across a bend and free shapes in the flat pattern', () => {
+  // a corner cut at 45 degrees across the bend: lines in the outline (were 2 B-splines)
+  const cut = fold(plate(100, 40, 2).cut(Box(30, 30, 10).rotate(Z, 45).translate(20, 20, 0)), new Axis([20, 0, 2], [0, 1, 0]), 90, {
+    radius: 2,
+  })
+  assert.deepEqual([...new Set(flatPattern(cut).outline.edges().map((e) => e.geomType))], ['line'])
+  // a spline cutout stays a spline
+  const region = makeFace(new Wire([Spline([-40, -5], [-30, 5], [-20, -5]), Line([-20, -5], [-40, -5])]))
+  const part = fold(plate(100, 40, 2).cut(region.extrude(10).translate(0, 0, -2)), new Axis([20, 0, 2], [0, 1, 0]), 90, { radius: 2 })
+  assert.equal(flatPattern(part).outline.edges().filter((e) => e.geomType === 'bspline').length, 1)
+})
+
+// -- D6: edges, wires and points -------------------------------------------------------------------
+test('a line bent in its middle is a line, an arc and a line', () => {
+  const line = Line([-50, 0, 0], [50, 0, 0])
+  const path = bend(new Wire([line]), 90, { radius: 10 })
+  assert.deepEqual(path.edges().map((e) => e.geomType), ['line', 'circle', 'line'])
+  const [a, arc, b] = path.edges()
+  const s = (5 * Math.PI) / 2 // half the bend's length: it is centered on the plane origin
+  approx(a.length, 50 - s, 1e-12)
+  approx(b.length, 50 - s, 1e-12)
+  approx(arc.radius, 10, 1e-12)
+  approx(arc.length, (10 * Math.PI) / 2, 1e-12)
+  assert.ok(arc.arcCenter.sub(new Vector(-s, 0, 10)).length < 1e-12)
+  assert.ok(path.end.sub(new Vector(10 - s, 0, 10 + 50 - s)).length < 1e-9)
+  const edge = bend(line, 90, { radius: 10 }) // an Edge stays one edge: the pieces joined
+  assert.ok(edge instanceof Edge)
+  approx(edge.length, 100, 1e-12)
+  assert.ok(edge.end.sub(path.end).length < 1e-9 && edge.pointAt(0.5).sub(path.pointAt(0.5)).length < 1e-9)
+  const whole = bend(line, 90) // the whole line: one exact arc
+  assert.equal(whole.geomType, 'circle')
+  approx(whole.radius, 200 / Math.PI, 1e-12)
+  // a closed wire stays closed, its edges split where they cross the range ends
+  const ring = bend(Polyline([-50, -5, 0], [50, -5, 0], [50, 5, 0], [-50, 5, 0], { close: true }), 90, { radius: 10 })
+  assert.ok(ring.isClosed)
+  assert.equal(ring.edges().length, 8)
+})
+
+test('twisted, tapered, unrolled and lattice curves', () => {
+  const helix = twistShape(Line([10, 0, 0], [10, 0, 100]), 90) // a quarter turn of a helix, within 1e-6
+  assert.equal(helix.geomType, 'bspline')
+  for (let i = 0; i <= 10; i++) {
+    const q = helix.pointAt(i / 10)
+    near(Math.hypot(q.x, q.y), 10, 1e-6)
+    near((Math.atan2(q.y, q.x) * 180) / Math.PI, 0.9 * q.z, 1e-5)
+  }
+  const rim = taper(CenterArc([0, 0, 50], 10, 0, 360), 0.5, { start: 0, end: 100 }) // the middle: 3/4 of the size
+  assert.equal(rim.geomType, 'circle')
+  approx(rim.radius, 7.5, 1e-12)
+  const flat = unroll(Helix(100, 40, 10), { radius: 10 }) // 0.4 turn: a straight line
+  assert.equal(flat.geomType, 'line')
+  approx(flat.length, Math.hypot(40, 8 * Math.PI), 1e-6)
+  const lat = new Lattice(Box(60, 40, 20), 3)
+  lat.move([1, 1, -1], [0, 0, 8])
+  const lifted = lat.apply(Line([-30, 0, 10], [30, 0, 10])) // exact: the lattice's image of the line
+  assert.equal(lifted.geomType, 'bspline')
+  for (let i = 0; i <= 12; i++) assert.ok(lifted.distanceTo(lat.map([-30 + 5 * i, 0, 10])) < 1e-9)
+  near(lifted.pointAt(0.5).z, 12, 1e-9) // 8 * 1/2 * 1/2 at the middle
+})
+
+test('points deform as the part they belong to', () => {
+  assert.ok(twistShape([10, 0, 100], 90, { start: 0, end: 100 }).sub(new Vector(0, 10, 100)).length < 1e-12)
+  const moved = twistShape([[10, 0, 0], [10, 0, 50], new Vector(10, 0, 150)], 90, { start: 0, end: 100 })
+  assert.ok(Array.isArray(moved) && moved.length === 3)
+  assert.ok(moved[1].sub(new Vector(10 / Math.SQRT2, 10 / Math.SQRT2, 50)).length < 1e-12)
+  assert.ok(moved[2].sub(new Vector(0, 10, 150)).length < 1e-12) // beyond end: turned by the whole angle
+  const bar = Box(100, 10, 10, { align: [Align.MIN, Align.CENTER, Align.CENTER] })
+  const bent = bar.bend(90) // the corner (100, 5, 5) where the bend moved it
+  const corner = bend([100, 5, 5], 90, { start: 0, end: 100 })
+  assert.ok(Math.min(...bent.vertices().map((v) => v.point.sub(corner).length)) < 1e-9)
+  assert.ok(taper([10, 0, 100], 0.5, { start: 0, end: 100 }).sub(new Vector(5, 0, 100)).length < 1e-12)
+  const lat = new Lattice(Box(60, 40, 20), 3)
+  lat.move([1, 1, -1], [0, 0, 8])
+  assert.ok(lat.apply([0, 0, 10]).equals(lat.map([0, 0, 10])))
+  assert.ok(unroll([10, 0, 0], { radius: 10, start: [1, 0, 0] }).sub(new Vector(10, 0, 0)).length < 1e-12)
+  raises(() => twistShape([10, 0, 100], 90), RangeError, /give start and end for points/)
+  raises(() => twistShape(Z as never, 90), TypeError, /Part, a Shell, an Edge, a Wire or points/)
+})
+
+// -- D7: a lattice is a global map -----------------------------------------------------------------
+test('a lattice point moves the whole box', () => {
+  const lat = new Lattice(Box(60, 40, 20), 3)
+  lat.move([1, 1, -1], [0, 0, 8])
+  near(lat.map([0, 0, 10]).z, 12, 1e-12) // 8 * 1/2 * 1/2
+  // far from the point too: the top's corner region and the middle of the block move
+  assert.ok(lat.map([25, 15, 10]).z > 10.25)
+  near(lat.map([0, 0, 0]).z, 0.5, 1e-12)
+  assert.ok(lat.map([30, 20, 10]).equals(new Vector(30, 20, 10))) // only the box's corners stay
+  const pillow = lat.apply(Box(60, 40, 20))
+  assert.equal(pillow.faces().filter((f) => f.geomType === 'plane').length, 5) // faces left in place keep their type
 })

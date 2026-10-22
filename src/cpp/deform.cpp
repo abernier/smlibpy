@@ -1246,9 +1246,10 @@ SmSurface* map_surface(SmFace* face, const Piece& piece, const Deformation& def,
     return out;
 }
 
-SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Stats& st)
+// The image of a curve over the interval `ivl` of its parameters (an edge's curve, or a
+// standalone curve), fitted keeping its parameters; null where the piece leaves it as it is.
+SmCurve* map_curve(const SmCurve* c, const SmExtent1d& ivl, const Piece& piece, const Deformation& def, Stats& st)
 {
-    const SmCurve* c = edge->GetCurve();
     if (!c || piece.kind == Piece::IDENTITY)
     {
         ++st.edges_kept;
@@ -1263,7 +1264,6 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
         return copy;
     }
     CurveInfo info = curve_info(c);
-    SmExtent1d ivl = edge->GetInterval();
     CurveFit fit;
     const Breaks tb = breaks_in(info.k, info.m, info.p, ivl.GetMin(), ivl.GetMax());
     const SmCurve* wcurve = info.weight.get();
@@ -1305,6 +1305,11 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
     }
     st.max_degree = std::max(st.max_degree, fit.s.d);
     return out;
+}
+
+SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Stats& st)
+{
+    return map_curve(edge->GetCurve(), edge->GetInterval(), piece, def, st);
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,6 +1652,190 @@ smlibpy::Deformed deform(const SmBrep* brep, const smlibpy::DeformSpec& spec)
     return {out, stats_of(st)};
 }
 
+// ---------------------------------------------------------------------------
+// Curves
+// ---------------------------------------------------------------------------
+
+// The parameters in (t0, t1) where a curve crosses the ends of the pieces along the deformation's
+// axis: sign changes of the distance to each end's plane on a dense sampling (64 points per knot
+// span of a B-spline, 512 at least), refined by bisection.
+std::vector<double> crossings(const SmCurve* c, double t0, double t1, const Deformation& def, double size)
+{
+    std::vector<double> cuts;
+    if (!def.has_axis || def.pieces.size() < 2 || !(t1 > t0))
+        return cuts;
+    std::vector<double> ends;
+    for (size_t i = 0; i + 1 < def.pieces.size(); ++i)
+        if (std::abs(def.pieces[i]->hi) < kInf)
+            ends.push_back(def.pieces[i]->hi);
+    if (ends.empty())
+        return cuts;
+    std::vector<double> ts;
+    {
+        const CurveInfo info = curve_info(c);
+        const int n = std::clamp(64 * static_cast<int>(info.k.size()), 512, 1 << 16);
+        for (int k = 0; k <= n; ++k)
+            ts.push_back(t0 + (t1 - t0) * k / n);
+    }
+    auto along = [&](double t) {
+        SmPoint3d p;
+        check(c->EvaluatePoint(t, p), "SmCurve::EvaluatePoint");
+        return (p - def.origin).Dot(def.direction);
+    };
+    std::vector<double> h(ts.size());
+    for (size_t k = 0; k < ts.size(); ++k)
+        h[k] = along(ts[k]);
+    const double eps = 1e-12 * std::max(1.0, size);
+    for (const double e : ends)
+    {
+        auto sign = [&](double x) { return x - e > eps ? 1 : (x - e < -eps ? -1 : 0); };
+        int last = 0;
+        size_t at = 0;
+        for (size_t k = 0; k < ts.size(); ++k)
+        {
+            const int sk = sign(h[k]);
+            if (sk == 0)
+                continue;
+            if (last != 0 && sk != last)
+            {
+                // a crossing between ts[at] (side `last`) and ts[k]
+                double a = ts[at], b = ts[k];
+                for (int it = 0; it < 200 && b - a > 1e-15 * std::max(1.0, std::abs(t1 - t0)); ++it)
+                {
+                    const double m = 0.5 * (a + b);
+                    if ((along(m) > e) == (last > 0))  // (the exact crossing, not the edge of the band)
+                        a = m;
+                    else
+                        b = m;
+                }
+                cuts.push_back(0.5 * (a + b));
+            }
+            last = sk, at = k;
+        }
+    }
+    std::sort(cuts.begin(), cuts.end());
+    std::vector<double> out;
+    const double gap = 1e-12 * std::max(1.0, std::abs(t1 - t0));
+    for (double t : cuts)
+        if (t - t0 > gap && t1 - t > gap && (out.empty() || t - out.back() > gap))
+            out.push_back(t);
+    return out;
+}
+
+// A curve sent through the deformation: split where it crosses the ends of the pieces, every
+// segment mapped by its piece (an analytic image where it is one, else fitted like the edges of a
+// Brep). The curves are the caller's.
+smlibpy::DeformedCurve deform_curve_impl(const SmCurve* curve, const smlibpy::DeformSpec& spec)
+{
+    if (!curve)
+        throw std::invalid_argument("deform_curve: no curve");
+    const SmExtent1d ivl = curve->GetNaturalInterval();
+    const double t0 = ivl.GetMin(), t1 = ivl.GetMax();
+    if (!(t1 > t0))
+        throw std::invalid_argument("deform_curve: the curve has no length");
+    // its size, for the tolerances
+    double size = 0.0;
+    {
+        SmPoint3d first, p;
+        check(curve->EvaluatePoint(t0, first), "SmCurve::EvaluatePoint");
+        for (int k = 1; k <= 32; ++k)
+        {
+            check(curve->EvaluatePoint(t0 + (t1 - t0) * k / 32, p), "SmCurve::EvaluatePoint");
+            size = std::max(size, first.DistanceBetween(p));
+        }
+    }
+    std::unique_ptr<Deformation> def = make_deformation(spec, std::max(size, 1.0));
+    std::vector<double> breaks{t0};
+    for (double t : crossings(curve, t0, t1, *def, size))
+        breaks.push_back(t);
+    breaks.push_back(t1);
+
+    Stats st;
+    std::vector<std::unique_ptr<SmCurve>> out;
+    for (size_t i = 0; i + 1 < breaks.size(); ++i)
+    {
+        const double a = breaks[i], b = breaks[i + 1];
+        SmPoint3d mid;
+        check(curve->EvaluatePoint(0.5 * (a + b), mid), "SmCurve::EvaluatePoint");
+        const Piece& piece = *def->pieces[def->piece_at(mid)];
+        SmCurve* raw = nullptr;
+        check(curve->Copy(ctx(), raw), "SmCurve::Copy");
+        std::unique_ptr<SmCurve> segment(raw);
+        if (breaks.size() > 2)
+        {
+            SmExtent1d part(a, b);
+            check(segment->Trim(part), "SmCurve::Trim");
+        }
+        const SmExtent1d sivl = segment->GetNaturalInterval();
+        SmCurve* mapped = nullptr;
+        if (def->analytic && (piece.kind == Piece::VOLUME || piece.kind == Piece::LATTICE))
+        {
+            const smlibpy::analytic::CurveImage image = smlibpy::analytic::curve_image(
+                segment.get(), sivl, [&piece](const SmPoint3d& q) { return piece.map(q); }, def->exact_tol);
+            if (image.curve)
+            {
+                mapped = image.curve;
+                ++st.edges_exact, ++st.edges_analytic;
+            }
+        }
+        if (!mapped)
+            mapped = map_curve(segment.get(), sivl, piece, *def, st);
+        std::unique_ptr<SmCurve> result(mapped ? mapped : segment.release());
+        // the NURBS data of analytic curves, built at once (the kernel builds it only when asked)
+        if (result->IsKindOf(SmBSplineCurve_TYPE) &&
+            !static_cast<SmBSplineCurve*>(result.get())->GetOrCreateGwNurbPointer())
+            throw std::runtime_error("deform_curve: a deformed segment has no NURBS form");
+        out.push_back(std::move(result));
+    }
+    smlibpy::DeformedCurve r;
+    r.stats = stats_of(st);
+    for (auto& c : out)
+        r.curves.push_back(c.release());
+    return r;
+}
+
+// A curve (a procedural one, such as the kernel's SmCrvInVolume) fitted over [t0, t1] keeping its
+// parameters, on the knots of `base` (the original it maps): exact where it is polynomial of the
+// original's degree, quintic splines whose spans are halved elsewhere (as the edges of a deformed
+// Brep). Null when it cannot be fitted within the tolerance.
+SmBSplineCurve* fit_keeping_impl(const SmCurve* curve, const SmCurve* base, double t0, double t1, double tolerance)
+{
+    if (!curve || !(t1 > t0) || !(tolerance > 0.0))
+        return nullptr;
+    try
+    {
+        const CurveInfo info = curve_info(base ? base : curve);
+        const SmCurve* wcurve = info.weight.get();
+        const CurveFn fn = [curve, wcurve](double t) {
+            SmPoint3d p;
+            check(curve->EvaluatePoint(t, p), "SmCurve::EvaluatePoint");
+            double w = 1.0;
+            if (wcurve)
+            {
+                SmPoint3d wp;
+                check(wcurve->EvaluatePoint(t, wp), "SmCurve::EvaluatePoint");
+                w = wp.x;
+            }
+            return hom(p, w);
+        };
+        double size = 0.0;
+        const SmPoint3d first = euclid(fn(t0));
+        for (int k = 1; k <= 16; ++k)
+            size = std::max(size, first.DistanceBetween(euclid(fn(t0 + (t1 - t0) * k / 16))));
+        const double exact_tol = std::min(1e-11 * std::max(1.0, size), 0.01 * tolerance);
+        CurveFit fit;
+        fit_approx_curve(fn, fit, breaks_in(info.k, info.m, info.p, t0, t1), info.nurbs ? info.p : 3, 0.5 * tolerance,
+                         exact_tol, 5);
+        if (!(fit.err <= 0.5 * tolerance))
+            return nullptr;
+        return build_curve(fit, fit.err <= exact_tol ? exact_tol : 0.25 * tolerance);
+    }
+    catch (const std::exception&)
+    {
+        return nullptr;
+    }
+}
+
 // The kernel's own composition (SmSrfInVolume / SmCrvInVolume, procedural and exact), for checks.
 SmBrep* composite(const SmBrep* brep, const smlibpy::DeformSpec& spec)
 {
@@ -1803,6 +1992,14 @@ Deformed deform_brep(const SmBrep* brep, const DeformSpec& spec) { return deform
 
 SmBrep* composite_brep(const SmBrep* brep, const DeformSpec& spec) { return composite(brep, spec); }
 
+DeformedCurve deform_curve(const SmCurve* curve, const DeformSpec& spec) { return deform_curve_impl(curve, spec); }
+
+SmBSplineCurve* fit_curve_keeping_parameters(const SmCurve* curve, const SmCurve* base, double t0, double t1,
+                                             double tolerance)
+{
+    return fit_keeping_impl(curve, base, t0, t1, tolerance);
+}
+
 Deviation deviation(const SmBrep* source, const SmBrep* result, const DeformSpec& spec, int samples)
 {
     return distance(source, result, spec, samples);
@@ -1912,6 +2109,25 @@ void bind_deform(py::module_& parent)
           "analytic geometry where the exact image is analytic (unless spec['analytic'] is False). The "
           "spec lists pieces of kernel volume maps (identity, rigid, affine, twist, bend, unbend, lattice) "
           "along an optional axis, or with spec['faces'] the piece of every face. Returns (brep, report).");
+
+    m.def("deform_curve", [](const SmCurve* curve, const py::dict& spec) {
+        const smlibpy::DeformedCurve r = smlibpy::deform_curve(curve, spec_from(spec));
+        py::list curves;
+        for (SmCurve* c : r.curves)
+            curves.append(py::cast(c, py::return_value_policy::take_ownership));
+        py::dict d;
+        d["edges_kept"] = r.stats.edges_kept;
+        d["edges_exact"] = r.stats.edges_exact;
+        d["edges_approximated"] = r.stats.edges_approximated;
+        d["edges_analytic"] = r.stats.edges_analytic;
+        d["max_error"] = r.stats.max_error;
+        d["max_degree"] = r.stats.max_degree;
+        return py::make_tuple(curves, d);
+    }, py::arg("curve"), py::arg("spec"),
+          "Send a copy of a curve (over its natural interval) through a space deformation: split where it "
+          "crosses the ends of the pieces along the spec's axis, every segment an analytic image (line, "
+          "circle, moved copy) where it is one, else NURBS (exact where the composition is polynomial, within "
+          "spec['tolerance'] elsewhere). Returns (curves, report): the segments in order, the caller's.");
 
     m.def("composite_brep", [](const SmBrep* brep, const py::dict& spec) {
         return smlibpy::composite_brep(brep, spec_from(spec));

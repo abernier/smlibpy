@@ -670,7 +670,11 @@ CurveImage curve_image(SmEdge* edge, const Map& map, double tol)
     const SmCurve* c = edge->GetCurve();
     if (!c)
         return {};
-    const SmExtent1d ivl = edge->GetInterval();
+    return curve_image(c, edge->GetInterval(), map, tol);
+}
+
+CurveImage curve_image(const SmCurve* c, const SmExtent1d& ivl, const Map& map, double tol)
+{
     const double ta = ivl.GetMin(), tb = ivl.GetMax();
     if (!(tb > ta))
         return {};

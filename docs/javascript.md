@@ -922,17 +922,29 @@ export interface TwistOptions extends RangeOptions {
 }
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part;
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell;
+export function twist(shape: Edge, angle: number, options?: TwistOptions): Edge;
+export function twist(shape: Wire, angle: number, options?: TwistOptions): Wire;
+export function twist(shape: VectorLike, angle: number, options?: TwistOptions): Vector;
+export function twist(shape: readonly VectorLike[], angle: number, options?: TwistOptions): Vector[];
 export interface TaperOptions extends RangeOptions {
     axis?: Axis;
 }
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part;
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell;
+export function taper(shape: Edge, scale: number, options?: TaperOptions): Edge;
+export function taper(shape: Wire, scale: number, options?: TaperOptions): Wire;
+export function taper(shape: VectorLike, scale: number, options?: TaperOptions): Vector;
+export function taper(shape: readonly VectorLike[], scale: number, options?: TaperOptions): Vector[];
 export interface BendOptions extends RangeOptions {
     radius?: number | null;
     plane?: Plane;
 }
 export function bend(shape: Part, angle: number, options?: BendOptions): Part;
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell;
+export function bend(shape: Edge, angle: number, options?: BendOptions): Edge;
+export function bend(shape: Wire, angle: number, options?: BendOptions): Wire;
+export function bend(shape: VectorLike, angle: number, options?: BendOptions): Vector;
+export function bend(shape: readonly VectorLike[], angle: number, options?: BendOptions): Vector[];
 export interface UnrollOptions {
     radius: number;
     axis?: Axis;
@@ -941,6 +953,10 @@ export interface UnrollOptions {
 }
 export function unroll(shape: Part, options: UnrollOptions): Part;
 export function unroll(shape: Shell, options: UnrollOptions): Shell;
+export function unroll(shape: Edge, options: UnrollOptions): Edge;
+export function unroll(shape: Wire, options: UnrollOptions): Wire;
+export function unroll(shape: VectorLike, options: UnrollOptions): Vector;
+export function unroll(shape: readonly VectorLike[], options: UnrollOptions): Vector[];
 export class Lattice {
     points: number[][][][];
     constructor(box: BoundBox | {
@@ -965,6 +981,18 @@ export class Lattice {
     apply(shape: Shell, options?: {
         tolerance?: number | null;
     }): Shell;
+    apply(shape: Edge, options?: {
+        tolerance?: number | null;
+    }): Edge;
+    apply(shape: Wire, options?: {
+        tolerance?: number | null;
+    }): Wire;
+    apply(shape: VectorLike, options?: {
+        tolerance?: number | null;
+    }): Vector;
+    apply(shape: readonly VectorLike[], options?: {
+        tolerance?: number | null;
+    }): Vector[];
     toString(): string;
 }
 ```

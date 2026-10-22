@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence, Union
 
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import Axis, Location, Plane, Vector, VectorLike, _vec
+from .geometry import Axis, BoundBox, Location, Plane, Vector, VectorLike, _vec
 from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex
 
 __all__ = [
@@ -309,8 +309,8 @@ class FlatPattern:
 
     @property
     def size(self) -> Vector:
-        """Size of the blank: (length along X, width along Y, thickness)."""
-        return self.part.bbox().size
+        """Size of the blank: (length along X, width along Y, thickness), measured on its edges."""
+        return _edge_box(self.part).size
 
     def __repr__(self) -> str:
         s = self.size
@@ -1104,8 +1104,7 @@ def _finish(work: Part, anchor: Any, done: list[tuple[_BendGeom, Vector, Vector,
         thickness = _thickness_behind(_planar_faces(work), base_face.interior_point(), base_face.normal_at(),
                                       _tol(work))
     if thickness is not None:
-        pl = base_face.plane
-        depth = work.moved(Plane(pl.origin, z_dir=pl.z_dir).location.inverse()).bbox().size.z
+        depth = _depth(work, base_face.plane)
         if abs(depth - thickness) > _tol(work):
             raise ModelingError(f"{what}: the unfolded part is {depth:.6g} deep across the fixed face, the sheet is "
                                 f"{thickness:.6g} thick: some of it is not a bend (only pairs of coaxial cylinder "
@@ -1115,6 +1114,21 @@ def _finish(work: Part, anchor: Any, done: list[tuple[_BendGeom, Vector, Vector,
                             f"{hint}")
     work._folds = ()  # flat: no bends left
     return _Unfolded(work, base_face, done, thickness, _common_k([d[4] for d in done], k_factor))
+
+
+def _edge_box(part: Part) -> BoundBox:
+    """The box around a flat sheet's edges. (Its own box can be larger: the surface of a fitted
+    face, such as the wall of a hole that crossed a bend, may reach past the face's edges, and
+    the kernel's tight box samples the surface: 0.19 mm too deep for an R20 bend's hole.)"""
+    box = None
+    for e in part.edges():
+        box = e.bbox() if box is None else box.union(e.bbox())
+    return part.bbox() if box is None else box
+
+
+def _depth(part: Part, plane: Plane) -> float:
+    """How deep a flat part is across a plane: the extent of its edges along the plane's normal."""
+    return _edge_box(part.moved(Plane(plane.origin, z_dir=plane.z_dir).location.inverse())).size.z
 
 
 def _loops(edges: list[Edge], tol: float) -> list[list[Edge]]:
@@ -1137,9 +1151,149 @@ def _loops(edges: list[Edge], tol: float) -> list[list[Edge]]:
     return loops
 
 
+# How far a fitted piece of the cut contour may be from a line or an arc to become one (mm; 1e-9
+# of the part's size for parts over 1 m). The edges of bend zones are fitted within 1e-7
+# (sheetmetal.cpp), so a hole across a bend comes back from fold and unfold within this of its
+# circle.
+_CONTOUR_TOLERANCE = 1e-6
+
+
+def _turn_about(e: Edge, center: Vector, n: int = 32) -> tuple[float, float] | None:
+    """The angle (radians, signed: counterclockwise positive) an edge in the XY plane turns about
+    ``center``, and the largest step between its samples; None if it turns back."""
+    total, step, last = 0.0, 0.0, None
+    sign = 0.0
+    for i in range(n + 1):
+        p = e.point_at(i / n)
+        a = math.atan2(p.y - center.y, p.x - center.x)
+        if last is not None:
+            d = (a - last + math.pi) % (2 * math.pi) - math.pi
+            if d * sign < 0:
+                return None
+            if d:
+                sign = math.copysign(1.0, d)
+            total += d
+            step = max(step, abs(d))
+        last = a
+    return total, step
+
+
+def _on_circle(e: Edge, center: Vector, radius: float, tol: float, n: int = 32) -> bool:
+    """Whether an edge of the contour (in the XY plane) lies on the circle (center, radius)."""
+    return all(abs(math.hypot(p.x - center.x, p.y - center.y) - radius) <= tol
+               for p in (e.point_at(i / n) for i in range(n + 1)))
+
+
+def _arc_of(center: Vector, radius: float, start: Vector, end: Vector, turn: float, closed: bool) -> Edge:
+    """The arc of the circle (center, radius) parallel to the XY plane (at the height of ``start``)
+    from ``start`` turning by ``turn`` radians to ``end``: through both ends exactly, or the whole
+    circle from ``start``."""
+    from .curves import CenterArc, ThreePointArc
+
+    a0 = math.atan2(start.y - center.y, start.x - center.x)
+    if closed:
+        return CenterArc((center.x, center.y, start.z), radius, math.degrees(a0), math.copysign(360.0, turn))
+    am = a0 + turn / 2
+    mid = Vector(center.x + radius * math.cos(am), center.y + radius * math.sin(am), (start.z + end.z) / 2)
+    return ThreePointArc(start, mid, end)
+
+
+def _as_line_or_arc(e: Edge, circles: list[tuple[Vector, float]], tol: float) -> Edge:
+    """A fitted (B-spline) piece of the cut contour as the line or arc it is within ``tol``: on
+    one of ``circles`` (those of the loop's exact arcs) first, else on the circle through its
+    ends and middle."""
+    from .curves import Line
+
+    if e.geom_type != "bspline" or e.length <= 10 * tol:
+        return e
+    a, b = e.start, e.end
+    chord = b - a
+    pts = [e.point_at(i / 32) for i in range(33)]
+    if chord.length > tol:
+        u = chord.normalized()
+        along = [(p - a).dot(u) for p in pts]
+        if all(((p - a) - u * t).length <= tol for p, t in zip(pts, along)) and \
+                all(t1 >= t0 - tol for t0, t1 in zip(along, along[1:])):
+            return Line(a, b)
+    candidates = list(circles)
+    closed = a.is_close(b, tol)
+    if closed:  # the circle through three points spread along it
+        a, m = e.point_at(1 / 3), e.point_at(2 / 3)
+        b = e.start
+    else:
+        m = e.point_at(0.5)
+    ab, am = b - a, m - a
+    nz = ab.x * am.y - ab.y * am.x
+    if abs(nz) > tol * max(ab.length, am.length, 1.0):  # the circle through start, middle and end (2D)
+        ab2, am2 = ab.x * ab.x + ab.y * ab.y, am.x * am.x + am.y * am.y
+        cx = a.x + (am.y * ab2 - ab.y * am2) / (2 * nz)
+        cy = a.y + (ab.x * am2 - am.x * ab2) / (2 * nz)
+        c = Vector(cx, cy, a.z)
+        candidates.append((c, math.hypot(a.x - cx, a.y - cy)))
+    for center, radius in candidates:
+        if not _on_circle(e, center, radius, tol):
+            continue
+        turned = _turn_about(e, center)
+        if turned is None or not abs(turned[0]) > 1e-9 or turned[1] > math.pi / 4:
+            continue
+        return _arc_of(center, radius, e.start, e.end, turned[0], closed)
+    return e
+
+
+def _merged_arcs(loop: list[Edge], tol: float) -> list[Edge]:
+    """A closed loop of the contour with arcs of one circle that follow each other merged into one
+    arc (the whole loop into one circle)."""
+    def circle(e: Edge) -> tuple[Vector, float] | None:
+        return (e.arc_center, e.radius) if e.geom_type == "circle" else None
+
+    def same(c1: tuple[Vector, float] | None, c2: tuple[Vector, float] | None) -> bool:
+        return c1 is not None and c2 is not None and c1[0].is_close(c2[0], tol) and abs(c1[1] - c2[1]) <= tol
+
+    n = len(loop)
+    if n < 2:
+        return loop
+    cs = [circle(e) for e in loop]
+    turns = []
+    for e, c in zip(loop, cs):
+        turned = _turn_about(e, c[0]) if c is not None else None
+        turns.append(turned[0] if turned is not None else 0.0)
+
+    def joins(i: int) -> bool:  # edge i and edge i + 1 are arcs of one circle turning the same way
+        j = (i + 1) % n
+        return same(cs[i], cs[j]) and turns[i] * turns[j] > 0
+
+    if all(joins(i) for i in range(n)):
+        center, radius = cs[0]  # type: ignore[misc]
+        return [_arc_of(center, radius, loop[0].start, loop[0].start, sum(turns), True)]
+    first = next(i for i in range(n) if not joins(i)) + 1  # a run starts here
+    order = [(first + i) % n for i in range(n)]
+    out: list[Edge] = []
+    run: list[int] = []
+    for idx in order:
+        run.append(idx)
+        if not joins(idx):
+            if len(run) == 1:
+                out.append(loop[idx])
+            else:
+                center, radius = cs[run[0]]  # type: ignore[misc]
+                out.append(_arc_of(center, radius, loop[run[0]].start, loop[run[-1]].end,
+                                   sum(turns[r] for r in run), False))
+            run = []
+    return out
+
+
+def _clean_loop(loop: list[Edge], tol: float) -> list[Edge]:
+    """A loop of the cut contour with its fitted pieces made the lines and arcs they are and arcs of
+    one circle merged (a hole that crossed a bend: 3 arcs and 2 B-splines -> one circle)."""
+    circles = [(e.arc_center, e.radius) for e in loop if e.geom_type == "circle"]
+    return _merged_arcs([_as_line_or_arc(e, circles, tol) for e in loop], tol)
+
+
 def _cut_contour(laid: Part, tol: float) -> Sketch:
     """The cutting contour at z = 0: the edges that only one bottom face of the flat uses (the
-    others are the edges of the bend zones), joined into loops, collinear pieces merged."""
+    others are the edges of the bend zones), joined into loops; fitted pieces that are lines or
+    arcs within :data:`_CONTOUR_TOLERANCE` made lines and arcs, arcs of one circle and collinear
+    lines merged."""
     from .shapes import Wire, _merged_lines
 
     count: dict[Any, list[Edge]] = {}
@@ -1148,7 +1302,8 @@ def _cut_contour(laid: Part, tol: float) -> Sketch:
             for e in f.edges():
                 count.setdefault(e._identity(), []).append(e)
     boundary = [es[0] for es in count.values() if len(es) == 1]
-    wires = [_merged_lines(Wire._raw(loop)) for loop in _loops(boundary, tol)]
+    fit = max(_CONTOUR_TOLERANCE, 1e-9 * laid._extent())
+    wires = [_merged_lines(Wire._raw(_clean_loop(loop, fit))) for loop in _loops(boundary, tol)]
     with kernel_call("flat_pattern", "the outline of the flat part could not be made into a sketch"):
         return Sketch._from_wires(wires, Plane.XY)
 
@@ -1243,7 +1398,7 @@ def flat_pattern(part: Part, *, k_factor: KFactor = None, fixed: Face | None = N
     frame = Plane(base_plane.origin, x_dir=_long_side(flat, Plane(base_plane.origin, z_dir=n_base)), z_dir=-n_base)
     to_xy = frame.location.inverse()
     laid = flat.moved(to_xy)
-    shift = Location(-laid.bbox().min)
+    shift = Location(-_edge_box(laid).min)
     laid = laid.moved(shift)
     place = shift * to_xy
     t = float(thickness)

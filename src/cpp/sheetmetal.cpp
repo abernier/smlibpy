@@ -7,7 +7,7 @@
 // Everything in the bend region (a strip of the bend allowance's width in the flat, a cylinder
 // sector when bent) is mapped through an exact bend volume; everything before and after it is
 // moved rigidly. Planes parallel to the sheet become exact cylinders, lines exact lines and
-// circles; other geometry crossing the region becomes NURBS within 1e-4.
+// circles; other geometry crossing the region becomes NURBS: faces within 1e-4, edges within 1e-7.
 //
 // The orchestration of the kernel (SmSpaceBend::DoSpaceBend, SmSpaceUnbend::DoSpaceUnbend) is
 // redone here with the kernel's own steps, because in usd-brep 1.0.0
@@ -31,11 +31,13 @@
 // and surface at once. Callers make sure the region holds nothing but flat sheet (bend) or one
 // bend (unbend); a region that does not cut the body in two is refused here.
 
+#include "deform.h"
 #include "kernel.h"
 #include "sheetmetal.h"
 
 #include <SmApiGeneral.h>
 #include <SmBendVolume.h>
+#include <SmCrvInVolume.h>
 #include <SmCylinder.h>
 #include <SmMerge.h>
 #include <SmPlane.h>
@@ -285,12 +287,53 @@ void move_cylinder_onto_face(SmBSplineSurface* cylinder, SmFace* face)
     cylinder->Transform(shift);
 }
 
+// The edges of the bend region are fitted within kCurveTolerance of the exact bend (deform.cpp's
+// parameter-keeping fit, else the kernel's curve approximation), its faces within the kernel's
+// tolerance (GetApproxTol, which it clamps to 1e-4). The curve fits cost nothing: a hole across a
+// bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the flat
+// pattern's outline gets it back as one circle. The kernel's surface fits at 1e-6 cost up to
+// twenty times as long (7 s instead of 0.3 s to unfold an R20 bend with two holes in it), so the
+// faces stay at the kernel's tolerance. Where a curve fit at 1e-7 fails, the kernel's tolerance
+// is the fallback.
+constexpr double kCurveTolerance = 1e-7;
+
 // Step 4: map the region, move the rest, then replace the mapped (volume) geometry by exact
-// analytic geometry where the kernel can make it, else by NURBS within `tolerance`.
+// analytic geometry where the kernel can make it, else by NURBS within `tolerance` (faces) and
+// kCurveTolerance (edges; `tolerance` where that fails).
 template <class MapRegion, class MoveRegion>
 SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion map_region, MoveRegion move,
                       double tolerance)
 {
+    const double tight = std::min(kCurveTolerance, tolerance);
+    // a mapped (volume) curve as a B-spline within `tol` of it, keeping its parameters: deform.cpp's
+    // fit on the knots of the original (quintic, 20 to 30 control points for a hole's arc across a
+    // bend), else the kernel's (cubic, 193 control points at 1e-7)
+    auto fit_curve = [&brep](SmEdge* edge, double tol) {
+        SmCurve* curve = edge->GetCurve();
+        if (!curve || curve->IsKindOf(SmBSplineCurve_TYPE))
+            return true;
+        const SmExtent1d ivl = edge->GetInterval();
+        const SmCurve* base = curve->IsKindOf(SmCrvInVolume_TYPE) ? static_cast<SmCrvInVolume*>(curve)->GetCurve() : nullptr;
+        if (SmBSplineCurve* fit = smlibpy::fit_curve_keeping_parameters(curve, base, ivl.GetMin(), ivl.GetMax(), tol))
+        {
+            brep.ReplaceCurve(edge, fit);
+            return true;
+        }
+        SmTArray<double> breaks;
+        const SmExtent1d nat = curve->GetNaturalInterval();
+        breaks.Add(nat.GetMin());
+        breaks.Add(nat.GetMax());
+        double gap = 0.0;
+        SmBSplineCurve* approx = nullptr;
+        if (curve->ApproximateCurve(*brep.GetContext(), breaks, tol / 2.0, gap, approx, FALSE, TRUE) == SM_SUCCESS &&
+            approx && gap <= tol)
+        {
+            brep.ReplaceCurve(edge, approx);
+            return true;
+        }
+        delete approx;
+        return false;
+    };
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
         p.in_faces[i]->ShrinkGeometry();
     SmStatus st = map_region(p.in_faces, p.in_edges, p.in_vertices);
@@ -325,7 +368,21 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
     }
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
-        if (p.in_edges[i]->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
+        // an exact line or arc where the kernel can make one (as SmEdge::ApproximateWithBSpline does
+        // first), else the exact image fitted within kCurveTolerance (the kernel's constrained
+        // approximation follows the fitted faces: 1.2e-6 off a line across a bend), else the kernel's
+        SmEdge* edge = p.in_edges[i];
+        SmCurve* curve = edge->GetCurve();
+        if (!curve || curve->IsKindOf(SmBSplineCurve_TYPE))
+            continue;
+        SmBSplineCurve* exact = nullptr;
+        curve->MakeExactBSplineIfPossible(exact);
+        if (exact)
+        {
+            if (brep.ReplaceCurve(edge, exact) != SM_SUCCESS)
+                result = SM_ERR;
+        }
+        else if (!fit_curve(edge, tight) && edge->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
             result = SM_ERR;
     }
     if (result != SM_SUCCESS)
@@ -339,22 +396,9 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
         SmEdge* edge = p.in_edges[i];
+        if (!fit_curve(edge, tight))
+            fit_curve(edge, tolerance);
         SmCurve* curve = edge->GetCurve();
-        if (curve && !curve->IsKindOf(SmBSplineCurve_TYPE))
-        {
-            SmTArray<double> breaks;
-            SmExtent1d ivl = curve->GetNaturalInterval();
-            breaks.Add(ivl.GetMin());
-            breaks.Add(ivl.GetMax());
-            double gap = 0.0;
-            SmBSplineCurve* approx = nullptr;
-            if (curve->ApproximateCurve(*brep.GetContext(), breaks, tolerance / 2.0, gap, approx, FALSE, TRUE) ==
-                    SM_SUCCESS && approx && gap <= tolerance)
-                brep.ReplaceCurve(edge, approx);
-            else
-                delete approx;
-            curve = edge->GetCurve();
-        }
         if (curve && curve->IsKindOf(SmBSplineCurve_TYPE) &&
             !static_cast<SmBSplineCurve*>(curve)->GetOrCreateGwNurbPointer())
             return SM_ERR_NOT_WITHIN_TOLERANCE;
