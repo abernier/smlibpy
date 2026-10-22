@@ -391,6 +391,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     atPoint(point: VectorLike, tol?: number): ShapeList<T>;
     newSince(since: unknown): ShapeList<T>;
     derivedFrom(...shapes: unknown[]): ShapeList<T>;
+    joining(a: unknown, b: unknown): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;
     difference(other: Iterable<T>): ShapeList<T>;
     intersection(other: Iterable<T>): ShapeList<T>;
@@ -546,6 +547,7 @@ export class Part extends _Body {
     }): boolean;
     solids(): ShapeList<Part>;
     merge(...others: unknown[]): Part;
+    get sources(): Part[];
     cells(): ShapeList<Part>;
     classify(point: VectorLike, tol?: number | null): [string, Face | Edge | Vertex | null];
     contains(point: VectorLike, tol?: number | null): boolean;

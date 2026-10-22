@@ -64,7 +64,7 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | Domain | Docs | What is in it |
 |---|---|---|
 | geometry | `geometry/*` | Vector, Axis, Plane, Location, Pos, Rot, BoundBox, Align, placement methods, patterns |
-| selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex; where faces and edges came from (history: new, derived_from) |
+| selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex; where faces and edges came from (history: new, derived_from), the edges where two bodies meet (joining) |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; NURBS data of an edge (nurbs), make_compatible, remove_knots |

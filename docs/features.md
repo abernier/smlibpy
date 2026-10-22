@@ -146,6 +146,19 @@ print(round(upper.volume, 3), round(lower.volume, 3))   # 3200.0 4800.0
 `part + sheet` and `part - sheet` raise `TypeError`: a sheet encloses no volume. `sheet & part`
 and `sheet - part` trim the sheet (see [Surfaces](surfaces.md)).
 
+A plane that only touches the part has no section: one that misses it raises `ValueError: the plane
+does not cut the part`, and one tangent to it (along the side of a cylinder, through an edge,
+around the top of a torus) `ValueError: the plane only touches the part`. A plane tangent to a face
+somewhere inside the part (along the wall of a hole) can make the kernel fail: `KernelError`, move
+the plane a little.
+
+```python
+try:
+    Cylinder(5, 20).section(Plane.XZ.offset(5))    # tangent to the side of the cylinder
+except ValueError as e:
+    print(e)                                       # the plane only touches the part (...)
+```
+
 ## Imprint
 
 `imprint` splits faces where a tool crosses them and adds or removes nothing: split lines for
@@ -179,9 +192,24 @@ block_with_insert = merge(Box(40, 40, 20), Cylinder(6, 30))
 print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 2262.0, 565.5, 565.5]
 ```
 
+Each cell is named and colored after the parts it lies in, its `sources`: a cell where a steel
+part and a brass part overlap is "steel&brass", in the color of the last of them that has one. The
+kernel keeps no record of where a cell came from; smlibpy classifies a point inside each cell
+against the parts given to `merge` (as given: not moved along with the merged part):
+
+```python
+steel = Box(40, 40, 20).named("steel").colored("gray")
+brass = Cylinder(6, 30).named("brass").colored("gold")
+for cell in merge(steel, brass).cells():
+    print(cell.name, cell.color, round(cell.volume, 1))
+# steel gray 29738.1 / steel&brass gold 2261.9 / brass gold 565.5 / brass gold 565.5
+```
+
 A merged part is no manifold solid (`is_valid()` is False): model the parts first and merge
 last, or work on the cells. Its `section()` has a region per cell. STEP writes each cell as a
-solid of its own; USD keeps the merged body with its shared faces.
+solid of its own, with the cell's name and color; USD keeps the merged body with its shared
+faces. `solids()` keeps cells that touch together (one solid), and separates a body that floats in
+a cavity of another (a captive part) from it.
 
 ## Mirror
 

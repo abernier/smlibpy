@@ -40,7 +40,7 @@ if nothing matches.
 plate = Box(60, 40, 8)
 boss = Cylinder(8, 20).translate(0, 0, 10)
 part = plate + boss
-rim = part.edges().new(since=[plate, boss])            # where the boss meets the plate
+rim = part.edges().new(since=[plate, boss])            # where the boss (through the top) meets the plate
 print(len(rim), rim[0].geom_type, rim[0].radius)        # 1 circle 8.0
 rounded = part.fillet(rim, 2)
 print(len(rounded.faces().new(since=part)))             # 1: the round
@@ -63,5 +63,9 @@ done = slotted.fillet(top, 1)                           # rounds all six pieces
 - A body read from a file counts as all new: `new(since=...)` of an imported part gives every
   face.
 
+- A boss *standing* on a plate meets it along the boss's own bottom edge, which is not new:
+  `new(since=[plate, boss])` finds nothing there. `joining(plate, boss)` (see `joining`) finds it.
+
 ## Related
-`selection/topology`, `features/fillet` (rounding the new edges of a Boolean), `features/imprint`.
+`selection/joining` (the edges where two bodies meet, by geometry), `selection/topology`,
+`features/fillet` (rounding the new edges of a Boolean), `features/imprint`.

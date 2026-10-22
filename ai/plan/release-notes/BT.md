@@ -1,4 +1,4 @@
-# Lane BT: Booleans along seams and beside earlier holes (B6, B4, B10); empty results, sheets, imprints, history and checks (B13, B12, B14, T3, T4)
+# Lane BT: Booleans along seams and beside earlier holes (B6, B4, B10); empty results, sheets, imprints, history and checks (B13, B12, B14, T3, T4); cells, solids, joints, sections and error hints (B15, B16, B17, B18, B19)
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked "native" or
 "wasm". The seam logic is C++ in `src/cpp/seams.cpp`, called from `ext.boolean`, so both builds run
@@ -92,6 +92,54 @@ report, in the kernel's fillet executive, fillet-7-185, is older and outside thi
   box moved apart by up to 0.1 and stitched within 0.5 stayed a Shell after `heal()`, although
   they bound a valid solid.
 
+- The cells of a merged part are named and colored after the parts they lie in (B15): every cell
+  got the first part's name and color, in `cells()` and in STEP. `merge(Box(40, 40, 20).named("steel")
+  .colored("gray"), Cylinder(6, 30).named("brass").colored("gold")).cells()` gave four cells, all
+  "steel"/"gray"; now "steel" (29738.1, gray), "steel&brass" (2261.9, gold) and two "brass" ends
+  (565.5, gold). `export_step` of the merged part writes each solid with its cell's name and color,
+  and `import_step` reads them back so. The kernel keeps no record (SmMergeRegionAttribute is a
+  helper of its manifold Boolean): smlibpy classifies a point inside each cell (one the merged
+  part itself classifies into that cell) against the parts given to `merge`.
+- `solids()` separates a body that floats in a cavity of another (B16, ai/todo/parts.md LOW #2):
+  `((Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)).solids()` gave one solid of 7064 (the
+  kernel's CreateOneBrepPerBody keeps nested shells together), now 7000 and 64; three nested
+  spheres give three. Only regions that share no face are split: the touching cells of a merged
+  part stay one solid, as documented (two boxes merged side by side: one solid of 2000; two
+  touching boxes merged inside a cage: 19000 and 432).
+- A plane that only touches a part has no section (B18): `Cylinder(5, 20).section(Plane.XZ.offset(5))`
+  raised a bare `KernelError: section failed (SM_ERR)`, and the plane tangent to the top of a
+  torus, `Torus(10, 2).section(Plane.XY.offset(2))`, returned a disc of 314.159 (π·10²) that does
+  not lie in the torus (fuzz case slice-11-272: 78.54 for `Torus(5, 1.5)` at z = -1.5); both raise
+  `ValueError: the plane only touches the part`, as a plane through the edge of a turned box does.
+  Every section's regions are checked to lie in the part. A plane tangent to a face inside the
+  part (the wall of a hole) still makes the kernel fail: `KernelError` with the hint to move it.
+- Error hints say what the operands show (B19). In the fuzz seeds 7, 8, 11 and 12 (natively),
+  all 221 failed Booleans had the one fixed hint ("the operands may touch ..., or a tool overlaps
+  an earlier cut ... combine the tools first"), 219 of them with a single tool. Now each clause is
+  given where its evidence is: a round face of a tool tangent to a face of the part (104, with the
+  place), operands that only touch (89: no point of one's mesh lies inside the other), a face of a
+  tool lying on a face of the part (24, `at z = 2`), a tool beside a parallel hole or boss that the
+  NURBS retry did not save, with the advice to combine the tools (3), several tools (also tried
+  combined), and, with none of these (25), that none shows. A null pointer of the kernel's own
+  (`SM_ERR_NULL_POINTER`) or a trap of the wasm reads "the kernel failed inside the cut" / "the
+  kernel crashed in the cut (...)" instead of a guess about the operands; for fillets and chamfers
+  "..., which says nothing about the radius" (fuzz fillet-7-161 read "the radius may be too large"
+  for 0.4956); for shells and offsets "a defect of the kernel rather than of the part". A shell
+  names the place: for walls that grow outward a hole or inside round tighter than the wall
+  (`Box(30, 30, 10) - Cylinder(1, 20)` shelled outward by 2), inward the place the part is
+  thinnest across where it is less than three walls thick. `cells()` no longer reports the cut's
+  hint about tools: it names the insert that touches the part around it.
+- Two defects of the empty-result checks of B13 (batch 2), found while testing B19: the classified
+  fallback sampled only the corners and middles of mesh triangles, which on the side of a long
+  cylinder can all lie outside the box where it crosses another body, so an overlap was taken for
+  none (`Box(6, 16, 4)` and `Cylinder(1.5, 30).translate(-1.5, 0, -13)`); triangles longer than a
+  twelfth of the box are now sampled on a grid. And the kernel's Boolean of the meshes of
+  internally tangent cylinders kills the process at a tenth of tessellate's tolerance (also on
+  origin/next, see Not done): operands with tangent or coincident planes, cylinders or spheres are
+  classified by points instead (within twice the mesh tolerance, which the kernel's sphere mesh
+  exceeds a little: 0.0356 for 0.0346). The ball in its own cavity, `Sphere(5) & (Box(20, 20, 20)
+  - Sphere(5))`, raised "the kernel returned a result that is empty" and is the empty part now.
+
 ## New
 
 - `smlibpy._core.ext.seam_contacts(a, b, tolerance=0.0)` (smlibwasm: `ext.seam_contacts`):
@@ -142,6 +190,19 @@ report, in the kernel's fillet executive, fillet-7-185, is older and outside thi
   corners ("Bad Vertex Gap", 0.002 against 2e-05). Generated parts pass in milliseconds; of 1471
   Boolean results of the fuzz seeds 7 and 8 that `is_valid()` accepts, 34 fail at level 2 (22 at
   level 0: gaps above the tolerance, repeated control points, seams).
+- `Part.sources` (B15): for a cell of a merged part, the parts given to `merge` that it lies in, in
+  the order given (a part that was itself merged stands for its own parts; the parts as given, not
+  moved along with a moved merged part); `()` for other parts. Cells are named after them, the
+  names joined by `&`, colored in the last one's color, and the merged part's own name and color
+  where none has one. A moved, scaled, renamed or recolored copy of a merged part keeps what it was
+  merged from.
+- `ShapeList.joining(a, b)` (B17): the edges that lie on the surfaces of both bodies (or of a body
+  of each of two lists), tested exactly at three points along each edge: where two bodies a
+  Boolean joined meet, the edges to round next. It also finds the circle where a boss *stands* on a
+  plate, which `new(since=[plate, boss])` does not count as new (the circle is the boss's own
+  bottom edge): `(plate + boss).edges().joining(plate, boss)`; `(block - hole).edges().joining(block,
+  hole)` gives the four rim pieces of an oblique hole. Merged coplanar faces' edges are not taken.
+  smlibwasm: the same names. The kernel's `SmApiBooleanWithCurves` was not used (see Not done).
 - `smlibpy._core.ext` (smlibwasm `ext`): `tag_topology(brep, fresh)`, `topology_tags(brep)`,
   `set_topology_tags(brep, faces, edges)`, `add_face_tags(brep, faces, tags)`,
   `untag_topology(brep)` (src/cpp/history.cpp); `check_brep(brep, level)`, `tolerance_gaps(brep)`,
@@ -241,6 +302,54 @@ kernel defect, listed under Not done, showed up in a guard test.
   kernel's own context, so `check()` and AssertValid see nothing of it. Code that walks a Brep's
   attributes through `_core` sees one with id `SM_AI_USER_1 + 50`.
 
+- The cells of a merged part (`cells()`, `cell_at()`) are named and colored after the parts they
+  lie in, and a STEP file of a merged part names and colors each solid so: scripts that took a
+  cell's name for the merged part's, or read the solids of such a STEP file by the merged part's
+  name, get the parts' names (where the parts have names):
+
+  ```python
+  m = merge(Box(40, 40, 20).named("block"), Cylinder(6, 30).named("insert"))
+  # before: every cell "block"; after: "block", "block&insert", "insert", "insert"
+  cells = [c.named(m.name) for c in m.cells()]          # the merged part's name for all, as before
+  steel = [c for c in m.cells() if c.sources[0].name == "block"]   # or select by source
+  ```
+- `solids()` gives a body inside a cavity of another as a solid of its own: a check
+  `len(part.solids()) == 1` fails for a part with a loose body in a cavity (which is two bodies).
+  To count only bodies that are not inside others, as before:
+
+  ```python
+  caged = (Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)
+  solids = caged.solids()                  # before: [7064.0]; after: [7000.0, 64.0]
+  outer = [s for s in solids if not any(o is not s and o.bbox().contains(s.bbox().min)
+                                        and o.bbox().contains(s.bbox().max) for o in solids)]   # [7000.0]
+  ```
+- `section()` with a plane that only touches the part raises `ValueError` (it raised `KernelError`,
+  or, tangent along a closed curve, returned a region that is not in the part):
+
+  ```python
+  try:
+      s = Torus(10, 2).section(Plane.XY.offset(2))   # before: a disc of 314.159; after: ValueError
+  except ValueError:
+      s = None                                       # the plane only touches the part
+  ```
+- Error messages of failed Booleans, fillets, chamfers, shells, offsets and `cells()` changed (B19):
+  the hint is built from what the operands show. Scripts that matched the old hint text ("combine
+  the tools first", "may touch only along an edge", "the wall may be thicker", "the radius may be
+  too large") should test the exception type and `status` instead:
+
+  ```python
+  try:
+      part = part - tool
+  except KernelError as e:          # before: matched "combine the tools first" in str(e)
+      if e.status == "SM_ERR_NULL_POINTER": ...   # the kernel failed inside
+  except ModelingError as e:        # a wrong result refused; str(e) says why
+      ...
+  ```
+- An empty intersection or cut of operands with tangent or coincident planes, cylinders or spheres
+  is checked by classifying points of their meshes instead of the meshes' Boolean: the ball in
+  its own cavity is accepted as empty (it raised), and such checks cost the classification of up
+  to 4000 points (0.03 to 0.2 s) rather than two mesh Booleans.
+
 ## Not done
 
 - Seams that cannot be turned away keep the old behaviour: the seam of an operand that is no body
@@ -283,3 +392,36 @@ kernel defect, listed under Not done, showed up in a guard test.
   30 or 100 boxes allocated first, nor with the build of batch 1. The normal builds pass the test;
   smlibpy runs these steps in a forked copy (smlibwasm: a probe worker). For the lane that owns
   the offset patches.
+- B17: the kernel's `SmApiBooleanWithCurves` (`_core.boolean_with_curves`) is not used and not
+  bound in the wasm, as the plan proposed: it hands out the merge's common edges after
+  `SmMerge::BooleanPostProcess` deleted some of them. AddressSanitizer: heap-use-after-free in
+  pybind11's cast of the returned edges, freed in `SmBrep::DeleteEdge` from `BooleanPostProcess`
+  (SmMerge.cpp:1169); `_core.boolean_with_curves(Box(10, 10, 10), Box(10, 10, 10).translate(10, 0,
+  0), UNION)` (copies) kills Python, and so does a step `Box(10, 10, 10)` + `Box(10, 10, 5)
+  .translate(5, 0, -2.5)`. Filtering the list by the result's edges would compare freed addresses
+  that a new edge may reuse. `ShapeList.joining` gives the selection by geometry instead. The raw
+  binding stays in `_core` (usd-brep's SmPyLib), unused by smlibpy.
+- B19: the fillet hint does not name a degenerate vertex: in the two `SM_ERR_NULL_POINTER` fillets
+  of the fuzz seeds (fillet-7-161, a torus less a sphere; fillet-7-185, two cones) there is none to
+  name, so the hint only says that the failure is the kernel's, not the radius's. The executive's
+  `SmFilletErrorInfo` (F8, another lane) is the way to name the culprit. Offsets and thickenings
+  get only the crash note; a shell whose walls grow inward is not told about rounds tighter than
+  the wall, since the kernel's extended mode builds those (a box with rounds of 1 shelled by -3).
+- Pre-existing, found while testing B19, in the kernel's mesh Booleans (public `Mesh & Mesh`): the
+  meshes of two internally tangent cylinders kill the process at a fine tolerance, on origin/next
+  too: `tessellate(Cylinder(4, 8).rotate(X, 90), 0.00894) & tessellate(Cylinder(1.5, 4).rotate(X,
+  90).translate(-2.5, 2, 0), 0.00447)` exits 139 (at 0.0894 and 0.0447 it works). smlibpy's own
+  checks no longer ask it for such operands; a user's mesh Booleans still can.
+- Pre-existing: merging a part with an already merged part inside a cavity of it,
+  `(Box(30, 30, 30) - Box(20, 20, 20)).merge(Box(6, 6, 6).merge(Box(6, 6, 6).translate(6, 0, 0)))`,
+  gets the kernel's 27000 (the cavity filled); origin/next returned it silently, the P0 volume
+  check refuses it. `merge(cage, box1, box2)` in one call is right (19000 + 432).
+- B15: glTF, OBJ, STL and USD export of a merged part are unchanged (one mesh, or the merged body,
+  in the part's color); export `part.cells()` for a mesh per cell with its name and color.
+- Noise in the fuzz comparison of this batch (seeds 7, 8, 11, 12 against batch 2): csg-8-23 and
+  offset-8-360 flip as before; csg-8-157's intersection is 226.47692 in a fresh process with this
+  batch and with batch 2 alike, and was 226.47710 in batch 2's fuzz process.
+- `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` failed once in four full
+  runs of the suite with this batch (it passed alone 6 of 6): the layout-dependent read of freed
+  memory in the extended offset listed above, in its raw kernel steps, which this batch does not
+  touch.

@@ -101,17 +101,31 @@ Measured on 10 mm boxes unless noted:
 
 ## Errors
 
-- `ModelingError: fuse: the kernel returned a result that is not a closed, manifold solid;
-  the operands may touch only along an edge, at a point or tangentially (move one so they
-  overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools
-  first and apply them at once: part - (tool1 + tool2))`.
-- `KernelError` (a `ModelingError`): `cut failed (SM_ERR): ` and the same hint. Its `status`
-  is `SM_ERR`, or `SM_ERR_BAD_INTERSECTIONS` where the kernel's intersection of the operands
-  cannot go on (crossing holes whose seams lie tangent to the other one, where neither can be
-  turned).
+- `ModelingError: fuse: the kernel returned a result that is not a closed, manifold solid; ...`
+  and `KernelError` (a `ModelingError`): `cut failed (SM_ERR): ...`. Its `status` is `SM_ERR`,
+  or `SM_ERR_BAD_INTERSECTIONS` where the kernel's intersection of the operands cannot go on
+  (crossing holes whose seams lie tangent to the other one, where neither can be turned). The
+  hint says what the operands show, one clause per finding; do what it says:
+  - `the operands touch only along an edge, at a point or tangentially (no point of one lies inside
+    the other): move one so they overlap, or apart`
+  - `a round face of a tool touches a face of the part tangentially (near (x, y, z)): move the
+    tool so that it cuts into that face, or stays clear of it` (a cylinder flush with a side
+    face, an end cap tangent to a sphere)
+  - `a face of a tool lies on a face of the part (at z = 2): let the tool reach past that face,
+    or stop short of it`
+  - `a tool runs beside a parallel hole or boss of the part and overlaps it (...): combine the
+    tools first and apply them at once, ...: part - (tool1 + tool2)`
+  - `smlibpy also applied the tools combined into one, which failed too: apply them one at a
+    time to find the one that fails` (several tools)
+  - `the kernel failed inside the cut (it met a null pointer of its own), a defect of the kernel
+    rather than of the operands; moving or turning a tool a little may avoid it`
+    (`SM_ERR_NULL_POINTER`; smlibwasm: `the kernel crashed in the cut (...)` for a trap)
+  - with none of these: `the operands neither only touch, nor have faces on or tangent to each
+    other, nor is a tool beside a parallel hole; move or turn a tool a little, and check
+    is_valid(strict=True) of the operands`
 - `ModelingError: cut: the kernel returned a result that is empty; ...` and `intersect: the
   kernel returned a result that is partly outside an operand (the kernel took one operand for
-  inside the other); ...`, with the same hint.
+  inside the other); ...`, with such a hint.
 - `TypeError: cannot cut a Sketch with a Part; extrude it first` (also for `+` and `&`).
 - `TypeError: cannot cut a body with a str value; use parts (or a list of parts)` for
   strings, numbers, edges and vertices.

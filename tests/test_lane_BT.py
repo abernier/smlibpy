@@ -1,6 +1,9 @@
 """Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10); empty Boolean results
 checked without the kernel's brep_relationship (B13); parts split along sheets and sheets trimmed by
-parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks (T4).
+parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks (T4);
+the cells of a merged part named after their parts (B15); solids() separating a body in a cavity
+(B16); the edges where two bodies meet (B17); sections by planes that only touch (B18); error hints
+from what the operands show (B19).
 
 Exact volumes come from integrating the overlaps of the operands (the cross sections of two
 cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is given where it
@@ -8,6 +11,7 @@ differs from that by more than 1e-6.
 """
 
 import math
+import re
 import subprocess
 import sys
 
@@ -18,6 +22,7 @@ from pytest import approx
 from smlibpy import *
 from smlibpy import shapes
 from smlibpy._kernel import ext, k
+from smlibpy.colors import to_rgb
 
 PIN = 24299.258668  # (Box(30, 30, 30) - Cylinder(5, 60)) less a pin of radius 2 tangent to the bore
 CROSS = 6931.747603  # Box(20, 20, 20) less two holes of radius 3 whose axes are 3 apart
@@ -513,3 +518,196 @@ def test_a_healed_closed_sheet_is_a_part():
         assert healed.volume == approx(8000, rel=2e-2)
     assert healed.check()  # its edges are far from tight
     assert type(_wave().heal()) is Shell
+
+
+# -- B15: the cells of a merged part know the parts they lie in --------------------------------
+def _steel_and_brass():
+    return Box(40, 40, 20).named("steel").colored("gray"), Cylinder(6, 30).named("brass").colored("gold")
+
+
+def test_cells_are_named_after_the_parts_they_lie_in():
+    # Every cell was named and colored as the first part: 4 cells, all "steel", "gray".
+    steel, brass = _steel_and_brass()
+    m = merge(steel, brass)
+    cells = sorted(m.cells(), key=lambda c: (-c.volume, c.center().z))
+    insert = math.pi * 36 * 20
+    assert [c.volume for c in cells] == [approx(32000 - insert), approx(insert), approx(insert / 4), approx(insert / 4)]
+    assert [(c.name, c.color) for c in cells] == [("steel", "gray"), ("steel&brass", "gold"), ("brass", "gold"),
+                                                  ("brass", "gold")]
+    assert [tuple(s.name for s in c.sources) for c in cells] == [("steel",), ("steel", "brass"), ("brass",), ("brass",)]
+    assert cells[1].sources[0] is steel and cells[1].sources[1] is brass
+    assert m.cell_at((0, 0, 12)).name == "brass" and m.cell_at((10, 10, 0)).name == "steel"
+    assert Box(1, 1, 1).sources == () and m.sources == ()
+
+
+def test_cells_of_moved_renamed_and_chained_merges():
+    steel, brass = _steel_and_brass()
+    m = merge(steel, brass)
+    moved = m.translate(100, 0, 0).rotate(Z, 30).scale(2).named("assembly")
+    names = sorted((c.name, round(c.volume, 1)) for c in moved.cells())
+    assert names == sorted((c.name, round(8 * c.volume, 1)) for c in m.cells())
+    pin = Cylinder(2, 50).rotate(X, 90).named("pin").colored("red")
+    chained = m.merge(pin)
+    found = {c.name for c in chained.cells()}
+    assert found == {"steel", "brass", "pin", "steel&brass", "steel&pin", "steel&brass&pin"}
+    assert all(c.color == "red" for c in chained.cells() if "pin" in c.name)
+    # parts without names: the merged part's name and color, as before
+    plain = Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0)).named("x").colored("blue")
+    assert {(c.name, c.color) for c in plain.cells()} == {("x", "blue")}
+    assert sorted(len(c.sources) for c in plain.cells()) == [1, 1, 2]
+
+
+def test_step_writes_the_cells_with_their_names_and_colors(tmp_path):
+    steel, brass = _steel_and_brass()
+    path = tmp_path / "cells.step"
+    export_step(merge(steel, brass), path)
+    text = path.read_text()
+    assert sorted(re.findall(r"MANIFOLD_SOLID_BREP\('([^']*)'", text)) == ["brass", "brass", "steel", "steel&brass"]
+    back = import_step(path)
+    assert sorted((b.name, b.color, round(b.volume, 1)) for b in back) == sorted(
+        (c.name, to_rgb(c.color), round(c.volume, 1)) for c in merge(steel, brass).cells())
+    # in another unit, the scaled copy keeps them
+    export_step(merge(steel, brass), tmp_path / "cm.step", unit="cm")
+    assert "steel&brass" in (tmp_path / "cm.step").read_text()
+
+
+# -- B16: solids() separates a body inside a cavity ----------------------------------------------
+def test_solids_separates_a_body_in_a_cavity():
+    caged = (Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)  # was one solid of 7064
+    solids = caged.solids()
+    assert [s.volume for s in solids] == [approx(7000), approx(64)] and all(s.is_valid() for s in solids)
+    nested = ((Sphere(20) - Sphere(15)) + (Sphere(10) - Sphere(6))) + Sphere(3)
+    assert sorted(s.volume for s in nested.solids()) == approx(sorted(c.volume for c in nested.cells()))
+    assert len(nested.solids()) == 3
+    # touching cells of a merged part stay one solid; cells that touch inside a cage stay together
+    assert [s.volume for s in Box(10, 10, 10).merge(Box(10, 10, 10).translate(10, 0, 0)).solids()] == [approx(2000)]
+    cage = Box(30, 30, 30) - Box(20, 20, 20)
+    inside = merge(cage, Box(6, 6, 6), Box(6, 6, 6).translate(6, 0, 0)).solids()
+    assert sorted(s.volume for s in inside) == [approx(432), approx(19000)]
+    assert [s.volume for s in (Box(10, 10, 10) + Box(10, 10, 10).translate(20, 0, 0)).solids()] == [approx(1000)] * 2
+
+
+# -- B17: the edges where two bodies meet ---------------------------------------------------------
+def test_edges_joining_two_bodies():
+    plate = Box(40, 40, 10)
+    standing = Cylinder(5, 10).translate(0, 0, 10)  # its bottom face on the plate's top
+    joined = plate + standing
+    assert len(joined.edges().new(since=[plate, standing])) == 0  # the circle is the boss's own edge
+    rim = joined.edges().joining(plate, standing)
+    assert len(rim) == 1 and rim[0].geom_type == "circle" and rim[0].length == approx(10 * math.pi)
+    rounded = joined.fillet(rim, 2)
+    assert rounded.is_valid() and rounded.volume > joined.volume
+    through = Cylinder(5, 20).translate(0, 0, 10)
+    assert len((plate + through).edges().joining(plate, through)) == 1
+    hole = Cylinder(5, 40).rotate(X, 30)
+    rims = (plate - hole).edges().joining(plate, hole)
+    assert sorted(round(e.length, 4) for e in rims) == [8.4724, 8.4724, 25.4172, 25.4172]
+    assert all(e.geom_type == "ellipse" for e in rims)
+    a, b = Box(10, 10, 10), Box(10, 10, 10).translate(10, 0, 0)
+    assert len((a + b).edges().joining(a, b)) == 0
+    step = Box(10, 10, 5).translate(5, 0, -2.5)
+    corner = (a + step).edges().joining(a, step)
+    assert len(corner) == 1 and corner[0].length == approx(10)
+    holes = [Cylinder(2, 20).translate(x, 0, 0) for x in (-10, 0, 10)]
+    assert len((plate - holes).edges().joining(plate, holes)) == 6
+    with pytest.raises(TypeError, match="selects edges"):
+        joined.faces().joining(plate, standing)
+    with pytest.raises(TypeError, match="takes bodies"):
+        joined.edges().joining(plate, (1, 2, 3))
+
+
+# -- B18: sections by planes that only touch ------------------------------------------------------
+@pytest.mark.parametrize("part, plane", [
+    (lambda: Cylinder(5, 20), Plane.XZ.offset(5)),  # was KernelError: section failed (SM_ERR)
+    (lambda: Cylinder(5, 20), Plane.XZ.offset(-5)),
+    (lambda: Box(10, 10, 10).rotate(Z, 45), Plane.YZ.offset(50 ** 0.5)),  # through an edge
+    (lambda: Torus(10, 2), Plane.XY.offset(2)),  # was a disc of 314.159 that is not in the torus
+    (lambda: Cylinder(5, 20).merge(Cylinder(5, 20).translate(20, 0, 0)), Plane.XZ.offset(5)),
+], ids=["cylinder", "cylinder below", "box edge", "torus top", "two cylinders"])
+def test_a_plane_that_only_touches_has_no_section(part, plane):
+    with pytest.raises(ValueError, match="only touches the part"):
+        part().section(plane)
+
+
+def test_sections_by_planes_on_faces_and_inside():
+    assert Box(10, 10, 10).section(Plane.XY.offset(5)).area == approx(100)  # a plane on a face: that face
+    assert Cylinder(5, 20).section(Plane.XZ).area == approx(200)
+    with pytest.raises(ValueError, match="does not cut"):
+        Cylinder(5, 20).section(Plane.XZ.offset(6))
+    # tangent to the wall of a hole inside the part: the kernel fails; the hint says to move the plane
+    with pytest.raises(KernelError, match="move the plane a little"):
+        (Box(20, 20, 10) - Cylinder(3, 20)).section(Plane.XZ.offset(3))
+
+
+# -- B19: error hints from what the operands show --------------------------------------------------
+def test_boolean_hints_say_what_the_operands_show(monkeypatch):
+    # In 830 fuzz cases every Boolean error advised combining tools, though each had one tool.
+    with pytest.raises(ModelingError, match="touch only along an edge") as e:
+        Cylinder(5, 20) + Cylinder(5, 20).translate(10, 0, 0)
+    assert "combine" not in str(e.value)
+    # a cylinder flush with a side face and with the top: both found, nothing about combining
+    with pytest.raises(ModelingError) as e:
+        Box(6, 16, 4) - Cylinder(1.5, 30).translate(-1.5, 0, -13)
+    msg = str(e.value)
+    assert "touches a face of the part tangentially (near (-3," in msg and "(at z = 2)" in msg
+    assert "combine" not in msg and "touch only" not in msg
+    # beside an earlier parallel hole, where the NURBS retry does not help either
+    monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
+    with pytest.raises(KernelError, match="combine the tools first") as e:
+        Box(40, 40, 10) - Cylinder(6, 30) - Cylinder(3, 30).translate(8, 0, 0)
+    assert "tangentially" not in str(e.value)
+
+
+def test_crashes_and_null_pointers_are_not_blamed_on_sizes():
+    e = KernelError("cut", "SmApiBoolean failed: SM_ERR_NULL_POINTER", "SM_ERR_NULL_POINTER", "x")
+    assert shapes._crash_note(e, "cut") == "the kernel failed inside the cut (it met a null pointer of its own)"
+    e = KernelError("fillet", "the kernel crashed (table index is out of bounds)", None, "x")
+    assert shapes._crash_note(e, "fillet") == "the kernel crashed in the fillet (table index is out of bounds)"
+    assert shapes._crash_note(KernelError("cut", "SM_ERR", "SM_ERR"), "cut") is None
+    # fuzz case fillet-7-161: a radius of 0.4956 that fits, and "the radius may be too large"
+    part = Torus(8, 1.5) - Sphere(2.5).translate(7, 7, -2.8573)
+    with pytest.raises(KernelError) as err:
+        part.fillet(part.edges(), 0.495553)
+    if err.value.status == "SM_ERR_NULL_POINTER":
+        assert "says nothing about the radius" in str(err.value) and "too large" not in str(err.value)
+
+
+def test_shell_and_cells_hints_name_the_place():
+    holed = Box(30, 30, 10) - Cylinder(1, 20)
+    with pytest.raises(KernelError, match=r"the hole or inside round at \(.*\) has a radius of 1, less than the wall of 2"):
+        holed.shell(2, outward=True)
+    slab = Box(40, 40, 5)
+    hint = slab._shell_hint([], 2.0, slab._inward_rays([]), False)
+    assert hint.startswith("the part is 5 thick across the face at (") and "two walls of 2" in hint
+    assert Box(40, 40, 40)._shell_hint([], 2.0, Box(40, 40, 40)._inward_rays([]), False) == \
+        "the wall may be thicker than the part allows"
+    with pytest.raises(ModelingError, match=r"the insert at \(6, .*\) touches the part around it") as e:
+        Box(20, 20, 20).merge(Cylinder(4, 10).translate(6, 0, 0)).cells()
+    assert "combine" not in str(e.value) and "tool" not in str(e.value)
+
+
+def test_hints_and_empty_checks_avoid_the_crashing_mesh_boolean():
+    # The kernel's Boolean of the meshes of these cylinders, tangent inside each other, kills the
+    # process at a tenth of tessellate's tolerance (also on origin/next); the hint and the check of
+    # empty results asked it. In a process of its own.
+    code = """
+from smlibpy import *
+from smlibpy import shapes
+from smlibpy._kernel import k
+a = Cylinder(4, 8).rotate(X, 90); b = Cylinder(1.5, 4).rotate(X, 90).translate(-2.5, 2.0, 0.0)
+try:
+    a - b
+except ModelingError as e:
+    print("tangentially" in str(e))
+print(shapes._empty_is_right(a, [b], k.BooleanOp.INTERSECTION))
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.split() == ["True", "False"]
+
+
+def test_classified_empty_sees_long_triangles():
+    # The side of the cylinder is a few triangles from end to end, whose corners and middles all lie
+    # outside the box: the overlap was missed, and the cut above was said to only touch.
+    box, pin = Box(6, 16, 4), Cylinder(1.5, 30).translate(-1.5, 0, -13)
+    assert not shapes._classified_empty(box, [pin], k.BooleanOp.INTERSECTION)

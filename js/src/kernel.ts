@@ -388,6 +388,11 @@ export class BrepHandle extends Handle {
   /** The tags of its faces and edges (`ext.topology_tags`, read once: a body's Brep does not change
    * once wrapped). */
   tags: [number[][], number[][]] | null = null
+  /** For a body made by `Part.merge` (or a copy of one): the parts it was merged from, the placement
+   * it was moved by since, and its cells' sources once found (kernel plan B15). */
+  merged: { parts: Any[]; placement: Float64Array; cells: Any[][] | null } | null = null
+  /** For a cell of a merged part: the parts it lies in. */
+  sources: Any[] | null = null
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

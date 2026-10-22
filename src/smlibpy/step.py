@@ -331,10 +331,14 @@ class _BodyWriter:
             n_step = p - (o + radial * R)
         return bool(np.dot(n_face, n_step) > 0)
 
-    def solids(self, name: str) -> list[int]:
-        """MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS items, one per material region."""
+    def solids(self, name: str, names: Sequence[str | None] | None = None) -> list[int]:
+        """MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS items, one per material region, named ``name`` or,
+        per region, ``names`` (the cells of a merged part); ``self.cells`` holds the region each
+        item is of (counting the regions that are not cavities)."""
         d = self.dump
         items = []
+        self.cells: list[int] = []
+        cell = -1
         shell_faces: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         for fi, f in enumerate(d["faces"]):
             for ui, use in enumerate(f["uses"]):
@@ -346,6 +350,8 @@ class _BodyWriter:
         for region in d["regions"]:
             if region["infinite"] or region["void"]:
                 continue
+            cell += 1
+            label = names[cell] if names is not None and cell < len(names) and names[cell] else name
             shells = []
             for si in region["shells"]:
                 faces = [self.face(fi, mate) for fi, mate in shell_faces.get(si, [])]
@@ -353,10 +359,11 @@ class _BodyWriter:
             if not shells:
                 continue
             if len(shells) == 1:
-                items.append(self.w.add(f"MANIFOLD_SOLID_BREP({_s(name)},#{shells[0]})"))
+                items.append(self.w.add(f"MANIFOLD_SOLID_BREP({_s(label)},#{shells[0]})"))
             else:
                 voids = [self.w.add(f"ORIENTED_CLOSED_SHELL('',*,#{s},.F.)") for s in shells[1:]]
-                items.append(self.w.add(f"BREP_WITH_VOIDS({_s(name)},#{shells[0]},({','.join(f'#{v}' for v in voids)}))"))
+                items.append(self.w.add(f"BREP_WITH_VOIDS({_s(label)},#{shells[0]},({','.join(f'#{v}' for v in voids)}))"))
+            self.cells.append(cell)
         return items
 
     def sheets(self, name: str) -> list[int]:
@@ -425,19 +432,24 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
             raise TypeError(f"cannot write a {type(body).__name__} to STEP")
         label = body.name or (product if len(bodies) == 1 else f"{product}_{i + 1}")
         brep = body._brep
+        cells = _cell_labels(body, label) if isinstance(body, Part) else None
+        names = [n for n, _ in cells] if cells else None
         try:
             bw = _BodyWriter(w, brep)
-            items = bw.solids(label) if isinstance(body, Part) else bw.sheets(label)
+            items = bw.solids(label, names) if isinstance(body, Part) else bw.sheets(label)
         except _NeedsNurbs:
             nb = body.to_nurbs()
             bw = _BodyWriter(w, nb._brep)
-            items = bw.solids(label) if isinstance(body, Part) else bw.sheets(label)
+            items = bw.solids(label, names) if isinstance(body, Part) else bw.sheets(label)
         if isinstance(body, Part):
             solid_items += items
         else:
             sheet_items += items
         rgb = _color(body.color)
-        if rgb is not None:
+        if cells:  # a merged part: each cell in the color of the parts it lies in
+            colors = [_color(cells[c][1]) if c < len(cells) else rgb for c in bw.cells]
+            styled += [(it, c) for it, c in zip(items, colors) if c is not None]
+        elif rgb is not None:
             styled += [(it, rgb) for it in items]
 
     reps = []
@@ -473,6 +485,22 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
     ]
     with open(path, "w", encoding="ascii") as fh:
         fh.write(w.text(header))
+
+
+def _cell_labels(body: Any, label: str) -> list[tuple[str, Any]] | None:
+    """Per cell of a merged part (as ``Part.cells`` names them, without building them): the name and
+    color of the parts it lies in, else ``label`` and the part's color; None for a part that does
+    not come from a merge, or where the cells' parts cannot be found (kernel plan B15)."""
+    from .shapes import _cell_sources, _source_label
+    from ._kernel import ModelingError
+
+    try:
+        sources = _cell_sources(body)
+    except (ModelingError, ValueError):
+        return None
+    if not sources:
+        return None
+    return [_source_label(s, label, body.color) for s in sources]
 
 
 def _product_name(path: str) -> str:

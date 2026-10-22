@@ -120,6 +120,8 @@
 ## LOW
 
 ### 2. `Part.solids()` does not separate a body that sits inside a cavity
+- **Fixed:** `solids()` splits the regions that share no face (kernel plan B16): 7000 and 64; the
+  touching cells of a merged part stay one solid.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `02-several-bodies.py`, `03-island-in-cavity.py`
 - **What happens:** `(Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)` → `solids()` returns 1
   part with volume 7064 and 18 faces; the inner cube is 3 mm from the walls.

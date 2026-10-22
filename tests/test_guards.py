@@ -486,7 +486,9 @@ def test_failed_booleans_free_their_operands():
     # The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.6 MB
     # per failed cut. In a process of its own, so that what other tests left does not count. (A
     # cross hole touching the first one inside at a point; the cut beside an earlier parallel hole
-    # used here before is right now, kernel plan B10.)
+    # used here before is right now, kernel plan B10.) Measured over the second hundred failures:
+    # the first raise the process's high-water mark (by 15 to 36 MB, with the hint's tessellations
+    # and classified points, kernel plan B19), which then stays; a leak grows by about 60 MB each.
     code = """
 import gc, os
 from smlibpy import *
@@ -498,7 +500,7 @@ def fail():
     except KernelError:
         return
     raise SystemExit("the cut did not fail")
-for _ in range(10):
+for _ in range(100):
     fail()
 gc.collect()
 before = rss()

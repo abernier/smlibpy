@@ -507,10 +507,12 @@ class ShapeList(list[T]):
         led from them to this list's body, descending from no face or edge of theirs.
 
         ``since`` is a body (part, shell, sketch) or a list of them, or faces and edges (then
-        only those count as old). After a Boolean, the curves along which the bodies meet
-        (``(plate + boss).edges().new(since=[plate, boss])``: the circle where the boss
-        stands on the plate); after a fillet, chamfer or shell, its new faces
-        (``rounded.faces().new(since=part)``) and their edges.
+        only those count as old). After a Boolean, the curves along which the bodies' faces cross
+        (``(plate + boss).edges().new(since=[plate, boss])``: the circle where a boss reaching
+        into the plate meets its top; where an edge of one body lies on the other, such as the
+        bottom edge of a boss standing on the plate, that edge is not new: :meth:`joining` finds
+        both); after a fillet, chamfer or shell, its new faces (``rounded.faces().new(since=part)``)
+        and their edges.
 
         smlibpy marks every face and edge of every body it makes, and the kernel carries the
         marks along: a copy keeps them, both halves of a split face keep their parent's, a face
@@ -533,6 +535,38 @@ class ShapeList(list[T]):
         """
         wanted = _history_tags(shapes, "derived_from")
         return ShapeList(s for s, t in zip(self, _item_tags(self, "derived_from")) if t & wanted)
+
+    def joining(self, a: Any, b: Any) -> ShapeList[T]:
+        """The edges that lie on the surfaces of both ``a`` and ``b``: where two bodies that a
+        Boolean combined meet, the edges to round or chamfer after it.
+        ``(plate + boss).edges().joining(plate, boss)`` gives the circle where the boss stands on
+        the plate, also where the boss's bottom face lay on the plate's top (which ``new`` does not
+        count as new: the circle is the boss's bottom edge), ``(block - hole).edges().joining(block,
+        hole)`` the rims of the hole. ``a`` and ``b`` are bodies (parts, shells, sketches) or lists of
+        them (an edge on any of them counts).
+
+        Each edge is tested at a quarter, half and three quarters of the way along it: there it lies
+        on a face of a body (within the edge's tolerance, at least 1e-6 of the bodies' size) where
+        :meth:`Part.classify` puts it on the body's surface. Edges of a merged face (a face of each
+        body lying in one plane, merged by a union) are not on both surfaces and are not taken.
+        """
+        firsts, seconds = _joined_bodies(a), _joined_bodies(b)
+        edges = [s for s in self if isinstance(s, Edge)]
+        if len(edges) != len(self):
+            raise TypeError(f"joining selects edges, not a {type(next(s for s in self if not isinstance(s, Edge))).__name__}")
+        boxes = [x._loose_box() for x in firsts + seconds]
+        size = max(boxes[0].union(boxes[-1]).diagonal, 1.0)
+        out: ShapeList[T] = ShapeList()
+        for e in edges:
+            tol = max(e.tolerance if e._e is not None else 0.0, 1e-6 * size)
+            box = e.bbox()
+            if not (any(not _disjoint(box, x._loose_box(), tol) for x in firsts)
+                    and any(not _disjoint(box, x._loose_box(), tol) for x in seconds)):
+                continue
+            points = [e.point_at(t) for t in (0.25, 0.5, 0.75)]
+            if _on_any(firsts, points, tol) and _on_any(seconds, points, tol):
+                out.append(e)  # type: ignore[arg-type]
+        return out
 
     # -- set operations and expansion ----------------------------------------
     def __add__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
@@ -659,6 +693,31 @@ def _unique(items: Iterable[T]) -> ShapeList[T]:
             seen.add(key)
             out.append(s)
     return out
+
+
+def _joined_bodies(x: Any) -> list[_Body]:
+    """The bodies of an argument of ``ShapeList.joining``: a body or a list of them."""
+    if isinstance(x, _Body):
+        return [x]
+    if isinstance(x, Iterable) and not isinstance(x, (str, bytes, Shape)):
+        out = [y for y in x]
+        if out and all(isinstance(y, _Body) for y in out):
+            return out
+    raise TypeError(f"joining takes bodies (parts, shells, sketches) or lists of them, not a {type(x).__name__}")
+
+
+def _on_any(bodies: Sequence[_Body], points: Sequence[Vector], tol: float) -> bool:
+    """Whether every point lies on the surface of one of the bodies, within ``tol``."""
+    left = list(points)
+    for x in bodies:
+        if not left:
+            break
+        if isinstance(x, Part):
+            on = [where in ("face", "edge", "vertex") for where, _, _ in x._classify(left, tol)]
+        else:
+            on = [x.distance_to(p) <= tol for p in left]
+        left = [p for p, o in zip(left, on) if not o]
+    return not left
 
 
 def _topology_tags(body: _Body) -> tuple[list[list[int]], list[list[int]]]:
@@ -1707,12 +1766,14 @@ class _Body(Shape):
     def named(self, name: str) -> Any:
         """The same body with a name (used by exporters and the viewer)."""
         b = self._like(self._copy_brep())
+        _same_sources(self._h, b._h)
         b.name = name
         return b
 
     def colored(self, color: str | Sequence[float]) -> Any:
         """The same body with a display color (``"steelblue"``, ``"#4682b4"`` or ``(r, g, b)``)."""
         b = self._like(self._copy_brep())
+        _same_sources(self._h, b._h)
         b.color = color
         return b
 
@@ -1823,7 +1884,9 @@ class _Body(Shape):
         # original's (copies in a pattern can be told apart; a selection of the original is
         # not taken for the copy's).
         ext.tag_topology(h.brep, True)
-        return self._like(_take(h))
+        moved = self._like(_take(h))
+        _same_sources(self._h, moved._h, m)
+        return moved
 
     # -- body conversions -----------------------------------------------------
     def to_nurbs(self) -> Any:
@@ -1955,6 +2018,95 @@ def _parallel_rounds(part: _Body, tool: _Body) -> bool:
             if not _disjoint(box, box2, 1e-6 * (box.diagonal + box2.diagonal)):
                 return True
     return False
+
+
+def _surface_contacts(part: _Body, tool: _Body) -> dict[str, Any]:
+    """How the planes, cylinders and spheres of a tool meet those of a part, for the hint of a
+    Boolean that failed (kernel plan B19): ``beside`` (a cylinder of the tool crosses a parallel
+    cylinder of the part along lines: a tool beside a hole or boss), ``tangent`` (where a cylinder
+    or sphere touches a plane, cylinder or sphere tangentially) and ``coincident`` (where a face of
+    the tool lies on one of the part: the same plane, cylinder or sphere, over an area), each place
+    as ``"at z = 5"`` (a plane across an axis) or ``"near (x, y, z)"``; None where there is none.
+    The faces must be near each other (their boxes overlap); not otherwise checked."""
+
+    def surfaces(body: _Body) -> list[tuple[str, Vector, Vector, float, BoundBox]]:
+        out = []
+        for f in body._brep.faces():
+            info = ext.surface_data(f.surface(), False)
+            kind = info["kind"]
+            if kind == "cone" and abs(info.get("semi_angle_deg", 1.0)) < 1e-12:
+                kind = "cylinder"
+            if kind in ("plane", "cylinder", "sphere"):
+                pl = info["placement"]
+                lo, hi = f.bounding_box(False)
+                out.append((kind, Vector(pl["origin"]), Vector(pl["z_dir"]).normalized(),
+                            float(info.get("radius", 0.0)), BoundBox(lo, hi)))
+        return out
+
+    def place(a: BoundBox, b: BoundBox, normal: Vector | None = None, level: Vector | None = None) -> str:
+        if normal is not None and level is not None:
+            for i, axis in enumerate("xyz"):
+                if abs(abs(normal[i]) - 1.0) < 1e-9:
+                    return f"at {axis} = {level[i]:.4g}"
+        c = (Vector(*(max(a.min[i], b.min[i]) for i in range(3))) + Vector(*(min(a.max[i], b.max[i]) for i in range(3)))) * 0.5
+        return f"near ({c.x:.4g}, {c.y:.4g}, {c.z:.4g})"
+
+    def spread(a: BoundBox, b: BoundBox) -> float:
+        """The second largest extent of the boxes' overlap (an area, not a line or a point, where it is not 0)."""
+        return sorted(min(a.max[i], b.max[i]) - max(a.min[i], b.min[i]) for i in range(3))[1]
+
+    tol = 1e-6 * max(part._loose_box().diagonal, tool._loose_box().diagonal, 1.0)
+    found: dict[str, Any] = {"beside": False, "tangent": None, "coincident": None}
+    mine = surfaces(part)
+    for kind, o, d, r, box in surfaces(tool):
+        for kind2, o2, d2, r2, box2 in mine:
+            if _disjoint(box, box2, tol):
+                continue
+            area = spread(box, box2) > 1e-4 * max(box.diagonal, box2.diagonal)
+            pair = {kind, kind2}
+            if pair == {"plane"}:
+                if d.cross(d2).length <= 1e-9 and abs((o2 - o).dot(d)) <= tol and area:
+                    found["coincident"] = found["coincident"] or place(box, box2, d, o)
+            elif pair == {"cylinder"}:
+                if d.cross(d2).length > 1e-9:
+                    continue
+                apart = ((o2 - o) - d * (o2 - o).dot(d)).length
+                if apart <= tol and abs(r - r2) <= tol and area:
+                    found["coincident"] = found["coincident"] or place(box, box2)
+                elif abs(apart - (r + r2)) <= tol or (abs(r - r2) > tol and abs(apart - abs(r - r2)) <= tol):
+                    found["tangent"] = found["tangent"] or place(box, box2)
+                elif abs(r - r2) + tol < apart < r + r2 - tol:
+                    found["beside"] = True
+            elif pair == {"sphere"}:
+                apart = (o2 - o).length
+                if apart <= tol and abs(r - r2) <= tol:
+                    found["coincident"] = found["coincident"] or place(box, box2)
+                elif abs(apart - (r + r2)) <= tol or (abs(r - r2) > tol and abs(apart - abs(r - r2)) <= tol):
+                    found["tangent"] = found["tangent"] or place(box, box2)
+            elif "plane" in pair:
+                (_, po, pn, _, _), (rk, ro, rd, rr, _) = sorted(
+                    [(kind, o, d, r, box), (kind2, o2, d2, r2, box2)], key=lambda x: x[0] != "plane")
+                if rk == "cylinder" and abs(rd.dot(pn)) > 1e-9:
+                    continue  # (a cylinder meets a plane across its axis in a circle or an ellipse)
+                if abs(abs((ro - po).dot(pn)) - rr) <= tol:
+                    found["tangent"] = found["tangent"] or place(box, box2)
+    return found
+
+
+def _crash_note(e: Exception | None, operation: str) -> str | None:
+    """For a kernel failure that is a crash (a trap of smlibwasm, a crash in a copy of the process)
+    or a null pointer the kernel met inside (SM_ERR_NULL_POINTER): what the error says of it instead
+    of a guess about the inputs; None for other failures (kernel plan B19)."""
+    if not isinstance(e, KernelError):
+        return None
+    detail = e.detail or ""
+    if "the kernel crashed" in detail:
+        inner = detail[detail.index("the kernel crashed"):]
+        why = inner[inner.index("(") + 1:inner.rindex(")")] if "(" in inner and ")" in inner else ""
+        return f"the kernel crashed in the {operation}" + (f" ({why})" if why else "")
+    if e.status == "SM_ERR_NULL_POINTER":
+        return f"the kernel failed inside the {operation} (it met a null pointer of its own)"
+    return None
 
 
 def _can_cover(tools: Sequence[Part], part: Part) -> bool:
@@ -2197,13 +2349,33 @@ def _mesh_overlap(a: Part, tools: Sequence[Part], op: Any, scale: float = 1.0) -
 
 
 def _surface_samples(body: _Body, near: BoundBox, tol: float, limit: int = 2000) -> list[tuple[float, float, float]]:
-    """Points on the mesh of a body (its corners and the middles of its triangles, within ``tol``
-    of the surface) that lie in a box, at most ``limit`` of them, spread over the list."""
+    """Points on the mesh of a body (within ``tol`` of the surface) that lie in a box, at most
+    ``limit`` of them, spread over the list: its corners, the middles of its triangles, and, in a
+    triangle longer than a twelfth of the box, points on a grid that far apart (the side of a long
+    cylinder is a few triangles from end to end: their corners and middles can all lie outside a
+    box that the cylinder crosses)."""
     from .mesh import tessellate
 
     mesh = tessellate(body, tol)
-    pts = np.vstack([mesh.vertices, mesh.vertices[mesh.triangles].mean(axis=1)]) if len(mesh.triangles) else mesh.vertices
     lo, hi = np.array(near.min.to_tuple()) - tol, np.array(near.max.to_tuple()) + tol
+    if len(mesh.triangles):
+        tri = mesh.vertices[mesh.triangles]
+        tri = tri[np.all((tri.max(axis=1) >= lo) & (tri.min(axis=1) <= hi), axis=1)]  # (those meeting the box)
+        parts = [mesh.vertices, tri.mean(axis=1)]
+        spacing = max(float(np.linalg.norm(hi - lo)) / 12, tol)
+        longest = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max(axis=1) if len(tri) else np.zeros(0)
+        steps = np.clip(np.ceil(longest / spacing), 1, 16).astype(int)
+        for n in np.unique(steps[steps > 1]):
+            sel = tri[steps == n]
+            i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
+            ok = (i + j) <= n
+            u, w = i[ok] / n, j[ok] / n
+            a = sel[:, 0][:, None, :]
+            grid = a + (sel[:, 1][:, None, :] - a) * u[None, :, None] + (sel[:, 2][:, None, :] - a) * w[None, :, None]
+            parts.append(grid.reshape(-1, 3))
+        pts = np.vstack(parts)
+    else:
+        pts = mesh.vertices
     pts = pts[np.all((pts >= lo) & (pts <= hi), axis=1)]
     if len(pts) > limit:
         pts = pts[np.linspace(0, len(pts) - 1, limit).astype(int)]
@@ -2211,21 +2383,23 @@ def _surface_samples(body: _Body, near: BoundBox, tol: float, limit: int = 2000)
 
 
 def _classified_empty(a: Part, tools: Sequence[Part], op: Any) -> bool:
-    """:func:`_empty_is_right` by classifying points instead (where the mesh Booleans fail): no
-    point of one operand's mesh lies inside the other by more than the mesh's tolerance
-    (INTERSECTION), or none of the part's lies outside every tool (DIFFERENCE)."""
+    """:func:`_empty_is_right` by classifying points instead (where the mesh Booleans fail, or
+    could crash): no point of one operand's mesh lies inside the other by more than twice the
+    mesh's tolerance (INTERSECTION), or none of the part's lies outside every tool (DIFFERENCE).
+    (Twice: the kernel's meshes keep to their tolerance only about; a sphere's for 0.0346 lies up
+    to 0.0356 inside it.)"""
     tol = max(_mesh_tolerance(a), *(_mesh_tolerance(t) for t in tools))
     if op == k.BooleanOp.INTERSECTION:
         b = tools[0]
         for x, y in ((a, b), (b, a)):
             pts = _surface_samples(x, y._loose_box(), tol)
-            if pts and any(where == "inside" for where, _, _ in y._classify(pts, tol)):
+            if pts and any(where == "inside" for where, _, _ in y._classify(pts, 2 * tol)):
                 return False
         return True
     pts = _surface_samples(a, a._loose_box(), tol)
     covered = [False] * len(pts)
     for t in tools:
-        for i, (where, _, _) in enumerate(t._classify(pts, tol)):
+        for i, (where, _, _) in enumerate(t._classify(pts, 2 * tol)):
             covered[i] = covered[i] or where != "outside"
     return all(covered)
 
@@ -2240,6 +2414,11 @@ def _empty_is_right(a: Part, tools: Sequence[Part], op: Any) -> bool:
     spheres with 18.6 in common or a pin through a plate, its answer changes with where the bodies
     are and with what was asked of them before, and it took 10 s for two plates of 168 faces.)"""
     try:
+        # The kernel's mesh Boolean can crash where the meshes have faces in common or touch
+        # tangentially (internally tangent cylinders, at a tenth of the tolerance): classify points
+        # there.
+        if any(c["tangent"] or c["coincident"] for c in (_surface_contacts(a, t) for t in tools)):
+            return _classified_empty(a, tools, op)
         volumes = [a._quick_volume()] + ([t._quick_volume() for t in tools] if op == k.BooleanOp.INTERSECTION else [])
         small = 1e-6 * max(min(abs(v) for v in volumes), 1e-300)
         coarse = _mesh_overlap(a, tools, op)
@@ -2608,10 +2787,15 @@ class Part(_Body):
                                 f"after each step and fix the step that broke it")
 
     def solids(self) -> ShapeList[Part]:
-        """The separate bodies of this part."""
+        """The separate bodies of this part: those that share no face, a body inside a cavity of
+        another (a captive part) too. Cells of a merged part that touch stay one solid (see
+        :meth:`merge`); a body keeps its cavities."""
         with kernel_call("solids"):
             parts = ext.separate_bodies(self._brep)
-        return ShapeList(Part._wrap(b, name=self.name, color=self.color) for b in parts)
+        out: ShapeList[Part] = ShapeList()
+        for b in parts:
+            out.extend(_islands(Part._wrap(b, name=self.name, color=self.color)))
+        return out
 
     def merge(self, *others: Part | Sequence[Part]) -> Part:
         """This part and others as one part made of cells. Where parts overlap, the overlap becomes
@@ -2619,9 +2803,11 @@ class Part(_Body):
         two cells: the body is non-manifold). For simulation meshes that must match across
         materials, and for models of several materials.
 
-        ``cells()`` gives the cells as parts of their own; ``volume`` is the volume of the union.
-        A merged part is not a manifold solid: ``is_valid()`` is False, and Booleans, fillets and
-        shells take its cells rather than the part itself.
+        ``cells()`` gives the cells as parts of their own, each named and colored after the parts it
+        lies in (``cell.sources``); ``volume`` is the volume of the union. A merged part is not a
+        manifold solid: ``is_valid()`` is False, and Booleans, fillets and shells take its cells
+        rather than the part itself. ``export_step`` writes each cell as a solid of its own, with
+        its name and color.
 
         A result whose volume is less than that of the largest part, or more than that of all
         parts together, is wrong: ``ModelingError``.
@@ -2641,17 +2827,36 @@ class Part(_Body):
         if problem is not None:
             raise ModelingError(f"merge: the kernel returned a result {problem}; a seam of one part that lies "
                                 f"tangent to another can do this: turn that part about its axis or move it a little")
+        merged._h.merged = {"parts": (self, *tools), "placement": np.eye(4), "cells": None}
         return merged
+
+    @property
+    def sources(self) -> tuple[Part, ...]:
+        """For a cell of a merged part (see :meth:`cells`): the parts given to :meth:`merge` whose
+        material it lies in, in the order they were given (a cell where two parts overlap lies in
+        both; a part that was itself merged stands for the parts it was merged from). They are the
+        parts as given, not moved along with the merged part. Empty for other parts."""
+        return tuple(self._h.sources or ())
 
     def cells(self) -> ShapeList[Part]:
         """The cells of a part made by :meth:`merge`, each as a part of its own (every closed region
-        of the body; a cavity is not a cell). A part that is one solid: ``[itself]``."""
+        of the body; a cavity is not a cell). A part that is one solid: ``[itself]``.
+
+        Each cell is named and colored after the parts given to merge that it lies in (its
+        :attr:`sources`): the names joined by ``&`` (``"steel&brass"`` where a steel and a brass
+        part overlap), the color of the last of them that has one; the merged part's own name and
+        color where none of them has one. The kernel keeps no record of the parts: smlibpy
+        classifies a point inside each cell against them."""
         d = ext.brep_dump(self._brep, False)
         if sum(1 for r in d["regions"] if not r["infinite"] and not r["void"]) <= 1:
             return ShapeList([self])
         with kernel_call("cells"):
             regions = ext.region_shells(self._brep)
         solids = [[Part._wrap(b, name=self.name, color=self.color) for b in shells] for shells in regions]
+        try:
+            sources = _cell_sources(self, solids)
+        except (ModelingError, ValueError):  # (the cells still come, named as the merged part)
+            sources = None
         touching = ("an insert that touches the part around it at a point or along a line can do this: move it "
                     "off the wall or into it")
         out: ShapeList[Part] = ShapeList()
@@ -2659,7 +2864,18 @@ class Part(_Body):
             try:
                 part = outer.cut(cavities) if cavities else outer
             except ModelingError as e:
-                raise ModelingError(f"cells: the cells inside a cell could not be cut out of it ({e}); {touching}") from e
+                # (the cut's own hint is about tools, which the user did not give)
+                why = f"the kernel's cut failed ({e.status})" if isinstance(e, KernelError) and e.status else \
+                    "the kernel's cut failed" if isinstance(e, KernelError) else "the kernel's cut returned no sound solid"
+                gap = 1e-6 * max(outer._extent(), 1.0)
+                insert = next((c for c in cavities if outer.distance_to(c) <= gap), None)
+                if insert is not None:
+                    c = insert._loose_box().center
+                    where = (f"the insert at ({c.x:.4g}, {c.y:.4g}, {c.z:.4g}) touches the part around it at a point or "
+                             f"along a line: move it off the wall or into it")
+                else:
+                    where = touching
+                raise ModelingError(f"cells: the cells inside a cell could not be cut out of it ({why}); {where}") from e
             try:
                 part._props()  # measured for the sum below, so that the check sees the gaps too
                 problem = part._solid_problem()
@@ -2667,6 +2883,9 @@ class Part(_Body):
                 problem = "a body whose volume cannot be integrated"
             if problem is not None:
                 raise ModelingError(f"cells: a cell is not a sound solid ({problem})")
+            if sources is not None:
+                part._h.sources = sources[len(out)]
+                part.name, part.color = _source_label(sources[len(out)], self.name, self.color)
             out.append(part)
         # The cells fill the part: a cell that kept another inside it counts that one twice (an
         # insert of 268 in 8000). Faces that meet only within a tolerance (fitted chamfers,
@@ -2773,12 +2992,52 @@ class Part(_Body):
             which = "the part" if broken[0] is self else "a tool"
             raise ModelingError(f"{name}: {which} is not a valid solid ({broken[0]._solid_problem()}); check "
                                 f"is_valid() of the operands and fix the step that broke them")
-        hint = ("the operands may touch only along an edge, at a point or tangentially (move one so they "
-                "overlap), or a tool overlaps an earlier cut or boss along a parallel face (combine the tools "
-                "first and apply them at once: part - (tool1 + tool2))")
+        hint = self._boolean_hint(tools, op, name, failure)
         if failure is not None:
             raise KernelError(failure.operation, failure.detail, failure.status, hint) from failure
         raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
+
+    def _boolean_hint(self, tools: Sequence[Part], op: Any, name: str, failure: KernelError | None) -> str:
+        """What a Boolean that failed says, from what the operands show (kernel plan B19): that the
+        kernel crashed or failed inside (a null pointer of its own); that a tool runs beside a
+        parallel hole or boss of the part (the B10 case the NURBS retry did not save), which the
+        tools of both cuts combined avoid; that a face of a tool lies on a face of the part; that
+        several tools were also tried combined; that the operands only touch (no point of the mesh of
+        one lies inside the other), or that a round face of a tool touches a face of the part
+        tangentially. With none of these, that none of them shows."""
+        clauses = []
+        crash = _crash_note(failure, name)
+        if crash is not None:
+            clauses.append(f"{crash}, a defect of the kernel rather than of the operands; moving or turning a tool "
+                           f"a little may avoid it")
+        near = [t for t in tools if not _disjoint(self._loose_box(), t._loose_box(), 1e-6 * self._extent())]
+        contacts = [_surface_contacts(self, t) for t in near]
+        if any(c["beside"] for c in contacts):
+            clauses.append("a tool runs beside a parallel hole or boss of the part and overlaps it (smlibpy tried it "
+                           "again as a NURBS copy, which failed too): combine the tools first and apply them at "
+                           "once, this one and the one that made that hole or boss: part - (tool1 + tool2)")
+        # (points classified, not the meshes' Boolean: that crashes on meshes of tangent cylinders)
+        touching = crash is None and any(_classified_empty(self, [t], k.BooleanOp.INTERSECTION) for t in near)
+        if touching:
+            clauses.append("the operands touch only along an edge, at a point or tangentially (no point of one lies "
+                           "inside the other): move one so they overlap, or apart")
+        else:
+            tangent = next((c["tangent"] for c in contacts if c["tangent"]), None)
+            if tangent is not None:
+                clauses.append(f"a round face of a tool touches a face of the part tangentially ({tangent}): move the "
+                               f"tool so that it cuts into that face, or stays clear of it")
+        coincident = next((c["coincident"] for c in contacts if c["coincident"]), None)
+        if coincident is not None:
+            clauses.append(f"a face of a tool lies on a face of the part ({coincident}): let the tool reach past "
+                           f"that face, or stop short of it")
+        if len(tools) > 1:
+            clauses.append("smlibpy also applied the tools combined into one, which failed too: apply them one at a "
+                           "time to find the one that fails")
+        if not clauses:
+            clauses.append("the operands neither only touch, nor have faces on or tangent to each other, nor is a "
+                           "tool beside a parallel hole; move or turn a tool a little, and check "
+                           "is_valid(strict=True) of the operands")
+        return "; ".join(clauses)
 
     def _nurbs_retry(self, tools: Sequence[Part], op: Any, name: str) -> Part | None:
         """The Boolean again with a NURBS copy of each tool that has a cylinder or cone parallel
@@ -3223,7 +3482,7 @@ class Part(_Body):
         if not outward:
             self._check_wall_fits(t, faces, rays)
         d = t if outward else -t
-        hint = self._shell_hint(faces)
+        hint = self._shell_hint(faces, t, rays, outward)
         offsets: dict[bool, float] = {}  # volume of the part offset by d, by mode (for a closed shell)
 
         def offset_volume(extended: bool) -> float:
@@ -3321,16 +3580,77 @@ class Part(_Body):
                 raise ModelingError(f"shell: a wall of {t:.4g} does not fit into the part, which is {depth:.4g} deep "
                                     f"from the face at {at} to the opening; use a thinner wall")
 
-    def _shell_hint(self, openings: list[Any]) -> str:
+    def _shell_hint(self, openings: list[Any], t: float | None = None,
+                    rays: Sequence[tuple[Vector, Vector, float, bool]] = (), outward: bool = False) -> str:
         """What a failed shell says: that the kernel cannot open a face whose rim meets its
-        neighbours tangentially (the flat top of a rounded box), or else that the wall may be too
-        thick."""
+        neighbours tangentially (the flat top of a rounded box); else where the walls of ``t`` fit
+        worst (kernel plan B19): for walls that grow ``outward``, a hole or inside round tighter than
+        the wall, which the outer wall closes (a hole of radius 1 and walls of 2 fail; inward, the
+        kernel's extended mode makes the inner wall sharp where a round is tighter, and those
+        succeed); inward, the place the part is thinnest across (``rays``, see ``_inward_rays``),
+        where it is less than three walls thick; else that the wall may be too thick."""
         for kf in openings:
             for e in Face(self, kf).edges():
                 if e.convexity == "smooth":
                     return ("the kernel cannot open a face whose rim meets its neighbours tangentially; shell the "
                             "part before rounding the rim, or shell it closed and cut the opening out")
+        if t is not None:
+            tight = self._tightest_round(openings, outward) if outward else None
+            if tight is not None and tight[0] < t:
+                r, p = tight
+                return (f"the hole or inside round at ({p.x:.4g}, {p.y:.4g}, {p.z:.4g}) has a radius of {r:.4g}, less "
+                        f"than the wall of {t:.4g}, and the outer wall would close it; shell the part before cutting "
+                        f"or rounding it there, or use a thinner wall")
+            if not outward and rays:
+                p, _, depth, opening = min(rays, key=lambda r: r[2] / (1 if r[3] else 2))
+                walls = 1 if opening else 2
+                if depth < (walls + 1) * t:
+                    return (f"the part is {depth:.4g} thick across the face at ({p.x:.4g}, {p.y:.4g}, {p.z:.4g}), "
+                            f"room for {'a wall' if walls == 1 else 'two walls'} of {t:.4g} and little more; use a "
+                            f"thinner wall")
         return "the wall may be thicker than the part allows"
+
+    def _tightest_round(self, openings: list[Any], outward: bool) -> tuple[float, Vector] | None:
+        """The radius and a point of the tightest cylinder, sphere or torus (its tube) of the part
+        that is not an opening and that walls growing inward (``outward``: outward) shrink: a round
+        of a convex edge, a boss (a hole); None where there is none."""
+        best: tuple[float, Vector] | None = None
+        for f in self._brep.faces():
+            if any(f is o for o in openings):
+                continue
+            info = ext.surface_data(f.surface(), False)
+            kind = info["kind"]
+            if kind == "cone" and abs(info.get("semi_angle_deg", 1.0)) < 1e-12:
+                r = float(info["radius"])
+            elif kind == "sphere":
+                r = float(info.get("radius", 0.0))
+            elif kind == "torus":
+                r = float(info.get("minor_radius", 0.0))
+            else:
+                continue
+            if not r > 0 or (best is not None and r >= best[0]):
+                continue
+            face = Face(self, f)
+            try:
+                p = face.interior_point()
+                n = face.normal_at(p)
+            except (RuntimeError, ValueError):
+                continue
+            # the center of the round: on the axis (cylinder), the center (sphere), on the tube's
+            # center circle (torus)
+            pl = info["placement"]
+            o, d = Vector(pl["origin"]), Vector(pl["z_dir"]).normalized()
+            if kind == "sphere":
+                center = o
+            elif kind == "cone":
+                center = o + d * (p - o).dot(d)
+            else:
+                q = p - d * (p - o).dot(d)
+                center = o + (q - o).normalized() * float(info["major_radius"])
+            convex = (p - center).dot(n) > 0  # the outward normal points away from the center
+            if convex != outward:
+                best = (r, p)
+        return best
 
     def _shell_problem(self, result: Part, d: float, openings: list[Any],
                        rays: list[tuple[Vector, Vector, float, bool]], extended: bool,
@@ -3438,6 +3758,10 @@ class Part(_Body):
                 return result
             refused = refused or why
         if error is not None:
+            crash = _crash_note(error, name)
+            if crash is not None:  # (not the hint's guess about the size)
+                raise KernelError(error.operation, error.detail, error.status,
+                                  f"{crash}, a defect of the kernel rather than of the part") from error
             raise error
         raise ModelingError(f"{name}: the kernel could not build a valid result (it built {refused}); {hint}")
 
@@ -3653,13 +3977,46 @@ class Part(_Body):
                 sheets = [f.to_shell() for f in regions]
                 with kernel_call("section"):
                     return Sketch._wrap(ext.combine([sh._brep for sh in sheets]), pl)
-        with kernel_call("section"):
-            curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
-        if not curves:
-            raise ValueError("the plane does not cut the part")
-        with kernel_call("section"):
-            b = k.create_planar_faces(list(curves))
-        return Sketch._wrap(b, pl)
+        touches = ("the plane only touches the part (along a line or a curve, or at a point), so the section has "
+                   "no area; move the plane into the part")
+        try:
+            with kernel_call("section"):
+                curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
+            if not curves:
+                raise ValueError("the plane does not cut the part")
+            with kernel_call("section"):
+                b = k.create_planar_faces(list(curves))
+        except KernelError as e:
+            # A plane tangent to a face meets the part along a line, which bounds no face.
+            if self._on_one_side(pl):
+                raise ValueError(touches) from e
+            raise KernelError(e.operation, e.detail, e.status, "the kernel could not make faces of the curves where "
+                              "the plane meets the part; a plane through an edge, or tangent to a face, inside the "
+                              "part can do this: move the plane a little") from e
+        section = Sketch._wrap(b, pl)
+        # A plane tangent to a part along a closed curve (the top of a torus) gives that curve, and
+        # the kernel fills it with a face that lies outside the part.
+        points = [f.interior_point() for f in section.faces()]
+        if any(where == "outside" for where, _, _ in self._classify(points, 1e-6 * max(self._extent(), 1.0))):
+            if self._on_one_side(pl):
+                raise ValueError(touches)
+            raise ModelingError("section: the kernel returned a region that lies outside the part; move the plane "
+                                "a little")
+        return section
+
+    def _on_one_side(self, plane: Plane) -> bool:
+        """Whether the part lies on one side of a plane that meets it: a plane a little beyond the
+        given one, on one side or the other, misses the part (the given one only touches it)."""
+        step = 1e-5 * max(self._extent(), 1.0)
+        for s in (step, -step):
+            p = plane.offset(s)
+            with kernel_call("section"):
+                curves = k.intersect_brep_with_plane(self._brep, p.origin.to_tuple(), p.z_dir.to_tuple())
+            for c in curves:
+                ext.delete_curve(c)
+            if not curves:
+                return True
+        return False
 
     # -- deformations (smlibpy.deform) ---------------------------------------
     def twist(self, angle: float, **kwargs: Any) -> Part:
@@ -3887,6 +4244,165 @@ def _distance_to_edge(e: Edge, p: Vector) -> float:
     return e.distance_to(p)
 
 
+def _solid_groups(brep: Any) -> list[list[int]]:
+    """The closed regions of a body that are not cavities (numbered as ``ext.region_shells``
+    numbers them), grouped across the faces two of them share: the touching cells of a merged part
+    form one group, a body inside a cavity of another a group of its own."""
+    d = ext.brep_dump(brep, False)
+    regions = d["regions"]
+    cell = {}  # region -> its number among the regions that are not cavities
+    for i, r in enumerate(regions):
+        if not r["infinite"] and not r["void"]:
+            cell[i] = len(cell)
+    region_of = {s: i for i, r in enumerate(regions) for s in r["shells"]}
+    parent = list(range(len(cell)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for f in d["faces"]:
+        sides = {region_of.get(u["shell"]) for u in f["uses"] if u is not None and u["shell"] is not None}
+        found = [cell[r] for r in sides if r in cell]
+        if len(found) == 2:
+            parent[root(found[0])] = root(found[1])
+    groups: dict[int, list[int]] = {}
+    for i in range(len(cell)):
+        groups.setdefault(root(i), []).append(i)
+    return list(groups.values())
+
+
+def _islands(part: Part) -> list[Part]:
+    """A body of ``ext.separate_bodies`` as the bodies in it that share no face. The kernel keeps a
+    body inside a cavity of another with that one (SmBrep::CreateOneBrepPerBody keeps nested shells
+    together). Each group of :func:`_solid_groups` becomes a body as :meth:`Part.cells` builds a
+    cell (its outer shell less its cavities), a group of several cells their merge. Where that
+    fails, the body stays whole, as the kernel gave it (kernel plan B16)."""
+    try:
+        if k.material_census(part._brep)["solid_count"] <= 1:  # (cheap)
+            return [part]
+        groups = _solid_groups(part._brep)
+    except RuntimeError:
+        return [part]
+    if len(groups) <= 1:
+        return [part]
+    try:
+        with kernel_call("solids"):
+            regions = ext.region_shells(part._brep)
+        solids = [[Part._wrap(b, name=part.name, color=part.color) for b in shells] for shells in regions]
+        bodies = []
+        for group in groups:
+            cells = [outer.cut(cavities) if cavities else outer for outer, *cavities in (solids[c] for c in group)]
+            bodies.append(cells[0] if len(cells) == 1 else cells[0].merge(cells[1:]))
+    except ModelingError:  # (also a KernelError)
+        return [part]
+    return bodies
+
+
+def _same_sources(src: BrepHandle, dst: BrepHandle, m: np.ndarray | None = None) -> None:
+    """Carries what a merged part was merged from, and a cell's sources, over to a copy of it moved
+    by the placement ``m`` (kernel plan B15)."""
+    if src.merged is not None:
+        placement = src.merged["placement"] if m is None else m @ src.merged["placement"]
+        dst.merged = {"parts": src.merged["parts"], "placement": placement, "cells": None}
+    dst.sources = src.sources
+
+
+# The tries of _cell_points, round by round: (the face of the cell, the step into it as a part of
+# the merged part's size).
+_CELL_TRIES = [[(0, 0.03)], [(0, 0.003), (1, 0.03)], [(1, 0.003), (2, 0.03), (2, 0.003)],
+               [(0, 3e-4), (1, 3e-4), (2, 3e-4)]]
+
+
+def _cell_points(part: Part, solids: Sequence[Sequence[Part]]) -> list[Vector | None]:
+    """Per cell of a merged part (given as its solids from ``ext.region_shells``, the outer one
+    first), a point inside it: from a point on one of the outer solid's first three faces, a step
+    into the cell that the part itself classifies into that cell, round by round (_CELL_TRIES) for
+    the cells not found yet (the classification costs about 0.25 ms a point on a part of 28
+    cells). None where none is found."""
+    size = max(part._extent(), 1.0)
+    starts: list[list[tuple[Vector, Vector] | None]] = []
+    for outer, *_ in solids:
+        mine: list[tuple[Vector, Vector] | None] = []
+        for f in list(outer.faces())[:3]:
+            try:
+                p = f.interior_point()
+                mine.append((p, f.normal_at(p)))
+            except (RuntimeError, ValueError):  # a face the kernel cannot place a point on
+                mine.append(None)
+        starts.append(mine)
+    found: list[Vector | None] = [None] * len(solids)
+    for tries in _CELL_TRIES:
+        points: list[Vector] = []
+        owners: list[int] = []
+        for i, mine in enumerate(starts):
+            if found[i] is not None:
+                continue
+            for face, step in tries:
+                if face < len(mine) and mine[face] is not None:
+                    p, n = mine[face]  # type: ignore[misc]
+                    points.append(p - n * (step * size))
+                    owners.append(i)
+        if not points:
+            break
+        for q, i, (where, _, cell) in zip(points, owners, part._classify(points)):
+            if where == "inside" and cell == i and found[i] is None:
+                found[i] = q
+    return found
+
+
+def _merge_sources(part: Part, points: Sequence[Vector]) -> list[list[Part]]:
+    """Per point, the parts a merged part was merged from whose material holds it (a part that was
+    itself merged stands for its own parts); the part itself for a part that was not merged."""
+    info = part._h.merged
+    if info is None:
+        return [[part] if where != "outside" else [] for where, _, _ in part._classify(points)]
+    back = np.linalg.inv(info["placement"])
+    local = [Vector((back @ np.array([p.x, p.y, p.z, 1.0]))[:3]) for p in points]
+    out: list[list[Part]] = [[] for _ in points]
+    for x in info["parts"]:
+        for found, more in zip(out, _merge_sources(x, local)):
+            found.extend(s for s in more if not any(s is y for y in found))
+    return out
+
+
+def _cell_sources(part: Part, solids: Sequence[Sequence[Part]] | None = None) -> list[tuple[Part, ...]] | None:
+    """Per cell of a merged part (in the order of ``ext.region_shells``, given as ``solids`` where
+    the caller has them), the parts given to merge that it lies in; None for a part that does not
+    come from a merge. A point inside each cell (:func:`_cell_points`) is classified against the
+    parts; a cell where none is found has no sources."""
+    info = part._h.merged
+    if info is None:
+        return None
+    if info["cells"] is None:
+        if solids is None:
+            with kernel_call("cells"):
+                regions = ext.region_shells(part._brep)
+            solids = [[Part._wrap(b) for b in shells] for shells in regions]
+        points = _cell_points(part, solids)
+        known = [i for i, p in enumerate(points) if p is not None]
+        found = _merge_sources(part, [points[i] for i in known]) if known else []
+        cells: list[tuple[Part, ...]] = [()] * len(solids)
+        for i, sources in zip(known, found):
+            cells[i] = tuple(sources)
+        info["cells"] = cells
+    return info["cells"]
+
+
+def _source_label(sources: Sequence[Part], name: str | None, color: Any) -> tuple[str | None, Any]:
+    """The name and color of a cell of a merged part: the names of its sources joined by ``&``
+    (each once), the color of the last of them that has one; ``name`` and ``color`` (the merged
+    part's) where none has one."""
+    names: list[str] = []
+    for s in sources:
+        if s.name and s.name not in names:
+            names.append(s.name)
+    colors = [s.color for s in sources if s.color is not None]
+    return ("&".join(names) if names else name), (colors[-1] if colors else color)
+
+
 def _take(h: BrepHandle) -> Any:
     """Release a handle's Brep to a new owner."""
     b, h.brep = h.brep, None
@@ -3957,11 +4473,19 @@ _ROUND_SELECTION_HINT = ("the kernel cannot round the selection as given, at any
 
 @contextlib.contextmanager
 def _round_call(operation: str, hint: str) -> Iterator[None]:
-    """:func:`kernel_call` for fillets and chamfers, with the hint for a selection the kernel cannot round."""
+    """:func:`kernel_call` for fillets and chamfers, with the hint for a selection the kernel cannot
+    round, and for a failure inside the kernel (a crash, a null pointer of its own), which says
+    nothing about the size: the size passed the checks against the faces before (kernel plan B19)."""
     try:
         with kernel_call(operation, hint):
             yield
     except KernelError as e:
+        crash = _crash_note(e, operation)
+        if crash is not None:
+            size = "length" if operation == "chamfer" else "radius"
+            raise KernelError(e.operation, e.detail, e.status,
+                              f"{crash}, which says nothing about the {size} (it fits the faces around the edges): "
+                              f"round the edges in smaller groups to find the one it fails at") from e
         if e.status != "SM_ERR_INVALID_INPUT":
             raise
         raise KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT) from e

@@ -57,7 +57,8 @@ the kernel extends the round past the end until it leaves the material, so more 
   or round the larger radius first. Small first, then large, leaves a dented corner
   (picture in training; volume 25199.4 vs 25154.7).
 - Fillet after the Booleans that create the edges; select the new edges with
-  `part.edges().new(since=[plate, boss])` (the curves where the bodies meet, see
+  `part.edges().joining(plate, boss)` (the edges where the bodies meet, see `selection/joining`),
+  `part.edges().new(since=[plate, boss])` (the curves where their faces cross, see
   `selection/history`) or by geometry (`circles()`, `concave()`, radius filters). Edges taken
   before a cut that split them stand for their pieces: `(box - slot).fillet(box.edges().top(), 1)`
   rounds all of them.
@@ -66,6 +67,10 @@ the kernel extends the round past the end until it leaves the material, so more 
 ## Errors
 - `ModelingError: fillet: the radius is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
 - `KernelError: fillet failed (SM_ERR): the radius may be too large for the selected edges`
+- `KernelError: fillet failed (SM_ERR_NULL_POINTER): the kernel failed inside the fillet (it met a
+  null pointer of its own), which says nothing about the radius (it fits the faces around the
+  edges): round the edges in smaller groups to find the one it fails at` (smlibwasm, for a trap:
+  `the kernel crashed in the fillet (...)`)
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
 - `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`

@@ -20,7 +20,7 @@ Every operation returns a new Part; the input is unchanged. Reassigning is the n
 | `center()` | Vector | center of mass, not the bbox center |
 | `bbox()` | BoundBox | tight; `.min`, `.max`, `.size` |
 | `is_valid()` | bool | closed manifold solid with a positive volume; see the gotchas |
-| `solids()` | ShapeList[Part] | the separate bodies, each with the part's name and color |
+| `solids()` | ShapeList[Part] | the separate bodies (also one inside a cavity of another), each with the part's name and color |
 | `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox` |
 | `faces()`, `edges()`, `vertices()` | ShapeList | see `selection/*` |
 | `name`, `color` | None by default | set with `named()` / `colored()` |
@@ -54,8 +54,8 @@ part that should be one piece, check `len(part.solids()) == 1`.
   See `booleans`. Fillet, chamfer, shell and offset refuse an invalid part.
 - A cut or intersection can return an empty Part (0 faces, volume 0, `is_valid()` False)
   without an error.
-- `solids()` does not separate a body that floats inside a cavity of another body: it reports
-  one solid.
+- `solids()` separates a body that floats inside a cavity of another (a captive part) from it;
+  the touching cells of a merged part stay one solid.
 - `colored()` accepts any value; an unknown color name fails only at export
   (`ValueError: unknown color 'lightgreen'`).
 - `part.name = "x"` mutates the part in place. Use `named()`.

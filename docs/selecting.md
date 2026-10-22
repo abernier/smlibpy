@@ -136,6 +136,29 @@ done = slotted.fillet(top, 1)
 Where a face or edge has no descendant (it belongs to another body), it is matched by geometry
 as before, and `ValueError: ... is not an edge of this part` says that nothing matched.
 
+### Where two bodies meet
+
+`joining(a, b)` selects the edges that lie on the surfaces of both bodies: where a Boolean joined
+them, the edges one rounds or chamfers next. It goes by geometry, not by the marks, so it also
+finds the circle where a boss *stands* on a plate: there the boss's bottom face lay on the plate's
+top, and the circle is the boss's bottom edge, which `new(since=...)` does not count as new:
+
+```python
+plate = Box(60, 40, 8)
+boss = Cylinder(8, 10).translate(0, 0, 9)         # standing on the top (z = 4)
+joined = plate + boss
+print(len(joined.edges().new(since=[plate, boss])))   # 0: the circle is the boss's own edge
+rim = joined.edges().joining(plate, boss)         # the circle where they meet
+rounded = joined.fillet(rim, 2)
+
+block = Box(40, 40, 10)
+hole = Cylinder(5, 40).rotate(X, 30)
+rims = (block - hole).edges().joining(block, hole)   # the 4 pieces of the two rims
+```
+
+Either side can be a list of bodies (`joining(plate, holes)`). Edges where coplanar faces of the
+two bodies merged into one face are not taken: they lie on one surface only.
+
 ## Seams
 
 Closed surfaces such as cylinders have a seam where the surface meets itself. Seams are

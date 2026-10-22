@@ -37,7 +37,8 @@ see `history`). Where it has none (another body), edges are matched by start, en
 faces by an interior point and the area; if nothing matches, it fails with
 `ValueError: Edge(...) is not an edge of this part`. Moved copies (`.translate()`) do not match:
 they are free shapes somewhere else. `new(since=...)` and `derived_from(...)` select by where
-faces and edges came from (`history`).
+faces and edges came from (`history`); `joining(a, b)` the edges where two bodies meet
+(`joining`).
 
 ## Empty selections
 Selectors never raise on empty input: an empty ShapeList chains through `top()`,

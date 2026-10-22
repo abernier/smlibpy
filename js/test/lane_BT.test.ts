@@ -1,7 +1,9 @@
 // Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10); empty Boolean results
 // checked without the kernel's brep_relationship (B13); parts split along sheets and sheets trimmed
 // by parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks
-// (T4). Ported from tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
+// (T4); the cells of a merged part named after their parts (B15); solids() separating a body in a
+// cavity (B16); the edges where two bodies meet (B17); sections by planes that only touch (B18);
+// error hints from what the operands show (B19). Ported from tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
 // sections of two cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is
 // given where it differs from that by more than 1e-6.
 import { test } from 'node:test'
@@ -30,12 +32,16 @@ import {
   X,
   Y,
   Z,
+  fromStep,
+  merge,
   split,
   stitch,
   surface,
+  toStep,
 } from '../src/index.ts'
+import { toRgb } from '../src/colors.ts'
 import { ext, k, module } from '../src/kernel.ts'
-import { _classifiedEmpty, _parallelRounds } from '../src/shapes.ts'
+import { _classifiedEmpty, _crashNote, _parallelRounds } from '../src/shapes.ts'
 import { GUARD_SECONDS, setGuardSeconds } from '../src/defeature.ts'
 
 // biome-ignore lint: wrong types on purpose, for the errors
@@ -607,4 +613,205 @@ test('a healed closed sheet is a part', () => {
   approx((healed as Part).volume, 8000, 2e-2)
   assert.ok(healed.check().length > 0) // its edges are far from tight
   assert.equal(wave().heal().constructor, Shell)
+})
+
+
+// -- B15: the cells of a merged part know the parts they lie in ---------------------------------
+const steelAndBrass = (): [Part, Part] => [Box(40, 40, 20).named('steel').colored('gray'), Cylinder(6, 30).named('brass').colored('gold')]
+
+test('cells are named after the parts they lie in', () => {
+  // Every cell was named and colored as the first part: 4 cells, all "steel", "gray".
+  const [steel, brass] = steelAndBrass()
+  const m = merge(steel, brass)
+  const cells = [...m.cells()].sort((a, b) => b.volume - a.volume || a.center().z - b.center().z)
+  const insert = PI * 36 * 20
+  ;[32000 - insert, insert, insert / 4, insert / 4].forEach((v, i) => approx(cells[i].volume, v))
+  assert.deepEqual(
+    cells.map((c) => [c.name, c.color]),
+    [['steel', 'gray'], ['steel&brass', 'gold'], ['brass', 'gold'], ['brass', 'gold']],
+  )
+  assert.deepEqual(
+    cells.map((c) => c.sources.map((s) => s.name)),
+    [['steel'], ['steel', 'brass'], ['brass'], ['brass']],
+  )
+  assert.ok(cells[1].sources[0] === steel && cells[1].sources[1] === brass)
+  assert.equal(m.cellAt([0, 0, 12])!.name, 'brass')
+  assert.equal(m.cellAt([10, 10, 0])!.name, 'steel')
+  assert.deepEqual(Box(1, 1, 1).sources, [])
+})
+
+test('cells of moved, renamed and chained merges', () => {
+  const [steel, brass] = steelAndBrass()
+  const m = merge(steel, brass)
+  const key = (c: Part, f = 1) => `${c.name} ${(c.volume * f).toFixed(1)}`
+  const moved = m.translate(100, 0, 0).rotate(Z, 30).scale(2).named('assembly')
+  assert.deepEqual(moved.cells().map((c) => key(c)).sort(), m.cells().map((c) => key(c, 8)).sort())
+  const pinPart = Cylinder(2, 50).rotate(X, 90).named('pin').colored('red')
+  const chained = m.merge(pinPart)
+  assert.deepEqual(new Set(chained.cells().map((c) => c.name)), new Set(['steel', 'brass', 'pin', 'steel&brass', 'steel&pin', 'steel&brass&pin']))
+  assert.ok(chained.cells().filter((c) => c.name!.includes('pin')).every((c) => c.color === 'red'))
+  // parts without names: the merged part's name and color, as before
+  const plain = Box(10, 10, 10).merge(Box(10, 10, 10).translate(5, 0, 0)).named('x').colored('blue')
+  assert.ok(plain.cells().every((c) => c.name === 'x' && c.color === 'blue'))
+  assert.deepEqual(plain.cells().map((c) => c.sources.length).sort(), [1, 1, 2])
+})
+
+test('STEP writes the cells with their names and colors', () => {
+  const [steel, brass] = steelAndBrass()
+  const text = toStep(merge(steel, brass))
+  assert.deepEqual([...text.matchAll(/MANIFOLD_SOLID_BREP\('([^']*)'/g)].map((x) => x[1]).sort(), ['brass', 'brass', 'steel', 'steel&brass'])
+  const back = fromStep(text) as Any
+  const got = [...back].map((b: Part) => `${b.name} ${(b.color as number[]).map((x) => x.toFixed(4))} ${b.volume.toFixed(1)}`).sort()
+  const want = merge(steel, brass).cells().map((c) => `${c.name} ${toRgb(c.color as string).map((x) => x.toFixed(4))} ${c.volume.toFixed(1)}`).sort()
+  assert.deepEqual(got, want)
+  assert.ok(toStep(merge(steel, brass), { unit: 'cm' }).includes('steel&brass'))
+})
+
+// -- B16: solids() separates a body inside a cavity ---------------------------------------------
+test('solids separates a body in a cavity', () => {
+  const caged = Box(20, 20, 20).cut(Box(10, 10, 10)).fuse(Box(4, 4, 4)) // was one solid of 7064
+  const solids = caged.solids()
+  assert.equal(solids.length, 2)
+  approx(solids[0].volume, 7000)
+  approx(solids[1].volume, 64)
+  assert.ok(solids.every((s) => s.isValid()))
+  const nested = Sphere(20).cut(Sphere(15)).fuse(Sphere(10).cut(Sphere(6))).fuse(Sphere(3))
+  const a = nested.solids().map((s) => s.volume).sort((x, y) => x - y)
+  const b = nested.cells().map((s) => s.volume).sort((x, y) => x - y)
+  assert.equal(a.length, 3)
+  a.forEach((v, i) => approx(v, b[i]))
+  const touching = Box(10, 10, 10).merge(Box(10, 10, 10).translate(10, 0, 0)).solids()
+  assert.equal(touching.length, 1)
+  approx(touching[0].volume, 2000)
+  const cage = Box(30, 30, 30).cut(Box(20, 20, 20))
+  const inside = merge(cage, Box(6, 6, 6), Box(6, 6, 6).translate(6, 0, 0)).solids().map((s) => s.volume).sort((x, y) => x - y)
+  assert.equal(inside.length, 2)
+  approx(inside[0], 432)
+  approx(inside[1], 19000)
+})
+
+// -- B17: the edges where two bodies meet --------------------------------------------------------
+test('edges joining two bodies', () => {
+  const plate = Box(40, 40, 10)
+  const standing = Cylinder(5, 10).translate(0, 0, 10) // its bottom face on the plate's top
+  const joined = plate.fuse(standing)
+  assert.equal(joined.edges().newSince([plate, standing]).length, 0) // the circle is the boss's own edge
+  const rim = joined.edges().joining(plate, standing)
+  assert.equal(rim.length, 1)
+  assert.equal(rim[0].geomType, 'circle')
+  approx(rim[0].length, 10 * PI)
+  const rounded = joined.fillet(rim, 2)
+  assert.ok(rounded.isValid() && rounded.volume > joined.volume)
+  const through = Cylinder(5, 20).translate(0, 0, 10)
+  assert.equal(plate.fuse(through).edges().joining(plate, through).length, 1)
+  const hole = Cylinder(5, 40).rotate(X, 30)
+  const rims = plate.cut(hole).edges().joining(plate, hole)
+  assert.deepEqual(rims.map((e) => e.length.toFixed(4)).sort(), ['25.4172', '25.4172', '8.4724', '8.4724'])
+  assert.ok(rims.every((e) => e.geomType === 'ellipse'))
+  const [a, b] = [Box(10, 10, 10), Box(10, 10, 10).translate(10, 0, 0)]
+  assert.equal(a.fuse(b).edges().joining(a, b).length, 0)
+  const step = Box(10, 10, 5).translate(5, 0, -2.5)
+  const corner = a.fuse(step).edges().joining(a, step)
+  assert.equal(corner.length, 1)
+  approx(corner[0].length, 10)
+  const holes = [-10, 0, 10].map((x) => Cylinder(2, 20).translate(x, 0, 0))
+  assert.equal(plate.cut(holes).edges().joining(plate, holes).length, 6)
+  assert.throws(() => (joined.faces() as Any).joining(plate, standing), /selects edges/)
+  assert.throws(() => joined.edges().joining(plate, [1, 2, 3]), /takes bodies/)
+})
+
+// -- B18: sections by planes that only touch -----------------------------------------------------
+const touchingPlanes: [string, () => Part, Plane][] = [
+  ['cylinder', () => Cylinder(5, 20), Plane.XZ.offset(5)], // was KernelError: section failed (SM_ERR)
+  ['cylinder below', () => Cylinder(5, 20), Plane.XZ.offset(-5)],
+  ['box edge', () => Box(10, 10, 10).rotate(Z, 45), Plane.YZ.offset(50 ** 0.5)], // through an edge
+  ['torus top', () => Torus(10, 2), Plane.XY.offset(2)], // was a disc of 314.159 that is not in the torus
+  ['two cylinders', () => Cylinder(5, 20).merge(Cylinder(5, 20).translate(20, 0, 0)), Plane.XZ.offset(5)],
+]
+for (const [name, make, plane] of touchingPlanes) {
+  test(`a plane that only touches has no section: ${name}`, () => {
+    assert.throws(() => make().section(plane), (e: Error) => e instanceof RangeError && /only touches the part/.test(e.message))
+  })
+}
+
+test('sections by planes on faces and inside', () => {
+  approx(Box(10, 10, 10).section(Plane.XY.offset(5)).area, 100) // a plane on a face: that face
+  approx(Cylinder(5, 20).section(Plane.XZ).area, 200)
+  assert.throws(() => Cylinder(5, 20).section(Plane.XZ.offset(6)), /does not cut/)
+  // tangent to the wall of a hole inside the part: the kernel fails; the hint says to move the plane
+  assert.throws(() => Box(20, 20, 10).cut(Cylinder(3, 20)).section(Plane.XZ.offset(3)), (e: Error) => e instanceof KernelError && /move the plane a little/.test(e.message))
+})
+
+// -- B19: error hints from what the operands show ------------------------------------------------
+test('Boolean hints say what the operands show', () => {
+  // In 830 fuzz cases every Boolean error advised combining tools, though each had one tool.
+  assert.throws(
+    () => Cylinder(5, 20).fuse(Cylinder(5, 20).translate(10, 0, 0)),
+    (e: Error) => e instanceof ModelingError && /touch only along an edge/.test(e.message) && !/combine/.test(e.message),
+  )
+  // a cylinder flush with a side face and with the top: both found, nothing about combining
+  assert.throws(
+    () => Box(6, 16, 4).cut(Cylinder(1.5, 30).translate(-1.5, 0, -13)),
+    (e: Error) =>
+      /touches a face of the part tangentially \(near \(-3,/.test(e.message) && /\(at z = 2\)/.test(e.message) && !/combine/.test(e.message) && !/touch only/.test(e.message),
+  )
+  // beside an earlier parallel hole, where the NURBS retry does not help either
+  const proto = Part.prototype as Any
+  const retry = proto._nurbsRetry
+  proto._nurbsRetry = () => null
+  try {
+    assert.throws(
+      () => Box(40, 40, 10).cut(Cylinder(6, 30)).cut(Cylinder(3, 30).translate(8, 0, 0)),
+      (e: Error) => e instanceof KernelError && /combine the tools first/.test(e.message) && !/tangentially/.test(e.message),
+    )
+  } finally {
+    proto._nurbsRetry = retry
+  }
+  // a flat end cap tangent to a sphere: a trap in the wasm before the kernel patch, now an error that says so
+  assert.throws(
+    () => Sphere(1.5).rotate(Y, 90).cut(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)),
+    (e: Error) => e instanceof ModelingError && /touches a face of the part tangentially/.test(e.message),
+  )
+})
+
+test('crashes and null pointers are not blamed on sizes', () => {
+  assert.equal(_crashNote(new KernelError('cut', 'SM_ERR_NULL_POINTER', 'SM_ERR_NULL_POINTER', 'x'), 'cut'), 'the kernel failed inside the cut (it met a null pointer of its own)')
+  assert.equal(_crashNote(new KernelError('fillet', 'the kernel crashed (table index is out of bounds)', null, 'x'), 'fillet'), 'the kernel crashed in the fillet (table index is out of bounds)')
+  assert.equal(_crashNote(new KernelError('cut', 'SM_ERR', 'SM_ERR'), 'cut'), null)
+  // fuzz case fillet-7-161: a radius of 0.4956 that fits, and "the radius may be too large"
+  const part = Torus(8, 1.5).cut(Sphere(2.5).translate(7, 7, -2.8573))
+  try {
+    part.fillet(part.edges(), 0.495553)
+  } catch (e) {
+    assert.ok(e instanceof KernelError)
+    if (e.status === 'SM_ERR_NULL_POINTER') assert.ok(/says nothing about the radius/.test(e.message) && !/too large/.test(e.message))
+  }
+})
+
+test('shell and cells hints name the place', () => {
+  const holed = Box(30, 30, 10).cut(Cylinder(1, 20))
+  assert.throws(() => holed.shell(2, null, { outward: true }), /the hole or inside round at \(.*\) has a radius of 1, less than the wall of 2/)
+  const slab = Box(40, 40, 5)
+  const hint = slab._shellHint([], 2, slab._inwardRays([]), false)
+  assert.ok(hint.startsWith('the part is 5 thick across the face at (') && hint.includes('two walls of 2'), hint)
+  const cube = Box(40, 40, 40)
+  assert.equal(cube._shellHint([], 2, cube._inwardRays([]), false), 'the wall may be thicker than the part allows')
+  assert.throws(
+    () => Box(20, 20, 20).merge(Cylinder(4, 10).translate(6, 0, 0)).cells(),
+    (e: Error) => /the insert at \(6, .*\) touches the part around it/.test(e.message) && !/combine|tool/.test(e.message),
+  )
+})
+
+test('hints and empty checks avoid the crashing mesh Boolean', () => {
+  // The kernel's Boolean of the meshes of these cylinders, tangent inside each other, kills the
+  // Python process at a tenth of tessellate's tolerance (also on origin/next).
+  const a = Cylinder(4, 8).rotate(X, 90)
+  const b = Cylinder(1.5, 4).rotate(X, 90).translate(-2.5, 2, 0)
+  assert.throws(() => a.cut(b), (e: Error) => e instanceof ModelingError && /tangentially/.test(e.message))
+})
+
+test('classified empty sees long triangles', () => {
+  // The side of the cylinder is a few triangles from end to end, whose corners and middles all lie
+  // outside the box: the overlap was missed, and the cut above was said to only touch.
+  assert.equal(_classifiedEmpty(Box(6, 16, 4), [Cylinder(1.5, 30).translate(-1.5, 0, -13)], k.BooleanOp.INTERSECTION), false)
 })

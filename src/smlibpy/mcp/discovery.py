@@ -49,7 +49,7 @@ SYNONYMS = {
     "size": ["bbox"], "bounds": ["bbox", "BoundBox"], "distance": ["distance_to", "closest_point"],
     "check": ["is_valid", "check", "heal"], "repair": ["heal"], "fix": ["heal"],
     "problem": ["check"], "problems": ["check"], "diagnose": ["check"], "gap": ["check", "tolerance"],
-    "history": ["new", "derived_from"], "provenance": ["derived_from", "new"], "descendant": ["derived_from"],
+    "history": ["new", "derived_from"], "joint": ["joining"], "joints": ["joining"], "provenance": ["derived_from", "new"], "descendant": ["derived_from"],
     "imprint": ["imprint"], "trim": ["split", "Shell"], "export": ["export", "export_step", "save"],
     "import": ["load", "import_step", "read_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
