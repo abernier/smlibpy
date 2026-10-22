@@ -6,8 +6,9 @@ revolves, lofts, sweeps and Booleans return Parts.
 ## Making one
 
 You never call `Part()` (it raises `TypeError: create a Part with the constructors`). Use
-`Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `sketch.extrude(...)`,
-`sketch.revolve(...)`, `loft`, `sweep`, or combine parts with `+`, `-`, `&`.
+`Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `AnnularSector`, `sketch.extrude(...)`,
+`sketch.revolve(...)`, `swing`, `loft`, `sweep`, or combine parts with `+`, `-`, `&`. Cylinder,
+Cone, Sphere and Torus also make sectors (`arc_size=`, `arc_size1..3=`, `major_angle=`).
 
 Every operation returns a new Part; the input is unchanged. Reassigning is the normal style:
 `plate -= Cylinder(3, 20)`.
@@ -82,5 +83,5 @@ print(len(pins.solids()))
 
 ## Related
 
-`Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `booleans`, `Hole`;
+`Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, `AnnularSector`, `booleans`, `Hole`;
 `analysis/*` for mass properties and distances; `selection/*` for faces and edges.

@@ -24,12 +24,17 @@
 #include "fit.h"
 #include "history.h"
 #include "measure.h"
+#include "oriented_sweep.h"
+#include "revolutions.h"
 #include "seams.h"
 #include "sheetmetal.h"
 #include "shells.h"
+#include "skins.h"
 #include "slice.h"
+#include "slivers.h"
 #include "step_build.h"
 #include "surface_eval.h"
+#include "swing.h"
 #include "tessellate.h"
 #include "usd.h"
 
@@ -110,6 +115,51 @@ val seam_contacts(uintptr_t a, uintptr_t b, double tolerance)
 }
 val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
+uintptr_t remove_slivers(uintptr_t b, val faces, double tolerance) { return guard([&] { return ptr(smlibpy::remove_slivers(brep(b), pointers<SmFace>(faces), tolerance)); }); }
+val analytic_revolutions(uintptr_t b) { return guard([&] { return owned_or_null(smlibpy::analytic_revolutions(brep(b))); }); }
+// Profile and path are copied, not consumed; x_axes flat (x, y, z for each of params); scales null or
+// one for each of params.
+uintptr_t oriented_sweep(val profile, uintptr_t path, val params, val x_axes, bool cap_ends, val scales)
+{
+    return guard([&] {
+        const std::vector<double> s = scales.isNull() || scales.isUndefined() ? std::vector<double>{} : numbers(scales);
+        return ptr(smlibpy::oriented_sweep(pointers<SmCurve>(profile), as<SmBSplineCurve>(path, "path"), numbers(params),
+                                           numbers(x_axes), cap_ends, s));
+    });
+}
+// [brep, start deviation, end deviation] (radians); curves copied, not consumed; tangents [x, y, z] or []
+val skin(val curves, val counts, unsigned degree, val start_tangent, val end_tangent, bool closed, bool cap_ends)
+{
+    return guard([&] {
+        const std::vector<double> c = numbers(counts);
+        double deviation[2] = {0.0, 0.0};
+        SmBrep* b = smlibpy::skin(pointers<SmCurve>(curves), std::vector<unsigned long>(c.begin(), c.end()), degree,
+                                  numbers(start_tangent), numbers(end_tangent), closed, cap_ends, deviation);
+        val out = val::array();
+        out.call<void>("push", ptr(b));
+        out.call<void>("push", deviation[0]);
+        out.call<void>("push", deviation[1]);
+        return out;
+    });
+}
+// The faces of a swung body, not stitched; curves copied, not consumed.
+uintptr_t swung(val profile, val outline, double scale)
+{
+    return guard([&] { return ptr(smlibpy::swung(pointers<SmCurve>(profile), pointers<SmCurve>(outline), scale)); });
+}
+// [[x, y, z of a point on the axis], [x, y, z of its direction]], or null
+val helix_axis(val curves, double tolerance)
+{
+    return guard([&] {
+        const std::vector<double> a = smlibpy::helix_axis(pointers<SmCurve>(curves), tolerance);
+        if (a.empty())
+            return val::null();
+        val out = val::array();
+        out.call<void>("push", number_array(std::vector<double>(a.begin(), a.begin() + 3)));
+        out.call<void>("push", number_array(std::vector<double>(a.begin() + 3, a.end())));
+        return out;
+    });
+}
 uintptr_t face_from_surface(uintptr_t s) { return guard([&] { return ptr(smlibpy::face_from_surface(smjs::surface(s))); }); }
 uintptr_t combine(val breps) { return guard([&] { return ptr(smlibpy::combine(pointers<SmBrep>(breps))); }); }
 val separate_bodies(uintptr_t b) { return guard([&] { return pointer_array(smlibpy::separate_bodies(brep(b))); }); }
@@ -904,6 +954,12 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__classify_points", &classify_points);
     function("ext__edge_angles", &edge_angles);
     function("ext__copy_faces", &copy_faces);
+    function("ext__remove_slivers", &remove_slivers);
+    function("ext__analytic_revolutions", &analytic_revolutions);
+    function("ext__oriented_sweep", &oriented_sweep);
+    function("ext__skin", &skin);
+    function("ext__swung", &swung);
+    function("ext__helix_axis", &helix_axis);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);
     function("ext__separate_bodies", &separate_bodies);

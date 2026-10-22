@@ -104,4 +104,9 @@ PYBIND11_MODULE(_core, m)
     bind_shells(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
     bind_fillet(m.attr("ext").cast<py::module_>());
+    bind_slivers(m.attr("ext").cast<py::module_>());
+    bind_oriented_sweep(m.attr("ext").cast<py::module_>());
+    bind_revolutions(m.attr("ext").cast<py::module_>());
+    bind_skins(m.attr("ext").cast<py::module_>());
+    bind_swing(m.attr("ext").cast<py::module_>());
 }

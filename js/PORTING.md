@@ -115,7 +115,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
   holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
-  `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
+  `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `WHOLE_TURN` (parts.ts makes
+  sectors whole within it, as revolve), `_offsetProblem` and
   `_intersectionProblem` (their tests), `_putFaceAttrs` (defeature.ts and step_import.ts put the
   faces' colors and names back on a body read from a file); `mesh.ts`: `_rayTriangles`,
   `faceMeshes` (shapes.ts casts rays with them), `_tessellate` (render.ts), `_coloredMesh`,

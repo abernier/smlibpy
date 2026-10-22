@@ -10,6 +10,9 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   create_cone: ['origin', 'radius_base', 'radius_top', 'height'],
   create_cylinder: ['origin', 'radius', 'height'],
   create_torus: ['origin', 'radius_major', 'radius_minor'],
+  create_partial_cylinder: ['origin', 'radius', 'height', 'start_angle_deg', 'end_angle_deg'],
+  create_partial_cone: ['origin', 'radius_base', 'radius_top', 'height', 'start_angle_deg', 'end_angle_deg'],
+  create_partial_sphere: ['origin', 'radius', 'start_angle_deg', 'end_angle_deg'],
   create_skin_primitive: ['curves_per_profile', 'curves', ['degree', 1], ['cap_ends', true]],
 
   // curves (SmPyCurves.cpp)

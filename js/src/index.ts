@@ -53,11 +53,11 @@ export {
 export { Text } from './text.ts'
 export { DEFAULT_FONT, Font, FontError, loadFont } from './font.ts'
 // parts
-export { Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge } from './parts.ts'
+export { AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge } from './parts.ts'
 // patterns
 export { GridLocations, HexLocations, Locations, PolarLocations } from './locations.ts'
 // operations
-export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, thicken } from './operations.ts'
+export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, swing, thicken } from './operations.ts'
 // removing fillets and faces: the time limit of a kernel step
 export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
 // deformations

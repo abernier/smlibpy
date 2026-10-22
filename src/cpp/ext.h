@@ -53,3 +53,13 @@ void bind_analytics(py::module_ m);
 void bind_shells(py::module_ m);
 // Fillets and chamfers with the fillet executive's record of a failure (fillet.cpp).
 void bind_fillet(py::module_ m);
+// Faces without area removed from a copy of a Brep (slivers.cpp).
+void bind_slivers(py::module_ m);
+// Sweeps with the profile's attitude given along the path, helix axes (oriented_sweep.cpp).
+void bind_oriented_sweep(py::module_ m);
+// Analytic surfaces for revolved faces (revolutions.cpp).
+void bind_revolutions(py::module_ m);
+// Lofts with end tangents, closed lofts (skins.cpp).
+void bind_skins(py::module_ m);
+// Swung bodies: profiles carried around outlines (swing.cpp).
+void bind_swing(py::module_ m);

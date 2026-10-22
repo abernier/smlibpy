@@ -11,7 +11,7 @@ Deform when a simple part gets a smooth overall change and its features should g
 | Shape | Deform | Instead of |
 |---|---|---|
 | twisted vase, column, baluster, flutes | extrude the section, `twist` (a range for a baluster) | a loft between turned sections (pinches between them) |
-| twisted blade, propeller, mixer paddle | blade with its fillets, `twist(start=...)` so the root stays, fuse to the hub | sweeping a profile along a helix (rolls it) |
+| twisted blade, propeller, mixer paddle | blade with its fillets, `twist(start=...)` so the root stays, fuse to the hub | `sweep(..., twist=...)` of the bare section (no fillets go along) |
 | bent handle, bracket, tube with holes or flats | model straight, drill and slot, then `bend` (the features bend along) | sweeping the profile along a path and cutting curved features afterwards |
 | tapered grip, leg, post, tool shank | `taper` (exact; fillets taper along) | `extrude(taper=...)` (only a profile, only a draft angle) |
 | pillow tops, ergonomic bodies, bulges | a rounded box and a `Lattice` | stitching free-form surfaces |

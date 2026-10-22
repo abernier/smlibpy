@@ -1,11 +1,11 @@
 # Features: what they share
 
-Features make solids from profiles (`extrude`, `revolve`, `loft`, `sweep`, `thicken`) and change
+Features make solids from profiles (`extrude`, `revolve`, `swing`, `loft`, `sweep`, `thicken`) and change
 solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). `merge` combines parts into
 one part made of cells (`cells()`). Each returns a new shape.
 
 ## `is_valid()` is not enough
-Features check their result: revolve, sweep, loft, extrude with taper and thicken raise
+Features check their result: revolve, swing, sweep, loft, extrude with taper or a direction and thicken raise
 `ModelingError` instead of returning an inside-out or volume-less body; fillet and chamfer
 check the volume change; shell checks that the walls fit. A few wrong results still pass
 `is_valid()`. Check the volume against a formula after every feature, and
@@ -14,7 +14,6 @@ check the volume change; shell checks that the walls fit. A few wrong results st
 | Input | Result |
 |---|---|
 | `loft` of sections that start in different places | twisted, pinched |
-| `sweep` of a non-round profile along a helix | the profile rolls ~30° per turn |
 | `sweep` with a profile larger than the bend / pitch | self-overlapping, volume too large |
 
 Each feature doc says how to avoid its case. Fillet, chamfer, shell and offset refuse an

@@ -4,8 +4,8 @@ Moves a profile along a path to make a solid (tubes, rails, springs, frames). An
 makes a surface (`Shell`).
 
 ## Signature
-`sweep(profile, path, *, orient=True, translational=False, sharp_corners=None)`
-`sketch.sweep(path, *, sharp_corners=None)` (no `orient`/`translational`)
+`sweep(profile, path, *, orient=True, translational=False, sharp_corners=None, up=None, twist=0.0, scale=None)`
+`sketch.sweep(path, *, sharp_corners=None, up=None, twist=0.0, scale=None)` (no `orient`/`translational`)
 
 - `profile`: a sketch (holes allowed), a planar face or a closed wire. Draw it anywhere,
   usually at the origin in XY.
@@ -17,18 +17,33 @@ makes a surface (`Shell`).
 - `translational=True`: keep the profile's orientation fixed (it does not turn with the path).
   The profile then cuts the path at a slant; on an arc the volume is area × rise, not area ×
   length. Useless on helices.
-- `sharp_corners`: for paths of several edges. Default: mitered corners for planar paths.
-  `False` sweeps the path piece by piece (each run of tangent edges in one go) and fuses the
-  pieces (notched corners). `True` on a 3D path raises.
-- There is no twist or scale option.
+- `sharp_corners`: for paths of several edges. Default: mitered corners for planar paths
+  (where the kernel cannot miter them, such as arcs meeting at a corner, the path goes piece by
+  piece with a `RuntimeWarning`; not with `up`/`twist`, see below). `False` sweeps the path piece
+  by piece (each run of tangent edges in one go) and fuses the pieces (notched corners). `True` on
+  a 3D path raises.
+- `up`: an `Axis` or a direction the profile keeps its attitude to: along the whole path it stays
+  at the angle it starts at to `up` made perpendicular to the path (also after corners). `"frenet"`:
+  to the path's principal normal (towards the center of curvature). Default: a helix's axis on
+  helical paths (also conical ones and chains of helices), the smallest turn on other paths.
+- `twist`: degrees the profile turns about the path on top of that, spread evenly along its
+  length, or a function of the fraction `s` of the length (0 to 1) giving the angle in degrees
+  there (`twist=lambda s: 90 * s * s`; the profile starts turned by `twist(0)`).
+- `scale`: the profile's scale along the path, about the point that sits on the path (the center
+  of its box): `(start, end)` changes evenly along the length; `[(t, s), ...]` passes through the
+  scales `s` at the fractions `t` of the length, from `t=0` to `t=1` (a piecewise cubic that does
+  not overshoot them); a function of the fraction gives it. Positive everywhere; along a closed
+  path the same at both ends. A planar path of several edges is then swept piece by piece
+  (`sharp_corners=True` raises).
 
 ## Placement
 - The **center of the profile's box** goes to the start of the path, wherever the profile was
   drawn: its box along the axes of its plane (for a sketch in XY, `sketch.bbox().center`), also
-  on oblique and helical paths. You cannot offset a profile from its path; move the path
-  instead. (Planar paths of several edges with mitered corners place the profile as the kernel
-  does, by its box along the axes the kernel turns it by: the same for paths that start along X,
-  Y or Z.)
+  on oblique and helical paths, and on planar paths with mitered corners. You cannot offset a
+  profile from its path; move the path instead. (On a mitered planar path an asymmetric profile
+  turned off the path plane's axes is put on the path by moving the path to its offset curve,
+  which works for lines and arcs; with a spline among the edges a `RuntimeWarning` says it sits
+  by its box along the path's plane instead.)
 - The profile is turned by the smallest rotation from its normal to the path tangent. For a
   path along Z it is unchanged. For a path along X, sketch x becomes Z; along Y, sketch y
   becomes Z. Check with `bbox()`.
@@ -41,20 +56,51 @@ makes a surface (`Shell`).
   `FilletPolyline`s), each edge is swept on its own, turned to its own start, and the pieces are
   fused: a profile that is not round then turns where the edges meet, and a `RuntimeWarning`
   says so.
-- On a `Helix` around Z starting at (r, 0, 0) the sketch x axis points radially at the start.
+- On a `Helix` around Z starting at (r, 0, 0) the sketch x axis points radially at the start,
+  and stays radial along the whole helix.
+
+## Attitude along the path
+- The profile turns about the path as little as it can (the kernel's rotation-minimizing frame:
+  on a planar path it keeps its attitude to the plane), except along helices: there it keeps its
+  attitude to the helix's axis, as a thread tooth or a flat spring wire does. A `Rectangle(2, 1)`
+  along `Helix(pitch=5, height=30, radius=10)` measures 2 x 1.004 at every section (the band cut
+  at its slope); before 0.5.0 it rolled by some 30 degrees a turn (1.34 to 2.23 by 1.25 to 2.22).
+- `up=Z` keeps a rail upright along a 3D spline; the path must never run along `up`
+  (`ValueError: sweep: the path runs along up= at (...)`): a path that starts along Z needs
+  another `up`.
+- `up="frenet"` follows the curvature: where the path nearly straightens the profile spins
+  quickly about it, and on a straight piece it raises (`ValueError: sweep: the path runs straight
+  at (...)`).
+- `twist` works on any path, on top of the default frame (on a helix: of its axis): a twisted bar
+  `sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)` (volume 2000), a twisted
+  ribbon from an open line profile (a helicoid). Along a closed path the profile must come round
+  into itself: `twist=90` with a square works, with a 4 x 2 rectangle it raises (`ValueError: ...
+  must come round into itself`).
+- With `up` or `twist` a planar path of several edges is swept piece by piece (mitered corners
+  keep the kernel's frame; `sharp_corners=True` raises), and `translational=True` or
+  `orient=False` raise.
 
 ## Gotchas
-- **Profiles roll along a helix.** A `Rectangle(2, 1)` swept along a 6-turn helix turns about
-  the path by roughly 30° per turn (sections measure 2.11×1.25, then 1.59×2.22, ...). Circles
-  do not care; thread and spring-band profiles do. Workaround: loft through copies of the
-  profile placed along the helix with `x_dir` radial (example) — exact to 0.01%.
+- Long helices are chained (`Helix.md`): `Wire([Helix(1, 30, 5), Helix(1, 30, 5, center=(0, 0,
+  30))])` sweeps with any profile (area x length to 1e-6; before 0.5.0 points sampled along such a
+  chain lay in a plane, and a rectangle raised a misleading "corners" error).
 - A loop closed with a kink (`Spline(*pts, pts[0])`, not `closed=True`) is swept in two halves
-  fused where its ends cross; for some loops that fuse fails (`KernelError`). A smoothly closed
-  spline (`closed=True`) has no kink.
-- Nothing checks self-intersection: a profile bigger than the path's bend radius, or a spring
-  wire thicker than the pitch, returns `is_valid() == True` with a volume of area × length
-  (too large). Keep profile radius < bend radius and wire diameter < pitch. Inside-out and
-  volume-less results raise `ModelingError`.
+  fused where its ends cross (a notch outside, the overlap inside: area × length less a few
+  tenths of a percent). Where that fuse fails, it is swept in pieces as before 0.5.0, and a round
+  profile with its seam turned (the same body); for a few loops all fail (`KernelError`). Faces
+  without area that such a fuse leaves are taken out, or the sweep raises `ModelingError` ("faces
+  that enclose no area"). A smoothly closed spline (`closed=True`) has no kink.
+- Mitered corners work on planar paths in any plane (a path in the YZ plane, or in an oblique
+  one, gave no closed solid before 0.5.0).
+- A path that is a single `Line` is swept as an extrusion, a single arc or circle (with `orient`)
+  as a revolve: planes, cylinders, cones and tori (`Circle(2)` along a line: a cylinder, radius 2;
+  before 0.5.0 a B-spline face). A profile that reaches across the arc's axis raises
+  `ModelingError: sweep: the profile reaches across the axis of the arc (radius 10), so it would
+  sweep through itself`.
+- Self-intersection is checked only along a single arc: a profile bigger than the bend radius of
+  another path, or a spring wire thicker than the pitch, returns `is_valid() == True` with a volume
+  of area × length (too large). Keep profile radius < bend radius and wire diameter < pitch.
+  Inside-out and volume-less results raise `ModelingError`.
 - Non-planar polylines are swept piece by piece: the corners are notched (3D path of three
   40 mm legs: 3320.9 instead of 3392.9). Round the corners with `FilletPolyline` instead.
 - A `Wire` whose edges do not connect raises `ValueError: the sweep path is not connected: a
@@ -70,6 +116,21 @@ Volume = profile area × path length for a perpendicular sweep that does not sel
 `math.pi * r**2 * path.length`. A mitered planar corner keeps that formula exactly.
 
 ## Errors
+- `ValueError: sweep: the path runs along up= at (x, y, z); ...` (pick another `up`)
+- `ValueError: sweep: the path runs straight at (x, y, z); up='frenet' needs a path that bends
+  everywhere`
+- `ValueError: sweep: up= and twist= turn the profile along the path; they need orient=True and
+  translational=False`
+- `ValueError: sweep: mitered corners keep the profile square to the path's plane; up= and twist=
+  need sharp_corners=False`
+- `ValueError: sweep: along a closed path the profile must come round into itself; twisted by 90
+  degrees it does not (...)`
+- `ValueError: sweep: the scale must be positive along the whole path; it is 0 at 0.5 of its length`
+- `ValueError: sweep: the points of a scale run from t = 0 to t = 1, t increasing`
+- `TypeError: sweep: scale is (start, end), [(t, s), ...] or a function of the fraction of the path's length, got 3`
+- `ValueError: sweep: along a closed path the profile must come round into itself; scaled from 1 to 2 it does not (...)`
+- `ModelingError: sweep: the profile reaches across the axis of the arc (radius 10), so it would
+  sweep through itself; ...`
 - `TypeError: a sweep path is an edge or a wire, got Part`
 - `TypeError: expected a sketch, face or closed wire, got Part`
 - `ValueError: sharp-cornered sweeps need a planar path`
@@ -90,19 +151,21 @@ print(round(frame.volume, 1))                           # 1920.0
 
 bent = sweep(Circle(3), FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), radius=8))  # rounded corner
 
-ring = sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))  # closed path: split into two halves
-print(len(ring.solids()), round(ring.volume, 2))        # 1 1579.14
+ring = sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))  # a single circle: a revolve, one torus face
+print(len(ring.solids()), [f.geom_type for f in ring.faces()], round(ring.volume, 2))  # 1 ['torus'] 1579.14
 
-# a square thread profile that does not roll: loft through placed copies (8 per turn)
+# a square thread profile: it keeps its attitude to the helix's axis (2 radial, 1 axial)
 h = Helix(pitch=5, height=10, radius=10)
-n = 16
-secs = []
-for i in range(n + 1):
-    p = h.point_at(i / n)
-    radial = Vector(p.x, p.y, 0).normalized()
-    secs.append(Rectangle(2, 1).on(Plane(origin=p, x_dir=radial, z_dir=h.tangent_at(i / n))))
-thread = loft(secs)
+thread = sweep(Rectangle(2, 1), h)
 print(thread.is_valid(), round(thread.volume, 2))       # True 252.12 = 2 * 1 * helix length
+
+rail = sweep(Rectangle(4, 2), Spline((0, 0, 0), (10, 20, 10), (30, 10, 25), (40, 30, 30)), up=Z)
+bar = sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)
+print(round(bar.volume, 3))                             # 2000.0
+
+horn = sweep(Circle(2), Line((0, 0, 0), (0, 0, 50)), scale=(1, 2))  # radius 2 to 4: a cone
+print(round(horn.volume, 3))                            # 1466.077 = the frustum
+bulge = sweep(Circle(2), Line((0, 0, 0), (0, 0, 40)), scale=[(0, 1), (0.5, 1.6), (1, 1)])
 ```
 
 ## Related

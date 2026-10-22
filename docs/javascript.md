@@ -647,6 +647,7 @@ export interface ExtrudeOptions {
     both?: boolean;
     taper?: number;
     direction?: Axis | VectorLike | null;
+    corners?: 'sharp' | 'round';
 }
 export class Sketch extends Shell {
     get plane(): Plane;
@@ -667,7 +668,11 @@ export class Sketch extends Shell {
     revolve(axis?: Axis | null, angle?: number): Part;
     sweep(path: Edge | Wire, options?: {
         sharpCorners?: boolean | null;
+        up?: Axis | VectorLike | string | null;
+        twist?: number | ((s: number) => number);
+        scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
     }): Part;
+    swing(outline: Sketch | Face | Wire | Edge): Part;
     toString(): string;
 }
 ```
@@ -811,18 +816,27 @@ export function Box(length: number, width: number, height: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Cylinder(radius: number, height: number, options?: {
+    arcSize?: number;
     align?: AlignLike;
 }): Part;
 export function Cone(bottomRadius: number, topRadius: number, height: number, options?: {
+    arcSize?: number;
     align?: AlignLike;
 }): Part;
 export function Sphere(radius: number, options?: {
+    arcSize1?: number;
+    arcSize2?: number;
+    arcSize3?: number;
     align?: AlignLike;
 }): Part;
 export function Torus(majorRadius: number, minorRadius: number, options?: {
+    majorAngle?: number;
     align?: AlignLike;
 }): Part;
 export function Wedge(length: number, width: number, height: number, topLength?: number, options?: {
+    align?: AlignLike;
+}): Part;
+export function AnnularSector(innerRadius: number, outerRadius: number, height: number, arcSize: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Hole(radius: number, depth: number): Part;
@@ -857,19 +871,27 @@ export interface ExtrudeFunctionOptions {
     both?: boolean;
     taper?: number;
     direction?: Axis | VectorLike | null;
+    corners?: 'sharp' | 'round';
 }
 export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options?: ExtrudeFunctionOptions): Part | Shell;
 export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis?: Axis | null, angle?: number): Part | Shell;
 export function loft(sections: readonly unknown[], options?: {
     ruled?: boolean;
     smooth?: boolean;
+    startTangent?: Axis | VectorLike | null;
+    endTangent?: Axis | VectorLike | null;
+    closed?: boolean;
 }): Part | Shell;
 export interface SweepOptions {
     orient?: boolean;
     translational?: boolean;
     sharpCorners?: boolean | null;
+    up?: Axis | VectorLike | string | null;
+    twist?: number | ((s: number) => number);
+    scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
 }
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
+export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell;
 export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;
 export function chamfer(edges: unknown, length: number, options?: ChamferOptions): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {

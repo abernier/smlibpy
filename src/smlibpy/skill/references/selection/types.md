@@ -15,12 +15,12 @@ Face `geom_type`:
 | Name | Made by |
 |---|---|
 | `plane` | flat faces of primitives, extrusions, cuts, chamfers |
-| `cylinder` | `Cylinder`, holes, fillets along straight edges |
-| `cone` | `Cone` |
-| `sphere` | `Sphere`, fillet corners where three rounded edges meet |
-| `torus` | `Torus` |
+| `cylinder` | `Cylinder`, holes, fillets along straight edges, revolved lines parallel to the axis |
+| `cone` | `Cone`, revolved oblique lines |
+| `sphere` | `Sphere`, fillet corners where three rounded edges meet, revolved arcs centred on the axis |
+| `torus` | `Torus`, revolved arcs (the rounded corners of a lathe profile) |
 | `extrusion` | extruding a profile with a spline or ellipse edge (the side faces) |
-| `revolution` | revolving a profile with a spline edge |
+| `revolution` | revolving a spline edge (or an arc whose circle reaches over the axis); ring fillets |
 | `bspline` | `loft`, `surface`, `ruled`, sweeps, `to_nurbs()`, many STEP imports |
 | `offset` | `offset()` of an extrusion or bspline face |
 | `other` | anything the kernel cannot name |

@@ -32,6 +32,10 @@ its **Y axis along the helix axis**. So:
 - `Rectangle(2, 1)` on `Helix(4, 12, 8)` is 2 radial (x 7..9) and 1 axial.
 - A thread tooth points along sketch +X; set the helix radius to rod radius + the half
   width of the tooth's bounding box in X, so its base sits on the rod.
+- The profile keeps that attitude along the whole helix (it turns with the helix about its
+  axis, not about the path): a `Rectangle(2, 1)` stays 2 radial and 1 axial at every turn, also
+  on a conical helix and on a chain of helices. `twist=` turns it on top of that; `up=` sets
+  another direction to keep the attitude to.
 
 ```python
 spring = sweep(Circle(1.2), Helix(pitch=6, height=48, radius=10))     # valid, volume pi*1.44*L
@@ -45,7 +49,7 @@ screw = rod + thread                                                   # valid, 
 - **Long helices fail.** About 26 turns at radius 50, 32 at radius 20, 46 at radius 5 and
   58 at radius 2 are the most that work; beyond that `KernelError: Helix failed
   (SM_ERR_NOT_WITHIN_TOLERANCE)`. Chain helices of whole turns; the joints are tangent and
-  `sweep` handles the wire:
+  `sweep` handles the wire with any profile (area x length to 1e-6):
   `Wire([Helix(1, 30, 5), Helix(1, 30, 5, center=(0, 0, 30))])`.
 - `part.bbox()` of a body swept along a helix can be about 0.1 mm too large. Check sizes with
   vertices or `distance_to`.

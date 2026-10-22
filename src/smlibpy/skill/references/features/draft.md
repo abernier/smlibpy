@@ -32,6 +32,8 @@ The results are exact: the walls are planes, the volumes those of the frusta.
 ## What can be drafted
 - Planes that cross the neutral plane at an angle: walls, ribs, pocket and boss sides. A face
   need not touch the neutral plane; the line where its plane meets the neutral plane is used.
+  Flat B-spline faces (`is_planar` True: control points in one plane, such as the walls of
+  `extrude(taper=..., corners="round")`) are planes here too.
 - Cylinders and cones whose axis runs along the normal: a cylinder becomes a cone with the draft
   as its half angle (a pin narrows, a hole widens along the pull direction), a cone gets steeper
   or flatter.

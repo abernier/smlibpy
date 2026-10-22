@@ -30,6 +30,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::DeleteFaces` fails with `SM_ERR_BAD_INTERSECTIONS` rather than delete a shell Vertex whose Shell still owns Faceuses | `SmBrep::DeleteVertex` deletes the Vertex's Shell with it, and the Faces left in that Shell were read when the Brep was post-processed and when it was deleted (AddressSanitizer: freed memory read in `SmEdge::GetBrep` from `SmMerge::BooleanPostProcess`, and in `~SmFaceuse`). `Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)`, a flat end cap tangent to the sphere, killed the process in 3 of 3 runs. |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::ResolveIntersections` fails on `SM_ERR_BAD_INTERSECTIONS` from `ResolveOverlappingProtoEdges` (its other errors stay ignored) | The group that function cannot take out stays as it is; the Boolean must not go on with it. |
 | `SMLib/src/SmMerge.cpp` | `SmMerge::BooleanPostProcess` takes only the Vertices still in the Brep (a set made after the Edges are merged, renewed after every Vertex it deletes) | A Vertex deleted earlier was read in `SmVertex::GetEdges` from `IsTopologicalVertex`: `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` killed the process in 11 of 48 runs (the shell's Booleans; 0 of 96 since). |
+| `SMLib/src/SmMerge.cpp` | `SmMerge::ManifoldBoolean` marks the common Vertices again (step 3.2c) when `CloseIntersectionLoop` has deleted one of them, also when it then failed (the Vertices of both Breps taken before and after the call, compared by pointer) | `CloseIntersectionLoop` squeezes coincident Vertices together (`CheckForSqueezeVertices`) before it can fail, and reports deleted topology only when it succeeds; the marking went on with the next Vertex of its list, one it had deleted (AddressSanitizer: a read of freed memory in `SmTopology::Mark`). Fusing the two halves of a tube along some loops closed with a kink, the way `sweep` went before 0.5.0 (and goes again where the profile cannot be carried along), killed the process: 2 of 60 random loops with `Circle(2)`, and one with `Rectangle(4, 1)`. |
 | `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::CreateFilletCorners` fails with `SM_ERR_INVALID_INPUT` when `SmFilletCorner::Create` makes no corner for a vertex, after deleting the list of edgeuses it kept in the corner's place, and names the first such vertex in the executive's error record; `CollectTangentEdgeSequence` walks only to solvers of the executive, each once, and stops where a solver does not end at the corner it came from | `Create` returns no corner for some ways edges meet at a vertex ("Corner Case Not Implemented"), and the executive went on with the vertex's list of edgeuses in `m_vVertexCornerMap` where the corner belonged. `CollectTangentEdgeSequence` and `SmFilletSolver::SetExtensionFlags` then called corner methods on that list (AddressSanitizer: a call to address 0). Filleting the two halves of a box edge that a cone touches tangentially, `(Box(10, 5, 20) - Cone(4, 5, 20))`, killed the process at any radius, and so did all-edge fillets of 7 of 337 imported parts and of upstream's `revolution_mold.smb`; the WebAssembly build trapped. |
 | `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::DoFilleting` shrinks only the fillet surfaces whose faces are still in the fillet Brep | The stitching of the fillet faces (`SmBrep::StitchFaces` in `CreateFilletBrep`) deletes degenerate lamina faces with their surfaces, and the FilletGeom of such a face still pointed to its surface: AddressSanitizer found it read freed memory in all-edge fillets of 2 imported parts, which killed the process. |
 | `SMLib/src/SmFilletGeom.cpp` | `SmFilletGeom::MakeFaceBrep` leaves a missing (null) boundary curve to its copy loop, which fails the fillet face (`SM_ERR_NULL_POINTER`), instead of asking it whether it is degenerate | A read of address 0: chamfering all edges of `Box(30, 20, 15) + Cylinder(5.0231, 20).rotate(X, 90).translate(8.998, 6.843, 3.2765)` by 0.25 killed the process (AddressSanitizer: SEGV in `MakeFaceBrep`); the WebAssembly build read its memory at 0 and built a broken body. |
@@ -47,6 +48,15 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
 build:
 
+- The fuse of the halves of the two loops closed with a kink that killed the process raises
+  `KernelError` (`fuse failed`) in 10 of 10 runs, and AddressSanitizer reports nothing for 255
+  sweeps of random such loops (circles and rectangles, 90 of them with the halves fused as before
+  0.5.0), nor for `tests/test_lane_S.py` and `tests/test_modeling.py`. Before: a read of freed
+  memory in `SmTopology::Mark`. Over 120 random loops (180 sweeps with circles and
+  rectangles), the halves fused as before 0.5.0 give the bodies they gave then wherever they gave
+  one, and the 3 that crashed raise.
+  `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel` runs
+  them in a process of their own.
 - The kernel's own fillet removal (`_core.remove_fillet`) gives a box with four rounded edges
   back: 6 faces, volume 24000.0. Before, it removed nothing (10 faces, the rounded box).
   `tests/test_defeature.py::test_kernel_fillet_removal` checks it.
@@ -231,7 +241,10 @@ When an upstream release fixes a defect:
    `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass; for the
    seam check, `tests/test_step_import.py::test_seam_checks_on_import_free_their_curves` must still
    pass and AddressSanitizer report nothing for `tests/test_step_import.py`; for the tight box,
-   `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass.
+   `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass; for
+   the `ManifoldBoolean` change, nothing for the loops of
+   `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel`, which
+   must still pass.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can

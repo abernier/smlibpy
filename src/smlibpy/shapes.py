@@ -1355,6 +1355,19 @@ def _transform_curve(curve: Any, m: np.ndarray) -> Any:
     return _canonical_curve(poles, d["knots"], d["degree"], d["weights"])
 
 
+@contextlib.contextmanager
+def _freed(curves: list[Any]) -> Iterator[list[Any]]:
+    """Standalone kernel curves (copies made for a kernel call), deleted when the block ends. The
+    kernel's sweeps, revolves and skins copy the curves they are given and leave them to the caller,
+    and a kernel ``Curve`` is not freed with its Python object: a few KB a call, which add up in long
+    sessions (1500 revolves kept 2 MB)."""
+    try:
+        yield curves
+    finally:
+        for c in curves:
+            ext.delete_curve(c)
+
+
 def _canonical_curve(poles: np.ndarray, knots: Sequence[float], degree: int, weights: Sequence[float] | None) -> Any:
     uniq: list[float] = []
     mult: list[int] = []
@@ -4905,7 +4918,9 @@ def _fmt_point(p: Vector) -> str:
 
 
 def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
-    """The axis and the positive angle of a revolve (a negative angle turns the other way)."""
+    """The axis and the positive angle of a revolve (a negative angle turns the other way). Within
+    0.01 degrees of a whole turn it is a whole turn: the kernel returns no closed solid for angles
+    above 359.99 and below 359.99999, where its whole turn starts."""
     angle = float(angle)
     if angle == 0 or not math.isfinite(angle):
         raise ValueError("revolve: the angle must not be zero")
@@ -4913,7 +4928,43 @@ def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
         raise ValueError("revolve: the angle is at most 360 degrees")
     if angle < 0:
         ax, angle = Axis(ax.origin, -ax.direction), -angle
-    return ax, min(angle, 360.0)
+    return ax, 360.0 if angle > 360.0 - _WHOLE_TURN else angle
+
+
+# How close to 360 degrees a revolve is a whole turn (degrees).
+_WHOLE_TURN = 0.01
+
+# Extrusion directions: within this sine of the sketch plane the kernel refuses them (SM_ERR), below
+# the other the solid is less than a thousandth of the amount thick (a warning).
+_IN_PLANE = 1e-5
+_NEAR_PLANE = 1e-3
+
+
+def _analytic_revolve(b: Any, cls: type[_Body]) -> Any:
+    """A revolve's kernel body (taken over) wrapped as ``cls``, with cylinders, cones, spheres and
+    tori where its surfaces of revolution are one. The kernel revolves through a whole turn into
+    surfaces of revolution where part of a turn gives cylinders, cones and spheres, and gives tori in
+    neither (a revolved tube had no cylinders: no ``Face.radius``, no draft, B-splines in STEP files).
+    Where the body with them is not the same (its faces, its volume or area), the body as it was."""
+    before = cls._wrap(b)
+    try:
+        c = ext.analytic_revolutions(b)
+    except RuntimeError:
+        return before
+    if c is None:
+        return before
+    after = cls._wrap(c)
+    try:
+        if c.face_count() != b.face_count():
+            return before
+        if isinstance(after, Part):
+            if after._solid_problem() is not None or not math.isclose(after.volume, before.volume, rel_tol=1e-7):
+                return before
+        elif not math.isclose(after.area, before.area, rel_tol=1e-7):
+            return before
+    except KernelError:
+        return before
+    return after
 
 
 def _face_samples(f: Face) -> list[Vector]:
@@ -6177,64 +6228,151 @@ class Sketch(Shell):
         both: bool = False,
         taper: float = 0.0,
         direction: Axis | VectorLike | None = None,
+        corners: str = "sharp",
     ) -> Part:
         """Extrude the region into a solid.
 
         Args:
             amount: Distance along the sketch normal (negative goes the other way).
             both: Extrude ``amount`` to both sides of the sketch.
-            taper: Draft angle in degrees; positive narrows the solid away from the sketch.
-            direction: Extrude along this direction (an axis or a vector) instead of the normal.
+            taper: Draft angle in degrees; positive narrows the solid away from the sketch (holes
+                widen). The walls are drafted planes, cones and cylinders (as ``Part.draft`` makes
+                them), B-spline surfaces where the profile has other curves.
+            direction: Extrude along this direction (an axis or a vector) instead of the normal;
+                ``amount`` is measured along it. A direction in the sketch plane raises
+                ``ValueError``; one less than 0.06 degrees (a sine of 1e-3) off the plane warns, as
+                the solid is then less than ``amount / 1000`` thick.
+            corners: With a taper, the corners that the taper pulls apart (convex ones of an
+                outward taper, concave ones of an inward one): ``"sharp"`` (the walls extended
+                until they meet) or ``"round"`` (rounded off, as an offset rounds them).
         """
         if amount == 0:
             raise ValueError("extrude amount must not be zero")
+        if corners not in ("sharp", "round"):
+            raise ValueError(f"extrude: corners is 'sharp' or 'round', got {corners!r}")
         self._require_region("extrude")
         d = _direction(direction, "extrude") if direction is not None else self._plane.z_dir
+        if direction is not None:
+            self._check_direction(d, abs(float(amount)) * (2 if both else 1), not taper)
         if taper:
-            return self._extrude_taper(amount, taper, both)
+            out = self._extrude_taper(amount, taper, both, corners == "round")
+            out.name, out.color = self.name, self.color
+            return out
         src = self
         dist = float(amount)
         if both:
             src = self.translate(-d * abs(dist))
             dist = 2 * abs(dist)
         sign = 1.0 if dist > 0 else -1.0
-        b = src._copy_brep()
-        h = BrepHandle(b)
-        with kernel_call("extrude"):
-            k.non_manifold_linear_sweep(h.brep, (d * sign).to_tuple(), abs(dist))
-        return Part._wrap(_take(h), name=self.name, color=self.color)
+        part = src._swept_along(d * sign, abs(dist))
+        if direction is not None and abs(d.dot(self._plane.z_dir)) < 1 - 1e-12:
+            part = src._oblique(part, d * sign, abs(dist))
+        part.name, part.color = self.name, self.color
+        return part
 
-    def _extrude_taper(self, amount: float, taper: float, both: bool) -> Part:
+    def _swept_along(self, d: Vector, dist: float) -> Part:
+        h = BrepHandle(self._copy_brep())
+        with kernel_call("extrude"):
+            k.non_manifold_linear_sweep(h.brep, d.to_tuple(), dist)
+        return Part._wrap(_take(h))
+
+    def _oblique(self, part: Part, d: Vector, dist: float) -> Part:
+        """An extrusion along a direction across the normal, checked (``is_valid``) and made again turned
+        about the normal where the kernel made it inside out or open. In planes that are not parallel to a
+        principal one the kernel breaks some such extrusions of profiles with curved edges: of 1200
+        (circles, rectangles, hexagons, ellipses and slots in random planes, both directions, one side and
+        both) 1 at 6 degrees off the plane, 25 at 0.6 and 0.06 degrees, 192 at 0.006 (the same before
+        0.5.0). Turned about the normal through the sketch's origin, extruded and turned back, all but 16
+        at each of those angles come out valid with the exact volume; where none of three turns does,
+        ``ModelingError``."""
+        if part.is_valid():
+            return part
+        axis = Axis(self._plane.origin, self._plane.z_dir)
+        for angle in (113.0, 180.0, 37.0):
+            again = self.rotate(axis, angle)._swept_along(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
+            if again.is_valid():
+                return again
+        raise ModelingError("extrude: the kernel made this extrusion along the direction invalid (inside out or "
+                            "open); extrude along the sketch normal, or along a direction further from the sketch "
+                            "plane")
+
+    def _check_direction(self, d: Vector, thickness: float, used: bool) -> None:
+        """Raise where an extrusion direction lies in the sketch plane, warn where it nearly does (where
+        it is ``used``: a taper extrudes along the normal). The kernel refused a direction within a sine
+        of 1e-5 of the plane with a bare ``KernelError`` (SM_ERR), and made a valid sliver above that
+        (5 along a direction 1e-4 off the plane: 0.0005 thick)."""
+        n = self._plane.z_dir
+        sine = abs(d.dot(n))
+        if not sine > _IN_PLANE:
+            raise ValueError(f"extrude: the direction lies in the sketch plane; it must cross the plane "
+                             f"(its normal is {_fmt_point(n)})")
+        if used and sine < _NEAR_PLANE:
+            import warnings
+
+            warnings.warn(f"extrude: the direction is {math.degrees(math.asin(sine)):.3g} degrees off the sketch "
+                          f"plane, so the solid is only {thickness * sine:.3g} thick (amount is measured along "
+                          f"the direction)", RuntimeWarning, stacklevel=3)
+
+    def _extrude_taper(self, amount: float, taper: float, both: bool, round_corners: bool = False) -> Part:
         if not abs(taper) < 90:
             raise ValueError("extrude: the taper must be between -90 and 90 degrees")
+        result = self._swept_taper(amount, taper, round_corners)
+        if not round_corners and any(f.geom_type == "bspline" for f in result.faces()):
+            drafted = self._drafted_extrusion(amount, taper)
+            if drafted is not None and abs(drafted.volume - result.volume) <= 1e-7 * result.volume:
+                result = drafted
+        if both:
+            result = result + self._extrude_taper(-amount, taper, False, round_corners)
+        return result
+
+    def _drafted_extrusion(self, amount: float, taper: float) -> Part | None:
+        """The tapered extrusion as a straight one with its walls drafted (``Part.draft``): planes,
+        cones and cylinders. The kernel's draft sweep makes the walls at sharp corners flat B-spline
+        surfaces (inward tapers) or planes with B-spline slivers at the corners (outward ones), which
+        selections by type miss, draft refuses and STEP files carry as B-splines. None where draft
+        cannot make it (curves other than lines and arcs, walls that run into each other)."""
+        n = self._plane.z_dir * (1.0 if amount > 0 else -1.0)
+        straight = self.extrude(amount)
+        walls = straight.faces().filter(lambda f: not (f.geom_type == "plane" and abs(f.normal_at().dot(n)) > 0.5))
+        try:
+            return straight.draft(walls, taper, Plane(self._plane.origin, z_dir=n))
+        except ModelingError:
+            return None
+
+    def _swept_taper(self, amount: float, taper: float, round_corners: bool) -> Part:
+        """The tapered extrusion by the kernel's draft sweep (``k.draft_sweep``), each loop on its own."""
         hint = "the taper may close the profile before the end"
         parts = []
         for f in self.faces():
             loops = f.wires()
-            curves = loops[0]._copy_curves()
-            with kernel_call("extrude", hint):
-                outer = k.draft_sweep(curves, float(amount), float(taper))
+            with kernel_call("extrude", hint), _freed(loops[0]._copy_curves()) as curves:
+                outer = k.draft_sweep(curves, float(amount), float(taper), fillet_corners=round_corners)
             part = _require_solid(Part._wrap(outer), "extrude", hint)
-            n = self._plane.z_dir * (1.0 if amount > 0 else -1.0)
-            o = self._plane.origin
-            reach = max((v.point - o).dot(n) for v in part.vertices())
-            if reach < abs(amount) - 1e-6 * max(1.0, abs(amount)):
-                raise ModelingError(f"extrude: the taper of {taper:g} degrees closes the profile after "
-                                    f"{reach:.6g} of {abs(amount):g}; use a smaller taper or a shorter extrusion")
+            self._reaches(part, amount, taper)
             for w in loops[1:]:
                 # A hole runs the other way round than the outline; the kernel sweeps a loop
                 # along the side its orientation gives, so turn it like the outline. The
                 # hole widens where the outline narrows.
-                with kernel_call("extrude", hint):
-                    hole = Part._wrap(k.draft_sweep(w.reversed()._copy_curves(), float(amount), -float(taper)))
+                with kernel_call("extrude", hint), _freed(w.reversed()._copy_curves()) as curves:
+                    hole = Part._wrap(k.draft_sweep(curves, float(amount), -float(taper), fillet_corners=round_corners))
                 part = part - _require_solid(hole, "extrude", hint)
+            if len(loops) > 1:
+                # (a hole that widens across the region before the end: a ring tapered by 10 degrees
+                # came out 5.67 high where 10 were asked for)
+                self._reaches(part, amount, taper)
             parts.append(part)
         result = parts[0]
         for p in parts[1:]:
             result = result + p
-        if both:
-            result = result + self._extrude_taper(-amount, taper, False)
         return result
+
+    def _reaches(self, part: Part, amount: float, taper: float) -> None:
+        """Raise if a tapered extrusion does not reach ``amount`` from the sketch plane."""
+        n = self._plane.z_dir * (1.0 if amount > 0 else -1.0)
+        reach = max((v.point - self._plane.origin).dot(n) for v in part.vertices())
+        if reach < abs(amount) - 1e-6 * max(1.0, abs(amount)):
+            raise ModelingError(f"extrude: the taper of {taper:g} degrees closes the profile after "
+                                f"{reach:.6g} of {abs(amount):g}; use a smaller taper or a shorter extrusion")
 
     def revolve(self, axis: Axis | None = None, angle: float = 360.0) -> Part:
         """Revolve the region about an axis in its plane.
@@ -6260,9 +6398,13 @@ class Sketch(Shell):
         with kernel_call("revolve", hint):
             for f in self.faces():
                 loops = f.wires()
-                piece = Part._wrap(k.rotational_sweep(loops[0]._copy_curves(), o, d, float(angle), cap_ends=True))
+                with _freed(loops[0]._copy_curves()) as curves:
+                    outer = k.rotational_sweep(curves, o, d, float(angle), cap_ends=True)
+                piece = _analytic_revolve(outer, Part)
                 for w in loops[1:]:
-                    piece = piece - Part._wrap(k.rotational_sweep(w._copy_curves(), o, d, float(angle), cap_ends=True))
+                    with _freed(w._copy_curves()) as curves:
+                        hole = k.rotational_sweep(curves, o, d, float(angle), cap_ends=True)
+                    piece = piece - _analytic_revolve(hole, Part)
                 result = piece if result is None else result + piece
         if result is None:
             raise ValueError("empty sketch")
@@ -6294,11 +6436,24 @@ class Sketch(Shell):
                      f"{_fmt_point(o)}, pass axis=... (for example Axis((0, 0, 0), (0, 1, 0)))") if default else ""
             raise ModelingError(f"revolve: the axis crosses the region{where}")
 
-    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None) -> Part:
-        """Sweep the region along a path. The sketch should sit at the start of the path."""
+    def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
+              twist: float | Callable[[float], float] = 0.0,
+              scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None
+              ) -> Part:
+        """Sweep the region along a path (see :func:`~smlibpy.sweep`: the center of the region's box
+        goes to the start of the path; ``up`` and ``twist`` set its attitude along it, ``scale`` its size)."""
         from .operations import sweep
 
-        return sweep(self, path, sharp_corners=sharp_corners)
+        return sweep(self, path, sharp_corners=sharp_corners, up=up, twist=twist, scale=scale)
+
+    def swing(self, outline: Sketch | Face | Wire | Edge) -> Part:
+        """Swing the region around an outline: a revolve about Z whose circle is the outline (see
+        :func:`~smlibpy.swing`: the region drawn as for a lathe in the XZ plane, the outline a closed
+        curve around the Z axis parallel to XY, scaled at each height to pass through the region's
+        outline on the +X side)."""
+        from .operations import swing
+
+        return swing(self, outline)
 
     def __repr__(self) -> str:
         return f"Sketch({self._brep.face_count()} faces, area={self.area:.6g})"

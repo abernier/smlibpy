@@ -6,6 +6,12 @@
 //   lists collected during the Boolean, and a Vertex deleted with an Edge was read in
 //   SmVertex::GetEdges from IsTopologicalVertex: the shell of a rotated box with an opening,
 //   Box(40, 30, 10).rotate(X, 45).shell(10, ...), crashed the process in about one run of four.
+//   SmMerge::ManifoldBoolean marks the common Vertices again when CloseIntersectionLoop has
+//   deleted any of them, also when it then failed. It went on with the next Vertex of its list:
+//   CloseIntersectionLoop squeezes coincident Vertices together (CheckForSqueezeVertices) before
+//   it can fail, and reports the deleted topology only when it succeeds, so the next Vertex was
+//   one it had deleted (AddressSanitizer: a read of freed memory in SmTopology::Mark). Fusing
+//   the two halves of a tube along some loops closed with a kink crashed the process.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2992,8 +2998,31 @@ static ULONG lDebugCount = 0 ;
                               // 3.2a find any edges connected to pVertex that can be
                               //      intersected, inserted, and related to m_pOther to
                               //      try and plug gaps in intersection loops.
+                              // smlibpy patch: the Vertices of both Breps before CloseIntersectionLoop
+                              std::unordered_set<SmVertex*> sLiveBefore, sOtherLiveBefore ;
+                              sm_LiveVertices( m_vTI.m_pBrep, sLiveBefore ) ;
+                              sm_LiveVertices( m_vTI.m_pOther, sOtherLiveBefore ) ;
+
                               SmStatus eStat = m_vTI.CloseIntersectionLoop( pVertex, bMadeNewTopology );
                               // (Was SER. [B601])
+
+                              // smlibpy patch: CloseIntersectionLoop can delete common Vertices
+                              // (squeezed together with others) and still fail, without saying so:
+                              // mark again (3.2c) when one that was in its Brep before is gone, as
+                              // when it reports deleted topology. The test reads no Vertex.
+                              if ( ! m_vTI.m_bTopologyDeleted )
+                                {
+                                  std::unordered_set<SmVertex*> sLive, sOtherLive ;
+                                  sm_LiveVertices( m_vTI.m_pBrep, sLive ) ;
+                                  sm_LiveVertices( m_vTI.m_pOther, sOtherLive ) ;
+                                  for(ULONG kk=0; kk<lCount && ! m_vTI.m_bTopologyDeleted; kk++)
+                                    {
+                                      SmVertex *pV = m_vVertices[kk], *pOV = m_vOtherVertices[kk] ;
+                                      if (   ( sLiveBefore.count( pV ) != 0 && sLive.count( pV ) == 0 )
+                                          || ( sOtherLiveBefore.count( pOV ) != 0 && sOtherLive.count( pOV ) == 0 ) )
+                                        { m_vTI.m_bTopologyDeleted = TRUE ; }
+                                    }
+                                }
 
                               // Note: ReIntersectAtVertex() has never been known to help anything,
                               // and it's expensive and complicates the algorithm.
