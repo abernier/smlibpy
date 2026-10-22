@@ -1317,7 +1317,7 @@ py::tuple py6(const double* v) { return py::make_tuple(v[0], v[1], v[2], v[3], v
 void bind_measure(py::module_ m)
 {
     m.def("brep_measure", [](const SmBrep* brep, double tolerance) {
-        const smlibpy::BrepMeasure r = smlibpy::brep_measure(brep, tolerance);
+        const smlibpy::BrepMeasure r = smlibpy::without_gil([&] { return smlibpy::brep_measure(brep, tolerance); });
         py::dict d;
         d["area"] = r.area;
         d["volume"] = r.volume;

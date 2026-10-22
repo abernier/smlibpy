@@ -209,6 +209,50 @@ smlibpy.defeature.GUARD_BOOLEANS = True    # a batch over STEP files that must n
 smlibpy.defeature.GUARD_PROCESS = "helper" # an application that must not fork
 ```
 
+## Threads
+
+The kernel is not thread-safe: its one context keeps shared state without locks (the marks of its
+traversals, the caches of curves, surfaces and bodies). Every function of smlibpy's kernel module
+(`smlibpy._core`: also the methods of its objects, and the deletions that run when a body is
+garbage collected) takes one lock, so the kernel runs one call at a time, whichever thread makes
+it. The long calls let Python's GIL go while the kernel works: Booleans, fillets and chamfers,
+shells and offsets, sweeps and lofts, tessellation (`mesh()` and the exporters), mass properties,
+distances, deformations, removing fillets and faces, drafts, sheet-metal bends, surface fits, the
+cells of a body, STEP and USD import, healing, stitching and mesh Booleans. Other Python threads
+run on meanwhile, and those that call the kernel wait for it. A cut of a plate by a tool of 144
+pins, 0.3 s in one kernel call, paused a thread that ticks every 5 ms for 7 ms (the whole 0.3 s
+before); meshing the result at 0.01 mm, about 6 s, paused it for 18 ms. The short calls keep the GIL:
+letting it go costs a thread switch, and a query takes microseconds.
+
+So a GUI, a web server or a progress bar stays responsive while a model builds in another thread.
+Threads that model at once get what one thread gets, but no sooner: there is one kernel, and they
+take turns. To model in parallel, use processes (the MCP server runs each session's kernel in a
+worker process of its own; `concurrent.futures.ProcessPoolExecutor` for a batch). A fork waits for a
+kernel call of another thread to end, so that the forked copy starts with the kernel at rest (the
+guarded steps above fork, and so does `multiprocessing` on Linux; Python warns that a process
+with threads forks; a program that must not fork sets
+`smlibpy.defeature.GUARD_PROCESS = "helper"`). smlibwasm runs on one thread; each `KernelWorker`
+has a kernel of its own.
+
+## What queries keep
+
+A query keeps what the kernel computed for it on the body's curves and surfaces (evaluation grids,
+trimmed-surface data, the spatial trees of its boxes) for as long as the body lives, and that can
+outweigh the body: on a holed, filleted box of 129 KB, `bbox()` added 41 KB, `mesh()` 754 KB and
+`distance_to()` 799 KB (smlibwasm: 90 KB, and 34, 541 and 573 KB). A query that finds them is
+about 1.2 times as fast (twice for `closest_point()` after `distance_to()`); Booleans gained
+nothing from them. `compact()` frees them: the body does not change, and the next query builds
+what it needs again. Compact what is kept but no longer queried, such as the copies of a large
+pattern after they were measured or exported:
+
+```python
+part = Box(40, 30, 10) - Cylinder(5, 20)
+copies = [part.translate(i * 50, 0, 0) for i in range(20)]
+boxes = [p.bbox() for p in copies]
+for p in copies:
+    p.compact()
+```
+
 ## Checks of the kernel
 
 Besides the test suites, the "Checks" workflow (`.github/workflows/checks.yml`) runs slower checks

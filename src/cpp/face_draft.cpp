@@ -442,7 +442,8 @@ void bind_face_draft(py::module_& root)
 
     m.def("draft_faces", [](const SmBrep* brep, const std::vector<SmFace*>& faces, const std::vector<double>& origin,
                             const std::vector<double>& normal, double angle, double tangency_deg) {
-        const smlibpy::FaceDraft r = smlibpy::draft_faces(brep, faces, origin, normal, angle, tangency_deg);
+        const smlibpy::FaceDraft r =
+            smlibpy::without_gil([&] { return smlibpy::draft_faces(brep, faces, origin, normal, angle, tangency_deg); });
         py::dict d;
         d["brep"] = r.brep ? py::cast(r.brep, py::return_value_policy::take_ownership) : py::object(py::none());
         d["error"] = r.error.empty() ? py::object(py::none()) : py::object(py::str(r.error));

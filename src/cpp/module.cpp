@@ -9,6 +9,7 @@
 
 #include "SmPyCommon.h"
 #include "ext.h"
+#include "kernel_lock.h"
 #include "trace.h"
 
 #include <SmApiGeneral.h>
@@ -98,4 +99,11 @@ PYBIND11_MODULE(_core, m)
     bind_distance(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
     bind_kernel_trace(m.attr("ext").cast<py::module_>());
+    bind_caches(m.attr("ext").cast<py::module_>());
+
+    // Threads: every entry point takes one kernel lock, and the long ones let the GIL go while the
+    // kernel works (kernel_lock.cpp; SmPyLib's long calls are bound again for that, nogil.cpp).
+    bind_nogil(m);
+    smlibpy::lock_kernel_entries(m);
+    smlibpy::bind_kernel_lock(m.attr("ext").cast<py::module_>());
 }

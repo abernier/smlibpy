@@ -714,3 +714,123 @@ Commit on `fix/kr-WN`; kernel plan items N4, N5, N6, N7 and W16.
   of its steps at HEAD and 3 of 100 (and 1 of 30) with this batch: the use of freed memory
   depends on the heap's layout, which the trace callback changes (it no longer makes a string
   per error report). Not caused by the callback, which writes only into its own ring.
+
+# Lane WN, batch 6: threads (N8), what queries keep (N9)
+
+Items: N8 (`infra-gil-held`), N9 (`infra-cache-retention`).
+
+## Fixed
+
+- Python (N8): a kernel call froze every other Python thread for as long as it ran (no call let
+  the GIL go; the GIL was the kernel's only lock). Every entry point of `smlibpy._core` now takes
+  one recursive kernel lock (`src/cpp/kernel_lock.cpp`: each pybind11 function record's
+  dispatcher is swapped for one that locks first, so SmPyLib's functions, the methods and
+  properties of its classes, smlibpy's own and the deletions that finalizers call all take it: a
+  test walks the module and finds 675 functions, methods and properties, all locked but the two
+  that only count). The long calls let the GIL go around their kernel work: smlibpy's Booleans (`ext.boolean`), tessellation, `brep_measure`,
+  `brep_properties`, distances, deformations, defeaturing, drafts, sheet-metal bends, surface
+  fits, cells, point classification, curve sweeps, STEP building and checks, USD reading and
+  writing, and 22 of SmPyLib's functions bound again in `src/cpp/nogil.cpp` with the same
+  signature and docstring (Booleans, fillets and chamfers, `shell_brep`, `offset_brep`, sweeps,
+  `create_skin_primitive`, `heal_brep`, stitching, `poly_boolean`). A thread waits for the lock
+  with the GIL let go (the thread that holds it may need the GIL to finish). Measured (a thread
+  ticking every 5 ms): a cut of 0.3 s in one kernel call paused it 0.29 s before, 7 ms now;
+  meshing that part at 0.01 mm (6.1 s) 6.05 s before, 18 ms now. 8 threads modelling at once for
+  30 s (5379 operations, 486,197 waits for the lock) got exactly the results of one thread, and
+  AddressSanitizer reported nothing over 60 s of it; with the GIL let go but no lock the same run
+  gave wrong volumes and kernel errors within seconds. Overhead of the lock: about 20 ns a call
+  (81 against 62 ns for `Brep.face_count()`, 337 against 311 ns for `ext.face_indices`; a
+  `Box(...).volume` 183 µs either way).
+- Python (N8): `os.fork` (the guard's forked steps, `multiprocessing` on Linux) waits for a kernel
+  call of another thread to end and gives the copy a free lock (`os.register_at_fork`). Without it
+  the copy started with the lock held by a thread it does not have and waited for ever (the test
+  fails that way with the hook taken out).
+
+## New
+
+- Both (N9): `compact()` on `Part`, `Sketch` and `Shell` (Python and TypeScript, `_Body`), and
+  the raw `ext.drop_caches(brep)` -> `(count, bytes)` (`src/cpp/caches.cpp`; `[count, bytes]` in
+  JavaScript, `js/cpp/bind_caches.cpp`). The kernel keeps what a query computes on a body's
+  curves, surfaces and the body itself (SmAObject's own cache; the global cache queue is compiled
+  out) for the body's whole life. Measured on 300 placed copies of a holed, filleted box
+  (malloc's statistics; wasm: `memoryUsage().used`):
+
+  | per copy | smlibpy | smlibwasm |
+  |---|---|---|
+  | the body | 128.9 KB | 89.7 KB |
+  | after `bbox()` | +41.5 KB | +34.2 KB |
+  | after `mesh()` | +754.1 KB | +541.0 KB |
+  | after `distance_to()` | +799.1 KB | +573.3 KB |
+  | after `compact()` | +0.0 to 0.3 KB | +0.0 to 0.2 KB |
+
+  The trade-off: a query that finds the caches is about 1.2 times as fast as one that builds them
+  (`closest_point()` after `distance_to()` 1.96 times); a cut gained nothing (0.99 to 1.02).
+  Compacting costs 0.01 to 0.03 ms a body. So it is a call for the user (bodies kept but no
+  longer queried, such as the copies of a pattern after they were meshed), not done after every
+  query. docs/kernel.md "What queries keep", docs/javascript.md "Memory", the skill reference
+  `analysis/compact`, docs/api.md's lists of `_Body`'s members.
+- Python (N8): `ext.kernel_lock_waits()` (how often an entry point found the lock taken) and
+  `ext.kernel_locked(fn)` (whether a function of the module takes it), for the tests;
+  `ext.nogil_rebound()` and `ext.nogil_mismatches()` (the SmPyLib functions bound again, and those
+  whose docstring would differ, which stay SmPyLib's: none). docs/kernel.md "Threads".
+
+## Behaviour changes
+
+- Python (N8): other threads run while a long kernel call works, and their own kernel calls wait
+  for it. Results do not change; nothing a script did before breaks. What is new for a program with
+  threads: a thread that called the kernel during another's long call used to wait for the GIL and
+  now waits for the kernel lock (the same wait, but other Python code runs meanwhile). Threads do
+  not model in parallel (one kernel); for that, use processes:
+
+  ```python
+  # before and after: threads take turns in the kernel
+  with ThreadPoolExecutor() as pool:
+      parts = list(pool.map(build, sizes))
+  # in parallel: processes, each with a kernel of its own
+  with ProcessPoolExecutor() as pool:
+      volumes = list(pool.map(volume_of, sizes))   # (bodies cross processes as .smb, see save/load)
+  ```
+- Python (N8): at interpreter exit, a finalizer that frees a body while a daemon thread is still
+  in a kernel call no longer waits (the daemon thread never gives the lock back): it raises
+  `RuntimeError("the kernel is busy in another thread while Python exits")`, which the handles'
+  `__del__` swallows (the body is left to the process's end).
+- Python raw layer (N8): `k.boolean`, `k.fillet_edges`, `k.shell_brep` and the other 19 functions
+  bound again are new function objects (same name, signature and docstring, in `k` and in their
+  category submodule). Where the kernel left no trace, their `RuntimeError` names
+  `nogil.cpp:<line>` as the binding site instead of `SmPyBooleans.cpp:<line>` and the like.
+
+  ```python
+  # before
+  if "SmPyFillets.cpp" in str(e): ...
+  # after: the kernel's own site, where it reported one
+  if any("SmFilletExecutive" in t for t in e.trace): ...
+  ```
+- N9: none; `compact()` and `ext.drop_caches` are new.
+
+## Not done
+
+- N8: SmPyLib's functions not bound again keep the GIL during their kernel work (they take the
+  lock): the methods of its classes (`Brep.bounding_box(True)`, up to 22 ms in the suite;
+  `Brep.copy`, `write_to_file`), `read_brep_from_file` and `read_part_from_file` (`.smb`, up to
+  14 ms; their helpers are file-local in SmPyLib), SmPyLib's `tessellate` and `curve_sweep`, the
+  non-manifold sweeps and the other short calls. The list in `nogil.cpp` covers what smlibpy uses
+  that took longer than 10 ms in the test suite. Short calls keep the GIL on purpose: letting it go
+  costs a thread switch, which a loop of thousands of queries would pay each time. STEP files are
+  parsed in Python (the GIL is Python's there).
+- N8: no concurrency inside the kernel (one SmContext with unlocked shared state; upstream allows
+  no concurrent SmApi calls). Free-threaded Python (3.13t) is not declared supported by the module
+  (pybind11's `mod_gil_not_used`), so such an interpreter turns the GIL back on; the lock would
+  serialize the kernel there too. Checked on macOS arm64 only: Windows has no fork (no hook; the
+  helper process runs the guarded steps), Linux not run; `_Py_IsFinalizing` is used before 3.13,
+  `Py_IsFinalizing` from 3.13.
+- N8: with threads, the guarded steps (shell, offset, fillets of imported parts, ...) still fork,
+  and Python 3.12 warns (`DeprecationWarning: This process ... is multi-threaded, use of fork() may
+  lead to deadlocks in the child`); `_guard`'s `warnings.catch_warnings()` does not silence it
+  reliably, since that is not thread-safe. The kernel lock is free in the copy; Python's own locks
+  that other threads held at the fork are not, as with any fork. `GUARD_PROCESS = "helper"` avoids
+  forking (docs/kernel.md "Threads" says so); choosing it by itself when threads run was left alone.
+- N8: the copies in `nogil.cpp` must follow SmPyLib: `tests/test_lane_WN.py` holds a hash of each
+  upstream binding's source (from `m.def` to its docstring) and fails when one changes.
+- N9: no automatic compaction after queries (the trade-off above; repeated queries of one body are
+  common in selectors). `compact()` is on bodies only: faces and edges belong to their body, and
+  meshes have `dispose()`.

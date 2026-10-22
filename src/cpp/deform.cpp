@@ -1692,7 +1692,8 @@ void bind_deform(py::module_& parent)
     py::module_ m = parent.def_submodule("deform", "Space deformations of whole Breps: twist, taper, bend, lattice.");
 
     m.def("deform_brep", [](const SmBrep* brep, const py::dict& spec) {
-        const smlibpy::Deformed r = smlibpy::deform_brep(brep, spec_from(spec));
+        const smlibpy::DeformSpec s = spec_from(spec);
+        const smlibpy::Deformed r = smlibpy::without_gil([&] { return smlibpy::deform_brep(brep, s); });
         py::dict d;
         d["faces_kept"] = r.stats.faces_kept;
         d["faces_exact"] = r.stats.faces_exact;
@@ -1710,13 +1711,15 @@ void bind_deform(py::module_& parent)
           "optional axis. Returns (brep, report).");
 
     m.def("composite_brep", [](const SmBrep* brep, const py::dict& spec) {
-        return smlibpy::composite_brep(brep, spec_from(spec));
+        const smlibpy::DeformSpec s = spec_from(spec);
+        return smlibpy::without_gil([&] { return smlibpy::composite_brep(brep, s); });
     }, py::arg("brep"), py::arg("spec"), py::return_value_policy::take_ownership,
           "The kernel's exact procedural composition (SmSrfInVolume faces, SmCrvInVolume edges) of a "
           "copy of a Brep with the deformation, for checks.");
 
     m.def("deviation", [](const SmBrep* source, const SmBrep* result, const py::dict& spec, int samples) {
-        const smlibpy::Deviation r = smlibpy::deviation(source, result, spec_from(spec), samples);
+        const smlibpy::DeformSpec s = spec_from(spec);
+        const smlibpy::Deviation r = smlibpy::without_gil([&] { return smlibpy::deviation(source, result, s, samples); });
         py::dict d;
         d["faces"] = r.faces;
         d["edges"] = r.edges;

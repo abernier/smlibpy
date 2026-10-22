@@ -219,6 +219,20 @@ A mesh (`part.mesh()`, `tessellate`) is its arrays: the kernel's mesh it is made
 soon as they are copied out, and mesh Booleans build one from the arrays when they need it.
 `mesh.dispose()` frees what a mesh still holds in the kernel; the mesh stays usable.
 
+A query keeps what the kernel computed for it on the body's curves and surfaces for as long as the
+body lives, and that can outweigh the body: on a holed, filleted box of 90 KB, `bbox()` added
+34 KB, `mesh()` 541 KB and `distanceTo()` 573 KB. `part.compact()` frees it: the body does not
+change, and the next query builds what it needs again (a query that finds it is about 1.2 times as
+fast). Compact the bodies an app keeps but no longer queries, such as the copies of a large
+pattern after they were meshed:
+
+```js
+const part = Box(40, 30, 10).cut(Cylinder(5, 20))
+const copies = Array.from({ length: 20 }, (_, i) => part.translate(i * 50, 0, 0))
+const meshes = copies.map((p) => p.mesh())
+for (const p of copies) p.compact()
+```
+
 The kernel's memory can grow to 4 GB, as far as a 32-bit WebAssembly module reaches (a browser
 may stop it earlier), and it never shrinks; each thread's kernel has its own. `memoryUsage()`
 tells how much of it the kernel's objects take (`used`), how far it has grown (`heap`) and how far
@@ -802,6 +816,7 @@ export class Part extends Shape {
     distanceTo(other: VectorLike | Shape): number;
     closestPoint(point: VectorLike): Vector;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
+    compact(): void;
     intersectionCurves(other: Part | Shell): ShapeList<Edge>;
     silhouette(direction?: Axis | VectorLike): ShapeList<Edge>;
     project(curve: Edge | Wire, direction?: Axis | VectorLike): ShapeList<Edge>;
@@ -841,6 +856,7 @@ export class Shell extends Shape {
     distanceTo(other: VectorLike | Shape): number;
     closestPoint(point: VectorLike): Vector;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
+    compact(): void;
     intersectionCurves(other: Part | Shell): ShapeList<Edge>;
     silhouette(direction?: Axis | VectorLike): ShapeList<Edge>;
     project(curve: Edge | Wire, direction?: Axis | VectorLike): ShapeList<Edge>;

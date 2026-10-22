@@ -1940,6 +1940,23 @@ export class _Body extends Shape {
     return _raycast(this.faces(), origin, direction, this._looseBox())
   }
 
+  /**
+   * Free what the kernel keeps from earlier queries of this body: the caches that `bbox()`,
+   * `distanceTo()`, `closestPoint()`, `raycast()` and `mesh()` leave on its curves, its surfaces
+   * and the body itself (evaluation grids, trimmed-surface data, spatial trees). The body does not
+   * change, nor do its faces and edges; a later query builds what it needs again.
+   *
+   * The kernel keeps these caches as long as the body lives, and they can outweigh the body: on a
+   * holed, filleted box of 129 KB, `bbox()` left 41 KB, `mesh()` 754 KB and `distanceTo()` 799 KB
+   * (smlibpy, natively). A query that finds them is about 1.2 times as fast (twice for
+   * `closestPoint()` after `distanceTo()`); Booleans gain nothing from them. Compact bodies that
+   * are kept but no longer queried, such as the copies of a large pattern after they were
+   * measured or exported: the module's memory (4 GB at most) is shared by all of them.
+   */
+  compact(): void {
+    ext.drop_caches(this._brep)
+  }
+
   // -- geometric queries --------------------------------------------------------------------
   /** The curves where this body's surface meets another body's surface, each one once. */
   intersectionCurves(other: Part | Shell): ShapeList<Edge> {

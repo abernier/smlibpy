@@ -98,6 +98,7 @@ const OWN: Record<string, Signature> = {
   'ext.object_class': ['object'],
   'ext.build_brep': ['faces', 'edges', 'solid', ['reversed', false], ['mirrored', false], ['voids', []]],
   'ext.inverted_faces': ['brep'],
+  'ext.drop_caches': ['brep'],
   'ext.seam_problems': ['brep', ['fix', false], ['only', null]],
   'ext.poly_face_indices': ['poly', 'brep'],
   'ext.surface_derivatives': ['surface', 'uv'],

@@ -479,8 +479,9 @@ void bind_sheetmetal(py::module_ m)
     m.def("bend", [](SmBrep* brep, double angle, double radius, double k_factor, double thickness,
                      const std::vector<double>& axis_point, const std::vector<double>& axis,
                      const std::vector<double>& direction, double length) {
-        const smlibpy::BendFaces f =
-            smlibpy::sheet_bend(brep, angle, radius, k_factor, thickness, axis_point, axis, direction, length);
+        const smlibpy::BendFaces f = smlibpy::without_gil([&] {
+            return smlibpy::sheet_bend(brep, angle, radius, k_factor, thickness, axis_point, axis, direction, length);
+        });
         return py::make_tuple(f.in, f.before, f.after);
     }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"),
@@ -489,7 +490,7 @@ void bind_sheetmetal(py::module_ m)
        "[0, length] along the axis from `axis_point`. The part on the side of cross(direction, axis) stays in "
        "place. Returns the numbers of faces in, before and after the region.");
 
-    m.def("unbend", &smlibpy::sheet_unbend,
+    m.def("unbend", &smlibpy::sheet_unbend, py::call_guard<smlibpy::NoGil>(),
        py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"), py::arg("anchor") = nullptr,
        "Unbend a Brep in place: the inverse of `bend`, with `direction` pointing from the axis to the middle "

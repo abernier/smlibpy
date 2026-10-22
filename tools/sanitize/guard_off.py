@@ -7,7 +7,7 @@ import pytest
 
 #: Tests that measure memory (the sanitizer's leak check covers what they look for).
 MEASURE_MEMORY = ("test_failed_booleans_free_their_operands", "test_seam_checks_on_import_free_their_curves",
-                  "test_sweeps_free_the_curves_they_hand_the_kernel")
+                  "test_sweeps_free_the_curves_they_hand_the_kernel", "test_compact_gives_the_memory_back")
 
 
 def pytest_configure(config):  # noqa: ARG001 - pytest's hook

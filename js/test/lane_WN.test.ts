@@ -5,7 +5,7 @@
 // (W10), the package's typings (W11) and the API reference (W12); WOFF2, CFF2 and seac fonts
 // (W13), files in memory (W14) and the raw kernel layer with all of SmPyLib's calls (W15);
 // NVIDIA's validator on toUsd's files (N4), the parity with smlibpy's golden files and the docs'
-// examples (N5, W16), and the kernel's error trace (N6).
+// examples (N5, W16), the kernel's error trace (N6), and what queries keep on a body (N9).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -1815,4 +1815,59 @@ test("toUsd's files pass NVIDIA's BrepArray validator (N4)", (t) => {
   const found = Object.fromEntries(Object.entries(JSON.parse(out.stdout) as Record<string, { breps: number; issues: [string, string][] }>)
     .map(([f, r]) => [f.split(/[\\/]/).at(-1), r.issues.map(([code]) => code)]))
   assert.deepEqual(found, Object.fromEntries([...Object.keys(bodies), 'two', 're_cubeWithVoid', 're_nonManifoldCubes'].map((n) => [`${n}.usda`, []])))
+})
+
+// ================================================================================ N9: what queries keep
+test('compact() frees what queries left on a body (N9)', () => {
+  // The kernel keeps what a query computes on the body's curves and surfaces for the body's life: on
+  // this 90 KB part, bbox() left 34 KB, mesh() 541 KB and distanceTo() 573 KB.
+  let part = Box(40, 30, 10).cut(Cylinder(5, 20))
+  part = part.fillet(part.edges().parallelTo(Z), 2)
+  const target = Box(5, 5, 5).translate(0, 0, 100)
+  ext.drop_caches(part._brep) // (what the fillet left)
+  assert.deepEqual([...ext.drop_caches(part._brep)], [0, 0])
+  const before = [part.bbox(), part.distanceTo(target), part.mesh().triangles.length, part.volume] as const
+  const [count, bytes] = ext.drop_caches(part._brep) as [number, number]
+  assert.ok(count >= 5 && bytes > 500_000, `${count} caches, ${bytes} bytes`)
+  assert.deepEqual([...ext.drop_caches({ brep: part._brep })], [0, 0])
+  // compact() does that, gives the memory back, and the body answers as before
+  part.distanceTo(target)
+  part.mesh()
+  const used = memoryUsage().used
+  assert.equal(part.compact(), undefined)
+  assert.ok(used - memoryUsage().used > 500_000, `${used - memoryUsage().used} bytes back`)
+  assert.deepEqual([...ext.drop_caches(part._brep)], [0, 0])
+  const after = [part.bbox(), part.distanceTo(target), part.mesh().triangles.length, part.volume] as const
+  assert.deepEqual([after[0].min.toArray(), after[0].max.toArray()], [before[0].min.toArray(), before[0].max.toArray()])
+  assert.deepEqual(after.slice(1), before.slice(1))
+  assert.ok((ext.drop_caches(part._brep) as number[])[0] > 0) // (built again)
+  // faces of a compacted body, sketches and shells
+  part.compact()
+  approx(part.faces().reduce((a, f) => a + f.area, 0), part.area, 1e-9)
+  assert.ok(part.isValid())
+  const sketch = Rectangle(10, 5).cut(Circle(1))
+  const sheet = extrude(Line([0, 0], [10, 0]), 3) as Shell
+  sketch.bbox()
+  sheet.mesh()
+  sketch.compact()
+  sheet.compact()
+  assert.deepEqual([...ext.drop_caches(sketch._brep)], [0, 0])
+  assert.deepEqual([...ext.drop_caches(sheet._brep)], [0, 0])
+  approx(sketch.area, 50 - Math.PI, 1e-9)
+  approx(sheet.area, 30, 1e-9)
+})
+
+test('compact() gives back what a pattern of meshed copies kept (N9)', () => {
+  let part = Box(40, 30, 10).cut(Cylinder(5, 20))
+  part = part.fillet(part.edges().parallelTo(Z), 2)
+  const copies = Array.from({ length: 50 }, (_, i) => part.translate(i * 50, 0, 0))
+  const made = memoryUsage().used
+  for (const p of copies) p.mesh()
+  const meshed = memoryUsage().used
+  for (const p of copies) p.compact()
+  const compacted = memoryUsage().used
+  const perPart = (meshed - made) / 50
+  assert.ok(perPart > 400_000, `${perPart} bytes a copy`)
+  assert.ok((compacted - made) / 50 < 0.02 * perPart, `${(compacted - made) / 50} of ${perPart} bytes a copy left`)
+  for (const p of copies) p.dispose()
 })

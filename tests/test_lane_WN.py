@@ -1,7 +1,8 @@
 """Lane WN of the kernel plan: isolated kernel steps (N1), memory (N2), the fuzz harness (N3), the typings of
 the free functions (W11), the API reference of the bodies (W12), fonts without fontTools: WOFF2 (Brotli), CFF2
 and accents built with seac (W13); NVIDIA's validator on smlibpy's USD files (N4), the golden files of the parity
-test of smlibwasm (N5, W16), the kernel's error trace (N6) and the C library's random numbers (N7)."""
+test of smlibwasm (N5, W16), the kernel's error trace (N6), the C library's random numbers (N7), threads: the
+kernel lock and the GIL (N8), and what queries keep on a body (N9)."""
 
 import _thread
 import math
@@ -948,3 +949,357 @@ def test_fillets_of_imported_parts_keep_their_body_with_the_guard_off(monkeypatc
     assert rounded.volume == approx(box.fillet(box.edges(), 1).volume, rel=1e-9)
     assert chamfered.volume == approx(box.chamfer(box.faces().top()[0].edges(), 1).volume, rel=1e-9)
     assert rounded.is_valid() and chamfered.is_valid()
+
+
+# ================================================================================ N8: threads
+def _plate_and_tool():
+    """A cut of about 0.3 s (macOS arm64) in one kernel call: a plate and a tool of 144 fused pins."""
+    pins = list(GridLocations(12, 12, 12, 12) * Cylinder(4, 30))
+    return Box(200, 200, 10), pins[0].fuse(*pins[1:])
+
+
+def _one_cut(plate, tool, boolean=None):
+    """The cut as one kernel call: smlibpy's ext.boolean, or SmPyLib's k.boolean bound again
+    (src/cpp/nogil.cpp), which return a new body (the kernel deletes the operands' copies)."""
+    a, b = plate._copy_brep(), tool._copy_brep()
+    t = time.perf_counter()
+    if boolean is None:
+        r = ext.boolean(a, b, k.BooleanOp.DIFFERENCE)
+    else:
+        r = boolean(a, b, operation=k.BooleanOp.DIFFERENCE)
+    dt = time.perf_counter() - t
+    try:
+        return r.face_count(), dt
+    finally:
+        ext.delete_brep(r)
+
+
+def test_long_kernel_calls_let_other_threads_run():
+    # No kernel call let the GIL go: a 0.29 s Boolean froze another Python thread for 0.293 s. Now
+    # the long ones let it go while the kernel works.
+    plate, tool = _plate_and_tool()
+    ticks, stop = [], threading.Event()
+
+    def ticker():
+        while not stop.is_set():
+            ticks.append(time.perf_counter())
+            time.sleep(0.002)
+
+    th = threading.Thread(target=ticker)
+    th.start()
+    try:
+        time.sleep(0.02)
+        calls = []
+        for boolean in (None, k.boolean, k.booleans.boolean):  # (smlibpy's, SmPyLib's in both places)
+            t0 = time.perf_counter()
+            faces, dt = _one_cut(plate, tool, boolean)
+            calls.append((t0, time.perf_counter(), faces, dt))
+        rounded = Box(40, 40, 10).fillet(Box(40, 40, 10).edges(), 3)
+        t0 = time.perf_counter()
+        mesh = rounded.mesh(0.0005)  # (ext.tessellate, 0.3 s)
+        t1 = time.perf_counter()
+    finally:
+        stop.set()
+        th.join()
+    assert len(mesh.triangles) > 50000
+    for t0, t1, faces, dt in calls + [(t0, t1, 150, t1 - t0)]:
+        during = [t for t in ticks if t0 <= t <= t1]
+        gaps = [b - a for a, b in zip(during, during[1:])]
+        assert faces == 150 and dt > 0.05
+        assert len(during) > 20 and max(gaps) < dt / 3, (len(during), max(gaps, default=None), dt)
+
+
+def test_every_entry_point_of_the_kernel_takes_its_lock():
+    # (functions of the module and its submodules, methods and properties of its classes)
+    import types
+
+    from smlibpy import _core
+
+    seen, found, unlocked = set(), [], []
+
+    def check(name, fn):
+        locked = ext.kernel_locked(fn)
+        if locked is not None:
+            found.append(name)
+            if not locked:
+                unlocked.append(name)
+
+    def walk(owner, prefix):
+        if id(owner) in seen:
+            return
+        seen.add(id(owner))
+        for name, v in vars(owner).items():
+            if isinstance(v, types.ModuleType):
+                if v.__name__.startswith(_core.__name__ + "."):
+                    walk(v, prefix + name + ".")
+            elif isinstance(v, type):
+                if v.__module__.startswith(_core.__name__):
+                    walk(v, prefix + name + ".")
+            elif isinstance(v, property):
+                for part in (v.fget, v.fset, v.fdel):
+                    check(prefix + name, part)
+            elif isinstance(v, (staticmethod, classmethod)):
+                check(prefix + name, v.__func__)
+            else:
+                check(prefix + name, v)
+
+    walk(_core, "")
+    assert len(found) > 600 and {"boolean", "fillets.fillet_edges", "Brep.face_count", "ext.delete_brep"} <= set(found)
+    assert unlocked == ["ext.kernel_lock_waits", "ext.kernel_locked"]  # (these two only count)
+
+
+def test_kernel_calls_of_other_threads_wait_for_a_long_one():
+    # The kernel is not thread-safe: every entry point takes one lock, the cheap ones too (functions,
+    # methods, properties, deletions), so they wait while another thread's long call runs.
+    plate, tool = _plate_and_tool()
+    box = Box(10, 20, 30)
+    brep, face = box._brep, box.faces()[0]._f
+    probes = {
+        "function": lambda: k.create_box((0, 0, 0), 1, 2, 3),
+        "method": lambda: brep.face_count(),
+        "ext": lambda: ext.face_indices(brep, [face]),
+        "deletion": lambda: ext.delete_brep(box._copy_brep()),
+    }
+    for name, probe in probes.items():
+        inside, out = threading.Event(), {}
+
+        def long_call():
+            inside.set()
+            out["cut"] = _one_cut(plate, tool)
+
+        waits = ext.kernel_lock_waits()
+        th = threading.Thread(target=long_call)
+        th.start()
+        inside.wait()
+        time.sleep(0.05)  # (the cut takes 0.3 s)
+        t = time.perf_counter()
+        result = probe()
+        waited = time.perf_counter() - t
+        th.join()
+        assert out["cut"][0] == 150
+        assert ext.kernel_lock_waits() > waits and waited > 0.03, (name, waited)
+        if name == "function":
+            ext.delete_brep(result)
+    assert brep.face_count() == 6  # (and nothing broke)
+
+
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")  # (shells fork)
+def test_threads_that_model_at_once_get_what_one_thread_gets():
+    def work(i):
+        part = Box(20 + i, 30, 10) - Cylinder(4, 20).translate(i, 0, 0)
+        part = part.fillet(part.edges().parallel_to(Z), 2)
+        shell = part.shell(-1, part.faces().top())
+        swept = sweep(Circle(2), Line((0, 0, 0), (0, 0, 20 + i)))
+        lofted = loft([Rectangle(10, 10), Circle(4).translate(0, 0, 10 + i)])
+        mesh = part.mesh(0.05)
+        return (round(part.volume, 6), round(shell.volume, 6), round(swept.volume, 6), round(lofted.volume, 6),
+                len(mesh.triangles), round(part.distance_to(Box(5, 5, 5).translate(0, 0, 40)), 9),
+                tuple(round(v, 9) for v in part.bbox().max))
+
+    alone = [work(i) for i in range(6)]
+    shared = Box(30, 30, 30) - Sphere(12)
+    reads, errors, results = [], [], [None] * 6
+
+    def run(i):
+        try:
+            results[i] = work(i)
+            for _ in range(5):
+                reads.append((round(shared.volume, 6), len(shared.faces()), round(shared.distance_to((100, 0, 0)), 9)))
+                for _ in range(20):  # (bodies made and freed: finalizers in every thread)
+                    Box(1, 1, 1).translate(i, 0, 0)
+        except BaseException as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    waits = ext.kernel_lock_waits()
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(6)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert not errors, errors
+    assert results == alone
+    assert len(set(reads)) == 1 and len(reads) == 30
+    assert ext.kernel_lock_waits() > waits  # (they did meet)
+
+
+@pytest.mark.skipif(not HAS_FORK, reason="no os.fork")
+def test_a_fork_waits_for_another_threads_kernel_call():
+    # A forked copy has only the forking thread. Without the at-fork hooks it could start with kernel
+    # state another thread was changing, and with the kernel lock held by a thread it does not have.
+    plate, tool = _plate_and_tool()
+    inside, out = threading.Event(), {}
+
+    def long_call():
+        inside.set()
+        out["cut"] = _one_cut(plate, tool)
+
+    part = Box(10, 10, 10) - Cylinder(2, 20)
+    expected = part.fillet(part.edges().parallel_to(Z), 1).volume
+    th = threading.Thread(target=long_call)
+    th.start()
+    inside.wait()
+    time.sleep(0.05)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # (forking a process with threads)
+        pid = os.fork()
+    if pid == 0:  # pragma: no cover - the copy
+        code = 1
+        try:
+            again = Box(10, 10, 10) - Cylinder(2, 20)
+            code = 0 if again.fillet(again.edges().parallel_to(Z), 1).volume == expected else 2
+        finally:
+            os._exit(code)
+    deadline = time.monotonic() + 30
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        if time.monotonic() > deadline:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            pytest.fail("the forked copy waited for the kernel lock")
+        time.sleep(0.01)
+    th.join()
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, status
+    assert out["cut"][0] == 150
+    # the guard's copies too, while another thread works
+    th = threading.Thread(target=long_call)
+    th.start()
+    inside.wait()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(defeature, "GUARD_PROCESS", "fork")
+        mp.setattr(defeature, "GUARD_SECONDS", 30.0)
+        assert isolated("probe", _bodies, 3)["n"] == 3
+    th.join()
+
+
+# The SmPyLib bindings bound again with the GIL let go (src/cpp/nogil.cpp), and a hash of the source
+# each was copied from (from `m.def("name"` to its docstring, blanks collapsed). A change upstream
+# fails here: copy it into nogil.cpp, then update the hash.
+_NOGIL_SOURCES = {
+    "boolean": "8791083e676041d1",  # SmPyBooleans.cpp
+    "boolean_with_options": "73e44a942abac7ac",  # SmPyBooleans.cpp
+    "boolean_2d": "0a680a7224916a78",  # SmPyBooleans.cpp
+    "non_manifold_boolean": "a51d755a24de47ff",  # SmPyBooleans.cpp
+    "chamfer_fillet": "1b8473e1f1c7c8ad",  # SmPyFillets.cpp
+    "circular_fillet": "0a669893ba280c16",  # SmPyFillets.cpp
+    "fillet_edges": "9b673965dd2673a5",  # SmPyFillets.cpp
+    "variable_radius_fillet": "42dbef934ad66dc7",  # SmPyFillets.cpp
+    "fillet_edges_per_edge": "028c218e8f4c3b04",  # SmPyFillets.cpp
+    "surface_surface_fillet": "ae6e1eed1412838c",  # SmPyFillets.cpp
+    "shell_brep": "1fdaeadf0297c877",  # SmPyOffset.cpp
+    "offset_brep": "5f247058d152fe6b",  # SmPyOffset.cpp
+    "linear_sweep": "5b1f1a0879976d12",  # SmPySweeps.cpp
+    "rotational_sweep": "a96c5ff846349ccd",  # SmPySweeps.cpp
+    "draft_sweep": "5e2179d06af84439",  # SmPySweeps.cpp
+    "pipe_sweep": "6205b2e8591234bf",  # SmPySweeps.cpp
+    "sweep_along_planar_path": "c439a85bc2db6863",  # SmPySweeps.cpp
+    "create_skin_primitive": "20c107a99b146f89",  # SmPyPrimitives.cpp
+    "heal_brep": "d2984c865745d825",  # SmPyHeal.cpp
+    "stitch_into_solid": "d834737efb6927f0",  # SmPyStitching.cpp
+    "stitch_into_shell": "f666b36103d7913a",  # SmPyStitching.cpp
+    "poly_boolean": "609b971e489ae738",  # SmPyPolyOps.cpp
+}
+
+
+def test_smpylibs_long_calls_are_bound_again_as_they_were():
+    import hashlib
+    import pathlib
+    import re
+
+    assert ext.nogil_mismatches() == []  # (same signature and docstring as SmPyLib's, or kept as it was)
+    assert sorted(ext.nogil_rebound()) == sorted(_NOGIL_SOURCES)
+    for name in _NOGIL_SOURCES:  # (both places: k.<name> and k.<category>.<name>)
+        assert any(getattr(sub, name, None) is not None and getattr(sub, name) is not getattr(k, name)
+                   and getattr(sub, name).__doc__ == getattr(k, name).__doc__
+                   for sub in vars(k).values() if isinstance(sub, type(k))), name
+    src = pathlib.Path(__file__).resolve().parent.parent / "third_party" / "usd-brep" / "source" / "SmPyLib" / "src"
+    if not src.is_dir():
+        pytest.skip("no usd-brep checkout")
+    texts = [p.read_text() for p in src.glob("SmPy*.cpp")]
+    for name, digest in _NOGIL_SOURCES.items():
+        (text,) = [t for t in texts if f'm.def("{name}"' in t]
+        lines = []
+        for line in text[text.index(f'm.def("{name}"'):].splitlines():
+            if re.match(r'\s*"', line):
+                break
+            lines.append(line)
+        assert hashlib.sha256(" ".join(" ".join(lines).split()).encode()).hexdigest()[:16] == digest, (
+            f"SmPyLib changed {name}: copy it into src/cpp/nogil.cpp again")
+
+
+def test_rebound_kernel_calls_work_and_fail_as_before():
+    a, b = Box(10, 10, 10)._copy_brep(), Box(10, 10, 10).translate(5, 0, 0)._copy_brep()
+    r = k.boolean(a, b, operation=k.BooleanOp.UNION)
+    try:
+        assert k.brep_volume(r) == approx(1500.0) if hasattr(k, "brep_volume") else r.face_count() == 6
+    finally:
+        ext.delete_brep(r)
+    brep = Box(10, 10, 10)._copy_brep()
+    try:
+        assert k.fillets.fillet_edges(brep, brep.edges()[:1], radius=1.0) is not None and brep.face_count() == 7
+        with pytest.raises(RuntimeError, match=r"SmApiFilletEdges failed: SM_ERR"):
+            k.fillet_edges(brep, brep.edges(), radius=50.0)
+    finally:
+        ext.delete_brep(brep)
+    with pytest.raises(KernelError) as e:  # (the error trace is still this thread's)
+        _crossing_holes()
+    assert e.value.trace[-1].endswith("(SmApiBoolean)")
+    part = Box(20, 20, 20)
+    assert part.shell(-2, part.faces().top()).volume == approx(8000 - 16 * 16 * 18)
+
+
+# ================================================================================ N9: query caches
+def test_compact_frees_what_queries_left_on_a_body():
+    # The kernel keeps what a query computes on the body's curves and surfaces for the body's life:
+    # on 300 copies of this part, bbox() added 41 KB to each one's 129 KB, mesh() 754 KB and
+    # distance_to() 799 KB (heap, macOS arm64).
+    part = Box(40, 30, 10) - Cylinder(5, 20)
+    part = part.fillet(part.edges().parallel_to(Z), 2)
+    target = Box(5, 5, 5).translate(0, 0, 100)
+    ext.drop_caches(part._brep)  # (what the fillet left)
+    assert ext.drop_caches(part._brep) == (0, 0.0)
+    before = (part.bbox(), part.distance_to(target), len(part.mesh().triangles), part.volume)
+    count, size = ext.drop_caches(part._brep)
+    assert count >= 5 and size > 500_000, (count, size)
+    assert ext.drop_caches(part._brep) == (0, 0.0)
+    # compact() does that, and the body answers as before
+    part.distance_to(target)
+    assert part.compact() is None and ext.drop_caches(part._brep) == (0, 0.0)
+    after = (part.bbox(), part.distance_to(target), len(part.mesh().triangles), part.volume)
+    assert after[0].min == before[0].min and after[0].max == before[0].max and after[1:] == before[1:]
+    assert ext.drop_caches(part._brep)[0] > 0  # (built again)
+    # faces and edges of a compacted body, sketches and shells
+    part.compact()
+    assert sum(f.area for f in part.faces()) == approx(part.area, rel=1e-9) and part.is_valid()
+    sketch = Rectangle(10, 5) - Circle(1)
+    sheet = extrude(Line((0, 0), (10, 0)), 3)
+    sketch.bbox(), sheet.mesh()
+    sketch.compact(), sheet.compact()
+    assert ext.drop_caches(sketch._brep) == (0, 0.0) and ext.drop_caches(sheet._brep) == (0, 0.0)
+    assert sketch.area == approx(50 - math.pi) and sheet.area == approx(30)
+
+
+def test_compact_gives_the_memory_back():
+    # (the heap the C allocator counts; tools/sanitize/guard_off.py leaves this test out)
+    import gc
+
+    if _heap() is None:
+        pytest.skip("no allocator statistics here")
+    base = Box(40, 30, 10) - Cylinder(5, 20)
+    base = base.fillet(base.edges().parallel_to(Z), 2)
+    target = Box(5, 5, 5).translate(0, 0, 100)
+    parts = [base.translate(i * 50, 0, 0) for i in range(50)]
+    gc.collect()
+    made = _heap()
+    for p in parts:
+        p.distance_to(target), p.mesh()
+    gc.collect()
+    queried = _heap()
+    for p in parts:
+        p.compact()
+    gc.collect()
+    compacted = _heap()
+    per_part = (queried - made) / 50
+    assert per_part > 500_000, per_part  # (about 1.2 MB each on macOS arm64)
+    assert (compacted - made) / 50 < 0.02 * per_part, ((compacted - made) / 50, per_part)

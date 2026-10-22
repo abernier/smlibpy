@@ -194,6 +194,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   up during the attempt (`_crashCount()`), and a step run here with `_isolatedValue(..., { trap:
   true })` throws a `_KernelFault` whose `here` is true, which the defeaturing loops pass on rather
   than drop. Python has nothing to port: a crash ends its process, or the copy of it.
+- **Python only.** The kernel lock and the GIL (src/cpp/kernel_lock.cpp, nogil.cpp): every entry
+  point of `_core` takes one lock and the long ones let the GIL go, so that other Python threads
+  run while the kernel works. The WebAssembly module runs on one thread (a `KernelWorker` has a
+  kernel of its own), so the port has nothing to take. `ext.drop_caches` and `compact()` are in
+  both.
 - **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
   `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
   file comes from), the files in memory (`toStep`, `fromStep`, ..., `toFile`, `fromFile`: Python

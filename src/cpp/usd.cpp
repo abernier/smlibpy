@@ -2470,12 +2470,12 @@ void bind_usd_files(py::module_ m)
                 item.normals = t[5].cast<std::vector<double>>();
             in.push_back(std::move(item));
         }
-        return smlibpy::usd_text(in, up_axis, meters_per_unit);
+        return smlibpy::without_gil([&] { return smlibpy::usd_text(in, up_axis, meters_per_unit); });
     }, py::arg("items"), py::arg("up_axis") = "Z", py::arg("meters_per_unit") = 0.001,
        "The .usda text of a stage: items are (brep or None, name, (r, g, b) or None, points or None, triangles "
        "or None[, corner normals or None]); a BrepArray prim per body, a Mesh prim per mesh.");
     m.def("usd_read", [](const std::string& text, bool heal) {
-        std::vector<smlibpy::UsdItem> items = smlibpy::usd_read(text, heal);
+        std::vector<smlibpy::UsdItem> items = smlibpy::without_gil([&] { return smlibpy::usd_read(text, heal); });
         py::list out;
         for (auto& item : items)
             out.append(py::make_tuple(py::cast(item.brep, py::return_value_policy::take_ownership), item.name,
@@ -2499,7 +2499,7 @@ void bind_usd_files(py::module_ m)
         }
         smlibpy::UsdReadOptions options;
         options.heal = heal, options.check = check, options.placement = placement, options.units = units;
-        smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
+        smlibpy::UsdStage stage = smlibpy::without_gil([&] { return smlibpy::usd_stage(in, options); });
         py::list bodies;
         for (auto& item : stage.items)
             bodies.append(py::make_tuple(py::cast(item.brep, py::return_value_policy::take_ownership), item.name,
