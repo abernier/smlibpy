@@ -20,6 +20,8 @@ solid from a sheet, test `isinstance(x, Part)`.
 - `center()`: area centroid.
 - `thicken(thickness)` → `Part` (see below). The module function `thicken(shell_or_face, t)` is
   the same and also takes a `Face`.
+- `trim(curves, keep)` → Shell: cut along curves that lie on the sheet, keep the side of a point
+  or (`"split"`) both sides as faces (see `trim`).
 - `heal()` → Shell: repairs tolerances and topology of a sewn shell (it turned a sewn but
   non-manifold stitch result into a manifold one). It does **not** sew separate faces; use
   `stitch` for that.
@@ -65,6 +67,8 @@ them with `revolve`/`loft`.
 `part & shell`, `part - shell` and `part + shell` do not raise; they return invalid "Parts"
 (volume 0, or the box with the sheet imprinted). The one useful case: `stitch(part & shell)`
 returns the piece of the sheet inside the solid as a `Shell` (trimming a sheet with a solid).
+To trim with curves that lie on the sheet (where another sheet crosses it, a projected outline),
+use `trim`.
 
 ## Example
 ```python
@@ -82,4 +86,4 @@ print(type(disc).__name__, round(disc.area, 3))                  # Shell 202.344
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves
+`surface`, `ruled`, `stitch`, `trim`, `blend`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves

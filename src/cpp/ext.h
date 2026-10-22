@@ -35,3 +35,7 @@ void bind_cells(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Blend surfaces between two free edges of sheets (blend.cpp).
+void bind_blend(py::module_ m);
+// Trimming and splitting faces with curves on them (trim.cpp).
+void bind_trim(py::module_ m);

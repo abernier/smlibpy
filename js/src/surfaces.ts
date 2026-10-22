@@ -6,7 +6,7 @@
 
 import { ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { Vector, _vec, type VectorLike } from './geometry.ts'
-import { Edge, Face, Part, Shell, Wire, _bodies, _t, _typeName } from './shapes.ts'
+import { Edge, Face, Part, Shell, Wire, _bodies, _continuity, _t, _typeName } from './shapes.ts'
 import { _guarded, _smb } from './defeature.ts'
 import { _withOptions } from './curves.ts'
 
@@ -147,10 +147,13 @@ export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | { tol
  * @param radius The radius of the blend: of the ball that rolls between the two surfaces.
  * @param options `sides`: the side of each face the blend lies on: 1 the side its normal
  *   (`normalAt()`) points to, -1 the other. Two crossing surfaces leave four places for a ball to
- *   roll, one per combination. Default `[1, 1]`.
- * @returns The blend, a sheet whose edges along its length lie on the two surfaces.
+ *   roll, one per combination. Default `[1, 1]`. `trim`: `true` cuts both faces back to the blend's
+ *   long edges and sews the three into one sheet; the blend's edges must run across both faces,
+ *   from border to border.
+ * @returns The blend, a sheet whose edges along its length lie on the two surfaces; with `trim` the
+ *   two faces, cut back, and the blend between them as one sheet.
  */
-export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options: { sides?: readonly [number, number] } = {}): Shell {
+export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options: { sides?: readonly [number, number]; trim?: boolean } = {}): Shell {
   _opts('surfaceFillet', options)
   const sides = options.sides ?? [1, 1]
   const fa = _oneFace(a, 'a')
@@ -175,7 +178,136 @@ export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, 
   if (!brep) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
   const shell = Shell._wrap(brep)
   if (!shell.faces().length) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)
+  if (options.trim) return _trimmedFillet(fa, fb, shell, Math.max(1e-5 * size, 1e-7))
   return shell
+}
+
+/** The faces of a surface fillet cut back to its long edges, sewn to it into one sheet. */
+function _trimmedFillet(fa: Face, fb: Face, blend: Shell, tol: number): Shell {
+  const railA = _railOn(blend, fa, tol)
+  const railB = _railOn(blend, fb, tol)
+  if (railA === null || railB === null || railA.equals(railB)) {
+    throw new ModelingError("surfaceFillet: the blend's long edges do not lie on the faces; trim them yourself")
+  }
+  const pieces: Shell[] = []
+  for (const [f, rail, other] of [[fa, railA, railB], [fb, railB, railA]] as const) {
+    // keep the side away from the blend: the blend leaves the face toward the other edge
+    const m = rail.pointAt(0.5)
+    const n = f.normalAt(m)
+    let v = other.pointAt(0.5).sub(m)
+    v = v.sub(n.mul(v.dot(n)))
+    if (!(v.length > 0)) throw new ModelingError('surfaceFillet: the blend leaves a face along its normal; trim the faces yourself')
+    const sheet = f.toShell()
+    try {
+      pieces.push(sheet.trim(rail, m.sub(v.normalized().mul(Math.max(1e-3 * sheet.bbox().diagonal, 10 * tol)))))
+    } catch (e) {
+      if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+      throw new ModelingError(`surfaceFillet: the blend does not cut a face back (its long edges must run across both faces, from border to border): ${e.message}`)
+    }
+  }
+  const joined = stitch(pieces[0], blend, pieces[1])
+  if (_freeEdges(joined) !== _freeEdges(pieces[0]) + _freeEdges(pieces[1])) {
+    throw new ModelingError('surfaceFillet: the blend could not be sewn to the faces cut back; join them with stitch(..., { tolerance })')
+  }
+  return joined as Shell
+}
+
+/** The edge of the blend that lies on the face's surface (null if none does). */
+function _railOn(blend: Shell, f: Face, tol: number): Edge | null {
+  const srf = k.face_surface(f._f)
+  const edges = blend.edges()
+  let best = -1
+  let bestGap = Number.POSITIVE_INFINITY
+  edges.forEach((e, i) => {
+    const gap = Math.max(...[0, 0.25, 0.5, 0.75, 1].map((t) => k.surface_closest_point(srf, e.pointAt(t).toArray())[2] as number))
+    if (gap < bestGap) [best, bestGap] = [i, gap]
+  })
+  return best >= 0 && bestGap <= tol ? edges[best] : null
+}
+
+function _freeEdges(body: Shell | Part): number {
+  return body.edges().filter((e) => e.faces().length === 1).length
+}
+
+/**
+ * A smooth bridge between free edges of two sheets: a sheet that leaves one sheet across one edge
+ * and reaches the other across the other, tangent to both (or curvature-continuous).
+ *
+ * @param edgeA An edge on the border of a sheet (one face uses it), such as
+ *   `sheet.edges().filter((e) => e.faces().length === 1)`.
+ * @param edgeB An edge on the border of another sheet (or of the same one).
+ * @param options `continuity`: how smoothly the blend meets the sheets: `'G1'` tangent, `'G2'` with
+ *   the same curvature across the edges too (default), `'G3'` also the same change of curvature.
+ *   `tension`: how far the blend runs on in each sheet's direction before it turns: its take-off at
+ *   `edgeA` and `edgeB` as a part of the gap between the edges (default 1); one number for both, or
+ *   a pair; less is tighter, more bulges. `join`: `true` sews the blend to both sheets (`stitch`)
+ *   and returns the one sheet.
+ *
+ * The blend joins the nearest ends of the two edges (its side edges never cross), and its normal
+ * follows `edgeA`'s sheet. Closed edges (a full circle) cannot be bridged: split the sheet so that
+ * the edge has two ends.
+ *
+ * @returns The blend, a sheet of one face (with `join`, the two sheets and the blend sewn into one).
+ */
+export function blend(
+  edgeA: Edge,
+  edgeB: Edge,
+  options: { continuity?: string | number; tension?: number | readonly [number, number]; join?: boolean } = {},
+): Shell {
+  _opts('blend', options)
+  const fa = _freeFace(edgeA, 'edgeA')
+  const fb = _freeFace(edgeB, 'edgeB')
+  const continuity = options.continuity ?? 'G2'
+  let level: number | null
+  try {
+    level = _continuity(continuity)
+  } catch (e) {
+    if (!(e instanceof RangeError || e instanceof TypeError)) throw e
+    level = null
+  }
+  if (level === null) throw new RangeError(`blend: continuity must be G1, G2 or G3, got ${JSON.stringify(continuity)}`)
+  const tension = options.tension ?? [1, 1]
+  let ta: number
+  let tb: number
+  if (typeof tension === 'number') {
+    ta = tb = tension
+  } else {
+    if (tension.length !== 2) throw new RangeError(`blend: tension is one number or a pair, got ${JSON.stringify(tension)}`)
+    ;[ta, tb] = tension.map(Number)
+  }
+  if (!(ta > 0 && tb > 0 && Number.isFinite(ta) && Number.isFinite(tb))) {
+    throw new RangeError(`blend: the tension must be positive, got ${JSON.stringify(tension)}`)
+  }
+  if (edgeA.equals(edgeB)) throw new RangeError('blend: edgeA and edgeB are the same edge')
+  let b: number
+  try {
+    b = kernelCall('blend', () => ext.edge_blend(fa._f, edgeA._e, fb._f, edgeB._e, level, ta, tb),
+      'the edges may touch or cross, or a sheet may not lead toward the other edge')
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e
+    throw new RangeError(e.message.replace('edge_blend:', 'blend:'))
+  }
+  const sheet = Shell._wrap(b)
+  if (!options.join) return sheet
+  const aBody = edgeA._owner as Shell
+  const bBody = edgeB._owner as Shell
+  const sheets = aBody === bBody ? [aBody] : [aBody, bBody]
+  const joined = stitch(...sheets, sheet)
+  if (_freeEdges(joined) !== sheets.reduce((n, x) => n + _freeEdges(x), 0)) {
+    throw new ModelingError('blend: the blend could not be sewn to the sheets; join them with stitch(..., { tolerance })')
+  }
+  return joined as Shell
+}
+
+/** The one face of a border edge of a sheet. */
+function _freeFace(e: unknown, name: string): Face {
+  if (!(e instanceof Edge)) throw new TypeError(`blend takes edges of sheets, not a ${_typeName(e)}`)
+  const faces = e.faces()
+  if (!faces.length) throw new TypeError(`blend: ${name} is a curve, not an edge of a sheet; make a sheet with it first (extrude, ruled)`)
+  if (faces.length !== 1 || e._owner instanceof Part) {
+    throw new RangeError(`blend: ${name} lies between two faces; take an edge on a sheet's border (used by one face)`)
+  }
+  return faces[0]
 }
 
 function _oneFace(x: unknown, name: string): Face {

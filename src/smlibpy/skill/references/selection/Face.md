@@ -18,6 +18,7 @@ there is no public constructor.
 | `outer_wire()`, `inner_wires()`, `wires()`, `edges(seams=False)`, `vertices()`, `neighbors()`, `owner` | topology, see `topology` |
 | `to_sketch()` | a Sketch with a copy of a planar face, holes included |
 | `to_shell()` | a Shell with a copy of any face |
+| `split(curves)` | the pieces of a copy of the face cut along curves on it (see `trim`); the face's body does not change |
 | `extrude(amount)` | a Part from a planar face, `amount` along the outward normal |
 | `distance_to(point)`, `bbox()` | true distance, tight bounding box |
 | `raycast(origin, direction)` | where a ray meets the face, nearest first (see `raycast`) |

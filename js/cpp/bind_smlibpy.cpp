@@ -9,6 +9,7 @@
 #include "common.h"
 #include "value_js.h"
 
+#include "blend.h"
 #include "cells.h"
 #include "distance.h"
 #include "defeature.h"
@@ -22,6 +23,7 @@
 #include "step_build.h"
 #include "surface_eval.h"
 #include "tessellate.h"
+#include "trim.h"
 #include "usd.h"
 
 using namespace emscripten;
@@ -610,6 +612,24 @@ val region_shells(uintptr_t b)
     });
 }
 
+// ---------------------------------------------------------------- ext: blends and trims
+// A new sheet (the caller's) bridging edge1 of face1 and edge2 of face2.
+uintptr_t edge_blend(uintptr_t face1, uintptr_t edge1, uintptr_t face2, uintptr_t edge2, int continuity, double tension1,
+                     double tension2)
+{
+    return guard([&] {
+        return ptr(smlibpy::edge_blend(face(face1), edge(edge1), face(face2), edge(edge2), continuity, tension1, tension2));
+    });
+}
+
+// A trimmed or split copy of the body (the caller's); the curves are not consumed.
+uintptr_t trim_with_curves(uintptr_t b, val curves, val point, int trim_type, double tolerance)
+{
+    return guard([&] {
+        return ptr(smlibpy::trim_with_curves(brep(b), pointers<SmCurve>(curves), numbers(point), trim_type, tolerance));
+    });
+}
+
 // items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
 std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
 {
@@ -747,6 +767,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__poly_from_triangles", &poly_from_triangles);
     function("ext__triangulate_poly", &triangulate_poly);
     function("ext__region_shells", &region_shells);
+    function("ext__edge_blend", &edge_blend);
+    function("ext__trim_with_curves", &trim_with_curves);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);

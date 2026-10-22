@@ -88,6 +88,8 @@ const OWN: Record<string, Signature> = {
   'ext.poly_from_triangles': ['vertices', 'triangles'],
   'ext.triangulate_poly': ['poly'],
   'ext.region_shells': ['brep'],
+  'ext.edge_blend': ['face1', 'edge1', 'face2', 'edge2', ['continuity', 2], ['tension1', 1.0], ['tension2', 1.0]],
+  'ext.trim_with_curves': ['brep', 'curves', 'point', 'trim_type', 'tolerance'],
   'ext.usd_text': ['items', ['up_axis', 'Z'], ['meters_per_unit', 0.001]],
   'ext.usd_read': ['text', ['heal', false]],
   'ext.usd_assets': ['text'],

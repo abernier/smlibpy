@@ -15,9 +15,9 @@ import numpy as np
 
 from ._kernel import KernelError, ModelingError, ext, k, kernel_call
 from .geometry import Vector, VectorLike, _vec
-from .shapes import Edge, Face, Part, Shell, Wire, _bodies, _t
+from .shapes import Edge, Face, Part, Shell, Wire, _bodies, _continuity, _t
 
-__all__ = ["surface", "ruled", "stitch", "surface_fillet"]
+__all__ = ["surface", "ruled", "stitch", "surface_fillet", "blend"]
 
 
 def _shell_of_surface(srf: Any) -> Shell:
@@ -152,7 +152,8 @@ def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None
     return shell
 
 
-def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tuple[int, int] = (1, 1)) -> Shell:
+def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tuple[int, int] = (1, 1),
+                   trim: bool = False) -> Shell:
     """A round blend between the surfaces of two faces, as a sheet: for surfaces that are not the
     faces of one part, such as two sheets that cross (``fillet`` rounds the edges of a part).
 
@@ -164,9 +165,12 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
         sides: The side of each face the blend lies on: 1 the side its normal (``normal_at()``)
             points to, -1 the other. Two crossing surfaces leave four places for a ball to roll,
             one per combination.
+        trim: True cuts both faces back to the blend's long edges and sews the three into one
+            sheet. The blend's edges must run across both faces, from border to border.
 
     Returns:
-        The blend, a sheet (:class:`Shell`) whose edges along its length lie on the two surfaces.
+        The blend, a sheet (:class:`Shell`) whose edges along its length lie on the two surfaces;
+        with ``trim`` the two faces, cut back, and the blend between them as one sheet.
     """
     from .defeature import _guarded
 
@@ -193,7 +197,118 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     shell = Shell._wrap(brep)
     if not shell.faces():
         raise ModelingError(f"surface_fillet: the kernel made no blend; {hint}")
+    if trim:
+        return _trimmed_fillet(fa, fb, shell, max(1e-5 * size, 1e-7))
     return shell
+
+
+def _trimmed_fillet(fa: Face, fb: Face, blend: Shell, tol: float) -> Shell:
+    """The faces of a surface fillet cut back to its long edges, sewn to it into one sheet."""
+    rail_a, rail_b = _rail_on(blend, fa, tol), _rail_on(blend, fb, tol)
+    if rail_a is None or rail_b is None or rail_a == rail_b:
+        raise ModelingError("surface_fillet: the blend's long edges do not lie on the faces; trim them yourself")
+    pieces = []
+    for f, rail, other in ((fa, rail_a, rail_b), (fb, rail_b, rail_a)):
+        # keep the side away from the blend: the blend leaves the face toward the other edge
+        m = rail.point_at(0.5)
+        n = f.normal_at(m)
+        v = other.point_at(0.5) - m
+        v = v - n * v.dot(n)
+        if not v.length > 0:
+            raise ModelingError("surface_fillet: the blend leaves a face along its normal; trim the faces yourself")
+        sheet = f.to_shell()
+        try:
+            pieces.append(sheet.trim(rail, m - v.normalized() * max(1e-3 * sheet.bbox().diagonal, 10 * tol)))
+        except (ModelingError, ValueError) as e:
+            raise ModelingError(f"surface_fillet: the blend does not cut a face back (its long edges must run "
+                                f"across both faces, from border to border): {e}") from e
+    joined = stitch(pieces[0], blend, pieces[1])
+    if _free_edges(joined) != _free_edges(pieces[0]) + _free_edges(pieces[1]):
+        raise ModelingError("surface_fillet: the blend could not be sewn to the faces cut back; join them with "
+                            "stitch(..., tolerance=...)")
+    return joined
+
+
+def _rail_on(blend: Shell, f: Face, tol: float) -> Edge | None:
+    """The edge of the blend that lies on the face's surface (None if none does)."""
+    srf = f._f.surface()
+    gaps = [(max(k.surface_closest_point(srf, e.point_at(t).to_tuple())[2] for t in (0.0, 0.25, 0.5, 0.75, 1.0)), i)
+            for i, e in enumerate(blend.edges())]
+    gap, i = min(gaps)
+    return blend.edges()[i] if gap <= tol else None
+
+
+def _free_edges(body: Shell | Part) -> int:
+    return sum(1 for e in body.edges() if len(e.faces()) == 1)
+
+
+def blend(edge_a: Edge, edge_b: Edge, *, continuity: str | int = "G2", tension: float | tuple[float, float] = (1, 1),
+          join: bool = False) -> Shell:
+    """A smooth bridge between free edges of two sheets: a sheet that leaves one sheet across one
+    edge and reaches the other across the other, tangent to both (or curvature-continuous).
+
+    Args:
+        edge_a: An edge on the border of a sheet (one face uses it), such as
+            ``sheet.edges().filter(lambda e: len(e.faces()) == 1)``.
+        edge_b: An edge on the border of another sheet (or of the same one).
+        continuity: How smoothly the blend meets the sheets: ``"G1"`` tangent, ``"G2"`` with the
+            same curvature across the edges too (default), ``"G3"`` also the same change of
+            curvature.
+        tension: How far the blend runs on in each sheet's direction before it turns: its
+            take-off at ``edge_a`` and ``edge_b`` as a part of the gap between the edges (default
+            1). One number for both, or a pair. Less is tighter, more bulges.
+        join: True sews the blend to both sheets (:func:`stitch`) and returns the one sheet.
+
+    The blend joins the nearest ends of the two edges (its side edges never cross), and its
+    normal follows ``edge_a``'s sheet. Closed edges (a full circle) cannot be bridged: split the
+    sheet so that the edge has two ends.
+
+    Returns:
+        The blend, a sheet of one face (with ``join``, the two sheets and the blend sewn into one).
+    """
+    fa, fb = _free_face(edge_a, "edge_a"), _free_face(edge_b, "edge_b")
+    try:
+        level = _continuity(continuity)
+    except (ValueError, TypeError):
+        level = None
+    if level is None:
+        raise ValueError(f"blend: continuity must be G1, G2 or G3, got {continuity!r}")
+    if isinstance(tension, (int, float)):
+        ta = tb = float(tension)
+    else:
+        if len(tension) != 2:
+            raise ValueError(f"blend: tension is one number or a pair, got {tension!r}")
+        ta, tb = (float(t) for t in tension)
+    if not (ta > 0 and tb > 0 and math.isfinite(ta) and math.isfinite(tb)):
+        raise ValueError(f"blend: the tension must be positive, got {tension!r}")
+    if edge_a == edge_b:
+        raise ValueError("blend: edge_a and edge_b are the same edge")
+    try:
+        with kernel_call("blend", "the edges may touch or cross, or a sheet may not lead toward the other edge"):
+            b = ext.edge_blend(fa._f, edge_a._e, fb._f, edge_b._e, level, ta, tb)
+    except ValueError as e:
+        raise ValueError(str(e).replace("edge_blend:", "blend:", 1)) from None
+    sheet = Shell._wrap(b)
+    if not join:
+        return sheet
+    a_body, b_body = edge_a._owner, edge_b._owner
+    sheets = [a_body] if a_body is b_body else [a_body, b_body]
+    joined = stitch(*sheets, sheet)
+    if _free_edges(joined) != sum(_free_edges(x) for x in sheets):
+        raise ModelingError("blend: the blend could not be sewn to the sheets; join them with stitch(..., tolerance=...)")
+    return joined
+
+
+def _free_face(e: Any, name: str) -> Face:
+    """The one face of a border edge of a sheet."""
+    if not isinstance(e, Edge):
+        raise TypeError(f"blend takes edges of sheets, not a {type(e).__name__}")
+    faces = e.faces()
+    if not faces:
+        raise TypeError(f"blend: {name} is a curve, not an edge of a sheet; make a sheet with it first (extrude, ruled)")
+    if len(faces) != 1 or isinstance(e._owner, Part):
+        raise ValueError(f"blend: {name} lies between two faces; take an edge on a sheet's border (used by one face)")
+    return faces[0]
 
 
 def _one_face(x: Any, name: str) -> Face:

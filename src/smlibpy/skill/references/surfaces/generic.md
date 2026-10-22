@@ -10,6 +10,8 @@ is a `Part`. The path is always: **make faces → (stitch them) → thicken or c
 | A freeform patch through measured or computed points | `surface(grid)` (at least 4 x 4) | 1 bicubic face |
 | A surface fitted to a cloud of points (a scan), in any order | `surface(points)` | 1 bicubic face |
 | A round blend between two sheets (or a sheet and a pipe) | `surface_fillet(a, b, r)` | Shell |
+| A smooth bridge between border edges of two sheets that do not meet (G1, G2, G3) | `blend(edge_a, edge_b)` | 1 face |
+| A sheet cut along curves on it (a hole, an outline, where another sheet crosses) | `sheet.trim(curves, keep)` | Shell |
 | Straight lines between two curves (blades, transitions, walls) | `ruled(a, b)` | 1 face |
 | A skin through three or more open curves | `loft([curve, ...])` | Shell |
 | A wall from an open curve | `extrude(curve, h)`, `revolve(curve, axis)`, `sweep(curve, path)` | Shell |
@@ -40,7 +42,8 @@ The Part's normals are made outward whatever the input. Hollow it afterwards wit
 result keeps each face's input normal: orient every piece the same way first, or the thicken
 raises `ModelingError`. With oriented pieces, B + `shell` and C give the same body (volumes within 0.001).
 
-Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet inside.
+Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet inside. Trim it
+with curves on it: `sheet.trim(curves, keep=point)` (`"split"` keeps both sides as faces).
 
 ## 3. Check after every step
 

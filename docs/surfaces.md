@@ -93,13 +93,68 @@ points, -1: the other side). The blend is a sheet of its own:
 ```python
 floor = Rectangle(40, 40).faces()[0]                   # normal +Z
 wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]       # normal -Y
-blend = surface_fillet(floor, wall, 5)                 # above the floor, on the -Y side of the wall
-print(round(blend.area, 4))                            # 314.1593: a quarter circle, 40 long
+rounding = surface_fillet(floor, wall, 5)              # above the floor, on the -Y side of the wall
+print(round(rounding.area, 4))                         # 314.1593: a quarter circle, 40 long
 
 pipe_a = Cylinder(5, 60).faces().cylinders()[0]
 pipe_b = Cylinder(4, 60).rotate(X, 90).faces().cylinders()[0]
 joint = surface_fillet(pipe_a, pipe_b, 1.5)            # around both places where they cross
 ```
+
+`trim=True` cuts both faces back to the blend's long edges and sews the three into one
+sheet, ready to thicken:
+
+```python
+one = surface_fillet(floor, wall, 5, trim=True)
+print(len(one.faces()), round(one.area, 4))            # 3 1514.1593: 600 + 600 + the blend
+plate = one.thicken(1)
+```
+
+## Bridges between sheets
+
+Two sheets that do not meet get a smooth bridge between two of their border edges with
+`blend`: a sheet that leaves one across its edge and reaches the other across its edge,
+tangent to both (`continuity="G1"`), with the same curvature across the edges too (`"G2"`, the
+default) or also the same change of curvature (`"G3"`). `tension` sets how far it runs on in
+each sheet's direction before it turns, as a part of the gap (one number, or one per edge).
+The blend joins the nearest ends of the two edges, whichever way they run, and its normal
+follows the first sheet; `join=True` sews it to both sheets:
+
+```python
+low = Rectangle(20, 20).translate(-20, 0).faces()[0].to_shell()
+high = Rectangle(20, 20).on(Plane.XY.offset(10)).translate(20, 0, 0).faces()[0].to_shell()
+edge_low = low.edges().filter(lambda e: abs(e.center().x + 10) < 1e-9).one()
+edge_high = high.edges().filter(lambda e: abs(e.center().x - 10) < 1e-9).one()
+bridge = blend(edge_low, edge_high)                    # G2: flat where it meets the flat sheets
+print(round(bridge.area, 3))                           # 466.054
+step = blend(edge_low, edge_high, tension=(0.5, 2), join=True)
+print(len(step.faces()), step.thicken(1).is_valid())   # 3 True
+```
+
+## Trimming sheets with curves
+
+`trim` cuts a sheet along curves that lie on it, and keeps the side of a point, or with
+`keep="split"` both sides as faces of their own. The curves come from where sheets meet
+(`intersection_curves`), from a `surface_fillet`'s long edges, or from `project`: a hole or
+an outline along a direction is the outline projected onto the sheet first. A curve may run
+across several faces of the sheet; each one runs from border to border, or closes a loop.
+`face.split(curves)` gives the pieces of one face:
+
+```python
+f = lambda x, y: 5 + 0.01 * (x - 20) ** 2 - 0.01 * (y - 15) ** 2
+saddle = surface([[(x, y, f(x, y)) for y in range(0, 31, 5)] for x in range(0, 41, 5)])
+outline = saddle.project(CenterArc((20, 15, 50), 5, 0, 360), (0, 0, -1))
+holed = saddle.trim(outline, keep=(2, 2, 0))          # a point outside the outline: the hole
+disk = saddle.trim(outline, keep=(20, 15, 0))          # a point inside: the disk
+print(round(holed.area + disk.area, 3), round(saddle.area, 3))   # 1248.607 1248.607
+
+halves = one.trim(one.intersection_curves(Rectangle(100, 100).on(Plane.YZ).faces()[0].to_shell()), "split")
+print(len(halves.faces()))                             # 6: each of the 3 faces cut in two
+pieces = floor.split(Line((-20, -20), (20, 20)))       # two triangles of 800
+```
+
+To give a region of a part's face a face of its own (a label area, a parting line), imprint
+the curves on the part: [features](features.md#imprints).
 
 ## Curves as NURBS
 

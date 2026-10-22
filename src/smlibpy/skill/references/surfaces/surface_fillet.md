@@ -5,13 +5,16 @@ cross, two pipes, a panel and a post. Returns the blend as a sheet. (`fillet` ro
 a part.)
 
 ## Signature
-`surface_fillet(a, b, radius, *, sides=(1, 1))`
+`surface_fillet(a, b, radius, *, sides=(1, 1), trim=False)`
 
 - `a`, `b`: faces, or sheets (`Shell`) of one face. Parts and sheets of several faces raise.
 - `radius`: of the ball that rolls between the two surfaces.
 - `sides`: on which side of each face the ball rolls: `1` the side its normal (`normal_at()`)
   points to, `-1` the other. Two crossing surfaces leave four places for the ball, one per
   combination.
+- `trim`: `True` cuts both faces back to the blend's long edges (`Shell.trim`) and sews the
+  three into one sheet. The blend's long edges must run across both faces, from border to
+  border; else `ModelingError: surface_fillet: the blend does not cut a face back ...`.
 
 ## Returns
 A `Shell`: the blend. One face per stretch where the ball rolls (two crossing pipes: 2, one
@@ -21,8 +24,9 @@ around each place where they cross). The edges along its length lie on the two s
 ## What is blended
 - The surfaces, as far as they reach, not the faces: the blend can run past a face's edges. A
   wall 20 wide standing on a floor 40 wide gets a blend 40 long.
-- The inputs are not changed and not trimmed. To make one sheet, cut the two sheets back to the
-  blend's long edges yourself; to make a solid, `thicken` the sheets or close them with `stitch`.
+- The inputs are not changed. `trim=True` returns one sheet: the two faces cut back to the
+  blend's long edges, and the blend (floor and wall below: 3 faces, 1514.1593, 8 free edges).
+  To make a solid, `thicken` it or close it with `stitch`.
 - It takes 20 to 50 ms.
 
 ## Errors
@@ -39,10 +43,12 @@ around each place where they cross). The edges along its length lie on the two s
 floor = Rectangle(40, 40).faces()[0]                  # z = 0, normal +Z
 wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]      # y = 0, normal -Y
 print(floor.normal_at(), wall.normal_at())            # Vector(0, 0, 1) Vector(0, -1, 0)
-blend = surface_fillet(floor, wall, 5)                # above the floor, on the -Y side of the wall
-print(round(blend.area, 4), blend.bbox())             # 314.1593 (a quarter circle r5, 40 long), y -5..0, z 0..5
+rounding = surface_fillet(floor, wall, 5)             # above the floor, on the -Y side of the wall
+print(round(rounding.area, 4), rounding.bbox())       # 314.1593 (a quarter circle r5, 40 long), y -5..0, z 0..5
 other = surface_fillet(floor, wall, 5, sides=(1, -1)) # above the floor, on the +Y side
 print(round(other.bbox().max.y, 6))                  # 5.0
+one = surface_fillet(floor, wall, 5, trim=True)       # floor and wall cut back, sewn to the blend
+print(len(one.faces()), round(one.area, 4))           # 3 1514.1593
 
 # two crossing pipes: a blend around each of the two places where they cross
 a = Cylinder(5, 60).faces().cylinders()[0]
@@ -52,4 +58,5 @@ print(len(outside.faces()))                           # 2
 ```
 
 ## Related
-`fillet` (edges of a part), `surface`, `ruled`, `stitch`, `Shell.thicken`, `generic`
+`fillet` (edges of a part), `blend` (a bridge between sheets that do not meet), `trim`,
+`surface`, `ruled`, `stitch`, `Shell.thicken`, `generic`

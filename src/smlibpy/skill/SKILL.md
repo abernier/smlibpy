@@ -68,9 +68,9 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; NURBS data of an edge (nurbs), make_compatible, remove_knots |
-| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
+| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, imprint (split faces along curves), thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
-| surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
+| surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), blend (a bridge between the edges of two sheets), trim (cut a sheet along curves on it), Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
 | files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |

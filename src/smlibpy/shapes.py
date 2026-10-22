@@ -1521,6 +1521,18 @@ class Face(Shape):
             b = ext.copy_faces(self._owner._brep, [self._f])
         return Shell._wrap(b)
 
+    def split(self, curves: Edge | Wire | Iterable[Edge | Wire]) -> ShapeList[Face]:
+        """The pieces of this face cut along curves that lie on it, as the faces of a new sheet.
+
+        Args:
+            curves: Edges or wires on the face (see :meth:`Shell.trim`): each runs from border to
+                border, or closes a loop.
+
+        The face's own body does not change: to split the faces of a part where they are, use
+        :meth:`Part.imprint`; of a sheet, :meth:`Shell.trim` with ``keep="split"``.
+        """
+        return self.to_shell().trim(curves, "split").faces()
+
     def extrude(self, amount: float, **kwargs: Any) -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
         return self.to_sketch().extrude(amount, **kwargs)
@@ -3095,6 +3107,45 @@ class Part(_Body):
             raise ModelingError(f"split: nothing of the part lies {keep} the plane")
         return kept
 
+    def imprint(self, tool: Edge | Wire | Iterable[Edge | Wire], direction: Axis | VectorLike | None = None, *,
+                nearest: bool = True) -> Part:
+        """Split the faces of the part along curves, without changing its shape: a region of a face
+        of its own, to color, draft or select (a label area, a parting line, a seal track).
+
+        Args:
+            tool: The curves: edges or wires. Without a direction they must lie on the part's faces
+                (:meth:`intersection_curves`, :meth:`project`).
+            direction: Move the curves along this direction (an axis or a vector) onto the part
+                first: where they cross its faces as they move (an outline projected onto them).
+                Only ahead of the curves: a part behind them is not reached.
+            nearest: With a direction, split only the faces the projection meets first: the side of
+                the part facing the curves (default). ``False`` splits every face the projection
+                crosses, also on the far side (a box's top and bottom face).
+
+        Returns:
+            The part with its faces split (a new one; the volume does not change). A curve across
+            the seam of a closed face (a cylinder's) gives a face on each side of the seam.
+        """
+        edges = _curves_of(tool, "imprint")
+        if direction is not None:
+            d = _direction(direction, "imprint")
+            edges = _swept_onto(self, edges, d)
+            if nearest:
+                edges = [e for e in edges if _seen_along(self, e, d)]
+            if not edges:
+                raise ModelingError("imprint: the curves, moved along the direction, miss the part")
+        before = len(self.faces())
+        out = self._like(_trim_with_curves(self, edges, Vector(), 2, "imprint"))
+        if len(out.faces()) <= before:
+            raise ModelingError("imprint: the curves split no face: each must run across a face from border to "
+                                "border, or close a loop on it")
+        problem = out._solid_problem()
+        if problem is None and abs(out.volume - self.volume) > 1e-6 * max(abs(self.volume), 1e-12):
+            problem = f"of another volume ({out.volume:.6g} instead of {self.volume:.6g})"
+        if problem is not None:
+            raise ModelingError(f"imprint: the kernel returned a body that is {problem}")
+        return out
+
     def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
         """The cross-section of the part in a plane, as a sketch. Of a part made by :meth:`merge`,
         the sections of the cells the plane cuts, side by side (a region per cell)."""
@@ -3450,6 +3501,74 @@ def _flatten_faces(items: Any) -> list[Face]:
     return out
 
 
+def _curves_of(items: Any, what: str) -> list[Edge]:
+    """The edges of curves given as edges, wires or lists of them."""
+    if isinstance(items, (Face, _Body, Vertex)):
+        raise TypeError(f"{what} takes curves (edges or wires), not a {type(items).__name__}")
+    try:
+        edges = _flatten_edges(items)
+    except TypeError:
+        raise TypeError(f"{what} takes curves (edges or wires), not a {type(items).__name__}") from None
+    if not edges:
+        raise ValueError(f"{what}: no curves")
+    return edges
+
+
+def _trim_with_curves(body: _Body, edges: Sequence[Edge], point: Vector, trim_type: int, what: str) -> Any:
+    """A copy of the body with its faces trimmed by curves that lie on them (ext.trim_with_curves):
+    trim_type 0 keeps the side of ``point``, 2 splits."""
+    box = body.bbox()
+    for e in edges:
+        box = box.union(e.bbox())
+    tol = max(1e-5 * box.diagonal, 1e-7)
+    curves = [e._copy_curve() for e in edges]
+    try:
+        with kernel_call(what, "the curves may cross each other, or run along an edge of the faces"):
+            return ext.trim_with_curves(body._brep, curves, point.to_tuple(), trim_type, tol)
+    except ValueError as e:
+        if "does not lie" not in str(e):
+            raise
+        raise ValueError(f"{what}: the curves must lie on the faces (within {tol:.2g}); move them onto them with "
+                         f"project()") from None
+    finally:
+        for c in curves:
+            ext.delete_curve(c)
+
+
+def _swept_onto(body: _Body, edges: Sequence[Edge], d: Vector) -> list[Edge]:
+    """Where curves moved along ``d`` cross the body's faces: the curves where the surface they
+    sweep meets the body (exact where the kernel's projection, project(), is within 4e-4)."""
+    from .surfaces import ruled
+
+    box = body.bbox()
+    out: list[Edge] = []
+    for e in edges:
+        reach = 2.0 * (box.diagonal + (e.center() - box.center).length) + 1.0
+        sweep = ruled(e, e.translate(d * reach))
+        if _disjoint(box, sweep.bbox()):
+            continue
+        try:
+            out.extend(body.intersection_curves(sweep))
+        except KernelError:
+            # (the kernel's intersection fails where there is none)
+            if body.distance_to(sweep) > 1e-7 * reach:
+                continue
+            raise
+    return out
+
+
+def _seen_along(body: _Body, edge: Edge, d: Vector) -> bool:
+    """True when a curve on the body is what rays along ``d`` meet first (at most of three points:
+    a ray can miss a face where it passes a seam)."""
+    reach = 2.0 * body.bbox().diagonal + 1.0
+    seen = 0
+    for t in (0.25, 0.5, 0.75):
+        m = edge.point_at(t)
+        hits = body.raycast(m - d * reach, d)
+        seen += bool(hits) and (hits[0].point - m).length <= 1e-5 * reach
+    return seen >= 2
+
+
 class Shell(_Body):
     """A sheet body: one or more faces that do not enclose a volume (surfaces)."""
 
@@ -3495,6 +3614,47 @@ class Shell(_Body):
         # in a copy of the process)
         b = _isolated("thicken", work)
         return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+
+    def trim(self, curves: Edge | Wire | Iterable[Edge | Wire], keep: VectorLike | str) -> Shell:
+        """Cut the sheet along curves that lie on it, and keep one side, or both as faces of their own.
+
+        Args:
+            curves: Edges or wires on the sheet: where two sheets meet (:meth:`intersection_curves`),
+                the long edges of a :func:`~smlibpy.surface_fillet`, curves projected onto the sheet
+                (:meth:`project`). A curve may run across several faces of the sheet. Each one runs
+                from border to border, or closes a loop (a hole or an outline).
+            keep: A point on the side to keep, or near it (not on a curve): the faces it reaches
+                without crossing a curve are kept. ``"split"`` keeps both sides, as faces of their
+                own.
+
+        Returns:
+            The trimmed sheet (a new one; this one does not change).
+
+        To cut along a direction instead (a hole through a curved panel), project the outline
+        first: ``sheet.trim(sheet.project(Circle(5).edges(), (0, 0, -1)), keep=(0, 0, 0))`` keeps
+        the disk.
+        """
+        split = isinstance(keep, str)
+        if split and keep != "split":
+            raise ValueError(f'trim: keep is a point on the side to keep, or "split"; got {keep!r}')
+        point = Vector() if split else _vec(keep)
+        edges = _curves_of(curves, "trim")
+        before = self.area
+        n = len(self.faces())
+        b = _trim_with_curves(self, edges, point, 2 if split else 0, "trim")
+        out = self._like(b)
+        after = out.area if out.faces() else 0.0
+        tol = 1e-4 * max(before, 1e-12)
+        if split:
+            if len(out.faces()) <= n or abs(after - before) > tol:
+                raise ModelingError("trim: the curves do not split the sheet: each must run across a face from "
+                                    "border to border, or close a loop on it")
+        elif not out.faces():
+            raise ModelingError("trim: nothing is left; the point lies on no side the curves cut off")
+        elif not after < before - tol:
+            raise ModelingError("trim: the curves do not cut the sheet in two: each must run across a face from "
+                                "border to border, or close a loop on it")
+        return out
 
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())

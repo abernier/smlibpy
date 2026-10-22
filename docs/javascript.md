@@ -500,6 +500,7 @@ export class Face extends Shape {
     neighbors(): ShapeList<Face>;
     toSketch(): Sketch;
     toShell(): Shell;
+    split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face>;
     extrude(amount: number, options?: ExtrudeOptions): Part;
     equals(other: unknown): boolean;
     toString(): string;
@@ -544,6 +545,9 @@ export class Part extends _Body {
     split(plane: Plane | Face, keep: 'above' | 'below'): Part;
     split(plane: Plane | Face, keep: 'both'): [Part, Part];
     split(plane: Plane | Face): Part;
+    imprint(tool: Edge | Wire | Iterable<Edge | Wire>, direction?: Axis | VectorLike | null, options?: {
+        nearest?: boolean;
+    }): Part;
     section(plane?: Plane | Face): Sketch;
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
@@ -578,6 +582,7 @@ export class Shell extends _Body {
     thicken(thickness: number, options?: {
         both?: boolean;
     }): Part;
+    trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): this;
     fuse(...others: unknown[]): Shell;
     toString(): string;
 }
@@ -892,6 +897,12 @@ export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | {
 })[]): Part | Shell;
 export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: {
     sides?: readonly [number, number];
+    trim?: boolean;
+}): Shell;
+export function blend(edgeA: Edge, edgeB: Edge, options?: {
+    continuity?: string | number;
+    tension?: number | readonly [number, number];
+    join?: boolean;
 }): Shell;
 ```
 

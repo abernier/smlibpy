@@ -41,6 +41,7 @@ import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, 
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
+import { ruled } from './surfaces.ts'
 import {
   type Bend,
   type FlangeOptions,
@@ -1755,6 +1756,19 @@ export class Face extends Shape {
   toShell(): Shell {
     const b = kernelCall('copy face', () => ext.copy_faces(this._owner!._brep, [this._f]))
     return Shell._wrap(b)
+  }
+
+  /**
+   * The pieces of this face cut along curves that lie on it, as the faces of a new sheet.
+   *
+   * @param curves Edges or wires on the face (see `Shell.trim`): each runs from border to border,
+   *   or closes a loop.
+   *
+   * The face's own body does not change: to split the faces of a part where they are, use
+   * `Part.imprint`; of a sheet, `Shell.trim` with `keep` `'split'`.
+   */
+  split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face> {
+    return this.toShell().trim(curves, 'split').faces()
   }
 
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
@@ -3515,6 +3529,44 @@ export class Part extends _Body {
   }
 
   /**
+   * Split the faces of the part along curves, without changing its shape: a region of a face of
+   * its own, to color, draft or select (a label area, a parting line, a seal track).
+   *
+   * @param tool The curves: edges or wires. Without a direction they must lie on the part's faces
+   *   (`intersectionCurves`, `project`).
+   * @param direction Move the curves along this direction (an axis or a vector) onto the part
+   *   first: where they cross its faces as they move (an outline projected onto them). Only ahead
+   *   of the curves: a part behind them is not reached.
+   * @param options `nearest`: with a direction, split only the faces the projection meets first:
+   *   the side of the part facing the curves (default `true`). `false` splits every face the
+   *   projection crosses, also on the far side (a box's top and bottom face).
+   * @returns The part with its faces split (a new one; the volume does not change). A curve across
+   *   the seam of a closed face (a cylinder's) gives a face on each side of the seam.
+   */
+  imprint(tool: Edge | Wire | Iterable<Edge | Wire>, direction: Axis | VectorLike | null = null, options: { nearest?: boolean } = {}): Part {
+    _opts('Part.imprint', options)
+    const nearest = options.nearest ?? true
+    let edges = _curvesOf(tool, 'imprint')
+    if (direction != null) {
+      const d = _direction(direction, 'imprint')
+      edges = _sweptOnto(this, edges, d)
+      if (nearest) edges = edges.filter((e) => _seenAlong(this, e, d))
+      if (!edges.length) throw new ModelingError('imprint: the curves, moved along the direction, miss the part')
+    }
+    const before = this.faces().length
+    const out = this._like(_trimWithCurves(this, edges, new Vector(), 2, 'imprint'))
+    if (out.faces().length <= before) {
+      throw new ModelingError('imprint: the curves split no face: each must run across a face from border to border, or close a loop on it')
+    }
+    let problem = out._solidProblem()
+    if (problem === null && Math.abs(out.volume - this.volume) > 1e-6 * Math.max(Math.abs(this.volume), 1e-12)) {
+      problem = `of another volume (${_formatG(out.volume)} instead of ${_formatG(this.volume)})`
+    }
+    if (problem !== null) throw new ModelingError(`imprint: the kernel returned a body that is ${problem}`)
+    return out
+  }
+
+  /**
    * The cross-section of the part in a plane, as a sketch. Of a part made by `merge`, the sections
    * of the cells the plane cuts, side by side (a region per cell).
    */
@@ -3895,6 +3947,74 @@ export function _flattenFaces(items: unknown): Face[] {
   return out
 }
 
+/** The edges of curves given as edges, wires or lists of them. */
+function _curvesOf(items: unknown, what: string): Edge[] {
+  if (items instanceof Face || items instanceof _Body || items instanceof Vertex) {
+    throw new TypeError(`${what} takes curves (edges or wires), not a ${_typeName(items)}`)
+  }
+  let edges: Edge[]
+  try {
+    edges = _flattenEdges(items)
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e
+    throw new TypeError(`${what} takes curves (edges or wires), not a ${_typeName(items)}`)
+  }
+  if (!edges.length) throw new RangeError(`${what}: no curves`)
+  return edges
+}
+
+/** A copy of the body with its faces trimmed by curves that lie on them (ext.trim_with_curves):
+ * trimType 0 keeps the side of `point`, 2 splits. */
+function _trimWithCurves(body: _Body, edges: readonly Edge[], point: Vector, trimType: number, what: string): number {
+  let box = body.bbox()
+  for (const e of edges) box = box.union(e.bbox())
+  const tol = Math.max(1e-5 * box.diagonal, 1e-7)
+  const curves = edges.map((e) => e._copyCurve())
+  try {
+    return kernelCall(what, () => ext.trim_with_curves(body._brep, curves, point.toArray(), trimType, tol),
+      'the curves may cross each other, or run along an edge of the faces')
+  } catch (e) {
+    if (!(e instanceof RangeError) || !e.message.includes('does not lie')) throw e
+    throw new RangeError(`${what}: the curves must lie on the faces (within ${_formatG(tol, 2)}); move them onto them with project()`)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
+/** Where curves moved along `d` cross the body's faces: the curves where the surface they sweep
+ * meets the body (exact where the kernel's projection, project(), is within 4e-4). */
+function _sweptOnto(body: _Body, edges: readonly Edge[], d: Vector): Edge[] {
+  const box = body.bbox()
+  const out: Edge[] = []
+  for (const e of edges) {
+    const reach = 2 * (box.diagonal + e.center().sub(box.center).length) + 1
+    const sweep = ruled(e, e.translate(d.mul(reach)))
+    if (_disjoint(box, sweep.bbox())) continue
+    try {
+      out.push(...body.intersectionCurves(sweep))
+    } catch (err) {
+      // (the kernel's intersection fails where there is none)
+      if (!(err instanceof KernelError)) throw err
+      if (body.distanceTo(sweep) > 1e-7 * reach) continue
+      throw err
+    }
+  }
+  return out
+}
+
+/** True when a curve on the body is what rays along `d` meet first (at most of three points: a ray
+ * can miss a face where it passes a seam). */
+function _seenAlong(body: _Body, edge: Edge, d: Vector): boolean {
+  const reach = 2 * body.bbox().diagonal + 1
+  let seen = 0
+  for (const t of [0.25, 0.5, 0.75]) {
+    const m = edge.pointAt(t)
+    const hits = body.raycast(m.sub(d.mul(reach)), d)
+    if (hits.length > 0 && hits[0].point.sub(m).length <= 1e-5 * reach) seen += 1
+  }
+  return seen >= 2
+}
+
 /** Python's message for what is no list, and what an `undefined` mostly is in code ported from
  * Python: an element taken with a negative index, which JavaScript lists do not have. */
 function _notIterable(items: unknown, what: string): string {
@@ -3945,6 +4065,42 @@ export class Shell extends _Body {
     const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { create_solid: true }, faces: [] })
     const b = _isolated('thicken', work, job, hint)
     return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
+  }
+
+  /**
+   * Cut the sheet along curves that lie on it, and keep one side, or both as faces of their own.
+   *
+   * @param curves Edges or wires on the sheet: where two sheets meet (`intersectionCurves`), the
+   *   long edges of a `surfaceFillet`, curves projected onto the sheet (`project`). A curve may run
+   *   across several faces of the sheet. Each one runs from border to border, or closes a loop (a
+   *   hole or an outline).
+   * @param keep A point on the side to keep, or near it (not on a curve): the faces it reaches
+   *   without crossing a curve are kept. `'split'` keeps both sides, as faces of their own.
+   * @returns The trimmed sheet (a new one; this one does not change).
+   *
+   * To cut along a direction instead (a hole through a curved panel), project the outline first:
+   * `sheet.trim(sheet.project(Circle(5).edges()[0], [0, 0, -1]), [0, 0, 0])` keeps the disk.
+   */
+  trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): this {
+    const split = typeof keep === 'string'
+    if (split && keep !== 'split') throw new RangeError(`trim: keep is a point on the side to keep, or "split"; got '${keep}'`)
+    const point = split ? new Vector() : _vec(keep as VectorLike)
+    const edges = _curvesOf(curves, 'trim')
+    const before = this.area
+    const n = this.faces().length
+    const out = this._like(_trimWithCurves(this, edges, point, split ? 2 : 0, 'trim'))
+    const after = out.faces().length ? out.area : 0
+    const tol = 1e-4 * Math.max(before, 1e-12)
+    if (split) {
+      if (out.faces().length <= n || Math.abs(after - before) > tol) {
+        throw new ModelingError('trim: the curves do not split the sheet: each must run across a face from border to border, or close a loop on it')
+      }
+    } else if (!out.faces().length) {
+      throw new ModelingError('trim: nothing is left; the point lies on no side the curves cut off')
+    } else if (!(after < before - tol)) {
+      throw new ModelingError('trim: the curves do not cut the sheet in two: each must run across a face from border to border, or close a loop on it')
+    }
+    return out
   }
 
   /** Union with other sheets (Python's `+`). */
