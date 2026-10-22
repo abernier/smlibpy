@@ -33,8 +33,8 @@ print(len(top.iso(u=0.5)))                          # 2: cut by the hole
 ```
 
 ## Errors
-- `ValueError: iso: give u or v (one of them)`.
-- `ValueError: iso: v is a fraction of the face's range from 0 to 1, got 1.5`.
+- `ValueError: iso: give u or v (exactly one of u and v)`.
+- `ValueError: iso: v is a fraction of the face's range, from 0 to 1 (got 1.5)`.
 
 ## Related
-`wrap`, `analysis/project`, `selection/Face`.
+`isocurve` (the same, as `face.isocurve`; also `Face.nurbs`), `wrap`, `analysis/project`, `selection/Face`.

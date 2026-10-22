@@ -5,13 +5,14 @@ body's surface.
 
 ## Signature
 
-`body.distance_to(other) -> float` where `other` is a point (`(x, y, z)`, `Vector`, `Vertex`)
-or another body (`Part`, `Shell`, `Sketch`).
+`body.distance_to(other) -> float` where `other` is a point (`(x, y, z)`, `Vector`, `Vertex`),
+another body (`Part`, `Shell`, `Sketch`), a `Face`, an `Edge` or a `Wire`.
 
-`body.closest_point(point) -> Vector`, a point on the body's surface.
+`body.closest_point(point) -> Vector`, a point on the body's surface. The nearest points of two
+shapes and their faces: `closest_points` (also `Face/Edge/Wire.closest_point`).
 
-On `Part`, `Shell` and `Sketch`. `Face`, `Edge`, `Wire` and `Vertex` have `distance_to(point)`
-only; they have no `closest_point`.
+On `Part`, `Shell` and `Sketch`. `Face`, `Edge` and `Wire` have `distance_to(point)` and
+`distance_to(body)` (the body's distance to them); `Vertex` has `distance_to(point)`.
 
 ## What the number means
 
@@ -48,10 +49,8 @@ large.
 
 - `distance_to` on a list raises `ValueError: expected 2 or 3 coordinates, got 1`; loop over
   the list.
-- `part.distance_to(edge)` raises `TypeError: distance_to takes a point or a body (Part,
-  Shell, Sketch), not a Edge` (the same for a face or wire), and `edge.distance_to(part)`
-  `TypeError: 'Part' object is not iterable`. For an edge, take the minimum over
-  `edge.point_at(t)` samples, or `face.to_shell()` for a face.
+- A face counts as the sheet it is (its own boundary, not the whole surface); an edge or a wire
+  as the curve between its ends (before 0.5.0 they raised `TypeError`).
 - Body-body distance takes a few to about 100 ms (both bodies are tessellated to find
   starting points); point queries under 0.1 ms.
 
@@ -75,8 +74,10 @@ c1, c2 = Cylinder(5, 20), Cylinder(3, 20).translate(20, 0, 0)
 print(c1.distance_to(c2))                # 12.0: parallel cylinders
 rod = Cylinder(5, 200).rotate(X, 1).translate(12, 0, 0)
 print(round(Cylinder(5, 200).distance_to(rod), 9))   # 2.0: crossing at 1 degree
+print(a.distance_to(Line((20, -50, 3), (20, 50, 3))))  # 15.0: an edge
+print(a.closest_points(b).point)         # Vector(5, 0, 0): and the point on b, the faces
 ```
 
 ## Related
 
-`measures`, `intersection_curves`, `Part.intersect` (`&`), `generic`
+`closest_points`, `measures`, `intersection_curves`, `Part.intersect` (`&`), `generic`

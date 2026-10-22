@@ -3,8 +3,10 @@
 The blank of a sheet metal part laid on the XY plane, with its cutting contour and bend lines.
 
 ## Signature
-`flat_pattern(part, *, k_factor=0.44, fixed=None)` -> `FlatPattern`
-`part.flat_pattern(*, k_factor=0.44, fixed=None)`
+`flat_pattern(part, *, k_factor=None, fixed=None)` -> `FlatPattern`
+`part.flat_pattern(*, k_factor=None, fixed=None)`
+
+`k_factor` as for `unfold`: by default each bend's own (from `fold`, `flange`), else 0.44.
 
 ## Returns
 A `FlatPattern`:
@@ -12,10 +14,15 @@ A `FlatPattern`:
   smallest rectangle around it along X, its bounding box starting at the origin.
 - `outline`: the cutting contour as a `Sketch` at z = 0: lines and circles (collinear pieces
   joined), holes as inner loops. 4 lines and 1 circle for a plate with one hole and two flanges.
+  Pieces that crossed a bend are fitted B-splines in the flat part; in the outline those that
+  are lines or arcs within 1e-6 mm become lines and arcs, and arcs of one circle in a row one
+  arc: a hole across a bend is one circle again (it was 3 arcs and 2 B-splines), an oblique cut
+  across a bend one line. Spline cutouts stay splines.
 - `bends`: one `Bend` each: `angle`, `radius`, `thickness`, `k_factor`, `allowance`, `length`,
   `line` (the bend line at z = 0, the middle of the bend's strip) and `direction` (`"up"`: the
   sheet beyond the line folds towards +Z).
-- `bend_lines`: the lines alone; `size`: (length, width, thickness); `thickness`, `k_factor`.
+- `bend_lines`: the lines alone; `size`: (length, width, thickness); `thickness`; `k_factor`:
+  the K-factor of every bend, `None` where they differ (each `Bend` has its own).
 
 The largest face of the part lies at z = 0 facing down, so a tray's bends are all `"up"`.
 
@@ -27,6 +34,11 @@ The largest face of the part lies at z = 0 facing down, so a tray's bends are al
 ## Gotchas
 - A part without bends gives its own flat pattern (`Box(10, 20, 2)`: 20 x 10, no bends).
 - Parts that do not unfold raise like `unfold`.
+- `pattern.part.bbox()` of a part with holes that crossed a bend can be deeper than the sheet
+  (the kernel's box samples the fitted hole walls' surfaces past their edges); `pattern.size`
+  measures the edges, which lie at z = 0 to thickness, as does the outline.
+- A hole wholly inside a bend zone gives the right outline, but `pattern.part.is_valid()` is
+  False (the unbent hole wall does not quite meet the faces around it).
 
 ## Example
 ```python

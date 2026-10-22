@@ -105,6 +105,7 @@ PYBIND11_MODULE(_core, m)
     bind_face_attrs(m.attr("ext").cast<py::module_>());
     bind_analytics(m.attr("ext").cast<py::module_>());
     bind_shells(m.attr("ext").cast<py::module_>());
+    bind_face_analysis(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
     bind_fillet(m.attr("ext").cast<py::module_>());
     bind_slivers(m.attr("ext").cast<py::module_>());

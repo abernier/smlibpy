@@ -23,7 +23,11 @@ there is no public constructor.
 | `untrimmed()` | a Shell of the whole surface the face lies on: holes and cut borders gone; a plane as the smallest rectangle around the face (see `extend`) |
 | `extended(distance, sides=None, continuity="natural")` | a Shell of the face's surface grown past its sides; planes stay planes, cylinders and spheres the same (see `extend`) |
 | `extrude(amount)` | a Part from a planar face, `amount` along the outward normal |
-| `distance_to(point)`, `bbox()` | true distance, tight bounding box |
+| `distance_to(point)`, `bbox()` | true distance (also to a body), tight bounding box |
+| `closest_point(point)`, `uv_at(point)`, `position_at(u, v)` | nearest point on the face, its parameters (fractions of the face's parameter box), the surface point there; see `closest_points` |
+| `curvature_at(point=None)`, `min_radius()` | principal curvatures and directions; smallest radius of curvature; see `curvature_at` |
+| `major_radius`, `cone_angle` | torus: from the axis to the tube's middle; cone: half the opening angle (degrees) |
+| `nurbs()`, `isocurve(u=, v=)` | the surface as NURBS data; its curves of constant parameter, clipped to the face; see `surfaces/isocurve` |
 | `raycast(origin, direction)` | where a ray meets the face, nearest first (see `raycast`) |
 
 ## Details

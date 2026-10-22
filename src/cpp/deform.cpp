@@ -25,9 +25,17 @@
 //     (at the original's knots as smooth as the original, C4 elsewhere) whose spans are halved
 //     until they are within the tolerance. Exact faces that would get more than
 //     `max_exact_points` control points are approximated the same way.
+//
+// Where the exact image of a face or edge is analytic, it gets that geometry instead of a fit
+// (deform_analytic.cpp): a moved copy where the map is a similarity on it (faces the map leaves
+// in place, the turned ends of a twist, the cross-sections of a taper), a cone like the
+// cylinder a taper narrows, and new planes, cylinders, cones, lines and circles where the
+// parameters change (a plate bent about an axis, a cylinder unrolled into a plane). New
+// geometry takes new trim curves; if those cannot be built, the fits stay.
 
 #include "kernel.h"
 #include "deform.h"
+#include "deform_analytic.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
@@ -40,6 +48,7 @@
 #include <SmSrfInVolume.h>
 #include <SmTransform.h>
 #include <SmTwistVolume.h>
+#include <SmUnbendVolume.h>
 
 #include <algorithm>
 #include <cmath>
@@ -47,6 +56,7 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace
 {
@@ -67,6 +77,15 @@ SmVector3d vec3(const std::vector<double>& v)
     if (v.size() != 3)
         throw std::invalid_argument("expected three coordinates");
     return SmVector3d(v[0], v[1], v[2]);
+}
+
+SmVector3d unit3(const std::vector<double>& v)
+{
+    SmVector3d d = vec3(v);
+    const double n = d.Length();
+    if (!(n > 0.0))
+        throw std::invalid_argument("expected a direction, not a zero vector");
+    return d / n;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +343,7 @@ struct Piece
     {
         IDENTITY,
         RIGID,    // rotation and translation: analytic geometry is transformed and kept
-        VOLUME,   // a kernel volume (twist, bend, affine transform)
+        VOLUME,   // a kernel volume (twist, bend, unbend, affine transform)
         LATTICE,  // a Bezier volume
     } kind = IDENTITY;
     double lo = -kInf, hi = kInf;           // region along the axis
@@ -332,6 +351,7 @@ struct Piece
     SmAxis2Placement placement;             // RIGID: p -> origin + R p
     Lattice lattice;                        // LATTICE
     int degree = -1;                        // total degree of a polynomial map, -1 otherwise
+    std::vector<smlibpy::analytic::Line3> axes;  // twist, bend, unbend: the axis (for analytic images)
 
     SmPoint3d map(const SmPoint3d& p) const
     {
@@ -350,6 +370,8 @@ struct Deformation
     bool has_axis = false;
     SmPoint3d origin;
     SmVector3d direction;
+    bool analytic = true;   // analytic images where they are analytic
+    std::vector<int> faces;  // the piece of every face, if the caller gives them
     std::vector<std::unique_ptr<Piece>> pieces;
     double tolerance = 1e-6;
     int max_degree = 12;
@@ -414,11 +436,33 @@ std::unique_ptr<Piece> make_piece(const smlibpy::DeformPiece& d)
     {
         piece->volume.reset(new (ctx()) SmTwistVolume(ctx(), vec3(d.origin), vec3(d.axis), vec3(d.mid), d.period));
         piece->kind = Piece::VOLUME;
+        piece->axes.push_back({vec3(d.origin), unit3(d.axis)});
     }
     else if (kind == "bend")
     {
         piece->volume.reset(new (ctx()) SmBendVolume(ctx(), vec3(d.center), vec3(d.axis), vec3(d.mid), d.neutral));
         piece->kind = Piece::VOLUME;
+        piece->axes.push_back({vec3(d.center), unit3(d.axis)});
+    }
+    else if (kind == "unbend")
+    {
+        // A point at distance r from the axis and at the angle a from `mid` (-pi < a < pi) goes to
+        // the plane at distance r along `mid`, neutral * a along axis x mid: the inverse of a bend.
+        // A rigid `matrix` moves the result (an unroll that keeps a flat in place).
+        if (!(d.neutral > 0.0))
+            throw std::invalid_argument("unbend: the neutral radius must be positive");
+        auto* volume = new (ctx()) SmUnbendVolume(ctx(), vec3(d.center), unit3(d.axis), unit3(d.mid), d.neutral);
+        piece->volume.reset(volume);
+        if (!d.matrix.empty())
+        {
+            double t[4][4];
+            row_matrix(d.matrix, t);
+            const SmAxis2Placement place(SmVector3d(t[3][0], t[3][1], t[3][2]), SmVector3d(t[0][0], t[0][1], t[0][2]),
+                                         SmVector3d(t[1][0], t[1][1], t[1][2]));
+            check(volume->Transform(place), "SmVolume::Transform");
+        }
+        piece->kind = Piece::VOLUME;
+        piece->axes.push_back({vec3(d.center), unit3(d.axis)});
     }
     else if (kind == "lattice")
     {
@@ -472,10 +516,16 @@ std::unique_ptr<Deformation> make_deformation(const smlibpy::DeformSpec& spec, d
         def->direction = SmVector3d(a[3], a[4], a[5]);
         def->direction.Unitize();
     }
+    if (spec.has_analytic)
+        def->analytic = spec.analytic;
     for (const smlibpy::DeformPiece& item : spec.pieces)
         def->pieces.push_back(make_piece(item));
     if (def->pieces.empty())
         throw std::invalid_argument("a deformation needs at least one piece");
+    for (int f : spec.faces)
+        if (f < 0 || f >= static_cast<int>(def->pieces.size()))
+            throw std::invalid_argument("faces: a piece index out of range");
+    def->faces = spec.faces;
     if (spec.has_tolerance)
         def->tolerance = spec.tolerance;
     if (spec.has_max_degree)
@@ -953,6 +1003,7 @@ struct Stats
 {
     int faces_kept = 0, faces_exact = 0, faces_approx = 0;
     int edges_kept = 0, edges_exact = 0, edges_approx = 0;
+    int faces_analytic = 0, edges_analytic = 0;
     double max_error = 0.0;  // largest deviation from the exact deformation found at the test points
     int max_degree = 0;
 };
@@ -1195,9 +1246,10 @@ SmSurface* map_surface(SmFace* face, const Piece& piece, const Deformation& def,
     return out;
 }
 
-SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Stats& st)
+// The image of a curve over the interval `ivl` of its parameters (an edge's curve, or a
+// standalone curve), fitted keeping its parameters; null where the piece leaves it as it is.
+SmCurve* map_curve(const SmCurve* c, const SmExtent1d& ivl, const Piece& piece, const Deformation& def, Stats& st)
 {
-    const SmCurve* c = edge->GetCurve();
     if (!c || piece.kind == Piece::IDENTITY)
     {
         ++st.edges_kept;
@@ -1212,7 +1264,6 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
         return copy;
     }
     CurveInfo info = curve_info(c);
-    SmExtent1d ivl = edge->GetInterval();
     CurveFit fit;
     const Breaks tb = breaks_in(info.k, info.m, info.p, ivl.GetMin(), ivl.GetMax());
     const SmCurve* wcurve = info.weight.get();
@@ -1256,6 +1307,11 @@ SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Sta
     return out;
 }
 
+SmCurve* map_curve(SmEdge* edge, const Piece& piece, const Deformation& def, Stats& st)
+{
+    return map_curve(edge->GetCurve(), edge->GetInterval(), piece, def, st);
+}
+
 // ---------------------------------------------------------------------------
 // Whole Breps
 // ---------------------------------------------------------------------------
@@ -1286,17 +1342,24 @@ void classify(SmBrep& brep, const Deformation& def, Topology& topo)
         std::fill(topo.vertex_piece.begin(), topo.vertex_piece.end(), 0);
         return;
     }
+    if (!def.faces.empty() && def.faces.size() != topo.faces.GetSize())
+        throw std::invalid_argument("faces: one piece per face of the Brep");
     std::unordered_map<const SmFace*, int> fp;
     for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
     {
-        SmPoint3d p;
-        if (SmApiFaceInternalPoint(topo.faces[i], p) != SM_SUCCESS)
+        if (!def.faces.empty())
+            topo.face_piece[i] = def.faces[i];
+        else
         {
-            SmExtent3d box;
-            topo.faces[i]->CalculateBoundingBox(box);
-            p = box.GetMid();
+            SmPoint3d p;
+            if (SmApiFaceInternalPoint(topo.faces[i], p) != SM_SUCCESS)
+            {
+                SmExtent3d box;
+                topo.faces[i]->CalculateBoundingBox(box);
+                p = box.GetMid();
+            }
+            topo.face_piece[i] = def.piece_at(p);
         }
-        topo.face_piece[i] = def.piece_at(p);
         fp[topo.faces[i]] = topo.face_piece[i];
     }
     auto rank = [&](int i) {
@@ -1406,6 +1469,8 @@ smlibpy::DeformStats stats_of(const Stats& st)
     d.edges_kept = st.edges_kept;
     d.edges_exact = st.edges_exact;
     d.edges_approximated = st.edges_approx;
+    d.faces_analytic = st.faces_analytic;
+    d.edges_analytic = st.edges_analytic;
     d.max_error = st.max_error;
     d.max_degree = st.max_degree;
     return d;
@@ -1419,48 +1484,120 @@ double model_size(const SmBrep* brep)
     return box.GetSize().Length();
 }
 
-smlibpy::Deformed deform(const SmBrep* brep, const smlibpy::DeformSpec& spec)
+// Whether a surface is analytic (a plane, cylinder, cone, sphere, torus, ...) rather than a NURBS.
+bool is_analytic(const SmSurface* s) { return s && s->GetType() != SmBSplineSurface_TYPE; }
+
+// One attempt at the deformed Brep. With `fresh`, faces and edges whose image is new analytic
+// geometry get it (their trim curves are built again); null if that fails, and the caller tries
+// again without.
+SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
 {
-    std::unique_ptr<Deformation> def = make_deformation(spec, model_size(brep));
     SmBrep* out = new (ctx()) SmBrep(*brep, nullptr, nullptr, TRUE, FALSE);
-    Stats st;
     try
     {
         Topology topo;
-        classify(*out, *def, topo);
+        classify(*out, def, topo);
         SavedTrims trims;
         trims.save(topo.edges);
 
-        // all new geometry from the unchanged copy first
-        std::vector<SmSurface*> surfaces(topo.faces.GetSize(), nullptr);
-        std::vector<SmCurve*> curves(topo.edges.GetSize(), nullptr);
+        // all new geometry from the unchanged copy first: analytic images where they are
+        const ULONG nf = topo.faces.GetSize(), ne = topo.edges.GetSize();
+        std::vector<SmSurface*> surfaces(nf, nullptr), new_surfaces(nf, nullptr);
+        std::vector<SmCurve*> curves(ne, nullptr), new_curves(ne, nullptr);
         std::vector<SmPoint3d> points(topo.vertices.GetSize());
+        std::unordered_set<const SmFace*> analytic_faces;  // analytic when done
+        auto deforming = [&](const Piece& piece) {
+            return def.analytic && (piece.kind == Piece::VOLUME || piece.kind == Piece::LATTICE);
+        };
         try
         {
-            for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
-                surfaces[i] = map_surface(topo.faces[i], *def->pieces[topo.face_piece[i]], *def, st);
-            for (ULONG i = 0; i < topo.edges.GetSize(); ++i)
-                curves[i] = map_curve(topo.edges[i], *def->pieces[topo.edge_piece[i]], *def, st);
+            for (ULONG i = 0; i < nf; ++i)
+            {
+                const Piece& piece = *def.pieces[topo.face_piece[i]];
+                if (deforming(piece))
+                {
+                    const smlibpy::analytic::SurfaceImage image = smlibpy::analytic::surface_image(
+                        topo.faces[i], face_box(topo.faces[i]), [&piece](const SmPoint3d& q) { return piece.map(q); },
+                        piece.axes, def.exact_tol);
+                    if (image.surface && (image.same || fresh))
+                    {
+                        // new geometry goes in with its trim curves at the end; the face keeps its
+                        // surface and trims until then
+                        (image.same ? surfaces : new_surfaces)[i] = image.surface;
+                        if (is_analytic(image.surface))
+                            analytic_faces.insert(topo.faces[i]);
+                        ++st.faces_exact, ++st.faces_analytic;
+                        continue;
+                    }
+                    delete image.surface;
+                }
+                surfaces[i] = map_surface(topo.faces[i], piece, def, st);
+                if (is_analytic(surfaces[i] ? surfaces[i] : topo.faces[i]->GetSurface()))
+                    analytic_faces.insert(topo.faces[i]);
+            }
+            for (ULONG i = 0; i < ne; ++i)
+            {
+                const Piece& piece = *def.pieces[topo.edge_piece[i]];
+                if (deforming(piece) && topo.edges[i]->GetCurve())
+                {
+                    const smlibpy::analytic::CurveImage image = smlibpy::analytic::curve_image(
+                        topo.edges[i], [&piece](const SmPoint3d& q) { return piece.map(q); }, def.exact_tol);
+                    // a new curve only where all faces of the edge are analytic: on a fitted face the
+                    // old trim curve is exact, a curve dropped onto it would not be
+                    bool ok = image.curve && (image.same || fresh);
+                    if (ok && !image.same)
+                    {
+                        SmTArray<SmFace*> faces;
+                        topo.edges[i]->GetFaces(faces);
+                        ok = faces.GetSize() > 0;
+                        for (ULONG k = 0; k < faces.GetSize() && ok; ++k)
+                            ok = analytic_faces.count(faces[k]) > 0;
+                    }
+                    if (ok)
+                    {
+                        (image.same ? curves : new_curves)[i] = image.curve;
+                        ++st.edges_exact, ++st.edges_analytic;
+                        continue;
+                    }
+                    delete image.curve;
+                }
+                curves[i] = map_curve(topo.edges[i], piece, def, st);
+            }
             for (ULONG i = 0; i < topo.vertices.GetSize(); ++i)
-                points[i] = def->pieces[topo.vertex_piece[i]]->map(topo.vertices[i]->GetPoint());
+                points[i] = def.pieces[topo.vertex_piece[i]]->map(topo.vertices[i]->GetPoint());
         }
         catch (...)
         {
-            for (SmSurface* s : surfaces)
-                delete s;
-            for (SmCurve* c : curves)
-                delete c;
+            for (auto* list : {&surfaces, &new_surfaces})
+                for (SmSurface* s : *list)
+                    delete s;
+            for (auto* list : {&curves, &new_curves})
+                for (SmCurve* c : *list)
+                    delete c;
             throw;
         }
+        // the new geometry is owned here until swap_in takes it
+        struct Pending
+        {
+            std::vector<SmSurface*>& surfaces;
+            std::vector<SmCurve*>& curves;
+            ~Pending()
+            {
+                for (SmSurface* s : surfaces)
+                    delete s;
+                for (SmCurve* c : curves)
+                    delete c;
+            }
+        } pending{new_surfaces, new_curves};
 
         out->Notify(SM_NO_PRE_EDIT, out, nullptr, nullptr);
-        std::vector<SmBoolean> rect(topo.faces.GetSize());
-        for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
+        std::vector<SmBoolean> rect(nf);
+        for (ULONG i = 0; i < nf; ++i)
             rect[i] = topo.faces[i]->GetRectangularTrim();
-        for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
+        for (ULONG i = 0; i < nf; ++i)
             if (surfaces[i])
                 topo.faces[i]->SetSurface(surfaces[i], TRUE);
-        for (ULONG i = 0; i < topo.edges.GetSize(); ++i)
+        for (ULONG i = 0; i < ne; ++i)
             if (curves[i])
             {
                 SmExtent1d ivl = topo.edges[i]->GetInterval();
@@ -1473,16 +1610,230 @@ smlibpy::Deformed deform(const SmBrep* brep, const smlibpy::DeformSpec& spec)
             topo.vertices[i]->SetPoint(points[i]);
         }
         trims.restore();
-        for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
+        for (ULONG i = 0; i < nf; ++i)
             topo.faces[i]->SetIsRectangularTrim(rect[i]);
         out->Notify(SM_NO_POST_EDIT, out, nullptr, nullptr);
+
+        // the new analytic geometry, with trim curves built again
+        std::vector<std::pair<SmFace*, SmSurface*>> faces;
+        std::vector<std::pair<SmEdge*, SmCurve*>> edges;
+        for (ULONG i = 0; i < nf; ++i)
+            if (new_surfaces[i])
+                faces.emplace_back(topo.faces[i], std::exchange(new_surfaces[i], nullptr));
+        for (ULONG i = 0; i < ne; ++i)
+            if (new_curves[i])
+                edges.emplace_back(topo.edges[i], std::exchange(new_curves[i], nullptr));
+        if ((!faces.empty() || !edges.empty()) &&
+            !smlibpy::analytic::swap_in(*out, faces, edges, def.tolerance, 10.0 * def.exact_tol))
+        {
+            delete out;
+            return nullptr;
+        }
     }
     catch (...)
     {
         delete out;
         throw;
     }
+    return out;
+}
+
+smlibpy::Deformed deform(const SmBrep* brep, const smlibpy::DeformSpec& spec)
+{
+    std::unique_ptr<Deformation> def = make_deformation(spec, model_size(brep));
+    Stats st;
+    SmBrep* out = build(brep, *def, def->analytic, st);
+    if (!out)
+    {
+        // a trim curve on new analytic geometry failed: fit those faces and edges instead
+        st = Stats();
+        out = build(brep, *def, false, st);
+    }
     return {out, stats_of(st)};
+}
+
+// ---------------------------------------------------------------------------
+// Curves
+// ---------------------------------------------------------------------------
+
+// The parameters in (t0, t1) where a curve crosses the ends of the pieces along the deformation's
+// axis: sign changes of the distance to each end's plane on a dense sampling (64 points per knot
+// span of a B-spline, 512 at least), refined by bisection.
+std::vector<double> crossings(const SmCurve* c, double t0, double t1, const Deformation& def, double size)
+{
+    std::vector<double> cuts;
+    if (!def.has_axis || def.pieces.size() < 2 || !(t1 > t0))
+        return cuts;
+    std::vector<double> ends;
+    for (size_t i = 0; i + 1 < def.pieces.size(); ++i)
+        if (std::abs(def.pieces[i]->hi) < kInf)
+            ends.push_back(def.pieces[i]->hi);
+    if (ends.empty())
+        return cuts;
+    std::vector<double> ts;
+    {
+        const CurveInfo info = curve_info(c);
+        const int n = std::clamp(64 * static_cast<int>(info.k.size()), 512, 1 << 16);
+        for (int k = 0; k <= n; ++k)
+            ts.push_back(t0 + (t1 - t0) * k / n);
+    }
+    auto along = [&](double t) {
+        SmPoint3d p;
+        check(c->EvaluatePoint(t, p), "SmCurve::EvaluatePoint");
+        return (p - def.origin).Dot(def.direction);
+    };
+    std::vector<double> h(ts.size());
+    for (size_t k = 0; k < ts.size(); ++k)
+        h[k] = along(ts[k]);
+    const double eps = 1e-12 * std::max(1.0, size);
+    for (const double e : ends)
+    {
+        auto sign = [&](double x) { return x - e > eps ? 1 : (x - e < -eps ? -1 : 0); };
+        int last = 0;
+        size_t at = 0;
+        for (size_t k = 0; k < ts.size(); ++k)
+        {
+            const int sk = sign(h[k]);
+            if (sk == 0)
+                continue;
+            if (last != 0 && sk != last)
+            {
+                // a crossing between ts[at] (side `last`) and ts[k]
+                double a = ts[at], b = ts[k];
+                for (int it = 0; it < 200 && b - a > 1e-15 * std::max(1.0, std::abs(t1 - t0)); ++it)
+                {
+                    const double m = 0.5 * (a + b);
+                    if ((along(m) > e) == (last > 0))  // (the exact crossing, not the edge of the band)
+                        a = m;
+                    else
+                        b = m;
+                }
+                cuts.push_back(0.5 * (a + b));
+            }
+            last = sk, at = k;
+        }
+    }
+    std::sort(cuts.begin(), cuts.end());
+    std::vector<double> out;
+    const double gap = 1e-12 * std::max(1.0, std::abs(t1 - t0));
+    for (double t : cuts)
+        if (t - t0 > gap && t1 - t > gap && (out.empty() || t - out.back() > gap))
+            out.push_back(t);
+    return out;
+}
+
+// A curve sent through the deformation: split where it crosses the ends of the pieces, every
+// segment mapped by its piece (an analytic image where it is one, else fitted like the edges of a
+// Brep). The curves are the caller's.
+smlibpy::DeformedCurve deform_curve_impl(const SmCurve* curve, const smlibpy::DeformSpec& spec)
+{
+    if (!curve)
+        throw std::invalid_argument("deform_curve: no curve");
+    const SmExtent1d ivl = curve->GetNaturalInterval();
+    const double t0 = ivl.GetMin(), t1 = ivl.GetMax();
+    if (!(t1 > t0))
+        throw std::invalid_argument("deform_curve: the curve has no length");
+    // its size, for the tolerances
+    double size = 0.0;
+    {
+        SmPoint3d first, p;
+        check(curve->EvaluatePoint(t0, first), "SmCurve::EvaluatePoint");
+        for (int k = 1; k <= 32; ++k)
+        {
+            check(curve->EvaluatePoint(t0 + (t1 - t0) * k / 32, p), "SmCurve::EvaluatePoint");
+            size = std::max(size, first.DistanceBetween(p));
+        }
+    }
+    std::unique_ptr<Deformation> def = make_deformation(spec, std::max(size, 1.0));
+    std::vector<double> breaks{t0};
+    for (double t : crossings(curve, t0, t1, *def, size))
+        breaks.push_back(t);
+    breaks.push_back(t1);
+
+    Stats st;
+    std::vector<std::unique_ptr<SmCurve>> out;
+    for (size_t i = 0; i + 1 < breaks.size(); ++i)
+    {
+        const double a = breaks[i], b = breaks[i + 1];
+        SmPoint3d mid;
+        check(curve->EvaluatePoint(0.5 * (a + b), mid), "SmCurve::EvaluatePoint");
+        const Piece& piece = *def->pieces[def->piece_at(mid)];
+        SmCurve* raw = nullptr;
+        check(curve->Copy(ctx(), raw), "SmCurve::Copy");
+        std::unique_ptr<SmCurve> segment(raw);
+        if (breaks.size() > 2)
+        {
+            SmExtent1d part(a, b);
+            check(segment->Trim(part), "SmCurve::Trim");
+        }
+        const SmExtent1d sivl = segment->GetNaturalInterval();
+        SmCurve* mapped = nullptr;
+        if (def->analytic && (piece.kind == Piece::VOLUME || piece.kind == Piece::LATTICE))
+        {
+            const smlibpy::analytic::CurveImage image = smlibpy::analytic::curve_image(
+                segment.get(), sivl, [&piece](const SmPoint3d& q) { return piece.map(q); }, def->exact_tol);
+            if (image.curve)
+            {
+                mapped = image.curve;
+                ++st.edges_exact, ++st.edges_analytic;
+            }
+        }
+        if (!mapped)
+            mapped = map_curve(segment.get(), sivl, piece, *def, st);
+        std::unique_ptr<SmCurve> result(mapped ? mapped : segment.release());
+        // the NURBS data of analytic curves, built at once (the kernel builds it only when asked)
+        if (result->IsKindOf(SmBSplineCurve_TYPE) &&
+            !static_cast<SmBSplineCurve*>(result.get())->GetOrCreateGwNurbPointer())
+            throw std::runtime_error("deform_curve: a deformed segment has no NURBS form");
+        out.push_back(std::move(result));
+    }
+    smlibpy::DeformedCurve r;
+    r.stats = stats_of(st);
+    for (auto& c : out)
+        r.curves.push_back(c.release());
+    return r;
+}
+
+// A curve (a procedural one, such as the kernel's SmCrvInVolume) fitted over [t0, t1] keeping its
+// parameters, on the knots of `base` (the original it maps): exact where it is polynomial of the
+// original's degree, quintic splines whose spans are halved elsewhere (as the edges of a deformed
+// Brep). Null when it cannot be fitted within the tolerance.
+SmBSplineCurve* fit_keeping_impl(const SmCurve* curve, const SmCurve* base, double t0, double t1, double tolerance)
+{
+    if (!curve || !(t1 > t0) || !(tolerance > 0.0))
+        return nullptr;
+    try
+    {
+        const CurveInfo info = curve_info(base ? base : curve);
+        const SmCurve* wcurve = info.weight.get();
+        const CurveFn fn = [curve, wcurve](double t) {
+            SmPoint3d p;
+            check(curve->EvaluatePoint(t, p), "SmCurve::EvaluatePoint");
+            double w = 1.0;
+            if (wcurve)
+            {
+                SmPoint3d wp;
+                check(wcurve->EvaluatePoint(t, wp), "SmCurve::EvaluatePoint");
+                w = wp.x;
+            }
+            return hom(p, w);
+        };
+        double size = 0.0;
+        const SmPoint3d first = euclid(fn(t0));
+        for (int k = 1; k <= 16; ++k)
+            size = std::max(size, first.DistanceBetween(euclid(fn(t0 + (t1 - t0) * k / 16))));
+        const double exact_tol = std::min(1e-11 * std::max(1.0, size), 0.01 * tolerance);
+        CurveFit fit;
+        fit_approx_curve(fn, fit, breaks_in(info.k, info.m, info.p, t0, t1), info.nurbs ? info.p : 3, 0.5 * tolerance,
+                         exact_tol, 5);
+        if (!(fit.err <= 0.5 * tolerance))
+            return nullptr;
+        return build_curve(fit, fit.err <= exact_tol ? exact_tol : 0.25 * tolerance);
+    }
+    catch (const std::exception&)
+    {
+        return nullptr;
+    }
 }
 
 // The kernel's own composition (SmSrfInVolume / SmCrvInVolume, procedural and exact), for checks.
@@ -1563,6 +1914,27 @@ smlibpy::Deviation distance(const SmBrep* src, const SmBrep* dst, const smlibpy:
         const Piece& piece = *def->pieces[topo.face_piece[i]];
         const SmSurface* s0 = topo.faces[i]->GetSurface();
         const SmSurface* s1 = faces[i]->GetSurface();
+        if (s1->GetType() != SmBSplineSurface_TYPE)
+        {
+            // analytic, with parameters of its own: the distance of the exact image of points of
+            // the source face from the face
+            const SmExtent2d box = face_box(topo.faces[i]);
+            for (int a = 0; a < n; ++a)
+                for (int b = 0; b < n; ++b)
+                {
+                    SmPoint2d uv(box.GetUMin() + (a + 0.37) / n * (box.GetUMax() - box.GetUMin()),
+                                 box.GetVMin() + (b + 0.61) / n * (box.GetVMax() - box.GetVMin()));
+                    int cls = SM_PC_UNKNOWN;
+                    if (SmApiFaceClassifyUV(topo.faces[i], uv, cls) != SM_SUCCESS || cls == SM_PC_UNKNOWN)
+                        continue;
+                    SmPoint3d p0, near;
+                    double gap = 0.0;
+                    check(s0->EvaluatePoint(uv, p0), "SmSurface::EvaluatePoint");
+                    check(SmApiFaceClosestPoint(faces[i], piece.map(p0), near, gap), "SmApiFaceClosestPoint");
+                    df = std::max(df, gap);
+                }
+            continue;
+        }
         SmExtent2d box = s1->GetNaturalUVDomain();
         for (int a = 0; a < n; ++a)
             for (int b = 0; b < n; ++b)
@@ -1582,6 +1954,20 @@ smlibpy::Deviation distance(const SmBrep* src, const SmBrep* dst, const smlibpy:
         const SmCurve* c1 = edges[i]->GetCurve();
         if (!c0 || !c1)
             continue;
+        if (c1->GetType() != SmBSplineCurve_TYPE)
+        {
+            // analytic, with parameters of its own: the distance of the exact image from the curve
+            const SmExtent1d ivl0 = topo.edges[i]->GetInterval();
+            for (int a = 0; a <= n; ++a)
+            {
+                SmPoint3d p0, near;
+                double param = 0.0, gap = 0.0;
+                check(c0->EvaluatePoint(ivl0.Evaluate((a + 0.29) / (n + 1.0)), p0), "SmCurve::EvaluatePoint");
+                check(SmApiCurveClosestPoint(c1, piece.map(p0), near, param, gap), "SmApiCurveClosestPoint");
+                de = std::max(de, gap);
+            }
+            continue;
+        }
         SmExtent1d ivl = edges[i]->GetInterval();
         for (int a = 0; a <= n; ++a)
         {
@@ -1605,6 +1991,14 @@ namespace smlibpy {
 Deformed deform_brep(const SmBrep* brep, const DeformSpec& spec) { return deform(brep, spec); }
 
 SmBrep* composite_brep(const SmBrep* brep, const DeformSpec& spec) { return composite(brep, spec); }
+
+DeformedCurve deform_curve(const SmCurve* curve, const DeformSpec& spec) { return deform_curve_impl(curve, spec); }
+
+SmBSplineCurve* fit_curve_keeping_parameters(const SmCurve* curve, const SmCurve* base, double t0, double t1,
+                                             double tolerance)
+{
+    return fit_keeping_impl(curve, base, t0, t1, tolerance);
+}
 
 Deviation deviation(const SmBrep* source, const SmBrep* result, const DeformSpec& spec, int samples)
 {
@@ -1682,6 +2076,10 @@ smlibpy::DeformSpec spec_from(const py::dict& d)
         spec.has_max_exact_points = true, spec.max_exact_points = py::cast<size_t>(d["max_exact_points"]);
     if (d.contains("approx_degree"))
         spec.has_approx_degree = true, spec.approx_degree = py::cast<int>(d["approx_degree"]);
+    if (d.contains("faces") && !d["faces"].is_none())
+        spec.faces = py::cast<std::vector<int>>(d["faces"]);
+    if (d.contains("analytic"))
+        spec.has_analytic = true, spec.analytic = py::cast<bool>(d["analytic"]);
     return spec;
 }
 
@@ -1700,14 +2098,36 @@ void bind_deform(py::module_& parent)
         d["edges_kept"] = r.stats.edges_kept;
         d["edges_exact"] = r.stats.edges_exact;
         d["edges_approximated"] = r.stats.edges_approximated;
+        d["faces_analytic"] = r.stats.faces_analytic;
+        d["edges_analytic"] = r.stats.edges_analytic;
         d["max_error"] = r.stats.max_error;
         d["max_degree"] = r.stats.max_degree;
         return py::make_tuple(py::cast(r.brep, py::return_value_policy::take_ownership), d);
     }, py::arg("brep"), py::arg("spec"),
           "Send a copy of a Brep through a space deformation and convert every face and edge to NURBS "
-          "(exact where the composition is polynomial, within spec['tolerance'] elsewhere). The spec "
-          "lists pieces of kernel volume maps (identity, rigid, affine, twist, bend, lattice) along an "
-          "optional axis. Returns (brep, report).");
+          "(exact where the composition is polynomial, within spec['tolerance'] elsewhere), or to "
+          "analytic geometry where the exact image is analytic (unless spec['analytic'] is False). The "
+          "spec lists pieces of kernel volume maps (identity, rigid, affine, twist, bend, unbend, lattice) "
+          "along an optional axis, or with spec['faces'] the piece of every face. Returns (brep, report).");
+
+    m.def("deform_curve", [](const SmCurve* curve, const py::dict& spec) {
+        const smlibpy::DeformedCurve r = smlibpy::deform_curve(curve, spec_from(spec));
+        py::list curves;
+        for (SmCurve* c : r.curves)
+            curves.append(py::cast(c, py::return_value_policy::take_ownership));
+        py::dict d;
+        d["edges_kept"] = r.stats.edges_kept;
+        d["edges_exact"] = r.stats.edges_exact;
+        d["edges_approximated"] = r.stats.edges_approximated;
+        d["edges_analytic"] = r.stats.edges_analytic;
+        d["max_error"] = r.stats.max_error;
+        d["max_degree"] = r.stats.max_degree;
+        return py::make_tuple(curves, d);
+    }, py::arg("curve"), py::arg("spec"),
+          "Send a copy of a curve (over its natural interval) through a space deformation: split where it "
+          "crosses the ends of the pieces along the spec's axis, every segment an analytic image (line, "
+          "circle, moved copy) where it is one, else NURBS (exact where the composition is polynomial, within "
+          "spec['tolerance'] elsewhere). Returns (curves, report): the segments in order, the caller's.");
 
     m.def("composite_brep", [](const SmBrep* brep, const py::dict& spec) {
         return smlibpy::composite_brep(brep, spec_from(spec));

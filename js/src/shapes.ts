@@ -10,8 +10,12 @@ import {
   TOLERANCE,
   Axis,
   BoundBox,
+  ClosestPoints,
+  Continuity,
+  Curvature,
   Hit,
   Nurbs,
+  NurbsSurface,
   Location,
   Plane,
   Vector,
@@ -40,7 +44,16 @@ import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
 import { visiblePieces, wrap as _wrap } from './_face_curves.ts'
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
-import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
+import {
+  type BendOptions,
+  type TaperOptions,
+  type TwistOptions,
+  type UnrollOptions,
+  bend as _bend,
+  taper as _taper,
+  twist as _twist,
+  unroll as _unroll,
+} from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { _wallThicknesses, moveFaces as _moveFaces, offsetFaces as _offsetFaces, shellWalls } from './face_edit.ts'
 import { sweep as _sweep, swing as _swing } from './operations.ts'
@@ -54,6 +67,7 @@ import {
   type FlangeOptions,
   type FlatPattern,
   type FoldOptions,
+  type KFactor,
   type UnfoldOptions,
   bends as _bends,
   flange as _flange,
@@ -608,6 +622,22 @@ export class ShapeList<T = Shape> extends Array<T> {
     return _list(_tangentChains([...this].filter((s): s is Edge & T => s instanceof Edge))[0])
   }
 
+  /** Edges whose two faces meet at least tangentially all along them ("G1" or "G2" by
+   * `Edge.continuity`): the borders of fillets and blends. */
+  g1(): ShapeList<T> {
+    return this.filter((s) => {
+      const level = _levelOf(s)
+      return level === 'G1' || level === 'G2'
+    })
+  }
+
+  /** Edges whose two faces meet with equal curvature as well ("G2" by `Edge.continuity`): the
+   * borders of curvature-continuous blends (`fillet(..., { continuity: 'G2' })`), seams of smooth
+   * surfaces. */
+  g2(): ShapeList<T> {
+    return this.filter((s) => _levelOf(s) === 'G2')
+  }
+
   /** Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry (with
    * the corner patches where fillets meet), up to `maxRadius`. See the defeature module. */
   fillets(maxRadius: number | null = null): ShapeList<T> {
@@ -824,11 +854,23 @@ export class ShapeList<T = Shape> extends Array<T> {
 }
 
 /** The convexity of each edge, and of each corner of a sketch (null for other shapes), with one
- * kernel call for the edges of each body. */
+ * kernel call for the edges of each body. An edge whose faces meet tangentially at its middle is
+ * smooth only if they do at 5 points along it; else it takes the kind where they turn most (a
+ * crease that a fillet runs out into, a blend that is tangent only in places). */
 function _convexities(items: readonly unknown[]): (string | null)[] {
   const edges = items.filter((s): s is Edge => s instanceof Edge)
   const angles = new Map<Edge, number | null>()
   _outerAngles(edges).forEach((a, i) => angles.set(edges[i], a))
+  const tangent = edges.filter((e) => {
+    const a = angles.get(e) ?? null
+    return a !== null && _angleKind(a) === 'smooth'
+  })
+  _outerAnglesAlong(tangent, 5).forEach((along, i) => {
+    if (!along.length) return
+    let worst = along[0]
+    for (const a of along) if (Math.abs(a - 180) > Math.abs(worst - 180)) worst = a
+    if (_angleKind(worst) !== 'smooth') angles.set(tangent[i], worst)
+  })
   return items.map((s) => {
     if (s instanceof Edge) {
       const a = angles.get(s) ?? null
@@ -859,6 +901,48 @@ function _outerAngles(edges: readonly Edge[]): (number | null)[] {
     })
   }
   return out
+}
+
+/** The kernel's outer angles of each edge at `samples` points along it (`ext.edge_outer_angles`),
+ * one call per body; [] where the kernel cannot tell. */
+function _outerAnglesAlong(edges: readonly Edge[], samples: number): number[][] {
+  const out: number[][] = edges.map(() => [])
+  const bodies = new Map<_Body, number[]>()
+  edges.forEach((e, i) => {
+    if (e._e && e._owner !== null) {
+      const idx = bodies.get(e._owner)
+      if (idx) idx.push(i)
+      else bodies.set(e._owner, [i])
+    }
+  })
+  for (const [owner, idx] of bodies) {
+    const angles: number[][] = ext.edge_outer_angles(owner._brep, idx.map((i) => edges[i]._e), samples)
+    idx.forEach((i, j) => {
+      out[i] = [...angles[j]]
+    })
+  }
+  return out
+}
+
+/** The continuity level from the largest gap, angle and curvature jump between two sides. */
+function _continuityLevel(gap: number, gapTol: number, angle: number, angleTol: number, jump: number, curvature: number,
+  curvatureTol: number, length: number): string | null {
+  if (!(gap <= gapTol)) return null
+  if (!(angle <= angleTol)) return 'G0'
+  if (!(jump <= curvatureTol * curvature + 1e-3 / Math.max(length, 1e-9))) return 'G1' // (NaN: no curvature to compare)
+  return 'G2'
+}
+
+/** The continuity level of an edge between two faces, null for anything else (and where the faces
+ * cannot be evaluated at the edge). */
+function _levelOf(s: unknown): string | null {
+  if (!(s instanceof Edge) || !s._ke) return null
+  try {
+    return s.continuity().level
+  } catch (e) {
+    if (e instanceof RangeError || e instanceof KernelError) return null
+    throw e
+  }
 }
 
 /** The convexity of an edge with this outer angle (degrees): smooth within half a degree of 180,
@@ -1269,11 +1353,11 @@ export class Edge extends Shape {
   }
 
   /** "convex" for an outside corner (material angle below 180 degrees), "concave" for an inside
-   * corner, "smooth" where the faces meet tangentially (within half a degree). Taken at the middle
-   * of the edge. Edges with a single face count as convex. */
+   * corner, "smooth" where the faces meet tangentially (within half a degree) all along the edge.
+   * Taken at the middle of the edge; an edge that is tangent there but not at points along it
+   * takes the kind where its faces turn most. Edges with a single face count as convex. */
   get convexity(): string {
-    const a = _outerAngles([this])[0]
-    return a !== null ? _angleKind(a) : this._probedConvexity()
+    return _convexities([this])[0] as string
   }
 
   /** The angle between the two faces of the edge through the material, in degrees, at the middle
@@ -1286,23 +1370,36 @@ export class Edge extends Shape {
     if (fs.length !== 2) throw new RangeError('dihedralAngle: the edge does not lie between two faces')
     const p = this.center()
     const turn = new Face(this._owner, fs[0]).normalAt(p).angleTo(new Face(this._owner, fs[1]).normalAt(p))
-    return this._probedConvexity() === 'concave' ? 180 + turn : 180 - turn
+    return this._probedConvexity(0.5, 1) === 'concave' ? 180 + turn : 180 - turn
   }
 
   /** The convexity from the faces' normals and a step into face 1, for edges the kernel's outer
-   * angle does not cover (an edge of a sheet, an inner edge of a merged part). On edges that lie
-   * off their faces by more than the step (imported bodies) the step can read noise. */
-  _probedConvexity(): string {
+   * angle does not cover (an edge of a sheet, an inner edge of a merged part): at the middle, and
+   * where the faces meet tangentially there, at the point along the edge (of `samples`) where their
+   * normals differ most. On edges that lie off their faces by more than the step (imported bodies)
+   * the step can read noise. */
+  _probedConvexity(at = 0.5, samples = 5): string {
     if (!this._e) return 'convex'
     const fs: number[] = k.edge_faces(this._e)
     if (fs.length !== 2) return 'convex'
     const f1 = new Face(this._owner, fs[0])
     const f2 = new Face(this._owner, fs[1])
-    const p = this.center()
+    const p = this.pointAt(at)
     const n1 = f1.normalAt(p)
     const n2 = f2.normalAt(p)
-    if (n1.angleTo(n2) < 0.5) return 'smooth'
-    const t = this.tangentAt(0.5)
+    if (n1.angleTo(n2) < 0.5) {
+      if (samples <= 1) return 'smooth'
+      let turn = -1
+      let where = at
+      for (let i = 0; i < samples; i++) {
+        const t = (i + 0.5) / samples
+        const q = this.pointAt(t)
+        const a = f1.normalAt(q).angleTo(f2.normalAt(q))
+        if (a > turn || (a === turn && t > where)) turn = a, where = t
+      }
+      return turn < 0.5 ? 'smooth' : this._probedConvexity(where, 1)
+    }
+    const t = this.tangentAt(at)
     const eps = 1e-4 * Math.max(this.length, 1e-9)
     let into = n1.cross(t)
     // pick the in-face direction of face 1 that stays on the face
@@ -1377,11 +1474,46 @@ export class Edge extends Shape {
     return new BoundBox(lo, hi)
   }
 
+  /** Distance to a point, or to a body (see `Part.distanceTo`). */
   override distanceTo(point: VectorLike | Shape): number {
+    if (point instanceof _Body) return point.distanceTo(this)
     const p = point instanceof Vertex ? point.point : _vec(point as VectorLike)
     if (this._e) return Number(k.edge_closest_point(this._e, p.toArray())[2])
     return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
   }
+
+  /**
+   * Where on the edge the point nearest to `point` lies, as a fraction of the edge's length from
+   * its start (0) to its end (1): `edge.pointAt(edge.paramAtPoint(p))` is `edge.closestPoint(p)`
+   * (the same as `paramAt`, build123d's name).
+   */
+  paramAtPoint(point: VectorLike | Vertex): number {
+    return this.paramAt(point)
+  }
+
+  /**
+   * How the two faces of the edge meet, checked at `samples` points along it (`Continuity`): "G2"
+   * where their curvatures across the edge agree as well, "G1" where they meet tangentially (a
+   * circular fillet's border), "G0" at a crease, `null` where they leave a gap wider than the edge's
+   * tolerance.
+   *
+   * `angleTol` is the largest angle (degrees) between the faces' normals for G1; `curvatureTol` the
+   * largest difference of their curvatures across the edge for G2, relative to the larger of them
+   * (and at least `1e-3 / length`, so that nearly flat faces count as G2). RangeError for an edge
+   * that does not lie between two faces.
+   */
+  continuity(samples = 16, options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+    _opts('Edge.continuity', options)
+    const { angleTol = 0.5, curvatureTol = 0.01 } = options
+    if (!this._e) throw new RangeError('continuity: the edge does not lie between two faces (it is a free curve)')
+    if (!(Math.trunc(samples) >= 1)) throw new RangeError('continuity: samples must be at least 1')
+    const r = kernelCall('continuity', () => ext.edge_continuity(this._e, Math.trunc(samples)))
+    const level = _continuityLevel(r.gap, Math.max(Number(r.tolerance), 1e-7), r.angle, angleTol, r.jump, r.curvature,
+      curvatureTol, r.length)
+    const at = level === null ? r.gap_at : level === 'G0' ? r.angle_at : r.jump_at
+    return new Continuity(level, Number(r.gap), Number(r.angle), Number(r.jump), new Vector(at))
+  }
+
 
   /** The point of the edge nearest to `point`. */
   closestPoint(point: VectorLike | Vertex): Vector {
@@ -2392,7 +2524,9 @@ export class Wire extends Shape {
     return lastEdge.tangentAt(1)
   }
 
+  /** Distance to a point, or to a body (see `Part.distanceTo`). */
   override distanceTo(point: VectorLike | Shape): number {
+    if (point instanceof _Body) return point.distanceTo(this)
     return Math.min(...this._edges.map((e) => e.distanceTo(point)))
   }
 
@@ -2556,6 +2690,57 @@ export class Wire extends Shape {
     return [best, at]
   }
 
+  /** The point of the wire nearest to `point`. */
+  closestPoint(point: VectorLike): Vector {
+    const p = _vec(point)
+    let best: Vector | null = null
+    for (const e of this._edges) {
+      const q = e.closestPoint(p)
+      if (best === null || q.sub(p).length < best.sub(p).length) best = q
+    }
+    return best as Vector
+  }
+
+  /**
+   * How the edges of the wire meet at its joints (and where a closed wire closes) (`Continuity`):
+   * "G2" where their curvature vectors agree as well, "G1" where they meet tangentially (within
+   * `angleTol` degrees), "G0" at a corner, `null` where an edge does not start where the one before
+   * ends (within 1e-6). `curvatureTol` is relative to the larger curvature (and at least
+   * `1e-3 / length`). RangeError for a wire of one open edge, which has no joint.
+   */
+  continuity(options: { angleTol?: number; curvatureTol?: number } = {}): Continuity {
+    _opts('Wire.continuity', options)
+    const { angleTol = 0.5, curvatureTol = 0.01 } = options
+    const edges = this._edges
+    const pairs: [Edge, Edge][] = []
+    for (let i = 0; i + 1 < edges.length; i++) pairs.push([edges[i], edges[i + 1]])
+    if (this.isClosed) pairs.push([edges[edges.length - 1], edges[0]])
+    if (!pairs.length) throw new RangeError('continuity: the wire has no joints (one open edge)')
+    const worst = new Map<string, [number, Vector]>()
+    const curvatures: number[] = []
+    for (const [a, b] of pairs) {
+      const p = a.end
+      const q = b.start
+      const ka = _curvatureVector(a, 1)
+      const kb = _curvatureVector(b, 0)
+      const values: [string, number][] = [['gap', p.sub(q).length], ['angle', a.tangentAt(1).angleTo(b.tangentAt(0))],
+        ['jump', ka.sub(kb).length]]
+      for (const [key, value] of values) {
+        const w = worst.get(key)
+        if (w === undefined || value > w[0]) worst.set(key, [value, p])
+      }
+      curvatures.push(Math.max(ka.length, kb.length))
+    }
+    const gap = worst.get('gap')![0]
+    const angle = worst.get('angle')![0]
+    const jump = worst.get('jump')![0]
+    const length = this.length
+    const level = _continuityLevel(gap, Math.max(1e-6, 1e-9 * length), angle, angleTol, jump, Math.max(...curvatures),
+      curvatureTol, length)
+    const at = worst.get(level === null ? 'gap' : level === 'G0' ? 'angle' : 'jump')![1]
+    return new Continuity(level, gap, angle, jump, at)
+  }
+
   /** This wire closed with a straight line from its end to its start. */
   close(): Wire {
     if (this.isClosed) return this
@@ -2611,6 +2796,17 @@ export class Wire extends Shape {
 }
 
 /** The wire with consecutive collinear line segments joined into one. */
+/** The curvature vector of an edge at fraction `t` (towards the center of curvature, of length
+ * 1 / radius); the same in either direction along the edge. */
+function _curvatureVector(e: Edge, t: number): Vector {
+  const [, d1, d2] = ext.curve_eval(e._curve(), e._param(t), 2)
+  const a = new Vector(d1)
+  const b = new Vector(d2)
+  const s = a.length
+  if (!(s > 0)) return new Vector()
+  return a.cross(b).cross(a).div(s ** 4)
+}
+
 export function _mergedLines(wire: Wire): Wire {
   const edges = [...wire.edges()]
   if (edges.length < 2) return wire
@@ -2753,7 +2949,11 @@ export class Face extends Shape {
 
   /** Area and first moments, integrated to `ACCURACY` (see `Part.massProperties`). */
   _measure(): Any {
-    if (this._m === null) this._m = kernelCall('face area', () => ext.face_measure(this._f, ACCURACY * _MARGIN))
+    if (this._m === null) {
+      const m = kernelCall('face area', () => ext.face_measure(this._f, ACCURACY * _MARGIN))
+      if (m.exhausted && this._owner !== null) _unmeasurable(this._owner, Number(ext.face_indices(this._owner._brep, [this._f])[0]), 'face area')
+      this._m = m
+    }
     return this._m
   }
 
@@ -2830,6 +3030,19 @@ export class Face extends Shape {
     throw new RangeError(`a ${this.geomType} face has no radius`)
   }
 
+  /** Major radius of a torus: from its axis to the middle of its tube (`radius` is the tube's). */
+  get majorRadius(): number {
+    const info = this._surfaceInfo()
+    if (!('major_radius' in info)) throw new RangeError(`a ${this.geomType} face has no major radius (only a torus has)`)
+    return Number(info.major_radius)
+  }
+
+  /** Half the opening angle of a cone, in degrees: the angle between its axis and its side. */
+  get coneAngle(): number {
+    if (this.geomType !== 'cone') throw new RangeError(`a ${this.geomType} face has no cone angle`)
+    return Math.abs(Number(this._surfaceInfo().semi_angle_deg))
+  }
+
   /** Axis of a cylinder, cone, sphere, torus or surface of revolution. */
   get axis(): Axis {
     const info = this._surfaceInfo()
@@ -2843,9 +3056,127 @@ export class Face extends Shape {
     return new BoundBox(lo, hi)
   }
 
+  /** Distance to a point, or to a body (see `Part.distanceTo`). */
   override distanceTo(point: VectorLike | Shape): number {
+    if (point instanceof _Body) return point.distanceTo(this)
     const p = point instanceof Vertex ? point.point : _vec(point as VectorLike)
     return Number(k.face_closest_point(this._f, p.toArray())[1])
+  }
+
+  /** The point of the face nearest to `point` (within its boundary). */
+  closestPoint(point: VectorLike): Vector {
+    const p = point instanceof Vertex ? point.point : _vec(point)
+    return new Vector(k.face_closest_point(this._f, p.toArray())[0])
+  }
+
+  _domain(): [number, number, number, number] {
+    const [[u0, v0], [u1, v1]] = k.face_uv_domain(this._f)
+    return [Number(u0), Number(u1), Number(v0), Number(v1)]
+  }
+
+  /** The surface parameters of the face's point nearest to `point` (of a seam's two, the one on the face). */
+  _uv(point: VectorLike): [number, number] {
+    const q = this.closestPoint(point)
+    const [, uvs] = k.surface_closest_point(k.face_surface(this._f), q.toArray())
+    for (const uv of uvs as number[][]) if (k.face_classify_uv(this._f, uv[0], uv[1]) !== 'outside') return [Number(uv[0]), Number(uv[1])]
+    return [Number(uvs[0][0]), Number(uvs[0][1])]
+  }
+
+  /**
+   * The parameters `[u, v]` of the face's point nearest to `point`, as fractions (0 to 1) of the
+   * face's parameter box: `face.positionAt(...face.uvAt(p))` is `face.closestPoint(p)`.
+   */
+  uvAt(point: VectorLike): [number, number] {
+    const [u0, u1, v0, v1] = this._domain()
+    const [u, v] = this._uv(point)
+    return [u1 > u0 ? (u - u0) / (u1 - u0) : 0, v1 > v0 ? (v - v0) / (v1 - v0) : 0]
+  }
+
+  /**
+   * The point of the face's surface at `(u, v)`, fractions (0 to 1) of the face's parameter box. A
+   * trimmed face (a plate with a hole, a face cut by another) does not cover its whole box: points
+   * there lie on the surface beyond the face's boundary.
+   */
+  positionAt(u: number, v: number): Vector {
+    const [u0, u1, v0, v1] = this._domain()
+    return new Vector(k.face_point_at_uv(this._f, u0 + (u1 - u0) * u, v0 + (v1 - v0) * v))
+  }
+
+  /**
+   * The curvature of the face at its point nearest to `point` (default: a point inside the face):
+   * both principal curvatures, their directions and the outward normal (`Curvature`). Curvatures
+   * are positive where the face bends away from its outward normal (a ball, a boss), negative where
+   * it bends towards it (a bore): a cylinder of radius 5 has `k1 = 0.2, k2 = 0`, its bore
+   * `k1 = 0, k2 = -0.2`.
+   */
+  curvatureAt(point: VectorLike | null = null): Curvature {
+    const p = point == null ? this.interiorPoint() : _vec(point)
+    const [u, v] = this._uv(p)
+    const r = kernelCall('curvatureAt', () => ext.face_curvature(this._f, u, v))
+    return new Curvature(Number(r.k1), Number(r.k2), new Vector(r.d1), new Vector(r.d2), new Vector(r.normal), new Vector(r.point))
+  }
+
+  /**
+   * The smallest radius of curvature on the face, `1 / max(|k1|, |k2|)`: `Infinity` for a plane, the
+   * radius of a cylinder or sphere, the smaller of a torus' tube radius and its inner radius, at the
+   * narrow end of a cone. Free-form faces are sampled on a 24 x 24 grid of their parameters and
+   * refined from the sharpest points (singular points such as a pole are left out). Compare it with
+   * a wall thickness or a cutter radius.
+   */
+  minRadius(): number {
+    const kind = this.geomType
+    if (kind === 'plane') return Infinity
+    if (kind === 'cylinder' || kind === 'sphere') return this.radius
+    return Number(kernelCall('minRadius', () => ext.face_min_radius(this._f, 24)).radius)
+  }
+
+  /**
+   * The face's surface as a NURBS (`NurbsSurface`): degrees, knots, control points and weights.
+   * Exact for every kind (planes, cylinders, cones, spheres, tori as rational surfaces). It is the
+   * whole surface, untrimmed: the face may cover only part of it.
+   */
+  nurbs(): NurbsSurface {
+    const d = ext.surface_data(k.face_surface(this._f), true)
+    if (d.poles == null) throw new RangeError(`nurbs: the ${this.geomType} surface has no NURBS form`)
+    const du = Number(d.u_degree)
+    const dv = Number(d.v_degree)
+    const ku: number[] = Array.from(d.u_knots, Number)
+    const kv: number[] = Array.from(d.v_knots, Number)
+    const nu = ku.length - du - 1
+    const nv = kv.length - dv - 1
+    const poles: Vector[] = (d.poles as number[][]).map((p) => new Vector(p[0], p[1], p[2]))
+    if (poles.length !== nu * nv) throw new RangeError("nurbs: the surface's control net does not match its knots")
+    const points: Vector[][] = []
+    for (let i = 0; i < nu; i++) points.push(poles.slice(i * nv, (i + 1) * nv))
+    let weights: number[][] | null = null
+    if (d.weights != null) {
+      const w: number[] = Array.from(d.weights, Number)
+      weights = []
+      for (let i = 0; i < nu; i++) weights.push(w.slice(i * nv, (i + 1) * nv))
+    }
+    return new NurbsSurface([du, dv], [ku, kv], points, weights)
+  }
+
+  /**
+   * The curve of constant `u` (or constant `v`) of the face's surface, at a fraction (0 to 1) of the
+   * face's parameter box, clipped to the face: one edge per piece that lies on it (a plate with a
+   * hole in the way gives two). Exact: lines, arcs or B-splines of the surface itself. Give one of
+   * `u` and `v` (`isocurve(0.5)`, `isocurve(null, 0.5)`). The same as `iso`.
+   */
+  isocurve(u: number | null = null, v: number | null = null): ShapeList<Edge> {
+    return this._isoCurves(u, v, 'isocurve')
+  }
+
+  /** `iso` (and `isocurve`): the face's curves of constant `u` or `v`, a fraction of its parameter
+   * box, clipped to the face (`ext.face_iso_curves`). */
+  _isoCurves(u: number | null, v: number | null, what: string): ShapeList<Edge> {
+    if ((u == null) === (v == null)) throw new RangeError(`${what}: give u or v (exactly one of u and v)`)
+    const t = Number(u ?? v)
+    if (!(t >= 0 && t <= 1)) throw new RangeError(`${what}: ${u != null ? 'u' : 'v'} is a fraction of the face's range, from 0 to 1 (got ${_formatG(t)})`)
+    const [u0, u1, v0, v1] = this._domain()
+    const value = u != null ? u0 + (u1 - u0) * t : v0 + (v1 - v0) * t
+    const curves: number[] = kernelCall(what, () => ext.face_iso_curves(this._f, u != null, value))
+    return _list(curves.map((c) => Edge._fromCurve(c)))
   }
 
   /** Where a ray meets this face, nearest first (see `Part.raycast`). */
@@ -2883,16 +3214,12 @@ export class Face extends Shape {
    * fraction (0 to 1) of the face's range of that parameter. Trimmed to the face: several pieces
    * where the face has holes or notches. For styling lines, inspection curves and rails on freeform
    * faces. Which parameter runs which way depends on the surface: on a cylinder's side `v` is
-   * constant around it (`iso(null, 0.5)`: the circle half way up) and `u` along it.
+   * constant around it (`iso(null, 0.5)`: the circle half way up) and `u` along it. Exact: lines,
+   * arcs or B-splines of the surface itself, ending exactly where the face's edges cross them.
+   * `isocurve` is the same.
    */
   iso(u: number | null = null, v: number | null = null): ShapeList<Edge> {
-    if ((u == null) === (v == null)) throw new RangeError('iso: give u or v (one of them)')
-    const f = Number(u ?? v)
-    if (!(f >= 0 && f <= 1)) throw new RangeError(`iso: ${u != null ? 'u' : 'v'} is a fraction of the face's range from 0 to 1, got ${_formatG(f)}`)
-    const [[u0, v0], [u1, v1]] = k.face_uv_domain(this._f)
-    const [lo, hi] = u != null ? [u0, u1] : [v0, v1]
-    const curves: number[] = kernelCall('Face.iso', () => ext.iso_curves(this._f, u != null, lo + (hi - lo) * f, 1e-7 * Math.max(1, this.bbox().diagonal)))
-    return new ShapeList<Edge>(...curves.map((c) => Edge._fromCurve(c)))
+    return this._isoCurves(u, v, 'iso')
   }
 
   /**
@@ -3256,18 +3583,36 @@ export class _Body extends Shape {
   }
 
   /**
-   * Minimum distance to a point or to another body.
+   * Minimum distance to a point, another body, a face, an edge or a wire.
    *
    * For a point inside a part, and for a body nested in another, it is the distance to the
-   * surface (the wall clearance). Bodies that touch or overlap are 0 apart.
+   * surface (the wall clearance). Bodies that touch or overlap are 0 apart, and so are a body and
+   * a curve that touches or crosses its surface.
    */
   override distanceTo(other: VectorLike | Shape): number {
     if (other instanceof _Body) return _bodyDistance(this, other)
+    if (other instanceof Face || other instanceof Edge || other instanceof Wire) return this.closestPoints(other).distance
     if (other instanceof Shape && !(other instanceof Vertex)) {
-      throw new TypeError(`distanceTo takes a point or a body (Part, Shell, Sketch), not a ${_typeName(other)}`)
+      throw new TypeError(`distanceTo takes a point, a body, a face, an edge or a wire, not a ${_typeName(other)}`)
     }
     const p = other instanceof Vertex ? other.point : _vec(other)
     return Number(k.brep_closest_point(this._brep, p.toArray())[1])
+  }
+
+  /**
+   * The nearest points of this body and another body, a face, an edge or a wire (`ClosestPoints`):
+   * the point on this body, the point on the other, their distance and the faces they lie on. The
+   * points are exact surface points (and curve points), as for `distanceTo`; where the shapes touch
+   * or overlap, the distance is 0 and the points are one place where they meet.
+   */
+  closestPoints(other: _Body | Face | Edge | Wire): ClosestPoints {
+    if (other instanceof Face) {
+      const r = _nearestBodies(this, other.toShell())
+      return new ClosestPoints(r.point, r.otherPoint, r.distance, r.face, other)
+    }
+    if (other instanceof _Body) return _nearestBodies(this, other)
+    if (other instanceof Edge || other instanceof Wire) return _curveDistance(this, other)
+    throw new TypeError(`closestPoints takes a body, a face, an edge or a wire, not a ${_typeName(other)}`)
   }
 
   closestPoint(point: VectorLike): Vector {
@@ -3843,6 +4188,11 @@ function _dist(a: readonly number[], b: readonly number[]): number {
  * rounds.)
  */
 function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
+  return _nearestBodies(a, b, seeds, sample).distance
+}
+
+/** `_bodyDistance` with the nearest points and their faces (Python's `_body_distance(points=True)`). */
+function _nearestBodies(a: _Body, b: _Body, seeds = 6, sample = 400): ClosestPoints {
   if (k.brep_face_count(a._brep) === 0 || k.brep_face_count(b._brep) === 0) throw new RangeError('distanceTo: an empty body has no distance')
   const starts: [number, _Body, _Body, number[]][] = []
   const ab = a.bbox() // each once: the tight box costs as much as the rest
@@ -3875,19 +4225,78 @@ function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
   }
   let best = Infinity
   let unsettled = 0
+  let pair: [number[], number[], number | null, number | null] = [[0, 0, 0], [0, 0, 0], null, null] // on a, on b, faces
   const first = starts.slice().sort((u, v) => u[0] - v[0]).slice(0, 2 * seeds)
   for (const [, x, y, start] of first) {
     const r = kernelCall('distanceTo', () => ext.nearest_points(x._brep, y._brep, start))
     if (r.distance < best) {
       best = r.distance
       unsettled = r.gain
+      pair = x === a ? [r.a, r.b, r.face_a, r.face_b] : [r.b, r.a, r.face_b, r.face_a]
     }
   }
   const scale = Math.max(ab.diagonal, bb.diagonal, 1)
   if (unsettled > 1e-9 * scale) {
     _warn(`distanceTo: the nearest points did not settle; the distance ${_formatG(best)} may be too large (the last step still gained ${unsettled.toPrecision(2)})`)
   }
-  return best <= 1e-12 * scale ? 0 : best
+  const [pa, pb, fa, fb] = pair
+  return new ClosestPoints(new Vector(pa), new Vector(pb), best <= 1e-12 * scale ? 0 : best, fa ? new Face(a, fa) : null,
+    fb ? new Face(b, fb) : null)
+}
+
+/**
+ * The nearest points of a body and an edge or a wire: for each edge, the body's distance from
+ * points along the curve (by its parameter) gives starting points; from the best few,
+ * `ext.nearest_curve_points` takes closest points in turn and finishes with Newton's method on the
+ * parameters of the curve and of the face it meets, as `_bodyDistance` does for two bodies.
+ */
+function _curveDistance(body: _Body, curve: Edge | Wire, samples = 64, seeds = 4): ClosestPoints {
+  if (k.brep_face_count(body._brep) === 0) throw new RangeError('distanceTo: an empty body has no distance')
+  let best = Infinity
+  let found: Any = null
+  let unsettled = 0
+  for (const e of curve.edges()) {
+    const c = e._curve()
+    const [t0, t1] = e._range()
+    const near: [number, number][] = []
+    for (let i = 0; i <= samples; i++) {
+      const t = t0 + ((t1 - t0) * i) / samples
+      const p = new Vector(k.curve_evaluate(c, t)).toArray() as number[]
+      near.push([_dist(_closest(body, p), p), t])
+    }
+    near.sort((u, v) => u[0] - v[0] || u[1] - v[1])
+    const taken: number[] = []
+    for (const [, t] of near) {
+      if (taken.length >= seeds) break
+      if (taken.every((u) => Math.abs(t - u) > (t1 - t0) / samples)) taken.push(t)
+    }
+    for (const t of taken) {
+      const r = kernelCall('distanceTo', () => ext.nearest_curve_points(body._brep, c, t0, t1, t))
+      if (r.distance < best) {
+        best = r.distance
+        found = r
+        unsettled = r.gain
+      }
+    }
+  }
+  const scale = Math.max(body._looseBox().diagonal, curve.bbox().diagonal, 1)
+  if (unsettled > 1e-9 * scale) {
+    _warn(`distanceTo: the nearest points did not settle; the distance ${_formatG(best)} may be too large (the last step still gained ${unsettled.toPrecision(2)})`)
+  }
+  return new ClosestPoints(new Vector(found.a), new Vector(found.b), best <= 1e-12 * scale ? 0 : best,
+    found.face_a ? new Face(body, found.face_a) : null, null)
+}
+
+/** Called where the integration ran out of a face's evaluation budget (measure.cpp): throws for a
+ * face that crosses its surface's seam, which the integration cannot converge on (it ran for
+ * minutes); otherwise the result stands, not converged, and says so. */
+function _unmeasurable(body: _Body, face: number, what = 'mass properties'): void {
+  const problems: Any[] = ext.seam_problems(body._brep, false, [face])
+  const crossed = problems.filter((p) => p.crossed)
+  if (crossed.length) {
+    const why = `face ${face} of the body crosses the seam of its surface (along ${crossed[0].crossed}), so its area and volume cannot be integrated: the body is broken (isValid() is false); rebuild the step that made it, or heal() it`
+    throw new KernelError(what, why, null, why)
+  }
 }
 
 /** tessellate's default tolerance for a body (1e-3 of its box diagonal), times `scale`. */
@@ -4213,9 +4622,124 @@ export class MassProperties {
     return [new Vector(a), new Vector(b), new Vector(c)]
   }
 
+  /**
+   * The radius of gyration about each principal axis, `sqrt(moment / mass)`, in the order of
+   * `principalMoments`: the distance from the axis at which the whole mass would have the same
+   * moment of inertia.
+   */
+  get radiiOfGyration(): [number, number, number] {
+    const [a, b, c] = this.principalMoments.map((m) => Math.sqrt(Math.max(m, 0) / this.mass))
+    return [a, b, c]
+  }
+
+  /**
+   * The inertia tensor about `point` (axes parallel to the world axes): `inertia` moved by the
+   * parallel-axis theorem, `inertia + mass * (d.d * I - d d^T)` with `d` from the center of mass to
+   * the point.
+   */
+  inertiaAbout(point: VectorLike): number[][] {
+    const d = _vec(point).sub(this.center).toArray()
+    const dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+    return this.inertia.map((row, i) => row.map((x, j) => x + this.mass * ((i === j ? dd : 0) - d[i] * d[j])))
+  }
+
+  /**
+   * The moment of inertia about an axis (for example a shaft's axis or a pivot): `n^T I n` with the
+   * inertia tensor about a point of the axis and its unit direction `n`.
+   */
+  momentAbout(axis: Axis): number {
+    if (!(axis instanceof Axis)) throw new TypeError(`momentAbout takes an Axis, not a ${_typeName(axis)}`)
+    const n = axis.direction.normalized().toArray()
+    const m = this.inertiaAbout(axis.origin)
+    let s = 0
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) s += n[i] * m[i][j] * n[j]
+    return s
+  }
+
   toString(): string {
     const c = this.center
     return `MassProperties(mass=${_formatG(this.mass)}, volume=${_formatG(this.volume)}, area=${_formatG(this.area)}, center=(${_formatG(c.x)}, ${_formatG(c.y)}, ${_formatG(c.z)}))`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
+}
+
+/**
+ * Section properties of a planar region (see `Sketch.sectionProperties`): the area and the second
+ * moments of area of a profile, for beams, frames and extrusions.
+ *
+ * The moments are about the centroid, in the axes of `plane` (the sketch plane moved to the
+ * centroid): `ixx = ∫ y² dA` about its x axis, `iyy = ∫ x² dA` about its y axis and the product
+ * `ixy = ∫ x y dA`, in mm⁴.
+ */
+export class SectionProperties {
+  readonly area: number
+  readonly centroid: Vector
+  readonly plane: Plane
+  readonly ixx: number
+  readonly iyy: number
+  readonly ixy: number
+  readonly _extent: [number, number, number, number] // min x, max x, min y, max y about the centroid
+
+  constructor(area: number, plane: Plane, ixx: number, iyy: number, ixy: number, extent: [number, number, number, number]) {
+    this.area = area
+    this.centroid = plane.origin
+    this.plane = plane
+    this.ixx = ixx
+    this.iyy = iyy
+    this.ixy = ixy
+    this._extent = extent
+  }
+
+  /** The polar moment about the centroid, `ixx + iyy` (the torsion constant only of a circle or a ring). */
+  get polar(): number {
+    return this.ixx + this.iyy
+  }
+
+  /** The second moments about the principal axes through the centroid, ascending. */
+  get principalMoments(): [number, number] {
+    const m = (this.ixx + this.iyy) / 2
+    const r = Math.hypot((this.ixx - this.iyy) / 2, this.ixy)
+    return [m - r, m + r]
+  }
+
+  /** Unit directions (in world coordinates, in the plane) of the principal axes, in the order of `principalMoments`. */
+  get principalAxes(): [Vector, Vector] {
+    const [lo] = this.principalMoments
+    // an eigenvector of [[ixx, -ixy], [-ixy, iyy]] for the smaller moment, and the one across it
+    let u: [number, number]
+    if (Math.abs(this.ixy) <= 1e-300) u = this.ixx <= this.iyy ? [1, 0] : [0, 1]
+    else {
+      const a = [this.ixy, this.ixx - lo] as const // (ixx - lo) x - ixy y = 0
+      const b = [this.iyy - lo, this.ixy] as const // -ixy x + (iyy - lo) y = 0
+      u = Math.hypot(...a) >= Math.hypot(...b) ? [a[0], a[1]] : [b[0], b[1]]
+    }
+    const px = this.plane.xDir
+    const py = this.plane.yDir
+    const first = px.mul(u[0]).add(py.mul(u[1])).normalized()
+    return [first, this.plane.zDir.cross(first).normalized()]
+  }
+
+  /** `[sqrt(ixx / area), sqrt(iyy / area)]`. */
+  get radiiOfGyration(): [number, number] {
+    return [Math.sqrt(Math.max(this.ixx, 0) / this.area), Math.sqrt(Math.max(this.iyy, 0) / this.area)]
+  }
+
+  /**
+   * The elastic section moduli `[ixx / c_y, iyy / c_x]`, with `c` the distance from the centroid to
+   * the farthest fiber of the region across each axis (the smaller modulus of a section that is
+   * not symmetric).
+   */
+  get sectionModuli(): [number, number] {
+    const [x0, x1, y0, y1] = this._extent
+    return [this.ixx / Math.max(-y0, y1), this.iyy / Math.max(-x0, x1)]
+  }
+
+  toString(): string {
+    const c = this.centroid
+    return `SectionProperties(area=${_formatG(this.area)}, centroid=(${_formatG(c.x)}, ${_formatG(c.y)}, ${_formatG(c.z)}), ixx=${_formatG(this.ixx)}, iyy=${_formatG(this.iyy)}, ixy=${_formatG(this.ixy)})`
   }
 
   [inspect](): string {
@@ -4277,6 +4801,35 @@ export interface ChamferOptions {
  * takes parts or any iterables of parts.
  */
 export class Part extends _Body {
+  /** The bends `fold()` and `flange()` made, with the K-factor each was made with, as [axis origin,
+   * axis direction, inside radius, kFactor]; `unfold()` takes them (sheetmetal.ts). Kept by the
+   * operations that keep the name and color (`_like`), moved with the part. */
+  _folds: readonly (readonly [number[], number[], number, number])[] = []
+
+  override _like(brep: number): this {
+    const b = super._like(brep)
+    b._folds = this._folds
+    return b
+  }
+
+  override _transformed(m: Matrix): Shape {
+    const b = super._transformed(m) as Part
+    if (this._folds.length) {
+      const r = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]
+      const scale = Math.abs(det3(r)) ** (1 / 3)
+      b._folds = this._folds.map(([origin, direction, radius, kf]) => {
+        const o = _apply(m, new Vector(origin))
+        const d = new Vector(
+          r[0] * direction[0] + r[1] * direction[1] + r[2] * direction[2],
+          r[3] * direction[0] + r[4] * direction[1] + r[5] * direction[2],
+          r[6] * direction[0] + r[7] * direction[1] + r[8] * direction[2],
+        ).normalized()
+        return [o.toArray(), d.toArray(), radius * scale, kf] as const
+      })
+    }
+    return b
+  }
+
   // -- measures -----------------------------------------------------------------------------
   /** Area, volume and moments (density 1) to the relative `accuracy` (default `ACCURACY`),
    * integrated by smlibpy's C++ with an error estimate (src/cpp/measure.cpp). Kept with the body,
@@ -4287,6 +4840,7 @@ export class Part extends _Body {
     const cached = this._h.props
     if (cached != null && cached.accuracy <= acc) return cached
     const p = kernelCall('mass properties', () => ext.brep_measure(this._brep, acc * _MARGIN), 'is the part a closed solid?')
+    if ((p.exhausted ?? -1) >= 0) _unmeasurable(this, Number(p.exhausted))
     p.accuracy = acc
     const [vx, vy, vz] = p.field_volumes
     p.gaps = vz ? Math.max(Math.abs(vx - vz), Math.abs(vy - vz)) / Math.abs(vz) : 0
@@ -6397,6 +6951,12 @@ export class Part extends _Body {
     return _bend(this, angle, options)
   }
 
+  /** Unroll this part from around an axis (default Z) into a flat one, the layer at `radius`
+   * keeping its length; see `unroll`. */
+  unroll(options: UnrollOptions): Part {
+    return _unroll(this, options)
+  }
+
   /** Deform with a `Lattice` (same as `lattice.apply(part)`). */
   deform(lattice: { apply(part: Part, options?: Record<string, unknown>): Part }, options: Record<string, unknown> = {}): Part {
     return lattice.apply(this, options)
@@ -6582,7 +7142,7 @@ export class Part extends _Body {
   }
 
   /** The bends of this sheet metal part (see `bends`). */
-  bends(options: { kFactor?: number } = {}): Bend[] {
+  bends(options: { kFactor?: KFactor } = {}): Bend[] {
     _opts('Part.bends', options)
     return _bends(this, options)
   }
@@ -8237,6 +8797,35 @@ export class Sketch extends Shell {
     let s = 0
     for (const f of this.faces()) for (const w of f.wires()) for (const e of w.edges()) s += e.length
     return s
+  }
+
+  /**
+   * Area, centroid and second moments of area of the region (a beam's or an extrusion's profile):
+   * `ixx`, `iyy` and `ixy` about the centroid in the axes of the sketch plane, the principal
+   * moments and axes, the polar moment, the radii of gyration and the section moduli (see
+   * `SectionProperties`).
+   *
+   * Integrated as the mass properties of a thin slab of the region (to `ACCURACY` of the largest
+   * moment), less the slab's own thickness term.
+   */
+  sectionProperties(): SectionProperties {
+    if (!this.faces().length) throw new RangeError('sectionProperties: the sketch is empty')
+    const pl = this._plane
+    const local = new Plane(pl.origin, pl.xDir, pl.zDir)
+    const flat = this.moved(local.location.inverse()) // the region in the plane's axes, on z = 0
+    const box = flat.bbox()
+    const h = 0.1 * Math.max(box.diagonal, 1e-9) // a slab thin against the region, thick enough to integrate
+    const mp = flat.extrude(h).massProperties()
+    const area = mp.volume / h
+    const c = mp.center
+    const i = mp.inertia
+    const slab = (area * h ** 3) / 12 // the slab's moment about the x and y axes through its middle
+    const ixx = (i[0][0] - slab) / h
+    const iyy = (i[1][1] - slab) / h
+    const ixy = -i[0][1] / h
+    const extent: [number, number, number, number] = [box.min.x - c.x, box.max.x - c.x, box.min.y - c.y, box.max.y - c.y]
+    const centroid = local.fromLocal([c.x, c.y, 0])
+    return new SectionProperties(area, new Plane(centroid, local.xDir, local.zDir), ixx, iyy, ixy, extent)
   }
 
   // -- 2D operations ------------------------------------------------------------------------

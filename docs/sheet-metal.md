@@ -57,6 +57,42 @@ bracket = fold(blank, Axis((line_x, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(0, 0
 print(bracket.bbox().size)                                     # 60 x 30 x 40
 ```
 
+### A K-factor for each bend
+
+A part keeps the K-factor each bend was folded with (`fold`, `flange`), and `unfold`,
+`flat_pattern` and `bends` take it: a blank folded with a tight hem at K 0.33 and a large bend
+at K 0.45 unfolds to the blank again. The record goes with the part through Booleans, moves and
+`named()`; a part read from a file has none, and its bends take 0.44.
+
+```python
+blank = Box(200, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+part = fold(blank, Axis((-60, 0, 2), (0, 1, 0)), 90, radius=1, k_factor=0.33)
+part = fold(part, Axis((60, 0, 2), (0, 1, 0)), 90, radius=6, k_factor=0.45)
+print(round(flat_pattern(part).size.x, 6))                     # 200.0
+print([b.k_factor for b in part.bends()])                      # [0.33, 0.45]
+```
+
+`k_factor=` on `unfold`, `flat_pattern` and `bends` gives other ones, for every bend at once:
+
+| `k_factor=` | each bend's K-factor |
+|---|---|
+| `0.42` | the number |
+| `{1: 0.33, 6: 0.45}` | by inside radius (a radius not in the table raises `ValueError`) |
+| `[(0.5, 0.33), (3, 0.45)]` | `(r / t, k)` pairs, a shop's table: interpolated, the ends held |
+| `lambda radius, thickness, angle: ...` | a function of the bend |
+| `"din6935"` | DIN 6935: `k = 0.65 + 0.5 log10(r / t)` up to `r / t = 5` (the neutral fiber at `k t / 2`), as a K-factor `k / 2` |
+| `None` (default) | as folded, else 0.44 |
+
+```python
+table = flat_pattern(part, k_factor=[(0.5, 0.33), (3, 0.45)])  # r/t 0.5 and 3: these two bends
+print(round(table.size.x, 6), table.k_factor)                  # 200.0 None: the bends differ
+din = flat_pattern(part, k_factor="din6935")
+print([round(b.k_factor, 4) for b in din.bends])               # [0.2497, 0.4443]
+```
+
+`FlatPattern.k_factor` is the K-factor of every bend, or `None` where they differ; each `Bend`
+has its own.
+
 ## Flanges
 
 A flange extends an edge of the sheet and bends it, which is how most sheet metal parts are
@@ -111,19 +147,57 @@ for b in pattern.bends:
 flat = tray.unfold()                         # the same, in place
 ```
 
-Bending and unfolding with the same K-factor give back the same blank exactly. Parts that were
-not made with `fold` unfold too, as long as each bend is a pair of cylinder faces one
-thickness apart, for example a profile with an inside radius extruded to a channel.
+Bending and unfolding with the same K-factor give back the same blank exactly, and by default
+each bend unfolds with the K-factor it was folded with. Parts that were not made with `fold`
+unfold too (at 0.44, or the `k_factor=` given), as long as each bend is a pair of cylinder faces
+one thickness apart, for example a profile with an inside radius extruded to a channel. A plate
+bent with `Part.bend` (see [deformations](deform.md)) has such cylinders, and keeps the K-factor
+its neutral layer gives.
+
+### Rolled parts, curls and bends over 180 degrees
+
+Rolled sheet unfolds too: a ring segment (a bend with no flat sheet at all), a bend at the free
+end of a sheet (a J shape, a curled edge) and bends over 180 degrees. They unroll at the
+neutral radius `radius + k_factor * thickness`; a rolled part about the middle of its bend, the
+others with the sheet toward the fixed face in place:
+
+```python
+ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+print(ring.bends())                          # [Bend(angle=270, radius=50, thickness=2, ...)]
+print(flat_pattern(ring).size)               # 239.766 x 40 x 2: 3 pi / 2 * (50 + 0.44 * 2) long
+curl = (Cylinder(12, 40) - Cylinder(10, 50)).rotate(X, 90).translate(0, 0, 12)
+curl = curl - Box(20, 60, 20, align=(Align.MAX, Align.CENTER, Align.MAX)).translate(0, 0, 12)
+hemmed = Box(100, 40, 2, align=(Align.MAX, Align.CENTER, Align.MIN)) + curl  # a 270 degree curl
+print(round(hemmed.unfold().bbox().size.x, 4))  # 151.2708: 100 + 3 pi / 2 * (10 + 0.44 * 2)
+```
 
 The outline and the bend lines lie in the XY plane, ready for a 2D export for the cutter;
-`export_step(pattern.part, "blank.step")` writes the blank as a solid.
+`export_step(pattern.part, "blank.step")` writes the blank as a solid. The outline is made of
+lines, arcs and circles wherever the blank has them: a hole that crossed a bend comes back as
+one circle, an oblique cut across a bend as one line (the pieces of the bend zone are fitted,
+so they are recognized within 1e-6 mm and merged with their neighbours), while free shapes such
+as spline cutouts stay splines:
+
+```python
+blank = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN)) - Cylinder(4, 10).translate(20, 0, 0)
+bracket = fold(blank, Axis((20, 0, 2), (0, 1, 0)), 90, radius=2)   # the hole crosses the bend
+outline = flat_pattern(bracket).outline
+print(sorted(e.geom_type for e in outline.edges()))               # 4 lines and one circle
+```
 
 ## Limits
 
 - The bend zone must cross flat sheet only: keep a bend line at least half the bend allowance
   away from edges parallel to it, from other bends and from ribs; smlibpy raises
   `ModelingError` with the distance otherwise.
-- Bend angles go up to 180 degrees, flange angles below 180; the inside radius from 0.11 mm.
-- Holes and cutouts that cross a bend zone bend into NURBS surfaces (within 0.0001 mm).
-  Better cut them into the flat pattern's blank and bend after.
+- `fold` bends up to 180 degrees, flange angles stay below 180; the inside radius from 0.11 mm.
+  `unfold` takes bends up to below a full turn: rolled parts, curls and bends over 180 degrees.
+- A bend at a free end of the sheet, a bend over 180 degrees and a rolled part must run the full
+  width of the sheet next to them (no sheet beside the bend along its axis), and a part with more
+  than one bend needs flat sheet on at least one side of each.
+- Holes and cutouts that cross a bend zone bend into NURBS surfaces (within 0.0001 mm); their
+  edges are within 0.0000001 mm, so the flat pattern's outline gets them back as the circles and
+  lines they were. Better cut them into the flat pattern's blank and bend after. A hole wholly
+  inside a bend zone unfolds into the right flat pattern, but the unfolded part's hole walls do
+  not quite meet its faces (`is_valid()` is False; the kernel's unbend of such a wall).
 - A corner without a bend radius does not unfold.

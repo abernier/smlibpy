@@ -302,6 +302,46 @@ export class Nurbs {
     readonly weights: number[] | null;
     constructor(degree: number, knots: number[], points: Vector[], weights?: number[] | null);
 }
+export class NurbsSurface {
+    readonly degrees: [number, number];
+    readonly knots: [
+        number[],
+        number[]
+    ];
+    readonly points: Vector[][];
+    readonly weights: number[][] | null;
+    constructor(degrees: [number, number], knots: [
+        number[],
+        number[]
+    ], points: Vector[][], weights?: number[][] | null);
+}
+export class Curvature {
+    readonly k1: number;
+    readonly k2: number;
+    readonly dir1: Vector;
+    readonly dir2: Vector;
+    readonly normal: Vector;
+    readonly point: Vector;
+    constructor(k1: number, k2: number, dir1: Vector, dir2: Vector, normal: Vector, point: Vector);
+    get mean(): number;
+    get gaussian(): number;
+}
+export class Continuity {
+    readonly level: string | null;
+    readonly gap: number;
+    readonly angle: number;
+    readonly curvatureJump: number;
+    readonly point: Vector;
+    constructor(level: string | null, gap: number, angle: number, curvatureJump: number, point: Vector);
+}
+export class ClosestPoints {
+    readonly point: Vector;
+    readonly otherPoint: Vector;
+    readonly distance: number;
+    readonly face: any;
+    readonly otherFace: any;
+    constructor(point: Vector, otherPoint: Vector, distance: number, face?: any, otherFace?: any);
+}
 export class BoundBox {
     min: Vector;
     max: Vector;
@@ -551,9 +591,18 @@ export class Face extends Shape {
     get isPlanar(): boolean;
     get plane(): Plane;
     get radius(): number;
+    get majorRadius(): number;
+    get coneAngle(): number;
     get axis(): Axis;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
+    closestPoint(point: VectorLike): Vector;
+    uvAt(point: VectorLike): [number, number];
+    positionAt(u: number, v: number): Vector;
+    curvatureAt(point?: VectorLike | null): Curvature;
+    minRadius(): number;
+    nurbs(): NurbsSurface;
+    isocurve(u?: number | null, v?: number | null): ShapeList<Edge>;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
     project(curve: Edge | Wire): ShapeList<Edge>;
     iso(u?: number | null, v?: number | null): ShapeList<Edge>;
@@ -595,6 +644,24 @@ export class MassProperties {
     constructor(mass: number, volume: number, area: number, center: Vector, inertia: number[][], density: number);
     get principalMoments(): [number, number, number];
     get principalAxes(): [Vector, Vector, Vector];
+    get radiiOfGyration(): [number, number, number];
+    inertiaAbout(point: VectorLike): number[][];
+    momentAbout(axis: Axis): number;
+    toString(): string;
+}
+export class SectionProperties {
+    readonly area: number;
+    readonly centroid: Vector;
+    readonly plane: Plane;
+    readonly ixx: number;
+    readonly iyy: number;
+    readonly ixy: number;
+    constructor(area: number, plane: Plane, ixx: number, iyy: number, ixy: number, extent: [number, number, number, number]);
+    get polar(): number;
+    get principalMoments(): [number, number];
+    get principalAxes(): [Vector, Vector];
+    get radiiOfGyration(): [number, number];
+    get sectionModuli(): [number, number];
     toString(): string;
 }
 export interface FilletOptions {
@@ -662,6 +729,7 @@ export class Part extends _Body {
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
     bend(angle: number, options?: BendOptions): Part;
+    unroll(options: UnrollOptions): Part;
     deform(lattice: {
         apply(part: Part, options?: Record<string, unknown>): Part;
     }, options?: Record<string, unknown>): Part;
@@ -682,7 +750,7 @@ export class Part extends _Body {
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
     flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
     bends(options?: {
-        kFactor?: number;
+        kFactor?: KFactor;
     }): Bend[];
     unfold(options?: UnfoldOptions): Part;
     flatPattern(options?: UnfoldOptions): FlatPattern;
@@ -722,6 +790,7 @@ export class Sketch extends Shell {
     xor(...others: unknown[]): Sketch;
     center(): Vector;
     get perimeter(): number;
+    sectionProperties(): SectionProperties;
     offset(distance: number, options?: {
         corners?: string;
         round?: boolean | null;
@@ -1004,17 +1073,41 @@ export interface TwistOptions extends RangeOptions {
 }
 export function twist(shape: Part, angle: number, options?: TwistOptions): Part;
 export function twist(shape: Shell, angle: number, options?: TwistOptions): Shell;
+export function twist(shape: Edge, angle: number, options?: TwistOptions): Edge;
+export function twist(shape: Wire, angle: number, options?: TwistOptions): Wire;
+export function twist(shape: VectorLike, angle: number, options?: TwistOptions): Vector;
+export function twist(shape: readonly VectorLike[], angle: number, options?: TwistOptions): Vector[];
 export interface TaperOptions extends RangeOptions {
     axis?: Axis;
 }
 export function taper(shape: Part, scale: number, options?: TaperOptions): Part;
 export function taper(shape: Shell, scale: number, options?: TaperOptions): Shell;
+export function taper(shape: Edge, scale: number, options?: TaperOptions): Edge;
+export function taper(shape: Wire, scale: number, options?: TaperOptions): Wire;
+export function taper(shape: VectorLike, scale: number, options?: TaperOptions): Vector;
+export function taper(shape: readonly VectorLike[], scale: number, options?: TaperOptions): Vector[];
 export interface BendOptions extends RangeOptions {
     radius?: number | null;
     plane?: Plane;
 }
 export function bend(shape: Part, angle: number, options?: BendOptions): Part;
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell;
+export function bend(shape: Edge, angle: number, options?: BendOptions): Edge;
+export function bend(shape: Wire, angle: number, options?: BendOptions): Wire;
+export function bend(shape: VectorLike, angle: number, options?: BendOptions): Vector;
+export function bend(shape: readonly VectorLike[], angle: number, options?: BendOptions): Vector[];
+export interface UnrollOptions {
+    radius: number;
+    axis?: Axis;
+    start?: VectorLike | null;
+    tolerance?: number | null;
+}
+export function unroll(shape: Part, options: UnrollOptions): Part;
+export function unroll(shape: Shell, options: UnrollOptions): Shell;
+export function unroll(shape: Edge, options: UnrollOptions): Edge;
+export function unroll(shape: Wire, options: UnrollOptions): Wire;
+export function unroll(shape: VectorLike, options: UnrollOptions): Vector;
+export function unroll(shape: readonly VectorLike[], options: UnrollOptions): Vector[];
 export class Lattice {
     points: number[][][][];
     constructor(box: BoundBox | {
@@ -1039,6 +1132,18 @@ export class Lattice {
     apply(shape: Shell, options?: {
         tolerance?: number | null;
     }): Shell;
+    apply(shape: Edge, options?: {
+        tolerance?: number | null;
+    }): Edge;
+    apply(shape: Wire, options?: {
+        tolerance?: number | null;
+    }): Wire;
+    apply(shape: VectorLike, options?: {
+        tolerance?: number | null;
+    }): Vector;
+    apply(shape: readonly VectorLike[], options?: {
+        tolerance?: number | null;
+    }): Vector[];
     toString(): string;
 }
 ```
@@ -1106,6 +1211,7 @@ export function network(u: Iterable<Edge | Wire>, v: Iterable<Edge | Wire>): She
 ### Sheet metal
 
 ```ts
+export type KFactor = number | string | ((radius: number, thickness: number, angle: number) => number) | ReadonlyMap<number, number> | Readonly<Record<string, number>> | readonly (readonly [number, number])[] | null;
 export interface BendAllowanceOptions {
     radius: number;
     thickness: number;
@@ -1139,8 +1245,8 @@ export class FlatPattern {
     readonly outline: Sketch;
     readonly bends: Bend[];
     readonly thickness: number;
-    readonly kFactor: number;
-    constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number);
+    readonly kFactor: number | null;
+    constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number | null);
     get bendLines(): ShapeList<Edge>;
     get size(): Vector;
     equals(other: unknown): boolean;
@@ -1160,7 +1266,7 @@ export interface FlangeOptions {
 }
 export function flange(part: Part, edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
 export interface UnfoldOptions {
-    kFactor?: number;
+    kFactor?: KFactor;
     fixed?: Face | null;
 }
 export function unfold(part: Part, options?: UnfoldOptions): Part;

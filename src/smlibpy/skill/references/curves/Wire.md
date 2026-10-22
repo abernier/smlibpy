@@ -27,7 +27,9 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 | `length` | sum of the edge lengths |
 | `point_at(t)`, `tangent_at(t)` | at fraction `t` of the total length; `t` is clamped to 0..1; unit tangent along the travel |
 | `center()` | length-weighted mean of the edge midpoints, not the area centroid |
-| `edges()`, `vertices()`, `bbox()`, `distance_to(p)` | as usual |
+| `edges()`, `vertices()`, `bbox()`, `distance_to(p)` | as usual (`distance_to` also to a body) |
+| `closest_point(p)` | the wire's point nearest to `p` |
+| `continuity()` | how the edges meet at the joints: G0, G1, G2 with gap, angle, curvature jump (analysis/continuity) |
 | `reversed()` | same wire traversed the other way |
 | `close()` | adds a straight line from `end` to `start`; returns the same wire if already closed |
 | `plane()` | fitted plane; normal by the right-hand rule along the travel (ccw in XY: +Z, cw: -Z) |

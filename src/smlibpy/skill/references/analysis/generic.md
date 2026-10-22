@@ -85,4 +85,5 @@ print(plate.info()["faces"])                           # 14
 
 ## Related
 
-`mass_properties`, `measures`, `is_valid`, `distance_to`, `raycast`, `recipes/verification`
+`mass_properties`, `section_properties`, `measures`, `is_valid`, `distance_to`, `closest_points`,
+`curvature_at`, `continuity`, `raycast`, `recipes/verification`

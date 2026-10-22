@@ -1,4 +1,4 @@
-"""Deformations: twist, taper and bend parts, or deform them with a control lattice.
+"""Deformations: twist, taper, bend and unroll parts, or deform them with a control lattice.
 
 A deformation moves every point of space, and the whole body with it: all faces, edges and
 vertices go through the same map, so the result is again a closed solid with the same
@@ -9,21 +9,34 @@ faces, edges and vertices::
     bar = Box(20, 20, 100).twist(90)                 # a quarter turn over its length
     grip = Cylinder(12, 80).taper(0.7)               # 70 % of the diameter at the top
     hook = Box(160, 10, 6).bend(180, radius=25)      # U shape with straight legs
+    ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+    strip = ring.unroll(radius=51)                   # the three quarter ring, flat (51 * 3 pi / 2 long)
     block = Box(60, 40, 20)
     lat = Lattice(block, 3)                          # 3 x 3 x 3 control points around it
     lat.move((1, 1, -1), (0, 0, 8))                  # lift the middle of the top
     pillow = lat.apply(block)
 
-The results are NURBS. Lattices and tapers are polynomial maps of space, so their results
-are exact: every face is the exact image of the original (up to degree ``MAX_DEGREE``).
-Twists and bends turn space with sines and cosines, which no NURBS reproduces; their faces
-are within ``tolerance`` (default 1e-6 mm) of the exact image, except where that image is
-still polynomial (the straight rulings of a twisted face, the turned ends of a twisted bar),
-which stays exact. Every face keeps the parameterization of the original, so the trim
-curves are the original ones.
+Edges, wires and points deform the same way: an edge comes back as an edge, a wire as a wire
+(a straight path bent in its middle: a line, an exact arc and a line), a point as the point the
+map moves it to::
+
+    rail = bend(Line((-50, 0, 0), (50, 0, 0)), 90, radius=10)   # one edge: line, arc, line joined
+    path = bend(Wire([Line((-50, 0, 0), (50, 0, 0))]), 90, radius=10)  # three edges
+    tip = twist((10, 0, 100), 90, start=0, end=100)          # where the twist moves a point
+
+Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result
+has that geometry: a plate bent about an axis gets exact cylinders (so ``bends()``, ``unfold``
+and selections such as ``faces().cylinders()`` see them), a tapered cylinder an exact cone, the
+turned ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves
+in place keep what they were. The other faces are NURBS. Lattices and tapers are polynomial
+maps of space, so their results are exact: every face is the exact image of the original (up
+to degree ``MAX_DEGREE``). Twists, bends and unrolls turn space with sines and cosines; a NURBS
+reproduces that where the image is analytic or still polynomial (the straight rulings of a
+twisted face) and is within ``tolerance`` (default 1e-6 mm) of the exact image elsewhere. Fitted
+faces keep the parameterization of the original, so their trim curves are the original ones.
 
 The maps are the kernel's volume deformations (``SmTwistVolume``, ``SmBendVolume``,
-``SmTransform``) and a Bezier volume for lattices and tapers.
+``SmUnbendVolume``, ``SmTransform``) and a Bezier volume for lattices and tapers.
 """
 
 from __future__ import annotations
@@ -37,7 +50,7 @@ import numpy as np
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, VectorLike, X, Y, Z, _vec
 
-__all__ = ["twist", "taper", "bend", "Lattice", "MAX_DEGREE"]
+__all__ = ["twist", "taper", "bend", "unroll", "Lattice", "MAX_DEGREE"]
 
 #: Highest degree of an exact result. A face whose exact image would need a higher degree
 #: (a sphere in a 4 x 4 x 4 lattice needs 18) is approximated within the tolerance instead.
@@ -53,14 +66,67 @@ def _bodies() -> tuple[Any, Any, Any]:
     return Part, Shell, Sketch
 
 
-def _check_shape(shape: Any, what: str) -> None:
+def _curves() -> tuple[Any, Any]:
+    from .shapes import Edge, Wire
+
+    return Edge, Wire
+
+
+class _Points:
+    """Points sent through a deformation: an ``(n, 3)`` array; ``one`` when a single point was
+    given (the result is then one Vector). ``bbox`` and ``_transformed`` as shapes have them."""
+
+    __slots__ = ("p", "one")
+
+    def __init__(self, p: np.ndarray, one: bool):
+        self.p, self.one = p, one
+
+    def bbox(self) -> BoundBox:
+        return BoundBox(tuple(self.p.min(axis=0)), tuple(self.p.max(axis=0)))
+
+    def _transformed(self, m: np.ndarray) -> _Points:
+        return _Points(self.p @ m[:3, :3].T + m[:3, 3], self.one)
+
+
+def _number(x: Any) -> bool:
+    return isinstance(x, (int, float, np.floating, np.integer)) and not isinstance(x, bool)
+
+
+def _as_points(shape: Any) -> _Points | None:
+    """A point (a Vector, or 2 or 3 numbers) or a list of them as points; None for anything else."""
+    if isinstance(shape, Vector):
+        return _Points(np.array([shape.to_tuple()], dtype=float), True)
+    if not isinstance(shape, (list, tuple, np.ndarray)) or len(shape) == 0:
+        return None
+    try:
+        if all(_number(x) for x in shape):
+            pts, one = np.array([_vec(shape).to_tuple()], dtype=float), True
+        else:
+            pts, one = np.array([_vec(x).to_tuple() for x in shape], dtype=float), False
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("points must have finite coordinates")
+    return _Points(pts, one)
+
+
+def _check_shape(shape: Any, what: str) -> Any:
+    """The shape a deformation works on: a Part or Shell (checked), an Edge or a Wire, or points
+    (as ``_Points``)."""
     Part, Shell, _ = _bodies()
+    Edge, Wire = _curves()
+    if isinstance(shape, (Edge, Wire)):
+        return shape
     if not isinstance(shape, (Part, Shell)):
-        raise TypeError(f"{what}: expected a Part or a Shell, got {type(shape).__name__}")
+        pts = _as_points(shape)
+        if pts is None:
+            raise TypeError(f"{what}: expected a Part, a Shell, an Edge, a Wire or points, got {type(shape).__name__}")
+        return pts
     if isinstance(shape, Part):
         shape._require_valid(what)
     elif shape._brep.face_count() == 0:
         raise ModelingError(f"{what}: the shape is empty")
+    return shape
 
 
 def _tolerance(tolerance: float | None) -> float:
@@ -96,8 +162,48 @@ def _perpendicular(d: np.ndarray) -> np.ndarray:
     return p / np.linalg.norm(p)
 
 
+def _curve_extent(shape: Any, origin: np.ndarray, d: np.ndarray) -> tuple[float, float]:
+    """The range of ``(p - origin) . d`` over the edges of an Edge or Wire: the extremes of 64
+    samples per edge, refined by golden-section search (a box of samples would be too small)."""
+    lo, hi = math.inf, -math.inf
+    g = (math.sqrt(5.0) - 1.0) / 2.0
+    for e in shape.edges():
+        c = e._curve()
+        t0, t1 = e._range()
+
+        def h(t: float) -> float:
+            return float(np.dot(np.array(c.evaluate(t), dtype=float) - origin, d))
+
+        n = 64
+        ts = [t0 + (t1 - t0) * i / n for i in range(n + 1)]
+        hs = [h(t) for t in ts]
+        for sign in (1.0, -1.0):
+            i = max(range(n + 1), key=lambda j: sign * hs[j])
+            a, b = ts[max(i - 1, 0)], ts[min(i + 1, n)]
+            best = sign * hs[i]
+            x1, x2 = b - g * (b - a), a + g * (b - a)
+            f1, f2 = sign * h(x1), sign * h(x2)
+            for _ in range(60):
+                if f1 > f2:
+                    b, x2, f2 = x2, x1, f1
+                    x1 = b - g * (b - a)
+                    f1 = sign * h(x1)
+                else:
+                    a, x1, f1 = x1, x2, f2
+                    x2 = a + g * (b - a)
+                    f2 = sign * h(x2)
+            best = max(best, f1, f2)
+            if sign > 0:
+                hi = max(hi, best)
+            else:
+                lo = min(lo, -best)
+    return lo, hi
+
+
 def _extent(shape: Any, origin: np.ndarray, d: np.ndarray) -> tuple[float, float]:
     """The range of ``(p - origin) . d`` over the shape (tight box in a frame along ``d``)."""
+    if isinstance(shape, _curves()):
+        return _curve_extent(shape, origin, d)
     for i in range(3):  # a world axis: the tight box directly
         if abs(abs(d[i]) - 1.0) < 1e-12:
             b = shape.bbox()
@@ -145,11 +251,13 @@ def _imprint(shape: Any, origin: np.ndarray, normal: np.ndarray) -> Any:
 @dataclass
 class _Plan:
     """What a deformation does: the shape to send (the ends of the range split into its
-    faces), the spec of the kernel map, and the bounds of the volume ratio."""
+    faces), the spec of the kernel map, the bounds of the volume ratio and, for a bend, the
+    record a sheet metal bend keeps (axis origin and direction, inside radius, K-factor)."""
 
     shape: Any
     spec: dict
     volume_ratio: tuple[float, float]
+    fold: tuple | None = None
 
 
 def _layout(shape: Any, origin: np.ndarray, d: np.ndarray, s: float, e: float, lo: float, hi: float,
@@ -158,9 +266,10 @@ def _layout(shape: Any, origin: np.ndarray, d: np.ndarray, s: float, e: float, l
     unchanged before ``s``, ``inside`` from ``s`` to ``e``, ``after`` beyond."""
     eps = 1e-7 * max(1.0, hi - lo)
     cut_start, cut_end = s > lo + eps, e < hi - eps
-    if cut_start:
+    body = isinstance(shape, _bodies()[:2])  # curves are split by the C++, points mapped one by one
+    if cut_start and body:
         shape = _imprint(shape, origin + s * d, d)
-    if cut_end:
+    if cut_end and body:
         shape = _imprint(shape, origin + e * d, d)
     if not cut_start and not cut_end:
         return shape, {"axis": None, "pieces": [inside], "tolerance": tol}
@@ -176,8 +285,13 @@ def _range(shape: Any, origin: np.ndarray, d: np.ndarray, start: float | None, e
     if not (math.isfinite(s) and math.isfinite(e)):
         raise ValueError(f"{what}: start and end must be finite numbers")
     if not e > s:
+        if isinstance(shape, _Points) and (start is None or end is None):
+            raise ValueError(f"{what}: give start and end for points (the range of the part they belong to); "
+                             "points have no length along the axis to take it from")
         raise ValueError(f"{what}: end ({e:g}) must lie beyond start ({s:g})")
     if e <= lo or s >= hi:
+        if isinstance(shape, _Points):  # points before or beyond the range move with the map there
+            return s, e, lo, hi
         raise ModelingError(f"{what}: the range {s:g} to {e:g} does not reach the part, which spans {lo:g} to {hi:g} "
                             "(distances along the axis from its origin)")
     return s, e, lo, hi
@@ -185,6 +299,10 @@ def _range(shape: Any, origin: np.ndarray, d: np.ndarray, start: float | None, e
 
 def _run(plan: _Plan, what: str, source: Any) -> Any:
     """Send the shape through the map; check and return the result."""
+    if isinstance(plan.shape, _Points):
+        return _run_points(plan)
+    if isinstance(plan.shape, _curves()):
+        return _run_curves(plan, what)
     Part, Shell, Sketch = _bodies()
     spec = dict(plan.spec)
     spec.setdefault("max_degree", MAX_DEGREE)
@@ -213,6 +331,41 @@ def _run(plan: _Plan, what: str, source: Any) -> Any:
             raise ModelingError(f"{what}: the result is not a valid solid ({problem}); the deformation "
                                 "probably folds the part onto itself: deform less")
     return result
+
+
+def _run_points(plan: _Plan) -> Any:
+    """Points through the map: a Vector for one point, a list of Vectors for several."""
+    out = [Vector(*q) for q in k.deform.map_points(plan.spec, plan.shape.p.tolist())]
+    return out[0] if plan.shape.one else out
+
+
+def _run_curves(plan: _Plan, what: str) -> Any:
+    """An Edge or Wire through the map. Every edge is split where it crosses the ends of the
+    range; the segments are lines and arcs where their image is one, else exact or fitted
+    B-splines. An Edge comes back as one edge (the segments joined), a Wire with every segment
+    an edge of its own."""
+    Edge, Wire = _curves()
+    shape = plan.shape
+    spec = dict(plan.spec)
+    spec.setdefault("max_degree", MAX_DEGREE)
+    segments: list[Edge] = []
+    for e in shape.edges():
+        c = e._copy_curve()
+        try:
+            with kernel_call(what, "deform less, or use a larger tolerance"):
+                curves, report = k.deform.deform_curve(c, spec)
+        finally:
+            ext.delete_curve(c)
+        segments += [Edge._from_curve(x) for x in curves]  # (owned from here on)
+        if report["edges_approximated"] and report["max_error"] > 2 * spec["tolerance"]:
+            raise ModelingError(f"{what}: could not follow the deformation within the tolerance (off by "
+                                f"{report['max_error']:.2g} mm); use a larger tolerance or deform less")
+    if isinstance(shape, Wire):
+        return Wire._raw(segments)
+    if len(segments) == 1:
+        return segments[0]
+    with kernel_call(what, "deform the edge as a Wire([edge]) to keep its pieces as edges of their own"):
+        return Edge._from_curve(ext.join_curves([s._curve() for s in segments]))
 
 
 def _volume_problem(source: Any, volume: float, ratio: tuple[float, float]) -> str | None:
@@ -250,7 +403,7 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
     at ``end``.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         angle: the turn in degrees between ``start`` and ``end``, counterclockwise seen from
             the tip of ``axis`` (right-hand rule, like ``rotate``). May exceed 360.
         axis: the line to twist about (default the world Z axis through the origin).
@@ -260,9 +413,12 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
             the axis. What lies beyond ``end`` is turned by the whole ``angle``.
         tolerance: largest distance of the twisted faces from the exact twist (mm).
 
-    Returns a Part (a Shell for a shell). The volume does not change.
+    Returns a Part (a Shell for a shell). The volume does not change. An Edge gives an Edge, a
+    Wire a Wire (see :func:`bend`), a point a Vector, a list of points a list of Vectors; for
+    points, give ``start`` and ``end`` (the range of the part they belong to), since a point has
+    no length along the axis.
     """
-    _check_shape(shape, "twist")
+    shape = _check_shape(shape, "twist")
     a = _angle(angle, "twist")
     plan = _plan_twist(shape, a, axis, start, end, _tolerance(tolerance))
     return _run(plan, "twist", shape)
@@ -299,7 +455,7 @@ def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = Non
     ``start`` to ``scale`` at ``end``.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         scale: size of the cross-section at ``end`` relative to ``start`` (> 0): 0.5 halves
             it, 2 doubles it. Lines along the axis stay straight.
         axis: the line the cross-sections shrink toward (default the world Z axis).
@@ -309,9 +465,10 @@ def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = Non
             ends. What lies beyond ``end`` is scaled by ``scale`` across the axis.
         tolerance: only for faces whose exact image would exceed ``MAX_DEGREE`` (mm).
 
-    The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid.
+    The result is exact: a cylinder becomes a cone, a box a frustum of a pyramid. Edges, wires
+    and points give edges, wires and points (see :func:`twist`).
     """
-    _check_shape(shape, "taper")
+    shape = _check_shape(shape, "taper")
     if isinstance(scale, bool) or not isinstance(scale, (int, float, np.floating, np.integer)):
         raise TypeError("taper: scale must be a number")
     f = float(scale)
@@ -338,6 +495,9 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
         s = lo if start is None else float(start)
         e = hi if end is None else float(end)
         if not e > s:
+            if isinstance(shape, _Points) and (start is None or end is None):
+                raise ValueError("bend: give radius, or start and end, for points (points have no length along "
+                                 "x_dir to take them from)")
             raise ValueError(f"bend: end ({e:g}) must lie beyond start ({s:g}) along the plane's x_dir")
         r = (e - s) / phi
     else:
@@ -358,7 +518,7 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
                                  f"need {length:g}; give only two of radius, start and end")
     if not (math.isfinite(s) and math.isfinite(e)):
         raise ValueError("bend: start and end must be finite numbers")
-    if e <= lo or s >= hi:
+    if (e <= lo or s >= hi) and not isinstance(shape, _Points):
         raise ModelingError(f"bend: the bend ({s:g} to {e:g} along x_dir from the plane origin) does not reach "
                             f"the part, which spans {lo:g} to {hi:g}")
     sigma = 1.0 if angle > 0 else -1.0
@@ -377,7 +537,13 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
     after = {"kind": "rigid", "matrix": _matrix(rot, t - rot @ ((e - s) * xd))}
     work, spec = _layout(shape, o, xd, s, e, lo, hi, inside, after, tol)
     # a layer at distance y (toward the axis) changes its length by (r - y) / r
-    return _Plan(work, spec, (min(1.0, (r - inner) / r), max(1.0, (r + outer) / r)))
+    ratio = (min(1.0, (r - inner) / r), max(1.0, (r + outer) / r))
+    # as a sheet: inside radius r - inner, thickness inner + outer, the neutral layer at r
+    thickness = inner + outer
+    fold = None
+    if thickness > 0 and inner >= 0:
+        fold = (tuple(map(float, center)), tuple(map(float, sigma * zd)), float(r - inner), float(inner / thickness))
+    return _Plan(work, spec, ratio, fold)
 
 
 def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane = Plane.XZ,
@@ -392,7 +558,7 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     bends up (toward +Z) about an axis parallel to Y.
 
     Args:
-        shape: a Part (or a Shell).
+        shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
         angle: how far the part turns, in degrees (positive: toward ``plane.y_dir``),
             less than 360.
         radius: the bend radius of the neutral layer. With ``radius`` and no ``start`` or
@@ -407,9 +573,19 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
         tolerance: largest distance of the bent faces from the exact bend (mm).
 
     The bend axis lies ``radius`` from the neutral layer on the side the part bends toward;
-    the part must not reach it.
+    the part must not reach it. Plane faces across the bend become exact cylinders about the
+    bend axis (and lines across it circles), so a bent plate is a sheet metal part to
+    :func:`smlibpy.bends` and :func:`smlibpy.unfold`; the K-factor its neutral layer gives
+    (where it lies in the thickness) is kept with it. For sheet metal, :func:`smlibpy.fold`
+    bends at a line with an inside radius and a K-factor, with flat legs on both sides.
+
+    Edges and wires bend too, into paths for sweeps: every edge is split where it crosses
+    ``start`` and ``end``, a line across the bend becomes an exact arc, and lines before and
+    after it stay lines. A Wire comes back with every piece an edge of its own (a straight path
+    bent in its middle: line, arc, line), an Edge as one edge (the pieces joined into one
+    B-spline; pass ``Wire([edge])`` to keep them apart). Points give points (see :func:`twist`).
     """
-    _check_shape(shape, "bend")
+    shape = _check_shape(shape, "bend")
     a = _angle(angle, "bend")
     if abs(a) >= 360:
         raise ValueError("bend: angle must be less than 360 degrees (a full turn would make the part touch "
@@ -422,7 +598,137 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     if not isinstance(plane, Plane):
         raise TypeError("bend: plane must be a Plane (x_dir along the part, y_dir toward the inside of the bend)")
     plan = _plan_bend(shape, a, radius, plane, start, end, _tolerance(tolerance))
-    return _run(plan, "bend", shape)
+    result = _run(plan, "bend", shape)
+    Part, _, _ = _bodies()
+    if isinstance(result, Part) and plan.fold is not None:
+        result._folds = (*result._folds, plan.fold)
+    return result
+
+
+# =============================================================================
+# unroll
+# =============================================================================
+def _samples(shape: Any) -> np.ndarray:
+    """Points on a shape: its vertices, points along its edges and a grid inside its faces (the
+    points themselves for points)."""
+    if isinstance(shape, _Points):
+        return shape.p
+    pts = [v.point.to_tuple() for v in shape.vertices()]
+    curve = isinstance(shape, _curves())
+    n = 32 if curve else 8
+    for e in shape.edges():
+        pts += [e.point_at(i / n).to_tuple() for i in range(n + 1)]
+    fractions = (0.05, 0.25, 0.5, 0.75, 0.95)
+    for f in [] if curve else shape.faces():
+        (u0, v0), (u1, v1) = f._f.uv_domain()
+        for a in fractions:
+            for b in fractions:
+                u, v = u0 + a * (u1 - u0), v0 + b * (v1 - v0)
+                if f._f.classify_uv(u, v) != "outside":
+                    pts.append(f._f.point_at_uv(u, v))
+    return np.array(pts, dtype=float)
+
+
+def _reaches_half_plane(shape: Any, o: np.ndarray, d: np.ndarray, toward: np.ndarray, reach: float,
+                        along: tuple[float, float]) -> bool:
+    """Whether the shape touches the half-plane from the axis (``o``, ``d``) toward ``toward``,
+    within ``reach`` of the axis and ``along`` it."""
+    from .sketches import Rectangle
+
+    if isinstance(shape, _Points):  # on the half-plane: across it within 1e-9, on its side of the axis
+        rel = shape.p - o
+        radial = rel - np.outer(rel @ d, d)
+        tol = 1e-9 * max(1.0, reach)
+        return bool(np.any((np.abs(radial @ np.cross(toward, d)) <= tol) & (radial @ toward >= -tol)))
+    h0, h1 = along[0] - 1.0, along[1] + 1.0
+    center = o + toward * (reach / 2) + d * ((h0 + h1) / 2)
+    half = Rectangle(reach, h1 - h0).on(Plane(tuple(center), tuple(toward), tuple(np.cross(toward, d))))
+    return shape.distance_to(half) <= 1e-9 * max(1.0, reach)
+
+
+def _plan_unroll(shape: Any, radius: float, axis: Axis, start: VectorLike | None, tol: float) -> _Plan:
+    o = np.array(axis.origin.to_tuple(), dtype=float)
+    d = _unit(axis.direction, "unroll: axis")
+    x0 = _perpendicular(d)
+    y0 = np.cross(d, x0)
+    rel = _samples(shape) - o
+    radial = rel - np.outer(rel @ d, d)
+    r = np.linalg.norm(radial, axis=1)
+    size = max(shape.bbox().diagonal, 1.0)
+    if r.min() <= max(0.01, 1e-6 * size):
+        raise ModelingError("unroll: the part reaches the axis; it can only unroll what lies around it (move the axis, "
+                            "or cut the part off the axis)")
+    angles = np.arctan2(radial @ y0, radial @ x0)
+    reach = 2.0 * float(r.max()) + 1.0
+    along = (float((rel @ d).min()), float((rel @ d).max()))
+    if start is None:
+        # the cut (opposite the middle of the part) in a gap between the samples' angles that
+        # the part does not reach: the widest such gap (a slit's edges are samples)
+        a = np.sort(np.mod(angles, 2 * math.pi))
+        gaps = np.diff(np.append(a, a[0] + 2 * math.pi))
+        mid = None
+        for i in np.argsort(-gaps)[:64]:
+            if not gaps[i] > 1e-9:
+                break
+            cut = a[i] + gaps[i] / 2
+            toward = math.cos(cut) * x0 + math.sin(cut) * y0
+            if not _reaches_half_plane(shape, o, d, toward, reach, along):
+                mid = -toward
+                break
+        if mid is None:
+            raise ModelingError("unroll: the part goes all the way around the axis; cut it open (a slit along the "
+                                "axis) so that it covers less than a full turn")
+    else:
+        s = np.array(_vec(start).to_tuple(), dtype=float)
+        s = s - d * s.dot(d)
+        if not np.linalg.norm(s) > 1e-9:
+            raise ValueError("unroll: start must be a direction across the axis (perpendicular to it)")
+        mid = s / np.linalg.norm(s)
+        if _reaches_half_plane(shape, o, d, -mid, reach, along):
+            raise ModelingError("unroll: the part reaches the line opposite start (half a turn from it), where the "
+                                "unrolled part would tear; leave start out (the middle of the part) or turn it")
+    spec = {"axis": None, "pieces": [{"kind": "unbend", "center": list(map(float, o)), "axis": list(map(float, d)),
+                                      "mid": list(map(float, mid)), "neutral": float(radius)}], "tolerance": tol}
+    # a layer at distance r from the axis changes its length by radius / r
+    return _Plan(shape, spec, (min(1.0, radius / float(r.max())), max(1.0, radius / float(r.min()))))
+
+
+def unroll(shape: Any, *, radius: float, axis: Axis = Z, start: VectorLike | None = None,
+           tolerance: float | None = None) -> Any:
+    """Unroll a part wrapped around an axis into a flat one: the inverse of :func:`bend`.
+
+    A point at distance ``r`` from the axis and at the angle ``a`` (radians) about it from
+    ``start`` goes to distance ``r`` from the axis along ``start`` and ``radius * a`` across:
+    the layer at ``radius`` (the neutral layer) keeps its length, material inside it gets
+    longer and outside it shorter. A rolled sheet (a ring segment of inside radius ``R`` and
+    thickness ``t``) unrolls into a flat plate; as sheet metal, with ``radius = R + k_factor * t``
+    (:func:`smlibpy.unfold` does that, also for rolled parts). Cylinders about the axis become
+    planes, circles about it lines; the faces are exact where their image is a plane, cone,
+    cylinder, line or circle, and within ``tolerance`` elsewhere.
+
+    Args:
+        shape: a Part (or a Shell), an Edge, a Wire or points around the axis: it must not
+            reach the axis and must cover less than a full turn about it.
+        radius: the radius of the neutral layer (mm, > 0).
+        axis: the axis the part is rolled about (default the world Z axis).
+        start: a direction across the axis: the line (at every distance from the axis) that
+            stays in place; the unrolled part lies in the plane through it perpendicular to
+            ``start``. Default: the middle of the part's angle about the axis. The part must
+            not reach the half-plane opposite it.
+        tolerance: largest distance of fitted faces from the exact unroll (mm).
+
+    Returns a Part (a Shell for a shell); an Edge, a Wire or points give an Edge, a Wire or
+    points (a helix about the axis unrolls at its own radius into a straight line).
+    """
+    shape = _check_shape(shape, "unroll")
+    if isinstance(radius, bool) or not isinstance(radius, (int, float, np.floating, np.integer)):
+        raise TypeError("unroll: radius must be a number")
+    if not (math.isfinite(radius) and radius > 0):
+        raise ValueError("unroll: radius must be a positive number (the radius of the layer that keeps its length)")
+    if not isinstance(axis, Axis):
+        raise TypeError("unroll: axis must be an Axis")
+    plan = _plan_unroll(shape, float(radius), axis, start, _tolerance(tolerance))
+    return _run(plan, "unroll", shape)
 
 
 # =============================================================================
@@ -454,8 +760,10 @@ class Lattice:
     Args:
         box: a BoundBox, or a shape whose bounding box is used.
         counts: points per direction, one int or three, 2 to 12. 2 moves the corners only (a
-            trilinear map), 3 adds the midpoints (default), more give finer control. The
-            degree of the exact result grows with the counts (see ``MAX_DEGREE``).
+            trilinear map), 3 adds the midpoints (default). Every point pulls the whole box
+            (Bernstein weights); more points concentrate a point's pull nearer to it without
+            confining it. The degree of the exact result grows with the counts (see
+            ``MAX_DEGREE``).
         margin: grow the box by this much on every side (mm).
     """
 
@@ -585,11 +893,14 @@ class Lattice:
 
         The result is exact unless a face's image needs a degree above ``MAX_DEGREE``; such
         faces are within ``tolerance``. Raises ``ModelingError`` when the lattice folds the
-        part onto itself (a point moved past its neighbours).
+        part onto itself (a point moved past its neighbours). An Edge or a Wire gives an Edge
+        or a Wire (exact B-splines; lines and arcs the map only moves stay lines and arcs),
+        points give points (as :meth:`map`); curves and points are not checked for folding.
         """
-        _check_shape(shape, "lattice")
+        shape = _check_shape(shape, "lattice")
         plan = self._plan(shape, _tolerance(tolerance))
-        _check_folding(shape, plan.spec["pieces"][0])
+        if isinstance(shape, _bodies()[:2]):
+            _check_folding(shape, plan.spec["pieces"][0])
         return _run(plan, "lattice", shape)
 
     def __repr__(self) -> str:
@@ -624,5 +935,4 @@ def _check_folding(shape: Any, piece: dict) -> None:
     if np.any(det <= 1e-6):
         w = p[int(np.argmin(det))]
         raise ModelingError(f"lattice: the lattice folds the part onto itself near ({w[0]:.4g}, {w[1]:.4g}, {w[2]:.4g}); "
-                            "a point was moved past its neighbours. Move the points less, or use more points for "
-                            "local changes")
+                            "a point was moved past its neighbours. Move the points less")

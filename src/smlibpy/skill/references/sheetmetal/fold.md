@@ -35,7 +35,8 @@ Bend faces are cylinders of exactly R and R + t; the end edges circles, all othe
 - `fixed` decides which side moves, not the direction: the direction comes from the angle sign
   and the face of the line.
 - The volume grows with the K-factor below 0.5 (8015.0797 for the plate above); that is right.
-- Holes in the bend zone bend into NURBS (within 1e-4); see `sheetmetal/generic`.
+- Holes in the bend zone bend into NURBS (faces within 1e-4, their edges within 1e-7: the flat
+  pattern gets a hole across a bend back as one circle); see `sheetmetal/generic`.
 
 ## Errors
 - `ModelingError: bend: the bend line does not lie on a face of the sheet; ...`

@@ -11,10 +11,29 @@
 export const version = '0.4.0'
 
 // geometry
-export { TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'
+export {
+  TOLERANCE,
+  Axis,
+  BoundBox,
+  ClosestPoints,
+  Continuity,
+  Curvature,
+  Hit,
+  Location,
+  Nurbs,
+  NurbsSurface,
+  Plane,
+  Pos,
+  Rot,
+  Vector,
+  X,
+  Y,
+  Z,
+  type VectorLike,
+} from './geometry.ts'
 export { Align, type AlignLike } from './align.ts'
 // shapes
-export { ACCURACY, Edge, Face, MassProperties, Part, Problem, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
+export { ACCURACY, Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
 export { Mesh, tessellate } from './mesh.ts'
 // curves
 export {
@@ -66,11 +85,11 @@ export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section
 // removing fillets and faces: the time limit of a kernel step
 export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
 // deformations
-export { Lattice, bend, taper, twist } from './deform.ts'
+export { Lattice, bend, taper, twist, unroll } from './deform.ts'
 // surfaces
 export { FitReport, StitchReport, blend, fill, network, nurbsSurface, ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
 // sheet metal
-export { Bend, FlatPattern, bendAllowance, bendDeduction, developedLength, flange, flatPattern, fold, unfold } from './sheetmetal.ts'
+export { Bend, FlatPattern, type KFactor, bendAllowance, bendDeduction, developedLength, flange, flatPattern, fold, unfold } from './sheetmetal.ts'
 // files, viewer, pictures
 export {
   exportFile,

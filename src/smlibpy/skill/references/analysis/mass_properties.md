@@ -24,7 +24,12 @@ A `MassProperties` with plain attributes:
 | `inertia` | 3x3 numpy array about the center of mass, axes parallel to the world axes |
 | `principal_moments` | the eigenvalues of `inertia`, ascending |
 | `principal_axes` | unit `Vector`s, in the order of `principal_moments` |
+| `radii_of_gyration` | `sqrt(principal moment / mass)`, in the same order |
 | `density` | the density passed in |
+
+and two methods: `inertia_about(point)`, the tensor about another point (axes parallel to the
+world's: the parallel-axis theorem), and `moment_about(axis)`, the moment about an `Axis` (a
+shaft's, a pivot's).
 
 `inertia` is the standard tensor: the diagonal holds Ixx, Iyy, Izz; the off-diagonals hold the
 **negated** products of inertia (`inertia[0][1] = -∫(x-cx)(y-cy) dm`). An L-shaped part with
@@ -74,6 +79,11 @@ could not be integrated to `accuracy` gets "the integration reached a relative a
 
 ## Errors
 
+- `KernelError: mass properties failed: face 0 of the body crosses the seam of its surface ...`:
+  a broken body (no public operation makes one) whose face the integration cannot converge on;
+  it stops after a budget of surface points instead of running for minutes. `is_valid()` is
+  False.
+
 - `ValueError: mass_properties: the density must be positive` for `density <= 0`.
 - `ValueError: mass_properties: accuracy must be between 1e-10 and 1e-2` for any other
   accuracy (`0` included).
@@ -94,11 +104,14 @@ precise = shaft.mass_properties(accuracy=1e-10)
 print(precise.volume)                           # 31415.92653589793
 ```
 
-Inertia about another point `p` (parallel axis theorem, checked on a box corner):
+Inertia about another point, and about an axis (checked on a box corner and edge):
 
 ```python
-d = p - np.array(mp.center.to_tuple())
-I_p = mp.inertia + mp.mass * (d.dot(d) * np.eye(3) - np.outer(d, d))
+I_end = mp.inertia_about((0, 0, 50))             # about the end face's center
+print(abs(I_end[0][0] - m * (3 * 10**2 + 4 * 100**2) / 12) / I_end[0][0] < 1e-9)   # True
+side = mp.moment_about(Axis((10, 0, 0), (0, 0, 1)))  # about a line on the side
+print(abs(side - 1.5 * m * 10**2) / side < 1e-9)  # True
+print(round(mp.radii_of_gyration[0], 6))         # 7.071068: 10 / sqrt(2) about the axis
 ```
 
 ## Related

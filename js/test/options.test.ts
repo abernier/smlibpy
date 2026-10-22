@@ -66,8 +66,8 @@ function call(name: string, options: Record<string, unknown>): unknown {
     Sketch: () => Rectangle(10, 10),
     Profile: () => new Profile(),
     Lattice: () => new Lattice(Box(10, 10, 10)),
-    Edge: () => Line([0, 0], [10, 0]),
-    Wire: () => Polyline([0, 0], [10, 0], [10, 10]),
+    Edge: () => Box(10, 10, 10).edges()[0],
+    Wire: () => Box(10, 10, 10).faces()[0].outerWire(),
     _Body: () => Box(10, 10, 10), // (named, colored: methods of every body)
   }
   assert.ok(cls in samples, `no sample of a ${cls}`)

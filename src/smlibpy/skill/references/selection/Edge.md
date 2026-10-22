@@ -32,7 +32,9 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `min_radius()`, `inflections()` | `(radius, t)` of the tightest bend; fractions where the bend flips (`curves/min_radius`) |
 | `to_arcs(tolerance=0.01)` | a wire of lines and circular arcs within the tolerance (`curves/to_arcs`) |
 | `reversed()` | the same edge run the other way |
-| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures; `bbox()` is exact (also of free curves) |
+| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures (`distance_to` also to a body); `bbox()` is exact (also of free curves) |
+| `param_at_point(point)` | the same as `param_at(point)` (build123d's name) |
+| `continuity(samples=16)` | how the two faces meet: G0, G1, G2 with gap, angle, curvature jump; see `continuity` |
 
 ## Details
 - `point_at` is uniform in arc length: 400 steps along a spline were all 0.0509 long.

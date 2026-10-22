@@ -140,7 +140,7 @@ class _BodyWriter:
         self.dump = ext.brep_dump(brep, True)
         for f in self.dump["faces"]:
             srf = f["surface"]
-            if srf["kind"] not in ("plane", "cone", "sphere", "torus") and "poles" not in srf:
+            if srf["kind"] not in ("plane", "cone", "cylinder", "sphere", "torus") and "poles" not in srf:
                 raise _NeedsNurbs()
         self.kfaces = brep.faces()
         self.kedges = brep.edges()
@@ -211,7 +211,7 @@ class _BodyWriter:
         if kind == "plane":
             z, x = _orthonormal(pl["z_dir"], pl["x_dir"])
             return w.add(f"PLANE('',#{w.axis2(pl['origin'], z, x)})"), ("plane", z)
-        if kind == "cone":
+        if kind in ("cone", "cylinder"):  # (a cylinder is also a cone without an angle)
             z, x = _orthonormal(pl["z_dir"], pl["x_dir"])
             semi = float(s.get("semi_angle_deg", 0.0))
             o = np.array(pl["origin"], dtype=float)

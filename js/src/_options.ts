@@ -21,6 +21,8 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   'Edge.offset': [1, ['plane']],
   'Edge.selfIntersections': [0, ['tolerance']],
   'Edge.through': [1, ['tangent', 'at']],
+
+  'Edge.continuity': [1, ['angleTol', 'curvatureTol']],
   Ellipse: [2, ['rotation', 'align']],
   'Face.wrap': [2, ['direction']],
   'Face.extended': [1, ['sides', 'continuity']],
@@ -84,6 +86,7 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   'Wire.intersections': [1, ['tolerance']],
   'Wire.offset': [1, ['corners', 'plane']],
   '_Body.project': [2, ['nearest']],
+  'Wire.continuity': [0, ['angleTol', 'curvatureTol']],
   bend: [2, ['radius', 'plane', 'start', 'end', 'tolerance']],
   bendAllowance: [1, ['radius', 'thickness', 'kFactor']],
   bendDeduction: [1, ['radius', 'thickness', 'kFactor']],
@@ -135,4 +138,5 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   toUsd: [1, ['mesh', 'tolerance', 'angle']],
   twist: [2, ['axis', 'start', 'end', 'tolerance']],
   unfold: [1, ['kFactor', 'fixed']],
+  unroll: [1, ['radius', 'axis', 'start', 'tolerance']],
 }

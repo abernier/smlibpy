@@ -287,6 +287,7 @@ val brep_measure(uintptr_t b, double tolerance)
         d.set("error", e);
         d.set("relative_error", r.relative_error), d.set("size", r.size), d.set("converged", r.converged);
         d.set("panels", static_cast<double>(r.panels)), d.set("evaluations", static_cast<double>(r.evaluations));
+        d.set("exhausted", static_cast<double>(r.exhausted));
         return d;
     });
 }
@@ -299,6 +300,8 @@ val nearest_points(uintptr_t a, uintptr_t b, val near_a)
         d.set("a", vec3(SmVector3d(r.a[0], r.a[1], r.a[2]))), d.set("b", vec3(SmVector3d(r.b[0], r.b[1], r.b[2])));
         d.set("distance", r.distance), d.set("converged", r.converged), d.set("gain", r.gain);
         d.set("steps", static_cast<double>(r.steps));
+        d.set("face_a", r.face_a ? val(ptr(r.face_a)) : val::null());
+        d.set("face_b", r.face_b ? val(ptr(r.face_b)) : val::null());
         return d;
     });
 }
@@ -313,6 +316,7 @@ val face_measure(uintptr_t f, double tolerance)
         d.set("first_moments", vec3(SmVector3d(r.first_moments[0], r.first_moments[1], r.first_moments[2])));
         d.set("error", r.error), d.set("relative_error", r.relative_error), d.set("converged", r.converged);
         d.set("panels", static_cast<double>(r.panels)), d.set("evaluations", static_cast<double>(r.evaluations));
+        d.set("exhausted", r.exhausted);
         return d;
     });
 }
@@ -504,6 +508,11 @@ smlibpy::DeformSpec deform_spec(const val& d)
         spec.has_max_exact_points = true, spec.max_exact_points = static_cast<size_t>(d["max_exact_points"].as<double>());
     if (has(d, "approx_degree"))
         spec.has_approx_degree = true, spec.approx_degree = d["approx_degree"].as<int>();
+    if (has(d, "faces"))
+        for (double f : numbers(d["faces"]))
+            spec.faces.push_back(static_cast<int>(f));
+    if (has(d, "analytic"))
+        spec.has_analytic = true, spec.analytic = d["analytic"].as<bool>();
     return spec;
 }
 
@@ -516,9 +525,29 @@ val deform_brep(uintptr_t b, val spec)
         report.set("faces_kept", r.stats.faces_kept), report.set("faces_exact", r.stats.faces_exact);
         report.set("faces_approximated", r.stats.faces_approximated), report.set("edges_kept", r.stats.edges_kept);
         report.set("edges_exact", r.stats.edges_exact), report.set("edges_approximated", r.stats.edges_approximated);
+        report.set("faces_analytic", r.stats.faces_analytic), report.set("edges_analytic", r.stats.edges_analytic);
         report.set("max_error", r.stats.max_error), report.set("max_degree", r.stats.max_degree);
         val out = val::array();
         out.call<void>("push", ptr(r.brep));
+        out.call<void>("push", report);
+        return out;
+    });
+}
+
+// [curves, report]: the segments of a curve sent through a deformation (the caller's)
+val deform_curve(uintptr_t c, val spec)
+{
+    return guard([&] {
+        const smlibpy::DeformedCurve r = smlibpy::deform_curve(smjs::curve(c), deform_spec(spec));
+        val curves = val::array();
+        for (SmCurve* curve : r.curves)
+            curves.call<void>("push", ptr(curve));
+        val report = val::object();
+        report.set("edges_kept", r.stats.edges_kept), report.set("edges_exact", r.stats.edges_exact);
+        report.set("edges_approximated", r.stats.edges_approximated), report.set("edges_analytic", r.stats.edges_analytic);
+        report.set("max_error", r.stats.max_error), report.set("max_degree", r.stats.max_degree);
+        val out = val::array();
+        out.call<void>("push", curves);
         out.call<void>("push", report);
         return out;
     });
@@ -1120,6 +1149,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("sheetmetal__unbend", &unbend);
 
     function("deform__deform_brep", &deform_brep);
+    function("deform__deform_curve", &deform_curve);
     function("deform__composite_brep", &composite_brep);
     function("deform__deviation", &deviation);
     function("deform__map_points", &map_points);
