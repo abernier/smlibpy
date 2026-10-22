@@ -491,20 +491,21 @@ test('cells must fill the part', () => {
 })
 
 test('cells of parts whose faces meet within a tolerance', () => {
-  // A pin with fitted chamfers in a block: the faces leave gaps of about 2e-6 of the volume, so the
-  // part and its cells integrate differently by about as much (444.61541 against 444.61629). cells()
-  // threw that they did not add up, and section() and cellAt() with it.
+  // A pin with fitted rounds in a block: the faces leave gaps of about 2e-6 of the volume, so the
+  // part and its cells integrate differently by about as much (456.57590 against 456.57678). cells()
+  // threw that they did not add up, and section() and cellAt() with it. (The pin's chamfers did this
+  // until 0.5.0; they are exact cones now.)
   const pin = Cylinder(3, 10)
-  const m = Box(8, 8, 5).merge(pin.chamfer(pin.edges(), 1))
+  const m = Box(8, 8, 5).merge(pin.fillet(pin.edges(), 1, { continuity: 'G2' }))
   const cells = m.cells()
   assert.equal(cells.length, 4)
-  approx(cells.reduce((sum, c) => sum + c.volume, 0), 444.61629, 1e-7)
+  approx(cells.reduce((sum, c) => sum + c.volume, 0), 456.57678, 1e-7)
   approx(m.cellAt([0, 0, 0])!.volume, 45 * PI)
   const xy = m.section(Plane.XY)
   assert.equal(xy.faces().length, 2)
   approx(xy.area, 64)
   const wide = Cylinder(10, 20)
-  assert.equal(Box(30, 30, 10).merge(wide.chamfer(wide.edges(), 3)).cells().length, 4)
+  assert.equal(Box(30, 30, 10).merge(wide.fillet(wide.edges(), 3, { continuity: 'G2' })).cells().length, 4)
 })
 
 test('section of a merged part has every cell', () => {

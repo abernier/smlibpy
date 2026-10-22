@@ -15,6 +15,13 @@
 //     edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits
 //     then come out as open bodies (a 10 mm cube rounded by 4.98); within 1 times, as
 //     SmApiCircularFillet's own solvers, they are exact. smlibpy tries SM_API's first.
+//   * mitred corners (SmFilletCorner::SetBevel) for any cross-section and radius
+//     (SmApiSetBevelCorners: circular rounds of one radius), only on the corners whose code takes it:
+//     the convex corners of three rounded edges and no other edge (SmFilletConvexNxNCorner bevels
+//     three and fails on more; the other corners skip their patch and would leave a hole).
+//     (Set-back corners, SmFilletCorner::SetSetBackDist, are not offered: every set-back corner read
+//     freed memory in SmCurveClassification::MergeInterval, and with that fixed the bodies came out
+//     open, the kernel's own test case too: ai/plan/release-notes/FO.md, F10.)
 //
 // (SM_API asks for the executive's global merge before SetFilletParameters, which turns it off
 // again. Turning it on for real changed no near-limit result measured and broke chamfers and G2
@@ -24,6 +31,7 @@
 #include "fillet.h"
 
 #include <SmApiGeneral.h>
+#include <SmFilletCorner.h>
 #include <SmFilletExecutive.h>
 #include <SmFilletStandardSolver.h>
 
@@ -197,6 +205,25 @@ SmStatus load_solvers(SmFilletExecutive& exec, SmBrep* brep, const smlibpy::Roun
     return SM_SUCCESS;
 }
 
+// Mitres the executive's corners that take it (see the head of this file), counting them.
+void mitre_corners(SmFilletExecutive& exec, smlibpy::Rounded& r)
+{
+    SmTArray<SmFilletCorner*>& corners = exec.GetFilletCorners();
+    for (ULONG i = 0; i < corners.GetSize(); ++i)
+    {
+        SmFilletCorner* c = corners[i];
+        if (c->GetCornerType() != SM_FCR_N_x_N_CONVEX || c->GetFilletedVertex() == nullptr)
+            continue;
+        SmTArray<SmEdge*> edges;
+        c->GetFilletedVertex()->GetEdges(edges);
+        if (edges.GetSize() == 3)
+        {
+            c->SetBevel(TRUE);
+            ++r.mitred;
+        }
+    }
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -231,6 +258,8 @@ Rounded round_edges(SmBrep* brep, const RoundSpec& spec)
     SmStatus status = load_solvers(exec, brep, spec, law, bad_edge);
     if (status == SM_SUCCESS)
         status = exec.CreateFilletCorners();
+    if (status == SM_SUCCESS && spec.mitre)
+        mitre_corners(exec, r);
     if (status == SM_SUCCESS)
         status = exec.DoFilleting();
 
@@ -271,7 +300,7 @@ void bind_fillet(py::module_ m)
     m.def("round_edges", [](SmBrep* brep, const std::vector<SmEdge*>& edges, const std::vector<double>& radii,
                             const std::vector<int>& sections, const std::vector<double>& radii2,
                             const std::vector<SmFace*>& faces, const std::vector<double>& law, int continuity,
-                            double thumbweight, double tolerance_factor) {
+                            double thumbweight, double tolerance_factor, bool mitre) {
         smlibpy::RoundSpec spec;
         spec.edges = edges, spec.radii = radii, spec.sections = sections, spec.radii2 = radii2, spec.faces = faces;
         if (!law.empty())
@@ -281,6 +310,7 @@ void bind_fillet(py::module_ m)
             spec.law = true, spec.start_radius = law[0], spec.end_radius = law[1];
         }
         spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
+        spec.mitre = mitre;
         SmPyErrorTrail::clear();
         const smlibpy::Rounded r = smlibpy::round_edges(brep, spec);
         auto point = [](bool has, const double* p) {
@@ -294,11 +324,12 @@ void bind_fillet(py::module_ m)
         d["location"] = point(r.has_location, r.location);
         d["corner"] = r.corner;
         d["comment"] = r.comment;
+        d["mitred"] = r.mitred;
         return d;
     }, py::arg("brep"), py::arg("edges"), py::arg("radii"), py::arg("sections"),
           py::arg("radii2") = std::vector<double>{}, py::arg("faces") = std::vector<SmFace*>{},
           py::arg("law") = std::vector<double>{}, py::arg("continuity") = 1, py::arg("thumbweight") = 1.0,
-          py::arg("tolerance_factor") = 4.0,
+          py::arg("tolerance_factor") = 4.0, py::arg("mitre") = false,
           "Mutates: brep. Round or bevel `edges` of `brep` in place with the kernel's fillet executive, as "
           "fillet_edges (one radius and one section), fillet_edges_per_edge (one of each per edge) and "
           "variable_radius_fillet (`law`: (start radius, end radius)) do. `sections`: 0 linear, 1 circular, 2 a "
@@ -306,10 +337,13 @@ void bind_fillet(py::module_ m)
           "the faces, in edge tolerances (SM_API's 4; 1 builds radii closer to the largest that fits). `radii2` (with "
           "one linear section): a second offset, of "
           "the other face of each edge than `faces` (None or left out: the face of its blend edgeuse); `radii` "
-          "offsets that face. Returns {'status': None, or the kernel status of a failure, 'error': the kind of "
+          "offsets that face. `mitre`: mitre the corners where three rounded convex edges meet and no other edge "
+          "(the rounds run on until they meet, no corner patch). "
+          "Returns {'status': None, or the kernel status of a failure, 'error': the kind of "
           "problem the executive recorded ('input', 'corner', 'edge', 'intersection', 'trim', 'merge', 'setup' or "
           "''), 'edge': the index of the edge it names or -1, 'vertex': the point of the vertex it names or None, "
           "'location': where it happened or None, 'corner': the kind of corner ('1x1', '2x2', 'Nx1', ... or ''), "
-          "'comment': the executive's comment}. A failure can leave the Brep half changed.");
+          "'comment': the executive's comment, 'mitred': how many corners were mitred}. A failure can leave the "
+          "Brep half changed.");
 }
 #endif  // SMLIBPY_PYTHON

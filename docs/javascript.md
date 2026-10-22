@@ -523,12 +523,14 @@ export interface FilletOptions {
     continuity?: number | string | null;
     fullness?: number;
     propagate?: boolean;
+    corners?: string;
 }
 export interface ChamferOptions {
     length2?: number | null;
     angle?: number | null;
     reference?: unknown;
     propagate?: boolean;
+    corners?: string;
 }
 export class Part extends _Body {
     get volume(): number;
@@ -550,7 +552,9 @@ export class Part extends _Body {
     shell(thickness: number, openings?: unknown, options?: {
         outward?: boolean;
     }): Part;
-    offset(distance: number): Part;
+    offset(distance: number, options?: {
+        corners?: string;
+    }): Part;
     split(plane: Plane | Face, keep: 'above' | 'below'): Part;
     split(plane: Plane | Face, keep: 'both'): [Part, Part];
     split(plane: Plane | Face): Part;

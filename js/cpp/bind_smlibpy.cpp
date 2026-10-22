@@ -569,7 +569,7 @@ val draft_faces(uintptr_t b, val faces, val origin, val normal, double angle, do
 // ---------------------------------------------------------------- ext: fillets and chamfers
 // As Python's ext.round_edges: the Brep changes in place; the result says how the executive failed.
 val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val faces, val law, int continuity,
-                double thumbweight, double tolerance_factor)
+                double thumbweight, double tolerance_factor, bool mitre)
 {
     return guard([&] {
         smlibpy::RoundSpec spec;
@@ -587,6 +587,7 @@ val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val
             spec.law = true, spec.start_radius = l[0], spec.end_radius = l[1];
         }
         spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
+        spec.mitre = mitre;
         SmPyErrorTrail::clear();
         const smlibpy::Rounded r = smlibpy::round_edges(brep(b), spec);
         auto point = [](bool has, const double* p) { return has ? vec3(SmVector3d(p[0], p[1], p[2])) : val::null(); };
@@ -598,6 +599,7 @@ val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val
         d.set("location", point(r.has_location, r.location));
         d.set("corner", r.corner);
         d.set("comment", r.comment);
+        d.set("mitred", static_cast<double>(r.mitred));
         return d;
     });
 }

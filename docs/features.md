@@ -80,6 +80,27 @@ softer = box.fillet(box.edges(), 4, continuity="G3", fullness=1.2)
 
 `fullness` shapes the blend's cross-section: above 1 is fuller, below 1 flatter.
 
+The rounds along the edges have the continuity asked for. Where three blended edges meet at a
+corner, the kernel joins them with a corner patch that is tangent continuous (G1) only, whatever
+the continuity: zebra stripes kink there (`render(part, zebra=True)`, see [Files](files.md)). For
+Class-A surfaces, keep three-edge corners out of the visible areas.
+
+### Corners
+
+Where three rounded edges meet, `corners="patch"` (the default) joins their rounds with a corner
+patch: a ball corner where the radii are equal. `corners="mitre"` runs the rounds on until they
+meet each other along mitre lines, without a patch, the look of a machined part:
+
+```python
+balls = box.fillet(box.edges(), 3)                    # 23340.8494, 26 faces
+mitred = box.fillet(box.edges(), 3, corners="mitre")  # 23354.2820, 18 faces
+```
+
+Mitred are the corners where three rounded convex edges meet and no other edge (the kernel has no
+mitre for more edges, or for a concave one); a selection without such a corner raises
+`ValueError`. `chamfer` takes `corners` too: its bevels then meet in a point instead of a small
+triangle (`box.chamfer(box.edges(), 2, corners="mitre")`: 23328.0, 23322.6667 with the triangles).
+
 ### What can't be rounded
 
 Seam edges (where a cylinder closes on itself) and edges between faces that already meet
@@ -141,6 +162,17 @@ the bevel keeps the angle and `length2` follows. Every beveled edge must lie on 
 with equal ones: a box's top bevels meet in a mitred corner, exact (OpenCASCADE gives the same
 volumes).
 
+The bevel of a full circle between faces around the same axis (the rim of a shaft or of a hole: a
+plane at right angles to the axis, a cylinder or a cone, or the faces of a revolve) is an exact
+cone, cut (or, at a concave rim, filled in) with the solid of revolution of the bevel's line:
+
+```python
+plate = Box(40, 30, 10) - Cylinder(5, 20)
+countersunk = plate.chamfer(plate.edges().circles(), 1)   # 11181.0915, exactly the plate less 2 rings
+```
+
+The kernel fits other bevels with B-spline faces, which meet their neighbours to about 1e-5 mm.
+
 ## Shell
 
 `shell` hollows a part to walls of a given thickness, leaving the chosen faces open:
@@ -176,9 +208,26 @@ is stopped; raise it for large parts.
 ## Offset
 
 ```python
-bigger = Box(20, 20, 20).offset(2)       # every face moves out by 2
+bigger = Box(20, 20, 20).offset(2)       # every face moves out by 2: a 24 mm cube
 smaller = Box(20, 20, 20).offset(-2)
 ```
+
+The faces are extended until they meet again, so edges and corners stay sharp. An edge whose
+faces meet at an angle `a` moves out by `distance / sin(a / 2)`: the base edge of a cone, the
+edges of a tapered extrusion reach farther than `distance`. Where faces would vanish or cross
+(an acute wedge, a hole that closes, a groove narrower than twice the distance) the kernel
+cannot extend them; `corners="round"` rolls a ball along the part instead, filling in cylinders
+and spheres where faces grow apart. Every point of the result is at `distance` from the part (a
+clearance body, the skin of an overmould):
+
+```python
+envelope = Box(20, 20, 20).offset(2, corners="round")   # 13587.4926: 26 faces, planes, cylinders, spheres
+holed = Box(40, 40, 10) - Cylinder(5, 20)
+closed = holed.offset(5, corners="round")               # 47520.5034; the sharp offset raises KernelError
+```
+
+Shrinking with `corners="round"` rounds the concave edges (they grow apart inward); the convex
+ones stay sharp.
 
 Sheets and faces move along their normals and stay sheets (see [Surfaces](surfaces.md)):
 

@@ -406,18 +406,19 @@ def test_cells_must_fill_the_part(monkeypatch):
 
 
 def test_cells_of_parts_whose_faces_meet_within_a_tolerance():
-    # A pin with fitted chamfers in a block: the faces leave gaps of about 2e-6 of the volume, so the
-    # part and its cells integrate differently by about as much (444.61541 against 444.61629).
-    # cells() raised that they did not add up, and section() and cell_at() with it.
+    # A pin with fitted rounds in a block: the faces leave gaps of about 2e-6 of the volume, so the
+    # part and its cells integrate differently by about as much (456.57590 against 456.57678).
+    # cells() raised that they did not add up, and section() and cell_at() with it. (The pin's
+    # chamfers did this until 0.5.0; they are exact cones now.)
     pin = Cylinder(3, 10)
-    m = Box(8, 8, 5).merge(pin.chamfer(pin.edges(), 1))
+    m = Box(8, 8, 5).merge(pin.fillet(pin.edges(), 1, continuity="G2"))
     cells = m.cells()
-    assert len(cells) == 4 and sum(c.volume for c in cells) == approx(444.61629, rel=1e-7)
+    assert len(cells) == 4 and sum(c.volume for c in cells) == approx(456.57678, rel=1e-7)
     assert m.cell_at((0, 0, 0)).volume == approx(45 * math.pi)
     xy = m.section(Plane.XY)
     assert len(xy.faces()) == 2 and xy.area == approx(64)
     wide = Cylinder(10, 20)
-    assert len(Box(30, 30, 10).merge(wide.chamfer(wide.edges(), 3)).cells()) == 4
+    assert len(Box(30, 30, 10).merge(wide.fillet(wide.edges(), 3, continuity="G2")).cells()) == 4
 
 
 def test_section_of_a_merged_part_has_every_cell():

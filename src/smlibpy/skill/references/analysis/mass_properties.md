@@ -48,9 +48,9 @@ to 1e-11.
 A coarse `accuracy` saves little on dense free-form faces: every knot span gets at least 7 x 7
 points.
 
-A body whose faces the kernel fits (B-spline chamfers, shells and offsets of curved faces,
-sweeps cut by planes) is itself defined only to 1e-7 to 4e-6 in volume: its faces meet to
-within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`. Beyond 1e-5 (or a
+A body whose faces the kernel fits (fitted chamfers and blends, shells and offsets of curved
+faces, sweeps cut by planes) is itself defined only to 1e-7 to 1e-5 in volume (more on small
+parts): its faces meet to within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`. Beyond 1e-5 (or a
 coarser `accuracy`) the result comes with a `RuntimeWarning`, once per part, which gives the
 volume of the faces as they are and how uncertain it is; the integration measures that by
 integrating the volume with three fields that agree only on a closed surface:

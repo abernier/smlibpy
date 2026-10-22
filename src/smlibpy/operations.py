@@ -589,9 +589,10 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
 
 
 def offset(shape: Part | Sketch | Shell | Face, distance: float, **kwargs: Any) -> Any:
-    """Grow or shrink a part or a sketch by ``distance`` (for a sketch also
-    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`), or move a sheet or a face
-    along its normals (:meth:`Shell.offset`, :meth:`Face.offset`: a sheet)."""
+    """Grow or shrink a part or a sketch by ``distance`` (also ``corners``: for a part
+    ``"sharp" | "round"``, see :meth:`Part.offset`; for a sketch ``"round" | "sharp" | "chamfer"``,
+    see :meth:`Sketch.offset`), or move a sheet or a face along its normals (:meth:`Shell.offset`,
+    :meth:`Face.offset`: a sheet)."""
     if not callable(getattr(shape, "offset", None)):
         raise TypeError(f"offset takes a part, a sketch, a sheet (Shell) or a face, not a {type(shape).__name__}")
     return shape.offset(distance, **kwargs)

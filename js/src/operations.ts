@@ -623,15 +623,17 @@ export function shell(part: Part, thickness: number, openings: unknown = null, o
   return part.shell(thickness, openings, options)
 }
 
-/** Grow or shrink a part or a sketch by `distance` (for a sketch also the option
- * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`), or move a sheet or a face along its
- * normals (`Shell.offset`, `Face.offset`: a sheet). */
+/** Grow or shrink a part or a sketch by `distance` (also the option `corners`: for a part
+ * `"sharp" | "round"`, see `Part.offset`; for a sketch `"round" | "sharp" | "chamfer"`, see
+ * `Sketch.offset`), or move a sheet or a face along its normals (`Shell.offset`, `Face.offset`: a
+ * sheet). */
 export function offset(shape: Part | Sketch | Shell | Face, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch | Shell {
   if (shape instanceof Sketch) return shape.offset(distance, options)
+  if (shape instanceof Part) return shape.offset(distance, options)
   if (typeof (shape as Any)?.offset !== 'function') {
     throw new TypeError(`offset takes a part, a sketch, a sheet (Shell) or a face, not a ${_typeName(shape)}`)
   }
-  _opts('Part.offset', options) // (the offset of a part, a sheet or a face takes none)
+  _opts('Shell.offset', options) // (the offset of a sheet or a face takes none)
   return shape.offset(distance)
 }
 

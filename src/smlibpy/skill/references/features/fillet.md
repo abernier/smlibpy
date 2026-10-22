@@ -3,7 +3,7 @@
 Rounds edges of a part.
 
 ## Signature
-`part.fillet(edges, radius, *, continuity=None, fullness=1.0, propagate=True)`
+`part.fillet(edges, radius, *, continuity=None, fullness=1.0, propagate=True, corners="patch")`
 `fillet(edges, radius, **same keywords)` (finds the part the edges belong to)
 
 - `edges`: a selection (`ShapeList`), one `Edge`, or faces (all their edges). Edges from an
@@ -20,7 +20,9 @@ Rounds edges of a part.
   more (removes less: 4 vertical box edges r5 remove 429.2 circular, 400.0 G1, 270.7 G2, 212.0 G3).
   A picture shows the difference: `render(part, zebra=True)` (stripes kink at a circular round,
   bend smoothly into a G2 blend) or `render(part, curvature="max")` (one color against a ramp
-  from white); see `recipes/verification`.
+  from white); see `recipes/verification`. Where three blended edges meet, the corner patch is
+  tangent continuous (G1) only, whatever `continuity`: the stripes kink at such a corner (the
+  kernel's corner patches are G1). Keep three-edge corners out of Class-A areas.
 - `fullness`: blends only (ignored for circular). Below 1 flatter, above 1 fuller. 0.5 to 1.2
   work; 1.5 and 2.0 fail on a box edge with the radius error message.
 - `propagate`: `True` (default) also rounds the edges that continue a selected edge
@@ -31,6 +33,12 @@ Rounds edges of a part.
   that runs on tangentially at one end is rounded and the round runs on past that end (see
   Returns); one that runs on tangentially at both ends often fails, and the `KernelError` then
   names the edge and where it runs on.
+- `corners`: where three rounded edges meet. `"patch"` (default) joins the rounds with a corner
+  patch (a ball corner for equal radii). `"mitre"` runs the rounds on until they meet each other
+  along mitre lines, no patch (machined look): all edges of a 40x30x20 box r 3, 23354.2820 and
+  18 faces against 23340.8494 and 26. Mitred are the corners of three rounded convex edges and no
+  other edge (others keep their patch); a selection without one raises `ValueError`. Works with
+  `continuity` and radius lists. (No setbacks: the kernel's set-back corners build open bodies.)
 
 ## Returns
 A new `Part`. One face per rounded edge plus corner patches. Removed volume per straight
@@ -92,6 +100,8 @@ with the edge.
   not help; select fewer edges there. (Chamfers say the same.)
 - `ValueError: fillet: the radius must be positive`
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
+- `ValueError: fillet: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`;
+  `ValueError: fillet: corners must be "patch" or "mitre", not 'round'`.
 - `ValueError: fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius`
 - `ValueError: fillet: a (start, end) radius cannot run around a closed edge ...` and
   `ValueError: fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at (15, 15, 5) ...`;
@@ -109,6 +119,8 @@ lid = box.fillet(box.faces().top(), 3)                  # a face: its edges
 ramp = box.fillet(box.edges().parallel_to(Z).first, (2, 8))  # radius 2 at the edge start, 8 at its end
 stepped = box.fillet(box.edges().parallel_to(Z), [2, 4, 6, 8])  # one radius per edge, in selection order
 soft = box.fillet(box.edges().parallel_to(Z), 5, continuity="G2")  # curvature-continuous, same setback 5
+mitred = box.fillet(box.edges(), 3, corners="mitre")    # rounds meet along mitre lines, no corner balls
+print(round(mitred.volume, 4), len(mitred.faces()))     # 23354.282 18
 
 # different radii that meet at corners: one call with a list, or the larger radius first
 blk = Box(30, 30, 30)

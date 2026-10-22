@@ -56,11 +56,12 @@ above takes 0.6 s at any accuracy.
 ## How exact a body is
 
 The numbers are as exact as the body. Where the kernel fits a surface or an intersection
-curve (B-spline chamfers and variable fillets, the offset faces of a shell, the cut ends of a
-sweep, two cylinders crossing), neighbouring faces meet only to within about 1e-6 to 2e-5 mm,
-and the volume of the body is defined only to that: measured turned by 90 degrees, the flange
-of `examples/flange.py` differs by 2.6e-7, two crossing cylinders of the same radius by 3e-7,
-the shelled bottle by 3.6e-6. Bodies whose edges are lines and circles close up exactly and
+curve (fitted chamfers, G2 and G3 blends and variable fillets, the offset faces of a shell, the
+cut ends of a sweep, two cylinders crossing), neighbouring faces meet only to within about 1e-6 to
+2e-5 mm, and the volume of the body is defined only to that: measured turned by 90 degrees, a pin
+with G2 blends on its rims (`Cylinder(3, 10)`, 1) differs by 3.4e-6, two crossing cylinders of the
+same radius by 3e-7, the shelled bottle by 3.6e-6. (Chamfers of full circles between coaxial faces
+are exact cones: the flange of `examples/flange.py` differs by 2e-14.) Bodies whose edges are lines and circles close up exactly and
 agree with their formulas to 1e-10 and better. Compare against formulas with a relative
 tolerance of 1e-6, or 1e-5 for sweeps, shells and offsets of curved faces.
 

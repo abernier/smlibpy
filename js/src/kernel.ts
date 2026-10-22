@@ -103,7 +103,7 @@ const OWN: Record<string, Signature> = {
     ['max_aspect_ratio', 0]],
   'ext.grid_deviation': ['face', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0]],
   'ext.round_edges': ['brep', 'edges', 'radii', 'sections', ['radii2', []], ['faces', []], ['law', []], ['continuity', 1],
-    ['thumbweight', 1.0], ['tolerance_factor', 4.0]],
+    ['thumbweight', 1.0], ['tolerance_factor', 4.0], ['mitre', false]],
   'sheetmetal.bend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length'],
   'sheetmetal.unbend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length',
     ['anchor', null]],

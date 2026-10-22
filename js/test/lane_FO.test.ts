@@ -1,10 +1,13 @@
 // tests/test_lane_FO.py: tangent chains in fillets and chamfers (kernel plan F6).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Box, CenterArc, Cone, Cylinder, Edge, KernelError, Line, Part, Plane, Polygon, Rectangle, Shell, Slot, Vector, X, Y, Z, chamfer, extrude, fillet, offset, stitch, surface, thicken } from '../src/index.ts'
+import { Box, CenterArc, Cone, Cylinder, Edge, KernelError, Line, ModelingError, Part, Plane, PolarLocations, Polygon, Rectangle, RegularPolygon, Shell, Slot, Vector, X, Y, Z, chamfer, extrude, fillet, offset, setGuardSeconds, stitch, surface, thicken } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { _take } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
+
+// biome-ignore lint: kernel functions replaced in a test
+type Any = any
 
 /** A 40 x 30 x 10 plate with corners rounded by 5: its top outline is one tangent run. */
 function plate(): Part {
@@ -289,7 +292,8 @@ test('SM_API global merge stays off', () => {
   // F7: moving SM_API's global merge request after SetFilletParameters changed no near-limit cube and
   // broke these chamfers and G2 rounds of a box with a hole, so neither SM_API nor round_edges asks for it.
   const p = Box(40, 30, 20).cut(Cylinder(5, 40))
-  approx(p.chamfer(p.edges(), 1).volume, 22221.0369, 0, 1e-3)
+  // (the kernel bevels the box's edges; the hole's rims are exact cones since F12: 22221.0369 before)
+  approx(p.chamfer(p.edges(), 1).volume, 22221.026685, 0, 1e-5)
   approx(p.fillet(p.edges(), 1, { continuity: 'G2' }).volume, 22372.0102, 0, 1e-3)
 })
 
@@ -333,4 +337,137 @@ test('rounds close to the limit are tried with a finer tolerance', () => {
   const [h, kedges] = b._withEdges(b.edges())
   assert.throws(() => ext.round_edges(h.brep, kedges, [1], [1], { tolerance_factor: 0 }), { name: 'RangeError', message: /tolerance factor must be positive/ })
   h.dispose()
+})
+
+// -- batch 3: offsets of acute parts (O8) and rounded offsets (O9), mitred corners (F10), exact conical
+// chamfers (F12) --------------------------------------------------------------------------------------
+test('sharp offsets of acute edges are kept', () => {
+  // O8: an edge whose faces meet at an angle a moves out by d / sin(a / 2) > d, which offset refused as
+  // reaching out of the part's box grown by d. The bound is now the first-order reach of the part's edges
+  // and corners (only asked for where a result reaches beyond d).
+  const cone = Cone(5, 2, 10).offset(1) // (0.5.0: ModelingError)
+  const a = 3.5 + Math.sqrt(1.09) // the offset side runs at radius a - 0.3 z, from z = -6 to 6
+  assert.ok(cone.isValid())
+  approx(cone.volume, Math.PI * (12 * a * a + 144 * 0.09), 1e-6)
+  approx(cone.bbox().max.x, 5.3 + Math.sqrt(1.09), 1e-9) // 6.344, beyond 5 + 1
+  const taper = (Rectangle(20, 20).extrude(10, { taper: 10 }) as Part).offset(1)
+  const t = Math.tan((10 * Math.PI) / 180)
+  const w = 10 + 1 / Math.cos((10 * Math.PI) / 180)
+  approx(taper.volume, (4 / (3 * t)) * ((w + t) ** 3 - (w - 11 * t) ** 3), 1e-9)
+  approx(taper.bbox().max.x, w + t, 1e-9)
+  approx(Box(10, 10, 10)._sharpOffsetReach(), Math.sqrt(3), 1e-12)
+  // the kernel's sharp mode fails on an acute wedge: the error points to the rounded mode
+  const wedge = Polygon([0, 0], [20, 0], [0, 8]).extrude(5) as Part
+  assert.throws(() => wedge.offset(1), (e: unknown) => e instanceof KernelError && /corners="round"/.test(e.message))
+  // a result that reaches farther than the part's edges and corners can move is still refused
+  const kernel = k as Any
+  const real = kernel.offset_brep
+  const guard = setGuardSeconds(0) // (in this kernel)
+  kernel.offset_brep = (brep: number, d: number, options: Any) => real(brep, 3 * d, options)
+  try {
+    assert.throws(() => Box(10, 10, 10).offset(1), (e: unknown) => e instanceof ModelingError && /reaches out of the box it must fit in/.test(e.message))
+  } finally {
+    kernel.offset_brep = real
+    setGuardSeconds(guard)
+  }
+  assert.throws(() => offset(Cylinder(5, 10), 1, { corners: 'chamfer' }), { name: 'RangeError', message: /corners must be "sharp" or "round"/ })
+})
+
+test('rounded offsets roll a ball along the part', () => {
+  // O9: corners: "round" (the kernel's offset without its extended mode): cylinders and spheres where
+  // faces grow apart; every point at the distance from the part (Steiner's formula for convex parts).
+  const cube = Box(10, 10, 10)
+  const grown = cube.offset(2, { corners: 'round' })
+  approx(grown.volume, 1000 + 600 * 2 + 30 * Math.PI * 4 + (4 / 3) * Math.PI * 8, 1e-9)
+  assert.deepEqual([...new Set(grown.faces().map((f) => f.geomType))].sort(), ['cylinder', 'plane', 'sphere'])
+  assert.equal(grown.faces().length, 26)
+  approx(cube.offset(2).volume, 14 ** 3, 1e-9) // (the default stays sharp)
+  approx(cube.offset(-2, { corners: 'round' }).volume, 6 ** 3, 1e-9) // convex edges stay sharp inward
+  // a wedge (the sharp mode fails): 400 + area 407.7033 + edges 93.5264 + ball 4.1888
+  const wedge = Polygon([0, 0], [20, 0], [0, 8]).extrude(5) as Part
+  const hyp = Math.hypot(20, 8)
+  const steiner = 400 + (160 + 5 * (28 + hyp)) + (5 * Math.PI + ((28 + hyp) * Math.PI) / 2) + (4 / 3) * Math.PI
+  approx((offset(wedge, 1, { corners: 'round' }) as Part).volume, steiner, 1e-6)
+  // a hole that closes (the sharp mode fails): the rounded box less a dimple over each end of the hole
+  const holed = Box(20, 20, 10).cut(Cylinder(3, 20)).offset(4, { corners: 'round' })
+  assert.ok(holed.isValid())
+  approx(holed.volume, 13170.0401, 1e-8)
+  // shrinking rounds the concave edges (OpenCASCADE's arc join: 2097.197642; sharp: 2092)
+  const notched = Box(20, 20, 10).cut(Box(10, 10, 10).translate(5, 5, 5))
+  approx(notched.offset(-1, { corners: 'round' }).volume, 2097.197642, 1e-8)
+  approx(notched.offset(-1).volume, 2092, 1e-9)
+})
+
+test('mitred corners', () => {
+  // F10: corners: "mitre" runs the rounds of three convex edges on until they meet (no corner patch)
+  const cube = Box(20, 20, 20)
+  const patchedCorners = cube.fillet(cube.edges(), 2)
+  const mitred = cube.fillet(cube.edges(), 2, { corners: 'mitre' })
+  approx(patchedCorners.volume, 7804.6961, 1e-8)
+  assert.equal(patchedCorners.faces().length, 26)
+  // the cube less the union of its edges' round prisms (integrated: 7808.676122)
+  assert.ok(mitred.isValid())
+  approx(mitred.volume, 7808.676122, 1e-8)
+  assert.equal(mitred.faces().length, 18)
+  assert.ok(cube.fillet(cube.edges(), 2, { continuity: 'G2', corners: 'mitre' }).isValid())
+  // chamfers too: the three bevel planes meet in a point (8000 less 8 x 54 at the corners, 12 x 40 along)
+  approx(cube.chamfer(cube.edges(), 2, { corners: 'mitre' }).volume, 7568, 1e-12)
+  approx((chamfer(cube.edges(), 2) as Part).volume, 7562.666667, 1e-9)
+  let [h, kedges] = cube._withEdges(cube.edges())
+  assert.equal(ext.round_edges(h.brep, kedges, [2], [1], [], [], [], 1, 1, 4, true).mitred, 8)
+  _take(h)
+  const notched = Box(20, 20, 10).cut(Box(10, 10, 10).translate(5, 5, 5))
+  ;[h, kedges] = notched._withEdges(notched.edges())
+  assert.equal(ext.round_edges(h.brep, kedges, [1], [1], [], [], [], 1, 1, 4, true).mitred, 11) // (not the 3 with a concave edge)
+  assert.ok(notched._like(_take(h)).isValid())
+  const hexagon = RegularPolygon(10, 6).extrude(5) as Part
+  assert.equal(hexagon.fillet(hexagon.edges(), 1, { corners: 'mitre' }).faces().length, 26)
+  // where no corner takes a mitre, and for other styles
+  assert.throws(() => cube.fillet(cube.edges().filter((e) => e.center().z > 9), 2, { corners: 'mitre' }), { name: 'RangeError', message: /the selection has none/ })
+  assert.throws(() => cube.fillet(cube.edges(), 2, { corners: 'round' }), { name: 'RangeError', message: /corners must be "patch" or "mitre"/ })
+})
+
+test('chamfers of circular edges are exact cones', () => {
+  // F12: the kernel fitted the bevel of a circular edge with a B-spline (volumes off by up to 1.2e-5);
+  // between faces coaxial with the edge, smlibwasm cuts it with a solid of revolution: exact.
+  const bevelled = (r: number, h: number, s: number) => Math.PI * r * r * h - 2 * 2 * Math.PI * (r - s / 3) * s * s / 2
+  for (const [r, h, s] of [
+    [2, 5, 1.94],
+    [2, 5, 1.0],
+    [10, 20, 1],
+    [10, 20, 5],
+    [1, 2, 0.3],
+  ]) {
+    const pin = Cylinder(r, h)
+    const result = pin.chamfer(pin.edges().filter((e) => e.isClosed), s)
+    approx(result.volume, bevelled(r, h, s), 1e-12) // (0.5.0: 1.1e-5 off at r 2)
+    assert.ok(!result.faces().some((f) => f.geomType === 'bspline') && result.isValid())
+  }
+  const holed = Box(20, 20, 10).cut(Cylinder(3, 20))
+  const rim = holed.edges().filter((e) => e.isClosed && e.center().z > 4)
+  approx(holed.chamfer(rim, 1).volume, holed.volume - 2 * Math.PI * (3 + 1 / 3) * 0.5, 1e-12)
+  // a concave rim (a boss on a plate): the bevel fills in
+  const boss = Box(30, 30, 5).fuse(Cylinder(5, 10).translate(0, 0, 7.5))
+  const base = boss.edges().filter((e) => e.isClosed && Math.abs(e.center().z - 2.5) < 1e-6)
+  approx(boss.chamfer(base, 1).volume, boss.volume + 2 * Math.PI * (5 + 1 / 3) * 0.5, 1e-12)
+  // unequal setbacks: 2 on the top face, 1 down the side (OpenCASCADE: 6224.542)
+  const pin = Cylinder(10, 20)
+  const top = pin.edges().filter((e) => e.isClosed && e.center().z > 0)
+  approx(pin.chamfer(top, 2, { length2: 1, reference: pin.faces().top() }).volume, Math.PI * 100 * 20 - ((2 * Math.PI * 28) / 3) * 1, 1e-12)
+  // faces of a revolve (surfaces of revolution with straight meridians): the flange example's neck
+  const section = Polygon([25, 0], [60, 0], [60, 12], [35, 12], [35, 40], [25, 40])
+  const neck = section.on(Plane.front).revolve(Z).cut(PolarLocations(47.5, 8).mul(Cylinder(5, 30)) as Any)
+  const ends = neck.faces().top().edges().circles()
+  approx(neck.chamfer(ends, 1).volume, neck.volume - Math.PI * 60, 1e-12)
+  // a cone's rims, and a selection with other edges (the kernel bevels those)
+  const frustum = Cone(5, 2, 10)
+  assert.ok(frustum.chamfer(frustum.edges(), 0.5).isValid())
+  approx(holed.chamfer(holed.edges(), 0.5).volume, holed.chamfer(holed.edges().lines(), 0.5).volume - 2 * 2 * Math.PI * (3 + 1 / 6) * 0.125, 1e-12)
+  // where the bevel's tool would take other material (a disc just below the rim), the kernel bevels the
+  // edge as before
+  const disc = Cylinder(10, 10).fuse(Cylinder(12, 0.5).translate(0, 0, 4.05))
+  const edge = disc.edges().filter((e) => e.isClosed && e.center().z > 4.9)
+  const kernelBevel = disc.chamfer(edge, 0.6)
+  assert.ok(kernelBevel.faces().some((f) => f.geomType === 'bspline'))
+  approx(kernelBevel.volume, disc.volume - 2 * Math.PI * (10 - 0.2) * 0.18, 1e-6)
 })

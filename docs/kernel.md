@@ -55,10 +55,13 @@ change. Where smlibpy needs more than the published bindings offer, its own C++ 
   accuracy.
 - **Edge lengths** are integrated per knot span to 1e-12 (the kernel's `SmCurve::Length`
   counts a span whose curve starts with a zero tangent as 0).
-- **A body is as exact as its faces meet.** Faces that the kernel fits (B-spline chamfers,
-  shell offsets, intersections of curved faces) close up only to about 1e-6 to 2e-5 mm; the
-  volume of such a body depends on that by 1e-7 to 4e-6 of its value. Beyond 1e-5 the
-  measures say so in a warning (see [Measuring](analysis.md)).
+- **A body is as exact as its faces meet.** Faces that the kernel fits (B-spline chamfers and
+  blends, shell offsets, intersections of curved faces) lie within about 1e-6 to 2e-5 mm of the
+  exact surface and close up only that well. The volume of such a body is off by that distance
+  times the fitted area: 1e-7 of its value on large parts, up to 1e-5 on small ones (a pin of
+  radius 2 with both rims chamfered by the kernel: 1.1e-5). Beyond 1e-5 the measures say so in a
+  warning (see [Measuring](analysis.md)). Chamfers of full circles between faces around one axis
+  (shafts, holes, revolved parts) are exact cones (below), not fitted.
 - **STEP export** writes the kernel's exact curves and surfaces. The test suite reads the
   files back with OpenCASCADE and checks validity and volume.
 - **STEP import** rebuilds every face on its exact surface and keeps the file's topology,
@@ -80,6 +83,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | SM_API's fillet calls keep the fillet executive's record of a failure to themselves (which corner or edge, and why): every failure read "the radius may be too large" | drives the executive itself (`ext.round_edges`, the same calls and defaults) and names the corner or edge it could not build |
 | SM_API has no chamfer with a different setback on each face, although the executive's solver takes two offsets | offsets the two faces of each edge so that the bevel meets them at the setbacks given (`length2`, `angle`) |
 | SM_API's fillets build the rounds' edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits then come out open (a 10 mm cube rounded by 4.98, a 20 mm cube by 9.98) | tries a failed or refused fillet or chamfer once more within 1 times the edge's tolerance, as the kernel's own all-edge fillet does: those rounds are exact |
+| SM_API mitres corners (the rounds run on until they meet, no corner patch) only for circular rounds of one radius | `corners="mitre"` sets the executive's corners of three convex rounded edges to mitres for every round and chamfer (its other corners skip their patch and would leave a hole, so they keep it) |
+| The kernel fits the bevel of a circular edge with a B-spline: the volume of a chamfered pin of radius 2 was 1.1e-5 off | bevels full circles between faces around one axis (planes at right angles to it, cylinders, cones, straight faces of revolves) with a cut, or at a concave rim a fuse, of the solid of revolution of the bevel's line: an exact cone, checked against its volume; the kernel bevels the other edges, and a circle where that solid would take other material |
 | A shell opening whose rim meets its neighbours tangentially keeps an open rim: the inner rounds run up to the outer edge and their edges lie off their faces | cuts planar openings of that kind out of the part shelled closed (their other rim edges must meet walls standing at right angles to them) |
 | Sweeps anchor the profile at the start point of its first curve, and the frame of each edge of a path is its own | sweeps the profile in its own frame with the center of its box (in its plane) on the start of the path, and along 3D paths joins tangent edges and carries the profile's orientation from edge to edge (the planar sweep of mitered paths keeps the kernel's anchor) |
 | The skin of single open curves has no degree | lofts open curves through the skin primitive, with the degree `ruled` and `smooth` give |
@@ -112,6 +117,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A failed Boolean keeps both operands and leaves the context marked as doing a Boolean (it then builds no surface caches) | holds the operands' copies until the kernel takes them and clears the mark (`ext.boolean`) |
 | The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, handed out an extended surface after deleting it, deleted the curve of an Edge it had made when the imprint failed later (issue #2's filleted boxes) and kept boundary curves it had deleted, and the process crashed now and then | patches the five sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
 | shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
+| The extended (sharp) offset moves an edge whose faces meet at an angle `a` by `d / sin(a / 2)`, more than `d`, and cannot extend the faces of an acute wedge or around a hole that closes; its plain mode rolls a ball instead and builds those, exactly | `offset` bounds a sharp result by the first-order reach of the part's edges and corners (it refused a cone's correct offset as reaching beyond `d`), and offers the plain mode as `corners="round"` |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below) and writes a line edge as a B-spline over SMLib's unbounded line (2.5 km long), and trusts the arrays and values of a file it reads (a malformed array, a sphere whose refDirection is its axis or a weight of 0 crashes it; a cylinder axis of length 0 gives a wrong body) | writes such cones as cylinders or turned around and line edges as long as the edges; checks every array, reference and value (the rules of usd-brep's validator) before converting, and checks each body from other software with the kernel (`SmBrep::AssertValid`) before anything measures it |
 
 ## Known kernel limitations
@@ -128,6 +134,11 @@ matter here:
   measured; compare such volumes with a formula.
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
+- The corner patch where three rounds meet is tangent continuous (G1) only, also for G2 and G3
+  blends (`SmApiBrep.h`: "three-edge corner boundaries guarantee only G1").
+- The fillet executive's set-back corners (`SmFilletCorner::SetSetBackDist`: the rounds end short
+  of the vertex and a larger patch joins them) read freed memory in every case tried (the kernel's
+  own test case too), and with that read fixed came out as open bodies; smlibpy offers no setbacks.
 - Where the kernel has no corner for how the selected edges meet at a vertex (the two halves of
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.

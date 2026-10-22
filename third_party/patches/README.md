@@ -170,6 +170,15 @@ Defects that remain in the kernel, and what smlibpy does about them:
   failure with 4: over 514 fillets and chamfers of random Boolean parts the finer tolerance changed
   no result by more than 3e-6 and made 4 near-limit ones succeed, but it failed the chamfer of
   `examples/gear` that SM_API's builds, so it comes second (`smlibpy/shapes.py`, `_with_finer_rounds`).
+- The fillet executive's set-back corners (`SmFilletCorner::SetSetBackDist`; SM_API has no entry
+  for them): `SmFilletCorner::InsertIntersectionTopology` merges a fillet edge's own curve into the
+  faces it lies on, and `sm_SetDoFilletingGeometry` gives that edge a new curve and deletes the old
+  one while `SmCurveClassification::MergeInterval` is still classifying it (AddressSanitizer: a
+  read of freed memory). Every set-back corner tried killed the process, the kernel's own test
+  case too (`smFilletTest.cpp`, case 303: all edges of a box, r 1, setback 1.25). Merging a copy of
+  the curve stops the crash, but the bodies then come out open (a 20 mm cube, all edges r 1,
+  setback 1.25: 84 open edges, 4 of its 6 planes gone). Not patched: smlibpy offers no setbacks
+  (`corners="mitre"` uses the executive's bevel corners, which are sound).
 - Small leaks on failure paths, not patched: `SmFilletCorner::Create` keeps its list of edgeuses
   when it makes no corner, and a failed extended shell keeps about 4.7 KB of curve copies
   (`SmOffsetGeometryCreation::ExtendTrimEdges`, found with macOS `leaks`).

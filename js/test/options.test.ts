@@ -29,8 +29,11 @@ test('an option spelled as in Python, a typo or a number for the options is a Ty
   // more arguments than the positional ones and the options
   assert.throws(() => (Rectangle as Any)(20, 10, 3), { name: 'TypeError', message: 'Rectangle() takes 2 positional arguments but 3 were given' })
   assert.throws(() => (Box as Any)(10, 10, 10, {}, 4), { name: 'TypeError', message: 'Box() takes 3 positional arguments but 4 were given' })
-  // a part's offset takes no options (a sketch's does)
-  assert.throws(() => offset(Box(10, 10, 10), 1, { corners: 'sharp' }), /Part\.offset\(\) got an unexpected option 'corners' \(it takes no options\)/)
+  // the offset of a sheet or a face takes no options (a part's and a sketch's do)
+  const top = Box(10, 10, 10).faces().top().one()
+  assert.throws(() => offset(top, 1, { corners: 'sharp' }), /Shell\.offset\(\) got an unexpected option 'corners' \(it takes no options\)/)
+  assert.throws(() => offset(Box(10, 10, 10), 1, { corner: 'round' } as Any), /Part\.offset\(\) got an unexpected option 'corner'; did you mean 'corners'\?/)
+  approx((offset(Box(10, 10, 10), 1, { corners: 'sharp' }) as Any).volume, 1728, 1e-9)
   assert.equal(offset(Rectangle(10, 10), 1, { corners: 'sharp' }).area, 144)
   // what is right goes through; null and undefined are no options; keys with _ are smlibwasm's own
   assert.equal(Box(10, 10, 10, { align: 'min' } as Any).bbox().min.x, 0)
@@ -91,8 +94,8 @@ test("the options' types are the table's keys, and every entry is checked", () =
   const checker = program.getTypeChecker()
   const checked = new Set<string>()
   const problems: string[] = []
-  // (a function that passes its options on to a part or a sketch: only the sketch takes them)
-  const forwards = new Set(['Part.offset'])
+  // (a function that passes its options on to a part or a sketch: a sheet or a face takes none)
+  const forwards = new Set(['Shell.offset'])
   for (const file of program.getSourceFiles()) {
     if (!file.fileName.startsWith(src)) continue
     const visit = (node: ts.Node): void => {

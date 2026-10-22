@@ -386,7 +386,8 @@ def test_sm_api_global_merge_stays_off():
     from smlibpy import Cylinder
 
     p = Box(40, 30, 20) - Cylinder(5, 40)
-    assert p.chamfer(p.edges(), 1).volume == approx(22221.0369, abs=1e-3)
+    # (the kernel bevels the box's edges; the hole's rims are exact cones since F12: 22221.0369 before)
+    assert p.chamfer(p.edges(), 1).volume == approx(22221.026685, abs=1e-5)
     assert p.fillet(p.edges(), 1, continuity="G2").volume == approx(22372.0102, abs=1e-3)
 
 
@@ -450,3 +451,139 @@ def test_rounds_close_to_the_limit_are_tried_with_a_finer_tolerance():
         b = Box(10, 10, 10)
         h, kedges = b._with_edges(b.edges())
         ext.round_edges(h.brep, kedges, [1.0], [1], tolerance_factor=0)
+
+
+# -- batch 3: offsets of acute parts (O8) and rounded offsets (O9), mitred corners (F10), exact conical
+# chamfers (F12) ---------------------------------------------------------------------------------------
+def test_sharp_offsets_of_acute_edges_are_kept(monkeypatch):
+    # O8: an edge whose faces meet at an angle a moves out by d / sin(a / 2) > d, which offset refused as
+    # reaching out of the part's box grown by d. The bound is now the first-order reach of the part's
+    # edges and corners (only asked for where a result reaches beyond d).
+    from smlibpy import Cone, Cylinder, ModelingError, Polygon, offset
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    cone = Cone(5, 2, 10).offset(1)  # (0.5.0: ModelingError)
+    a = 3.5 + math.sqrt(1.09)  # the offset side runs at radius a - 0.3 z, from z = -6 to 6
+    assert cone.is_valid() and cone.volume == approx(math.pi * (12 * a * a + 144 * 0.09), rel=1e-6)
+    assert cone.bbox().max.x == approx(5.3 + math.sqrt(1.09), rel=1e-9)  # 6.344, beyond 5 + 1
+    taper = Rectangle(20, 20).extrude(10, taper=10).offset(1)
+    t, w = math.tan(math.radians(10)), 10 + 1 / math.cos(math.radians(10))
+    assert taper.volume == approx(4 / (3 * t) * ((w + t) ** 3 - (w - 11 * t) ** 3), rel=1e-9)
+    assert taper.bbox().max.x == approx(w + t, rel=1e-9)
+    assert Box(10, 10, 10)._sharp_offset_reach() == approx(math.sqrt(3), rel=1e-12)
+    # the kernel's sharp mode fails on an acute wedge: the error points to the rounded mode
+    wedge = Polygon((0, 0), (20, 0), (0, 8)).extrude(5)
+    with pytest.raises(KernelError, match='corners="round"'):
+        wedge.offset(1)
+    # a result that reaches farther than the part's edges and corners can move is still refused
+    real = smlibpy.shapes.k.offset_brep
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)  # (in this process)
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", lambda brep, d, **kw: real(brep, 3 * d, **kw))
+    with pytest.raises(ModelingError, match="reaches out of the box it must fit in"):
+        Box(10, 10, 10).offset(1)
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match='corners must be "sharp" or "round"'):
+        offset(Cylinder(5, 10), 1, corners="chamfer")
+
+
+def test_rounded_offsets_roll_a_ball_along_the_part():
+    # O9: corners="round" (the kernel's offset without its extended mode): cylinders and spheres where
+    # faces grow apart; every point at the distance from the part (Steiner's formula for convex parts).
+    from smlibpy import Cylinder, Polygon, offset
+
+    cube = Box(10, 10, 10)
+    grown = cube.offset(2, corners="round")
+    assert grown.volume == approx(1000 + 600 * 2 + 30 * math.pi * 4 + 4 / 3 * math.pi * 8, rel=1e-9)
+    assert {f.geom_type for f in grown.faces()} == {"plane", "cylinder", "sphere"} and len(grown.faces()) == 26
+    assert cube.offset(2).volume == approx(14 ** 3)  # (the default stays sharp)
+    assert cube.offset(-2, corners="round").volume == approx(6 ** 3)  # convex edges stay sharp inward
+    # a wedge (the sharp mode fails): 400 + area 407.7033 + edges 93.5264 + ball 4.1888
+    wedge = Polygon((0, 0), (20, 0), (0, 8)).extrude(5)
+    hyp = math.hypot(20, 8)
+    steiner = 400 + (160 + 5 * (28 + hyp)) + (5 * math.pi + (28 + hyp) * math.pi / 2) + 4 / 3 * math.pi
+    assert offset(wedge, 1, corners="round").volume == approx(steiner, rel=1e-6)
+    # a hole that closes (the sharp mode fails): the rounded box less a dimple over each end of the hole
+    holed = (Box(20, 20, 10) - Cylinder(3, 20)).offset(4, corners="round")
+    assert holed.is_valid() and holed.volume == approx(13170.0401, rel=1e-8)
+    # shrinking rounds the concave edges (OpenCASCADE's arc join: 2097.197642; sharp: 2092)
+    notched = Box(20, 20, 10) - Box(10, 10, 10).translate(5, 5, 5)
+    assert notched.offset(-1, corners="round").volume == approx(2097.197642, rel=1e-8)
+    assert notched.offset(-1).volume == approx(2092)
+
+
+def test_mitred_corners():
+    # F10: corners="mitre" runs the rounds of three convex edges on until they meet (no corner patch)
+    from smlibpy import RegularPolygon
+    from smlibpy._kernel import ext
+    from smlibpy.shapes import _take
+
+    cube = Box(20, 20, 20)
+    patched, mitred = cube.fillet(cube.edges(), 2), cube.fillet(cube.edges(), 2, corners="mitre")
+    assert patched.volume == approx(7804.6961, rel=1e-8) and len(patched.faces()) == 26
+    # the cube less the union of its edges' round prisms (integrated: 7808.676122)
+    assert mitred.is_valid() and mitred.volume == approx(7808.676122, rel=1e-8) and len(mitred.faces()) == 18
+    assert cube.fillet(cube.edges(), 2, continuity="G2", corners="mitre").is_valid()
+    # chamfers too: the three bevel planes meet in a point (8000 less 8 x 54 at the corners, 12 x 40 along)
+    assert cube.chamfer(cube.edges(), 2, corners="mitre").volume == approx(7568.0, rel=1e-12)
+    assert chamfer(cube.edges(), 2).volume == approx(7562.666667, rel=1e-9)
+    h, kedges = cube._with_edges(cube.edges())
+    assert ext.round_edges(h.brep, kedges, [2.0], [1], mitre=True)["mitred"] == 8
+    _take(h)
+    notched = Box(20, 20, 10) - Box(10, 10, 10).translate(5, 5, 5)
+    h, kedges = notched._with_edges(notched.edges())
+    assert ext.round_edges(h.brep, kedges, [1.0], [1], mitre=True)["mitred"] == 11  # (not the 3 with a concave edge)
+    assert notched._like(_take(h)).is_valid()
+    hexagon = RegularPolygon(10, 6).extrude(5)
+    assert len(hexagon.fillet(hexagon.edges(), 1, corners="mitre").faces()) == 26
+    # where no corner takes a mitre, and for other styles
+    with pytest.raises(ValueError, match="the selection has none"):
+        cube.fillet(cube.edges().filter(lambda e: e.center().z > 9), 2, corners="mitre")
+    with pytest.raises(ValueError, match='corners must be "patch" or "mitre"'):
+        cube.fillet(cube.edges(), 2, corners="round")
+
+
+def test_chamfers_of_circular_edges_are_exact_cones():
+    # F12: the kernel fitted the bevel of a circular edge with a B-spline (volumes off by up to 1.2e-5);
+    # between faces coaxial with the edge, smlibpy cuts it with a solid of revolution: exact.
+    from smlibpy import Cone, Cylinder, PolarLocations, Polygon, Plane
+
+    def bevelled(r, h, s):
+        return math.pi * r * r * h - 2 * 2 * math.pi * (r - s / 3) * s * s / 2
+
+    for r, h, s in ((2, 5, 1.94), (2, 5, 1.0), (10, 20, 1), (10, 20, 5), (1, 2, 0.3)):
+        pin = Cylinder(r, h)
+        result = pin.chamfer(pin.edges().filter(lambda e: e.is_closed), s)
+        assert result.volume == approx(bevelled(r, h, s), rel=1e-12)  # (0.5.0: 1.1e-5 off at r 2)
+        assert "bspline" not in {f.geom_type for f in result.faces()} and result.is_valid()
+    holed = Box(20, 20, 10) - Cylinder(3, 20)
+    rim = holed.edges().filter(lambda e: e.is_closed and e.center().z > 4)
+    assert holed.chamfer(rim, 1).volume == approx(holed.volume - 2 * math.pi * (3 + 1 / 3) * 0.5, rel=1e-12)
+    # a concave rim (a boss on a plate): the bevel fills in
+    boss = Box(30, 30, 5) + Cylinder(5, 10).translate(0, 0, 7.5)
+    base = boss.edges().filter(lambda e: e.is_closed and abs(e.center().z - 2.5) < 1e-6)
+    assert boss.chamfer(base, 1).volume == approx(boss.volume + 2 * math.pi * (5 + 1 / 3) * 0.5, rel=1e-12)
+    # unequal setbacks: 2 on the top face, 1 down the side (OpenCASCADE: 6224.542)
+    pin = Cylinder(10, 20)
+    top = pin.edges().filter(lambda e: e.is_closed and e.center().z > 0)
+    unequal = pin.chamfer(top, 2, length2=1, reference=pin.faces().top())
+    assert unequal.volume == approx(math.pi * 100 * 20 - 2 * math.pi * 28 / 3 * 1, rel=1e-12)
+    # faces of a revolve (surfaces of revolution with straight meridians): the flange example's neck
+    section = Polygon((25, 0), (60, 0), (60, 12), (35, 12), (35, 40), (25, 40))
+    neck = section.on(Plane.front).revolve(Z)
+    neck -= PolarLocations(47.5, 8) * Cylinder(5, 30)
+    ends = neck.faces().top().edges().circles()
+    assert neck.chamfer(ends, 1).volume == approx(neck.volume - math.pi * 60, rel=1e-12)
+    # a cone's rims, and a selection with other edges (the kernel bevels those)
+    frustum = Cone(5, 2, 10)
+    assert frustum.chamfer(frustum.edges(), 0.5).is_valid()
+    both = holed.chamfer(holed.edges(), 0.5)
+    rings = 2 * 2 * math.pi * (3 + 1 / 6) * 0.125
+    assert both.volume == approx(holed.chamfer(holed.edges().lines(), 0.5).volume - rings, rel=1e-12)
+    # where the bevel's tool would take other material (a disc just below the rim), the kernel bevels
+    # the edge as before
+    disc = Cylinder(10, 10) + Cylinder(12, 0.5).translate(0, 0, 4.05)
+    edge = disc.edges().filter(lambda e: e.is_closed and e.center().z > 4.9)
+    kernel = disc.chamfer(edge, 0.6)
+    assert "bspline" in {f.geom_type for f in kernel.faces()}
+    assert kernel.volume == approx(disc.volume - 2 * math.pi * (10 - 0.2) * 0.18, rel=1e-6)

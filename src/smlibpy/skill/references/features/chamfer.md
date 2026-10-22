@@ -3,7 +3,7 @@
 Bevels edges of a part with a flat face.
 
 ## Signature
-`part.chamfer(edges, length, *, length2=None, angle=None, reference=None, propagate=True)`
+`part.chamfer(edges, length, *, length2=None, angle=None, reference=None, propagate=True, corners="patch")`
 `chamfer(edges, length, **same keywords)` (finds the part the edges belong to)
 
 - `edges`: a selection, one `Edge`, or faces (all their edges).
@@ -27,11 +27,19 @@ Bevels edges of a part with a flat face.
   edge tangentially (`edge.tangent_chain()`): one straight top edge of a slot bevels its whole
   outline. `False` bevels the selected edges only, and the bevel runs on past an end where the
   edge runs on tangentially.
+- `corners`: `"patch"` (default) cuts a corner where three bevels meet with a small triangle;
+  `"mitre"` runs the bevels on until they meet in a point (all edges of a 40x30x20 box, 2:
+  23328.0 against 23322.667). As for `fillet`: corners of three convex edges and no other edge.
 
 ## Returns
 A new `Part`. Removed volume per straight 90° edge: `length² / 2 * edge length`. Concave edges
 add material. Circular edges (hole rims, cylinder ends) work: a hole rim chamfer is a
-countersink-like bevel.
+countersink-like bevel. The bevel of a full circle between faces around one axis (a plane at
+right angles to it, a cylinder or a cone, or the straight faces of a revolve: shafts, holes,
+turned parts) is an **exact cone** (a `"revolution"` face): `Cylinder(2, 5)` with both rims 1 is
+52.3598776, exactly `pi*20 - 2*2*pi*(2 - 1/3)*0.5`. smlibpy cuts it (fills it at a concave rim)
+with the solid of revolution of the bevel's line; the kernel bevels the other edges, and a
+circle where that solid would take other material (a flange just below the rim).
 
 ## Limits
 Same rules as `fillet` with the setback = `length`: two chamfered edges `d` apart on one face
@@ -52,13 +60,16 @@ chamfered: the kernel extends the bevel past the end). An invalid input part rai
 - Unequal setbacks on faces that meet at an acute angle: each must be at least `cos(wedge)` times
   the other (60°: half), or `ModelingError` (the kernel's solver offsets the faces and cannot
   reach such a bevel).
-- Bevels of circular edges are fitted B-splines, off by about 1e-6 of the volume (a cylinder rim,
-  2 and 1: 6224.536, exact 6224.542), equal or not.
+- Bevels the kernel makes (straight edges between curved faces, circles on spheres or tori, a
+  circle whose bevel would take other material) are fitted B-splines, off by about 1e-6 mm: up to
+  1e-5 of the volume of a small part. Circles between coaxial faces are exact (above; a cylinder
+  rim, 2 and 1: 6224.5422, as OpenCASCADE).
 
 ## Errors
 - `ModelingError: chamfer: the length is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
 - `KernelError: chamfer failed (SM_ERR): the length may be too large for the selected edges`
 - `ModelingError: chamfer: the faces of an edge meet at an angle that changes along it (their normals are 60 to 120 degrees apart), and the bevel would reach 1 to 3 from the edge instead of 1; round such an edge with fillet(), whose radius stays the same along it`
+- `ValueError: chamfer: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`
 - `ValueError: chamfer: the length must be positive`; `ValueError: chamfer: length2 must be positive`;
   `ValueError: chamfer: give length2 or angle, not both`
 - `ValueError: chamfer: length2 and angle need reference=, the face (or faces) of each edge on which length is measured`
@@ -79,8 +90,8 @@ also = chamfer(box.faces().top().edges(), 2)            # function form: finds t
 
 plate = Box(40, 40, 10) - Cylinder(5, 20)
 rim = plate.edges().circles().filter(lambda e: e.center().z > 0)
-plate = plate.chamfer(rim, 1.5)                         # countersink-like bevel on the hole
-print(plate.is_valid(), round(plate.volume, 3))         # True 15175.73
+plate = plate.chamfer(rim, 1.5)                         # countersink-like bevel on the hole: an exact cone
+print(plate.is_valid(), round(plate.volume, 3))         # True 15175.725 = 15214.602 - 2*pi*5.5*1.125
 
 tri = Polygon((0, 0), (40, 0), (0, 20)).extrude(10)
 sharp = tri.edges().parallel_to(Z).nearest((40, 0, 0))  # acute 26.6-degree edge

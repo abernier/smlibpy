@@ -1,4 +1,4 @@
-# Lane FO: fillets, chamfers, shells and offsets (F6, F7, F8, F9, O1, O3, O7)
+# Lane FO: fillets, chamfers, shells and offsets (F6, F7, F8, F9, F10, F11, F12, O1, O3, O7, O8, O9)
 
 ## Fixed
 
@@ -54,6 +54,30 @@
   514 fillets and chamfers of random Boolean parts: 291 results bit for bit the same, 4 more
   succeed, none fewer; failures take twice as long (the whole set 17.7 s, now 21.1 s).
 
+- Sharp offsets of parts with acute convex edges are kept (O8): an edge whose faces meet at an
+  angle `a` moves out by `d / sin(a / 2)`, more than `d`, and `offset` refused every result reaching
+  beyond the part's box grown by `d`. `Cone(5, 2, 10).offset(1)` raised `ModelingError`; now 819.1342
+  (analytic 819.1344), 12.688 across. `Rectangle(20, 20).extrude(10, taper=10).offset(1)`: 4947.2078
+  (analytic to 4e-10). A sharp result that reaches beyond `d` is now bounded by the first-order reach
+  of the part's edges (`1 / cos(t / 2)`, `t` the angle between the face normals, at 5 points of each
+  edge) and corners (where the moved tangent planes of three faces meet), times 1.25 for curved faces,
+  counted up to 25 (`Part._sharp_offset_reach`; asked only for such results). Over the 140 imported
+  parts of the corpus (offset by +-0.5 or a tenth of their size): 3 more grow (parts 42, 50, 163, the
+  same volumes as OpenCASCADE's `BRepOffsetAPI_MakeOffsetShape` with `GeomAbs_Intersection` to 1e-9),
+  none fewer; the reach took 1.1 s over all 140.
+- Chamfers of circular edges are exact (F12): the kernel fits the bevel of a circle with a B-spline,
+  and the volume of a chamfered pin of radius 2 was 1.1e-5 off (docs/kernel.md said 1e-7 to 4e-6). A
+  full circle between faces around one axis (a plane at right angles to it, a cylinder or a cone, or
+  the straight faces of a revolve, sampled at four angles) is now bevelled with a cut (a fuse at a
+  concave rim) of the solid of revolution of the bevel's line: an exact cone. `Cylinder(2, 5)` with
+  both rims 1.94: 30.8290435179 (exact, 1e-15; 0.5.0: 30.8287005); the flange example 157979.6668
+  (exact; 0.5.0: 157979.6230); unequal setbacks on a cylinder rim, 2 and 1: 6224.5422 (OpenCASCADE
+  6224.542; 0.5.0: 6224.536). Checked: the volume taken must be the bevel's (Pappus) to 1e-6, or the
+  kernel bevels the edge as before (a disc just below the rim). The kernel bevels the other edges of a
+  selection first. Faster on many holes: 162 hole rims of a plate 1.5 s (the kernel 3.1 s), one
+  Boolean for all. docs/kernel.md, docs/analysis.md and the skill's analysis references give the
+  accuracy of fitted faces as up to 1e-5 of the volume on small parts.
+
 ## New
 
 - `Part.fillet(..., propagate=True)` and `Part.chamfer(edges, length, *, propagate=True)` (also
@@ -100,6 +124,36 @@
   sheets), `docs/surfaces.md` (Offset surfaces), `docs/kernel.md` (three rows, two limitations);
   skill references `features/chamfer`, `features/fillet`, `features/shell`, `features/offset`,
   `features/thicken`.
+
+- `Part.offset(distance, *, corners="sharp")` (O9; smlibwasm `offset(d, { corners })`, and the function
+  `offset(part, d, corners=...)`): `"round"` rolls a ball along the part (the kernel's offset without
+  its extended mode): cylinders and spheres where faces grow apart, every point at `distance` from the
+  part. Exact: `Box(10, 10, 10)` by 2 gives 2610.50144 (Steiner's formula), the acute wedge
+  `Polygon((0, 0), (20, 0), (0, 8)).extrude(5)` by 1 905.4184 (sharp: `KernelError`), a box with a
+  hole that closes, `(Box(20, 20, 10) - Cylinder(3, 20)).offset(4, corners="round")`, 13170.040141
+  (the rounded box less a dimple over each end of the hole, integrated: 13170.040141; sharp:
+  `KernelError`), an L-block shrunk by 1: 2097.197642 (its concave edges rounded; OpenCASCADE's arc
+  join the same). Checked like the sharp mode, within the part's box grown by `distance`, tried once.
+  Over the corpus: 111 of 140 parts grow (sharp 89; 24 of those the sharp mode fails on), 82 shrink
+  (sharp 84). The sharp mode's `KernelError` suggests it: "offset failed (SM_ERR): try a smaller
+  distance, or corners="round", which rounds the edges whose faces grow apart instead of extending the
+  faces (it builds acute wedges and holes that close)".
+- `corners="patch" | "mitre"` for `Part.fillet` and `Part.chamfer` (F10; smlibwasm `{ corners }`):
+  `"mitre"` runs the rounds (or bevels) of three convex edges on until they meet, without a corner
+  patch, through the executive's bevel corners (`SmFilletCorner::SetBevel` in `ext.round_edges`, for
+  every cross-section and radius; SM_API's `SmApiSetBevelCorners` takes circular rounds of one radius).
+  All edges of a 20 mm cube r 2: 7808.676141, 18 faces (the cube less the union of its edges' round
+  prisms, integrated: 7808.676122; with patches 7804.6961, 26 faces); chamfered by 2: 7568.0, exact.
+  Only corners of three convex edges and no other edge are mitred (`SmFilletConvexNxNCorner` bevels
+  three and fails on more; other corners skip their patch and would leave a hole); a selection without
+  one raises `ValueError`. `ext.round_edges(..., mitre=True)` returns how many corners it mitred
+  (`"mitred"`).
+- Docs (F11): the corner patch where three rounds meet is G1 only, also for G2 and G3 blends
+  (`docs/features.md` Smooth blends, the skill's `features/fillet`, the `Part.fillet` docstring in both
+  languages, `docs/kernel.md` limitations). New sections: `docs/features.md` Corners, exact circular
+  chamfers, rounded offsets; `docs/kernel.md` rows for the offset bound, mitred corners and conical
+  chamfers; skill references `features/offset`, `features/fillet`, `features/chamfer`; the
+  JavaScript API section.
 
 ## Behaviour changes
 
@@ -155,6 +209,35 @@
   ...") for objects without an offset, where it raised `AttributeError` (smlibwasm: `TypeError` with
   that text); sheets and faces are offset instead of raising.
 
+- `offset` of a part with acute convex edges returns the sharp offset where it raised
+  `ModelingError` ("it built a body that reaches out of the box it must fit in"); a sharp result is
+  refused only beyond the reach of the part's edges and corners.
+- The sharp offset's kernel error has a hint ("offset failed (SM_ERR)" became "offset failed
+  (SM_ERR): try a smaller distance, or corners="round", ..."); scripts that match the text should
+  match the status (`e.status == "SM_ERR"`).
+- `offset(part, d, corners=...)` passes `corners` to the part (it raised `TypeError: ... unexpected
+  keyword argument 'corners'`; smlibwasm: `TypeError: Part.offset() got an unexpected option
+  'corners' (it takes no options)`). For a sheet or a face smlibwasm's error now names
+  `Shell.offset()`.
+- Chamfers of full circles between coaxial faces are exact cones: their faces are `"revolution"`
+  (were `"bspline"`), their volumes move by up to 1.2e-5 (to the exact value), and their edges are
+  circles (were B-splines), so `edges().circles()` now finds them. Scripts that found chamfer faces
+  or edges by their type:
+  ```python
+  pin = Cylinder(2, 5).chamfer(Cylinder(2, 5).edges(), 1)
+  pin.faces().filter(lambda f: f.geom_type == "bspline")      # before: the two bevels; now: none
+  pin.faces().filter(lambda f: f.geom_type == "revolution")   # now: the two bevels
+  pin.edges().circles()                                       # before: none; now: all 4 bevel edges
+  pin.edges().circles().filter(lambda e: e.radius < 2)        # now: the bevels' inner circles (r 1)
+  ```
+  Volumes pinned to the fitted value change (the flange example 157979.6230 -> 157979.6668; the
+  chamfer of all edges of `Box(40, 30, 20) - Cylinder(5, 40)` 22221.0369 -> 22221.0267). Tests
+  adjusted: `tests/test_measure.py` and `js/test/measure.test.ts` (flange),
+  `tests/test_lane_FO.py::test_sm_api_global_merge_stays_off` and its twin (the kernel now bevels
+  only the box's edges there), `tests/test_modeling.py::test_cells_of_parts_whose_faces_meet_within_a_tolerance`
+  and its twin (a pin with G2 rounds keeps the faces that meet within a tolerance it is about),
+  `tests/test_js_options.py` and `js/test/options.test.ts` (`Part.offset` takes `corners`).
+
 ## Not done
 
 - The extended offset mode still crashes on some imported parts, contained by the forked copy
@@ -184,8 +267,8 @@
   rollover" or a corner), with either tolerance, as does r 4.99 on a 10 mm cube.
 - F8: the executive's fillet status (`SmFilStatus`) is private in `SmFilletErrorInfo` (no getter), so
   the record has the kind of problem, the corner type, the place and the comment, but not the
-  status. Laws along chains (F4, F5), setbacks and mitred corners (F10) and the constant-distance
-  solver go through the same wrapper later; not part of this batch.
+  status. Laws along chains (F4, F5) and the constant-distance solver can go through the same
+  wrapper (mitred corners do since F10; setbacks, below, cannot yet).
 - F9: unequal bevels of edges whose face angle changes along them are refused like equal ones (F4);
   on faces meeting at an acute angle the kernel's solver offsets one face backwards where the
   setbacks are less alike than the cosine of the angle, and it takes that only so far (60 degrees: 3
@@ -198,3 +281,20 @@
 - O7: a sheet whose faces do not share their edges offsets face by face (documented: `stitch` first).
   The plan's bbox bound `d / sin(alpha/2)` is replaced by the distance checks, which also catch faces
   left unmoved and offsets to the wrong side.
+- F10 setbacks (`setback=`): the kernel's set-back corners read freed memory in every case tried
+  (`SmCurveClassification::MergeInterval`, from `SmFilletCorner::InsertIntersectionTopology`, which
+  merges a fillet edge's own curve while `sm_SetDoFilletingGeometry` replaces and deletes it; the
+  kernel's own test case 303 too). A patched copy of `SmFilletCorner.cpp` that merges a copy of the
+  curve stopped the crash (AddressSanitizer clean) but every body came out open (a 20 mm cube, all
+  edges r 1, setback 1.25: 84 open edges, 4 of 6 planes gone; an L-block and a hexagonal prism the
+  same; r 2 with setback 3 `SM_ERR`). Not landed; recorded in `third_party/patches/README.md`
+  (defects that remain). The patched copy is in the lane's scratch (`b3/SmFilletCorner.setback-uaf.cpp`).
+- F11 `Part.fillet_preview` (optional in the plan): not added. SM_API's preview is documented as
+  crashing for some inputs, so it would need the forked copy (smlibwasm: the probe worker) and a way
+  to bring surfaces back from it, and it gives the untrimmed round surfaces only; the fillet errors
+  already name the corner or edge that fails.
+- F12 for edges that are not full circles between coaxial faces (arcs of a rounded outline, circles
+  on spheres or tori, straight edges between curved faces): those bevels are still the kernel's
+  fitted B-splines.
+- O9: `Shell.offset` has no `corners` (the kernel's plain mode on sheets returned a multi-face sheet's
+  faces unmoved, O7). `shell` still picks its mode by what succeeds (O12, not in this lane).

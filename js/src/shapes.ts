@@ -41,6 +41,7 @@ import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, 
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
+import { Polygon } from './sketches.ts'
 import {
   type Bend,
   type FlangeOptions,
@@ -109,6 +110,14 @@ const _OFFSET_GAPS = 1e-3
 // depends on memory layout), but not after this many seconds; an attempt that failed is not
 // repeated, since the kernel fails the same way again.
 const _RETRY_SECONDS = 10.0
+
+// A sharp offset may reach this many times farther than its first-order reach (see
+// Part._sharpOffsetReach) before it is refused: curved faces extended past an edge bend away from
+// their tangent planes (two spherical caps offset by 1 reached 0.98 of it). The reach counts up to
+// _SHARP_OFFSET_REACH (an edge of 4.6 degrees): beyond that, and at faces that meet back to back, a
+// sharp offset is refused where it reaches farther (corners: "round" builds such parts).
+const _SHARP_OFFSET_SLACK = 1.25
+const _SHARP_OFFSET_REACH = 25.0
 
 // Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
 const INTERNAL = Symbol('smlibwasm.internal')
@@ -2150,13 +2159,22 @@ function _sameVertices(a: _Body, b: _Body, tol: number): boolean {
   return pa.every((c) => around.some(([i, j, m]) => cells.has(`${c[0] + i},${c[1] + j},${c[2] + m}`)))
 }
 
-/** What is wrong with the result of a shell or an offset (see `Part._checked`), or null. */
-export function _offsetProblem(result: Part, box: BoundBox, tol: number, before: number, smaller: boolean | null): string | null {
+/** What is wrong with the result of a shell or an offset (see `Part._checked`), or null. `wider` gives
+ * the box's margin for a result that reaches beyond `tol` (computed only then). */
+export function _offsetProblem(
+  result: Part,
+  box: BoundBox,
+  tol: number,
+  before: number,
+  smaller: boolean | null,
+  wider: (() => number) | null = null,
+): string | null {
   const problem = result._solidProblem()
   if (problem !== null) return `a body that is ${problem}`
   const rb = result.bbox()
   const [lo, hi, rlo, rhi] = [box.min.toArray(), box.max.toArray(), rb.min.toArray(), rb.max.toArray()]
-  if ([0, 1, 2].some((i) => rlo[i] < lo[i] - tol || rhi[i] > hi[i] + tol)) return 'a body that reaches out of the box it must fit in'
+  const reachesOut = (margin: number): boolean => [0, 1, 2].some((i) => rlo[i] < lo[i] - margin || rhi[i] > hi[i] + margin)
+  if (reachesOut(tol) && (wider === null || reachesOut(wider()))) return 'a body that reaches out of the box it must fit in'
   const p = result._props(1e-4)
   if (!(p.gaps < _OFFSET_GAPS)) return `a body whose faces do not meet, so that its volume is uncertain by ${_formatE(p.gaps, 1)} of its value`
   const after = Number(p.volume)
@@ -2496,6 +2514,12 @@ export interface FilletOptions {
    * kernel then fails, the error names a selected edge that runs on tangentially into one that is
    * not selected (the kernel cannot always round such an edge alone). Default true. */
   propagate?: boolean
+  /** Where three rounded edges meet: "patch" (the default) joins their rounds with a corner patch (a
+   * ball corner where the radii are equal); "mitre" runs the rounds on until they meet each other,
+   * along mitre lines without a patch (the look of a machined part). Mitred are the corners where
+   * three rounded convex edges meet and no other edge; a selection without such a corner throws a
+   * RangeError. */
+  corners?: string
 }
 
 /** Which edges a chamfer bevels. */
@@ -2513,6 +2537,10 @@ export interface ChamferOptions {
    * `fillet` does; `false` bevels the selected edges only. The edges a run adds must lie on a
    * reference face too. Default true. */
   propagate?: boolean
+  /** The corners where three bevelled edges meet, as for `fillet`: "patch" (the default) cuts them off
+   * with a corner face, "mitre" runs the bevels on until they meet (the corners of three bevelled
+   * convex edges and no other edge). */
+  corners?: string
 }
 
 /**
@@ -3178,13 +3206,18 @@ export class Part extends _Body {
    *   (where they differ: circular rounds only, not on closed edges or on edges that run into each
    *   other tangentially). An array with one radius per edge rounds edges differently.
    *
+   * Where three rounds meet, the corner patch is tangent continuous (G1) only, also with
+   * `continuity: "G2"` or `"G3"`: zebra stripes kink there (the kernel's corner patches are G1
+   * whatever the continuity of the rounds).
+   *
    * A round the kernel cannot build throws a KernelError naming the corner or edge its fillet code
    * could not build, where it recorded one.
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
-    const { continuity = null, fullness = 1.0, propagate = true } = options
+    const { continuity = null, fullness = 1.0, propagate = true, corners = 'patch' } = options
     this._requireValid('fillet')
+    const mitre = _cornerStyle('fillet', corners)
     const varying = typeof radius === 'object' && !Array.isArray(radius) && !ArrayBuffer.isView(radius) ? (radius as { start: number; end: number }) : null
     const list = Array.isArray(radius) || ArrayBuffer.isView(radius) ? Array.from(radius as ArrayLike<number>, Number) : null
     const given = varying ? [varying.start, varying.end].map(Number) : list ?? [Number(radius)]
@@ -3213,6 +3246,7 @@ export class Part extends _Body {
     else if (perEdge) radii = perEdge
     else radii = new Array(sel.length).fill(Number(radius))
     this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
+    if (mitre) _requireMitredCorners('fillet', sel)
     const cont = _continuity(continuity)
     const hint = 'the radius may be too large for the selected edges'
     const section = cont === null ? 1 : 2 // circular, or a blend curve
@@ -3226,11 +3260,17 @@ export class Part extends _Body {
               law: [Number(varying.start), Number(varying.end)],
               continuity: cont || 1,
               toleranceFactor: factor,
+              mitre,
             })
           } else if (perEdge) {
-            _roundEdges('fillet', hint, h.brep, kedges, sel, perEdge, new Array(kedges.length).fill(section), { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor })
+            _roundEdges('fillet', hint, h.brep, kedges, sel, perEdge, new Array(kedges.length).fill(section), {
+              continuity: cont || 1,
+              thumbweight: fullness,
+              toleranceFactor: factor,
+              mitre,
+            })
           } else {
-            _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(radius)], [section], { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor })
+            _roundEdges('fillet', hint, h.brep, kedges, sel, [Number(radius)], [section], { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor, mitre })
           }
         },
         hint,
@@ -3258,11 +3298,16 @@ export class Part extends _Body {
    * `propagate` bevels the edges that continue the selected ones tangentially too
    * (`Edge.tangentChain`), as `fillet` does; `false` bevels the selected edges only. The edges a run
    * adds must lie on a reference face too.
+   *
+   * `corners` sets the corners where three bevelled edges meet, as for `fillet`: "patch" cuts them off
+   * with a corner face, "mitre" runs the bevels on until they meet (the corners of three bevelled
+   * convex edges and no other edge).
    */
   chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part {
     _opts('Part.chamfer', options)
-    const { length2 = null, angle = null, reference = null, propagate = true } = options
+    const { length2 = null, angle = null, reference = null, propagate = true, corners = 'patch' } = options
     this._requireValid('chamfer')
+    const mitre = _cornerStyle('chamfer', corners)
     length = Number(length)
     if (!(length > 0)) throw new RangeError('chamfer: the length must be positive')
     if (length2 != null && angle != null) throw new RangeError('chamfer: give length2 or angle, not both')
@@ -3329,46 +3374,182 @@ export class Part extends _Body {
       }
     }
     this._checkRoundSizes(sel, setbacks, 'chamfer', 'length')
+    if (mitre) _requireMitredCorners('chamfer', sel)
     const hint = 'the length may be too large for the selected edges'
     // (the volume bound of a bevel is its triangle, half the product of its setbacks)
     const sizes = setbacks.map((b) => (typeof b === 'number' ? b : Math.sqrt([...b.values()].reduce((x, y) => x * y, 1))))
-    const attempt = (factor: number): Part => {
-      let h: BrepHandle
-      if (two) {
-        const [copy, kfaces, kedges] = ext.copy_with_map(this._brep, firsts, this._ownEdges(sel), [])
-        h = new BrepHandle(copy)
-        Part._rounding('chamfer', () => _roundEdges('chamfer', hint, h.brep, [...kedges], sel, radii, [0], { radii2, faces: [...kfaces], toleranceFactor: factor }), hint, sel, propagate)
-      } else {
-        let kedges: number[]
-        ;[h, kedges] = this._withEdges(sel)
-        Part._rounding(
+    const bevel = (keep: readonly number[]): Part => {
+      // the kernel's bevels of the edges sel[i], i in keep
+      const edges = keep.map((i) => sel[i])
+      const rs = keep.map((i) => radii[i])
+      const attempt = (factor: number): Part => {
+        let h: BrepHandle
+        if (two) {
+          const [copy, kfaces, kedges] = ext.copy_with_map(
+            this._brep,
+            keep.map((i) => firsts[i]),
+            this._ownEdges(edges),
+            [],
+          )
+          h = new BrepHandle(copy)
+          Part._rounding(
+            'chamfer',
+            () => _roundEdges('chamfer', hint, h.brep, [...kedges], edges, rs, [0], { radii2: keep.map((i) => radii2[i]), faces: [...kfaces], toleranceFactor: factor, mitre }),
+            hint,
+            edges,
+            propagate,
+          )
+        } else {
+          let kedges: number[]
+          ;[h, kedges] = this._withEdges(edges)
+          Part._rounding(
+            'chamfer',
+            () => {
+              if (rs.every((r) => Math.abs(r - rs[0]) < 1e-12)) {
+                _roundEdges('chamfer', hint, h.brep, kedges, edges, [rs[0]], [0], { toleranceFactor: factor, mitre })
+              } else {
+                // per-edge radii with a linear cross-section, in one call: a call per edge replaces
+                // the edges next to it, and the next call would use freed edges
+                _roundEdges('chamfer', hint, h.brep, kedges, edges, rs, new Array(kedges.length).fill(0), { toleranceFactor: factor, mitre })
+              }
+            },
+            hint,
+            edges,
+            propagate,
+          )
+        }
+        const result = this._like(_take(h))
+        this._checkVolumeChange(
+          result,
+          edges,
           'chamfer',
-          () => {
-            if (radii.every((r) => Math.abs(r - radii[0]) < 1e-12)) {
-              _roundEdges('chamfer', hint, h.brep, kedges, sel, [radii[0]], [0], { toleranceFactor: factor })
-            } else {
-              // per-edge radii with a linear cross-section, in one call: a call per edge replaces
-              // the edges next to it, and the next call would use freed edges
-              _roundEdges('chamfer', hint, h.brep, kedges, sel, radii, new Array(kedges.length).fill(0), { toleranceFactor: factor })
-            }
-          },
-          hint,
-          sel,
-          propagate,
+          keep.map((i) => sizes[i]),
+          'chamfer',
         )
+        return result
       }
-      const result = this._like(_take(h))
-      this._checkVolumeChange(result, sel, 'chamfer', sizes, 'chamfer')
-      return result
+      try {
+        return _withFinerRounds(attempt)
+      } catch (e) {
+        if (!(e instanceof ModelingError) || backwards === null) throw e // (a KernelError is a ModelingError)
+        const error = new ModelingError(backwards)
+        ;(error as Any).cause = e
+        throw error
+      }
     }
-    try {
-      return _withFinerRounds(attempt)
-    } catch (e) {
-      if (!(e instanceof ModelingError) || backwards === null) throw e // (a KernelError is a ModelingError)
-      const error = new ModelingError(backwards)
-      ;(error as Any).cause = e
-      throw error
+    const everything = sel.map((_, i) => i)
+    const cones = this._conicalBevels(sel, setbacks)
+    if (cones.size) {
+      // the kernel's bevels of the other edges, then the exact ones; where one of those does not take what
+      // it should (other material in its way), the kernel bevels all
+      const rest = everything.filter((i) => !cones.has(i))
+      const result = rest.length ? bevel(rest) : this._like(this._copyBrep())
+      const applied = result._appliedBevels([...cones.values()])
+      if (applied !== null) return applied
+      return bevel(everything)
     }
+    return bevel(everything)
+  }
+
+  /**
+   * The exact bevels of the closed circular `edges` between faces coaxial with them (a plane at right
+   * angles to the axis, a cylinder or a cone around it, a face of a revolve whose meridian is straight
+   * there), by index: the solid of revolution each cuts off
+   * (a convex edge) or fills in (a concave edge), its volume, and whether it fills in. `setbacks` holds
+   * each edge's setback, or its setbacks by face. The kernel fits such bevels with B-splines (volumes off
+   * by up to 1e-5 of the part's); this one is a surface of revolution of the bevel's line, exact.
+   */
+  _conicalBevels(edges: readonly Edge[], setbacks: readonly (number | Map<string, number>)[]): Map<number, [Part, number, boolean]> {
+    const out = new Map<number, [Part, number, boolean]>()
+    edges.forEach((e, i) => {
+      if (!(e.isClosed && e.geomType === 'circle')) return
+      const fs = [...e.faces()]
+      const kind = e.convexity
+      if (fs.length !== 2 || (kind !== 'convex' && kind !== 'concave')) return
+      const center = e.arcCenter
+      const axis = e.normal.normalized()
+      const near = 1e-9 * Math.max(e.radius, 1)
+      for (const f of fs) {
+        if (f.geomType !== 'plane' && f.geomType !== 'cylinder' && f.geomType !== 'cone' && f.geomType !== 'revolution') return
+        if (f.geomType === 'revolution') continue // (no axis to read: sampled below)
+        const placement = f._surfaceInfo().placement
+        if (!(Math.abs(new Vector(placement.z_dir).normalized().dot(axis)) > 1 - 1e-12)) return
+        const off = new Vector(placement.origin).sub(center)
+        if (f.geomType !== 'plane' && off.sub(axis.mul(off.dot(axis))).length > near) return
+      }
+      const setback = setbacks[i]
+      const s = fs.map((f) => (typeof setback === 'number' ? setback : Number(setback.get(f._identity()))))
+      const c = e.pointAt(0)
+      const t = e.tangentAt(0)
+      const normals = fs.map((f) => f.normalAt(c))
+      const ways = [0, 1].map((j) => {
+        // into each face, at right angles to the edge
+        const w = normals[j].cross(t).normalized()
+        return w.dot(normals[1 - j]) < 0 !== (kind === 'convex') ? w.neg() : w
+      })
+      if (!fs.every((f, j) => f.geomType !== 'revolution' || _straightAround(f, center, axis, c, ways[j].mul(s[j]), normals[j]))) return
+      const q = c.sub(center)
+      const radial = q.sub(axis.mul(q.dot(axis))).normalized()
+      const rz = (p: Vector): [number, number] => [p.sub(center).dot(radial), p.sub(center).dot(axis)]
+      const corner = rz(c)
+      const p1 = rz(c.add(ways[0].mul(s[0])))
+      const p2 = rz(c.add(ways[1].mul(s[1])))
+      // the bevel's line runs on a little past both faces, and the profile closes beyond the edge, so
+      // that the tool meets the faces only along the bevel (no faces on faces)
+      let ext_ = 0.25
+      for (const [a, b] of [
+        [p1, p2],
+        [p2, p1],
+      ]) {
+        if (a[0] < b[0]) ext_ = Math.min(ext_, (0.5 * a[0]) / (b[0] - a[0]))
+      }
+      const m = [0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1])]
+      const profile: [number, number][] = [
+        [p1[0] + (p1[0] - p2[0]) * ext_, p1[1] + (p1[1] - p2[1]) * ext_],
+        [p2[0] + (p2[0] - p1[0]) * ext_, p2[1] + (p2[1] - p1[1]) * ext_],
+        [2 * corner[0] - m[0], 2 * corner[1] - m[1]],
+      ]
+      if (Math.min(p1[0], p2[0], profile[2][0]) <= near || ext_ <= 1e-3) return // (the bevel reaches the axis)
+      const area = 0.5 * Math.abs((p1[0] - corner[0]) * (p2[1] - corner[1]) - (p1[1] - corner[1]) * (p2[0] - corner[0]))
+      const volume = ((2 * Math.PI * (corner[0] + p1[0] + p2[0])) / 3) * area
+      const plane = new Plane(center, radial, radial.cross(axis)) // (its y direction is the axis)
+      let tool: Part
+      try {
+        tool = Polygon(...profile)
+          .on(plane)
+          .revolve(new Axis(center, axis), 360)
+      } catch (err) {
+        if (!(err instanceof ModelingError)) throw err
+        return
+      }
+      out.set(i, [tool, volume, kind === 'concave'])
+    })
+    return out
+  }
+
+  /** The part with the `tools` of `_conicalBevels` cut away, and those that fill fused on (each kind in
+   * one Boolean), or null where that does not change the volume by the tools' bevels (other material in
+   * their way). */
+  _appliedBevels(tools: readonly [Part, number, boolean][]): Part | null {
+    let result: Part = this
+    for (const fills of [false, true]) {
+      const group = tools.filter(([, , f]) => f === fills)
+      if (!group.length) continue
+      const before = Number(result._props(1e-6).volume)
+      let after: Part
+      try {
+        after = fills ? result.fuse(group.map(([t]) => t)) : result.cut(group.map(([t]) => t))
+      } catch (err) {
+        if (!(err instanceof ModelingError)) throw err
+        return null
+      }
+      if (after._solidProblem() !== null) return null
+      const change = Math.abs(Number(after._props(1e-6).volume) - before)
+      const volume = group.reduce((sum, [, v]) => sum + v, 0)
+      if (!(Math.abs(change - volume) <= 1e-6 * volume + 1e-10 * Math.abs(before))) return null
+      result = after // (a Boolean keeps the name and the color of its first operand)
+    }
+    return result
   }
 
   /**
@@ -3705,30 +3886,104 @@ export class Part extends _Body {
   /** Grow (positive) or shrink (negative) the part by `distance` everywhere (0 gives an equal
    * copy).
    *
+   * `corners: "sharp"` (the default) moves each face by `distance` and extends the faces until they
+   * meet again: edges and corners stay sharp, and an edge whose faces meet at an angle `a` moves out
+   * by `distance / sin(a / 2)`. `"round"` rolls a ball of radius `distance` along the part: where
+   * faces grow apart (the convex edges and corners of a growing part) it fills in cylinders and
+   * spheres, so that every point of the result lies at `distance` from the part (a clearance body,
+   * the skin of an overmould). Shrinking with `"round"` rounds the concave edges, which grow apart
+   * inward; the convex ones stay sharp. The sharp mode fails where faces would vanish or cross (an
+   * acute wedge, a hole that closes, a groove narrower than twice the distance); the rounded mode
+   * builds those.
+   *
    * Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) throw a
    * ModelingError. The kernel step runs in the probe worker and is stopped after `GUARD_SECONDS`
    * (20 s), as for `shell`. */
-  offset(distance: number): Part {
+  offset(distance: number, options: { corners?: string } = {}): Part {
+    _opts('Part.offset', options)
+    const { corners = 'sharp' } = options
+    if (corners !== 'sharp' && corners !== 'round') throw new RangeError(`offset: corners must be "sharp" or "round" for a part, not '${corners}'`)
     this._requireValid('offset')
     const d = Number(distance)
     if (d === 0) return this._like(this._copyBrep())
-    const work = (): number => kernelCall('offset', () => k.offset_brep(this._brep, d))
-    // (always the extended mode, which depends on memory layout and can crash: it runs in the probe
-    // worker, smlibpy: in a copy of its process)
-    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: true } })))
+    const extended = corners === 'sharp' // (the kernel's extended mode extends the faces, the other one rolls)
+    const hint = extended
+      ? 'try a smaller distance, or corners="round", which rounds the edges whose faces grow apart instead of extending the faces (it builds acute wedges and holes that close)'
+      : 'try a smaller distance'
+    const work = (): number => kernelCall('offset', () => k.offset_brep(this._brep, d, { extended_offset: extended }), hint)
+    // (the kernel's offset code can crash, mostly in its extended mode, which depends on memory layout:
+    // it runs in the probe worker, smlibpy: in a copy of its process)
+    const attempt = (): Part =>
+      this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended } }), hint))
+    if (!extended) {
+      // every point lies at |d| from the part: in its box grown by d; a repeat gives the same
+      return this._checked('offset', [[false, attempt]], { grow: Math.max(d, 0), smaller: d < 0, hint })
+    }
+    // the sharp mode moves edges and corners farther than d (a cone's base edge by d / sin(a / 2))
+    const wider = d > 0 ? (): number => d * _SHARP_OFFSET_SLACK * Math.min(this._sharpOffsetReach(), _SHARP_OFFSET_REACH) : null
     return this._checked(
       'offset',
       [
         [true, attempt],
         [true, attempt],
       ],
-      { grow: Math.max(d, 0), smaller: d < 0 },
+      { grow: Math.max(d, 0), wider, smaller: d < 0, hint },
     )
   }
 
+  /** How far a sharp offset by 1 (the kernel's extended mode) moves the points of the part, to first
+   * order: 1 on its faces; 1 / cos(t / 2) at an edge whose face normals are t apart (sampled at 5
+   * points along it); and at a vertex, the point where the moved tangent planes of three of its faces
+   * meet (each three whose normals span space). Infinite at an edge whose faces meet back to back. */
+  _sharpOffsetReach(): number {
+    let reach = 1
+    for (const e of this.edges()) {
+      const fs = e.faces()
+      if (fs.length !== 2) continue
+      for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+        const p = e.pointAt(t)
+        let c: number
+        try {
+          c = fs[0].normalAt(p).dot(fs[1].normalAt(p))
+        } catch (err) {
+          if (!(err instanceof KernelError || _isValueError(err))) throw err
+          continue // (the apex of a cone)
+        }
+        if (1 + c < 1e-12) return Infinity
+        reach = Math.max(reach, Math.sqrt(2 / (1 + c)))
+      }
+    }
+    for (const v of this.vertices()) {
+      const normals: Vector[] = []
+      for (const f of v.faces()) {
+        let n: Vector
+        try {
+          n = f.normalAt(v.point)
+        } catch (err) {
+          if (!(err instanceof KernelError || _isValueError(err))) throw err
+          continue
+        }
+        if (normals.every((m) => n.dot(m) < 1 - 1e-9)) normals.push(n)
+      }
+      for (let i = 0; i < normals.length; i++) {
+        for (let j = i + 1; j < normals.length; j++) {
+          for (let m = j + 1; m < normals.length; m++) {
+            // the point x with a.x = b.x = c.x = 1
+            const [a, b, c] = [normals[i], normals[j], normals[m]]
+            const [bc, ca, ab] = [b.cross(c), c.cross(a), a.cross(b)]
+            const det = a.dot(bc)
+            if (Math.abs(det) > 1e-6) reach = Math.max(reach, bc.add(ca).add(ab).div(det).length)
+          }
+        }
+      }
+    }
+    return reach
+  }
+
   /** The first result of `attempts` that passes the checks: a valid solid within the part's box
-   * (grown by `grow`), whose faces meet (gaps below _OFFSET_GAPS), whose volume went down
-   * (`smaller`), up (`smaller: false`) or changed (null), and in which `problem` finds nothing wrong.
+   * (grown by `grow`, or by what `wider` gives, asked only for a result beyond that), whose faces meet
+   * (gaps below _OFFSET_GAPS), whose volume went down (`smaller`), up (`smaller: false`) or changed
+   * (null), and in which `problem` finds nothing wrong.
    *
    * Each attempt is a mode (the kernel's extended offset mode or not) and a function that makes the
    * result. An attempt in the mode of the one before runs only when that one's result was refused,
@@ -3738,11 +3993,19 @@ export class Part extends _Body {
   _checked(
     name: string,
     attempts: readonly [boolean, () => Part][],
-    options: { grow: number; smaller: boolean | null; problem?: ((result: Part, extended: boolean) => string | null) | null; hint?: string },
+    options: {
+      grow: number
+      smaller: boolean | null
+      problem?: ((result: Part, extended: boolean) => string | null) | null
+      hint?: string
+      wider?: (() => number) | null
+    },
   ): Part {
-    const { grow, smaller, problem = null, hint = 'try a smaller value' } = options
+    const { grow, smaller, problem = null, hint = 'try a smaller value', wider = null } = options
     const box = this.bbox()
     const tol = 1e-6 * Math.max(box.diagonal, 1) + grow
+    let margin: number | null = null // (wider's, once asked)
+    const wide = wider === null ? null : (): number => (margin ??= 1e-6 * Math.max(box.diagonal, 1) + wider())
     const before = Number(this._props(1e-4).volume)
     const start = Date.now()
     let error: KernelError | null = null
@@ -3762,7 +4025,7 @@ export class Part extends _Body {
         continue
       }
       last = [mode, false]
-      const why = _offsetProblem(result, box, tol, before, smaller) ?? (problem ? problem(result, mode) : null)
+      const why = _offsetProblem(result, box, tol, before, smaller, wide) ?? (problem ? problem(result, mode) : null)
       if (why === null) return result
       refused ??= why
       result.dispose()
@@ -4361,12 +4624,20 @@ function _roundEdges(
   edges: readonly Edge[],
   radii: readonly number[],
   sections: readonly number[],
-  options: { radii2?: readonly number[]; faces?: readonly number[]; law?: readonly number[]; continuity?: number; thumbweight?: number; toleranceFactor?: number } = {},
+  options: {
+    radii2?: readonly number[]
+    faces?: readonly number[]
+    law?: readonly number[]
+    continuity?: number
+    thumbweight?: number
+    toleranceFactor?: number
+    mitre?: boolean
+  } = {},
 ): void {
-  const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0 } = options
+  const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0, mitre = false } = options
   const record = kernelCall(
     operation,
-    () => ext.round_edges(brep, [...kedges], radii.map(Number), sections.map(Number), radii2.map(Number), [...faces], law.map(Number), continuity, thumbweight, toleranceFactor),
+    () => ext.round_edges(brep, [...kedges], radii.map(Number), sections.map(Number), radii2.map(Number), [...faces], law.map(Number), continuity, thumbweight, toleranceFactor, mitre),
     hint,
   )
   const status = record.status
@@ -4376,6 +4647,64 @@ function _roundEdges(
   const error = new KernelError(operation, detail, status, where ? `the kernel could not build ${where}; ${hint}` : hint)
   ;(error as Any)._where = where
   throw error
+}
+
+/** Whether `face` runs straight from `start` (on a circle about `axis` through `center`) by `step`, with the
+ * `normal` it has at `start`, all around the axis: a surface of revolution about it whose meridian is
+ * straight there (sampled halfway and at the end, at four angles). */
+function _straightAround(face: Face, center: Vector, axis: Vector, start: Vector, step: Vector, normal: Vector): boolean {
+  const near = 1e-7 * Math.max(start.distanceTo(center), step.length, 1)
+  const turned = (v: Vector, quarter: number): Vector => {
+    // (by quarter turns about the axis)
+    const along = axis.mul(v.dot(axis))
+    const across = v.sub(along)
+    return along.add(quarter === 0 ? across : quarter === 1 ? axis.cross(across) : quarter === 2 ? across.neg() : axis.cross(across).neg())
+  }
+  for (let quarter = 0; quarter < 4; quarter++) {
+    const n = turned(normal, quarter)
+    for (const k of [0.5, 1]) {
+      const p = center.add(turned(start.add(step.mul(k)).sub(center), quarter))
+      try {
+        if (face.distanceTo(p) > near || face.normalAt(p).dot(n) < 1 - 1e-9) return false
+      } catch (err) {
+        if (!(err instanceof KernelError || _isValueError(err))) throw err
+        return false
+      }
+    }
+  }
+  return true
+}
+
+/** Whether `corners` (of `Part.fillet` or `Part.chamfer`) asks for mitred corners. */
+function _cornerStyle(operation: string, corners: string): boolean {
+  if (corners !== 'patch' && corners !== 'mitre') throw new RangeError(`${operation}: corners must be "patch" or "mitre", not '${corners}'`)
+  return corners === 'mitre'
+}
+
+/** The corners `corners: "mitre"` mitres: where three of `edges` meet, all convex, and no other edge
+ * (the kernel mitres those only: SmFilletConvexNxNCorner). */
+export function _mitredCorners(edges: readonly Edge[]): Vector[] {
+  const rounded = new Set(edges.map((e) => e._identity()))
+  const seen = new Set<string>()
+  const out: Vector[] = []
+  for (const e of edges) {
+    for (const v of e.vertices()) {
+      if (seen.has(v._identity())) continue
+      seen.add(v._identity())
+      const at = [...v.edges()]
+      if (at.length === 3 && at.every((x) => rounded.has(x._identity())) && at.every((x) => x.convexity === 'convex')) out.push(v.point)
+    }
+  }
+  return out
+}
+
+/** Throw where `corners: "mitre"` would mitre no corner of the rounded `edges`. */
+function _requireMitredCorners(operation: string, edges: readonly Edge[]): void {
+  if (!_mitredCorners(edges).length) {
+    throw new RangeError(
+      `${operation}: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`,
+    )
+  }
 }
 
 export function _continuity(c: number | string | null | undefined): number | null {

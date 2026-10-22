@@ -223,7 +223,7 @@ for (const text of ['@&8', 'Qq%', '(', 'SMLIB 42']) {
 
 for (const [name, make, volume] of [
   ['spring', spring, 2170.0811],
-  ['flange', flange, 157979.623],
+  ['flange', flange, 157979.6668],
 ] as const) {
   test(`the ${name} example against a tight integration`, () => {
     // the kernel's integration was 2.9e-5 (spring) and 8e-7 (flange) off at the default
