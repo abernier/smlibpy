@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import ts from 'typescript'
 import { runInNewContext } from 'node:vm'
 import * as api from '../src/index.ts'
-import { Align, Axis, Box, Lattice, Profile, Rectangle, fold, offset } from '../src/index.ts'
+import { Align, Axis, Box, Lattice, Line, Polyline, Profile, Rectangle, fold, offset } from '../src/index.ts'
 import { OPTIONS } from '../src/_options.ts'
 import { approx } from './_approx.ts'
 
@@ -65,6 +65,9 @@ function call(name: string, options: Record<string, unknown>): unknown {
     Sketch: () => Rectangle(10, 10),
     Profile: () => new Profile(),
     Lattice: () => new Lattice(Box(10, 10, 10)),
+    Edge: () => Line([0, 0], [10, 0]),
+    Wire: () => Polyline([0, 0], [10, 0], [10, 10]),
+    Face: () => Box(10, 10, 10).faces()[0],
     _Body: () => Box(10, 10, 10), // (named, colored: methods of every body)
   }
   assert.ok(cls in samples, `no sample of a ${cls}`)

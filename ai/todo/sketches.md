@@ -144,6 +144,9 @@
 ## LOW
 
 ### 19. `create_offset_profile` refuses open curves
+- **Worked around:** `Wire.offset` / `Edge.offset` offset open wires (lines and arcs exactly, splines and
+  ellipses within 1e-6 of the size), and `Stroke` builds bands along splines from them (kernel plan C7);
+  the kernel call itself still refuses open curves.
 - **Session:** `2026-10-13_00-42-19_sketches-profiles`
 - **What happens:** `k.create_offset_profile([line], 3, offset_type=BOTH)` raises `SM_ERR` for an open line or
   polyline (its docstring promises a two-sided band). `Stroke` builds bands of lines and arcs itself.

@@ -195,7 +195,7 @@ test('sheets and faces offset along their normals', () => {
   const skin = surface([0, 10, 20, 30].map((y) => [0, 10, 20, 30].map((x) => [x, y, 3 * Math.sin(x / 10)]))) as Shell
   assert.throws(() => skin.offset(50), { name: 'ModelingError', message: /lies nowhere at 50/ })
   assert.throws(() => side.offset(-6), { name: 'KernelError', message: /cannot offset this sheet/ })
-  assert.throws(() => offset(Line([0, 0, 0], [1, 0, 0]) as never, 1), { name: 'TypeError', message: /offset takes a part, a sketch, a sheet/ })
+  assert.throws(() => offset(Box(1, 1, 1).vertices()[0] as never, 1), { name: 'TypeError', message: /offset takes a part, a sketch, a sheet/ }) // (edges and wires offset too)
   approx(thicken(half, 2, { both: true }).volume, (Math.PI * (11 ** 2 - 9 ** 2)) / 2 * 20, 1e-6)
   assert.throws(() => thicken(half, 2, { bth: true } as never), { name: 'TypeError' })
 })

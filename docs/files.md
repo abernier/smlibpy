@@ -199,6 +199,14 @@ sketch in another plane is drawn in that plane's own coordinates, and `plane=` c
 explicitly. A shape's name becomes its layer. `unit` converts the millimeters of the model, as
 it does for STEP, and the file declares its unit in `$INSUNITS`.
 
+Some cutting software reads only lines and arcs. `curves="arcs"` writes splines and ellipses as
+LINE and ARC entities within `tolerance` (0.01 mm by default), joined tangentially
+(`Edge.to_arcs`); lines, arcs and circles stay as they are:
+
+```python
+export_dxf(Ellipse(40, 20) - Circle(5), "plate.dxf", curves="arcs")   # 48 arcs and a circle
+```
+
 `import_dxf` reads the closed outlines of a drawing as a sketch, in millimeters and at the
 drawing's coordinates:
 

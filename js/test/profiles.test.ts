@@ -547,9 +547,9 @@ const cornerErrors: [string, () => unknown, abstract new (...args: never[]) => E
   ['a smooth corner', () => Slot(30, 10).fillet(1, [[10, 5]]), ModelingError, /is smooth/],
   [
     'a corner of a spline',
-    () => makeFace(Spline([0, 0], [10, 5], [20, 0], { tangents: [[0, 1], [0, -1]] }).add(Line([20, 0], [0, 0]))).fillet(1),
+    () => makeFace(Spline([0, 0], [10, 5], [20, 0], { tangents: [[0, 1], [0, -1]] }).add(Line([20, 0], [0, 0]))).fillet(3),
     ModelingError,
-    /works on corners between lines and arcs/,
+    /no arc of radius 3 touches both segments/, // (OpenCASCADE finds none either; 2.5 fits)
   ],
   ['a zero radius', () => Rectangle(10, 10).fillet(0), RangeError, /must be positive/],
   ['edges for corners', () => Rectangle(10, 10).fillet(1, Rectangle(10, 10).edges() as unknown as Vertex[]), TypeError, /not as an Edge/],

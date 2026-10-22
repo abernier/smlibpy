@@ -351,8 +351,10 @@ export function ArcSlot(radius: number, width: number, angle: number, options: P
 }
 
 /**
- * The region a pen `width` wide covers along a path of lines and arcs: a slot between two centers
- * (`Stroke(Line(a, b), 6)`), a slot along an arc, a rib from its centerline.
+ * The region a pen `width` wide covers along a path: a slot between two centers
+ * (`Stroke(Line(a, b), 6)`), a slot along an arc, a rib from its centerline, a groove along a
+ * spline. Lines and arcs give exact lines and arcs; splines and ellipses their offsets
+ * (`Edge.offset`), within 1e-6 of the path's size.
  *
  * `ends`: "round" (half circles, the default) or "flat" (cut square at the end points).
  * `corners`: how the outside of a bend is shaped, "round", "sharp" or "chamfer". A closed path

@@ -156,7 +156,53 @@ Sphere(10).silhouette((0, 0, 1))            # outline seen along a direction
 box.project(CenterArc((0, 0, 30), 5, 0, 360), (0, 0, -1))   # curve onto the faces below
 box.outline(Plane.XZ)                       # edges projected to a plane
 Line((0, 0), (10, 10)).intersections(Line((0, 10), (10, 0)))  # [Vector(5, 5, 0)]
+Line((0, 0, -20), (0, 0, 20)).intersections(box)              # where it enters and leaves the box
+Line((0, 0, -20), (0, 0, 20)).intersection_params(box)        # [0.25, 0.75] along the line
 ```
+
+`project` fits its curves within 1e-7 of the size of the body and the curve. It gives pieces on
+every face the direction meets, the far side and faces seen edge-on too; `nearest=True` keeps
+what the curve sees along the direction, cut where another part of the body hides it. A curve
+that misses the body gives an empty list. On a single face, `Face.project` projects along the
+face's normals (each point to its nearest point of the surface), `Face.iso` gives the curves of
+constant surface parameter, and `Face.wrap` lays a flat drawing onto the face keeping its lengths
+along the face's parameter lines, as a label on a can:
+
+```python
+Sphere(10).project(CenterArc((0, 0, 30), 5, 0, 360), nearest=True)   # the top piece only
+side = Cylinder(10, 40).faces().cylinders()[0]
+side.project(Line((-30, -15, 5), (30, -15, -5)))        # onto the cylinder along its normals
+side.iso(v=0.5)                                          # the circle half way up
+side.wrap(Text("SMLIB", 6), (0, -10, 0), direction=(1, 0, 0))   # lettering around the cylinder
+```
+
+`intersections` of an edge or a wire takes edges, wires, faces and bodies, gives the points in
+order along the edge, and an empty list where there are none. A point counts when it lies within
+`tolerance` of the other shape: 1e-6 by default, or 1e-9 of the size of the two where that is
+larger, so lines that miss each other by 0.0005 do not cross. Where two curves overlap, the
+overlap's two ends count; where an edge lies on a face, the points where it starts and stops
+lying on the face. `self_intersections()` gives the points where an edge crosses itself.
+`closest_point(p)` and `param_at(p)` give the nearest point of an edge and its fraction along it.
+
+## Curvature of edges
+
+```python
+s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+s.curvature_at(0.5), s.radius_at(0.5)       # 1/radius and radius at a fraction of the length
+r, t = s.min_radius()                       # 3.9975 at t 0.677: (20.78, -3.17, 0)
+s.inflections()                             # [0.484]: where it changes the side it bends to
+w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
+w.min_radius()                              # a wire: over its edges (corners do not count)
+Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y   # 1.0069: exact boxes of free curves
+```
+
+`min_radius()` is the smallest radius of curvature and where it is, found by the kernel's global
+solver, not by sampling (it agrees with OpenCASCADE to 1e-15): a sweep profile that reaches
+farther from the path than this, or an offset larger than it on the inner side, folds over
+itself. A line gives `(inf, 0.0)`, an arc its radius. Sweep errors about the path's curvature
+give the path's smallest radius, where it is and how far the profile reaches. The box of a free
+curve (one not taken from a body) is exact: its ends, its corners and the points where its
+tangent is perpendicular to an axis.
 
 ## Draft and parting lines
 

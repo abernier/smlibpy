@@ -44,6 +44,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmShell.cpp` | `SmShell::IsInnerShellOf` takes the ray directions from wire and vertex shells from a generator of its own, seeded the same each call | As above (`srand(time(NULL))`). |
 | `SMLib/src/SmCurve.cpp` | `SmCurve::CalculateTightBoundingBox` adds the knots of a B-spline only where they lie in the interval asked for | It added the last knot (and the tangent breaks) wherever they were: the tight box of an edge whose curve runs past the edge reached the curve's end. A box whose line edges a USD file had written over SMLib's unbounded line interval (-1234567 to 1234567) read back with `bbox()` reaching 1234560, in its edges, faces and every body made from it (the WebAssembly build reached that code only now and then and gave the right box). |
 | `SMLib/src/SmPlane.cpp` | `SmPlane::IsNurbSurfacePlane` also requires every control point to be the candidate plane's point at its Greville abscissae, and takes rational surfaces only with equal weights | With `HIGHER_ORDER_USE_ANALYTICS` (`SmPlane.h`) the test compared the surface with the plane at 13 fixed parameters only. A B-spline face parameterized like a plane with a bump between them was taken for a plane, and every copy that adds analytic surfaces flattened it: `SmBrep::CopyFaces` (`Face.to_shell`), the `.smb` reader, the offset code (`Shell.thicken`) and tessellation. Of 40 random single-pole bumps, `to_shell()` flattened 10. |
+| `SMLib/src/SmPrimitiveCreation.cpp` | `SmPrimitiveCreation::Boolean2D` fails with `SM_ERR_BAD_INTERSECTIONS` when an edgeuse of a coincident edge of either operand lies on no face | After intersecting the two regions it classifies the faces along each coincident edge and read the mark of each edgeuse's face; an edge the intersection had left as a wire edge of a shell has edgeuses without a face, and the call read through a null pointer (address 0x38) and killed the process. A 2D union of two exclusive-or sketches whose faces touch at points crashed in 7 of 13 runs, depending on memory layout (`tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash`); in the WebAssembly build such a read does not trap, it reads whatever lies at that address. smlibpy's checked route (C1) then takes its next way, and the union is right in every run. |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
 build:
@@ -140,6 +141,13 @@ build:
 - The tight box: a USD file with such line edges reads back with `bbox()` of +-5, as the box is
   (`tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges`, which also checks that
   smlibpy no longer writes such files).
+- The planar Boolean: the 2D union of two exclusive-or sketches whose faces touch at points (case 16 of 40
+  random ones checked against OpenCASCADE) finishes in 24 of 24 fresh processes with the right area,
+  219.190364 (before: a crash in 7 of 13 runs, in `SmTopology::IsMarked` called from `Boolean2D` with a null
+  face). The 1134 results of the C1 oracle families (exclusive ors, pairs of them, islands, rings and the
+  repros, against OpenCASCADE) are as before: right, except one exclusive or that raises `ModelingError`.
+  AddressSanitizer reports nothing for them; it never takes the crashing path itself (its allocator lays
+  memory out the same way every run), so the null read was located with lldb in the normal build.
 - Both test suites pass.
 
 Defects that remain in the kernel, and what smlibpy does about them:
@@ -244,7 +252,8 @@ When an upstream release fixes a defect:
    `tests/test_io.py::test_usd_line_edges_are_written_as_long_as_the_edges` must still pass; for
    the `ManifoldBoolean` change, nothing for the loops of
    `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel`, which
-   must still pass.
+   must still pass; for the planar Boolean,
+   `tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash` must still pass.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can

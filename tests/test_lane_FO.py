@@ -261,7 +261,7 @@ def test_sheets_and_faces_offset_along_their_normals():
     with pytest.raises(KernelError, match="cannot offset this sheet"):
         side.offset(-6)
     with pytest.raises(TypeError, match="offset takes a part, a sketch, a sheet"):
-        offset(Line((0, 0, 0), (1, 0, 0)), 1)
+        offset(Box(1, 1, 1).vertices()[0], 1)  # (edges and wires offset too, lane C)
     # thicken(..., both=True), the function too
     assert thicken(half, 2, both=True).volume == approx(math.pi * (11 ** 2 - 9 ** 2) / 2 * 20, rel=1e-6)
 

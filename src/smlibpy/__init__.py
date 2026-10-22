@@ -13,17 +13,22 @@ from .deform import Lattice, bend, taper, twist
 from .curves import (
     Bezier,
     CenterArc,
+    ConicArc,
     EllipticalArc,
     FilletPolyline,
     Helix,
+    HyperbolicArc,
     Line,
+    ParabolicArc,
     PolarLine,
     Polyline,
     RadiusArc,
     SagittaArc,
     Spline,
+    Spiral,
     TangentArc,
     ThreePointArc,
+    fit_curve,
     make_compatible,
 )
 from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z
@@ -59,7 +64,8 @@ __all__ = [
     "Mesh",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
-    "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "make_compatible",
+    "EllipticalArc", "Spline", "Bezier", "Helix", "Spiral", "ParabolicArc", "HyperbolicArc", "ConicArc",
+    "FilletPolyline", "fit_curve", "make_compatible",
     # sketches
     "Profile", "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Triangle", "Trapezoid",
     "Slot", "ArcSlot", "Stroke", "Hull", "make_face",

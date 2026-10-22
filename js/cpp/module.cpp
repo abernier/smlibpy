@@ -8,6 +8,7 @@
 //   mesh.cpp           meshes as arrays
 
 #include "common.h"
+#include "curve_tools.h"
 
 #include <SmApiGeneral.h>
 
@@ -20,6 +21,7 @@ static void init()
     {
         SmApiCreateContext();
         install_sm_error_callback();  // the kernel's messages go to the trail errors report
+        smlibpy::init_kernel_limits();  // (NLib's cap on the control points of a helix fit)
         done = true;
     }
 }

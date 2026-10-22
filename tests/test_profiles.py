@@ -411,8 +411,8 @@ def test_corners_selected_by_geometry():
     (lambda: Rectangle(40, 20).fillet(10.5), ModelingError, r"they need 10.5 \+ 10.5 of its 20"),
     (lambda: Slot(30, 10).fillet(1), ModelingError, "no sharp corners"),
     (lambda: Slot(30, 10).fillet(1, [(10, 5)]), ModelingError, "is smooth"),
-    (lambda: make_face(Spline((0, 0), (10, 5), (20, 0), tangents=((0, 1), (0, -1))) + Line((20, 0), (0, 0))).fillet(1),
-     ModelingError, "works on corners between lines and arcs"),
+    (lambda: make_face(Spline((0, 0), (10, 5), (20, 0), tangents=((0, 1), (0, -1))) + Line((20, 0), (0, 0))).fillet(3),
+     ModelingError, "no arc of radius 3 touches both segments"),  # (OpenCASCADE finds none either; 2.5 fits)
     (lambda: Rectangle(10, 10).fillet(0), ValueError, "must be positive"),
     (lambda: Rectangle(10, 10).fillet(1, Rectangle(10, 10).edges()), TypeError, "not as an Edge"),
     (lambda: Box(1, 1, 1).vertices()[0].convexity, ValueError, "corners of a sketch"),

@@ -448,13 +448,53 @@ export class Edge extends Shape {
     center(): Vector;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
-    intersections(other: Edge): Vector[];
+    closestPoint(point: VectorLike | Vertex): Vector;
+    paramAt(point: VectorLike | Vertex): number;
+    trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge;
+    split(at: number | VectorLike | Vertex): [Edge, Edge];
+    extend(distance: number, options?: {
+        end?: string;
+        continuity?: string;
+    }): Edge;
+    intersections(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): Vector[];
+    intersectionParams(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): number[];
+    selfIntersections(options?: {
+        tolerance?: number | null;
+    }): Vector[];
+    curvatureAt(t?: number): number;
+    radiusAt(t?: number): number;
+    minRadius(): [number, number];
+    inflections(): number[];
+    offset(distance: number, options?: {
+        plane?: Plane | null;
+    }): Edge;
+    toArcs(tolerance?: number): Wire;
+    through(point: VectorLike | Vertex, options?: {
+        tangent?: VectorLike | null;
+        at?: number | null;
+    }): Edge;
+    match(options?: {
+        start?: VectorLike | Vertex | null;
+        end?: VectorLike | Vertex | null;
+        startTangent?: VectorLike | null;
+        endTangent?: VectorLike | null;
+    }): Edge;
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
     tangentChain(): ShapeList<Edge>;
     reversed(): Edge;
     nurbs(): Nurbs;
+    static fromNurbs(nurbs: Nurbs | {
+        degree: number;
+        knots: readonly number[];
+        points: readonly VectorLike[];
+        weights?: readonly number[] | null;
+    }): Edge;
     removeKnots(): Edge;
     add(other: Edge | Wire): Wire;
     equals(other: unknown): boolean;
@@ -477,6 +517,18 @@ export class Wire extends Shape {
     pointAt(t?: number): Vector;
     tangentAt(t?: number): Vector;
     distanceTo(point: VectorLike | Shape): number;
+    split(at: number | VectorLike | Vertex): [Wire, Wire];
+    trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Wire;
+    intersections(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): Vector[];
+    toEdge(): Edge;
+    offset(distance: number, options?: {
+        corners?: string;
+        plane?: Plane | null;
+    }): Wire;
+    toArcs(tolerance?: number): Wire;
+    minRadius(): [number, number];
     close(): Wire;
     reversed(): Wire;
     add(other: Edge | Wire): Wire;
@@ -503,6 +555,11 @@ export class Face extends Shape {
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
+    project(curve: Edge | Wire): ShapeList<Edge>;
+    iso(u?: number | null, v?: number | null): ShapeList<Edge>;
+    wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at?: VectorLike | Vertex | null, options?: {
+        direction?: VectorLike | null;
+    }): ShapeList<Edge>;
     outerWire(): Wire;
     innerWires(): ShapeList<Wire>;
     wires(): ShapeList<Wire>;
@@ -691,10 +748,19 @@ export function RadiusArc(start: VectorLike, end: VectorLike, radius: number, pl
 export function SagittaArc(start: VectorLike, end: VectorLike, sagitta: number, plane?: Plane): Edge;
 export function TangentArc(start: VectorLike, end: VectorLike, tangent: VectorLike): Edge;
 export function EllipticalArc(center: VectorLike, xRadius: number, yRadius: number, startAngle?: number, endAngle?: number, plane?: Plane): Edge;
+export function ParabolicArc(vertex: VectorLike, focalLength: number, start: number, end: number, plane?: Plane): Edge;
+export function HyperbolicArc(center: VectorLike, xRadius: number, yRadius: number, start: number, end: number, plane?: Plane): Edge;
+export function ConicArc(start: VectorLike, apex: VectorLike, end: VectorLike, rho?: number): Edge;
 export function Spline(...args: (VectorLike | readonly VectorLike[] | {
-    tangents?: readonly [VectorLike | null, VectorLike | null] | null;
+    tangents?: readonly (VectorLike | null)[] | null;
     closed?: boolean;
 })[]): Edge;
+export function fitCurve(points: Iterable<VectorLike>, options?: {
+    tolerance?: number | null;
+    degree?: number;
+    tangents?: readonly [VectorLike | null, VectorLike | null] | null;
+    closed?: boolean;
+}): Edge;
 export function Bezier(...args: (VectorLike | readonly VectorLike[] | {
     weights?: readonly number[] | null;
 })[]): Edge;
@@ -703,6 +769,9 @@ export function Helix(pitch: number, height: number, radius: number, options?: {
     direction?: Axis | VectorLike;
     endRadius?: number | null;
     leftHanded?: boolean;
+}): Edge;
+export function Spiral(startRadius: number, endRadius: number, turns: number, plane?: Plane, options?: {
+    clockwise?: boolean;
 }): Edge;
 export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | {
     radius: number;
@@ -1176,6 +1245,8 @@ export interface DxfReadOptions {
 export interface DxfWriteOptions {
     unit?: string;
     plane?: Plane | null;
+    curves?: string;
+    tolerance?: number;
 }
 export function importDxfWires(path: string, options?: DxfReadOptions): ShapeList<Wire>;
 export function fromDxfWires(data: string | Uint8Array, options?: DxfReadOptions): ShapeList<Wire>;

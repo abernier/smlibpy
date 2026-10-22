@@ -121,12 +121,14 @@ or intersecting regions that do not meet); extruding an empty sketch raises.
 
 `Hull` makes the convex outline around points and shapes, as if a string were pulled tight
 around them; around circles it follows the arcs exactly. `Stroke` makes the region a pen of
-some width covers along a path of lines and arcs.
+some width covers along a path: lines and arcs exactly, splines and ellipses within 1e-6 of
+the path's size.
 
 ```python
 lever = Hull(Circle(10), Pos(60, 0) * Circle(6)) - Circle(5) - Pos(60, 0) * Circle(3)
 slot = Stroke(Line((10, 5), (40, 20)), 6)                 # a slot between two centers
 rib = Stroke(Polyline((0, 0), (30, 0), (30, 20)), 3, ends="flat", corners="sharp")
+groove = Stroke(Spline((0, 0), (20, 8), (40, 0)), 4)      # area 188.283
 ```
 
 ## Changing a sketch
@@ -154,6 +156,15 @@ angle = angle.chamfer(1, angle.vertices().convex())      # the five outside corn
 tab = Rectangle(30, 10).fillet(5, Rectangle(30, 10).vertices().right())
 ```
 
+Corners next to splines and ellipses are rounded and beveled too: the arc's center lies at the
+radius from both curves, and the curves are cut where it touches them.
+
+```python
+bottle = make_face(Wire([Line((0, 0), (10, 0)), Spline((10, 0), (14, 4), (12, 8), (10, 10)),
+                         Line((10, 10), (0, 10)), Line((0, 10), (0, 0))]))
+rounded = bottle.fillet(2)                                # all four corners, two of them at the spline
+```
+
 `mirror` reflects a sketch about an axis in its plane (or in a plane). The mirrored sketch
 keeps facing the same way, so it extrudes to the same side:
 
@@ -175,7 +186,115 @@ blob = make_face(Spline((0, 0), (10, 5), (0, 10), (-10, 5), closed=True))
 ```
 
 The curve constructors (`Line`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `TangentArc`,
-`Spline`, `Bezier`, ...) are described in the curves guide.
+`Spline`, `Bezier`, ...) are described in the curves guide. Among them are conic arcs and flat
+spirals, exact where NURBS can be (a conic is one rational quadratic), and edges made from NURBS
+data, the inverse of `edge.nurbs()`:
+
+```python
+reflector = ParabolicArc((0, 0), 25, -40, 40)       # y = x^2 / 100 from x = -40 to 40, focus (0, 25)
+waist = HyperbolicArc((0, 0), 10, 20, -30, 30)      # x^2/10^2 - y^2/20^2 = 1; revolve about Y
+blend = ConicArc((0, 0), (10, 0), (10, 10), 0.6)    # a rho conic: 0.5 a parabola, more is fuller
+coil = Spiral(2, 20, 5)                             # flat: from radius 2 to 20 in 5 turns
+n = Spline((0, 0), (10, 5), (20, 0)).nurbs()
+pulled = Edge.from_nurbs(n._replace(points=[*n.points[:2], n.points[2] + Vector(0, 3), *n.points[3:]]))
+```
+
+A closed `Spline` is as smooth at its seam as everywhere else (curvature continuous), and
+splines through thousands of points take milliseconds.
+
+## Cutting, joining and extending curves
+
+Edges and wires are cut where they meet other shapes, trimmed, extended and joined. Positions
+along an edge are fractions of its length, as `point_at` takes them, or points on it; the
+pieces keep their curve, so a trimmed arc is still an arc with its radius and center.
+
+```python
+s = Spline((0, 0), (10, 10), (20, 0))
+x = s.intersections(Line((0, 4), (20, 4)))       # [(2.254, 4, 0), (17.746, 4, 0)]
+left, rest = s.split(x[0])                        # the lengths add up to s.length
+middle = s.trim(x[0], x[1])                       # the arch between the two crossings
+s.param_at(x[0]), s.closest_point((10, 20))      # 0.1553, (10, 10, 0)
+
+arc = CenterArc((0, 0), 10, 0, 180).trim(0.25, 0.75)    # an arc from 45 to 135 degrees
+longer = Line((0, 0), (10, 0)).extend(2, end="both")   # (-2, 0) to (12, 0)
+runout = s.extend(5, end="both", continuity="G1")       # straight on along the end tangents
+
+rail = FilletPolyline((0, 0), (30, 0), (30, 20), radius=5).to_edge()   # one B-spline edge
+a, b = Polyline((0, 0), (10, 0), (10, 10)).split(0.25)  # 5 and 15 long
+```
+
+- `intersections(other)` takes an edge, a wire, a face, a body or a list of them, and gives the
+  points in order along the edge; `intersection_params(other)` gives their fractions, ready for
+  `split` and `trim`. Where two curves run along each other, the overlap's two ends count. No
+  point is an empty list. Points within `tolerance` (1e-6, or 1e-9 of the size of the two
+  where that is larger) count as on the other shape and as one point.
+- `extend` continues lines and arcs (circles, ellipses) as themselves, other curves straight
+  along the end tangent (`continuity="G1"`), with the end curvature (`"G2"`) or as their own
+  polynomial goes on (`"natural"`), by exactly the distance given.
+- `Wire.to_edge()` joins edges that run end to end into one B-spline: a single rail for `sweep`
+  and `loft`, a single SPLINE in DXF.
+
+## Parallel curves, fitted curves, lines and arcs
+
+`offset` moves an edge or a wire sideways in its plane: an open one to its left for a positive
+distance (seen from the side the plane's normal points to; for a wire in XY, from above), a
+closed one outward. Lines and arcs stay exact; splines and ellipses are offset within 1e-6 of
+the wire's size. The corners the offset pulls apart are rounded, extended (`corners="sharp"`)
+or cut (`"chamfer"`), as for sketches; where the sides cross, they are cut there.
+
+```python
+path = Polyline((0, 0), (40, 0), (40, 30))
+wall = path.offset(2)                             # inside the turn: 66 long
+outer = path.offset(-2, corners="sharp")          # outside: 74 long, a sharp corner
+rail = Spline((0, 0), (20, 8), (40, 0)).offset(3) # a parallel spline, 3 to the left
+inner = outline.offset(-1)                        # 1 inside a closed outline
+```
+
+An offset that would fold over itself raises `ModelingError` with the place: a curve that bends
+more tightly than the distance on that side (its smallest radius of curvature, `min_radius()`,
+is below it), an edge that vanishes between two corners, or parts of the wire that lie closer
+together than the distance. The offset of the region a closed wire bounds, which merges and
+drops such parts, is `Sketch.offset`.
+
+`fit_curve` makes a smooth curve near many points, with as few control points as keep it within
+a tolerance of every point: for scans, digitized outlines and sampled curves, where `Spline`
+passes through every point and needs a control point for each. `Spline` also takes a direction
+for every point.
+
+```python
+import math
+scan_points = [(x / 10, 8 * math.sin(x / 90) + 0.01 * math.sin(37.3 * x)) for x in range(600)]
+outline = fit_curve(scan_points, tolerance=0.05)  # 14 control points (Spline: 602)
+s = Spline((0, 0), (10, 0), (20, 10), tangents=[(1, 0), (1, 1), (0, 1)])
+```
+
+`to_arcs` turns an edge or wire into lines and circular arcs within a tolerance (default 0.01
+mm), joined tangentially, for cutters and DXF readers that take only LINE and ARC; `export_dxf(...,
+curves="arcs")` writes splines and ellipses so.
+
+```python
+cut = Spline((0, 0), (10, 5), (20, -3), (30, 4)).to_arcs(0.01)   # 26 arcs (52 for 0.001)
+```
+
+## Editing curves
+
+`through` bends an edge so that it passes through a point (and there in a direction, if
+given), with the smallest move of its control points and its ends and end directions kept;
+`match` moves its ends and sets its directions there, bending the rest smoothly. `Wire.fillet`
+rounds the corners of a wire as `Sketch.fillet` rounds a region's: between lines and arcs
+exactly, next to splines and ellipses through their offsets.
+
+```python
+path = Spline((0, 0), (20, 10), (40, 0))
+higher = path.through((20, 15))                         # through (20, 15), the ends where they were
+level = path.through((20, 15), tangent=(1, 0))          # and running along X there
+snapped = path.match(end=(45, 5), end_tangent=(1, 0))   # the end moved, the shape kept
+route = Wire([Line((0, 0), (10, 0)), ThreePointArc((10, 0), (13, 5), (10, 10)), Line((10, 10), (0, 10))])
+smooth = route.fillet(2)                                # every corner, also those at the arc
+```
+
+A point given to `fillet` that is not a corner, or a corner that is smooth, raises
+`ModelingError`, as for sketches.
 
 ## Placing a sketch
 

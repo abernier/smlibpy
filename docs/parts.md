@@ -178,6 +178,10 @@ bar = sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)        # 
 ribbon = sweep(Line((-5, 0, 0), (5, 0, 0)), Line((0, 0, 0), (0, 0, 100)), twist=lambda s: 360 * s * s)
 ```
 
+A `Helix` takes any number of turns: the kernel fits up to 120 in one go, longer ones in pieces
+of whole turns joined into one edge (`Helix(2, 400, 20)`, 200 turns, is 25135.87 long against
+25135.92 for the exact helix). Sweeps along a helix of radius 20 work up to about 60 turns.
+
 ## Booleans and patterns
 
 ```python

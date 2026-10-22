@@ -1014,7 +1014,10 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
                               "turns about the path as the kernel's frame turns it", RuntimeWarning, stacklevel=2)
             return out
         if len(pieces) < 2:
-            raise
+            bent = _bend_error(err, local, edges, hint)
+            if bent is err:
+                raise
+            raise bent from err
         if closed:
             # A closed path the kernel cannot sweep carried along (the fuse where the halves of a
             # loop closed with a kink cross fails for some loops) is swept as before 0.5.0; a round
@@ -1038,7 +1041,7 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
                     except ModelingError:
                         pass
             if out is None:
-                raise err from None
+                raise _bend_error(err, local, edges, hint) from None
             return out
         # An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet
         # polyline joined into one curve fails at random) is swept edge by edge, each edge turned
@@ -1046,7 +1049,7 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
         try:
             out = _afresh_sweep(local, edges, axes, orient, translational, hint, grow)
         except ModelingError:
-            raise err from None
+            raise _bend_error(err, local, edges, hint) from None
         if not _round(sk, anchor):
             warnings.warn(f"sweep: the profile could not be carried along the path ({err}); each of its "
                           f"{len(edges)} edges was swept turned to its own start instead, so the profile turns "
@@ -1102,6 +1105,26 @@ def _analytic_sweep(sk: Sketch, edge: Edge, turn: bool) -> Part | None:
 # closed with a kink that failed go (circles of radius 1.5 along 60 random loops: all 60, 37 before
 # 0.5.0).
 _SEAM_TURNS = (20.0, -20.0, 45.0, -45.0, 70.0, -70.0, 100.0, -100.0, 135.0, -135.0)
+
+
+def _bend_error(err: ModelingError, local: Sketch, edges: list[Edge], hint: str) -> ModelingError:
+    """A sweep's error about the path's curvature with the numbers: where the path bends most
+    tightly and how far the profile reaches from it (the same error where that is not known)."""
+    if hint not in str(err):
+        return err
+    try:
+        r, t, e = min(((*e.min_radius(), e) for e in edges), key=lambda x: x[0])
+        reach = max(q.point_at(i / 16).length for q in local.edges() for i in range(17))
+    except (ModelingError, ValueError):
+        return err
+    if not math.isfinite(r):
+        return err
+    p = e.point_at(t)
+    detail = (f"the path bends with a radius of {r:.4g} at ({p.x:.4g}, {p.y:.4g}, {p.z:.4g}) (Edge.min_radius), and "
+              f"the profile reaches {reach:.4g} from the path")
+    if isinstance(err, KernelError):
+        return KernelError(err.operation, err.detail, err.status, f"{err.hint}: {detail}" if err.hint else detail)
+    return ModelingError(f"{err}: {detail}")
 
 
 def _carried_sweep(sk: Sketch, local: Sketch, edges: list[Edge], axes: np.ndarray, anchor: np.ndarray, halved: bool,
@@ -1637,13 +1660,15 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
     return part.shell(thickness, openings, outward=outward, corners=corners, walls=walls)
 
 
-def offset(shape: Part | Sketch | Shell | Face, distance: float, **kwargs: Any) -> Any:
+def offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: float, **kwargs: Any) -> Any:
     """Grow or shrink a part or a sketch by ``distance`` (also ``corners``: for a part
     ``"sharp" | "round"``, see :meth:`Part.offset`; for a sketch ``"round" | "sharp" | "chamfer"``,
-    see :meth:`Sketch.offset`), or move a sheet or a face along its normals (:meth:`Shell.offset`,
-    :meth:`Face.offset`: a sheet)."""
+    see :meth:`Sketch.offset`), move a sheet or a face along its normals (:meth:`Shell.offset`,
+    :meth:`Face.offset`: a sheet), or move a wire or an edge sideways (:meth:`Wire.offset`,
+    :meth:`Edge.offset`)."""
     if not callable(getattr(shape, "offset", None)):
-        raise TypeError(f"offset takes a part, a sketch, a sheet (Shell) or a face, not a {type(shape).__name__}")
+        raise TypeError(f"offset takes a part, a sketch, a sheet (Shell), a face, a wire or an edge, not a "
+                        f"{type(shape).__name__}")
     return shape.offset(distance, **kwargs)
 
 

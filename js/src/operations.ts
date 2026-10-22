@@ -1114,7 +1114,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
       }
       return back
     }
-    if (pieces.length < 2) throw err
+    if (pieces.length < 2) throw _bendError(err, local, edges, hint)
     if (closed) {
       // A closed path the kernel cannot sweep carried along (the fuse where the halves of a loop
       // closed with a kink cross fails for some loops) is swept as before 0.5.0; a round profile
@@ -1140,7 +1140,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
           }
         }
       }
-      if (out === null) throw err
+      if (out === null) throw _bendError(err, local, edges, hint)
       return out
     }
     // An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet polyline
@@ -1151,7 +1151,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
       out = _afreshSweep(local, edges, axes, orient, translational, hint, grow)
     } catch (e) {
       if (!(e instanceof ModelingError)) throw e
-      throw err
+      throw _bendError(err, local, edges, hint)
     }
     if (!_round(sk, anchor)) {
       _warn(`sweep: the profile could not be carried along the path (${err.message}); each of its ${edges.length} edges was swept turned to its own start instead, so the profile turns where they meet`)
@@ -1211,6 +1211,32 @@ function _analyticSweep(sk: Sketch, edge: Edge, turn: boolean): Part | null {
 // closed with a kink that failed go (circles of radius 1.5 along 60 random loops: all 60, 37 before
 // 0.5.0).
 const SEAM_TURNS = [20, -20, 45, -45, 70, -70, 100, -100, 135, -135]
+
+/** A sweep's error about the path's curvature with the numbers: where the path bends most tightly and
+ * how far the profile reaches from it (the same error where that is not known). */
+function _bendError(err: ModelingError, local: Sketch, edges: Edge[], hint: string): ModelingError {
+  if (!err.message.includes(hint)) return err
+  let r = Infinity
+  let t = 0
+  let e: Edge = edges[0]
+  let reach = 0
+  try {
+    for (const x of edges) {
+      const [rx, tx] = x.minRadius()
+      if (rx < r) [r, t, e] = [rx, tx, x]
+    }
+    for (const q of local.edges()) for (let i = 0; i <= 16; i++) reach = Math.max(reach, q.pointAt(i / 16).length)
+  } catch (ex) {
+    if (!(ex instanceof ModelingError || ex instanceof RangeError)) throw ex
+    return err
+  }
+  if (!Number.isFinite(r)) return err
+  const p = e.pointAt(t)
+  const g = (v: number) => _formatG(v, 4)
+  const detail = `the path bends with a radius of ${g(r)} at (${g(p.x)}, ${g(p.y)}, ${g(p.z)}) (Edge.minRadius), and the profile reaches ${g(reach)} from the path`
+  if (err instanceof KernelError) return new KernelError(err.operation, err.detail, err.status, err.hint ? `${err.hint}: ${detail}` : detail)
+  return new ModelingError(`${err.message}: ${detail}`)
+}
 
 /** A profile carried along a path: tangent edges in one go, the frame carried across corners (or,
  * with `law`, given by it). */
@@ -1805,15 +1831,25 @@ export function shell(
   return part.shell(thickness, openings, options)
 }
 
+/** Options of the function `offset`: `corners` for a part, a sketch or a wire, `plane` for a wire or an edge. */
+export type OffsetFunctionOptions = { corners?: string; round?: boolean | null; plane?: Plane | null }
 /** Grow or shrink a part or a sketch by `distance` (also the option `corners`: for a part
  * `"sharp" | "round"`, see `Part.offset`; for a sketch `"round" | "sharp" | "chamfer"`, see
- * `Sketch.offset`), or move a sheet or a face along its normals (`Shell.offset`, `Face.offset`: a
- * sheet). */
-export function offset(shape: Part | Sketch | Shell | Face, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch | Shell {
+ * `Sketch.offset`), move a sheet or a face along its normals (`Shell.offset`, `Face.offset`: a
+ * sheet), or move a wire or an edge sideways (`Wire.offset`, `Edge.offset`). */
+export function offset(shape: Part, distance: number, options?: OffsetFunctionOptions): Part
+export function offset(shape: Sketch, distance: number, options?: OffsetFunctionOptions): Sketch
+export function offset(shape: Shell | Face, distance: number, options?: OffsetFunctionOptions): Shell
+export function offset(shape: Wire, distance: number, options?: OffsetFunctionOptions): Wire
+export function offset(shape: Edge, distance: number, options?: OffsetFunctionOptions): Edge
+export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: number, options?: OffsetFunctionOptions): Part | Sketch | Shell | Wire | Edge
+export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: number, options: OffsetFunctionOptions = {}): Part | Sketch | Shell | Wire | Edge {
   if (shape instanceof Sketch) return shape.offset(distance, options)
   if (shape instanceof Part) return shape.offset(distance, options)
+  if (shape instanceof Wire) return shape.offset(distance, options)
+  if (shape instanceof Edge) return shape.offset(distance, options)
   if (typeof (shape as Any)?.offset !== 'function') {
-    throw new TypeError(`offset takes a part, a sketch, a sheet (Shell) or a face, not a ${_typeName(shape)}`)
+    throw new TypeError(`offset takes a part, a sketch, a sheet (Shell), a face, a wire or an edge, not a ${_typeName(shape)}`)
   }
   _opts('Shell.offset', options) // (the offset of a sheet or a face takes none)
   return shape.offset(distance)

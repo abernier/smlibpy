@@ -1181,10 +1181,11 @@ class Edge(Shape):
         if self._e is not None:
             lo, hi = self._e.bounding_box(True)
             return BoundBox(lo, hi)
-        pts = [self.point_at(i / 32) for i in range(33)]
-        if self.geom_type == "line":
-            pts = [self.start, self.end]
-        return BoundBox.of_points(pts)
+        # exact: the ends, the corners and where the tangent is perpendicular to an axis
+        t0, t1 = self._range()
+        with kernel_call("bbox"):
+            lo, hi = ext.curve_box(self._curve(), t0, t1)
+        return BoundBox(lo, hi)
 
     def distance_to(self, point: VectorLike) -> float:
         p = _vec(point)
@@ -1194,16 +1195,515 @@ class Edge(Shape):
         _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
         return float(d)
 
-    def intersections(self, other: Edge) -> list[Vector]:
-        """Points where this edge crosses another edge."""
-        with kernel_call("edge intersections"):
-            pts, ta, tb = k.intersect_curves(self._curve(), other._curve())
-        (a0, a1), (b0, b1) = self._range(), other._range()
-        out = []
-        for p, u, v in zip(pts, ta, tb):
-            if a0 - 1e-9 <= u <= a1 + 1e-9 and b0 - 1e-9 <= v <= b1 + 1e-9:
-                out.append(Vector(p))
-        return out
+    def closest_point(self, point: VectorLike | Vertex) -> Vector:
+        """The point of the edge nearest to ``point``."""
+        return self._closest(point)[0]
+
+    def param_at(self, point: VectorLike | Vertex) -> float:
+        """Where the point of the edge nearest to ``point`` lies along it: the fraction of the
+        length from the start, as :meth:`point_at` takes it (``e.point_at(e.param_at(p))`` is
+        ``e.closest_point(p)``)."""
+        return self._fraction(self._closest(point)[1])
+
+    def _closest(self, point: VectorLike | Vertex) -> tuple[Vector, float, float]:
+        """The nearest point of the edge, its kernel parameter and its distance."""
+        p = point.point if isinstance(point, Vertex) else _vec(point)
+        if self._e is not None:
+            q, u, d = self._e.closest_point(p.to_tuple())
+        else:
+            q, u, d = k.curve_closest_point(self._curve(), p.to_tuple())
+            q = (q.x, q.y, q.z)  # (a Vec3)
+        t0, t1 = self._range()
+        return Vector(q), float(min(max(u, t0), t1)), float(d)
+
+    def _fraction(self, u: float) -> float:
+        """The fraction of the length (in edge direction) at kernel parameter ``u``."""
+        t0, t1 = self._range()
+        u = min(max(float(u), t0), t1)
+        if u <= t0 or t1 <= t0:
+            f = 0.0
+        elif u >= t1:
+            f = 1.0
+        elif self.geom_type == "line":
+            f = (u - t0) / (t1 - t0)
+        else:
+            total = float(ext.curve_length(self._curve(), t0, t1))
+            f = float(ext.curve_length(self._curve(), t0, u)) / total if total > 0 else 0.0
+        f = min(max(f, 0.0), 1.0)
+        return 1.0 - f if self._rev else f
+
+    def _at(self, at: float | VectorLike | Vertex, what: str) -> float:
+        """The kernel parameter of ``at``: a fraction of the length or a point on the edge."""
+        if isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool):
+            t = float(at)
+            if not 0.0 <= t <= 1.0:
+                raise ValueError(f"{what}: a fraction of the edge runs from 0 to 1, got {t:g}")
+            return self._param(t)
+        p = at.point if isinstance(at, Vertex) else _vec(at)
+        q, u, d = self._closest(p)
+        tol = 1e-6 * max(1.0, self.length)
+        if d > tol:
+            raise ValueError(f"{what}: the point {_fmt_point(p)} lies {d:.6g} off the edge (the nearest point of "
+                             f"the edge is {_fmt_point(q)}); pass a point on the edge or a fraction from 0 to 1")
+        return u
+
+    def _piece(self, lo: float, hi: float, what: str) -> Edge:
+        """The edge between kernel parameters lo < hi, in edge direction (a new curve)."""
+        with kernel_call(what):
+            c = ext.trimmed_curve(self._curve(), float(lo), float(hi))
+        if self._rev:
+            ext.reverse_curve(c)
+        return Edge._from_curve(c)
+
+    def trim(self, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Edge:
+        """The part of the edge from ``start`` to ``end``, each a fraction of the length (as in
+        :meth:`point_at`) or a point on the edge. The part keeps the curve: a trimmed arc is an
+        arc, a trimmed spline the same spline. ``start`` must come before ``end`` along the edge.
+
+        ::
+
+            arc = CenterArc((0, 0), 10, 0, 180).trim(0.25, 0.75)    # the arc from 45 to 135 degrees
+            tail = Spline((0, 0), (10, 10), (20, 0)).trim((10, 10, 0), 1.0)
+        """
+        u0, u1 = self._at(start, "trim"), self._at(end, "trim")
+        lo, hi = (u1, u0) if self._rev else (u0, u1)
+        t0, t1 = self._range()
+        if not hi - lo > 1e-12 * max(1.0, abs(t1 - t0)):
+            raise ValueError("trim: the start must come before the end along the edge (fractions from 0 at its "
+                             "start to 1 at its end)")
+        return self._piece(lo, hi, "trim")
+
+    def split(self, at: float | VectorLike | Vertex) -> tuple[Edge, Edge]:
+        """The edge cut in two at ``at``, a fraction of the length or a point on the edge: the part
+        before and the part after, each keeping the curve. ::
+
+            a, b = Line((0, 0), (10, 0)).split(0.3)                 # 3 and 7 long
+            left, right = edge.split(edge.intersections(other)[0])
+        """
+        u = self._at(at, "split")
+        t0, t1 = self._range()
+        length = self.length
+        before = float(ext.curve_length(self._curve(), t0, u)) if u > t0 else 0.0
+        if min(before, length - before) <= 1e-9 * max(1.0, length):
+            raise ValueError("split: the point is an end of the edge; there is nothing to split")
+        a, b = self._piece(t0, u, "split"), self._piece(u, t1, "split")
+        return (b, a) if self._rev else (a, b)
+
+    def extend(self, distance: float, *, end: str = "end", continuity: str = "G1") -> Edge:
+        """The edge made longer by ``distance`` at its ``end`` (``"end"``, ``"start"`` or
+        ``"both"``), for cut tools and paths that must run past a body.
+
+        Lines and arcs (circles and ellipses) go on as themselves. Other curves are continued
+        as ``continuity`` says: ``"G1"`` straight along the end tangent, ``"G2"`` with the
+        curvature at the end, ``"natural"`` as the curve's own polynomial goes on. The added
+        length is ``distance`` in every case. ::
+
+            groove_path = Spline((0, 0), (20, 8), (40, 0)).extend(5, end="both")
+        """
+        if not (isinstance(distance, (int, float)) and math.isfinite(distance) and distance > 0):
+            raise ValueError(f"extend: the distance must be positive, got {distance!r} (use trim to shorten an edge)")
+        if end not in ("start", "end", "both"):
+            raise ValueError(f"extend: end must be 'start', 'end' or 'both', got {end!r}")
+        modes = {"G1": 1, "G2": 2, "natural": 0}
+        if continuity not in modes:
+            raise ValueError(f"extend: continuity must be 'G1', 'G2' or 'natural', got {continuity!r}")
+        if self.is_closed:
+            raise ValueError("extend: a closed edge has no ends to extend")
+        e = self
+        if end in ("start", "both"):
+            e = e._extended(float(distance), True, modes[continuity])
+        if end in ("end", "both"):
+            e = e._extended(float(distance), False, modes[continuity])
+        return e
+
+    def _extended(self, d: float, at_start: bool, continuity: int) -> Edge:
+        from .curves import EllipticalArc, Line, ThreePointArc
+
+        kind = self.geom_type
+        a, b = self.start, self.end
+        if kind == "line":
+            u = (b - a).normalized()
+            return Line(a - u * d, b) if at_start else Line(a, b + u * d)
+        if kind in ("circle", "ellipse"):
+            data = ext.curve_data(self._curve())
+            pl = data["placement"]
+            c, xd, zd = Vector(pl["origin"]), Vector(pl["x_dir"]), Vector(pl["z_dir"])
+            yd = zd.cross(xd)
+            r1, r2 = (data["radius"], data["radius"]) if kind == "circle" else (data["radius1"], data["radius2"])
+
+            def angle(p: Vector) -> float:
+                q = p - c
+                return math.atan2(q.dot(yd) / r2, q.dot(xd) / r1)
+
+            # the turn of the edge about zd: +1 counterclockwise, -1 clockwise
+            sense = 1.0 if (a - c).cross(self.tangent_at(0.0)).dot(zd) > 0 else -1.0
+            span = (sense * (angle(b) - angle(a))) % (2 * math.pi)
+            span = span or 2 * math.pi
+            add = _ellipse_angle_for_length(r1, r2, angle(a if at_start else b), d, -sense if at_start else sense)
+            if span + add >= 2 * math.pi - 1e-9:
+                raise ValueError(f"extend: the arc would reach around its whole {kind} (it is {self.length:.6g} long); "
+                                 f"extend it less")
+            a0 = angle(a) - sense * add if at_start else angle(a)
+            total = span + add
+            if kind == "circle":
+                plane = Plane(c, xd, zd)
+
+                def point(t: float) -> Vector:
+                    return plane.from_local(Vector(r1 * math.cos(t), r1 * math.sin(t), 0.0))
+
+                return ThreePointArc(point(a0), point(a0 + sense * total / 2), point(a0 + sense * total))
+            lo = math.degrees(a0 if sense > 0 else a0 - total)
+            arc = EllipticalArc((0, 0), r1, r2, lo, lo + math.degrees(total), plane=Plane(c, xd, zd))
+            return arc if sense > 0 else arc.reversed()
+        c = self._copy_curve()
+        try:
+            with kernel_call("extend", "the curve cannot be extended that far with this continuity; extend it less, "
+                                       "or with continuity='G1'"):
+                return Edge._from_curve(ext.extend_curve(c, d, at_start, continuity))
+        finally:
+            ext.delete_curve(c)
+
+    def intersections(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[Vector]:
+        """Points where this edge meets ``other``: an edge, a wire, a face, a body (its faces) or
+        a list of them, in order along this edge.
+
+        Where the two run along each other, the points where that overlap starts and ends.
+        Points closer than ``tolerance`` to the other shape count as on it (default: 1e-6, or
+        1e-9 of the size of the two where that is larger); points closer than that to each other
+        count once. No point is an empty list.
+        """
+        return [p for _, p in self._hits(other, tolerance, "intersections")]
+
+    def intersection_params(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[float]:
+        """Where this edge meets ``other`` (see :meth:`intersections`), as fractions of its length
+        (as :meth:`point_at` and :meth:`split` take them), in order."""
+        return [t for t, _ in self._hits(other, tolerance, "intersection_params")]
+
+    def self_intersections(self, *, tolerance: float | None = None) -> list[Vector]:
+        """Points where the edge crosses itself (a figure eight, a looping spline), in order along
+        it; the closing point of a closed edge does not count."""
+        tol = _hit_tolerance(self, None, tolerance)
+        t0, t1 = self._range()
+        with kernel_call("self_intersections"):
+            sols = ext.self_intersections(self._curve(), t0, t1, tol)
+        span = 1e-9 * max(1.0, abs(t1 - t0))
+        hits = []
+        for s in sols:
+            u, v = s["t"]
+            if self.is_closed and min(u, v) - t0 <= span and t1 - max(u, v) <= span:
+                continue
+            hits.append((self._fraction(u), Vector(s["point"])))
+        return [p for _, p in _merged_hits(hits, tol, self.is_closed)]
+
+    def _hits(self, other: Any, tolerance: float | None, what: str) -> list[tuple[float, Vector]]:
+        """(fraction along this edge, point) where it meets other, in order, merged within the tolerance."""
+        tol = _hit_tolerance(self, other, tolerance)
+        t0, t1 = self._range()
+        params: list[float] = []
+        if isinstance(other, Edge):
+            if other._identity() == self._identity():
+                raise ValueError(f"{what}: an edge lies on itself everywhere; use self_intersections() for the points "
+                                 f"where it crosses itself")
+            b0, b1 = other._range()
+            with kernel_call(what):
+                sols = ext.intersect_curves(self._curve(), t0, t1, other._curve(), b0, b1, tol)
+            for s in sols:
+                params.append(s["t"][0])
+                if s["end"] is not None:
+                    params.append(s["end"][0])
+        elif isinstance(other, (Wire, list, tuple)):
+            items = other.edges() if isinstance(other, Wire) else other
+            hits = [h for item in items for h in self._hits(item, tol, what)]
+            return _merged_hits(sorted(hits, key=lambda h: h[0]), tol, self.is_closed)
+        elif isinstance(other, (Face, _Body)):
+            faces = list(other.faces())
+            with kernel_call(what):
+                sols = ext.intersect_curve_faces(self._curve(), t0, t1, [f._f for f in faces], tol)
+            params = [s["t"] for s in sols]
+        else:
+            raise TypeError(f"{what}: expected an Edge, Wire, Face or body (or a list of them), got "
+                            f"{type(other).__name__}")
+        curve = self._curve()
+        hits = sorted(((self._fraction(u), Vector(curve.evaluate(u))) for u in params), key=lambda h: h[0])
+        return _merged_hits(hits, tol, self.is_closed)
+
+    # -- curvature ------------------------------------------------------------
+    def curvature_at(self, t: float = 0.5) -> float:
+        """The curvature at fraction ``t`` of the length (as :meth:`point_at`): one over the radius
+        of the circle that fits the edge best there; 0 where it runs straight."""
+        g = ext.curve_geometry(self._curve(), self._param(t))
+        return float(np.linalg.norm(g["curvature"]))
+
+    def radius_at(self, t: float = 0.5) -> float:
+        """The radius of curvature at fraction ``t`` of the length (``math.inf`` where the edge runs
+        straight): the radius of the circle that fits the edge best there."""
+        c = self.curvature_at(t)
+        return 1.0 / c if c > 0 else math.inf
+
+    def min_radius(self) -> tuple[float, float]:
+        """The smallest radius of curvature of the edge and where it is: ``(radius, t)``, ``t`` a
+        fraction of the length (as :meth:`point_at`). A line gives ``(inf, 0.0)``, an arc its
+        radius. A sweep profile that reaches farther from the path than this folds over itself. ::
+
+            r, t = path.min_radius()
+            print(f"tightest bend: radius {r:.3g} at {path.point_at(t)}")
+        """
+        kind = self.geom_type
+        if kind == "line" or self._is_straight():
+            return math.inf, 0.0
+        if kind == "circle":
+            return self.radius, 0.0
+        t0, t1 = self._range()
+        curve = self._curve()
+        with kernel_call("min_radius"):
+            sols = ext.curve_properties(curve, t0, t1, "min_radius", 0.0, 1e-9 * max(1.0, self.length))
+        candidates = [t0, t1] + [u for s in sols for u in (s["t"], s["end"]) if u is not None]
+        best_k, best_u = -1.0, t0
+        for u in candidates:
+            k_u = float(np.linalg.norm(ext.curve_geometry(curve, min(max(u, t0), t1))["curvature"]))
+            if k_u > best_k:
+                best_k, best_u = k_u, u
+        return (1.0 / best_k if best_k > 0 else math.inf), self._fraction(best_u)
+
+    def inflections(self) -> list[float]:
+        """Where the edge changes the side it bends to (an S-curve has one), as fractions of its
+        length (as :meth:`point_at`), in order: points where its curvature passes through zero.
+        Lines, arcs and curves that bend one way only have none; a straight stretch between two
+        bends counts once, at its middle, where the bends go opposite ways."""
+        kind = self.geom_type
+        if kind in ("line", "circle", "ellipse"):
+            return []
+        t0, t1 = self._range()
+        curve = self._curve()
+        with kernel_call("inflections"):
+            sols = ext.curve_properties(curve, t0, t1, "inflections", 0.0, 1e-9 * max(1.0, self.length))
+        span = t1 - t0
+        out: list[float] = []
+        for s in sols:
+            a = s["t"]
+            b = s["end"] if s["end"] is not None else a
+            a, b = min(a, b), max(a, b)
+            before = _binormal(curve, a, -1, t0, t1, span)
+            after = _binormal(curve, b, 1, t0, t1, span)
+            if before is None or after is None or float(np.dot(before, after)) >= 0:
+                continue
+            f = self._fraction(0.5 * (a + b))
+            if 0.0 < f < 1.0 and not any(abs(f - g) <= 1e-9 for g in out):
+                out.append(f)
+        return sorted(out)
+
+    # -- offsets, lines and arcs ----------------------------------------------
+    def offset(self, distance: float, *, plane: Plane | None = None) -> Edge:
+        """The edge moved ``distance`` sideways in its plane: an open edge to its left for a
+        positive distance (seen from the side the plane's normal points to), to its right for a
+        negative one; a closed edge (a circle, a closed spline) outward for a positive distance.
+
+        Lines stay lines and arcs stay arcs, exactly. Splines and ellipses are offset by the
+        kernel within 1e-6 of their size. Where the edge bends toward that side more tightly than
+        the distance (a radius of curvature below it, see :meth:`min_radius`), the offset would
+        fold over itself and :class:`ModelingError` says where.
+
+        ``plane``: the plane the edge lies in, whose normal tells left from right. Default: the
+        XY plane for an edge at one height, else the plane the edge lies in, its normal toward
+        +Z (+Y, then +X, for vertical planes). ::
+
+            rail = Spline((0, 0), (20, 8), (40, 0)).offset(3)     # 3 to the left (+Y side)
+        """
+        from ._regions import offset_wire
+
+        if _offset_distance(distance, "offset") == 0:
+            return self
+        return offset_wire([self], float(distance), "round", plane, "offset")[0]
+
+    def to_arcs(self, tolerance: float = 0.01) -> Wire:
+        """The edge as lines and circular arcs within ``tolerance`` of it, end to end along it:
+        for CNC, laser and plasma cutters and DXF readers that take only LINE and ARC
+        (``export_dxf(..., curves="arcs")``). Lines and arcs come back as they are; splines and
+        ellipses become chains of arcs that join tangentially (lines where they run straight).
+        Both ways, every point of one lies within ``tolerance`` of the other. ::
+
+            cut = Spline((0, 0), (10, 5), (20, -3), (30, 4)).to_arcs(0.01)   # 26 arcs
+        """
+        from .curves import Line, ThreePointArc
+
+        if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
+            raise ValueError(f"to_arcs: the tolerance must be positive, got {tolerance!r}")
+        kind = self.geom_type
+        if kind in ("line", "circle"):
+            return Wire._raw([self])
+        if self._is_straight():
+            return Wire._raw([Line(self.start, self.end)])
+        c = self._copy_curve()
+        try:
+            with kernel_call("to_arcs"):
+                r = ext.lines_and_arcs(c, float(tolerance))
+        finally:
+            ext.delete_curve(c)
+        dev = float(r["deviation"])
+        if not r["pieces"] or dev > tolerance:
+            raise ModelingError(f"to_arcs: the lines and arcs come no closer than {dev:.3g} to the {kind}, more than "
+                                f"the tolerance {tolerance:g}; use a larger tolerance")
+        edges = [Line(p["start"], p["end"]) if p["kind"] == "line" else ThreePointArc(p["start"], p["mid"], p["end"])
+                 for p in r["pieces"]]
+        return Wire._raw(edges)
+
+    # -- editing --------------------------------------------------------------
+    def _plain_bspline(self) -> Any:
+        """A new kernel B-spline of this edge (lines and arcs as the B-splines they are)."""
+        n = self.nurbs()
+        return _canonical_curve(np.array([p.to_tuple() for p in n.points]), n.knots, n.degree, n.weights)
+
+    def through(self, point: VectorLike | Vertex, *, tangent: VectorLike | None = None,
+                at: float | None = None) -> Edge:
+        """This edge bent to pass through ``point`` (and there in the direction ``tangent``, if
+        given): the smallest move of its control points that does it, with the ends of the edge and
+        its directions at the ends kept. For "make this curve pass here" edits of splines, sweep
+        paths and outlines; lines and arcs become cubic B-splines.
+
+        Args:
+            point: The point the edge passes through.
+            tangent: The direction of the edge at that point (its length does not count; it is the
+                direction the edge runs in).
+            at: Where along the edge the point goes, as a fraction of its length (strictly between 0
+                and 1). Default: where the edge comes closest to the point.
+
+        The change is local: it moves the few control points near ``at`` (knots are inserted there
+        when the edge has too few), so a point far from the edge makes a bump, not a new curve. ::
+
+            path = Spline((0, 0), (20, 10), (40, 0)).through((20, 15))
+        """
+        from .curves import _basis_ders, _span
+
+        p = _vec(point.point if isinstance(point, Vertex) else point)
+        if not all(math.isfinite(c) for c in p):
+            raise ValueError("through: the point must be finite")
+        t = None
+        if tangent is not None:
+            t = _vec(tangent)
+            if not t.length > 0 or not all(math.isfinite(c) for c in t):
+                raise ValueError("through: the tangent must be a direction (not zero)")
+            t = t.normalized()
+        if at is not None and not (isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool)
+                                   and 0.0 < float(at) < 1.0):
+            raise ValueError(f"through: at is a fraction of the edge strictly between 0 and 1 (its ends stay), "
+                             f"got {at!r}")
+        need = 1 if t is None else 2
+        with kernel_call("Edge.through"):
+            base = Edge._from_curve(self._plain_bspline())
+            u = base._param(float(at)) if at is not None else base._closest(p)[1]
+            t0, t1 = base._range()
+            if not t0 < u < t1:
+                raise ValueError("through: the point is nearest to an end of the edge, and the ends stay; pass at= to "
+                                 "say where along the edge it goes")
+            d = ext.curve_data(base._curve(), True)
+            q = max(3, int(d["degree"]))
+            # the knots after raising the degree (every knot once more per degree)
+            knots = [float(x) for x in d["knots"]]
+            raised: list[float] = []
+            i = 0
+            while i < len(knots):
+                j = i
+                while j < len(knots) and knots[j] == knots[i]:
+                    j += 1
+                raised += [knots[i]] * (j - i + q - int(d["degree"]))
+                i = j
+            # knots in the spans around u until enough control points that are free to move (not
+            # the first two or the last two) act there
+            inserts: list[float] = []
+            for _ in range(12):
+                kv = sorted(raised + inserts)
+                m = len(kv) - q - 1
+                s = _span(kv, q, u)
+                free = [i for i in range(s - q, s + 1) if 2 <= i <= m - 3]
+                if len(free) >= need + 1:
+                    break
+                lo, hi = max(q, s - q), min(m, s + q + 1)  # the spans s - q .. s + q
+                spans = sorted({x for x in kv[lo:hi + 1]})
+                inserts += [(a + b) / 2 for a, b in zip(spans, spans[1:]) if b > a]
+            else:
+                raise ModelingError("through: the edge cannot be refined enough to move")
+            c = ext.refine_curve(base._curve(), q, inserts)
+            try:
+                d = ext.curve_data(c, True)
+            finally:
+                ext.delete_curve(c)
+        kv = [float(x) for x in d["knots"]]
+        P = np.array(d["poles"], dtype=float)
+        w = None if d["weights"] is None else np.array(d["weights"], dtype=float)
+        m = len(P)
+        s = _span(kv, q, u)
+        ders = _basis_ders(kv, q, s, u, 1)
+        idx = list(range(s - q, s + 1))
+        N, dN = np.array(ders[0]), np.array(ders[1])
+        if w is not None:  # rational: R = N w / W, linear in the control points for fixed weights
+            ww = w[idx]
+            W, dW = float(N @ ww), float(dN @ ww)
+            R = N * ww / W
+            dR = (dN * ww * W - N * ww * dW) / (W * W)
+        else:
+            R, dR = N, dN
+        here = R @ P[idx]
+        rows, rhs = [R], [np.array(p.to_tuple()) - here]
+        if t is not None:
+            slope = dR @ P[idx]
+            rows.append(dR)
+            rhs.append(np.array(t.to_tuple()) * float(np.linalg.norm(slope)) - slope)
+        free = [j for j, i in enumerate(idx) if 2 <= i <= m - 3]
+        A = np.array(rows)[:, free]
+        B = np.array(rhs)
+        G = A @ A.T
+        if abs(np.linalg.det(G)) <= 1e-14 * max(1.0, float(np.abs(G).max())) ** len(rows):
+            raise ModelingError("through: the edge cannot be bent there (its control points do not reach the point)")
+        move = A.T @ np.linalg.solve(G, B)  # the smallest move (least squares, minimum norm)
+        for j, k_ in enumerate(free):
+            P[idx[k_]] += move[j]
+        with kernel_call("Edge.through"):
+            return Edge._from_curve(_canonical_curve(P, kv, q, None if w is None else list(w)))
+
+    def match(self, *, start: VectorLike | Vertex | None = None, end: VectorLike | Vertex | None = None,
+              start_tangent: VectorLike | None = None, end_tangent: VectorLike | None = None) -> Edge:
+        """This edge with its ends moved to ``start`` and ``end`` and its directions there set to
+        ``start_tangent`` and ``end_tangent`` (each optional: what is not given stays), bent smoothly
+        in between: the parts near the ends move as a whole, the middle blends. For closing gaps,
+        snapping a curve onto a point or another curve, and making it leave or arrive tangentially.
+        Lines and arcs become B-splines (cubic at least).
+
+        The kernel's own end deformation (``SmCurve::DeformToEndPointTargets``); the ends land on
+        their targets exactly. ::
+
+            snapped = spline.match(end=other.start, end_tangent=other.tangent_at(0))   # G1 joint
+        """
+        def point(v: Any, what: str) -> list[float]:
+            if v is None:
+                return []
+            q = _vec(v.point if isinstance(v, Vertex) else v)
+            if not all(math.isfinite(c) for c in q):
+                raise ValueError(f"match: {what} must be finite")
+            return list(q)
+
+        def direction(v: Any, what: str) -> list[float]:
+            if v is None:
+                return []
+            q = _vec(v)
+            if not q.length > 0 or not all(math.isfinite(c) for c in q):
+                raise ValueError(f"match: {what} must be a direction (not zero)")
+            return list(q)
+
+        targets = (point(start, "start"), point(end, "end"), direction(start_tangent, "start_tangent"),
+                   direction(end_tangent, "end_tangent"))
+        if not any(targets):
+            raise ValueError("match: give start, end, start_tangent or end_tangent")
+        with kernel_call("Edge.match"):
+            base = self._plain_bspline()
+            try:
+                c, dev = ext.deform_ends(base, *targets)
+            finally:
+                ext.delete_curve(base)
+        e = Edge._from_curve(c)
+        size = max(1.0, self.bbox().diagonal, *(abs(x) for x in targets[0] + targets[1]))
+        if dev > 1e-9 * size:
+            raise ModelingError(f"match: the ends came no closer than {dev:.3g} to their targets")
+        return e
 
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
@@ -1251,6 +1751,32 @@ class Edge(Shape):
         return Nurbs(int(d["degree"]), [float(x) for x in d["knots"]], [Vector(*p) for p in d["poles"]],
                      None if d["weights"] is None else [float(w) for w in d["weights"]])
 
+    @classmethod
+    def from_nurbs(cls, nurbs: Nurbs | tuple[int, Sequence[float], Sequence[VectorLike], Sequence[float] | None]
+                   ) -> Edge:
+        """The edge of a NURBS curve given by its data: the inverse of :meth:`nurbs`, for control
+        points read from a file or another program, curves edited by moving control points and
+        B-splines of many spans (a :func:`~smlibpy.Bezier` is one span).
+
+        Args:
+            nurbs: A :class:`~smlibpy.Nurbs`, or a tuple ``(degree, knots, points, weights)``:
+                the degree (1 to 32), the knot vector with every knot as often as its multiplicity
+                (``len(points) + degree + 1`` knots, not decreasing; the ends need not repeat), the
+                control points (2D points lie at z = 0) and a positive weight per point, or
+                ``None`` for a non-rational curve.
+
+        The curve runs from ``knots[degree]`` to ``knots[-degree - 1]``; where the ends do not
+        repeat ``degree + 1`` times, it starts and ends inside the control polygon. ::
+
+            n = edge.nurbs()
+            points = list(n.points)
+            points[2] += Vector(0, 0, 5)  # pull one control point up
+            bent = Edge.from_nurbs(n._replace(points=points))
+        """
+        degree, knots, points, weights = _nurbs_data(nurbs)
+        with kernel_call("Edge.from_nurbs"):
+            return cls._from_curve(_canonical_curve(points, knots, degree, weights))
+
     def remove_knots(self) -> Edge:
         """The same curve with the knots it does not need taken out: a B-spline with fewer control
         points (the kernel's knot removal, which keeps the curve within about 1e-6 of where it was).
@@ -1281,6 +1807,83 @@ class Edge(Shape):
         s, e = self.start, self.end
         return (f"Edge({self.geom_type}, ({s.x:.4g}, {s.y:.4g}, {s.z:.4g}) -> "
                 f"({e.x:.4g}, {e.y:.4g}, {e.z:.4g}))")
+
+
+def _hit_tolerance(shape: Edge | Wire, other: Any, tolerance: float | None) -> float:
+    """The distance within which an edge or wire meets another shape: as given, else 1e-6, or
+    1e-9 of the size of the two where that is larger."""
+    if tolerance is not None:
+        if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
+            raise ValueError(f"the tolerance must be positive, got {tolerance!r}")
+        return float(tolerance)
+    box = shape.bbox()
+    for item in (other if isinstance(other, (list, tuple)) else [other]):
+        if isinstance(item, Shape):
+            box = box.union(item.bbox())
+    return max(TOLERANCE, 1e-9 * box.diagonal)
+
+
+def _merged_hits(hits: list[tuple[float, Vector]], tol: float, closed: bool) -> list[tuple[float, Vector]]:
+    """Hits sorted along an edge or wire, those within ``tol`` of the one before dropped (on a
+    closed one also the last where it is the first, the closing point)."""
+    out: list[tuple[float, Vector]] = []
+    for t, p in hits:
+        if out and p.distance_to(out[-1][1]) <= tol:
+            continue
+        out.append((t, p))
+    if closed and len(out) > 1 and out[-1][1].distance_to(out[0][1]) <= tol:
+        out.pop()
+    return out
+
+
+def _binormal(curve: Any, u: float, side: int, t0: float, t1: float, span: float) -> np.ndarray | None:
+    """C' x C'' a little before (side -1) or after (+1) parameter u, stepping farther while the
+    curve runs straight there; None where that leaves [t0, t1]."""
+    step = 1e-6 * span
+    while step <= 0.25 * span:
+        w = u + side * step
+        if not t0 < w < t1:
+            return None
+        d = ext.curve_eval(curve, w, 2)
+        b = np.cross(np.asarray(d[1], dtype=float), np.asarray(d[2], dtype=float))
+        if float(np.linalg.norm(b)) * span > 1e-9 * float(np.dot(d[1], d[1])):  # (curvature x length > 1e-9)
+            return b
+        step *= 8.0
+    return None
+
+
+def _offset_distance(distance: Any, what: str) -> float:
+    if not (isinstance(distance, (int, float, np.integer, np.floating)) and not isinstance(distance, bool)
+            and math.isfinite(distance)):
+        raise ValueError(f"{what}: the distance must be a finite number, got {distance!r}")
+    return float(distance)
+
+
+def _ellipse_angle_for_length(r1: float, r2: float, start: float, length: float, sense: float) -> float:
+    """The angle (radians, >= 0) to turn from ``start`` (radians, in the sense +-1) along the
+    ellipse x = r1 cos t, y = r2 sin t to cover ``length``."""
+
+    def speed(t: float) -> float:
+        return math.hypot(r1 * math.sin(t), r2 * math.cos(t))
+
+    def arc(phi: float) -> float:  # length from start over phi (composite Simpson, 2048 panels per turn)
+        n = max(64, 2 * int(math.ceil(512 * phi / math.pi)))
+        h = phi / n
+        s = speed(start) + speed(start + sense * phi)
+        for i in range(1, n):
+            s += (4 if i % 2 else 2) * speed(start + sense * i * h)
+        return s * h / 3
+
+    phi = length / max(min(r1, r2), 1e-300)
+    phi = min(phi, 2 * math.pi)
+    for _ in range(50):
+        step = (arc(phi) - length) / speed(start + sense * phi)
+        phi -= step
+        if phi < 0:
+            phi = 0.5 * (phi + step)
+        if abs(step) <= 1e-15 * max(1.0, phi):
+            break
+    return phi
 
 
 def _collinear(points: np.ndarray) -> bool:
@@ -1366,6 +1969,58 @@ def _freed(curves: list[Any]) -> Iterator[list[Any]]:
     finally:
         for c in curves:
             ext.delete_curve(c)
+
+
+def _nurbs_data(nurbs: Any) -> tuple[int, list[float], np.ndarray, list[float] | None]:
+    """The checked degree, knots, control points (an n x 3 array) and weights of NURBS data
+    (Edge.from_nurbs): clear errors where the kernel would only say SM_ERR, or would take a knot
+    vector of the wrong length."""
+    what = "Edge.from_nurbs"
+    try:
+        degree, knots, points, weights = nurbs
+    except (TypeError, ValueError):
+        raise TypeError(f"{what} takes a Nurbs or a tuple (degree, knots, points, weights), "
+                        f"not {type(nurbs).__name__}") from None
+    if isinstance(degree, bool) or not isinstance(degree, (int, np.integer)) or not 1 <= degree <= 32:
+        raise ValueError(f"{what}: the degree is a whole number from 1 to 32, got {degree!r}")
+    degree = int(degree)
+    pts = [_vec(p) for p in points]
+    if len(pts) < degree + 1:
+        raise ValueError(f"{what}: a curve of degree {degree} needs at least {degree + 1} control points, "
+                         f"got {len(pts)}")
+    if not all(math.isfinite(c) for p in pts for c in p):
+        raise ValueError(f"{what}: the control points must be finite numbers")
+    kv = [float(x) for x in knots]
+    if len(kv) != len(pts) + degree + 1:
+        raise ValueError(f"{what}: {len(pts)} control points of degree {degree} take {len(pts) + degree + 1} knots "
+                         f"(points + degree + 1, every knot as often as its multiplicity), got {len(kv)}")
+    if not all(math.isfinite(x) for x in kv):
+        raise ValueError(f"{what}: the knots must be finite numbers")
+    for i in range(1, len(kv)):
+        if kv[i] < kv[i - 1]:
+            raise ValueError(f"{what}: the knots must not decrease, but knot {i + 1} ({kv[i]:g}) is less than knot "
+                             f"{i} ({kv[i - 1]:g})")
+    lo, hi = kv[degree], kv[-degree - 1]
+    if not hi > lo:
+        raise ValueError(f"{what}: the curve's knot range, knots[{degree}] to knots[{len(kv) - degree - 1}], is empty "
+                         f"({lo:g} to {hi:g})")
+    i = 0
+    while i < len(kv):
+        j = i
+        while j < len(kv) and kv[j] == kv[i]:
+            j += 1
+        if (lo < kv[i] < hi and j - i > degree) or j - i > degree + 1:
+            raise ValueError(f"{what}: the knot {kv[i]:g} is repeated {j - i} times; at most {degree} times inside "
+                             f"the curve (more would break it) and {degree + 1} times at its ends")
+        i = j
+    w = None
+    if weights is not None:
+        w = [float(x) for x in weights]
+        if len(w) != len(pts):
+            raise ValueError(f"{what}: one weight per control point ({len(pts)}), got {len(w)}")
+        if not all(math.isfinite(x) and x > 0 for x in w):
+            raise ValueError(f"{what}: the weights must be positive numbers")
+    return degree, kv, np.array([p.to_tuple() for p in pts], dtype=float), w
 
 
 def _canonical_curve(poles: np.ndarray, knots: Sequence[float], degree: int, weights: Sequence[float] | None) -> Any:
@@ -1474,6 +2129,154 @@ class Wire(Shape):
     def distance_to(self, point: VectorLike) -> float:
         return min(e.distance_to(point) for e in self._edges)
 
+    def _locate(self, at: float | VectorLike | Vertex, what: str) -> tuple[int, float]:
+        """The edge (index) and the fraction along it of ``at``: a fraction of the wire's length
+        or a point on the wire."""
+        if isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool):
+            t = float(at)
+            if not 0.0 <= t <= 1.0:
+                raise ValueError(f"{what}: a fraction of the wire runs from 0 to 1, got {t:g}")
+            lengths = [e.length for e in self._edges]
+            s = t * sum(lengths)
+            for i, L in enumerate(lengths):
+                if s <= L or i == len(lengths) - 1:
+                    return i, min(max(s / L if L else 0.0, 0.0), 1.0)
+                s -= L
+        p = at.point if isinstance(at, Vertex) else _vec(at)
+        best = min(range(len(self._edges)), key=lambda i: self._edges[i].distance_to(p))
+        e = self._edges[best]
+        d = e.distance_to(p)
+        if d > 1e-6 * max(1.0, self.length):
+            raise ValueError(f"{what}: the point {_fmt_point(p)} lies {d:.6g} off the wire; pass a point on the wire or "
+                             f"a fraction from 0 to 1")
+        return best, e.param_at(p)
+
+    def split(self, at: float | VectorLike | Vertex) -> tuple[Wire, Wire]:
+        """The wire cut in two at ``at``, a fraction of its length or a point on it: the part
+        before and the part after. At a vertex the edges stay as they are; elsewhere the edge
+        there is split (:meth:`Edge.split`)."""
+        i, f = self._locate(at, "split")
+        edges = list(self._edges)
+        eps = 1e-9 * max(1.0, edges[i].length)
+        if f * edges[i].length <= eps:
+            first, second = edges[:i], edges[i:]
+        elif (1.0 - f) * edges[i].length <= eps:
+            first, second = edges[:i + 1], edges[i + 1:]
+        else:
+            a, b = edges[i].split(f)
+            first, second = [*edges[:i], a], [b, *edges[i + 1:]]
+        if not first or not second:
+            raise ValueError("split: the point is an end of the wire; there is nothing to split")
+        return Wire._raw(first), Wire._raw(second)
+
+    def trim(self, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Wire:
+        """The part of the wire from ``start`` to ``end``, each a fraction of its length or a
+        point on it; ``start`` must come before ``end`` along the wire."""
+        (i, f), (j, g) = self._locate(start, "trim"), self._locate(end, "trim")
+        edges = self._edges
+        if (j, g) <= (i, f) or (i == j and (g - f) * edges[i].length <= 1e-9 * max(1.0, edges[i].length)):
+            raise ValueError("trim: the start must come before the end along the wire (fractions from 0 at its start "
+                             "to 1 at its end)")
+        if i == j:
+            return Wire._raw([edges[i].trim(f, g)])
+        out: list[Edge] = []
+        if (1.0 - f) * edges[i].length > 1e-9 * max(1.0, edges[i].length):
+            out.append(edges[i] if f <= 0.0 else edges[i].trim(f, 1.0))
+        out.extend(edges[i + 1:j])
+        if g * edges[j].length > 1e-9 * max(1.0, edges[j].length):
+            out.append(edges[j] if g >= 1.0 else edges[j].trim(0.0, g))
+        if not out:
+            raise ValueError("trim: the start and the end are the same point of the wire; there is nothing between")
+        return Wire._raw(out)
+
+    def intersections(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[Vector]:
+        """Points where this wire meets ``other`` (see :meth:`Edge.intersections`), in order along
+        the wire; a point where two of its edges meet counts once."""
+        tol = _hit_tolerance(self, other, tolerance)
+        hits: list[tuple[float, Vector]] = []
+        lengths = [e.length for e in self._edges]
+        total = sum(lengths) or 1.0
+        before = 0.0
+        for e, L in zip(self._edges, lengths):
+            for t, p in e._hits(other, tol, "intersections"):
+                hits.append(((before + t * L) / total, p))
+            before += L
+        return [p for _, p in _merged_hits(sorted(hits, key=lambda h: h[0]), tol, self.is_closed)]
+
+    def to_edge(self) -> Edge:
+        """The wire as one edge: its curves joined into one B-spline curve (a wire of one edge gives
+        that edge). The edges must meet end to end (within 1e-6); where they meet at a corner,
+        the edge has a corner there too.
+
+        One edge makes a single sweep or loft rail, a single SPLINE in DXF and a single curve for
+        :func:`~smlibpy.make_compatible`. ::
+
+            rail = FilletPolyline((0, 0), (30, 0), (30, 20), radius=5).to_edge()
+        """
+        edges = self._edges
+        if len(edges) == 1:
+            return edges[0]
+        for a, b in zip(edges, edges[1:]):
+            gap = a.end.distance_to(b.start)
+            if gap > 1e-6:
+                raise ValueError(f"to_edge: the edges do not meet: a gap of {gap:.6g} at {_fmt_point(a.end)}; join only "
+                                 f"edges that run end to end (Wire sorts them)")
+        curves = self._copy_curves()
+        try:
+            with kernel_call("to_edge"):
+                return Edge._from_curve(ext.join_curves(curves))
+        finally:
+            for c in curves:
+                ext.delete_curve(c)
+
+    def offset(self, distance: float, *, corners: str = "round", plane: Plane | None = None) -> Wire:
+        """The wire moved ``distance`` sideways in its plane, as a parallel curve: an open wire to
+        its left for a positive distance (seen from the side the plane's normal points to), to
+        its right for a negative one; a closed wire outward for a positive distance, inward for
+        a negative one (as :meth:`Sketch.offset` grows and shrinks).
+
+        Lines stay lines and arcs stay arcs, exactly; splines and ellipses are offset within
+        1e-6 of the wire's size (:meth:`Edge.offset`). ``corners`` shapes the corners the offset
+        pulls apart: ``"round"`` (arcs of radius ``|distance|``), ``"sharp"`` (the sides
+        extended until they meet) or ``"chamfer"`` (a straight cut across); at the corners it
+        pushes together, the sides are cut where they cross. Where the offset would fold over or
+        run into itself (an edge bends more tightly than the distance, an edge vanishes, parts
+        of the wire lie closer than the distance), :class:`ModelingError` says where; a region's
+        offset that merges and drops parts is :meth:`Sketch.offset`.
+
+        ``plane``: the plane the wire lies in, whose normal tells left from right (see
+        :meth:`Edge.offset` for the default). ::
+
+            path = Polyline((0, 0), (40, 0), (40, 30))
+            wall = path.offset(2, corners="sharp")        # 2 to the left, a sharp outer corner
+            toolpath = outline.offset(-3)                  # 3 inside a closed outline
+        """
+        from ._regions import CORNER_STYLES, offset_wire
+
+        if corners not in CORNER_STYLES:
+            raise ValueError(f"offset: corners is 'round', 'sharp' or 'chamfer', not {corners!r}")
+        if _offset_distance(distance, "offset") == 0:
+            return self
+        return Wire._raw(offset_wire(list(self._edges), float(distance), corners, plane, "offset"))
+
+    def to_arcs(self, tolerance: float = 0.01) -> Wire:
+        """The wire as lines and circular arcs within ``tolerance`` (see :meth:`Edge.to_arcs`)."""
+        return Wire._raw([p for e in self._edges for p in e.to_arcs(tolerance).edges()])
+
+    def min_radius(self) -> tuple[float, float]:
+        """The smallest radius of curvature of the wire's edges and where it is: ``(radius, t)``,
+        ``t`` a fraction of the wire's length (as :meth:`point_at`). The corners where edges
+        meet do not count (a corner has no radius; see :meth:`fillet`)."""
+        lengths = [e.length for e in self._edges]
+        total = sum(lengths) or 1.0
+        best, at, before = math.inf, 0.0, 0.0
+        for e, L in zip(self._edges, lengths):
+            r, t = e.min_radius()
+            if r < best:
+                best, at = r, (before + t * L) / total
+            before += L
+        return best, at
+
     def close(self) -> Wire:
         """This wire closed with a straight line from its end to its start."""
         if self.is_closed:
@@ -1500,7 +2303,14 @@ class Wire(Shape):
         return _fit_plane(pts, closed=self.is_closed)
 
     def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Wire:
-        """Round the corners between straight edges with tangent arcs (planar wires)."""
+        """Round corners with tangent arcs of ``radius``: every sharp corner, or those at
+        ``vertices`` (points or vertices). A planar wire's corners are rounded in its plane, as
+        :meth:`Sketch.fillet` does: between lines and arcs exactly, next to splines and ellipses
+        with the arc whose center lies at ``radius`` from both curves (the curves are cut where
+        it touches them). A wire that is not planar has its corners between lines rounded. A
+        corner a wire that is not planar has next to another curve, a smooth corner that is named
+        and a point that is not a corner raise :class:`ModelingError`; a radius that does not fit
+        raises ``ValueError``. Open wires keep their ends."""
         from .curves import _fillet_wire
 
         return _fillet_wire(self, radius, vertices)
@@ -1754,6 +2564,77 @@ class Face(Shape):
     def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
         """Where a ray meets this face, nearest first (see :meth:`Part.raycast`)."""
         return _raycast([self], origin, direction, self.bbox())
+
+    # -- curves on the face ---------------------------------------------------
+    def project(self, curve: Edge | Wire) -> ShapeList[Edge]:
+        """The curve projected onto this face along its normals: every point to the nearest point
+        of the face's surface, the result trimmed to the face (pieces where it leaves the face and
+        comes back). Within 1e-7 of the size of the face and the curve. For curves drawn near a
+        freeform face; along one direction, see :meth:`Part.project`. ::
+
+            on_face = part.faces().sort_by(Z)[-1].project(Spline((0, 0, 30), (10, 5, 30), (20, 0, 30)))
+        """
+        size = max(1.0, self.bbox().union(curve.bbox()).diagonal)
+        out = ShapeList()
+        for e in curve.edges():
+            c = e._copy_curve()
+            try:
+                with kernel_call("Face.project"):
+                    # (the kernel's tolerance bounds the drop; along the surface the curve comes within
+                    # about five times it)
+                    res = ext.normal_project([self._f], c, 1e-8 * size)
+            finally:
+                ext.delete_curve(c)
+            out.extend(Edge._from_curve(cv) for cv, _ in res)
+        return out
+
+    def iso(self, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
+        """The curve of the face along which one of its surface parameters is constant: ``u`` or
+        ``v`` as a fraction (0 to 1) of the face's range of that parameter. Trimmed to the face:
+        several pieces where the face has holes or notches. For styling lines, inspection curves
+        and rails on freeform faces. Which parameter runs which way depends on the surface: on a
+        cylinder's side ``v`` is constant around it (``iso(v=0.5)``: the circle half way up) and
+        ``u`` along it. ::
+
+            ring = Cylinder(10, 40).faces().cylinders()[0].iso(v=0.5)
+        """
+        if (u is None) == (v is None):
+            raise ValueError("iso: give u or v (one of them)")
+        f = float(u if u is not None else v)  # type: ignore[arg-type]
+        if not 0.0 <= f <= 1.0 or not math.isfinite(f):
+            raise ValueError(f"iso: {'u' if u is not None else 'v'} is a fraction of the face's range from 0 to 1, "
+                             f"got {f:g}")
+        (u0, v0), (u1, v1) = self._f.uv_domain()
+        lo, hi = (u0, u1) if u is not None else (v0, v1)
+        with kernel_call("Face.iso"):
+            curves = ext.iso_curves(self._f, u is not None, lo + (hi - lo) * f, 1e-7 * max(1.0, self.bbox().diagonal))
+        return ShapeList(Edge._from_curve(c) for c in curves)
+
+    def wrap(self, shape: Edge | Wire | Sketch | Iterable[Edge], at: VectorLike | Vertex | None = None, *,
+             direction: VectorLike | None = None) -> ShapeList[Edge]:
+        """A drawing on XY wrapped onto this face, as a label onto a can: its origin goes to
+        ``at`` (a point of the face; default its middle), its X axis along the face in
+        ``direction`` (default: the face's first parameter direction there; it follows the
+        parameter line nearest to it), its Y axis across, so that it reads from outside. Lengths
+        stay along the two parameter lines through ``at``: on planes and cylinders the whole
+        drawing keeps its size (text around a cylinder); on cones and doubly curved faces it
+        stretches away from those lines. Around a closed face (a cylinder) the drawing continues
+        across the seam; what leaves the face is cut off (also in its holes). Returns the curves on
+        the face, fitted within 1e-7 of its size, cut where they cross its seam.
+
+        Args:
+            shape: An edge, a wire, a sketch or edges, drawn on XY (z is ignored).
+            at: Where the drawing's origin goes: a point of the face's surface. Default: the middle
+                of the face's parameter range.
+            direction: Where its X axis points (projected onto the face).
+
+        ::
+
+            label = can.faces().cylinders()[0].wrap(Text("SMLIB", 8), (0, -20, 0), direction=(1, 0, 0))
+        """
+        from ._face_curves import wrap
+
+        return wrap(self, shape, at, direction)
 
     # -- topology -------------------------------------------------------------
     def _loops(self) -> list[Wire]:
@@ -2035,19 +2916,36 @@ class _Body(Shape):
             curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
         return ShapeList(Edge._from_curve(c) for c in curves)
 
-    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
+    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1), *,
+                nearest: bool = False) -> ShapeList[Edge]:
         """Project a curve onto the body along ``direction`` (an axis or a vector); returns the
-        curves on its faces."""
+        curves on its faces, fitted within 1e-7 of the size of the body and the curve.
+
+        Every face the projection meets gets its pieces: the near side and the far side of the
+        body, and faces seen edge-on (pieces along the direction). ``nearest=True`` keeps what the
+        projection reaches first: the parts seen from the curve along the direction, cut where
+        another part of the body hides them. ::
+
+            path = part.project(Spline((0, -20, 50), (10, 0, 50), (0, 20, 50)), (0, 0, -1), nearest=True)
+        """
         d = _direction(direction, "project")
+        faces = self.faces()
+        size = max(1.0, self._loose_box().union(curve.bbox()).diagonal)
         out = ShapeList()
         for e in curve.edges():
             c = e._copy_curve()
             try:
                 with kernel_call("project"):
-                    res = k.project_curve(self._brep, c, d.to_tuple())
+                    res = ext.project_curve([f._f for f in faces], c, d.to_tuple(), 1e-7 * size)
             finally:
                 ext.delete_curve(c)
-            out.extend(Edge._from_curve(r) for r in res)
+            pieces = [(Edge._from_curve(cv), faces[i]) for cv, i in res]
+            if nearest:
+                from ._face_curves import visible_pieces
+
+                out.extend(visible_pieces(self, e, pieces, d, size))
+            else:
+                out.extend(p for p, _ in pieces)
         return out
 
     def outline(self, plane: Plane = Plane.XY) -> ShapeList[Edge]:
@@ -6188,8 +7086,10 @@ class Sketch(Shell):
 
         ``vertices``: the corners to round, as vertices of this sketch (a selection such as
         ``s.vertices().concave()``) or points; ``None`` rounds every sharp corner. Corners
-        between lines and arcs are rounded exactly; a corner that does not fit, a point that
-        is not a corner, or a smooth corner raises :class:`ModelingError`.
+        between lines and arcs are rounded exactly; next to a spline or an ellipse the arc's
+        center lies at ``radius`` from both curves (where their offsets meet), and the curves are
+        cut where it touches them. A corner that does not fit, a point that is not a corner, or a
+        smooth corner raises :class:`ModelingError`.
         """
         from ._regions import round_corners
 

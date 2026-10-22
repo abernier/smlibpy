@@ -20,17 +20,22 @@ export { Mesh, tessellate } from './mesh.ts'
 export {
   Bezier,
   CenterArc,
+  ConicArc,
   EllipticalArc,
   FilletPolyline,
   Helix,
+  HyperbolicArc,
   Line,
+  ParabolicArc,
   PolarLine,
   Polyline,
   RadiusArc,
   SagittaArc,
+  Spiral,
   Spline,
   TangentArc,
   ThreePointArc,
+  fitCurve,
   makeCompatible,
 } from './curves.ts'
 // sketches
