@@ -106,6 +106,21 @@ print(top.point)                                   # Vector(10, 8, 10)
 To select faces with a ray instead, and chain on, use `part.faces().hit_by(origin, direction)`
 (see [Selecting](selecting.md#by-position)).
 
+Many rays at once (height maps, depth images, visibility, sampling) go through `raycast_many`:
+the first hit of each ray, or `None`. It traces the rays through a mesh of the part with the
+kernel's ray tracer and moves each hit onto the exact face, 20 to 50 times faster than one
+`raycast` per ray on a plate with holes; on a mesh it is the tracer alone:
+
+```python
+import numpy as np
+
+xs, ys = np.meshgrid(np.linspace(-20, 20, 41), np.linspace(-15, 15, 31))
+origins = np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, 50.0)])
+hits = part.raycast_many(origins, (0, 0, -1))       # one direction for all rays
+print(sum(h is None for h in hits))                 # 69: the rays through the hole
+first = part.mesh().raycast_many(origins, (0, 0, -1))  # on the triangles
+```
+
 ## Inside or outside
 
 `classify` says where a point lies: in the material, outside (a cavity is outside), or on the
@@ -129,9 +144,10 @@ box = Box(20, 20, 20)
 pipe = Cylinder(4, 40).rotate(X, 30)
 
 box.intersection_curves(pipe)               # where the surfaces cross, as edges
-Sphere(10).silhouette((0, 0, 1))            # outline seen along a direction
+Sphere(10).silhouette((0, 0, 1))            # the contour seen along a direction: one circle
 box.project(CenterArc((0, 0, 30), 5, 0, 360), (0, 0, -1))   # curve onto the faces below
-box.outline(Plane.XZ)                       # edges projected to a plane
+box.outline(Plane.XZ)                       # the visible edges projected to a plane
+seen, hidden = (box - pipe).outline(Plane.XZ, hidden=True)  # and the hidden ones
 Line((0, 0), (10, 10)).intersections(Line((0, 10), (10, 0)))  # [Vector(5, 5, 0)]
 ```
 
@@ -180,6 +196,10 @@ A part with a face that stays straight across while it twists along (a twisted p
 loft between different sections, the walls of a thickened free-form sheet) is divided until
 all its faces are flat within the tolerance. Its mesh is right, but it takes many more
 triangles: 2076 for `Box(20, 20, 100).twist(90)`, where the box has 12.
+
+The points of a mesh are double precision, and its corner normals are those of the exact
+surface (at the apex of a cone, where each line of the cone has a normal of its own, the normal
+beside the corner).
 
 Closed meshes from anywhere (`tessellate`, `import_stl`, `Mesh(...)`) take `+`, `-` and `&`,
 for meshes that have no exact part behind them, such as scans. Every result is checked (closed,

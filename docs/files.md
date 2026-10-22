@@ -10,7 +10,8 @@ control. All of them accept a single shape or a list.
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
 | USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those) |
-| DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
+| DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves, drawing views; exact |
+| SVG (`.svg`) | `export_svg` | 2D drawings: drawing views (hidden lines dashed), curves; at true size |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
 | STL (`.stl`) | `export_stl` | triangles |
 | OBJ (`.obj`) | `export_obj` | triangles |
@@ -70,6 +71,12 @@ part's size); `angle` limits the angle between neighbouring triangles on curved 
 glTF is defined in meters: `export_glb` and `export_gltf` keep the positions in millimeters
 and scale the scene's root node by 0.001, so viewers that respect units show the part at its
 real size. STL and OBJ have no units and hold the millimeter values.
+
+Meshes are computed in double precision. STL and glTF store float32 (7 digits): glTF positions
+are kept relative to the middle of each shape, whose node moves them there, so a part 1 km from
+the origin keeps its shape in glTF (in STL its points are off by up to 0.03 mm there); OBJ writes
+12 digits. glTF materials hold colors linear, as the format defines them: the sRGB colors of
+`colored("#7c93b5")` are converted, so viewers show the color asked for.
 
 ## Reading files
 
@@ -153,6 +160,28 @@ holder = holder.moved(mcs.location)            # put something on the tool's MCS
 several products have a coordinate system of that name (each part of an assembly has its own
 `MCS`): `product=` picks one by the beginning of its product's name. `render(tool)` and the
 live viewer draw the bodies and curves and mark the coordinate systems and named points.
+
+## Drawings
+
+`drawing_views` makes the views of a part for a 2D drawing: front, top, side and the others,
+each with its visible lines and its hidden lines, laid out next to each other in the XY plane in
+first-angle (ISO) or third-angle (ASME) projection. `export_dxf` writes them on the layers
+VISIBLE and HIDDEN, the hidden lines dashed; `export_svg` writes an SVG that prints at true size:
+
+```python
+part = Box(40, 30, 20) - Cylinder(6, 40)
+views = drawing_views(part)                         # front, top below it, left to its right
+print([(v.name, len(v.visible), len(v.hidden)) for v in views])
+# [('front', 4, 2), ('top', 5, 0), ('left', 4, 2)]: the bore is hidden from the front and the side
+export_dxf(views, "part.dxf")
+export_svg(views, "part.svg")
+seen, hidden = part.outline(Plane.XZ, hidden=True)  # one view, in the plane it looks through
+```
+
+The lines come from the kernel's hidden curve removal, exact: edges and the contours of curved
+faces, split where they pass behind the part. Each line is drawn once (the back edges of a box
+seen from the front lie under its front edges and are left out), edges seen end-on and seams of
+round faces are not drawn, and `tangent_edges=True` adds the tangent lines of fillets.
 
 ## DXF
 

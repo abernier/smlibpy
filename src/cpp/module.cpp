@@ -95,4 +95,7 @@ PYBIND11_MODULE(_core, m)
     bind_cells(m.attr("ext").cast<py::module_>());
     bind_distance(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
+    bind_poly_arrays(m.attr("ext").cast<py::module_>());
+    bind_rays(m.attr("ext").cast<py::module_>());
+    bind_hidden_lines(m.attr("ext").cast<py::module_>());
 }

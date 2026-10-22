@@ -323,6 +323,44 @@ export class Mesh {
     return out
   }
 
+  /**
+   * The first hit of each of many rays: for each origin, the `Hit` that `raycast` gives first (the
+   * point, the distance, the triangle's normal and its index `triangle`), `null` where the ray
+   * misses.
+   *
+   * `origins` are points; `directions` one direction (a vector or an axis) for all of them, or one
+   * each. The kernel's ray tracer sorts the triangles into a grid once per call (0.8 s for 250 000
+   * triangles) and then takes about 0.01 ms a ray, where `raycast` tests every triangle: give all
+   * the rays in one call.
+   */
+  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[] {
+    const [o, d] = _rays(origins, directions, 'raycastMany')
+    const n = o.length / 3
+    if (!n || !this.triangles.length) return Array.from({ length: n }, () => null)
+    const b = this.bbox()
+    const size = b.max.sub(b.min).length
+    // (hits a hair behind the start count, as for raycast: the rays start that much earlier)
+    const tol = new Float64Array(n)
+    const start = new Float64Array(o.length)
+    for (let i = 0; i < n; i++) {
+      tol[i] = 1e-9 * Math.max(size, Math.hypot(o[3 * i], o[3 * i + 1], o[3 * i + 2]), 1e-300)
+      for (let j = 0; j < 3; j++) start[3 * i + j] = o[3 * i + j] - d[3 * i + j] * tol[i]
+    }
+    const r = kernelCall('raycastMany', () => ext.mesh_first_hits(this.vertices, this.triangles, start, d))
+    const out: (Hit | null)[] = []
+    for (let i = 0; i < n; i++) {
+      const tri = r.triangles[i]
+      if (tri < 0) {
+        out.push(null)
+        continue
+      }
+      const t = Math.max(r.t[i] - tol[i], 0)
+      const point = new Vector(o[3 * i] + d[3 * i] * t, o[3 * i + 1] + d[3 * i + 1] * t, o[3 * i + 2] + d[3 * i + 2] * t)
+      out.push(new Hit(point, t, new Vector(r.normals[3 * i], r.normals[3 * i + 1], r.normals[3 * i + 2]), null, tri))
+    }
+    return out
+  }
+
   /** True if every edge of the mesh is shared by exactly two triangles (a watertight mesh). */
   isClosed(): boolean {
     return this._openEdgeCount() === 0
@@ -346,12 +384,15 @@ export class Mesh {
   // -- construction -------------------------------------------------------------------------
   /** The mesh of a kernel PolyBrep, which it takes over: freed once the arrays are copied out, or
    * kept with the mesh (`keep`, for what needs the tessellation's own mesh: the faces of its
-   * triangles, the curvature at its corners), which the caller then disposes. */
-  static _fromPoly(poly: number, normals = true, keep = false): Mesh {
+   * triangles, the curvature at its corners), which the caller then disposes. `brep` is the body it
+   * was made from: corners where its surfaces have no normal (the apex of a cone) get the normal of
+   * the surface next to them. */
+  static _fromPoly(poly: number, normals = true, keep = false, brep: number | null = null): Mesh {
     const handle = new PolyHandle(poly)
     try {
-      const arr = k.poly_mesh(poly, normals)
-      const pts = Float64Array.from(arr.points as Float32Array)
+      // (the points in double precision: k.poly_mesh, as Python's to_numpy_arrays, gives float32)
+      const arr = ext.poly_arrays(poly, normals, brep)
+      const pts = arr.points as Float64Array
       const [tris, cornerIdx] = _triangulate(arr.faces as Int32Array)
       let n: Float32Array | null = null
       if (normals) {
@@ -386,6 +427,31 @@ export class Mesh {
   [inspect](): string {
     return this.toString()
   }
+}
+
+/** Many rays as two flat arrays (x, y, z each): the origins and their unit directions (one
+ * direction for all of them, a vector or an axis, or one each). */
+export function _rays(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>, what: string): [Float64Array, Float64Array] {
+  if (origins == null || typeof (origins as Iterable<VectorLike>)[Symbol.iterator] !== 'function') throw new TypeError(`${what}: give the origins as points`)
+  const points = [...origins].map((p) => _vec(p))
+  const n = points.length
+  const o = new Float64Array(3 * n)
+  points.forEach((p, i) => o.set([p.x, p.y, p.z], 3 * i))
+  if (!o.every(Number.isFinite)) throw new RangeError(`${what}: the origins must be finite`)
+  const d = new Float64Array(3 * n)
+  const one = directions instanceof Vector || directions instanceof Axis || typeof (directions as ArrayLike<unknown>)[0] === 'number'
+  if (one) {
+    const u = _direction(directions as VectorLike | Axis, what)
+    for (let i = 0; i < n; i++) d.set([u.x, u.y, u.z], 3 * i)
+  } else {
+    const rows = [...(directions as Iterable<VectorLike | Axis>)]
+    if (rows.length !== n) throw new RangeError(`${what}: give one direction for all origins, or one for each (${rows.length} for ${n})`)
+    rows.forEach((x, i) => {
+      const u = _direction(x, what)
+      d.set([u.x, u.y, u.z], 3 * i)
+    })
+  }
+  return [o, d]
 }
 
 /** A VTK-style polygon list (n, i0, ..., n, ...) as triangles (a fan per polygon) and, per
@@ -507,7 +573,7 @@ export function _tessellate(shape: Shape | Iterable<Shape>, tolerance: number | 
           surface_angle_tolerance_deg: Number(angle),
         }),
     )
-    const mesh = Mesh._fromPoly(poly, true, keep)
+    const mesh = Mesh._fromPoly(poly, true, keep, b._brep)
     if (turned) {
       // (a kernel's mesh kept with it stays as it is)
       const t = mesh.triangles
@@ -547,14 +613,14 @@ export function faceMeshes(shape: _Body | ShapeList<Shape>, tolerance: number | 
   }
 }
 
-function _faceMeshes(shape: _Body | ShapeList<Shape>, mesh: Mesh): Mesh[] {
-  const poly = mesh._poly !== null ? mesh._poly.poly : 0
-  const count = shape.faces().length
-  if (!poly) return Array.from({ length: count }, () => new Mesh([], []))
+/** For each triangle of a mesh made with `_tessellate(shape, ..., true)`, the index of the face of
+ * `shape` (in `shape.faces()` order) it lies on. */
+export function _triangleFaces(shape: _Body | ShapeList<Shape>, mesh: Mesh): number[] {
+  const poly = (mesh._poly as PolyHandle).poly
   const brep = (shape as _Body)._brep
   if (brep === undefined) throw new TypeError(`faceMeshes: a ${_typeName(shape)} has no body of its own; give a part, shell or sketch`)
   const owners = ext.poly_face_indices(poly, brep) as Int32Array
-  const polygons = k.poly_mesh(poly, false).faces as Int32Array
+  const polygons = ext.poly_arrays(poly, false).faces as Int32Array
   const sizes: number[] = []
   for (let i = 0; i < polygons.length; i += sizes[sizes.length - 1] + 1) sizes.push(polygons[i])
   // the face of each triangle (numpy's repeat: one count for all, or one per polygon)
@@ -565,8 +631,16 @@ function _faceMeshes(shape: _Body | ShapeList<Shape>, mesh: Mesh): Mesh[] {
   owners.forEach((fi, i) => {
     for (let n = Math.max((sizes.length === 1 ? sizes[0] : sizes[i]) - 2, 0); n > 0; n--) owner.push(fi)
   })
+  if (owner.length !== mesh.triangles.length / 3) throw new ModelingError('tessellate: the mesh does not say which face each triangle belongs to')
+  return owner
+}
+
+function _faceMeshes(shape: _Body | ShapeList<Shape>, mesh: Mesh): Mesh[] {
+  const poly = mesh._poly !== null ? mesh._poly.poly : 0
+  const count = shape.faces().length
+  if (!poly) return Array.from({ length: count }, () => new Mesh([], []))
+  const owner = _triangleFaces(shape, mesh)
   const t = mesh.triangles
-  if (owner.length !== t.length / 3) throw new ModelingError('tessellate: the mesh does not say which face each triangle belongs to')
   const byFace: number[][] = Array.from({ length: count }, () => [])
   owner.forEach((fi, i) => {
     if (fi >= 0 && fi < count) byFace[fi].push(i)

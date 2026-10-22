@@ -14,7 +14,7 @@ Writes shapes as Wavefront OBJ: one named object per shape, triangles only.
 ```
 # smlibpy
 o bracket
-v -30 -20 -4          (9 significant digits, mm)
+v -30 -20 -4          (12 significant digits, mm)
 f 1 2 3               (1-based, numbered across the whole file)
 ```
 Unnamed shapes are called `part_<i>` (meshes too), counted from 1 over the list.

@@ -58,6 +58,7 @@ function call(name: string, options: Record<string, unknown>): unknown {
   const [cls, method] = [name.slice(0, dot), name.slice(dot + 1)]
   const samples: Record<string, () => Any> = {
     Part: () => Box(10, 10, 10),
+    _Body: () => Box(10, 10, 10), // (methods of every body: Python's _Body)
     Shell: () => Box(10, 10, 10).faces()[0].toShell(),
     Sketch: () => Rectangle(10, 10),
     Profile: () => new Profile(),

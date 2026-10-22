@@ -1635,6 +1635,43 @@ class _Body(Shape):
         p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
         return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
 
+    def raycast_many(self, origins: Any, directions: Any) -> list[Hit | None]:
+        """The first hit of each of many rays: for each origin, the ``Hit`` that :meth:`raycast`
+        gives first (the exact point on the face, the distance, the face, its outward normal),
+        ``None`` where the ray misses.
+
+        ``origins`` is an ``(n, 3)`` array or a sequence of points; ``directions`` one direction
+        (a vector or an axis) for all of them, or one each. The rays are traced through a mesh of
+        the body (made once per body, at 1e-4 of its size) by the kernel's ray tracer, and each
+        hit is moved onto the exact face the mesh says the ray meets first; where that face is
+        missed there, the ray is cast exactly (:meth:`raycast`). A ray that passes the body's
+        outline within the mesh's tolerance (1e-4 of its size) can come out a miss where
+        :meth:`raycast` finds where it grazes the surface. Give all the rays in one call: the
+        tracer is built once per call (0.2 s for a mesh of 20 000 triangles), then a ray takes
+        0.02 to 0.05 ms (a plate with 144 holes: 0.05 ms, where :meth:`raycast` takes 1 ms)."""
+        from .mesh import _rays
+
+        o, d = _rays(origins, directions, "raycast_many")
+        if not len(o):
+            return []
+        vertices, triangles, owners, mesh_tol = _ray_mesh(self)
+        box = self._loose_box()
+        tol = 1e-9 * max(box.diagonal, 1e-9, float(np.linalg.norm(o, axis=1).max()))
+        with kernel_call("raycast_many"):
+            r = ext.body_first_hits(self._brep, vertices, triangles, owners, o, d, tol, mesh_tol)
+        faces = self.faces()
+        out: list[Hit | None] = []
+        for i, found in enumerate(r["found"].tolist()):
+            if found == 0:
+                out.append(None)
+            elif found == 1:
+                out.append(Hit(Vector(*r["points"][i]), float(r["t"][i]), Vector(*r["normals"][i]),
+                               faces[int(r["faces"][i])]))
+            else:  # (the mesh's face is missed there, or met behind the start: the exact cast)
+                hits = _raycast(faces, Vector(*o[i]), Vector(*d[i]), box)
+                out.append(hits[0] if hits else None)
+        return out
+
     def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
         """Where a ray meets this body's faces, nearest first: the exact points (``Hit``: point,
         distance from the start, the face, its outward normal there).
@@ -1658,11 +1695,21 @@ class _Body(Shape):
         return _distinct_curves(curves, 1e-6 * max(1.0, self._loose_box().union(other._loose_box()).diagonal))
 
     def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
-        """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
+        """The contour of the body seen along ``direction`` (an axis or a vector, from the body
+        towards the viewer): the curves on its faces where the surface turns away from the viewer
+        (``n . d = 0``), and the edges between faces that face the viewer and faces that face away.
+        All of them, seen or not, as standalone 3D edges; arcs of one circle come joined (a
+        sphere's rim is one circle). Faces seen edge-on go with the faces behind them, so their
+        near edges are the contour (a box seen from +Z: its 4 top edges). A sheet's free edges are
+        not part of it. The curves are exact for spheres, cylinders and tori
+        around the direction, traced (within 1e-6 of the body's size) otherwise."""
+        from .draft import _contour, _joined_arcs
+
         d = _direction(direction, "silhouette")
-        with kernel_call("silhouette"):
-            curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
-        return ShapeList(Edge._from_curve(c) for c in curves)
+        body, line = _contour(self, -d, "silhouette")
+        edges = [Edge._from_curve(ext.edge_curve(e._e)) for e in line]
+        del body
+        return ShapeList(_joined_arcs(edges, 1e-7 * max(self._loose_box().diagonal, 1.0)))
 
     def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
         """Project a curve onto the body along ``direction`` (an axis or a vector); returns the
@@ -1679,8 +1726,23 @@ class _Body(Shape):
             out.extend(Edge._from_curve(r) for r in res)
         return out
 
-    def outline(self, plane: Plane = Plane.XY) -> ShapeList[Edge]:
-        """The body's edges projected onto a plane (a 2D drawing view)."""
+    def outline(self, plane: Plane = Plane.XY, *, hidden: bool = False,
+                tangent_edges: bool = False) -> ShapeList[Edge] | tuple[ShapeList[Edge], ShapeList[Edge]]:
+        """The body's edges and contours projected onto a plane (a 2D drawing view), seen from
+        the side the plane's normal points to: the visible lines.
+
+        With ``hidden=True``, ``(visible, hidden)``: the lines behind the body too, for dashed
+        hidden lines. With ``tangent_edges=True`` the edges between faces that meet tangentially
+        (the tangent lines of fillets) are drawn too. Either way each line comes once: hidden
+        pieces under visible lines are cut away, seams of closed faces and edges seen end-on are
+        left out. See also :func:`drawing_views`."""
+        if hidden or tangent_edges:
+            with kernel_call("outline"):
+                seen, behind = ext.hidden_lines(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple(), False,
+                                                bool(tangent_edges))
+            visible = ShapeList(Edge._from_curve(c) for c in seen)
+            back = ShapeList(Edge._from_curve(c) for c in behind)
+            return (visible, back) if hidden else visible
         with kernel_call("outline"):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
         # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
@@ -2041,13 +2103,42 @@ def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: Vector
     return out
 
 
+def _ray_mesh(body: _Body) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """What ``raycast_many`` traces rays through: the mesh of the body at 1e-4 of its size (its
+    vertices and triangles), the index of the face of each triangle, and that tolerance. Made
+    once per body."""
+    from .mesh import _tessellate, _triangle_faces
+
+    cached = body._h.meshes.get("rays")
+    if cached is None:
+        tolerance = max(body._loose_box().diagonal * 1e-4, 1e-7)
+        mesh = _tessellate(body, tolerance, 15.0, True)
+        try:
+            owners = _triangle_faces(body, mesh) if mesh._poly is not None else np.zeros(0, dtype=np.int64)
+        finally:
+            mesh.dispose()
+        cached = body._h.meshes["rays"] = (mesh.vertices, mesh.triangles, owners, tolerance)
+    return cached
+
+
+def _body_face_meshes(owner: _Body) -> list[Any]:
+    """The meshes of the faces of a body (``face_meshes``), made once per body."""
+    from .mesh import face_meshes
+
+    cached = owner._h.meshes.get("faces")
+    if cached is None:
+        cached = owner._h.meshes["faces"] = face_meshes(owner)
+    return cached
+
+
 def _mesh_hits(f: Face, o: Vector, d: Vector, reach: float, tol: float, meshes: dict[int, Any]) -> list[Vector]:
     """The points where the ray crosses the mesh of face ``f``, moved onto its exact surface."""
-    from .mesh import _ray_triangles, face_meshes
+    from .mesh import _ray_triangles
 
     owner = f._owner
     if id(owner) not in meshes:
-        meshes[id(owner)] = (owner, face_meshes(owner))  # (the owner is kept: its id stays its own)
+        # (the owner is kept: its id stays its own; its meshes are made once per body)
+        meshes[id(owner)] = (owner, _body_face_meshes(owner))
     (index,) = ext.face_indices(owner._brep, [f._f])
     m = meshes[id(owner)][1][index]
     out: list[Vector] = []

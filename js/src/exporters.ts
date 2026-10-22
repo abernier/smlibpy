@@ -4,6 +4,7 @@
 //   STEP     .step, .stp                                          read/write
 //   SMLib    .smb (exact native kernel format)                    read/write
 //   DXF      .dxf (2D drawings: sketches, sections, curves)       read/write
+//   SVG      .svg (2D drawings: views, curves)                    write
 //   glTF     .glb, .gltf                                          write
 //   STL      .stl                                                 read/write
 //   OBJ      .obj                                                 write
@@ -22,6 +23,7 @@ import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName 
 import { _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
 import { exportDxf, importDxf } from './dxf.ts'
+import { exportSvg } from './drawing.ts'
 import { exportUsd, importUsd } from './usd.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
@@ -82,7 +84,8 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
   else if (ext_ === '.smb') save(shapes, p, options)
   else if (ext_ === '.dxf') exportDxf(shapes, p, options)
   else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
-  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda`)
+  else if (ext_ === '.svg') exportSvg(shapes, p, options)
+  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf, .svg or .usda`)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -494,7 +497,8 @@ export function toObj(shapes: unknown, options: MeshOptions = {}): string {
   _meshes(shapes, tolerance, angle).forEach(([item, m], i) => {
     lines.push(`o ${(item as Any).name || `part_${i + 1}`}`)
     const v = m.vertices
-    for (let j = 0; j < v.length; j += 3) lines.push(`v ${_pyG(v[j], 9)} ${_pyG(v[j + 1], 9)} ${_pyG(v[j + 2], 9)}`)
+    // (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
+    for (let j = 0; j < v.length; j += 3) lines.push(`v ${_pyG(v[j], 12)} ${_pyG(v[j + 1], 12)} ${_pyG(v[j + 2], 12)}`)
     const t = m.triangles
     for (let j = 0; j < t.length; j += 3) lines.push(`f ${t[j] + offset} ${t[j + 1] + offset} ${t[j + 2] + offset}`)
     offset += v.length / 3
@@ -511,6 +515,15 @@ export function exportObj(shapes: unknown, path: string, options: MeshOptions = 
 
 // --------------------------------------------------------------------------------------- glTF 2.0
 export const _DEFAULT_COLORS: readonly string[] = ['#7c93b5', '#d9925a', '#79ad73', '#c97878', '#9d87c7', '#d4b45a', '#6bb3b3', '#b08e6c']
+
+/** A color as glTF's `baseColorFactor` takes it: the sRGB values that colors are given in
+ * (`'#7c93b5'`, `[124, 147, 181]`) turned linear, so viewers show the color asked for (glTF stores
+ * linear values and viewers encode them as sRGB for the screen). */
+function _linearRgb(color: Any): [number, number, number] {
+  const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+  const [r, g, b] = toRgb(color)
+  return [linear(r), linear(g), linear(b)]
+}
 
 /** Polylines of the body's edges (each an array of [x, y, z] points), without the seams of
  * periodic faces (they are not edges a designer drew). */
@@ -550,6 +563,20 @@ export function _curvePoints(item: Edge | Wire | Shape): number[][][] {
     const n = e.geomType === 'line' ? 1 : 96
     return Array.from({ length: n + 1 }, (_, i) => e.pointAt(i / n).toArray())
   })
+}
+
+/** The middle of the box around points (each [x, y, z]; the origin for none). */
+function _centre(points: number[][]): number[] {
+  if (!points.length) return [0, 0, 0]
+  const lo = [...points[0]]
+  const hi = [...points[0]]
+  for (const p of points) {
+    for (let j = 0; j < 3; j++) {
+      lo[j] = Math.min(lo[j], p[j])
+      hi[j] = Math.max(hi[j], p[j])
+    }
+  }
+  return [0, 1, 2].map((j) => (lo[j] + hi[j]) / 2)
 }
 
 /** Python's "{:,.6g}" with thin spaces between the thousands. */
@@ -616,7 +643,7 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
   }
 
   const material = (color: Any, lines = false): number => {
-    const [r, g, b] = toRgb(color)
+    const [r, g, b] = _linearRgb(color)
     const m: Any = {
       pbrMetallicRoughness: { baseColorFactor: [r, g, b, 1.0], metallicFactor: lines ? 0.0 : 0.05, roughnessFactor: lines ? 1.0 : 0.55 },
     }
@@ -625,10 +652,12 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
     return materials.length - 1
   }
 
-  const linePrim = (polylines: number[][][], mat: number): Any => {
+  const linePrim = (polylines: number[][][], mat: number, centre: number[]): Any => {
     if (!polylines.length) throw new RangeError('need at least one array to concatenate')
     const segs: number[] = []
-    for (const pl of polylines) for (let i = 0; i + 1 < pl.length; i++) segs.push(...pl[i], ...pl[i + 1])
+    for (const pl of polylines) {
+      for (let i = 0; i + 1 < pl.length; i++) for (const p of [pl[i], pl[i + 1]]) segs.push(p[0] - centre[0], p[1] - centre[1], p[2] - centre[2])
+    }
     return { attributes: { POSITION: addAccessor(Float32Array.from(segs), 'VEC3', 5126, 34962, true) }, material: mat, mode: 1 }
   }
 
@@ -638,11 +667,17 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
   items.forEach((item, i) => {
     const name = (item as Any).name || `${_typeName(item).toLowerCase()}_${i + 1}`
     const prims: Any[] = []
+    // Positions are float32 in glTF (7 digits): each node holds them relative to the middle of its
+    // shape and moves them there by its translation (a double), so a part far from the origin
+    // keeps its shape.
+    let centre = [0, 0, 0]
     if (item instanceof Edge || item instanceof Wire) {
       const points = _curvePoints(item)
-      prims.push(linePrim(points, material((item as Any).color || '#d9480f', true)))
+      centre = _centre(points.flat())
+      prims.push(linePrim(points, material((item as Any).color || '#d9480f', true), centre))
     } else if (item instanceof Vertex) {
-      const pts = Float32Array.from(item.point.toArray())
+      centre = item.point.toArray()
+      const pts = new Float32Array(3)
       prims.push({ attributes: { POSITION: addAccessor(pts, 'VEC3', 5126, 34962, true) }, material: material('#d9480f', true), mode: 0 })
     } else {
       const body = item instanceof Face ? item.toShell() : item
@@ -652,11 +687,14 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
       colorIndex += 1
       const tri = m.triangles
       const v = m.vertices
+      const rows: number[][] = []
+      for (let j = 0; j < v.length; j += 3) rows.push([v[j], v[j + 1], v[j + 2]])
+      centre = _centre(rows)
       const pos = new Float32Array(tri.length * 3)
       for (let c = 0; c < tri.length; c++) {
-        pos[c * 3] = v[tri[c] * 3]
-        pos[c * 3 + 1] = v[tri[c] * 3 + 1]
-        pos[c * 3 + 2] = v[tri[c] * 3 + 2]
+        pos[c * 3] = v[tri[c] * 3] - centre[0]
+        pos[c * 3 + 1] = v[tri[c] * 3 + 1] - centre[1]
+        pos[c * 3 + 2] = v[tri[c] * 3 + 2] - centre[2]
       }
       let nrm: Float32Array
       if (m.normals !== null) nrm = Float32Array.from(m.normals)
@@ -684,12 +722,14 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
         const lines = _edgePolylines(body)
         if (lines.length) {
           if (edgeMat === null) edgeMat = material(edgeColor, true)
-          prims.push(linePrim(lines, edgeMat))
+          prims.push(linePrim(lines, edgeMat, centre))
         }
       }
     }
     meshes.push({ name, primitives: prims })
-    nodes.push({ mesh: meshes.length - 1, name })
+    const node: Any = { mesh: meshes.length - 1, name }
+    if (centre.some((x) => x !== 0)) node.translation = centre
+    nodes.push(node)
   })
 
   const doc = {

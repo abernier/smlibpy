@@ -13,7 +13,8 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
    - bind_topology.cpp: SmPyLib's methods of Brep, Face, Edge, Vertex, Curve and Surface as
      functions, `<class>_<method>` (`brep_faces(b)` for `b.faces()`, `curve_evaluate(c, t)`).
    - bind_smlibpy.cpp: smlibpy's C++ as `<submodule>__<name>` (`ext__curve_data`,
-     `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy`.
+     `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy` (SmPyLib's), `ext__poly_arrays`,
+     `ext__mesh_first_hits`, `ext__body_first_hits`; bind_drawing.cpp: `ext__hidden_lines`.
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
      message is the one Python's RuntimeError carries.
@@ -115,8 +116,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
   holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
-  `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
-  rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
+  `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes`, `_rays`,
+  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; render.ts takes `_tessellate`);
+  `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
+  `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
+  `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
   (its test).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in

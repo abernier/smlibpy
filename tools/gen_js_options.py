@@ -33,6 +33,7 @@ ALIASES = {
     "toSmb": "save",
     "toDxf": "export_dxf",
     "toUsd": "export_usd",
+    "toSvg": "export_svg",
     "fromStep": "import_step",
     "fromStepModel": "read_step",
     "fromDxf": "import_dxf",

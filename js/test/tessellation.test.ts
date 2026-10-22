@@ -243,12 +243,14 @@ test('the angle tolerance of the faces decides', () => {
   assert.ok(offSurface(transition, Mesh._fromPoly(poly)) <= 2 * tol)
 })
 
-/** The triangles of a glTF document's first primitive, as x, y, z of each corner. */
+/** The triangles of a glTF document's first primitive, as x, y, z of each corner (moved by its
+ * node's translation: positions are relative to the node). */
 function gltfTriangles(doc: Any, buf: Uint8Array): Float64Array {
   const acc = doc.accessors[doc.meshes[0].primitives[0].attributes.POSITION]
   const view = doc.bufferViews[acc.bufferView]
   const floats = new Float32Array(buf.buffer, buf.byteOffset + view.byteOffset, acc.count * 3)
-  return Float64Array.from(floats)
+  const move = doc.nodes[0].translation ?? [0, 0, 0]
+  return Float64Array.from(floats, (x, i) => x + move[i % 3])
 }
 
 // biome-ignore lint: glTF documents are plain JSON

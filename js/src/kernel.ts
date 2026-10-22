@@ -37,8 +37,8 @@ module.init()
  */
 export type Signature = readonly (string | readonly [string, unknown])[]
 
-// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp and
-// bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
+// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp, bind_drawing.cpp
+// and bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
 const OWN: Record<string, Signature> = {
   'ext.curve_data': ['curve', ['nurbs', true]],
   'ext.surface_data': ['surface', ['nurbs', true]],
@@ -102,6 +102,10 @@ const OWN: Record<string, Signature> = {
   'ext.tessellation_algorithm': ['brep', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0],
     ['max_aspect_ratio', 0]],
   'ext.grid_deviation': ['face', 'chord_height_tolerance', ['surface_angle_tolerance_deg', 25], ['max_edge_length', 0]],
+  'ext.poly_arrays': ['poly', ['face_varying_normals', false], ['brep', null]],
+  'ext.mesh_first_hits': ['vertices', 'triangles', 'origins', 'directions'],
+  'ext.body_first_hits': ['brep', 'vertices', 'triangles', 'owners', 'origins', 'directions', 'tolerance', 'mesh_tolerance'],
+  'ext.hidden_lines': ['brep', 'plane_point', 'plane_normal', ['seams', false], ['smooth_edges', false]],
   'sheetmetal.bend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length'],
   'sheetmetal.unbend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length',
     ['anchor', null]],
@@ -373,6 +377,8 @@ export function _disposed(what: string): TypeError {
 export class BrepHandle extends Handle {
   sound = 0
   props: Any = null
+  /** The meshes rays are cast against, by purpose (a body's Brep does not change once wrapped). */
+  meshes = new Map<string, Any>()
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

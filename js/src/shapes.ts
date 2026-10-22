@@ -32,13 +32,13 @@ import {
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
-import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
+import { _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
-import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
+import { type DraftAnalysis, _contour, _joinedArcs, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import {
@@ -1918,6 +1918,53 @@ export class _Body extends Shape {
     return _raycast(this.faces(), origin, direction, this._looseBox())
   }
 
+  /**
+   * The first hit of each of many rays: for each origin, the `Hit` that `raycast` gives first (the
+   * exact point on the face, the distance, the face, its outward normal), `null` where the ray
+   * misses.
+   *
+   * `origins` are points; `directions` one direction (a vector or an axis) for all of them, or one
+   * each. The rays are traced through a mesh of the body (made once per body, at 1e-4 of its size)
+   * by the kernel's ray tracer, and each hit is moved onto the exact face the mesh says the ray
+   * meets first; where that face is missed there, the ray is cast exactly (`raycast`). A ray that
+   * passes the body's outline within the mesh's tolerance (1e-4 of its size) can come out a miss
+   * where `raycast` finds where it grazes the surface. Give all the rays in one call: the tracer is
+   * built once per call (0.2 s for a mesh of 20 000 triangles), then a ray takes 0.02 to 0.05 ms.
+   */
+  raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[] {
+    const [o, d] = _rays(origins, directions, 'raycastMany')
+    const n = o.length / 3
+    if (!n) return []
+    const [vertices, triangles, owners, meshTol] = _rayMesh(this)
+    const box = this._looseBox()
+    let far = 0
+    for (let i = 0; i < n; i++) far = Math.max(far, Math.hypot(o[3 * i], o[3 * i + 1], o[3 * i + 2]))
+    const tol = 1e-9 * Math.max(box.diagonal, 1e-9, far)
+    const r = kernelCall('raycastMany', () => ext.body_first_hits(this._brep, vertices, triangles, owners, o, d, tol, meshTol))
+    const faces = this.faces()
+    const out: (Hit | null)[] = []
+    for (let i = 0; i < n; i++) {
+      const found = r.found[i]
+      if (found === 0) out.push(null)
+      else if (found === 1) {
+        out.push(
+          new Hit(
+            new Vector(r.points[3 * i], r.points[3 * i + 1], r.points[3 * i + 2]),
+            r.t[i],
+            new Vector(r.normals[3 * i], r.normals[3 * i + 1], r.normals[3 * i + 2]),
+            faces[r.faces[i]],
+          ),
+        )
+      } else {
+        // (the mesh's face is missed there, or met behind the start: the exact cast)
+        const origin = new Vector(o[3 * i], o[3 * i + 1], o[3 * i + 2])
+        const hits = _raycast(faces, origin, new Vector(d[3 * i], d[3 * i + 1], d[3 * i + 2]), box)
+        out.push(hits.length ? hits[0] : null)
+      }
+    }
+    return out
+  }
+
   // -- geometric queries --------------------------------------------------------------------
   /** The curves where this body's surface meets another body's surface, each one once. */
   intersectionCurves(other: _Body): ShapeList<Edge> {
@@ -1927,11 +1974,21 @@ export class _Body extends Shape {
     return _distinctCurves(curves, 1e-6 * Math.max(1, this._looseBox().union(other._looseBox()).diagonal))
   }
 
-  /** Silhouette curves on the body as seen along `direction` (an axis or a vector). */
+  /**
+   * The contour of the body seen along `direction` (an axis or a vector, from the body towards the
+   * viewer): the curves on its faces where the surface turns away from the viewer (`n . d = 0`), and
+   * the edges between faces that face the viewer and faces that face away. All of them, seen or
+   * not, as standalone 3D edges; arcs of one circle come joined (a sphere's rim is one circle).
+   * Faces seen edge-on go with the faces behind them, so their near edges are the contour (a box
+   * seen from +Z: its 4 top edges). A sheet's free edges are not part of it. The curves are exact for spheres, cylinders and tori around the direction, traced
+   * (within 1e-6 of the body's size) otherwise.
+   */
   silhouette(direction: Axis | VectorLike = [0, 0, 1]): ShapeList<Edge> {
     const d = _direction(direction, 'silhouette')
-    const curves: number[] = kernelCall('silhouette', () => k.create_silhouette_curves(this._brep, [0, 0, 0], d.toArray()))
-    return _list(curves.map((c) => Edge._fromCurve(c)))
+    const [body, line] = _contour(this, d.neg(), 'silhouette')
+    const edges = line.map((e) => Edge._fromCurve(ext.edge_curve(e._e)))
+    body.dispose()
+    return _list(_joinedArcs(edges, 1e-7 * Math.max(this._looseBox().diagonal, 1)))
   }
 
   /** Project a curve onto the body along `direction` (an axis or a vector); returns the curves on
@@ -1952,8 +2009,30 @@ export class _Body extends Shape {
     return out
   }
 
-  /** The body's edges projected onto a plane (a 2D drawing view). */
-  outline(plane: Plane = Plane.XY): ShapeList<Edge> {
+  /**
+   * The body's edges and contours projected onto a plane (a 2D drawing view), seen from the side the
+   * plane's normal points to: the visible lines.
+   *
+   * With `hidden: true`, `[visible, hidden]`: the lines behind the body too, for dashed hidden
+   * lines. With `tangentEdges: true` the edges between faces that meet tangentially (the tangent
+   * lines of fillets) are drawn too. Either way each line comes once: hidden pieces under visible
+   * lines are cut away, seams of closed faces and edges seen end-on are left out. See also
+   * `drawingViews`.
+   */
+  outline(plane?: Plane, options?: { hidden?: false; tangentEdges?: boolean }): ShapeList<Edge>
+  outline(plane: Plane | undefined, options: { hidden: true; tangentEdges?: boolean }): [ShapeList<Edge>, ShapeList<Edge>]
+  outline(plane?: Plane, options?: { hidden?: boolean; tangentEdges?: boolean }): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>]
+  outline(plane: Plane = Plane.XY, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
+    _opts('_Body.outline', options)
+    const { hidden = false, tangentEdges = false } = options
+    if (hidden || tangentEdges) {
+      const [seen, behind]: [number[], number[]] = kernelCall('outline', () =>
+        ext.hidden_lines(this._brep, plane.origin.toArray(), plane.zDir.toArray(), false, Boolean(tangentEdges)),
+      )
+      const visible = _list(seen.map((c) => Edge._fromCurve(c)))
+      const back = _list(behind.map((c) => Edge._fromCurve(c)))
+      return hidden ? [visible, back] : visible
+    }
     const curves = kernelCall('outline', () => k.project_brep_onto_plane(this._brep, plane.origin.toArray(), plane.zDir.toArray()))
     // The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
     // circles seen edge-on come with a copy each); a drawing view needs each line once.
@@ -2367,10 +2446,39 @@ function _raycast(
   return out
 }
 
+/** What `raycastMany` traces rays through: the mesh of the body at 1e-4 of its size (its vertices
+ * and triangles), the index of the face of each triangle, and that tolerance. Made once per body. */
+function _rayMesh(body: _Body): [Float64Array, Uint32Array, Int32Array, number] {
+  let cached = body._h.meshes.get('rays')
+  if (cached === undefined) {
+    const tolerance = Math.max(body._looseBox().diagonal * 1e-4, 1e-7)
+    const mesh = _tessellate(body, tolerance, 15.0, true)
+    let owners: number[]
+    try {
+      owners = mesh._poly !== null ? _triangleFaces(body, mesh) : []
+    } finally {
+      mesh.dispose()
+    }
+    cached = [mesh.vertices, mesh.triangles, Int32Array.from(owners), tolerance]
+    body._h.meshes.set('rays', cached)
+  }
+  return cached
+}
+
+/** The meshes of the faces of a body (`faceMeshes`), made once per body. */
+function _bodyFaceMeshes(owner: _Body): Mesh[] {
+  let cached = owner._h.meshes.get('faces')
+  if (cached === undefined) {
+    cached = faceMeshes(owner)
+    owner._h.meshes.set('faces', cached)
+  }
+  return cached
+}
+
 /** The points where the ray crosses the mesh of face `f`, moved onto its exact surface. */
 function _meshHits(f: Face, o: Vector, d: Vector, reach: number, tol: number, meshes: Map<unknown, Mesh[]>): Vector[] {
   const owner = f._owner!
-  if (!meshes.has(owner)) meshes.set(owner, faceMeshes(owner))
+  if (!meshes.has(owner)) meshes.set(owner, _bodyFaceMeshes(owner)) // (made once per body)
   const [index] = ext.face_indices(owner._brep, [f._f])
   const m = meshes.get(owner)![index]
   const out: Vector[] = []

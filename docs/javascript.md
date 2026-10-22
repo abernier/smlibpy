@@ -980,6 +980,7 @@ export class Mesh {
     mirror(plane?: Plane | Face | Axis | ShapeList<Face>): Mesh;
     scale(factor: number | VectorLike, center?: VectorLike): Mesh;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
+    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[];
     isClosed(): boolean;
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
@@ -1095,6 +1096,28 @@ export function importDxf(path: string, options?: DxfReadOptions): Sketch;
 export function fromDxf(data: string | Uint8Array, options?: DxfReadOptions): Sketch;
 export function exportDxf(shapes: unknown, path: string, options?: DxfWriteOptions): void;
 export function toDxf(shapes: unknown, options?: DxfWriteOptions): string;
+export class DrawingView {
+    readonly name: string;
+    readonly direction: Vector;
+    readonly visible: ShapeList<Edge>;
+    readonly hidden: ShapeList<Edge>;
+    constructor(name: string, direction: Vector, visible: ShapeList<Edge>, hidden: ShapeList<Edge>);
+    bbox(): BoundBox;
+    toString(): string;
+}
+export interface DrawingViewsOptions {
+    projection?: string;
+    hidden?: boolean;
+    tangentEdges?: boolean;
+    gap?: number | null;
+}
+export function drawingViews(part: _Body, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
+export interface SvgOptions {
+    margin?: number | null;
+    stroke?: number | null;
+}
+export function toSvg(shapes: unknown, options?: SvgOptions): string;
+export function exportSvg(shapes: unknown, path: string, options?: SvgOptions): void;
 export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;

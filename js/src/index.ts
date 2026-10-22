@@ -97,6 +97,7 @@ export {
   type StepPoint,
 } from './step_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
+export { DrawingView, drawingViews, exportSvg, toSvg, type DrawingViewsOptions, type SvgOptions } from './drawing.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'

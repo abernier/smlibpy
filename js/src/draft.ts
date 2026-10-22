@@ -16,8 +16,9 @@
 // whose edges leave its faces.
 
 import { ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { CenterArc } from './curves.ts'
 import { type Axis, Plane, Vector, type VectorLike, _degrees as _toDegrees, _direction, _formatG, _radians } from './geometry.ts'
-import { Edge, Face, Part, ShapeList, Wire, _asPlane, _flattenFaces, _list } from './shapes.ts'
+import { Edge, Face, Part, ShapeList, Shell, Wire, _Body, _asPlane, _flattenFaces, _list } from './shapes.ts'
 
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
@@ -192,7 +193,7 @@ function _side(lo: number, hi: number, eps: number): number | null {
 }
 
 /** Edges of `body` grouped into chains connected at their vertices. */
-function _loops(body: Part, edges: readonly Edge[]): Edge[][] {
+function _loops(body: _Body, edges: readonly Edge[]): Edge[][] {
   const parent = edges.map((_, i) => i)
   const find = (i: number): number => {
     while (parent[i] !== i) {
@@ -223,6 +224,103 @@ function _loops(body: Part, edges: readonly Edge[]): Edge[][] {
 export function partingLine(part: Part, direction: Axis | VectorLike): ShapeList<Wire> {
   const d = _direction(direction, 'partingLine')
   part._requireValid('partingLine')
+  const [body, line] = _contour(part, d, 'partingLine')
+  const wires: Wire[] = []
+  for (const chain of _loops(body, line)) {
+    const curves = chain.map((e) => Edge._fromCurve(ext.edge_curve(e._e)))
+    wires.push(new Wire(curves))
+  }
+  const keyed = wires.map((w) => [-w.length, w] as [number, Wire])
+  keyed.sort((x, y) => x[0] - y[0])
+  return _list(keyed.map(([, w]) => w))
+}
+
+/**
+ * The edges, with the arcs of one circle that meet end to end joined into one arc (a full circle
+ * where they go round): the pieces a contour is split into where it crosses edges or seams of the
+ * faces (a sphere's rim at its seam).
+ */
+export function _joinedArcs(edges: Edge[], tol: number): Edge[] {
+  const groups: [Vector, number, Vector, Edge[]][] = []
+  const out: Edge[] = []
+  for (const e of edges) {
+    if (e.geomType !== 'circle') {
+      out.push(e)
+      continue
+    }
+    const [c, r, n] = [e.arcCenter, e.radius, e.normal]
+    const g = groups.find(([gc, gr, gn]) => gc.sub(c).length <= tol && Math.abs(gr - r) <= tol && gn.cross(n).length <= 1e-9)
+    if (g) g[3].push(e)
+    else groups.push([c, r, n, [e]])
+  }
+  const mod = (a: number) => ((a % 360) + 360) % 360
+  for (const [c, r, n, members] of groups) {
+    if (members.length === 1) {
+      out.push(members[0])
+      continue
+    }
+    const x = members[0].start.sub(c).normalized()
+    const plane = new Plane(c, x, n)
+    const angle = (p: Vector) => {
+      const q = plane.toLocal(p)
+      return mod((Math.atan2(q.y, q.x) * 180) / Math.PI)
+    }
+    const spans: [number, number][] = [] // counterclockwise about n: [start, size]
+    for (const e of members) {
+      const [a0, am, a1] = [angle(e.start), angle(e.pointAt(0.5)), angle(e.end)]
+      if (e.isClosed) {
+        spans.push([0, 360])
+        continue
+      }
+      const ccw = mod(am - a0) < mod(a1 - a0) || mod(a1 - a0) === 0
+      spans.push(ccw ? [a0, mod(a1 - a0)] : [a1, mod(a0 - a1)])
+    }
+    const eps = ((tol / r) * 180) / Math.PI
+    spans.sort((p, q) => p[0] - q[0] || p[1] - q[1])
+    const merged: [number, number][] = []
+    for (const [a, size] of spans) {
+      const last = merged[merged.length - 1]
+      if (last && a <= last[0] + last[1] + eps) last[1] = Math.max(last[1], a + size - last[0])
+      else merged.push([a, size])
+    }
+    if (merged.length > 1 && merged[merged.length - 1][0] + merged[merged.length - 1][1] >= merged[0][0] + 360 - eps) {
+      const first = merged.shift()! // (across angle 0)
+      const last = merged[merged.length - 1]
+      last[1] = first[0] + 360 + first[1] - last[0]
+    }
+    if (merged.length === members.length) {
+      out.push(...members)
+      continue
+    }
+    for (const [a, size] of merged) out.push(CenterArc([0, 0], r, size >= 360 - eps ? 0 : a, Math.min(size, 360), plane))
+  }
+  return out
+}
+
+/**
+ * A copy of the body (a part, a sheet or a sketch) split along its silhouettes for the unit
+ * direction `d`, and its edges between the half that faces along `d` and the half that faces away
+ * (faces parallel to `d` go with the half that faces along it, unless they touch only faces of the
+ * other half). The copy holds the edges: keep it while they are used.
+ */
+export function _contour(part: _Body, d: Vector, what: string): [_Body, Edge[]] {
+  try {
+    return _splitHalves(part, d, d, what)
+  } catch (e) {
+    if (!(e instanceof ModelingError)) throw e
+    // The kernel traces the silhouettes of a face differently for -d (the same curves): a torus
+    // split for -X kept a face that faces both ways, split for +X it splits cleanly.
+    try {
+      return _splitHalves(part, d, d.neg(), what)
+    } catch (e2) {
+      if (!(e2 instanceof ModelingError)) throw e2
+    }
+    throw e
+  }
+}
+
+/** `_contour` with the faces split along the silhouettes traced for `split` (`d` or `-d`). */
+function _splitHalves(part: _Body, d: Vector, split: Vector, what: string): [_Body, Edge[]] {
   const size = Math.max(part.bbox().diagonal, 1e-9)
   const tolerance = 1e-6 * size // fit tolerance of traced silhouettes
   const eps = _SIGN
@@ -232,15 +330,15 @@ export function partingLine(part: Part, direction: Axis | VectorLike): ShapeList
     if (_side(lo, hi, eps) === null) straddling.push(f)
   }
   const res = kernelCall(
-    'partingLine',
-    () => _DR.split_at_silhouettes(part._brep, d.toArray(), tolerance, straddling.map((f) => f._f)),
+    what,
+    () => _DR.split_at_silhouettes(part._brep, split.toArray(), tolerance, straddling.map((f) => f._f)),
     'the kernel could not split the faces along their silhouettes',
   )
-  const body = Part._wrap(res.brep) // keeps the split copy alive while its edges are read
+  const body: _Body = part instanceof Part ? Part._wrap(res.brep) : Shell._wrap(res.brep) // keeps the split copy alive
   if (res.failed.length) {
     const kinds = [...new Set((res.failed as number[]).map((i) => straddling[i].geomType))].sort()
     throw new ModelingError(
-      `partingLine: the kernel could not find where ${res.failed.length} ${kinds.join('/')} face(s) turn away from the direction; try a direction a little off this one, or heal() an imported part first`,
+      `${what}: the kernel could not find where ${res.failed.length} ${kinds.join('/')} face(s) turn away from the direction; try a direction a little off this one, or heal() an imported part first`,
     )
   }
   // Sides of the faces of the split copy. A face split along a traced silhouette can turn past 0
@@ -252,7 +350,7 @@ export function partingLine(part: Part, direction: Axis | VectorLike): ShapeList
     let s = _side(lo, hi, eps)
     if (s === null) {
       if (Math.min(-lo, hi) > _STRAY) {
-        throw new ModelingError('partingLine: a face still faces both ways after the split; heal() the part, or try a direction a little off this one')
+        throw new ModelingError(`${what}: a face still faces both ways after the split; heal() the part, or try a direction a little off this one`)
       }
       s = hi >= -lo ? 1 : -1
     }
@@ -289,14 +387,7 @@ export function partingLine(part: Part, direction: Axis | VectorLike): ShapeList
     const fs = e.faces()
     if (fs.length === 2 && side.get(fs[0]._identity()) !== side.get(fs[1]._identity())) line.push(e)
   }
-  const wires: Wire[] = []
-  for (const chain of _loops(body, line)) {
-    const curves = chain.map((e) => Edge._fromCurve(ext.edge_curve(e._e)))
-    wires.push(new Wire(curves))
-  }
-  const keyed = wires.map((w) => [-w.length, w] as [number, Wire])
-  keyed.sort((x, y) => x[0] - y[0])
-  return _list(keyed.map(([, w]) => w))
+  return [body, line]
 }
 
 // ============================================================================= face drafts

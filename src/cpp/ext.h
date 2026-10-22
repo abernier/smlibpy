@@ -35,3 +35,9 @@ void bind_cells(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Meshes as arrays with double points (poly_arrays.cpp).
+void bind_poly_arrays(py::module_ m);
+// Many rays at once: first hits on meshes, refined onto exact faces (rays.cpp).
+void bind_rays(py::module_ m);
+// Drawing views with hidden lines (hidden_lines.cpp).
+void bind_hidden_lines(py::module_ m);

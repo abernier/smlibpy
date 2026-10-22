@@ -244,6 +244,7 @@ def test_exports_take_the_turned_mesh_of_a_face(tmp_path):
     acc = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
     view = doc["bufferViews"][acc["bufferView"]]
     tris = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3, 3).astype(float)
+    tris += doc["nodes"][0].get("translation", [0, 0, 0])  # (positions are relative to the node)
     assert np.allclose(tris, mesh.vertices[mesh.triangles], atol=1e-4)
     path = tmp_path / "side.stl"
     export_stl(side, path)

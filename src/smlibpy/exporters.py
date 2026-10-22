@@ -6,6 +6,7 @@ Format    Extension                                            Direction
 STEP      ``.step``, ``.stp``                                  read/write
 SMLib     ``.smb`` (exact native kernel format)                read/write
 DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
+SVG       ``.svg`` (2D drawings: views, curves)                write
 glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
 OBJ       ``.obj``                                             write
@@ -77,8 +78,12 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         from .usd import export_usd
 
         export_usd(shapes, p, **kwargs)
+    elif ext == ".svg":
+        from .drawing import export_svg
+
+        export_svg(shapes, p, **kwargs)
     else:
-        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda")
+        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf, .svg or .usda")
 
 
 def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None) -> None:
@@ -153,7 +158,8 @@ def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | 
     offset = 1
     for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle)):
         lines.append(f"o {getattr(item, 'name', None) or f'part_{i + 1}'}")
-        lines.extend(f"v {x:.9g} {y:.9g} {z:.9g}" for x, y, z in m.vertices)
+        # (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
+        lines.extend(f"v {x:.12g} {y:.12g} {z:.12g}" for x, y, z in m.vertices)
         lines.extend(f"f {a + offset} {b + offset} {c + offset}" for a, b, c in m.triangles)
         offset += len(m.vertices)
     with open(os.fspath(path), "w") as fh:
@@ -164,6 +170,18 @@ def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | 
 # glTF 2.0
 # -----------------------------------------------------------------------------
 _DEFAULT_COLORS = ["#7c93b5", "#d9925a", "#79ad73", "#c97878", "#9d87c7", "#d4b45a", "#6bb3b3", "#b08e6c"]
+
+
+def _linear_rgb(color: Any) -> tuple[float, float, float]:
+    """A color as glTF's ``baseColorFactor`` takes it: the sRGB values that colors are given in
+    (``"#7c93b5"``, ``(124, 147, 181)``) turned linear, so viewers show the color asked for (glTF
+    stores linear values and viewers encode them as sRGB for the screen)."""
+
+    def linear(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = to_rgb(color)
+    return linear(r), linear(g), linear(b)
 
 
 def _edge_polylines(item: Any, angle: float = 5.0) -> list[np.ndarray]:
@@ -207,6 +225,12 @@ def _curve_points(item: Any) -> list[np.ndarray]:
     return out
 
 
+def _centre(points: np.ndarray) -> np.ndarray:
+    """The middle of the box around points ((n, 3); the origin for none)."""
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    return (p.min(axis=0) + p.max(axis=0)) / 2 if len(p) else np.zeros(3)
+
+
 def _fmt_num(v: float) -> str:
     return f"{v:,.6g}".replace(",", "\u2009")
 
@@ -245,7 +269,7 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         return len(accessors) - 1
 
     def material(color: Any, lines: bool = False) -> int:
-        r, g, b = to_rgb(color)
+        r, g, b = _linear_rgb(color)
         m: dict[str, Any] = {"pbrMetallicRoughness": {"baseColorFactor": [r, g, b, 1.0],
                                                       "metallicFactor": 0.0 if lines else 0.05,
                                                       "roughnessFactor": 1.0 if lines else 0.55}}
@@ -254,8 +278,9 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         materials.append(m)
         return len(materials) - 1
 
-    def line_prim(polylines: list[np.ndarray], mat: int) -> dict[str, Any]:
-        segs = np.concatenate([np.stack([pl[:-1], pl[1:]], axis=1).reshape(-1, 3) for pl in polylines]).astype(np.float32)
+    def line_prim(polylines: list[np.ndarray], mat: int, centre: np.ndarray) -> dict[str, Any]:
+        segs = np.concatenate([np.stack([pl[:-1], pl[1:]], axis=1).reshape(-1, 3) for pl in polylines])
+        segs = (segs - centre).astype(np.float32)
         return {"attributes": {"POSITION": add_accessor(segs, "VEC3", 5126, 34962, True)}, "material": mat, "mode": 1}
 
     items = _flatten_all(shapes)
@@ -264,10 +289,17 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
     for i, item in enumerate(items):
         name = getattr(item, "name", None) or f"{type(item).__name__.lower()}_{i + 1}"
         prims: list[dict[str, Any]] = []
+        # Positions are float32 in glTF (7 digits): each node holds them relative to the middle of
+        # its shape and moves them there by its translation (a double), so a part far from the
+        # origin keeps its shape.
+        centre = np.zeros(3)
         if isinstance(item, (Edge, Wire)):
-            prims.append(line_prim(_curve_points(item), material(getattr(item, "color", None) or "#d9480f", True)))
+            points = _curve_points(item)
+            centre = _centre(np.concatenate(points))
+            prims.append(line_prim(points, material(getattr(item, "color", None) or "#d9480f", True), centre))
         elif isinstance(item, Vertex):
-            pts = np.array([item.point.to_tuple()], dtype=np.float32)
+            centre = np.array(item.point.to_tuple(), dtype=np.float64)
+            pts = np.zeros((1, 3), dtype=np.float32)
             prims.append({"attributes": {"POSITION": add_accessor(pts, "VEC3", 5126, 34962, True)},
                           "material": material("#d9480f", True), "mode": 0})
         else:
@@ -276,7 +308,8 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
             m = body if isinstance(body, Mesh) else tessellate(item, tolerance, angle)
             color = getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
             color_index += 1
-            pos = m.vertices[m.triangles].reshape(-1, 3).astype(np.float32)
+            centre = _centre(m.vertices)
+            pos = (m.vertices[m.triangles].reshape(-1, 3) - centre).astype(np.float32)
             if m.normals is not None:
                 nrm = m.normals.reshape(-1, 3).astype(np.float32)
             else:
@@ -291,9 +324,12 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
                 if lines:
                     if edge_mat is None:
                         edge_mat = material(edge_color, True)
-                    prims.append(line_prim(lines, edge_mat))
+                    prims.append(line_prim(lines, edge_mat, centre))
         meshes.append({"name": name, "primitives": prims})
-        nodes.append({"mesh": len(meshes) - 1, "name": name})
+        node: dict[str, Any] = {"mesh": len(meshes) - 1, "name": name}
+        if centre.any():
+            node["translation"] = [float(x) for x in centre]
+        nodes.append(node)
 
     doc = {
         "asset": {"version": "2.0", "generator": "smlibpy"},

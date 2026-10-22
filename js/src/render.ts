@@ -14,7 +14,7 @@
 // Images are flat typed arrays, row by row from the top left, three numbers (red, green, blue)
 // per pixel; points and segments are flat arrays of x, y, z.
 
-import { _opts, ext, k as kernel } from './kernel.ts'
+import { _opts, ext } from './kernel.ts'
 import { BoundBox, Plane, Vector, _formatG } from './geometry.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, _tessellate, _triangulate, tessellate } from './mesh.ts'
@@ -1275,7 +1275,7 @@ function _cornerCurvatures(mesh: Mesh | null, source: unknown, count: number): [
   const poly = mesh?._poly?.poly ?? 0
   if (!poly || source == null) return [missing, missing]
   const r = ext.poly_curvatures(poly)
-  const faces = kernel.poly_mesh(poly, true).faces as Int32Array
+  const faces = ext.poly_arrays(poly, false).faces as Int32Array
   const [tris, corner] = _triangulate(faces)
   const k1 = r.k1 as Float64Array
   const k2 = r.k2 as Float64Array

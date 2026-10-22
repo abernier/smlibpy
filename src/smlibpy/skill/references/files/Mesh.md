@@ -17,15 +17,16 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 ## Fields
 | Field | Type | Meaning |
 |---|---|---|
-| `vertices` | `(n, 3)` float64 | positions, shared between triangles of one body |
+| `vertices` | `(n, 3)` float64 | positions, shared between triangles of one body; double precision also far from the origin |
 | `triangles` | `(m, 3)` int64 | vertex indices, counterclockwise seen from outside |
-| `normals` | `(m, 3, 3)` float32 or `None` | unit corner normals of the exact surface. `None` for `import_stl` and hand-built meshes |
+| `normals` | `(m, 3, 3)` float32 or `None` | unit corner normals of the exact surface (at the apex of a cone, the normal of the surface beside the corner). `None` for `import_stl` and hand-built meshes |
 | `triangle_normals` | `(m, 3)` | computed from the winding |
 | `len(m)` | int | number of triangles |
 | `area`, `volume` | float | from the triangles |
 | `bbox()`, `center()` | | `center()` is the **bbox center**, not the centroid |
 | `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
 | `raycast(origin, direction)` | list of `Hit` | where a ray meets the triangles, nearest first (see `raycast`) |
+| `raycast_many(origins, directions)` | list of `Hit` or `None` | the first hit of each of many rays, by the kernel's ray tracer (see `raycast`) |
 | `m1 + m2`, `m1 - m2`, `m1 & m2` | `Mesh` | mesh Booleans, see below |
 | `translate`, `rotate`, `mirror`, `scale`, `moved` | `Mesh` | a moved copy, as for shapes (normals turn along; a mirrored mesh still faces outward) |
 
