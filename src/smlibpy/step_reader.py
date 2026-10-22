@@ -589,8 +589,9 @@ class _Interp:
                 # outer loop first (if marked); otherwise keep the order
                 loops.sort(key=lambda l: not l.get("outer", False))
                 faces.append(len(b.faces))
+                # (a face's own color, from a STYLED_ITEM of the face, and its name: kernel plan T5)
                 b.faces.append({"surface": smap[sref], "same_sense": str(fa[3]) == "T", "loops": loops,
-                                "name": fa[0] if isinstance(fa[0], str) else ""})
+                                "name": fa[0] if isinstance(fa[0], str) else "", "color": self.colors.get(int(fref))})
             b.shells.append({"faces": faces, "reversed": reversed_, "closed": t != "OPEN_SHELL"})
         return b
 

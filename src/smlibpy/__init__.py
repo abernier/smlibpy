@@ -33,7 +33,7 @@ from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, 
                          thicken)
 from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
 from .profiles import Profile
-from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
+from .shapes import Edge, Face, MassProperties, Part, Problem, Shape, ShapeList, Shell, Sketch, Vertex, Wire
 from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot,
                        Stroke, Trapezoid, Triangle, make_face)
 from .text import Text
@@ -55,7 +55,8 @@ __all__ = [
     "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "Nurbs", "X", "Y", "Z", "TOLERANCE",
     "Align",
     # shapes
-    "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Mesh",
+    "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Problem",
+    "Mesh",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
     "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "make_compatible",

@@ -31,7 +31,21 @@ void bind_tessellate(py::module_ m);
 void bind_fit(py::module_ m);
 // The cells of a non-manifold body (cells.cpp).
 void bind_cells(py::module_ m);
+// Seams tangent to the other operand of a Boolean (seams.cpp).
+void bind_seams(py::module_ m);
 // The nearest points of two bodies (distance.cpp).
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Where the faces and edges of a body came from: tags the kernel carries along (history.cpp).
+void bind_history(py::module_ m);
+// What is wrong with a body: the kernel's validity checks and gaps (check.cpp).
+void bind_check(py::module_ m);
+// A solid split by a sheet (slice.cpp).
+void bind_slice(py::module_ m);
+// Colors and names of single faces (face_attrs.cpp).
+void bind_face_attrs(py::module_ m);
+// Analytic faces and edges recognized in B-splines (analytics.cpp).
+void bind_analytics(py::module_ m);
+// The shells of a body: outside, cavities, cells (shells.cpp).
+void bind_shells(py::module_ m);

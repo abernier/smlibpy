@@ -1,6 +1,7 @@
 # Parts
 
-A `Part` is a solid. It may consist of several separate bodies (`part.solids()` lists them).
+A `Part` is a solid. It may consist of several separate bodies (`part.solids()` lists them, a
+body inside a cavity of another too).
 
 ## Primitives
 

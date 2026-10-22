@@ -635,8 +635,8 @@ export function mirror<S extends Shape>(shape: S, plane: Plane | Face | Axis | S
   return shape.mirror(plane)
 }
 
-/** Cut a part with a plane (see `Part.split`). */
-export function split(part: Part, plane: Plane | Face, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
+/** Cut a part with a plane or along a sheet (see `Part.split`). */
+export function split(part: Part, plane: Plane | Face | Shell, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
   return keep === 'both' ? part.split(plane, 'both') : part.split(plane, keep)
 }
 

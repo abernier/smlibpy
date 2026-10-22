@@ -364,6 +364,49 @@ def face_meshes(shape: "Shape", tolerance: float | None = None, angle: float = 1
         mesh.dispose()
 
 
+def _colored_mesh(shape: "Shape", tolerance: float | None = None, angle: float = 15.0) -> tuple[Mesh, np.ndarray | None]:
+    """:func:`tessellate`, and where faces of a body have colors of their own (``Face.color``,
+    kernel plan T5), per triangle the color of its face, (n, 3) from 0 to 1 with NaN for a face
+    without one; None where no face has one."""
+    from .shapes import _Body
+
+    if not isinstance(shape, _Body) or all(c is None for c in ext.face_attrs(shape._brep)[0]):
+        return tessellate(shape, tolerance, angle), None
+    mesh = _tessellate(shape, tolerance, angle, True)
+    try:
+        return mesh, _triangle_colors(shape, mesh)
+    finally:
+        mesh.dispose()
+
+
+def _triangle_colors(shape: "Shape", mesh: Mesh) -> np.ndarray | None:
+    """Per triangle of a body's mesh that keeps its tessellation, the own color of its face (NaN
+    for a face without one); None where no face has one."""
+    colors, _ = ext.face_attrs(shape._brep)  # type: ignore[attr-defined]
+    if all(c is None for c in colors):
+        return None
+    table = np.array([c if c is not None else (np.nan, np.nan, np.nan) for c in colors], dtype=np.float64)
+    return table[_triangle_faces(shape, mesh)]
+
+
+def _triangle_faces(shape: "Shape", mesh: Mesh) -> np.ndarray:
+    """Per triangle of a body's mesh that keeps its tessellation (``_tessellate(..., keep=True)``),
+    the index of its face in ``shape.faces()``."""
+    poly = mesh._poly.poly if mesh._poly is not None else None
+    if poly is None:
+        return np.zeros(0, dtype=np.int64)
+    owners = np.asarray(ext.poly_face_indices(poly, shape._brep), dtype=np.int64)
+    polygons = np.asarray(poly.to_numpy_arrays(face_varying_normals=False)["faces"], dtype=np.int64)
+    sizes, i = [], 0
+    while i < len(polygons):
+        sizes.append(int(polygons[i]))
+        i += sizes[-1] + 1
+    owner = np.repeat(owners, np.maximum(np.array(sizes, dtype=np.int64) - 2, 0))
+    if len(owner) != len(mesh.triangles):
+        raise ModelingError("tessellate: the mesh does not say which face each triangle belongs to")
+    return owner
+
+
 def _face_meshes(shape: "Shape", mesh: Mesh) -> list[Mesh]:
     poly = mesh._poly.poly if mesh._poly is not None else None
     count = len(shape.faces())

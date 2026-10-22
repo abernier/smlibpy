@@ -416,6 +416,8 @@ export interface FaceData {
   same_sense: boolean
   loops: LoopData[]
   name: string
+  /** The face's own color, from a STYLED_ITEM of the face (kernel plan T5). */
+  color?: number[] | null
   // (the frame of a seam the importer adds)
   frame?: [number[], number[]] | null
 }
@@ -930,7 +932,14 @@ class _Interp {
         loops.sort((p, q) => Number(!p.outer) - Number(!q.outer))
         faces.push(b.faces.length)
         const faceName = _at(fa, 0)
-        b.faces.push({ surface: smap.get(sref) as number, same_sense: String(_at(fa, 3)) === 'T', loops, name: _isStr(faceName) ? String(faceName) : '' })
+        // (a face's own color, from a STYLED_ITEM of the face, and its name: kernel plan T5)
+        b.faces.push({
+          surface: smap.get(sref) as number,
+          same_sense: String(_at(fa, 3)) === 'T',
+          loops,
+          name: _isStr(faceName) ? String(faceName) : '',
+          color: this.colors.get(_int(fref)) ?? null,
+        })
       }
       b.shells.push({ faces, reversed, closed: t !== 'OPEN_SHELL' })
     }

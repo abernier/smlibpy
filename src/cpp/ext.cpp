@@ -9,6 +9,7 @@
 
 #include "kernel.h"
 #include "ext_shared.h"
+#include "seams.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -24,6 +25,7 @@
 #include <SmEllipse.h>
 #include <SmPrimitiveCreation.h>
 #include <SmApiBrep.h>
+#include <SmApiQueries.h>
 
 #include <cmath>
 #include <unordered_map>
@@ -657,6 +659,48 @@ static const SmRegion* voted_region(const SmBrep* brep, const SmPoint3d& point, 
     return best->first;
 }
 
+// The kernel's coarse volume of a body (SmBrep::ComputePreciseProperties to 1e-4), NaN where that
+// fails.
+static double coarse_volume(const SmBrep* brep)
+{
+    SmExtent3d box;
+    if (brep->CalculateBoundingBox(box) != SM_SUCCESS)
+        return std::nan("");
+    SmMassPropertyBehavior behavior(1.0);
+    double area = 0.0, volume = 0.0, mass = 0.0;
+    SmTArray<SmVector3d> moments;
+    if (const_cast<SmBrep*>(brep)->ComputePreciseProperties(1e-4, box.GetMid(), behavior, area, volume, mass,
+                                                            moments) != SM_SUCCESS)
+        return std::nan("");
+    return volume;
+}
+
+// Whether the result of a Boolean of bodies of volumes va and vb can be right: a closed, manifold
+// solid (any body for a merge) whose volume lies within the bounds theirs set, within 1e-3 of the
+// larger body (a union), the smaller (an intersection) or the first (a difference): a union, or a
+// merge, holds the larger body and no more than both; an intersection no more than the smaller; a
+// difference no more than the first body and no less than what the second can take of it.
+static bool plausible(SmBrep* result, double va, double vb, SmBooleanOperationType op, bool non_manifold)
+{
+    if (result->GetNumFaces() == 0 || (!non_manifold && !result->IsManifoldSolid()))
+        return false;
+    const double v = coarse_volume(result);
+    if (!(v > 0))  // (also NaN)
+        return false;
+    switch (op)
+    {
+    case SM_BO_UNION:
+    case SM_BO_MERGE:
+    {
+        const double e = 1e-3 * std::max(va, vb);
+        return v >= std::max(va, vb) - e && v <= va + vb + e;
+    }
+    case SM_BO_INTERSECTION: return v <= std::min(va, vb) * (1 + 1e-3);
+    case SM_BO_DIFFERENCE: return v <= va * (1 + 1e-3) && v >= va - vb - 1e-3 * va;
+    default: return false;
+    }
+}
+
 SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, bool imprinting)
 {
     if (!brep1 || !brep2)
@@ -667,14 +711,78 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, 
     if (non_manifold && imprinting)
         throw std::invalid_argument("non_manifold and imprinting: one or the other");
     const auto op = static_cast<SmBooleanOperationType>(operation);
+    auto run = [&](SmBrep* b1, SmBrep* b2, SmBrep*& result) {
+        // (the imprint as k.boolean_with_options takes it by default: post-processed, brep2 deleted)
+        const SmStatus st = non_manifold ? SmApiNonManifoldBoolean(b1, b2, op, result)
+                            : imprinting ? SmApiBooleanWithOptions(b1, b2, op, FALSE, TRUE, TRUE, FALSE, FALSE, result)
+                                         : SmApiBoolean(b1, b2, op, result);
+        if (st != SM_SUCCESS)  // SmMerge clears the mark only on its way out of a success
+            SmApiGetOrCreateContext()->SetDoingBoolean(FALSE);
+        return st;
+    };
+    if (!imprinting && brep1->IsManifoldSolid() && brep2->IsManifoldSolid())
+    {
+        // Where the faces cross along a curve tangent to a seam of either body, the kernel's Boolean
+        // goes wrong (a valid body of the wrong volume, or an error; seams.cpp, kernel plan B6). The
+        // body that seam belongs to is turned about its axis first where that keeps its shape (a
+        // body of revolution): on copies, at up to three angles that clear the seam. A result that
+        // cannot be right (a union smaller than one of the bodies: the turned one taken for inside
+        // the other) is passed over too; where the kernel fails with each, the bodies go in as they
+        // are.
+        SeamTurns turns1, turns2;
+        try
+        {
+            turns2 = seam_turns(brep2, brep1, 0.0, 3);
+            turns1 = seam_turns(brep1, brep2, 0.0, 3);
+        }
+        catch (const std::exception&)  // (a seam that cannot be evaluated: the bodies as they are)
+        {
+            turns1 = turns2 = SeamTurns();
+        }
+        const size_t tries = std::max(turns1.angles.size(), turns2.angles.size());
+        const double va = tries ? coarse_volume(brep1) : 0.0, vb = tries ? coarse_volume(brep2) : 0.0;
+        for (size_t i = 0; i < tries; ++i)
+        {
+            SmBrep *c1 = nullptr, *c2 = nullptr;
+            check(SmApiBrepCopy(brep1, c1), "SmApiBrepCopy");
+            if (SmApiBrepCopy(brep2, c2) != SM_SUCCESS)
+            {
+                delete c1;
+                check(SM_ERR, "SmApiBrepCopy");
+            }
+            SmBrep* result = nullptr;
+            SmStatus st = SM_ERR;
+            try
+            {
+                if (!turns1.angles.empty())
+                    turn_brep(c1, turns1, turns1.angles[std::min(i, turns1.angles.size() - 1)]);
+                if (!turns2.angles.empty())
+                    turn_brep(c2, turns2, turns2.angles[std::min(i, turns2.angles.size() - 1)]);
+                st = run(c1, c2, result);
+            }
+            catch (...)
+            {
+                delete c1;
+                delete c2;
+                throw;
+            }
+            if (st == SM_SUCCESS)  // the result is c1, changed; c2 is deleted
+            {
+                if (plausible(result, va, vb, op, non_manifold))
+                {
+                    delete brep1;
+                    delete brep2;
+                    return result;
+                }
+                delete result;
+                continue;
+            }
+            delete c1;
+            delete c2;
+        }
+    }
     SmBrep* result = nullptr;
-    // (the imprint as k.boolean_with_options takes it by default: post-processed, brep2 deleted)
-    const SmStatus st =
-        non_manifold ? SmApiNonManifoldBoolean(brep1, brep2, op, result)
-        : imprinting ? SmApiBooleanWithOptions(brep1, brep2, op, FALSE, TRUE, TRUE, FALSE, FALSE, result)
-                     : SmApiBoolean(brep1, brep2, op, result);
-    if (st != SM_SUCCESS)  // SmMerge clears the mark only on its way out of a success
-        SmApiGetOrCreateContext()->SetDoingBoolean(FALSE);
+    const SmStatus st = run(brep1, brep2, result);
     check(st, non_manifold ? "SmApiNonManifoldBoolean" : imprinting ? "SmApiBooleanWithOptions" : "SmApiBoolean");
     return result;
 }
@@ -1122,7 +1230,9 @@ void bind_smlibpy_ext(py::module_ m)
           py::arg("imprinting") = false, py::return_value_policy::reference,
           "k.boolean (k.non_manifold_boolean with `non_manifold`, k.boolean_with_options(imprinting=True) with "
           "`imprinting`) that leaves the kernel as it was when it fails: on success the result is brep1, "
-          "changed, and brep2 is deleted; on failure both stay the caller's.");
+          "changed, and brep2 is deleted; on failure both stay the caller's. Where the faces cross along a curve "
+          "tangent to a seam of a body of revolution, that body is turned about its axis first, on copies: then "
+          "the result is a Brep of its own, and brep1 and brep2 are deleted.");
     m.def("classify_points", [](const SmBrep* brep, const std::vector<std::vector<double>>& points, double tolerance) {
         std::vector<double> flat;
         flat.reserve(points.size() * 3);

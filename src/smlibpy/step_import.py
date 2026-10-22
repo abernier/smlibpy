@@ -572,7 +572,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         # surface's seam; build_brep moves the seam off it
         free_seam = srf["kind"] == "bspline" and not any(_is_seam_loop(l) for l in loops if l.get("edges"))
         faces.append({"surface": bld.surface_spec(f), "same_sense": bool(f["same_sense"]), "loops": loops,
-                      "free_seam": free_seam})
+                      "free_seam": free_seam, "color": f.get("color"), "name": f.get("name") or None})
     solid = body.kind == "solid"
     parts = []
     built = []  # the faces and orientation each shell was built with in the end
@@ -582,7 +582,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         # Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
         reversed_ = bool(sh["reversed"]) and not (solid and si > 0)
         with kernel_call("import STEP", "the file may hold faces the kernel cannot rebuild"):
-            brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
+            brep = _attributed(ext.build_brep(shell_faces, edges, closed, reversed_, False), shell_faces)
             # A few writers flip a face's same_sense flag against its loops (which agree with
             # the loops of its neighbours): the loops decide.
             # (Faces that lack their seam have loops that do not close in the parameter
@@ -595,12 +595,13 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
                 for i in inverted:
                     shell_faces[i] = dict(shell_faces[i], same_sense=not shell_faces[i]["same_sense"])
                 ext.delete_brep(brep)
-                brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
+                brep = _attributed(ext.build_brep(shell_faces, edges, closed, reversed_, False), shell_faces)
         part = _with_seams(Part._wrap(brep) if closed else Shell._wrap(brep))
         if closed and not _positive(part):
             reversed_ = not reversed_
             with kernel_call("import STEP"):
-                part = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, reversed_, False)))
+                part = _with_seams(Part._wrap(_attributed(ext.build_brep(shell_faces, edges, closed, reversed_, False),
+                                                          shell_faces)))
         built.append((shell_faces, reversed_))
         if heal and closed and not _sound(part):
             # Only heal what came out broken: the kernel's healer can damage good bodies.
@@ -626,6 +627,15 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     return result
 
 
+def _attributed(brep: Any, faces: list[dict[str, Any]]) -> Any:
+    """The Brep ``ext.build_brep`` built from ``faces``, with their colors and names (the faces of the
+    file, in its order; kernel plan T5): the kernel carries them on through healing and seams."""
+    from .shapes import _put_face_attrs
+
+    _put_face_attrs(brep, [f.get("color") for f in faces], [f.get("name") for f in faces])
+    return brep
+
+
 def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any], bool]], edges: dict[int, Any]) -> Any:
     """A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the
     solid, as the file has it. The Boolean difference is the fallback; it fails where a
@@ -640,7 +650,8 @@ def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any],
         voids = [(f, r != flip) for f, r in built[1:]]
         try:
             with kernel_call("import STEP: cavities"):
-                part = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
+                brep = ext.build_brep(faces, edges, True, rev, False, voids)
+                part = _with_seams(Part._wrap(_attributed(brep, faces + [f for v, _ in voids for f in v])))
             if part._solid_problem() is None and abs(part.volume - expected) <= 1e-6 * max(abs(outer.volume), 1.0):
                 return part
         except (KernelError, ModelingError):

@@ -10,15 +10,22 @@
 #include "value_js.h"
 
 #include "cells.h"
+#include "check.h"
 #include "distance.h"
 #include "defeature.h"
 #include "deform.h"
 #include "draft.h"
 #include "ext_shared.h"
+#include "analytics.h"
+#include "face_attrs.h"
 #include "face_draft.h"
 #include "fit.h"
+#include "history.h"
 #include "measure.h"
+#include "seams.h"
 #include "sheetmetal.h"
+#include "shells.h"
+#include "slice.h"
 #include "step_build.h"
 #include "surface_eval.h"
 #include "tessellate.h"
@@ -57,8 +64,9 @@ val copy_with_map(uintptr_t b, val faces, val edges, val vertices)
 }
 
 void transform_brep(uintptr_t b, val matrix) { guard([&] { smlibpy::transform_brep(brep(b), numbers(matrix)); }); }
-// As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
-// the caller's (and the kernel's Boolean mark is cleared).
+// As k.boolean: on success the result is brep1, changed, or a Brep in its place (brep1 deleted)
+// where a seam was turned, and brep2 is deleted; on failure both stay the caller's, as they were
+// (and the kernel's Boolean mark is cleared).
 uintptr_t boolean(uintptr_t brep1, uintptr_t brep2, int operation, bool non_manifold, bool imprinting)
 {
     return guard([&] { return ptr(smlibpy::boolean(brep(brep1), brep(brep2), operation, non_manifold, imprinting)); });
@@ -77,6 +85,25 @@ val classify_points(uintptr_t b, val points, double tolerance)
             flat.insert(flat.end(), p.begin(), p.end());
         }
         return to_js(smlibpy::classify_points(brep(b), flat, tolerance));
+    });
+}
+// Per point where a seam of a touches a face of b tangentially: [edge, face, [x, y, z]].
+val seam_contacts(uintptr_t a, uintptr_t b, double tolerance)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& c : smlibpy::seam_contacts(brep(a), brep(b), tolerance))
+        {
+            val point = val::array();
+            for (double x : c.point)
+                point.call<void>("push", x);
+            val item = val::array();
+            item.call<void>("push", static_cast<double>(c.edge));
+            item.call<void>("push", static_cast<double>(c.face));
+            item.call<void>("push", point);
+            out.call<void>("push", item);
+        }
+        return out;
     });
 }
 val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
@@ -565,6 +592,89 @@ val draft_faces(uintptr_t b, val faces, val origin, val normal, double angle, do
     });
 }
 
+
+// ---------------------------------------------------------------- ext: history (T3), checks (T4), slices (B12)
+double tag_topology(uintptr_t b, bool fresh) { return guard([&] { return static_cast<double>(smlibpy::tag_topology(brep(b), fresh)); }); }
+val tag_lists(const std::vector<std::vector<long>>& lists)
+{
+    val out = val::array();
+    for (const auto& l : lists)
+        out.call<void>("push", number_array(l));
+    return out;
+}
+std::vector<std::vector<long>> lists_of(const val& a)
+{
+    const unsigned n = a["length"].as<unsigned>();
+    std::vector<std::vector<long>> out(n);
+    for (unsigned i = 0; i < n; ++i)
+        for (double x : numbers(a[i]))
+            out[i].push_back(static_cast<long>(x));
+    return out;
+}
+// [face tags, edge tags]
+val topology_tags(uintptr_t b)
+{
+    return guard([&] {
+        const smlibpy::TopologyTags t = smlibpy::topology_tags(brep(b));
+        val out = val::array();
+        out.call<void>("push", tag_lists(t.faces));
+        out.call<void>("push", tag_lists(t.edges));
+        return out;
+    });
+}
+bool set_topology_tags(uintptr_t b, val faces, val edges)
+{
+    return guard([&] { return smlibpy::set_topology_tags(brep(b), lists_of(faces), lists_of(edges)); });
+}
+void add_face_tags(uintptr_t b, val faces, val tags)
+{
+    guard([&] {
+        std::vector<long> t;
+        for (double x : numbers(tags))
+            t.push_back(static_cast<long>(x));
+        smlibpy::add_face_tags(brep(b), pointers<SmFace>(faces), t);
+    });
+}
+void untag_topology(uintptr_t b) { guard([&] { smlibpy::untag_topology(brep(b)); }); }
+
+val check_brep(uintptr_t b, int level) { return guard([&] { return to_js(smlibpy::check_brep(brep(b), level)); }); }
+val tolerance_gaps(uintptr_t b) { return guard([&] { return to_js(smlibpy::tolerance_gaps(brep(b))); }); }
+double edge_tolerance(uintptr_t e) { return guard([&] { return smlibpy::edge_tolerance(edge(e)); }); }
+double vertex_tolerance(uintptr_t v) { return guard([&] { return smlibpy::vertex_tolerance(vertex(v)); }); }
+
+// As ext.boolean: on success the result is brep, changed, and the sheet is deleted.
+uintptr_t slice(uintptr_t b, uintptr_t sheet, bool below) { return guard([&] { return ptr(smlibpy::slice(brep(b), brep(sheet), below)); }); }
+uintptr_t extended_sheet(uintptr_t f, double distance) { return guard([&] { return ptr(smlibpy::extended_sheet(face(f), distance)); }); }
+
+// ---------------------------------------------------------------- ext: face colors and names (T5), analytics (T6), shells (T7)
+// colors: per face [r, g, b], or [] / null to take the color off
+void set_face_colors(uintptr_t b, val faces, val colors)
+{
+    guard([&] {
+        std::vector<std::vector<double>> c;
+        const unsigned n = colors["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            c.push_back(colors[i].isNull() || colors[i].isUndefined() ? std::vector<double>() : numbers(colors[i]));
+        smlibpy::set_face_colors(brep(b), pointers<SmFace>(faces), c);
+    });
+}
+// names: per face a string ('' to take the name off)
+void set_face_names(uintptr_t b, val faces, val names)
+{
+    guard([&] {
+        std::vector<std::string> s;
+        const unsigned n = names["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            s.push_back(names[i].isNull() || names[i].isUndefined() ? std::string() : names[i].as<std::string>());
+        smlibpy::set_face_names(brep(b), pointers<SmFace>(faces), s);
+    });
+}
+val face_attr(uintptr_t f) { return guard([&] { return to_js(smlibpy::face_attr(face(f))); }); }
+val face_attrs(uintptr_t b) { return guard([&] { return to_js(smlibpy::face_attrs(brep(b))); }); }
+// the copy (the caller's) or null
+val recognize_analytics(uintptr_t b, double tolerance) { return guard([&] { return owned_or_null(smlibpy::recognize_analytics(brep(b), tolerance)); }); }
+val brep_shells(uintptr_t b) { return guard([&] { return to_js(smlibpy::brep_shells(brep(b))); }); }
+
 }  // namespace
 
 // ---------------------------------------------------------------- ext: clouds, meshes, cells, USD
@@ -610,7 +720,19 @@ val region_shells(uintptr_t b)
     });
 }
 
-// items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
+// Per cavity, the solids inside its shells (its wall's first), each the caller's.
+val void_shells(uintptr_t b)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& cavity : smlibpy::void_shells(brep(b)))
+            out.call<void>("push", pointer_array(cavity));
+        return out;
+    });
+}
+
+// items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null, r, g, b per
+// triangle or null]
 std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
 {
     return guard([&] {
@@ -631,6 +753,8 @@ std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
                     item.triangles.push_back(static_cast<long>(x));
             if (it["length"].as<unsigned>() > 5 && !none(it[5]))
                 item.normals = numbers(it[5]);
+            if (it["length"].as<unsigned>() > 6 && !none(it[6]))
+                item.face_colors = numbers(it[6]);
             in.push_back(std::move(item));
         }
         return smlibpy::usd_text(in, up_axis, meters_per_unit);
@@ -747,6 +871,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__poly_from_triangles", &poly_from_triangles);
     function("ext__triangulate_poly", &triangulate_poly);
     function("ext__region_shells", &region_shells);
+    function("ext__seam_contacts", &seam_contacts);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);
@@ -759,6 +884,24 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__tessellation_algorithm", &tessellation_algorithm);
     function("ext__poly_face_indices", &poly_face_indices);
     function("ext__grid_deviation", &grid_deviation);
+    function("ext__tag_topology", &tag_topology);
+    function("ext__topology_tags", &topology_tags);
+    function("ext__set_topology_tags", &set_topology_tags);
+    function("ext__add_face_tags", &add_face_tags);
+    function("ext__untag_topology", &untag_topology);
+    function("ext__check_brep", &check_brep);
+    function("ext__tolerance_gaps", &tolerance_gaps);
+    function("ext__edge_tolerance", &edge_tolerance);
+    function("ext__vertex_tolerance", &vertex_tolerance);
+    function("ext__slice", &slice);
+    function("ext__extended_sheet", &extended_sheet);
+    function("ext__set_face_colors", &set_face_colors);
+    function("ext__set_face_names", &set_face_names);
+    function("ext__face_attr", &face_attr);
+    function("ext__face_attrs", &face_attrs);
+    function("ext__recognize_analytics", &recognize_analytics);
+    function("ext__brep_shells", &brep_shells);
+    function("ext__void_shells", &void_shells);
 
     function("sheetmetal__bend", &bend);
     function("sheetmetal__unbend", &unbend);

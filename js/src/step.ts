@@ -5,9 +5,9 @@
 // kernel's exact control points and knots. Solids become MANIFOLD_SOLID_BREPs (BREP_WITH_VOIDS for
 // hollow ones), sheets become open shells.
 
-import { ext, k } from './kernel.ts'
+import { ModelingError, ext, k } from './kernel.ts'
 import { toRgb } from './colors.ts'
-import { Part, _Body, _typeName, type ColorLike } from './shapes.ts'
+import { Part, _Body, _cellSources, _sourceLabel, _typeName, type ColorLike } from './shapes.ts'
 import { _fs } from './exporters.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
@@ -211,6 +211,11 @@ class _BodyWriter {
   kedges: number[]
   vertexIds = new Map<number, number>()
   edgeIds = new Map<number, number>()
+  // the faces' own colors and names, and the ADVANCED_FACE items written for each face (a face
+  // between two cells of a merged part is written in each) (kernel plan T5)
+  faceColors: (number[] | null)[]
+  faceNames: (string | null)[]
+  faceItems = new Map<number, number[]>()
 
   constructor(w: _Writer, brep: number) {
     this.w = w
@@ -222,6 +227,7 @@ class _BodyWriter {
     }
     this.kfaces = k.brep_faces(brep)
     this.kedges = k.brep_edges(brep)
+    ;[this.faceColors, this.faceNames] = ext.face_attrs(brep)
   }
 
   // -- geometry -----------------------------------------------------------------------------
@@ -400,7 +406,9 @@ class _BodyWriter {
       bounds.push(`#${bound}`)
     }
     const same = this._sameSense(idx, use, normalOf)
-    return w.add(`ADVANCED_FACE('',(${bounds.join(',')}),#${srf},${same ? '.T.' : '.F.'})`)
+    const item = w.add(`ADVANCED_FACE(${_s(this.faceNames[idx])},(${bounds.join(',')}),#${srf},${same ? '.T.' : '.F.'})`)
+    this.faceItems.set(idx, [...(this.faceItems.get(idx) ?? []), item])
+    return item
   }
 
   _sameSense(idx: number, use: Any, normalOf: NormalOf): boolean {
@@ -449,10 +457,16 @@ class _BodyWriter {
     return _dot(nFace, nStep) > 0
   }
 
-  /** MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS items, one per material region. */
-  solids(name: string): number[] {
+  /** The region each item of `solids` is of (counting the regions that are not cavities). */
+  cells: number[] = []
+
+  /** MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS items, one per material region, named `name` or, per
+   * region, `names` (the cells of a merged part); `cells` holds the region each item is of. */
+  solids(name: string, names: readonly (string | null)[] | null = null): number[] {
     const d = this.dump
     const items: number[] = []
+    this.cells = []
+    let cell = -1
     const shellFaces = new Map<number, [number, Any][]>()
     d.faces.forEach((f: Any, fi: number) => {
       f.uses.forEach((use: Any, ui: number) => {
@@ -466,17 +480,20 @@ class _BodyWriter {
     })
     for (const region of d.regions) {
       if (region.infinite || region.void) continue
+      cell += 1
+      const label = (names !== null && cell < names.length && names[cell]) || name
       const shells: number[] = []
       for (const si of region.shells) {
         const faces = (shellFaces.get(si) ?? []).map(([fi, mate]) => this.face(fi, mate))
         shells.push(this.w.add(`CLOSED_SHELL('',(${faces.map((x) => `#${x}`).join(',')}))`))
       }
       if (!shells.length) continue
-      if (shells.length === 1) items.push(this.w.add(`MANIFOLD_SOLID_BREP(${_s(name)},#${shells[0]})`))
+      if (shells.length === 1) items.push(this.w.add(`MANIFOLD_SOLID_BREP(${_s(label)},#${shells[0]})`))
       else {
         const voids = shells.slice(1).map((s) => this.w.add(`ORIENTED_CLOSED_SHELL('',*,#${s},.F.)`))
-        items.push(this.w.add(`BREP_WITH_VOIDS(${_s(name)},#${shells[0]},(${voids.map((v) => `#${v}`).join(',')}))`))
+        items.push(this.w.add(`BREP_WITH_VOIDS(${_s(label)},#${shells[0]},(${voids.map((v) => `#${v}`).join(',')}))`))
       }
+      this.cells.push(cell)
     }
     return items
   }
@@ -551,20 +568,34 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
   bodies.forEach((body, i) => {
     if (!(body instanceof _Body)) throw new TypeError(`cannot write a ${_typeName(body)} to STEP`)
     const label = body.name || (bodies.length === 1 ? product : `${product}_${i + 1}`)
+    const cells = body instanceof Part ? _cellLabels(body, label) : null
+    const names = cells ? cells.map(([n]) => n) : null
     let items: number[]
+    let bw: _BodyWriter
     try {
-      const bw = new _BodyWriter(w, body._brep)
-      items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
+      bw = new _BodyWriter(w, body._brep)
+      items = body instanceof Part ? bw.solids(label, names) : bw.sheets(label)
     } catch (e) {
       if (!(e instanceof _NeedsNurbs)) throw e
       const nb = body.toNurbs()
-      const bw = new _BodyWriter(w, nb._brep)
-      items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
+      bw = new _BodyWriter(w, nb._brep)
+      items = body instanceof Part ? bw.solids(label, names) : bw.sheets(label)
     }
     if (body instanceof Part) solidItems.push(...items)
     else sheetItems.push(...items)
     const rgb = _color(body.color)
-    if (rgb !== null) for (const it of items) styled.push([it, rgb])
+    if (cells) {
+      // a merged part: each cell in the color of the parts it lies in
+      items.forEach((it, j) => {
+        const c = bw.cells[j] < cells.length ? _color(cells[bw.cells[j]][1]) : rgb
+        if (c !== null) styled.push([it, c])
+      })
+    } else if (rgb !== null) for (const it of items) styled.push([it, rgb])
+    // faces of their own color: a STYLED_ITEM of the face, over the body's
+    for (const fi of [...bw.faceItems.keys()].sort((a, b) => a - b)) {
+      const own = bw.faceColors[fi]
+      if (own !== null) for (const it of bw.faceItems.get(fi)!) styled.push([it, [Number(own[0]), Number(own[1]), Number(own[2])]])
+    }
   })
 
   const reps: number[] = []
@@ -614,6 +645,21 @@ function _stamp(): string {
   const d = new Date()
   const p = (n: number) => String(n).padStart(2, '0')
   return `${String(d.getFullYear()).padStart(4, '0')}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** Per cell of a merged part (as `Part.cells` names them, without building them): the name and
+ * color of the parts it lies in, else `label` and the part's color; null for a part that does not
+ * come from a merge, or where the cells' parts cannot be found (kernel plan B15). */
+function _cellLabels(body: Part, label: string): [string | null, ColorLike | null][] | null {
+  let sources: Part[][] | null
+  try {
+    sources = _cellSources(body)
+  } catch (e) {
+    if (!(e instanceof ModelingError) && !(e instanceof RangeError)) throw e
+    return null
+  }
+  if (!sources || !sources.length) return null
+  return sources.map((s) => _sourceLabel(s, label, body.color))
 }
 
 function _productName(path: string): string {

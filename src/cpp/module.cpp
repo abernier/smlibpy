@@ -93,6 +93,13 @@ PYBIND11_MODULE(_core, m)
     bind_measure(m.attr("ext").cast<py::module_>());
     bind_fit(m.attr("ext").cast<py::module_>());
     bind_cells(m.attr("ext").cast<py::module_>());
+    bind_seams(m.attr("ext").cast<py::module_>());
     bind_distance(m.attr("ext").cast<py::module_>());
+    bind_history(m.attr("ext").cast<py::module_>());
+    bind_check(m.attr("ext").cast<py::module_>());
+    bind_slice(m.attr("ext").cast<py::module_>());
+    bind_face_attrs(m.attr("ext").cast<py::module_>());
+    bind_analytics(m.attr("ext").cast<py::module_>());
+    bind_shells(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
 }

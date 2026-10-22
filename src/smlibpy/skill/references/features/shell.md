@@ -63,7 +63,14 @@ bosses work too.
 - Check: `volume` drops (inward) and `bbox()` stays the same; compare with outer minus inner.
 
 ## Errors
-- `KernelError: shell failed (SM_ERR): the wall may be thicker than the part allows`
+- `KernelError: shell failed (SM_ERR): ...`, with a hint from what the part shows: for walls
+  that grow outward, `the hole or inside round at (x, y, z) has a radius of 1, less than the wall
+  of 2, and the outer wall would close it; shell the part before cutting or rounding it there, or
+  use a thinner wall`; inward, `the part is 4.2 thick across the face at (x, y, z), room for two
+  walls of 1.6 and little more; use a thinner wall`; or else `the wall may be thicker than the
+  part allows`
+- `KernelError: shell failed (SM_ERR_NULL_POINTER): the kernel failed inside the shell (it met a
+  null pointer of its own), a defect of the kernel rather than of the part`
 - `ModelingError: shell: the kernel could not build a valid result (it built a body whose faces do not meet, ...); try a smaller value`
 - `ModelingError: shell: two walls of 6 do not fit into the part, which is 10 thick along Z; use a thinner wall`
 - `ModelingError: shell: the kernel crashed (signal 11, in a copy of this process); this process is fine`

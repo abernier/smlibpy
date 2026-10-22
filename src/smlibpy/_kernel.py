@@ -62,9 +62,21 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
 class BrepHandle:
     """Owns one kernel Brep and frees it with the last reference. ``sound`` records how far
     the body was found a sound solid (0: not checked; the levels are in shapes.py),
-    ``props`` its integrated mass properties (a body's Brep does not change once wrapped)."""
+    ``props`` its integrated mass properties, ``tags`` the tags of its faces and edges
+    (``ext.topology_tags``) and ``shells`` its shells (``ext.brep_shells``), each read once. A body made by
+    ``Part.merge`` (or a copy of one) has ``merged``: the parts it was merged from, the placement
+    it was moved by since, and its cells' sources once found; a cell of one has ``sources``: the
+    parts it lies in (kernel plan B15).
 
-    __slots__ = ("brep", "sound", "props", "__weakref__")
+    No operation changes a body's faces, edges and vertices or their geometry once it is wrapped,
+    but measuring it stores refitted trim curves in its Brep (the first area, volume or tight box
+    of a face): later measures can differ from the first in the last digits, and a ``.smb`` file
+    written after a measure from one written before (kernel plan T6). So caches hold what was
+    measured first, and a body scaled differently along its axes gets its analytic faces back before
+    anything measures it. ``named()`` and ``colored()`` wrap the same handle (kernel plan T8): its
+    caches serve both bodies, and a measure of one stores its trims for both."""
+
+    __slots__ = ("brep", "sound", "props", "tags", "shells", "merged", "sources", "__weakref__")
 
     def __init__(self, brep: "k.Brep"):
         if brep is None:
@@ -72,6 +84,10 @@ class BrepHandle:
         self.brep = brep
         self.sound = 0
         self.props = None
+        self.tags = None
+        self.shells = None
+        self.merged = None
+        self.sources = None
 
     def __del__(self) -> None:
         b, self.brep = getattr(self, "brep", None), None  # (none: __init__ raised)

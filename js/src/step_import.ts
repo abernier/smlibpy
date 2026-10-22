@@ -9,7 +9,7 @@ import { KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.
 import { type Location, type Matrix, Plane, Vector } from './geometry.ts'
 import { det3 } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line } from './curves.ts'
-import { Edge, Part, Shell, Wire, _canonicalCurve, _list, type ShapeList } from './shapes.ts'
+import { Edge, Part, Shell, Wire, _canonicalCurve, _list, _putFaceAttrs, type ShapeList } from './shapes.ts'
 import {
   NotImplementedError,
   _repr,
@@ -788,7 +788,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     // a face on a closed B-spline surface without a seam edge of its own may lie across the
     // surface's seam; build_brep moves the seam off it
     const freeSeam = srf.kind === 'bspline' && !loops.some((l) => l.edges?.length && _isSeamLoop(l))
-    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam })
+    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam, color: f.color ?? null, name: f.name || null })
   })
   const solid = body.kind === 'solid'
   const parts: (Part | Shell)[] = []
@@ -802,7 +802,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     const brep = kernelCall(
       'import STEP',
       () => {
-        let b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+        let b = _attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces)
         // A few writers flip a face's same_sense flag against its loops (which agree with the
         // loops of its neighbours): the loops decide.
         // (Faces that lack their seam have loops that do not close in the parameter plane, and no
@@ -815,7 +815,7 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
         if (inverted.length && 2 * inverted.length < shellFaces.length) {
           for (const i of inverted) shellFaces[i] = { ...shellFaces[i], same_sense: !shellFaces[i].same_sense }
           ext.delete_brep(b)
-          b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+          b = _attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces)
         }
         return b
       },
@@ -824,7 +824,9 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     let part: Part | Shell = _withSeams(closed ? Part._wrap(brep) : Shell._wrap(brep))
     if (closed && !_positive(part as Part)) {
       reversed = !reversed
-      const turned = kernelCall('import STEP', () => _withSeams(Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false))))
+      const turned = kernelCall('import STEP', () =>
+        _withSeams(Part._wrap(_attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces))),
+      )
       part.dispose()
       part = turned
     }
@@ -857,6 +859,17 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   return result
 }
 
+/** The Brep `ext.build_brep` built from `faces`, with their colors and names (the faces of the file,
+ * in its order; kernel plan T5): the kernel carries them on through healing and seams. */
+function _attributed(brep: number, faces: readonly Any[]): number {
+  _putFaceAttrs(
+    brep,
+    faces.map((f) => f.color ?? null),
+    faces.map((f) => f.name ?? null),
+  )
+  return brep
+}
+
 /** A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the solid, as the
  * file has it. The Boolean difference is the fallback; it fails where a cavity's faces come close
  * to the solid's. */
@@ -869,7 +882,9 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
     const voids = built.slice(1).map(([f, r]) => [f, r !== flip])
     let part: Part | null = null
     try {
-      part = kernelCall('import STEP: cavities', () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids))))
+      part = kernelCall('import STEP: cavities', () =>
+        _withSeams(Part._wrap(_attributed(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids), [...faces, ...voids.flatMap(([f]) => f as Any[])]))),
+      )
       if (part._solidProblem() === null && Math.abs(part.volume - expected) <= 1e-6 * Math.max(Math.abs(outer.volume), 1.0)) return part
     } catch (e) {
       if (!(e instanceof ModelingError)) throw e // (a KernelError is one)

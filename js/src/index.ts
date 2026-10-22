@@ -14,7 +14,7 @@ export const version = '0.4.0'
 export { TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z, type VectorLike } from './geometry.ts'
 export { Align, type AlignLike } from './align.ts'
 // shapes
-export { ACCURACY, Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
+export { ACCURACY, Edge, Face, MassProperties, Part, Problem, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
 export { Mesh, tessellate } from './mesh.ts'
 // curves
 export {

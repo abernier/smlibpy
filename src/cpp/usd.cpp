@@ -378,6 +378,24 @@ void put_color(std::string& out, const std::vector<double>& c)
     out += ")] (\n            interpolation = \"constant\"\n        )\n";
 }
 
+// A color per face of a mesh (its triangles, in order): r, g, b each.
+void put_face_colors(std::string& out, const std::vector<double>& c)
+{
+    out += "        color3f[] primvars:displayColor = [";
+    for (size_t i = 0; i + 2 < c.size(); i += 3)
+    {
+        out += i ? ", (" : "(";
+        for (int d = 0; d < 3; ++d)
+        {
+            if (d)
+                out += ", ";
+            put(out, c[i + d]);
+        }
+        out += ')';
+    }
+    out += "] (\n            interpolation = \"uniform\"\n        )\n";
+}
+
 void put_extent(std::string& out, const double lo[3], const double hi[3])
 {
     out += "        float3[] extent = [(";
@@ -529,7 +547,11 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
     std::string out = "    def Mesh \"" + name + "\"\n    {\n";
     if (!p.empty())
         put_extent(out, lo, hi);
-    put_color(out, item.color);
+    // (faces of a color of their own: a color per triangle, the others in the body's)
+    if (!item.face_colors.empty() && item.face_colors.size() == t.size())
+        put_face_colors(out, item.face_colors);
+    else
+        put_color(out, item.color);
     out += "        int[] faceVertexCounts = [";
     for (size_t i = 0; i < tri.size() / 3; ++i)
         out += i ? ", 3" : "3";
@@ -2468,12 +2490,15 @@ void bind_usd_files(py::module_ m)
                 item.triangles = t[4].cast<std::vector<long>>();
             if (t.size() > 5 && !t[5].is_none())
                 item.normals = t[5].cast<std::vector<double>>();
+            if (t.size() > 6 && !t[6].is_none())
+                item.face_colors = t[6].cast<std::vector<double>>();
             in.push_back(std::move(item));
         }
         return smlibpy::usd_text(in, up_axis, meters_per_unit);
     }, py::arg("items"), py::arg("up_axis") = "Z", py::arg("meters_per_unit") = 0.001,
        "The .usda text of a stage: items are (brep or None, name, (r, g, b) or None, points or None, triangles "
-       "or None[, corner normals or None]); a BrepArray prim per body, a Mesh prim per mesh.");
+       "or None[, corner normals or None[, r, g, b per triangle or None]]); a BrepArray prim per body, a Mesh prim per "
+       "mesh.");
     m.def("usd_read", [](const std::string& text, bool heal) {
         std::vector<smlibpy::UsdItem> items = smlibpy::usd_read(text, heal);
         py::list out;

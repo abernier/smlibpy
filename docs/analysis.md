@@ -74,6 +74,28 @@ volume is 6e-5 off). A warning that the integration did not reach the accuracy a
 the same; each comes once per part. From 1e-2 the faces do not bound one solid (a Boolean
 result that left a face out: 0.25), and `is_valid()` is False.
 
+## What is wrong with a body
+
+`is_valid()` says whether a part is a closed solid with a positive volume whose faces meet;
+`check()` runs the kernel's own checks of every face, edge and vertex and names what is wrong,
+and where: each `Problem` has the face, edge or vertex (`shape`), a `message`, the `value`
+measured and the `tolerance` it was held against. For imported, stitched and healed bodies:
+
+```python
+sides = Box(20, 20, 20).faces()
+lifted = stitch([f.to_shell().translate(0, 0, 0.002 if f.normal_at().z > 0.5 else 0) for f in sides],
+                tolerance=0.01)                    # the top face sewn on 0.002 above the walls
+print(lifted.is_valid(), lifted.is_valid(strict=True))   # True False
+for problem in lifted.check():
+    print(problem.test, problem.shape, round(problem.value, 6))   # Bad Vertex Gap Vertex(..., 10) 0.002
+print(round(max(e.tolerance for e in lifted.edges()), 6))         # 0.004
+```
+
+`is_valid(strict=True)` also requires an empty `check()`. `check(level)` runs the structure tests
+(0), also the geometry (1) or all (2, the default); some milliseconds on generated parts. The
+tests do not see a body that runs through itself. `edge.tolerance` and `vertex.tolerance` are
+the kernel's tolerances (1e-5 on parts smlibpy makes).
+
 ## Distances
 
 ```python

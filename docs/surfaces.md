@@ -83,6 +83,22 @@ solid = stitch(sheets)          # a Part again
 Any face of a part becomes a separate surface with `face.to_shell()`, or a sketch with
 `face.to_sketch()` when it is planar.
 
+## Splitting and trimming
+
+A sheet splits a part along its surface, and a part trims a sheet:
+
+```python
+sheet = surface([[(x, y, 2 + 3 * math.sin(x / 6)) for y in np.linspace(-15, 15, 7)]
+                 for x in np.linspace(-15, 15, 13)])
+upper, lower = Box(20, 20, 20).split(sheet, keep="both")   # "above" is where the normals point
+inside = sheet & Cylinder(5, 30)       # the piece of the sheet inside the cylinder: a Shell
+outside = sheet - Cylinder(5, 30)      # the sheet with a hole
+print(round(inside.area + outside.area - sheet.area, 9))   # 0.0
+```
+
+`part & sheet` is `sheet & part`; `part + sheet` and `part - sheet` raise `TypeError` (a sheet
+encloses no volume: split the part, or `imprint` the sheet's lines into its faces).
+
 ## Blends between surfaces
 
 `fillet` rounds the edges of a part. Two sheets that are no part of one body, two crossing

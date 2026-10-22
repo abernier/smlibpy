@@ -68,13 +68,32 @@ function run(kernelModule: Any, job: Any): void {
   }
 }
 
-/** The contents of the .smb file of the body a step whose body comes back makes. */
+/** Colors and names of faces (`ext.face_attrs` of the same body) on the faces of a Brep in its
+ * order, as shapes.ts's `_putFaceAttrs` (kernel plan T5). */
+function putFaceAttrs({ ext, k }: Any, brep: number, [colors, names]: Any[][]): void {
+  const faces: number[] = k.brep_faces(brep)
+  if (faces.length !== colors.length || faces.length !== names.length) return
+  let pick = colors.flatMap((c: Any, i: number) => (c != null && c.length === 3 ? [i] : []))
+  if (pick.length) ext.set_face_colors(brep, pick.map((i: number) => faces[i]), pick.map((i: number) => Array.from(colors[i], Number)))
+  pick = names.flatMap((n: Any, i: number) => (n ? [i] : []))
+  if (pick.length) ext.set_face_names(brep, pick.map((i: number) => faces[i]), pick.map((i: number) => String(names[i])))
+}
+
+/** What comes back of a step whose body comes back: the length of the body's .smb file (4 bytes,
+ * little-endian), the file, and as JSON the tags of its faces and edges (`ext.topology_tags`) and
+ * its faces' colors and names (`ext.face_attrs`; the file holds none). The job's `tags` are those of
+ * its bodies (with their faces' colors and names: shapes.ts's `_carried`). */
 function make(kernelModule: Any, job: Any): Uint8Array {
   const { ext, k, module } = kernelModule
   const breps: number[] = []
   let made = 0
   try {
-    for (const data of job.bodies as Uint8Array[]) breps.push(load(kernelModule, data))
+    ;(job.bodies as Uint8Array[]).forEach((data, i) => {
+      breps.push(load(kernelModule, data))
+      const tags = job.tags?.[i]
+      if (tags) ext.set_topology_tags(breps[i], tags[0], tags[1])
+      if (tags?.[2]) putFaceAttrs(kernelModule, breps[i], tags[2])
+    })
     const all = k.brep_faces(breps[0]) as number[]
     if (job.op === 'shell_brep') {
       made = k.shell_brep(breps[0], job.distance, { ...job.options, faces_to_shell: (job.faces as number[]).map((i) => all[i]) })
@@ -85,11 +104,18 @@ function make(kernelModule: Any, job: Any): Uint8Array {
     }
     const name = '/tmp/smlibwasm-probe-result.smb'
     k.brep_write_to_file(made, name, false)
+    let smb: Uint8Array
     try {
-      return module.FS.readFile(name)
+      smb = module.FS.readFile(name)
     } finally {
       module.FS.unlink(name)
     }
+    const tags = new TextEncoder().encode(JSON.stringify([...ext.topology_tags(made), ext.face_attrs(made)]))
+    const out = new Uint8Array(4 + smb.length + tags.length)
+    new DataView(out.buffer).setUint32(0, smb.length, true)
+    out.set(smb, 4)
+    out.set(tags, 4 + smb.length)
+    return out
   } finally {
     for (const brep of made ? [made, ...breps] : breps) ext.delete_brep(brep)
   }

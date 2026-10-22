@@ -17,7 +17,7 @@
 import { _opts, ext, k as kernel } from './kernel.ts'
 import { BoundBox, Plane, Vector, _formatG } from './geometry.ts'
 import { toRgb } from './colors.ts'
-import { Mesh, _tessellate, _triangulate, tessellate } from './mesh.ts'
+import { Mesh, _coloredMesh, _tessellate, _triangleColors, _triangulate, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
 import { _withOptions } from './curves.ts'
 import { _DEFAULT_COLORS, _curvePoints, _edgePolylines, _flattenAll, _fs } from './exporters.ts'
@@ -862,10 +862,20 @@ class _Body {
   readonly segs: Float64Array
   readonly mesh: Mesh | null
   readonly source: unknown // keeps the Brep alive that the mesh points into
+  readonly faceRgb: Float64Array | null // per triangle, where faces have colors of their own (kernel plan T5)
   _adjacent: [Int32Array, Int32Array, Float64Array] | null = null
   _principal: [Float64Array, Float64Array] | null = null
 
-  constructor(tris: Float64Array, norms: Float64Array, rgb: RGB, closed: boolean, segs: Float64Array, mesh: Mesh | null = null, source: unknown = null) {
+  constructor(
+    tris: Float64Array,
+    norms: Float64Array,
+    rgb: RGB,
+    closed: boolean,
+    segs: Float64Array,
+    mesh: Mesh | null = null,
+    source: unknown = null,
+    faceRgb: Float64Array | null = null,
+  ) {
     this.tris = tris
     this.norms = norms
     this.rgb = rgb
@@ -873,6 +883,7 @@ class _Body {
     this.segs = segs
     this.mesh = mesh
     this.source = source
+    this.faceRgb = faceRgb
   }
 
   get count(): number {
@@ -1068,7 +1079,17 @@ export class _Scene {
         const source = piece instanceof Face && fine ? piece.toShell() : piece
         if (source !== piece) this._made.push(source)
         // (curvature maps need the tessellation's own mesh)
-        const mesh: Mesh = piece instanceof Mesh ? piece : _tessellate(source, tolerance, fine ? 5.0 : 15.0, fine)
+        let mesh: Mesh
+        let faceRgb: Float64Array | null = null
+        if (piece instanceof Mesh) mesh = piece
+        else if (fine) {
+          mesh = _tessellate(source, tolerance, 5.0, true)
+          if (source instanceof Solidish && colors !== 'distinct') faceRgb = _triangleColors(source, mesh)
+        } else {
+          ;[mesh, faceRgb] = _coloredMesh(source as Shape, tolerance, 15.0)
+          if (colors === 'distinct') faceRgb = null
+        }
+        if (faceRgb !== null) for (let i = 0; i < faceRgb.length; i++) if (Number.isNaN(faceRgb[i])) faceRgb[i] = rgb[i % 3] // faces without a color of their own: the body's
         if (mesh !== piece) this._made.push(mesh)
         let segs: Float64Array
         if (piece instanceof Mesh) segs = new Float64Array(0)
@@ -1079,7 +1100,7 @@ export class _Scene {
           continue
         }
         const [v, n] = _meshArrays(mesh)
-        this.bodies.push(new _Body(v, n, rgb, closed, segs, mesh, piece instanceof Mesh ? null : source))
+        this.bodies.push(new _Body(v, n, rgb, closed, segs, mesh, piece instanceof Mesh ? null : source, faceRgb))
       }
     })
     const pts = [...this.bodies.map((b) => b.tris), ...this.bodies.map((b) => b.segs), ...this.overlays.map(([s]) => s)]
@@ -1409,7 +1430,14 @@ function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, f
   const caps: [Float64Array, RGB, number][] = [] // cut outline, body color, body index
   const outlines: Float64Array[] = []
   scene.bodies.forEach((body, bi) => {
-    let piece: _Part = { tris: body.tris, norms: body.norms, values: o.curvature !== null ? body.curvature(o.curvature[0]) : null, rgb: body.rgb, factor: null }
+    let piece: _Part = {
+      tris: body.tris,
+      norms: body.norms,
+      values: o.curvature !== null ? body.curvature(o.curvature[0]) : null,
+      rgb: body.rgb,
+      factor: null,
+      colors: body.faceRgb,
+    }
     if (cut !== null) {
       if (body.closed) {
         const outline = _crossings(body.tris, cut)
@@ -1447,6 +1475,11 @@ function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, f
   const rgb = new Float64Array(factor.length * 3)
   let at = 0
   for (const p of parts) {
+    if (p.colors) {
+      rgb.set(p.colors, at)
+      at += p.colors.length
+      continue
+    }
     const [r, g, b] = p.rgb
     for (let i = 0; i < p.tris.length / 9; i++, at += 3) {
       rgb[at] = r
@@ -1516,6 +1549,8 @@ interface _Part {
   values: Float64Array | null
   rgb: RGB
   factor: Float64Array | null
+  /** a color per triangle (three numbers), where faces have colors of their own */
+  colors?: Float64Array | null
 }
 
 function _repeat(color: RGB, n: number): Float64Array {
@@ -1558,13 +1593,15 @@ function _select(p: _Part, value: Float64Array, test: (v: number) => boolean): _
   const norms = new Float64Array(keep.length * 9)
   const values = p.values ? new Float64Array(keep.length * 3) : null
   const factor = p.factor ? new Float64Array(keep.length) : null
+  const colors = p.colors ? new Float64Array(keep.length * 3) : null
   keep.forEach((t, i) => {
     tris.set(p.tris.subarray(t * 9, t * 9 + 9), i * 9)
     norms.set(p.norms.subarray(t * 9, t * 9 + 9), i * 9)
     if (values) values.set(p.values!.subarray(t * 3, t * 3 + 3), i * 3)
     if (factor) factor[i] = p.factor![t]
+    if (colors) colors.set(p.colors!.subarray(t * 3, t * 3 + 3), i * 3)
   })
-  return { tris, norms, values, rgb: p.rgb, factor }
+  return { tris, norms, values, rgb: p.rgb, factor, colors }
 }
 
 /** Triangles on the screen with what the fill and the shading need: the maps from a pixel to
@@ -2012,12 +2049,20 @@ function _clip(p: _Part, cut: _Cut): _Part {
   const outT: number[] = []
   const outN: number[] = []
   const outV: number[] = []
+  const outC: number[] = [] // (the colors of the triangles' faces, where they have their own)
+  const colorOf = (t: number) => {
+    if (p.colors) for (let c = 0; c < 3; c++) outC.push(p.colors[t * 3 + c])
+  }
   const pushCorner = (src: Float64Array, srcN: Float64Array, srcV: Float64Array | null, at: number, vat: number) => {
     for (let c = 0; c < 3; c++) outT.push(src[at + c])
     for (let c = 0; c < 3; c++) outN.push(srcN[at + c])
     if (srcV) outV.push(srcV[vat])
   }
-  for (let t = 0; t < n; t++) if (npos[t] === 0) for (let c = 0; c < 3; c++) pushCorner(tris, norms, values, t * 9 + c * 3, t * 3 + c)
+  for (let t = 0; t < n; t++) {
+    if (npos[t] !== 0) continue
+    for (let c = 0; c < 3; c++) pushCorner(tris, norms, values, t * 9 + c * 3, t * 3 + c)
+    colorOf(t)
+  }
   for (const count of [1, 2]) {
     const sel: number[] = []
     for (let t = 0; t < n; t++) if (npos[t] === count) sel.push(t)
@@ -2034,7 +2079,7 @@ function _clip(p: _Part, cut: _Cut): _Part {
       const dd = idx.map((c) => d[t * 3 + c])
       const p01 = _crossPoint(v[0], v[1], nn[0], nn[1], vv ? vv[0] : 0, vv ? vv[1] : 0, dd[0], dd[1])
       const p02 = _crossPoint(v[0], v[2], nn[0], nn[2], vv ? vv[0] : 0, vv ? vv[2] : 0, dd[0], dd[2])
-      return { v, nn, vv, p01, p02 }
+      return { t, v, nn, vv, p01, p02 }
     })
     const corner = (point: ArrayLike<number>, normal: ArrayLike<number>, value: number) => {
       for (let c = 0; c < 3; c++) outT.push(point[c])
@@ -2043,26 +2088,36 @@ function _clip(p: _Part, cut: _Cut): _Part {
     }
     if (count === 1) {
       // the first corner is cut away: the quad p01, v1, v2, p02 stays
-      for (const { v, nn, vv, p01 } of pieces) {
+      for (const { t, v, nn, vv, p01 } of pieces) {
         corner(p01[0], p01[1], p01[2])
         corner(v[1], nn[1], vv ? vv[1] : 0)
         corner(v[2], nn[2], vv ? vv[2] : 0)
+        colorOf(t)
       }
-      for (const { v, nn, vv, p01, p02 } of pieces) {
+      for (const { t, v, nn, vv, p01, p02 } of pieces) {
         corner(p01[0], p01[1], p01[2])
         corner(v[2], nn[2], vv ? vv[2] : 0)
         corner(p02[0], p02[1], p02[2])
+        colorOf(t)
       }
     } else {
       // only the first corner stays
-      for (const { v, nn, vv, p01, p02 } of pieces) {
+      for (const { t, v, nn, vv, p01, p02 } of pieces) {
         corner(v[0], nn[0], vv ? vv[0] : 0)
         corner(p01[0], p01[1], p01[2])
         corner(p02[0], p02[1], p02[2])
+        colorOf(t)
       }
     }
   }
-  return { tris: Float64Array.from(outT), norms: Float64Array.from(outN), values: values ? Float64Array.from(outV) : null, rgb: p.rgb, factor: null }
+  return {
+    tris: Float64Array.from(outT),
+    norms: Float64Array.from(outN),
+    values: values ? Float64Array.from(outV) : null,
+    rgb: p.rgb,
+    factor: null,
+    colors: p.colors ? Float64Array.from(outC) : null,
+  }
 }
 
 /** Where the segment a-b crosses the plane, and the normal and the value there. Interpolated

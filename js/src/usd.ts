@@ -9,7 +9,7 @@
 
 import { _opts, _warn, ext, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
-import { Mesh, tessellate } from './mesh.ts'
+import { Mesh, _coloredMesh } from './mesh.ts'
 import { Part, Shell, ShapeList } from './shapes.ts'
 import { _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
 import { _MM_PER_UNIT } from './step.ts'
@@ -48,7 +48,11 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
     if (it instanceof Mesh) {
       items.push([null, name, rgb, ..._meshArrays(it)])
     } else if (options.mesh ?? true) {
-      items.push([(it as Any)._brep, name, rgb, ..._meshArrays(tessellate(it, options.tolerance ?? null, options.angle ?? 15))])
+      // faces of their own color: a color per triangle (displayColor "uniform"), the others in the
+      // body's (kernel plan T5)
+      const [m, colors] = _coloredMesh(it, options.tolerance ?? null, options.angle ?? 15)
+      const per = colors === null ? null : Float64Array.from(colors, (c, i) => (Number.isNaN(c) ? rgb[i % 3] : c))
+      items.push([(it as Any)._brep, name, rgb, ..._meshArrays(m), per])
     } else {
       items.push([(it as Any)._brep, name, rgb, null, null, null])
     }

@@ -64,15 +64,15 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | Domain | Docs | What is in it |
 |---|---|---|
 | geometry | `geometry/*` | Vector, Axis, Plane, Location, Pos, Rot, BoundBox, Align, placement methods, patterns |
-| selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex |
+| selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex; where faces and edges came from (history: new, derived_from), the edges where two bodies meet (joining), shells and cavities of a part, the faces between cells (shells: shells, voids, Face.cells, shared) |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; NURBS data of an edge (nurbs), make_compatible, remove_knots |
-| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
+| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split (also along a sheet), imprint (split lines on faces), section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
 | surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
-| analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
-| files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
+| analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity (is_valid, check: what is wrong and where), draft analysis and parting lines for molding and casting |
+| files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans; colors and names of single faces (face_colors) |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 
 Each domain has a `generic.md` with the concepts; the other docs are named after the API

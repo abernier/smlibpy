@@ -19,9 +19,9 @@
 // Windows: a crash of the kernel (a trap of the WebAssembly module) drops that step, but a step
 // that loops does not come back.
 
-import { BrepHandle, ModelingError, _warn, ext, k, kernelCall, module } from './kernel.ts'
+import { BrepHandle, ModelingError, _isRuntimeError, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { _formatG } from './geometry.ts'
-import { type Edge, Face, type Part, ShapeList, type _Body, _flattenFaces } from './shapes.ts'
+import { type Edge, Face, type Part, ShapeList, type _Body, _flattenFaces, _putFaceAttrs } from './shapes.ts'
 import { toSmb } from './exporters.ts'
 import { _giveUp, _noProbe, _probeMissing, _probeSupervisor } from './_guard.ts'
 
@@ -207,7 +207,18 @@ export function _isolated(what: string, work: () => number, job: () => _Job, hin
         hint,
       )
     }
-    return _loaded(bytes)
+    // (the .smb file's length, the file, and as JSON the tags of the body's faces and edges and its
+    // faces' colors and names: .smb files hold none)
+    const n = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true)
+    const made = _loaded(bytes.subarray(4, 4 + n))
+    try {
+      const [faces, edges, attrs] = JSON.parse(new TextDecoder().decode(bytes.subarray(4 + n)))
+      ext.set_topology_tags(made, faces, edges)
+      if (attrs) _putFaceAttrs(made, attrs[0], attrs[1])
+    } catch (e) {
+      if (!(e instanceof SyntaxError || _isRuntimeError(e))) throw e // (its faces and edges then count as new, uncolored)
+    }
+    return made
   }
 }
 

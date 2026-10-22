@@ -6,7 +6,11 @@ whose faces meet.
 
 ## Signature
 
-`part.is_valid() -> bool` (only on `Part`)
+`part.is_valid(strict=False) -> bool` (only on `Part`)
+
+With `strict=True`, the kernel's own checks of every face, edge and vertex (`check`) must find
+nothing too: a stitched or imported body can be closed and enclose its volume while its vertices
+lie farther from its faces than their tolerances allow (see `check`).
 
 `body.info() -> dict` (on `Part`, `Shell`, `Sketch`)
 
@@ -87,4 +91,5 @@ print(corner.is_valid(), corner.volume)                        # True 2000.0: to
 
 ## Related
 
-`generic` (what to check after each step), `mass_properties`, `Part.solids`, `heal`
+`check` (what is wrong, and where), `generic` (what to check after each step),
+`mass_properties`, `Part.solids`, `heal`

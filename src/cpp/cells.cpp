@@ -3,6 +3,7 @@
 // The cells of a non-manifold body (`smlibpy._core.ext`):
 //
 //   region_shells(brep)   per closed region that is not a cavity, the solids inside its shells
+//   void_shells(brep)     per cavity, the solids inside its shells (Part.voids, kernel plan T7)
 //
 // A merged part (Part.merge, the kernel's non-manifold Boolean) keeps its cells as regions of one
 // body: a face between two cells is used from both sides, by a shell of each region. A region's
@@ -125,11 +126,8 @@ double box_diagonal(SmBrep* brep)
     return box.GetSize().Length();
 }
 
-}  // namespace
-
-namespace smlibpy {
-
-std::vector<std::vector<SmBrep*>> region_shells(const SmBrep* brep)
+// Per closed region that is not a cavity (or, with `voids`, per cavity), the solids inside its shells.
+std::vector<std::vector<SmBrep*>> shell_solids(const SmBrep* brep, bool voids)
 {
     if (!brep)
         throw std::invalid_argument("brep is None");
@@ -141,7 +139,7 @@ std::vector<std::vector<SmBrep*>> region_shells(const SmBrep* brep)
     {
         for (ULONG r = 0; r < regions.GetSize(); ++r)
         {
-            if (regions[r] == body->GetInfiniteRegion() || regions[r]->IsVoid() == TRUE)
+            if (regions[r] == body->GetInfiniteRegion() || (regions[r]->IsVoid() == TRUE) != voids)
                 continue;
             SmTArray<SmShell*> shells;
             regions[r]->GetShells(shells);
@@ -183,6 +181,14 @@ std::vector<std::vector<SmBrep*>> region_shells(const SmBrep* brep)
     return out;
 }
 
+}  // namespace
+
+namespace smlibpy {
+
+std::vector<std::vector<SmBrep*>> region_shells(const SmBrep* brep) { return shell_solids(brep, false); }
+
+std::vector<std::vector<SmBrep*>> void_shells(const SmBrep* brep) { return shell_solids(brep, true); }
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -193,5 +199,8 @@ void bind_cells(py::module_ m)
     m.def("region_shells", &smlibpy::region_shells, py::arg("brep"), py::return_value_policy::take_ownership,
           "Per closed region of a body that is not a cavity (the cells of a merged part), the solids inside its "
           "shells: the outer shell's first, then its cavities' (the caller's).");
+    m.def("void_shells", &smlibpy::void_shells, py::arg("brep"), py::return_value_policy::take_ownership,
+          "Per cavity of a body, the solids inside its shells: its wall's first, then those of the bodies floating in "
+          "it (the caller's).");
 }
 #endif  // SMLIBPY_PYTHON

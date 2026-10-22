@@ -41,6 +41,29 @@ OpenCASCADE.
 model (in mm) is converted to it, so `bracket_inch.step` above holds a 2.362 x 1.575 x 0.315
 inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm.
 
+### Colors and names of faces
+
+Besides the body's own name and color, single faces can have one: `colored(color, faces=...)` and
+`named(name, faces=...)` give them to the selected faces (the body keeps its own), `face.color` and
+`face.name` read them. They stay with the faces through later operations: both pieces of a face a
+cut splits keep them, the walls of a hole keep the color of the tool's faces, a fillet's rounds
+have none. STEP files write them on the faces (a `STYLED_ITEM` per `ADVANCED_FACE`, the face's
+name), and `import_step` reads them from files of other systems too; glTF files, USD meshes,
+pictures and the viewer show the colors.
+
+```python
+tool = Cylinder(5, 20)
+tool = tool.colored("red", faces=tool.faces())          # every hole it cuts has red walls
+plate = (Box(60, 40, 8) - tool).named("plate").colored("steelblue")
+plate = plate.colored("gold", faces=plate.faces().top()).named("seal", faces=plate.faces().bottom())
+print([f.color for f in plate.faces().cylinders()])     # [(1.0, 0.0, 0.0)]
+export_step(plate, "plate.step")
+back = import_step("plate.step")
+print(back.faces().top()[0].color, back.faces().bottom()[0].name)   # (1.0, 0.843..., 0.0) seal
+```
+
+The native format (`.smb`) holds neither, nor the body's name and color.
+
 ### USD
 
 `export_usd` writes each body as a `BrepArray` prim, the B-rep of NVIDIA's usd-brep (its

@@ -17,7 +17,7 @@
 
 import { _opts, ext, k, kernelCall, module } from './kernel.ts'
 import { toRgb } from './colors.ts'
-import { Mesh, tessellate } from './mesh.ts'
+import { Mesh, _coloredMesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
 import { _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
@@ -647,8 +647,9 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
     } else {
       const body = item instanceof Face ? item.toShell() : item
       // a face is meshed itself, facing out of its part; its copy gives the edges
-      const m = body instanceof Mesh ? body : tessellate(item as Shape, tolerance, angle)
-      const color = (body as Any).color || _DEFAULT_COLORS[colorIndex % _DEFAULT_COLORS.length]
+      const [m, faceColors] = body instanceof Mesh ? [body, null] : _coloredMesh(item as Shape, tolerance, angle)
+      const own = item instanceof Face ? item.color : null
+      const color = own || (body as Any).color || _DEFAULT_COLORS[colorIndex % _DEFAULT_COLORS.length]
       colorIndex += 1
       const tri = m.triangles
       const v = m.vertices
@@ -675,11 +676,19 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
         nrm[c + 1] = y / d
         nrm[c + 2] = z / d
       }
-      prims.push({
-        attributes: { POSITION: addAccessor(pos, 'VEC3', 5126, 34962, true), NORMAL: addAccessor(nrm, 'VEC3', 5126, 34962) },
-        material: material(color),
-        mode: 4,
-      })
+      // faces of their own color: a primitive per color, the others in the body's (kernel plan T5)
+      for (const [rgb, sel] of _colorGroups(faceColors, tri.length / 3, toRgb(color))) {
+        const pick = (a: Float32Array): Float32Array => {
+          const out = new Float32Array(sel.length * 9)
+          sel.forEach((t, i) => out.set(a.subarray(t * 9, t * 9 + 9), i * 9))
+          return out
+        }
+        prims.push({
+          attributes: { POSITION: addAccessor(pick(pos), 'VEC3', 5126, 34962, true), NORMAL: addAccessor(pick(nrm), 'VEC3', 5126, 34962) },
+          material: material(rgb),
+          mode: 4,
+        })
+      }
       if (edges && body instanceof _Body) {
         const lines = _edgePolylines(body)
         if (lines.length) {
@@ -710,6 +719,22 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
     at += c.length
   }
   return [doc, buf, _summary(items)]
+}
+
+/** The triangles of a mesh by color: [color, the triangles] for each color in `colors` (three numbers
+ * per triangle, NaN for `fallback`; null: all `fallback`), in the order they first come. */
+function _colorGroups(colors: Float64Array | null, count: number, fallback: number[]): [number[], number[]][] {
+  if (colors === null) return [[fallback, Array.from({ length: count }, (_, i) => i)]]
+  const groups = new Map<string, [number[], number[]]>()
+  for (let t = 0; t < count; t++) {
+    const c = [colors[t * 3], colors[t * 3 + 1], colors[t * 3 + 2]]
+    const plain = c.some(Number.isNaN)
+    const key = plain ? '-' : c.map((x) => x.toFixed(6)).join(',')
+    let g = groups.get(key)
+    if (g === undefined) groups.set(key, (g = [plain ? fallback : c, []]))
+    g[1].push(t)
+  }
+  return [...groups.values()]
 }
 
 function _summary(items: (Shape | Mesh)[]): string {

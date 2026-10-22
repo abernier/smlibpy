@@ -15,4 +15,8 @@ namespace smlibpy {
 // each of its shells, the outer shell's first, then its cavities'. Owned by the caller.
 std::vector<std::vector<SmBrep*>> region_shells(const SmBrep* brep);
 
+// Every cavity of a body (kernel plan T7): the solid inside its wall first, then the solids of the
+// bodies floating in it (their outsides are the cavity's other shells). Owned by the caller.
+std::vector<std::vector<SmBrep*>> void_shells(const SmBrep* brep);
+
 }  // namespace smlibpy

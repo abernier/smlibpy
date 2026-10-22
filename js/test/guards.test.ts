@@ -38,7 +38,7 @@ import {
 } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { setGuardSeconds } from '../src/defeature.ts'
-import { _intersectionProblem, _offsetProblem } from '../src/shapes.ts'
+import { _intersectionProblem, _mergeProblem, _offsetProblem } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
 
 // biome-ignore lint: test helpers
@@ -510,7 +510,15 @@ test('overlapping parallel holes in one cut', () => {
 })
 
 test('Boolean errors say what to do', () => {
-  throwsMatching(() => Box(40, 40, 10).cut(Cylinder(6, 30)).cut(Cylinder(3, 30).translate(8, 0, 0)), KernelError, /combine the tools first/)
+  // (a tool beside an earlier hole: the retry with a NURBS copy of the tool gets it right, kernel plan
+  // B10; the hint is for where that fails too)
+  const retry = Part.prototype._nurbsRetry
+  Part.prototype._nurbsRetry = () => null
+  try {
+    throwsMatching(() => Box(40, 40, 10).cut(Cylinder(6, 30)).cut(Cylinder(3, 30).translate(8, 0, 0)), KernelError, /combine the tools first/)
+  } finally {
+    Part.prototype._nurbsRetry = retry
+  }
   throwsMatching(() => Cylinder(5, 20).fuse(Cylinder(5, 20).translate(10, 0, 0)), ModelingError, /touch only along an edge/) // returned an invalid part
   throwsMatching(() => Box(10, 10, 10).fuse(rawUnion(Cylinder(5, 20), Cylinder(5, 20).translate(10, 0, 0))), ModelingError, /a tool is not a valid solid/)
 })
@@ -530,11 +538,18 @@ test('empty Boolean results where they are right', () => {
 
 test('an empty cut needs tools that can cover the part', () => {
   // A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of the
-  // same pair, which confirmed the empty cut, is the whole part. Both were accepted.
-  const holed = Sphere(20).cut(Cylinder(6, 60))
-  throwsMatching(() => holed.cut(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /empty/) // was Part(0 faces), no error
-  throwsMatching(() => holed.intersect(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /partly outside an operand/) // was the whole part, 29089.8 (right: 929.188)
-  approx(Sphere(20).cut([Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume, 28160.608174, 1e-8)
+  // same pair, which confirmed the empty cut, is the whole part. Both were accepted. (The retry with
+  // a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.)
+  const retry = Part.prototype._nurbsRetry
+  Part.prototype._nurbsRetry = () => null
+  try {
+    const holed = Sphere(20).cut(Cylinder(6, 60))
+    throwsMatching(() => holed.cut(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /empty/) // was Part(0 faces), no error
+    throwsMatching(() => holed.intersect(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /partly outside an operand/) // was the whole part, 29089.8 (right: 929.188)
+    approx(Sphere(20).cut([Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume, 28160.608174, 1e-8)
+  } finally {
+    Part.prototype._nurbsRetry = retry
+  }
 })
 
 test('an intersection may give an operand back when the other contains it', () => {
@@ -608,27 +623,31 @@ const seamHoles: [string, () => Part, number][] = [
   ['cross holes', () => Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0)).cut(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), 6931.747603],
 ]
 for (const [name, cut, exact] of seamHoles) {
-  // kernel plan B6: a primitive's seam line in a tangent plane of the other operand (24364.1472 and
-  // 6994.4685 here, both valid). Expected to be wrong, as Python's strict xfail: once it is right,
-  // this fails, to be turned into a test of the right volume.
-  test(`holes tangent to a seam: ${name} (still wrong)`, () => {
-    const volume = cut().volume
-    assert.ok(Math.abs(volume - exact) > 1e-7 * exact, `${volume}: kernel plan B6 is fixed; test for ${exact} here`)
+  // The seam of the second hole lies in a plane tangent to the first (kernel plan B6): the kernel gave
+  // valid bodies of 24364.1472 and 6994.4685 here. That hole is turned about its axis first now.
+  test(`holes tangent to a seam: ${name}`, () => {
+    const part = cut()
+    assert.ok(part.isValid())
+    approx(part.volume, exact, 1e-7)
   })
 }
 
 test('failed Booleans free their operands', () => {
   // The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.4 MB per
-  // failed cut. In a process of its own, so that what other tests left does not count.
+  // failed cut. In a process of its own, so that what other tests left does not count. (A cross hole
+  // touching the first one inside at a point; the cut beside an earlier parallel hole used here
+  // before is right now, kernel plan B10.)
   const src = new URL('../src/', import.meta.url).href
   const code = `
-    import { Box, Cylinder, KernelError } from '${src}index.ts'
+    import { Box, Cylinder, KernelError, X, Z } from '${src}index.ts'
     const fail = () => {
       try {
-        Box(40, 30, 20).cut(Cylinder(3, 40).translate([-5, 0, 0])).cut(Cylinder(3, 40))
+        Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 45)).cut(Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0))
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
+        return
       }
+      throw new Error('the cut did not fail')
     }
     const settle = async () => {
       for (let i = 0; i < 3; i++) {
@@ -655,11 +674,15 @@ test('failed Booleans free their operands', () => {
 test('Booleans that read freed kernel memory throw', () => {
   // Each of these read freed memory in the kernel (natively the process died). Crossing holes whose
   // seams lie tangent to the other hole: SplitIntersectingProtoEdges split a ProtoEdge it had just
-  // deleted. A flat end cap tangent to a sphere: the Boolean deleted a Shell that Faces still used,
-  // and the module trapped. The extended shell of a rotated box: BooleanPostProcess read a deleted
-  // Vertex, natively in about one call of a hundred; the kernel's shell itself, 100 times (shell()
-  // measures the walls first and runs the kernel in the probe worker, so it would not reach or show
-  // this). In a process of its own, so that a trap does not leave this one's kernel damaged.
+  // deleted. smlibwasm turns the hole whose seam that is about its axis first (kernel plan B6), and
+  // gets them right: the cut 6931.7476, the union 2199.2258 and the intersection 62.721 (by
+  // integration 62.720958; OpenCASCADE 62.7209). The kernel's own Boolean of them fails (plain
+  // SM_ERR here) but for the intersection, which takes another path through the curve intersector
+  // here than natively. A flat end cap tangent to a sphere: the Boolean deleted a Shell that Faces
+  // still used, and the module trapped. The extended shell of a rotated box: BooleanPostProcess read
+  // a deleted Vertex, natively in about one call of a hundred; the kernel's shell itself, 100 times
+  // (shell() measures the walls first and runs the kernel in the probe worker, so it would not reach
+  // or show this). In a process of its own, so that a trap does not leave this one's kernel damaged.
   const src = new URL('../src/', import.meta.url).href
   const code = `
     import { Axis, Box, Cylinder, Part, Sphere, X, Y } from '${src}index.ts'
@@ -670,6 +693,12 @@ test('Booleans that read freed kernel memory throw', () => {
       const h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
       cases.push(() => Box(20, 20, 20).cut(h1).cut(h2), () => Box(20, 20, 20).cut([h1, h2]), () => h1.fuse(h2),
         () => h1.intersect(h2), () => h1.merge(h2))
+    }
+    for (const z of [3, 3.1]) { // the kernel's own Boolean, seams as they are
+      const h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+      for (const [a, op] of [[Box(20, 20, 20).cut(h1), k.BooleanOp.DIFFERENCE], [h1, k.BooleanOp.UNION], [h1, k.BooleanOp.INTERSECTION]]) {
+        cases.push(() => Part._wrap(k.boolean(a._copyBrep(), h2._copyBrep(), { operation: op })))
+      }
     }
     cases.push(() => Sphere(1.5).rotate(Y, 90).cut(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)))
     const box = Box(40, 30, 10).rotate(X, 45)
@@ -690,12 +719,12 @@ test('Booleans that read freed kernel memory throw', () => {
   const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
   assert.equal(run.status, 0, run.stderr)
   const out = run.stdout.trim().split(' ')
-  // The intersection of the crossing holes is right here (OpenCASCADE: 62.7209), where smlibpy's
-  // native kernel raises KernelError (SM_ERR_BAD_INTERSECTIONS): the two builds take different paths
-  // through the curve intersector there. The others raise plain SM_ERR here.
-  const holes = ['KernelError', 'KernelError', 'KernelError', 'ok:62.721', 'KernelError']
-  assert.deepEqual(out.slice(0, 11), [...holes, ...holes, 'KernelError']) // the end cap, the last, trapped
-  assert.equal(out.length, 111)
+  const holes = ['ok:6931.748', 'ok:6931.748', 'ok:2199.226', 'ok:62.721', 'ok'] // (a merged part is no valid solid)
+  assert.deepEqual(out.slice(0, 10), [...holes, ...holes]) // were KernelError but for the intersection
+  const raw = ['Error', 'Error', 'ok:62.721']
+  assert.deepEqual(out.slice(10, 16), [...raw, ...raw]) // the kernel's own Boolean of the same holes
+  assert.equal(out[16], 'KernelError') // the end cap, the last, trapped
+  assert.equal(out.length, 117)
   assert.ok(!out.includes('crashed'), out.join(' '))
   approx(Sphere(1.5).rotate(Y, 90).intersect(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume, 14.137072, 1e-6)
 })
@@ -703,10 +732,17 @@ test('Booleans that read freed kernel memory throw', () => {
 test('a merge that loses volume throws', () => {
   // A sphere whose seam lies tangent to the cylinder: the kernel's merge came out smaller than the
   // cut cylinder (518.314 against 566.559; right: 586.443), and cells() of it crashed the process.
+  // merge() turns the sphere about its axis first now (kernel plan B6) and gets it right; the kernel's
+  // own merge, seams as they are, is still wrong, and the check refuses it.
   const pin = Cylinder(2.5, 30).rotate(Y, 90).cut(Cone(2.5, 6, 6).rotate(Y, 90).translate(15, 0.6687, -3.5))
-  throwsMatching(() => pin.merge(Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5)), ModelingError, /less than that of the largest part/)
+  const sphere = Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5)
+  const raw = Part._wrap(k.non_manifold_boolean(pin._copyBrep(), sphere._copyBrep(), { operation: k.BooleanOp.MERGE }))
+  assert.match(_mergeProblem(raw, [pin, sphere]) ?? '', /less than that of the largest part/)
+  const merged = pin.merge(sphere)
+  approx(merged.volume, 586.443229, 1e-6) // OpenCASCADE
+  approx(merged.cells().reduce((sum, c) => sum + c.volume, 0), 586.443229, 1e-6)
   const right = pin.merge(Sphere(2).translate(0, -0.5, 2.5)) // the sphere not turned
-  approx(right.volume, 586.443229, 1e-6) // OpenCASCADE
+  approx(right.volume, 586.443229, 1e-6)
   approx(right.cells().reduce((sum, c) => sum + c.volume, 0), 586.443229, 1e-6)
 })
 
