@@ -9,7 +9,10 @@ Bevels edges of a part with a flat face.
 - `edges`: a selection, one `Edge`, or faces (all their edges).
 - `length`: the setback, measured along **both** faces from the edge. Equal on both sides,
   also where the faces are not perpendicular (an acute 26.6° edge with length 2: both new
-  corners 2.000 from the old edge).
+  corners 2.000 from the old edge), and edges of different angles go in one call (all 18
+  edges of a hexagonal prism). The faces must meet at the same angle all along the edge
+  (within 1°): where a hole or boss meets a tilted or curved face the setback would vary
+  with the angle, and `chamfer` raises `ModelingError`; round such an edge with `fillet`.
 - There is no angle and no second distance: `chamfer(edge, (2, 3))` raises `TypeError`. For
   an unequal bevel, cut with a prism (`extrude` a triangle sketch placed at the edge).
 
@@ -36,6 +39,7 @@ chamfered: the kernel extends the bevel past the end). An invalid input part rai
 ## Errors
 - `ModelingError: chamfer: the length is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
 - `KernelError: chamfer failed (SM_ERR): the length may be too large for the selected edges`
+- `ModelingError: chamfer: the faces of an edge meet at an angle that changes along it (their normals are 60 to 120 degrees apart), and the bevel would reach 1 to 3 from the edge instead of 1; round such an edge with fillet(), whose radius stays the same along it`
 - `ValueError: chamfer: the length must be positive`
 - `ModelingError: chamfer: the part is not a valid solid (...); check is_valid() after each step and fix the step that broke it`
 

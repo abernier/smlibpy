@@ -11,6 +11,10 @@ Rounds edges of a part.
   still works if the edge did not change.
 - `radius`: a number; a `(start, end)` tuple for a linearly varying radius (start = the edge's
   `start` point; check `edge.start`); a list with one radius per edge, in selection order.
+  The tuple runs along each edge on its own: circular rounds only (not with `continuity`), and
+  not on a closed edge (a hole rim: the radius would jump back at the seam) or on edges that run
+  into each other tangentially (the kernel bends both radii to one where they meet). Those
+  raise `ValueError`; use a constant radius there.
 - `continuity`: `None` circular arc. `"G1"`, `"G2"`, `"G3"` (or 1, 2, 3; case does not matter)
   make a blend instead: it meets the faces at the same setback as the circular round but bulges
   more (removes less: 4 vertical box edges r5 remove 429.2 circular, 400.0 G1, 270.7 G2, 212.0 G3).
@@ -62,8 +66,16 @@ the kernel extends the round past the end until it leaves the material, so more 
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
 - `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`
+- `KernelError: fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as given, at any size: ...`:
+  an edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a
+  way the kernel has no corner for (the two halves of an edge that another face touches
+  tangentially; edges between duplicated vertices of an imported part). A smaller radius does
+  not help; select fewer edges there. (Chamfers say the same.)
 - `ValueError: fillet: the radius must be positive`
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
+- `ValueError: fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius`
+- `ValueError: fillet: a (start, end) radius cannot run around a closed edge ...` and
+  `ValueError: fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at (15, 15, 5) ...`
 - `ValueError: Edge(...) is not an edge of this part`; with the function form and edges of no
   part: `ValueError: these edges do not belong to a part; call part.fillet(edges, ...) instead`.
 

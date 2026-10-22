@@ -156,6 +156,83 @@ test('rounds that run on past their edge pass the volume check', () => {
   approx(kinked.volume, 12421.835947, 1e-6)
 })
 
+test('rounds that crashed the kernel throw', () => {
+  // In a process of its own, so that a trap does not leave this one's kernel damaged.
+  // A chamfer of edges at different angles (a hexagonal prism: 90 and 120 degrees) bevelled one
+  // edge per kernel call, with edges taken before the first call replaced it (natively the process
+  // died). The two halves of a box edge that a cone touches tangentially: the kernel has no corner
+  // for where they meet, went on, and called corner methods on what it held in the corner's place
+  // (the module trapped at any radius). The same for all edges of upstream's revolution_mold.smb.
+  const src = new URL('../src/', import.meta.url).href
+  const mold = new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/Solids/revolution_mold.smb', import.meta.url).pathname
+  const code = `
+    import { Box, Cone, RegularPolygon, load } from '${src}index.ts'
+    let p = RegularPolygon(10, 6).extrude(10)
+    const out = [String(p.chamfer(p.edges(), 1).faces().length)]
+    p = Box(10, 5, 20).cut(Cone(4, 5, 20))
+    const halves = p.edges().filter((e) => Math.abs(e.center().x - 5) < 1e-6 && Math.abs(e.center().z - 10) < 1e-6)
+    const mold = load(${JSON.stringify(mold)})
+    for (const make of [() => p.fillet(halves, 0.1), () => p.fillet(halves, 0.02), () => mold.fillet(mold.edges(), 0.2)]) {
+      try {
+        make()
+        out.push('ok')
+      } catch (e) {
+        out.push(/crashed/.test(e.message + (e.detail ?? '')) ? 'crashed' : e.status)
+      }
+    }
+    console.log(out.join(' '))
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
+  assert.equal(run.status, 0, run.stderr)
+  assert.deepEqual(run.stdout.trim().split(' '), ['38', ...Array(3).fill('SM_ERR_INVALID_INPUT')])
+  const p = RegularPolygon(10, 6).extrude(10)
+  const hexagon = p.chamfer(p.edges(), 1)
+  assert.ok(hexagon.isValid())
+  approx(hexagon.volume, 2516.827500047, 1e-9) // OpenCASCADE
+  // the setbacks: 1 along both faces, 0.5 and 0.7071 from the old edges at 120 and 90 degrees
+  assert.deepEqual([...new Set(p.edges().map((e) => Math.round(hexagon.distanceTo(e.center()) * 1e9) / 1e9))].sort(), [0.5, 0.707106781])
+  const cut = Box(10, 5, 20).cut(Cone(4, 5, 20))
+  const halves = cut.edges().filter((e) => Math.abs(e.center().x - 5) < 1e-6 && Math.abs(e.center().z - 10) < 1e-6)
+  throwsMatching(() => cut.fillet(halves, 0.1), KernelError, /cannot round the selection as given, at any size/)
+})
+
+test('a variable radius runs along each edge on its own', () => {
+  const box = Box(40, 30, 20)
+  const edge = box.edges().parallelTo(Z).at(0)!
+  approx(box.volume - box.fillet(edge, { start: 2, end: 6 }).volume, 74.399926, 1e-6)
+  for (const continuity of ['G1', 'G2', 'G3']) {
+    // gave the ruled chamfer (173.3333 removed), not a blend
+    throwsMatching(() => box.fillet(edge, { start: 2, end: 6 }, { continuity }), RangeError, /circular rounds only/)
+  }
+  // A closed edge: the radius rose to 2.9 and fell back to 1 at the seam.
+  const cylinder = Cylinder(10, 20)
+  const rim = cylinder.edges().circles().sortBy(Z).last
+  throwsMatching(() => cylinder.fillet(rim, { start: 1, end: 3 }), RangeError, /closed edge/)
+  approx(cylinder.fillet(rim, { start: 2, end: 2 }).volume, cylinder.fillet(rim, 2).volume, 1e-9)
+  // Edges that run into each other tangentially: the kernel gave the rounds one radius where they
+  // meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs.
+  let plate = Box(40, 30, 10)
+  plate = plate.fillet(plate.edges().parallelTo(Z).filter((e) => e.center().x > 0), 5)
+  const chain = plate.edges().filter((e) => e.center().z > 4.9 && e.center().x > -19.9)
+  throwsMatching(() => plate.fillet(chain, { start: 1, end: 3 }), RangeError, /run into each other tangentially at \(15, 15, 5\)/)
+  assert.ok(plate.fillet(chain, 2).isValid())
+})
+
+test('a chamfer needs one angle along its edge', () => {
+  // A cylinder tilted by 30 degrees on a plate: the faces meet at 60 to 120 degrees along the
+  // ellipse, and the bevel of length 1 reached 1 to 3 into the plate.
+  const plate = Box(60, 60, 10, { align: [Align.CENTER, Align.CENTER, Align.MAX] })
+  const above = Box(60, 60, 30, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const tilted = plate.fuse(Cylinder(5, 60).rotate(Y, 30).intersect(above))
+  const foot = tilted.edges().filter((e) => Math.abs(e.center().z) < 1e-6 && e.geomType === 'ellipse')
+  throwsMatching(() => tilted.chamfer(foot, 1), ModelingError, /60 to 120 degrees apart.*reach 1 to 3 from the edge instead of 1/)
+  const upright = plate.fuse(Cylinder(5, 60).intersect(above))
+  const ring = upright.edges().filter((e) => Math.abs(e.center().z) < 1e-6 && e.geomType === 'circle')
+  const bevel = upright.chamfer(ring, 1) // a concave ring: adds the triangle 1 x 1 / 2 around radius 5 1/3
+  assert.ok(bevel.isValid())
+  approx(bevel.volume - upright.volume, PI * 2 * (5 + 1 / 3) * 0.5, 1e-3)
+})
+
 // -- revolve --------------------------------------------------------------------------------
 const crossing: [string, () => Part][] = [
   ['full turn', () => Rectangle(10, 20).on(Plane.front).revolve(Z)],

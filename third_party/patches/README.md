@@ -26,6 +26,8 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::IntersectTopology` fails on `SM_ERR_BAD_INTERSECTIONS` from `SplitIntersectingProtoEdges` (its other errors stay ignored) | Without it the crossing holes above gave valid bodies of the wrong volume that could not be tessellated (`h1 + h2` 1697.46 instead of 2199.24, OpenCASCADE). |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::DeleteFaces` fails with `SM_ERR_BAD_INTERSECTIONS` rather than delete a shell Vertex whose Shell still owns Faceuses | `SmBrep::DeleteVertex` deletes the Vertex's Shell with it, and the Faces left in that Shell were read when the Brep was post-processed and when it was deleted (AddressSanitizer: freed memory read in `SmEdge::GetBrep` from `SmMerge::BooleanPostProcess`, and in `~SmFaceuse`). `Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)`, a flat end cap tangent to the sphere, killed the process in 3 of 3 runs. |
 | `SMLib/src/SmMerge.cpp` | `SmMerge::BooleanPostProcess` takes only the Vertices still in the Brep (a set made after the Edges are merged, renewed after every Vertex it deletes) | A Vertex deleted earlier was read in `SmVertex::GetEdges` from `IsTopologicalVertex`: `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` killed the process in 11 of 48 runs (the shell's Booleans; 0 of 96 since). |
+| `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::CreateFilletCorners` fails with `SM_ERR_INVALID_INPUT` when `SmFilletCorner::Create` makes no corner for a vertex, after deleting the list of edgeuses it kept in the corner's place; `CollectTangentEdgeSequence` walks only to solvers of the executive, each once, and stops where a solver does not end at the corner it came from | `Create` returns no corner for some ways edges meet at a vertex ("Corner Case Not Implemented"), and the executive went on with the vertex's list of edgeuses in `m_vVertexCornerMap` where the corner belonged. `CollectTangentEdgeSequence` and `SmFilletSolver::SetExtensionFlags` then called corner methods on that list (AddressSanitizer: a call to address 0). Filleting the two halves of a box edge that a cone touches tangentially, `(Box(10, 5, 20) - Cone(4, 5, 20))`, killed the process at any radius, and so did all-edge fillets of 7 of 337 imported parts and of upstream's `revolution_mold.smb`; the WebAssembly build trapped. |
+| `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::DoFilleting` shrinks only the fillet surfaces whose faces are still in the fillet Brep | The stitching of the fillet faces (`SmBrep::StitchFaces` in `CreateFilletBrep`) deletes degenerate lamina faces with their surfaces, and the FilletGeom of such a face still pointed to its surface: AddressSanitizer found it read freed memory in all-edge fillets of 2 imported parts, which killed the process. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
@@ -52,6 +54,11 @@ build:
   and in none of 96 since. `tests/test_guards.py::test_booleans_that_read_freed_kernel_memory_raise`
   runs them in a process of their own. Over the fuzz seeds 7 and 8 the changes turned 2 crashing
   Booleans into errors and changed no other result.
+- Fillets: the cone-touched box edge above and all-edge fillets of `revolution_mold.smb` raise
+  `KernelError` (`SM_ERR_INVALID_INPUT`), with AddressSanitizer reporting nothing; so do the 10
+  imported parts whose all-edge fillets crashed (8 from the missing corners, 2 from the shrink).
+  The corners were missing in no other fillet of those 479 imported parts, of the fuzz seeds 7 and
+  8 (190 fillets and chamfers) or of the test suite, and no other result changed.
 - Both test suites pass.
 
 Defects that remain in the kernel (crashes and loops in the feature executive's patching) are
@@ -84,7 +91,8 @@ When an upstream release fixes a defect:
    change, nothing for `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`; for the
    `SplitIntersectingProtoEdges`, `DeleteFaces` and `BooleanPostProcess` changes, nothing for the
    cases of `tests/test_guards.py::test_booleans_that_read_freed_kernel_memory_raise`, which must
-   still pass with the normal build.
+   still pass with the normal build; for the fillet changes, nothing for the cases of
+   `tests/test_guards.py::test_rounds_that_crashed_the_kernel_raise`, which must still pass.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can

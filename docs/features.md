@@ -31,6 +31,12 @@ A `(start, end)` tuple changes the radius linearly along each edge:
 ramp = box.fillet(box.edges().parallel_to(Z).first, (2, 8))
 ```
 
+The radius runs along each edge on its own, so it makes circular rounds only (with
+`continuity` it raises `ValueError`), and it cannot run around a closed edge such as a hole's
+rim, or across edges that run into each other tangentially: where two such rounds meet the
+kernel gives them one radius and bends both. Those raise `ValueError` too; give a constant
+radius there.
+
 ### Different radii
 
 A list gives each edge its own radius:
@@ -78,7 +84,10 @@ beveled = box.chamfer(box.faces().top().edges(), 2)
 ```
 
 `length` is the setback along both faces, also on edges where the faces are not
-perpendicular.
+perpendicular, and edges of different angles can be beveled in one call (all edges of a
+hexagonal prism). The faces must meet at the same angle all along each edge: where a hole or
+boss meets a tilted or curved face the angle changes, the setback would change with it, and
+`chamfer` raises a `ModelingError`. Round such an edge with `fillet`.
 
 ## Shell
 

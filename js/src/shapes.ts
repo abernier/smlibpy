@@ -83,6 +83,15 @@ const _GAPS = 1e-5
 // thickness 1.1e-3.
 const _BROKEN_GAPS = 1e-2
 
+// Fillet corners take two edges whose directions differ by less than this (degrees) for edges that
+// run into each other tangentially: the kernel's default tangency tolerance.
+const _FILLET_TANGENT_DEG = 10.0
+
+// A chamfer bevels each edge with one cross-section, so its setback equals the length only where
+// the faces meet at the angle measured; along an edge whose angle changes by more than this
+// (degrees) the setback would change with it.
+const _CHAMFER_ANGLE_SPREAD = 1.0
+
 // Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
 const INTERNAL = Symbol('smlibwasm.internal')
 
@@ -2822,6 +2831,50 @@ export class Part extends _Body {
     })
   }
 
+  /**
+   * A `{ start, end }` radius runs along each edge on its own. Refuse the edges where it cannot: a
+   * closed edge (the radius would jump back at its seam) and edges that run into each other
+   * tangentially (the kernel gives the rounds one radius where they meet and bends both radii to it).
+   */
+  static _checkRadiusLaw(edges: readonly Edge[]): void {
+    const at = new Map<string, Vector[]>() // vertex -> directions of the edges ending there
+    for (const e of edges) {
+      if (e.isClosed) {
+        throw new RangeError('fillet: a (start, end) radius cannot run around a closed edge (it would jump back to the start radius at the seam); give a constant radius')
+      }
+      for (const v of e.vertices()) {
+        const p = v.center()
+        const d = e.tangentAt(p.sub(e.start).length <= p.sub(e.end).length ? 0.0 : 1.0)
+        for (const d2 of at.get(v._identity()) ?? []) {
+          const a = d.angleTo(d2)
+          if (Math.min(a, 180.0 - a) < _FILLET_TANGENT_DEG) {
+            throw new RangeError(
+              `fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at ${_fmtPoint(p)}, where the kernel would bend both radii to one; give a constant radius`,
+            )
+          }
+        }
+        if (!at.has(v._identity())) at.set(v._identity(), [])
+        at.get(v._identity())!.push(d)
+      }
+    }
+  }
+
+  /** Angles (degrees) between the normals of an edge's two faces at 9 points along it, leaving out
+   * points where a normal cannot be evaluated (the apex of a cone). */
+  static _faceAngles(e: Edge): number[] {
+    const fs = e.faces()
+    const out: number[] = []
+    for (const t of [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1]) {
+      const p = e.pointAt(t)
+      try {
+        out.push(fs[0].normalAt(p).angleTo(fs[1].normalAt(p)))
+      } catch (err) {
+        if (!(err instanceof KernelError || _isValueError(err))) throw err
+      }
+    }
+    return out
+  }
+
   /** Distance from the edge to where a circular round of `radius` meets the faces. */
   static _setback(e: Edge, radius: number): number {
     const fs = e.faces()
@@ -2888,8 +2941,9 @@ export class Part extends _Body {
    * Round edges.
    *
    * @param edges Edges of this part (a selection, a single edge, or faces whose edges to round).
-   * @param radius Fillet radius. `{ start, end }` varies the radius linearly along each edge. An
-   *   array with one radius per edge rounds edges differently.
+   * @param radius Fillet radius. `{ start, end }` varies the radius linearly along each edge
+   *   (circular rounds only, not on closed edges or on edges that run into each other
+   *   tangentially). An array with one radius per edge rounds edges differently.
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
@@ -2899,7 +2953,12 @@ export class Part extends _Body {
     const list = Array.isArray(radius) || ArrayBuffer.isView(radius) ? Array.from(radius as ArrayLike<number>, Number) : null
     const given = varying ? [varying.start, varying.end].map(Number) : list ?? [Number(radius)]
     if (given.some((r) => !(r > 0))) throw new RangeError('fillet: the radius must be positive')
+    if (varying && continuity != null) {
+      // the kernel makes a ruled chamfer of it, not tangent to the faces
+      throw new RangeError('fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius')
+    }
     const sel = this._sharpEdges(edges, 'fillet')
+    if (varying && Number(varying.start) !== Number(varying.end)) Part._checkRadiusLaw(sel)
     let radii: number[]
     if (varying) radii = new Array(sel.length).fill(Math.max(varying.start, varying.end))
     else if (list) radii = list
@@ -2909,7 +2968,7 @@ export class Part extends _Body {
     }
     const [h, kedges] = this._withEdges(sel)
     const cont = _continuity(continuity)
-    kernelCall(
+    _roundCall(
       'fillet',
       () => {
         if (varying) {
@@ -2940,7 +2999,12 @@ export class Part extends _Body {
     return result
   }
 
-  /** Bevel edges. `length` is the setback measured along both adjacent faces. */
+  /**
+   * Bevel edges. `length` is the setback measured along both adjacent faces.
+   *
+   * The faces of each edge must meet at the same angle all along it (within 1 degree); where they
+   * do not (a hole into a tilted or curved face), use `fillet`.
+   */
   chamfer(edges: unknown, length: number): Part {
     this._requireValid('chamfer')
     if (!(Number(length) > 0)) throw new RangeError('chamfer: the length must be positive')
@@ -2952,20 +3016,29 @@ export class Part extends _Body {
       if (fs.length === 2) {
         const p = e.center()
         const theta = _radians(fs[0].normalAt(p).angleTo(fs[1].normalAt(p)))
-        radii.push(theta > 1e-6 ? length / Math.tan(theta / 2) : length)
+        const r = theta > 1e-6 ? length / Math.tan(theta / 2) : length
+        const angles = Part._faceAngles(e)
+        if (angles.length && Math.max(...angles) - Math.min(...angles) > _CHAMFER_ANGLE_SPREAD) {
+          const [lo, hi] = [Math.min(...angles), Math.max(...angles)]
+          throw new ModelingError(
+            `chamfer: the faces of an edge meet at an angle that changes along it (their normals are ${_formatG(lo, 4)} to ${_formatG(hi, 4)} degrees apart), and the bevel would reach ${_formatG(r * Math.tan(_radians(lo) / 2), 4)} to ${_formatG(r * Math.tan(_radians(hi) / 2), 4)} from the edge instead of ${_formatG(Number(length), 4)}; round such an edge with fillet(), whose radius stays the same along it`,
+          )
+        }
+        radii.push(r)
       } else {
         radii.push(length)
       }
     }
     const [h, kedges] = this._withEdges(sel)
-    kernelCall(
+    _roundCall(
       'chamfer',
       () => {
         if (radii.every((r) => Math.abs(r - radii[0]) < 1e-12)) {
           k.fillet_edges(h.brep, kedges, { radius: radii[0], xsect_type: 0 })
         } else {
-          // per-edge radii with a linear cross-section
-          kedges.forEach((ke, i) => k.fillet_edges(h.brep, [ke], { radius: radii[i], xsect_type: 0 }))
+          // per-edge radii with a linear cross-section, in one call: a call per edge replaces
+          // the edges next to it, and the next call would use freed edges
+          k.fillet_edges_per_edge(h.brep, kedges, radii, new Array(kedges.length).fill(k.FilletXSect.LINEAR))
         }
       },
       'the length may be too large for the selected edges',
@@ -3447,6 +3520,23 @@ function _combine(h: BrepHandle, tool: _Body, op: number, nonManifold = false): 
     th.release()
   } finally {
     th.dispose()
+  }
+}
+
+// A fillet or chamfer that fails with SM_ERR_INVALID_INPUT fails at any size: the kernel takes an edge
+// for one it cannot round, or has no corner for the way the selected edges meet at a vertex.
+const _ROUND_SELECTION_HINT =
+  'the kernel cannot round the selection as given, at any size: an edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a way it has no corner for (such as the two halves of an edge that another face touches tangentially); select fewer edges there'
+
+/** `kernelCall` for fillets and chamfers, with the hint for a selection the kernel cannot round. */
+function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
+  try {
+    return kernelCall(operation, fn, hint)
+  } catch (e) {
+    if (!(e instanceof KernelError) || e.status !== 'SM_ERR_INVALID_INPUT') throw e
+    const error = new KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT)
+    ;(error as Any).cause = e
+    throw error
   }
 }
 

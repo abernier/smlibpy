@@ -326,3 +326,102 @@ moves from 640.77182 to 640.77171 (both off the cells' 640.77204; the native bui
 640.77171 too when the case's earlier operations are left out), which the analyser's 1e-6 counts
 as one more silent result. The remaining crashes are other groups': shell-8-290 dies in
 `GlueCoincidentBrepVertices` in about 6 runs of 10, before and after (K2, O1).
+
+## Group F: fillets and chamfers
+
+Kernel patch K4 in a new copy of `third_party/patches/SMLib/src/SmFilletExecutive.cpp` (two README
+rows), confirmed with AddressSanitizer first (`build-asan`): every reproduction below crashed or
+read freed memory before and reports nothing now. F1, F3, F4 and F5 are changes to `Part.fillet`
+and `Part.chamfer` in `shapes.py` and `shapes.ts`; the docs (`docs/features.md`, the skill's
+`fillet.md` and `chamfer.md`, the docstrings) say what they refuse.
+
+**F1 · Chamfers of edges at different angles no longer crash** (both)
+- Now: a chamfer whose edges meet their faces at different angles bevels them all in one kernel
+  call (`fillet_edges_per_edge`, a linear cross-section with each edge's own radius). All 18 edges
+  of `RegularPolygon(10, 6).extrude(10)` by 1: valid, 38 faces, volume 2516.8275000 (OpenCASCADE
+  2516.8275000), and the old edges lie 0.5 (120 degrees) and 0.7071 (90 degrees) from the body, as
+  a setback of 1 along both faces gives. The plan's trapezoid prism, all edges: valid, 26 faces,
+  every setback exact; its volume, 4392.3495, differs from OpenCASCADE's 4392.1087 by the corners
+  where three bevels of different angles meet (B-spline patches in SMLib, planes in OpenCASCADE).
+- Before: one kernel call per edge, with all edges taken before the first call, which replaced the
+  edges next to its own: the process died (exit 139, 3 of 3 runs), and the wasm trapped
+  ("the length may be too large", detail "the kernel crashed (function signature mismatch)").
+  Box chamfers have only 90 degree edges and never took that path.
+- Breaks scripts: no. Chamfers whose edges share one angle take the same call as before.
+
+**F2 · Fillets the kernel has no corner for raise instead of crashing** (both)
+- Now: filleting the two halves of a box edge that a cone touches tangentially, `p = Box(10, 5,
+  20) - Cone(4, 5, 20)` and its two 2.5 mm edges at x = 5, z = 10, raises `KernelError: fillet
+  failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as given, at any size: an
+  edge whose faces meet almost tangentially, or a vertex where the selected edges meet in a way
+  it has no corner for (such as the two halves of an edge that another face touches
+  tangentially); select fewer edges there`, at r 0.1 and 0.02, in both builds. So do part 100's
+  pair of edges (0.15875), and in both builds the all-edge fillets of the 9 imported parts and of
+  upstream's `revolution_mold.smb` that crashed (the wasm no longer traps on any of them).
+- The cause, found with AddressSanitizer, is not a stale pointer: `SmFilletCorner::Create` has no
+  corner for some ways edges meet at a vertex ("Corner Case Not Implemented"; here two rounded
+  edges at a vertex of five edges), and `CreateFilletCorners` went on. The vertex then kept, in
+  the executive's vertex-to-corner map, the list of its edgeuses where its corner belonged, and
+  `CollectTangentEdgeSequence` and `SmFilletSolver::SetExtensionFlags` made virtual calls on that
+  list (AddressSanitizer: a call to address 0; natively a jump through the list's own table,
+  hence the garbage solver pointers 0x30 and 0x3d the plan saw). The patch fails
+  `CreateFilletCorners` in that case and deletes the lists no corner owns; the walk in
+  `CollectTangentEdgeSequence` also checks its corners and solvers (the plan's checks; they did
+  not fire once the first change was in). Two of the imported parts (7 and 109) then still
+  crashed elsewhere: `DoFilleting` shrank a fillet surface whose sliver face the stitching of the
+  fillet faces had deleted (AddressSanitizer: heap-use-after-free). It now shrinks only surfaces
+  of faces still in the fillet body, and those two raise `KernelError (SM_ERR)`.
+- The hint: a fillet or chamfer that fails with `SM_ERR_INVALID_INPUT` (also the kernel's "edge
+  cannot be filleted", which 10 imported parts gave before) now says that no size works, instead
+  of "the radius may be too large".
+- Measured: all-edge fillets of the 479 imported files: the 10 crashes now raise, the other 469
+  results are identical (348 volumes, 121 errors). Fuzz seeds 7 and 8 (190 fillets and
+  chamfers, resolved parameters): fillet-7-199 crashed and now raises; no other fillet changed.
+  The test suite never takes the new paths.
+- Not reproduced: the plan's crash of one of the halves alone (1 of 7 runs on 0.4.0): 0 of 80 runs
+  on this branch, with the old code paths and the new, and no report in 8 runs under
+  AddressSanitizer; the single edge raises the size error (its result is not a closed solid). I1
+  (shared vertices on import) is not part of this group; the corner fix does not depend on it.
+- Before: exit 139 at any radius; the wasm trapped with "the radius may be too large".
+- Breaks scripts: no, these had no result. KernelErrors with `SM_ERR_INVALID_INPUT` have a new hint.
+
+**F3 · A (start, end) radius with continuity raises ValueError** (both)
+- Now: `part.fillet(edges, (start, end), continuity=...)` raises `ValueError: fillet: a (start, end)
+  radius makes circular rounds only; continuity needs a constant radius` (smlibwasm: RangeError,
+  for `{ start, end }`).
+- Before: the kernel made the ruled variable chamfer, not tangent to the faces, with no error:
+  `Box(40, 30, 20)`, one vertical edge, (2, 6) removed 173.3333 with G1, G2 and G3 alike (the
+  circular round removes 74.3999), and `fullness` did nothing. The cause in the kernel is not
+  known (the plan's patch is not planned).
+- Breaks scripts: yes, scripts that passed `continuity` with a tuple raise; they were getting a
+  chamfer, not a blend.
+
+**F4 · A chamfer refuses an edge whose faces change their angle** (both)
+- Now: `chamfer` measures the angle between the faces at 9 points along each edge; where it
+  changes by more than 1 degree it raises `ModelingError: chamfer: the faces of an edge meet at an
+  angle that changes along it (their normals are 60 to 120 degrees apart), and the bevel would
+  reach 1 to 3 from the edge instead of 1; round such an edge with fillet(), whose radius stays
+  the same along it` (a cylinder tilted by 30 degrees on a plate, the plan's probe). The same
+  cylinder upright is chamfered as before. It costs 9 normal pairs per edge: under 2% (40 hole
+  rims: 485 ms before, 494 ms now).
+- Before: one radius from the angle at the edge's middle, so the setback ran from 1 to 3 along
+  the edge, valid and silent.
+- Breaks scripts: yes, chamfers of such edges (a hole into a tilted or curved face, crossing
+  cylinders) raise; they got a bevel of the wrong size. In the fuzz seeds 4 chamfers that raised a
+  KernelError or crashed now raise this ModelingError, and none of the 110 fillets and chamfers
+  that succeeded changed. Fillets keep the midpoint angle for their size check (`_setback`); a
+  chamfer with a radius law per edge is F8's.
+
+**F5 · A (start, end) radius on a closed edge or a tangent chain raises ValueError** (both)
+- Now: a tuple whose two radii differ raises `ValueError: fillet: a (start, end) radius cannot run
+  around a closed edge (it would jump back to the start radius at the seam); give a constant
+  radius`, and, for two selected edges that meet at a vertex within 10 degrees of tangent (the
+  kernel's tangency tolerance for fillet corners), `ValueError: fillet: a (start, end) radius runs
+  along each edge on its own, and two of the edges run into each other tangentially at (15, 15,
+  5), where the kernel would bend both radii to one; give a constant radius`. A single edge, edges
+  that meet at corners and `(r, r)` work as before.
+- Before: valid, with no warning: on `Cylinder(10, 20)`'s rim (1, 3) rose linearly to 2.90 and
+  fell back to 1 within the last 3% of the edge; on the plan's five-edge chain the radius ran
+  1.07 -> 2.93 on one line, 2.46 -> 1.04 on another and 1.65 -> 1.99 -> 1.07 on the arcs.
+- Breaks scripts: yes, for those selections; they got bent radii. Laws along a whole chain need
+  C++ (F8).

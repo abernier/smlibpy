@@ -3,6 +3,7 @@
 import math
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -113,6 +114,82 @@ def test_rounds_that_run_on_past_their_edge_pass_the_volume_check():
     prism = RegularPolygon(20, 24).extrude(10)
     kinked = prism.fillet(prism.edges().group_by(Z)[-1].sort_by(X)[-1], 1)  # 15 degree kinks
     assert kinked.is_valid() and kinked.volume == approx(12421.835947, rel=1e-6)
+
+
+def test_rounds_that_crashed_the_kernel_raise():
+    # In a process of its own, so that a crash fails the test rather than the run.
+    # A chamfer of edges at different angles (a hexagonal prism: 90 and 120 degrees) bevelled one
+    # edge per kernel call, with edges taken before the first call replaced it: exit 139.
+    # The two halves of a box edge that a cone touches tangentially: the kernel has no corner for
+    # where they meet, went on, and called corner methods on what it held in the corner's place
+    # (exit 139 at any radius). The same for all edges of upstream's revolution_mold.smb.
+    mold = Path(__file__).resolve().parent.parent / "third_party/usd-brep/TestFiles/pt_TestFiles/Solids/revolution_mold.smb"
+    code = f"""
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+p = RegularPolygon(10, 6).extrude(10)
+print(len(p.chamfer(p.edges(), 1).faces()), flush=True)
+p = Box(10, 5, 20) - Cone(4, 5, 20)
+halves = p.edges().filter(lambda e: abs(e.center().x - 5) < 1e-6 and abs(e.center().z - 10) < 1e-6)
+mold = load({str(mold)!r})
+for make in (lambda: p.fillet(halves, 0.1), lambda: p.fillet(halves, 0.02), lambda: mold.fillet(mold.edges(), 0.2)):
+    try:
+        make()
+        print("ok", flush=True)
+    except KernelError as e:
+        print(e.status, flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode} after {run.stdout.split()}"
+    assert run.stdout.split() == ["38"] + ["SM_ERR_INVALID_INPUT"] * 3
+    p = RegularPolygon(10, 6).extrude(10)
+    hexagon = p.chamfer(p.edges(), 1)
+    assert hexagon.is_valid() and hexagon.volume == approx(2516.827500047, rel=1e-9)  # OpenCASCADE
+    # the setbacks: 1 along both faces, 0.5 and 0.7071 from the old edges at 120 and 90 degrees
+    assert sorted({round(hexagon.distance_to(e.center()), 9) for e in p.edges()}) == [0.5, 0.707106781]
+    p = Box(10, 5, 20) - Cone(4, 5, 20)
+    halves = p.edges().filter(lambda e: abs(e.center().x - 5) < 1e-6 and abs(e.center().z - 10) < 1e-6)
+    with pytest.raises(KernelError, match="cannot round the selection as given, at any size"):
+        p.fillet(halves, 0.1)
+
+
+def test_a_variable_radius_runs_along_each_edge_on_its_own():
+    box = Box(40, 30, 20)
+    edge = box.edges().parallel_to(Z)[0]
+    assert box.volume - box.fillet(edge, (2, 6)).volume == approx(74.399926, rel=1e-6)
+    for continuity in ("G1", "G2", "G3"):  # gave the ruled chamfer (173.3333 removed), not a blend
+        with pytest.raises(ValueError, match="circular rounds only"):
+            box.fillet(edge, (2, 6), continuity=continuity)
+    # A closed edge: the radius rose to 2.9 and fell back to 1 at the seam.
+    cylinder = Cylinder(10, 20)
+    rim = cylinder.edges().circles().sort_by(Z)[-1]
+    with pytest.raises(ValueError, match="closed edge"):
+        cylinder.fillet(rim, (1, 3))
+    assert cylinder.fillet(rim, (2, 2)).volume == approx(cylinder.fillet(rim, 2).volume, rel=1e-9)
+    # Edges that run into each other tangentially: the kernel gave the rounds one radius where they
+    # meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs.
+    plate = Box(40, 30, 10)
+    plate = plate.fillet(plate.edges().parallel_to(Z).filter(lambda e: e.center().x > 0), 5)
+    chain = plate.edges().filter(lambda e: e.center().z > 4.9 and e.center().x > -19.9)
+    with pytest.raises(ValueError, match=r"run into each other tangentially at \(15, 15, 5\)"):
+        plate.fillet(chain, (1, 3))
+    assert plate.fillet(chain, 2).is_valid()
+
+
+def test_a_chamfer_needs_one_angle_along_its_edge():
+    # A cylinder tilted by 30 degrees on a plate: the faces meet at 60 to 120 degrees along the
+    # ellipse, and the bevel of length 1 reached 1 to 3 into the plate.
+    plate = Box(60, 60, 10, align=(Align.CENTER, Align.CENTER, Align.MAX))
+    above = Box(60, 60, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    tilted = plate + (Cylinder(5, 60).rotate(Y, 30) & above)
+    foot = tilted.edges().filter(lambda e: abs(e.center().z) < 1e-6 and e.geom_type == "ellipse")
+    with pytest.raises(ModelingError, match="60 to 120 degrees apart.*reach 1 to 3 from the edge instead of 1"):
+        tilted.chamfer(foot, 1)
+    upright = plate + (Cylinder(5, 60) & above)
+    ring = upright.edges().filter(lambda e: abs(e.center().z) < 1e-6 and e.geom_type == "circle")
+    bevel = upright.chamfer(ring, 1)  # a concave ring: adds the triangle 1 x 1 / 2 around radius 5 1/3
+    assert bevel.is_valid() and bevel.volume - upright.volume == approx(math.pi * 2 * (5 + 1 / 3) * 0.5, rel=1e-3)
 
 
 # -- revolve ------------------------------------------------------------------------------

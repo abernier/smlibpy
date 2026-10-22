@@ -8,6 +8,7 @@ for as long as you hold them and can be passed back to operations on that body
 
 from __future__ import annotations
 
+import contextlib
 import math
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union, overload
 
@@ -56,6 +57,15 @@ _GAPS = 1e-5
 # bodies stay below 2e-3: imported parts up to 6e-4, a sheet unfolded at a radius far below its
 # thickness 1.1e-3.
 _BROKEN_GAPS = 1e-2
+
+# Fillet corners take two edges whose directions differ by less than this (degrees) for edges
+# that run into each other tangentially: the kernel's default tangency tolerance.
+_FILLET_TANGENT_DEG = 10.0
+
+# A chamfer bevels each edge with one cross-section, so its setback equals the length only where
+# the faces meet at the angle measured; along an edge whose angle changes by more than this
+# (degrees) the setback would change with it.
+_CHAMFER_ANGLE_SPREAD = 1.0
 
 S = TypeVar("S", bound="Shape")
 
@@ -2468,6 +2478,43 @@ class Part(_Body):
                         f"overlap (largest possible setback here: {limit:.4g})")
 
     @staticmethod
+    def _check_radius_law(edges: list[Edge]) -> None:
+        """A ``(start, end)`` radius runs along each edge on its own. Refuse the edges where it
+        cannot: a closed edge (the radius would jump back at its seam) and edges that run into
+        each other tangentially (the kernel gives the rounds one radius where they meet and bends
+        both radii to it)."""
+        at: dict[Vertex, list[Vector]] = {}  # vertex (kept, so its identity stays) -> edge directions
+        for e in edges:
+            if e.is_closed:
+                raise ValueError("fillet: a (start, end) radius cannot run around a closed edge (it would jump "
+                                 "back to the start radius at the seam); give a constant radius")
+            for v in e.vertices():
+                p = v.center()
+                d = e.tangent_at(0.0 if (p - e.start).length <= (p - e.end).length else 1.0)
+                for d2 in at.get(v, []):
+                    a = d.angle_to(d2)
+                    if min(a, 180.0 - a) < _FILLET_TANGENT_DEG:
+                        raise ValueError(
+                            f"fillet: a (start, end) radius runs along each edge on its own, and two of the edges "
+                            f"run into each other tangentially at {_fmt_point(p)}, where the kernel would bend both "
+                            f"radii to one; give a constant radius")
+                at.setdefault(v, []).append(d)
+
+    @staticmethod
+    def _face_angles(e: Edge) -> list[float]:
+        """Angles (degrees) between the normals of an edge's two faces at 9 points along it,
+        leaving out points where a normal cannot be evaluated (the apex of a cone)."""
+        fs = e.faces()
+        out = []
+        for t in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0):
+            p = e.point_at(t)
+            try:
+                out.append(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
+            except (KernelError, ValueError):
+                pass
+        return out
+
+    @staticmethod
     def _setback(e: Edge, radius: float) -> float:
         """Distance from the edge to where a circular round of ``radius`` meets the faces."""
         fs = e.faces()
@@ -2540,7 +2587,9 @@ class Part(_Body):
             edges: Edges of this part (a selection, a single edge, or faces whose edges
                 to round).
             radius: Fillet radius. A ``(start, end)`` tuple varies the radius linearly
-                along each edge. A list with one radius per edge rounds edges differently.
+                along each edge (circular rounds only, not on closed edges or on edges that
+                run into each other tangentially). A list with one radius per edge rounds
+                edges differently.
             continuity: ``None`` for a circular fillet. ``"G2"`` or ``"G3"`` make a
                 curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
@@ -2550,8 +2599,14 @@ class Part(_Body):
         given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
         if any(not r > 0 for r in given):
             raise ValueError("fillet: the radius must be positive")
+        if isinstance(radius, tuple) and len(radius) == 2 and continuity is not None:
+            # the kernel makes a ruled chamfer of it, not tangent to the faces
+            raise ValueError("fillet: a (start, end) radius makes circular rounds only; continuity needs a "
+                             "constant radius")
         sel = self._sharp_edges(edges, "fillet")
         if isinstance(radius, tuple) and len(radius) == 2:
+            if float(radius[0]) != float(radius[1]):
+                self._check_radius_law(sel)
             radii = [max(float(radius[0]), float(radius[1]))] * len(sel)
         elif isinstance(radius, (list, np.ndarray)):
             radii = [float(r) for r in radius]
@@ -2561,7 +2616,7 @@ class Part(_Body):
             self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
         h, kedges = self._with_edges(sel)
         cont = _continuity(continuity)
-        with kernel_call("fillet", "the radius may be too large for the selected edges"):
+        with _round_call("fillet", "the radius may be too large for the selected edges"):
             if isinstance(radius, tuple) and len(radius) == 2:
                 k.variable_radius_fillet(h.brep, kedges, start_radius=float(radius[0]), end_radius=float(radius[1]),
                                          xsect_type=1 if cont is None else 2, continuity=cont or 1)
@@ -2586,7 +2641,11 @@ class Part(_Body):
         return result
 
     def chamfer(self, edges: Any, length: float) -> Part:
-        """Bevel edges. ``length`` is the setback measured along both adjacent faces."""
+        """Bevel edges. ``length`` is the setback measured along both adjacent faces.
+
+        The faces of each edge must meet at the same angle all along it (within 1 degree);
+        where they do not (a hole into a tilted or curved face), use ``fillet``.
+        """
         self._require_valid("chamfer")
         if not float(length) > 0:
             raise ValueError("chamfer: the length must be positive")
@@ -2598,19 +2657,26 @@ class Part(_Body):
             if len(fs) == 2:
                 p = e.center()
                 theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
-                radii.append(length / math.tan(theta / 2) if theta > 1e-6 else length)
+                r = length / math.tan(theta / 2) if theta > 1e-6 else length
+                angles = self._face_angles(e)
+                if angles and max(angles) - min(angles) > _CHAMFER_ANGLE_SPREAD:
+                    lo, hi = (r * math.tan(math.radians(a) / 2) for a in (min(angles), max(angles)))
+                    raise ModelingError(
+                        f"chamfer: the faces of an edge meet at an angle that changes along it (their normals are "
+                        f"{min(angles):.4g} to {max(angles):.4g} degrees apart), and the bevel would reach "
+                        f"{lo:.4g} to {hi:.4g} from the edge instead of {float(length):.4g}; round such an edge "
+                        f"with fillet(), whose radius stays the same along it")
+                radii.append(r)
             else:
                 radii.append(length)
         h, kedges = self._with_edges(sel)
-        with kernel_call("chamfer", "the length may be too large for the selected edges"):
-            xs = [k.FilletXSect.CIRCULAR] * len(kedges)
+        with _round_call("chamfer", "the length may be too large for the selected edges"):
             if all(abs(r - radii[0]) < 1e-12 for r in radii):
                 k.fillet_edges(h.brep, kedges, radius=radii[0], xsect_type=0)
             else:
-                # per-edge radii with a linear cross-section
-                for ke, r in zip(kedges, radii):
-                    k.fillet_edges(h.brep, [ke], radius=r, xsect_type=0)
-        del xs
+                # per-edge radii with a linear cross-section, in one call: a call per edge
+                # replaces the edges next to it, and the next call would use freed edges
+                k.fillet_edges_per_edge(h.brep, kedges, radii, [k.FilletXSect.LINEAR] * len(kedges))
         result = self._like(_take(h))
         self._check_volume_change(result, sel, "chamfer", [float(length)] * len(sel), "chamfer")
         return result
@@ -3036,6 +3102,26 @@ def _combine(h: BrepHandle, tool: _Body, op: Any, non_manifold: bool = False) ->
     th = BrepHandle(tool._copy_brep())
     h.brep = ext.boolean(h.brep, th.brep, op, non_manifold)
     _take(th)
+
+
+# A fillet or chamfer that fails with SM_ERR_INVALID_INPUT fails at any size: the kernel takes an
+# edge for one it cannot round, or has no corner for the way the selected edges meet at a vertex.
+_ROUND_SELECTION_HINT = ("the kernel cannot round the selection as given, at any size: an edge whose faces meet "
+                         "almost tangentially, or a vertex where the selected edges meet in a way it has no corner "
+                         "for (such as the two halves of an edge that another face touches tangentially); select "
+                         "fewer edges there")
+
+
+@contextlib.contextmanager
+def _round_call(operation: str, hint: str) -> Iterator[None]:
+    """:func:`kernel_call` for fillets and chamfers, with the hint for a selection the kernel cannot round."""
+    try:
+        with kernel_call(operation, hint):
+            yield
+    except KernelError as e:
+        if e.status != "SM_ERR_INVALID_INPUT":
+            raise
+        raise KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT) from e
 
 
 def _continuity(c: int | str | None) -> int | None:
