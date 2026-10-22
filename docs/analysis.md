@@ -213,3 +213,76 @@ print(corners.is_closed(), round(corners.volume, 2))       # True 1631.68
 blob = (Box(20, 20, 20) - Sphere(12)).mesh(tolerance=0.01) # exact first: closer to 1616.28
 print(round(blob.volume, 2))
 ```
+
+A mesh Boolean's triangles take the normals of the operand triangles they lie on (turned on the
+inside of a cut), so its result shades as its operands do; meshes without normals give a result
+without.
+
+`max_edge` bounds the length of the triangles' edges, for evenly sized triangles (simulation
+meshes, deformation, sampling) where the tolerance alone leaves a flat face two long triangles.
+`tessellate`, `mesh` and the mesh exports (`export_stl`, `export_obj`, `export_glb`,
+`export_gltf`, `export_usd`) take it:
+
+```python
+plate = Box(100, 100, 2) - Cylinder(5, 10)
+print(len(plate.mesh(0.1)), len(plate.mesh(0.1, max_edge=10)))   # 144 706: edges of 100, under 13
+```
+
+With `max_edge` every face is meshed by the kernel's grid; a part with a twisted face, which the
+grid meshes too far off (see above), gets a `RuntimeWarning` saying how far, and a smaller
+`max_edge` brings the grid nearer.
+
+### Measuring and cutting meshes
+
+Meshes of scans and STL files have no exact part behind them; they are measured and cut on their
+triangles. `mass_properties` gives the mass, center and inertia of what a closed mesh encloses,
+exact for its triangles (the same `MassProperties` as a part's); `centroid` is its center of mass
+(`center()` is the middle of the bounding box):
+
+```python
+scan = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)
+mp = scan.mass_properties(density=7.85e-3)      # steel, g/mm³
+print(round(mp.mass, 2), scan.centroid)         # 170.66 Vector(0, 0, 0)
+```
+
+`section(plane)` cuts a mesh: the wires where its triangles cross the plane, chained into loops
+(outer loops counterclockwise seen from the plane's normal, holes clockwise, as the faces of a
+part's section). `slices(step)` cuts it into layers, a section in the middle of each, and
+`Part.slices` does the same for exact parts (a `Sketch` per layer):
+
+```python
+loops = scan.section(Plane.XY)
+print([round(w.length, 3) for w in loops])                      # [140.0, 37.69]
+region = make_face(loops[0]) - make_face(loops[1])
+print(round(region.area, 2))                                    # 1087.01 (exact: 1086.9)
+print(len(scan.slices(5)), len((Box(40, 30, 20) - Cylinder(6, 40)).slices(5)))   # 4 4
+```
+
+A plane through a flat part of a mesh (the top face of a box's mesh) cuts it just beside that,
+on the side where the cut encloses more.
+
+### Fewer triangles, closed meshes, faceted parts
+
+`decimate` thins a mesh out with the kernel's quadric decimation, which keeps a closed mesh
+closed: give the share of the triangles to remove, about how many to leave, or how far the result
+may be from the mesh (`tolerance=`, measured by smlibpy at the points of both meshes; the kernel's
+own "maximum error" is not a distance). `fill_holes` closes the holes of an open mesh;
+`repaired` also merges points that lie on each other, leaves out triangles without an area or
+repeated, turns triangles that face the wrong way, and says what it did. `to_part` (or
+`Part.from_mesh`) makes a faceted part of a closed mesh, for exact Booleans and STEP files:
+neighbouring triangles in one plane become one face, and a mesh that would give more than
+`max_faces` faces (5000) raises, since Booleans on many faces get slow:
+
+```python
+ball = Sphere(10).mesh(0.001)
+print(len(ball), len(ball.decimate(0.9)))           # 136872 13674 (about; the kernel varies a little)
+print(len(ball.decimate(tolerance=0.01)) < 15000)   # True: within 0.01 of the fine mesh
+
+holed = Mesh(scan.vertices, scan.triangles[1:])      # a triangle missing
+fixed, report = holed.repaired()
+print(fixed.is_closed(), report["filled_holes"])    # True 1
+
+block = scan.to_part()                               # faceted: 102 faces, the bore's facets and 6
+print(block.is_valid(), round(block.volume, 3))      # True 21740.176 (the mesh's volume)
+print(round((block - Box(10, 10, 40).translate(20, 15, 0)).volume, 3))   # 21240.176
+```

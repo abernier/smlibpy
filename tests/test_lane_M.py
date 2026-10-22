@@ -1,6 +1,8 @@
 """Meshes, drawings and rays (kernel plan, lane M): normals at the apex of a cone, colors and
 positions in glTF, mesh points in double precision, drawing views with hidden lines, contours,
-and many rays at once."""
+and many rays at once; mass properties, sections, decimation, repair and faceted parts of meshes,
+a longest edge for tessellation, normals in OBJ files, indexed glTF and normals of mesh
+Booleans."""
 
 import json
 import math
@@ -9,9 +11,11 @@ import struct
 import numpy as np
 import pytest
 
-from smlibpy import (Axis, Box, Cone, Cylinder, DrawingView, Edge, GridLocations, Plane, Polygon, ShapeList, Sphere,
-                     Torus, X, Y, Z, drawing_views, export, export_dxf, export_glb, export_obj, export_svg,
-                     import_dxf_wires, surface)
+import warnings
+
+from smlibpy import (Axis, Box, Cone, Cylinder, DrawingView, Edge, GridLocations, ModelingError, Part, Plane, Polygon,
+                     ShapeList, Sphere, Torus, X, Y, Z, drawing_views, export, export_dxf, export_glb, export_obj,
+                     export_stl, export_svg, import_dxf_wires, import_stl, make_face, surface, tessellate)
 from smlibpy._kernel import ext
 from smlibpy.drawing import to_svg
 from smlibpy.exporters import gltf_document
@@ -135,7 +139,9 @@ def test_gltf_positions_are_relative_to_their_node(tmp_path):
     view = doc["bufferViews"][acc["bufferView"]]
     pos = np.frombuffer(buf, np.float32, acc["count"] * 3, view["byteOffset"]).reshape(-1, 3)
     assert np.abs(pos).max() < 6  # (around the middle of the box)
-    world = pos.astype(float) + node["translation"]
+    iacc = doc["accessors"][prim["indices"]]
+    index = np.frombuffer(buf, np.uint16, iacc["count"], doc["bufferViews"][iacc["bufferView"]]["byteOffset"])
+    world = pos[index].astype(float) + node["translation"]
     assert np.abs(world - mesh.vertices[mesh.triangles].reshape(-1, 3)).max() < 1e-5
     assert acc["max"] == pytest.approx([5.15, 5.35, 5.05], abs=1e-5)
     lines = doc["meshes"][node["mesh"]]["primitives"][1]
@@ -407,3 +413,401 @@ def test_rays_along_a_cylinder_mesh_its_faces_once():
     hits = cylinder.raycast_many([(3, 0, 50), (0, 0, 50)], -Z)
     assert [h.distance for h in hits] == pytest.approx([40, 40])
     assert "rays" in cylinder._h.meshes
+
+
+# =============================================================================
+# Mass properties of meshes (M11)
+# =============================================================================
+def test_mesh_mass_properties_of_a_box_are_exact():
+    m = Box(10, 20, 30).translate(5, 6, 7).mesh()
+    mp = m.mass_properties(2.0)
+    assert mp.volume == pytest.approx(6000, rel=1e-12) and mp.mass == pytest.approx(12000, rel=1e-12)
+    assert mp.center.to_tuple() == pytest.approx((5, 6, 7), abs=1e-12)
+    assert m.centroid.to_tuple() == pytest.approx((5, 6, 7), abs=1e-12)
+    expected = np.diag([12000 / 12 * (20**2 + 30**2), 12000 / 12 * (10**2 + 30**2), 12000 / 12 * (10**2 + 20**2)])
+    assert np.abs(mp.inertia - expected).max() < 1e-7 * expected.max()
+    assert mp.area == pytest.approx(2 * (200 + 300 + 600))
+    # far from the origin the numbers keep their digits
+    far = Box(10, 20, 30).translate(1e6, -2e5, 3e5).mesh().mass_properties(2.0)
+    assert far.center.to_tuple() == pytest.approx((1e6, -2e5, 3e5), abs=1e-6)
+    assert np.abs(far.inertia - expected).max() < 1e-6 * expected.max()
+
+
+def test_mesh_mass_properties_match_the_kernel_and_the_part():
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh(0.01)
+    mp = m.mass_properties()
+    poly = m._kernel_mesh()
+    try:
+        kp = poly.mass_properties(1.0)  # (SmApiPolyBrepComputeMassProperties)
+    finally:
+        ext.delete_polybrep(poly)
+    assert mp.volume == pytest.approx(kp["volume"], rel=1e-12)
+    assert np.diag(mp.inertia) == pytest.approx(kp["moments_of_inertia"], rel=1e-9)
+    assert mp.center.to_tuple() == pytest.approx(kp["centroid"], abs=1e-9)
+    exact = part.mass_properties()
+    assert mp.volume == pytest.approx(exact.volume, rel=2e-4)
+    assert np.abs(mp.inertia - exact.inertia).max() < 1e-4 * np.abs(exact.inertia).max()
+
+
+def test_empty_open_and_inward_meshes_say_why():
+    empty = Box(5, 5, 5).mesh() - Box(10, 10, 10).mesh()
+    assert len(empty) == 0
+    with pytest.raises(ValueError, match="an empty mesh has no bounding box"):
+        empty.bbox()
+    with pytest.raises(ValueError, match="an empty mesh has no bounding box"):
+        empty.center()
+    with pytest.raises(ValueError, match="no mass properties"):
+        empty.mass_properties()
+    box = Box(10, 10, 10).mesh()
+    with pytest.raises(ModelingError, match=r"open \(3 open edges\).*fill_holes"):
+        Mesh(box.vertices, box.triangles[1:]).mass_properties()
+    with pytest.raises(ModelingError, match="face inward"):
+        Mesh(box.vertices, box.triangles[:, ::-1]).centroid
+    with pytest.raises(ValueError, match="density"):
+        box.mass_properties(0)
+
+
+# =============================================================================
+# Sections of meshes (M7)
+# =============================================================================
+def loop_area(wire: Edge, plane: Plane) -> float:
+    """Signed area of a closed polyline seen from the plane's normal."""
+    p = np.array([e.start.to_tuple() for e in wire.edges()])
+    x, y = p @ np.array(plane.x_dir.to_tuple()), p @ np.array(plane.y_dir.to_tuple())
+    return 0.5 * float((x * np.roll(y, -1) - np.roll(x, -1) * y).sum())
+
+
+def test_mesh_section_chains_closed_loops_outer_counterclockwise():
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh(0.01)
+    loops = m.section(Plane.XY)
+    assert isinstance(loops, ShapeList) and len(loops) == 2 and all(w.is_closed for w in loops)
+    outer, hole = loops
+    assert len(outer.edges()) == 4 and outer.length == pytest.approx(140, abs=1e-9)  # (straight runs joined)
+    assert hole.length == pytest.approx(2 * math.pi * 6, rel=1e-3)  # (a polygon within 0.01 of the circle)
+    assert loop_area(outer, Plane.XY) == pytest.approx(1200, rel=1e-12) and loop_area(hole, Plane.XY) < 0
+    region = make_face(outer) - make_face(hole)
+    assert region.area == pytest.approx(part.section(Plane.XY).area, rel=1e-3)
+    # a plane on the top or bottom face of the mesh cuts it just inside
+    for z in (10, -10):
+        on = m.section(Plane.XY.offset(z))
+        assert [round(w.length, 6) for w in on] == [round(w.length, 6) for w in loops]
+        assert all(abs(e.start.z - z) < 1e-12 for w in on for e in w.edges())
+    assert len(m.section(Plane.XY.offset(30))) == 0
+    # a slanted plane through a far mesh, and a mesh whose triangles each have their own corners
+    soup = Mesh(m.vertices[m.triangles].reshape(-1, 3), np.arange(3 * len(m)).reshape(-1, 3))
+    assert sum(w.length for w in soup.section(Plane.XZ)) == pytest.approx(sum(w.length for w in m.section(Plane.XZ)))
+    near = sum(w.length for w in m.section(Plane((0, 0, 0), z_dir=(0, 1, 1))))
+    far = sum(w.length for w in m.translate(1e5, 0, 0).section(Plane((1e5, 0, 0), z_dir=(0, 1, 1))))
+    assert far == pytest.approx(near, rel=1e-9)
+
+
+def test_mesh_section_of_an_open_mesh_gives_open_polylines():
+    side = Cylinder(5, 10).faces().filter_by(lambda f: f.geom_type == "cylinder")[0]
+    m = tessellate(side, 0.01)
+    assert not m.is_closed()
+    lines = m.section(Plane.XZ)
+    assert len(lines) == 2 and not any(w.is_closed for w in lines)
+    assert all(w.length == pytest.approx(10, abs=1e-9) and len(w.edges()) == 1 for w in lines)
+
+
+def test_slices_of_meshes_and_parts():
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh(0.01)
+    layers = m.slices(5)
+    assert len(layers) == 4 and all(len(layer) == 2 for layer in layers)
+    assert [layer[0].edges()[0].start.z for layer in layers] == pytest.approx([-7.5, -2.5, 2.5, 7.5])
+    sketches = part.slices(5)
+    assert [s.plane.origin.z for s in sketches] == pytest.approx([-7.5, -2.5, 2.5, 7.5])
+    assert all(s.area == pytest.approx(1200 - math.pi * 36, rel=1e-9) for s in sketches)
+    across = part.slices(7, X)  # x from -20 to 20: middles of 7-wide layers
+    assert [s.plane.origin.x for s in across] == pytest.approx([-16.5, -9.5, -2.5, 4.5, 11.5, 18.5])
+    assert [round(s.area, 3) for s in across] == [round(part.section(s.plane).area, 3) for s in across]
+    assert across[0].area == pytest.approx(600) and across[2].area < 600
+    # two parts with a gap: the layer in the gap is left out
+    pair = Box(10, 10, 10) + Box(10, 10, 10).translate(0, 0, 20)
+    assert len(pair.slices(10)) == 2 and len(pair.mesh().slices(10)) == 2
+    with pytest.raises(ValueError, match="step"):
+        m.slices(0)
+
+
+# =============================================================================
+# Decimation (M6)
+# =============================================================================
+@pytest.fixture(scope="module")
+def fine_sphere():
+    return Sphere(10).mesh(0.001)  # 136 872 triangles, within 0.001 of the sphere
+
+
+def off_sphere(m: Mesh, radius: float = 10.0) -> float:
+    """How far a mesh's points and the middles of its triangles are off a sphere at the origin."""
+    p = np.vstack([m.vertices, m.vertices[m.triangles].mean(axis=1)])
+    return float(np.abs(np.linalg.norm(p, axis=1) - radius).max())
+
+
+def test_decimate_by_fraction_and_count_keeps_the_sphere_closed(fine_sphere):
+    tenth = fine_sphere.decimate(0.9)
+    assert len(tenth) == pytest.approx(len(fine_sphere) / 10, rel=0.02)
+    assert tenth.is_closed() and tenth.volume == pytest.approx(fine_sphere.volume, rel=1e-3)
+    assert off_sphere(tenth) < 0.02
+    assert tenth.normals.shape == (len(tenth), 3, 3)
+    assert np.abs(np.linalg.norm(tenth.normals, axis=2) - 1).max() < 1e-5
+    # smooth normals on the sphere (no crease): near the radial direction at the corners (the
+    # kernel's folded slivers are turned back, tilted ones take the normals around them)
+    radial = tenth.vertices[tenth.triangles] / np.linalg.norm(tenth.vertices[tenth.triangles], axis=2, keepdims=True)
+    along = np.einsum("ijk,ijk->ij", tenth.normals, radial)
+    assert (along > 0.99).mean() > 0.99
+    middles = tenth.vertices[tenth.triangles].mean(axis=1)
+    assert (np.einsum("ij,ij->i", tenth.triangle_normals, middles) < 0).sum() <= 10  # (few folds, if any)
+    few = fine_sphere.decimate(triangles=2000)
+    assert few.is_closed() and len(few) == pytest.approx(2000, rel=0.02)
+    same = fine_sphere.decimate(triangles=10**6)
+    assert len(same) == len(fine_sphere) and same is not fine_sphere
+
+
+def test_decimate_to_a_tolerance_measures_the_distance(fine_sphere):
+    from smlibpy.mesh import _deviation
+
+    m = fine_sphere.decimate(tolerance=0.01)
+    assert m.is_closed() and len(m) < len(fine_sphere) / 5
+    assert _deviation(fine_sphere, m) <= 0.01
+    assert off_sphere(m) <= 0.01 + 0.001  # (the fine mesh is within 0.001 of the sphere itself)
+    coarse = fine_sphere.decimate(tolerance=0.05)
+    assert len(coarse) < len(m)
+
+
+def test_decimate_keeps_the_border_of_an_open_mesh_and_checks_its_input():
+    dome = Sphere(10).split(Plane.XY).faces().filter_by(lambda f: f.geom_type == "sphere")[0]
+    m = tessellate(dome, 0.01)
+    rim = m.vertices[m.triangles][np.abs(m.vertices[m.triangles][..., 2]).max(axis=1) < 1e-9]
+    half = m.decimate(0.5)
+    assert len(half) < 0.6 * len(m) and half._open_edge_count() == m._open_edge_count() == 128
+    assert np.abs(half.vertices[:, 2]).min() < 1e-12  # (the rim's points stay where they were)
+    # a tube of long triangles has all its points on its rims: the kernel collapses it to 2
+    side = Cylinder(5, 10).faces().filter_by(lambda f: f.geom_type == "cylinder")[0]
+    with pytest.raises(ModelingError, match="collapsed the mesh to 2 triangles"):
+        tessellate(side, 0.001).decimate(0.5)
+    box = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)
+    assert box.decimate(0.5).is_closed() and box.decimate(0.5).volume == pytest.approx(box.volume, rel=1e-3)
+    with pytest.raises(TypeError, match="one of fraction, triangles or tolerance"):
+        box.decimate()
+    with pytest.raises(TypeError, match="one of"):
+        box.decimate(0.5, triangles=10)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        box.decimate(1.5)
+    with pytest.raises(ValueError, match="4 triangles"):
+        box.decimate(triangles=2)
+
+
+# =============================================================================
+# Holes and repair (M9)
+# =============================================================================
+def test_fill_holes_closes_holes_that_touch_and_keeps_the_triangles(fine_sphere):
+    s = Sphere(10).mesh(0.01)
+    drop = [0, 70, 140, 210, 280]  # (three of them meet at a pole)
+    holed = Mesh(s.vertices, np.delete(s.triangles, drop, axis=0), np.delete(s.normals, drop, axis=0))
+    assert holed._open_edge_count() == 15
+    filled = holed.fill_holes()
+    assert filled.is_closed() and len(filled) == len(s)
+    assert filled.volume == pytest.approx(s.volume, rel=1e-12)  # (each hole was one triangle)
+    assert np.array_equal(filled.triangles[:len(holed)], holed.triangles)
+    assert np.array_equal(filled.normals[:len(holed)], holed.normals)
+    # a large hole that is not flat: the cap above z = 9.5 and a slanted cut
+    middles = fine_sphere.vertices[fine_sphere.triangles].mean(axis=1)
+    keep = middles[:, 2] + 0.3 * middles[:, 0] < 9.0
+    capless = Mesh(fine_sphere.vertices, fine_sphere.triangles[keep])
+    closed = capless.fill_holes()
+    h = 10 - 9 / math.hypot(1, 0.3)  # the cap cut off by the plane z + 0.3 x = 9
+    cap = math.pi * h * h * (30 - h) / 3
+    assert closed.is_closed() and fine_sphere.volume - closed.volume == pytest.approx(cap, rel=0.1)
+
+
+def test_repaired_merges_turns_and_reports():
+    m = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)
+    tri = m.triangles.copy()
+    tri[::5] = tri[::5, ::-1]  # every fifth triangle turned
+    soup_triangles = np.arange(3 * len(tri)).reshape(-1, 3)
+    soup = Mesh(m.vertices[tri].reshape(-1, 3), np.vstack([soup_triangles, soup_triangles[:1], [[0, 0, 1]]]))
+    fixed, report = soup.repaired()
+    assert report == {"merged_vertices": 3 * len(tri) - len(m.vertices), "removed_triangles": 2,
+                      "flipped_triangles": len(tri[::5]), "filled_holes": 0, "open_holes": 0, "open_edges": 0}
+    assert fixed.is_closed() and len(fixed.vertices) == len(m.vertices)
+    assert fixed.volume == pytest.approx(m.volume, rel=1e-12)
+    # a mesh that faces inward all over turns outward; normals turn with their triangles
+    inward = Mesh(m.vertices, m.triangles[:, ::-1], -m.normals[:, ::-1])
+    out, report = inward.repaired()
+    assert report["flipped_triangles"] == len(m) and out.volume == pytest.approx(m.volume, rel=1e-12)
+    # (each corner's normal is the one of its point in the mesh: triangles may start at another corner)
+    expected = {(tuple(sorted(t)), v): n for t, n in zip(m.triangles.tolist(), m.normals) for v, n in zip(t, n)}
+    assert all(np.allclose(n, expected[(tuple(sorted(t)), v)]) for t, ns in zip(out.triangles.tolist(), out.normals)
+               for v, n in zip(t, ns))
+    # a soup with normals: each corner keeps its normal, turned with its triangle
+    soup_n = m.normals.copy()
+    soup_n[::5] = -soup_n[::5, ::-1]  # (the turned triangles' normals face with them: inward)
+    turned = Mesh(m.vertices[tri].reshape(-1, 3), soup_triangles, soup_n)
+    out, report = turned.repaired()
+    assert report["merged_vertices"] > 0 and report["flipped_triangles"] == len(tri[::5])
+    corner = {}
+    for v, n in zip(out.vertices[out.triangles].reshape(-1, 3), out.normals.reshape(-1, 3)):
+        corner.setdefault(tuple(np.round(v, 9)), []).append(n)
+    for v, n in zip(m.vertices[m.triangles].reshape(-1, 3), m.normals.reshape(-1, 3)):
+        assert min(np.linalg.norm(x - n) for x in corner[tuple(np.round(v, 9))]) < 1e-6
+    assert (np.einsum("ijk,ik->ij", out.normals, out.triangle_normals) > 0).all()
+    # a hole and a border that does not close
+    holed, report = Mesh(m.vertices, m.triangles[1:]).repaired()
+    assert holed.is_closed() and report["filled_holes"] == 1 and report["open_edges"] == 0
+
+
+# =============================================================================
+# Faceted parts of meshes (M8)
+# =============================================================================
+def test_to_part_merges_flat_triangles_and_keeps_the_volume(tmp_path):
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh(0.01)
+    faceted = m.to_part()
+    assert isinstance(faceted, Part) and faceted.is_valid()
+    assert faceted.volume == pytest.approx(m.volume, rel=1e-9)
+    assert len(faceted.faces()) == 6 + len(m.section(Plane.XY)[1].edges())  # (6, and a face per facet of the bore)
+    assert len(faceted.faces().filter_by(Z)) == 2  # top and bottom: one face each, with the hole
+    cut = faceted - Box(10, 10, 40).translate(20, 15, 0)
+    assert cut.is_valid() and cut.volume == pytest.approx(faceted.volume - 25 * 20, rel=1e-9)
+    # from an STL file, and as Part.from_mesh
+    export_stl(part, tmp_path / "p.stl", tolerance=0.01)
+    stl = import_stl(tmp_path / "p.stl")
+    again = Part.from_mesh(stl)
+    assert again.is_valid() and again.volume == pytest.approx(stl.volume, rel=1e-9)
+    ball = Part.from_mesh(Sphere(10).mesh(0.3))
+    assert ball.is_valid() and (ball - Box(5, 5, 40)).is_valid()
+
+
+def test_to_part_refuses_open_and_large_meshes():
+    box = Box(10, 10, 10).mesh()
+    with pytest.raises(ModelingError, match=r"open \(3 open edges\).*fill_holes"):
+        Mesh(box.vertices, box.triangles[1:]).to_part()
+    ball = Sphere(10).mesh(0.3)
+    with pytest.raises(ModelingError, match=r"faces, more than max_faces=100.*decimate"):
+        ball.to_part(max_faces=100)
+    assert ball.to_part(max_faces=0).is_valid()
+    with pytest.raises(TypeError, match="takes a Mesh"):
+        Part.from_mesh(Box(1, 1, 1))
+
+
+# =============================================================================
+# A longest edge for tessellation (M10)
+# =============================================================================
+def longest_edge(m: Mesh) -> float:
+    p = m.vertices[m.triangles]
+    return float(np.linalg.norm(p - np.roll(p, 1, axis=1), axis=2).max())
+
+
+def test_max_edge_bounds_the_triangles(tmp_path):
+    plate = Box(100, 100, 2) - Cylinder(5, 10)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        plain, fine = plate.mesh(0.1), plate.mesh(0.1, max_edge=10)
+    assert longest_edge(plain) > 100 and longest_edge(fine) < 13 and len(fine) > 4 * len(plain)
+    assert fine.is_closed() and fine.volume == pytest.approx(plain.volume, rel=1e-9)
+    assert longest_edge(tessellate(plate, 0.1, max_edge=5)) < 7
+    export_stl(plate, tmp_path / "fine.stl", tolerance=0.1, max_edge=10)
+    assert len(import_stl(tmp_path / "fine.stl")) == len(fine)
+    doc, _ = gltf_document(plate, tolerance=0.1, max_edge=10, edges=False)
+    assert doc["accessors"][doc["meshes"][0]["primitives"][0]["indices"]]["count"] == 3 * len(fine)
+    with pytest.raises(ValueError, match="max_edge"):
+        plate.mesh(max_edge=0)
+
+
+def test_max_edge_on_a_twisted_part_warns_where_the_grid_is_off():
+    bar = Box(10, 10, 40).twist(90)
+    with pytest.warns(RuntimeWarning, match=r"twisted face.*0\.13\d* off it, for a tolerance of 0\.01"):
+        coarse = bar.mesh(0.01, max_edge=5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fine = bar.mesh(0.01, max_edge=1)  # (fine enough: no warning)
+        bar.mesh(0.01)
+    assert len(fine) > len(coarse) and longest_edge(fine) < 1.5
+
+
+# =============================================================================
+# Normals in OBJ files, indexed glTF, normals of mesh Booleans (M12)
+# =============================================================================
+def test_obj_names_the_normal_of_each_corner(tmp_path):
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh()
+    export_obj(part, tmp_path / "p.obj")
+    lines = (tmp_path / "p.obj").read_text().splitlines()
+    vn = np.array([[float(x) for x in l.split()[1:]] for l in lines if l.startswith("vn ")])
+    faces = [l.split()[1:] for l in lines if l.startswith("f ")]
+    assert len(faces) == len(m) and all(len(c.split("/")) == 3 for f in faces for c in f)
+    corner = np.array([[int(c.split("//")[1]) - 1 for c in f] for f in faces])
+    assert np.abs(vn[corner] - m.normals).max() < 1e-6
+    assert len(vn) == len(np.unique(np.round(m.normals.reshape(-1, 3), 5), axis=0))  # each normal once
+    assert {tuple(n) for n in vn} >= {(0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (1.0, 0.0, 0.0)}
+    # a mesh without normals: each triangle's own
+    plain = Mesh(m.vertices, m.triangles)
+    export_obj(plain, tmp_path / "q.obj")
+    assert sum(l.startswith("vn ") for l in (tmp_path / "q.obj").read_text().splitlines()) < len(plain)
+
+
+def test_gltf_is_indexed_with_one_entry_per_corner_and_normal(fine_sphere):
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    m = part.mesh()
+    doc, buf = gltf_document(part, edges=False)
+    prim = doc["meshes"][0]["primitives"][0]
+    pos_acc, nrm_acc, idx_acc = (doc["accessors"][prim["attributes"]["POSITION"]],
+                                 doc["accessors"][prim["attributes"]["NORMAL"]], doc["accessors"][prim["indices"]])
+    assert idx_acc["componentType"] == 5123 and idx_acc["type"] == "SCALAR" and idx_acc["count"] == 3 * len(m)
+    assert doc["bufferViews"][idx_acc["bufferView"]]["target"] == 34963
+    pairs = {(int(v), *np.round(n, 6)) for v, n in zip(m.triangles.ravel(), m.normals.reshape(-1, 3))}
+    assert pos_acc["count"] == nrm_acc["count"] == len(pairs) < 3 * len(m)  # (each corner and normal once)
+
+    def read(acc, dtype, width):
+        view = doc["bufferViews"][acc["bufferView"]]
+        return np.frombuffer(buf, dtype, acc["count"] * width, view["byteOffset"]).reshape(-1, width) if width > 1 \
+            else np.frombuffer(buf, dtype, acc["count"], view["byteOffset"])
+
+    pos, nrm, idx = read(pos_acc, np.float32, 3), read(nrm_acc, np.float32, 3), read(idx_acc, np.uint16, 1)
+    assert np.abs(pos[idx].reshape(-1, 3, 3) - m.vertices[m.triangles]).max() < 1e-5
+    assert np.abs(nrm[idx].reshape(-1, 3, 3) - m.normals).max() < 1e-6
+    # more than 65 535 corners: 32-bit indices
+    doc, _ = gltf_document(fine_sphere, edges=False)
+    big = doc["accessors"][doc["meshes"][0]["primitives"][0]["indices"]]
+    assert big["componentType"] == 5125 and big["count"] == 3 * len(fine_sphere)
+
+
+def test_mesh_boolean_results_take_the_normals_of_their_operands():
+    union = Box(16, 16, 16).mesh() + Sphere(10).mesh()
+    p = union.vertices[union.triangles]
+    on_sphere = (np.abs(np.linalg.norm(p, axis=2) - 10) < 1e-9).all(axis=1)
+    radial = p[on_sphere] / 10
+    assert on_sphere.sum() > 1000
+    assert np.abs(np.einsum("ijk,ijk->ij", union.normals[on_sphere], radial) - 1).max() < 1e-6
+    flat = np.abs(np.abs(union.triangle_normals).max(axis=1) - 1) < 1e-12  # on the box's faces
+    assert np.allclose(union.normals[flat], union.triangle_normals[flat][:, None, :], atol=1e-6)
+    # meshes without normals give a result without
+    a, b = Box(16, 16, 16).mesh(), Sphere(10).mesh()
+    assert (Mesh(a.vertices, a.triangles) + b).normals is not None  # (one operand has them)
+    assert (Mesh(a.vertices, a.triangles) + Mesh(b.vertices, b.triangles)).normals is None
+
+
+# =============================================================================
+# SmPyLib's PolyBrep.ray_intersection (M13)
+# =============================================================================
+def test_poly_ray_intersection_returns_its_hits():
+    m = Box(20, 20, 20).mesh()
+    poly = m._kernel_mesh()
+    try:
+        hits = poly.ray_intersection((0.0, 0.0, -50.0), (0.0, 0.0, 1.0), 1e-9, 1e-9)
+        assert len(hits) >= 1 and hits[0]["point"] == pytest.approx((0, 0, -10), abs=1e-9)
+        assert hits[0]["t"] == pytest.approx(40, abs=1e-6) and hits[0]["normal"] == pytest.approx((0, 0, -1))
+        assert type(hits[0]["face"]).__name__ == "PolyFace"
+        assert poly.ray_intersection((50.0, 0.0, 0.0), (0.0, 0.0, 1.0), 1e-9, 1e-9) == []
+    finally:
+        ext.delete_polybrep(poly)
+
+
+def test_decimate_refuses_what_the_kernel_collapses():
+    cone = Cone(10, 0, 20).mesh()  # (long thin triangles on the base)
+    with pytest.raises(ModelingError, match=r"collapsed the mesh to \d+ triangles, where about 63 were asked"):
+        cone.decimate(0.5)
+    assert len(cone.decimate(tolerance=0.5)) <= len(cone)  # (steps the kernel collapses are not taken)

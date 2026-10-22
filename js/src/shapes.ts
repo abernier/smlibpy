@@ -32,7 +32,7 @@ import {
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
-import { _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate, type Mesh } from './mesh.ts'
+import { Mesh, _levels, _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
@@ -227,9 +227,10 @@ export abstract class Shape {
   }
 
   // -- output -------------------------------------------------------------------------------
-  /** Triangulate the shape (see `tessellate`). */
-  mesh(tolerance: number | null = null, angle = 15): Mesh {
-    return tessellate(this, tolerance, angle)
+  /** Triangulate the shape (see `tessellate`; `maxEdge` is the longest edge a triangle may have). */
+  mesh(tolerance: number | null = null, angle = 15, options: { maxEdge?: number | null } = {}): Mesh {
+    _opts('Shape.mesh', options, arguments.length)
+    return tessellate(this, tolerance, angle, options)
   }
 
   /** Show the shape in the viewer (see `show`). */
@@ -3664,6 +3665,41 @@ export class Part extends _Body {
     if (!curves.length) throw new RangeError('the plane does not cut the part')
     const b = kernelCall('section', () => k.create_planar_faces([...curves]))
     return Sketch._wrap(b, { plane: pl })
+  }
+
+  /**
+   * Sections (`section`) across `axis`, `step` apart: the part cut into layers of thickness `step`
+   * from its lowest point along the axis up, each cut in its middle (at `step / 2`, `3 * step / 2`,
+   * ... above the lowest point; the contours of a printer's layers). Each sketch lies in its plane
+   * (`sketch.plane`); layers whose plane misses the part are left out.
+   */
+  slices(step: number, axis: Axis | VectorLike = Z): Sketch[] {
+    const d = _direction(axis, 'slices')
+    if (!(step > 0)) throw new RangeError('slices: the step must be positive')
+    // the part's extent along the axis: the box of the part turned so that the axis is Z
+    const frame = new Plane([0, 0, 0], null, d)
+    const turned = this.moved(frame.location.inverse())
+    let box: BoundBox
+    try {
+      box = turned.bbox()
+    } finally {
+      turned.dispose()
+    }
+    const out: Sketch[] = []
+    for (const level of _levels(box.min.z, box.max.z, step)) {
+      try {
+        out.push(this.section(new Plane(d.mul(level), frame.xDir, d)))
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e // the plane misses the part
+      }
+    }
+    return out
+  }
+
+  /** A faceted part of a closed mesh (see `Mesh.toPart`). */
+  static fromMesh(mesh: Mesh, maxFaces = 5000): Part {
+    if (!(mesh instanceof Mesh)) throw new TypeError(`fromMesh takes a Mesh, not a ${_typeName(mesh)}`)
+    return mesh.toPart(maxFaces)
   }
 
   // -- deformations (the deform module) -----------------------------------------------------

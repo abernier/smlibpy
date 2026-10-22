@@ -26,13 +26,14 @@ const BINARY: Record<string, string> = {
 }
 
 /** How a USD file is written: `mesh` (default true) writes a Mesh prim (`<name>_mesh`) of each body,
- * which is what USD viewers draw, with `tolerance` and `angle` as in `tessellate`; false writes the
+ * which is what USD viewers draw, with `tolerance`, `angle` and `maxEdge` as in `tessellate`; false writes the
  * exact B-reps alone, for usd-brep and Omniverse, which draw BrepArray prims themselves and would
  * show each body twice. */
 export interface UsdExportOptions {
   mesh?: boolean
   tolerance?: number | null
   angle?: number
+  maxEdge?: number | null
 }
 
 function _meshArrays(m: Mesh): [Float64Array, Uint32Array, Float32Array | null] {
@@ -48,7 +49,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
     if (it instanceof Mesh) {
       items.push([null, name, rgb, ..._meshArrays(it)])
     } else if (options.mesh ?? true) {
-      items.push([(it as Any)._brep, name, rgb, ..._meshArrays(tessellate(it, options.tolerance ?? null, options.angle ?? 15))])
+      items.push([(it as Any)._brep, name, rgb, ..._meshArrays(tessellate(it, options.tolerance ?? null, options.angle ?? 15, { maxEdge: options.maxEdge ?? null }))])
     } else {
       items.push([(it as Any)._brep, name, rgb, null, null, null])
     }

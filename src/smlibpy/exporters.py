@@ -93,17 +93,19 @@ def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", 
     write_step(_items(shapes), os.fspath(path), unit=unit, name=name)
 
 
-def _meshes(shapes: Any, tolerance: float | None, angle: float) -> list[tuple[Any, Mesh]]:
+def _meshes(shapes: Any, tolerance: float | None, angle: float,
+            max_edge: float | None = None) -> list[tuple[Any, Mesh]]:
     out = []
     for it in _items(shapes, faces=True):  # a face is meshed itself, facing out of its part
-        out.append((it, it if isinstance(it, Mesh) else tessellate(it, tolerance, angle)))
+        out.append((it, it if isinstance(it, Mesh) else tessellate(it, tolerance, angle, max_edge=max_edge)))
     return out
 
 
 def export_stl(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
-               ascii: bool = False) -> None:
-    """Triangle mesh export (binary unless ``ascii``). ``tolerance`` is the maximum deviation."""
-    meshes = [m for _, m in _meshes(shapes, tolerance, angle)]
+               ascii: bool = False, max_edge: float | None = None) -> None:
+    """Triangle mesh export (binary unless ``ascii``). ``tolerance`` is the maximum deviation,
+    ``max_edge`` the longest edge a triangle may have (see :func:`tessellate`)."""
+    meshes = [m for _, m in _meshes(shapes, tolerance, angle, max_edge)]
     tris = np.concatenate([m.vertices[m.triangles] for m in meshes]).astype(np.float32)
     normals = np.concatenate([m.triangle_normals for m in meshes]).astype(np.float32)
     p = os.fspath(path)
@@ -152,18 +154,54 @@ def _weld(corner_positions: np.ndarray) -> Mesh:
     return Mesh(uniq, inverse.reshape(-1, 3))
 
 
-def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0) -> None:
-    """Wavefront OBJ export (one object per part)."""
+def export_obj(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
+               max_edge: float | None = None) -> None:
+    """Wavefront OBJ export (one object per part), with the mesh's normals: each corner names
+    its normal (``f v//vn``), so edges stay sharp where the faces meet at an angle and curved
+    faces shade smooth. ``max_edge`` is the longest edge a triangle may have."""
     lines = ["# smlibpy"]
     offset = 1
-    for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle)):
+    normal_offset = 1
+    for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle, max_edge)):
         lines.append(f"o {getattr(item, 'name', None) or f'part_{i + 1}'}")
         # (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
         lines.extend(f"v {x:.12g} {y:.12g} {z:.12g}" for x, y, z in m.vertices)
-        lines.extend(f"f {a + offset} {b + offset} {c + offset}" for a, b, c in m.triangles)
+        normals, corner = _corner_normals(m)
+        lines.extend(f"vn {x:.6g} {y:.6g} {z:.6g}" for x, y, z in normals)
+        c = corner.reshape(-1, 3) + normal_offset
+        lines.extend(f"f {a + offset}//{na} {b + offset}//{nb} {cc + offset}//{nc}"
+                     for (a, b, cc), (na, nb, nc) in zip(m.triangles.tolist(), c.tolist()))
         offset += len(m.vertices)
+        normal_offset += len(normals)
     with open(os.fspath(path), "w") as fh:
         fh.write("\n".join(lines) + "\n")
+
+
+def _corner_normals(m: Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """The distinct unit normals of a mesh's corners ((k, 3), float32) and, per triangle corner,
+    which of them it has ((m, 3)): the mesh's normals, or each triangle's own."""
+    if m.normals is not None:
+        n = m.normals.reshape(-1, 3).astype(np.float32)
+    else:
+        n = np.repeat(m.triangle_normals, 3, axis=0).astype(np.float32)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    # (to 7 decimals: normals the kernel computed a hair apart are one; -0 is 0)
+    n = np.round((n / np.where(ln > 0, ln, 1)).astype(np.float32), 7) + np.float32(0.0)
+    if not len(n):
+        return n.reshape(0, 3), np.zeros((0, 3), dtype=np.int64)
+    unique, inverse = np.unique(n, axis=0, return_inverse=True)
+    return unique, inverse.reshape(-1, 3)
+
+
+def _indexed_corners(m: Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A mesh as glTF takes it: one entry per distinct (point, normal) pair of its corners, the
+    points ((k, 3) float64) and normals ((k, 3) float32), and three indices per triangle."""
+    normals, corner = _corner_normals(m)
+    key = np.stack([m.triangles.reshape(-1), corner.reshape(-1)], axis=1)
+    if not len(key):
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int64)
+    pairs, inverse = np.unique(key, axis=0, return_inverse=True)
+    return m.vertices[pairs[:, 0]], normals[pairs[:, 1]], inverse.reshape(-1)
 
 
 # -----------------------------------------------------------------------------
@@ -236,7 +274,8 @@ def _fmt_num(v: float) -> str:
 
 
 def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
-                        edge_color: Any = "#1f2328") -> tuple[dict[str, Any], bytes, str]:
+                        edge_color: Any = "#1f2328",
+                        max_edge: float | None = None) -> tuple[dict[str, Any], bytes, str]:
     """glTF JSON, binary buffer and a one-line summary for any mix of shapes."""
     from .shapes import Edge, Face, Part, Shell, Sketch, Vertex, Wire, _Body
 
@@ -305,19 +344,18 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         else:
             body = item.to_shell() if isinstance(item, Face) else item
             # a face is meshed itself, facing out of its part; its copy gives the edges
-            m = body if isinstance(body, Mesh) else tessellate(item, tolerance, angle)
+            m = body if isinstance(body, Mesh) else tessellate(item, tolerance, angle, max_edge=max_edge)
             color = getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
             color_index += 1
             centre = _centre(m.vertices)
-            pos = (m.vertices[m.triangles].reshape(-1, 3) - centre).astype(np.float32)
-            if m.normals is not None:
-                nrm = m.normals.reshape(-1, 3).astype(np.float32)
-            else:
-                nrm = np.repeat(m.triangle_normals, 3, axis=0).astype(np.float32)
-            ln = np.linalg.norm(nrm, axis=1, keepdims=True)
-            nrm = nrm / np.where(ln > 0, ln, 1)
+            # each distinct (point, normal) pair of the corners once, and the triangles as indices
+            points, nrm, index = _indexed_corners(m)
+            pos = (points - centre).astype(np.float32)
+            wide = len(pos) > 65535
             prims.append({"attributes": {"POSITION": add_accessor(pos, "VEC3", 5126, 34962, True),
                                          "NORMAL": add_accessor(nrm, "VEC3", 5126, 34962)},
+                          "indices": add_accessor(index.astype(np.uint32 if wide else np.uint16), "SCALAR",
+                                                  5125 if wide else 5123, 34963),
                           "material": material(color), "mode": 4})
             if edges and isinstance(body, _Body):
                 lines = _edge_polylines(body)
@@ -374,14 +412,16 @@ def gltf_document(shapes: Any, **kwargs: Any) -> tuple[dict[str, Any], bytes]:
 
 
 def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
-               edges: bool = True, edge_color: Any = "#1f2328") -> None:
+               edges: bool = True, edge_color: Any = "#1f2328", max_edge: float | None = None) -> None:
     """Binary glTF export with colors, names and (optionally) the B-rep edges as lines.
 
     glTF is Y-up and measured in meters; the model is written Z-up in millimeters as
     modeled, under a root node that turns it upright and scales it by 0.001, so viewers
-    show it at its real size.
+    show it at its real size. Triangles are indexed: each distinct corner (a point with its
+    normal) is written once. ``max_edge`` is the longest edge a triangle may have.
     """
-    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color)
+    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                             max_edge=max_edge)
     _z_up(doc, meters=True)
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * (-len(js) % 4)

@@ -30,6 +30,6 @@ def test_the_table_has_the_keyword_only_parameters_in_camel_case():
     assert table["Part.fold"] == (2, ["radius", "kFactor", "fixed", "partial"])
     assert table["Rectangle"] == (2, ["fillet", "chamfer", "rotation", "align"])
     assert table["Polyline"] == (-1, ["close"])  # (*points)
-    assert table["toStl"] == (1, ["tolerance", "angle", "ascii"])  # export_stl without its path
-    assert table["exportGltf"][1] == ["tolerance", "angle", "edges", "edgeColor"]  # (**kwargs passed on)
+    assert table["toStl"] == (1, ["tolerance", "angle", "ascii", "maxEdge"])  # export_stl without its path
+    assert table["exportGltf"][1] == ["tolerance", "angle", "edges", "edgeColor", "maxEdge"]  # (**kwargs passed on)
     assert "Part.offset" not in table  # (no keyword-only parameters: it takes no options)

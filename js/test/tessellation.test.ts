@@ -245,12 +245,20 @@ test('the angle tolerance of the faces decides', () => {
 
 /** The triangles of a glTF document's first primitive, as x, y, z of each corner (moved by its
  * node's translation: positions are relative to the node). */
+/** The corners of the first primitive's triangles (x, y, z each), through its indices, moved by
+ * its node. */
 function gltfTriangles(doc: Any, buf: Uint8Array): Float64Array {
-  const acc = doc.accessors[doc.meshes[0].primitives[0].attributes.POSITION]
+  const prim = doc.meshes[0].primitives[0]
+  const acc = doc.accessors[prim.attributes.POSITION]
   const view = doc.bufferViews[acc.bufferView]
-  const floats = new Float32Array(buf.buffer, buf.byteOffset + view.byteOffset, acc.count * 3)
+  const floats = new Float32Array(buf.slice(view.byteOffset, view.byteOffset + acc.count * 12).buffer)
+  const iacc = doc.accessors[prim.indices]
+  const iview = doc.bufferViews[iacc.bufferView]
+  const wide = iacc.componentType === 5125
+  const bytes = buf.slice(iview.byteOffset, iview.byteOffset + iacc.count * (wide ? 4 : 2)).buffer
+  const index = wide ? new Uint32Array(bytes) : new Uint16Array(bytes)
   const move = doc.nodes[0].translation ?? [0, 0, 0]
-  return Float64Array.from(floats, (x, i) => x + move[i % 3])
+  return Float64Array.from({ length: index.length * 3 }, (_, i) => floats[index[Math.floor(i / 3)] * 3 + (i % 3)] + move[i % 3])
 }
 
 // biome-ignore lint: glTF documents are plain JSON
@@ -497,8 +505,24 @@ test('mesh Booleans on any mesh', () => {
   const sb = _fromStl(_toStl(b))
   const diff = sa.cut(sb)
   assert.ok(diff.isClosed())
-  // (the kernel gives the result no normals: they come from the triangles, not all (0, 0, 1))
+  // (the kernel gives the result no normals: meshes without normals give a result without; with
+  // them, each triangle takes those of the operand's triangle it lies on, turned in a cut)
   assert.equal(diff.normals, null)
+  const cut = a.mesh().cut(b.mesh())
+  const tn = cut.triangleNormals
+  let walls = 0
+  let worst = 0
+  for (let i = 0; i < cut.length; i++) {
+    const corners = [0, 1, 2].map((c) => cut.triangles[3 * i + c])
+    if (!corners.every((vi) => Math.hypot(cut.vertices[vi * 3], cut.vertices[vi * 3 + 1]) < 6.01) || !(Math.abs(tn[3 * i + 2]) < 1e-9)) continue
+    walls++
+    corners.forEach((vi, c) => {
+      const r = Math.hypot(cut.vertices[vi * 3], cut.vertices[vi * 3 + 1])
+      const n = (cut.normals as Float32Array).subarray(9 * i + 3 * c, 9 * i + 3 * c + 2)
+      worst = Math.max(worst, Math.abs((-n[0] * cut.vertices[vi * 3] - n[1] * cut.vertices[vi * 3 + 1]) / r - 1)) // (inward)
+    })
+  }
+  assert.ok(walls > 20 && worst < 1e-6, `${walls} ${worst}`)
   approx(diff.volume, sa.volume - sa.intersect(sb).volume, 1e-6)
   approx(diff.volume, a.cut(b).volume, 1e-2) // (the cylinder's facets cut its corners)
   const tet = new _Mesh([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])

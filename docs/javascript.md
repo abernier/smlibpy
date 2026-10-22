@@ -345,7 +345,9 @@ export abstract class Shape {
     abstract bbox(): BoundBox;
     abstract center(): Vector;
     distanceTo(other: VectorLike | Shape): number;
-    mesh(tolerance?: number | null, angle?: number): Mesh;
+    mesh(tolerance?: number | null, angle?: number, options?: {
+        maxEdge?: number | null;
+    }): Mesh;
     show(options?: Record<string, unknown>): unknown;
     export(path: string, options?: Record<string, unknown>): void;
     toString(): string;
@@ -545,6 +547,8 @@ export class Part extends _Body {
     split(plane: Plane | Face, keep: 'both'): [Part, Part];
     split(plane: Plane | Face): Part;
     section(plane?: Plane | Face): Sketch;
+    slices(step: number, axis?: Axis | VectorLike): Sketch[];
+    static fromMesh(mesh: Mesh, maxFaces?: number): Part;
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
     bend(angle: number, options?: BendOptions): Part;
@@ -974,6 +978,8 @@ export class Mesh {
     get volume(): number;
     bbox(): BoundBox;
     center(): Vector;
+    get centroid(): Vector;
+    massProperties(density?: number): MassProperties;
     moved(location: Location): Mesh;
     translate(x?: number | VectorLike, y?: number, z?: number): Mesh;
     rotate(axis?: Axis, angle?: number): Mesh;
@@ -982,13 +988,24 @@ export class Mesh {
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
     raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[];
     isClosed(): boolean;
+    section(plane?: Plane | Face): ShapeList<Wire>;
+    slices(step: number, axis?: Axis | VectorLike): ShapeList<Wire>[];
+    decimate(fraction?: number | null, options?: {
+        triangles?: number | null;
+        tolerance?: number | null;
+    }): Mesh;
+    fillHoles(): Mesh;
+    repaired(): [Mesh, Record<string, number>];
+    toPart(maxFaces?: number): Part;
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
     intersect(other: Mesh): Mesh;
     export(path: string, options?: Record<string, unknown>): void;
     toString(): string;
 }
-export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number): Mesh;
+export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number, options?: {
+    maxEdge?: number | null;
+}): Mesh;
 ```
 
 ### Files
@@ -1004,6 +1021,7 @@ export function toStep(shapes: unknown, options?: StepExportOptions): string;
 export interface MeshOptions {
     tolerance?: number | null;
     angle?: number;
+    maxEdge?: number | null;
 }
 export function toStl(shapes: unknown, options?: MeshOptions & {
     ascii?: boolean;
@@ -1122,6 +1140,7 @@ export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;
     angle?: number;
+    maxEdge?: number | null;
 }
 export function toUsd(shapes: unknown, options?: UsdExportOptions): string;
 export function exportUsd(shapes: unknown, path: string, options?: UsdExportOptions): void;

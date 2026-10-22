@@ -41,3 +41,7 @@ void bind_poly_arrays(py::module_ m);
 void bind_rays(py::module_ m);
 // Drawing views with hidden lines (hidden_lines.cpp).
 void bind_hidden_lines(py::module_ m);
+// Triangle meshes as arrays: nearest points, corner normals, decimation, repair, faceted bodies (mesh_tools.cpp).
+void bind_mesh_tools(py::module_ m);
+// PolyBrep.ray_intersection with its hit polygon tied to the mesh (mesh_tools.cpp; SmPyLib's raised for every hit).
+void bind_poly_ray_intersection(py::module_ m);

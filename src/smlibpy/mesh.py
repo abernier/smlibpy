@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numbers
+import warnings
 import zlib
 from typing import TYPE_CHECKING, Any
 
@@ -12,7 +13,7 @@ from ._kernel import ModelingError, PolyHandle, ext, k, kernel_call
 from .geometry import Axis, BoundBox, Hit, Location, Plane, Vector, VectorLike, Z, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .shapes import Face, Shape
+    from .shapes import Face, MassProperties, Part, Shape, ShapeList, Wire
 
 __all__ = ["Mesh", "tessellate"]
 
@@ -31,6 +32,10 @@ class Mesh:
     still holds in the kernel at once. The arrays can be changed in place
     (``m.vertices += (10, 0, 0)``); :meth:`translate`, :meth:`rotate`, :meth:`mirror`,
     :meth:`scale` and :meth:`moved` return moved copies, as for shapes.
+
+    Meshes of scans and STL files: :meth:`section` and :meth:`slices` cut them, :meth:`decimate`
+    thins them out, :meth:`fill_holes` and :meth:`repaired` close them, :meth:`mass_properties`
+    measures what they enclose and :meth:`to_part` makes a faceted part of them.
     """
 
     __slots__ = ("vertices", "triangles", "normals", "_poly", "_key")
@@ -67,10 +72,55 @@ class Mesh:
         return float(np.einsum("ij,ij->i", v[:, 0], np.cross(v[:, 1], v[:, 2])).sum() / 6.0)
 
     def bbox(self) -> BoundBox:
+        if not len(self.vertices):
+            raise ValueError("an empty mesh has no bounding box")
         return BoundBox(self.vertices.min(axis=0), self.vertices.max(axis=0))
 
     def center(self) -> Vector:
+        """The middle of the bounding box (:attr:`centroid` is the center of mass)."""
         return self.bbox().center
+
+    @property
+    def centroid(self) -> Vector:
+        """The center of mass of the volume a closed mesh encloses (uniform density); see
+        :meth:`mass_properties`."""
+        return self.mass_properties().center
+
+    def mass_properties(self, density: float = 1.0) -> MassProperties:
+        """Mass, center of mass and inertia tensor of the volume a closed mesh encloses, for a
+        uniform ``density`` (as :meth:`Part.mass_properties`, a :class:`MassProperties`).
+
+        Exact for the triangles: each spans a tetrahedron with a point, and their integrals add
+        up (the divergence theorem). The mesh must be closed and face outward (``ModelingError``
+        otherwise: close it with :meth:`fill_holes` or :meth:`repaired`); an empty mesh raises
+        ``ValueError``.
+        """
+        from .shapes import MassProperties
+
+        if not density > 0:
+            raise ValueError("mass_properties: the density must be positive")
+        if not len(self.triangles):
+            raise ValueError("an empty mesh has no mass properties")
+        if not self.is_closed():
+            raise ModelingError(f"mass_properties: the mesh is open ({self._open_edge_count()} open edges), so it "
+                                f"encloses no volume; close it first: mesh.fill_holes() or mesh.repaired()")
+        ref = (self.vertices.min(axis=0) + self.vertices.max(axis=0)) / 2  # (a point near the mesh: fewer digits lost)
+        v = self.vertices[self.triangles] - ref
+        a, b, c = v[:, 0], v[:, 1], v[:, 2]
+        det = np.einsum("ij,ij->i", a, np.cross(b, c))  # six times the volume of each tetrahedron
+        volume = float(det.sum() / 6.0)
+        if not volume > 0:
+            raise ModelingError(f"mass_properties: the mesh encloses a volume of {volume:.6g}: its triangles face "
+                                f"inward (mesh.repaired() turns them outward)")
+        s = a + b + c
+        first = (det[:, None] * s).sum(axis=0) / 24.0
+        # the integral of x x^T over a tetrahedron (0, a, b, c): its volume / 20 * (a a^T + b b^T + c c^T + s s^T)
+        second = np.einsum("i,ij,ik->jk", det / 120.0, a, a) + np.einsum("i,ij,ik->jk", det / 120.0, b, b) \
+            + np.einsum("i,ij,ik->jk", det / 120.0, c, c) + np.einsum("i,ij,ik->jk", det / 120.0, s, s)
+        d = first / volume  # the centroid relative to ref
+        i_ref = np.trace(second) * np.eye(3) - second
+        i_c = i_ref - volume * (d.dot(d) * np.eye(3) - np.outer(d, d))
+        return MassProperties(density * volume, volume, self.area, Vector(*(ref + d)), density * i_c, density)
 
     def __len__(self) -> int:
         return len(self.triangles)
@@ -145,6 +195,7 @@ class Mesh:
             r = k.poly_boolean(a, b, op)
             ext.triangulate_poly(r)  # (its polygons with holes: the mesh arrays take only outer loops)
         result = Mesh._from_poly(r, normals=False)  # (the kernel gives a Boolean's result no normals)
+        result.normals = _transferred_normals(result, (self, other))
         # The kernel's mesh Booleans often return open or wrong meshes (faces that should get
         # a hole stay whole). Check what can be checked: closed, and a volume the operation
         # can give.
@@ -233,6 +284,221 @@ class Mesh:
     def is_closed(self) -> bool:
         """True if every edge of the mesh is shared by exactly two triangles (a watertight mesh)."""
         return self._open_edge_count() == 0
+
+    # -- sections ---------------------------------------------------------------
+    def section(self, plane: Plane | Face = Plane.XY) -> ShapeList[Wire]:
+        """Where the plane cuts the mesh: polylines (wires of straight edges) through the points
+        where its triangles cross the plane, chained into loops, the longest first.
+
+        Of a closed mesh every loop is closed, outer loops counterclockwise seen from the plane's
+        normal and holes clockwise (as the faces of :meth:`Part.section`); an open mesh can give
+        open polylines too. ``make_face(loop)`` makes a face of a closed loop. Points where the
+        cut runs straight on are left out. A plane through a flat part of the mesh (the top face
+        of a box's mesh) cuts it just beside that, on the side where the cut encloses more. Empty
+        where the plane misses the mesh.
+        """
+        from .shapes import ShapeList
+
+        pl = _as_section_plane(plane)
+        return ShapeList(_section_wires(self.vertices, self.triangles, pl))
+
+    def slices(self, step: float, axis: Axis | VectorLike = Z) -> list[ShapeList[Wire]]:
+        """Sections (:meth:`section`) across ``axis``, ``step`` apart: the mesh cut into layers of
+        thickness ``step`` from its lowest point along the axis up, each cut in its middle (at
+        ``step / 2``, ``3 * step / 2``, ... above the lowest point; the contours of a printer's
+        layers). Layers whose plane cuts nothing are left out."""
+        from .shapes import ShapeList
+
+        d = _direction(axis, "slices")
+        if not step > 0:
+            raise ValueError("slices: the step must be positive")
+        if not len(self.triangles):
+            return []
+        along = self.vertices @ np.array(d.to_tuple())
+        out = []
+        for level in _levels(float(along.min()), float(along.max()), float(step)):
+            wires = _section_wires(self.vertices, self.triangles, Plane(d * level, z_dir=d))
+            if wires:
+                out.append(ShapeList(wires))
+        return out
+
+    # -- decimation and repair --------------------------------------------------
+    def decimate(self, fraction: float | None = None, *, triangles: int | None = None,
+                 tolerance: float | None = None) -> Mesh:
+        """A mesh with fewer triangles, as near to this one as the kernel's quadric decimation
+        (SmPolyDecimate) keeps it: it collapses the edges whose removal changes the shape least
+        first, keeps a closed mesh closed and keeps the border of an open one.
+
+        Give one of:
+
+        - ``fraction``: the share of the triangles to remove (``0.9`` leaves a tenth).
+        - ``triangles``: about how many triangles to leave.
+        - ``tolerance``: how far the result may be from this mesh at most. The mesh is decimated
+          step by step while the distance stays within it (measured at the points of both
+          meshes and the middles of their triangles), so this takes a few decimations (seconds
+          for 100 000 triangles).
+
+        The result has normals of its own: at each corner the average of the triangles around
+        it, except across edges sharper than 30 degrees. ``ModelingError`` if a closed mesh
+        comes back open, or an open mesh with another border (a mesh whose points all lie on its
+        border, such as a tube of long triangles, cannot keep it), and where the kernel collapses
+        the mesh far below the count asked (it does with the long thin triangles of a coarse
+        mesh of a cone: mesh such a part with a larger tolerance instead). The kernel orders equal
+        choices by memory, so the count can differ by a few triangles from run to run.
+        """
+        given = [x is not None for x in (fraction, triangles, tolerance)]
+        if sum(given) != 1:
+            raise TypeError("decimate takes one of fraction, triangles or tolerance")
+        n = len(self.triangles)
+        if fraction is not None:
+            if not 0 < fraction < 1:
+                raise ValueError("decimate: fraction is the share of the triangles to remove, between 0 and 1")
+            return self._decimated(float(fraction))
+        if triangles is not None:
+            if not triangles >= 4:
+                raise ValueError("decimate: a mesh needs 4 triangles or more")
+            if triangles >= n:
+                return Mesh(self.vertices.copy(), self.triangles.copy(),
+                            None if self.normals is None else self.normals.copy())
+            return self._decimated(1.0 - triangles / n)
+        if not tolerance > 0:  # type: ignore[operator]
+            raise ValueError("decimate: the tolerance must be positive")
+        best = Mesh(self.vertices.copy(), self.triangles.copy(), None if self.normals is None else self.normals.copy())
+        step = 0.5
+        for _ in range(40):
+            if step < 1 / 32 or len(best.triangles) <= 8:
+                break
+            try:
+                trial = best._decimated(step, original=self)
+            except ModelingError:
+                step /= 2
+                continue
+            if len(trial.triangles) >= len(best.triangles) or _deviation(self, trial) > tolerance:
+                step /= 2
+                continue
+            best = trial
+        return best
+
+    def _decimated(self, fraction: float, original: Mesh | None = None) -> Mesh:
+        """One run of the kernel's decimation, ``fraction`` of the points removed; checked
+        against ``original`` (default: this mesh): closed where it was."""
+        if not len(self.triangles):
+            raise ValueError("decimate: the mesh has no triangles")
+        with kernel_call("decimate", "is the mesh made of triangles with an area?"):
+            r = ext.decimate_triangles(self.vertices, self.triangles, fraction, 30.0, True)
+        v, t = np.asarray(r["vertices"], dtype=np.float64), np.asarray(r["triangles"], dtype=np.int64)
+        result = Mesh(v, t, ext.crease_normals(v, t, 30.0).reshape(-1, 3, 3) if len(t) else None)
+        asked = len(self) * (1.0 - fraction)
+        if len(result) < 0.5 * asked:
+            raise ModelingError(f"decimate: the kernel's decimation collapsed the mesh to {len(result)} triangles, "
+                                f"where about {int(asked + 0.5)} were asked (it does so with meshes of long thin "
+                                f"triangles, such as the flat faces of a coarse mesh of a part); mesh the part with a "
+                                f"larger tolerance instead, or decimate a finer mesh")
+        source = self if original is None else original
+        border, left = source._open_edge_count(), result._open_edge_count()
+        if not border and left:
+            raise ModelingError(f"decimate: the decimation left the mesh open ({left} open edges); remove a smaller "
+                                f"share")
+        if border and left != border:
+            raise ModelingError(f"decimate: the decimation changed the border of the open mesh ({border} open edges, "
+                                f"then {left}): the kernel keeps a border only where the mesh has points inside it")
+        return result
+
+    def fill_holes(self) -> Mesh:
+        """A copy with every hole closed: each border of edges that only one triangle has, which
+        closes on itself, is filled with triangles (the kernel's triangulation of the polygon, also
+        of one that is not flat). The triangles of the mesh stay as they are; the new ones face as
+        the triangles beside them do. See :meth:`repaired`, which also merges points that lie on
+        each other and turns triangles that face the wrong way first."""
+        r = self._repair(clean=False)
+        tris = np.vstack([self.triangles, r["triangles"][r["sources"] < 0]])
+        return self._repaired_mesh(r, tris, keep_all=True)
+
+    def repaired(self) -> tuple[Mesh, dict[str, int]]:
+        """A repaired copy and what was done: points that lie on each other (to 1e-9 of the
+        largest coordinate) are merged, triangles left without an area and repeated ones are
+        left out, triangles are turned to face the way their neighbours face (a closed piece
+        outward), and holes are filled (as :meth:`fill_holes`).
+
+        Returns ``(mesh, report)``; the report counts ``merged_vertices``, ``removed_triangles``,
+        ``flipped_triangles``, ``filled_holes``, ``open_holes`` (borders that do not close on
+        themselves, left open) and ``open_edges`` (edges of the result not shared by two
+        triangles: 0 for a closed mesh).
+        """
+        r = self._repair(clean=True)
+        mesh = self._repaired_mesh(r, r["triangles"], keep_all=False)
+        report = {key: int(r[key]) for key in ("merged_vertices", "removed_triangles", "flipped_triangles",
+                                                "filled_holes", "open_holes", "open_edges")}
+        return mesh, report
+
+    def _repair(self, clean: bool) -> dict[str, Any]:
+        with kernel_call("repair"):
+            r = ext.repair_triangles(self.vertices, self.triangles, clean, True)
+        r["triangles"] = np.asarray(r["triangles"], dtype=np.int64).reshape(-1, 3)
+        r["sources"] = np.asarray(r["sources"], dtype=np.int64)
+        return r
+
+    def _repaired_mesh(self, r: dict[str, Any], tris: np.ndarray, keep_all: bool) -> Mesh:
+        """The mesh of a repair: this mesh's points and the new ones; the normals of triangles
+        that come from this mesh (turned with them), flat ones for new triangles."""
+        vertices = np.vstack([self.vertices, np.asarray(r["new_vertices"], dtype=np.float64).reshape(-1, 3)])
+        sources = r["sources"]
+        if keep_all:
+            sources = np.concatenate([np.arange(len(self.triangles)), sources[sources < 0]])
+        normals = None
+        if self.normals is not None:
+            flat = _flat_normals(vertices, tris)
+            normals = np.repeat(flat[:, None, :], 3, axis=1).astype(np.float32)
+            old = sources >= 0
+            if old.any():
+                src = sources[old]
+                # (a triangle turned round has its last two corners swapped: its normals turn too)
+                same = np.einsum("ij,ij->i", flat[old], _flat_normals(self.vertices, self.triangles[src])) >= 0
+                n = self.normals[src].copy()
+                n[~same] = -n[~same][:, [0, 2, 1]]
+                normals[old] = n
+        if not keep_all:  # (only the points the triangles use)
+            used, local = np.unique(tris, return_inverse=True)
+            return Mesh(vertices[used], local.reshape(-1, 3), normals)
+        return Mesh(vertices, tris, normals)
+
+    # -- parts ------------------------------------------------------------------
+    def to_part(self, max_faces: int = 5000) -> Part:
+        """A faceted part of a closed mesh: a planar face for each triangle, where neighbouring
+        triangles that lie in one plane (the faces of a CAD part's mesh) make one face. Exact
+        Booleans with other parts, sections and STEP files work on it; its faces stay flat (no
+        fillets of curved faces).
+
+        Booleans get slow as faces add up (a sphere of 14 080 triangles took 40 s to cut by a
+        box), so a mesh that would give more than ``max_faces`` faces raises ``ModelingError``:
+        decimate it first (``mesh.decimate(triangles=2000).to_part()``), or give a larger
+        ``max_faces`` (``0``: no limit). An open mesh raises ``ModelingError`` too (close it with
+        :meth:`fill_holes` or :meth:`repaired`), and so does one whose part is not a valid solid
+        or does not enclose the mesh's volume.
+        """
+        from .shapes import Part
+
+        if not isinstance(max_faces, numbers.Integral) or max_faces < 0:
+            raise ValueError("to_part: max_faces must be a whole number, 0 for no limit")
+        if not len(self.triangles):
+            raise ValueError("to_part: the mesh has no triangles")
+        if not self.is_closed():
+            raise ModelingError(f"to_part: the mesh is open ({self._open_edge_count()} open edges), and a part "
+                                f"needs a closed one; close it first: mesh.fill_holes() or mesh.repaired()")
+        with kernel_call("to_part", "is the mesh closed, without triangles through each other?"):
+            r = ext.brep_from_triangles(self.vertices, self.triangles, True, int(max_faces))
+        if r["brep"] is None:
+            raise ModelingError(f"to_part: the part would get {r['faces']} faces, more than max_faces={max_faces}, "
+                                f"and Booleans on it would be slow; decimate the mesh first "
+                                f"(mesh.decimate(triangles={max(max_faces // 2, 4)})) or give a larger max_faces")
+        part = Part._wrap(r["brep"])
+        if not part.is_valid():
+            raise ModelingError("to_part: the faceted part is not a valid solid (do triangles cross each other, or "
+                                "face inward?); mesh.repaired() turns them outward")
+        v, mv = part.volume, self.volume
+        if abs(v - mv) > 1e-6 * abs(mv):
+            raise ModelingError(f"to_part: the faceted part has a volume of {v:.10g}, the mesh {mv:.10g}")
+        return part
 
     def __add__(self, other: Mesh) -> Mesh:
         return self._bool(other, k.PolyBooleanOp.UNION, "union")
@@ -332,6 +598,233 @@ def _ray_triangles(o: Vector, d: Vector, vertices: np.ndarray, triangles: np.nda
     return t[hit], np.nonzero(hit)[0]
 
 
+def _flat_normals(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """The unit normal of each triangle ((m, 3); zero for one without an area)."""
+    v = np.asarray(vertices, dtype=np.float64)[np.asarray(triangles, dtype=np.int64).reshape(-1, 3)]
+    n = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    return n / np.where(ln > 0, ln, 1.0)
+
+
+def _transferred_normals(result: Mesh, operands: tuple[Mesh, ...]) -> np.ndarray | None:
+    """Corner normals for the result of a mesh Boolean, which the kernel gives none: each of its
+    triangles lies on an operand (the one nearest to its middle, and of two as near the one whose
+    triangle there lies flattest on it), and each corner takes the normals of the operand's
+    triangle under a point just inside the result's triangle from it, where it lies on that
+    triangle (turned where that triangle faces the other way: the inside of a cut). The kernel
+    merges the triangles of a flat facet and splits the merged polygon anew, so a result triangle
+    can span two operand triangles. None where the operands have no normals."""
+    if not len(result.triangles) or all(m.normals is None for m in operands):
+        return None
+    tri = result.vertices[result.triangles]
+    mid = tri.mean(axis=1)
+    rn = result.triangle_normals
+    size = max(float(np.linalg.norm(result.vertices.max(axis=0) - result.vertices.min(axis=0))), 1e-300)
+    eps = 1e-9 * size
+    best_d = np.full(len(mid), np.inf)
+    best_dot = np.zeros(len(mid))
+    best_op = np.full(len(mid), -1)
+    for k, m in enumerate(operands):
+        if not len(m.triangles):
+            continue
+        near = ext.mesh_nearest_points(m.vertices, m.triangles, mid)
+        t, d = np.asarray(near["triangles"], dtype=np.int64), np.asarray(near["distances"], dtype=np.float64)
+        ok = t >= 0
+        dot = np.zeros(len(mid))
+        dot[ok] = np.abs(np.einsum("ij,ij->i", m.triangle_normals[t[ok]], rn[ok]))
+        better = ok & ((d < best_d - eps) | ((d <= best_d + eps) & (dot > best_dot)))
+        best_d[better], best_dot[better], best_op[better] = d[better], dot[better], k
+    out = np.repeat(rn[:, None, :], 3, axis=1)
+    for k, m in enumerate(operands):
+        sel = np.flatnonzero((best_op == k) & (best_d <= 1e-6 * size))
+        if not len(sel):
+            continue
+        corners = tri[sel]  # (s, 3, 3)
+        inside = corners + (mid[sel][:, None] - corners) * 1e-3
+        near = ext.mesh_nearest_points(m.vertices, m.triangles, inside.reshape(-1, 3))
+        src = np.asarray(near["triangles"], dtype=np.int64)
+        good = src >= 0
+        src = np.where(good, src, 0)
+        p = m.vertices[m.triangles[src]]  # (3s, 3, 3)
+        if m.normals is not None:
+            nn = m.normals[src].astype(np.float64)
+        else:
+            nn = np.repeat(m.triangle_normals[src][:, None, :], 3, axis=1)
+        # the barycentric coordinates of each corner on its operand's triangle
+        x = corners.reshape(-1, 3)
+        e0, e1 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+        d00, d01, d11 = (e0 * e0).sum(-1), (e0 * e1).sum(-1), (e1 * e1).sum(-1)
+        den = d00 * d11 - d01 * d01
+        den = np.where(den != 0, den, 1.0)
+        w = x - p[:, 0]
+        d20, d21 = (w * e0).sum(-1), (w * e1).sum(-1)
+        bv = (d11 * d20 - d01 * d21) / den
+        bw = (d00 * d21 - d01 * d20) / den
+        b = np.clip(np.stack([1.0 - bv - bw, bv, bw], axis=-1), 0.0, None)
+        b /= np.where((sb := b.sum(-1, keepdims=True)) > 0, sb, 1.0)
+        n = np.einsum("cj,cjk->ck", b, nn)
+        n /= np.where((ln := np.linalg.norm(n, axis=-1, keepdims=True)) > 0, ln, 1.0)
+        turned = np.einsum("ij,ij->i", m.triangle_normals[src], np.repeat(rn[sel], 3, axis=0)) < 0
+        n[turned] = -n[turned]
+        n[~good] = np.repeat(rn[sel], 3, axis=0)[~good]
+        out[sel] = n.reshape(-1, 3, 3)
+    return out.astype(np.float32)
+
+
+def _deviation(a: Mesh, b: Mesh) -> float:
+    """How far two meshes are apart: the largest distance of the points of each, and of the
+    middles of its triangles, from the other."""
+    if not len(a.triangles) or not len(b.triangles):
+        raise ValueError("decimate: a mesh without triangles")
+    pa = np.vstack([a.vertices, a.vertices[a.triangles].mean(axis=1)])
+    pb = np.vstack([b.vertices, b.vertices[b.triangles].mean(axis=1)])
+    d1 = np.asarray(ext.mesh_nearest_points(b.vertices, b.triangles, pa)["distances"])
+    d2 = np.asarray(ext.mesh_nearest_points(a.vertices, a.triangles, pb)["distances"])
+    return float(max(d1.max(), d2.max()))
+
+
+def _as_section_plane(plane: Any) -> Plane:
+    from .shapes import _as_plane
+
+    return _as_plane(plane)
+
+
+def _levels(lo: float, hi: float, step: float) -> list[float]:
+    """The middles of layers of thickness ``step`` from ``lo`` up, while below ``hi``."""
+    if (hi - lo) / step > 1e6:
+        raise ValueError("slices: the step gives more than a million layers")
+    out = []
+    i = 0
+    while (level := lo + (i + 0.5) * step) < hi:
+        out.append(level)
+        i += 1
+    return out
+
+
+def _section_wires(vertices: np.ndarray, triangles: np.ndarray, pl: Plane) -> list[Wire]:
+    """The loops where a plane cuts a mesh (see :meth:`Mesh.section`), as wires, longest first."""
+    from .curves import Polyline
+
+    v = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    t = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if not len(t):
+        return []
+    # points that lie on each other are one (each triangle of an STL file has its own)
+    size = max(float(np.abs(v).max()), 1e-300)
+    _, first, inverse = np.unique(np.round(v / size, 9), axis=0, return_index=True, return_inverse=True)
+    pts = v[first]
+    tri = inverse.reshape(-1)[t]
+    n, o = np.array(pl.z_dir.to_tuple()), np.array(pl.origin.to_tuple())
+    d = (pts - o) @ n
+    diagonal = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+    d[np.abs(d) <= 1e-10 * max(diagonal, float(np.abs(o).max()), 1e-300)] = 0.0
+    on = d == 0
+    # a point on the plane counts as above it (the plane just below), or as below it
+    best: list[np.ndarray] = []
+    best_area = -1.0
+    for above in (True, False) if on.any() else (True,):
+        loops = _crossing_loops(pts, tri, d, (d > 0) | (on & above))
+        area = sum(abs(_loop_area(p, pl)) for p, closed in loops if closed)
+        if area > best_area:
+            best, best_area = loops, area
+    loops = sorted(best, key=lambda item: -_loop_length(*item))
+    out = []
+    for p, closed in loops:
+        p = _straightened(p, closed, 1e-12 * max(diagonal, 1e-300))
+        if len(p) >= (3 if closed else 2):
+            out.append(Polyline(*[tuple(x) for x in p], close=closed))
+    return out
+
+
+def _crossing_loops(pts: np.ndarray, tri: np.ndarray, d: np.ndarray, pos: np.ndarray) -> list[tuple[np.ndarray, bool]]:
+    """The points where the triangles cross from ``pos`` (above the plane, by the signed
+    distance ``d``) to below, chained into loops: for each, its points and whether it closes.
+    Each triangle gives a piece that runs with the cut's region on its left (seen from the
+    plane's normal), so the loops of a closed mesh run counterclockwise around its region."""
+    p = pos[tri]
+    count = p.sum(axis=1)
+    sel = np.flatnonzero((count == 1) | (count == 2))
+    if not len(sel):
+        return []
+    odd = np.where(count[sel] == 1, np.argmax(p[sel], axis=1), np.argmax(~p[sel], axis=1))
+    abc = np.take_along_axis(tri[sel], (odd[:, None] + np.arange(3)) % 3, axis=1)  # the odd corner first
+    up = (count[sel] == 1)[:, None]
+    # a piece runs from the crossing of the edge a-b to that of c-a where a is above, else back
+    start = np.where(up, abc[:, [0, 1]], abc[:, [2, 0]])
+    end = np.where(up, abc[:, [2, 0]], abc[:, [0, 1]])
+    nv = np.int64(len(pts))
+    start_key = start.min(axis=1) * nv + start.max(axis=1)
+    end_key = end.min(axis=1) * nv + end.max(axis=1)
+    keys, where = np.unique(np.concatenate([start_key, end_key]), return_inverse=True)
+    lo, hi = keys // nv, keys % nv
+    s = (d[lo] / (d[lo] - d[hi]))[:, None]
+    points = pts[lo] + (pts[hi] - pts[lo]) * s  # (the same for both triangles of an edge)
+    a, b = where[:len(sel)], where[len(sel):]
+    outgoing: dict[int, list[int]] = {}
+    for i, k in enumerate(a.tolist()):
+        outgoing.setdefault(k, []).append(i)
+    ends = set(b.tolist())
+    used = np.zeros(len(sel), dtype=bool)
+    loops: list[tuple[np.ndarray, bool]] = []
+    b_list = b.tolist()
+
+    def walk(first: int) -> tuple[list[int], bool]:
+        chain = [int(a[first])]
+        i = first
+        while True:
+            used[i] = True
+            k = b_list[i]
+            if k == chain[0]:
+                return chain, True
+            chain.append(k)
+            nxt = [j for j in outgoing.get(k, ()) if not used[j]]
+            if not nxt:
+                return chain, False
+            i = nxt[0]
+
+    # open chains from where no piece ends, then the loops
+    for i in range(len(sel)):
+        if not used[i] and int(a[i]) not in ends:
+            chain, closed = walk(i)
+            loops.append((points[chain], closed))
+    for i in range(len(sel)):
+        if not used[i]:
+            chain, closed = walk(i)
+            loops.append((points[chain], closed))
+    return loops
+
+
+def _straightened(p: np.ndarray, closed: bool, tol: float) -> np.ndarray:
+    """A polyline's points without those where it runs straight on, or that repeat the last."""
+    keep = [p[0]]
+    for x in p[1:]:
+        if np.linalg.norm(x - keep[-1]) > tol:
+            keep.append(x)
+    if closed and len(keep) > 1 and np.linalg.norm(keep[0] - keep[-1]) <= tol:
+        keep.pop()
+    q = np.array(keep)
+    if len(q) < 3:
+        return q
+    u, w = q - np.roll(q, 1, axis=0), np.roll(q, -1, axis=0) - q
+    turn = np.linalg.norm(np.cross(u, w), axis=1)
+    on = np.einsum("ij,ij->i", u, w) > 0
+    straight = (turn <= 1e-9 * np.linalg.norm(u, axis=1) * np.linalg.norm(w, axis=1)) & on
+    if not closed:
+        straight[0] = straight[-1] = False
+    return q[~straight]
+
+
+def _loop_area(p: np.ndarray, pl: Plane) -> float:
+    x, y = (p - np.array(pl.origin.to_tuple())) @ np.array(pl.x_dir.to_tuple()), \
+        (p - np.array(pl.origin.to_tuple())) @ np.array(pl.y_dir.to_tuple())
+    return float(0.5 * (x * np.roll(y, -1) - np.roll(x, -1) * y).sum())
+
+
+def _loop_length(p: np.ndarray, closed: bool) -> float:
+    q = np.vstack([p, p[:1]]) if closed else p
+    return float(np.linalg.norm(np.diff(q, axis=0), axis=1).sum())
+
+
 def _triangulate(faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """VTK-style polygon list -> triangles (fan) and, per triangle corner, the corner index."""
     tris: list[tuple[int, int, int]] = []
@@ -355,7 +848,8 @@ def _triangulate(faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.array(tris, dtype=np.int64).reshape(-1, 3), np.array(corners, dtype=np.int64).reshape(-1, 3)
 
 
-def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15.0) -> Mesh:
+def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15.0, *,
+               max_edge: float | None = None) -> Mesh:
     """Triangulate a shape.
 
     Args:
@@ -364,6 +858,11 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
         tolerance: Maximum distance between mesh and exact surface. Default: 0.1 % of the
             bounding box diagonal.
         angle: Maximum angle (degrees) between neighbouring triangle normals on curved faces.
+        max_edge: The longest edge a triangle may have (default: no limit): evenly sized
+            triangles for simulation meshes, deformation or sampling, where the tolerance alone
+            leaves a flat face two long triangles. A plate 100 long at tolerance 0.1 gets
+            triangles 100 long; ``max_edge=10`` keeps them under 13 (the kernel splits by
+            about that length).
 
     The kernel cuts each face into a grid whose lines it places by the curves along the
     face's borders. A face that is straight in one direction and twisted along it (the sides
@@ -374,18 +873,25 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     between its lines). On spheres, tori, cones and cylinders, edges whose middle is off the
     face by more than the tolerance are split onto it (the grid's slivers near the poles of a
     sphere). Other bodies get the grid's triangles.
+
+    With ``max_edge`` every body gets the grid (the halving cannot take a longest edge): a body
+    with a twisted face whose grid triangles are then off by more than twice the tolerance gets a
+    ``RuntimeWarning`` saying how far (a smaller ``max_edge`` brings them nearer).
     """
-    return _tessellate(shape, tolerance, angle, False)
+    return _tessellate(shape, tolerance, angle, False, max_edge)
 
 
-def _tessellate(shape: "Shape", tolerance: float | None, angle: float, keep: bool) -> Mesh:
+def _tessellate(shape: "Shape", tolerance: float | None, angle: float, keep: bool,
+                max_edge: float | None = None) -> Mesh:
     """:func:`tessellate`; with ``keep``, the mesh keeps the kernel's mesh of the tessellation
     (for the faces of its triangles and the curvature at its corners), and the caller disposes
     it."""
     from .shapes import Face, ShapeList, _Body
 
+    if max_edge is not None and not (isinstance(max_edge, numbers.Real) and max_edge > 0):
+        raise ValueError("tessellate: max_edge must be a positive length")
     if isinstance(shape, ShapeList):
-        meshes = [tessellate(s, tolerance, angle) for s in shape]
+        meshes = [tessellate(s, tolerance, angle, max_edge=max_edge) for s in shape]
         return merge(meshes)
     turned = False
     if isinstance(shape, Face):
@@ -403,13 +909,33 @@ def _tessellate(shape: "Shape", tolerance: float | None, angle: float, keep: boo
     with kernel_call("tessellate"):
         # the kernel's own tessellate (k.tessellate) always uses the grid
         poly = ext.tessellate(shape._brep, chord_height_tolerance=float(tolerance),
-                              curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle))
+                              curve_angle_tolerance_deg=float(angle), surface_angle_tolerance_deg=float(angle),
+                              max_edge_length=float(max_edge or 0.0))
+    if max_edge is not None:
+        _grid_note(shape, float(tolerance), float(angle), float(max_edge))
     mesh = Mesh._from_poly(poly, keep=keep, brep=shape._brep)
     if turned:  # (a kernel's mesh kept with it stays as it is)
         mesh.triangles = mesh.triangles[:, [0, 2, 1]]
         if mesh.normals is not None:
             mesh.normals = -mesh.normals[:, [0, 2, 1]]
     return mesh
+
+
+def _grid_note(body: Any, tolerance: float, angle: float, max_edge: float) -> None:
+    """Warns where ``max_edge`` kept the grid on a body that the tessellation would halve (a
+    twisted face, see :func:`tessellate`) and the grid's triangles are off that face by more than
+    twice the tolerance."""
+    with kernel_call("tessellate"):
+        if ext.tessellation_algorithm(body._brep, chord_height_tolerance=tolerance,
+                                      surface_angle_tolerance_deg=angle) != "halving":
+            return
+        worst = max((ext.grid_deviation(f._f, chord_height_tolerance=tolerance, surface_angle_tolerance_deg=angle,
+                                        max_edge_length=max_edge) for f in body.faces()), default=0.0)
+    if worst > 2 * tolerance:
+        warnings.warn(f"tessellate: with max_edge the kernel's grid meshes every face, and a twisted face of this "
+                      f"body (straight one way and twisted along it: the side of a twisted bar, a ruled loft) gets "
+                      f"triangles about {worst:.3g} off it, for a tolerance of {tolerance:.3g}; give a smaller "
+                      f"max_edge, or leave it out", RuntimeWarning, stacklevel=4)
 
 
 def face_meshes(shape: "Shape", tolerance: float | None = None, angle: float = 15.0) -> list[Mesh]:

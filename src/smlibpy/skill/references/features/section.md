@@ -47,4 +47,5 @@ except ValueError as e:
 ```
 
 ## Related
-`split` (keep a side as a solid), `Part.outline`, `Part.silhouette`, `extrude`.
+`slices` (sections a step apart), `Mesh.section` (`Mesh-section`), `split` (keep a side as a
+solid), `Part.outline`, `Part.silhouette`, `extrude`.

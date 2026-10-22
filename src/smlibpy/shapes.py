@@ -167,11 +167,12 @@ class Shape:
         raise NotImplementedError
 
     # -- output ---------------------------------------------------------------
-    def mesh(self, tolerance: float | None = None, angle: float = 15.0) -> "Mesh":
-        """Triangulate the shape (see :func:`smlibpy.mesh.tessellate`)."""
+    def mesh(self, tolerance: float | None = None, angle: float = 15.0, *, max_edge: float | None = None) -> "Mesh":
+        """Triangulate the shape (see :func:`smlibpy.mesh.tessellate`; ``max_edge`` is the longest
+        edge a triangle may have)."""
         from .mesh import tessellate
 
-        return tessellate(self, tolerance=tolerance, angle=angle)
+        return tessellate(self, tolerance=tolerance, angle=angle, max_edge=max_edge)
 
     def show(self, **kwargs: Any) -> Any:
         """Show the shape in the browser viewer (see :func:`smlibpy.show`)."""
@@ -3220,6 +3221,37 @@ class Part(_Body):
         with kernel_call("section"):
             b = k.create_planar_faces(list(curves))
         return Sketch._wrap(b, pl)
+
+    def slices(self, step: float, axis: Axis | VectorLike = Z) -> list[Sketch]:
+        """Sections (:meth:`section`) across ``axis``, ``step`` apart: the part cut into layers of
+        thickness ``step`` from its lowest point along the axis up, each cut in its middle (at
+        ``step / 2``, ``3 * step / 2``, ... above the lowest point; the contours of a printer's
+        layers). Each sketch lies in its plane (``sketch.plane``); layers whose plane misses the
+        part are left out."""
+        from .mesh import _levels
+
+        d = _direction(axis, "slices")
+        if not step > 0:
+            raise ValueError("slices: the step must be positive")
+        # the part's extent along the axis: the box of the part turned so that the axis is Z
+        frame = Plane((0, 0, 0), z_dir=d)
+        box = self.moved(frame.location.inverse()).bbox()
+        out = []
+        for level in _levels(float(box.min.z), float(box.max.z), float(step)):
+            try:
+                out.append(self.section(Plane(d * level, x_dir=frame.x_dir, z_dir=d)))
+            except ValueError:  # the plane misses the part
+                continue
+        return out
+
+    @classmethod
+    def from_mesh(cls, mesh: "Mesh", max_faces: int = 5000) -> "Part":
+        """A faceted part of a closed mesh (see :meth:`Mesh.to_part`)."""
+        from .mesh import Mesh
+
+        if not isinstance(mesh, Mesh):
+            raise TypeError(f"from_mesh takes a Mesh, not a {type(mesh).__name__}")
+        return mesh.to_part(max_faces)
 
     # -- deformations (smlibpy.deform) ---------------------------------------
     def twist(self, angle: float, **kwargs: Any) -> Part:

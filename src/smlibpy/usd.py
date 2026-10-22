@@ -29,7 +29,8 @@ _BINARY = {
 }
 
 
-def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float) -> list[tuple[Any, ...]]:
+def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float,
+               max_edge: float | None = None) -> list[tuple[Any, ...]]:
     from .exporters import _DEFAULT_COLORS, _items
     from .mesh import Mesh, tessellate
 
@@ -44,7 +45,7 @@ def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float) -
             continue
         keep.append(it)
         if mesh:
-            items.append((it._brep, name, rgb, *_mesh_arrays(tessellate(it, tolerance, angle))))
+            items.append((it._brep, name, rgb, *_mesh_arrays(tessellate(it, tolerance, angle, max_edge=max_edge))))
         else:
             items.append((it._brep, name, rgb, None, None, None))
     return items, keep  # type: ignore[return-value]
@@ -56,7 +57,7 @@ def _mesh_arrays(m: Any) -> tuple[list[float], list[int], list[float] | None]:
 
 
 def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, tolerance: float | None = None,
-               angle: float = 15.0) -> None:
+               angle: float = 15.0, max_edge: float | None = None) -> None:
     """Write parts, sheets and meshes to a USD file (``.usda``, or ``.usd`` as text).
 
     Each body becomes a ``BrepArray`` prim under ``/World``, its exact B-rep with its name and
@@ -65,15 +66,15 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
 
     Args:
         shapes: Parts, sheets, faces and meshes (or lists of them). Meshes become ``Mesh`` prims.
-        mesh: Write the ``Mesh`` prim of each body; ``tolerance`` and ``angle`` as in
-            :func:`tessellate`. ``False`` writes the exact B-reps alone, for usd-brep and Omniverse,
+        mesh: Write the ``Mesh`` prim of each body; ``tolerance``, ``angle`` and ``max_edge`` as
+            in :func:`tessellate`. ``False`` writes the exact B-reps alone, for usd-brep and Omniverse,
             which draw ``BrepArray`` prims themselves and would show each body twice.
     """
     p = os.fspath(path)
     ext_ = os.path.splitext(p)[1].lower()
     if ext_ in _BINARY:
         raise ValueError(f"export_usd writes text USD (.usda, .usd), not {ext_}: {_BINARY[ext_]}")
-    items, keep = _usd_items(shapes, mesh, tolerance, angle)
+    items, keep = _usd_items(shapes, mesh, tolerance, angle, max_edge)
     if not items:
         raise ValueError("export_usd: nothing to write")
     with kernel_call("export_usd"):

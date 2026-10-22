@@ -4,13 +4,13 @@ Writes shapes as a glTF 2.0 scene: triangle meshes with colors and names, plus t
 as lines. Use it for web viewers, presentations and other tools that show meshes.
 
 ## Signatures
-`export_glb(shapes, path, *, tolerance=None, angle=15.0, edges=True, edge_color="#1f2328")`: one
-binary `.glb` file.
+`export_glb(shapes, path, *, tolerance=None, angle=15.0, edges=True, edge_color="#1f2328", max_edge=None)`:
+one binary `.glb` file.
 `export_gltf(shapes, path, **kwargs)`: one `.gltf` JSON file with the buffer embedded as a
 base64 data URI (1.3 times larger). It takes the same keyword arguments.
 
 - `shapes`: parts, shells, sketches, faces, meshes, edges, wires, vertices, or lists of them.
-- `tolerance`, `angle`: as in `tessellate`.
+- `tolerance`, `angle`, `max_edge`: as in `tessellate`.
 - `edges`: draw the edges of faces as a line primitive. Seams of round faces are left out.
 
 ## Returns
@@ -36,8 +36,11 @@ part 1 km from the origin keeps its shape (float32 positions there are off by 0.
 ## Gotchas
 - **Units:** the scene is in meters (root node scale 0.001). Do not scale the shapes yourself:
   `export_glb([s.scale(0.001) for s in shapes], path)` makes a 60 mm part 0.06 mm.
-- Triangles are not indexed (3 vertices each, about 72 bytes per triangle). A sphere of r = 10
-  takes 259 kB at the default tolerance, 1 MB at 0.01 and 9.6 MB at 0.001.
+- Triangles are indexed: each distinct corner (a point with its normal) is written once, about
+  a third of the corners (a box with a bore: 152 for 144 triangles), with 16-bit indices, 32-bit
+  above 65 535 corners. A sphere of r = 10 takes 66 kB at the default tolerance, 271 kB at 0.01
+  and 3.3 MB at 0.001 (before 0.5.0: 259 kB, 1 MB, 9.6 MB, unindexed). Readers that take the
+  `POSITION` accessor as triangle corners must go through `indices`.
 - An empty list writes a valid, empty scene without an error.
 - smlibpy cannot read glTF back (`load("x.glb")` raises `ValueError: unknown file type
   '.glb'; ...`).

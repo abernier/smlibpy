@@ -37,8 +37,8 @@ module.init()
  */
 export type Signature = readonly (string | readonly [string, unknown])[]
 
-// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp, bind_drawing.cpp
-// and bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
+// smlibpy's own functions (src/cpp, bound in js/cpp/bind_smlibpy.cpp, mesh.cpp, bind_drawing.cpp,
+// bind_mesh_tools.cpp and bind_topology.cpp), in the order the bindings take them; the kernel's are in signatures.ts.
 const OWN: Record<string, Signature> = {
   'ext.curve_data': ['curve', ['nurbs', true]],
   'ext.surface_data': ['surface', ['nurbs', true]],
@@ -106,6 +106,11 @@ const OWN: Record<string, Signature> = {
   'ext.mesh_first_hits': ['vertices', 'triangles', 'origins', 'directions'],
   'ext.body_first_hits': ['brep', 'vertices', 'triangles', 'owners', 'origins', 'directions', 'tolerance', 'mesh_tolerance'],
   'ext.hidden_lines': ['brep', 'plane_point', 'plane_normal', ['seams', false], ['smooth_edges', false]],
+  'ext.mesh_nearest_points': ['vertices', 'triangles', 'points'],
+  'ext.crease_normals': ['vertices', 'triangles', 'crease_angle'],
+  'ext.decimate_triangles': ['vertices', 'triangles', 'fraction', ['feature_angle', 30.0], ['keep_boundary', true]],
+  'ext.repair_triangles': ['vertices', 'triangles', ['clean', true], ['fill', true]],
+  'ext.brep_from_triangles': ['vertices', 'triangles', ['merge_coplanar', true], ['max_faces', 0]],
   'sheetmetal.bend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length'],
   'sheetmetal.unbend': ['brep', 'angle', 'radius', 'k_factor', 'thickness', 'axis_point', 'axis', 'direction', 'length',
     ['anchor', null]],

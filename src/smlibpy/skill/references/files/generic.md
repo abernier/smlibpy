@@ -12,7 +12,7 @@ and text. The other formats are triangle meshes or pictures.
 | SVG `.svg` | `export_svg` | no | 2D lines: lines and circular arcs exact, other curves as polylines | 2D only (views of `drawing_views`, edges, sketches) | no | black lines, hidden ones dashed | mm (prints at true size) |
 | STL `.stl` | `export_stl` | `import_stl` → `Mesh` | triangles, float32 | merged into one mesh | no | no | none |
 | glTF `.glb` `.gltf` | `export_glb`, `export_gltf` | no | triangles + edge lines | one node per shape | yes | yes | meters (a root node scales the mm by 0.001) |
-| OBJ `.obj` | `export_obj` | no | triangles, no normals | one object per shape | yes | no | none |
+| OBJ `.obj` | `export_obj` | no | triangles with normals | one object per shape | yes | no | none |
 | PNG | `render` | `diff_images` compares two | a picture | | | yes | |
 | HTML | `show` | | an interactive viewer | | | yes | |
 

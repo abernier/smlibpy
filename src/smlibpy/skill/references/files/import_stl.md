@@ -19,10 +19,16 @@ starts with `solid` is read correctly.
 - Move it: `m.translate(...)`, `rotate`, `mirror`, `scale`, `moved` (copies), or the arrays in
   place (`m.vertices += ...`).
 - Mesh Booleans with other closed meshes: `m - Sphere(5).mesh()` (see `Mesh.md`).
+- Measure what it encloses: `m.mass_properties(density)`, `m.centroid` (`mass_properties`).
+- Cut it: `m.section(plane)` (wires), `m.slices(step)` (`Mesh-section`, `slices`).
+- Thin it out: `m.decimate(0.9)`, `m.decimate(tolerance=0.01)` (`decimate`).
+- Close its holes: `m.fill_holes()`, `m.repaired()` (`repaired`).
+- Make a faceted part of it, for exact Booleans and STEP: `m.to_part()` (`to_part`).
 - Export it again: `export_stl`, `export_glb`, `export_obj`, `render`, `show` all accept a `Mesh`.
 
 ## What you cannot do
-- It is not a `Part`. There are no faces, no fillets, no exact Booleans, no `export_step`.
+- It is not a `Part`. There are no faces, no fillets, no exact Booleans, no `export_step`, until
+  `to_part()` makes a faceted part of it.
 - `name` and `color` do not exist on a `Mesh`.
 
 ## Gotchas

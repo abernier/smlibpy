@@ -1,6 +1,8 @@
 // tests/test_lane_M.py: meshes, drawings and rays (kernel plan, lane M): normals at the apex of a
 // cone, colors and positions in glTF, mesh points in double precision, drawing views with hidden
-// lines, contours, and many rays at once.
+// lines, contours, and many rays at once; mass properties, sections, decimation, repair and faceted
+// parts of meshes, a longest edge for tessellation, normals in OBJ files, indexed glTF and normals
+// of mesh Booleans.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -154,9 +156,12 @@ test('glTF positions are relative to their node; OBJ writes twelve digits', () =
   const acc = doc.accessors[doc.meshes[node.mesh].primitives[0].attributes.POSITION]
   const view = doc.bufferViews[acc.bufferView]
   const pos = new Float32Array(buf.slice(view.byteOffset, view.byteOffset + acc.count * 12).buffer)
+  const iacc = doc.accessors[doc.meshes[node.mesh].primitives[0].indices]
+  const iview = doc.bufferViews[iacc.bufferView]
+  const index = new Uint16Array(buf.slice(iview.byteOffset, iview.byteOffset + iacc.count * 2).buffer)
   let worst = 0
-  for (let c = 0; c < acc.count; c++) {
-    for (let j = 0; j < 3; j++) worst = Math.max(worst, Math.abs(pos[c * 3 + j] + node.translation[j] - mesh.vertices[mesh.triangles[c] * 3 + j]))
+  for (let c = 0; c < iacc.count; c++) {
+    for (let j = 0; j < 3; j++) worst = Math.max(worst, Math.abs(pos[index[c] * 3 + j] + node.translation[j] - mesh.vertices[mesh.triangles[c] * 3 + j]))
   }
   assert.ok(worst < 1e-5, `${worst}`)
   ;[5.15, 5.35, 5.05].forEach((x, i) => approx(acc.max[i], x, 0, 1e-5))
@@ -353,4 +358,250 @@ test('Part.raycastMany from inside, from a face and near the rims of holes; face
   assert.equal(cylinder._h.meshes.get('faces'), meshes) // made once per body
   cylinder.raycastMany([[3, 0, 50], [0, 0, 50]], Z.neg()).forEach((h) => approx(h!.distance, 40))
   assert.ok(cylinder._h.meshes.has('rays'))
+})
+
+// ============================================================================ batch 2: M6-M13
+import { Mesh as _Mesh, ModelingError, Part as _Part, fromStl, makeFace, setWarningHandler, tessellate, toStl } from '../src/index.ts'
+import { _deviation } from '../src/mesh.ts'
+
+const holed = () => Box(40, 30, 20).cut(Cylinder(6, 40))
+const radialDots = (m: Mesh): number[] => {
+  const out: number[] = []
+  const n = m.normals as Float32Array
+  for (let i = 0; i < m.triangles.length; i++) {
+    const v = m.triangles[i] * 3
+    const r = Math.hypot(m.vertices[v], m.vertices[v + 1], m.vertices[v + 2])
+    out.push((n[3 * i] * m.vertices[v] + n[3 * i + 1] * m.vertices[v + 1] + n[3 * i + 2] * m.vertices[v + 2]) / r)
+  }
+  return out
+}
+const longestEdge = (m: Mesh): number => {
+  let worst = 0
+  const t = m.triangles
+  const v = m.vertices
+  for (let i = 0; i < t.length; i += 3) {
+    for (let c = 0; c < 3; c++) {
+      const a = t[i + c] * 3
+      const b = t[i + ((c + 1) % 3)] * 3
+      worst = Math.max(worst, Math.hypot(v[a] - v[b], v[a + 1] - v[b + 1], v[a + 2] - v[b + 2]))
+    }
+  }
+  return worst
+}
+const without = (m: Mesh, drop: number[]): number[] => {
+  const out: number[] = []
+  for (let i = 0; i < m.length; i++) if (!drop.includes(i)) out.push(m.triangles[3 * i], m.triangles[3 * i + 1], m.triangles[3 * i + 2])
+  return out
+}
+
+test('Mesh.massProperties and centroid; empty, open and inward meshes say why (M11)', () => {
+  const m = Box(10, 20, 30).translate(5, 6, 7).mesh()
+  const mp = m.massProperties(2)
+  approx(mp.volume, 6000, 1e-12)
+  approx(mp.mass, 12000, 1e-12)
+  ;[5, 6, 7].forEach((x, i) => approx(m.centroid.toArray()[i], x, 0, 1e-12))
+  const expected = [(12000 / 12) * (20 ** 2 + 30 ** 2), (12000 / 12) * (10 ** 2 + 30 ** 2), (12000 / 12) * (10 ** 2 + 20 ** 2)]
+  expected.forEach((x, i) => approx(mp.inertia[i][i], x, 1e-9))
+  approx(mp.inertia[0][1], 0, 0, 1e-6)
+  const part = holed()
+  const fine = part.mesh(0.01)
+  const exact = part.massProperties()
+  approx(fine.massProperties().volume, exact.volume, 2e-4)
+  approx(fine.massProperties().inertia[2][2], exact.inertia[2][2], 2e-4)
+  const empty = Box(5, 5, 5).mesh().cut(Box(10, 10, 10).mesh())
+  assert.equal(empty.length, 0)
+  assert.throws(() => empty.bbox(), { name: 'RangeError', message: 'an empty mesh has no bounding box' })
+  assert.throws(() => empty.massProperties(), /no mass properties/)
+  const box = Box(10, 10, 10).mesh()
+  assert.throws(() => new _Mesh(box.vertices, box.triangles.slice(3)).massProperties(), (e: Any) => e instanceof ModelingError && /open \(3 open edges\).*fillHoles/.test(e.message))
+  const inward = Uint32Array.from(box.triangles)
+  for (let i = 0; i < inward.length; i += 3) [inward[i + 1], inward[i + 2]] = [inward[i + 2], inward[i + 1]]
+  assert.throws(() => new _Mesh(box.vertices, inward).centroid, /face inward/)
+})
+
+test('Mesh.section chains loops; slices of meshes and parts (M7)', () => {
+  const part = holed()
+  const m = part.mesh(0.01)
+  const loops = m.section(Plane.XY)
+  assert.equal(loops.length, 2)
+  assert.ok(loops.every((w) => w.isClosed))
+  assert.equal(loops[0].edges().length, 4)
+  approx(loops[0].length, 140, 0, 1e-9)
+  approx(loops[1].length, 2 * Math.PI * 6, 1e-3)
+  approx(makeFace(loops[0]).cut(makeFace(loops[1])).area, part.section(Plane.XY).area, 1e-3)
+  for (const z of [10, -10]) {
+    const on = m.section(Plane.XY.offset(z))
+    assert.deepEqual(on.map((w) => w.length.toFixed(6)), loops.map((w) => w.length.toFixed(6)))
+  }
+  assert.equal(m.section(Plane.XY.offset(30)).length, 0)
+  const layers = m.slices(5)
+  assert.deepEqual(layers.map((l) => l.length), [2, 2, 2, 2])
+  layers.forEach((l, i) => approx(l[0].edges()[0].start.z, [-7.5, -2.5, 2.5, 7.5][i], 0, 1e-9))
+  const across = part.slices(7, X)
+  across.forEach((s, i) => approx(s.plane.origin.x, [-16.5, -9.5, -2.5, 4.5, 11.5, 18.5][i], 0, 1e-9))
+  approx(across[0].area, 600, 1e-9)
+  part.slices(5).forEach((s) => approx(s.area, 1200 - Math.PI * 36, 1e-9))
+})
+
+test('Mesh.decimate by fraction, count and tolerance (M6)', () => {
+  const s = Sphere(10).mesh(0.01)
+  const tenth = s.decimate(0.9)
+  approx(tenth.length, s.length / 10, 0.03)
+  assert.ok(tenth.isClosed())
+  approx(tenth.volume, s.volume, 5e-3)
+  const dots = radialDots(tenth)
+  assert.ok(dots.filter((d) => d > 0.95).length / dots.length > 0.99) // (smooth: near the radial direction)
+  const few = s.decimate(null, { triangles: 1000 })
+  assert.ok(few.isClosed())
+  approx(few.length, 1000, 0.03)
+  const close = s.decimate(null, { tolerance: 0.05 })
+  assert.ok(close.isClosed() && close.length < s.length / 3)
+  assert.ok(_deviation(s, close) <= 0.05)
+  const cone = Cone(10, 0, 20).mesh() // (long thin triangles on the base)
+  assert.throws(() => cone.decimate(0.5), (e: Any) => e instanceof ModelingError && /collapsed the mesh to \d+ triangles, where about 63 were asked/.test(e.message))
+  assert.throws(() => s.decimate(), { name: 'TypeError', message: /one of fraction, triangles or tolerance/ })
+  assert.throws(() => s.decimate(1.5), /between 0 and 1/)
+  assert.throws(() => s.decimate(0.5, { triangle: 3 } as Any), /Mesh\.decimate\(\) got an unexpected option 'triangle'/)
+})
+
+test('Mesh.fillHoles and repaired (M9)', () => {
+  const s = Sphere(10).mesh(0.01)
+  const drop = [0, 70, 140, 210, 280] // (three of them meet at a pole)
+  const hole = new _Mesh(s.vertices, without(s, drop))
+  assert.equal(hole._openEdgeCount(), 15)
+  const filled = hole.fillHoles()
+  assert.ok(filled.isClosed())
+  assert.equal(filled.length, s.length)
+  approx(filled.volume, s.volume, 1e-12)
+  const m = holed().mesh(0.01)
+  // a soup of triangles, every fifth turned, one repeated and one without an area
+  const soupV: number[] = []
+  const soupT: number[] = []
+  for (let i = 0; i < m.length; i++) {
+    const order = i % 5 === 0 ? [2, 1, 0] : [0, 1, 2]
+    for (const c of order) soupV.push(...m.vertices.subarray(m.triangles[3 * i + c] * 3, m.triangles[3 * i + c] * 3 + 3))
+    soupT.push(3 * i, 3 * i + 1, 3 * i + 2)
+  }
+  soupT.push(0, 1, 2, 0, 0, 1)
+  const [fixed, report] = new _Mesh(soupV, soupT).repaired()
+  assert.deepEqual(report, {
+    mergedVertices: 3 * m.length - m.vertices.length / 3,
+    removedTriangles: 2,
+    flippedTriangles: Math.ceil(m.length / 5),
+    filledHoles: 0,
+    openHoles: 0,
+    openEdges: 0,
+  })
+  assert.ok(fixed.isClosed())
+  approx(fixed.volume, m.volume, 1e-12)
+  // with normals: each corner keeps its own, turned with its triangle
+  const soupN: number[] = []
+  const nm = m.normals as Float32Array
+  for (let i = 0; i < m.length; i++) {
+    const order = i % 5 === 0 ? [2, 1, 0] : [0, 1, 2]
+    for (const c of order) for (let j = 0; j < 3; j++) soupN.push((i % 5 === 0 ? -1 : 1) * nm[9 * i + 3 * c + j])
+  }
+  const [withNormals] = new _Mesh(soupV, soupT.slice(0, 3 * m.length), soupN).repaired()
+  const tn = withNormals.triangleNormals
+  const wn = withNormals.normals as Float32Array
+  for (let i = 0; i < withNormals.length; i++) {
+    for (let c = 0; c < 3; c++) assert.ok(wn[9 * i + 3 * c] * tn[3 * i] + wn[9 * i + 3 * c + 1] * tn[3 * i + 1] + wn[9 * i + 3 * c + 2] * tn[3 * i + 2] > 0)
+  }
+  const [closed, r2] = new _Mesh(m.vertices, m.triangles.slice(3)).repaired()
+  assert.ok(closed.isClosed() && r2.filledHoles === 1)
+})
+
+test('Mesh.toPart and Part.fromMesh (M8)', () => {
+  const part = holed()
+  const m = part.mesh(0.01)
+  const faceted = m.toPart()
+  assert.ok(faceted instanceof _Part && faceted.isValid())
+  approx(faceted.volume, m.volume, 1e-9)
+  assert.equal(faceted.faces().length, 6 + m.section(Plane.XY)[1].edges().length)
+  const cut = faceted.cut(Box(10, 10, 40).translate(20, 15, 0))
+  assert.ok(cut.isValid())
+  approx(cut.volume, faceted.volume - 25 * 20, 1e-9)
+  const stl = fromStl(toStl(part, { tolerance: 0.01 }))
+  const again = _Part.fromMesh(stl)
+  assert.ok(again.isValid())
+  approx(again.volume, stl.volume, 1e-9)
+  const ball = Sphere(10).mesh(0.3)
+  assert.throws(() => ball.toPart(100), (e: Any) => e instanceof ModelingError && /faces, more than maxFaces=100.*decimate/.test(e.message))
+  assert.ok(ball.toPart(0).isValid())
+  const box = Box(10, 10, 10).mesh()
+  assert.throws(() => new _Mesh(box.vertices, box.triangles.slice(3)).toPart(), /open \(3 open edges\)/)
+  assert.throws(() => _Part.fromMesh(Box(1, 1, 1) as Any), { name: 'TypeError', message: /takes a Mesh/ })
+})
+
+test('maxEdge bounds the triangles; a twisted part warns (M10)', () => {
+  const said: string[] = []
+  setWarningHandler((msg) => said.push(msg))
+  try {
+    const plate = Box(100, 100, 2).cut(Cylinder(5, 10))
+    const plain = plate.mesh(0.1)
+    const fine = plate.mesh(0.1, 15, { maxEdge: 10 })
+    assert.ok(longestEdge(plain) > 100 && longestEdge(fine) < 13 && fine.length > 4 * plain.length)
+    assert.ok(fine.isClosed())
+    approx(fine.volume, plain.volume, 1e-9)
+    assert.ok(longestEdge(tessellate(plate, 0.1, 15, { maxEdge: 5 })) < 7)
+    assert.equal(fromStl(toStl(plate, { tolerance: 0.1, maxEdge: 10 })).length, fine.length)
+    assert.equal(said.length, 0)
+    const bar = Box(10, 10, 40).twist(90)
+    const coarse = bar.mesh(0.01, 15, { maxEdge: 5 })
+    assert.equal(said.length, 1)
+    assert.match(said[0], /twisted face.*0\.13\d* off it, for a tolerance of 0\.01/)
+    const close = bar.mesh(0.01, 15, { maxEdge: 1 })
+    assert.equal(said.length, 1)
+    assert.ok(close.length > coarse.length)
+    assert.throws(() => plate.mesh(null, 15, { maxEdge: 0 }), /maxEdge/)
+  } finally {
+    setWarningHandler((msg) => console.warn(msg))
+  }
+})
+
+test('OBJ names the normal of each corner; glTF is indexed; Boolean results take normals (M12)', () => {
+  const part = holed()
+  const m = part.mesh()
+  const lines = toObj(part).split('\n')
+  const vn = lines.filter((l) => l.startsWith('vn ')).map((l) => l.split(' ').slice(1).map(Number))
+  const faces = lines.filter((l) => l.startsWith('f ')).map((l) => l.split(' ').slice(1))
+  assert.equal(faces.length, m.length)
+  let worst = 0
+  faces.forEach((f, i) =>
+    f.forEach((c, j) => {
+      const n = vn[Number(c.split('//')[1]) - 1]
+      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(n[k] - (m.normals as Float32Array)[9 * i + 3 * j + k]))
+    }),
+  )
+  assert.ok(worst < 1e-6, `${worst}`)
+  const [doc, buf] = gltfDocument(part, { edges: false })
+  const prim = doc.meshes[0].primitives[0]
+  const idx = doc.accessors[prim.indices]
+  assert.equal(idx.componentType, 5123)
+  assert.equal(idx.count, 3 * m.length)
+  const pos = doc.accessors[prim.attributes.POSITION]
+  assert.ok(pos.count < 3 * m.length)
+  const view = doc.bufferViews[pos.bufferView]
+  const p = new Float32Array(buf.slice(view.byteOffset, view.byteOffset + pos.count * 12).buffer)
+  const iview = doc.bufferViews[idx.bufferView]
+  const index = new Uint16Array(buf.slice(iview.byteOffset, iview.byteOffset + idx.count * 2).buffer)
+  worst = 0
+  for (let c = 0; c < idx.count; c++) for (let j = 0; j < 3; j++) worst = Math.max(worst, Math.abs(p[index[c] * 3 + j] - m.vertices[m.triangles[c] * 3 + j]))
+  assert.ok(worst < 1e-5)
+  const big = gltfDocument(Sphere(10).mesh(0.001), { edges: false })[0]
+  assert.equal(big.accessors[big.meshes[0].primitives[0].indices].componentType, 5125)
+  // the normals of a mesh Boolean's result: radial on the sphere's part of a union
+  const union = Box(16, 16, 16).mesh().fuse(Sphere(10).mesh())
+  let onSphere = 0
+  worst = 0
+  for (let i = 0; i < union.length; i++) {
+    const corners = [0, 1, 2].map((c) => union.triangles[3 * i + c] * 3)
+    if (!corners.every((v) => Math.abs(Math.hypot(union.vertices[v], union.vertices[v + 1], union.vertices[v + 2]) - 10) < 1e-9)) continue
+    onSphere++
+    corners.forEach((v, c) => {
+      const n = (union.normals as Float32Array).subarray(9 * i + 3 * c, 9 * i + 3 * c + 3)
+      worst = Math.max(worst, Math.abs((n[0] * union.vertices[v] + n[1] * union.vertices[v + 1] + n[2] * union.vertices[v + 2]) / 10 - 1))
+    })
+  }
+  assert.ok(onSphere > 1000 && worst < 1e-6, `${onSphere} ${worst}`)
 })

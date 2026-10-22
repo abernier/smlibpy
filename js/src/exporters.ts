@@ -208,17 +208,18 @@ function _pyG(v: number, p = 6): string {
 // ------------------------------------------------------------------------------------------ STL
 /** How shapes are meshed: `tolerance` the maximum deviation from the exact surface (by default
  * 0.1 % of the bounding box diagonal), `angle` the maximum angle between neighbouring triangle
- * normals in degrees. */
+ * normals in degrees, `maxEdge` the longest edge a triangle may have (see `tessellate`). */
 export interface MeshOptions {
   tolerance?: number | null
   angle?: number
+  maxEdge?: number | null
 }
 
-function _meshes(shapes: unknown, tolerance: number | null, angle: number): [Shape | Mesh, Mesh][] {
+function _meshes(shapes: unknown, tolerance: number | null, angle: number, maxEdge: number | null = null): [Shape | Mesh, Mesh][] {
   const out: [Shape | Mesh, Mesh][] = []
   for (const it of _items(shapes, true)) {
     // a face is meshed itself, facing out of its part
-    out.push([it, it instanceof Mesh ? it : tessellate(it as Shape, tolerance, angle)])
+    out.push([it, it instanceof Mesh ? it : tessellate(it as Shape, tolerance, angle, { maxEdge })])
   }
   return out
 }
@@ -226,8 +227,8 @@ function _meshes(shapes: unknown, tolerance: number | null, angle: number): [Sha
 /** A triangle mesh in STL (binary unless `ascii`). `tolerance` is the maximum deviation. */
 export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean } = {}): Uint8Array {
   _opts('toStl', options)
-  const { tolerance = null, angle = 15.0, ascii = false } = options
-  const meshes = _meshes(shapes, tolerance, angle).map(([, m]) => m)
+  const { tolerance = null, angle = 15.0, ascii = false, maxEdge = null } = options
+  const meshes = _meshes(shapes, tolerance, angle, maxEdge).map(([, m]) => m)
   let count = 0
   for (const m of meshes) count += m.triangles.length / 3
   // corners and normals in single precision, as STL has them
@@ -271,7 +272,7 @@ export function toStl(shapes: unknown, options: MeshOptions & { ascii?: boolean 
 }
 
 /** Triangle mesh export to an STL file (binary unless `ascii`). `tolerance` is the maximum
- * deviation. */
+ * deviation, `maxEdge` the longest edge a triangle may have (see `tessellate`). */
 export function exportStl(shapes: unknown, path: string, options: MeshOptions & { ascii?: boolean } = {}): void {
   _opts('exportStl', options)
   const fs = _fs()
@@ -488,25 +489,113 @@ function _aheapsort(t: Int32Array, start: number, n: number, cmp: (i: number, j:
 }
 
 // ------------------------------------------------------------------------------------------ OBJ
-/** Wavefront OBJ text of the shapes (one object per part). */
+/** Wavefront OBJ text of the shapes (one object per part), with the mesh's normals: each corner
+ * names its normal (`f v//vn`), so edges stay sharp where the faces meet at an angle and curved
+ * faces shade smooth. `maxEdge` is the longest edge a triangle may have. */
 export function toObj(shapes: unknown, options: MeshOptions = {}): string {
   _opts('toObj', options)
-  const { tolerance = null, angle = 15.0 } = options
+  const { tolerance = null, angle = 15.0, maxEdge = null } = options
   const lines = ['# smlibwasm']
   let offset = 1
-  _meshes(shapes, tolerance, angle).forEach(([item, m], i) => {
+  let normalOffset = 1
+  _meshes(shapes, tolerance, angle, maxEdge).forEach(([item, m], i) => {
     lines.push(`o ${(item as Any).name || `part_${i + 1}`}`)
     const v = m.vertices
     // (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
     for (let j = 0; j < v.length; j += 3) lines.push(`v ${_pyG(v[j], 12)} ${_pyG(v[j + 1], 12)} ${_pyG(v[j + 2], 12)}`)
+    const [normals, corner] = _cornerNormals(m)
+    for (let j = 0; j < normals.length; j += 3) lines.push(`vn ${_pyG(normals[j], 6)} ${_pyG(normals[j + 1], 6)} ${_pyG(normals[j + 2], 6)}`)
     const t = m.triangles
-    for (let j = 0; j < t.length; j += 3) lines.push(`f ${t[j] + offset} ${t[j + 1] + offset} ${t[j + 2] + offset}`)
+    for (let j = 0; j < t.length; j += 3) {
+      const [na, nb, nc] = [corner[j] + normalOffset, corner[j + 1] + normalOffset, corner[j + 2] + normalOffset]
+      lines.push(`f ${t[j] + offset}//${na} ${t[j + 1] + offset}//${nb} ${t[j + 2] + offset}//${nc}`)
+    }
     offset += v.length / 3
+    normalOffset += normals.length / 3
   })
   return `${lines.join('\n')}\n`
 }
 
-/** Wavefront OBJ export (one object per part). */
+/** The unit normals of a mesh's corners in single precision (as numpy works on a float32 array):
+ * the mesh's normals, or each triangle's own, to 7 decimals (normals the kernel computed a hair
+ * apart are one); -0 is 0. */
+function _unitCornerNormals(m: Mesh): Float32Array {
+  const tri = m.triangles
+  let nrm: Float32Array
+  if (m.normals !== null) nrm = Float32Array.from(m.normals)
+  else {
+    const tn = m.triangleNormals
+    nrm = new Float32Array(tri.length * 3)
+    for (let f = 0; f < tn.length / 3; f++) for (let c = 0; c < 3; c++) nrm.set(tn.subarray(f * 3, f * 3 + 3), (f * 3 + c) * 3)
+  }
+  const f32 = Math.fround
+  for (let c = 0; c < nrm.length; c += 3) {
+    const [x, y, z] = [nrm[c], nrm[c + 1], nrm[c + 2]]
+    const ln = f32(Math.sqrt(f32(f32(f32(x * x) + f32(y * y)) + f32(z * z))))
+    const d = ln > 0 ? ln : 1
+    nrm[c] = f32(x / d)
+    nrm[c + 1] = f32(y / d)
+    nrm[c + 2] = f32(z / d)
+  }
+  for (let c = 0; c < nrm.length; c++) nrm[c] = _round7(nrm[c]) + 0
+  return nrm
+}
+
+/** numpy's round(x, 7) of a float32: rounded half to even, in single precision. */
+function _round7(x: number): number {
+  const f32 = Math.fround
+  const y = f32(x * f32(1e7))
+  let r = Math.round(y)
+  if (Math.abs(y - Math.trunc(y)) === 0.5 && r % 2 !== 0) r -= 1 // (half to even)
+  return f32(r / f32(1e7))
+}
+
+/** numpy's unique over rows: the distinct rows, sorted, and for each row the index of its own. */
+function _uniqueRows(rows: ArrayLike<number>, width: number): [number[][], Int32Array] {
+  const n = rows.length / width
+  const seen = new Map<string, number[]>()
+  const keys: string[] = []
+  for (let i = 0; i < n; i++) {
+    const row = Array.from({ length: width }, (_, j) => rows[i * width + j])
+    const key = row.join(',')
+    if (!seen.has(key)) seen.set(key, row)
+    keys.push(key)
+  }
+  const unique = [...seen.values()].sort((a, b) => {
+    for (let j = 0; j < width; j++) if (a[j] !== b[j]) return a[j] - b[j]
+    return 0
+  })
+  const index = new Map(unique.map((row, i) => [row.join(','), i]))
+  return [unique, Int32Array.from(keys, (key) => index.get(key) as number)]
+}
+
+/** The distinct unit normals of a mesh's corners (x, y, z each, single precision) and, per triangle
+ * corner, which of them it has. */
+function _cornerNormals(m: Mesh): [Float32Array, Int32Array] {
+  const [unique, corner] = _uniqueRows(_unitCornerNormals(m), 3)
+  return [Float32Array.from(unique.flat()), corner]
+}
+
+/** A mesh as glTF takes it: one entry per distinct (point, normal) pair of its corners, the points
+ * (x, y, z each) and normals (single precision), and three indices per triangle. */
+function _indexedCorners(m: Mesh): [Float64Array, Float32Array, Uint32Array] {
+  const [normals, corner] = _cornerNormals(m)
+  const key = new Float64Array(m.triangles.length * 2)
+  for (let i = 0; i < m.triangles.length; i++) {
+    key[2 * i] = m.triangles[i]
+    key[2 * i + 1] = corner[i]
+  }
+  const [pairs, index] = _uniqueRows(key, 2)
+  const points = new Float64Array(pairs.length * 3)
+  const nrm = new Float32Array(pairs.length * 3)
+  pairs.forEach(([vi, ni], i) => {
+    points.set(m.vertices.subarray(vi * 3, vi * 3 + 3), i * 3)
+    nrm.set(normals.subarray(ni * 3, ni * 3 + 3), i * 3)
+  })
+  return [points, nrm, Uint32Array.from(index)]
+}
+
+/** Wavefront OBJ export (one object per part; see `toObj`). */
 export function exportObj(shapes: unknown, path: string, options: MeshOptions = {}): void {
   _opts('exportObj', options)
   const fs = _fs()
@@ -596,7 +685,7 @@ export interface GltfOptions extends MeshOptions {
 
 /** glTF JSON, binary buffer and a one-line summary for any mix of shapes. */
 export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [Any, Uint8Array, string] {
-  const { tolerance = null, angle = 15.0, edges = true, edgeColor = '#1f2328' } = options
+  const { tolerance = null, angle = 15.0, edges = true, edgeColor = '#1f2328', maxEdge = null } = options
   const chunks: Uint8Array[] = []
   let size = 0
   const views: Any[] = []
@@ -605,7 +694,7 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
   const nodes: Any[] = []
   const materials: Any[] = []
 
-  const addView = (arr: Float32Array, target: number | null): number => {
+  const addView = (arr: Float32Array | Uint16Array | Uint32Array, target: number | null): number => {
     if (size % 4) {
       chunks.push(new Uint8Array(4 - (size % 4)))
       size += 4 - (size % 4)
@@ -620,10 +709,10 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
     return views.length - 1
   }
 
-  // `arr`: rows of three numbers
-  const addAccessor = (arr: Float32Array, kind: string, comp: number, target: number | null, minmax = false): number => {
+  // `arr`: rows of three numbers (one number each for a SCALAR)
+  const addAccessor = (arr: Float32Array | Uint16Array | Uint32Array, kind: string, comp: number, target: number | null, minmax = false): number => {
     const view = addView(arr, target)
-    const count = arr.length / 3
+    const count = kind === 'SCALAR' ? arr.length : arr.length / 3
     const a: Any = { bufferView: view, componentType: comp, count, type: kind }
     if (minmax) {
       if (!count) throw new RangeError('zero-size array to reduction operation minimum which has no identity')
@@ -682,39 +771,21 @@ export function gltfDocumentMixed(shapes: unknown, options: GltfOptions = {}): [
     } else {
       const body = item instanceof Face ? item.toShell() : item
       // a face is meshed itself, facing out of its part; its copy gives the edges
-      const m = body instanceof Mesh ? body : tessellate(item as Shape, tolerance, angle)
+      const m = body instanceof Mesh ? body : tessellate(item as Shape, tolerance, angle, { maxEdge })
       const color = (body as Any).color || _DEFAULT_COLORS[colorIndex % _DEFAULT_COLORS.length]
       colorIndex += 1
-      const tri = m.triangles
       const v = m.vertices
       const rows: number[][] = []
       for (let j = 0; j < v.length; j += 3) rows.push([v[j], v[j + 1], v[j + 2]])
       centre = _centre(rows)
-      const pos = new Float32Array(tri.length * 3)
-      for (let c = 0; c < tri.length; c++) {
-        pos[c * 3] = v[tri[c] * 3] - centre[0]
-        pos[c * 3 + 1] = v[tri[c] * 3 + 1] - centre[1]
-        pos[c * 3 + 2] = v[tri[c] * 3 + 2] - centre[2]
-      }
-      let nrm: Float32Array
-      if (m.normals !== null) nrm = Float32Array.from(m.normals)
-      else {
-        const tn = m.triangleNormals
-        nrm = new Float32Array(tri.length * 3)
-        for (let f = 0; f < tn.length / 3; f++) for (let c = 0; c < 3; c++) nrm.set(tn.subarray(f * 3, f * 3 + 3), (f * 3 + c) * 3)
-      }
-      // unit normals, in single precision as numpy works on the float32 array
-      const f32 = Math.fround
-      for (let c = 0; c < nrm.length; c += 3) {
-        const [x, y, z] = [nrm[c], nrm[c + 1], nrm[c + 2]]
-        const ln = f32(Math.sqrt(f32(f32(f32(x * x) + f32(y * y)) + f32(z * z))))
-        const d = ln > 0 ? ln : 1
-        nrm[c] = x / d
-        nrm[c + 1] = y / d
-        nrm[c + 2] = z / d
-      }
+      // each distinct (point, normal) pair of the corners once, and the triangles as indices
+      const [points, nrm, index] = _indexedCorners(m)
+      const pos = new Float32Array(points.length)
+      for (let c = 0; c < points.length; c += 3) for (let j = 0; j < 3; j++) pos[c + j] = points[c + j] - centre[j]
+      const wide = pos.length / 3 > 65535
       prims.push({
         attributes: { POSITION: addAccessor(pos, 'VEC3', 5126, 34962, true), NORMAL: addAccessor(nrm, 'VEC3', 5126, 34962) },
+        indices: addAccessor(wide ? index : Uint16Array.from(index), 'SCALAR', wide ? 5125 : 5123, 34963),
         material: material(color),
         mode: 4,
       })

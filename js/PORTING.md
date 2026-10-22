@@ -14,7 +14,9 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
      functions, `<class>_<method>` (`brep_faces(b)` for `b.faces()`, `curve_evaluate(c, t)`).
    - bind_smlibpy.cpp: smlibpy's C++ as `<submodule>__<name>` (`ext__curve_data`,
      `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy` (SmPyLib's), `ext__poly_arrays`,
-     `ext__mesh_first_hits`, `ext__body_first_hits`; bind_drawing.cpp: `ext__hidden_lines`.
+     `ext__mesh_first_hits`, `ext__body_first_hits`; bind_drawing.cpp: `ext__hidden_lines`;
+     bind_mesh_tools.cpp: `ext__mesh_nearest_points`, `ext__crease_normals`,
+     `ext__decimate_triangles`, `ext__repair_triangles`, `ext__brep_from_triangles`.
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
      message is the one Python's RuntimeError carries.
@@ -117,7 +119,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
   `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes`, `_rays`,
-  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; render.ts takes `_tessellate`);
+  `_triangleFaces`, `_tessellate` (shapes.ts casts rays with them; render.ts takes `_tessellate`),
+  `_levels` (shapes.ts slices parts with it), `_deviation` (its test);
   `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
   `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
   `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
