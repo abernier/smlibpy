@@ -20,6 +20,46 @@ def test_open_curves_make_surfaces():
     assert patch.area == pytest.approx(10 * math.hypot(10, 5), rel=1e-6)
 
 
+def test_loft_of_open_curves_takes_ruled_and_smooth():
+    # Lofts of single open curves ignored both: three lines, z = 0, 10 (8 higher in y) and 20,
+    # passed y = 6.0 at z = 5 with ruled=True, as by default (area 800.2232).
+    lines = [Line((0, 0, 0), (30, 0, 0)), Line((0, 8, 10), (30, 8, 10)), Line((0, 0, 20), (30, 0, 20))]
+
+    def y_at(s, z):
+        return s.raycast((15, -50, z), (0, 1, 0))[0].point.y
+
+    default = loft(lines)
+    assert default.area == pytest.approx(800.2232, abs=1e-4) and y_at(default, 5) == pytest.approx(6.0)
+    ruled = loft(lines, ruled=True)
+    assert len(ruled.faces()) == 2 and y_at(ruled, 5) == pytest.approx(4.0)
+    assert ruled.area == pytest.approx(2 * 30 * math.hypot(8, 10))
+    four = lines + [Line((0, 8, 30), (30, 8, 30))]
+    assert y_at(loft(four), 5) == pytest.approx(8.0)  # cubic, as before
+    assert y_at(loft(four, smooth=False), 5) == pytest.approx(20 / 3)  # quadratic
+
+
+def test_bspline_faces_with_a_bump_stay_curved(tmp_path):
+    # A cubic sheet parameterized like a plane (control points at 60 times their Greville
+    # abscissae) with one control point raised between the 13 parameters the kernel's plane test
+    # looked at: every copy that adds analytic surfaces made it a plane (kernel patch K7).
+    n = 21
+    t = np.r_[[0.0] * 4, np.arange(1, n - 3) / (n - 3), [1.0] * 4]
+    g = np.array([t[i + 1:i + 4].mean() for i in range(n)])
+    grid = [[(60 * g[i], 60 * g[j], 5.0 if (i, j) == (16, 9) else 0.0) for i in range(n)] for j in range(n)]
+    sheet = surface(grid, interpolate=False)
+    assert sheet.area == pytest.approx(3607.471, abs=1e-3) and sheet.bbox().max.z == pytest.approx(2.2222, abs=1e-4)
+    copy = sheet.faces()[0].to_shell()  # was a plane of 3600.0
+    assert copy.faces()[0].geom_type == "bspline" and copy.area == pytest.approx(sheet.area, rel=1e-9)
+    sheet.export(tmp_path / "bump.smb")
+    back = load(tmp_path / "bump.smb")  # was flat, zmax 0.0
+    assert back.bbox().max.z == pytest.approx(2.2222, abs=1e-4)
+    assert sheet.thicken(2).volume == pytest.approx(7212.841, abs=1e-2)  # was 7200.0
+    assert np.asarray(sheet.mesh(0.01).vertices)[:, 2].max() > 2.2  # was 0.0
+    # B-spline faces that are planes still come back from .smb as planes
+    Box(10, 20, 30).to_nurbs().export(tmp_path / "box.smb")
+    assert {f.geom_type for f in load(tmp_path / "box.smb").faces()} == {"plane"}
+
+
 def test_surface_through_points_and_thicken():
     pts = [[(x * 10, y * 10, 3 * math.sin(x / 2) * math.cos(y / 2)) for x in range(6)] for y in range(5)]
     s = surface(pts)

@@ -283,6 +283,41 @@ def test_many_tools_in_one_boolean():
     assert r.area == approx(200 * 120 - (4 - PI) * 100 - 180 * 9 * PI, rel=1e-6)
 
 
+def test_booleans_of_faces_that_touch_at_a_point():
+    # The faces of an exclusive or of circles touch each other at points. There the kernel's planar
+    # Boolean misclassified whole faces without an error, in either operand: abc & t was 86.6355 and
+    # abc - t 23.9044 (wasm 54.9061 and 55.6337), abc ^ t 702.18 (wasm 67.09). The values below
+    # are OpenCASCADE's.
+    abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2, 4)
+    t = Polygon((-20, -20), (20, -20), (0, 20))
+    a = 110.5398163
+    assert abc.area == approx(a)
+    for r in (abc & t, t & abc):
+        assert len(r.faces()) == 4 and r.area == approx(a)
+        assert (r.center() - Vector(2, 1.5261489, 0)).length < 1e-6
+    assert not (abc - t).faces()
+    for r in (t - abc, abc ^ t, t ^ abc):
+        assert r.area == approx(800 - a)
+        assert (r.center() - Vector(-0.3206561, -7.9802049, 0)).length < 1e-6
+    assert (abc + t).area == approx(800) and len((abc + t).faces()) == 1
+    # The result is built as the kernel builds such regions: its faces share their vertices.
+    assert (abc & t).extrude(5).volume == approx(5 * a)
+
+    # two such sketches; OpenCASCADE: & 35.067874, - 103.018076, + 213.322849, ^ 178.254975
+    def xor3(*centers):
+        c = [Circle(5).translate(x, y) for x, y in centers]
+        return c[0] ^ c[1] ^ c[2]
+
+    p = xor3((-0.285723, 0.358634), (6.545264, -0.2061), (2.047048, 4.524309))
+    q = xor3((-1.892038, 0.071452), (4.779296, 1.757861), (-0.435259, 2.820408)).translate(-4.911954, 3.715734)
+    i = (p & q).area
+    assert i == approx(35.067874, abs=1e-5)
+    assert (p - q).area == approx(p.area - i) and (q - p).area == approx(q.area - i)
+    assert (p + q).area == approx(p.area + q.area - i)
+    assert (p ^ q).area == approx(p.area + q.area - 2 * i)
+    assert (p ^ q).area == approx(178.254975, abs=1e-5)
+
+
 def test_empty_results_and_operand_errors():
     empty = Rectangle(10, 10) - Rectangle(20, 20)
     assert len(empty.faces()) == 0

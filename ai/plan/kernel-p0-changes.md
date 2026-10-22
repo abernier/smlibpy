@@ -557,3 +557,171 @@ HEAD's code on the patched kernel against the new code.
   not seen in either.
 - Breaks scripts: no. A part that only a later repeat could shell fails sooner (on the imported
   parts, every such late result was the part given back unchanged).
+
+## Group SCUMA: sweeps, lofts, 2D Booleans, plane recognition, meshes, distances
+
+Kernel patch K7 in a new copy of `third_party/patches/SMLib/src/SmPlane.cpp` (README row). New
+shared C++: `src/cpp/distance.cpp` (`ext.nearest_points`), `ext.join_curves` (`src/cpp/ext.cpp`)
+and the facet checks in `src/cpp/tessellate.cpp`, bound in both builds. The rest is in
+`operations.py`/`operations.ts`, `shapes.py`/`shapes.ts` and `mesh.py`/`mesh.ts`.
+
+**S2 · Sweeps put the center of the profile's own box on the path** (both)
+- Now: the profile is swept in its own frame (in its plane, its box along the axes there, the path
+  brought into that frame) and the body is placed back, so the center of the profile's box along
+  the axes of its plane (for a sketch in XY, `sketch.bbox().center`) sits at the start of the path
+  on every path, as `sweep.md` says. `Polygon((0, 0), (10, 0), (0, 10))` along
+  `Line((0, 0, 0), (10, 10, 10))` starts at the path start, its centroid 2.357 from it in its plane.
+- Before: the kernel took the center of the box along the world axes of the profile already turned
+  to the path: the triangle started 1.6667 before the path (along (1, 2, 0.3): 0.8025 off, 0.2947
+  of it along the path). Paths along X, Y or Z were right.
+- Exactly what changes: asymmetric profiles (triangles, L and T sections, thread teeth, anything
+  whose box center is not a center of symmetry) on single edges and on 3D paths whose start
+  tangent is not along X, Y or Z move to the new anchor. Profiles that are symmetric about their box
+  center (circles, centered rectangles and rings, regular polygons), and every profile on paths
+  that start along X, Y or Z, give the same bodies: the same volumes, the vertices equal or, along
+  arcs and splines, within the kernel's sweep approximation (up to 0.005: the path is now swept in
+  the profile's frame). A sketch drawn on a tilted plane is anchored in its plane (the center of
+  the world box of a tilted profile need not lie in its plane).
+- Not changed: planar paths of several edges with mitered corners (the default for planar paths)
+  are swept by the kernel's planar-path sweep, which turns the profile by its own rule; it keeps
+  the kernel's anchor, the center of the profile's box along the axes it turns it by. That is the
+  profile's own box center for paths that start along X, Y or Z, and along rotated axes otherwise;
+  changing it would change the roll of every such sweep. The `anchor=` option is not added.
+- Breaks scripts: yes, those that swept asymmetric profiles along oblique single edges or 3D paths
+  (they were off the path by up to a third of the profile's size).
+
+**S1 · Sweeps along 3D paths keep the profile's orientation** (both)
+- Now: edges of the path that meet tangentially (within 1e-6 rad) are joined into one curve (new
+  `ext.join_curves`, `SmBSplineCurve::CreateByJoining`) and swept in one go. At a corner of a path
+  that is not planar, the next piece starts in the frame the last one ended in, turned by the
+  smallest rotation from one tangent to the next; along a planar piece that frame is computed,
+  along a twisted one it is read off a ribbon swept the same way (the kernel's frame along a helix
+  is not the rotation-minimizing one: 79 degrees apart after two turns). A closed path that is not
+  planar and has no corner is swept in one go without caps and closed where its ends meet (the
+  kernel spreads the turn of its frame around a closed path); circles about the anchor (tubes,
+  rings) are swept in two halves as before, which is exact. A closed path with a kink at the
+  closure is swept in two halves with the frame carried from one to the other.
+  `Rectangle(4, 2)` along `FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40),
+  radius=8)` is valid with 905.062 (area x length) and ends 2 wide in x and 4 high, and a section
+  through the last joint works.
+- Before: each edge was turned afresh from the sketch: the rectangle turned by 90 degrees at the
+  last arc-line joint (its end 4 wide and 2 high), a section through the joint raised
+  `section failed (SM_ERR)`. Along an asymmetric closed loop the rectangle turned by 10 degrees at
+  the halfway point and 44 at the closure (20 faces); a circle along a closed path with a kink at
+  the closure raised `fuse failed (SM_ERR)`.
+- Exactly what changes: sweeps along paths that are not planar with several edges, or with one
+  closed edge, and sweeps with `sharp_corners=False`: after the first edge the profile has the
+  carried orientation (a rectangle along `Polyline((0, 0, 0), (0, 0, 20), (20, 0, 20),
+  (20, 20, 30))` ends with its long side along (-0.447, -0.4, 0.8) instead of X; the volume changes
+  where the notches at the corners change: 243.766 instead of 244.325). Tangent edges become one
+  sweep (a different face structure: 22 faces instead of 20 for the repro). The rectangle on the
+  closed loop has 4 faces and no turn, with 480.6952 for an area x length of 480.7022 (one sweep
+  approximates the path to the kernel's sweep tolerance; the halves gave 480.7024 with the turns).
+  Round profiles, single open edges and planar paths with mitered corners keep their orientation.
+  Helices chained into one wire still take the mitered planar route when `_is_planar_path` takes
+  them for planar (S6), as before.
+- Breaks scripts: yes, those that relied on the turned pieces (they had the wrong shape).
+
+**S5 · loft of single open curves takes ruled and smooth** (both)
+- Now: lofts of open sections all go through `create_skin_primitive` with the degree that `ruled`
+  and `smooth` give; three lines at z = 0, 10 (8 higher in y) and 20 lofted with `ruled=True` make
+  two flat faces through y = 4.0 at z = 5 (area 768.375), and `smooth=False` with four sections a
+  quadratic surface (y = 6.667 there). The default is the same surface as before (the kernel's
+  skin: area 800.2232, y = 6.0; the same areas and normals for 2 to 6 lines and splines). The copied
+  section curves are freed (the path for chains of edges kept them).
+- Before: single curves went through `create_skin_surface`, which has no degree: `ruled` and
+  `smooth` were ignored without a word.
+- Breaks scripts: only those that passed `ruled=True` or `smooth=False` with single open curves,
+  which got the default surface.
+
+**C1 · 2D Booleans of faces that touch at a point** (both)
+- Now: where faces of an operand (or loops of one face) touch each other at a point, as the faces
+  of an exclusive or do, `&` is taken face by face (the intersection of two single faces is
+  reliable) and the pieces are joined by unions so that they share their vertices; `-`, `+` and `^`
+  are computed in several ways (the kernel's Boolean face by face, one tool face at a time, slabs
+  in 3D; `^` as what is in one sketch only from either side), each checked against those overlaps
+  by area and first moments, and the first that holds is the result. When none holds:
+  `ModelingError: cut: the sketches have faces that touch each other at a point, as at (x, y), and
+  the kernel's planar Boolean gives a wrong region there (checked against the overlaps of the
+  faces); move one of the shapes that make those faces a little, so that no two faces meet at a
+  single point`. `abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2, 4)` and a
+  triangle around it give `abc & t` = 110.5398, `abc - t` empty, `abc ^ t` = `t ^ abc` = 689.4602
+  (OpenCASCADE's values, centroids too).
+- Before: the kernel's planar Boolean misclassified whole faces without an error, in either
+  operand: 86.6355, 23.9044 and 702.18 natively, 54.9061, 55.6337 and 67.09 in the wasm. Against
+  OpenCASCADE on 80 random cases (three-circle xors with a circle, rectangle or triangle, and with
+  another such xor; 560 results with the operands themselves) the native code was wrong in 230 and
+  the wasm in 231; one exclusive or of such sketches killed the process (1 of 40 in another set).
+  Now 0 are wrong and 1 raises (an exclusive or with a sliver triangle 0.1 in area), in both
+  builds. Disjoint faces (lettering, islands, rings) take the kernel's Boolean as before (80 more
+  random cases, right before and after).
+- Cost: 1.5 to 3 ms became 2 to 18 ms for such sketches; other sketches are unchanged.
+- Breaks scripts: only those that relied on the wrong regions; such a Boolean can now raise
+  ModelingError where it gave a wrong region. `ai/todo/sketches.md` #20 is closed.
+
+**U1 · B-spline faces with a bump are no longer taken for planes** (both; kernel patch K7)
+- Now: `SmPlane::IsNurbSurfacePlane` also requires every control point to be the candidate plane's
+  point at its Greville abscissae, and takes rational surfaces only with equal weights (a B-spline
+  reproduces a linear function from those values, so the test is exact). A 21 x 21 cubic sheet
+  parameterized like a plane with one control point raised by 5 keeps its bump through
+  `face.to_shell()` (area 3607.471, B-spline), a `.smb` round trip (top at 2.2222), `thicken(2)`
+  (7212.841) and `mesh()`. Of 40 random single-control-point bumps, none is flattened.
+- Before: every copy that adds analytic surfaces (`SmBrep::CopyFaces`, the `.smb` reader, the
+  offset code, tessellation) made such a face an exact plane: a plane of 3600.0, the `.smb` top at
+  0, `thicken(2)` 7200.0, a flat mesh; 10 of the 40 random bumps.
+- B-spline faces that are planes are still recognised (`Box(...).to_nurbs()` comes back from
+  `.smb` with planes). The `.smb` docs no longer say "lossless": its geometry is exact, but
+  B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come
+  back as those.
+- Audit of the other recognizers: the cone and extrusion tests compare control points; the sphere
+  and revolution tests (`sm_TestForIsoCircles`) check curves of constant parameter at 3 parameters
+  per knot span, each with `IsArc` at 5 points, so a local bump could also slip through them. No
+  such case was built (smlibpy cannot make a rational surface with a moved control point); they are
+  not patched.
+- Breaks scripts: no (the flattened faces were wrong).
+
+**M1 · Mesh Booleans use the arrays as they are; meshes move as shapes do** (both)
+- Now: a mesh keeps a kernel mesh only internally (W3), and a mesh Boolean takes it only while the
+  arrays are the ones it was made from (a checksum); otherwise it builds one from the arrays. New
+  `Mesh.translate`, `rotate`, `mirror`, `scale` and `moved` return moved copies, as for shapes: the
+  corner normals turn along, and a mirrored mesh still faces outward. `b.vertices += [10, 0, 0]`
+  then `Box(20, 20, 20).mesh() - b` gives 7739.27 (the exact cut is 7738.20), as
+  `- Sphere(5).mesh().translate(10, 0, 0)` does.
+- Before: the public symptom had gone with W3; a kept tessellation moved in place still cut with
+  its old geometry (7478.54). Meshes had no transforms. `import_stl.md` said mesh Booleans raise a
+  TypeError and `export_stl.md` that they mostly fail; both now point to `Mesh.md`.
+  `ai/todo/files.md` #17 is closed (merged meshes and STL imports take part in mesh Booleans).
+- Breaks scripts: no (additions).
+
+**M2 · Meshes of spheres and of free-form faces keep the tolerance** (both)
+- Now: on spheres, tori, cones and cylinders, `tessellate` splits every edge whose middle lies more
+  than the tolerance off the face onto the face, until none is left (the mesh stays closed; the new
+  corners get the surface normal). A body with a free-form face whose surface the grid misses by
+  more than twice the tolerance at one of its control points is halved, as bodies with twisted
+  faces are. `tessellate(Sphere(10), 0.01)` is within 0.0096 (15004 triangles, 89 ms); the default
+  within 0.026 (3596 triangles); 0.001 within 0.0010 (136872 triangles, 0.75 s). An interpolated
+  21 x 21 sheet with one point raised by 5 is meshed to 5.0 (8174 triangles at 0.01).
+- Before: the grid left a fan of long slivers along the seam near both poles: 0.6783 off at 0.01
+  (14080 triangles, 61 ms), 0.103 at the default (3584), 0.0014 at 0.001 (133984, 0.60 s); the
+  sheet's bump was missed (top at 0.16 for 0.01, 128 triangles). `ai/todo/files.md` #3 is closed;
+  the gotchas in `Mesh.md` and `export_stl.md` are gone.
+- Exactly what changes: meshes of sphere faces whose poles are whole (spheres, spheres with side
+  features) get a few more triangles; meshes of bodies with such free-form faces get the halving's
+  triangles. Tori, cones, cylinders, rounded boxes and spheres cut at the poles measured here keep
+  their triangles. `test_plain_parts_keep_their_facets` now expects 3596 for `Sphere(10).mesh()`.
+- Breaks scripts: only those that pin triangle counts of such bodies.
+
+**A1 · distance_to between nearly parallel faces is exact** (both)
+- Now: from each starting point, the new `ext.nearest_points` (`src/cpp/distance.cpp`) takes
+  closest points in turn and finishes with damped Newton on the parameters of the faces (or edges)
+  they lie on, while they stay on them. `Cylinder(5, 200).distance_to(Cylinder(5, 200).rotate(X, a)
+  .translate(12, 0, 0))` is 2.0 for 1, 5 and 10 degrees. Against OpenCASCADE on 101 random pairs
+  of primitives (40 % nearly parallel cylinders), none is off by more than 1e-15 relative, in
+  1.85 s for all. Should the points not settle, `distance_to` warns that the distance may be too
+  large.
+- Before: closest points in turn only, at most 500 rounds: 2.1197, 2.4853 and 2.0162, too large
+  and without a warning; 18 of the 101 random pairs too large, by up to 10 %, in 3.25 s.
+- `analysis/distance_to.md`: the accuracy claim holds now; the overlap test it recommended
+  (`len((a & b).faces()) > 0`, seconds on parts of many faces) is replaced by `a.contains(...)` of a
+  point of the other body (B11).
+- Breaks scripts: no (distances only come out right).

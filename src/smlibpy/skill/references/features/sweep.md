@@ -9,24 +9,34 @@ makes a surface (`Shell`).
 
 - `profile`: a sketch (holes allowed), a planar face or a closed wire. Draw it anywhere,
   usually at the origin in XY.
-- `path`: an `Edge` or a connected `Wire` (`Polyline`, `FilletPolyline`, `Wire([...])`). A
-  closed single-edge path (a full `CenterArc`, a closed `Spline`) is split into two halves
-  automatically.
+- `path`: an `Edge` or a connected `Wire` (`Polyline`, `FilletPolyline`, `Wire([...])`). Edges
+  that meet tangentially are swept in one go. A closed path that does not lie in a plane
+  (`Spline(..., closed=True)`) is swept in one go and closed where its ends meet; a planar
+  closed single-edge path (a full `CenterArc`) is split into two halves.
 - `orient=True`: turn the profile to stand perpendicular to the path at its start. Leave it on.
 - `translational=True`: keep the profile's orientation fixed (it does not turn with the path).
   The profile then cuts the path at a slant; on an arc the volume is area × rise, not area ×
   length. Useless on helices.
 - `sharp_corners`: for paths of several edges. Default: mitered corners for planar paths.
-  `False` sweeps each edge alone and fuses the pieces (notched corners). `True` on a 3D path
-  raises.
+  `False` sweeps the path piece by piece (each run of tangent edges in one go) and fuses the
+  pieces (notched corners). `True` on a 3D path raises.
 - There is no twist or scale option.
 
 ## Placement
-- The **bounding-box center** of the profile goes to the start of the path, wherever the
-  profile was drawn. You cannot offset a profile from its path; move the path instead.
+- The **center of the profile's box** goes to the start of the path, wherever the profile was
+  drawn: its box along the axes of its plane (for a sketch in XY, `sketch.bbox().center`), also
+  on oblique and helical paths. You cannot offset a profile from its path; move the path
+  instead. (Planar paths of several edges with mitered corners place the profile as the kernel
+  does, by its box along the axes the kernel turns it by: the same for paths that start along X,
+  Y or Z.)
 - The profile is turned by the smallest rotation from its normal to the path tangent. For a
   path along Z it is unchanged. For a path along X, sketch x becomes Z; along Y, sketch y
   becomes Z. Check with `bbox()`.
+- Along a path of several edges the profile keeps its orientation from piece to piece: tangent
+  edges (a `FilletPolyline` in 3D) are one sweep, and at a corner it turns by the smallest
+  rotation from one tangent to the next (`Rectangle(4, 2)` along
+  `FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40), radius=8)` ends 2 wide in x
+  and 4 high, as it is carried along; it used to turn by 90 degrees at a joint).
 - On a `Helix` around Z starting at (r, 0, 0) the sketch x axis points radially at the start.
 
 ## Gotchas

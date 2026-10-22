@@ -25,8 +25,10 @@ It is the distance between **surfaces**, not between volumes:
 | bodies touching or crossing | 0.0 |
 | one body inside the other, or in a hole | the clearance to the surface (a sphere r2 in a box 10: 3.0) |
 
-So a non-zero distance does not mean "apart". To test for overlap, intersect:
-`len((a & b).faces()) > 0` (an empty intersection has no faces, volume 0).
+So a non-zero distance does not mean "apart": one body may lie inside the other. Above 0 the
+surfaces do not cross, so one point of the other body's surface decides:
+`a.contains(b.faces()[0].interior_point())` (see `classify`). An intersection,
+`len((a & b).faces()) > 0`, tells as well but takes seconds on parts of many faces.
 
 `closest_point` of a point inside returns the nearest surface point
 (`(1, 2, 3)` in a 10 mm box gives `(1, 2, 5)`). For the center of a sphere it returns one of
@@ -36,8 +38,10 @@ the equally near points.
 
 Point queries are exact to 1e-14 on planes, cylinders, spheres, fillets, also far from the
 origin. Body-body distances are exact (1e-11 or better), also where the nearest points form a
-line (two parallel cylinders, a cylinder beside a flat face parallel to its axis) and far from
-the origin.
+line (two parallel cylinders, a cylinder beside a flat face parallel to its axis), between
+nearly parallel faces (two cylinders crossing at 1 degree) and far from the origin. Should the
+nearest points not settle, `distance_to` warns (`RuntimeWarning`) that the distance may be too
+large.
 
 ## Gotchas
 
@@ -60,14 +64,15 @@ print(a.distance_to((0, 0, 30)))         # 25.0
 print(a.closest_point((0, 0, 30)))       # Vector(0, 0, 5)
 print(a.distance_to((1, 2, 3)))          # 2.0: inside the box, distance to its surface
 
-# overlap check: distance_to cannot tell nested from apart, an intersection can
+# overlap check: distance_to cannot tell nested from apart, a point of the other body can
 inner = Sphere(2)
 print(a.distance_to(inner))              # 3.0 although the sphere is inside
-overlap = a & inner
-print(len(overlap.faces()) > 0, round(overlap.volume, 4))   # True 33.5103
+print(a.contains(inner.faces()[0].interior_point()))   # True: inside, not apart
 
 c1, c2 = Cylinder(5, 20), Cylinder(3, 20).translate(20, 0, 0)
 print(c1.distance_to(c2))                # 12.0: parallel cylinders
+rod = Cylinder(5, 200).rotate(X, 1).translate(12, 0, 0)
+print(round(Cylinder(5, 200).distance_to(rod), 9))   # 2.0: crossing at 1 degree
 ```
 
 ## Related

@@ -22,6 +22,7 @@ import {
   type Face,
   Helix,
   Line,
+  Location,
   Mesh,
   type Part,
   Plane,
@@ -138,7 +139,9 @@ const sameArray = (a: ArrayLike<number>, b: ArrayLike<number>) => a.length === b
 test('plain parts keep their facets', () => {
   assert.equal(Box(20, 20, 20).mesh().length, 12)
   assert.equal(Cylinder(10, 20).mesh().length, 252)
-  assert.equal(Sphere(10).mesh().length, 3584)
+  // (the grid's 3584, and 12 more where facets near the poles were up to 0.103 off, three times the
+  // tolerance: their long edges are split onto the sphere)
+  assert.equal(Sphere(10).mesh().length, 3596)
   let rounded = Box(40, 30, 20).cut(Cylinder(5, 30))
   rounded = rounded.fillet(rounded.edges().parallelTo([0, 0, 1]), 3)
   const plain: Part[] = [
@@ -154,6 +157,56 @@ test('plain parts keep their facets', () => {
     const grid = kernelGrid(part, tol)
     assert.ok(sameArray(mesh.vertices, grid.vertices) && sameArray(mesh.triangles, grid.triangles))
   }
+})
+
+test('spheres are meshed within the tolerance', () => {
+  // The grid put a fan of long slivers along the seam near both poles: tessellate(Sphere(10), 0.01)
+  // was 0.6783 off the sphere (68 times the tolerance); their edges are split onto the sphere now.
+  const offSphere = (mesh: Mesh): number => {
+    const v = mesh.vertices
+    const t = mesh.triangles
+    let worst = 0
+    for (let i = 0; i < t.length; i += 3) {
+      const c = [0, 1, 2].map((k) => [v[t[i + k] * 3], v[t[i + k] * 3 + 1], v[t[i + k] * 3 + 2]])
+      const pts = [[0, 1, 2].map((j) => (c[0][j] + c[1][j] + c[2][j]) / 3), ...[0, 1, 2].map((k) => [0, 1, 2].map((j) => (c[k][j] + c[(k + 1) % 3][j]) / 2))]
+      for (const p of pts) worst = Math.max(worst, Math.abs(Math.hypot(p[0], p[1], p[2]) - 10))
+    }
+    return worst
+  }
+  for (const tol of [0.01, 0.001]) {
+    const mesh = tessellate(Sphere(10), tol)
+    assert.ok(mesh.isClosed() && offSphere(mesh) <= tol * (1 + 1e-9))
+    assert.ok(offSphere(kernelGrid(Sphere(10), tol)) > tol) // the defect the test is about (0.6783, 0.0014)
+  }
+  const pinned = Sphere(10).fuse(Cylinder(2, 30).rotate(Axis.X, 90)) // (the poles stay whole)
+  assert.ok(offSurface(pinned, tessellate(pinned, 0.05)) <= 0.05 * (1 + 1e-9))
+  const mesh = tessellate(Sphere(10), 0.01)
+  assert.ok(mesh.length < 1.1 * kernelGrid(Sphere(10), 0.01).length) // (14080 triangles, 15004 now)
+  const n = mesh.normals!
+  for (let i = 0; i < mesh.triangles.length; i++) {
+    const p = mesh.triangles[i] * 3
+    const dot = (mesh.vertices[p] * n[i * 3] + mesh.vertices[p + 1] * n[i * 3 + 1] + mesh.vertices[p + 2] * n[i * 3 + 2]) / 10
+    assert.ok(dot > 1 - 1e-6) // the new corners' normals too
+  }
+})
+
+test('free-form bumps between the grid lines are meshed', () => {
+  // An interpolated sheet with one point raised by 5: its borders are straight, so the grid had no
+  // lines across the bump and was 0.16 high for a tolerance of 0.01. Such a body is halved now.
+  const n = 21
+  const sheet = surface(Array.from({ length: n }, (_, j) => Array.from({ length: n }, (_, i) => [3 * i, 3 * j, i === 16 && j === 9 ? 5 : 0]))) as Shell
+  const top = (m: Mesh) => {
+    let z = -Infinity
+    for (let i = 2; i < m.vertices.length; i += 3) z = Math.max(z, m.vertices[i])
+    return z
+  }
+  for (const tol of [0.1, 0.01]) {
+    approx(top(sheet.mesh(tol)), 5, 0, tol)
+    assert.ok(top(kernelGrid(sheet, tol)) < 0.2) // the defect the test is about
+  }
+  const [poly, report] = ext.tessellate(sheet._brep, { chord_height_tolerance: 0.01, return_report: true })
+  ext.delete_polybrep(poly)
+  assert.equal(report.algorithm, 'halving')
 })
 
 test('a surface straight both ways keeps the grid', () => {
@@ -372,6 +425,54 @@ test('meshes kept in a loop keep only their arrays (smlibwasm)', () => {
   assert.equal(run.status, 0, run.stderr)
   const grown = Number(run.stdout.trim())
   assert.ok(grown < 150, `15 meshes took ${grown} MB`)
+})
+
+test('mesh Booleans use the arrays as they are', () => {
+  // A mesh Boolean ran on the kernel mesh of the tessellation, also after the arrays were moved in
+  // place: 7478.54, the cut by the unmoved sphere (the exact cut is 7738.20).
+  const box = Box(20, 20, 20).mesh()
+  const ball = Sphere(5).mesh()
+  for (let i = 0; i < ball.vertices.length; i += 3) ball.vertices[i] += 10
+  const moved = box.cut(ball).volume
+  approx(moved, Box(20, 20, 20).cut(Sphere(5).translate(10, 0, 0)).volume, 2e-4)
+  approx(moved, box.cut(new Mesh(ball.vertices, ball.triangles)).volume, 1e-12)
+  const kept = _tessellate(Sphere(5), null, 15, true) // (internal: keeps the kernel mesh)
+  for (let i = 0; i < kept.vertices.length; i += 3) kept.vertices[i] += 10
+  approx(box.cut(kept).volume, moved, 1e-12)
+  kept.dispose()
+  approx(box.cut(Sphere(5).mesh().translate(10, 0, 0)).volume, moved, 1e-12)
+})
+
+test('meshes move as shapes do', () => {
+  const m = Box(10, 20, 30).mesh()
+  const cases: [Mesh, number[], number[]][] = [
+    [m.translate(5, 0, 0), [0, -10, -15], [10, 10, 15]],
+    [m.rotate(Z, 90), [-10, -5, -15], [10, 5, 15]],
+    [m.moved(new Location([0, 0, 15])), [-5, -10, 0], [5, 10, 30]],
+    [m.mirror(Plane.YZ.offset(5)), [5, -10, -15], [15, 10, 15]],
+    [m.scale([1, 2, 3]), [-5, -20, -45], [5, 20, 45]],
+  ]
+  for (const [moved, lo, hi] of cases) {
+    assert.ok(moved.isClosed() && moved.volume > 0)
+    const b = moved.bbox()
+    lo.forEach((x, i) => approx(b.min.toArray()[i], x, 0, 1e-9))
+    hi.forEach((x, i) => approx(b.max.toArray()[i], x, 0, 1e-9))
+  }
+  approx(m.scale(2).volume, 8 * m.volume)
+  assert.deepEqual(Array.from(m.vertices), Array.from(Box(10, 20, 30).mesh().vertices)) // (copies: the mesh stays)
+  const ball = Sphere(5).mesh()
+  for (const moved of [ball.mirror(), ball.scale([1, 2, 3]), ball.rotate(new Axis([1, 0, 0], [1, 1, 0]), 40)]) {
+    // the corner normals turn along and still agree with the triangles' winding
+    const tn = moved.triangleNormals
+    const n = moved.normals!
+    for (let t = 0; t < moved.length; t++) {
+      let agree = 0
+      for (let c = 0; c < 3; c++) for (let j = 0; j < 3; j++) agree += (tn[t * 3 + j] * n[t * 9 + c * 3 + j]) / 3
+      assert.ok(agree > 0.5)
+    }
+    assert.ok(moved.volume > 0)
+  }
+  assert.throws(() => m.scale([1, 0, 1]), (e: Error) => e instanceof RangeError && /not zero/.test(e.message))
 })
 
 test('mesh Booleans on any mesh', () => {

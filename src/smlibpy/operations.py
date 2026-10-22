@@ -8,7 +8,10 @@ the edges belong to.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
+
+import numpy as np
 
 from ._kernel import BrepHandle, KernelError, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
@@ -155,22 +158,18 @@ def loft(sections: Sequence[Sketch | Face | Wire | Edge], *, ruled: bool = False
         raise ValueError("loft needs at least two sections")
     opened = [_open_curve(s) for s in sections]
     if all(w is not None for w in opened):
-        if all(len(w.edges()) == 1 for w in opened):  # type: ignore[union-attr]
-            curves = [w.edges()[0]._copy_curve() for w in opened]  # type: ignore[union-attr]
-            try:
-                with kernel_call("loft", "curves should run in the same direction"):
-                    srf = k.create_skin_surface(curves)
-            finally:
-                for c in curves:
-                    ext.delete_curve(c)
-            from .surfaces import _shell_of_surface
-
-            return _shell_of_surface(srf)
+        # One skin for single curves and chains alike, so that ruled and smooth hold for both
+        # (the kernel's skin surface has no degree). With the default degree it is the same
+        # surface as that skin.
         counts = [len(w.edges()) for w in opened]  # type: ignore[union-attr]
         curves = [c for w in opened for c in w._copy_curves()]  # type: ignore[union-attr]
         degree = 1 if ruled else min(3 if smooth else 2, len(sections) - 1)
-        with kernel_call("loft"):
-            return Shell._wrap(k.create_skin_primitive(counts, curves, degree, False))
+        try:
+            with kernel_call("loft", "curves should run in the same direction"):
+                return Shell._wrap(k.create_skin_primitive(counts, curves, degree, False))
+        finally:
+            for c in curves:
+                ext.delete_curve(c)
     if any(w is not None for w in opened):
         raise ValueError("loft sections must be all closed (solid) or all open (surface)")
     loops = [_section_loops(s) for s in sections]
@@ -218,16 +217,176 @@ def _oriented_to(sk: Sketch, tangent: Vector) -> Sketch:
     return sk.rotate(Axis(sk.bbox().center, axis), angle)
 
 
+# -- the frame a profile is swept in ---------------------------------------------------------------
+# The kernel moves a profile to the start of the path by the center of the profile's box along the
+# world axes. Turned to face along an oblique path, an asymmetric profile has a box along the world
+# axes whose center is not its own: a triangle swept along (1, 1, 1) started 1.6667 before the
+# path. So the profile is swept in its own frame, in its plane with its box along the axes there,
+# along the path brought into that frame, and the body is placed back. Along a path of several
+# edges, each piece starts in the frame the piece before ended in (turned at a corner by the
+# smallest rotation from one tangent to the next), not turned afresh from the sketch: a rectangle
+# turned by 90 degrees at the joints of a 3D path otherwise.
+def _unit(v: Any) -> np.ndarray:
+    v = np.asarray(v, dtype=float)
+    return v / np.linalg.norm(v)
+
+
+def _turn(a: np.ndarray, b: np.ndarray, axis: np.ndarray | None = None) -> np.ndarray:
+    """The rotation (3 x 3) that turns direction a into direction b: the smallest one, or about
+    ``axis`` (perpendicular to both) when given, also by half a turn."""
+    a, b = _unit(a), _unit(b)
+    if axis is None:
+        axis = np.cross(a, b)
+        if np.linalg.norm(axis) < 1e-12:
+            if np.dot(a, b) > 0:
+                return np.eye(3)
+            axis = np.cross(a, (1.0, 0.0, 0.0) if abs(a[0]) < 0.9 else (0.0, 1.0, 0.0))
+    axis = _unit(axis)
+    angle = math.atan2(float(np.dot(np.cross(a, b), axis)), float(np.dot(a, b)))
+    kx = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+    return np.eye(3) + math.sin(angle) * kx + (1.0 - math.cos(angle)) * (kx @ kx)
+
+
+def _placement(axes: np.ndarray, origin: Any) -> np.ndarray:
+    m = np.eye(4)
+    m[:3, :3] = axes
+    m[:3, 3] = origin
+    return m
+
+
+def _inverse(m: np.ndarray) -> np.ndarray:
+    out = np.eye(4)
+    out[:3, :3] = m[:3, :3].T
+    out[:3, 3] = -m[:3, :3].T @ m[:3, 3]
+    return out
+
+
+def _tangent(edge: Edge, t: float) -> np.ndarray:
+    return _unit(edge.tangent_at(t).to_tuple())
+
+
+def _profile_frame(sk: Sketch, tangent: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The axes of the profile's plane (x: the world X axis seen in the plane, Y where X is its
+    normal; z: the normal, the way the path starts) and the anchor: the center of the profile's
+    box along them. For a sketch in the XY plane, the center of its bounding box."""
+    n = _unit(sk.plane.z_dir.to_tuple())
+    if np.dot(n, tangent) < 0:
+        n = -n
+    ref = np.array((1.0, 0.0, 0.0)) if abs(n[0]) < 0.9 else np.array((0.0, 1.0, 0.0))
+    x = _unit(ref - np.dot(ref, n) * n)
+    axes = np.column_stack([x, np.cross(n, x), n])
+    origin = np.array(sk.plane.origin.to_tuple())
+    center = np.array(sk._transformed(_inverse(_placement(axes, origin))).bbox().center.to_tuple())
+    center[2] = 0.0
+    return axes, origin + axes @ center
+
+
+def _swept(sk: Sketch, edge: Edge, placement: np.ndarray, translational: bool, cap: bool = True) -> Part | Shell:
+    """A profile in its own frame (``sk``: in the XY plane, its anchor at the origin) swept along
+    an edge, placed by ``placement`` at the edge's start."""
+    local = edge._transformed(_inverse(placement))
+    curves = [c for f in sk.faces() for w in f.wires() for c in w._copy_curves()]
+    path_curve = local._copy_curve()
+    hint = "the profile may be too large for the path's curvature"
+    try:
+        with kernel_call("sweep", hint):
+            b = ext.curve_sweep(curves, path_curve, cap, True, False, translational, None, None)
+    finally:
+        ext.delete_curve(path_curve)
+        for c in curves:
+            ext.delete_curve(c)
+    body = Part._wrap(b) if cap else Shell._wrap(b)
+    return body._transformed(placement)
+
+
+def _carried(edge: Edge, placement: np.ndarray, translational: bool, size: float) -> np.ndarray:
+    """The axes a sweep along ``edge`` from ``placement`` ends with. Along a planar edge they
+    turn about its plane's normal as its tangent does (the kernel's frame keeps the normal);
+    along a twisted path they are read off a ribbon swept the same way (the kernel's frame is not
+    the rotation-minimizing one there: along a helix it turns some 40 degrees a turn)."""
+    axes = placement[:3, :3]
+    if translational:
+        return axes
+    ts, te = _tangent(edge, 0.0), _tangent(edge, 1.0)
+    pts = np.array([edge.point_at(i / 16).to_tuple() for i in range(17)])
+    _, sv, vt = np.linalg.svd(pts - pts.mean(axis=0))
+    if sv[2] <= 1e-9 * max(1.0, sv[0]):  # planar
+        if sv[1] <= 1e-9 * max(1.0, sv[0]):  # straight
+            return axes
+        return _turn(ts, te, vt[2]) @ axes
+    from .curves import Line
+
+    local = edge._transformed(_inverse(placement))
+    marker = Line((0.0, 0.0, 0.0), (size, 0.0, 0.0))
+    curves = [marker._copy_curve()]
+    path_curve = local._copy_curve()
+    try:
+        with kernel_call("sweep"):
+            ribbon = Shell._wrap(ext.curve_sweep(curves, path_curve, False, True, False, False, None, None))
+    finally:
+        ext.delete_curve(path_curve)
+        ext.delete_curve(curves[0])
+    p0, p1 = (np.array(local.point_at(t).to_tuple()) for t in (0.0, 1.0))
+    edges = list(ribbon.edges())
+    first = min(edges, key=lambda e: float(np.linalg.norm(np.array(e.center().to_tuple()) - p0)))
+    last = min(edges, key=lambda e: float(np.linalg.norm(np.array(e.center().to_tuple()) - p1)))
+    # the marker's start at the start of the ribbon, and where the ribbon's side from it ends
+    a = min((np.array(v.to_tuple()) for v in (first.start, first.end)), key=lambda v: float(v[0]))
+    ends = [np.array(v.to_tuple()) for v in (last.start, last.end)]
+    side = next(e for e in edges if e is not first and e is not last
+                and min(np.linalg.norm(np.array(v.to_tuple()) - a) for v in (e.start, e.end)) < 1e-6 * max(1.0, size))
+    tip = max((np.array(v.to_tuple()) for v in (side.start, side.end)), key=lambda v: float(np.linalg.norm(v - a)))
+    far = min(range(2), key=lambda i: float(np.linalg.norm(ends[i] - tip)))
+    x = axes @ (ends[1 - far] - ends[far])
+    x = _unit(x - np.dot(x, te) * te)
+    return np.column_stack([x, np.cross(te, x), te])
+
+
+def _round(sk: Sketch, anchor: np.ndarray) -> bool:
+    """Whether the profile turns into itself about its anchor: circles about it."""
+    edges = sk.edges()
+    tol = 1e-9 * max(1.0, sk.bbox().diagonal)
+    return bool(edges) and all(e.geom_type == "circle" and e.is_closed
+                               and float(np.linalg.norm(np.array(e.arc_center.to_tuple()) - anchor)) <= tol for e in edges)
+
+
+def _g1_chains(edges: list[Edge]) -> list[list[Edge]]:
+    """The edges in runs that meet tangentially (within 1e-6 rad); a new run at each corner."""
+    chains = [[edges[0]]]
+    for e in edges[1:]:
+        if np.linalg.norm(_tangent(chains[-1][-1], 1.0) - _tangent(e, 0.0)) <= 1e-6:
+            chains[-1].append(e)
+        else:
+            chains.append([e])
+    return chains
+
+
+def _joined(chain: list[Edge]) -> Edge:
+    """A run of edges as one edge (one B-spline curve): swept in one go, it has no joints."""
+    if len(chain) == 1:
+        return chain[0]
+    curves = [e._copy_curve() for e in chain]
+    try:
+        with kernel_call("sweep"):
+            return Edge._from_curve(ext.join_curves(curves))
+    finally:
+        for c in curves:
+            ext.delete_curve(c)
+
+
 def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = True, translational: bool = False,
           sharp_corners: bool | None = None) -> Part:
     """Sweep a profile along a path.
 
-    The profile is moved so that its center sits at the start of the path and (with
-    ``orient``) turned to face along the path, so profiles can be drawn anywhere,
-    usually in the XY plane::
+    The profile is moved so that the center of its box (along the axes of its plane) sits at the
+    start of the path and (with ``orient``) turned to face along the path, so profiles can be
+    drawn anywhere, usually in the XY plane::
 
         tube = sweep(Circle(2), Spline((0, 0, 0), (0, 10, 20), (30, 10, 40)))
         rail = sweep(Rectangle(4, 2), Helix(pitch=10, height=40, radius=20))
+
+    Edges of a path that meet tangentially are swept as one; at a corner of a path that is not
+    planar, the profile goes on turned by the smallest rotation from one tangent to the next.
 
     Args:
         profile: A sketch (holes allowed), a planar face or a closed wire.
@@ -235,16 +394,16 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
         orient: Turn the profile to be perpendicular to the path at its start.
         translational: Keep the profile's orientation fixed instead of turning it with the path.
         sharp_corners: For paths of several edges: miter the corners of a planar path
-            (default for planar paths); ``False`` sweeps each edge on its own and joins the pieces.
+            (default for planar paths); ``False`` sweeps the path piece by piece (each run of
+            tangent edges in one go) and joins the pieces.
     """
     edges = _path_edges(path)
-    if len(edges) == 1 and edges[0].is_closed and _open_curve(profile) is None:
-        # The kernel sweeps a profile along a closed single-edge path inside out; along the
-        # same path in two halves it works.
-        edges = _halves(edges[0])
     w = _open_curve(profile)
     if w is not None:
         # an open profile sweeps into a surface
+        if len(edges) == 1 and edges[0].is_closed:
+            # (the kernel sweeps along a closed single-edge path inside out; in two halves it works)
+            edges = _halves(edges[0])
         pc = edges[0]._copy_curve()
         curves = w._copy_curves()
         if len(edges) != 1:
@@ -258,41 +417,61 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
                 ext.delete_curve(c)
         return Shell._wrap(b)  # type: ignore[return-value]
     sk = _as_sketch(profile)
-    if orient and not translational:
-        sk = _oriented_to(sk, edges[0].tangent_at(0.0))
-    curves = [c for f in sk.faces() for w in f.wires() for c in w._copy_curves()]
-    try:
-        if len(edges) == 1:
-            path_curve = edges[0]._copy_curve()
-            hint = "the profile may be too large for the path's curvature"
-            try:
-                with kernel_call("sweep", hint):
-                    b = ext.curve_sweep(curves, path_curve, True, True, False, translational, None, None)
-            finally:
-                ext.delete_curve(path_curve)
-            return _require_solid(Part._wrap(b), "sweep", hint)
-        planar = _is_planar_path(edges)
-        if sharp_corners is None:
-            sharp_corners = planar
-        if sharp_corners:
-            if not planar:
-                raise ValueError("sharp-cornered sweeps need a planar path")
-            moved = [c for c in curves]
-            path_curves = [e._copy_curve() for e in edges]
-            hint = "the profile may be too large for the path's corners"
+    closed = edges[0].start.is_close(edges[-1].end, 1e-6 * max(1.0, edges[0].length))
+    tangent_closure = closed and np.linalg.norm(_tangent(edges[-1], 1.0) - _tangent(edges[0], 0.0)) <= 1e-6
+    planar = _is_planar_path(edges)
+    halved = len(edges) == 1 and edges[0].is_closed and (planar or not tangent_closure)
+    if halved:
+        # The kernel sweeps a profile along a closed single-edge path inside out (it caps the
+        # ends where they meet); along the same path in two halves it works.
+        edges = _halves(edges[0])
+    if sharp_corners is None:
+        sharp_corners = planar
+    if sharp_corners and len(edges) > 1:
+        if not planar:
+            raise ValueError("sharp-cornered sweeps need a planar path")
+        oriented = _oriented_to(sk, edges[0].tangent_at(0.0)) if orient and not translational else sk
+        curves = [c for f in oriented.faces() for w in f.wires() for c in w._copy_curves()]
+        path_curves = [e._copy_curve() for e in edges]
+        hint = "the profile may be too large for the path's corners"
+        try:
             with kernel_call("sweep", hint):
-                b = k.sweep_along_planar_path(moved, path_curves, move_profile=True)
-            return _require_solid(Part._wrap(b), "sweep", hint)
-    finally:
-        for c in curves:
-            ext.delete_curve(c)
-    pieces = []
-    for e in edges:
-        pieces.append(sweep(sk, e, orient=orient, translational=translational))
-    out = pieces[0]
-    for p in pieces[1:]:
-        out = out + p
-    return out
+                b = k.sweep_along_planar_path(curves, path_curves, move_profile=True)
+        finally:
+            for c in curves:
+                ext.delete_curve(c)
+        return _require_solid(Part._wrap(b), "sweep", hint)
+    t0 = _tangent(edges[0], 0.0)
+    axes, anchor = _profile_frame(sk, t0)
+    local = sk._transformed(_inverse(_placement(axes, anchor)))
+    if orient and not translational:
+        axes = _turn(axes[:, 2], t0) @ axes
+    hint = "the profile may be too large for the path's curvature"
+    chains = [[e] for e in edges] if halved else _g1_chains(edges)
+    if tangent_closure and len(chains) == 1 and _round(sk, anchor):
+        # (a profile that turns into itself, as in two halves before: exact)
+        chains = [[e] for e in _halves(_joined(edges))]
+    elif tangent_closure and len(chains) == 1:
+        # A closed path without a corner: swept in one go and closed where its ends meet (the
+        # kernel spreads the turn of its frame around such a path, so they meet; in two halves a
+        # rectangle turned by 10 degrees at the halfway point and 44 at the start).
+        chain = _joined(edges)
+        tube = _swept(local, chain, _placement(axes, chain.point_at(0.0).to_tuple()), translational, cap=False)
+        with kernel_call("sweep", hint):
+            k.stitch_into_solid(tube._brep)
+        return _require_solid(Part._wrap(tube._copy_brep()), "sweep", hint)
+    chains = [_joined(c) for c in chains]
+    size = sk.bbox().diagonal
+    out: Part | None = None
+    for i, e in enumerate(chains):
+        if i:
+            axes = _carried(chains[i - 1], placement, translational, size)
+            if not translational:
+                axes = _turn(axes[:, 2], _tangent(e, 0.0)) @ axes
+        placement = _placement(axes, e.point_at(0.0).to_tuple())
+        piece = _require_solid(_swept(local, e, placement, translational), "sweep", hint)  # type: ignore[arg-type]
+        out = piece if out is None else out + piece
+    return out  # type: ignore[return-value]
 
 
 def _halves(edge: Edge) -> list[Edge]:

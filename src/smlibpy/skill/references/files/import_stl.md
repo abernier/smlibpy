@@ -16,11 +16,13 @@ starts with `solid` is read correctly.
 
 ## What you can do with it
 - `volume`, `area`, `bbox()`, `len(m)` (triangles), `triangle_normals`.
+- Move it: `m.translate(...)`, `rotate`, `mirror`, `scale`, `moved` (copies), or the arrays in
+  place (`m.vertices += ...`).
+- Mesh Booleans with other closed meshes: `m - Sphere(5).mesh()` (see `Mesh.md`).
 - Export it again: `export_stl`, `export_glb`, `export_obj`, `render`, `show` all accept a `Mesh`.
 
 ## What you cannot do
 - It is not a `Part`. There are no faces, no fillets, no exact Booleans, no `export_step`.
-- Mesh Booleans raise `TypeError: mesh Booleans need meshes produced by tessellate()`.
 - `name` and `color` do not exist on a `Mesh`.
 
 ## Gotchas

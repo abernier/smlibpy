@@ -9,7 +9,7 @@ control. All of them accept a single shape or a list.
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
 | USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
-| SMLib (`.smb`) | `save` | the kernel's native format, exact and lossless |
+| SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those) |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
 | glTF (`.glb`, `.gltf`) | `export_glb`, `export_gltf` | triangles, edges as lines, colors, names |
 | STL (`.stl`) | `export_stl` | triangles |

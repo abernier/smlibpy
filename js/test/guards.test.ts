@@ -682,6 +682,10 @@ const distances: [string, () => [Part, Part], number][] = [
   ['overlapping boxes', () => [Box(10, 10, 10), Box(10, 10, 10).translate(5, 0, 0)], 0.0],
   ['touching boxes', () => [Box(10, 10, 10), Box(10, 10, 10).translate(10, 0, 0)], 0.0],
   ['overlapping spheres', () => [Sphere(10), Sphere(10).translate(15, 3, 0)], 0.0],
+  // nearly parallel faces: closest points in turn settled slowly and stopped too far apart
+  ['cylinders crossing at 1 degree', () => [Cylinder(5, 200), Cylinder(5, 200).rotate(X, 1).translate(12, 0, 0)], 2.0], // was 2.1197
+  ['cylinders crossing at 5 degrees', () => [Cylinder(5, 200), Cylinder(5, 200).rotate(X, 5).translate(12, 0, 0)], 2.0], // was 2.4853
+  ['cylinders crossing at 10 degrees', () => [Cylinder(5, 200), Cylinder(5, 200).rotate(X, 10).translate(12, 0, 0)], 2.0], // was 2.0162
 ]
 for (const [name, make, expected] of distances) {
   test(`distance between bodies: ${name}`, () => {

@@ -1,8 +1,8 @@
 // Triangle meshes: tessellation of exact shapes, mesh Booleans, mesh files.
 
 import { ModelingError, PolyHandle, ext, k, kernelCall } from './kernel.ts'
-import { Axis, BoundBox, Hit, Vector, _direction, _formatG, _vec, type VectorLike } from './geometry.ts'
-import { Face, ShapeList, _Body, _typeName, type Shape } from './shapes.ts'
+import { Axis, BoundBox, Hit, Location, Plane, Vector, Z, _direction, _formatG, _vec, type Matrix, type VectorLike } from './geometry.ts'
+import { Face, ShapeList, _Body, _reflection, _scaling, _translation, _typeName, type Shape } from './shapes.ts'
 import { exportFile } from './exporters.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
@@ -18,19 +18,33 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
  *
  * A mesh is its arrays: the kernel's mesh it came from is freed once they are copied out, and mesh
  * Booleans build one from the arrays when they need it. `dispose()` (or `using`) frees what a mesh
- * still holds in the kernel at once.
+ * still holds in the kernel at once. The arrays can be changed in place; `translate`, `rotate`,
+ * `mirror`, `scale` and `moved` return moved copies, as for shapes.
  */
 export class Mesh {
   vertices: Float64Array
   triangles: Uint32Array
   normals: Float32Array | null
   _poly: PolyHandle | null
+  _key: string | null
 
   constructor(vertices: ArrayLike<number>, triangles: ArrayLike<number>, normals: ArrayLike<number> | null = null, _poly: PolyHandle | null = null) {
     this.vertices = Float64Array.from(vertices)
     this.triangles = Uint32Array.from(triangles)
     this.normals = normals == null ? null : Float32Array.from(normals)
     this._poly = _poly
+    this._key = _poly !== null ? this._fingerprint() : null
+  }
+
+  /** What tells the arrays apart: their lengths and checksums. */
+  _fingerprint(): string {
+    const sum = (a: Float64Array | Uint32Array): number => {
+      const words = new Uint32Array(a.buffer, a.byteOffset, a.byteLength / 4)
+      let h = 0x811c9dc5
+      for (let i = 0; i < words.length; i++) h = Math.imul(h ^ words[i], 0x01000193)
+      return h >>> 0
+    }
+    return `${this.vertices.length}:${this.triangles.length}:${sum(this.vertices)}:${sum(this.triangles)}`
   }
 
   /** The number of triangles (Python's `len(mesh)`). */
@@ -125,13 +139,80 @@ export class Mesh {
     return this.bbox().center
   }
 
+  // -- placement (copies, as for shapes) ----------------------------------------------------
+  _transformed(m: Matrix): Mesh {
+    const v = this.vertices
+    const vertices = new Float64Array(v.length)
+    for (let i = 0; i < v.length; i += 3) {
+      for (let r = 0; r < 3; r++) vertices[i + r] = m[r * 4] * v[i] + m[r * 4 + 1] * v[i + 1] + m[r * 4 + 2] * v[i + 2] + m[r * 4 + 3]
+    }
+    const a = [m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]
+    const det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) + a[2] * (a[3] * a[7] - a[4] * a[6])
+    const turned = det < 0 // a reflection: the winding turns too, to stay outward
+    const triangles = Uint32Array.from(this.triangles)
+    if (turned) for (let i = 0; i < triangles.length; i += 3) [triangles[i], triangles[i + 2]] = [triangles[i + 2], triangles[i]]
+    let normals: Float32Array | null = null
+    if (this.normals !== null) {
+      // normals take the inverse transpose: the cofactors of the matrix (its scale drops out)
+      const c = [
+        a[4] * a[8] - a[5] * a[7], a[5] * a[6] - a[3] * a[8], a[3] * a[7] - a[4] * a[6],
+        a[2] * a[7] - a[1] * a[8], a[0] * a[8] - a[2] * a[6], a[1] * a[6] - a[0] * a[7],
+        a[1] * a[5] - a[2] * a[4], a[2] * a[3] - a[0] * a[5], a[0] * a[4] - a[1] * a[3],
+      ]
+      const n = this.normals
+      normals = new Float32Array(n.length)
+      for (let t = 0; t < n.length; t += 9) {
+        for (let corner = 0; corner < 3; corner++) {
+          const i = t + corner * 3
+          const o = t + (turned ? 2 - corner : corner) * 3
+          const x = c[0] * n[i] + c[1] * n[i + 1] + c[2] * n[i + 2]
+          const y = c[3] * n[i] + c[4] * n[i + 1] + c[5] * n[i + 2]
+          const z = c[6] * n[i] + c[7] * n[i + 1] + c[8] * n[i + 2]
+          const s = (det < 0 ? -1 : 1) / (Math.hypot(x, y, z) || 1)
+          normals[o] = x * s
+          normals[o + 1] = y * s
+          normals[o + 2] = z * s
+        }
+      }
+    }
+    return new Mesh(vertices, triangles, normals)
+  }
+
+  /** A copy placed by `location`. */
+  moved(location: Location): Mesh {
+    return this._transformed(location._m)
+  }
+
+  /** A copy moved by `(x, y, z)`. */
+  translate(x: number | VectorLike = 0, y = 0, z = 0): Mesh {
+    return this._transformed(_translation(x, y, z))
+  }
+
+  /** A copy rotated by `angle` degrees about `axis`. */
+  rotate(axis: Axis = Z, angle = 0): Mesh {
+    return this._transformed(Location.about(axis, angle)._m)
+  }
+
+  /** A mirrored copy (reflection in `plane`, a plane or a planar face; by default the XZ plane,
+   * which flips Y). The triangles keep facing outward. */
+  mirror(plane: Plane | Face | Axis | ShapeList<Face> = Plane.XZ): Mesh {
+    return this._transformed(_reflection(plane))
+  }
+
+  /** A scaled copy. `factor` is a number or per-axis factors `[sx, sy, sz]`, none of them zero
+   * (RangeError). */
+  scale(factor: number | VectorLike, center: VectorLike = [0, 0, 0]): Mesh {
+    return this._transformed(_scaling(factor, center))
+  }
+
   // -- mesh Booleans (kernel polygon Booleans) ----------------------------------------------
   /**
    * A new kernel mesh of this one, for the caller to own: a copy of the tessellation's where the
-   * mesh keeps it, else built from the triangles, stitched along the edges they share.
+   * mesh keeps it and its arrays are still the ones it was made from (they can be changed in
+   * place), else built from the triangles, stitched along the edges they share.
    */
   _kernelMesh(): number {
-    if (this._poly !== null && this._poly.poly) return k.poly_copy(this._poly.poly)
+    if (this._poly !== null && this._poly.poly && this._key === this._fingerprint()) return k.poly_copy(this._poly.poly)
     if (!this.triangles.length) throw new RangeError('mesh Booleans need triangles: this mesh has none')
     return kernelCall('mesh', () => ext.poly_from_triangles(this.vertices, this.triangles), 'the mesh may have no triangle with an area')
   }
@@ -389,8 +470,10 @@ export function _triangulate(faces: ArrayLike<number>): [Uint32Array, Uint32Arra
  * borders. A face that is straight in one direction and twisted along it (the sides of a twisted
  * bar, a ruled loft between different curves, the walls of a thickened free-form sheet) gets no
  * lines across, so a body with such a face is divided by halving its faces until every part is
- * flat within the tolerance: more triangles, but within the tolerance. Other bodies get the
- * grid's triangles.
+ * flat within the tolerance: more triangles, but within the tolerance. So is a body with a
+ * free-form face whose surface the grid misses (a bump between its lines). On spheres, tori, cones
+ * and cylinders, edges whose middle is off the face by more than the tolerance are split onto it
+ * (the grid's slivers near the poles of a sphere). Other bodies get the grid's triangles.
  */
 export function tessellate(shape: Shape | Iterable<Shape>, tolerance: number | null = null, angle = 15): Mesh {
   return _tessellate(shape, tolerance, angle, false)

@@ -81,7 +81,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   `dispose()`; `_take(h)` releases one to a new owner. A face's, edge's or vertex's kernel
   object (`_f`, `_e`, `_v`) is a getter that throws a TypeError once its body was disposed.
   Meshes keep no PolyBrep (`_fromPoly` frees it once the arrays are copied), except where a
-  caller keeps the tessellation's own (`_tessellate(..., keep)`) and disposes it.
+  caller keeps the tessellation's own (`_tessellate(..., keep)`) and disposes it; a mesh Boolean
+  takes a kept one only while the arrays are the ones it was made from (`_fingerprint`, a
+  checksum where Python takes zlib's crc32).
   Copies that go into a kernel call which keeps them when it fails (Booleans, transforms) are
   held by a handle until the kernel takes them: `_held(copy, (h) => ...)` gives the Brep back
   on success and frees it on a failure; `_combine(h, tool, op)` does a Boolean (`ext.boolean`).
@@ -107,7 +109,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
-  `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`;
+  `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`,
+  `_translation`, `_reflection`, `_scaling` (the matrices of a move; mesh.ts moves meshes with
+  them);
   `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them), `_tessellate`
   (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it),
   `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill` (its test);

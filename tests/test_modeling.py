@@ -156,6 +156,54 @@ def test_loft_and_sweep():
     assert sweep(Rectangle(4, 2), helix).volume == approx(8 * helix.length, rel=1e-5)
 
 
+def test_sweep_puts_the_center_of_the_profile_on_the_path():
+    # The kernel anchored the profile by the box along the world axes of the profile already turned
+    # to the path: a triangle along (1, 1, 1) started 1.6667 before the path (along (1, 2, 0.3):
+    # 0.8025 off). The center of the triangle's own box is 2.357 from its centroid, in its plane.
+    tri = Polygon((0, 0), (10, 0), (0, 10))
+    for d in [(0, 0, 1), (1, 0, 0), (1, 1, 1), (1, 2, 0.3)]:
+        d = np.array(d) / np.linalg.norm(d)
+        part = sweep(tri, Line((0, 0, 0), tuple(10 * d)))
+        assert part.is_valid() and part.volume == pytest.approx(500)
+        caps = [f for f in part.faces() if f.geom_type == "plane" and abs(np.dot(f.normal_at().to_tuple(), d)) > 1 - 1e-9]
+        start = min(caps, key=lambda f: abs(np.dot(f.center().to_tuple(), d)))
+        c = np.array(start.center().to_tuple())
+        assert np.dot(c, d) == pytest.approx(0, abs=1e-9) and np.linalg.norm(c) == pytest.approx(math.sqrt(50) / 3)
+
+
+def test_sweep_carries_the_profile_along_a_3d_path():
+    # Each piece of a 3D path was turned afresh from the sketch: the rectangle turned by 90 degrees
+    # at the last joint of this path (its end 4 wide in x and 2 high), and a section through that
+    # joint failed (SM_ERR). Tangent edges are swept in one go now.
+    path = FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), (40, 40, 40), radius=8)
+    bar = sweep(Rectangle(4, 2), path)
+    assert bar.is_valid() and bar.volume == pytest.approx(8 * path.length, rel=1e-6)
+    end = next(f for f in bar.faces() if f.geom_type == "plane" and f.normal_at().y > 1 - 1e-9 and f.center().y > 39)
+    assert (end.bbox().max - end.bbox().min).to_tuple() == pytest.approx((2, 0, 4), abs=1e-6)
+    cut = bar.section(Plane((40, 8, 40), z_dir=(0, 1, 0))).bbox()
+    assert (cut.max - cut.min).to_tuple() == pytest.approx((2, 0, 4), abs=1e-6)
+    # at a corner the profile turns by the smallest rotation from one leg to the next: the long
+    # side ends along (-1 / sqrt(5), -0.4, 0.8), where it ended along X before
+    legs = Polyline((0, 0, 0), (0, 0, 20), (20, 0, 20), (20, 20, 30))
+    part = sweep(Rectangle(4, 1), legs)
+    t = np.array((0, 2, 1)) / math.sqrt(5)
+    end = next(f for f in part.faces() if f.geom_type == "plane" and abs(np.dot(f.normal_at().to_tuple(), t)) > 1 - 1e-9
+               and f.center().distance_to((20, 20, 30)) < 1)
+    side = max(end.edges(), key=lambda e: e.length)
+    assert side.length == pytest.approx(4)
+    assert abs(np.dot(_unit((side.end - side.start).to_tuple()), (-1 / math.sqrt(5), -0.4, 0.8))) == pytest.approx(1)
+    # a closed path that is not planar: in one go, without a turn where the halves met
+    loop = Spline(*[(20 * math.cos(a), 14 * math.sin(a), 6 * math.sin(2 * a) + 3 * math.cos(a))
+                    for a in np.arange(8) * math.pi / 4], closed=True)
+    ring = sweep(Rectangle(4, 1), loop)
+    assert ring.is_valid() and len(ring.faces()) == 4 and ring.volume == pytest.approx(4 * loop.length, rel=1e-4)
+    assert sweep(Circle(2), loop).volume == pytest.approx(4 * math.pi * loop.length, rel=1e-7)  # (in two halves, as before)
+
+
+def _unit(v):
+    return np.array(v) / np.linalg.norm(v)
+
+
 def test_disjoint_sketch_union():
     two = Circle(1).translate(-3, 0, 0) + Circle(1).translate(3, 0, 0)
     assert two.area == approx(2 * math.pi)

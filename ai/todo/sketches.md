@@ -3,6 +3,13 @@
 ## HIGH
 
 ### 20. 2D Booleans of regions of several faces: wrong results without an error
+- **Fixed:** where faces of an operand touch each other at a point (as in exclusive ors), `&` goes face by
+  face, and `-`, `+` and `^` are computed in several ways, each checked against those overlaps (area and
+  first moments); the first that holds is the result, else ModelingError (kernel plan C1, 2026-10-22).
+  Against OpenCASCADE on 80 random cases (xors of three circles with a shape or with another xor; 560
+  results with the operands themselves): 0 wrong and 1 ModelingError (a triangle 0.1 in area), where
+  the code before had 230 wrong natively (wasm about as many). Disjoint faces (lettering, islands) take
+  the kernel's Boolean as before (80 more cases, right before and after).
 - **Found:** by the JavaScript port (2026-10-13): the WebAssembly kernel's answer differs from the native one,
   and both are wrong.
 - **What happens:** the kernel's planar Boolean returns a wrong region without an error for operands of several

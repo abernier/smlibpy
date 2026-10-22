@@ -120,10 +120,7 @@ class Shape:
 
     def translate(self: S, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> S:
         """A copy moved by ``(x, y, z)``."""
-        v = _vec(x) if not isinstance(x, (int, float)) else Vector(x, y, z)
-        m = np.eye(4)
-        m[:3, 3] = v.to_tuple()
-        return self._transformed(m)
+        return self._transformed(_translation(x, y, z))
 
     def rotate(self: S, axis: Axis = Z, angle: float = 0.0) -> S:
         """A copy rotated by ``angle`` degrees about ``axis``."""
@@ -132,25 +129,12 @@ class Shape:
     def mirror(self: S, plane: Plane | Face = Plane.XZ) -> S:
         """A mirrored copy (reflection in ``plane``, a plane or a planar face; by default the
         XZ plane, which flips Y)."""
-        plane = _as_plane(plane)
-        n = np.array(plane.z_dir.to_tuple())
-        o = np.array(plane.origin.to_tuple())
-        m = np.eye(4)
-        m[:3, :3] -= 2.0 * np.outer(n, n)
-        m[:3, 3] = 2.0 * n * o.dot(n)
-        return self._transformed(m)
+        return self._transformed(_reflection(plane))
 
     def scale(self: S, factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> S:
         """A scaled copy. ``factor`` is a number or per-axis factors ``(sx, sy, sz)``, none of
         them zero (``ValueError``: that would flatten the shape)."""
-        f = (factor, factor, factor) if isinstance(factor, (int, float)) else tuple(_vec(factor))
-        if not all(math.isfinite(x) and x != 0 for x in f):
-            raise ValueError(f"scale: every factor must be finite and not zero (got {factor!r})")
-        c = np.array(_vec(center).to_tuple())
-        m = np.eye(4)
-        m[:3, :3] = np.diag(f)
-        m[:3, 3] = c - np.diag(f) @ c
-        return self._transformed(m)
+        return self._transformed(_scaling(factor, center))
 
     def on(self: S, target: Plane | Face | Location | ShapeList | Sequence[Any]) -> S:
         """Place this shape, designed around the world XY plane, onto a plane or face.
@@ -1789,6 +1773,37 @@ def _surface_points(body: _Body) -> list[tuple[float, float, float]]:
     return [Vector(p).to_tuple() for p in points]
 
 
+def _translation(x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> np.ndarray:
+    """The matrix of a move by ``(x, y, z)`` (Shape.translate, Mesh.translate)."""
+    v = _vec(x) if not isinstance(x, (int, float)) else Vector(x, y, z)
+    m = np.eye(4)
+    m[:3, 3] = v.to_tuple()
+    return m
+
+
+def _reflection(plane: Plane | Face) -> np.ndarray:
+    """The matrix of a reflection in a plane or a planar face (Shape.mirror, Mesh.mirror)."""
+    plane = _as_plane(plane)
+    n = np.array(plane.z_dir.to_tuple())
+    o = np.array(plane.origin.to_tuple())
+    m = np.eye(4)
+    m[:3, :3] -= 2.0 * np.outer(n, n)
+    m[:3, 3] = 2.0 * n * o.dot(n)
+    return m
+
+
+def _scaling(factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> np.ndarray:
+    """The matrix of a scale about ``center`` (Shape.scale, Mesh.scale)."""
+    f = (factor, factor, factor) if isinstance(factor, (int, float)) else tuple(_vec(factor))
+    if not all(math.isfinite(x) and x != 0 for x in f):
+        raise ValueError(f"scale: every factor must be finite and not zero (got {factor!r})")
+    c = np.array(_vec(center).to_tuple())
+    m = np.eye(4)
+    m[:3, :3] = np.diag(f)
+    m[:3, 3] = c - np.diag(f) @ c
+    return m
+
+
 def _disjoint_batches(tools: Sequence[Any]) -> list[list[Any]]:
     """The tools in groups whose members' boxes do not overlap (so that each group can go
     into one Boolean); empty tools are left out."""
@@ -1821,9 +1836,11 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
 
     The kernel's own body distance is wrong where the nearest points form a line (parallel
     cylinders) and far from the origin. Here: the mesh vertices of each body nearest to the
-    other give starting points; from the best ones, closest points are taken in turn on
-    either body until the pair settles (alternating projections), which ends in a pair of
-    exact surface points.
+    other give starting points; from the best ones, ``ext.nearest_points`` takes closest
+    points in turn on either body and finishes with Newton's method on the parameters of the
+    faces they lie on, which ends in a pair of exact surface points. (Closest points in turn
+    alone settle slowly between nearly parallel faces: two skew cylinders 2 apart at 5 degrees
+    were still 2.4845 apart after 500 rounds.)
     """
     from .mesh import tessellate
 
@@ -1847,23 +1864,18 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
             if all(np.linalg.norm(pts[i] - t) > spacing for t in taken):
                 taken.append(pts[i])
                 starts.append((d, x, y, pts[i]))
-    best = math.inf
+    best, unsettled = math.inf, 0.0
     for _, x, y, p in sorted(starts, key=lambda t: t[0])[:2 * seeds]:
-        p = _closest(x, p)
-        q = _closest(y, p)
-        d = float(np.linalg.norm(p - q))
-        for _ in range(500):
-            p2 = _closest(x, q)
-            q2 = _closest(y, p2)
-            d2 = float(np.linalg.norm(p2 - q2))
-            if d2 >= d * (1 - 1e-14) - 1e-300:
-                break
-            moved = float(np.linalg.norm(p2 - p) + np.linalg.norm(q2 - q))
-            p, q, d = p2, q2, d2
-            if moved <= 1e-13 * max(1.0, float(np.abs(p).max())):
-                break
-        best = min(best, d)
+        with kernel_call("distance_to"):
+            r = ext.nearest_points(x._brep, y._brep, tuple(float(c) for c in p))
+        if r["distance"] < best:
+            best, unsettled = r["distance"], r["settled"]
     scale = max(ab.diagonal, bb.diagonal, 1.0)
+    if unsettled > 1e-9 * scale:
+        import warnings
+
+        warnings.warn(f"distance_to: the nearest points did not settle; the distance {best:.6g} may be too large "
+                      f"(the last step still gained {unsettled:.2g})", RuntimeWarning, stacklevel=3)
     return 0.0 if best <= 1e-12 * scale else best
 
 
@@ -3450,7 +3462,7 @@ class Sketch(Shell):
                 result = result._boolean2d_with([t], op, name)
         return result
 
-    def _boolean2d_with(self, tools: list[Sketch], op: Any, name: str) -> Sketch:
+    def _boolean2d_with(self, tools: list[Sketch], op: Any, name: str, *, split: bool = True) -> Sketch:
         from ._regions import rebuilt_brep
 
         if not tools:
@@ -3473,6 +3485,13 @@ class Sketch(Shell):
             if op == k.BooleanOp2D.DIFFERENCE:
                 return self
             return self._empty()
+        if split:
+            contact = self._contact()
+            for t in tools:
+                if contact is None:
+                    contact = t._contact()
+            if contact is not None:
+                return self._boolean2d_by_faces(tools, op, name, contact)
         # The kernel's planar Boolean is exact and fast on bodies built from their curves.
         # On bodies that were moved it can fail, or return a wrong union without an error,
         # so both operands are rebuilt first (see ai/plan/2d.md).
@@ -3517,6 +3536,160 @@ class Sketch(Shell):
             if "empty" in str(e):
                 return self._empty()
             raise
+
+    def _contact(self) -> Vector | None:
+        """A point where two faces of the sketch, or two loops of one face, touch (a vertex of
+        one at a vertex of the other, as in an exclusive or of circles); None if none do."""
+        points: list[tuple[float, float, float]] = []
+        loops: list[int] = []
+        n = 0
+        for f in self.faces():
+            for w in f.wires():
+                for v in w.vertices():
+                    points.append(v.point.to_tuple())
+                    loops.append(n)
+                n += 1
+        if n < 2:
+            return None
+        p = np.array(points)
+        tol = 1e-6 * max(1.0, self._loose_box().diagonal)
+        order = np.argsort(p[:, 0])
+        for rank, i in enumerate(order):
+            for j in order[rank + 1:]:
+                if p[j, 0] - p[i, 0] > tol:
+                    break
+                if loops[i] != loops[j] and np.linalg.norm(p[i] - p[j]) <= tol:
+                    return Vector(*p[i])
+        return None
+
+    def _face_sketches(self) -> list[Sketch]:
+        """Each face as a sketch of its own."""
+        with kernel_call("copy face"):
+            return [self._like(ext.copy_faces(self._brep, [f._f])) for f in self.faces()]
+
+    def _combined(self, pieces: list[Sketch]) -> Sketch:
+        """The faces of sketches whose regions do not overlap, in one sketch (no Boolean)."""
+        pieces = [p for p in pieces if p._brep.face_count()]
+        if not pieces:
+            return self._empty()
+        with kernel_call("combine"):
+            return self._like(ext.combine([p._brep for p in pieces]))
+
+    def _boolean2d_by_faces(self, tools: list[Sketch], op: Any, name: str, contact: Vector) -> Sketch:
+        """A planar Boolean of sketches with faces that touch each other at a point.
+
+        There the kernel's planar Boolean misclassifies whole faces without an error, in either
+        operand: of ``abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2, 4)``
+        and a triangle around it, ``&`` kept 86.6355 of 110.5398 and ``-`` left 23.9044 behind.
+        The intersection of two single faces is reliable, so ``&`` is taken face by face. The
+        other operations are computed in the ways below, each checked against those overlaps
+        (area and first moments); the first that holds is the result.
+        """
+        own = self._face_sketches()
+        other: list[Sketch] = []
+        owner: list[int] = []
+        for n, t in enumerate(tools):
+            for g in t._face_sketches():
+                other.append(g)
+                owner.append(n)
+        common: dict[tuple[int, int], Sketch] = {}
+        for i, f in enumerate(own):
+            for j, g in enumerate(other):
+                if not _disjoint(f._loose_box(), g._loose_box()):
+                    piece = f._boolean2d_with([g], k.BooleanOp2D.INTERSECTION, name, split=False)
+                    if piece._brep.face_count():
+                        common[i, j] = piece
+        box = self._loose_box()
+        for t in tools:
+            box = box.union(t._loose_box())
+        ref = box.center
+        tol = 1e-7 * box.diagonal**2 + 1e-12
+
+        def measure(sketches: Iterable[Sketch]) -> np.ndarray:
+            total = np.zeros(4)
+            for s in sketches:
+                for f in s.faces():
+                    a = f.area
+                    total += (a, *((f.center() - ref) * a).to_tuple())
+            return total
+
+        def holds(result: Sketch, want: np.ndarray) -> bool:
+            got = measure([result])
+            return abs(got[0] - want[0]) <= tol and float(np.linalg.norm(got[1:] - want[1:])) <= tol * box.diagonal
+
+        def first(ways: list[Callable[[], Sketch]], want: np.ndarray) -> Sketch:
+            for way in ways:
+                try:
+                    result = way()
+                except RuntimeError:  # a KernelError, ModelingError or a kernel call that failed
+                    continue
+                if holds(result, want):
+                    return result
+            raise ModelingError(f"{name}: the sketches have faces that touch each other at a point, as at "
+                                f"{_fmt_point(contact)}, and the kernel's planar Boolean gives a wrong region there "
+                                f"(checked against the overlaps of the faces); move one of the shapes that make "
+                                f"those faces a little, so that no two faces meet at a single point")
+
+        def assembled(pieces: list[Sketch]) -> Sketch:
+            # Pieces that do not overlap, joined by unions so that they share their vertices as
+            # the kernel's own regions do (pieces that merely lie side by side do not extrude).
+            pieces = [p for p in pieces if p._brep.face_count()]
+            if not pieces:
+                return self._empty()
+
+            def joined() -> Sketch:
+                result = pieces[0]
+                for p in pieces[1:]:
+                    result = p._boolean2d_with([result], k.BooleanOp2D.UNION, name, split=False)
+                return self._like(result._copy_brep())
+
+            try:
+                return first([joined], measure(pieces))
+            except ModelingError:
+                return self._combined(pieces)
+
+        def cut(f: Sketch, whole: list[Sketch], faces: list[Sketch], overlaps: list[Sketch]) -> Sketch:
+            # f less the sketches ``whole``, whose faces ``faces`` overlap it by ``overlaps``
+            if not faces:
+                return f
+
+            def one_by_one() -> Sketch:
+                parts = [f]
+                for g in faces:
+                    parts = [q for p in parts for q in (
+                        [p] if _disjoint(p._loose_box(), g._loose_box())
+                        else p._boolean2d_with([g], k.BooleanOp2D.DIFFERENCE, name, split=False)._face_sketches())]
+                return f._combined(parts)
+
+            tool = whole[0] if len(whole) == 1 else f._combined(whole)
+            return first([lambda: f._boolean2d_with(whole, k.BooleanOp2D.DIFFERENCE, name, split=False), one_by_one,
+                          lambda: f._slab_or_empty(tool, k.BooleanOp2D.DIFFERENCE, name)],
+                         measure([f]) - measure(overlaps))
+
+        def mine() -> list[Sketch]:
+            out = []
+            for i, f in enumerate(own):
+                js = [j for (a, j) in common if a == i]
+                out.append(cut(f, [tools[n] for n in sorted({owner[j] for j in js})], [other[j] for j in js],
+                               [common[i, j] for j in js]))
+            return out
+
+        if op == k.BooleanOp2D.INTERSECTION:
+            return assembled(list(common.values()))
+        if op == k.BooleanOp2D.DIFFERENCE:
+            return assembled(mine())
+        whole = measure([self]) + measure(tools) - measure(common.values())
+        if op == k.BooleanOp2D.UNION:
+            tool = tools[0] if len(tools) == 1 else self._combined(list(tools))
+            return first([lambda: self._boolean2d_with(tools, op, name, split=False),
+                          lambda: assembled(mine() + other),
+                          lambda: self._slab_or_empty(tool, op, name)], whole)
+        # exclusive or: what is in one sketch only, from either side
+        theirs = []
+        for j, g in enumerate(other):
+            iis = [i for (i, b) in common if b == j]
+            theirs.append(cut(g, [self], [own[i] for i in iis], [common[i, j] for i in iis]))
+        return first([lambda: assembled(mine() + theirs)], whole - measure(common.values()))
 
     def _boolean2d_plausible(self, tools: list[Sketch], result: Sketch, op: Any) -> bool:
         """A cheap check of a union or exclusive or: its area is at least the larger operand's

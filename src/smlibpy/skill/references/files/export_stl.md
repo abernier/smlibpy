@@ -27,9 +27,8 @@ Bracket 60 x 40 x 8 with a hole of r = 4 (volume 18797.876):
 | default | 1 | 2080 | |
 
 Both limits apply and the stricter one wins. Planar faces ignore both: a box is always 12
-triangles. On a cylinder of r = 10, tolerance 0.001 gives 411 segments. On a sphere, also set
-`angle=5`: with only a small tolerance, sliver triangles near the poles stay up to 0.68 mm off
-the surface (see `Mesh.md`). For 3D printing, `tolerance=0.01` is plenty.
+triangles. On a cylinder of r = 10, tolerance 0.001 gives 411 segments. For 3D printing,
+`tolerance=0.01` is plenty.
 
 ## Gotchas
 - Several parts go into **one** unnamed mesh. STL has no names, no colors, no units. Readers
@@ -37,7 +36,8 @@ the surface (see `Mesh.md`). For 3D printing, `tolerance=0.01` is plenty.
 - Coordinates are float32 (about 7 digits). Far from the origin the resolution drops, to about
   0.01 mm at 100 m. ASCII is no more precise: it writes 7 digits too.
 - A `Sketch` or face becomes 2 triangles per planar face: an open mesh, useless for printing.
-- Mesh Booleans mostly fail (`ModelingError`). Do Booleans on the exact parts before you export.
+- Do Booleans on the exact parts before you export: exact, and the mesh then follows the
+  tolerance. Mesh Booleans (`Mesh.md`) are for meshes without a part behind them.
 
 ## Errors
 - `ValueError: need at least one array to concatenate`: the list was empty.

@@ -10,6 +10,7 @@
 #include "value_js.h"
 
 #include "cells.h"
+#include "distance.h"
 #include "defeature.h"
 #include "deform.h"
 #include "draft.h"
@@ -89,6 +90,7 @@ void delete_surface(uintptr_t s) { smlibpy::delete_surface(reinterpret_cast<SmSu
 void delete_polybrep(uintptr_t p) { smlibpy::delete_polybrep(reinterpret_cast<SmPolyBrep*>(p)); }
 
 uintptr_t copy_curve(uintptr_t c) { return guard([&] { return ptr(smlibpy::copy_curve(smjs::curve(c))); }); }
+uintptr_t join_curves(val curves) { return guard([&] { return ptr(smlibpy::join_curves(pointers<SmCurve>(curves))); }); }
 uintptr_t trimmed_curve(uintptr_t c, double t0, double t1) { return guard([&] { return ptr(smlibpy::trimmed_curve(smjs::curve(c), t0, t1)); }); }
 uintptr_t ellipse_arc(uintptr_t c, double start, double end) { return guard([&] { return ptr(smlibpy::ellipse_arc(smjs::curve(c), start, end)); }); }
 uintptr_t edge_curve(uintptr_t e) { return guard([&] { return ptr(smlibpy::edge_curve(edge(e))); }); }
@@ -199,6 +201,18 @@ val brep_measure(uintptr_t b, double tolerance)
         d.set("error", e);
         d.set("relative_error", r.relative_error), d.set("size", r.size), d.set("converged", r.converged);
         d.set("panels", static_cast<double>(r.panels)), d.set("evaluations", static_cast<double>(r.evaluations));
+        return d;
+    });
+}
+
+val nearest_points(uintptr_t a, uintptr_t b, val near_a)
+{
+    return guard([&] {
+        const smlibpy::NearestPoints r = smlibpy::nearest_points(brep(a), brep(b), numbers(near_a));
+        val d = val::object();
+        d.set("a", vec3(SmVector3d(r.a[0], r.a[1], r.a[2]))), d.set("b", vec3(SmVector3d(r.b[0], r.b[1], r.b[2])));
+        d.set("distance", r.distance), d.set("converged", r.converged), d.set("settled", r.settled);
+        d.set("steps", static_cast<double>(r.steps));
         return d;
     });
 }
@@ -656,6 +670,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__delete_polybrep", &delete_polybrep);
     function("ext__copy_curve", &copy_curve);
     function("ext__trimmed_curve", &trimmed_curve);
+    function("ext__join_curves", &join_curves);
     function("ext__ellipse_arc", &ellipse_arc);
     function("ext__edge_curve", &edge_curve);
     function("ext__reverse_curve", &reverse_curve);
@@ -681,6 +696,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__face_measure", &face_measure);
+    function("ext__nearest_points", &nearest_points);
     function("ext__curve_length", &curve_length);
     function("ext__curve_parameter_at_length", &curve_parameter_at_length);
     function("ext__tessellate", &tessellate);

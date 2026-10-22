@@ -27,15 +27,16 @@ NumPy arrays, used for STL/OBJ/glTF, render and quick measurements.
 | `is_closed()` | bool | every edge shared by exactly two triangles (watertight) |
 | `raycast(origin, direction)` | list of `Hit` | where a ray meets the triangles, nearest first (see `raycast`) |
 | `m1 + m2`, `m1 - m2`, `m1 & m2` | `Mesh` | mesh Booleans, see below |
+| `translate`, `rotate`, `mirror`, `scale`, `moved` | `Mesh` | a moved copy, as for shapes (normals turn along; a mirrored mesh still faces outward) |
 
 ## Tolerance and triangle count
 | Shape | tolerance / angle | triangles | volume error |
 |---|---|---|---|
 | Cylinder(10, 20) | default (0.035) / 15 | 252 (64 segments) | -0.16 % |
 | Cylinder(10, 20) | 0.001 / 15 | 1640 (411 segments) | |
-| Sphere(10) | default / 15 | 3584 | -0.41 % |
-| Sphere(10) | 0.01 / 5 | 16128 | -0.10 % |
-| Sphere(10) | 0.001 / 15 | 133984 | -0.013 % |
+| Sphere(10) | default / 15 | 3596 | -0.41 % |
+| Sphere(10) | 0.01 / 15 | 15004 | -0.10 % |
+| Sphere(10) | 0.001 / 15 | 136872 (0.75 s) | -0.012 % |
 | Box | anything | 12 | 0 |
 | Box(20, 20, 100).twist(90) | default (0.108) / 15 | 2076 | +0.15 % |
 | Box(20, 20, 100).twist(90) | 0.001 / 15 | 131596 (0.6 s) | -0.004 % |
@@ -49,7 +50,12 @@ ruled loft between different sections, the walls of a thickened free-form sheet)
 differently: the kernel's usual grid would put one facet across such a face (the twisted box:
 68 triangles, 1 mm off, +5.5 %), so all faces of the part are halved until they are flat
 within the tolerance. That costs 10 to 30 times the triangles, in proportion to 1 / tolerance.
-Other parts get the kernel's triangles unchanged.
+So are parts with a free-form face whose surface the grid misses by more than twice the
+tolerance at one of its control points (a bump inside a face with straight borders falls between
+the grid's lines: a sheet with one point raised by 5 was meshed flat). On spheres, tori, cones
+and cylinders, edges whose middle is more than the tolerance off the face are split onto it
+(the grid's slivers near the poles of a sphere were 68 times the tolerance off). Other parts get
+the kernel's triangles unchanged.
 
 ## Mesh Booleans
 `m1 + m2`, `m1 - m2`, `m1 & m2` work on closed meshes from anywhere: `tessellate`, `import_stl`,
@@ -66,13 +72,11 @@ STL files from elsewhere); with exact parts, do the Boolean on the parts and mes
   first.
 
 ## Gotchas
-- The tolerance is not a hard limit near the poles of spheres. `Sphere(10)` with
-  `tolerance=0.01` had sliver triangles 0.68 mm off the surface. Add `angle=5`: the largest
-  deviation then drops to 0.006.
 - `volume` only means something for closed meshes. For an open mesh it changes when you move
   the mesh, and reversed winding makes it negative.
-- Unlike shapes, a `Mesh` is mutable: `m.vertices += [10, 0, 0]` moves it in place. It has no
-  `name` or `color`.
+- Unlike shapes, a `Mesh` is mutable: `m.vertices += [10, 0, 0]` moves it in place, and mesh
+  Booleans, exports and `render` all use the arrays as they are then. `m.translate(10, 0, 0)`
+  returns a moved copy instead. It has no `name` or `color`.
 - Use the exact shape for measurements (`part.volume`, `part.area`). Mesh values are off by
   the tolerance.
 

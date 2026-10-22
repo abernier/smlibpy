@@ -27,6 +27,7 @@ import {
   surface,
 } from '../src/index.ts'
 import { approx } from './_approx.ts'
+import { fromSmb, toSmb } from '../src/exporters.ts'
 import { KernelError as _KernelError, ModelingError as _ModelingError, Rectangle as _Rectangle, Vector as _Vector, surface as _surface, surfaceFillet as _surfaceFillet } from '../src/index.ts'
 import { ext as _ext, k as _k } from '../src/kernel.ts'
 
@@ -43,6 +44,47 @@ test('open curves make surfaces', () => {
 
   const patch = loft([Line([0, 0, 0], [10, 0, 0]), Line([0, 10, 5], [10, 10, 5])]) as Shell
   approx(patch.area, 10 * Math.hypot(10, 5), 1e-6)
+})
+
+test('loft of open curves takes ruled and smooth', () => {
+  // Lofts of single open curves ignored both: three lines, z = 0, 10 (8 higher in y) and 20, passed
+  // y = 6.0 at z = 5 with ruled: true, as by default (area 800.2232).
+  const lines = [Line([0, 0, 0], [30, 0, 0]), Line([0, 8, 10], [30, 8, 10]), Line([0, 0, 20], [30, 0, 20])]
+  const yAt = (s: Shell, z: number) => s.raycast([15, -50, z], [0, 1, 0])[0].point.y
+  const byDefault = loft(lines) as Shell
+  approx(byDefault.area, 800.2232, 0, 1e-4)
+  approx(yAt(byDefault, 5), 6)
+  const ruled = loft(lines, { ruled: true }) as Shell
+  assert.equal(ruled.faces().length, 2)
+  approx(yAt(ruled, 5), 4)
+  approx(ruled.area, 2 * 30 * Math.hypot(8, 10))
+  const four = [...lines, Line([0, 8, 30], [30, 8, 30])]
+  approx(yAt(loft(four) as Shell, 5), 8) // cubic, as before
+  approx(yAt(loft(four, { smooth: false }) as Shell, 5), 20 / 3) // quadratic
+})
+
+test('B-spline faces with a bump stay curved', () => {
+  // A cubic sheet parameterized like a plane (control points at 60 times their Greville abscissae)
+  // with one control point raised between the 13 parameters the kernel's plane test looked at:
+  // every copy that adds analytic surfaces made it a plane (kernel patch K7).
+  const n = 21
+  const t = [0, 0, 0, 0, ...Array.from({ length: n - 4 }, (_, i) => (i + 1) / (n - 3)), 1, 1, 1, 1]
+  const g = Array.from({ length: n }, (_, i) => (t[i + 1] + t[i + 2] + t[i + 3]) / 3)
+  const grid = Array.from({ length: n }, (_, j) => Array.from({ length: n }, (_, i) => [60 * g[i], 60 * g[j], i === 16 && j === 9 ? 5 : 0]))
+  const sheet = surface(grid, { interpolate: false }) as Shell
+  approx(sheet.area, 3607.471, 0, 1e-3)
+  approx(sheet.bbox().max.z, 2.2222, 0, 1e-4)
+  const copy = sheet.faces()[0].toShell() // was a plane of 3600.0
+  assert.equal(copy.faces()[0].geomType, 'bspline')
+  approx(copy.area, sheet.area, 1e-9)
+  approx((fromSmb(toSmb(sheet)) as Shell).bbox().max.z, 2.2222, 0, 1e-4) // was flat, zmax 0.0
+  approx(sheet.thicken(2).volume, 7212.841, 0, 1e-2) // was 7200.0
+  const v = sheet.mesh(0.01).vertices
+  let top = -Infinity
+  for (let i = 2; i < v.length; i += 3) top = Math.max(top, v[i])
+  assert.ok(top > 2.2) // was 0.0
+  // B-spline faces that are planes still come back from .smb as planes
+  assert.deepEqual([...new Set((fromSmb(toSmb(Box(10, 20, 30).toNurbs())) as Part).faces().map((f) => f.geomType))], ['plane'])
 })
 
 test('a surface through points, thickened', () => {

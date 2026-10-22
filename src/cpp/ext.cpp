@@ -918,6 +918,29 @@ SmBSplineCurve* approximate_curve(const SmCurve* curve, double tolerance)
     return out;
 }
 
+SmBSplineCurve* join_curves(const std::vector<SmCurve*>& curves)
+{
+    if (curves.empty())
+        throw std::invalid_argument("join_curves: no curves");
+    std::vector<std::unique_ptr<SmBSplineCurve>> approximated;
+    SmTArray<SmBSplineCurve*> parts;
+    for (SmCurve* c : curves)
+    {
+        if (!c)
+            throw std::invalid_argument("curve is None");
+        SmBSplineCurve* b = SM_CAST_PTR(SmBSplineCurve, c);
+        if (!b)
+        {
+            approximated.emplace_back(approximate_curve(c, 1e-7));
+            b = approximated.back().get();
+        }
+        parts.Add(b);
+    }
+    SmBSplineCurve* joined = nullptr;
+    check(SmBSplineCurve::CreateByJoining(ctx(), parts, nullptr, joined), "SmBSplineCurve::CreateByJoining");
+    return joined;
+}
+
 // Precise integration without the SM_API accuracy clamp ([1e-4, 1e-1] for faces): the kernel's
 // error falls as the accuracy is tightened (usd-brep KNOWN_ISSUES, "Area, volume and mass
 // properties of faces bounded by circles").
@@ -1107,6 +1130,9 @@ void bind_smlibpy_ext(py::module_ m)
         const auto r = smlibpy::reverse_curve(curve);
         return py::make_tuple(r.first, r.second);
     }, py::arg("curve"), "Reverse the direction of a standalone curve in place; returns the new interval.");
+    m.def("join_curves", &smlibpy::join_curves, py::arg("curves"), py::return_value_policy::take_ownership,
+          "Curves that each start where the one before ends, as one standalone B-spline curve "
+          "(SmBSplineCurve::CreateByJoining); one that is not a B-spline (an ellipse) is approximated to 1e-7.");
     m.def("approximate_curve", &smlibpy::approximate_curve, py::arg("curve"), py::arg("tolerance") = 1e-7,
           py::return_value_policy::take_ownership, "NURBS approximation of any curve that keeps its parameterisation.");
 

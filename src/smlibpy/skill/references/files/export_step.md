@@ -68,4 +68,4 @@ print(import_step("bracket_inch.step").bbox().size)   # Vector(60, 40, 8)
 ```
 
 ## Related
-`import_step`, `export` (by extension), `save` (native, bit-exact, one body), `generic.md`.
+`import_step`, `export` (by extension), `save` (native, exact, one body), `generic.md`.

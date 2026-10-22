@@ -66,6 +66,11 @@
   `test_a_byte_order_mark_is_no_part_of_the_drawing`.
 
 ### 3. `tessellate`: tolerance not kept near the poles of a sphere
+- **Fixed:** on spheres, tori, cones and cylinders, `tessellate` splits the edges whose middle is more than the
+  tolerance off the face onto it (kernel plan M2, `split_far_edges` in `src/cpp/tessellate.cpp`):
+  `tessellate(Sphere(10), 0.01)` is within 0.0096 (15004 triangles instead of 14080), 0.001 within 0.0010
+  (was 0.0014), the default within 0.026 (was 0.103). Free-form faces whose surface the grid misses at a control
+  point are halved (a raised point of an interpolated sheet came out flat) (2026-10-22).
 - **Session:** `2026-10-12_21-32-28_files-mesh`, scripts `03-sphere-deviation.py`, `04-sphere-slivers.py`
 - **What happens:** `tessellate(Sphere(10), 0.01, 15)` (also with angle 45) has a largest
   deviation of 0.678 mm, 68 times the tolerance. It comes from long sliver triangles (edges up to
@@ -179,6 +184,9 @@
 - **Expected:** STEP's `\X2\...\X0\` encoding (ISO 10303-21), which other CAD systems read.
 
 ### 17. Mesh Boolean error on merged meshes names the wrong cause
+- **Fixed:** mesh Booleans build the kernel's mesh from the arrays (kernel plan W3, M1), so merged meshes
+  and STL imports work: `tessellate(ShapeList([Box(10, 10, 10), Box(4, 4, 4).translate(20, 0, 0)])) -
+  Box(2, 2, 20).mesh()` gives 1024.0 (2026-10-22).
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `16-mesh-measures.py`
 - **What happens:** `tessellate(ShapeList([...])) - m` raises `TypeError: mesh Booleans need meshes
   produced by tessellate()`, although the mesh was made by `tessellate()`. A merged mesh has no

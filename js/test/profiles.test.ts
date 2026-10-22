@@ -401,6 +401,46 @@ test('many tools in one Boolean', () => {
   approx(r.area, 200 * 120 - (4 - PI) * 100 - 180 * 9 * PI)
 })
 
+test('Booleans of faces that touch at a point', () => {
+  // The faces of an exclusive or of circles touch each other at points. There the kernel's planar
+  // Boolean misclassified whole faces without an error, in either operand: abc & t was 54.9061 and
+  // abc - t 55.6337 (Python 86.6355 and 23.9044), abc ^ t 67.09 (Python 702.18). The values below
+  // are OpenCASCADE's.
+  const abc = Circle(5).xor(Circle(5).translate(4, 0)).xor(Circle(5).translate(2, 4))
+  const t = Polygon([-20, -20], [20, -20], [0, 20])
+  const a = 110.5398163
+  approx(abc.area, a)
+  for (const r of [abc.intersect(t), t.intersect(abc)]) {
+    assert.equal(r.faces().length, 4)
+    approx(r.area, a)
+    assert.ok(r.center().distanceTo(new Vector(2, 1.5261489, 0)) < 1e-6)
+  }
+  assert.equal(abc.cut(t).faces().length, 0)
+  for (const r of [t.cut(abc), abc.xor(t), t.xor(abc)]) {
+    approx(r.area, 800 - a)
+    assert.ok(r.center().distanceTo(new Vector(-0.3206561, -7.9802049, 0)) < 1e-6)
+  }
+  approx(abc.fuse(t).area, 800)
+  assert.equal(abc.fuse(t).faces().length, 1)
+  // The result is built as the kernel builds such regions: its faces share their vertices.
+  approx(abc.intersect(t).extrude(5).volume, 5 * a)
+
+  // two such sketches; OpenCASCADE: & 35.067874, - 103.018076, + 213.322849, ^ 178.254975
+  const xor3 = (...centers: [number, number][]) => {
+    const c = centers.map(([x, y]) => Circle(5).translate(x, y))
+    return c[0].xor(c[1]).xor(c[2])
+  }
+  const p = xor3([-0.285723, 0.358634], [6.545264, -0.2061], [2.047048, 4.524309])
+  const q = xor3([-1.892038, 0.071452], [4.779296, 1.757861], [-0.435259, 2.820408]).translate(-4.911954, 3.715734)
+  const i = p.intersect(q).area
+  approx(i, 35.067874, 0, 1e-5)
+  approx(p.cut(q).area, p.area - i)
+  approx(q.cut(p).area, q.area - i)
+  approx(p.fuse(q).area, p.area + q.area - i)
+  approx(p.xor(q).area, p.area + q.area - 2 * i)
+  approx(p.xor(q).area, 178.254975, 0, 1e-5)
+})
+
 test('empty results and operand errors', () => {
   const empty = Rectangle(10, 10).cut(Rectangle(20, 20))
   assert.equal(empty.faces().length, 0)

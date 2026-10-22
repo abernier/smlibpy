@@ -66,8 +66,10 @@ straight = loft([Rectangle(20, 20), RegularPolygon(10, 6).translate(0, 0, 20)], 
 
 ## Sweep
 
-A sweep moves a profile along a path. smlibpy centers the profile on the start of the path
-and turns it to face along the path, so profiles are simply drawn in XY:
+A sweep moves a profile along a path. smlibpy puts the center of the profile's box on the
+start of the path and turns it to face along the path, so profiles are simply drawn in XY.
+Along a path of several edges the profile keeps its orientation: tangent edges are swept in one
+go, and at a corner of a 3D path it turns by the smallest rotation from one tangent to the next.
 
 ```python
 path = Spline((0, 0, 0), (0, 20, 30), (40, 20, 50))

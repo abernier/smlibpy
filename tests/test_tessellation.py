@@ -14,8 +14,8 @@ import math
 import numpy as np
 import pytest
 
-from smlibpy import (Axis, Box, Circle, Cylinder, Helix, Line, Plane, Rectangle, Sphere, Z, export_stl, import_stl,
-                     loft, ruled, surface, sweep)
+from smlibpy import (Axis, Box, Circle, Cylinder, Helix, Line, Location, Plane, Rectangle, Sphere, Z, export_stl,
+                     import_stl, loft, ruled, surface, sweep)
 from smlibpy._kernel import ext, k
 from smlibpy.exporters import gltf_document
 from smlibpy.mesh import Mesh, tessellate
@@ -91,7 +91,9 @@ def test_edges_at_the_end_of_a_twist_are_divided_too():
 def test_plain_parts_keep_their_facets():
     assert len(Box(20, 20, 20).mesh()) == 12
     assert len(Cylinder(10, 20).mesh()) == 252
-    assert len(Sphere(10).mesh()) == 3584
+    # (the grid's 3584, and 12 more where facets near the poles were up to 0.103 off, three times
+    # the tolerance: their long edges are split onto the sphere)
+    assert len(Sphere(10).mesh()) == 3596
     rounded = Box(40, 30, 20) - Cylinder(5, 30)
     rounded = rounded.fillet(rounded.edges().parallel_to((0, 0, 1)), 3)
     plain = [rounded, sweep(Circle(1), Helix(pitch=5, height=30, radius=10)),
@@ -102,6 +104,39 @@ def test_plain_parts_keep_their_facets():
         assert algorithm(part, tol) == "grid"
         mesh, grid = part.mesh(), kernel_grid(part, tol)
         assert np.array_equal(mesh.vertices, grid.vertices) and np.array_equal(mesh.triangles, grid.triangles)
+
+
+def test_spheres_are_meshed_within_the_tolerance():
+    # The grid put a fan of long slivers along the seam near both poles: tessellate(Sphere(10), 0.01)
+    # was 0.6783 off the sphere (68 times the tolerance); their edges are split onto the sphere now.
+    def off_sphere(mesh):
+        t = mesh.vertices[mesh.triangles]
+        pts = np.concatenate([t.mean(axis=1), (t + np.roll(t, -1, axis=1)).reshape(-1, 3) / 2])
+        return np.abs(np.linalg.norm(pts, axis=1) - 10).max()
+
+    for tol in (0.01, 0.001):
+        mesh = tessellate(Sphere(10), tol)
+        assert mesh.is_closed() and off_sphere(mesh) <= tol * (1 + 1e-9)
+        assert off_sphere(kernel_grid(Sphere(10), tol)) > tol  # the defect the test is about (0.6783, 0.0014)
+    pinned = Sphere(10) + Cylinder(2, 30).rotate(Axis.X, 90)  # (the poles stay whole)
+    assert off_surface(pinned, tessellate(pinned, 0.05)) <= 0.05 * (1 + 1e-9)
+    mesh = tessellate(Sphere(10), 0.01)
+    assert len(mesh) < 1.1 * len(kernel_grid(Sphere(10), 0.01))  # (14080 triangles, 15004 now)
+    corners = mesh.vertices[mesh.triangles] / 10.0
+    assert np.einsum("ijk,ijk->ij", corners, mesh.normals).min() > 1 - 1e-6  # the new corners' normals too
+
+
+def test_free_form_bumps_between_the_grid_lines_are_meshed():
+    # An interpolated sheet with one point raised by 5: its borders are straight, so the grid had no
+    # lines across the bump and was 0.16 high for a tolerance of 0.01. Such a body is halved now.
+    n = 21
+    sheet = surface([[(3.0 * i, 3.0 * j, 5.0 if (i, j) == (16, 9) else 0.0) for i in range(n)] for j in range(n)])
+    for tol in (0.1, 0.01):
+        mesh = sheet.mesh(tol)
+        assert mesh.vertices[:, 2].max() == pytest.approx(5.0, abs=tol)
+        assert kernel_grid(sheet, tol).vertices[:, 2].max() < 0.2  # the defect the test is about
+    _, report = ext.tessellate(sheet._brep, chord_height_tolerance=0.01, return_report=True)
+    assert report["algorithm"] == "halving"
 
 
 def test_surface_straight_both_ways_keeps_the_grid():
@@ -244,6 +279,44 @@ def test_a_mesh_is_its_arrays():
     assert kept._poly is None
     kept.dispose()  # (once is enough)
     assert (kept + Box(10, 10, 10).translate(5, 0, 0).mesh()).volume == pytest.approx(1500, rel=1e-9)
+
+
+def test_mesh_booleans_use_the_arrays_as_they_are():
+    # A mesh Boolean ran on the kernel mesh of the tessellation, also after the documented
+    # b.vertices += ...: 7478.54, the cut by the unmoved sphere (the exact cut is 7738.20).
+    from smlibpy.mesh import _tessellate
+
+    box = Box(20, 20, 20).mesh()
+    ball = Sphere(5).mesh()
+    ball.vertices += [10, 0, 0]
+    moved = (box - ball).volume
+    assert moved == pytest.approx((Box(20, 20, 20) - Sphere(5).translate(10, 0, 0)).volume, rel=2e-4)
+    assert moved == pytest.approx((box - Mesh(ball.vertices, ball.triangles)).volume, rel=1e-12)
+    kept = _tessellate(Sphere(5), None, 15.0, True)  # (internal: keeps the kernel mesh)
+    kept.vertices += [10, 0, 0]
+    assert (box - kept).volume == pytest.approx(moved, rel=1e-12)
+    kept.dispose()
+    assert (box - Sphere(5).mesh().translate(10, 0, 0)).volume == pytest.approx(moved, rel=1e-12)
+
+
+def test_meshes_move_as_shapes_do():
+    m = Box(10, 20, 30).mesh()
+    for moved, (lo, hi) in [(m.translate(5, 0, 0), ((0, -10, -15), (10, 10, 15))),
+                            (m.rotate(Z, 90), ((-10, -5, -15), (10, 5, 15))),
+                            (m.moved(Location((0, 0, 15))), ((-5, -10, 0), (5, 10, 30))),
+                            (m.mirror(Plane.YZ.offset(5)), ((5, -10, -15), (15, 10, 15))),
+                            (m.scale((1, 2, 3)), ((-5, -20, -45), (5, 20, 45)))]:
+        assert moved.is_closed() and moved.volume > 0
+        assert np.allclose(moved.bbox().min.to_tuple(), lo) and np.allclose(moved.bbox().max.to_tuple(), hi)
+    assert m.scale(2).volume == pytest.approx(8 * m.volume)
+    assert np.allclose(m.vertices, Box(10, 20, 30).mesh().vertices)  # (copies: the mesh stays)
+    ball = Sphere(5).mesh()
+    for moved in (ball.mirror(), ball.scale((1, 2, 3)), ball.rotate(Axis((1, 0, 0), (1, 1, 0)), 40)):
+        # the corner normals turn along and still agree with the triangles' winding
+        agree = np.einsum("ij,ij->i", moved.triangle_normals, moved.normals.mean(axis=1))
+        assert agree.min() > 0.5 and moved.volume > 0
+    with pytest.raises(ValueError, match="not zero"):
+        m.scale((1, 0, 1))
 
 
 def test_mesh_booleans_on_any_mesh(tmp_path):

@@ -969,6 +969,11 @@ export class Mesh {
     get volume(): number;
     bbox(): BoundBox;
     center(): Vector;
+    moved(location: Location): Mesh;
+    translate(x?: number | VectorLike, y?: number, z?: number): Mesh;
+    rotate(axis?: Axis, angle?: number): Mesh;
+    mirror(plane?: Plane | Face | Axis | ShapeList<Face>): Mesh;
+    scale(factor: number | VectorLike, center?: VectorLike): Mesh;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
     isClosed(): boolean;
     fuse(other: Mesh): Mesh;

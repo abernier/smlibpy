@@ -9,6 +9,7 @@ import {
   Cone,
   Cylinder,
   EllipticalArc,
+  FilletPolyline,
   GridLocations,
   Helix,
   Line,
@@ -186,6 +187,60 @@ test('loft and sweep', () => {
   approx((sweep(Circle(2), elbow) as Part).volume, PI * 4 * elbow.length, 1e-6)
   const helix = Helix(10, 40, 20)
   approx((sweep(Rectangle(4, 2), helix) as Part).volume, 8 * helix.length, 1e-5)
+})
+
+test('sweep puts the center of the profile on the path', () => {
+  // The kernel anchored the profile by the box along the world axes of the profile already turned to
+  // the path: a triangle along (1, 1, 1) started 1.6667 before the path (along (1, 2, 0.3): 0.8025
+  // off). The center of the triangle's own box is 2.357 from its centroid, in its plane.
+  const tri = Polygon([0, 0], [10, 0], [0, 10])
+  for (const d0 of [[0, 0, 1], [1, 0, 0], [1, 1, 1], [1, 2, 0.3]]) {
+    const l = Math.hypot(d0[0], d0[1], d0[2])
+    const d = d0.map((v) => v / l)
+    const along = (v: Vector) => v.x * d[0] + v.y * d[1] + v.z * d[2]
+    const part = sweep(tri, Line([0, 0, 0], d.map((v) => 10 * v))) as Part
+    assert.ok(part.isValid())
+    approx(part.volume, 500)
+    const caps = part.faces().filter((f) => f.geomType === 'plane' && Math.abs(along(f.normalAt())) > 1 - 1e-9)
+    const start = caps.reduce((a, b) => (Math.abs(along(a.center())) < Math.abs(along(b.center())) ? a : b))
+    approx(along(start.center()), 0, 0, 1e-9)
+    approx(start.center().length, Math.sqrt(50) / 3)
+  }
+})
+
+test('sweep carries the profile along a 3D path', () => {
+  // Each piece of a 3D path was turned afresh from the sketch: the rectangle turned by 90 degrees at
+  // the last joint of this path (its end 4 wide in x and 2 high), and a section through that joint
+  // failed (SM_ERR). Tangent edges are swept in one go now.
+  const path = FilletPolyline([0, 0, 0], [0, 0, 40], [40, 0, 40], [40, 40, 40], { radius: 8 })
+  const bar = sweep(Rectangle(4, 2), path) as Part
+  assert.ok(bar.isValid())
+  approx(bar.volume, 8 * path.length, 1e-6)
+  const size = (b: { min: Vector; max: Vector }) => [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z]
+  const end = bar.faces().find((f) => f.geomType === 'plane' && f.normalAt().y > 1 - 1e-9 && f.center().y > 39)!
+  size(end.bbox()).forEach((v, i) => approx(v, [2, 0, 4][i], 0, 1e-6))
+  size(bar.section(new Plane([40, 8, 40], null, [0, 1, 0])).bbox()).forEach((v, i) => approx(v, [2, 0, 4][i], 0, 1e-6))
+  // at a corner the profile turns by the smallest rotation from one leg to the next: the long side
+  // ends along (-1 / sqrt(5), -0.4, 0.8), where it ended along X before
+  const legs = Polyline([0, 0, 0], [0, 0, 20], [20, 0, 20], [20, 20, 30])
+  const part = sweep(Rectangle(4, 1), legs) as Part
+  const t = new Vector(0, 2, 1).normalized()
+  const last = part.faces().find((f) => f.geomType === 'plane' && Math.abs(f.normalAt().dot(t)) > 1 - 1e-9 && f.center().distanceTo([20, 20, 30]) < 1)!
+  const side = last.edges().reduce((a, b) => (a.length >= b.length ? a : b))
+  approx(side.length, 4)
+  approx(Math.abs(side.end.sub(side.start).normalized().dot(new Vector(-1 / Math.sqrt(5), -0.4, 0.8))), 1)
+  // a closed path that is not planar: in one go, without a turn where the halves met
+  const loop = Spline(
+    ...Array.from({ length: 8 }, (_, i) => {
+      const a = (i * PI) / 4
+      return [20 * Math.cos(a), 14 * Math.sin(a), 6 * Math.sin(2 * a) + 3 * Math.cos(a)]
+    }),
+    { closed: true },
+  )
+  const ring = sweep(Rectangle(4, 1), loop) as Part
+  assert.ok(ring.isValid() && ring.faces().length === 4)
+  approx(ring.volume, 4 * loop.length, 1e-4)
+  approx((sweep(Circle(2), loop) as Part).volume, 4 * PI * loop.length, 1e-7) // (in two halves, as before)
 })
 
 test('a disjoint sketch union', () => {

@@ -175,12 +175,7 @@ export abstract class Shape {
 
   /** A copy moved by `(x, y, z)`. */
   translate(x: number | VectorLike = 0, y = 0, z = 0): this {
-    const v = typeof x === 'number' ? new Vector(x, y, z) : _vec(x)
-    const m = _identity()
-    m[3] = v.x
-    m[7] = v.y
-    m[11] = v.z
-    return this._transformed(m) as this
+    return this._transformed(_translation(x, y, z)) as this
   }
 
   /** A copy rotated by `angle` degrees about `axis`. */
@@ -191,33 +186,13 @@ export abstract class Shape {
   /** A mirrored copy (reflection in `plane`, a plane or a planar face; by default the XZ plane,
    * which flips Y). */
   mirror(plane: Plane | Face | Axis | ShapeList<Face> = Plane.XZ): this {
-    const pl = _asPlane(plane)
-    const n = pl.zDir.toArray()
-    const d = pl.origin.dot(pl.zDir)
-    const m = _identity()
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) m[i * 4 + j] -= 2 * n[i] * n[j]
-    m[3] = 2 * n[0] * d
-    m[7] = 2 * n[1] * d
-    m[11] = 2 * n[2] * d
-    return this._transformed(m) as this
+    return this._transformed(_reflection(plane)) as this
   }
 
   /** A scaled copy. `factor` is a number or per-axis factors `[sx, sy, sz]`, none of them zero
    * (RangeError: that would flatten the shape). */
   scale(factor: number | VectorLike, center: VectorLike = [0, 0, 0]): this {
-    const f = typeof factor === 'number' ? [factor, factor, factor] : _vec(factor).toArray()
-    if (!f.every((x) => Number.isFinite(x) && x !== 0)) {
-      throw new RangeError(`scale: every factor must be finite and not zero (got ${_repr(typeof factor === 'number' ? factor : Array.from(factor as ArrayLike<number>))})`)
-    }
-    const c = _vec(center)
-    const m = _identity()
-    m[0] = f[0]
-    m[5] = f[1]
-    m[10] = f[2]
-    m[3] = c.x - f[0] * c.x
-    m[7] = c.y - f[1] * c.y
-    m[11] = c.z - f[2] * c.z
-    return this._transformed(m) as this
+    return this._transformed(_scaling(factor, center)) as this
   }
 
   /**
@@ -1972,6 +1947,46 @@ function _distinctCurves(curves: Iterable<number>, tol: number): ShapeList<Edge>
   return _list(kept.map(([e]) => e))
 }
 
+/** The matrix of a move by `(x, y, z)` (Shape.translate, Mesh.translate). */
+export function _translation(x: number | VectorLike = 0, y = 0, z = 0): Matrix {
+  const v = typeof x === 'number' ? new Vector(x, y, z) : _vec(x)
+  const m = _identity()
+  m[3] = v.x
+  m[7] = v.y
+  m[11] = v.z
+  return m
+}
+
+/** The matrix of a reflection in a plane or a planar face (Shape.mirror, Mesh.mirror). */
+export function _reflection(plane: Plane | Face | Axis | ShapeList<Face>): Matrix {
+  const pl = _asPlane(plane)
+  const n = pl.zDir.toArray()
+  const d = pl.origin.dot(pl.zDir)
+  const m = _identity()
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) m[i * 4 + j] -= 2 * n[i] * n[j]
+  m[3] = 2 * n[0] * d
+  m[7] = 2 * n[1] * d
+  m[11] = 2 * n[2] * d
+  return m
+}
+
+/** The matrix of a scale about `center` (Shape.scale, Mesh.scale). */
+export function _scaling(factor: number | VectorLike, center: VectorLike = [0, 0, 0]): Matrix {
+  const f = typeof factor === 'number' ? [factor, factor, factor] : _vec(factor).toArray()
+  if (!f.every((x) => Number.isFinite(x) && x !== 0)) {
+    throw new RangeError(`scale: every factor must be finite and not zero (got ${_repr(typeof factor === 'number' ? factor : Array.from(factor as ArrayLike<number>))})`)
+  }
+  const c = _vec(center)
+  const m = _identity()
+  m[0] = f[0]
+  m[5] = f[1]
+  m[10] = f[2]
+  m[3] = c.x - f[0] * c.x
+  m[7] = c.y - f[1] * c.y
+  m[11] = c.z - f[2] * c.z
+  return m
+}
+
 export function _disjoint(a: BoundBox, b: BoundBox, tol = 1e-9): boolean {
   const amin = a.min.toArray()
   const amax = a.max.toArray()
@@ -2105,8 +2120,11 @@ function _dist(a: readonly number[], b: readonly number[]): number {
  *
  * The kernel's own body distance is wrong where the nearest points form a line (parallel
  * cylinders) and far from the origin. Here: the mesh vertices of each body nearest to the other
- * give starting points; from the best ones, closest points are taken in turn on either body until
- * the pair settles (alternating projections), which ends in a pair of exact surface points.
+ * give starting points; from the best ones, `ext.nearest_points` takes closest points in turn on
+ * either body and finishes with Newton's method on the parameters of the faces they lie on, which
+ * ends in a pair of exact surface points. (Closest points in turn alone settle slowly between
+ * nearly parallel faces: two skew cylinders 2 apart at 5 degrees were still 2.4845 apart after 500
+ * rounds.)
  */
 function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
   if (k.brep_face_count(a._brep) === 0 || k.brep_face_count(b._brep) === 0) throw new RangeError('distanceTo: an empty body has no distance')
@@ -2140,25 +2158,19 @@ function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
     }
   }
   let best = Infinity
+  let unsettled = 0
   const first = starts.slice().sort((u, v) => u[0] - v[0]).slice(0, 2 * seeds)
   for (const [, x, y, start] of first) {
-    let p = _closest(x, start)
-    let q = _closest(y, p)
-    let d = _dist(p, q)
-    for (let it = 0; it < 500; it++) {
-      const p2 = _closest(x, q)
-      const q2 = _closest(y, p2)
-      const d2 = _dist(p2, q2)
-      if (d2 >= d * (1 - 1e-14) - 1e-300) break
-      const moved = _dist(p2, p) + _dist(q2, q)
-      p = p2
-      q = q2
-      d = d2
-      if (moved <= 1e-13 * Math.max(1, Math.abs(p[0]), Math.abs(p[1]), Math.abs(p[2]))) break
+    const r = kernelCall('distanceTo', () => ext.nearest_points(x._brep, y._brep, start))
+    if (r.distance < best) {
+      best = r.distance
+      unsettled = r.settled
     }
-    best = Math.min(best, d)
   }
   const scale = Math.max(ab.diagonal, bb.diagonal, 1)
+  if (unsettled > 1e-9 * scale) {
+    _warn(`distanceTo: the nearest points did not settle; the distance ${_formatG(best)} may be too large (the last step still gained ${unsettled.toPrecision(2)})`)
+  }
   return best <= 1e-12 * scale ? 0 : best
 }
 
@@ -3899,7 +3911,7 @@ export class Sketch extends Shell {
     return result
   }
 
-  _boolean2dWith(tools: readonly Sketch[], op: number, name: string): Sketch {
+  _boolean2dWith(tools: readonly Sketch[], op: number, name: string, split = true): Sketch {
     if (!tools.length) return this
     const emptySelf = !k.brep_face_count(this._brep)
     if (emptySelf || !tools.some((t) => k.brep_face_count(t._brep))) {
@@ -3915,6 +3927,11 @@ export class Sketch extends Shell {
       }
       if (op === k.BooleanOp2D.DIFFERENCE) return this
       return this._empty()
+    }
+    if (split) {
+      let contact = this._contact()
+      for (const t of tools) contact = contact ?? t._contact()
+      if (contact !== null) return this._boolean2dByFaces(tools, op, name, contact)
     }
     // The kernel's planar Boolean is exact and fast on bodies built from their curves. On bodies
     // that were moved it can fail, or return a wrong union without an error, so both operands are
@@ -3958,6 +3975,182 @@ export class Sketch extends Shell {
       if (e instanceof ModelingError && e.message.includes('empty')) return this._empty()
       throw e
     }
+  }
+
+  /** A point where two faces of the sketch, or two loops of one face, touch (a vertex of one at a
+   * vertex of the other, as in an exclusive or of circles); null if none do. */
+  _contact(): Vector | null {
+    const points: Vector[] = []
+    const loops: number[] = []
+    let n = 0
+    for (const f of this.faces()) {
+      for (const w of f.wires()) {
+        for (const v of w.vertices()) {
+          points.push(v.point)
+          loops.push(n)
+        }
+        n += 1
+      }
+    }
+    if (n < 2) return null
+    const tol = 1e-6 * Math.max(1, this._looseBox().diagonal)
+    const order = points.map((_, i) => i).sort((i, j) => points[i].x - points[j].x)
+    for (let a = 0; a < order.length; a++) {
+      const i = order[a]
+      for (const j of order.slice(a + 1)) {
+        if (points[j].x - points[i].x > tol) break
+        if (loops[i] !== loops[j] && points[i].distanceTo(points[j]) <= tol) return points[i]
+      }
+    }
+    return null
+  }
+
+  /** Each face as a sketch of its own. */
+  _faceSketches(): Sketch[] {
+    return kernelCall('copy face', () => this.faces().map((f) => this._like(ext.copy_faces(this._brep, [f._f]))))
+  }
+
+  /** The faces of sketches whose regions do not overlap, in one sketch (no Boolean). */
+  _combined(pieces: readonly Sketch[]): Sketch {
+    const kept = pieces.filter((p) => k.brep_face_count(p._brep))
+    if (!kept.length) return this._empty()
+    return kernelCall('combine', () => this._like(ext.combine(kept.map((p) => p._brep))))
+  }
+
+  /** A planar Boolean of sketches with faces that touch each other at a point.
+   *
+   * There the kernel's planar Boolean misclassifies whole faces without an error, in either
+   * operand: of `abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2, 4)` and a
+   * triangle around it, `&` kept 54.9061 of 110.5398 and `-` left 55.6337 behind (Python: 86.6355
+   * and 23.9044). The intersection of two single faces is reliable, so `&` is taken face by face.
+   * The other operations are computed in the ways below, each checked against those overlaps (area
+   * and first moments); the first that holds is the result. */
+  _boolean2dByFaces(tools: readonly Sketch[], op: number, name: string, contact: Vector): Sketch {
+    const own = this._faceSketches()
+    const other: Sketch[] = []
+    const owner: number[] = []
+    tools.forEach((t, n) => {
+      for (const g of t._faceSketches()) {
+        other.push(g)
+        owner.push(n)
+      }
+    })
+    const common = new Map<string, [number, number, Sketch]>()
+    own.forEach((f, i) => {
+      other.forEach((g, j) => {
+        if (!_disjoint(f._looseBox(), g._looseBox())) {
+          const piece = f._boolean2dWith([g], k.BooleanOp2D.INTERSECTION, name, false)
+          if (k.brep_face_count(piece._brep)) common.set(`${i},${j}`, [i, j, piece])
+        }
+      })
+    })
+    const pairs = [...common.values()]
+    let box = this._looseBox()
+    for (const t of tools) box = box.union(t._looseBox())
+    const ref = box.center
+    const tol = 1e-7 * box.diagonal ** 2 + 1e-12
+
+    const measure = (sketches: Iterable<Sketch>): number[] => {
+      const total = [0, 0, 0, 0]
+      for (const s of sketches) {
+        for (const f of s.faces()) {
+          const a = f.area
+          const m = f.center().sub(ref).mul(a)
+          total[0] += a
+          total[1] += m.x
+          total[2] += m.y
+          total[3] += m.z
+        }
+      }
+      return total
+    }
+    const minus = (a: number[], b: number[]): number[] => a.map((x, i) => x - b[i])
+    const holds = (result: Sketch, want: number[]): boolean => {
+      const got = minus(measure([result]), want)
+      return Math.abs(got[0]) <= tol && Math.hypot(got[1], got[2], got[3]) <= tol * box.diagonal
+    }
+    const first = (ways: Array<() => Sketch>, want: number[]): Sketch => {
+      for (const way of ways) {
+        let result: Sketch
+        try {
+          result = way()
+        } catch (e) {
+          if (!_isRuntimeError(e)) throw e // a KernelError, ModelingError or a kernel call that failed
+          continue
+        }
+        if (holds(result, want)) return result
+      }
+      throw new ModelingError(
+        `${name}: the sketches have faces that touch each other at a point, as at ${_fmtPoint(contact)}, and the kernel's planar Boolean gives a wrong region there (checked against the overlaps of the faces); move one of the shapes that make those faces a little, so that no two faces meet at a single point`,
+      )
+    }
+    // Pieces that do not overlap, joined by unions so that they share their vertices as the
+    // kernel's own regions do (pieces that merely lie side by side do not extrude).
+    const assembled = (pieces: readonly Sketch[]): Sketch => {
+      const kept = pieces.filter((p) => k.brep_face_count(p._brep))
+      if (!kept.length) return this._empty()
+      const joined = (): Sketch => {
+        let result = kept[0]
+        for (const p of kept.slice(1)) result = p._boolean2dWith([result], k.BooleanOp2D.UNION, name, false)
+        return this._like(result._copyBrep())
+      }
+      try {
+        return first([joined], measure(kept))
+      } catch (e) {
+        if (!(e instanceof ModelingError)) throw e
+        return this._combined(kept)
+      }
+    }
+    // f less the sketches `whole`, whose faces `faces` overlap it by `overlaps`
+    const cut = (f: Sketch, whole: readonly Sketch[], faces: readonly Sketch[], overlaps: readonly Sketch[]): Sketch => {
+      if (!faces.length) return f
+      const oneByOne = (): Sketch => {
+        let parts = [f]
+        for (const g of faces) {
+          parts = parts.flatMap((p) =>
+            _disjoint(p._looseBox(), g._looseBox()) ? [p] : p._boolean2dWith([g], k.BooleanOp2D.DIFFERENCE, name, false)._faceSketches(),
+          )
+        }
+        return f._combined(parts)
+      }
+      const tool = whole.length === 1 ? whole[0] : f._combined(whole)
+      return first(
+        [
+          () => f._boolean2dWith(whole, k.BooleanOp2D.DIFFERENCE, name, false),
+          oneByOne,
+          () => f._slabOrEmpty(tool, k.BooleanOp2D.DIFFERENCE, name),
+        ],
+        minus(measure([f]), measure(overlaps)),
+      )
+    }
+    const mine = (): Sketch[] =>
+      own.map((f, i) => {
+        const js = pairs.filter(([a]) => a === i).map(([, j]) => j)
+        const whole = [...new Set(js.map((j) => owner[j]))].sort((a, b) => a - b).map((n) => tools[n])
+        return cut(f, whole, js.map((j) => other[j]), js.map((j) => common.get(`${i},${j}`)![2]))
+      })
+
+    if (op === k.BooleanOp2D.INTERSECTION) return assembled(pairs.map(([, , p]) => p))
+    if (op === k.BooleanOp2D.DIFFERENCE) return assembled(mine())
+    const operands = measure([this, ...tools])
+    const whole = minus(operands, measure(pairs.map(([, , p]) => p)))
+    if (op === k.BooleanOp2D.UNION) {
+      const tool = tools.length === 1 ? tools[0] : this._combined(tools)
+      return first(
+        [
+          () => this._boolean2dWith(tools, op, name, false),
+          () => assembled([...mine(), ...other]),
+          () => this._slabOrEmpty(tool, op, name),
+        ],
+        whole,
+      )
+    }
+    // exclusive or: what is in one sketch only, from either side
+    const theirs = other.map((g, j) => {
+      const is = pairs.filter(([, b]) => b === j).map(([i]) => i)
+      return cut(g, [this], is.map((i) => own[i]), is.map((i) => common.get(`${i},${j}`)![2]))
+    })
+    return first([() => assembled([...mine(), ...theirs])], minus(whole, measure(pairs.map(([, , p]) => p))))
   }
 
   /** A cheap check of a union or exclusive or: its area is at least the larger operand's (minus

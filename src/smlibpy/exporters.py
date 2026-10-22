@@ -4,7 +4,7 @@
 Format    Extension                                            Direction
 ========  ===================================================  ==========
 STEP      ``.step``, ``.stp``                                  read/write
-SMLib     ``.smb`` (exact, lossless native kernel format)      read/write
+SMLib     ``.smb`` (exact native kernel format)                read/write
 DXF       ``.dxf`` (2D drawings: sketches, sections, curves)   read/write
 glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
@@ -382,7 +382,11 @@ def _z_up(doc: dict[str, Any], meters: bool = False) -> None:
 # Native SMLib files
 # -----------------------------------------------------------------------------
 def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> None:
-    """Write a body to SMLib's native ``.smb`` format (exact and lossless)."""
+    """Write a body to SMLib's native ``.smb`` format (exact).
+
+    Reading it back gives the same geometry; B-spline faces that are exactly planes, cylinders,
+    cones, spheres or surfaces of revolution come back as those (``to_nurbs()`` does not survive).
+    """
     items = _items(shapes)
     if len(items) != 1:
         raise ValueError("an .smb file holds one body; fuse the parts or save them separately")

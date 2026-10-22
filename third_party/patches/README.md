@@ -34,6 +34,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::DoExtendedOffset` fails when two of the faces whose surfaces it extends use one surface, or a face uses a surface that belongs to another face | `ReplaceSurface()` gives the surface's owner face the new surface, not the face it is called for, and the extension deleted for the one face was handed out again, from the executive's table of extensions, for the other (AddressSanitizer: a read of freed memory in `GetCreateExtendedSurface`). `(Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)).shell(2.4, <the face at x = 3>)` crashed in every run, and the WebAssembly build trapped. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails | It was kept (a leak), unlike after a failed stitch. Code reading; not seen in the runs measured. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
+| `SMLib/src/SmPlane.cpp` | `SmPlane::IsNurbSurfacePlane` also requires every control point to be the candidate plane's point at its Greville abscissae, and takes rational surfaces only with equal weights | With `HIGHER_ORDER_USE_ANALYTICS` (`SmPlane.h`) the test compared the surface with the plane at 13 fixed parameters only. A B-spline face parameterized like a plane with a bump between them was taken for a plane, and every copy that adds analytic surfaces flattened it: `SmBrep::CopyFaces` (`Face.to_shell`), the `.smb` reader, the offset code (`Shell.thicken`) and tessellation. Of 40 random single-pole bumps, `to_shell()` flattened 10. |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
 build:
@@ -80,6 +81,11 @@ build:
   shells and offsets) they turned 2 crashes into errors and one refused offset into a body (whose
   faces lie at the offset distance); 3 failures failed with another error, and no other result
   changed.
+- The plane test: a 21 x 21 cubic sheet with one control point raised by 5 between the sample
+  parameters keeps its bump through `Face.to_shell()` (area 3607.471, not the plane's 3600.0), an
+  `.smb` round trip (top at 2.2222, not 0) and `thicken(2)` (7212.841, not 7200.0), and its mesh is
+  no longer flat; B-spline faces that are planes (`Box(...).to_nurbs()`) still come back as planes
+  from `.smb`. `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` checks it.
 - Both test suites pass.
 
 Defects that remain in the kernel (crashes and loops in the feature executive's patching) are
@@ -117,7 +123,8 @@ When an upstream release fixes a defect:
    the changes to the offset code (`GlueCoincidentBrepVertices`, `ResolveOverlappingProtoEdges`,
    `DoExtendedOffset`), nothing for the steps of
    `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` and the plain shell of
-   crescendo part 40 (with `quarantine_size_mb=8192`).
+   crescendo part 40 (with `quarantine_size_mb=8192`); for the plane test,
+   `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory and `smlibpy_patch_sources` in `CMakeLists.txt` can

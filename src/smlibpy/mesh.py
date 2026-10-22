@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import zlib
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ._kernel import ModelingError, PolyHandle, ext, k, kernel_call
-from .geometry import Axis, BoundBox, Hit, Vector, VectorLike, _direction, _vec
+from .geometry import Axis, BoundBox, Hit, Location, Plane, Vector, VectorLike, Z, _direction, _vec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .shapes import Shape
+    from .shapes import Face, Shape
 
 __all__ = ["Mesh", "tessellate"]
 
@@ -26,16 +27,24 @@ class Mesh:
 
     A mesh is its arrays: the kernel's mesh it came from is freed once they are copied out, and
     mesh Booleans build one from the arrays when they need it. :meth:`dispose` frees what a mesh
-    still holds in the kernel at once.
+    still holds in the kernel at once. The arrays can be changed in place
+    (``m.vertices += (10, 0, 0)``); :meth:`translate`, :meth:`rotate`, :meth:`mirror`,
+    :meth:`scale` and :meth:`moved` return moved copies, as for shapes.
     """
 
-    __slots__ = ("vertices", "triangles", "normals", "_poly")
+    __slots__ = ("vertices", "triangles", "normals", "_poly", "_key")
 
     def __init__(self, vertices: Any, triangles: Any, normals: Any = None, _poly: PolyHandle | None = None):
         self.vertices = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
         self.triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
         self.normals = None if normals is None else np.asarray(normals, dtype=np.float32).reshape(-1, 3, 3)
         self._poly = _poly
+        self._key = self._fingerprint() if _poly is not None else None
+
+    def _fingerprint(self) -> tuple[Any, ...]:
+        """What tells the arrays apart: their shapes and checksums."""
+        v, t = np.ascontiguousarray(self.vertices), np.ascontiguousarray(self.triangles)
+        return v.shape, t.shape, zlib.crc32(v), zlib.crc32(t)
 
     # -- measures -------------------------------------------------------------
     @property
@@ -73,12 +82,54 @@ class Mesh:
         if poly is not None:
             poly.dispose()
 
+    # -- placement (copies, as for shapes) --------------------------------------
+    def _transformed(self, m: np.ndarray) -> Mesh:
+        a = np.asarray(m, dtype=np.float64)[:3, :3]
+        vertices = self.vertices @ a.T + np.asarray(m, dtype=np.float64)[:3, 3]
+        turned = np.linalg.det(a) < 0  # a reflection: the winding turns too, to stay outward
+        triangles = self.triangles[:, ::-1] if turned else self.triangles
+        normals = None
+        if self.normals is not None:
+            n = self.normals.astype(np.float64) @ np.linalg.inv(a)  # (rows: n @ inv(a) = inv(a).T @ n)
+            n /= np.where((ln := np.linalg.norm(n, axis=2, keepdims=True)) > 0, ln, 1.0)
+            normals = (n[:, ::-1] if turned else n).astype(np.float32)
+        return Mesh(vertices, triangles.copy(), normals)
+
+    def moved(self, location: Location) -> Mesh:
+        """A copy placed by ``location``."""
+        return self._transformed(location.matrix)
+
+    def translate(self, x: float | VectorLike = 0.0, y: float = 0.0, z: float = 0.0) -> Mesh:
+        """A copy moved by ``(x, y, z)``."""
+        from .shapes import _translation
+
+        return self._transformed(_translation(x, y, z))
+
+    def rotate(self, axis: Axis = Z, angle: float = 0.0) -> Mesh:
+        """A copy rotated by ``angle`` degrees about ``axis``."""
+        return self._transformed(Location.about(axis, angle).matrix)
+
+    def mirror(self, plane: Plane | Face = Plane.XZ) -> Mesh:
+        """A mirrored copy (reflection in ``plane``, a plane or a planar face; by default the XZ
+        plane, which flips Y). The triangles keep facing outward."""
+        from .shapes import _reflection
+
+        return self._transformed(_reflection(plane))
+
+    def scale(self, factor: float | VectorLike, center: VectorLike = (0, 0, 0)) -> Mesh:
+        """A scaled copy. ``factor`` is a number or per-axis factors ``(sx, sy, sz)``, none of
+        them zero (``ValueError``)."""
+        from .shapes import _scaling
+
+        return self._transformed(_scaling(factor, center))
+
     # -- mesh Booleans (kernel polygon Booleans) -------------------------------
     def _kernel_mesh(self) -> Any:
         """A new kernel mesh of this one, for the caller to own: a copy of the tessellation's
-        where the mesh keeps it, else built from the triangles, stitched along the edges they
-        share."""
-        if self._poly is not None and self._poly.poly is not None:
+        where the mesh keeps it and its arrays are still the ones it was made from (they can be
+        changed in place, ``m.vertices += ...``), else built from the triangles, stitched along
+        the edges they share."""
+        if self._poly is not None and self._poly.poly is not None and self._key == self._fingerprint():
             return self._poly.poly.copy()
         if not len(self.triangles):
             raise ValueError("mesh Booleans need triangles: this mesh has none")
@@ -259,7 +310,10 @@ def tessellate(shape: "Shape", tolerance: float | None = None, angle: float = 15
     of a twisted bar, a ruled loft between different curves, the walls of a thickened
     free-form sheet) gets no lines across, so a body with such a face is divided by halving
     its faces until every part is flat within the tolerance: more triangles, but within the
-    tolerance. Other bodies get the grid's triangles.
+    tolerance. So is a body with a free-form face whose surface the grid misses (a bump
+    between its lines). On spheres, tori, cones and cylinders, edges whose middle is off the
+    face by more than the tolerance are split onto it (the grid's slivers near the poles of a
+    sphere). Other bodies get the grid's triangles.
     """
     return _tessellate(shape, tolerance, angle, False)
 

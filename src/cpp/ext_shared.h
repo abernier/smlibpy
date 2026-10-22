@@ -91,6 +91,9 @@ SmCurve* edge_curve(const SmEdge* edge);
 std::pair<double, double> reverse_curve(SmCurve* curve);
 // A NURBS approximation of any curve that keeps its parameterisation.
 SmBSplineCurve* approximate_curve(const SmCurve* curve, double tolerance);
+// Curves that each start where the one before ends, as one B-spline curve
+// (SmBSplineCurve::CreateByJoining); one that is not a B-spline (an ellipse) is approximated.
+SmBSplineCurve* join_curves(const std::vector<SmCurve*>& curves);
 
 // The kernel's precise integration: {area, origin, first_moments, signed_area} of a face;
 // {area, volume, mass, origin, moments} of a Brep.

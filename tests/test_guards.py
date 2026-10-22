@@ -623,6 +623,10 @@ def test_moved_bodies_keep_their_tolerances():
     (Box(10, 10, 10), Box(10, 10, 10).translate(5, 0, 0), 0.0),
     (Box(10, 10, 10), Box(10, 10, 10).translate(10, 0, 0), 0.0),
     (Sphere(10), Sphere(10).translate(15, 3, 0), 0.0),
+    # nearly parallel faces: closest points in turn settled slowly and stopped too far apart
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 1).translate(12, 0, 0), 2.0),  # was 2.1197
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 5).translate(12, 0, 0), 2.0),  # was 2.4853
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 10).translate(12, 0, 0), 2.0),  # was 2.0162
 ])
 def test_distance_between_bodies(a, b, expected):
     assert a.distance_to(b) == approx(expected, rel=1e-9, abs=1e-9)

@@ -2,7 +2,7 @@
 //
 //   Format   Extension                                            Direction
 //   STEP     .step, .stp                                          read/write
-//   SMLib    .smb (exact, lossless native kernel format)          read/write
+//   SMLib    .smb (exact native kernel format)                    read/write
 //   DXF      .dxf (2D drawings: sketches, sections, curves)       read/write
 //   glTF     .glb, .gltf                                          write
 //   STL      .stl                                                 read/write
@@ -848,8 +848,9 @@ function _unlink(name: string): void {
   }
 }
 
-/** The contents of an SMLib native `.smb` file of one body (exact and lossless; ASCII unless
- * `ascii` is false). */
+/** The contents of an SMLib native `.smb` file of one body (exact; ASCII unless `ascii` is false).
+ * Reading it back gives the same geometry; B-spline faces that are exactly planes, cylinders, cones,
+ * spheres or surfaces of revolution come back as those (`toNurbs()` does not survive). */
 export function toSmb(shapes: unknown, options: { ascii?: boolean } = {}): Uint8Array {
   _opts('toSmb', options)
   const { ascii = true } = options
@@ -886,7 +887,7 @@ export function fromSmb(data: string | Uint8Array): Part | Shell {
   return part
 }
 
-/** Write a body to SMLib's native `.smb` format (exact and lossless). */
+/** Write a body to SMLib's native `.smb` format (exact; see `toSmb`). */
 export function save(shapes: unknown, path: string, options: { ascii?: boolean } = {}): void {
   _opts('save', options)
   const fs = _fs()

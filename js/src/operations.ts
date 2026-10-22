@@ -5,8 +5,9 @@
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
 import { _opts, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Plane, Vector, type VectorLike, Z, _direction } from './geometry.ts'
+import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction } from './geometry.ts'
 import { spread } from './_linalg.ts'
+import { Line } from './curves.ts'
 import {
   Edge,
   Face,
@@ -24,7 +25,6 @@ import {
   _revolveAxisAngle,
   _typeName,
 } from './shapes.ts'
-import { _shellOfSurface } from './surfaces.ts'
 
 // biome-ignore lint: shapes of any kind
 type Any = any
@@ -155,21 +155,18 @@ export function loft(sections: readonly unknown[], options: { ruled?: boolean; s
   if (sections.length < 2) throw new RangeError('loft needs at least two sections')
   const opened = sections.map(_openCurve)
   if (opened.every((w) => w !== null)) {
+    // One skin for single curves and chains alike, so that ruled and smooth hold for both (the
+    // kernel's skin surface has no degree). With the default degree it is the same surface as that
+    // skin.
     const wires = opened as Wire[]
-    if (wires.every((w) => w.edges().length === 1)) {
-      const curves = wires.map((w) => w.edges()[0]._copyCurve())
-      let srf: number
-      try {
-        srf = kernelCall('loft', () => k.create_skin_surface(curves), 'curves should run in the same direction')
-      } finally {
-        for (const c of curves) ext.delete_curve(c)
-      }
-      return _shellOfSurface(srf)
-    }
     const counts = wires.map((w) => w.edges().length)
     const curves = wires.flatMap((w) => w._copyCurves())
     const degree = ruled ? 1 : Math.min(smooth ? 3 : 2, sections.length - 1)
-    return kernelCall('loft', () => Shell._wrap(k.create_skin_primitive(counts, curves, degree, false)))
+    try {
+      return kernelCall('loft', () => Shell._wrap(k.create_skin_primitive(counts, curves, degree, false)), 'curves should run in the same direction')
+    } finally {
+      for (const c of curves) ext.delete_curve(c)
+    }
   }
   if (opened.some((w) => w !== null)) throw new RangeError('loft sections must be all closed (solid) or all open (surface)')
   const loops = sections.map(_sectionLoops)
@@ -228,6 +225,187 @@ function _orientedTo(sk: Sketch, tangent: Vector): Sketch {
   return sk.rotate(new Axis(sk.bbox().center, axis), angle)
 }
 
+// -- the frame a profile is swept in ------------------------------------------------------------
+// The kernel moves a profile to the start of the path by the center of the profile's box along the
+// world axes. Turned to face along an oblique path, an asymmetric profile has a box along the world
+// axes whose center is not its own: a triangle swept along (1, 1, 1) started 1.6667 before the
+// path. So the profile is swept in its own frame, in its plane with its box along the axes there,
+// along the path brought into that frame, and the body is placed back. Along a path of several
+// edges, each piece starts in the frame the piece before ended in (turned at a corner by the
+// smallest rotation from one tangent to the next), not turned afresh from the sketch: a rectangle
+// turned by 90 degrees at the joints of a 3D path otherwise.
+type V3 = [number, number, number]
+/** Three axes, the columns of a rotation: x, y, z. */
+type Axes = [V3, V3, V3]
+
+const _dot3 = (a: readonly number[], b: readonly number[]): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const _cross3 = (a: readonly number[], b: readonly number[]): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+const _norm3 = (a: readonly number[]): number => Math.hypot(a[0], a[1], a[2])
+const _unit3 = (a: readonly number[]): V3 => {
+  const l = _norm3(a)
+  return [a[0] / l, a[1] / l, a[2] / l]
+}
+const _sub3 = (a: readonly number[], b: readonly number[]): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+
+/** The rotation that turns direction a into direction b, as a function on vectors: the smallest
+ * one, or about `axis` (perpendicular to both) when given, also by half a turn. */
+function _turn(a: readonly number[], b: readonly number[], axis: readonly number[] | null = null): (v: readonly number[]) => V3 {
+  const ua = _unit3(a)
+  const ub = _unit3(b)
+  let k: V3
+  if (axis === null) {
+    k = _cross3(ua, ub)
+    if (_norm3(k) < 1e-12) {
+      if (_dot3(ua, ub) > 0) return (v) => [v[0], v[1], v[2]]
+      k = _cross3(ua, Math.abs(ua[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0])
+    }
+  } else {
+    k = [axis[0], axis[1], axis[2]]
+  }
+  k = _unit3(k)
+  const angle = Math.atan2(_dot3(_cross3(ua, ub), k), _dot3(ua, ub))
+  const c = Math.cos(angle)
+  const sn = Math.sin(angle)
+  // Rodrigues: v cos + (k x v) sin + k (k . v) (1 - cos)
+  return (v) => {
+    const kv = _cross3(k, v)
+    const d = _dot3(k, v) * (1 - c)
+    return [v[0] * c + kv[0] * sn + k[0] * d, v[1] * c + kv[1] * sn + k[1] * d, v[2] * c + kv[2] * sn + k[2] * d]
+  }
+}
+
+function _placement(axes: Axes, origin: readonly number[]): Matrix {
+  const m = new Float64Array(16)
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) m[r * 4 + c] = axes[c][r]
+    m[r * 4 + 3] = origin[r]
+  }
+  m[15] = 1
+  return m
+}
+
+function _inverse(m: Matrix): Matrix {
+  const out = new Float64Array(16)
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) out[r * 4 + c] = m[c * 4 + r]
+    out[r * 4 + 3] = -(m[r] * m[3] + m[4 + r] * m[7] + m[8 + r] * m[11])
+  }
+  out[15] = 1
+  return out
+}
+
+const _tangent = (edge: Edge, t: number): V3 => _unit3(edge.tangentAt(t).toArray())
+const _point = (edge: Edge, t: number): V3 => edge.pointAt(t).toArray() as V3
+
+/** The axes of the profile's plane (x: the world X axis seen in the plane, Y where X is its
+ * normal; z: the normal, the way the path starts) and the anchor: the center of the profile's box
+ * along them. For a sketch in the XY plane, the center of its bounding box. */
+function _profileFrame(sk: Sketch, tangent: V3): [Axes, V3] {
+  let n = _unit3(sk.plane.zDir.toArray())
+  if (_dot3(n, tangent) < 0) n = [-n[0], -n[1], -n[2]]
+  const ref: V3 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]
+  const x = _unit3(_sub3(ref, n.map((v) => v * _dot3(ref, n))))
+  const axes: Axes = [x, _cross3(n, x), n]
+  const origin = sk.plane.origin.toArray()
+  const c = sk._transformed(_inverse(_placement(axes, origin))).bbox().center.toArray()
+  const anchor: V3 = [0, 1, 2].map((r) => origin[r] + axes[0][r] * c[0] + axes[1][r] * c[1]) as V3
+  return [axes, anchor]
+}
+
+/** A profile in its own frame (`sk`: in the XY plane, its anchor at the origin) swept along an
+ * edge, placed by `placement` at the edge's start. */
+function _swept(sk: Sketch, edge: Edge, placement: Matrix, translational: boolean, cap = true): Part | Shell {
+  const local = edge._transformed(_inverse(placement))
+  const curves = sk.faces().flatMap((f) => f.wires().flatMap((w) => w._copyCurves()))
+  const pathCurve = local._copyCurve()
+  const hint = "the profile may be too large for the path's curvature"
+  let b: number
+  try {
+    b = kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, cap, true, false, translational, null, null), hint)
+  } finally {
+    ext.delete_curve(pathCurve)
+    for (const c of curves) ext.delete_curve(c)
+  }
+  return (cap ? Part._wrap(b) : Shell._wrap(b))._transformed(placement) as Part | Shell
+}
+
+/** The axes a sweep along `edge` from `placement` ends with. Along a planar edge they turn about
+ * its plane's normal as its tangent does (the kernel's frame keeps the normal); along a twisted
+ * path they are read off a ribbon swept the same way (the kernel's frame is not the
+ * rotation-minimizing one there: along a helix it turns some 40 degrees a turn). */
+function _carried(edge: Edge, placement: Matrix, translational: boolean, size: number): Axes {
+  const axes: Axes = [0, 1, 2].map((c) => [placement[c], placement[4 + c], placement[8 + c]]) as Axes
+  if (translational) return axes
+  const ts = _tangent(edge, 0)
+  const te = _tangent(edge, 1)
+  const { values, directions } = spread(Array.from({ length: 17 }, (_, i) => _point(edge, i / 16)))
+  if (values[2] <= 1e-9 * Math.max(1, values[0])) {
+    // planar
+    if (values[1] <= 1e-9 * Math.max(1, values[0])) return axes // straight
+    const turn = _turn(ts, te, directions[2])
+    return axes.map(turn) as Axes
+  }
+  const local = edge._transformed(_inverse(placement))
+  const curves = [Line([0, 0, 0], [size, 0, 0])._copyCurve()]
+  const pathCurve = local._copyCurve()
+  let ribbon: Shell
+  try {
+    ribbon = Shell._wrap(kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, false, true, false, false, null, null)))
+  } finally {
+    ext.delete_curve(pathCurve)
+    ext.delete_curve(curves[0])
+  }
+  const p0 = _point(local, 0)
+  const p1 = _point(local, 1)
+  const edges = [...ribbon.edges()]
+  const nearest = (p: V3) => edges.reduce((best, e) => (_norm3(_sub3(e.center().toArray(), p)) < _norm3(_sub3(best.center().toArray(), p)) ? e : best))
+  const first = nearest(p0)
+  const last = nearest(p1)
+  // the marker's start at the start of the ribbon, and where the ribbon's side from it ends
+  const [s0, s1] = [first.start.toArray(), first.end.toArray()]
+  const a = s0[0] <= s1[0] ? s0 : s1
+  const ends = [last.start.toArray(), last.end.toArray()]
+  const side = edges.find(
+    (e) => e !== first && e !== last && Math.min(_norm3(_sub3(e.start.toArray(), a)), _norm3(_sub3(e.end.toArray(), a))) < 1e-6 * Math.max(1, size),
+  )!
+  const [q0, q1] = [side.start.toArray(), side.end.toArray()]
+  const tip = _norm3(_sub3(q0, a)) >= _norm3(_sub3(q1, a)) ? q0 : q1
+  const far = _norm3(_sub3(ends[0], tip)) <= _norm3(_sub3(ends[1], tip)) ? 0 : 1
+  const d = _sub3(ends[1 - far], ends[far])
+  let x: V3 = [0, 1, 2].map((r) => axes[0][r] * d[0] + axes[1][r] * d[1] + axes[2][r] * d[2]) as V3
+  x = _unit3(_sub3(x, te.map((v) => v * _dot3(x, te))))
+  return [x, _cross3(te, x), te]
+}
+
+/** Whether the profile turns into itself about its anchor: circles about it. */
+function _round(sk: Sketch, anchor: V3): boolean {
+  const edges = sk.edges()
+  const tol = 1e-9 * Math.max(1, sk.bbox().diagonal)
+  return edges.length > 0 && edges.every((e) => e.geomType === 'circle' && e.isClosed && _norm3(_sub3(e.arcCenter.toArray(), anchor)) <= tol)
+}
+
+/** The edges in runs that meet tangentially (within 1e-6 rad); a new run at each corner. */
+function _g1Chains(edges: readonly Edge[]): Edge[][] {
+  const chains = [[edges[0]]]
+  for (const e of edges.slice(1)) {
+    const run = chains[chains.length - 1]
+    if (_norm3(_sub3(_tangent(run[run.length - 1], 1), _tangent(e, 0))) <= 1e-6) run.push(e)
+    else chains.push([e])
+  }
+  return chains
+}
+
+/** A run of edges as one edge (one B-spline curve): swept in one go, it has no joints. */
+function _joined(chain: readonly Edge[]): Edge {
+  if (chain.length === 1) return chain[0]
+  const curves = chain.map((e) => e._copyCurve())
+  try {
+    return Edge._fromCurve(kernelCall('sweep', () => ext.join_curves(curves)))
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
 /** How a profile is swept (see `sweep`). */
 export interface SweepOptions {
   /** Turn the profile to be perpendicular to the path at its start (default). */
@@ -235,18 +413,23 @@ export interface SweepOptions {
   /** Keep the profile's orientation fixed instead of turning it with the path. */
   translational?: boolean
   /** For paths of several edges: miter the corners of a planar path (default for planar
-   * paths); `false` sweeps each edge on its own and joins the pieces. */
+   * paths); `false` sweeps the path piece by piece (each run of tangent edges in one go) and joins
+   * the pieces. */
   sharpCorners?: boolean | null
 }
 
 /**
  * Sweep a profile along a path.
  *
- * The profile is moved so that its center sits at the start of the path and (with `orient`)
- * turned to face along the path, so profiles can be drawn anywhere, usually in the XY plane:
+ * The profile is moved so that the center of its box (along the axes of its plane) sits at the
+ * start of the path and (with `orient`) turned to face along the path, so profiles can be drawn
+ * anywhere, usually in the XY plane:
  *
  *     const tube = sweep(Circle(2), Spline([0, 0, 0], [0, 10, 20], [30, 10, 40]))
  *     const rail = sweep(Rectangle(4, 2), Helix(10, 40, 20))
+ *
+ * Edges of a path that meet tangentially are swept as one; at a corner of a path that is not
+ * planar, the profile goes on turned by the smallest rotation from one tangent to the next.
  *
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
@@ -256,14 +439,11 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   const { orient = true, translational = false } = options
   let sharpCorners = options.sharpCorners ?? null
   let edges = _pathEdges(path)
-  if (edges.length === 1 && edges[0].isClosed && _openCurve(profile) === null) {
-    // The kernel sweeps a profile along a closed single-edge path inside out; along the same path
-    // in two halves it works.
-    edges = _halves(edges[0])
-  }
   const w = _openCurve(profile)
   if (w !== null) {
     // an open profile sweeps into a surface
+    // (the kernel sweeps along a closed single-edge path inside out; in two halves it works)
+    if (edges.length === 1 && edges[0].isClosed) edges = _halves(edges[0])
     if (edges.length !== 1) throw new RangeError('surface sweeps need a single-edge path')
     const pc = edges[0]._copyCurve()
     const curves = w._copyCurves()
@@ -276,38 +456,61 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
     }
     return Shell._wrap(b)
   }
-  let sk = _asSketch(profile)
-  if (orient && !translational) sk = _orientedTo(sk, edges[0].tangentAt(0))
-  const curves = sk.faces().flatMap((f) => f.wires().flatMap((wire) => wire._copyCurves()))
-  try {
-    if (edges.length === 1) {
-      const pathCurve = edges[0]._copyCurve()
-      const hint = "the profile may be too large for the path's curvature"
-      let b: number
-      try {
-        b = kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, true, true, false, translational, null, null), hint)
-      } finally {
-        ext.delete_curve(pathCurve)
-      }
-      return _requireSolid(Part._wrap(b), 'sweep', hint)
+  const sk = _asSketch(profile)
+  const closed = edges[0].start.isClose(edges[edges.length - 1].end, 1e-6 * Math.max(1, edges[0].length))
+  const tangentClosure = closed && _norm3(_sub3(_tangent(edges[edges.length - 1], 1), _tangent(edges[0], 0))) <= 1e-6
+  const planar = _isPlanarPath(edges)
+  const halved = edges.length === 1 && edges[0].isClosed && (planar || !tangentClosure)
+  // The kernel sweeps a profile along a closed single-edge path inside out (it caps the ends where
+  // they meet); along the same path in two halves it works.
+  if (halved) edges = _halves(edges[0])
+  if (sharpCorners === null) sharpCorners = planar
+  if (sharpCorners && edges.length > 1) {
+    if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
+    const oriented = orient && !translational ? _orientedTo(sk, edges[0].tangentAt(0)) : sk
+    const curves = oriented.faces().flatMap((f) => f.wires().flatMap((wire) => wire._copyCurves()))
+    const pathCurves = edges.map((e) => e._copyCurve())
+    const hint = "the profile may be too large for the path's corners"
+    let b: number
+    try {
+      b = kernelCall('sweep', () => k.sweep_along_planar_path(curves.slice(), pathCurves, { move_profile: true }), hint)
+    } finally {
+      for (const c of curves) ext.delete_curve(c)
     }
-    const planar = _isPlanarPath(edges)
-    if (sharpCorners === null) sharpCorners = planar
-    if (sharpCorners) {
-      if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
-      const pathCurves = edges.map((e) => e._copyCurve())
-      const hint = "the profile may be too large for the path's corners"
-      const b = kernelCall('sweep', () => k.sweep_along_planar_path(curves.slice(), pathCurves, { move_profile: true }), hint)
-      return _requireSolid(Part._wrap(b), 'sweep', hint)
-    }
-  } finally {
-    for (const c of curves) ext.delete_curve(c)
+    return _requireSolid(Part._wrap(b), 'sweep', hint)
   }
-  // (a sketch sweeps into solids)
-  const pieces = edges.map((e) => sweep(sk, e, { orient, translational }) as Part)
-  let out = pieces[0]
-  for (const p of pieces.slice(1)) out = out.fuse(p)
-  return out
+  const t0 = _tangent(edges[0], 0)
+  let [axes, anchor] = _profileFrame(sk, t0)
+  const local = sk._transformed(_inverse(_placement(axes, anchor)))
+  if (orient && !translational) axes = axes.map(_turn(axes[2], t0)) as Axes
+  const hint = "the profile may be too large for the path's curvature"
+  let runs = halved ? edges.map((e) => [e]) : _g1Chains(edges)
+  if (tangentClosure && runs.length === 1 && _round(sk, anchor)) {
+    // (a profile that turns into itself, as in two halves before: exact)
+    runs = _halves(_joined(edges)).map((e) => [e])
+  } else if (tangentClosure && runs.length === 1) {
+    // A closed path without a corner: swept in one go and closed where its ends meet (the kernel
+    // spreads the turn of its frame around such a path, so they meet; in two halves a rectangle
+    // turned by 10 degrees at the halfway point and 44 at the start).
+    const chain = _joined(edges)
+    const tube = _swept(local, chain, _placement(axes, _point(chain, 0)), translational, false)
+    kernelCall('sweep', () => k.stitch_into_solid(tube._brep), hint)
+    return _requireSolid(Part._wrap(tube._copyBrep()), 'sweep', hint)
+  }
+  const chains = runs.map((run) => _joined(run))
+  const size = sk.bbox().diagonal
+  let out: Part | null = null
+  let placement: Matrix = _placement(axes, _point(chains[0], 0))
+  chains.forEach((e, i) => {
+    if (i) {
+      axes = _carried(chains[i - 1], placement, translational, size)
+      if (!translational) axes = axes.map(_turn(axes[2], _tangent(e, 0))) as Axes
+    }
+    placement = _placement(axes, _point(e, 0))
+    const piece = _requireSolid(_swept(local, e, placement, translational) as Part, 'sweep', hint)
+    out = out === null ? piece : out.fuse(piece)
+  })
+  return out as unknown as Part
 }
 
 /** A closed edge as two edges, split halfway along it. */
