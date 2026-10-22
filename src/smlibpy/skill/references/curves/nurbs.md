@@ -31,5 +31,7 @@ edge = Box(10, 10, 10).edges()[0]
 print(edge.nurbs().points == [edge.start, edge.end])   # True
 ```
 
+A face's surface as NURBS data: `face.nurbs()` (see `surfaces/isocurve`).
+
 ## Related
-`make_compatible`, `remove_knots`, `Spline`, `Bezier`, `generic`
+`make_compatible`, `remove_knots`, `Spline`, `Bezier`, `generic`, `surfaces/isocurve`

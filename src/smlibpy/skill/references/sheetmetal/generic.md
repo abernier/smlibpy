@@ -15,8 +15,13 @@ unfolds them exactly with the kernel's space bend: `fold`, `flange`, `unfold`, `
 - `radius`: the inside bend radius. `thickness`: found from the part (the distance from the
   face with the line or edge to the nearest face opposite it).
 - `k_factor`: where the neutral fiber lies, 0 (inside face) to 1 (outside face); default 0.44
-  (`smlibpy.sheetmetal.K_FACTOR`). The neutral fiber keeps its length. Unfold with the K-factor
-  the part was bent with to get the blank back.
+  (`smlibpy.sheetmetal.K_FACTOR`). The neutral fiber keeps its length. The part keeps the
+  K-factor each bend was folded with, and `unfold`, `flat_pattern` and `bends` take it, so the
+  blank comes back. Their `k_factor=` takes, for every bend: a number; `{1: 0.33, 6: 0.45}` by
+  inside radius; `[(0.5, 0.33), (3, 0.45)]`, `(r / t, k)` pairs interpolated (the ends held); a
+  function `(radius, thickness, angle) -> k`; `"din6935"`: DIN 6935's `k = 0.65 + 0.5 log10(r / t)`
+  up to `r / t = 5`, the neutral fiber at `k t / 2`, as a K-factor `k / 2`
+  (`smlibpy.sheetmetal.din6935(r, t)`).
 - Bend allowance `BA = radians(angle) * (radius + k_factor * thickness)`: the strip of the flat
   that the bend takes (4.5239 for 90 degrees, R 2, t 2).
 - Outside setback `(radius + thickness) * tan(angle / 2)`: from the start of the bend to the

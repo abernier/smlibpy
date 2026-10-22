@@ -57,6 +57,42 @@ bracket = fold(blank, Axis((line_x, 0, 2), (0, 1, 0)), 90, radius=2, fixed=(0, 0
 print(bracket.bbox().size)                                     # 60 x 30 x 40
 ```
 
+### A K-factor for each bend
+
+A part keeps the K-factor each bend was folded with (`fold`, `flange`), and `unfold`,
+`flat_pattern` and `bends` take it: a blank folded with a tight hem at K 0.33 and a large bend
+at K 0.45 unfolds to the blank again. The record goes with the part through Booleans, moves and
+`named()`; a part read from a file has none, and its bends take 0.44.
+
+```python
+blank = Box(200, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+part = fold(blank, Axis((-60, 0, 2), (0, 1, 0)), 90, radius=1, k_factor=0.33)
+part = fold(part, Axis((60, 0, 2), (0, 1, 0)), 90, radius=6, k_factor=0.45)
+print(round(flat_pattern(part).size.x, 6))                     # 200.0
+print([b.k_factor for b in part.bends()])                      # [0.33, 0.45]
+```
+
+`k_factor=` on `unfold`, `flat_pattern` and `bends` gives other ones, for every bend at once:
+
+| `k_factor=` | each bend's K-factor |
+|---|---|
+| `0.42` | the number |
+| `{1: 0.33, 6: 0.45}` | by inside radius (a radius not in the table raises `ValueError`) |
+| `[(0.5, 0.33), (3, 0.45)]` | `(r / t, k)` pairs, a shop's table: interpolated, the ends held |
+| `lambda radius, thickness, angle: ...` | a function of the bend |
+| `"din6935"` | DIN 6935: `k = 0.65 + 0.5 log10(r / t)` up to `r / t = 5` (the neutral fiber at `k t / 2`), as a K-factor `k / 2` |
+| `None` (default) | as folded, else 0.44 |
+
+```python
+table = flat_pattern(part, k_factor=[(0.5, 0.33), (3, 0.45)])  # r/t 0.5 and 3: these two bends
+print(round(table.size.x, 6), table.k_factor)                  # 200.0 None: the bends differ
+din = flat_pattern(part, k_factor="din6935")
+print([round(b.k_factor, 4) for b in din.bends])               # [0.2497, 0.4443]
+```
+
+`FlatPattern.k_factor` is the K-factor of every bend, or `None` where they differ; each `Bend`
+has its own.
+
 ## Flanges
 
 A flange extends an edge of the sheet and bends it, which is how most sheet metal parts are
@@ -111,9 +147,10 @@ for b in pattern.bends:
 flat = tray.unfold()                         # the same, in place
 ```
 
-Bending and unfolding with the same K-factor give back the same blank exactly. Parts that were
-not made with `fold` unfold too, as long as each bend is a pair of cylinder faces one
-thickness apart, for example a profile with an inside radius extruded to a channel.
+Bending and unfolding with the same K-factor give back the same blank exactly, and by default
+each bend unfolds with the K-factor it was folded with. Parts that were not made with `fold`
+unfold too (at 0.44, or the `k_factor=` given), as long as each bend is a pair of cylinder faces
+one thickness apart, for example a profile with an inside radius extruded to a channel.
 
 The outline and the bend lines lie in the XY plane, ready for a 2D export for the cutter;
 `export_step(pattern.part, "blank.step")` writes the blank as a solid.

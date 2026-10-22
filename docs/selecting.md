@@ -52,7 +52,8 @@ part = part.fillet(seen.edges(), 2)
 | `parallel_to(axis)` | straight edges along an axis, planar faces normal to it |
 | `perpendicular_to(axis)` | straight edges across an axis, planar faces containing it |
 | `facing(direction)` | faces whose outward normal points that way (on a curved face: everywhere) |
-| `convex()`, `concave()`, `smooth()` | edges on outside / inside corners, tangent edges |
+| `convex()`, `concave()`, `smooth()` | edges on outside / inside corners, tangent edges (tangent all along) |
+| `g1()`, `g2()` | edges whose faces meet at least tangentially / with equal curvature too (see [continuity](analysis.md#continuity)) |
 | `filter(predicate)` | anything you can test in Python |
 
 Face types are `plane`, `cylinder`, `cone`, `sphere`, `torus`, `revolution`, `extrusion`,

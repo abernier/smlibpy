@@ -33,5 +33,7 @@ void bind_fit(py::module_ m);
 void bind_cells(py::module_ m);
 // The nearest points of two bodies (distance.cpp).
 void bind_distance(py::module_ m);
+// Curvature, iso-parametric curves and edge continuity of faces (face_analysis.cpp).
+void bind_face_analysis(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);

@@ -3,12 +3,15 @@
 Unfolds a sheet metal part: every bend becomes flat again, in place.
 
 ## Signature
-`unfold(part, *, k_factor=0.44, fixed=None)`
-`part.unfold(*, k_factor=0.44, fixed=None)`
+`unfold(part, *, k_factor=None, fixed=None)`
+`part.unfold(*, k_factor=None, fixed=None)`
 
 - `fixed`: a planar face of the part that stays where it is; default: the largest planar face
   (of faces that large, the one the part stands on: the rest of the part lies behind it).
-- `k_factor`: use the one the part was bent with to get its blank back.
+- `k_factor`: default `None`: each bend unfolds with the K-factor `fold` or `flange` made it with
+  (the part keeps it, through Booleans, moves and `named()`), else 0.44 (a part read from a
+  file). Or one for all bends, per bend: a number; `{inside radius: k}`; `[(r / t, k), ...]`
+  interpolated; a function `(radius, thickness, angle) -> k`; `"din6935"` (see `generic`).
 
 ## Returns
 A flat `Part`, the fixed face in its place. A U channel bent from a 100 x 40 x 2 blank unfolds
@@ -23,7 +26,11 @@ flange, the flat stands in that face's plane.
 - Bends unfold from the fixed face outwards; any number, both directions.
 
 ## Gotchas
-- A different K-factor gives a different blank: a bend made with K 0.3 unfolds 0.4398 longer with 0.44.
+- A different K-factor gives a different blank: a bend made with K 0.3 unfolds 0.4398 longer
+  with `k_factor=0.44`. By default it takes the 0.3 it was folded with (before 0.5.0: 0.44).
+- Two bends of the same inside radius folded with different K-factors, one of which a later
+  fold moved: `ModelingError` asking for `k_factor=` (the record is matched by its axis, then
+  by its radius).
 - The flat pattern for a cutter (on XY, with outline and bend lines) is `flat_pattern`.
 
 ## Errors

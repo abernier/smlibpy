@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, T
 import numpy as np
 
 from ._kernel import BrepHandle, CurveHandle, KernelError, ModelingError, ext, k, kernel_call
-from .geometry import (TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction,
-                       _vec)
+from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Curvature, Hit, Location, Nurbs,
+                       NurbsSurface, Plane, Rot, Vector, VectorLike, X, Y, Z, _direction, _vec)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import Mesh
@@ -33,6 +33,7 @@ __all__ = [
     "Sketch",
     "Part",
     "MassProperties",
+    "SectionProperties",
 ]
 
 #: Relative accuracy of areas, volumes, centers and inertia: volumes and areas to
@@ -451,6 +452,17 @@ class ShapeList(list[T]):
         vertices of a sketch where two edges meet tangentially."""
         return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "smooth")
 
+    def g1(self) -> ShapeList[T]:
+        """Edges whose two faces meet at least tangentially all along them (``"G1"`` or ``"G2"``
+        by :meth:`Edge.continuity`): the borders of fillets and blends."""
+        return ShapeList(s for s in self if _level_of(s) in ("G1", "G2"))
+
+    def g2(self) -> ShapeList[T]:
+        """Edges whose two faces meet with equal curvature as well (``"G2"`` by
+        :meth:`Edge.continuity`): the borders of curvature-continuous blends
+        (``fillet(..., continuity="G2")``), seams of smooth surfaces."""
+        return ShapeList(s for s in self if _level_of(s) == "G2")
+
     def fillets(self, max_radius: float | None = None) -> ShapeList[T]:
         """Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry
         (with the corner patches where fillets meet), up to ``max_radius``. See
@@ -581,9 +593,17 @@ class ShapeList(list[T]):
 
 def _convexities(items: Sequence[Any]) -> list[str | None]:
     """The convexity of each edge, and of each corner of a sketch (None for other shapes), with
-    one kernel call for the edges of each body."""
+    one kernel call for the edges of each body. An edge whose faces meet tangentially at its
+    middle is smooth only if they do at 5 points along it; else it takes the kind where they turn
+    most (a crease that a fillet runs out into, a blend that is tangent only in places)."""
     edges = [s for s in items if isinstance(s, Edge)]
     angles = {id(e): a for e, a in zip(edges, _outer_angles(edges))}
+    tangent = [e for e in edges if angles[id(e)] is not None and _angle_kind(angles[id(e)]) == "smooth"]
+    for e, along in zip(tangent, _outer_angles(tangent, 5)):
+        if along:
+            worst = max(along, key=lambda a: abs(a - 180.0))
+            if _angle_kind(worst) != "smooth":
+                angles[id(e)] = worst
     out: list[str | None] = []
     for s in items:
         if isinstance(s, Edge):
@@ -596,25 +616,55 @@ def _convexities(items: Sequence[Any]) -> list[str | None]:
     return out
 
 
-def _outer_angles(edges: Sequence[Edge]) -> list[float | None]:
+@overload
+def _outer_angles(edges: Sequence[Edge]) -> list[float | None]: ...
+@overload
+def _outer_angles(edges: Sequence[Edge], samples: int) -> list[list[float]]: ...
+def _outer_angles(edges: Sequence[Edge], samples: int = 0) -> Any:
     """The kernel's outer angle of each edge in degrees (``ext.edge_angles``: above 180 at a
     convex edge), one call per body; None where the kernel cannot tell (an edge that does not
-    lie between two faces of a solid, a standalone curve)."""
-    out: list[float | None] = [None] * len(edges)
+    lie between two faces of a solid, a standalone curve). With ``samples``, the angles at that
+    many points along each edge (``ext.edge_outer_angles``; [] where the kernel cannot tell)."""
+    out: list[Any] = [[] if samples else None for _ in edges]
     bodies: dict[int, tuple[Any, list[int]]] = {}
     for i, e in enumerate(edges):
         if e._e is not None and e._owner is not None:
             bodies.setdefault(id(e._owner), (e._owner, []))[1].append(i)
     for owner, idx in bodies.values():
-        for i, a in zip(idx, ext.edge_angles(owner._brep, [edges[i]._e for i in idx])):
-            out[i] = a
+        kedges = [edges[i]._e for i in idx]
+        found = ext.edge_outer_angles(owner._brep, kedges, samples) if samples else ext.edge_angles(owner._brep, kedges)
+        for i, a in zip(idx, found):
+            out[i] = list(a) if samples else a
     return out
+
+
+def _continuity_level(gap: float, gap_tol: float, angle: float, angle_tol: float, jump: float, curvature: float,
+                      curvature_tol: float, length: float) -> str | None:
+    """The continuity level from the largest gap, angle and curvature jump between two sides."""
+    if not gap <= gap_tol:
+        return None
+    if not angle <= angle_tol:
+        return "G0"
+    if not jump <= curvature_tol * curvature + 1e-3 / max(length, 1e-9):  # (NaN: no curvature to compare)
+        return "G1"
+    return "G2"
 
 
 def _angle_kind(outer: float) -> str:
     """The convexity of an edge with this outer angle (degrees): smooth within half a degree of
     180, as the faces' normals are within half a degree."""
     return "smooth" if abs(outer - 180.0) < 0.5 else "convex" if outer > 180.0 else "concave"
+
+
+def _level_of(s: Any) -> str | None:
+    """The continuity level of an edge between two faces, None for anything else (and where the
+    faces cannot be evaluated at the edge)."""
+    if not isinstance(s, Edge) or s._e is None:
+        return None
+    try:
+        return s.continuity().level
+    except (ValueError, KernelError):
+        return None
 
 
 def _unique(items: Iterable[T]) -> ShapeList[T]:
@@ -836,9 +886,10 @@ class Edge(Shape):
     def convexity(self) -> str:
         """``"convex"`` for an outside corner (material angle below 180 degrees), ``"concave"``
         for an inside corner, ``"smooth"`` where the faces meet tangentially (within half a
-        degree). Taken at the middle of the edge. Edges with a single face count as convex."""
-        a = _outer_angles([self])[0]
-        return _angle_kind(a) if a is not None else self._probed_convexity()
+        degree) all along the edge. Taken at the middle of the edge; an edge that is tangent there
+        but not at points along it takes the kind where its faces turn most. Edges with a single
+        face count as convex."""
+        return _convexities([self])[0]  # type: ignore[return-value]
 
     @property
     def dihedral_angle(self) -> float:
@@ -854,23 +905,30 @@ class Edge(Shape):
         f1, f2 = (Face(self._owner, f) for f in self._e.faces())
         p = self.center()
         turn = f1.normal_at(p).angle_to(f2.normal_at(p))
-        return 180.0 + turn if self._probed_convexity() == "concave" else 180.0 - turn
+        return 180.0 + turn if self._probed_convexity(0.5, 1) == "concave" else 180.0 - turn
 
-    def _probed_convexity(self) -> str:
+    def _probed_convexity(self, at: float = 0.5, samples: int = 5) -> str:
         """The convexity from the faces' normals and a step into face 1, for edges the kernel's
-        outer angle does not cover (an edge of a sheet, an inner edge of a merged part). On edges
-        that lie off their faces by more than the step (imported bodies) the step can read noise."""
+        outer angle does not cover (an edge of a sheet, an inner edge of a merged part): at the
+        middle, and where the faces meet tangentially there, at the point along the edge (of
+        ``samples``) where their normals differ most. On edges that lie off their faces by more
+        than the step (imported bodies) the step can read noise."""
         if self._e is None:
             return "convex"
         fs = self._e.faces()
         if len(fs) != 2:
             return "convex"
         f1, f2 = Face(self._owner, fs[0]), Face(self._owner, fs[1])
-        p = self.center()
+        p = self.point_at(at)
         n1, n2 = f1.normal_at(p), f2.normal_at(p)
         if n1.angle_to(n2) < 0.5:
-            return "smooth"
-        t = self.tangent_at(0.5)
+            if samples <= 1:
+                return "smooth"
+            turns = [(f1.normal_at(q).angle_to(f2.normal_at(q)), t)
+                     for t, q in ((t, self.point_at(t)) for t in ((i + 0.5) / samples for i in range(samples)))]
+            turn, t = max(turns)
+            return "smooth" if turn < 0.5 else self._probed_convexity(t, 1)
+        t = self.tangent_at(at)
         eps = 1e-4 * max(self.length, 1e-9)
         into = n1.cross(t)
         # pick the in-face direction of face 1 that stays on the face
@@ -943,13 +1001,76 @@ class Edge(Shape):
             pts = [self.start, self.end]
         return BoundBox.of_points(pts)
 
-    def distance_to(self, point: VectorLike) -> float:
+    def distance_to(self, point: VectorLike | _Body) -> float:
+        """Distance to a point, or to a body (see :meth:`Part.distance_to`)."""
+        if isinstance(point, _Body):
+            return point.distance_to(self)
         p = _vec(point)
         if self._e is not None:
             _, _, d = self._e.closest_point(p.to_tuple())
             return float(d)
         _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
         return float(d)
+
+    def _closest(self, point: VectorLike) -> tuple[Vector, float]:
+        """The edge's point nearest to ``point`` and its kernel parameter."""
+        p = _vec(point).to_tuple()
+        if self._e is not None:
+            q, t, _ = self._e.closest_point(p)
+        else:
+            q, t, _ = k.curve_closest_point(self._curve(), p)
+        return (Vector(q.x, q.y, q.z) if hasattr(q, "x") else Vector(q)), float(t)
+
+    def closest_point(self, point: VectorLike) -> Vector:
+        """The point of the edge nearest to ``point``."""
+        return self._closest(point)[0]
+
+    def param_at_point(self, point: VectorLike) -> float:
+        """Where on the edge the point nearest to ``point`` lies, as a fraction of the edge's
+        length from its start (0) to its end (1): ``edge.point_at(edge.param_at_point(p))`` is
+        ``edge.closest_point(p)``."""
+        _, t = self._closest(point)
+        t0, t1 = self._range()
+        if not t1 > t0:
+            return 0.0
+        if self.geom_type == "line":
+            f = (t - t0) / (t1 - t0)
+        else:
+            f = float(ext.curve_length(self._curve(), t0, min(max(t, t0), t1))) / float(ext.curve_length(self._curve(), t0, t1))
+        f = min(max(f, 0.0), 1.0)
+        return 1.0 - f if self._rev else f
+
+    def curvature_at(self, t: float = 0.5) -> float:
+        """The curvature (1 / the radius of curvature, in 1/mm) at fraction ``t`` of the edge's
+        length: 0 on a line, ``1 / radius`` on an arc."""
+        _, d1, d2 = ext.curve_eval(self._curve(), self._param(t), 2)
+        a, b = Vector(tuple(d1)), Vector(tuple(d2))
+        s = a.length
+        if not s > 0:
+            raise ValueError("curvature_at: the curve has no tangent there")
+        return a.cross(b).length / s ** 3
+
+    def continuity(self, samples: int = 16, *, angle_tol: float = 0.5, curvature_tol: float = 0.01) -> Continuity:
+        """How the two faces of the edge meet, checked at ``samples`` points along it
+        (:class:`Continuity`): ``"G2"`` where their curvatures across the edge agree as well,
+        ``"G1"`` where they meet tangentially (a circular fillet's border), ``"G0"`` at a crease,
+        ``None`` where they leave a gap wider than the edge's tolerance.
+
+        ``angle_tol`` is the largest angle (degrees) between the faces' normals for G1;
+        ``curvature_tol`` the largest difference of their curvatures across the edge for G2,
+        relative to the larger of them (and at least ``1e-3 / length``, so that nearly flat
+        faces count as G2). ``ValueError`` for an edge that does not lie between two faces."""
+        if self._e is None:
+            raise ValueError("continuity: the edge does not lie between two faces (it is a free curve)")
+        if not int(samples) >= 1:
+            raise ValueError("continuity: samples must be at least 1")
+        with kernel_call("continuity"):
+            r = ext.edge_continuity(self._e, int(samples))
+        gap_tol = max(float(r["tolerance"]), 1e-7)
+        level = _continuity_level(r["gap"], gap_tol, r["angle"], angle_tol, r["jump"], r["curvature"], curvature_tol,
+                                  r["length"])
+        at = r["gap_at"] if level is None else r["angle_at"] if level == "G0" else r["jump_at"]
+        return Continuity(level, float(r["gap"]), float(r["angle"]), float(r["jump"]), Vector(tuple(at)))
 
     def intersections(self, other: Edge) -> list[Vector]:
         """Points where this edge crosses another edge."""
@@ -1206,8 +1327,46 @@ class Wire(Shape):
             s -= L
         return self._edges[-1].tangent_at(1.0)
 
-    def distance_to(self, point: VectorLike) -> float:
+    def distance_to(self, point: VectorLike | _Body) -> float:
+        """Distance to a point, or to a body (see :meth:`Part.distance_to`)."""
+        if isinstance(point, _Body):
+            return point.distance_to(self)
         return min(e.distance_to(point) for e in self._edges)
+
+    def closest_point(self, point: VectorLike) -> Vector:
+        """The point of the wire nearest to ``point``."""
+        p = _vec(point)
+        return min((e.closest_point(p) for e in self._edges), key=lambda q: (q - p).length)
+
+    def continuity(self, *, angle_tol: float = 0.5, curvature_tol: float = 0.01) -> Continuity:
+        """How the edges of the wire meet at its joints (and where a closed wire closes)
+        (:class:`Continuity`): ``"G2"`` where their curvature vectors agree as well, ``"G1"``
+        where they meet tangentially (within ``angle_tol`` degrees), ``"G0"`` at a corner,
+        ``None`` where an edge does not start where the one before ends (within 1e-6).
+        ``curvature_tol`` is relative to the larger curvature (and at least ``1e-3 / length``).
+        ``ValueError`` for a wire of one open edge, which has no joint."""
+        edges = list(self._edges)
+        pairs = list(zip(edges, edges[1:]))
+        if self.is_closed:
+            pairs.append((edges[-1], edges[0]))
+        if not pairs:
+            raise ValueError("continuity: the wire has no joints (one open edge)")
+        worst: dict[str, tuple[float, Vector]] = {}
+        jumps, curvatures = [], []
+        for a, b in pairs:
+            p, q = a.end, b.start
+            ta, tb = a.tangent_at(1.0), b.tangent_at(0.0)
+            ka, kb = _curvature_vector(a, 1.0), _curvature_vector(b, 0.0)
+            values = {"gap": (p - q).length, "angle": ta.angle_to(tb), "jump": (ka - kb).length}
+            for key, value in values.items():
+                if key not in worst or value > worst[key][0]:
+                    worst[key] = (value, p)
+            curvatures.append(max(ka.length, kb.length))
+        gap, angle, jump = worst["gap"][0], worst["angle"][0], worst["jump"][0]
+        level = _continuity_level(gap, max(1e-6, 1e-9 * self.length), angle, angle_tol, jump, max(curvatures),
+                                  curvature_tol, self.length)
+        at = worst["gap" if level is None else "angle" if level == "G0" else "jump"][1]
+        return Continuity(level, gap, angle, jump, at)
 
     def close(self) -> Wire:
         """This wire closed with a straight line from its end to its start."""
@@ -1247,6 +1406,17 @@ class Wire(Shape):
     def __repr__(self) -> str:
         kind = "closed" if self.is_closed else "open"
         return f"Wire({len(self._edges)} edges, {kind}, length={self.length:.6g})"
+
+
+def _curvature_vector(e: Edge, t: float) -> Vector:
+    """The curvature vector of an edge at fraction ``t`` (towards the center of curvature, of
+    length 1 / radius); the same in either direction along the edge."""
+    _, d1, d2 = ext.curve_eval(e._curve(), e._param(t), 2)
+    a, b = Vector(tuple(d1)), Vector(tuple(d2))
+    s = a.length
+    if not s > 0:
+        return Vector()
+    return a.cross(b).cross(a) / s ** 4
 
 
 def _merged_lines(wire: Wire) -> Wire:
@@ -1367,7 +1537,11 @@ class Face(Shape):
         """Area and first moments, integrated to ``ACCURACY`` (see :meth:`Part.mass_properties`)."""
         if self._m is None:
             with kernel_call("face area"):
-                self._m = ext.face_measure(self._f, ACCURACY * _MARGIN)
+                m = ext.face_measure(self._f, ACCURACY * _MARGIN)
+            if m.get("exhausted") and self._owner is not None:
+                index = ext.face_indices(self._owner._brep, [self._f])[0]
+                _unmeasurable(self._owner, int(index), "face area")
+            self._m = m
         return self._m
 
     @property
@@ -1442,6 +1616,22 @@ class Face(Shape):
         raise ValueError(f"a {self.geom_type} face has no radius")
 
     @property
+    def major_radius(self) -> float:
+        """Major radius of a torus: from its axis to the middle of its tube (:attr:`radius` is the
+        tube's)."""
+        info = self._surface_info()
+        if "major_radius" not in info:
+            raise ValueError(f"a {self.geom_type} face has no major radius (only a torus has)")
+        return float(info["major_radius"])
+
+    @property
+    def cone_angle(self) -> float:
+        """Half the opening angle of a cone, in degrees: the angle between its axis and its side."""
+        if self.geom_type != "cone":
+            raise ValueError(f"a {self.geom_type} face has no cone angle")
+        return abs(float(self._surface_info()["semi_angle_deg"]))
+
+    @property
     def axis(self) -> Axis:
         """Axis of a cylinder, cone, sphere, torus or surface of revolution."""
         info = self._surface_info()
@@ -1454,9 +1644,107 @@ class Face(Shape):
         lo, hi = self._f.bounding_box(True)
         return BoundBox(lo, hi)
 
-    def distance_to(self, point: VectorLike) -> float:
+    def distance_to(self, point: VectorLike | _Body) -> float:
+        """Distance to a point, or to a body (see :meth:`Part.distance_to`)."""
+        if isinstance(point, _Body):
+            return point.distance_to(self)
         _, d = self._f.closest_point(_vec(point).to_tuple())
         return float(d)
+
+    def closest_point(self, point: VectorLike) -> Vector:
+        """The point of the face nearest to ``point`` (within its boundary)."""
+        q, _ = self._f.closest_point(_vec(point).to_tuple())
+        return Vector(tuple(q))
+
+    def _domain(self) -> tuple[float, float, float, float]:
+        (u0, v0), (u1, v1) = self._f.uv_domain()
+        return float(u0), float(u1), float(v0), float(v1)
+
+    def _uv(self, point: VectorLike) -> tuple[float, float]:
+        """The surface parameters of the face's point nearest to ``point`` (of a seam's two, the
+        one on the face)."""
+        q = self.closest_point(point)
+        _, uvs, _ = k.surface_closest_point(self._f.surface(), q.to_tuple())
+        for uv in uvs:
+            if self._f.classify_uv(uv.x, uv.y) != "outside":
+                return float(uv.x), float(uv.y)
+        return float(uvs[0].x), float(uvs[0].y)
+
+    def uv_at(self, point: VectorLike) -> tuple[float, float]:
+        """The parameters ``(u, v)`` of the face's point nearest to ``point``, as fractions (0 to
+        1) of the face's parameter box: ``face.position_at(*face.uv_at(p))`` is
+        ``face.closest_point(p)``."""
+        u0, u1, v0, v1 = self._domain()
+        u, v = self._uv(point)
+        return ((u - u0) / (u1 - u0) if u1 > u0 else 0.0, (v - v0) / (v1 - v0) if v1 > v0 else 0.0)
+
+    def position_at(self, u: float, v: float) -> Vector:
+        """The point of the face's surface at ``(u, v)``, fractions (0 to 1) of the face's
+        parameter box. A trimmed face (a plate with a hole, a face cut by another) does not cover
+        its whole box: points there lie on the surface beyond the face's boundary."""
+        u0, u1, v0, v1 = self._domain()
+        return Vector(tuple(self._f.point_at_uv(u0 + (u1 - u0) * float(u), v0 + (v1 - v0) * float(v))))
+
+    def curvature_at(self, point: VectorLike | None = None) -> Curvature:
+        """The curvature of the face at its point nearest to ``point`` (default: a point inside
+        the face): both principal curvatures, their directions and the outward normal
+        (:class:`Curvature`). Curvatures are positive where the face bends away from its outward
+        normal (a ball, a boss), negative where it bends towards it (a bore): a cylinder of radius
+        5 has ``k1 = 0.2, k2 = 0``, its bore ``k1 = 0, k2 = -0.2``."""
+        p = self.interior_point() if point is None else _vec(point)
+        u, v = self._uv(p)
+        with kernel_call("curvature_at"):
+            r = ext.face_curvature(self._f, u, v)
+        return Curvature(float(r["k1"]), float(r["k2"]), Vector(r["d1"]), Vector(r["d2"]), Vector(r["normal"]),
+                         Vector(r["point"]))
+
+    def min_radius(self) -> float:
+        """The smallest radius of curvature on the face, ``1 / max(|k1|, |k2|)``: ``inf`` for a
+        plane, the radius of a cylinder or sphere, the smaller of a torus' tube radius and its
+        inner radius, at the narrow end of a cone. Free-form faces are sampled on a 24 x 24 grid of
+        their parameters and refined from the sharpest points (singular points such as a pole are
+        left out). Compare it with a wall thickness or a cutter radius."""
+        kind = self.geom_type
+        if kind == "plane":
+            return math.inf
+        if kind in ("cylinder", "sphere"):
+            return self.radius
+        with kernel_call("min_radius"):
+            return float(ext.face_min_radius(self._f, 24)["radius"])
+
+    def nurbs(self) -> NurbsSurface:
+        """The face's surface as a NURBS (:class:`NurbsSurface`): degrees, knots, control points
+        and weights. Exact for every kind (planes, cylinders, cones, spheres, tori as rational
+        surfaces). It is the whole surface, untrimmed: the face may cover only part of it."""
+        d = ext.surface_data(self._f.surface(), True)
+        if d.get("poles") is None:
+            raise ValueError(f"nurbs: the {self.geom_type} surface has no NURBS form")
+        du, dv = int(d["u_degree"]), int(d["v_degree"])
+        ku, kv = [float(x) for x in d["u_knots"]], [float(x) for x in d["v_knots"]]
+        nu, nv = len(ku) - du - 1, len(kv) - dv - 1
+        poles = [Vector(tuple(p)) for p in d["poles"]]
+        if len(poles) != nu * nv:
+            raise ValueError("nurbs: the surface's control net does not match its knots")
+        points = [poles[i * nv:(i + 1) * nv] for i in range(nu)]
+        w = d.get("weights")
+        weights = None if w is None else [[float(x) for x in w[i * nv:(i + 1) * nv]] for i in range(nu)]
+        return NurbsSurface((du, dv), (ku, kv), points, weights)
+
+    def isocurve(self, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
+        """The curve of constant ``u`` (or constant ``v``) of the face's surface, at a fraction (0
+        to 1) of the face's parameter box, clipped to the face: one edge per piece that lies on it
+        (a plate with a hole in the way gives two). Exact: lines, arcs or B-splines of the surface
+        itself. Give one of ``u`` and ``v``."""
+        if (u is None) == (v is None):
+            raise ValueError("isocurve: give one of u and v")
+        t = float(u if u is not None else v)  # type: ignore[arg-type]
+        if not 0.0 <= t <= 1.0:
+            raise ValueError(f"isocurve: the parameter is a fraction of the face, from 0 to 1 (got {t!r})")
+        u0, u1, v0, v1 = self._domain()
+        value = u0 + (u1 - u0) * t if u is not None else v0 + (v1 - v0) * t
+        with kernel_call("isocurve"):
+            curves = ext.face_iso_curves(self._f, u is not None, value)
+        return ShapeList(Edge._from_curve(c) for c in curves)
 
     def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
         """Where a ray meets this face, nearest first (see :meth:`Part.raycast`)."""
@@ -1619,17 +1907,35 @@ class _Body(Shape):
         return BoundBox(lo, hi)
 
     def distance_to(self, other: VectorLike | Shape) -> float:
-        """Minimum distance to a point or to another body.
+        """Minimum distance to a point, another body, a face, an edge or a wire.
 
         For a point inside a part, and for a body nested in another, it is the distance to
-        the surface (the wall clearance). Bodies that touch or overlap are 0 apart.
+        the surface (the wall clearance). Bodies that touch or overlap are 0 apart, and so are a
+        body and a curve that touches or crosses its surface.
         """
         if isinstance(other, _Body):
             return _body_distance(self, other)
+        if isinstance(other, (Face, Edge, Wire)):
+            return self.closest_points(other).distance
         if isinstance(other, Shape) and not isinstance(other, Vertex):
-            raise TypeError(f"distance_to takes a point or a body (Part, Shell, Sketch), not a {type(other).__name__}")
+            raise TypeError(f"distance_to takes a point, a body, a face, an edge or a wire, not a {type(other).__name__}")
         _, d = k.brep_closest_point(self._brep, _vec(other).to_tuple())  # type: ignore[arg-type]
         return float(d)
+
+    def closest_points(self, other: _Body | Face | Edge | Wire) -> ClosestPoints:
+        """The nearest points of this body and another body, a face, an edge or a wire
+        (:class:`ClosestPoints`): the point on this body, the point on the other, their distance
+        and the faces they lie on. The points are exact surface points (and curve points), as for
+        :meth:`distance_to`; where the shapes touch or overlap, the distance is 0 and the points
+        are one place where they meet."""
+        if isinstance(other, Face):
+            r = _body_distance(self, other.to_shell(), points=True)
+            return ClosestPoints(r.point, r.other_point, r.distance, r.face, other)
+        if isinstance(other, _Body):
+            return _body_distance(self, other, points=True)
+        if isinstance(other, (Edge, Wire)):
+            return _curve_distance(self, other)
+        raise TypeError(f"closest_points takes a body, a face, an edge or a wire, not a {type(other).__name__}")
 
     def closest_point(self, point: VectorLike) -> Vector:
         p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
@@ -1915,7 +2221,11 @@ def _closest(body: _Body, p: np.ndarray) -> np.ndarray:
     return np.array((q.x, q.y, q.z)) if hasattr(q, "x") else np.array(q, dtype=float)
 
 
-def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> float:
+@overload
+def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> float: ...
+@overload
+def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400, *, points: bool) -> ClosestPoints: ...
+def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400, *, points: bool = False) -> Any:
     """Distance between the surfaces of two bodies (0 where they touch or overlap).
 
     The kernel's own body distance is wrong where the nearest points form a line (parallel
@@ -1924,7 +2234,8 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
     points in turn on either body and finishes with Newton's method on the parameters of the
     faces they lie on, which ends in a pair of exact surface points. (Closest points in turn
     alone settle slowly between nearly parallel faces: two skew cylinders 2 apart at 5 degrees
-    were still 2.4845 apart after 500 rounds.)
+    were still 2.4845 apart after 500 rounds.) With ``points``, the nearest points and their faces
+    (:class:`ClosestPoints`).
     """
     from .mesh import tessellate
 
@@ -1949,18 +2260,81 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
                 taken.append(pts[i])
                 starts.append((d, x, y, pts[i]))
     best, unsettled = math.inf, 0.0
+    pair: tuple[Any, Any, Any, Any] = (None, None, None, None)  # on a, on b, face of a, face of b
     for _, x, y, p in sorted(starts, key=lambda t: t[0])[:2 * seeds]:
         with kernel_call("distance_to"):
             r = ext.nearest_points(x._brep, y._brep, tuple(float(c) for c in p))
         if r["distance"] < best:
             best, unsettled = r["distance"], r["gain"]
+            pair = ((r["a"], r["b"], r["face_a"], r["face_b"]) if x is a else
+                    (r["b"], r["a"], r["face_b"], r["face_a"]))
     scale = max(ab.diagonal, bb.diagonal, 1.0)
     if unsettled > 1e-9 * scale:
         import warnings
 
         warnings.warn(f"distance_to: the nearest points did not settle; the distance {best:.6g} may be too large "
                       f"(the last step still gained {unsettled:.2g})", RuntimeWarning, stacklevel=3)
-    return 0.0 if best <= 1e-12 * scale else best
+    best = 0.0 if best <= 1e-12 * scale else best
+    if not points:
+        return best
+    pa, pb, fa, fb = pair
+    return ClosestPoints(Vector(tuple(pa)), Vector(tuple(pb)), best, None if fa is None else Face(a, fa),
+                         None if fb is None else Face(b, fb))
+
+
+def _curve_distance(body: _Body, curve: Edge | Wire, samples: int = 64, seeds: int = 4) -> ClosestPoints:
+    """The nearest points of a body and an edge or a wire: for each edge, the body's distance
+    from points along the curve (by its parameter) gives starting points; from the best few,
+    ``ext.nearest_curve_points`` takes closest points in turn and finishes with Newton's method on
+    the parameters of the curve and of the face it meets, as :func:`_body_distance` does for two
+    bodies."""
+    if body._brep.face_count() == 0:
+        raise ValueError("distance_to: an empty body has no distance")
+    best: tuple[float, Any] = (math.inf, None)
+    unsettled = 0.0
+    for e in curve.edges():
+        c = e._curve()
+        t0, t1 = e._range()
+        ts = [t0 + (t1 - t0) * i / samples for i in range(samples + 1)]
+        found = []
+        for t in ts:
+            p = np.array(Vector(c.evaluate(t)).to_tuple())
+            found.append((float(np.linalg.norm(_closest(body, p) - p)), t))
+        found.sort()
+        taken: list[float] = []
+        for _, t in found:
+            if len(taken) >= seeds:
+                break
+            if all(abs(t - u) > (t1 - t0) / samples for u in taken):
+                taken.append(t)
+        for t in taken:
+            with kernel_call("distance_to"):
+                r = ext.nearest_curve_points(body._brep, c, t0, t1, t)
+            if r["distance"] < best[0]:
+                best, unsettled = (r["distance"], r), r["gain"]
+    d, r = best
+    scale = max(body._loose_box().diagonal, curve.bbox().diagonal, 1.0)
+    if unsettled > 1e-9 * scale:
+        import warnings
+
+        warnings.warn(f"distance_to: the nearest points did not settle; the distance {d:.6g} may be too large "
+                      f"(the last step still gained {unsettled:.2g})", RuntimeWarning, stacklevel=4)
+    d = 0.0 if d <= 1e-12 * scale else d
+    return ClosestPoints(Vector(tuple(r["a"])), Vector(tuple(r["b"])), d,
+                         None if r["face_a"] is None else Face(body, r["face_a"]), None)
+
+
+def _unmeasurable(body: _Body, face: int, what: str = "mass properties") -> None:
+    """Called where the integration ran out of a face's evaluation budget (measure.cpp): raises
+    for a face that crosses its surface's seam, which the integration cannot converge on (it ran
+    for minutes); otherwise the result stands, not converged, and says so."""
+    problems = ext.seam_problems(body._brep, False, [face])
+    crossed = [p for p in problems if p.get("crossed")]
+    if crossed:
+        why = (f"face {face} of the body crosses the seam of its surface (along {crossed[0]['crossed']}), so its "
+               f"area and volume cannot be integrated: the body is broken (is_valid() is False); rebuild the step "
+               f"that made it, or heal() it")
+        raise KernelError(what, why, None, why)
 
 
 def _relationship(a: _Body, b: _Body) -> str | None:
@@ -2119,10 +2493,100 @@ class MassProperties:
         _, v = np.linalg.eigh(self.inertia)
         return (Vector(v[:, 0]), Vector(v[:, 1]), Vector(v[:, 2]))
 
+    @property
+    def radii_of_gyration(self) -> tuple[float, float, float]:
+        """The radius of gyration about each principal axis, ``sqrt(moment / mass)``, in the order
+        of :attr:`principal_moments`: the distance from the axis at which the whole mass would have
+        the same moment of inertia."""
+        return tuple(math.sqrt(max(m, 0.0) / self.mass) for m in self.principal_moments)  # type: ignore[return-value]
+
+    def inertia_about(self, point: VectorLike) -> np.ndarray:
+        """The inertia tensor about ``point`` (axes parallel to the world axes): :attr:`inertia`
+        moved by the parallel-axis theorem, ``inertia + mass * (d.d * I - d d^T)`` with ``d`` from
+        the center of mass to the point."""
+        d = np.array(_vec(point).to_tuple()) - np.array(self.center.to_tuple())
+        return self.inertia + self.mass * (d.dot(d) * np.eye(3) - np.outer(d, d))
+
+    def moment_about(self, axis: Axis) -> float:
+        """The moment of inertia about an axis (for example a shaft's axis or a pivot): ``n^T I n``
+        with the inertia tensor about a point of the axis and its unit direction ``n``."""
+        if not isinstance(axis, Axis):
+            raise TypeError(f"moment_about takes an Axis, not a {type(axis).__name__}")
+        n = np.array(axis.direction.normalized().to_tuple())
+        return float(n @ self.inertia_about(axis.origin) @ n)
+
     def __repr__(self) -> str:
         c = self.center
         return (f"MassProperties(mass={self.mass:.6g}, volume={self.volume:.6g}, area={self.area:.6g}, "
                 f"center=({c.x:.6g}, {c.y:.6g}, {c.z:.6g}))")
+
+
+class SectionProperties:
+    """Section properties of a planar region (see :meth:`Sketch.section_properties`): the area
+    and the second moments of area of a profile, for beams, frames and extrusions.
+
+    The moments are about the centroid, in the axes of :attr:`plane` (the sketch plane moved to
+    the centroid): ``ixx = ∫ y² dA`` about its x axis, ``iyy = ∫ x² dA`` about its y axis and the
+    product ``ixy = ∫ x y dA``, in mm⁴.
+    """
+
+    __slots__ = ("area", "centroid", "plane", "ixx", "iyy", "ixy", "_extent")
+
+    def __init__(self, area: float, plane: Plane, ixx: float, iyy: float, ixy: float,
+                 extent: tuple[float, float, float, float]):
+        self.area = area
+        self.centroid = plane.origin
+        self.plane = plane
+        self.ixx = ixx
+        self.iyy = iyy
+        self.ixy = ixy
+        self._extent = extent  # min x, max x, min y, max y about the centroid, in the plane's axes
+
+    @property
+    def polar(self) -> float:
+        """The polar moment about the centroid, ``ixx + iyy`` (the torsion constant only of a circle
+        or a ring)."""
+        return self.ixx + self.iyy
+
+    @property
+    def principal_moments(self) -> tuple[float, float]:
+        """The second moments about the principal axes through the centroid, ascending."""
+        m = (self.ixx + self.iyy) / 2
+        r = math.hypot((self.ixx - self.iyy) / 2, self.ixy)
+        return (m - r, m + r)
+
+    @property
+    def principal_axes(self) -> tuple[Vector, Vector]:
+        """Unit directions (in world coordinates, in the plane) of the principal axes, in the
+        order of :attr:`principal_moments`."""
+        lo = self.principal_moments[0]
+        # an eigenvector of [[ixx, -ixy], [-ixy, iyy]] for the smaller moment, and the one across it
+        if abs(self.ixy) <= 1e-300:
+            u = (1.0, 0.0) if self.ixx <= self.iyy else (0.0, 1.0)
+        else:
+            a = (self.ixy, self.ixx - lo)  # (ixx - lo) x - ixy y = 0
+            b = (self.iyy - lo, self.ixy)  # -ixy x + (iyy - lo) y = 0
+            u = a if math.hypot(*a) >= math.hypot(*b) else b
+        first = (self.plane.x_dir * u[0] + self.plane.y_dir * u[1]).normalized()
+        return (first, self.plane.z_dir.cross(first).normalized())
+
+    @property
+    def radii_of_gyration(self) -> tuple[float, float]:
+        """``(sqrt(ixx / area), sqrt(iyy / area))``."""
+        return (math.sqrt(max(self.ixx, 0.0) / self.area), math.sqrt(max(self.iyy, 0.0) / self.area))
+
+    @property
+    def section_moduli(self) -> tuple[float, float]:
+        """The elastic section moduli ``(ixx / c_y, iyy / c_x)``, with ``c`` the distance from the
+        centroid to the farthest fiber of the region across each axis (the smaller modulus of a
+        section that is not symmetric)."""
+        x0, x1, y0, y1 = self._extent
+        return (self.ixx / max(-y0, y1), self.iyy / max(-x0, x1))
+
+    def __repr__(self) -> str:
+        c = self.centroid
+        return (f"SectionProperties(area={self.area:.6g}, centroid=({c.x:.6g}, {c.y:.6g}, {c.z:.6g}), "
+                f"ixx={self.ixx:.6g}, iyy={self.iyy:.6g}, ixy={self.ixy:.6g})")
 
 
 class Part(_Body):
@@ -2132,7 +2596,35 @@ class Part(_Body):
     The right-hand side may be a single part or any iterable of parts.
     """
 
-    __slots__ = ()
+    # _folds: the bends fold() and flange() made, with the K-factor each was made with, as
+    # (axis origin, axis direction, inside radius, k_factor); unfold() takes them (sheetmetal.py).
+    # Kept by the operations that keep the name and color (_like), moved with the part.
+    __slots__ = ("_folds",)
+
+    @classmethod
+    def _wrap(cls, brep: Any, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        b = super()._wrap(brep, *args, **kwargs)
+        b._folds = ()
+        return b
+
+    def _like(self, brep: Any) -> Any:
+        b = super()._like(brep)
+        b._folds = self._folds
+        return b
+
+    def _transformed(self, m: np.ndarray) -> Any:
+        b = super()._transformed(m)
+        if self._folds:
+            r = np.asarray(m, dtype=float)[:3, :3]
+            scale = abs(float(np.linalg.det(r))) ** (1.0 / 3.0)
+            moved = []
+            for origin, direction, radius, kf in self._folds:
+                o = np.asarray(m, dtype=float) @ np.array((*origin, 1.0))
+                d = r @ np.array(direction)
+                moved.append((tuple(float(x) for x in o[:3]), tuple(float(x) for x in d / np.linalg.norm(d)),
+                              radius * scale, kf))
+            b._folds = tuple(moved)
+        return b
 
     # -- measures -------------------------------------------------------------
     def _props(self, accuracy: float | None = None) -> dict[str, Any]:
@@ -2146,6 +2638,8 @@ class Part(_Body):
             return cached
         with kernel_call("mass properties", "is the part a closed solid?"):
             p = ext.brep_measure(self._brep, accuracy * _MARGIN)
+        if p.get("exhausted", -1) >= 0:
+            _unmeasurable(self, int(p["exhausted"]))
         p["accuracy"] = accuracy
         vx, vy, vz = p["field_volumes"]
         p["gaps"] = max(abs(vx - vz), abs(vy - vz)) / abs(vz) if vz else 0.0
@@ -3223,19 +3717,19 @@ class Part(_Body):
 
         return flange(self, edge, length, angle=angle, radius=radius, k_factor=k_factor)
 
-    def bends(self, *, k_factor: float = 0.44) -> list[Any]:
+    def bends(self, *, k_factor: Any = None) -> list[Any]:
         """The bends of this sheet metal part (see :func:`smlibpy.sheetmetal.bends`)."""
         from .sheetmetal import bends
 
         return bends(self, k_factor=k_factor)
 
-    def unfold(self, *, k_factor: float = 0.44, fixed: Face | None = None) -> Part:
+    def unfold(self, *, k_factor: Any = None, fixed: Face | None = None) -> Part:
         """This sheet metal part unfolded flat (see :func:`smlibpy.unfold`)."""
         from .sheetmetal import unfold
 
         return unfold(self, k_factor=k_factor, fixed=fixed)
 
-    def flat_pattern(self, *, k_factor: float = 0.44, fixed: Face | None = None) -> Any:
+    def flat_pattern(self, *, k_factor: Any = None, fixed: Face | None = None) -> Any:
         """The flat pattern of this sheet metal part on XY (see :func:`smlibpy.flat_pattern`)."""
         from .sheetmetal import flat_pattern
 
@@ -3909,6 +4403,33 @@ class Sketch(Shell):
     def perimeter(self) -> float:
         """Total length of the boundary: outlines and holes."""
         return sum(e.length for f in self.faces() for w in f.wires() for e in w.edges())
+
+    def section_properties(self) -> SectionProperties:
+        """Area, centroid and second moments of area of the region (a beam's or an extrusion's
+        profile): ``ixx``, ``iyy`` and ``ixy`` about the centroid in the axes of the sketch plane,
+        the principal moments and axes, the polar moment, the radii of gyration and the section
+        moduli (see :class:`SectionProperties`).
+
+        Integrated as the mass properties of a thin slab of the region (to ``ACCURACY`` of the
+        largest moment), less the slab's own thickness term."""
+        if not self.faces():
+            raise ValueError("section_properties: the sketch is empty")
+        pl = self._plane
+        local = Plane(pl.origin, pl.x_dir, pl.z_dir)
+        flat = self.moved(local.location.inverse())  # the region in the plane's axes, on z = 0
+        box = flat.bbox()
+        h = 0.1 * max(box.diagonal, 1e-9)  # a slab thin against the region, thick enough to integrate
+        mp = flat.extrude(h).mass_properties()
+        area = mp.volume / h
+        c = mp.center
+        i = mp.inertia
+        slab = area * h ** 3 / 12  # the slab's moment about the x and y axes through its middle
+        ixx = (float(i[0][0]) - slab) / h
+        iyy = (float(i[1][1]) - slab) / h
+        ixy = -float(i[0][1]) / h
+        extent = (box.min.x - c.x, box.max.x - c.x, box.min.y - c.y, box.max.y - c.y)
+        centroid = local.from_local((c.x, c.y, 0.0))
+        return SectionProperties(area, Plane(centroid, local.x_dir, local.z_dir), ixx, iyy, ixy, extent)
 
     # -- 2D operations --------------------------------------------------------
     def offset(self, distance: float, *, corners: str = "round", round: bool | None = None) -> Sketch:

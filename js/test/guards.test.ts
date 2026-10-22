@@ -15,6 +15,7 @@ import {
   Helix,
   Hole,
   KernelError,
+  Line,
   Location,
   Locations,
   ModelingError,
@@ -761,8 +762,11 @@ for (const [name, make, expected] of distances) {
   })
 }
 
-test('distanceTo takes points and bodies', () => {
-  throwsMatching(() => Box(1, 1, 1).distanceTo(Box(1, 1, 1).edges()[0]), TypeError, /point or a body/)
+test('distanceTo takes points, bodies and curves', () => {
+  // (edges, wires and faces threw a TypeError before 0.5.0)
+  const box = Box(1, 1, 1)
+  assert.equal(box.distanceTo(box.edges()[0]), 0)
+  approx(box.distanceTo(Line([3, -5, 0], [3, 5, 0])), 2.5)
   approx(Box(2, 2, 2).distanceTo([5, 0, 0]), 4)
 })
 

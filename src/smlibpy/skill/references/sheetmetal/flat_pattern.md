@@ -3,8 +3,10 @@
 The blank of a sheet metal part laid on the XY plane, with its cutting contour and bend lines.
 
 ## Signature
-`flat_pattern(part, *, k_factor=0.44, fixed=None)` -> `FlatPattern`
-`part.flat_pattern(*, k_factor=0.44, fixed=None)`
+`flat_pattern(part, *, k_factor=None, fixed=None)` -> `FlatPattern`
+`part.flat_pattern(*, k_factor=None, fixed=None)`
+
+`k_factor` as for `unfold`: by default each bend's own (from `fold`, `flange`), else 0.44.
 
 ## Returns
 A `FlatPattern`:
@@ -15,7 +17,8 @@ A `FlatPattern`:
 - `bends`: one `Bend` each: `angle`, `radius`, `thickness`, `k_factor`, `allowance`, `length`,
   `line` (the bend line at z = 0, the middle of the bend's strip) and `direction` (`"up"`: the
   sheet beyond the line folds towards +Z).
-- `bend_lines`: the lines alone; `size`: (length, width, thickness); `thickness`, `k_factor`.
+- `bend_lines`: the lines alone; `size`: (length, width, thickness); `thickness`; `k_factor`:
+  the K-factor of every bend, `None` where they differ (each `Bend` has its own).
 
 The largest face of the part lies at z = 0 facing down, so a tray's bends are all `"up"`.
 

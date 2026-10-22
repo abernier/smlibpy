@@ -3,6 +3,8 @@
 // The nearest points of two bodies (`smlibpy._core.ext`):
 //
 //   nearest_points(a, b, near_a)   from a point near body a: the nearest points on a and b
+//   nearest_curve_points(body, curve, t0, t1, near_t)
+//                                  the same for a body and a curve over [t0, t1]
 //
 // Closest points taken in turn on either body (alternating projections) settle at a pair of
 // nearest points, but slowly where the two surfaces are nearly parallel: each round gains a
@@ -29,14 +31,26 @@
 namespace
 {
 
-// A point on a body: on a face (two parameters), on an edge (one) or at a vertex (none).
+// A point on a body: on a face (two parameters), on an edge (one) or at a vertex (none); or a
+// point on a curve over an interval (one parameter).
 struct Spot
 {
     const SmFace* face = nullptr;
     const SmEdge* edge = nullptr;
+    const SmVertex* vertex = nullptr;
+    const SmCurve* curve = nullptr;  // the edge's curve, or the curve itself
+    double lo = 0.0, hi = 0.0;       // the curve's interval
     int n = 0;
     double t[2] = {0.0, 0.0};
     SmPoint3d p;
+};
+
+// What the nearest points are taken on: a body, or a curve over [lo, hi].
+struct Target
+{
+    const SmBrep* brep = nullptr;
+    const SmCurve* curve = nullptr;
+    double lo = 0.0, hi = 0.0;
 };
 
 // The point of a body nearest to q, and what it lies on.
@@ -61,10 +75,48 @@ bool locate(const SmBrep* brep, const SmPoint3d& q, Spot& spot)
     else if (const SmEdge* edge = SM_CAST_PTR(SmEdge, object))
     {
         found.edge = edge, found.n = 1;
+        found.curve = edge->GetCurve();
+        const SmExtent1d interval = edge->GetInterval();
+        found.lo = interval.GetMin(), found.hi = interval.GetMax();
         found.t[0] = parameters.x;
     }
+    else if (const SmVertex* vertex = SM_CAST_PTR(SmVertex, object))
+        found.vertex = vertex;
     spot = found;
     return true;
+}
+
+// The point of a curve over [lo, hi] nearest to q.
+bool locate(const Target& target, const SmPoint3d& q, Spot& spot)
+{
+    if (target.brep)
+        return locate(target.brep, q, spot);
+    SmSolutionArray solutions;
+    if (target.curve->GlobalPointSolve(SmExtent1d(target.lo, target.hi), SM_SO_MINIMIZE, q, SM_ZONE_TOL_3D, nullptr,
+                                       nullptr, SM_SR_SINGLE, solutions) != SM_SUCCESS ||
+        solutions.GetSize() < 1)
+        return false;
+    Spot found;
+    found.curve = target.curve, found.n = 1;
+    found.lo = target.lo, found.hi = target.hi;
+    found.t[0] = std::min(std::max(solutions[0].m_vStart[0], target.lo), target.hi);
+    if (target.curve->EvaluatePoint(found.t[0], found.p) != SM_SUCCESS)
+        return false;
+    spot = found;
+    return true;
+}
+
+// The face a spot lies on: its own, or one of the faces at its edge or vertex.
+const SmFace* face_of(const Spot& s)
+{
+    if (s.face)
+        return s.face;
+    SmTArray<SmFace*> faces;
+    if (s.edge)
+        s.edge->GetFaces(faces);
+    else if (s.vertex)
+        s.vertex->GetFaces(faces);
+    return faces.GetSize() > 0 ? faces[0] : nullptr;
 }
 
 // Position, first derivatives d[i] and second derivatives dd[i + j] of a spot at parameters t.
@@ -73,10 +125,10 @@ bool evaluate(const Spot& s, const double* t, SmPoint3d& p, SmVector3d d[2], SmV
     if (s.face)
         return s.face->GetSurface()->Evaluate2ndDerivatives(SmPoint2d(t[0], t[1]), TRUE, TRUE, p, d[0], d[1], dd[1],
                                                            dd[0], dd[2]) == SM_SUCCESS;
-    if (s.edge)
+    if (s.curve)
     {
         SmVector3d v[3];
-        if (s.edge->GetCurve()->Evaluate(t[0], 2, TRUE, v, FALSE) != SM_SUCCESS)
+        if (s.curve->Evaluate(t[0], 2, TRUE, v, FALSE) != SM_SUCCESS)
             return false;
         p = v[0], d[0] = v[1], dd[0] = v[2];
         return true;
@@ -93,11 +145,10 @@ bool inside(const Spot& s, const double* t)
         int where = SM_PC_UNKNOWN;
         return SmApiFaceClassifyUV(s.face, SmPoint2d(t[0], t[1]), where) == SM_SUCCESS && where != SM_PC_UNKNOWN;
     }
-    if (s.edge)
+    if (s.curve)
     {
-        const SmExtent1d interval = s.edge->GetInterval();
-        const double slack = 1e-12 * (1.0 + std::fabs(interval.GetMin()) + std::fabs(interval.GetMax()));
-        return t[0] >= interval.GetMin() - slack && t[0] <= interval.GetMax() + slack;
+        const double slack = 1e-12 * (1.0 + std::fabs(s.lo) + std::fabs(s.hi));
+        return t[0] >= s.lo - slack && t[0] <= s.hi + slack;
     }
     return true;
 }
@@ -227,20 +278,12 @@ bool newton(Spot& a, Spot& b, double& distance)
     return true;
 }
 
-}  // namespace
-
-namespace smlibpy {
-
-NearestPoints nearest_points(const SmBrep* a, const SmBrep* b, const std::vector<double>& near_a)
+// The nearest points of a and b from a point near a.
+smlibpy::NearestPoints nearest(const Target& a, const Target& b, const SmPoint3d& near_a, Spot& sa, Spot& sb)
 {
-    if (!a || !b)
-        throw std::invalid_argument("brep is None");
-    if (near_a.size() != 3)
-        throw std::invalid_argument("expected a point with three coordinates");
-    Spot sa, sb;
-    if (!locate(a, SmPoint3d(near_a[0], near_a[1], near_a[2]), sa) || !locate(b, sa.p, sb))
+    if (!locate(a, near_a, sa) || !locate(b, sa.p, sb))
         throw std::runtime_error("nearest_points: the kernel found no closest point");
-    NearestPoints out;
+    smlibpy::NearestPoints out;
     double distance = sa.p.DistanceBetween(sb.p);
     const double scale = std::max({1.0, sa.p.GetMaxDimension(), sb.p.GetMaxDimension()});
     double gained = std::numeric_limits<double>::infinity();
@@ -272,6 +315,46 @@ NearestPoints nearest_points(const SmBrep* a, const SmBrep* b, const std::vector
     return out;
 }
 
+}  // namespace
+
+namespace smlibpy {
+
+NearestPoints nearest_points(const SmBrep* a, const SmBrep* b, const std::vector<double>& near_a)
+{
+    if (!a || !b)
+        throw std::invalid_argument("brep is None");
+    if (near_a.size() != 3)
+        throw std::invalid_argument("expected a point with three coordinates");
+    Target ta, tb;
+    ta.brep = a, tb.brep = b;
+    Spot sa, sb;
+    NearestPoints out = nearest(ta, tb, SmPoint3d(near_a[0], near_a[1], near_a[2]), sa, sb);
+    out.face_a = face_of(sa), out.face_b = face_of(sb);
+    return out;
+}
+
+NearestPoints nearest_curve_points(const SmBrep* body, const SmCurve* curve, double t0, double t1, double near_t)
+{
+    if (!body || !curve)
+        throw std::invalid_argument("brep or curve is None");
+    if (!(t0 <= t1) || !(near_t >= t0 && near_t <= t1))
+        throw std::invalid_argument("nearest_curve_points: expected t0 <= near_t <= t1");
+    Target tc, tb;
+    tc.curve = curve, tc.lo = t0, tc.hi = t1;
+    tb.brep = body;
+    SmPoint3d start;
+    if (curve->EvaluatePoint(near_t, start) != SM_SUCCESS)
+        throw std::runtime_error("nearest_curve_points: the curve cannot be evaluated");
+    Spot sc, sb;
+    const NearestPoints r = nearest(tc, tb, start, sc, sb);
+    NearestPoints out = r;  // on the body first, then on the curve
+    std::copy(r.b, r.b + 3, out.a);
+    std::copy(r.a, r.a + 3, out.b);
+    out.face_a = face_of(sb), out.face_b = nullptr;
+    out.t = sc.t[0];
+    return out;
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -286,10 +369,26 @@ void bind_distance(py::module_ m)
         out["b"] = py::make_tuple(r.b[0], r.b[1], r.b[2]);
         out["distance"] = r.distance, out["converged"] = r.converged, out["gain"] = r.gain;
         out["steps"] = r.steps;
+        out["face_a"] = py::cast(const_cast<SmFace*>(r.face_a), py::return_value_policy::reference);
+        out["face_b"] = py::cast(const_cast<SmFace*>(r.face_b), py::return_value_policy::reference);
         return out;
     }, py::arg("a"), py::arg("b"), py::arg("near_a"),
           "The nearest points of two bodies from a point near the first: closest points in turn, and Newton's "
           "method on the parameters of the faces and edges they lie on. {a, b, distance, converged, gain "
-          "(what the last step gained when it did not converge), steps}.");
+          "(what the last step gained when it did not converge), steps, face_a, face_b (the faces the points "
+          "lie on; at an edge or a corner, one of the faces there)}.");
+    m.def("nearest_curve_points", [](const SmBrep* body, const SmCurve* curve, double t0, double t1, double near_t) {
+        const smlibpy::NearestPoints r = smlibpy::nearest_curve_points(body, curve, t0, t1, near_t);
+        py::dict out;
+        out["a"] = py::make_tuple(r.a[0], r.a[1], r.a[2]);
+        out["b"] = py::make_tuple(r.b[0], r.b[1], r.b[2]);
+        out["distance"] = r.distance, out["converged"] = r.converged, out["gain"] = r.gain;
+        out["steps"] = r.steps, out["t"] = r.t;
+        out["face_a"] = py::cast(const_cast<SmFace*>(r.face_a), py::return_value_policy::reference);
+        return out;
+    }, py::arg("body"), py::arg("curve"), py::arg("t0"), py::arg("t1"), py::arg("near_t"),
+          "The nearest points of a body and a curve over [t0, t1], from the curve's point at near_t: as "
+          "nearest_points, with the curve as the second body. {a (on the body), b (on the curve), t (the curve "
+          "parameter of b), distance, converged, gain, steps, face_a}.");
 }
 #endif  // SMLIBPY_PYTHON

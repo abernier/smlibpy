@@ -202,6 +202,7 @@ val brep_measure(uintptr_t b, double tolerance)
         d.set("error", e);
         d.set("relative_error", r.relative_error), d.set("size", r.size), d.set("converged", r.converged);
         d.set("panels", static_cast<double>(r.panels)), d.set("evaluations", static_cast<double>(r.evaluations));
+        d.set("exhausted", static_cast<double>(r.exhausted));
         return d;
     });
 }
@@ -214,6 +215,8 @@ val nearest_points(uintptr_t a, uintptr_t b, val near_a)
         d.set("a", vec3(SmVector3d(r.a[0], r.a[1], r.a[2]))), d.set("b", vec3(SmVector3d(r.b[0], r.b[1], r.b[2])));
         d.set("distance", r.distance), d.set("converged", r.converged), d.set("gain", r.gain);
         d.set("steps", static_cast<double>(r.steps));
+        d.set("face_a", r.face_a ? val(ptr(r.face_a)) : val::null());
+        d.set("face_b", r.face_b ? val(ptr(r.face_b)) : val::null());
         return d;
     });
 }
@@ -228,6 +231,7 @@ val face_measure(uintptr_t f, double tolerance)
         d.set("first_moments", vec3(SmVector3d(r.first_moments[0], r.first_moments[1], r.first_moments[2])));
         d.set("error", r.error), d.set("relative_error", r.relative_error), d.set("converged", r.converged);
         d.set("panels", static_cast<double>(r.panels)), d.set("evaluations", static_cast<double>(r.evaluations));
+        d.set("exhausted", r.exhausted);
         return d;
     });
 }

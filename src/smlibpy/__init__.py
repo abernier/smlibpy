@@ -26,14 +26,15 @@ from .curves import (
     ThreePointArc,
     make_compatible,
 )
-from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z
+from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Curvature, Hit, Location, Nurbs, NurbsSurface,
+                       Plane, Pos, Rot, Vector, X, Y, Z)
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, tessellate
 from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
                          thicken)
 from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
 from .profiles import Profile
-from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
+from .shapes import Edge, Face, MassProperties, Part, SectionProperties, Shape, ShapeList, Shell, Sketch, Vertex, Wire
 from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot,
                        Stroke, Trapezoid, Triangle, make_face)
 from .text import Text
@@ -52,10 +53,12 @@ __version__ = "0.4.0"
 
 __all__ = [
     # geometry
-    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "Nurbs", "X", "Y", "Z", "TOLERANCE",
+    "Vector", "Axis", "Plane", "Location", "Pos", "Rot", "BoundBox", "Hit", "Nurbs", "NurbsSurface", "Curvature",
+    "Continuity", "ClosestPoints", "X", "Y", "Z", "TOLERANCE",
     "Align",
     # shapes
-    "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Mesh",
+    "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties",
+    "SectionProperties", "Mesh",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
     "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "make_compatible",

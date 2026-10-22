@@ -1,0 +1,535 @@
+// tests/test_lane_DA.py: measuring and analysis, and per-bend K-factors (kernel plan items A2-A7,
+// D1): nearest points and closest points, curvature, NURBS data and iso curves of faces, continuity
+// of edges and wires, section properties, inertia about points and axes, the integration's budget,
+// K-factors per bend.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { KernelError, ext } from '../src/kernel.ts'
+import {
+  Align,
+  Axis,
+  Box,
+  CenterArc,
+  Circle,
+  Cone,
+  Cylinder,
+  Ellipse,
+  Helix,
+  Line,
+  Part,
+  Plane,
+  Polyline,
+  Rectangle,
+  Sphere,
+  Spline,
+  Torus,
+  Vector,
+  Wire,
+  X,
+  Y,
+  Z,
+  flange,
+  flatPattern,
+  fold,
+  stitch,
+  surface,
+  unfold,
+  type Face,
+  type NurbsSurface,
+  type VectorLike,
+} from '../src/index.ts'
+import { bends, din6935 } from '../src/sheetmetal.ts'
+import { approx } from './_approx.ts'
+
+function near(actual: number, expected: number, tol: number): void {
+  approx(actual, expected, 0, tol)
+}
+
+function raises(fn: () => unknown, kind: abstract new (...args: never[]) => Error, pattern: RegExp): void {
+  assert.throws(fn, (e: unknown) => e instanceof kind && pattern.test((e as Error).message))
+}
+
+const cone = () => Cone(10, 4, 20).faces().filterBy((f: Face) => f.geomType === 'cone')[0]
+
+// -- A6: inertia about a point or an axis ----------------------------------------------------------
+test('inertia about a corner and an axis', () => {
+  const [a, b, c] = [10, 20, 30]
+  const mp = Box(a, b, c).massProperties(2.0)
+  const m = 2.0 * a * b * c
+  const corner: VectorLike = [a / 2, b / 2, c / 2]
+  const i = mp.inertiaAbout(corner)
+  approx(i[0][0], (m * (b * b + c * c)) / 3, 1e-9)
+  approx(i[2][2], (m * (a * a + b * b)) / 3, 1e-9)
+  approx(i[0][1], (-m * a * b) / 4, 1e-9)
+  const atCenter = mp.inertiaAbout(mp.center)
+  const scale = Math.max(...mp.inertia.flat().map(Math.abs))
+  for (let r = 0; r < 3; r++) for (let s = 0; s < 3; s++) near(atCenter[r][s], mp.inertia[r][s], 1e-6 * scale)
+  approx(mp.momentAbout(new Axis(corner, [0, 0, 1])), (m * (a * a + b * b)) / 3, 1e-9)
+  approx(mp.momentAbout(new Axis([a / 2, b / 2, -100], [0, 0, -1])), (m * (a * a + b * b)) / 3, 1e-9)
+  approx(mp.momentAbout(new Axis([0, 0, 0], [1, 1, 0])), (mp.inertia[0][0] + mp.inertia[1][1] + 2 * mp.inertia[0][1]) / 2, 1e-9)
+  raises(() => mp.momentAbout([0, 0, 1] as never), TypeError, /Axis/)
+})
+
+test('radii of gyration', () => {
+  const mp = Cylinder(10, 100).massProperties(7.85e-3)
+  const k = mp.radiiOfGyration
+  approx(k[0], 10 / Math.sqrt(2), 1e-9)
+  approx(k[1], Math.sqrt((3 * 10 ** 2 + 100 ** 2) / 12), 1e-9)
+  mp.principalMoments.forEach((x, j) => approx(k[j], Math.sqrt(x / mp.mass), 1e-15))
+})
+
+// -- A5: section properties ----------------------------------------------------------------------
+test('section properties of a rectangle and a plate with a hole', () => {
+  let sp = Rectangle(40, 20).sectionProperties()
+  approx(sp.area, 800, 1e-12)
+  approx(sp.ixx, (40 * 20 ** 3) / 12, 1e-9)
+  approx(sp.iyy, (20 * 40 ** 3) / 12, 1e-9)
+  assert.ok(Math.abs(sp.ixy) <= 1e-9 * sp.iyy)
+  approx(sp.polar, sp.ixx + sp.iyy)
+  approx(sp.sectionModuli[0], (40 * 20 ** 2) / 6, 1e-9)
+  approx(sp.sectionModuli[1], (20 * 40 ** 2) / 6, 1e-9)
+  approx(sp.radiiOfGyration[0], 20 / Math.sqrt(12), 1e-9)
+  approx(sp.principalMoments[0], sp.ixx, 1e-9)
+  near(Math.abs(sp.principalAxes[0].dot(X.direction)), 1, 1e-9)
+  const plane = new Plane([5, 6, 7], [0, 1, 0], [1, 0, 0])
+  sp = Rectangle(40, 20).cut(Circle(5)).on(plane).sectionProperties()
+  approx(sp.area, 800 - 25 * Math.PI, 1e-10)
+  approx(sp.ixx, (40 * 20 ** 3) / 12 - (Math.PI * 5 ** 4) / 4, 1e-9)
+  approx(sp.iyy, (20 * 40 ** 3) / 12 - (Math.PI * 5 ** 4) / 4, 1e-9)
+  assert.ok(sp.centroid.sub([5, 6, 7]).length <= 1e-9)
+  assert.ok(sp.plane.xDir.isClose([0, 1, 0]) && sp.plane.zDir.isClose([1, 0, 0]))
+})
+
+test('section properties of an angle', () => {
+  const sp = Rectangle(30, 5, { align: [Align.MIN, Align.MIN] }).fuse(Rectangle(5, 40, { align: [Align.MIN, Align.MIN] })).sectionProperties()
+  const parts = [[30 * 5, 15, 2.5, 30, 5], [5 * 35, 2.5, 22.5, 5, 35]]
+  const area = parts.reduce((s, p) => s + p[0], 0)
+  const cx = parts.reduce((s, p) => s + p[0] * p[1], 0) / area
+  const cy = parts.reduce((s, p) => s + p[0] * p[2], 0) / area
+  const ixx = parts.reduce((s, [a, , y, w, h]) => s + (w * h ** 3) / 12 + a * (y - cy) ** 2, 0)
+  const iyy = parts.reduce((s, [a, x, , w, h]) => s + (h * w ** 3) / 12 + a * (x - cx) ** 2, 0)
+  const ixy = parts.reduce((s, [a, x, y]) => s + a * (x - cx) * (y - cy), 0)
+  approx(sp.area, area, 1e-12)
+  assert.ok(sp.centroid.sub([cx, cy, 0]).length <= 1e-9)
+  approx(sp.ixx, ixx, 1e-9)
+  approx(sp.iyy, iyy, 1e-9)
+  approx(sp.ixy, ixy, 1e-9)
+  const [lo, hi] = sp.principalMoments
+  approx(lo + hi, ixx + iyy, 1e-12)
+  approx(lo * hi, ixx * iyy - ixy ** 2, 1e-9)
+  const [u, v] = sp.principalAxes
+  approx(u.x * (sp.ixx * u.x - sp.ixy * u.y) + u.y * (-sp.ixy * u.x + sp.iyy * u.y), lo, 1e-9)
+  near(u.dot(v), 0, 1e-12)
+  approx(sp.sectionModuli[0], ixx / (40 - cy), 1e-9)
+  approx(sp.sectionModuli[1], iyy / (30 - cx), 1e-9)
+  raises(() => Rectangle(10, 10).cut(Rectangle(20, 20)).sectionProperties(), RangeError, /empty/)
+})
+
+// -- A2: closest points ----------------------------------------------------------------------------
+test('closest points of two bodies with their faces', () => {
+  const a = Box(10, 10, 10)
+  const b = Sphere(3).translate(20, 0, 0)
+  const cp = a.closestPoints(b)
+  near(cp.distance, 12.0, 1e-12)
+  assert.equal(cp.distance, a.distanceTo(b))
+  assert.ok(cp.point.sub([5, 0, 0]).length <= 1e-9 && cp.otherPoint.sub([17, 0, 0]).length <= 1e-9)
+  assert.ok(cp.face.geomType === 'plane' && cp.face.normalAt().isClose([1, 0, 0]))
+  assert.ok(cp.otherFace.geomType === 'sphere' && cp.otherFace.owner === b)
+  const back = b.closestPoints(a)
+  assert.ok(back.point.sub(cp.otherPoint).length <= 1e-9 && back.face.owner === b)
+  const c = Cylinder(5, 200)
+  const d = Cylinder(5, 200).rotate(X, 5).translate(12, 0, 0)
+  const cq = c.closestPoints(d)
+  near(cq.distance, 2.0, 1e-9)
+  assert.ok(c.distanceTo(cq.point) <= 1e-9 && d.distanceTo(cq.otherPoint) <= 1e-9)
+  near(cq.point.sub(cq.otherPoint).length, cq.distance, 1e-12)
+})
+
+test('distances to edges, wires and faces', () => {
+  const box = Box(10, 10, 10)
+  const line = Line([20, -50, 3], [20, 50, 3])
+  const cp = box.closestPoints(line)
+  near(cp.distance, 15, 1e-12)
+  assert.equal(cp.otherFace, null)
+  approx(cp.point.x, 5)
+  approx(cp.otherPoint.x, 20)
+  assert.ok(cp.face.normalAt().isClose([1, 0, 0]))
+  approx(box.distanceTo(line), 15)
+  approx(line.distanceTo(box), 15)
+  assert.equal(box.distanceTo(Line([0, 0, -20], [0, 0, 20])), 0)
+  const rod = Cylinder(5, 20)
+  const cr = rod.closestPoints(Line([-50, 10, 5], [50, 10, 5]))
+  near(cr.distance, 5, 1e-12)
+  assert.equal(cr.face.geomType, 'cylinder')
+  assert.ok(cr.point.sub([0, 5, 5]).length <= 1e-9)
+  const w = Polyline([20, 0, 20], [20, 0, -20], [-20, 0, -20])
+  approx(box.distanceTo(w), 15)
+  approx(w.distanceTo(box), 15)
+  const helix = Helix(2, 30, 8).translate(0, 0, -15)
+  const ball5 = Sphere(5)
+  let brute = Infinity
+  for (let i = 0; i <= 300; i++) brute = Math.min(brute, ball5.distanceTo(helix.pointAt(i / 300)))
+  const d = ball5.distanceTo(helix)
+  near(d, 3.0, 1e-5)
+  assert.ok(d <= brute + 1e-12)
+  const top = Box(40, 30, 20).cut(Cylinder(6, 30)).faces().top()[0]
+  const ball = Sphere(2).translate(0, 0, 30)
+  const cf = ball.closestPoints(top)
+  approx(cf.distance, Math.hypot(6, 20) - 2, 1e-12)
+  assert.equal(cf.otherFace, top)
+  approx(top.distanceTo(ball), cf.distance)
+  approx(Math.hypot(cf.otherPoint.x, cf.otherPoint.y), 6)
+  approx(cf.otherPoint.z, 10)
+})
+
+test('closest points and parameters on faces, edges and wires', () => {
+  const part = Box(40, 30, 20).cut(Cylinder(6, 30))
+  const bore = part.faces().cylinders()[0]
+  assert.ok(bore.closestPoint([0, 0, 0]).sub([6, 0, 0]).length <= 1e-12)
+  const top = part.faces().top()[0]
+  assert.ok(top.closestPoint([0, 0, 20]).sub([6, 0, 10]).length <= 1e-12)
+  for (const p of [[3, 4, 25], [-17, 9, 30], [100, -3, 0]] as VectorLike[]) {
+    const [u, v] = top.uvAt(p)
+    assert.ok(u >= 0 && u <= 1 && v >= 0 && v <= 1)
+    assert.ok(top.positionAt(u, v).sub(top.closestPoint(p)).length <= 1e-9)
+  }
+  const [u, v] = bore.uvAt([0, 6, 3])
+  assert.ok(bore.positionAt(u, v).sub([0, 6, 3]).length <= 1e-9)
+  const circle = part.edges().circles()[0]
+  assert.ok(circle.closestPoint([0, 0, 0]).sub([6, 0, circle.start.z]).length <= 1e-12)
+  for (const t of [0.0, 0.3, 0.77]) near(circle.paramAtPoint(circle.pointAt(t)), t, 1e-9)
+  const spline = Spline([0, 0, 0], [10, 5, 0], [20, 0, 0], [30, -5, 0])
+  for (const t of [0.1, 0.5, 0.77]) {
+    near(spline.paramAtPoint(spline.pointAt(t).add([0, 0, 1])), t, 1e-9)
+    near(spline.reversed().paramAtPoint(spline.pointAt(t)), 1 - t, 1e-9)
+  }
+  const line = Line([0, 0, 0], [10, 0, 0])
+  approx(line.paramAtPoint([3, 5, 0]), 0.3)
+  approx(line.reversed().paramAtPoint([3, 5, 0]), 0.7)
+  assert.equal(line.paramAtPoint([-5, 1, 0]), 0)
+  assert.equal(line.paramAtPoint([50, 1, 0]), 1)
+  const w = new Wire([Line([0, 0, 0], [10, 0, 0]), Line([10, 0, 0], [10, 10, 0])])
+  assert.ok(w.closestPoint([12, 5, 3]).sub([10, 5, 0]).length <= 1e-12)
+})
+
+// -- A3: curvature and surface access ---------------------------------------------------------------
+test('curvature of analytic faces', () => {
+  const ball = Sphere(10).faces()[0]
+  for (const p of [[20, 0, 0], [0, 0, 20], [3, -4, 5]] as [number, number, number][]) {
+    const c = ball.curvatureAt(p)
+    approx(c.k1, 0.1, 1e-12)
+    approx(c.k2, 0.1, 1e-12)
+    approx(c.mean, 0.1)
+    approx(c.gaussian, 0.01)
+    assert.ok(c.normal.isClose(new Vector(p).normalized(), 1e-9))
+    assert.ok(Math.abs(c.dir1.dot(c.normal)) <= 1e-9 && Math.abs(c.dir2.dot(c.normal)) <= 1e-9)
+  }
+  const side = Cylinder(5, 20).faces().cylinders()[0]
+  const c = side.curvatureAt([10, 0, 3])
+  near(c.k1, 0.2, 1e-12)
+  near(c.k2, 0, 1e-12)
+  assert.ok(Math.abs(c.dir1.dot(Z.direction)) <= 1e-12)
+  approx(Math.abs(c.dir2.dot(Z.direction)), 1)
+  assert.ok(c.point.isClose([5, 0, 3]) && c.normal.isClose([1, 0, 0]))
+  const bore = Box(40, 30, 20).cut(Cylinder(6, 30)).faces().cylinders()[0].curvatureAt()
+  near(bore.k1, 0, 1e-12)
+  near(bore.k2, -1 / 6, 1e-12)
+  const torus = Torus(20, 5).faces()[0]
+  const outer = torus.curvatureAt([30, 0, 0])
+  const inner = torus.curvatureAt([0, 10, 0])
+  approx(outer.k1, 0.2, 1e-12)
+  approx(outer.k2, 1 / 25, 1e-12)
+  approx(inner.k1, 0.2, 1e-12)
+  approx(inner.k2, -1 / 15, 1e-12)
+  assert.equal(torus.radius, 5)
+  assert.equal(torus.majorRadius, 20)
+  approx(cone().coneAngle, (Math.atan(6 / 20) * 180) / Math.PI, 1e-12)
+  raises(() => side.majorRadius, RangeError, /major radius/)
+  raises(() => side.coneAngle, RangeError, /cone angle/)
+})
+
+test('min radius', () => {
+  assert.equal(Box(1, 1, 1).faces()[0].minRadius(), Infinity)
+  assert.equal(Cylinder(5, 20).faces().cylinders()[0].minRadius(), 5)
+  assert.equal(Sphere(10).faces()[0].minRadius(), 10)
+  approx(Torus(20, 5).faces()[0].minRadius(), 5, 1e-12)
+  approx(Torus(6, 5).faces()[0].minRadius(), 1, 1e-9)
+  approx(cone().minRadius(), 4 / Math.cos(Math.atan(6 / 20)), 1e-9)
+  const pts: [number, number, number][][] = []
+  for (let i = 0; i < 12; i++) {
+    const row: [number, number, number][] = []
+    for (let j = 0; j < 12; j++) {
+      const x = (60 * i) / 11
+      const y = (60 * j) / 11
+      row.push([x, y, 3 * Math.sin(x / 7) * Math.cos(y / 9)])
+    }
+    pts.push(row)
+  }
+  const face = surface(pts).faces()[0]
+  const r = face.minRadius()
+  let sampled = Infinity
+  for (let i = 0; i <= 40; i++) {
+    for (let j = 0; j <= 40; j++) {
+      const c = face.curvatureAt(face.positionAt(i / 40, j / 40))
+      sampled = Math.min(sampled, 1 / Math.max(Math.abs(c.k1), Math.abs(c.k2)))
+    }
+  }
+  assert.ok(r <= sampled * (1 + 1e-9) && r >= 0.95 * sampled, `${r} against ${sampled}`)
+})
+
+/** A point of a NURBS surface (Cox-de Boor), to check the layout of Face.nurbs(). */
+function nurbsPoint(n: NurbsSurface, u: number, v: number): Vector {
+  const basis = (knots: number[], p: number, t: number): number[] => {
+    const last = t >= knots[knots.length - 1]
+    let b: number[] = knots.slice(0, -1).map((_, i) =>
+      (knots[i] <= t && t < knots[i + 1]) || (last && knots[i] < knots[i + 1] && knots[i + 1] === knots[knots.length - 1]) ? 1 : 0)
+    for (let d = 1; d <= p; d++) {
+      const next: number[] = []
+      for (let i = 0; i < knots.length - d - 1; i++) {
+        const a = knots[i + d] > knots[i] ? ((t - knots[i]) / (knots[i + d] - knots[i])) * b[i] : 0
+        const c = knots[i + d + 1] > knots[i + 1] ? ((knots[i + d + 1] - t) / (knots[i + d + 1] - knots[i + 1])) * b[i + 1] : 0
+        next.push(a + c)
+      }
+      b = next
+    }
+    return b
+  }
+  const bu = basis(n.knots[0], n.degrees[0], u)
+  const bv = basis(n.knots[1], n.degrees[1], v)
+  let s = new Vector()
+  let w = 0
+  bu.forEach((a, i) => bv.forEach((b, j) => {
+    const wt = n.weights === null ? 1 : n.weights[i][j]
+    s = s.add(n.points[i][j].mul(a * b * wt))
+    w += a * b * wt
+  }))
+  return s.div(w)
+}
+
+const NURBS_FACES: [string, () => Face][] = [
+  ['plane', () => Box(10, 20, 30).faces()[2]],
+  ['cylinder', () => Cylinder(5, 20).faces().cylinders()[0]],
+  ['torus', () => Torus(20, 5).faces()[0]],
+  ['cone', cone],
+  ['sphere', () => Sphere(7).faces()[0]],
+]
+for (const [name, make] of NURBS_FACES) {
+  test(`nurbs of faces: ${name}`, () => {
+    const face = make()
+    const n = face.nurbs()
+    const nu = n.knots[0].length - n.degrees[0] - 1
+    const nv = n.knots[1].length - n.degrees[1] - 1
+    assert.equal(n.points.length, nu)
+    assert.ok(n.points.every((row) => row.length === nv))
+    const [u0, u1, v0, v1] = face._domain()
+    for (const [a, b] of [[0.3, 0.6], [0.5, 0.5], [0.9, 0.1]]) {
+      const p = nurbsPoint(n, u0 + (u1 - u0) * a, v0 + (v1 - v0) * b)
+      assert.ok(p.sub(face.positionAt(a, b)).length <= 1e-9, `${p} against ${face.positionAt(a, b)}`)
+    }
+  })
+}
+
+test('isocurves', () => {
+  const plate = Box(40, 30, 5).cut(Cylinder(5, 10)).faces().top()[0]
+  const pieces = plate.isocurve(0.5)
+  const ends = pieces.flatMap((e) => [e.start, e.end]).map((p) => Math.abs(Math.round((p.x + p.y) * 1e12) / 1e12)).sort((a, b) => a - b)
+  assert.deepEqual(ends, [5, 5, 15, 15])
+  assert.ok(pieces.every((e) => e.geomType === 'line'))
+  approx(pieces.reduce((s, e) => s + e.length, 0), 20, 1e-12)
+  const across = plate.isocurve(null, 0.9)
+  assert.equal(across.length, 1)
+  approx(across[0].length, plate.positionAt(0, 0).x !== plate.positionAt(1, 0).x ? 40 : 30, 1e-12)
+  assert.equal(plate.isocurve(0.0).length, 1)
+  const side = Cylinder(5, 20).faces().cylinders()[0]
+  const ring = side.isocurve(null, 0.5)
+  assert.ok(ring.length === 1 && ring[0].geomType === 'circle')
+  approx(ring[0].length, 10 * Math.PI, 1e-12)
+  approx(side.isocurve(0.25)[0].length, 20, 1e-12)
+  raises(() => plate.isocurve(), RangeError, /one of u and v/)
+  raises(() => plate.isocurve(0.5, 0.5), RangeError, /one of u and v/)
+  raises(() => plate.isocurve(1.5), RangeError, /from 0 to 1/)
+})
+
+test('curvature of edges', () => {
+  approx(CenterArc([0, 0, 0], 7, 0, 90).curvatureAt(0.3), 1 / 7, 1e-12)
+  assert.equal(Line([0, 0, 0], [1, 2, 3]).curvatureAt(), 0)
+  const e = Ellipse(10, 4).edges()[0]
+  let most = 0
+  for (let t = 0; t <= 400; t++) most = Math.max(most, e.curvatureAt(t / 400))
+  approx(most, 10 / 16, 1e-4)
+})
+
+// -- A4: continuity ----------------------------------------------------------------------------------
+test('continuity of fillet borders', () => {
+  const box = Box(30, 30, 30)
+  const edge = box.edges().filterBy(Z).sortBy(X).last
+  const round = box.fillet(edge, 5)
+  const blend = box.fillet(edge, 5, { continuity: 'G2' })
+  const borders = round.edges().g1()
+  assert.equal(borders.length, 2)
+  assert.equal(round.edges().g2().length, 0)
+  for (const e of borders) {
+    const c = e.continuity()
+    assert.equal(c.level, 'G1')
+    assert.ok(c.angle <= 1e-9 && c.gap <= 1e-9)
+    approx(c.curvatureJump, 0.2, 1e-9)
+  }
+  assert.equal(blend.edges().g2().length, 2)
+  assert.equal(blend.edges().g1().length, 2)
+  for (const e of blend.edges().g2()) assert.ok(e.continuity().curvatureJump <= 1e-6)
+  const crease = box.edges()[0].continuity()
+  assert.equal(crease.level, 'G0')
+  approx(crease.angle, 90)
+  const seam = Cylinder(5, 10).edges(true).filter((e) => e.isSeam)[0].continuity()
+  assert.equal(seam.level, 'G2')
+  assert.ok(seam.angle <= 1e-9)
+  assert.equal(borders[0].continuity(16, { angleTol: 1e-12 }).level, 'G1')
+  assert.equal(borders[0].continuity(16, { curvatureTol: 10 }).level, 'G2')
+  raises(() => Line([0, 0, 0], [1, 0, 0]).continuity(), RangeError, /free curve/)
+  raises(() => Rectangle(10, 10).edges()[0].continuity(), RangeError, /between two faces/)
+})
+
+function twist(x: number, y: number): number {
+  return x > 10 ? (y - 5) * 0.05 * (x - 10) : 0
+}
+
+/** Two faces along x = 10 whose angle runs from -14 through 0 (at y = 5) to +14 degrees: a sheet, or
+ * a solid closed by planar sides and bottom. */
+function creaseThroughTangency(solid: boolean): ReturnType<typeof stitch> {
+  const grid = (x0: number, x1: number) => {
+    const rows: [number, number, number][][] = []
+    for (let i = 0; i < 5; i++) {
+      const x = x0 + ((x1 - x0) * i) / 4
+      const row: [number, number, number][] = []
+      for (let j = 0; j < 5; j++) row.push([x, (10 * j) / 4, twist(x, (10 * j) / 4)])
+      rows.push(row)
+    }
+    return rows
+  }
+  const flat = surface(grid(0, 10))
+  const twisted = surface(grid(10, 20))
+  if (!solid) return stitch(flat, twisted)
+  const sides = [
+    Polyline([0, 0, -5], [20, 0, -5], [20, 0, twist(20, 0)], [10, 0, 0], [0, 0, 0]),
+    Polyline([0, 10, -5], [20, 10, -5], [20, 10, twist(20, 10)], [10, 10, 0], [0, 10, 0]),
+    Polyline([20, 0, -5], [20, 10, -5], [20, 10, twist(20, 10)], [20, 0, twist(20, 0)]),
+    Polyline([0, 0, -5], [0, 10, -5], [0, 10, 0], [0, 0, 0]),
+    Polyline([0, 0, -5], [20, 0, -5], [20, 10, -5], [0, 10, -5]),
+  ]
+  return stitch(flat, twisted, ...sides.map((w) => w.close().toSketch()))
+}
+
+test('convexity looks along the whole edge', () => {
+  const sheet = creaseThroughTangency(false)
+  const edge = sheet.edges().filter((e) => e.faces().length === 2)[0]
+  assert.equal(edge._probedConvexity(0.5, 1), 'smooth')
+  assert.ok(['convex', 'concave'].includes(edge.convexity))
+  const c = edge.continuity()
+  assert.equal(c.level, 'G0')
+  approx(c.angle, (Math.atan(0.05 * 4.6875) * 180) / Math.PI, 1e-6)
+  const solid = creaseThroughTangency(true)
+  assert.ok(solid instanceof Part)
+  approx((solid as Part).volume, 1000, 1e-9)
+  const inner = solid.edges().filter((e) => Math.abs(e.center().x - 10) < 1e-6 && Math.abs(e.center().z) < 1e-6)[0]
+  approx(inner.dihedralAngle, 180)
+  assert.ok(['convex', 'concave'].includes(inner.convexity))
+  assert.ok(!solid.edges().smooth().some((e) => e.equals(inner)))
+  assert.equal(inner.continuity().level, 'G0')
+})
+
+test('continuity of wires', () => {
+  const tangent = new Wire([Line([0, 0, 0], [10, 0, 0]), CenterArc([10, 5, 0], 5, -90, 90)])
+  const c = tangent.continuity()
+  assert.equal(c.level, 'G1')
+  approx(c.curvatureJump, 0.2, 1e-9)
+  assert.ok(c.point.isClose([10, 0, 0]))
+  const corner = Polyline([0, 0, 0], [10, 0, 0], [10, 10, 0]).continuity()
+  assert.equal(corner.level, 'G0')
+  approx(corner.angle, 90)
+  assert.equal(new Wire(Circle(5).edges()).continuity().level, 'G2')
+  const apart = new Wire([Line([0, 0, 0], [1, 0, 0]), Line([1, 0.1, 0], [2, 0, 0])], { sort: false }).continuity()
+  assert.equal(apart.level, null)
+  approx(apart.gap, 0.1)
+  raises(() => new Wire(Line([0, 0, 0], [1, 0, 0])).continuity(), RangeError, /no joints/)
+})
+
+// -- A7: faces the integration cannot converge on ---------------------------------------------------
+function crossedOring(vStart: number): Part {
+  const faces = [{
+    surface: { kind: 'torus', origin: [0, 0, 0], z: [0, -1, 0], x: [1, 0, 0], major: 4.5, minor: 0.5, v_start: vStart },
+    same_sense: true,
+    loops: [{ edges: [[0, false], [1, true], [0, true], [1, false]] }],
+    free_seam: false,
+  }]
+  const edges = {
+    0: { kind: 'circle', center: [4.5, 0, 0], z: [0, 0, -1], x: [1, 0, 0], radius: 0.5, sweep: 360.0, v0: 0, v1: 0 },
+    1: { kind: 'circle', center: [0, 0, 0], z: [0, -1, 0], x: [1, 0, 0], radius: 5.0, sweep: 360.0, v0: 0, v1: 0 },
+  }
+  return Part._wrap(ext.build_brep(faces, edges, true, false, false))
+}
+
+test('a face across its seam raises instead of integrating for minutes', () => {
+  const sound = crossedOring(0.0)
+  approx(sound.volume, 2 * Math.PI ** 2 * 4.5 * 0.25, 1e-7)
+  const broken = crossedOring(-180.0)
+  assert.equal(broken.isValid(), false)
+  const t = performance.now()
+  raises(() => broken.volume, KernelError, /crosses the seam of its surface/)
+  raises(() => broken.faces()[0].area, KernelError, /crosses the seam/)
+  assert.ok(performance.now() - t < 60000)
+  const m = ext.brep_measure(broken._brep, 1e-8)
+  assert.equal(m.exhausted, 0)
+  assert.equal(m.converged, false)
+  assert.equal(ext.brep_measure(sound._brep, 1e-8).exhausted, -1)
+})
+
+// -- D1: K-factors per bend ------------------------------------------------------------------------
+function twoBends(): Part {
+  const blank = Box(200, 40, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const part = fold(blank, new Axis([-60, 0, 2], [0, 1, 0]), 90, { radius: 1, kFactor: 0.33 })
+  return fold(part, new Axis([60, 0, 2], [0, 1, 0]), 90, { radius: 6, kFactor: 0.45 })
+}
+
+test("unfold takes each bend's own K-factor", () => {
+  const part = twoBends()
+  assert.deepEqual(bends(part).map((b) => b.kFactor), [0.33, 0.45])
+  const pattern = flatPattern(part)
+  near(pattern.size.x, 200, 1e-6)
+  assert.equal(pattern.kFactor, null)
+  assert.deepEqual(pattern.bends.map((b) => b.kFactor), [0.33, 0.45])
+  near(unfold(part).bbox().size.x, 200, 1e-6)
+  near(part.rotate(Z, 30).translate(5, 5, 5).flatPattern().size.x, 200, 1e-6)
+  near(part.cut(Cylinder(3, 10).translate(-90, 0, 1)).flatPattern().size.x, 200, 1e-6)
+  near(part.named('p').flatPattern().size.x, 200, 1e-6)
+  near(flatPattern(part, { kFactor: 0.44 }).size.x, 200.314, 1e-3)
+  assert.equal(flatPattern(part, { kFactor: 0.44 }).kFactor, 0.44)
+})
+
+test('K-factor rules', () => {
+  const part = twoBends()
+  const rules = [new Map([[1, 0.33], [6, 0.45]]), { 1: 0.33, 6: 0.45 }, (r: number) => (r < 3 ? 0.33 : 0.45), [[0.5, 0.33], [3, 0.45]] as [number, number][]]
+  for (const rule of rules) near(flatPattern(part, { kFactor: rule }).size.x, 200, 1e-6)
+  approx(din6935(1, 2), (0.65 + 0.5 * Math.log10(0.5)) / 2)
+  assert.equal(din6935(20, 2), 0.5)
+  const din = flatPattern(part, { kFactor: 'din6935' })
+  approx(din.bends[0].kFactor, din6935(1, 2))
+  approx(din.bends[1].kFactor, din6935(6, 2))
+  const expected = 200 + din.bends.reduce((s, b, i) => s + (Math.PI / 2) * (b.kFactor - [0.33, 0.45][i]) * 2, 0)
+  near(din.size.x, expected, 1e-6)
+  approx(bends(part, { kFactor: [[0, 0.3], [1, 0.4]] })[0].kFactor, 0.35)
+  raises(() => flatPattern(part, { kFactor: { 1: 0.33 } }), RangeError, /no entry for the inside radius 6/)
+  raises(() => flatPattern(part, { kFactor: 'foo' }), RangeError, /din6935/)
+  raises(() => flatPattern(part, { kFactor: () => 2.0 }), RangeError, /between 0 and 1/)
+  raises(() => flatPattern(part, { kFactor: [[1, 2, 3]] as never }), TypeError, /kFactor must be/)
+})
+
+test('flanges keep their K-factor', () => {
+  const plate = Box(100, 60, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const edge = plate.edges().filterBy(Y).top().sortBy(X).last
+  const part = flange(plate, edge, 20, { radius: 2, kFactor: 0.3 })
+  assert.equal(part.bends()[0].kFactor, 0.3)
+  const blank = part.flatPattern().size.x
+  near(part.flatPattern({ kFactor: 0.44 }).size.x, blank + (Math.PI / 2) * (0.44 - 0.3) * 2, 1e-6)
+  const plain = Part._wrap(part._copyBrep())
+  assert.equal(plain.bends()[0].kFactor, 0.44)
+})

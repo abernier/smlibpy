@@ -46,12 +46,40 @@ mp.principal_moments
 mp.principal_axes
 
 precise = part.mass_properties(density=7.85e-3, accuracy=1e-10)
+
+mp.inertia_about((20, 15, 10))             # the tensor about another point (parallel axes)
+mp.moment_about(Axis((0, 0, 0), (0, 0, 1)))  # about an axis: a shaft's, a pivot's
+mp.radii_of_gyration                       # sqrt(principal moment / mass), per principal axis
 ```
 
 `accuracy` (1e-10 to 1e-2) sets the bound above for one call. It costs little: the spring
 takes 55 ms at 1e-7 and at 1e-10, 23 ms at 1e-4. A coarse accuracy saves little on dense
 free-form faces, though: every knot span gets at least 7 x 7 points, and the thickened surface
 above takes 0.6 s at any accuracy.
+
+## Section properties
+
+The second moments of area of a profile, for beams, frames and extrusions, come from its
+sketch. They are about the centroid, in the axes of the sketch plane (`sp.plane`, the plane
+moved to the centroid):
+
+```python
+sp = (Rectangle(40, 20) - Circle(5)).section_properties()
+sp.area                   # 721.46
+sp.ixx, sp.iyy, sp.ixy    # 26175.79, 106175.79, 0: integral of y², x², x y over the area
+sp.polar                  # ixx + iyy
+sp.section_moduli         # (2617.58, 5308.79): ixx / c_y and iyy / c_x, c to the farthest fiber
+sp.radii_of_gyration      # (6.023, 12.131)
+
+angle = Rectangle(30, 5, align=Align.MIN) + Rectangle(5, 40, align=Align.MIN)
+sa = angle.section_properties()
+sa.centroid               # Vector(8.26923, 13.2692, 0)
+sa.principal_moments      # (13276.7, 61442.9): ascending
+sa.principal_axes         # their directions, in the plane
+```
+
+They are integrated as the mass properties of a thin slab of the region (to the same 1e-7),
+less the slab's own thickness term.
 
 ## How exact a body is
 
@@ -63,6 +91,12 @@ of `examples/flange.py` differs by 2.6e-7, two crossing cylinders of the same ra
 the shelled bottle by 3.6e-6. Bodies whose edges are lines and circles close up exactly and
 agree with their formulas to 1e-10 and better. Compare against formulas with a relative
 tolerance of 1e-6, or 1e-5 for sweeps, shells and offsets of curved faces.
+
+A face the integration cannot converge on stops it after a budget of surface points (far more
+than a sound face of as many knot spans takes): one that crosses the seam of its own surface, a
+broken body that no public operation makes, raises `KernelError` ("face 0 of the body crosses
+the seam of its surface ...") in under a second, where it ran for minutes. Any other face that
+runs out gives its result with the warning that the accuracy was not reached.
 
 The integration measures the gaps as well: it integrates the volume with three fields, the
 kernel's (0, 0, z) and (x, 0, 0) and (0, y, 0), which give the same volume only for faces that
@@ -82,11 +116,87 @@ b = Sphere(3).translate(20, 0, 0)
 a.distance_to(b)                 # 12.0
 a.distance_to((0, 0, 30))        # to a point
 a.closest_point((0, 0, 30))      # Vector(0, 0, 5)
+
+cp = a.closest_points(b)         # the nearest points themselves, and the faces they lie on
+cp.point, cp.other_point         # Vector(5, 0, 0), Vector(17, 0, 0)
+cp.distance, cp.face, cp.other_face
+
+a.distance_to(Line((20, -50, 3), (20, 50, 3)))   # 15.0: to an edge (a wire, a face) as well
 ```
 
 The distance between bodies is exact, also between faces that are nearly parallel: the closest
 points are refined on the faces' own parameters until they settle, and `distance_to` warns if
-they do not.
+they do not. Edges and wires go the same way: from the curve's nearest samples, Newton's method
+on the curve's parameter and the face's. A face counts as the sheet it is; an edge, a wire or a
+face also measures to a body (`edge.distance_to(part)`).
+
+Faces, edges and wires have their closest points, and the parameters there:
+
+```python
+top = part.faces().top().one()
+top.closest_point((0, 0, 30))    # Vector(6, 0, 10): on the face, not in its hole
+u, v = top.uv_at((5, 5, 30))     # its parameters as fractions of the face's parameter box
+top.position_at(u, v)            # the point there; position_at(0.5, 0.5) is the box's middle
+edge = part.edges().circles().first
+edge.closest_point((10, 0, 0))   # Vector(6, 0, -10)
+edge.param_at_point((0, 10, 10)) # 0.25: the fraction of the length, as point_at takes it
+```
+
+## Curvature
+
+```python
+bore = part.faces().cylinders().one()
+c = bore.curvature_at()          # at a point inside the face, or the one nearest to a point given
+c.k1, c.k2                       # 0, -1/6: principal curvatures, negative where the face is hollow
+c.dir1, c.dir2, c.normal         # their directions and the outward normal
+c.mean, c.gaussian
+Torus(20, 5).faces()[0].min_radius()   # 5: the smallest radius of curvature on the face
+edge.curvature_at(0.5)           # 1/6: 1 / radius of a curve
+```
+
+Curvatures come from the exact surface, signed by the face's outward normal: a ball is positive,
+a bore negative, a plane 0. `min_radius()` is exact for planes (`inf`), cylinders and spheres;
+other faces are sampled on a 24 x 24 grid of their parameters and refined from the sharpest
+points; points within 1e-2 of a pole (by the ratio of the tangents) are left out, where the
+derivatives do not give the curvature to all its digits. Compare it with a wall thickness
+(`thicken` inward) or a cutter's radius.
+
+A face's surface itself: its NURBS data (the whole surface, untrimmed; exact for every kind,
+rational for circles), and its curves of constant parameter, clipped to the face:
+
+```python
+n = Cylinder(5, 20).faces().cylinders()[0].nurbs()
+n.degrees, len(n.knots[0]), len(n.points), len(n.points[0])   # (2, 1), 12, 9 x 2 control points
+top.isocurve(u=0.5)              # two lines: the hole is in the way
+bore.isocurve(v=0.5)[0].length   # 37.699: the circle around the bore
+torus_face = Torus(20, 5).faces()[0]
+torus_face.major_radius, torus_face.radius   # 20, 5
+Cone(10, 4, 20).faces().filter_by(lambda f: f.geom_type == "cone")[0].cone_angle  # 16.7: half the opening
+```
+
+## Continuity
+
+How two faces meet along an edge: `"G0"` at a crease, `"G1"` where they meet tangentially (a
+circular fillet's border), `"G2"` where their curvature across the edge agrees too (a fillet
+with `continuity="G2"`), `None` where they leave a gap. The edge is checked at 16 points (or
+`samples=`) for the largest gap, angle between the normals and jump of the curvature across it:
+
+```python
+box = Box(30, 30, 30)
+edge = box.edges().filter_by(Z).sort_by(X).last
+round_part = box.fillet(edge, 5)
+blend = box.fillet(edge, 5, continuity="G2")
+c = round_part.edges().g1().first.continuity()
+c.level, c.angle, c.curvature_jump     # 'G1', 0.0, 0.2: tangent, but 1/5 against 0
+len(blend.edges().g2())                # 2: both borders of the G2 blend
+Polyline((0, 0), (10, 0), (10, 10)).continuity().level   # 'G0': the joints of a wire
+```
+
+`g1()` selects the edges that are at least tangent, `g2()` the curvature-continuous ones. The
+defaults: G1 within 0.5 degrees (the kernel's own tolerance, also `smooth()`'s), G2 within 1% of
+the larger curvature (or `1e-3 / length`, where both are nearly flat); `angle_tol=` and
+`curvature_tol=` take others. `smooth()` and `convexity` look along the whole edge as well: an
+edge whose faces meet tangentially only at its middle is not smooth.
 
 ## Rays
 

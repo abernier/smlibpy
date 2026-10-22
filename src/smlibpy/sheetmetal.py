@@ -21,8 +21,9 @@ The kernel does the geometry (SMLib's space bend and unbend); see ``src/cpp/shee
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence, Union
 
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import Axis, Location, Plane, Vector, VectorLike, _vec
@@ -30,6 +31,8 @@ from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex
 
 __all__ = [
     "K_FACTOR",
+    "KFactor",
+    "din6935",
     "Bend",
     "FlatPattern",
     "fold",
@@ -44,6 +47,13 @@ __all__ = [
 
 #: Default K-factor: the neutral fiber at 0.44 of the thickness from the inside surface.
 K_FACTOR = 0.44
+
+#: What ``k_factor`` of :func:`unfold`, :func:`flat_pattern` and :func:`bends` takes: one K-factor
+#: for every bend; a function ``(radius, thickness, angle) -> k``; a mapping from inside radius to
+#: K-factor; ``(r / t, k)`` pairs, interpolated; ``"din6935"``; or ``None``, the K-factor each bend
+#: was folded with (:func:`fold`, :func:`flange`), else :data:`K_FACTOR`.
+KFactor = Union[float, str, Callable[[float, float, float], float], Mapping[float, float],
+                Sequence[Sequence[float]], None]
 
 
 # =============================================================================
@@ -64,6 +74,126 @@ def _check_values(what: str, angle: float, radius: float, thickness: float, k_fa
 #: Smallest inside radius: the kernel's bend region reaches 0.1 past the sheet on both sides, so
 #: unfolding needs a radius above 0.1.
 MIN_RADIUS = 0.11
+
+
+def din6935(radius: float, thickness: float) -> float:
+    """The K-factor of DIN 6935 for a bend of inside ``radius`` in a sheet of ``thickness``: the
+    standard puts the neutral fiber at ``k * t / 2`` from the inside with the correction factor
+    ``k = 0.65 + 0.5 * log10(r / t)``, which reaches 1 (the middle of the sheet) at ``r / t = 5``.
+    As a K-factor: ``k / 2``, from 0 to 0.5."""
+    if not radius > 0 or not thickness > 0:
+        raise ValueError("din6935: the radius and the thickness must be positive")
+    return min(0.5, max(0.0, (0.65 + 0.5 * math.log10(radius / thickness)) / 2))
+
+
+def _k_rule(k_factor: KFactor, what: str) -> Callable[[float, float, float], float] | None:
+    """``k_factor`` as a function (radius, thickness, angle) -> K-factor; None for None (each bend's
+    own). Checks what it can before any bend is seen."""
+    if k_factor is None:
+        return None
+    if isinstance(k_factor, bool):
+        raise TypeError(f"{what}: k_factor must be a number, a function, a table or 'din6935', not a bool")
+    if isinstance(k_factor, (int, float)):
+        k = float(k_factor)
+        if not 0.0 <= k <= 1.0:
+            raise ValueError(f"{what}: the K-factor must be between 0 and 1 (got {k_factor!r})")
+        return lambda r, t, a: k
+    if isinstance(k_factor, str):
+        if k_factor.lower().replace(" ", "") in ("din6935", "din-6935"):
+            return lambda r, t, a: din6935(r, t)
+        raise ValueError(f"{what}: the only K-factor rule by name is 'din6935', not {k_factor!r}")
+    if callable(k_factor):
+        rule = k_factor
+        return lambda r, t, a: float(rule(r, t, a))
+    if isinstance(k_factor, Mapping):
+        table = sorted((float(r), float(k)) for r, k in k_factor.items())
+        if not table:
+            raise ValueError(f"{what}: the K-factor table is empty")
+        for r, k in table:
+            if not r > 0 or not 0.0 <= k <= 1.0:
+                raise ValueError(f"{what}: the K-factor table maps inside radii (positive) to K-factors (0 to 1); "
+                                 f"got {r:g}: {k:g}")
+
+        def by_radius(r: float, t: float, a: float) -> float:
+            for radius, k in table:
+                if abs(radius - r) <= 1e-6 * max(1.0, r):
+                    return k
+            raise ValueError(f"{what}: the K-factor table has no entry for the inside radius {r:g} (it has "
+                             f"{', '.join(f'{x:g}' for x, _ in table)})")
+
+        return by_radius
+    try:
+        pairs = sorted((float(rt), float(k)) for rt, k in k_factor)  # type: ignore[union-attr, misc]
+    except (TypeError, ValueError) as e:
+        raise TypeError(f"{what}: k_factor must be a number, a function (radius, thickness, angle) -> k, a mapping "
+                        f"from inside radius to k, (r / t, k) pairs or 'din6935', not {type(k_factor).__name__}") from e
+    if not pairs:
+        raise ValueError(f"{what}: the K-factor table is empty")
+    for rt, k in pairs:
+        if not rt >= 0 or not 0.0 <= k <= 1.0:
+            raise ValueError(f"{what}: the (r / t, k) pairs need ratios of 0 or more and K-factors from 0 to 1; got "
+                             f"({rt:g}, {k:g})")
+
+    def by_ratio(r: float, t: float, a: float) -> float:
+        x = r / t
+        if x <= pairs[0][0]:
+            return pairs[0][1]
+        for (x0, k0), (x1, k1) in zip(pairs, pairs[1:]):
+            if x <= x1:
+                return k0 + (k1 - k0) * (x - x0) / (x1 - x0) if x1 > x0 else k1
+        return pairs[-1][1]
+
+    return by_ratio
+
+
+def _resolve_k(rule: Callable[[float, float, float], float], radius: float, thickness: float, angle: float,
+               what: str) -> float:
+    k = rule(radius, thickness, angle)
+    if not 0.0 <= k <= 1.0:
+        raise ValueError(f"{what}: the K-factor for the bend of radius {radius:g} and {angle:g} degrees is {k!r}; it "
+                         f"must be between 0 and 1")
+    return k
+
+
+def _recorded_k(part: Part, g: Any, what: str) -> float | None:
+    """The K-factor a bend of the part was folded with: of the bends fold() and flange() recorded
+    on the part, the one on the bend's axis with its radius; else the one K-factor of the recorded
+    bends of that radius (the bend may have moved with a later fold). None without a record."""
+    records = getattr(part, "_folds", ())
+    if not records:
+        return None
+    tol = _tol(part)
+    same: list[float] = []
+    for origin, direction, radius, kf in records:
+        if abs(radius - g.radius) > tol:
+            continue
+        same.append(kf)
+        d = Vector(direction)
+        if d.is_parallel(g.axis, 1e-7) and (g.origin - Vector(origin)).cross(d).length <= tol:
+            return kf
+    kinds = sorted(set(same))
+    if len(kinds) > 1:
+        raise ModelingError(f"{what}: the part has bends of inside radius {g.radius:g} folded with different K-factors "
+                            f"({', '.join(f'{k:g}' for k in kinds)}), and one of them moved with a later fold; give "
+                            f"k_factor= (a number, a function or a table)")
+    return kinds[0] if kinds else None
+
+
+def _bend_k(part: Part, g: Any, thickness: float, rule: Callable[[float, float, float], float] | None,
+            what: str) -> float:
+    """The K-factor of a bend: by the rule given, else as it was folded, else K_FACTOR."""
+    if rule is not None:
+        return _resolve_k(rule, g.radius, thickness, g.angle, what)
+    recorded = _recorded_k(part, g, what)
+    return recorded if recorded is not None else K_FACTOR
+
+
+def _common_k(ks: Sequence[float], k_factor: KFactor) -> float | None:
+    """The one K-factor of all bends, or None where they differ; without bends, the number given
+    (else K_FACTOR)."""
+    if not ks:
+        return float(k_factor) if isinstance(k_factor, (int, float)) and not isinstance(k_factor, bool) else K_FACTOR
+    return ks[0] if all(k == ks[0] for k in ks) else None
 
 
 def _check_radius(what: str, radius: float, thickness: float) -> None:
@@ -147,7 +277,7 @@ class Bend:
     def __repr__(self) -> str:
         extra = f", {self.direction}" if self.direction else ""
         return (f"Bend(angle={self.angle:.6g}, radius={self.radius:.6g}, thickness={self.thickness:.6g}, "
-                f"length={self.length:.6g}, allowance={self.allowance:.6g}{extra})")
+                f"k_factor={self.k_factor:.6g}, length={self.length:.6g}, allowance={self.allowance:.6g}{extra})")
 
 
 @dataclass(frozen=True)
@@ -157,14 +287,16 @@ class FlatPattern:
     the origin.
 
     ``outline`` is the cut contour (outer boundary and holes) as a sketch at z = 0; ``bends``
-    carry the bend lines (at z = 0) with angle, radius, direction and allowance.
+    carry the bend lines (at z = 0) with angle, radius, direction, K-factor and allowance.
+    ``k_factor`` is the K-factor of every bend, or ``None`` where the bends have different ones
+    (each :class:`Bend` has its own).
     """
 
     part: Part
     outline: Sketch
     bends: list[Bend]
     thickness: float
-    k_factor: float
+    k_factor: float | None
 
     @property
     def bend_lines(self) -> ShapeList[Edge]:
@@ -178,8 +310,9 @@ class FlatPattern:
 
     def __repr__(self) -> str:
         s = self.size
+        k = "per bend" if self.k_factor is None else f"{self.k_factor:g}"
         return (f"FlatPattern({s.x:.6g} x {s.y:.6g}, thickness={self.thickness:.6g}, "
-                f"{len(self.bends)} bends, k_factor={self.k_factor:g})")
+                f"{len(self.bends)} bends, k_factor={k})")
 
 
 # =============================================================================
@@ -340,7 +473,8 @@ def fold(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor
             side the face with the line faces (that face ends up inside the bend); a negative
             angle folds it the other way.
         radius: Inside bend radius.
-        k_factor: Position of the neutral fiber, 0 (inside) to 1 (outside).
+        k_factor: Position of the neutral fiber, 0 (inside) to 1 (outside). The part keeps it
+            with the bend: :func:`unfold` and :func:`flat_pattern` take it by default.
         fixed: A point (or a face, edge or vertex) on the side of the line that stays in place;
             by default the side that reaches farther from the line stays.
         partial: Bend only along the segment ``line`` (an Edge), not across the whole sheet. The
@@ -423,8 +557,9 @@ def fold(part: Part, line: Axis | Edge, angle: float, *, radius: float, k_factor
     result = part._like(h.brep)
     h.brep = None
     # the before side stays: the bend's axis ends up over the zone's edge on that side
-    _check_bend_result(result, part, what, strip, radius, t, k_factor, Axis(axis_line_point + stay * (allowance / 2),
-                       axis_dir), partial, hint)
+    axis = Axis(axis_line_point + stay * (allowance / 2), axis_dir)
+    _check_bend_result(result, part, what, strip, radius, t, k_factor, axis, partial, hint)
+    result._folds = (*part._folds, (axis.origin.to_tuple(), axis.direction.to_tuple(), radius, k_factor))
     return result
 
 
@@ -467,7 +602,8 @@ def flange(part: Part, edge: Edge | ShapeList[Edge], length: float, *, angle: fl
         angle: Bend angle in degrees, below 180. A positive angle folds the flange towards the side
             the face with the edge faces, a negative one the other way.
         radius: Inside bend radius.
-        k_factor: Position of the neutral fiber, 0 (inside) to 1 (outside).
+        k_factor: Position of the neutral fiber, 0 (inside) to 1 (outside). The part keeps it
+            with the bend, as :func:`fold` does.
     """
     what = "flange"
     from .parts import Box
@@ -630,18 +766,22 @@ def _find_bends(part: Part) -> tuple[list[_BendGeom], float | None]:
     return found, thickness
 
 
-def bends(part: Part, *, k_factor: float = K_FACTOR) -> list[Bend]:
-    """The bends of a sheet metal part: angle, inside radius, thickness, length and axis of each.
+def bends(part: Part, *, k_factor: KFactor = None) -> list[Bend]:
+    """The bends of a sheet metal part: angle, inside radius, thickness, K-factor, length and axis
+    of each.
 
     A bend is a pair of coaxial cylinder faces one sheet thickness apart (as :func:`bend` and
     :func:`flange` make them, or as imported from a sheet metal part). Cylinders without such a
-    partner (holes, rounds) are not bends. ``k_factor`` is only used for the allowances.
+    partner (holes, rounds) are not bends. ``k_factor`` (see :data:`KFactor`; default: the
+    K-factor each bend was folded with, else :data:`K_FACTOR`) gives each bend's K-factor, which
+    its allowance uses.
     """
     if not isinstance(part, Part):
         raise TypeError(f"bends: expected a Part, got {type(part).__name__}")
+    rule = _k_rule(k_factor, "bends")
     found, _ = _find_bends(part)
-    return [Bend(_r(g.angle), _r(g.radius), _r(g.thickness), float(k_factor), _r(g.length), Axis(g.origin, g.axis))
-            for g in found]
+    return [Bend(_r(g.angle), _r(g.radius), _r(g.thickness), _bend_k(part, g, g.thickness, rule, "bends"), _r(g.length),
+                 Axis(g.origin, g.axis)) for g in found]
 
 
 def _r(value: float) -> float:
@@ -697,16 +837,14 @@ def _face_distances(part: Part, start: Any) -> dict[int, int]:
 class _Unfolded:
     part: Part  # flat, in place
     base: Face  # the face that stayed
-    bends: list[tuple[_BendGeom, Vector, Vector, Vector]]  # bend, line start, line direction, inside normal
+    bends: list[tuple[_BendGeom, Vector, Vector, Vector, float]]  # bend, line start, line direction, inside normal, K
     thickness: float | None
-    k_factor: float
+    k_factor: float | None  # of every bend (None: they differ)
 
 
-def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfolded:
+def _unfold(part: Part, k_factor: KFactor, fixed: Face | None, what: str) -> _Unfolded:
     _require_part(part, what)
-    if not 0.0 <= float(k_factor) <= 1.0:
-        raise ValueError(f"{what}: the K-factor must be between 0 and 1 (got {k_factor!r})")
-    k_factor = float(k_factor)
+    rule = _k_rule(k_factor, what)
     planes = _planar_faces(part)
     if fixed is not None:
         if not isinstance(fixed, Face) or fixed.owner is not part or fixed.geom_type != "plane":
@@ -717,10 +855,15 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
     found, thickness = _find_bends(part)
     for g in found:
         _check_radius(what, g.radius, g.thickness)
-    copy, mapped, _, _ = ext.copy_with_map(part._brep, [base._f], [], [])
+    # each bend's K-factor, from the part as it is; an inner face of each, followed into the copy,
+    # tells which bend is which as the unbends move them
+    ks = [_bend_k(part, g, g.thickness, rule, what) for g in found]
+    copy, mapped, _, _ = ext.copy_with_map(part._brep, [base._f] + [g.inner[0]._f for g in found], [], [])
     work = Part._wrap(copy, name=part.name, color=part.color)
     anchor = mapped[0]
-    done: list[tuple[_BendGeom, Vector, Vector, Vector]] = []
+    tracked = list(mapped[1:])
+    left = list(range(len(found)))
+    done: list[tuple[_BendGeom, Vector, Vector, Vector, float]] = []
     volume = _volume(part)
     expected = volume
     hint = "the part must be a sheet of constant thickness whose bends are separated by flat regions"
@@ -735,11 +878,20 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
             index[id(g)] = min((dist.get(i, 1 << 30) for i in ids), default=1 << 30)
         g = min(current, key=lambda c: index[id(c)])
         assert thickness is not None
-        nr = g.radius + k_factor * thickness
+        mine = [i for i in left if any(f._f is tracked[i] for f in g.inner)]
+        if not mine:  # (its faces were replaced): the bend of the part with its radius, angle and length
+            mine = [i for i in left if abs(found[i].radius - g.radius) <= _tol(part)
+                    and abs(found[i].angle - g.angle) <= 1e-6 and abs(found[i].length - g.length) <= _tol(part)]
+        if mine:
+            left.remove(mine[0])
+            k_factor_here = ks[mine[0]]
+        else:
+            k_factor_here = _bend_k(part, g, thickness, rule, what)
+        nr = g.radius + k_factor_here * thickness
         strip = sum(f.area for f in g.inner) * nr / g.radius
-        expected -= strip * thickness * thickness * (0.5 - k_factor) / nr
+        expected -= strip * thickness * thickness * (0.5 - k_factor_here) / nr
         with kernel_call(what, hint):
-            stayed = k.sheetmetal.unbend(work._brep, g.angle, g.radius, k_factor, thickness, g.origin.to_tuple(),
+            stayed = k.sheetmetal.unbend(work._brep, g.angle, g.radius, k_factor_here, thickness, g.origin.to_tuple(),
                                          g.axis.to_tuple(), g.mid.to_tuple(), g.length, anchor)
         work._h.sound = 0  # changed in place: checked again below
         if stayed == 0:
@@ -756,7 +908,7 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
             into = -g.axis.cross(end)
         allowance = math.radians(g.angle) * nr
         start = g.origin + end * nr + into * (allowance / 2)
-        done.append((g, start, g.axis, -end))
+        done.append((g, start, g.axis, -end, k_factor_here))
     if _find_bends(work)[0]:
         raise ModelingError(f"{what}: not every bend could be unfolded; {hint}")
     problem = work._solid_problem()
@@ -776,7 +928,8 @@ def _unfold(part: Part, k_factor: float, fixed: Face | None, what: str) -> _Unfo
     if not _volume_agrees(work, expected, volume):
         raise ModelingError(f"{what}: the unfolded part has the volume {_volume(work):.9g}, expected {expected:.9g}; "
                             f"{hint}")
-    return _Unfolded(work, base_face, done, thickness, k_factor)
+    work._folds = ()  # flat: no bends left
+    return _Unfolded(work, base_face, done, thickness, _common_k([d[4] for d in done], k_factor))
 
 
 def _loops(edges: list[Edge], tol: float) -> list[list[Edge]]:
@@ -864,20 +1017,26 @@ def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]
     return lower[:-1] + upper[:-1]
 
 
-def unfold(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None = None) -> Part:
+def unfold(part: Part, *, k_factor: KFactor = None, fixed: Face | None = None) -> Part:
     """Unfold a sheet metal part: every bend becomes flat again.
 
     The face ``fixed`` (default: the largest planar face) stays where it is; the rest of the
     sheet unfolds into its plane. With the K-factor the part was bent with, the result is the
-    blank it was bent from. For the flat pattern on the XY plane, with outline and bend lines,
-    use :func:`flat_pattern`.
+    blank it was bent from: by default each bend takes the K-factor :func:`fold` or
+    :func:`flange` made it with (else :data:`K_FACTOR`, 0.44, as for an imported part).
+    ``k_factor`` gives other ones: one number for every bend, a function ``(radius, thickness,
+    angle) -> k``, a mapping from inside radius to K-factor (``{1: 0.33, 6: 0.45}``), ``(r / t,
+    k)`` pairs to interpolate (a shop's table), or ``"din6935"`` (see :data:`KFactor`). For the
+    flat pattern on the XY plane, with outline and bend lines, use :func:`flat_pattern`.
     """
     return _unfold(part, k_factor, fixed, "unfold").part
 
 
-def flat_pattern(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None = None) -> FlatPattern:
+def flat_pattern(part: Part, *, k_factor: KFactor = None, fixed: Face | None = None) -> FlatPattern:
     """The flat pattern of a sheet metal part, laid on the XY plane (see :class:`FlatPattern`).
 
+    ``k_factor`` as for :func:`unfold`: by default each bend's own (from :func:`fold` and
+    :func:`flange`), else :data:`K_FACTOR`.
     The part is unfolded with ``fixed`` (default: the largest planar face) staying in place; that
     face is the bottom of the flat (z = 0) and bends are ``"up"`` when the far side of the sheet
     folds towards +Z. The longer side of the smallest rectangle around the blank runs along X, and
@@ -904,11 +1063,11 @@ def flat_pattern(part: Part, *, k_factor: float = K_FACTOR, fixed: Face | None =
         raise ModelingError(f"flat_pattern: the outline encloses {outline.area:.9g}, the flat part is "
                             f"{_volume(laid) / t:.9g} in area; the part is not a flat sheet")
     pattern_bends = []
-    for g, start, direction, inside in u.bends:
+    for g, start, direction, inside, kf in u.bends:
         p0 = place * start
         p1 = place * (start + direction * g.length)
         up = place.rotate_vector(inside).z > 0
         line = Line(Vector(p0.x, p0.y, 0.0), Vector(p1.x, p1.y, 0.0))
-        pattern_bends.append(Bend(_r(g.angle), _r(g.radius), _r(t), u.k_factor, _r(g.length), None, line,
+        pattern_bends.append(Bend(_r(g.angle), _r(g.radius), _r(t), kf, _r(g.length), None, line,
                                   "up" if up else "down"))
     return FlatPattern(laid, outline, pattern_bends, _r(t), u.k_factor)

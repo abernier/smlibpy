@@ -62,6 +62,8 @@ function call(name: string, options: Record<string, unknown>): unknown {
     Sketch: () => Rectangle(10, 10),
     Profile: () => new Profile(),
     Lattice: () => new Lattice(Box(10, 10, 10)),
+    Edge: () => Box(10, 10, 10).edges()[0],
+    Wire: () => Box(10, 10, 10).faces()[0].outerWire(),
   }
   assert.ok(cls in samples, `no sample of a ${cls}`)
   const obj = samples[cls]()

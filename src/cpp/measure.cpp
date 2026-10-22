@@ -392,6 +392,8 @@ struct Job
     std::vector<const Rule*> outer_rule;  // per curve: the 3/7 rule along a dense one
     double sign = 1.0;                    // sign of the volume terms (faceuse orientation)
     bool area = true, volume = true;      // the terms this faceuse adds to the body
+    long face = -1;                       // the face's index in the body
+    long spent = 0, budget = 0;           // surface points evaluated for it, and how many it may take (0: no limit)
 
     Job() = default;
     Job(const Job&) = delete;
@@ -406,6 +408,7 @@ struct Job
         inner_v = o.inner_v, planar = o.planar, base = o.base;
         inner_knots = std::move(o.inner_knots), outer_knots = std::move(o.outer_knots);
         column = o.column, sign = o.sign, area = o.area, volume = o.volume;
+        face = o.face, spent = o.spent, budget = o.budget;
         inner_rule = o.inner_rule, outer_rule = std::move(o.outer_rule), spline = std::move(o.spline);
         return *this;
     }
@@ -927,6 +930,25 @@ struct Result
     double relative = 0.0;  // the largest estimated error relative to its scale
     bool converged = false;
     long panels = 0;
+    long exhausted = -1;  // the job that ran out of its evaluation budget (the integration stopped there)
+};
+
+// A face's evaluation budget: far more surface points than a sound face of as many knot spans
+// takes (a dense free-form face of 200 x 230 spans takes 7 million at 1e-8), so that only a face
+// the integration cannot converge on reaches it. Such a face, one that crosses its surface's
+// seam (built through private internals, never by a public operation), ran `volume` for minutes:
+// 15 million points still left the integration at 1e-2. The budget grows with the accuracy.
+long evaluation_budget(const Job& job, double tolerance)
+{
+    const double spans = (static_cast<double>(job.inner_knots.size()) + 1.0) *
+                         (static_cast<double>(job.outer_knots.size()) + 1.0);
+    const double digits = std::max(1.0, -std::log10(tolerance) / 8.0);
+    return static_cast<long>(std::min((2e6 + 4000.0 * spans) * digits, 4e9));
+}
+
+struct Exhausted
+{
+    long job;
 };
 
 // The scales of the components; the targets are tolerance times these.
@@ -954,17 +976,32 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
                 jobs[j].outer_rule[c] = panels.size() - before >= kDense ? &k7() : &k15();
             }
     auto evaluate = [&](Panel& p) {
-        if (!outer_panel(jobs[static_cast<size_t>(p.job)], s, p))
+        Job& job = jobs[static_cast<size_t>(p.job)];
+        const long before = s.evaluations;
+        if (!outer_panel(job, s, p))
             throw std::runtime_error("the integration cannot evaluate a face's surface (SM_ERR)");
+        job.spent += s.evaluations - before;
+        if (job.budget > 0 && job.spent > job.budget)
+            throw Exhausted{p.job};
     };
-    for (Panel& p : panels)
-        evaluate(p);
+    Result r;
+    try
+    {
+        for (Panel& p : panels)
+            evaluate(p);
+    }
+    catch (const Exhausted& e)
+    {
+        zero(r.val), zero(r.err);
+        r.relative = std::numeric_limits<double>::infinity();
+        r.exhausted = e.job;
+        return r;
+    }
     auto weight = [&](const Panel& p, int k) {
         const Job& job = jobs[static_cast<size_t>(p.job)];
         return k < VOL ? (job.area ? 1.0 : 0.0) : (job.volume ? job.sign : 0.0);
     };
 
-    Result r;
     double last_excess = std::numeric_limits<double>::infinity();
     int stalled = 0;
     for (int round = 0;; ++round)
@@ -1032,8 +1069,17 @@ Result integrate(std::vector<Job>& jobs, Settings& s)
             }
             const double m = 0.5 * (p.a + p.b);
             Panel l{p.job, p.curve, p.a, m, {}, {}, 0.0}, h{p.job, p.curve, m, p.b, {}, {}, 0.0};
-            evaluate(l);
-            evaluate(h);
+            try
+            {
+                evaluate(l);
+                evaluate(h);
+            }
+            catch (const Exhausted& e)
+            {
+                r.converged = false;  // the values of the last round stand, with their errors
+                r.exhausted = e.job;
+                return r;
+            }
             next.push_back(l);
             next.push_back(h);
         }
@@ -1185,6 +1231,8 @@ BrepMeasure brep_measure(const SmBrep* brep, double tolerance)
                 continue;
             Job job = make_job(face);
             job.sign = fu->GetOrientation() == SM_OT_SAME ? -1.0 : 1.0;
+            job.face = static_cast<long>(i);
+            job.budget = evaluation_budget(job, tolerance);
             jobs.push_back(std::move(job));
         }
     }
@@ -1216,6 +1264,7 @@ BrepMeasure brep_measure(const SmBrep* brep, double tolerance)
     m.converged = r.converged;
     m.panels = r.panels;
     m.evaluations = s.evaluations;
+    m.exhausted = r.exhausted >= 0 ? jobs[static_cast<size_t>(r.exhausted)].face : -1;
     return m;
 }
 
@@ -1230,6 +1279,7 @@ FaceMeasure face_measure(const SmFace* face, double tolerance)
     std::vector<Job> jobs;
     jobs.push_back(make_job(face));
     jobs.back().volume = false;
+    jobs.back().budget = evaluation_budget(jobs.back(), tolerance);
     const Result r = integrate(jobs, s);
     FaceMeasure m;
     m.area = std::fabs(r.val[AREA]);
@@ -1241,6 +1291,7 @@ FaceMeasure face_measure(const SmFace* face, double tolerance)
     m.converged = r.converged;
     m.panels = r.panels;
     m.evaluations = s.evaluations;
+    m.exhausted = r.exhausted >= 0;
     return m;
 }
 
@@ -1337,13 +1388,16 @@ void bind_measure(py::module_ m)
         d["converged"] = r.converged;
         d["panels"] = r.panels;
         d["evaluations"] = r.evaluations;
+        d["exhausted"] = r.exhausted;
         return d;
     }, py::arg("brep"), py::arg("tolerance") = 1e-9,
           "Area, volume, and first and second volume moments of a Brep (about the bounding box centre, "
           "'origin'), integrated until the estimated error of each is below `tolerance` times its scale: "
           "the area, |volume|, |volume| * size, |volume| * size^2 (size: the bounding box diagonal). "
           "'error' holds the estimates, 'converged' whether they met the tolerance, 'closure' the integral "
-          "of the outward normal (zero for a closed surface; else the vector area of the gaps).");
+          "of the outward normal (zero for a closed surface; else the vector area of the gaps), 'exhausted' "
+          "the index of a face the integration could not converge on within its evaluation budget (it stopped "
+          "there; -1 if none).");
     m.def("face_measure", [](const SmFace* face, double tolerance) {
         const smlibpy::FaceMeasure r = smlibpy::face_measure(face, tolerance);
         py::dict d;
@@ -1356,6 +1410,7 @@ void bind_measure(py::module_ m)
         d["converged"] = r.converged;
         d["panels"] = r.panels;
         d["evaluations"] = r.evaluations;
+        d["exhausted"] = r.exhausted;
         return d;
     }, py::arg("face"), py::arg("tolerance") = 1e-9,
           "Area and first area moments of a face (about its bounding box centre, 'origin'), to a relative "

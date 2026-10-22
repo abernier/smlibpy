@@ -20,7 +20,10 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `convexity`, `is_convex()`, `dihedral_angle` | see `convexity` |
 | `intersections(other)` | list of points where the two edges cross |
 | `reversed()` | the same edge run the other way |
-| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures |
+| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures (`distance_to` also to a body) |
+| `closest_point(point)`, `param_at_point(point)` | nearest point; its fraction of the length (as `point_at` takes it) |
+| `curvature_at(t=0.5)` | 1 / the radius of curvature |
+| `continuity(samples=16)` | how the two faces meet: G0, G1, G2 with gap, angle, curvature jump; see `continuity` |
 
 ## Details
 - `point_at` is uniform in arc length: 400 steps along a spline were all 0.0509 long.

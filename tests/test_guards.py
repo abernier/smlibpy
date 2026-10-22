@@ -675,9 +675,11 @@ def test_distance_between_bodies(a, b, expected):
     assert b.distance_to(a) == approx(expected, rel=1e-9, abs=1e-9)
 
 
-def test_distance_to_takes_points_and_bodies():
-    with pytest.raises(TypeError, match="point or a body"):
-        Box(1, 1, 1).distance_to(Box(1, 1, 1).edges()[0])
+def test_distance_to_takes_points_bodies_and_curves():
+    # (edges, wires and faces raised a TypeError before 0.5.0)
+    box = Box(1, 1, 1)
+    assert box.distance_to(box.edges()[0]) == 0.0
+    assert box.distance_to(Line((3, -5, 0), (3, 5, 0))) == approx(2.5)
     assert Box(2, 2, 2).distance_to((5, 0, 0)) == approx(4)
 
 

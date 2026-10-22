@@ -32,6 +32,21 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
 /** Default K-factor: the neutral fiber at 0.44 of the thickness from the inside surface. */
 export const K_FACTOR = 0.44
 
+/**
+ * What `kFactor` of `unfold`, `flatPattern` and `bends` takes: one K-factor for every bend; a
+ * function `(radius, thickness, angle) => k`; a mapping from inside radius to K-factor (a `Map`, or
+ * an object such as `{ 1: 0.33, 6: 0.45 }`); `[r / t, k]` pairs, interpolated; `'din6935'`; or
+ * `null`/left out, the K-factor each bend was folded with (`fold`, `flange`), else `K_FACTOR`.
+ */
+export type KFactor =
+  | number
+  | string
+  | ((radius: number, thickness: number, angle: number) => number)
+  | ReadonlyMap<number, number>
+  | Readonly<Record<string, number>>
+  | readonly (readonly [number, number])[]
+  | null
+
 // =============================================================================== formulas
 /** The bend of `bendAllowance` and `bendDeduction`. */
 export interface BendAllowanceOptions {
@@ -63,6 +78,116 @@ function _checkValues(what: string, angle: number, radius: number, thickness: nu
 /** Smallest inside radius: the kernel's bend region reaches 0.1 past the sheet on both sides, so
  * unfolding needs a radius above 0.1. */
 export const MIN_RADIUS = 0.11
+
+/**
+ * The K-factor of DIN 6935 for a bend of inside `radius` in a sheet of `thickness`: the standard
+ * puts the neutral fiber at `k * t / 2` from the inside with the correction factor
+ * `k = 0.65 + 0.5 * log10(r / t)`, which reaches 1 (the middle of the sheet) at `r / t = 5`. As a
+ * K-factor: `k / 2`, from 0 to 0.5.
+ */
+export function din6935(radius: number, thickness: number): number {
+  if (!(radius > 0) || !(thickness > 0)) throw new RangeError('din6935: the radius and the thickness must be positive')
+  return Math.min(0.5, Math.max(0.0, (0.65 + 0.5 * Math.log10(radius / thickness)) / 2))
+}
+
+type _Rule = (r: number, t: number, a: number) => number
+
+/** `kFactor` as a function (radius, thickness, angle) => K-factor; null for null (each bend's own).
+ * Checks what it can before any bend is seen. */
+function _kRule(kFactor: KFactor | undefined, what: string): _Rule | null {
+  if (kFactor == null) return null
+  if (typeof kFactor === 'boolean') throw new TypeError(`${what}: kFactor must be a number, a function, a table or 'din6935', not a boolean`)
+  if (typeof kFactor === 'number') {
+    if (!(0.0 <= kFactor && kFactor <= 1.0)) throw new RangeError(`${what}: the K-factor must be between 0 and 1 (got ${String(kFactor)})`)
+    return () => kFactor
+  }
+  if (typeof kFactor === 'string') {
+    if (['din6935', 'din-6935'].includes(kFactor.toLowerCase().replaceAll(' ', ''))) return (r, t) => din6935(r, t)
+    throw new RangeError(`${what}: the only K-factor rule by name is 'din6935', not '${kFactor}'`)
+  }
+  if (typeof kFactor === 'function') return (r, t, a) => Number(kFactor(r, t, a))
+  if (Array.isArray(kFactor)) {
+    const pairs = (kFactor as readonly (readonly number[])[]).map((p) => {
+      if (!Array.isArray(p) || p.length !== 2) {
+        throw new TypeError(`${what}: kFactor must be a number, a function (radius, thickness, angle) => k, a mapping from inside radius to k, [r / t, k] pairs or 'din6935'`)
+      }
+      return [Number(p[0]), Number(p[1])] as [number, number]
+    }).sort((x, y) => x[0] - y[0] || x[1] - y[1])
+    if (!pairs.length) throw new RangeError(`${what}: the K-factor table is empty`)
+    for (const [rt, kf] of pairs) {
+      if (!(rt >= 0) || !(0.0 <= kf && kf <= 1.0)) {
+        throw new RangeError(`${what}: the (r / t, k) pairs need ratios of 0 or more and K-factors from 0 to 1; got (${_formatG(rt)}, ${_formatG(kf)})`)
+      }
+    }
+    return (r, t) => {
+      const x = r / t
+      if (x <= pairs[0][0]) return pairs[0][1]
+      for (let i = 0; i + 1 < pairs.length; i++) {
+        const [x0, k0] = pairs[i]
+        const [x1, k1] = pairs[i + 1]
+        if (x <= x1) return x1 > x0 ? k0 + ((k1 - k0) * (x - x0)) / (x1 - x0) : k1
+      }
+      return pairs[pairs.length - 1][1]
+    }
+  }
+  const entries: [number, number][] = (kFactor instanceof Map ? [...kFactor.entries()] : Object.entries(kFactor as Record<string, number>))
+    .map(([r, kf]) => [Number(r), Number(kf)] as [number, number])
+    .sort((x, y) => x[0] - y[0] || x[1] - y[1])
+  if (!entries.length) throw new RangeError(`${what}: the K-factor table is empty`)
+  for (const [r, kf] of entries) {
+    if (!(r > 0) || !(0.0 <= kf && kf <= 1.0)) {
+      throw new RangeError(`${what}: the K-factor table maps inside radii (positive) to K-factors (0 to 1); got ${_formatG(r)}: ${_formatG(kf)}`)
+    }
+  }
+  return (r) => {
+    for (const [radius, kf] of entries) if (Math.abs(radius - r) <= 1e-6 * Math.max(1.0, r)) return kf
+    throw new RangeError(`${what}: the K-factor table has no entry for the inside radius ${_formatG(r)} (it has ${entries.map(([x]) => _formatG(x)).join(', ')})`)
+  }
+}
+
+function _resolveK(rule: _Rule, radius: number, thickness: number, angle: number, what: string): number {
+  const kf = rule(radius, thickness, angle)
+  if (!(0.0 <= kf && kf <= 1.0)) {
+    throw new RangeError(`${what}: the K-factor for the bend of radius ${_formatG(radius)} and ${_formatG(angle)} degrees is ${String(kf)}; it must be between 0 and 1`)
+  }
+  return kf
+}
+
+/** The K-factor a bend of the part was folded with: of the bends fold() and flange() recorded on the
+ * part, the one on the bend's axis with its radius; else the one K-factor of the recorded bends of
+ * that radius (the bend may have moved with a later fold). null without a record. */
+function _recordedK(part: Part, g: _BendGeom, what: string): number | null {
+  const records = part._folds
+  if (!records.length) return null
+  const tol = _tol(part)
+  const same: number[] = []
+  for (const [origin, direction, radius, kf] of records) {
+    if (Math.abs(radius - g.radius) > tol) continue
+    same.push(kf)
+    const d = new Vector(direction)
+    if (d.isParallel(g.axis, 1e-7) && g.origin.sub(new Vector(origin)).cross(d).length <= tol) return kf
+  }
+  const kinds = [...new Set(same)].sort((x, y) => x - y)
+  if (kinds.length > 1) {
+    throw new ModelingError(
+      `${what}: the part has bends of inside radius ${_formatG(g.radius)} folded with different K-factors (${kinds.map((x) => _formatG(x)).join(', ')}), and one of them moved with a later fold; give kFactor (a number, a function or a table)`,
+    )
+  }
+  return kinds.length ? kinds[0] : null
+}
+
+/** The K-factor of a bend: by the rule given, else as it was folded, else K_FACTOR. */
+function _bendK(part: Part, g: _BendGeom, thickness: number, rule: _Rule | null, what: string): number {
+  if (rule !== null) return _resolveK(rule, g.radius, thickness, g.angle, what)
+  return _recordedK(part, g, what) ?? K_FACTOR
+}
+
+/** The one K-factor of all bends, or null where they differ; without bends, the number given
+ * (else K_FACTOR). */
+function _commonK(ks: readonly number[], kFactor: KFactor | undefined): number | null {
+  if (!ks.length) return typeof kFactor === 'number' ? kFactor : K_FACTOR
+  return ks.every((x) => x === ks[0]) ? ks[0] : null
+}
 
 function _checkRadius(what: string, radius: number, _thickness: number): void {
   if (radius < MIN_RADIUS - 1e-12) {
@@ -189,7 +314,7 @@ export class Bend {
 
   toString(): string {
     const extra = this.direction ? `, ${this.direction}` : ''
-    return `Bend(angle=${_formatG(this.angle)}, radius=${_formatG(this.radius)}, thickness=${_formatG(this.thickness)}, length=${_formatG(this.length)}, allowance=${_formatG(this.allowance)}${extra})`
+    return `Bend(angle=${_formatG(this.angle)}, radius=${_formatG(this.radius)}, thickness=${_formatG(this.thickness)}, kFactor=${_formatG(this.kFactor)}, length=${_formatG(this.length)}, allowance=${_formatG(this.allowance)}${extra})`
   }
 
   [inspect](): string {
@@ -203,16 +328,17 @@ export class Bend {
  * the origin.
  *
  * `outline` is the cut contour (outer boundary and holes) as a sketch at z = 0; `bends` carry the
- * bend lines (at z = 0) with angle, radius, direction and allowance.
+ * bend lines (at z = 0) with angle, radius, direction, K-factor and allowance. `kFactor` is the
+ * K-factor of every bend, or `null` where the bends have different ones (each `Bend` has its own).
  */
 export class FlatPattern {
   readonly part: Part
   readonly outline: Sketch
   readonly bends: Bend[]
   readonly thickness: number
-  readonly kFactor: number
+  readonly kFactor: number | null
 
-  constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number) {
+  constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number | null) {
     this.part = part
     this.outline = outline
     this.bends = bends
@@ -245,7 +371,8 @@ export class FlatPattern {
 
   toString(): string {
     const s = this.size
-    return `FlatPattern(${_formatG(s.x)} x ${_formatG(s.y)}, thickness=${_formatG(this.thickness)}, ${this.bends.length} bends, kFactor=${_formatG(this.kFactor)})`
+    const kf = this.kFactor === null ? 'per bend' : _formatG(this.kFactor)
+    return `FlatPattern(${_formatG(s.x)} x ${_formatG(s.y)}, thickness=${_formatG(this.thickness)}, ${this.bends.length} bends, kFactor=${kf})`
   }
 
   [inspect](): string {
@@ -437,7 +564,8 @@ function _zoneMaterial(
 export interface FoldOptions {
   /** Inside bend radius. */
   radius: number
-  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. */
+  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. The part keeps
+   * it with the bend: `unfold` and `flatPattern` take it by default. */
   kFactor?: number
   /** A point (or a face, edge or vertex) on the side of the line that stays in place; by default
    * the side that reaches farther from the line stays. */
@@ -564,7 +692,9 @@ export function fold(part: Part, line: Axis | Edge, angle: number, options: Fold
   }
   const result = part._like(_take(h))
   // the before side stays: the bend's axis ends up over the zone's edge on that side
-  _checkBendResult(result, part, what, strip, radius, t, kFactor, new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir), Boolean(partial), hint)
+  const axis = new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir)
+  _checkBendResult(result, part, what, strip, radius, t, kFactor, axis, Boolean(partial), hint)
+  result._folds = [...part._folds, [axis.origin.toArray(), axis.direction.toArray(), radius, kFactor] as const]
   return result
 }
 
@@ -828,11 +958,12 @@ function _findBends(part: Part): [_BendGeom[], number | null] {
  * make them, or as imported from a sheet metal part). Cylinders without such a partner (holes,
  * rounds) are not bends. `kFactor` is only used for the allowances.
  */
-export function bends(part: Part, options: { kFactor?: number } = {}): Bend[] {
-  const { kFactor = K_FACTOR } = options
+export function bends(part: Part, options: { kFactor?: KFactor } = {}): Bend[] {
+  const { kFactor = null } = options
   if (!(part instanceof Part)) throw new TypeError(`bends: expected a Part, got ${_typeName(part)}`)
+  const rule = _kRule(kFactor, 'bends')
   const [found] = _findBends(part)
-  return found.map((g) => new Bend(_r(g.angle), _r(g.radius), _r(g.thickness), Number(kFactor), _r(g.length), new Axis(g.origin, g.axis)))
+  return found.map((g) => new Bend(_r(g.angle), _r(g.radius), _r(g.thickness), _bendK(part, g, g.thickness, rule, 'bends'), _r(g.length), new Axis(g.origin, g.axis)))
 }
 
 /** A measured value without the noise far below the modeling tolerance (90.00000000000051):
@@ -900,18 +1031,16 @@ interface _Unfolded {
   part: Part
   /** The face that stayed. */
   base: Face
-  /** Bend, line start, line direction, inside normal. */
-  bends: [_BendGeom, Vector, Vector, Vector][]
+  /** Bend, line start, line direction, inside normal, K-factor. */
+  bends: [_BendGeom, Vector, Vector, Vector, number][]
   thickness: number | null
-  kFactor: number
+  /** Of every bend (null: they differ). */
+  kFactor: number | null
 }
 
-function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string): _Unfolded {
+function _unfold(part: Part, kFactor: KFactor | undefined, fixed: Face | null, what: string): _Unfolded {
   _requirePart(part, what)
-  if (!(0.0 <= Number(kFactor) && Number(kFactor) <= 1.0)) {
-    throw new RangeError(`${what}: the K-factor must be between 0 and 1 (got ${String(kFactor)})`)
-  }
-  kFactor = Number(kFactor)
+  const rule = _kRule(kFactor, what)
   const planes = _planarFaces(part)
   let base: Face
   if (fixed != null) {
@@ -925,10 +1054,15 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
   const [found, foundThickness] = _findBends(part)
   let thickness = foundThickness
   for (const g of found) _checkRadius(what, g.radius, g.thickness)
-  const [copy, mapped] = ext.copy_with_map(part._brep, [base._f], [], [])
+  // each bend's K-factor, from the part as it is; an inner face of each, followed into the copy,
+  // tells which bend is which as the unbends move them
+  const ks = found.map((g) => _bendK(part, g, g.thickness, rule, what))
+  const [copy, mapped] = ext.copy_with_map(part._brep, [base._f, ...found.map((g) => g.inner[0]._f)], [], [])
   const work = Part._wrap(copy, { name: part.name, color: part.color })
   const anchor: number = mapped[0]
-  const done: [_BendGeom, Vector, Vector, Vector][] = []
+  const tracked: number[] = mapped.slice(1)
+  const left = found.map((_, i) => i)
+  const done: [_BendGeom, Vector, Vector, Vector, number][] = []
   const volume = _volume(part)
   let expected = volume
   const hint = 'the part must be a sheet of constant thickness whose bends are separated by flat regions'
@@ -948,14 +1082,27 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
     }
     const g = _minBy(current, (c) => index.get(c) as number)
     const sheet = thickness as number // (the part has bends, so their thickness is known)
-    const nr = g.radius + kFactor * sheet
+    let mine = left.filter((i) => g.inner.some((f) => f._f === tracked[i]))
+    if (!mine.length) {
+      // (its faces were replaced): the bend of the part with its radius, angle and length
+      mine = left.filter((i) => Math.abs(found[i].radius - g.radius) <= _tol(part) && Math.abs(found[i].angle - g.angle) <= 1e-6 &&
+        Math.abs(found[i].length - g.length) <= _tol(part))
+    }
+    let kHere: number
+    if (mine.length) {
+      left.splice(left.indexOf(mine[0]), 1)
+      kHere = ks[mine[0]]
+    } else {
+      kHere = _bendK(part, g, sheet, rule, what)
+    }
+    const nr = g.radius + kHere * sheet
     let inside = 0
     for (const f of g.inner) inside += f.area
     const strip = (inside * nr) / g.radius
-    expected -= (strip * sheet * sheet * (0.5 - kFactor)) / nr
+    expected -= (strip * sheet * sheet * (0.5 - kHere)) / nr
     const stayed: number = kernelCall(
       what,
-      () => k.sheetmetal.unbend(work._brep, g.angle, g.radius, kFactor, sheet, g.origin.toArray(), g.axis.toArray(), g.mid.toArray(), g.length, anchor),
+      () => k.sheetmetal.unbend(work._brep, g.angle, g.radius, kHere, sheet, g.origin.toArray(), g.axis.toArray(), g.mid.toArray(), g.length, anchor),
       hint,
     )
     work._h.sound = 0 // changed in place: checked again below
@@ -975,7 +1122,7 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
     }
     const allowance = _radians(g.angle) * nr
     const start = g.origin.add(end.mul(nr)).add(into.mul(allowance / 2))
-    done.push([g, start, g.axis, end.neg()])
+    done.push([g, start, g.axis, end.neg(), kHere])
   }
   if (_findBends(work)[0].length) throw new ModelingError(`${what}: not every bend could be unfolded; ${hint}`)
   const problem = work._solidProblem()
@@ -996,7 +1143,8 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
   if (!_volumeAgrees(work, expected, volume)) {
     throw new ModelingError(`${what}: the unfolded part has the volume ${_formatG(_volume(work), 9)}, expected ${_formatG(expected, 9)}; ${hint}`)
   }
-  return { part: work, base: baseFace, bends: done, thickness, kFactor }
+  work._folds = [] // flat: no bends left
+  return { part: work, base: baseFace, bends: done, thickness, kFactor: _commonK(done.map((d) => d[4]), kFactor) }
 }
 
 /** Split boundary edges into closed loops, each ordered head to tail. */
@@ -1111,8 +1259,8 @@ function _convexHull(points: readonly [number, number][]): [number, number][] {
 
 /** Options of `unfold` and `flatPattern`. */
 export interface UnfoldOptions {
-  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. */
-  kFactor?: number
+  /** The K-factor of each bend (see `KFactor`); default: the one each bend was folded with, else `K_FACTOR`. */
+  kFactor?: KFactor
   /** The planar face of the part that stays in place (default: the largest planar face). */
   fixed?: Face | null
 }
@@ -1122,18 +1270,23 @@ export interface UnfoldOptions {
  *
  * The face `fixed` (default: the largest planar face) stays where it is; the rest of the sheet
  * unfolds into its plane. With the K-factor the part was bent with, the result is the blank it
- * was bent from. For the flat pattern on the XY plane, with outline and bend lines, use
+ * was bent from: by default each bend takes the K-factor `fold` or `flange` made it with (else
+ * `K_FACTOR`, 0.44, as for an imported part). `kFactor` gives other ones: one number for every
+ * bend, a function `(radius, thickness, angle) => k`, a mapping from inside radius to K-factor
+ * (`{ 1: 0.33, 6: 0.45 }`), `[r / t, k]` pairs to interpolate (a shop's table), or `'din6935'`
+ * (see `KFactor`). For the flat pattern on the XY plane, with outline and bend lines, use
  * `flatPattern`.
  */
 export function unfold(part: Part, options: UnfoldOptions = {}): Part {
   _opts('unfold', options)
-  const { kFactor = K_FACTOR, fixed = null } = options
+  const { kFactor = null, fixed = null } = options
   return _unfold(part, kFactor, fixed, 'unfold').part
 }
 
 /**
  * The flat pattern of a sheet metal part, laid on the XY plane (see `FlatPattern`).
  *
+ * `kFactor` as for `unfold`: by default each bend's own (from `fold` and `flange`), else `K_FACTOR`.
  * The part is unfolded with `fixed` (default: the largest planar face) staying in place; that
  * face is the bottom of the flat (z = 0) and bends are "up" when the far side of the sheet folds
  * towards +Z. The longer side of the smallest rectangle around the blank runs along X, and the
@@ -1141,7 +1294,7 @@ export function unfold(part: Part, options: UnfoldOptions = {}): Part {
  */
 export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPattern {
   _opts('flatPattern', options)
-  const { kFactor = K_FACTOR, fixed = null } = options
+  const { kFactor = null, fixed = null } = options
   const u = _unfold(part, kFactor, fixed, 'flatPattern')
   const flat = u.part
   const thickness = u.thickness
@@ -1162,12 +1315,12 @@ export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPatter
     )
   }
   const patternBends: Bend[] = []
-  for (const [g, start, direction, inside] of u.bends) {
+  for (const [g, start, direction, inside, kf] of u.bends) {
     const p0 = place.mul(start)
     const p1 = place.mul(start.add(direction.mul(g.length)))
     const up = place.rotateVector(inside).z > 0
     const line = Line(new Vector(p0.x, p0.y, 0.0), new Vector(p1.x, p1.y, 0.0))
-    patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), u.kFactor, _r(g.length), null, line, up ? 'up' : 'down'))
+    patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), kf, _r(g.length), null, line, up ? 'up' : 'down'))
   }
   return new FlatPattern(laid, outline, patternBends, _r(t), u.kFactor)
 }
