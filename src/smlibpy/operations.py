@@ -552,13 +552,13 @@ def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **
     return _owner_part(edges).fillet(edges, radius, **kwargs)
 
 
-def chamfer(edges: Any, length: float) -> Part | Sketch:
+def chamfer(edges: Any, length: float, **kwargs: Any) -> Part | Sketch:
     """Bevel edges of the part they belong to (see :meth:`Part.chamfer`), or corners of the
     sketch they belong to (see :meth:`Sketch.chamfer`)."""
     sk = _owner_sketch(edges)
     if sk is not None:
         return sk.chamfer(length, edges)
-    return _owner_part(edges).chamfer(edges, length)
+    return _owner_part(edges).chamfer(edges, length, **kwargs)
 
 
 def _owner_sketch(items: Any) -> Sketch | None:

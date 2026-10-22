@@ -106,7 +106,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A merge in which a part's seam lies tangent to another part can lose volume, and the stitcher behind `cells()` then crashed on it | `merge` raises when its result holds less than its largest part or more than all parts together, and `cells()` checks that the cells add up to the part |
 | A section of a merged part drops cells, or fails | `section` cuts each cell and puts their regions side by side |
 | A failed Boolean keeps both operands and leaves the context marked as doing a Boolean (it then builds no surface caches) | holds the operands' copies until the kernel takes them and clears the mark (`ext.boolean`) |
-| The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, and handed out an extended surface after deleting it, and the process crashed now and then | patches the three sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
+| The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, handed out an extended surface after deleting it, deleted the curve of an Edge it had made when the imprint failed later (issue #2's filleted boxes) and kept boundary curves it had deleted, and the process crashed now and then | patches the five sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
 | shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below) and writes a line edge as a B-spline over SMLib's unbounded line (2.5 km long), and trusts the arrays and values of a file it reads (a malformed array, a sphere whose refDirection is its axis or a weight of 0 crashes it; a cylinder axis of length 0 gives a wrong body) | writes such cones as cylinders or turned around and line edges as long as the edges; checks every array, reference and value (the rules of usd-brep's validator) before converting, and checks each body from other software with the kernel (`SmBrep::AssertValid`) before anything measures it |
 
@@ -130,7 +130,7 @@ matter here:
 - `shell` cannot open a face whose rim meets its neighbours tangentially, such as a face
   bordered by fillets; shell first, then round the rim.
 - The offset code behind `shell`, `offset` and `thicken` depends on memory layout in its extended
-  mode: the same call can fail, succeed or crash (filleted boxes still crash it now and then).
+  mode: the same call can fail or succeed (and some imported parts still crash it now and then).
   smlibpy runs it in a forked copy of the process (Linux, macOS; smlibwasm: in a kernel of its
   own), so a crash raises `ModelingError` and this process goes on, and it tries a mode again only
   after a result it refused, not after an error. A step longer than

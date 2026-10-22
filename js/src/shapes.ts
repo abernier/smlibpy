@@ -578,6 +578,13 @@ export class ShapeList<T = Shape> extends Array<T> {
     return this.filter((_, i) => kinds[i] === 'smooth')
   }
 
+  /** The edges of the list and the edges that continue them tangentially (see
+   * `Edge.tangentChain`): what `fillet` and `chamfer` round for this selection. Other shapes are
+   * left out. */
+  tangentChain(): ShapeList<Edge> {
+    return _list(_tangentChains([...this].filter((s): s is Edge & T => s instanceof Edge))[0])
+  }
+
   /** Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry (with
    * the corner patches where fillets meet), up to `maxRadius`. See the defeature module. */
   fillets(maxRadius: number | null = null): ShapeList<T> {
@@ -1156,6 +1163,17 @@ export class Edge extends Shape {
   override faces(): ShapeList<Face> {
     if (!this._e) return new ShapeList<Face>()
     return _list((k.edge_faces(this._e) as number[]).map((f) => new Face(this._owner, f)))
+  }
+
+  /**
+   * This edge and the edges that continue it tangentially, through vertices where the next edge
+   * runs on in the same direction (within 10 degrees) between faces that meet this edge's faces
+   * smoothly, and so on along the run: all top edges of a plate with rounded corners, the outline
+   * of a slot. This edge comes first. `fillet` and `chamfer` round the whole run of each selected
+   * edge (their `propagate`). An edge of no part is its own chain.
+   */
+  tangentChain(): ShapeList<Edge> {
+    return _list(_tangentChains([this])[0])
   }
 
   // -- derived edges ------------------------------------------------------------------------
@@ -2466,6 +2484,19 @@ export interface FilletOptions {
   continuity?: number | string | null
   /** Shape of a blend cross-section; above 1 fuller, below 1 flatter. */
   fullness?: number
+  /** Round the edges that continue the selected ones tangentially too (`Edge.tangentChain`): one
+   * top edge of a plate with rounded corners rounds the whole outline. An added edge takes the
+   * radius of the selected edge it continues. `false` rounds the selected edges only; where the
+   * kernel then fails, the error names a selected edge that runs on tangentially into one that is
+   * not selected (the kernel cannot always round such an edge alone). Default true. */
+  propagate?: boolean
+}
+
+/** Which edges a chamfer bevels. */
+export interface ChamferOptions {
+  /** Bevel the edges that continue the selected ones tangentially too (`Edge.tangentChain`), as
+   * `fillet` does; `false` bevels the selected edges only. Default true. */
+  propagate?: boolean
 }
 
 /**
@@ -2995,6 +3026,25 @@ export class Part extends _Body {
   }
 
   /**
+   * `_roundCall` for a fillet or chamfer of `sel`. Without `propagate`, a failure names a selected
+   * edge that runs on tangentially into an edge that is not selected, if there is one: the kernel
+   * cannot always round such an edge alone (a top edge of a plate with rounded corners, at any
+   * radius), and its own status says nothing about it.
+   */
+  static _rounding<T>(what: string, fn: () => T, hint: string, sel: readonly Edge[], propagate: boolean): T {
+    try {
+      return _roundCall(what, fn, hint)
+    } catch (e) {
+      if (!(e instanceof KernelError) || propagate) throw e
+      const better = _runOnHint(sel, what)
+      if (better === null) throw e
+      const error = new KernelError(e.operation, e.detail, e.status, better)
+      ;(error as Any).cause = e
+      throw error
+    }
+  }
+
+  /**
    * A `{ start, end }` radius runs along each edge on its own. Refuse the edges where it cannot: a
    * closed edge (the radius would jump back at its seam) and edges that run into each other
    * tangentially (the kernel gives the rounds one radius where they meet and bends both radii to it).
@@ -3110,7 +3160,7 @@ export class Part extends _Body {
    */
   fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
-    const { continuity = null, fullness = 1.0 } = options
+    const { continuity = null, fullness = 1.0, propagate = true } = options
     this._requireValid('fillet')
     const varying = typeof radius === 'object' && !Array.isArray(radius) && !ArrayBuffer.isView(radius) ? (radius as { start: number; end: number }) : null
     const list = Array.isArray(radius) || ArrayBuffer.isView(radius) ? Array.from(radius as ArrayLike<number>, Number) : null
@@ -3120,18 +3170,29 @@ export class Part extends _Body {
       // the kernel makes a ruled chamfer of it, not tangent to the faces
       throw new RangeError('fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius')
     }
-    const sel = this._sharpEdges(edges, 'fillet')
-    if (varying && Number(varying.start) !== Number(varying.end)) Part._checkRadiusLaw(sel)
+    const selection = this._sharpEdges(edges, 'fillet')
+    if (list && list.length !== selection.length) throw new RangeError(`${list.length} radii for ${selection.length} edges`)
+    const [sel, src] = propagate ? _tangentChains(selection) : [selection, selection.map((_, i) => i)]
+    const perEdge = list ? src.map((i) => list[i]) : null
+    if (varying && Number(varying.start) !== Number(varying.end)) {
+      if (sel.length > selection.length) {
+        const g = sel[selection.length]
+        const from = sel[src[selection.length]]
+        const p = g.vertices().map((v) => v.point).reduce((a, b) => (from.distanceTo(b) < from.distanceTo(a) ? b : a))
+        throw new RangeError(
+          `fillet: a (start, end) radius runs along each edge on its own, and a selected edge runs on tangentially into another edge at ${_fmtPoint(p)}, which propagate=True rounds with it; give a constant radius, or propagate=False to round the selected edges only`,
+        )
+      }
+      Part._checkRadiusLaw(sel)
+    }
     let radii: number[]
     if (varying) radii = new Array(sel.length).fill(Math.max(varying.start, varying.end))
-    else if (list) radii = list
+    else if (perEdge) radii = perEdge
     else radii = new Array(sel.length).fill(Number(radius))
-    if (radii.length === sel.length) {
-      this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
-    }
+    this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
     const [h, kedges] = this._withEdges(sel)
     const cont = _continuity(continuity)
-    _roundCall(
+    Part._rounding(
       'fillet',
       () => {
         if (varying) {
@@ -3141,10 +3202,9 @@ export class Part extends _Body {
             xsect_type: cont === null ? 1 : 2,
             continuity: cont || 1,
           })
-        } else if (list) {
-          if (list.length !== kedges.length) throw new RangeError(`${list.length} radii for ${kedges.length} edges`)
+        } else if (perEdge) {
           const xs = new Array(kedges.length).fill(cont ? k.FilletXSect.BLEND : k.FilletXSect.CIRCULAR)
-          k.fillet_edges_per_edge(h.brep, kedges, list, xs, { continuity: cont || 1, thumbweight: fullness })
+          k.fillet_edges_per_edge(h.brep, kedges, perEdge, xs, { continuity: cont || 1, thumbweight: fullness })
         } else if (cont === null) {
           k.fillet_edges(h.brep, kedges, { radius: Number(radius) })
         } else {
@@ -3152,13 +3212,11 @@ export class Part extends _Body {
         }
       },
       'the radius may be too large for the selected edges',
+      sel,
+      propagate,
     )
     const result = this._like(_take(h))
-    let sizes: number[]
-    if (varying) sizes = new Array(sel.length).fill(Math.max(varying.start, varying.end))
-    else if (list) sizes = list
-    else sizes = new Array(sel.length).fill(Number(radius))
-    this._checkVolumeChange(result, sel, 'fillet', sizes, cont === null ? 'circular' : 'blend')
+    this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend')
     return result
   }
 
@@ -3167,11 +3225,17 @@ export class Part extends _Body {
    *
    * The faces of each edge must meet at the same angle all along it (within 1 degree); where they
    * do not (a hole into a tilted or curved face), use `fillet`.
+   *
+   * `propagate` bevels the edges that continue the selected ones tangentially too
+   * (`Edge.tangentChain`), as `fillet` does; `false` bevels the selected edges only.
    */
-  chamfer(edges: unknown, length: number): Part {
+  chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part {
+    _opts('Part.chamfer', options)
+    const { propagate = true } = options
     this._requireValid('chamfer')
     if (!(Number(length) > 0)) throw new RangeError('chamfer: the length must be positive')
-    const sel = this._sharpEdges(edges, 'chamfer')
+    const selection = this._sharpEdges(edges, 'chamfer')
+    const sel = propagate ? _tangentChains(selection)[0] : selection
     this._checkRoundSizes(sel, new Array(sel.length).fill(Number(length)), 'chamfer', 'length')
     const radii: number[] = []
     for (const e of sel) {
@@ -3193,7 +3257,7 @@ export class Part extends _Body {
       }
     }
     const [h, kedges] = this._withEdges(sel)
-    _roundCall(
+    Part._rounding(
       'chamfer',
       () => {
         if (radii.every((r) => Math.abs(r - radii[0]) < 1e-12)) {
@@ -3205,6 +3269,8 @@ export class Part extends _Body {
         }
       },
       'the length may be too large for the selected edges',
+      sel,
+      propagate,
     )
     const result = this._like(_take(h))
     this._checkVolumeChange(result, sel, 'chamfer', new Array(sel.length).fill(Number(length)), 'chamfer')
@@ -3772,6 +3838,77 @@ function _leaving(e: Edge, p: Vector): Vector[] {
   if (e.isClosed) return [e.tangentAt(0), e.tangentAt(1).neg()]
   if (e.start.distanceTo(p) <= e.end.distanceTo(p)) return [e.tangentAt(0)]
   return [e.tangentAt(1).neg()]
+}
+
+/**
+ * True if `g` continues `e` tangentially through their vertex `v`: it leaves `v` within the
+ * kernel's tangency angle of the direction in which `e` arrives there, and its two faces meet those
+ * of `e` smoothly (their normals at `v` pair up within the same angle), as the next edge around a
+ * rounded corner does. `g` must be an edge a round can follow: not a seam and not smooth itself.
+ */
+function _continues(e: Edge, g: Edge, v: Vertex): boolean {
+  const p = v.point
+  const along = _leaving(g, p)
+  if (!_leaving(e, p).some((a) => along.some((b) => a.neg().angleTo(b) < _FILLET_TANGENT_DEG))) return false
+  const fe = e.faces()
+  const fg = g.faces()
+  if (fe.length !== 2 || fg.length !== 2) return false
+  let ne: Vector[]
+  let ng: Vector[]
+  try {
+    ne = fe.map((f) => f.normalAt(p))
+    ng = fg.map((f) => f.normalAt(p))
+  } catch (err) {
+    if (err instanceof KernelError || _isValueError(err)) return false
+    throw err
+  }
+  const t = _FILLET_TANGENT_DEG
+  if (!((ne[0].angleTo(ng[0]) < t && ne[1].angleTo(ng[1]) < t) || (ne[0].angleTo(ng[1]) < t && ne[1].angleTo(ng[0]) < t))) return false
+  return g.convexity !== 'smooth'
+}
+
+/**
+ * `edges`, then the edges that continue them tangentially (`_continues`), and the edges that
+ * continue those, as far as the chains go; with the index in `edges` of the edge each one was
+ * reached from (the nearest along its chain).
+ */
+function _tangentChains(edges: readonly Edge[]): [Edge[], number[]] {
+  const out = [...edges]
+  const src = out.map((_, i) => i)
+  const seen = new Set(out.map((e) => e._identity()))
+  for (let i = 0; i < out.length; i++) {
+    const e = out[i]
+    if (!e._e || e._owner === null) continue
+    for (const v of e.vertices()) {
+      for (const g of v.edges()) {
+        const key = g._identity()
+        if (!seen.has(key) && _continues(e, g, v)) {
+          seen.add(key)
+          out.push(g)
+          src.push(src[i])
+        }
+      }
+    }
+  }
+  return [out, src]
+}
+
+/** The hint for a round of `sel` (without propagation) that the kernel refused: the first
+ * selected edge that an edge that is not selected continues tangentially, and where. */
+function _runOnHint(sel: readonly Edge[], what: string): string | null {
+  const keys = new Set(sel.map((e) => e._identity()))
+  for (const e of sel) {
+    if (!e._e || e._owner === null) continue
+    const ends = e
+      .vertices()
+      .filter((v) => v.edges().some((g) => !keys.has(g._identity()) && _continues(e, g, v)))
+      .map((v) => _fmtPoint(v.point))
+    if (ends.length) {
+      const verb = what === 'chamfer' ? 'bevel' : 'round'
+      return `the edge from ${_fmtPoint(e.start)} to ${_fmtPoint(e.end)} runs on tangentially into an edge that is not selected at ${ends.join(' and ')}, which the kernel cannot always ${verb} alone; select the whole run (propagate=True, the default, or edge.tangent_chain())`
+    }
+  }
+  return null
 }
 
 /** Distance from a point to an edge (analytic for straight edges). */

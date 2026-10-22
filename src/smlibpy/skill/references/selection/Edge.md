@@ -18,6 +18,7 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `is_closed` | start == end (full circles, closed splines) |
 | `is_seam` | True for the seam of a closed surface (see `edges(seams=True)`) |
 | `convexity`, `is_convex()`, `dihedral_angle` | see `convexity` |
+| `tangent_chain()` | this edge and the edges that continue it tangentially (see `tangent_chain`) |
 | `intersections(other)` | list of points where the two edges cross |
 | `reversed()` | the same edge run the other way |
 | `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures |

@@ -384,6 +384,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     convex(): ShapeList<T>;
     concave(): ShapeList<T>;
     smooth(): ShapeList<T>;
+    tangentChain(): ShapeList<Edge>;
     fillets(maxRadius?: number | null): ShapeList<T>;
     hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
@@ -444,6 +445,7 @@ export class Edge extends Shape {
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
+    tangentChain(): ShapeList<Edge>;
     reversed(): Edge;
     nurbs(): Nurbs;
     removeKnots(): Edge;
@@ -519,6 +521,10 @@ export class MassProperties {
 export interface FilletOptions {
     continuity?: number | string | null;
     fullness?: number;
+    propagate?: boolean;
+}
+export interface ChamferOptions {
+    propagate?: boolean;
 }
 export class Part extends _Body {
     get volume(): number;
@@ -536,7 +542,7 @@ export class Part extends _Body {
     cut(...others: (Part | Iterable<Part>)[]): Part;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
     fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part;
-    chamfer(edges: unknown, length: number): Part;
+    chamfer(edges: unknown, length: number, options?: ChamferOptions): Part;
     shell(thickness: number, openings?: unknown, options?: {
         outward?: boolean;
     }): Part;
@@ -809,7 +815,7 @@ export interface SweepOptions {
 }
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
 export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;
-export function chamfer(edges: unknown, length: number): Part | Sketch;
+export function chamfer(edges: unknown, length: number, options?: ChamferOptions): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {
     outward?: boolean;
 }): Part;

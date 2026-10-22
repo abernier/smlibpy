@@ -11,6 +11,7 @@ import { Line } from './curves.ts'
 import {
   Edge,
   Face,
+  type ChamferOptions,
   type FilletOptions,
   type FilletRadius,
   Part,
@@ -592,10 +593,10 @@ export function fillet(edges: unknown, radius: FilletRadius, options: FilletOpti
 
 /** Bevel edges of the part they belong to (see `Part.chamfer`), or corners of the sketch they
  * belong to (see `Sketch.chamfer`). */
-export function chamfer(edges: unknown, length: number): Part | Sketch {
+export function chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.chamfer(length, edges as Iterable<Vertex>)
-  return _ownerPart(edges).chamfer(edges, length)
+  return _ownerPart(edges).chamfer(edges, length, options)
 }
 
 /** The sketch that vertices belong to (null if the items are not vertices). */

@@ -451,6 +451,12 @@ class ShapeList(list[T]):
         vertices of a sketch where two edges meet tangentially."""
         return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "smooth")
 
+    def tangent_chain(self) -> ShapeList[T]:
+        """The edges of the list and the edges that continue them tangentially (see
+        :meth:`Edge.tangent_chain`): what ``fillet`` and ``chamfer`` round for this selection.
+        Other shapes are left out."""
+        return ShapeList(_tangent_chains([s for s in self if isinstance(s, Edge)])[0])  # type: ignore[misc]
+
     def fillets(self, max_radius: float | None = None) -> ShapeList[T]:
         """Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry
         (with the corner patches where fillets meet), up to ``max_radius``. See
@@ -979,6 +985,15 @@ class Edge(Shape):
         if self._e is None:
             return ShapeList()
         return ShapeList(Face(self._owner, f) for f in self._e.faces())
+
+    def tangent_chain(self) -> ShapeList[Edge]:
+        """This edge and the edges that continue it tangentially, through vertices where the next
+        edge runs on in the same direction (within 10 degrees) between faces that meet this
+        edge's faces smoothly, and so on along the run: all top edges of a plate with rounded
+        corners, the outline of a slot. This edge comes first. ``fillet`` and ``chamfer`` round
+        the whole run of each selected edge (their ``propagate``). An edge of no part is its own
+        chain."""
+        return ShapeList(_tangent_chains([self])[0])
 
     # -- derived edges --------------------------------------------------------
     def reversed(self) -> Edge:
@@ -2625,6 +2640,22 @@ class Part(_Body):
                         f"overlap (largest possible setback here: {limit:.4g})")
 
     @staticmethod
+    @contextlib.contextmanager
+    def _rounding(what: str, hint: str, sel: list[Edge], propagate: bool) -> Iterator[None]:
+        """:func:`_round_call` for a fillet or chamfer of ``sel``. Without ``propagate``, a failure
+        names a selected edge that runs on tangentially into an edge that is not selected, if there
+        is one: the kernel cannot always round such an edge alone (a top edge of a plate with
+        rounded corners, at any radius), and its own status says nothing about it."""
+        try:
+            with _round_call(what, hint):
+                yield
+        except KernelError as e:
+            better = None if propagate else _run_on_hint(sel, what)
+            if better is None:
+                raise
+            raise KernelError(e.operation, e.detail, e.status, better) from e
+
+    @staticmethod
     def _check_radius_law(edges: list[Edge]) -> None:
         """A ``(start, end)`` radius runs along each edge on its own. Refuse the edges where it
         cannot: a closed edge (the radius would jump back at its seam) and edges that run into
@@ -2727,6 +2758,7 @@ class Part(_Body):
         *,
         continuity: int | str | None = None,
         fullness: float = 1.0,
+        propagate: bool = True,
     ) -> Part:
         """Round edges.
 
@@ -2741,6 +2773,12 @@ class Part(_Body):
                 curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
+            propagate: Round the edges that continue the selected ones tangentially too
+                (:meth:`Edge.tangent_chain`): one top edge of a plate with rounded corners
+                rounds the whole outline. An added edge takes the radius of the selected edge
+                it continues. ``False`` rounds the selected edges only; where the kernel then
+                fails, the error names a selected edge that runs on tangentially into one that is
+                not selected (the kernel cannot always round such an edge alone).
         """
         self._require_valid("fillet")
         given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
@@ -2751,52 +2789,64 @@ class Part(_Body):
             raise ValueError("fillet: a (start, end) radius makes circular rounds only; continuity needs a "
                              "constant radius")
         sel = self._sharp_edges(edges, "fillet")
+        per_edge: list[float] | None = None
+        if isinstance(radius, (list, np.ndarray)):
+            per_edge = [float(r) for r in radius]
+            if len(per_edge) != len(sel):
+                raise ValueError(f"{len(per_edge)} radii for {len(sel)} edges")
+        selected = len(sel)
+        sel, src = _tangent_chains(sel) if propagate else (sel, list(range(len(sel))))
+        if per_edge is not None:
+            per_edge = [per_edge[i] for i in src]
         if isinstance(radius, tuple) and len(radius) == 2:
             if float(radius[0]) != float(radius[1]):
+                if len(sel) > selected:
+                    g = sel[selected]
+                    p = min((v.point for v in g.vertices()), key=lambda q: sel[src[selected]].distance_to(q))
+                    raise ValueError(
+                        f"fillet: a (start, end) radius runs along each edge on its own, and a selected edge runs on "
+                        f"tangentially into another edge at {_fmt_point(p)}, which propagate=True rounds with it; "
+                        f"give a constant radius, or propagate=False to round the selected edges only")
                 self._check_radius_law(sel)
             radii = [max(float(radius[0]), float(radius[1]))] * len(sel)
-        elif isinstance(radius, (list, np.ndarray)):
-            radii = [float(r) for r in radius]
+        elif per_edge is not None:
+            radii = per_edge
         else:
             radii = [float(radius)] * len(sel)
-        if len(radii) == len(sel):
-            self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
+        self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
         h, kedges = self._with_edges(sel)
         cont = _continuity(continuity)
-        with _round_call("fillet", "the radius may be too large for the selected edges"):
+        with self._rounding("fillet", "the radius may be too large for the selected edges", sel, propagate):
             if isinstance(radius, tuple) and len(radius) == 2:
                 k.variable_radius_fillet(h.brep, kedges, start_radius=float(radius[0]), end_radius=float(radius[1]),
                                          xsect_type=1 if cont is None else 2, continuity=cont or 1)
-            elif isinstance(radius, (list, np.ndarray)):
-                radii = [float(r) for r in radius]
-                if len(radii) != len(kedges):
-                    raise ValueError(f"{len(radii)} radii for {len(kedges)} edges")
+            elif per_edge is not None:
                 xs = [k.FilletXSect.BLEND if cont else k.FilletXSect.CIRCULAR] * len(kedges)
-                k.fillet_edges_per_edge(h.brep, kedges, radii, xs, continuity=cont or 1, thumbweight=fullness)
+                k.fillet_edges_per_edge(h.brep, kedges, per_edge, xs, continuity=cont or 1, thumbweight=fullness)
             elif cont is None:
                 k.fillet_edges(h.brep, kedges, radius=float(radius))
             else:
                 k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
         result = self._like(_take(h))
-        if isinstance(radius, tuple) and len(radius) == 2:
-            sizes = [max(float(radius[0]), float(radius[1]))] * len(sel)
-        elif isinstance(radius, (list, np.ndarray)):
-            sizes = [float(r) for r in radius]
-        else:
-            sizes = [float(radius)] * len(sel)
-        self._check_volume_change(result, sel, "fillet", sizes, "circular" if cont is None else "blend")
+        self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend")
         return result
 
-    def chamfer(self, edges: Any, length: float) -> Part:
+    def chamfer(self, edges: Any, length: float, *, propagate: bool = True) -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces.
 
         The faces of each edge must meet at the same angle all along it (within 1 degree);
         where they do not (a hole into a tilted or curved face), use ``fillet``.
+
+        ``propagate`` bevels the edges that continue the selected ones tangentially too
+        (:meth:`Edge.tangent_chain`), as :meth:`fillet` does; ``False`` bevels the selected edges
+        only.
         """
         self._require_valid("chamfer")
         if not float(length) > 0:
             raise ValueError("chamfer: the length must be positive")
         sel = self._sharp_edges(edges, "chamfer")
+        if propagate:
+            sel = _tangent_chains(sel)[0]
         self._check_round_sizes(sel, [float(length)] * len(sel), "chamfer", "length")
         radii = []
         for e in sel:
@@ -2817,7 +2867,7 @@ class Part(_Body):
             else:
                 radii.append(length)
         h, kedges = self._with_edges(sel)
-        with _round_call("chamfer", "the length may be too large for the selected edges"):
+        with self._rounding("chamfer", "the length may be too large for the selected edges", sel, propagate):
             if all(abs(r - radii[0]) < 1e-12 for r in radii):
                 k.fillet_edges(h.brep, kedges, radius=radii[0], xsect_type=0)
             else:
@@ -3344,6 +3394,69 @@ def _leaving(e: Edge, p: Vector) -> list[Vector]:
     if e.start.distance_to(p) <= e.end.distance_to(p):
         return [e.tangent_at(0.0)]
     return [-e.tangent_at(1.0)]
+
+
+def _continues(e: Edge, g: Edge, v: Vertex) -> bool:
+    """True if ``g`` continues ``e`` tangentially through their vertex ``v``: it leaves ``v``
+    within the kernel's tangency angle of the direction in which ``e`` arrives there, and its two
+    faces meet those of ``e`` smoothly (their normals at ``v`` pair up within the same angle), as
+    the next edge around a rounded corner does. ``g`` must be an edge a round can follow: not a
+    seam and not smooth itself."""
+    p = v.point
+    if not any((-a).angle_to(b) < _FILLET_TANGENT_DEG for a in _leaving(e, p) for b in _leaving(g, p)):
+        return False
+    fe, fg = e.faces(), g.faces()
+    if len(fe) != 2 or len(fg) != 2:
+        return False
+    try:
+        ne = [f.normal_at(p) for f in fe]
+        ng = [f.normal_at(p) for f in fg]
+    except (KernelError, ValueError):
+        return False
+    t = _FILLET_TANGENT_DEG
+    if not ((ne[0].angle_to(ng[0]) < t and ne[1].angle_to(ng[1]) < t)
+            or (ne[0].angle_to(ng[1]) < t and ne[1].angle_to(ng[0]) < t)):
+        return False
+    return g.convexity != "smooth"
+
+
+def _tangent_chains(edges: Sequence[Edge]) -> tuple[list[Edge], list[int]]:
+    """``edges``, then the edges that continue them tangentially (:func:`_continues`), and the
+    edges that continue those, as far as the chains go; with the index in ``edges`` of the edge
+    each one was reached from (the nearest along its chain)."""
+    out = list(edges)
+    src = list(range(len(out)))
+    seen = {e._identity() for e in out}
+    i = 0
+    while i < len(out):
+        e = out[i]
+        if e._e is not None and e._owner is not None:
+            for v in e.vertices():
+                for g in v.edges():
+                    key = g._identity()
+                    if key not in seen and _continues(e, g, v):
+                        seen.add(key)
+                        out.append(g)
+                        src.append(src[i])
+        i += 1
+    return out, src
+
+
+def _run_on_hint(sel: Sequence[Edge], what: str) -> str | None:
+    """The hint for a round of ``sel`` (without propagation) that the kernel refused: the first
+    selected edge that an edge that is not selected continues tangentially, and where."""
+    keys = {e._identity() for e in sel}
+    for e in sel:
+        if e._e is None or e._owner is None:
+            continue
+        ends = [v.point for v in e.vertices()
+                if any(g._identity() not in keys and _continues(e, g, v) for g in v.edges())]
+        if ends:
+            verb = "bevel" if what == "chamfer" else "round"
+            return (f"the edge from {_fmt_point(e.start)} to {_fmt_point(e.end)} runs on tangentially into an edge "
+                    f"that is not selected at {' and '.join(_fmt_point(p) for p in ends)}, which the kernel cannot "
+                    f"always {verb} alone; select the whole run (propagate=True, the default, or edge.tangent_chain())")
+    return None
 
 
 def _distance_to_edge(e: Edge, p: Vector) -> float:

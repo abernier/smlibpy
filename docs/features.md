@@ -23,6 +23,26 @@ well when the selection says it all:
 rounded = fillet(box.edges().parallel_to(Z), 5)
 ```
 
+### Tangent runs
+
+An edge that runs on tangentially into the next one, as the edges around a rounded corner do,
+is rounded with the whole run: one top edge of a plate with rounded corners rounds its whole
+top outline, as in most CAD systems (and as OpenCASCADE does).
+
+```python
+plate = Rectangle(40, 30, fillet=5).extrude(10)
+edge = plate.edges().filter(lambda e: abs(e.center().z - 10) < 1e-6).sort_by("length")[-1]
+outline = plate.fillet(edge, 1)            # all 8 top edges: edge.tangent_chain()
+```
+
+`edge.tangent_chain()` (and `part.edges()....tangent_chain()` for a selection) shows the run:
+edges that leave a vertex in the direction the previous one arrives in (within 10 degrees),
+between faces that meet smoothly there. The added edges take the radius of the selected edge they
+continue. `propagate=False` rounds the selected edges only; the kernel then runs a round on past
+an end where the edge continues tangentially, and it often cannot round an edge that continues
+tangentially at both ends (the `KernelError` says which edge and where). `chamfer` takes the same
+`propagate`.
+
 ### Variable radius
 
 A `(start, end)` tuple changes the radius linearly along each edge:

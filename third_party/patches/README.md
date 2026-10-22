@@ -25,6 +25,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmProtoTopology.cpp` | `SmProtoTopologyManager::SplitIntersectingProtoEdges` stops once a range solution has deleted `pPE2`, and returns `SM_ERR_BAD_INTERSECTIONS` when solutions are left; it asks `pPE2`, not `pPE1`, which ProtoVertex lies at `pPE2`'s split parameter; `sm_WhichPVToCombine` takes ProtoEdges without end ProtoVertices | The next solution split the deleted ProtoEdge (AddressSanitizer: a read of freed memory in `SmProtoEdge::Split`). Booleans of crossing holes whose seams lie tangent to the other hole, such as `Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)` and its cut, `&` and merge, killed the process. The solutions there are nine ranges of one ProtoEdge, each on all of the other; the Boolean cannot go on soundly. |
 | `SMLib/src/SmProtoTopology.cpp` | `SmProtoTopologyManager::GlueCoincidentBrepVertices` stops gluing a Vertex once it has deleted it (an Edge to it squeezed, or the two Vertices glued), and does not look up the mate of a deleted Vertex | With two common Edges between two coincident Vertices, the next long Edge glued the deleted Vertex again (AddressSanitizer: a read of freed memory in `SmBrep::GlueVertices`, from the offset executive's `PiecewiseMerge`). Shells and offsets in the kernel's extended mode crashed the process at random: an L-shaped body of two boxes shelled with one opening in 1 run of 4 (`Box(6, 20, 12) + Box(4, 10, 6).translate(1, -5, -6)`, 2.94), `(Cone(6, 0, 8).rotate(Y, 90) + Cylinder(4, 12).translate(-6.7843, 0, 0)).offset(6)` in every run, imported parts (issue #2's family). |
 | `SMLib/src/SmProtoTopology.cpp` | `SmProtoTopologyManager::ResolveOverlappingProtoEdges` takes the ProtoEdges of a group it deletes out of the lists of coincident ProtoEdges of every ProtoFace (it stopped at the first one that listed them, as its comment wonders), and puts the new ProtoEdges into each list that had them; it returns `SM_ERR_BAD_INTERSECTIONS` for a group in which a ProtoEdge has no start or end ProtoVertex | `GlueCoincidentBrepVertices` read the deleted ProtoEdges from the other lists (AddressSanitizer: a read of freed memory): the plain shell of an imported part crashed in every run (crescendo part 40). It read the missing ProtoVertex of a ProtoEdge (an offset in the extended mode, 1 run in 10, after the change above). |
+| `SMLib/src/SmProtoTopology.cpp` | `SmEdgeDefinition::Imprint` deletes, when `SmBrep::MakeEdgeInFace` fails, only the curves the Brep did not take (those without an owner), for Brep 1 and for the copy and the UV curve of Brep 2 | `MakeEdgeInFace` gives the curves it is passed to the new Edge (`SetCurve`, `SetOwner`) before it links the Edge into the Face's loops, and it can fail after that: the Edge stays in the Brep with them. `Imprint` deleted them all the same (`Destruct()`), `ImprintIntersections` goes on after a failed imprint, and the next Boolean of the offset executive's `PiecewiseMerge` read the freed curve (AddressSanitizer: a read of freed memory in `SmEdge::CalculateBoundingBox`; malloc stack logging showed the same free in every native crash). Shells in the extended mode of issue #2's filleted boxes crashed the process now and then. |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::IntersectTopology` fails on `SM_ERR_BAD_INTERSECTIONS` from `SplitIntersectingProtoEdges` (its other errors stay ignored) | Without it the crossing holes above gave valid bodies of the wrong volume that could not be tessellated (`h1 + h2` 1697.46 instead of 2199.24, OpenCASCADE). |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::DeleteFaces` fails with `SM_ERR_BAD_INTERSECTIONS` rather than delete a shell Vertex whose Shell still owns Faceuses | `SmBrep::DeleteVertex` deletes the Vertex's Shell with it, and the Faces left in that Shell were read when the Brep was post-processed and when it was deleted (AddressSanitizer: freed memory read in `SmEdge::GetBrep` from `SmMerge::BooleanPostProcess`, and in `~SmFaceuse`). `Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)`, a flat end cap tangent to the sphere, killed the process in 3 of 3 runs. |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::ResolveIntersections` fails on `SM_ERR_BAD_INTERSECTIONS` from `ResolveOverlappingProtoEdges` (its other errors stay ignored) | The group that function cannot take out stays as it is; the Boolean must not go on with it. |
@@ -34,6 +35,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::DoExtendedOffset` fails when two of the faces whose surfaces it extends use one surface, or a face uses a surface that belongs to another face | `ReplaceSurface()` gives the surface's owner face the new surface, not the face it is called for, and the extension deleted for the one face was handed out again, from the executive's table of extensions, for the other (AddressSanitizer: a read of freed memory in `GetCreateExtendedSurface`). `(Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)).shell(2.4, <the face at x = 3>)` crashed in every run, and the WebAssembly build trapped. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails | It was kept (a leak), unlike after a failed stitch. Code reading; not seen in the runs measured. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
+| `SMLib/src/SmSurface.cpp` | `SmSurface::CreateNaturalUVTrimCurves` empties its output arrays when it fails | It adds each boundary curve to the arrays as it makes it, and on failure its cleanup objects deleted the curves made so far, which stayed in the arrays. `SmSurface::CoincidenceCheck` (and `SmPlane`'s) ignores the status, went on with the freed curves and deleted them again (AddressSanitizer: a read of freed memory in `CoincidenceCheck`, from the extended offset mode's `PiecewiseMerge`): the shell of an imported part (crescendo part 65) crashed the process in about half of the runs. |
 | `SMLib/src/SmFace.cpp` | `SmFace::HasSeamProblem` hands the seam curve it makes over to the caller's classification instead of copying it (in the classification it builds, and from the face properties it runs when called without them) | `SmCurveClassification::operator=` deep-copies a curve its source owns; the function assigned and then disowned the source, so the original curve belonged to nobody: 3.4 KB per call on a cylinder, 4.8 KB on a sphere, 12.7 KB on a torus, 8.3 KB per `heal_brep` of a cylinder with a sphere. smlibpy checks the seams of every body it imports from STEP. The copy also kept a pointer into the lost original (its UV curve, which `SplitAtSeam` reads), so the original could not just be freed. |
 | `SMLib/src/SmFace.cpp` | `SmFace::GetPointsInFace` dithers its sample points with a generator of its own, seeded the same each call | It seeded the process-wide `rand()` from the clock, so its points, and the inner-shell classification that rays from them, changed from run to run (and every other user of `rand()` was reseeded). |
 | `SMLib/src/SmShell.cpp` | `SmShell::IsInnerShellOf` takes the ray directions from wire and vertex shells from a generator of its own, seeded the same each call | As above (`srand(time(NULL))`). |
@@ -77,14 +79,29 @@ build:
   shell or offset attempts per call in the process, before: the L-shaped body crashed in 6 of 30
   runs, a second L-shaped body in 22 of 30, the cone offset and the two cones in 10 of 10,
   imported parts 15 and 34 in 6 of 6; after: 1 of 30, 0 of 30, 0 of 10 runs of 3 calls each, and
-  0 of 6. Issue #2's filleted boxes still crash now and then (1 or 2 of 10 runs of 3 calls), in
+  0 of 6. Issue #2's filleted boxes still crashed now and then (1 or 2 of 10 runs of 3 calls), in
   `SmEdge::CalculateBoundingBox` as a `ManifoldBoolean` of `PiecewiseMerge` starts; neither
-  AddressSanitizer nor libgmalloc takes that path, and smlibpy runs these steps in a forked copy
-  of the process. `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` runs the
+  AddressSanitizer nor libgmalloc took that path then (the site was found later with malloc stack
+  logging: the curves of a failed imprint, below). `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` runs the
   kernel steps in a process of their own. Over the fuzz seeds 7 and 8 (110 and 100
   shells and offsets) they turned 2 crashes into errors and one refused offset into a body (whose
   faces lie at the offset distance); 3 failures failed with another error, and no other result
   changed.
+- The curves of a failed imprint (`SmEdgeDefinition::Imprint`): the extended shell of a 20 mm cube
+  with all edges rounded by 2 (wall 1, top open) and of issue #2's boxes (40 x 30 x 10, rounds 1
+  and 2, walls 0.5 and 1), 8 raw `k.shell_brep` calls per process: before, 27, 8 and 7 of 300
+  processes crashed, after 0 of 300 each. Under lldb every native crash stopped in
+  `SmEdge::CalculateBoundingBox` on a curve that malloc stack logging showed freed by `Destruct()`
+  in `Imprint` (6 of 6), and a breakpoint there found a curve with an owner in the runs that
+  crashed and in none of the others. AddressSanitizer (random allocations between the calls to
+  vary the layout): 6 of 200 processes reported that read before, 0 of 200 after.
+  `tests/test_lane_FO.py::test_extended_shells_of_filleted_boxes_keep_their_curves` runs the calls
+  in six processes of their own (with the old kernel it failed in 6 of 9 runs).
+- The natural trim curves (`SmSurface::CreateNaturalUVTrimCurves`): crescendo part 65 (shell, then
+  offset by +0.5 and -0.5, extended mode, 2 calls per process): before 17 of 40 processes crashed,
+  after 0 of 40; AddressSanitizer reported the read in 97 of 100 perturbed processes before, in
+  none after, with the same outcomes of every call. No test of its own: the part is not in the
+  repository, and no part made with smlibpy reached that path.
 - The plane test: a 21 x 21 cubic sheet with one control point raised by 5 between the sample
   parameters keeps its bump through `Face.to_shell()` (area 3607.471, not the plane's 3600.0), an
   `.smb` round trip (top at 2.2222, not 0) and `thicken(2)` (7212.841, not 7200.0), and its mesh is
@@ -110,12 +127,16 @@ Defects that remain in the kernel, and what smlibpy does about them:
 - Crashes and loops in the feature executive's patching (`ai/todo/features.md`, 37):
   `smlibpy.defeature` runs each step of `remove_fillets`, `remove_faces` and `surface_fillet` in
   a forked copy first (smlibwasm: in a probe worker with a kernel of its own).
-- The extended offset mode still crashes now and then on filleted boxes (issue #2's family: 1 or
-  2 of 10 runs of 3 calls), in `SmEdge::CalculateBoundingBox` on a freed Edge as a
-  `ManifoldBoolean` of `PiecewiseMerge` starts; neither AddressSanitizer nor libgmalloc takes that
-  path, so it is not located. The offset of crescendo part 81 reads a null pointer in
-  `SmBezierAux2d::BuildPolarBox`. `shell`, `offset` and `thicken` run their kernel steps only in a
-  forked copy (smlibwasm: the probe worker), so these raise `ModelingError`.
+- The extended offset mode still crashes on some imported parts (raw kernel calls, shell and two
+  offsets per process): crescendo part 52 in 24 of 40 processes, where `ImprintIntersections` goes
+  on after `SmBrep::MakeEdgeInFaceWithVU` has connected only the start of a closed Edge (its
+  sectoring of the end Vertex then reads the missing end Vertex in
+  `SmEdgeuse::CreateUVTrimCurve`, address 0x98, and with that read guarded the Boolean crashes
+  later in `SmTopologyTraverser::CollectFaces` on the half-made Edge, 6 of 40: the fix belongs in
+  the imprint, which should fail the Boolean instead of going on); crescendo parts 81 and 19 read a
+  null pointer in `SmBezierAux2d::BuildPolarBox` (half of the runs of part 81). `shell`, `offset`
+  and `thicken` run their kernel steps only in a forked copy (smlibwasm: the probe worker), so
+  these raise `ModelingError`.
 - Booleans in which the seam of a cylinder, cone or sphere lies in a tangent plane of the other
   operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the site
   is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
@@ -164,7 +185,11 @@ When an upstream release fixes a defect:
    `DoExtendedOffset`), nothing for the steps of
    `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` and the plain shell of
    crescendo part 40 (with `quarantine_size_mb=8192`; the `ShellBrep` change has no check of its
-   own, as its path never ran in the runs measured); for the plane test,
+   own, as its path never ran in the runs measured); for the imprint's curves
+   (`SmEdgeDefinition::Imprint`), `tests/test_lane_FO.py::test_extended_shells_of_filleted_boxes_keep_their_curves`
+   must still pass, and AddressSanitizer report nothing for 200 processes of 8 extended shells of
+   the 20 mm cube with rounded edges, with random allocations between them; for the natural trim
+   curves (`SmSurface.cpp`), nothing for the extended shell of crescendo part 65 in the same way; for the plane test,
    `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass; for the
    seam check, `tests/test_step_import.py::test_seam_checks_on_import_free_their_curves` must still
    pass and AddressSanitizer report nothing for `tests/test_step_import.py`; for the tight box,

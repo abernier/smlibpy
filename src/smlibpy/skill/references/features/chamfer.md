@@ -3,8 +3,8 @@
 Bevels edges of a part with a flat face.
 
 ## Signature
-`part.chamfer(edges, length)`
-`chamfer(edges, length)` (finds the part the edges belong to)
+`part.chamfer(edges, length, *, propagate=True)`
+`chamfer(edges, length, **same keywords)` (finds the part the edges belong to)
 
 - `edges`: a selection, one `Edge`, or faces (all their edges).
 - `length`: the setback, measured along **both** faces from the edge. Equal on both sides,
@@ -15,6 +15,10 @@ Bevels edges of a part with a flat face.
   with the angle, and `chamfer` raises `ModelingError`; round such an edge with `fillet`.
 - There is no angle and no second distance: `chamfer(edge, (2, 3))` raises `TypeError`. For
   an unequal bevel, cut with a prism (`extrude` a triangle sketch placed at the edge).
+- `propagate`: as for `fillet`: `True` (default) also bevels the edges that continue a selected
+  edge tangentially (`edge.tangent_chain()`): one straight top edge of a slot bevels its whole
+  outline. `False` bevels the selected edges only, and the bevel runs on past an end where the
+  edge runs on tangentially.
 
 ## Returns
 A new `Part`. Removed volume per straight 90° edge: `length² / 2 * edge length`. Concave edges
@@ -63,4 +67,4 @@ tip = tri.chamfer(sharp, 2)                             # still 2 along each fac
 ```
 
 ## Related
-`fillet`, `CounterSinkHole`, `ShapeList.circles()`.
+`fillet`, `CounterSinkHole`, `ShapeList.circles()`, `Edge.tangent_chain()` (`selection/tangent_chain`).

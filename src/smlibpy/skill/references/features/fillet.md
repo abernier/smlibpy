@@ -3,7 +3,7 @@
 Rounds edges of a part.
 
 ## Signature
-`part.fillet(edges, radius, *, continuity=None, fullness=1.0)`
+`part.fillet(edges, radius, *, continuity=None, fullness=1.0, propagate=True)`
 `fillet(edges, radius, **same keywords)` (finds the part the edges belong to)
 
 - `edges`: a selection (`ShapeList`), one `Edge`, or faces (all their edges). Edges from an
@@ -13,8 +13,8 @@ Rounds edges of a part.
   `start` point; check `edge.start`); a list with one radius per edge, in selection order.
   The tuple runs along each edge on its own: circular rounds only (not with `continuity`), and
   not on a closed edge (a hole rim: the radius would jump back at the seam) or on edges that run
-  into each other tangentially (the kernel bends both radii to one where they meet). Those
-  raise `ValueError`; use a constant radius there.
+  into each other tangentially (the kernel bends both radii to one where they meet), also those
+  `propagate` adds. Those raise `ValueError`; use a constant radius there (or `propagate=False`).
 - `continuity`: `None` circular arc. `"G1"`, `"G2"`, `"G3"` (or 1, 2, 3; case does not matter)
   make a blend instead: it meets the faces at the same setback as the circular round but bulges
   more (removes less: 4 vertical box edges r5 remove 429.2 circular, 400.0 G1, 270.7 G2, 212.0 G3).
@@ -23,12 +23,22 @@ Rounds edges of a part.
   from white); see `recipes/verification`.
 - `fullness`: blends only (ignored for circular). Below 1 flatter, above 1 fuller. 0.5 to 1.2
   work; 1.5 and 2.0 fail on a box edge with the radius error message.
+- `propagate`: `True` (default) also rounds the edges that continue a selected edge
+  tangentially, its `tangent_chain()` (see `selection/tangent_chain`): one top edge of a plate
+  with rounded corners rounds the whole top outline (r 1: 11757.4972, as OpenCASCADE, which
+  always does this). An added edge takes the radius of the selected edge it continues; a radius
+  list still has one radius per selected edge. `False` rounds the selected edges only: an edge
+  that runs on tangentially at one end is rounded and the round runs on past that end (see
+  Returns); one that runs on tangentially at both ends often fails, and the `KernelError` then
+  names the edge and where it runs on.
 
 ## Returns
 A new `Part`. One face per rounded edge plus corner patches. Removed volume per straight
 convex 90° edge: `(r² − π r²/4) * length`. Where an edge runs on into an edge that is not
-rounded (tangentially, as into the arc of a rounded corner, or at a kink, as around a polygon),
-the kernel extends the round past the end until it leaves the material, so more is removed.
+rounded (at a kink, as around a polygon, or tangentially with `propagate=False`, as into the
+arc of a rounded corner), the kernel extends the round past the end until it leaves the
+material, so more is removed. With `propagate` (the default) a tangential run-on is rounded
+with the edge.
 
 ## What can be rounded
 - Seam edges and smooth (tangent) edges in the selection are skipped. A selection with only
@@ -63,6 +73,8 @@ the kernel extends the round past the end until it leaves the material, so more 
 ## Errors
 - `ModelingError: fillet: the radius is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
 - `KernelError: fillet failed (SM_ERR): the radius may be too large for the selected edges`
+- `KernelError: fillet failed (SM_ERR): the edge from (15, 15, 10) to (-15, 15, 10) runs on tangentially into an edge that is not selected at (15, 15, 10) and (-15, 15, 10), which the kernel cannot always round alone; select the whole run (propagate=True, the default, or edge.tangent_chain())`:
+  only with `propagate=False`.
 - `KernelError: fillet failed: the size is too large for the selected edges` when the result
   of rounding only convex edges has more volume than before (smlibpy's own check).
 - `ModelingError: fillet: the kernel returned a wrong body (the volume changed by 988.809, at most 804.757 is possible); the radius 4.99 is too close to the largest the selected edges allow, use a smaller one`
@@ -75,7 +87,8 @@ the kernel extends the round past the end until it leaves the material, so more 
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
 - `ValueError: fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius`
 - `ValueError: fillet: a (start, end) radius cannot run around a closed edge ...` and
-  `ValueError: fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at (15, 15, 5) ...`
+  `ValueError: fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at (15, 15, 5) ...`;
+  `ValueError: fillet: a (start, end) radius runs along each edge on its own, and a selected edge runs on tangentially into another edge at (15, 15, 10), which propagate=True rounds with it; give a constant radius, or propagate=False to round the selected edges only`
 - `ValueError: Edge(...) is not an edge of this part`; with the function form and edges of no
   part: `ValueError: these edges do not belong to a part; call part.fillet(edges, ...) instead`.
 
@@ -106,6 +119,12 @@ plate = Box(60, 40, 8) - Cylinder(5, 20)
 rim = plate.edges().circles().filter(lambda e: abs(e.radius - 5) < 1e-6 and e.center().z > 0)
 plate = plate.fillet(rim, 1)
 
+# one edge of a tangent run rounds the whole run (propagate=True, the default)
+plate = Rectangle(40, 30, fillet=5).extrude(10)
+long = plate.edges().filter(lambda e: abs(e.center().z - 10) < 1e-6).sort_by("length")[-1]
+outline = plate.fillet(long, 1)                         # all 8 top edges, as plate.fillet(long.tangent_chain(), 1)
+print(round(outline.volume, 4))                         # 11757.4972
+
 cube = Box(10, 10, 10)
 try:
     cube.fillet(cube.edges(), 6)
@@ -115,4 +134,4 @@ except ModelingError as e:
 
 ## Related
 `chamfer`, `shell`, `Sketch.fillet` (2D corners), `Wire.fillet`, `FilletPolyline`,
-`ShapeList.concave()`, `ShapeList.parallel_to()`.
+`ShapeList.concave()`, `ShapeList.parallel_to()`, `Edge.tangent_chain()` (`selection/tangent_chain`).
