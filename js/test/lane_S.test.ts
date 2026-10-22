@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Align, Axis, Circle, Ellipse, FilletPolyline, Helix, Line, ModelingError, Plane, Polygon, Polyline, Rectangle, Spline, ThreePointArc, Wire, Z, exportStep, importStep, revolve, sweep, type Part, type Shell } from '../src/index.ts'
+import { Align, Axis, CenterArc, Circle, Edge, Ellipse, FilletPolyline, Helix, Line, Location, ModelingError, Plane, Polygon, Polyline, Rectangle, Spline, ThreePointArc, Vector, Wire, X, Z, exportStep, extrude, importStep, loft, revolve, sweep, type Part, type Shell } from '../src/index.ts'
 import { ext, setWarningHandler } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
@@ -419,4 +419,170 @@ test('revolves within a hundredth of a degree of a turn are whole', () => {
   assert.ok(!text.includes('B_SPLINE_SURFACE'))
   const back = importStep(path) as Part
   assert.deepEqual([...back.faces()].map((f) => f.geomType).sort(), ['cylinder', 'cylinder', 'plane', 'plane'])
+})
+
+// -- batch 3: scale laws (S7), lines and arcs (S8), tapers (S9), loft ends (S10), curve copies (S11) ---
+const kinds = (p: Part | Shell) => [...p.faces()].map((f) => f.geomType).sort()
+const radiusAt = (p: Part, z: number) => Math.sqrt(p.section(new Plane([0, 0, z])).area / PI)
+
+test('sweeps scale the profile along the path', () => {
+  const cone = sweep(Circle(2), Line([0, 0, 0], [0, 0, 50]), { scale: [1, 2] }) as Part
+  assert.ok(cone.isValid())
+  approx(cone.volume, (PI * 50 * (4 + 8 + 16)) / 3, 1e-7)
+  approx(radiusAt(cone, 25), 3, 1e-4)
+  approx(radiusAt(cone, 49), 3.96, 1e-4)
+  const bar = Rectangle(4, 2).sweep(Line([0, 0, 0], [0, 0, 30]), { scale: (t: number) => 1 + t })
+  approx(bar.volume, (8 * 30 * 7) / 3, 1e-9)
+  approx(bar.bbox().max.x, 4, 1e-6)
+  const bulge = sweep(Circle(2), Line([0, 0, 0], [0, 0, 40]), { scale: [[0, 1], [0.5, 1.6], [1, 1]] }) as Part
+  approx(radiusAt(bulge, 20), 3.2, 1e-4)
+  approx(radiusAt(bulge, 10), 2 * 1.45, 1e-4)
+  approx(radiusAt(bulge, 1), 2 * (0.99275 + 0.045125 * 0.5 * 2.4 + 0.00725 * 1.6), 1e-4)
+  const path = Spline([0, 0, 0], [0, 10, 20], [30, 10, 40])
+  const horn = sweep(Circle(1), path, { scale: [1, 3] }) as Part
+  assert.ok(horn.isValid())
+  approx(horn.volume, (PI * path.length * (1 + 3 + 9)) / 3, 1e-7)
+  const h = Helix(10, 40, 15)
+  approx((sweep(Circle(2), h, { scale: [1, 0.5] }) as Part).volume, (PI * 4 * h.length * 1.75) / 3, 1e-6)
+  approx((sweep(Rectangle(4, 2), Line([0, 0, 0], [0, 0, 30]), { twist: 90, scale: [1, 2] }) as Part).volume, (8 * 30 * 7) / 3, 1e-5)
+  const ring = sweep(Circle(1), Circle(10).edges()[0], { scale: (t: number) => 1 + 0.5 * Math.sin(PI * t) ** 2 }) as Part
+  assert.ok(ring.isValid())
+  approx(ring.volume, PI * 2 * PI * 10 * (1 + 0.5 + (0.25 * 3) / 8), 1e-5)
+  approx((sweep(Line([-1, 0, 0], [1, 0, 0]), Line([0, 0, 0], [0, 10, 10]), { scale: [1, 2] }) as Shell).area, 2 * Math.sqrt(200) * 1.5, 1e-9)
+  const corner = quiet(() => sweep(Rectangle(2, 1), Polyline([0, 0, 0], [20, 0, 0], [20, 20, 0]), { scale: [1, 2] }) as Part)
+  assert.ok(corner.isValid() && corner.volume > ((2 * 40 * 7) / 3) * 0.95 && corner.volume < (2 * 40 * 7) / 3)
+})
+
+test('scale errors', () => {
+  const line = Line([0, 0, 0], [0, 0, 10])
+  assert.throws(() => sweep(Circle(1), line, { scale: [1, -1] }), { name: 'RangeError', message: /positive/ })
+  assert.throws(() => sweep(Circle(1), line, { scale: (t: number) => 1 - t }), { name: 'RangeError', message: /positive/ })
+  assert.throws(() => sweep(Circle(1), line, { scale: [[0, 1], [0.5, 2]] }), { name: 'RangeError', message: /t = 0 to t = 1/ })
+  for (const bad of ['x', 3]) assert.throws(() => sweep(Circle(1), line, { scale: bad as never }), { name: 'TypeError', message: /scale is/ })
+  assert.throws(() => sweep(Circle(1), Circle(10).edges()[0], { scale: [1, 2] }), { name: 'RangeError', message: /come round into itself/ })
+  assert.throws(() => sweep(Rectangle(2, 1), Polyline([0, 0, 0], [20, 0, 0], [20, 20, 0]), { scale: [1, 2], sharpCorners: true }), {
+    name: 'RangeError',
+    message: /sharpCorners false/,
+  })
+})
+
+test('single lines and arcs sweep into planes, cylinders and tori', () => {
+  const rod = sweep(Circle(2), Line([0, 0, 0], [0, 0, 50])) as Part
+  assert.deepEqual(kinds(rod), ['cylinder', 'plane', 'plane'])
+  approx(rod.faces().cylinders()[0].radius, 2, 1e-12)
+  approx(rod.volume, PI * 4 * 50, 1e-12)
+  const beam = sweep(Rectangle(4, 3).cut(Circle(1)), Line([1, 2, 3], [11, 22, 13])) as Part
+  assert.deepEqual(kinds(beam), ['cylinder', 'plane', 'plane', 'plane', 'plane', 'plane', 'plane'])
+  approx(beam.volume, (12 - PI) * Math.sqrt(600), 1e-12)
+  const bend = sweep(Rectangle(4, 2), CenterArc([0, 0], 10, 0, 90)) as Part
+  assert.deepEqual(kinds(bend), ['cylinder', 'cylinder', 'plane', 'plane', 'plane', 'plane'])
+  approx(bend.volume, ((8 * PI) / 2) * 10, 1e-12)
+  const torus = sweep(Circle(2), Circle(10).edges()[0]) as Part
+  assert.deepEqual(kinds(torus), ['torus'])
+  approx(torus.volume, PI * 4 * 2 * PI * 10, 1e-12)
+  const prism = sweep(Rectangle(4, 2), Line([0, 0, 0], [10, 20, 10]), { translational: true }) as Part
+  approx(prism.volume, 80, 1e-12)
+  assert.throws(() => sweep(Circle(12), CenterArc([0, 0], 10, 0, 90)), (e: unknown) => e instanceof ModelingError && /across the axis of the arc/.test(e.message))
+})
+
+test('tapered extrusions have plane walls', () => {
+  const inward = Rectangle(30, 30).extrude(10, { taper: 8 })
+  assert.deepEqual(kinds(inward), Array(6).fill('plane'))
+  approx(inward.volume, 8183.09063, 1e-9)
+  const outward = Rectangle(30, 30).extrude(10, { taper: -8 })
+  assert.deepEqual(kinds(outward), Array(6).fill('plane'))
+  approx(outward.volume, 9869.58064, 1e-9)
+  const holed = Rectangle(30, 30).cut(Rectangle(10, 10)).extrude(10, { taper: -5 })
+  assert.deepEqual(kinds(holed), Array(10).fill('plane'))
+  approx(holed.volume, 8699.9093, 1e-8)
+  const ell = Polygon([0, 0], [20, 0], [20, 8], [8, 8], [8, 20], [0, 20]).extrude(10, { taper: -8, both: true })
+  assert.deepEqual([...new Set(kinds(ell))], ['plane'])
+  approx(ell.volume, 2 * 3148.498974, 1e-8)
+  const box = Rectangle(20, 20).extrude(10, { taper: 3 })
+  const again = box.draft(box.faces().filter((f) => Math.abs(f.normalAt().z) < 0.5), 2, Plane.XY)
+  approx(again.volume, Rectangle(20, 20).extrude(10, { taper: 5 }).volume, 1e-9)
+  const rounded = Rectangle(30, 30).extrude(10, { taper: -8, corners: 'round' })
+  assert.equal(rounded.faces().length, 10)
+  approx(rounded.volume, 9863.92897, 1e-8)
+  const soft = Rectangle(20, 20).extrude(10, { taper: 3, corners: 'round' })
+  const flat = soft.faces().filter((f) => f.geomType === 'bspline')
+  assert.equal(flat.length, 4)
+  approx(soft.draft(flat, 2, Plane.XY).volume, Rectangle(20, 20).extrude(10, { taper: 5 }).volume, 1e-9)
+  assert.throws(() => Rectangle(30, 30).extrude(10, { taper: 5, corners: 'chamfer' as never }), { name: 'RangeError', message: /corners is 'sharp' or 'round'/ })
+  assert.throws(() => Circle(10).cut(Circle(8)).extrude(10, { taper: 10 }), (e: unknown) => e instanceof ModelingError && /closes the profile after 5.67128 of 10/.test(e.message))
+})
+
+test('lofts leave and reach their ends along tangents', () => {
+  const a = Circle(10)
+  const b = Circle(4).moved(new Location([0, 0, 30]))
+  const radialError = (p: Part) => {
+    const side = p.faces().filter((f) => f.geomType === 'bspline')[0]
+    let worst = 0
+    for (let i = 0; i < 12; i++) {
+      const t = (2 * PI * i) / 12
+      for (const [r, z] of [[10, 0], [4, 30]]) {
+        const n = side.normalAt(new Vector(r * Math.cos(t), r * Math.sin(t), z))
+        worst = Math.max(worst, n.angleTo([Math.cos(t), Math.sin(t), 0]))
+      }
+    }
+    return worst
+  }
+  const neck = loft([a, b], { startTangent: Z, endTangent: Z }) as Part
+  assert.ok(neck.isValid() && radialError(neck) < 1e-6)
+  assert.ok(radialError(loft([a, b]) as Part) > 1)
+  const bottle = Circle(10).extrude(-20).fuse(neck).fuse(Circle(4).moved(new Location([0, 0, 30])).extrude(10))
+  assert.ok(bottle.isValid())
+  assert.equal(bottle.faces().length, 5)
+  approx((loft([a, b], { startTangent: Z }) as Part).volume, 6361.8212, 1e-6)
+  const holed = loft([Rectangle(20, 20).cut(Circle(4)), Rectangle(10, 10).cut(Circle(2)).moved(new Location([0, 0, 20]))], { startTangent: Z, endTangent: Z }) as Part
+  assert.ok(holed.isValid())
+  assert.equal(holed.faces().length, 7)
+  const rings = Array.from({ length: 16 }, (_, i) => {
+    const t = (2 * PI * i) / 16
+    return Circle(2).moved(new Plane([10 * Math.cos(t), 10 * Math.sin(t), 0], [Math.cos(t), Math.sin(t), 0], [-Math.sin(t), Math.cos(t), 0]).location)
+  })
+  const torus = loft(rings, { closed: true }) as Part
+  assert.ok(torus.isValid())
+  assert.equal(torus.faces().length, 1)
+  approx(torus.volume, 2 * PI ** 2 * 10 * 4, 2e-4)
+  assert.throws(() => loft([a, b], { startTangent: X }), { name: 'RangeError', message: /lies in the plane/ })
+  assert.throws(() => loft([a, b], { ruled: true, endTangent: Z }), { name: 'RangeError', message: /ruled false/ })
+  assert.throws(() => loft(rings, { closed: true, startTangent: Z }), { name: 'RangeError', message: /closed false/ })
+  assert.throws(() => loft([a, b], { closed: true }), { name: 'RangeError', message: /three sections/ })
+})
+
+test('revolves, lofts, extrusions and tapers free their curve copies', () => {
+  const counts = { copies: 0, deletes: 0 }
+  const copy = Edge.prototype._copyCurve
+  const del = ext.delete_curve
+  Edge.prototype._copyCurve = function (this: Edge) {
+    counts.copies++
+    return copy.call(this)
+  }
+  ext.delete_curve = (c: number) => {
+    counts.deletes++
+    return del(c)
+  }
+  try {
+    const lathe = Rectangle(10, 10, { align: [Align.MIN, Align.MIN] }).translate(5, 0).cut(Circle(2).translate(10, 5)).on(Plane.XZ)
+    const sections = [Rectangle(10, 10).cut(Circle(2)), Rectangle(8, 8).cut(Circle(1)).moved(new Location([0, 0, 10]))]
+    const region = Rectangle(30, 30).cut(Circle(4))
+    const curve = Spline([0, 0, 0], [5, 3, 0], [10, 0, 0])
+    for (const op of [
+      () => lathe.revolve(Z, 90),
+      () => revolve(Line([5, 0, 0], [5, 0, 20]), Z),
+      () => extrude(curve, 5), // (both: the moved copy of the curve is a handle's, freed by the collector)
+      () => loft(sections),
+      () => region.extrude(10, { taper: 5 }),
+      // (not the mitered sweep: it moves the path, and the moved curves are handles', freed by the collector)
+    ]) {
+      counts.copies = 0
+      counts.deletes = 0
+      op()
+      assert.ok(counts.copies > 0 && counts.deletes >= counts.copies, JSON.stringify(counts))
+    }
+  } finally {
+    Edge.prototype._copyCurve = copy
+    ext.delete_curve = del
+  }
 })

@@ -28,8 +28,15 @@ Box(40, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))   # sits on the X
 plate = Rectangle(40, 30).extrude(5)              # along the sketch normal
 both = Circle(5).extrude(10, both=True)           # 10 to each side
 drafted = Rectangle(30, 30).extrude(10, taper=8)  # sides lean in by 8 degrees
+flared = Rectangle(30, 30).extrude(10, taper=-8, corners="round")  # out, corners rounded off
 slanted = Circle(5).extrude(20, direction=(0, 1, 2))
 ```
+
+The walls of a tapered extrusion are drafted planes, cones and cylinders (as `Part.draft` makes
+them: selections by type find them, they draft again, and STEP files carry them as such), B-spline
+surfaces where the profile has other curves. `corners="round"` rounds off the corners the taper
+pulls apart (the convex ones of an outward taper, the concave ones of an inward one), as an offset
+rounds them. A taper that closes the profile before the end raises `ModelingError`.
 
 A negative amount extrudes against the normal, which is how pockets are cut into faces:
 
@@ -69,6 +76,16 @@ vase = loft([Circle(15), Circle(25).translate(0, 0, 30), Circle(10).translate(0,
 straight = loft([Rectangle(20, 20), RegularPolygon(10, 6).translate(0, 0, 20)], ruled=True)
 ```
 
+`start_tangent` and `end_tangent` set the direction a loft leaves its first section in and
+reaches its last in, so that it meets the bodies there smoothly; `closed=True` runs it on from the
+last section through the first again (a ring without ends):
+
+```python
+neck = loft([Circle(10), Circle(4).translate(0, 0, 30)], start_tangent=Z, end_tangent=Z)
+bottle = Circle(10).extrude(-40) + neck + Circle(4).translate(0, 0, 30).extrude(10)  # smooth joints
+ring = loft([Rot(z=45 * i) * Pos(10, 0, 0) * Rot(x=90) * Circle(2 + i % 2) for i in range(8)], closed=True)
+```
+
 ## Sweep
 
 A sweep moves a profile along a path. smlibpy puts the center of the profile's box on the
@@ -95,6 +112,20 @@ elbow = sweep(Circle(4), Wire([Line((0, 0, 0), (0, 0, 20)),
 
 `translational=True` keeps the profile's orientation fixed along the path instead of turning
 it.
+
+A path that is a single line is swept as an extrusion, a single arc (or circle) as a revolve:
+planes, cylinders, cones and tori, the same faces a path of several edges gives. A profile that
+reaches across the axis of the arc raises `ModelingError` (it would sweep through itself).
+
+`scale` grows or shrinks the profile along the path, about the point of it that sits on the
+path: `(start, end)` evenly along the length, `[(t, s), ...]` through scales at fractions of the
+length (a smooth curve that does not overshoot them), or a function of the fraction:
+
+```python
+horn = sweep(Circle(2), path, scale=(1, 3))
+taper_spring = sweep(Circle(1), Helix(pitch=8, height=40, radius=15), scale=(1, 0.5))
+bulge = sweep(Circle(2), Line((0, 0, 0), (0, 0, 40)), scale=[(0, 1), (0.5, 1.6), (1, 1)])
+```
 
 Along the path the profile turns as little as it can, which keeps its attitude to the plane of a
 planar path. Along a helix it keeps its attitude to the helix's axis instead (a thread tooth or a

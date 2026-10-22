@@ -396,3 +396,186 @@ def test_revolves_within_a_hundredth_of_a_degree_of_a_turn_are_whole(tmp_path):
     assert text.count("CYLINDRICAL_SURFACE") == 2 and "B_SPLINE_SURFACE" not in text
     back = import_step(path)
     assert sorted(f.geom_type for f in back.faces()) == ["cylinder", "cylinder", "plane", "plane"]
+
+
+# -- batch 3: scale laws (S7), lines and arcs (S8), tapers (S9), loft ends (S10), curve copies (S11) ----
+def _kinds(body):
+    return sorted(f.geom_type for f in body.faces())
+
+
+def _radius_at(part, z):
+    return math.sqrt(part.section(Plane((0, 0, z))).area / math.pi)
+
+
+def test_sweeps_scale_the_profile_along_the_path():
+    cone = sweep(Circle(2), Line((0, 0, 0), (0, 0, 50)), scale=(1, 2))
+    assert cone.is_valid()
+    assert cone.volume == pytest.approx(math.pi * 50 * (4 + 8 + 16) / 3, rel=1e-7)
+    assert _radius_at(cone, 25) == pytest.approx(3, rel=1e-4)
+    assert _radius_at(cone, 49) == pytest.approx(3.96, rel=1e-4)
+    # a function of the fraction of the length, about the profile's anchor
+    bar = Rectangle(4, 2).sweep(Line((0, 0, 0), (0, 0, 30)), scale=lambda t: 1 + t)
+    assert bar.volume == pytest.approx(8 * 30 * 7 / 3, rel=1e-9)
+    assert bar.bbox().max.x == pytest.approx(4, rel=1e-6) and bar.bbox().min.x == pytest.approx(-4, rel=1e-6)
+    # through points, without overshoot
+    bulge = sweep(Circle(2), Line((0, 0, 0), (0, 0, 40)), scale=[(0, 1), (0.5, 1.6), (1, 1)])
+    assert _radius_at(bulge, 20) == pytest.approx(3.2, rel=1e-4)
+    # (a piecewise cubic: 1.45 at a quarter, its end slopes 2.4 as scipy's PCHIP takes them)
+    assert _radius_at(bulge, 10) == pytest.approx(2 * 1.45, rel=1e-4)
+    assert _radius_at(bulge, 1) == pytest.approx(_radius_at(bulge, 39), rel=1e-6)
+    assert _radius_at(bulge, 1) == pytest.approx(2 * (0.99275 + 0.045125 * 0.5 * 2.4 + 0.00725 * 1.6), rel=1e-4)
+    assert max(_radius_at(bulge, z) for z in range(1, 40)) <= 3.2 * (1 + 1e-4)
+    # along a 3D spline (the kernel's frame) and a helix (the attitude kept): area x length, scaled
+    path = Spline((0, 0, 0), (0, 10, 20), (30, 10, 40))
+    horn = sweep(Circle(1), path, scale=(1, 3))
+    assert horn.is_valid() and horn.volume == pytest.approx(math.pi * path.length * (1 + 3 + 9) / 3, rel=1e-7)
+    h = Helix(pitch=10, height=40, radius=15)
+    spring = sweep(Circle(2), h, scale=(1, 0.5))
+    assert spring.volume == pytest.approx(math.pi * 4 * h.length * (1 + 0.5 + 0.25) / 3, rel=1e-6)
+    twisted = sweep(Rectangle(4, 2), Line((0, 0, 0), (0, 0, 30)), twist=90, scale=(1, 2))
+    assert twisted.volume == pytest.approx(8 * 30 * 7 / 3, rel=1e-5)
+    # closed paths: the same scale at both ends
+    ring = sweep(Circle(1), Circle(10).edges()[0], scale=lambda t: 1 + 0.5 * math.sin(math.pi * t) ** 2)
+    assert ring.is_valid()
+    assert ring.volume == pytest.approx(math.pi * 2 * math.pi * 10 * (1 + 0.5 + 0.25 * 3 / 8), rel=1e-5)
+    # an open profile: a scaled surface
+    sheet = sweep(Line((-1, 0, 0), (1, 0, 0)), Line((0, 0, 0), (0, 10, 10)), scale=(1, 2))
+    assert sheet.area == pytest.approx(2 * math.sqrt(200) * 1.5, rel=1e-9)
+    # planar paths of several edges go piece by piece
+    corner = _quiet(lambda: sweep(Rectangle(2, 1), Polyline((0, 0, 0), (20, 0, 0), (20, 20, 0)), scale=(1, 2)))
+    assert corner.is_valid() and 2 * 40 * 7 / 3 * 0.95 < corner.volume < 2 * 40 * 7 / 3
+
+
+def test_scale_errors():
+    line = Line((0, 0, 0), (0, 0, 10))
+    with pytest.raises(ValueError, match="positive"):
+        sweep(Circle(1), line, scale=(1, -1))
+    with pytest.raises(ValueError, match="positive"):
+        sweep(Circle(1), line, scale=lambda t: 1 - t)
+    with pytest.raises(ValueError, match="t = 0 to t = 1"):
+        sweep(Circle(1), line, scale=[(0, 1), (0.5, 2)])
+    for bad in ("x", 3):
+        with pytest.raises(TypeError, match="scale is"):
+            sweep(Circle(1), line, scale=bad)
+    with pytest.raises(ValueError, match="come round into itself"):
+        sweep(Circle(1), Circle(10).edges()[0], scale=(1, 2))
+    with pytest.raises(ValueError, match="sharp_corners=False"):
+        sweep(Rectangle(2, 1), Polyline((0, 0, 0), (20, 0, 0), (20, 20, 0)), scale=(1, 2), sharp_corners=True)
+
+
+def test_single_lines_and_arcs_sweep_into_planes_cylinders_and_tori():
+    rod = sweep(Circle(2), Line((0, 0, 0), (0, 0, 50)))
+    assert _kinds(rod) == ["cylinder", "plane", "plane"]  # (was a B-spline face)
+    assert rod.faces().cylinders().first.radius == pytest.approx(2) and rod.volume == pytest.approx(math.pi * 4 * 50)
+    beam = sweep(Rectangle(4, 3) - Circle(1), Line((1, 2, 3), (11, 22, 13)))
+    assert _kinds(beam) == ["cylinder"] + ["plane"] * 6
+    assert beam.volume == pytest.approx((12 - math.pi) * math.sqrt(600), rel=1e-12)
+    bend = sweep(Rectangle(4, 2), CenterArc((0, 0), 10, 0, 90))
+    assert _kinds(bend) == ["cylinder", "cylinder", "plane", "plane", "plane", "plane"]
+    assert bend.volume == pytest.approx(8 * math.pi / 2 * 10, rel=1e-12)  # (Pappus)
+    torus = sweep(Circle(2), Circle(10).edges()[0])
+    assert _kinds(torus) == ["torus"] and torus.volume == pytest.approx(math.pi * 4 * 2 * math.pi * 10, rel=1e-12)
+    # translational along an oblique line: the profile's plane kept
+    prism = sweep(Rectangle(4, 2), Line((0, 0, 0), (10, 20, 10)), translational=True)
+    assert prism.volume == pytest.approx(80, rel=1e-12) and prism.bbox().min.z == pytest.approx(0)
+    # a profile that reaches across the arc's axis would sweep through itself (it was a "valid" body)
+    with pytest.raises(ModelingError, match="across the axis of the arc"):
+        sweep(Circle(12), CenterArc((0, 0), 10, 0, 90))
+
+
+def test_tapered_extrusions_have_plane_walls():
+    inward = Rectangle(30, 30).extrude(10, taper=8)
+    assert _kinds(inward) == ["plane"] * 6 and inward.volume == pytest.approx(8183.09063, rel=1e-9)
+    outward = Rectangle(30, 30).extrude(10, taper=-8)
+    assert _kinds(outward) == ["plane"] * 6 and outward.volume == pytest.approx(9869.58064, rel=1e-9)  # (14 faces)
+    holed = (Rectangle(30, 30) - Rectangle(10, 10)).extrude(10, taper=-5)
+    assert _kinds(holed) == ["plane"] * 10 and holed.volume == pytest.approx(8699.9093, rel=1e-8)
+    ell = Polygon((0, 0), (20, 0), (20, 8), (8, 8), (8, 20), (0, 20)).extrude(10, taper=-8, both=True)
+    assert set(_kinds(ell)) == {"plane"} and ell.volume == pytest.approx(2 * 3148.498974, rel=1e-8)
+    assert {f.geom_type for f in (Circle(8) - Circle(2)).extrude(10, taper=8).faces()} == {"cone", "plane"}
+    # the walls can be drafted again: draft.md's promise (taper 3, then 2 more)
+    walls = Rectangle(20, 20).extrude(10, taper=3).faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+    again = walls[0]._owner.draft(walls, 2, Plane.XY)
+    assert again.volume == pytest.approx(Rectangle(20, 20).extrude(10, taper=5).volume, rel=1e-9)
+    # corners="round": the kernel's rounded corners; its flat B-spline walls draft too
+    rounded = Rectangle(30, 30).extrude(10, taper=-8, corners="round")
+    assert len(rounded.faces()) == 10 and rounded.volume == pytest.approx(9863.92897, rel=1e-8)
+    soft = Rectangle(20, 20).extrude(10, taper=3, corners="round")
+    assert _kinds(soft).count("bspline") == 4
+    flat = soft.faces().filter(lambda f: f.geom_type == "bspline")
+    five = Rectangle(20, 20).extrude(10, taper=5).volume
+    assert soft.draft(flat, 2, Plane.XY).volume == pytest.approx(five, rel=1e-9)
+    with pytest.raises(ValueError, match="corners is 'sharp' or 'round'"):
+        Rectangle(30, 30).extrude(10, taper=5, corners="chamfer")
+    # a hole that widens across the region before the end (it came out 5.67 high)
+    with pytest.raises(ModelingError, match="closes the profile after 5.67128 of 10"):
+        (Circle(10) - Circle(8)).extrude(10, taper=10)
+
+
+def test_lofts_leave_and_reach_their_ends_along_tangents():
+    a, b = Circle(10), Circle(4).moved(Location((0, 0, 30)))
+
+    def radial_error(part):
+        side = part.faces().filter(lambda f: f.geom_type == "bspline")[0]
+        worst = 0.0
+        for i in range(12):
+            t = 2 * math.pi * i / 12
+            for r, z in ((10, 0.0), (4, 30.0)):
+                n = side.normal_at(Vector(r * math.cos(t), r * math.sin(t), z))
+                worst = max(worst, n.angle_to((math.cos(t), math.sin(t), 0)))
+        return worst
+
+    neck = loft([a, b], start_tangent=Z, end_tangent=Z)
+    assert neck.is_valid() and radial_error(neck) < 1e-6
+    assert radial_error(loft([a, b])) > 1
+    bottle = Circle(10).extrude(-20) + neck + Circle(4).moved(Location((0, 0, 30))).extrude(10)
+    assert bottle.is_valid() and len(bottle.faces()) == 5  # (smooth: the joints are no edges of note)
+    assert loft([a, b], start_tangent=Z).volume == pytest.approx(6361.8212, rel=1e-6)
+    holed = loft([Rectangle(20, 20) - Circle(4), (Rectangle(10, 10) - Circle(2)).moved(Location((0, 0, 20)))],
+                 start_tangent=Z, end_tangent=Z)
+    assert holed.is_valid() and len(holed.faces()) == 7
+    sheet = loft([Line((0, 0, 0), (10, 0, 0)), Line((0, 5, 10), (10, 5, 10))], start_tangent=Z, end_tangent=Z)
+    assert isinstance(sheet, Shell) and sheet.area > 10 * math.sqrt(125)
+    # closed: through the first section again, smooth (16 circles about a circle: nearly a torus)
+    rings = [Circle(2).moved(Plane((10 * math.cos(t), 10 * math.sin(t), 0), x_dir=(math.cos(t), math.sin(t), 0),
+                                   z_dir=(-math.sin(t), math.cos(t), 0)).location)
+             for t in (2 * math.pi * i / 16 for i in range(16))]
+    torus = loft(rings, closed=True)
+    assert torus.is_valid() and len(torus.faces()) == 1
+    assert torus.volume == pytest.approx(2 * math.pi ** 2 * 10 * 4, rel=2e-4)
+    with pytest.raises(ValueError, match="lies in the plane"):
+        loft([a, b], start_tangent=X)
+    with pytest.raises(ValueError, match="ruled=False"):
+        loft([a, b], ruled=True, end_tangent=Z)
+    with pytest.raises(ValueError, match="closed=False"):
+        loft(rings, closed=True, start_tangent=Z)
+    with pytest.raises(ValueError, match="three sections"):
+        loft([a, b], closed=True)
+
+
+def test_revolves_lofts_extrusions_and_tapers_free_their_curve_copies(monkeypatch):
+    import smlibpy.shapes as shapes
+
+    counts = {"copies": 0, "deletes": 0}
+    copy, delete = shapes.Edge._copy_curve, ext.delete_curve
+
+    def counted_copy(self):
+        counts["copies"] += 1
+        return copy(self)
+
+    def counted_delete(c):
+        counts["deletes"] += 1
+        return delete(c)
+
+    monkeypatch.setattr(shapes.Edge, "_copy_curve", counted_copy)
+    monkeypatch.setattr(ext, "delete_curve", counted_delete)
+    lathe = (Rectangle(10, 10, align=(Align.MIN, Align.MIN)).translate(5, 0) - Circle(2).translate(10, 5)).on(Plane.XZ)
+    sections = [Rectangle(10, 10) - Circle(2), (Rectangle(8, 8) - Circle(1)).moved(Location((0, 0, 10)))]
+    region = Rectangle(30, 30) - Circle(4)
+    curve = Spline((0, 0, 0), (5, 3, 0), (10, 0, 0))
+    for op in (lambda: lathe.revolve(Z, 90), lambda: revolve(Line((5, 0, 0), (5, 0, 20)), Z),
+               lambda: extrude(curve, 5, both=True), lambda: loft(sections), lambda: region.extrude(10, taper=5),
+               lambda: sweep(Rectangle(2, 1), Polyline((0, 0, 0), (20, 0, 0), (20, 20, 0)))):
+        counts.update(copies=0, deletes=0)
+        op()
+        assert counts["copies"] > 0 and counts["deletes"] >= counts["copies"]  # (before: 0 deleted)

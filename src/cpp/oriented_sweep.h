@@ -19,9 +19,12 @@ namespace smlibpy {
 // profile is drawn in the XY plane with its anchor at the origin: at each point of the path its x
 // axis goes along the given one, its y axis along the tangent crossed with that, its z axis along the
 // tangent. With `cap_ends` the ends are closed with planar faces (a solid), otherwise the result is a
-// sheet. The caller owns the result; throws where the kernel cannot sweep.
+// sheet. `scales` (empty, or one for each parameter, positive): the profile's scale about its anchor
+// there, interpolated cubically in between (the profile is drawn at the scale of the first). The caller
+// owns the result; throws where the kernel cannot sweep.
 SmBrep* oriented_sweep(const std::vector<SmCurve*>& profile, const SmBSplineCurve* path,
-                       const std::vector<double>& params, const std::vector<double>& x_axes, bool cap_ends);
+                       const std::vector<double>& params, const std::vector<double>& x_axes, bool cap_ends,
+                       const std::vector<double>& scales = {});
 
 // The axis of a path of curves that winds about one at a constant pitch (a helix, also one whose
 // radius changes evenly with the angle: a conical helix), as {x, y, z of a point on it, x, y, z of its

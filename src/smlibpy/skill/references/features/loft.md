@@ -3,7 +3,7 @@
 A solid through a series of cross sections (closed sections), or a surface through open curves.
 
 ## Signature
-`loft(sections, *, ruled=False, smooth=True)`
+`loft(sections, *, ruled=False, smooth=True, start_tangent=None, end_tangent=None, closed=False)`
 
 - `sections`: two or more, in order. Closed: sketches, planar faces, closed wires (`Polyline(..., close=True)`).
   Open: edges or open wires (result is a `Shell`). Do not mix closed and open. Closed sections
@@ -11,8 +11,16 @@ A solid through a series of cross sections (closed sections), or a surface throu
 - `ruled=True`: straight transitions between neighbouring sections (degree 1), for closed and
   open sections alike (three lines: two flat faces).
 - `smooth`: only matters with **four or more** sections (cubic instead of quadratic). With three
-  sections the loft is quadratic either way; with two it is always straight.
-- There is no `closed` option (no loft back to the first section).
+  sections the loft is quadratic either way; with two it is always straight (unless tangents are
+  given).
+- `start_tangent`, `end_tangent`: an `Axis` or a direction the loft leaves the first section in
+  and reaches the last in: across the section, usually its normal (`Z` for sections in XY), so the
+  loft meets an extrusion of the end section smoothly (a bottle neck on its body). Only the
+  direction counts; each one is one more condition (two sections and both tangents: cubic). Not
+  with `ruled=True`. The kernel drops tangents it cannot meet; the loft checks them and raises
+  `ModelingError` ("cannot leave the first section along start_tangent").
+- `closed=True`: run on from the last section through the first again, smoothly (C1): a ring
+  without end faces (three sections or more; no tangents).
 
 ## Returns
 A `Part` for closed sections, a `Shell` for open curves. Sections are placed where they are:
@@ -49,6 +57,10 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
 
 ## Errors
 - `ValueError: loft needs at least two sections`
+- `ValueError: loft: start_tangent lies in the plane of the section; it must run across it`
+- `ValueError: loft: a ruled loft runs straight to its ends; start_tangent and end_tangent need ruled=False`
+- `ValueError: loft: a closed loft has no ends; start_tangent and end_tangent need closed=False`
+- `ValueError: loft: a closed loft needs three sections or more`
 - `ValueError: loft sections must be all closed (solid) or all open (surface)`
 - `ValueError: a loft section must be a single region`
 - `ValueError: loft: every section needs the same number of holes (a hole runs through the whole loft)`
@@ -79,6 +91,15 @@ print(best)                                             # 45
 
 sheet = loft([Line((0, 0, 0), (10, 0, 0)), Line((0, 10, 5), (10, 10, 5))])  # open curves -> Shell
 print(type(sheet).__name__, round(sheet.area, 3))       # Shell 111.803
+
+# a neck that leaves the body and reaches the mouth straight up: smooth joints
+neck = loft([Circle(10), Circle(4).translate(0, 0, 30)], start_tangent=Z, end_tangent=Z)
+bottle = Circle(10).extrude(-40) + neck + Circle(4).translate(0, 0, 30).extrude(10)
+print(bottle.is_valid(), len(bottle.faces()))           # True 5
+
+# a closed loft: 16 circles about a circle make (nearly) a torus
+ring = loft([Rot(z=22.5 * i) * Pos(10, 0, 0) * Rot(x=90) * Circle(2) for i in range(16)], closed=True)
+print(round(ring.volume, 1))                            # 789.5 (torus 789.6)
 ```
 
 Shelling a loft: opening the bottom (planar polygon) face works; opening the circular top

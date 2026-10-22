@@ -4,8 +4,8 @@ Moves a profile along a path to make a solid (tubes, rails, springs, frames). An
 makes a surface (`Shell`).
 
 ## Signature
-`sweep(profile, path, *, orient=True, translational=False, sharp_corners=None, up=None, twist=0.0)`
-`sketch.sweep(path, *, sharp_corners=None, up=None, twist=0.0)` (no `orient`/`translational`)
+`sweep(profile, path, *, orient=True, translational=False, sharp_corners=None, up=None, twist=0.0, scale=None)`
+`sketch.sweep(path, *, sharp_corners=None, up=None, twist=0.0, scale=None)` (no `orient`/`translational`)
 
 - `profile`: a sketch (holes allowed), a planar face or a closed wire. Draw it anywhere,
   usually at the origin in XY.
@@ -29,7 +29,12 @@ makes a surface (`Shell`).
 - `twist`: degrees the profile turns about the path on top of that, spread evenly along its
   length, or a function of the fraction `s` of the length (0 to 1) giving the angle in degrees
   there (`twist=lambda s: 90 * s * s`; the profile starts turned by `twist(0)`).
-- There is no scale option.
+- `scale`: the profile's scale along the path, about the point that sits on the path (the center
+  of its box): `(start, end)` changes evenly along the length; `[(t, s), ...]` passes through the
+  scales `s` at the fractions `t` of the length, from `t=0` to `t=1` (a piecewise cubic that does
+  not overshoot them); a function of the fraction gives it. Positive everywhere; along a closed
+  path the same at both ends. A planar path of several edges is then swept piece by piece
+  (`sharp_corners=True` raises).
 
 ## Placement
 - The **center of the profile's box** goes to the start of the path, wherever the profile was
@@ -87,10 +92,15 @@ makes a surface (`Shell`).
   that enclose no area"). A smoothly closed spline (`closed=True`) has no kink.
 - Mitered corners work on planar paths in any plane (a path in the YZ plane, or in an oblique
   one, gave no closed solid before 0.5.0).
-- Nothing checks self-intersection: a profile bigger than the path's bend radius, or a spring
-  wire thicker than the pitch, returns `is_valid() == True` with a volume of area × length
-  (too large). Keep profile radius < bend radius and wire diameter < pitch. Inside-out and
-  volume-less results raise `ModelingError`.
+- A path that is a single `Line` is swept as an extrusion, a single arc or circle (with `orient`)
+  as a revolve: planes, cylinders, cones and tori (`Circle(2)` along a line: a cylinder, radius 2;
+  before 0.5.0 a B-spline face). A profile that reaches across the arc's axis raises
+  `ModelingError: sweep: the profile reaches across the axis of the arc (radius 10), so it would
+  sweep through itself`.
+- Self-intersection is checked only along a single arc: a profile bigger than the bend radius of
+  another path, or a spring wire thicker than the pitch, returns `is_valid() == True` with a volume
+  of area × length (too large). Keep profile radius < bend radius and wire diameter < pitch.
+  Inside-out and volume-less results raise `ModelingError`.
 - Non-planar polylines are swept piece by piece: the corners are notched (3D path of three
   40 mm legs: 3320.9 instead of 3392.9). Round the corners with `FilletPolyline` instead.
 - A `Wire` whose edges do not connect raises `ValueError: the sweep path is not connected: a
@@ -115,6 +125,12 @@ Volume = profile area × path length for a perpendicular sweep that does not sel
   need sharp_corners=False`
 - `ValueError: sweep: along a closed path the profile must come round into itself; twisted by 90
   degrees it does not (...)`
+- `ValueError: sweep: the scale must be positive along the whole path; it is 0 at 0.5 of its length`
+- `ValueError: sweep: the points of a scale run from t = 0 to t = 1, t increasing`
+- `TypeError: sweep: scale is (start, end), [(t, s), ...] or a function of the fraction of the path's length, got 3`
+- `ValueError: sweep: along a closed path the profile must come round into itself; scaled from 1 to 2 it does not (...)`
+- `ModelingError: sweep: the profile reaches across the axis of the arc (radius 10), so it would
+  sweep through itself; ...`
 - `TypeError: a sweep path is an edge or a wire, got Part`
 - `TypeError: expected a sketch, face or closed wire, got Part`
 - `ValueError: sharp-cornered sweeps need a planar path`
@@ -135,8 +151,8 @@ print(round(frame.volume, 1))                           # 1920.0
 
 bent = sweep(Circle(3), FilletPolyline((0, 0, 0), (0, 0, 40), (40, 0, 40), radius=8))  # rounded corner
 
-ring = sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))  # closed path: split into two halves
-print(len(ring.solids()), round(ring.volume, 2))        # 1 1579.14
+ring = sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))  # a single circle: a revolve, one torus face
+print(len(ring.solids()), [f.geom_type for f in ring.faces()], round(ring.volume, 2))  # 1 ['torus'] 1579.14
 
 # a square thread profile: it keeps its attitude to the helix's axis (2 radial, 1 axial)
 h = Helix(pitch=5, height=10, radius=10)
@@ -146,6 +162,10 @@ print(thread.is_valid(), round(thread.volume, 2))       # True 252.12 = 2 * 1 * 
 rail = sweep(Rectangle(4, 2), Spline((0, 0, 0), (10, 20, 10), (30, 10, 25), (40, 30, 30)), up=Z)
 bar = sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)
 print(round(bar.volume, 3))                             # 2000.0
+
+horn = sweep(Circle(2), Line((0, 0, 0), (0, 0, 50)), scale=(1, 2))  # radius 2 to 4: a cone
+print(round(horn.volume, 3))                            # 1466.077 = the frustum
+bulge = sweep(Circle(2), Line((0, 0, 0), (0, 0, 40)), scale=[(0, 1), (0.5, 1.6), (1, 1)])
 ```
 
 ## Related

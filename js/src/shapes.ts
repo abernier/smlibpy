@@ -1303,6 +1303,17 @@ export function _transformCurve(curve: number, m: Matrix): number {
   return _canonicalCurve(poles, d.knots, d.degree, d.weights)
 }
 
+/** Calls `fn` with standalone kernel curves (copies made for a kernel call) and deletes them
+ * afterwards. The kernel's sweeps, revolves and skins copy the curves they are given and leave them to
+ * the caller: a few KB a call, and the WebAssembly heap never shrinks (Python's `_freed`). */
+export function _freed<T>(curves: number[], fn: (curves: number[]) => T): T {
+  try {
+    return fn(curves)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+}
+
 export function _canonicalCurve(poles: readonly (readonly number[])[], knots: Iterable<number>, degree: number, weights: Iterable<number> | null): number {
   const uniq: number[] = []
   const mult: number[] = []
@@ -4002,6 +4013,9 @@ export interface ExtrudeOptions {
   taper?: number
   /** Extrude along this direction (an axis or a vector) instead of the normal. */
   direction?: Axis | VectorLike | null
+  /** With a taper, the corners the taper pulls apart: 'sharp' (the walls extended until they meet)
+   * or 'round' (rounded off, as an offset rounds them). */
+  corners?: 'sharp' | 'round'
 }
 
 /**
@@ -4528,15 +4542,27 @@ export class Sketch extends Shell {
   /**
    * Extrude the region into a solid.
    *
+   * With a taper (degrees; positive narrows the solid away from the sketch, holes widen) the walls
+   * are drafted planes, cones and cylinders (as `Part.draft` makes them), B-spline surfaces where the
+   * profile has other curves. `corners` shapes the corners the taper pulls apart (convex ones of an
+   * outward taper, concave ones of an inward one): 'sharp' (the walls extended until they meet) or
+   * 'round' (rounded off, as an offset rounds them).
+   *
    * @param amount Distance along the sketch normal (negative goes the other way).
    */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
     _opts('Sketch.extrude', options)
-    const { both = false, taper = 0, direction = null } = options
+    const { both = false, taper = 0, direction = null, corners = 'sharp' } = options
     if (amount === 0) throw new RangeError('extrude amount must not be zero')
+    if (corners !== 'sharp' && corners !== 'round') throw new RangeError(`extrude: corners is 'sharp' or 'round', got ${_repr(corners)}`)
     this._requireRegion('extrude')
     const d = direction != null ? _direction(direction, 'extrude') : this._plane.zDir
-    if (taper) return this._extrudeTaper(amount, taper, both)
+    if (taper) {
+      const out = this._extrudeTaper(amount, taper, both, corners === 'round')
+      out.name = this.name
+      out.color = this.color
+      return out
+    }
     let src: Sketch = this
     let dist = Number(amount)
     if (both) {
@@ -4549,36 +4575,80 @@ export class Sketch extends Shell {
     return Part._wrap(_take(h), { name: this.name, color: this.color })
   }
 
-  _extrudeTaper(amount: number, taper: number, both: boolean): Part {
+  _extrudeTaper(amount: number, taper: number, both: boolean, roundCorners = false): Part {
     if (!(Math.abs(taper) < 90)) throw new RangeError('extrude: the taper must be between -90 and 90 degrees')
+    let result = this._sweptTaper(amount, taper, roundCorners)
+    if (!roundCorners && result.faces().some((f) => f.geomType === 'bspline')) {
+      const drafted = this._draftedExtrusion(amount, taper)
+      if (drafted !== null && Math.abs(drafted.volume - result.volume) <= 1e-7 * result.volume) result = drafted
+    }
+    if (both) result = result.fuse(this._extrudeTaper(-amount, taper, false, roundCorners))
+    return result
+  }
+
+  /** The tapered extrusion as a straight one with its walls drafted (`Part.draft`): planes, cones and
+   * cylinders. The kernel's draft sweep makes the walls at sharp corners flat B-spline surfaces
+   * (inward tapers) or planes with B-spline slivers at the corners (outward ones), which selections by
+   * type miss, draft refuses and STEP files carry as B-splines. Null where draft cannot make it (curves
+   * other than lines and arcs, walls that run into each other). */
+  _draftedExtrusion(amount: number, taper: number): Part | null {
+    const n = this._plane.zDir.mul(amount > 0 ? 1 : -1)
+    const straight = this.extrude(amount)
+    const walls = straight.faces().filter((f) => !(f.geomType === 'plane' && Math.abs(f.normalAt().dot(n)) > 0.5))
+    try {
+      return straight.draft(walls, taper, new Plane(this._plane.origin, null, n))
+    } catch (e) {
+      if (!(e instanceof ModelingError)) throw e
+      return null
+    }
+  }
+
+  /** The tapered extrusion by the kernel's draft sweep (`k.draft_sweep`), each loop on its own. */
+  _sweptTaper(amount: number, taper: number, roundCorners: boolean): Part {
     const hint = 'the taper may close the profile before the end'
     const parts: Part[] = []
     for (const f of this.faces()) {
       const loops = f.wires()
-      const curves = loops[0]._copyCurves()
-      const outer = kernelCall('extrude', () => k.draft_sweep(curves, Number(amount), Number(taper)), hint)
+      const outer = kernelCall(
+        'extrude',
+        () => _freed(loops[0]._copyCurves(), (curves) => k.draft_sweep(curves, Number(amount), Number(taper), { fillet_corners: roundCorners })),
+        hint,
+      )
       let part = _requireSolid(Part._wrap(outer), 'extrude', hint)
-      const n = this._plane.zDir.mul(amount > 0 ? 1 : -1)
-      const o = this._plane.origin
-      const reach = Math.max(...part.vertices().map((v) => v.point.sub(o).dot(n)))
-      if (reach < Math.abs(amount) - 1e-6 * Math.max(1, Math.abs(amount))) {
-        throw new ModelingError(
-          `extrude: the taper of ${_formatG(taper)} degrees closes the profile after ${_formatG(reach)} of ${_formatG(Math.abs(amount))}; use a smaller taper or a shorter extrusion`,
-        )
-      }
+      this._reaches(part, amount, taper)
       for (const w of loops.slice(1)) {
         // A hole runs the other way round than the outline; the kernel sweeps a loop along the
         // side its orientation gives, so turn it like the outline. The hole widens where the
         // outline narrows.
-        const hole = Part._wrap(kernelCall('extrude', () => k.draft_sweep(w.reversed()._copyCurves(), Number(amount), -Number(taper)), hint))
+        const hole = Part._wrap(
+          kernelCall(
+            'extrude',
+            () => _freed(w.reversed()._copyCurves(), (curves) => k.draft_sweep(curves, Number(amount), -Number(taper), { fillet_corners: roundCorners })),
+            hint,
+          ),
+        )
         part = part.cut(_requireSolid(hole, 'extrude', hint))
       }
+      // (a hole that widens across the region before the end: a ring tapered by 10 degrees came out
+      // 5.67 high where 10 were asked for)
+      if (loops.length > 1) this._reaches(part, amount, taper)
       parts.push(part)
     }
     let result = parts[0]
     for (const p of parts.slice(1)) result = result.fuse(p)
-    if (both) result = result.fuse(this._extrudeTaper(-amount, taper, false))
     return result
+  }
+
+  /** Throws if a tapered extrusion does not reach `amount` from the sketch plane. */
+  _reaches(part: Part, amount: number, taper: number): void {
+    const n = this._plane.zDir.mul(amount > 0 ? 1 : -1)
+    const o = this._plane.origin
+    const reach = Math.max(...part.vertices().map((v) => v.point.sub(o).dot(n)))
+    if (reach < Math.abs(amount) - 1e-6 * Math.max(1, Math.abs(amount))) {
+      throw new ModelingError(
+        `extrude: the taper of ${_formatG(taper)} degrees closes the profile after ${_formatG(reach)} of ${_formatG(Math.abs(amount))}; use a smaller taper or a shorter extrusion`,
+      )
+    }
   }
 
   /**
@@ -4608,10 +4678,9 @@ export class Sketch extends Shell {
         let out: Part | null = null
         for (const f of this.faces()) {
           const loops = f.wires()
-          let piece = _analyticRevolve<Part>(k.rotational_sweep(loops[0]._copyCurves(), o, d, Number(angle), { cap_ends: true }), Part)
-          for (const w of loops.slice(1)) {
-            piece = piece.cut(_analyticRevolve<Part>(k.rotational_sweep(w._copyCurves(), o, d, Number(angle), { cap_ends: true }), Part))
-          }
+          const revolved = (w: Wire) => _freed(w._copyCurves(), (curves) => k.rotational_sweep(curves, o, d, Number(angle), { cap_ends: true }))
+          let piece = _analyticRevolve<Part>(revolved(loops[0]), Part)
+          for (const w of loops.slice(1)) piece = piece.cut(_analyticRevolve<Part>(revolved(w), Part))
           out = out === null ? piece : out.fuse(piece)
         }
         return out
@@ -4659,10 +4728,18 @@ export class Sketch extends Shell {
   }
 
   /** Sweep the region along a path (see `sweep`: the center of the region's box goes to the start of
-   * the path; `up` and `twist` set its attitude along it). */
-  sweep(path: Edge | Wire, options: { sharpCorners?: boolean | null; up?: Axis | VectorLike | string | null; twist?: number | ((s: number) => number) } = {}): Part {
+   * the path; `up` and `twist` set its attitude along it, `scale` its size). */
+  sweep(
+    path: Edge | Wire,
+    options: {
+      sharpCorners?: boolean | null
+      up?: Axis | VectorLike | string | null
+      twist?: number | ((s: number) => number)
+      scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null
+    } = {},
+  ): Part {
     _opts('Sketch.sweep', options)
-    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null, up: options.up ?? null, twist: options.twist ?? 0 }) as Part
+    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null, up: options.up ?? null, twist: options.twist ?? 0, scale: options.scale ?? null }) as Part
   }
 
   override toString(): string {

@@ -4,9 +4,10 @@
 //
 // A draft tilts faces of a solid by the draft angle about the line where each one meets the
 // neutral plane, so that a molded or cast part comes out of its mold. The plane's normal is the
-// pull direction: a positive angle turns the outward normal of a face towards it. A plane is
-// turned about that line; a cylinder or cone whose axis is perpendicular to the neutral plane
-// becomes the cone that keeps its circle in the neutral plane. SmBrep::LocalOperation then
+// pull direction: a positive angle turns the outward normal of a face towards it. A plane (or a
+// flat B-spline face, such as the walls k.draft_sweep makes) is turned about that line; a cylinder
+// or cone whose axis is perpendicular to the neutral plane becomes the cone that keeps its circle
+// in the neutral plane. SmBrep::LocalOperation then
 // rebuilds the Brep from the new surfaces of the drafted faces and the extended surfaces of the
 // others; the lines and circles among its new edges get their analytic curves back.
 //
@@ -27,6 +28,7 @@
 #include "face_draft.h"
 
 #include <SmApiGeneral.h>
+#include <SmBSplineSurface.h>
 #include <SmCone.h>
 #include <SmCopyBrepMap.h>
 #include <SmLine.h>
@@ -237,6 +239,41 @@ SmSurface* drafted_cone(const SmFace* face, const SmCone* cone, const NeutralPla
     return surface;
 }
 
+// Whether a surface is a flat B-spline: its control points lie in the plane through `point` with the
+// normal `normal` (the root of the sum of their squared distances from it at most 1e-10 of the root of
+// the sum of their squared distances from their centroid; Face.is_planar asks the same of the singular
+// values). The flat B-spline walls of a tapered extrusion (k.draft_sweep) are flat to 1e-15, but the
+// kernel's IsPlanar(1e-7) says they are not.
+bool flat_bspline(const SmSurface* surface, const SmPoint3d& point, const SmVector3d& normal)
+{
+    if (!surface->IsKindOf(SmBSplineSurface_TYPE))
+        return false;
+    ULONG udeg = 0, vdeg = 0;
+    SmTArray<SmPoint3d> poles;
+    SmBSplineSurfaceForm form;
+    SmTArray<ULONG> umults, vmults;
+    SmTArray<double> uknots, vknots, weights;
+    SmKnotType knot_type;
+    if (static_cast<const SmBSplineSurface*>(surface)->GetCanonical(udeg, vdeg, poles, form, umults, vmults, uknots,
+                                                                    vknots, knot_type, weights) != SM_SUCCESS ||
+        poles.GetSize() < 3)
+        return false;
+    const ULONG n = poles.GetSize();
+    SmVector3d centroid(0, 0, 0);
+    for (ULONG i = 0; i < n; ++i)
+        centroid = centroid + (poles[i] - SmPoint3d(0, 0, 0));
+    centroid = scaled(centroid, 1.0 / n);
+    const SmPoint3d c(centroid.x, centroid.y, centroid.z);
+    double off = 0.0, spread = 0.0;
+    for (ULONG i = 0; i < n; ++i)
+    {
+        const double d = dot(poles[i] - point, normal);
+        off += d * d;
+        spread += dot(poles[i] - c, poles[i] - c);
+    }
+    return spread > 0.0 && std::sqrt(off) <= 1e-10 * std::sqrt(spread);
+}
+
 // The new surface of a drafted face; `before` gets its draft angle before.
 SmSurface* drafted_surface(const SmFace* face, const NeutralPlane& plane, double angle, double tol, double& before)
 {
@@ -249,7 +286,7 @@ SmSurface* drafted_surface(const SmFace* face, const NeutralPlane& plane, double
     if (surface->EvaluatePoint(uv, point) != SM_SUCCESS || surface->EvaluateNormal(uv, TRUE, TRUE, normal) != SM_SUCCESS)
         throw Refusal{"invalid"};
     SmVector3d outward = unit(scaled(normal, outward_sign(face)));
-    if (surface->IsKindOf(SmPlane_TYPE) || surface->IsPlanar(1e-7))  // as Face.is_planar
+    if (surface->IsKindOf(SmPlane_TYPE) || flat_bspline(surface, point, outward) || surface->IsPlanar(1e-7))
         return tilted_plane(face, plane, angle, point, outward, tol, before);
     if (surface->IsKindOf(SmCone_TYPE))  // a cylinder is a cone without an angle
         return drafted_cone(face, static_cast<const SmCone*>(surface), plane, angle, point, outward, tol, before);

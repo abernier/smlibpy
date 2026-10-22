@@ -21,6 +21,7 @@
 #include "oriented_sweep.h"
 #include "revolutions.h"
 #include "sheetmetal.h"
+#include "skins.h"
 #include "slivers.h"
 #include "step_build.h"
 #include "surface_eval.h"
@@ -86,12 +87,29 @@ val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibp
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
 uintptr_t remove_slivers(uintptr_t b, val faces, double tolerance) { return guard([&] { return ptr(smlibpy::remove_slivers(brep(b), pointers<SmFace>(faces), tolerance)); }); }
 val analytic_revolutions(uintptr_t b) { return guard([&] { return owned_or_null(smlibpy::analytic_revolutions(brep(b))); }); }
-// Profile and path are copied, not consumed; x_axes flat (x, y, z for each of params).
-uintptr_t oriented_sweep(val profile, uintptr_t path, val params, val x_axes, bool cap_ends)
+// Profile and path are copied, not consumed; x_axes flat (x, y, z for each of params); scales null or
+// one for each of params.
+uintptr_t oriented_sweep(val profile, uintptr_t path, val params, val x_axes, bool cap_ends, val scales)
 {
     return guard([&] {
+        const std::vector<double> s = scales.isNull() || scales.isUndefined() ? std::vector<double>{} : numbers(scales);
         return ptr(smlibpy::oriented_sweep(pointers<SmCurve>(profile), as<SmBSplineCurve>(path, "path"), numbers(params),
-                                           numbers(x_axes), cap_ends));
+                                           numbers(x_axes), cap_ends, s));
+    });
+}
+// [brep, start deviation, end deviation] (radians); curves copied, not consumed; tangents [x, y, z] or []
+val skin(val curves, val counts, unsigned degree, val start_tangent, val end_tangent, bool closed, bool cap_ends)
+{
+    return guard([&] {
+        const std::vector<double> c = numbers(counts);
+        double deviation[2] = {0.0, 0.0};
+        SmBrep* b = smlibpy::skin(pointers<SmCurve>(curves), std::vector<unsigned long>(c.begin(), c.end()), degree,
+                                  numbers(start_tangent), numbers(end_tangent), closed, cap_ends, deviation);
+        val out = val::array();
+        out.call<void>("push", ptr(b));
+        out.call<void>("push", deviation[0]);
+        out.call<void>("push", deviation[1]);
+        return out;
     });
 }
 // [[x, y, z of a point on the axis], [x, y, z of its direction]], or null
@@ -744,6 +762,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__remove_slivers", &remove_slivers);
     function("ext__analytic_revolutions", &analytic_revolutions);
     function("ext__oriented_sweep", &oriented_sweep);
+    function("ext__skin", &skin);
     function("ext__helix_axis", &helix_axis);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);

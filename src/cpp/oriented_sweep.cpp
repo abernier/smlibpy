@@ -144,7 +144,8 @@ struct BrepGuard
 namespace smlibpy {
 
 SmBrep* oriented_sweep(const std::vector<SmCurve*>& profile, const SmBSplineCurve* path,
-                       const std::vector<double>& params, const std::vector<double>& x_axes, bool cap_ends)
+                       const std::vector<double>& params, const std::vector<double>& x_axes, bool cap_ends,
+                       const std::vector<double>& scales)
 {
     if (!path)
         throw std::invalid_argument("oriented_sweep: path is None");
@@ -161,6 +162,11 @@ SmBrep* oriented_sweep(const std::vector<SmCurve*>& profile, const SmBSplineCurv
     for (size_t i = 1; i < n; ++i)
         if (!(params[i] > params[i - 1]))
             throw std::invalid_argument("oriented_sweep: the parameters must increase");
+    if (!scales.empty() && scales.size() != n)
+        throw std::invalid_argument("oriented_sweep: give a scale for each parameter, or none");
+    for (double v : scales)
+        if (!(v > 0.0) || !std::isfinite(v))
+            throw std::invalid_argument("oriented_sweep: the scales must be positive");
 
     // the x axis along the path: a curve of vectors over the path's parameters
     SmTArray<SmPoint3d> axis_points;
@@ -207,21 +213,69 @@ SmBrep* oriented_sweep(const std::vector<SmCurve*>& profile, const SmBSplineCurv
     }
     const double need = std::max(turned, fastest * length) / (SM_PI / 32.0);
     const ULONG sections = static_cast<ULONG>(std::min(20000.0, std::max(16.0, std::ceil(need) + 1.0)));
-    SmTArray<SmPoint3d> ones;
-    SmTArray<double> knots;
-    SmTArray<ULONG> mults;
-    for (ULONG i = 0; i < sections; ++i)
-        ones.Add(SmPoint3d(1.0, 1.0, 1.0));
-    for (ULONG i = 0; i < sections; ++i)
-    {
-        knots.Add(range.Evaluate(static_cast<double>(i) / (sections - 1)));
-        mults.Add(i == 0 || i + 1 == sections ? 2 : 1);
-    }
     SmBSplineCurve* scale = nullptr;
-    const SmStatus scaled = SmBSplineCurve::CreateCanonical(ctx(), 3, 1, ones, SM_CF_UNSPECIFIED, mults, knots,
-                                                            SM_KT_UNSPECIFIED, nullptr, nullptr, scale);
-    SmObjDelete clean_scale(scale);
-    check(scaled, "SmBSplineCurve::CreateCanonical");
+    SmObjDelete clean_scale;
+    if (scales.empty())
+    {
+        SmTArray<SmPoint3d> ones;
+        SmTArray<double> knots;
+        SmTArray<ULONG> mults;
+        for (ULONG i = 0; i < sections; ++i)
+            ones.Add(SmPoint3d(1.0, 1.0, 1.0));
+        for (ULONG i = 0; i < sections; ++i)
+        {
+            knots.Add(range.Evaluate(static_cast<double>(i) / (sections - 1)));
+            mults.Add(i == 0 || i + 1 == sections ? 2 : 1);
+        }
+        const SmStatus made = SmBSplineCurve::CreateCanonical(ctx(), 3, 1, ones, SM_CF_UNSPECIFIED, mults, knots,
+                                                              SM_KT_UNSPECIFIED, nullptr, nullptr, scale);
+        clean_scale.SetObj(scale);
+        check(made, "SmBSplineCurve::CreateCanonical");
+    }
+    else
+    {
+        // A scale law (the profile's scale at the parameters; the profile is drawn at the scale of the
+        // start): (s, s, s) interpolated cubically over the path's parameters, as the kernel's sweep
+        // interpolates the law it takes from a scale curve. NLib places a section for each of its control
+        // points, and in the first and last span between sections a changing scale leaves the surface
+        // off by about 0.017 / (sections - 1) of the change (a circle of radius 2 scaled to 4 along 50:
+        // 5.6e-4 with 31, 3.4e-5 with 500): where it has fewer control points than the x axis needs or
+        // 512, it is sampled evenly and interpolated again with that many (the kernel's own scale law
+        // has 10 a knot of the path and its curve, 650 for the 65 points operations.sweep gives it).
+        SmTArray<SmPoint3d> points;
+        for (size_t i = 0; i < n; ++i)
+            points.Add(SmPoint3d(scales[i], scales[i], scales[i]));
+        const SmStatus made = SmBSplineCurve::InterpolatePoints(ctx(), points, &axis_params, std::min<ULONG>(3, n - 1),
+                                                                nullptr, nullptr, FALSE, SM_IT_CHORDLENGTH, scale);
+        clean_scale.SetObj(scale);
+        check(made, "SmBSplineCurve::InterpolatePoints");
+        const ULONG wanted = std::max<ULONG>(sections, 512);
+        if (scale->GetNumberControlPoints() < wanted)
+        {
+            SmTArray<SmPoint3d> even;
+            SmTArray<double> at;
+            for (ULONG i = 0; i < wanted; ++i)
+            {
+                const double t = range.Evaluate(static_cast<double>(i) / (wanted - 1));
+                SmPoint3d p;
+                check(scale->EvaluatePoint(t, p), "SmCurve::EvaluatePoint");
+                even.Add(p);
+                at.Add(t);
+            }
+            SmBSplineCurve* denser = nullptr;
+            const SmStatus again = SmBSplineCurve::InterpolatePoints(ctx(), even, &at, 3, nullptr, nullptr, FALSE,
+                                                                     SM_IT_CHORDLENGTH, denser);
+            clean_scale.ReplaceObj(denser);
+            scale = denser;
+            check(again, "SmBSplineCurve::InterpolatePoints");
+        }
+        check(scale->EditParameterization(range), "SmBSplineCurve::EditParameterization");
+    }
+    // (a trajectory of degree 1, a line, raised to cubic as the kernel's sweep makes it compatible with
+    // its scale curve: NLib sweeps along a line of degree 1 as along straight pieces, and the end curve
+    // of a circle turned along one did not close into a cap: twist=90 along a line raised SM_ERR)
+    if (trajectory->GetDegree() < 3)
+        check(trajectory->RaiseDegree(3), "SmBSplineCurve::RaiseDegree");
 
     // the profile: B-spline copies (the kernel's sweep skips other curves), split where they turn
     // (SM_CT_C1), mapped onto the section frame and joined into composites
@@ -309,38 +363,54 @@ SmBrep* oriented_sweep(const std::vector<SmCurve*>& profile, const SmBSplineCurv
                 SmPyRaise(SM_ERR, "N_CreateSweepScale", __FILE__, __LINE__);
             surface = new (ctx()) SmBSplineSurface(reinterpret_cast<gw_SURFACE*>(&swept));
         }
+        // (CreateFacesFromSurface owns the surface: it gives it to the face, or splits it where it turns
+        // and deletes it; where it fails half way the surface may be gone too, so it is not read again)
         SmTArray<SmFace*> faces;
-        const SmStatus made = brep->CreateFacesFromSurface(surface, surface->GetNaturalUVDomain(), SM_CT_G1, faces);
-        if (made != SM_SUCCESS && surface->GetOwner() == nullptr)
-            delete surface;
-        check(made, "SmBrep::CreateFacesFromSurface");
+        check(brep->CreateFacesFromSurface(surface, surface->GetNaturalUVDomain(), SM_CT_G1, faces),
+              "SmBrep::CreateFacesFromSurface");
         sides.Append(faces);
     }
 
     if (cap_ends)
     {
-        // the end caps from the side faces' end curves, as SmPrimitiveCreation::CreateCurveSweep makes
-        // them: the first faces' start curves and the last faces' end curves
+        // the end caps from the side faces' end curves: the curves at the start and the end of each face
+        // along the path that lie in the plane across the path's start or end. (CreateCurveSweep takes the
+        // start curves of the first faces and the end curves of the last ones, as many as there are
+        // profile curves; a circle is one curve, but its surface may come in four faces, which left three
+        // quarters out of a cap: a circle twisted along a line raised SM_ERR.)
         SmTArray<SmCurve*> starts, ends;
         SmObjsDelete<SmCurve*> clean_starts(&starts), clean_ends(&ends);
-        const ULONG side_count = sides.GetSize();
-        for (ULONG i = 0; i < side_count; ++i)
+        SmVector3d head[2], tail[2];
+        check(path->Evaluate(range.GetMin(), 1, TRUE, head), "SmCurve::Evaluate");
+        check(path->Evaluate(range.GetMax(), 1, FALSE, tail), "SmCurve::Evaluate");
+        const SmPoint3d first(head[0].x, head[0].y, head[0].z), last(tail[0].x, tail[0].y, tail[0].z);
+        const SmVector3d first_dir = head[1] / head[1].Length(), last_dir = tail[1] / tail[1].Length();
+        const double tol = 10.0 * SM_ZONE_TOL_3D;
+        auto across = [&](const SmBSplineCurve* c, const SmPoint3d& at, const SmVector3d& dir) {
+            const SmExtent1d iv = c->GetNaturalInterval();
+            for (int k = 0; k <= 4; ++k)
+            {
+                SmPoint3d p;
+                if (c->EvaluatePoint(iv.Evaluate(k / 4.0), p) != SM_SUCCESS || std::abs((p - at).Dot(dir)) > tol)
+                    return false;
+            }
+            return true;
+        };
+        for (ULONG i = 0; i < sides.GetSize(); ++i)
         {
             SmSurface* surface = sides[i]->GetSurface();
             const SmExtent2d domain = surface->GetNaturalUVDomain();
-            if (i < curve_count)
+            for (double u : {domain.GetMin().x, domain.GetMax().x})
             {
                 SmBSplineCurve* c = nullptr;
-                check(surface->CreateIsoParametricCurve(ctx(), SM_SP_U, domain.GetMin().x, SM_ZONE_TOL_3D / 10.0, c),
+                check(surface->CreateIsoParametricCurve(ctx(), SM_SP_U, u, SM_ZONE_TOL_3D / 10.0, c),
                       "SmSurface::CreateIsoParametricCurve");
-                starts.Add(c);
-            }
-            if (curve_count > side_count || i >= side_count - curve_count)
-            {
-                SmBSplineCurve* c = nullptr;
-                check(surface->CreateIsoParametricCurve(ctx(), SM_SP_U, domain.GetMax().x, SM_ZONE_TOL_3D / 10.0, c),
-                      "SmSurface::CreateIsoParametricCurve");
-                ends.Add(c);
+                if (u == domain.GetMin().x && across(c, first, first_dir))
+                    starts.Add(c);
+                else if (u == domain.GetMax().x && across(c, last, last_dir))
+                    ends.Add(c);
+                else
+                    delete c;
             }
         }
         SmTArray<SmFace*> cap;
@@ -649,10 +719,12 @@ std::vector<double> helix_axis(const std::vector<SmCurve*>& curves, double toler
 void bind_oriented_sweep(py::module_ m)
 {
     m.def("oriented_sweep", &smlibpy::oriented_sweep, py::arg("profile"), py::arg("path"), py::arg("params"),
-          py::arg("x_axes"), py::arg("cap_ends") = true, py::return_value_policy::take_ownership,
+          py::arg("x_axes"), py::arg("cap_ends") = true, py::arg("scales") = std::vector<double>{},
+          py::return_value_policy::take_ownership,
           "Sweep profile curves (in the XY plane, their anchor at the origin) along a path with the profile's x axis "
           "given along it: `x_axes` (x, y, z each, flat) at the path's parameters `params` (from its start to its "
-          "end), perpendicular to the tangent there. Profile and path are copied, not consumed.");
+          "end), perpendicular to the tangent there; `scales` (optional) the profile's scale there (the profile is "
+          "drawn at the first). Profile and path are copied, not consumed.");
     m.def("helix_axis", [](const std::vector<SmCurve*>& curves, double tolerance) -> py::object {
         const std::vector<double> a = smlibpy::helix_axis(curves, tolerance);
         if (a.empty())

@@ -41,3 +41,5 @@ void bind_slivers(py::module_ m);
 void bind_oriented_sweep(py::module_ m);
 // Analytic surfaces for revolved faces (revolutions.cpp).
 void bind_revolutions(py::module_ m);
+// Lofts with end tangents, closed lofts (skins.cpp).
+void bind_skins(py::module_ m);

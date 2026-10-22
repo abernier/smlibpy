@@ -1,4 +1,4 @@
-# Lane S: sweeps and revolves (S1 regressions, S2 rest, S3, S4, S6)
+# Lane S: sweeps, revolves, tapers and lofts (S1 regressions, S2 rest, S3, S4, S6, S7, S8, S9, S10, S11)
 
 ## Fixed
 
@@ -105,6 +105,56 @@
   within 0.01 degrees of a whole turn a revolve is a whole turn now (S4).
 - `Face.axis` works on surfaces of revolution (a spline revolved): `ext.surface_data` gives their
   placement (both builds). The docs said it did.
+- A path that is a single line or arc gives planes, cylinders, cones and tori (S8): it is swept as
+  an extrusion along the line, or (with `orient`) as a revolve about the arc's axis, the profile
+  placed as on any other path. The kernel's curve sweep made B-spline faces there, while the same
+  profile along a path of several edges came out analytic: `sweep(Circle(2), Line(...))` had no
+  cylinder (`Face.radius` raised), a rectangle along `CenterArc((0, 0), 10, 0, 90)` had four
+  B-spline walls (now 2 cylinders and 2 planes, 125.6637 = Pappus exactly). 8 profiles (circle,
+  rectangle, triangles, ring, rectangle with a hole, rounded rectangle, ellipse) along 7 single-edge
+  paths (lines, arcs in and out of XY, a full circle), oriented and translational (112 sweeps): the
+  same 89 build and 23 raise as before; 78 have the same volume to 1e-8, 10 along arcs differ by up
+  to 9.4e-6 and now match Pappus to 1e-15 (the kernel's sweep approximated the frame), one moves (see
+  Behaviour changes); their faces: B-spline 327 -> 90 (oblique translational extrusions and
+  ellipses keep theirs), cylinders 0 -> 38, cones 0 -> 50, tori 0 -> 32, planes 146 -> 232.
+- A profile that reaches across the axis of a single arc path raises `ModelingError` (S8,
+  `ai/todo/features.md` 13): `sweep(Circle(12), CenterArc((0, 0), 10, 0, 90))` returned a "valid"
+  body that sweeps through itself, with area x length as its volume.
+- Tapered extrusions have plane walls (S9, `ai/todo/features.md` 8): the extrusion is made straight
+  and its walls drafted (`Part.draft`), kept where it has the same volume as the kernel's draft
+  sweep to 1e-7. The draft sweep made the walls at sharp corners flat B-spline surfaces (inward
+  tapers) or planes and two B-spline slivers a corner (outward ones: `Rectangle(30,
+  30).extrude(10, taper=-8)` had 14 faces), which `faces().of_type("plane")` missed, `Part.draft` refused
+  ("the bspline face ... cannot be drafted", contrary to the draft guide) and STEP wrote as
+  B-splines. 8 profiles (rectangles with and without a hole, an L, a triangle, a hexagon, a rounded
+  rectangle, a slot, a ring) at tapers of +-3 and +-8, both ways and `both=True` (128 extrusions):
+  the same volumes to 2e-15, B-spline faces 996 -> 0, faces 1888 -> 1240. Profiles with other
+  curves (ellipses, splines) keep the draft sweep.
+- `Part.draft` drafts flat B-spline faces as planes (S9): `face_draft` asked the kernel's
+  `IsPlanar(1e-7)`, which says no for them, though `Face.is_planar` says yes; it now tests their
+  control points (in one plane to 1e-10 of their spread) as `Face.is_planar` does. The walls of
+  `extrude(taper=3, corners="round")` drafted by 2 more degrees give the volume of `taper=5` exactly.
+- A tapered extrusion whose hole widens across the region before the end raises `ModelingError`
+  (S9): `(Circle(10) - Circle(8)).extrude(10, taper=10)` came out 5.67 high (320.70) where 10 was
+  asked for; the check that the body reaches the end looked at the outline only.
+- Revolves, lofts, open-curve extrusions, tapers and mitered planar sweeps free the curve copies
+  they give the kernel (S11): the kernel copies its inputs and the copies stayed allocated (1500
+  revolves +1.98 MB, 1500 lofts +3.62 MB, 1500 open extrusions +3.42 MB; now +0.15, +0.38 and
+  +1.18 MB; the WebAssembly heap never shrinks).
+- A circle or ellipse twisted along a straight line (`sweep(Circle(2), Line(...), twist=90)`)
+  raised `KernelError` (SM_ERR; this lane's batch 2): the caps of `ext.oriented_sweep` took the
+  end curves of as many side faces as the profile had curves, and a circle is one curve whose sweep
+  comes in four faces. The caps now take the end curves that lie across the path's start and end.
+  Volumes area x length to 1e-6 (both builds).
+- `ext.oriented_sweep` read the surface it had handed to `SmBrep::CreateFacesFromSurface` when that
+  failed, which may have deleted it (found with AddressSanitizer in the new `ext.skin`, where it read
+  freed memory on success too); neither reads it now.
+- Checked through STEP: OpenCASCADE reads an outward taper (6 planes), a holed inward one (10
+  planes), a rounded one, a rod and a bend from line and arc sweeps (cylinders), a torus from a
+  circle path, a scaled cone and spring, a tangent neck and a closed loft as valid solids of our
+  volumes (to 1.1e-7), with the analytic faces as such. AddressSanitizer reports nothing for
+  `tests/test_lane_S.py`, `tests/test_draft.py` and the probes of this batch (scaled sweeps,
+  tapers, lofts with tangents and closed, twisted circles).
 
 ## New
 
@@ -136,6 +186,49 @@
   spheres or tori where they are one (the kernel's own tests for cones and spheres; tori built from
   the generating arc, because `SmTorus::IsNurbSurfaceTorus`, the test the kernel leaves out, gets
   the major radius and the angles of a revolved fillet's quarter arcs wrong), or None. Internal.
+- `sweep(..., scale=None)` and `Sketch.sweep(..., scale=None)` (S7; wasm `{ scale }`): the
+  profile's scale along the path, about the point of it that sits on the path. `(start, end)`
+  changes evenly along the length; `[(t, s), ...]` passes through scales at fractions of the length,
+  from 0 to 1 (a piecewise cubic that does not overshoot them: Fritsch and Carlson, scipy's PCHIP);
+  a function of the fraction gives it. A cone from `sweep(Circle(2), Line((0, 0, 0), (0, 0, 50)),
+  scale=(1, 2))`: 1466.07658 (the frustum 1466.07657; radius 3.0000 halfway); a tapered spring
+  `sweep(Circle(2), Helix(pitch=10, height=40, radius=15), scale=(1, 0.5))`: 2778.99553 (pi 4 L 7/12
+  = 2778.99553), its attitude to the axis kept; a bulging ring along a circle 314.5936 (exactly).
+  Along a path without a frame law the kernel's own scaled sweep is used (reference and scale
+  curves built from 65 points by arc length; the law runs over the path's parameter in the kernel);
+  with `up=`, `twist=` or along a helix `ext.oriented_sweep` takes the scale. Works on open profiles
+  (surfaces), along closed paths (the same scale at both ends) and along paths of several edges
+  (planar ones piece by piece). Errors: `ValueError` for a scale that is not positive along the
+  whole path, points that do not run from t = 0 to t = 1, a closed path whose ends differ,
+  `sharp_corners=True` on a planar path of several edges; `TypeError` for anything else.
+- `extrude(..., corners="sharp")` and `Sketch.extrude(..., corners="sharp")` (S9; wasm
+  `{ corners }`): `"round"` rounds off the corners a taper pulls apart (the kernel's draft sweep
+  with rounded corners): `Rectangle(30, 30).extrude(10, taper=-8, corners="round")` has 10 faces,
+  9863.929.
+- `loft(..., start_tangent=None, end_tangent=None, closed=False)` (S10; wasm `{ startTangent,
+  endTangent, closed }`): the direction the loft leaves its first section in and reaches its last
+  in (an axis or a vector; only the direction counts), so that it meets an extrusion of the end
+  section smoothly: `loft([Circle(10), Circle(4).translate(0, 0, 30)], start_tangent=Z,
+  end_tangent=Z)` leaves and reaches its circles with radial normals (to 1e-6 degrees; without them
+  the normals lean), and fused with a cylinder at each end gives a body of 5 faces. Each tangent is
+  one more condition (two sections and both tangents: cubic). `closed=True` runs the loft on from
+  the last section through the first again, C1 where it closes (three sections or more): 16 circles
+  of radius 2 about a circle of radius 10 make a ring within 7e-5 of the torus. Holes and open
+  sections (surfaces) take them too. Errors: `ValueError` for a tangent in the plane of its section,
+  with `ruled=True`, tangents with `closed=True`, and a closed loft of two sections;
+  `ModelingError` where the kernel does not meet a tangent (it drops them silently; the loft
+  measures the direction across its ends, 1e-6 rad).
+- `ext.skin(curves, counts, degree=3, start_tangent=[], end_tangent=[], closed=False,
+  cap_ends=True)` (new C++ in `src/cpp/skins.cpp`, both builds): the kernel's skin
+  (`CreateSkinnedSurface`) with cross-boundary derivative strips (NLib's
+  `N_CreateSkinSrfBoundaryDerivs`), or NLib's C1-closed skin (`N_CreateSkinSrf`), the side faces split
+  where they turn, capped from the end curves that lie on the end sections, stitched; returns the
+  body and the largest angles between its direction across its ends and the tangents. Internal.
+- `ext.oriented_sweep(..., scales=[])`: the profile's scale at the parameters (S7), interpolated
+  cubically with 512 control points at least (NLib places a section for each, and leaves a changing
+  scale by about 0.017 / (sections - 1) of the change in the first and last span: the kernel's own
+  scale law with 31 points, as `ext.curve_sweep` takes it, gave the cone above 1466.0801). A path of
+  degree 1 is raised to 3 there. Internal.
 
 ## Behaviour changes
 
@@ -210,6 +303,62 @@
 - A revolve through more than 359.99 degrees is a whole turn (it raised below 359.99999; no
   migration).
 
+- Sweeps along a single line or arc give planes, cylinders, cones and tori (S8) where they gave
+  B-spline faces; volumes the same to 1e-8, or to 9.4e-6 where the kernel's approximation along an
+  arc is gone. Selections by type change:
+
+  ```python
+  # before 0.5.0: the swept rod's wall was a B-spline face
+  wall = rod.faces().filter(lambda f: f.geom_type == "bspline").first
+  # now: a cylinder (radius and axis work)
+  wall = rod.faces().cylinders().first
+  ```
+- An asymmetric profile along a single full circle (`Circle(10).edges()[0]`, `CenterArc(..., 360)`)
+  whose plane faced against the path's start sits as along any other path (S8): the circle went to
+  the mitered planar sweep in two halves, which turned such a profile by half a turn about the
+  circle's axis (`Polygon((0, 0), (3, 0), (1, 2)).on(Plane.XZ)` along a circle of radius 15:
+  279.6017, was 285.8849, mirrored about the path). Symmetric profiles are unchanged. To get the
+  old body, mirror the profile across the plane through its box center that faces along the
+  circle's radius at its start (X for `Circle(15)`, which starts at (15, 0, 0)):
+
+  ```python
+  # before 0.5.0: 285.8849
+  body = sweep(tri, Circle(15).edges()[0])
+  # now the same body (285.8849)
+  c = tri.bbox().center
+  body = sweep(tri.mirror(Plane(c, z_dir=(1, 0, 0))), Circle(15).edges()[0])
+  ```
+- A profile that reaches across the axis of a single arc path raises `ModelingError` where it gave a
+  body that sweeps through itself (S8). Make the bend radius larger than the profile:
+
+  ```python
+  # before: a "valid" body with too much volume; now ModelingError
+  pipe = sweep(Circle(12), CenterArc((0, 0), 10, 0, 90))
+  pipe = sweep(Circle(8), CenterArc((0, 0), 10, 0, 90))
+  ```
+- Tapered extrusions of profiles with sharp corners have plane walls and fewer faces (S9): an
+  outward-tapered rectangle 6 faces (was 14), inward ones planes where they were flat B-splines; the
+  same volumes. Selections by type and face counts change; a taper takes about twice as long for
+  such profiles (a rectangle 4 -> 8 ms; rounded profiles unchanged). There is no way back to the
+  B-spline walls (`corners="round"` is the kernel's draft sweep with rounded corners):
+
+  ```python
+  # before 0.5.0: four flat B-spline walls
+  walls = part.faces().filter(lambda f: f.geom_type == "bspline")
+  # now: planes
+  walls = part.faces().of_type("plane").filter(lambda f: abs(f.normal_at().z) < 0.99)
+  ```
+- A tapered extrusion carries the sketch's name and color, as a straight one does (S9; it had
+  none).
+- A tapered extrusion whose hole widens across the region before the end raises `ModelingError`
+  (S9) where it returned a shorter body; extrude less, or taper less:
+
+  ```python
+  # before: 5.67 high, no error; now ModelingError ("closes the profile after 5.67128 of 10")
+  ring = (Circle(10) - Circle(8)).extrude(10, taper=10)
+  ring = (Circle(10) - Circle(8)).extrude(5, taper=10)
+  ```
+
 ## Not done
 
 - 1 of the fixer's 60 harder loops (`Circle(2)`) builds in Python and not in the wasm (the kernel's
@@ -232,5 +381,23 @@
 - Along closed paths with corners (kinked loops, closed polylines) the attitude carried with
   `twist=` alone is not made to meet at the closure; the pieces are fused there, as without a twist.
   The profile must come round into itself only for the twist (checked) on paths closed smoothly.
-- Mitered planar paths cannot take `up=` or `twist=` (piece by piece instead).
-- No scale law (S7 is another item).
+- Mitered planar paths cannot take `up=`, `twist=` or `scale=` (piece by piece instead).
+- No rails for lofts or sweeps, no spine (S10): `loft(rails=)` and `sweep(rails=)` are not offered,
+  because the kernel cannot do them properly. `CreateSkinnedSurface`'s rails are side boundaries
+  that need as many sections as the rails have control points (the fillet solver, its only user,
+  places a section at every rail knot): with sections placed where the user puts them it returned
+  SM_ERR for all 12 combinations tried (lines, splines and arcs as sections, one or two rails, two
+  or three sections). The two-rail `CreateSweepSurface` only approximates its rails: 40 mm wavy
+  rails were missed by 0.31 with its default 4 points between profiles, 5.2e-3 with 64 (35 ms),
+  4.5e-4 with 256 (128 ms) and 1.6e-4 with 1024 (1.5 s, 61065 control points). The guards of U4
+  for it (its fixed arrays of 640 curves) are therefore not needed yet.
+- End tangency comes from a direction only, not from an adjacent face (its tangent plane along the
+  edge); a loft that leaves a planar section along its normal meets an extrusion of it smoothly,
+  which covers the common case.
+- A sweep along a single arc with `translational=True` or `orient=False` keeps the kernel's
+  B-spline faces (it is no revolve). Oblique translational extrusions have flat B-spline walls
+  (the kernel's linear sweep makes them; `extrude(direction=...)` too).
+- `extrude(taper=...)` still ignores `direction` (`ai/todo/features.md` 7).
+- A scale law along a path whose kernel curve is not parameterized by arc length runs over the
+  kernel's parameter between the 65 points it is given at (the law is interpolated there, so it
+  holds to the interpolation, not exactly, between them).
