@@ -423,6 +423,11 @@ smlibpy::DeformSpec deform_spec(const val& d)
         spec.has_max_exact_points = true, spec.max_exact_points = static_cast<size_t>(d["max_exact_points"].as<double>());
     if (has(d, "approx_degree"))
         spec.has_approx_degree = true, spec.approx_degree = d["approx_degree"].as<int>();
+    if (has(d, "faces"))
+        for (double f : numbers(d["faces"]))
+            spec.faces.push_back(static_cast<int>(f));
+    if (has(d, "analytic"))
+        spec.has_analytic = true, spec.analytic = d["analytic"].as<bool>();
     return spec;
 }
 
@@ -435,6 +440,7 @@ val deform_brep(uintptr_t b, val spec)
         report.set("faces_kept", r.stats.faces_kept), report.set("faces_exact", r.stats.faces_exact);
         report.set("faces_approximated", r.stats.faces_approximated), report.set("edges_kept", r.stats.edges_kept);
         report.set("edges_exact", r.stats.edges_exact), report.set("edges_approximated", r.stats.edges_approximated);
+        report.set("faces_analytic", r.stats.faces_analytic), report.set("edges_analytic", r.stats.edges_analytic);
         report.set("max_error", r.stats.max_error), report.set("max_degree", r.stats.max_degree);
         val out = val::array();
         out.call<void>("push", ptr(r.brep));

@@ -41,7 +41,16 @@ import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
-import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
+import {
+  type BendOptions,
+  type TaperOptions,
+  type TwistOptions,
+  type UnrollOptions,
+  bend as _bend,
+  taper as _taper,
+  twist as _twist,
+  unroll as _unroll,
+} from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
@@ -4143,6 +4152,12 @@ export class Part extends _Body {
   /** Bend around an axis by `angle` degrees (default: along X, toward +Z); see `bend`. */
   bend(angle: number, options: BendOptions = {}): Part {
     return _bend(this, angle, options)
+  }
+
+  /** Unroll this part from around an axis (default Z) into a flat one, the layer at `radius`
+   * keeping its length; see `unroll`. */
+  unroll(options: UnrollOptions): Part {
+    return _unroll(this, options)
   }
 
   /** Deform with a `Lattice` (same as `lattice.apply(part)`). */

@@ -29,7 +29,9 @@ the top layer of a 3 x 3 x 3 lattice scaled, a cylinder side (4, 2) and a sphere
 one point of a 3 x 3 x 3 lattice moved, a sphere (12, 12) with 1225 poles. A face needing
 more than degree 12 (`MAX_DEGREE`), such as a sphere with one point of a 4 x 4 x 4
 lattice moved, is fitted within `tolerance` instead (quintic, 2925 poles). An unmoved
-lattice changes nothing.
+lattice changes nothing, and faces the lattice leaves in place (the bottom of a block when
+only the top layer moves, the sides when only the middle of the top does) keep their type:
+the pillow below has 5 planes and a B-spline top.
 
 ## How points act
 A point pulls the region around it, weighted by Bernstein polynomials: moving the middle
@@ -58,7 +60,7 @@ block = Box(60, 40, 20)
 lat = Lattice(block, 3)                              # 3 x 3 x 3 points on the block's bounding box
 lat.move((1, 1, -1), (0, 0, 8))                      # lift the middle of the top layer
 pillow = lat.apply(block)
-print(pillow.is_valid(), round(pillow.mass_properties(accuracy=1e-10).volume, 3))
+print(pillow.is_valid(), round(pillow.volume, 3))
 print(lat.map((0, 0, 10)))                           # the middle of the top moves 8 * 1/2 * 1/2
 
 lat = Lattice(block, 4)

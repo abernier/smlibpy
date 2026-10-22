@@ -629,6 +629,7 @@ export class Part extends _Body {
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
     bend(angle: number, options?: BendOptions): Part;
+    unroll(options: UnrollOptions): Part;
     deform(lattice: {
         apply(part: Part, options?: Record<string, unknown>): Part;
     }, options?: Record<string, unknown>): Part;
@@ -932,6 +933,14 @@ export interface BendOptions extends RangeOptions {
 }
 export function bend(shape: Part, angle: number, options?: BendOptions): Part;
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell;
+export interface UnrollOptions {
+    radius: number;
+    axis?: Axis;
+    start?: VectorLike | null;
+    tolerance?: number | null;
+}
+export function unroll(shape: Part, options: UnrollOptions): Part;
+export function unroll(shape: Shell, options: UnrollOptions): Shell;
 export class Lattice {
     points: number[][][][];
     constructor(box: BoundBox | {

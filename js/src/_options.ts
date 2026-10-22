@@ -102,4 +102,5 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   toUsd: [1, ['mesh', 'tolerance', 'angle']],
   twist: [2, ['axis', 'start', 'end', 'tolerance']],
   unfold: [1, ['kFactor', 'fixed']],
+  unroll: [1, ['radius', 'axis', 'start', 'tolerance']],
 }

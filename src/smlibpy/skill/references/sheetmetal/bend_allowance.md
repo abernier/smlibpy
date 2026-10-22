@@ -4,7 +4,7 @@ The formulas for designing blanks: bend allowance, bend deduction and the develo
 strip bent into legs.
 
 ## Signatures
-- `bend_allowance(angle, *, radius, thickness, k_factor=0.44)` = `radians(angle) * (radius + k_factor * thickness)`
+- `bend_allowance(angle, *, radius, thickness, k_factor=0.44)` = `radians(angle) * (radius + k_factor * thickness)`, angle above 0 and below 360 (a rolled part's 270 degrees too)
 - `bend_deduction(angle, *, radius, thickness, k_factor=0.44)` = `2 * (radius + thickness) * tan(angle / 2) - bend_allowance`, angle below 180
 - `developed_length(*legs, angle=90, radius, thickness, k_factor=0.44)` = `sum(legs) - sum(bend_deduction)`
 

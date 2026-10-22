@@ -80,7 +80,7 @@ export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section
 // removing fillets and faces: the time limit of a kernel step
 export { GUARD_SECONDS, setGuardSeconds } from './defeature.ts'
 // deformations
-export { Lattice, bend, taper, twist } from './deform.ts'
+export { Lattice, bend, taper, twist, unroll } from './deform.ts'
 // surfaces
 export { ruled, stitch, surface, surfaceFillet } from './surfaces.ts'
 // sheet metal

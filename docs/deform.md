@@ -2,9 +2,9 @@
 
 A deformation changes a finished part as a whole. Instead of modeling a twisted column, a
 bent handle or a tapered grip directly, you model the straight, simple part with its holes,
-slots and rounds, and then twist, bend or taper it. The holes and rounds go along. For
-free-form changes, a lattice of control points around the part lets you pull and push it
-into shape.
+slots and rounds, and then twist, bend or taper it. The holes and rounds go along. Unroll
+does the opposite of a bend: it lays a part wrapped around an axis out flat. For free-form
+changes, a lattice of control points around the part lets you pull and push it into shape.
 
 ```python
 from smlibpy import *
@@ -20,30 +20,37 @@ selections such as `faces().sort_by(Z)[-1]` work as before.
 
 ## Exact results
 
-The results are NURBS, and wherever the mathematics allows it they are exact:
+Wherever the mathematics allows it, the results are exact:
 
-- **Lattices and tapers** are polynomial maps of space. Every face of the result is the
-  exact image of the original face. A tapered cylinder is an exact cone; a pillow made with
-  a lattice is exactly the shape the control points describe.
-- **Twists and bends** turn space with sines and cosines, which no NURBS can reproduce. Their
-  faces are within a tolerance of the exact shape, by default a millionth of a millimeter
-  (`tolerance=1e-6`). Faces that are only turned stay exact: the ends of a twisted bar are
-  planes, and the straight rulings of its twisted sides stay straight.
+- **Analytic faces stay analytic.** Where the exact image of a face is a plane, cylinder or
+  cone, the result has that surface, and lines and circles stay lines and circles. A plate
+  bent about an axis gets exact cylinders there (so `faces().cylinders()`, `Face.radius` and
+  sheet metal's `bends()` and `unfold` see the bend), a tapered cylinder is an exact cone, the
+  turned ends of a twisted bar are planes, a rolled sheet unrolls into planes, and faces a
+  map leaves in place (the bottom of a block whose top a lattice lifts) keep what they were.
+  STEP files write them as planes, cylinders and cones.
+- **Lattices and tapers** are polynomial maps of space. Every other face of the result is a
+  NURBS that is the exact image of the original face; a pillow made with a lattice is exactly
+  the shape the control points describe.
+- **Twists, bends and unrolls** turn space with sines and cosines. Where the image is not
+  analytic (the sides of a twisted bar, a hole across a bend), a NURBS can only follow it:
+  those faces are within a tolerance of the exact shape, by default a millionth of a
+  millimeter (`tolerance=1e-6`), and the straight rulings of a twisted face stay straight.
 
-Each face keeps the parameterization of the original face, so the part stays as watertight
-as it was. Volumes behave as they should: a twist keeps the volume, a bend keeps it when the
-part bends about the middle of its cross-section, and a taper changes it exactly as the
-scaled cross-sections say.
+The NURBS faces keep the parameterization of the original face, so the part stays as
+watertight as it was. Volumes behave as they should: a twist keeps the volume, a bend keeps
+it when the part bends about the middle of its cross-section, and a taper changes it exactly
+as the scaled cross-sections say. `part.volume` measures deformed parts as exactly as any
+other (to 1e-7 relative or better, within the tolerance of the fitted faces):
 
 ```python
 bar = Box(20, 20, 100).twist(90)
-print(bar.mass_properties(accuracy=1e-10).volume)    # 40000.0
+print(round(bar.volume, 3))                           # 40000.0
 cone = Cylinder(10, 50).taper(0.5)
-print(cone.mass_properties(accuracy=1e-10).volume)   # 9162.98, the frustum's volume
+print(cone.volume, cone.faces().sort_by(Z)[1].geom_type)   # 9162.98, the frustum's volume; cone
+plate = Box(200, 40, 10).bend(90, radius=25)
+print(plate.volume, len(plate.faces().cylinders()))   # 80000.0 (to 1e-12), 2
 ```
-
-Measure deformed parts with `mass_properties(accuracy=1e-10)`: the kernel's default
-integration (`part.volume`) can be a few parts in ten thousand off on bent parts.
 
 ## Twist
 
@@ -91,6 +98,42 @@ down = Box(100, 10, 10).bend(-90, radius=20, start=10)         # down, starting 
 
 The radius must be larger than the part's thickness on the inside of the bend. Bends of
 more than half a turn with long legs can make the legs cross; that is not detected.
+
+Planes across the bend become exact cylinders about the bend axis. A bent plate is therefore
+a sheet metal part: `bends()` finds the bend, and `unfold()` lays it flat again with the
+K-factor the bend's neutral layer gives (where the plane's origin lies in the thickness: 0.5
+for a plate bent about its middle layer):
+
+```python
+plate = Box(200, 40, 10).bend(90, radius=25)
+print(plate.bends())                  # [Bend(angle=90, radius=20, thickness=10, k_factor=0.5, ...)]
+print(plate.unfold().bbox().size)     # 200 x 40 x 10 again
+```
+
+For sheet metal, `fold()` and `flange()` (see [sheet metal](sheet-metal.md)) are the better
+tools: they bend at a line on the sheet with an inside radius and a K-factor, and keep flat
+legs on both sides.
+
+## Unroll
+
+`unroll(radius=...)` lays a part wrapped around an axis out flat: the inverse of a bend over
+the whole part. A point at distance r from the axis and at an angle about it goes to
+distance r from the axis and the arc length `radius * angle` across, so the layer at
+`radius` (the neutral layer) keeps its length; material inside it gets longer, material
+outside it shorter. Cylinders about the axis become planes and circles about it lines:
+
+```python
+ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+strip = ring.unroll(radius=51)                 # the three quarter ring, flat
+print(len(strip.faces().planar()), round(strip.volume, 6) == round(ring.volume, 6))   # 6 True
+label = ring.unroll(radius=52, start=(-2, -1, 0))  # the outside keeps its length
+```
+
+The axis defaults to Z through the origin. `start` is the direction from the axis to the
+line that stays in place (default: the middle of the part's angle about the axis); the part
+must not reach the axis, must cover less than a full turn about it, and must not reach the
+half-plane opposite `start`, where the unrolled part would tear. For rolled sheet metal,
+`unfold()` unrolls at the neutral radius `radius + k_factor * thickness` by itself.
 
 ## Lattice
 

@@ -218,7 +218,7 @@ class _BodyWriter {
     this.dump = ext.brep_dump(brep, true)
     for (const f of this.dump.faces) {
       const srf = f.surface
-      if (!['plane', 'cone', 'sphere', 'torus'].includes(srf.kind) && !('poles' in srf)) throw new _NeedsNurbs()
+      if (!['plane', 'cone', 'cylinder', 'sphere', 'torus'].includes(srf.kind) && !('poles' in srf)) throw new _NeedsNurbs()
     }
     this.kfaces = k.brep_faces(brep)
     this.kedges = k.brep_edges(brep)
@@ -293,7 +293,8 @@ class _BodyWriter {
       const [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
       return [w.add(`PLANE('',#${w.axis2(pl.origin, z, x)})`), { kind: 'plane', z }]
     }
-    if (kind === 'cone') {
+    if (kind === 'cone' || kind === 'cylinder') {
+      // (a cylinder is also a cone without an angle)
       let [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
       let semi = 'semi_angle_deg' in s ? Number(s.semi_angle_deg) : 0.0
       const o = _vec(pl.origin)

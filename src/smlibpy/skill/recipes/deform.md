@@ -30,9 +30,9 @@ Model directly when:
 2. Deform. One deformation per step; chaining is fine (`part.taper(0.8).twist(45)`).
 3. Add the features that must keep their shape (bores, flats, mounting holes) and their
    fillets.
-4. Check: `is_valid()`, the face count (unchanged unless a range split faces), the volume
-   with `mass_properties(accuracy=1e-10)` against the rule (twist: same; bend about the
-   middle layer: same; taper: the scaled cross-sections), and a snapshot.
+4. Check: `is_valid()`, the face count (unchanged unless a range split faces), `volume`
+   against the rule (twist: same; bend about the middle layer: same; taper: the scaled
+   cross-sections), and a snapshot.
 
 ## Patterns
 
@@ -73,12 +73,15 @@ prints `True 27`, `True 23`, `True [(-80.0, -0.0), (-80.0, 60.0)]` (the two hole
 60 apart), `True 1`, `True 11.5`.
 
 ## Limits
-- Twist and bend are within `tolerance` (1e-6 mm); lattices and tapers are exact up to
-  degree 12.
+- Faces whose image is a plane, cylinder or cone are exact analytic faces (a bent plate's
+  cylinders, a tapered cylinder's cone); other twisted, bent or unrolled faces are within
+  `tolerance` (1e-6 mm); lattices and tapers are exact up to degree 12.
 - Meshes, STL and snapshots of twisted parts keep to the tolerance but take many more
   triangles (2076 for `Box(20, 20, 100).twist(90)`, the box 12; about 1 / tolerance more for a
   finer one). Do not ask for a finer mesh than needed. STEP is exact.
-- `part.volume` can be 4e-4 off on bent parts; measure with `mass_properties(accuracy=1e-10)`.
+- `part.volume` is exact on deformed parts (no `accuracy=` needed).
+- For sheet metal, `fold`/`flange` bend at a line with an inside radius and a K-factor; a plate
+  bent with `bend` is sheet metal too (`bends()`, `unfold`), and `unroll` lays a rolled part flat.
 - Bends stay under 360°; legs crossing after a large bend are not detected.
 - A lattice point moved past its neighbours folds space and is refused.
 - A range inside the part splits the faces it crosses (more faces).

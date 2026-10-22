@@ -61,7 +61,10 @@ KFactor = Union[float, str, Callable[[float, float, float], float], Mapping[floa
 # =============================================================================
 def _check_values(what: str, angle: float, radius: float, thickness: float, k_factor: float,
                   max_angle: float = 180.0) -> None:
-    if not 0.0 < float(angle) <= max_angle:
+    if max_angle >= 360.0:
+        if not 0.0 < float(angle) < 360.0:
+            raise ValueError(f"{what}: the angle must be above 0 and below 360 degrees (got {angle!r})")
+    elif not 0.0 < float(angle) <= max_angle:
         raise ValueError(f"{what}: the angle must be above 0 and at most {max_angle:g} degrees (got {angle!r})")
     if not float(radius) > 0.0:
         raise ValueError(f"{what}: the radius must be positive (got {radius!r})")
@@ -205,9 +208,10 @@ def _check_radius(what: str, radius: float, thickness: float) -> None:
 def bend_allowance(angle: float, *, radius: float, thickness: float, k_factor: float = K_FACTOR) -> float:
     """Length of the flat strip that a bend takes: ``radians(angle) * (radius + k_factor * thickness)``.
 
-    ``angle`` is the bend angle in degrees (90 for an L), ``radius`` the inside radius.
+    ``angle`` is the bend angle in degrees (90 for an L, up to below 360 for a rolled part),
+    ``radius`` the inside radius.
     """
-    _check_values("bend_allowance", angle, radius, thickness, k_factor)
+    _check_values("bend_allowance", angle, radius, thickness, k_factor, max_angle=360.0)
     return math.radians(angle) * (radius + k_factor * thickness)
 
 
@@ -754,27 +758,58 @@ def _find_bends(part: Part) -> tuple[list[_BendGeom], float | None]:
             angles += a
             along += s
         start, span = _arc_span(angles)
-        if span > math.pi + 1e-6:
-            raise ModelingError(f"a bend of the part turns {math.degrees(span):.6g} degrees; bends up to 180 "
-                                "degrees can be unfolded")
         mid_angle = start + span / 2
         mid = x * math.cos(mid_angle) + y * math.sin(mid_angle)
         s0, s1 = min(along), max(along)
         inner = [f for f in faces if abs(f.radius - r_in) <= tol]
         outer = [f for f in faces if abs(f.radius - r_out) <= tol]
-        found.append(_BendGeom(inner, outer, o + z * s0, z, mid, r_in, t, min(math.degrees(span), 180.0), s1 - s0))
+        angle = math.degrees(span)
+        if abs(angle - 180.0) <= 1e-6:
+            angle = 180.0  # (a U bend, measured to the rounding of its points)
+        found.append(_BendGeom(inner, outer, o + z * s0, z, mid, r_in, t, angle, s1 - s0))
     return found, thickness
+
+
+def _bend_ends(part: Part, g: _BendGeom) -> tuple[list[Face], list[Face]]:
+    """The flat sheet at the two ends of a bend (its start, half the angle before ``mid``, and
+    its end): the planar faces tangent to its cylinders along their straight boundary lines
+    there. A free end (an end face across the sheet) has none."""
+    tol = _tol(part)
+    half = math.radians(g.angle) / 2
+    x, y = g.mid, g.axis.cross(g.mid)
+    own = {f._identity() for f in g.faces()}
+    ends: tuple[list[Face], list[Face]] = ([], [])
+    seen: set[Any] = set()
+    for f in g.faces():
+        for e in f.edges():
+            if e.geom_type != "line" or not (e.end - e.start).is_parallel(g.axis, 1e-7):
+                continue
+            q = e.center() - g.origin
+            a = math.atan2(q.dot(y), q.dot(x))
+            radius = math.hypot(q.dot(x), q.dot(y))
+            side = 0 if abs(a + half) * radius <= 10 * tol else 1 if abs(a - half) * radius <= 10 * tol else None
+            if side is None:
+                continue
+            radial = x * math.cos(a) + y * math.sin(a)
+            for nb in e.faces():
+                key = nb._identity()
+                if key in own or key in seen or nb.geom_type != "plane":
+                    continue
+                if abs(abs(nb.normal_at().dot(radial)) - 1.0) <= 1e-7:
+                    seen.add(key)
+                    ends[side].append(nb)
+    return ends
 
 
 def bends(part: Part, *, k_factor: KFactor = None) -> list[Bend]:
     """The bends of a sheet metal part: angle, inside radius, thickness, K-factor, length and axis
     of each.
 
-    A bend is a pair of coaxial cylinder faces one sheet thickness apart (as :func:`bend` and
-    :func:`flange` make them, or as imported from a sheet metal part). Cylinders without such a
-    partner (holes, rounds) are not bends. ``k_factor`` (see :data:`KFactor`; default: the
-    K-factor each bend was folded with, else :data:`K_FACTOR`) gives each bend's K-factor, which
-    its allowance uses.
+    A bend is a pair of coaxial cylinder faces one sheet thickness apart (as :func:`fold`,
+    :func:`flange` and :func:`smlibpy.bend` make them, or as imported from a sheet metal part),
+    up to below a full turn. Cylinders without such a partner (holes, rounds) are not bends.
+    ``k_factor`` (see :data:`KFactor`; default: the K-factor each bend was folded with, else
+    :data:`K_FACTOR`) gives each bend's K-factor, which its allowance uses.
     """
     if not isinstance(part, Part):
         raise TypeError(f"bends: expected a Part, got {type(part).__name__}")
@@ -849,24 +884,37 @@ def _unfold(part: Part, k_factor: KFactor, fixed: Face | None, what: str) -> _Un
     if fixed is not None:
         if not isinstance(fixed, Face) or fixed.owner is not part or fixed.geom_type != "plane":
             raise ValueError(f"{what}: fixed must be a planar face of the part")
-        base = fixed
-    else:
-        base = _base_face(part, planes)
     found, thickness = _find_bends(part)
     for g in found:
         _check_radius(what, g.radius, g.thickness)
     # each bend's K-factor, from the part as it is; an inner face of each, followed into the copy,
     # tells which bend is which as the unbends move them
     ks = [_bend_k(part, g, g.thickness, rule, what) for g in found]
+    volume = _volume(part)
+    expected = volume
+    hint = "the part must be a sheet of constant thickness whose bends are separated by flat regions"
+    done: list[tuple[_BendGeom, Vector, Vector, Vector, float]] = []
+    if len(found) == 1 and not any(_bend_ends(part, found[0])):
+        # a rolled part: one bend and no flat sheet; it unrolls about the middle of the bend
+        if fixed is not None:
+            raise ValueError(f"{what}: the part is rolled (one bend, no flat sheet to keep in place); it unrolls about "
+                             "the middle of its bend: leave fixed out")
+        g, kf = found[0], ks[0]
+        nr = g.radius + kf * g.thickness
+        expected -= _strip(g, nr) * g.thickness * g.thickness * (0.5 - kf) / nr
+        piece = {"kind": "unbend", "center": list(g.origin.to_tuple()), "axis": list(g.axis.to_tuple()),
+                 "mid": list(g.mid.to_tuple()), "neutral": nr}
+        spec = {"axis": None, "tolerance": 1e-6, "pieces": [piece]}
+        work = _deformed(part, spec, (min(1.0, nr / (g.radius + g.thickness)), max(1.0, nr / g.radius)), what, hint)
+        anchor = _base_face(work, _planar_faces(work))._f
+        done.append((g, g.origin + g.mid * nr, g.axis, -g.mid, kf))
+        return _finish(work, anchor, done, thickness, expected, volume, k_factor, what, hint)
+    base = fixed if fixed is not None else _base_face(part, planes)
     copy, mapped, _, _ = ext.copy_with_map(part._brep, [base._f] + [g.inner[0]._f for g in found], [], [])
     work = Part._wrap(copy, name=part.name, color=part.color)
     anchor = mapped[0]
     tracked = list(mapped[1:])
     left = list(range(len(found)))
-    done: list[tuple[_BendGeom, Vector, Vector, Vector, float]] = []
-    volume = _volume(part)
-    expected = volume
-    hint = "the part must be a sheet of constant thickness whose bends are separated by flat regions"
     for _ in range(len(found)):
         current, _ = _find_bends(work)
         if not current:
@@ -888,8 +936,15 @@ def _unfold(part: Part, k_factor: KFactor, fixed: Face | None, what: str) -> _Un
         else:
             k_factor_here = _bend_k(part, g, thickness, rule, what)
         nr = g.radius + k_factor_here * thickness
-        strip = sum(f.area for f in g.inner) * nr / g.radius
-        expected -= strip * thickness * thickness * (0.5 - k_factor_here) / nr
+        expected -= _strip(g, nr) * thickness * thickness * (0.5 - k_factor_here) / nr
+        ends = _bend_ends(work, g)
+        if not (ends[0] and ends[1] and g.angle <= 180.0 + 1e-9):
+            # a bend at a free end of the sheet, or over 180 degrees: unrolled with the unbend
+            # deformation (the kernel's unbend needs flat sheet on both sides and turns up to 180)
+            work, anchor, start, inside = _unroll_bend(work, g, nr, anchor, ends, what, hint)
+            tracked = [None] * len(tracked)  # (a new body: the bends left are found by their sizes)
+            done.append((g, start, g.axis, inside, k_factor_here))
+            continue
         with kernel_call(what, hint):
             stayed = k.sheetmetal.unbend(work._brep, g.angle, g.radius, k_factor_here, thickness, g.origin.to_tuple(),
                                          g.axis.to_tuple(), g.mid.to_tuple(), g.length, anchor)
@@ -909,6 +964,136 @@ def _unfold(part: Part, k_factor: KFactor, fixed: Face | None, what: str) -> _Un
         allowance = math.radians(g.angle) * nr
         start = g.origin + end * nr + into * (allowance / 2)
         done.append((g, start, g.axis, -end, k_factor_here))
+    return _finish(work, anchor, done, thickness, expected, volume, k_factor, what, hint)
+
+
+def _strip(g: _BendGeom, nr: float) -> float:
+    """Area of a bend's strip in the flat (its neutral fiber's length times its length)."""
+    return sum(f.area for f in g.inner) * nr / g.radius
+
+
+def _deformed(part: Part, spec: dict, ratio: tuple[float, float], what: str, hint: str) -> Part:
+    """``part`` sent through a deformation (deform.py), with this module's hint on failure."""
+    from .deform import _Plan, _run
+
+    try:
+        return _run(_Plan(part, spec, ratio), what, part)
+    except (ModelingError, KernelError) as e:
+        raise ModelingError(f"{what}: unrolling a bend failed ({e}); {hint}") from e
+
+
+def _rigid(rotation: Any, translation: Any) -> list[float]:
+    """A 3 x 4 row-major matrix [rotation | translation]."""
+    return [float(v) for i in range(3) for v in (*rotation[i], translation[i])]
+
+
+def _turn(origin: Vector, axis: Vector, angle: float) -> tuple[Any, Any]:
+    """Rotation matrix and translation of the turn by ``angle`` radians about the line through
+    ``origin`` along ``axis``."""
+    m = Location.about(Axis(origin, axis), math.degrees(angle)).matrix
+    return m[:3, :3], m[:3, 3]
+
+
+def _unroll_bend(work: Part, g: _BendGeom, nr: float, anchor: Any, ends: tuple[list[Face], list[Face]], what: str,
+                 hint: str) -> tuple[Part, Any, Vector, Vector]:
+    """Unroll one bend with the unbend deformation: the end of the bend toward the fixed face
+    stays where it is, the strip unrolls at the neutral radius ``nr``, and the sheet beyond the
+    other end (if any) moves with it rigidly. The faces go to these three pieces by where they
+    lie (the bend's sector and thickness) and by what they connect to (the fixed side).
+    Returns the unrolled part, its fixed face, and the bend line's start and inside normal."""
+    import numpy as np
+
+    from .deform import _imprint
+
+    half = math.radians(g.angle) / 2
+    m, z = g.mid, g.axis
+    b = z.cross(m)
+
+    def radial(a: float) -> Vector:
+        return m * math.cos(a) + b * math.sin(a)
+
+    def tangent(a: float) -> Vector:
+        return z.cross(radial(a))
+
+    if ends[0] and ends[1]:  # the end toward the fixed face stays
+        dist = _face_distances(work, anchor)
+
+        def reach(faces: list[Face]) -> int:
+            return min(dist.get(i, 1 << 30) for i in ext.face_indices(work._brep, [f._f for f in faces]))
+
+        fe = -half if reach(ends[0]) <= reach(ends[1]) else half
+    elif ends[0] or ends[1]:
+        fe = -half if ends[0] else half
+    else:
+        raise ModelingError(f"{what}: a bend has flat sheet on neither side, and the part has more than one bend; "
+                            f"{hint}")
+    ff = -fe
+    keep = Face(work, anchor)
+    keep_point, keep_normal = keep.interior_point(), keep.normal_at()
+    # faces across the bend's ends (the sheet's side faces) are split there
+    o = np.array(g.origin.to_tuple())
+    shape = work
+    for a in (fe, ff):
+        shape = _imprint(shape, o, np.array(tangent(a).to_tuple()))
+    faces = list(shape.faces())
+    index = ext.face_indices(shape._brep, [f._f for f in faces])
+
+    def found_face(part: Part) -> Face:
+        cands = [f for f in part.faces() if f.geom_type == "plane" and f.normal_at().dot(keep_normal) > 1 - 1e-9]
+        if not cands:
+            raise ModelingError(f"{what}: the fixed face got lost unrolling a bend; {hint}")
+        return min(cands, key=lambda f: f.distance_to(keep_point))
+
+    start_face = found_face(shape)
+    tol = _tol(shape)
+    piece = [-1] * len(faces)
+    for f, i in zip(faces, index):
+        q = f.interior_point() - g.origin
+        a = math.atan2(q.dot(b), q.dot(m))
+        rho = math.hypot(q.dot(m), q.dot(b))
+        if abs(a) <= half + 1e-7 and g.radius - 10 * tol <= rho <= g.radius + g.thickness + 10 * tol:
+            piece[i] = 1  # the bend
+    # the fixed side: faces connected to the fixed face without crossing the bend
+    neighbors: dict[int, list[int]] = {}
+    for f, i in zip(faces, index):
+        neighbors[i] = list(ext.face_indices(shape._brep, [n._f for n in f.neighbors()]))
+    first = ext.face_indices(shape._brep, [start_face._f])[0]
+    if piece[first] == 1:
+        raise ModelingError(f"{what}: the fixed face lies in a bend; {hint}")
+    piece[first] = 0
+    queue = [first]
+    while queue:
+        nxt = []
+        for i in queue:
+            for j in neighbors.get(i, ()):
+                if piece[j] == -1:
+                    piece[j] = 0
+                    nxt.append(j)
+        queue = nxt
+    piece = [2 if p == -1 else p for p in piece]  # beyond the bend
+    # the strip: unbent about the bend's middle, then turned and moved so that its end at fe stays
+    r1, t1 = _turn(g.origin, z, fe)
+    shift = np.array((b * (nr * fe)).to_tuple())
+    strip = {"kind": "unbend", "center": list(g.origin.to_tuple()), "axis": list(z.to_tuple()),
+             "mid": list(m.to_tuple()), "neutral": nr, "matrix": _rigid(r1, t1 - r1 @ shift)}
+    # beyond the other end: turned back by the angle between the ends, moved along the strip
+    r2, t2 = _turn(g.origin, z, fe - ff)
+    beyond = {"kind": "rigid", "matrix": _rigid(r2, t2 + np.array((tangent(fe) * (nr * (ff - fe))).to_tuple()))}
+    spec = {"axis": None, "tolerance": 1e-6, "faces": piece, "pieces": [{"kind": "identity"}, strip, beyond]}
+    ratio = (min(1.0, nr / (g.radius + g.thickness)), max(1.0, nr / g.radius))
+    result = _deformed(shape, spec, ratio, what, hint)
+    anchor = found_face(result)._f
+    # the bend line: from the neutral fiber at the end that stayed, half the strip into it
+    into = tangent(fe) * (1.0 if ff > fe else -1.0)
+    start = g.origin + radial(fe) * nr + into * (math.radians(g.angle) * nr / 2)
+    return result, anchor, start, -radial(fe)
+
+
+def _finish(work: Part, anchor: Any, done: list[tuple[_BendGeom, Vector, Vector, Vector, float]],
+            thickness: float | None, expected: float, volume: float, k_factor: KFactor, what: str,
+            hint: str) -> _Unfolded:
+    """The checks of an unfolded part: no bends left, a sound solid one sheet thick, the volume
+    the unbends give."""
     if _find_bends(work)[0]:
         raise ModelingError(f"{what}: not every bend could be unfolded; {hint}")
     problem = work._solid_problem()
@@ -1028,6 +1213,10 @@ def unfold(part: Part, *, k_factor: KFactor = None, fixed: Face | None = None) -
     angle) -> k``, a mapping from inside radius to K-factor (``{1: 0.33, 6: 0.45}``), ``(r / t,
     k)`` pairs to interpolate (a shop's table), or ``"din6935"`` (see :data:`KFactor`). For the
     flat pattern on the XY plane, with outline and bend lines, use :func:`flat_pattern`.
+
+    Rolled parts (one bend, no flat sheet: a ring segment), bends at a free end of the sheet (a
+    curl) and bends over 180 degrees unroll at the neutral radius ``radius + k_factor *
+    thickness``; a rolled part about the middle of its bend (``fixed`` is refused there).
     """
     return _unfold(part, k_factor, fixed, "unfold").part
 

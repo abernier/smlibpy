@@ -7,11 +7,12 @@ The bends of a sheet metal part: angle, inside radius, thickness, length and axi
 `smlibpy.sheetmetal.bends(part, *, k_factor=None)`
 
 ## Returns
-One `Bend` per bend: `angle` (degrees, 0..180, no sign), `radius` (inside), `thickness`,
+One `Bend` per bend: `angle` (degrees, above 0 and below 360 (a rolled ring segment), no sign), `radius` (inside), `thickness`,
 `k_factor` (the one it was folded with, else 0.44, or by the `k_factor=` rule as `unfold` takes
 it), `length` (along the axis), `axis` (the axis of the bend's cylinders, origin at one end) and
 `allowance` for its K-factor. A bend is a pair of coaxial cylinder faces one thickness apart;
-holes and rounds (single cylinders) are not bends, so a filleted box returns `[]`.
+holes and rounds (single cylinders) are not bends, so a filleted box returns `[]`. A plate bent
+with `Part.bend` has one (exact cylinders), with the K-factor of its neutral layer.
 
 ## Gotchas
 - The angle has no sign: the direction of a bend is in the flat pattern (`direction`).

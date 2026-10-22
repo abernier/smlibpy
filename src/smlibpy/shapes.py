@@ -3643,6 +3643,13 @@ class Part(_Body):
 
         return bend(self, angle, **kwargs)
 
+    def unroll(self, **kwargs: Any) -> Part:
+        """Unroll this part from around an axis (default Z) into a flat one, the layer at
+        ``radius`` keeping its length; see :func:`smlibpy.unroll`."""
+        from .deform import unroll
+
+        return unroll(self, **kwargs)
+
     def deform(self, lattice: Any, **kwargs: Any) -> Part:
         """Deform with a :class:`smlibpy.Lattice` (same as ``lattice.apply(part)``)."""
         return lattice.apply(self, **kwargs)

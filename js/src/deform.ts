@@ -1,4 +1,4 @@
-// Deformations: twist, taper and bend parts, or deform them with a control lattice.
+// Deformations: twist, taper, bend and unroll parts, or deform them with a control lattice.
 //
 // A deformation moves every point of space, and the whole body with it: all faces, edges and
 // vertices go through the same map, so the result is again a closed solid with the same faces,
@@ -7,20 +7,26 @@
 //     const bar = Box(20, 20, 100).twist(90)                  // a quarter turn over its length
 //     const grip = Cylinder(12, 80).taper(0.7)                // 70 % of the diameter at the top
 //     const hook = Box(160, 10, 6).bend(180, { radius: 25 })  // U shape with straight legs
+//     const ring = Cylinder(52, 40).cut(Cylinder(50, 50)).cut(Box(60, 60, 50, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+//     const strip = ring.unroll({ radius: 51 })               // the three quarter ring, flat
 //     const block = Box(60, 40, 20)
 //     const lat = new Lattice(block, 3)                       // 3 x 3 x 3 control points around it
 //     lat.move([1, 1, -1], [0, 0, 8])                         // lift the middle of the top
 //     const pillow = lat.apply(block)
 //
-// The results are NURBS. Lattices and tapers are polynomial maps of space, so their results are
-// exact: every face is the exact image of the original (up to degree `MAX_DEGREE`). Twists and
-// bends turn space with sines and cosines, which no NURBS reproduces; their faces are within
-// `tolerance` (default 1e-6 mm) of the exact image, except where that image is still polynomial
-// (the straight rulings of a twisted face, the turned ends of a twisted bar), which stays exact.
-// Every face keeps the parameterization of the original, so the trim curves are the original ones.
+// Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result has
+// that geometry: a plate bent about an axis gets exact cylinders (so `bends()`, `unfold` and
+// selections such as `faces().cylinders()` see them), a tapered cylinder an exact cone, the turned
+// ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves in place
+// keep what they were. The other faces are NURBS. Lattices and tapers are polynomial maps of
+// space, so their results are exact: every face is the exact image of the original (up to degree
+// `MAX_DEGREE`). Twists, bends and unrolls turn space with sines and cosines; a NURBS reproduces
+// that where the image is analytic or still polynomial (the straight rulings of a twisted face)
+// and is within `tolerance` (default 1e-6 mm) of the exact image elsewhere. Fitted faces keep the
+// parameterization of the original, so their trim curves are the original ones.
 //
-// The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmTransform) and a
-// Bezier volume for lattices and tapers.
+// The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmUnbendVolume,
+// SmTransform) and a Bezier volume for lattices and tapers.
 
 import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import {
@@ -42,6 +48,7 @@ import {
 import { det3, mean3 } from './_linalg.ts'
 import { Part, Shell, Sketch, type _Body, _held, _typeName } from './shapes.ts'
 import { Box } from './parts.ts'
+import { Rectangle } from './sketches.ts'
 
 // biome-ignore lint: the kernel's spec and results are what their bindings take and return
 type Any = any
@@ -168,7 +175,7 @@ function _rotationAbout(origin: readonly number[], d: readonly number[], angle: 
 }
 
 /** The shape with the faces it has across a plane split there (nothing added or removed). */
-function _imprint(shape: Deformable, origin: V3, normal: V3): Deformable {
+export function _imprint(shape: Deformable, origin: V3, normal: V3): Deformable {
   const size = 4.0 * (shape.bbox().diagonal + _norm(origin)) + 10.0
   const plane = new Plane(origin, _perpendicular(normal), normal)
   const tool = Box(size, size, size).translate(0, 0, -size / 2).moved(plane.location)
@@ -194,19 +201,30 @@ export interface _Spec {
   pieces: Record<string, unknown>[]
   tolerance: number
   max_degree?: number
+  /** The piece of every face (in the Brep's order), where the caller decides. */
+  faces?: number[]
+  /** False: NURBS everywhere (no analytic images). */
+  analytic?: boolean
 }
 
+/** The record a sheet metal bend keeps on its part: axis origin and direction, inside radius,
+ * K-factor (see `Part._folds`). */
+export type _Fold = readonly [number[], number[], number, number]
+
 /** What a deformation does: the shape to send (the ends of the range split into its faces), the
- * spec of the kernel map, and the bounds of the volume ratio. */
+ * spec of the kernel map, the bounds of the volume ratio and, for a bend, the record a sheet metal
+ * bend keeps. */
 export class _Plan {
   shape: Deformable
   spec: _Spec
   volumeRatio: [number, number]
+  fold: _Fold | null
 
-  constructor(shape: Deformable, spec: _Spec, volumeRatio: [number, number]) {
+  constructor(shape: Deformable, spec: _Spec, volumeRatio: [number, number], fold: _Fold | null = null) {
     this.shape = shape
     this.spec = spec
     this.volumeRatio = volumeRatio
+    this.fold = fold
   }
 }
 
@@ -249,7 +267,7 @@ function _range(shape: Deformable, origin: V3, d: V3, start: number | null | und
 }
 
 /** Send the shape through the map; check and return the result. */
-function _run(plan: _Plan, what: string, source: Deformable): Deformable {
+export function _run(plan: _Plan, what: string, source: Deformable): Deformable {
   const spec: Any = { ...plan.spec }
   if (!('max_degree' in spec)) spec.max_degree = MAX_DEGREE
   const shape = plan.shape
@@ -498,7 +516,11 @@ export function _planBend(
   const after = { kind: 'rigid', matrix: _matrix(rot, _sub(t, _matVec(rot, _mul(e - s, xd)))) }
   const [work, spec] = _layout(shape, o, xd, s, e, lo, hi, inside, after, tol)
   // a layer at distance y (toward the axis) changes its length by (r - y) / r
-  return new _Plan(work, spec, [Math.min(1.0, (r - inner) / r), Math.max(1.0, (r + outer) / r)])
+  const ratio: [number, number] = [Math.min(1.0, (r - inner) / r), Math.max(1.0, (r + outer) / r)]
+  // as a sheet: inside radius r - inner, thickness inner + outer, the neutral layer at r
+  const thickness = inner + outer
+  const fold: _Fold | null = thickness > 0 && inner >= 0 ? [[...center], _mul(sigma, zd), r - inner, inner / thickness] : null
+  return new _Plan(work, spec, ratio, fold)
 }
 
 /** How a part is bent (see `bend`). */
@@ -532,7 +554,10 @@ export interface BendOptions extends RangeOptions {
  *   (mm).
  *
  * The bend axis lies `radius` from the neutral layer on the side the part bends toward; the part
- * must not reach it.
+ * must not reach it. Plane faces across the bend become exact cylinders about the bend axis (and
+ * lines across it circles), so a bent plate is a sheet metal part to `bends` and `unfold`; the
+ * K-factor its neutral layer gives (where it lies in the thickness) is kept with it. For sheet
+ * metal, `fold` bends at a line with an inside radius and a K-factor, with flat legs on both sides.
  */
 export function bend(shape: Part, angle: number, options?: BendOptions): Part
 export function bend(shape: Shell, angle: number, options?: BendOptions): Shell
@@ -550,7 +575,144 @@ export function bend(shape: Deformable, angle: number, options: BendOptions = {}
   }
   if (!(plane instanceof Plane)) throw new TypeError('bend: plane must be a Plane (xDir along the part, yDir toward the inside of the bend)')
   const plan = _planBend(shape, a, radius, plane, start, end, _tolerance(tolerance))
-  return _run(plan, 'bend', shape)
+  const result = _run(plan, 'bend', shape)
+  if (result instanceof Part && plan.fold !== null) result._folds = [...result._folds, plan.fold]
+  return result
+}
+
+// ============================================================================= unroll
+/** Points on a shape: its vertices, points along its edges and a grid inside its faces. */
+function _samples(shape: Deformable): V3[] {
+  const pts: V3[] = shape.vertices().map((v) => v.point.toArray())
+  for (const e of shape.edges()) for (const t of [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]) pts.push(e.pointAt(t).toArray())
+  const fractions = [0.05, 0.25, 0.5, 0.75, 0.95]
+  for (const f of shape.faces()) {
+    const [[u0, v0], [u1, v1]] = k.face_uv_domain(f._f)
+    for (const a of fractions) {
+      for (const b of fractions) {
+        const u = u0 + a * (u1 - u0)
+        const v = v0 + b * (v1 - v0)
+        if (k.face_classify_uv(f._f, u, v) !== 'outside') {
+          const p = k.face_point_at_uv(f._f, u, v)
+          pts.push([Number(p[0]), Number(p[1]), Number(p[2])])
+        }
+      }
+    }
+  }
+  return pts
+}
+
+/** Whether the shape touches the half-plane from the axis (`o`, `d`) toward `toward`, within
+ * `reach` of the axis and `along` it. */
+function _reachesHalfPlane(shape: Deformable, o: V3, d: V3, toward: V3, reach: number, along: [number, number]): boolean {
+  const h0 = along[0] - 1.0
+  const h1 = along[1] + 1.0
+  const center = _add(_add(o, _mul(reach / 2, toward)), _mul((h0 + h1) / 2, d))
+  const half = Rectangle(reach, h1 - h0).on(new Plane(center, toward, _cross(toward, d)))
+  return shape.distanceTo(half) <= 1e-9 * Math.max(1.0, reach)
+}
+
+export function _planUnroll(shape: Deformable, radius: number, axis: Axis, start: VectorLike | null, tol: number): _Plan {
+  const o = axis.origin.toArray()
+  const d = _unit(axis.direction, 'unroll: axis')
+  const x0 = _perpendicular(d)
+  const y0 = _cross(d, x0)
+  const rel = _samples(shape).map((p) => _sub(p, o))
+  const radial = rel.map((v) => _sub(v, _mul(_dot(v, d), d)))
+  const r = radial.map(_norm)
+  const size = Math.max(shape.bbox().diagonal, 1.0)
+  const rmin = Math.min(...r)
+  const rmax = Math.max(...r)
+  if (rmin <= Math.max(0.01, 1e-6 * size)) {
+    throw new ModelingError('unroll: the part reaches the axis; it can only unroll what lies around it (move the axis, or cut the part off the axis)')
+  }
+  const angles = radial.map((v) => Math.atan2(_dot(v, y0), _dot(v, x0)))
+  const reach = 2.0 * rmax + 1.0
+  const hs = rel.map((v) => _dot(v, d))
+  const along: [number, number] = [Math.min(...hs), Math.max(...hs)]
+  let mid: V3 | null = null
+  if (start == null) {
+    // the cut (opposite the middle of the part) in a gap between the samples' angles that the
+    // part does not reach: the widest such gap (a slit's edges are samples)
+    const a = angles.map((x) => ((x % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)).sort((p, q) => p - q)
+    const gaps = a.map((x, i) => (i + 1 < a.length ? a[i + 1] : a[0] + 2 * Math.PI) - x)
+    const order = gaps.map((_, i) => i).sort((p, q) => gaps[q] - gaps[p] || p - q)
+    for (const i of order.slice(0, 64)) {
+      if (!(gaps[i] > 1e-9)) break
+      const cut = a[i] + gaps[i] / 2
+      const toward = _add(_mul(Math.cos(cut), x0), _mul(Math.sin(cut), y0))
+      if (!_reachesHalfPlane(shape, o, d, toward, reach, along)) {
+        mid = _mul(-1, toward)
+        break
+      }
+    }
+    if (mid === null) {
+      throw new ModelingError('unroll: the part goes all the way around the axis; cut it open (a slit along the axis) so that it covers less than a full turn')
+    }
+  } else {
+    let s = _vec(start).toArray()
+    s = _sub(s, _mul(_dot(s, d), d))
+    if (!(_norm(s) > 1e-9)) throw new RangeError('unroll: start must be a direction across the axis (perpendicular to it)')
+    mid = _mul(1 / _norm(s), s)
+    if (_reachesHalfPlane(shape, o, d, _mul(-1, mid), reach, along)) {
+      throw new ModelingError(
+        'unroll: the part reaches the line opposite start (half a turn from it), where the unrolled part would tear; leave start out (the middle of the part) or turn it',
+      )
+    }
+  }
+  const spec: _Spec = { axis: null, pieces: [{ kind: 'unbend', center: [...o], axis: [...d], mid: [...mid], neutral: radius }], tolerance: tol }
+  // a layer at distance r from the axis changes its length by radius / r
+  return new _Plan(shape, spec, [Math.min(1.0, radius / rmax), Math.max(1.0, radius / rmin)])
+}
+
+/** How a part is unrolled (see `unroll`). */
+export interface UnrollOptions {
+  /** The radius of the neutral layer, the one that keeps its length (mm, > 0). */
+  radius: number
+  /** The axis the part is rolled about (default the world Z axis). */
+  axis?: Axis
+  /** A direction across the axis: the line that stays in place. Default: the middle of the
+   * part's angle about the axis. */
+  start?: VectorLike | null
+  /** Largest distance of fitted faces from the exact unroll (mm). */
+  tolerance?: number | null
+}
+
+/**
+ * Unroll a part wrapped around an axis into a flat one: the inverse of `bend`.
+ *
+ * A point at distance `r` from the axis and at the angle `a` (radians) about it from `start` goes
+ * to distance `r` from the axis along `start` and `radius * a` across: the layer at `radius` (the
+ * neutral layer) keeps its length, material inside it gets longer and outside it shorter. A rolled
+ * sheet (a ring segment of inside radius `R` and thickness `t`) unrolls into a flat plate; as sheet
+ * metal, with `radius = R + kFactor * t` (`unfold` does that, also for rolled parts). Cylinders
+ * about the axis become planes, circles about it lines; the faces are exact where their image is a
+ * plane, cone, cylinder, line or circle, and within `tolerance` elsewhere.
+ *
+ * @param shape A Part (or a Shell) around the axis: it must not reach the axis and must cover less
+ *   than a full turn about it.
+ * @param options `radius`: the radius of the neutral layer (mm, > 0). `axis`: the axis the part is
+ *   rolled about (default the world Z axis). `start`: a direction across the axis: the line (at
+ *   every distance from the axis) that stays in place; the unrolled part lies in the plane through
+ *   it perpendicular to `start`; default: the middle of the part's angle about the axis; the part
+ *   must not reach the half-plane opposite it. `tolerance`: largest distance of fitted faces from
+ *   the exact unroll (mm).
+ *
+ * Returns a Part (a Shell for a shell).
+ */
+export function unroll(shape: Part, options: UnrollOptions): Part
+export function unroll(shape: Shell, options: UnrollOptions): Shell
+export function unroll(shape: Deformable, options: UnrollOptions): Deformable {
+  _opts('unroll', options)
+  const { radius, axis = Z, start = null, tolerance = null } = options ?? ({} as UnrollOptions)
+  _checkShape(shape, 'unroll')
+  if (!_isNumber(radius)) throw new TypeError('unroll: radius must be a number')
+  if (!(Number.isFinite(radius) && radius > 0)) {
+    throw new RangeError('unroll: radius must be a positive number (the radius of the layer that keeps its length)')
+  }
+  if (!(axis instanceof Axis)) throw new TypeError('unroll: axis must be an Axis')
+  const plan = _planUnroll(shape, radius, axis, start, _tolerance(tolerance))
+  return _run(plan, 'unroll', shape)
 }
 
 // ============================================================================= lattice

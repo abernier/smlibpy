@@ -1,4 +1,4 @@
-# Lane DA: measuring and analysis, per-bend K-factors (A2, A3, A4, A5, A6, A7, D1)
+# Lane DA: measuring and analysis, per-bend K-factors, analytic deformations, unrolling (A2, A3, A4, A5, A6, A7, D1, D2, D3, D4)
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase names) alike.
 
@@ -18,6 +18,42 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
 - `smooth()` and `Edge.convexity` look along the whole edge (A4): an edge whose faces meet
   tangentially only at its middle (an angle running from -14 through 0 to +14 degrees along it)
   was "smooth"; it is now "convex" or "concave" where its faces turn most.
+- Deformations keep analytic faces where the exact image is analytic (D2). `Box(200, 40, 10)
+  .bend(90, radius=25)` had 4 B-spline faces and B-spline edges in the bend; it now has 2 exact
+  cylinders about the bend axis (r 20 and 30) and 4 circles, so `faces().cylinders()`,
+  `Face.radius`/`axis`, `edges().circles()` and sheet metal's `bends()` see the bend
+  (`bends()` gave `[]`, `unfold()` raised "the unfolded part is 110.365 deep"). A slanted plane
+  across a bend becomes a cone (a chamfered plate's chamfers, 45 degrees). `Cylinder(10, 50)
+  .taper(0.5)` is an exact cone with circular rims (was 3 B-spline faces, 2 B-spline edges), a
+  tapered box has planes, the turned ends of a twisted bar are planes and their rims circles, a
+  rolled ring unrolls into planes and lines, and faces a map leaves in place keep their type (a
+  lattice that lifts the middle of a block's top keeps the bottom and the sides planes). Faces
+  whose image is not analytic (a twisted side, a hole across a bend, a bent tube with a seam) are
+  fitted as before. Measured: the bent plate's volume is 79999.99999999993 (80000), its deviation
+  from the exact bend 2e-13; the kernel's deviation check gives the same for every case.
+  `src/cpp/deform_analytic.cpp`: the exact map is sampled on the original geometry; a similarity
+  on a face or edge moves a copy of the original (same parameters, the trims stay), a cone or
+  cylinder like the original about the image of its axis keeps its parameters too (a taper), and
+  new planes, cylinders, cones, lines and circles get their trim curves dropped again within
+  1e-8 (the kernel's `CreateUVTrimCurves` with tight edge tolerances); if a trim curve cannot be
+  built, the fitted body is made instead.
+- STEP files write the kernel's `SmCylinder` faces as `CYLINDRICAL_SURFACE` (D2): the cylinders
+  `fold`, `flange` and now `bend` make were written as B-spline surfaces (a folded plate:
+  6 `B_SPLINE_SURFACE`, 0 cylinders; now 2 `CYLINDRICAL_SURFACE` and no B-splines), and read back
+  as B-splines.
+- Rolled sheet metal unfolds (D3). A ring segment with no flat (90 degrees: `KernelError`
+  "SM_ERR_INVALID_INPUT ... bends are separated by flat regions"), a bend at the free end of a
+  sheet (a J shape, a curl; the same error) and bends over 180 degrees (a 270 degree ring:
+  `ModelingError` "bends up to 180 degrees can be unfolded"; a 270 degree loop between two flats)
+  now unfold at the neutral radius r + k t with the unbend deformation: the 90 degree segment (R50,
+  t 2) to 79.9221 x 40, the 270 degree ring to 239.766 x 40, a 30 mm leg with a 90 degree end bend
+  to 109.922 with the leg in place, a 100 mm plate with a 270 degree curl (R10, t 2) to 151.271.
+  K-factors per bend apply as for other bends. Bends up to 180 degrees with flat sheet on both
+  sides still go through the kernel's unbend, unchanged.
+- The deform guides no longer teach `mass_properties(accuracy=1e-10)` for deformed parts (D4):
+  `part.volume` is smlibpy's own integration (`measure.cpp`) and exact on them (a bar bent 90
+  degrees: 10000.000000000002; the guides said 10003.546). docs/deform.md, the skill references
+  (deform/generic, bend, twist, taper, Lattice, recipes/deform) and `ai/todo/deform.md` #2 (fixed).
 
 ## New
 
@@ -53,8 +89,26 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
   `k_factor=` also takes a function `(radius, thickness, angle) -> k`, a mapping from inside
   radius to k, `(r / t, k)` pairs (interpolated) and `"din6935"`
   (`smlibpy.sheetmetal.din6935(r, t)`, the type `KFactor`). `Bend.k_factor` is each bend's own.
-- New exports: `ClosestPoints`, `Continuity`, `Curvature`, `NurbsSurface`, `SectionProperties`
-  (TypeScript also `type KFactor`).
+- `unroll(shape, *, radius, axis=Z, start=None, tolerance=None)` and `Part.unroll(...)` (D3): lay a
+  part wrapped around an axis out flat, the inverse of `bend`: a point at distance r and angle a
+  from `start` goes to distance r and `radius * a` across; the layer at `radius` keeps its length.
+  The default `start` is the middle of the part's angle about the axis; parts that reach the
+  axis, go all the way around it or reach the half-plane opposite `start` raise `ModelingError`.
+  A 270 degree ring (R50 to 52) unrolled at 51: 6 planes, the volume to 1e-12. TypeScript:
+  `unroll(shape, { radius, axis, start, tolerance })`, `part.unroll({ radius })`.
+- A plate bent with `Part.bend` keeps the K-factor of its neutral layer (D2): where the plane's
+  origin lies in the thickness (0.5 for a plate bent about its middle layer), recorded like
+  `fold`'s, so `unfold()` gives the plate back (200 x 40 x 10 for the plate above; with the
+  default 0.44 it was 199.058).
+- `bend_allowance` takes angles up to below 360 degrees (a rolled part's 270).
+- `_core.deform`: an `unbend` piece (`SmUnbendVolume`, with an optional rigid `matrix` after it),
+  a spec key `faces` (the piece of every face, where the caller decides) and `analytic` (False:
+  NURBS everywhere, as before); the report has `faces_analytic` and `edges_analytic`. Docs:
+  docs/deform.md (Exact results, Bend, Unroll), docs/sheet-metal.md (rolled parts, curls, bends
+  over 180 degrees, limits), skill reference `deform/unroll`, updated `sheetmetal/unfold`, `bends`,
+  `bend_allowance`, `generic`.
+- New exports: `ClosestPoints`, `Continuity`, `Curvature`, `NurbsSurface`, `SectionProperties`,
+  `unroll` (TypeScript also `type KFactor`, `UnrollOptions`).
 
 ## Behaviour changes
 
@@ -67,6 +121,16 @@ Everything applies to smlibpy (Python) and smlibwasm (JavaScript, camelCase name
 | `part.distance_to(edge)` (also wire, face) | the distance | `TypeError` |
 | `smooth()`, `convex()`, `concave()`, `Edge.convexity` on an edge tangent at its middle but not along it | "convex" or "concave" | "smooth" |
 | `volume` and the other measures of a body with a face across its seam | `KernelError` after about a second | ran for minutes |
+| `bend`, `taper`, `twist`, lattices: faces and edges whose exact image is analytic | `geom_type` `"plane"`, `"cylinder"`, `"cone"`, `"line"`, `"circle"` (or the original's type where the map moves them like a rigid body or scales them evenly) | `"bspline"` |
+| the same faces: their parameters (`Face.position_at`, `uv_at`, `nurbs()`, `isocurve`) | those of the analytic surface (a cylinder's angle and height) | the original face's |
+| `bends()` / `unfold()` of a plate bent with `Part.bend` | the bend, unfolded with the K of the neutral layer | `[]` / `ModelingError` |
+| `deform` report (`_core.deform.deform_brep`) | analytic faces count as `faces_exact`, plus `faces_analytic`, `edges_analytic` | they were `faces_approximated` |
+| `_core.deform.deviation` on analytic faces and edges | the distance of the exact image from the face or curve | the distance at the same parameters |
+| STEP export of `fold`/`flange`/`bend` cylinders | `CYLINDRICAL_SURFACE` | `B_SPLINE_SURFACE_WITH_KNOTS` (rational) |
+| `bends()` of a ring segment over 180 degrees | `Bend(angle=270, ...)` | `ModelingError` "bends up to 180 degrees can be unfolded" |
+| `unfold`/`flat_pattern` of rolled parts, end bends, bends over 180 degrees | the flat part | `KernelError` / `ModelingError` |
+| `unfold(part, fixed=...)` of a rolled part (one bend, no flat) | `ValueError` (it unrolls about the bend's middle) | `KernelError` |
+| `bend_allowance(angle)` for 180 < angle < 360 | the allowance | `ValueError` |
 
 Migration:
 
@@ -90,6 +154,52 @@ d = part.distance_to(edge)   # now exact
 flatPattern(part, { kFactor: 0.44 })   // the old numbers
 ```
 
+Analytic deformation results (D2):
+
+```python
+# before: every bent face was a B-spline; scripts selected them by type
+bent = Box(200, 40, 10).bend(90, radius=25)
+bend_faces = bent.faces().filter(lambda f: f.geom_type == "bspline")   # was 4, now []
+# now: the bend's faces are cylinders (and a chamfer's cones)
+bend_faces = bent.faces().filter(lambda f: f.geom_type in ("cylinder", "cone", "bspline"))
+# or select by place rather than type
+bend_faces = bent.faces().filter(lambda f: not f.is_planar)
+
+# before: Face.nurbs()/position_at(u, v) of a bent face used the plate's parameters;
+# now those of the cylinder. Use points rather than parameters:
+p = bend_faces[0].position_at(0.5, 0.5)   # still a point on the face, at other (u, v)
+
+# the old results, NURBS everywhere (for comparisons with stored data):
+from smlibpy import deform as D
+from smlibpy._kernel import k
+plan = D._plan_bend(Box(200, 40, 10), 90, 25, Plane.XZ, None, None, 1e-6)
+brep, report = k.deform.deform_brep(plan.shape._brep, dict(plan.spec, analytic=False))
+
+# before: a Part.bend plate unfolded with 0.44 (199.058 long); now with its own K (200.0)
+flat = bent.unfold(k_factor=0.44)   # the old numbers
+```
+
+```javascript
+// before: the bend's faces were 'bspline'
+const bent = Box(200, 40, 10).bend(90, { radius: 25 })
+bent.faces().filter((f) => !f.isPlanar)   // select by shape, not by type
+bent.unfold({ kFactor: 0.44 })            // the old (0.44) numbers
+```
+
+Rolled parts (D3):
+
+```python
+# before: bends() raised for a 270 degree ring; unfold raised for rolled parts and curls
+try:
+    flat = ring.unfold()
+except (KernelError, ModelingError):
+    flat = None
+# now it unfolds; to keep refusing them, check first
+if any(b.angle > 180 for b in ring.bends()):
+    ...
+# before: bend_allowance(270, ...) raised ValueError; now it is the 270 degree strip's width
+```
+
 ## Not done
 
 - `Face.parameters(point)` (A3's name) is `Face.uv_at(point)` (A2's), one method for both.
@@ -102,3 +212,21 @@ flatPattern(part, { kFactor: 0.44 })   // the old numbers
   at 0.44.
 - A7: the budget stops any face the integration cannot converge on; only the crossed seam has a
   public message, and no public input is known that makes one.
+- D2: no torus or sphere images: a bent tube (a cylinder along the bend) is a torus in the bend,
+  but its face has a seam, and a face with a seam keeps its fitted surface (a new seam would not
+  lie where the old one was); the same for a cylinder twisted about its own axis. Spheres and tori
+  stay analytic only where a map moves them like a rigid body or scales them evenly. Edges whose
+  image is a line or circle stay fitted when a fitted face uses them (a trim curve dropped onto a
+  fitted face would be less exact than the original one). Not done: the kernel's
+  `SmBendVolume::MakeExactBSpline1stOutSurface/Curve` (the plan's first idea); smlibpy's own
+  recognition by sampling covers its cases (planes to cylinders, radial planes, planes across the
+  axis, lines to lines and circles) and more (cones from slanted planes, tapers, twists, lattices,
+  unrolls), without its known defects (`ai/todo/sheetmetal.md` #3, #7).
+- D3: a bend at a free end, a bend over 180 degrees and a rolled part must run the full width of
+  the sheet next to them (no sheet beside the bend along its axis); a part with more than one bend
+  needs flat sheet on at least one side of each; a rolled part unrolls about the middle of its
+  bend (`fixed=` refused). Faces whose box reaches near the unroll axis fit slowly if their new
+  analytic geometry cannot be trimmed (the fallback; not seen in the tests).
+- D7 (not this lane's item, partly done here): faces a lattice leaves in place keep their type
+  (D2's similarity copy); the wording about local control in docs/deform.md and Lattice.md is
+  unchanged.

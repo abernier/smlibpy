@@ -150,7 +150,26 @@ flat = tray.unfold()                         # the same, in place
 Bending and unfolding with the same K-factor give back the same blank exactly, and by default
 each bend unfolds with the K-factor it was folded with. Parts that were not made with `fold`
 unfold too (at 0.44, or the `k_factor=` given), as long as each bend is a pair of cylinder faces
-one thickness apart, for example a profile with an inside radius extruded to a channel.
+one thickness apart, for example a profile with an inside radius extruded to a channel. A plate
+bent with `Part.bend` (see [deformations](deform.md)) has such cylinders, and keeps the K-factor
+its neutral layer gives.
+
+### Rolled parts, curls and bends over 180 degrees
+
+Rolled sheet unfolds too: a ring segment (a bend with no flat sheet at all), a bend at the free
+end of a sheet (a J shape, a curled edge) and bends over 180 degrees. They unroll at the
+neutral radius `radius + k_factor * thickness`; a rolled part about the middle of its bend, the
+others with the sheet toward the fixed face in place:
+
+```python
+ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+print(ring.bends())                          # [Bend(angle=270, radius=50, thickness=2, ...)]
+print(flat_pattern(ring).size)               # 239.766 x 40 x 2: 3 pi / 2 * (50 + 0.44 * 2) long
+curl = (Cylinder(12, 40) - Cylinder(10, 50)).rotate(X, 90).translate(0, 0, 12)
+curl = curl - Box(20, 60, 20, align=(Align.MAX, Align.CENTER, Align.MAX)).translate(0, 0, 12)
+hemmed = Box(100, 40, 2, align=(Align.MAX, Align.CENTER, Align.MIN)) + curl  # a 270 degree curl
+print(round(hemmed.unfold().bbox().size.x, 4))  # 151.2708: 100 + 3 pi / 2 * (10 + 0.44 * 2)
+```
 
 The outline and the bend lines lie in the XY plane, ready for a 2D export for the cutter;
 `export_step(pattern.part, "blank.step")` writes the blank as a solid.
@@ -160,7 +179,11 @@ The outline and the bend lines lie in the XY plane, ready for a 2D export for th
 - The bend zone must cross flat sheet only: keep a bend line at least half the bend allowance
   away from edges parallel to it, from other bends and from ribs; smlibpy raises
   `ModelingError` with the distance otherwise.
-- Bend angles go up to 180 degrees, flange angles below 180; the inside radius from 0.11 mm.
+- `fold` bends up to 180 degrees, flange angles stay below 180; the inside radius from 0.11 mm.
+  `unfold` takes bends up to below a full turn: rolled parts, curls and bends over 180 degrees.
+- A bend at a free end of the sheet, a bend over 180 degrees and a rolled part must run the full
+  width of the sheet next to them (no sheet beside the bend along its axis), and a part with more
+  than one bend needs flat sheet on at least one side of each.
 - Holes and cutouts that cross a bend zone bend into NURBS surfaces (within 0.0001 mm).
   Better cut them into the flat pattern's blank and bend after.
 - A corner without a bend radius does not unfold.

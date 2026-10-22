@@ -6,7 +6,10 @@ parameters, NURBS data and iso-parametric curves of faces; major radius and cone
 continuity of the faces at an edge and of the edges of a wire, G1/G2 selectors, convexity along the
 whole edge. A5: section properties of sketches. A6: inertia about a point or an axis, radii of
 gyration. A7: a face the integration cannot converge on raises instead of running for minutes.
-D1: K-factors per bend: as folded, by rule, by table.
+D1: K-factors per bend: as folded, by rule, by table. D2: deformations keep analytic faces where
+the exact image is a plane, cylinder or cone (a bent plate is sheet metal). D3: unroll, and
+unfolding rolled parts, bends at a free end and bends over 180 degrees. D4: part.volume of
+deformed parts.
 """
 
 import math
@@ -447,3 +450,236 @@ def test_flanges_keep_their_k_factor():
     assert part.flat_pattern(k_factor=0.44).size.x == approx(blank + math.pi / 2 * (0.44 - 0.3) * 2, abs=1e-6)
     plain = Part._wrap(part._copy_brep())  # a part without the record (imported, say): 0.44
     assert plain.bends()[0].k_factor == 0.44
+
+
+# -- D2: analytic images of deformations --------------------------------------------------------
+def _kinds(shapes) -> dict:
+    out: dict = {}
+    for s in shapes:
+        out[s.geom_type] = out.get(s.geom_type, 0) + 1
+    return out
+
+
+def _deviation(plan, result) -> float:
+    from smlibpy import deform as D
+    from smlibpy._kernel import k
+
+    return max(k.deform.deviation(plan.shape._brep, result._brep, dict(plan.spec, max_degree=D.MAX_DEGREE), 9).values())
+
+
+def test_a_bent_plate_has_exact_cylinders_and_circles():
+    from smlibpy import deform as D
+
+    plate = Box(200, 40, 10)
+    bent = plate.bend(90, radius=25)
+    assert bent.is_valid()
+    assert _kinds(bent.faces()) == {"plane": 12, "cylinder": 2}
+    assert _kinds(bent.edges()) == {"line": 24, "circle": 4}
+    cyl = bent.faces().cylinders()
+    assert sorted(round(f.radius, 9) for f in cyl) == [20, 30]
+    for f in cyl:  # about the bend axis: 25 above the plate's middle, at the bend's start
+        assert f.axis.direction.is_parallel((0, 1, 0))
+        assert Axis((-25 * math.pi / 4, 0, 25), (0, 1, 0)).distance_to(f.axis.origin) < 1e-9
+    assert sorted(round(e.radius, 9) for e in bent.edges().circles()) == [20, 20, 30, 30]
+    assert bent.volume == approx(80000, rel=1e-12)  # bent about its middle layer: the volume stays
+    plan = D._plan_bend(plate, 90.0, 25, Plane.XZ, None, None, 1e-6)
+    assert _deviation(plan, bent) < 1e-9
+
+
+def test_a_bent_plate_is_sheet_metal():
+    bent = Box(200, 40, 10).bend(90, radius=25)
+    (b,) = bent.bends()
+    assert (b.angle, b.radius, b.thickness, b.k_factor) == (90, 20, 10, 0.5)  # its neutral layer: the middle
+    flat = bent.unfold()
+    assert flat.bbox().size == approx(Vector(200, 40, 10), abs=1e-9)
+    assert flat.volume == approx(80000, rel=1e-9)
+    assert flat_pattern(bent).size.x == approx(200, abs=1e-9)
+    # neutral layer at the bottom, the outside of the bend: K 1, inside radius 25 - 10
+    low = Box(200, 40, 10).bend(90, radius=25, plane=Plane((0, 0, -5), (1, 0, 0), (0, -1, 0)))
+    (b,) = low.bends()
+    assert (b.radius, b.k_factor) == (approx(15), 1.0)
+    assert low.unfold().bbox().size.x == approx(200, abs=1e-9)
+
+
+def test_tapers_make_cones_planes_and_circles():
+    cone = Cylinder(10, 50).taper(0.5)
+    assert _kinds(cone.faces()) == {"cone": 1, "plane": 2}
+    assert _kinds(cone.edges()) == {"circle": 2}
+    assert sorted(round(e.radius, 9) for e in cone.edges()) == [5, 10]
+    side = cone.faces().filter(lambda f: f.geom_type == "cone")[0]
+    assert side.cone_angle == approx(math.degrees(math.atan(5 / 50)), abs=1e-9)
+    assert side.axis.direction.is_parallel((0, 0, 1))
+    assert cone.volume == approx(math.pi * 50 / 3 * (100 + 50 + 25), rel=1e-10)
+    frustum = Box(20, 20, 50).taper(2.0)
+    assert _kinds(frustum.faces()) == {"plane": 6} and _kinds(frustum.edges()) == {"line": 12}
+    assert frustum.volume == approx(50 / 3 * (400 + 1600 + 800), rel=1e-12)
+    # tapered below z = 0, scaled across the axis above it: a cone, then a cylinder of half the radius
+    half = Cylinder(10, 50).taper(0.5, end=0)
+    assert _kinds(half.faces()) == {"cone": 1, "cylinder": 1, "plane": 2}
+    assert [round(f.radius, 9) for f in half.faces().cylinders()] == [5]
+
+
+def test_twists_keep_turned_faces_and_unmoved_faces():
+    bar = Box(20, 20, 100).twist(90)
+    assert _kinds(bar.faces()) == {"plane": 2, "bspline": 4}
+    rod = Cylinder(10, 100).twist(90)
+    assert _kinds(rod.edges()) == {"circle": 2}  # the rims only turn
+    block = Box(60, 40, 20)
+    lat = Lattice(block, 3)
+    lat.move((1, 1, -1), (0, 0, 8))  # the bottom and the sides do not move
+    pillow = lat.apply(block)
+    assert _kinds(pillow.faces()) == {"plane": 5, "bspline": 1}
+    assert pillow.faces().sort_by(Z)[0].center().z == approx(-10, abs=1e-12)
+
+
+def test_slanted_planes_bend_into_cones_and_holes_stay_fitted():
+    b = Box(200, 40, 10)
+    chamfered = b.chamfer(b.edges().filter_by(X).filter(lambda e: e.center().z > 0), 3)
+    bent = chamfered.bend(90, radius=25)
+    assert bent.is_valid()
+    assert _kinds(bent.faces()) == {"plane": 16, "cylinder": 2, "cone": 2}
+    for f in bent.faces().filter(lambda f: f.geom_type == "cone"):
+        assert f.cone_angle == approx(45, abs=1e-9) and f.axis.direction.is_parallel((0, 1, 0))
+    holed = (Box(200, 40, 10) - Cylinder(5, 20)).bend(90, radius=25)
+    assert holed.is_valid()
+    assert _kinds(holed.faces()) == {"plane": 12, "cylinder": 2, "bspline": 1}  # the hole's wall is fitted
+    assert holed.volume == approx(80000 - 250 * math.pi, rel=1e-9)
+
+
+def test_bent_parts_write_cylinders_to_step(tmp_path):
+    for name, part in (("bent", Box(200, 40, 10).bend(90, radius=25)),
+                       ("folded", fold(Box(200, 40, 10, align=(Align.MIN, Align.CENTER, Align.MIN)),
+                                       Axis((100, 0, 10), (0, 1, 0)), 90, radius=20, k_factor=0.5))):
+        path = tmp_path / f"{name}.step"
+        export_step(part, path)
+        text = path.read_text()
+        assert text.count("CYLINDRICAL_SURFACE") == 2 and "B_SPLINE_SURFACE" not in text
+        back = import_step(path)
+        assert _kinds(back.faces()) == {"plane": 12, "cylinder": 2}
+        assert back.volume == approx(80000, rel=1e-9)
+
+
+def test_the_kernel_report_counts_analytic_faces_and_can_leave_them_out():
+    from smlibpy import deform as D
+    from smlibpy._kernel import k
+
+    plan = D._plan_bend(Box(200, 40, 10), 90.0, 25, Plane.XZ, None, None, 1e-6)
+    spec = dict(plan.spec, max_degree=D.MAX_DEGREE)
+    brep, report = k.deform.deform_brep(plan.shape._brep, spec)
+    assert (report["faces_analytic"], report["edges_analytic"], report["faces_approximated"]) == (4, 12, 0)
+    brep, report = k.deform.deform_brep(plan.shape._brep, dict(spec, analytic=False))
+    assert (report["faces_analytic"], report["faces_approximated"]) == (0, 4)
+    assert _kinds(Part._wrap(brep).faces()) == {"plane": 10, "bspline": 4}
+
+
+# -- D3: unroll, rolled sheet metal --------------------------------------------------------------
+def test_unroll_lays_a_ring_segment_flat():
+    ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+    strip = unroll(ring, radius=51)
+    assert strip.is_valid() and _kinds(strip.faces()) == {"plane": 6} and _kinds(strip.edges()) == {"line": 12}
+    assert strip.volume == approx(ring.volume, rel=1e-12)  # unrolled at the middle of the thickness
+    # every layer is as long as the neutral one: the inside and outside faces 51 * 3 pi / 2 by 40
+    big = sorted(f.area for f in strip.faces())[-2:]
+    assert big == [approx(51 * 3 * math.pi / 2 * 40, rel=1e-12)] * 2
+    seg = (Cylinder(52, 40) - Cylinder(50, 50)) & Box(60, 60, 40, align=(Align.MIN, Align.MIN, Align.CENTER))
+    flat = seg.unroll(radius=51, start=(1, 0, 0))  # the line along +X stays
+    bb = flat.bbox()
+    assert (bb.min.x, bb.max.x) == (approx(50), approx(52))
+    assert (bb.min.y, bb.max.y) == (approx(0, abs=1e-9), approx(51 * math.pi / 2))
+    outside = seg.unroll(radius=52, start=(1, 0, 0))  # the outside keeps its length, the rest shrinks
+    assert outside.volume == approx(seg.volume * 52 / 51, rel=1e-9)
+
+
+def test_unroll_inverts_bend():
+    bar = Box(100, 10, 10)
+    bent = bar.bend(90)
+    center, direction, _, _ = bent._folds[0]
+    straight = bent.unroll(radius=100 / (math.pi / 2), axis=Axis(center, direction))
+    assert straight.is_valid() and _kinds(straight.faces()) == {"plane": 6}
+    assert straight.volume == approx(10000, rel=1e-12)
+    assert sorted(round(f.area, 6) for f in straight.faces()) == [100] * 2 + [1000] * 4
+
+
+def test_unroll_refuses_what_it_cannot_lay_flat():
+    tube = Cylinder(52, 40) - Cylinder(50, 50)
+    with pytest.raises(ModelingError, match="all the way around"):
+        tube.unroll(radius=51)
+    with pytest.raises(ModelingError, match="reaches the axis"):
+        Box(10, 10, 10).unroll(radius=5)
+    seg = (Cylinder(52, 40) - Cylinder(50, 50)) & Box(60, 60, 40, align=(Align.MIN, Align.MIN, Align.CENTER))
+    with pytest.raises(ModelingError, match="opposite start"):
+        seg.unroll(radius=51, start=(-1, -1, 0))
+    with pytest.raises(ValueError, match="positive"):
+        seg.unroll(radius=0)
+    with pytest.raises(ValueError, match="across the axis"):
+        seg.unroll(radius=51, start=(0, 0, 1))
+    slit = Cylinder(30, 50) - Cylinder(29, 60) - Box(4, 40, 60, align=(Align.CENTER, Align.MIN, Align.CENTER))
+    assert slit.unroll(radius=30).bbox().size.x == approx(30 * (2 * math.pi - 2 * math.asin(2 / 30)), rel=1e-9)
+
+
+def test_rolled_parts_unfold():
+    seg = (Cylinder(52, 40) - Cylinder(50, 50)) & Box(200, 200, 40, align=(Align.MIN, Align.MIN, Align.CENTER))
+    pattern = flat_pattern(seg)
+    assert pattern.size == approx(Vector((50 + 0.44 * 2) * math.pi / 2, 40, 2), abs=1e-9)
+    assert pattern.outline.area == approx(pattern.size.x * 40, rel=1e-12)
+    assert seg.unfold(k_factor=0.5).volume == approx(seg.volume, rel=1e-12)
+    ring = (Cylinder(52, 40) - Cylinder(50, 50)) - Box(200, 200, 40, align=(Align.MIN, Align.MIN, Align.CENTER))
+    (b,) = ring.bends()
+    assert b.angle == approx(270) and b.allowance == approx(3 * math.pi / 2 * 50.88)
+    assert flat_pattern(ring).size.x == approx(3 * math.pi / 2 * 50.88, abs=1e-9)
+    with pytest.raises(ValueError, match="rolled"):
+        unfold(seg, fixed=seg.faces().planar()[0])
+
+
+def test_a_bend_at_a_free_end_unfolds_with_its_flat_in_place():
+    seg = (Cylinder(52, 40) - Cylinder(50, 50)) & Box(200, 200, 40, align=(Align.MIN, Align.MIN, Align.CENTER))
+    j = seg + Box(30, 2, 40, align=(Align.MAX, Align.MIN, Align.CENTER)).translate(0, 50, 0)
+    flat = j.unfold()
+    bb = flat.bbox()
+    assert (bb.min.x, bb.max.x) == (approx(-30), approx((50 + 0.44 * 2) * math.pi / 2))
+    assert (bb.min.y, bb.max.y) == (approx(50), approx(52))  # the leg stayed where it was
+    assert flat_pattern(j).size.x == approx(30 + (50 + 0.44 * 2) * math.pi / 2, abs=1e-9)
+
+
+def _curl() -> Part:
+    ring = (Cylinder(12, 40) - Cylinder(10, 50)).rotate(X, 90).translate(0, 0, 12)
+    curl = ring - Box(20, 60, 20, align=(Align.MAX, Align.CENTER, Align.MAX)).translate(0, 0, 12)
+    return Box(100, 40, 2, align=(Align.MAX, Align.CENTER, Align.MIN)) + curl  # 270 degrees at x = 0
+
+
+def test_curls_and_bends_over_180_degrees_unfold():
+    curled = _curl()
+    (b,) = curled.bends()
+    assert b.angle == approx(270)
+    flat = curled.unfold()
+    bb = flat.bbox()
+    assert (bb.min.x, bb.max.x) == (approx(-100), approx(3 * math.pi / 2 * 10.88))
+    assert (bb.min.z, bb.max.z) == (approx(0, abs=1e-9), approx(2))  # the plate stayed
+    # with flat sheet beyond the bend too: it moves along
+    omega = curled + Box(2, 40, 5, align=(Align.MIN, Align.CENTER, Align.MAX)).translate(-12, 0, 12)
+    assert omega.unfold().bbox().size.x == approx(105 + 3 * math.pi / 2 * 10.88, abs=1e-9)
+    assert omega.unfold(k_factor=0.5).bbox().size.x == approx(105 + 3 * math.pi / 2 * 11, abs=1e-9)
+    assert omega.flat_pattern().outline.area == approx((105 + 3 * math.pi / 2 * 10.88) * 40, rel=1e-9)
+
+
+def test_a_folded_part_with_a_curl_unfolds():
+    curled = _curl()
+    part = fold(curled, Axis((-50, 0, 2), (0, 1, 0)), 90, radius=2, k_factor=0.4)
+    assert len(part.bends()) == 2
+    flat = flat_pattern(part)
+    assert flat.size.x == approx(100 + 3 * math.pi / 2 * 10.88, abs=1e-6)
+    assert sorted(b.k_factor for b in flat.bends) == [0.4, 0.44]
+
+
+def test_bend_allowance_takes_rolled_angles():
+    assert bend_allowance(270, radius=50, thickness=2) == approx(3 * math.pi / 2 * 50.88)
+    with pytest.raises(ValueError, match="below 360"):
+        bend_allowance(360, radius=50, thickness=2)
+    with pytest.raises(ValueError, match="between -180 and 180"):
+        fold(Box(100, 40, 2), Axis((0, 0, 1), (0, 1, 0)), 200, radius=2)
+
+
+# -- D4: volumes of deformed parts ---------------------------------------------------------------
+def test_deformed_parts_measure_exactly():
+    assert Box(100, 10, 10).bend(90).volume == approx(10000, rel=1e-12)
+    assert round(Box(20, 20, 100).twist(90).volume, 3) == 40000.0

@@ -18,8 +18,10 @@ Scales the cross-sections of a part toward an axis, by a factor that changes eve
 
 ## Returns
 A `Part` (`Shell` for a shell or sketch), same faces, edges and vertices. **Exact**: a
-taper is a polynomial map, every face is its exact image. A cylinder becomes a cone (side
-degree 2 x 1, rational; top radius exactly half for 0.5), a box a frustum of a pyramid.
+taper is a polynomial map, every face is its exact image. A cylinder about the axis becomes
+an exact cone (`geom_type == "cone"`, its rims circles; top radius exactly half for 0.5), a
+box a frustum of a pyramid with plane faces; other faces (fillets, off-axis holes) are exact
+NURBS.
 
 ## Gotchas
 - `taper(0.5)` scales the cross-section, not the angle: a 20 x 20 x 50 box becomes a
@@ -40,7 +42,7 @@ degree 2 x 1, rational; top radius exactly half for 0.5), a box a frustum of a p
 ## Example
 ```python
 cone = Cylinder(10, 50).taper(0.5)                   # exact frustum of a cone
-print(round(cone.mass_properties(accuracy=1e-10).volume, 3), round(math.pi * 50 / 3 * (100 + 50 + 25), 3))
+print(round(cone.volume, 3), round(math.pi * 50 / 3 * (100 + 50 + 25), 3), cone.faces().sort_by(Z)[1].geom_type)
 
 grip = Cylinder(12, 90)
 grip = grip.fillet(grip.edges(), 4).taper(0.75)      # the rounds taper with it
@@ -50,9 +52,9 @@ post = Box(40, 40, 60).taper(1.4, start=10)          # flares from z = 10 up, 1.
 print(post.bbox())
 
 wedge = Box(100, 20, 20).taper(0.25, axis=X)         # along X: a quarter of the size at x = 50
-print(round(wedge.mass_properties(accuracy=1e-10).volume, 3))
+print(round(wedge.volume, 3))
 ```
-prints `9162.979 9162.979`, `True 5`, a box of ±28 x ±28 x ±30, `17500.0`.
+prints `9162.979 9162.979 cone`, `True 5`, a box of ±28 x ±28 x ±30, `17500.0`.
 
 ## Related
 `deform/generic`, `twist`, `Lattice` (scale a layer for non-linear tapers);

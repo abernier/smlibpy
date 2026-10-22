@@ -1,7 +1,8 @@
 // tests/test_lane_DA.py: measuring and analysis, and per-bend K-factors (kernel plan items A2-A7,
 // D1): nearest points and closest points, curvature, NURBS data and iso curves of faces, continuity
 // of edges and wires, section properties, inertia about points and axes, the integration's budget,
-// K-factors per bend.
+// K-factors per bend. D2-D4: analytic faces of deformed parts (a bent plate is sheet metal), unroll,
+// unfolding rolled parts, curls and bends over 180 degrees, volumes of deformed parts.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { KernelError, ext } from '../src/kernel.ts'
@@ -39,6 +40,9 @@ import {
   type VectorLike,
 } from '../src/index.ts'
 import { bends, din6935 } from '../src/sheetmetal.ts'
+import { Lattice, ModelingError, bendAllowance, fromStep, toStep, unroll } from '../src/index.ts'
+import { MAX_DEGREE, _planBend } from '../src/deform.ts'
+import { k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
 function near(actual: number, expected: number, tol: number): void {
@@ -532,4 +536,227 @@ test('flanges keep their K-factor', () => {
   near(part.flatPattern({ kFactor: 0.44 }).size.x, blank + (Math.PI / 2) * (0.44 - 0.3) * 2, 1e-6)
   const plain = Part._wrap(part._copyBrep())
   assert.equal(plain.bends()[0].kFactor, 0.44)
+})
+
+// -- D2: analytic images of deformations ------------------------------------------------------------
+function kinds(shapes: Iterable<{ geomType: string }>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of shapes) out[s.geomType] = (out[s.geomType] ?? 0) + 1
+  return out
+}
+
+function round9(v: number): number {
+  return Number(v.toFixed(9))
+}
+
+test('a bent plate has exact cylinders and circles', () => {
+  const plate = Box(200, 40, 10)
+  const bent = plate.bend(90, { radius: 25 })
+  assert.ok(bent.isValid())
+  assert.deepEqual(kinds(bent.faces()), { plane: 12, cylinder: 2 })
+  assert.deepEqual(kinds(bent.edges()), { line: 24, circle: 4 })
+  const cyl = bent.faces().cylinders()
+  assert.deepEqual(cyl.map((f) => round9(f.radius)).sort((a, b) => a - b), [20, 30])
+  for (const f of cyl) {
+    assert.ok(f.axis.direction.isParallel([0, 1, 0]))
+    near(new Axis([(-25 * Math.PI) / 4, 0, 25], [0, 1, 0]).distanceTo(f.axis.origin), 0, 1e-9)
+  }
+  assert.deepEqual(bent.edges().circles().map((e) => round9(e.radius)).sort((a, b) => a - b), [20, 20, 30, 30])
+  approx(bent.volume, 80000, 1e-12)
+  const plan = _planBend(plate, 90.0, 25, Plane.XZ, null, null, 1e-6)
+  const d = k.deform.deviation(plan.shape._brep, bent._brep, { ...plan.spec, max_degree: MAX_DEGREE }, 9)
+  assert.ok(Math.max(...(Object.values(d) as number[])) < 1e-9)
+})
+
+test('a bent plate is sheet metal', () => {
+  const bent = Box(200, 40, 10).bend(90, { radius: 25 })
+  const [b] = bent.bends()
+  assert.deepEqual([b.angle, b.radius, b.thickness, b.kFactor], [90, 20, 10, 0.5]) // its neutral layer: the middle
+  const flat = bent.unfold()
+  near(flat.bbox().size.x, 200, 1e-9)
+  near(flat.bbox().size.y, 40, 1e-9)
+  near(flat.bbox().size.z, 10, 1e-9)
+  approx(flat.volume, 80000, 1e-9)
+  near(flatPattern(bent).size.x, 200, 1e-9)
+  // neutral layer at the bottom, the outside of the bend: K 1, inside radius 25 - 10
+  const low = Box(200, 40, 10).bend(90, { radius: 25, plane: new Plane([0, 0, -5], [1, 0, 0], [0, -1, 0]) })
+  const [c] = low.bends()
+  near(c.radius, 15, 1e-9)
+  assert.equal(c.kFactor, 1.0)
+  near(low.unfold().bbox().size.x, 200, 1e-9)
+})
+
+test('tapers make cones, planes and circles', () => {
+  const cone = Cylinder(10, 50).taper(0.5)
+  assert.deepEqual(kinds(cone.faces()), { cone: 1, plane: 2 })
+  assert.deepEqual(kinds(cone.edges()), { circle: 2 })
+  assert.deepEqual(cone.edges().map((e) => round9(e.radius)).sort((a, b) => a - b), [5, 10])
+  const side = cone.faces().filter((f) => f.geomType === 'cone')[0]
+  near(side.coneAngle, (Math.atan(5 / 50) * 180) / Math.PI, 1e-9)
+  approx(cone.volume, ((Math.PI * 50) / 3) * (100 + 50 + 25), 1e-10)
+  const frustum = Box(20, 20, 50).taper(2.0)
+  assert.deepEqual(kinds(frustum.faces()), { plane: 6 })
+  assert.deepEqual(kinds(frustum.edges()), { line: 12 })
+  const half = Cylinder(10, 50).taper(0.5, { end: 0 })
+  assert.deepEqual(kinds(half.faces()), { cone: 1, cylinder: 1, plane: 2 })
+})
+
+test('twists keep turned faces, lattices unmoved faces', () => {
+  assert.deepEqual(kinds(Box(20, 20, 100).twist(90).faces()), { plane: 2, bspline: 4 })
+  assert.deepEqual(kinds(Cylinder(10, 100).twist(90).edges()), { circle: 2 })
+  const block = Box(60, 40, 20)
+  const lat = new Lattice(block, 3)
+  lat.move([1, 1, -1], [0, 0, 8])
+  assert.deepEqual(kinds(lat.apply(block).faces()), { plane: 5, bspline: 1 })
+})
+
+test('slanted planes bend into cones; holes stay fitted', () => {
+  const b = Box(200, 40, 10)
+  const chamfered = b.chamfer(b.edges().filterBy(X).filter((e) => e.center().z > 0), 3)
+  const bent = chamfered.bend(90, { radius: 25 })
+  assert.ok(bent.isValid())
+  assert.deepEqual(kinds(bent.faces()), { plane: 16, cylinder: 2, cone: 2 })
+  const holed = Box(200, 40, 10).cut(Cylinder(5, 20)).bend(90, { radius: 25 })
+  assert.deepEqual(kinds(holed.faces()), { plane: 12, cylinder: 2, bspline: 1 })
+  approx(holed.volume, 80000 - 250 * Math.PI, 1e-9)
+})
+
+test('bent and folded parts write cylinders to STEP', () => {
+  const folded = fold(Box(200, 40, 10, { align: [Align.MIN, Align.CENTER, Align.MIN] }), new Axis([100, 0, 10], [0, 1, 0]), 90, { radius: 20, kFactor: 0.5 })
+  for (const part of [Box(200, 40, 10).bend(90, { radius: 25 }), folded]) {
+    const text = toStep(part)
+    assert.equal(text.split('CYLINDRICAL_SURFACE').length - 1, 2)
+    assert.ok(!text.includes('B_SPLINE_SURFACE'))
+    const back = fromStep(text) as Part
+    assert.deepEqual(kinds(back.faces()), { plane: 12, cylinder: 2 })
+    approx(back.volume, 80000, 1e-9)
+  }
+})
+
+test('the kernel report counts analytic faces and can leave them out', () => {
+  const plan = _planBend(Box(200, 40, 10), 90.0, 25, Plane.XZ, null, null, 1e-6)
+  const spec = { ...plan.spec, max_degree: MAX_DEGREE }
+  const [b1, r1] = k.deform.deform_brep(plan.shape._brep, spec)
+  assert.deepEqual([r1.faces_analytic, r1.edges_analytic, r1.faces_approximated], [4, 12, 0])
+  const [b2, r2] = k.deform.deform_brep(plan.shape._brep, { ...spec, analytic: false })
+  assert.deepEqual([r2.faces_analytic, r2.faces_approximated], [0, 4])
+  assert.deepEqual(kinds(Part._wrap(b2).faces()), { plane: 10, bspline: 4 })
+  Part._wrap(b1)
+})
+
+// -- D3: unroll, rolled sheet metal ---------------------------------------------------------------
+function ring270(): Part {
+  return Cylinder(52, 40).cut(Cylinder(50, 50)).cut(Box(60, 60, 50, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+}
+
+function quarter(): Part {
+  return Cylinder(52, 40).cut(Cylinder(50, 50)).intersect(Box(60, 60, 40, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+}
+
+test('unroll lays a ring segment flat', () => {
+  const ring = ring270()
+  const strip = unroll(ring, { radius: 51 })
+  assert.ok(strip.isValid())
+  assert.deepEqual(kinds(strip.faces()), { plane: 6 })
+  assert.deepEqual(kinds(strip.edges()), { line: 12 })
+  approx(strip.volume, ring.volume, 1e-12)
+  const big = strip.faces().map((f) => f.area).sort((a, b) => a - b).slice(-2)
+  for (const a of big) approx(a, ((51 * 3 * Math.PI) / 2) * 40, 1e-12)
+  const seg = quarter()
+  const flat = seg.unroll({ radius: 51, start: [1, 0, 0] })
+  const bb = flat.bbox()
+  near(bb.min.x, 50, 1e-9)
+  near(bb.max.x, 52, 1e-9)
+  near(bb.min.y, 0, 1e-9)
+  near(bb.max.y, (51 * Math.PI) / 2, 1e-9)
+  approx(seg.unroll({ radius: 52, start: [1, 0, 0] }).volume, (seg.volume * 52) / 51, 1e-9)
+})
+
+test('unroll inverts bend', () => {
+  const bent = Box(100, 10, 10).bend(90)
+  const [center, direction] = bent._folds[0]
+  const straight = bent.unroll({ radius: 100 / (Math.PI / 2), axis: new Axis(center, direction) })
+  assert.ok(straight.isValid())
+  assert.deepEqual(kinds(straight.faces()), { plane: 6 })
+  approx(straight.volume, 10000, 1e-12)
+  assert.deepEqual(straight.faces().map((f) => Number(f.area.toFixed(6))).sort((a, b) => a - b), [100, 100, 1000, 1000, 1000, 1000])
+})
+
+test('unroll refuses what it cannot lay flat', () => {
+  const tube = Cylinder(52, 40).cut(Cylinder(50, 50))
+  raises(() => tube.unroll({ radius: 51 }), ModelingError, /all the way around/)
+  raises(() => Box(10, 10, 10).unroll({ radius: 5 }), ModelingError, /reaches the axis/)
+  const seg = quarter()
+  raises(() => seg.unroll({ radius: 51, start: [-1, -1, 0] }), ModelingError, /opposite start/)
+  raises(() => seg.unroll({ radius: 0 }), RangeError, /positive/)
+  raises(() => seg.unroll({ radius: 51, start: [0, 0, 1] }), RangeError, /across the axis/)
+  const slit = Cylinder(30, 50).cut(Cylinder(29, 60)).cut(Box(4, 40, 60, { align: [Align.CENTER, Align.MIN, Align.CENTER] }))
+  approx(slit.unroll({ radius: 30 }).bbox().size.x, 30 * (2 * Math.PI - 2 * Math.asin(2 / 30)), 1e-9)
+})
+
+test('rolled parts unfold', () => {
+  const seg = Cylinder(52, 40).cut(Cylinder(50, 50)).intersect(Box(200, 200, 40, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+  const pattern = flatPattern(seg)
+  near(pattern.size.x, ((50 + 0.44 * 2) * Math.PI) / 2, 1e-9)
+  near(pattern.size.y, 40, 1e-9)
+  near(pattern.size.z, 2, 1e-9)
+  approx(pattern.outline.area, pattern.size.x * 40, 1e-12)
+  approx(seg.unfold({ kFactor: 0.5 }).volume, seg.volume, 1e-12)
+  const ring = Cylinder(52, 40).cut(Cylinder(50, 50)).cut(Box(200, 200, 40, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+  const [b] = ring.bends()
+  near(b.angle, 270, 1e-9)
+  approx(b.allowance, ((3 * Math.PI) / 2) * 50.88, 1e-9)
+  near(flatPattern(ring).size.x, ((3 * Math.PI) / 2) * 50.88, 1e-9)
+  raises(() => unfold(seg, { fixed: seg.faces().planar()[0] }), RangeError, /rolled/)
+})
+
+test('a bend at a free end unfolds with its flat in place', () => {
+  const seg = Cylinder(52, 40).cut(Cylinder(50, 50)).intersect(Box(200, 200, 40, { align: [Align.MIN, Align.MIN, Align.CENTER] }))
+  const j = seg.fuse(Box(30, 2, 40, { align: [Align.MAX, Align.MIN, Align.CENTER] }).translate(0, 50, 0))
+  const bb = j.unfold().bbox()
+  near(bb.min.x, -30, 1e-9)
+  near(bb.max.x, ((50 + 0.44 * 2) * Math.PI) / 2, 1e-9)
+  near(bb.min.y, 50, 1e-9)
+  near(bb.max.y, 52, 1e-9)
+  near(flatPattern(j).size.x, 30 + ((50 + 0.44 * 2) * Math.PI) / 2, 1e-9)
+})
+
+function curl(): Part {
+  const ring = Cylinder(12, 40).cut(Cylinder(10, 50)).rotate(X, 90).translate(0, 0, 12)
+  const c = ring.cut(Box(20, 60, 20, { align: [Align.MAX, Align.CENTER, Align.MAX] }).translate(0, 0, 12))
+  return Box(100, 40, 2, { align: [Align.MAX, Align.CENTER, Align.MIN] }).fuse(c) // 270 degrees at x = 0
+}
+
+test('curls and bends over 180 degrees unfold', () => {
+  const curled = curl()
+  const [b] = curled.bends()
+  near(b.angle, 270, 1e-9)
+  const bb = curled.unfold().bbox()
+  near(bb.min.x, -100, 1e-9)
+  near(bb.max.x, ((3 * Math.PI) / 2) * 10.88, 1e-9)
+  near(bb.min.z, 0, 1e-9)
+  near(bb.max.z, 2, 1e-9)
+  const omega = curled.fuse(Box(2, 40, 5, { align: [Align.MIN, Align.CENTER, Align.MAX] }).translate(-12, 0, 12))
+  near(omega.unfold().bbox().size.x, 105 + ((3 * Math.PI) / 2) * 10.88, 1e-9)
+  near(omega.unfold({ kFactor: 0.5 }).bbox().size.x, 105 + ((3 * Math.PI) / 2) * 11, 1e-9)
+  approx(omega.flatPattern().outline.area, (105 + ((3 * Math.PI) / 2) * 10.88) * 40, 1e-9)
+})
+
+test('a folded part with a curl unfolds', () => {
+  const part = fold(curl(), new Axis([-50, 0, 2], [0, 1, 0]), 90, { radius: 2, kFactor: 0.4 })
+  assert.equal(part.bends().length, 2)
+  const flat = flatPattern(part)
+  near(flat.size.x, 100 + ((3 * Math.PI) / 2) * 10.88, 1e-6)
+  assert.deepEqual(flat.bends.map((x) => x.kFactor).sort((a, b) => a - b), [0.4, 0.44])
+})
+
+test('bendAllowance takes rolled angles', () => {
+  approx(bendAllowance(270, { radius: 50, thickness: 2 }), ((3 * Math.PI) / 2) * 50.88)
+  raises(() => bendAllowance(360, { radius: 50, thickness: 2 }), RangeError, /below 360/)
+})
+
+// -- D4: volumes of deformed parts -----------------------------------------------------------------
+test('deformed parts measure exactly', () => {
+  approx(Box(100, 10, 10).bend(90).volume, 10000, 1e-12)
+  assert.equal(Number(Box(20, 20, 100).twist(90).volume.toFixed(3)), 40000)
 })

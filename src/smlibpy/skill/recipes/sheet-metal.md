@@ -113,6 +113,7 @@ print(round(k, 4), round(developed_length(*legs, radius=r, thickness=t, k_factor
 - Angles up to 180 (hems) for `fold`, below 180 for `flange`; radius from 0.11.
 - `unfold` and `flat_pattern` need bends as coaxial cylinders one thickness apart; a sharp
   corner (no radius) raises `ModelingError: unfold: the unfolded part is ... deep across the fixed face`.
+  Rolled parts, curls at a free end and bends over 180 degrees unfold too (unrolled at r + k t).
 - Holes across a bend zone become NURBS and make the part's volume unreliable; cut them in the flat.
 - Check every step: `is_valid()`, `bbox().size` against the outside dimensions, `len(part.bends())`,
   and that `flat_pattern(part).part.volume` equals the blank's volume.

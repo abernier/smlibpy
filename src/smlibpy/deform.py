@@ -1,4 +1,4 @@
-"""Deformations: twist, taper and bend parts, or deform them with a control lattice.
+"""Deformations: twist, taper, bend and unroll parts, or deform them with a control lattice.
 
 A deformation moves every point of space, and the whole body with it: all faces, edges and
 vertices go through the same map, so the result is again a closed solid with the same
@@ -9,21 +9,26 @@ faces, edges and vertices::
     bar = Box(20, 20, 100).twist(90)                 # a quarter turn over its length
     grip = Cylinder(12, 80).taper(0.7)               # 70 % of the diameter at the top
     hook = Box(160, 10, 6).bend(180, radius=25)      # U shape with straight legs
+    ring = Cylinder(52, 40) - Cylinder(50, 50) - Box(60, 60, 50, align=(Align.MIN, Align.MIN, Align.CENTER))
+    strip = ring.unroll(radius=51)                   # the three quarter ring, flat (51 * 3 pi / 2 long)
     block = Box(60, 40, 20)
     lat = Lattice(block, 3)                          # 3 x 3 x 3 control points around it
     lat.move((1, 1, -1), (0, 0, 8))                  # lift the middle of the top
     pillow = lat.apply(block)
 
-The results are NURBS. Lattices and tapers are polynomial maps of space, so their results
-are exact: every face is the exact image of the original (up to degree ``MAX_DEGREE``).
-Twists and bends turn space with sines and cosines, which no NURBS reproduces; their faces
-are within ``tolerance`` (default 1e-6 mm) of the exact image, except where that image is
-still polynomial (the straight rulings of a twisted face, the turned ends of a twisted bar),
-which stays exact. Every face keeps the parameterization of the original, so the trim
-curves are the original ones.
+Where the exact image of a face or edge is a plane, cylinder, cone, line or circle, the result
+has that geometry: a plate bent about an axis gets exact cylinders (so ``bends()``, ``unfold``
+and selections such as ``faces().cylinders()`` see them), a tapered cylinder an exact cone, the
+turned ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves
+in place keep what they were. The other faces are NURBS. Lattices and tapers are polynomial
+maps of space, so their results are exact: every face is the exact image of the original (up
+to degree ``MAX_DEGREE``). Twists, bends and unrolls turn space with sines and cosines; a NURBS
+reproduces that where the image is analytic or still polynomial (the straight rulings of a
+twisted face) and is within ``tolerance`` (default 1e-6 mm) of the exact image elsewhere. Fitted
+faces keep the parameterization of the original, so their trim curves are the original ones.
 
 The maps are the kernel's volume deformations (``SmTwistVolume``, ``SmBendVolume``,
-``SmTransform``) and a Bezier volume for lattices and tapers.
+``SmUnbendVolume``, ``SmTransform``) and a Bezier volume for lattices and tapers.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import numpy as np
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, VectorLike, X, Y, Z, _vec
 
-__all__ = ["twist", "taper", "bend", "Lattice", "MAX_DEGREE"]
+__all__ = ["twist", "taper", "bend", "unroll", "Lattice", "MAX_DEGREE"]
 
 #: Highest degree of an exact result. A face whose exact image would need a higher degree
 #: (a sphere in a 4 x 4 x 4 lattice needs 18) is approximated within the tolerance instead.
@@ -145,11 +150,13 @@ def _imprint(shape: Any, origin: np.ndarray, normal: np.ndarray) -> Any:
 @dataclass
 class _Plan:
     """What a deformation does: the shape to send (the ends of the range split into its
-    faces), the spec of the kernel map, and the bounds of the volume ratio."""
+    faces), the spec of the kernel map, the bounds of the volume ratio and, for a bend, the
+    record a sheet metal bend keeps (axis origin and direction, inside radius, K-factor)."""
 
     shape: Any
     spec: dict
     volume_ratio: tuple[float, float]
+    fold: tuple | None = None
 
 
 def _layout(shape: Any, origin: np.ndarray, d: np.ndarray, s: float, e: float, lo: float, hi: float,
@@ -377,7 +384,13 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
     after = {"kind": "rigid", "matrix": _matrix(rot, t - rot @ ((e - s) * xd))}
     work, spec = _layout(shape, o, xd, s, e, lo, hi, inside, after, tol)
     # a layer at distance y (toward the axis) changes its length by (r - y) / r
-    return _Plan(work, spec, (min(1.0, (r - inner) / r), max(1.0, (r + outer) / r)))
+    ratio = (min(1.0, (r - inner) / r), max(1.0, (r + outer) / r))
+    # as a sheet: inside radius r - inner, thickness inner + outer, the neutral layer at r
+    thickness = inner + outer
+    fold = None
+    if thickness > 0 and inner >= 0:
+        fold = (tuple(map(float, center)), tuple(map(float, sigma * zd)), float(r - inner), float(inner / thickness))
+    return _Plan(work, spec, ratio, fold)
 
 
 def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane = Plane.XZ,
@@ -407,7 +420,11 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
         tolerance: largest distance of the bent faces from the exact bend (mm).
 
     The bend axis lies ``radius`` from the neutral layer on the side the part bends toward;
-    the part must not reach it.
+    the part must not reach it. Plane faces across the bend become exact cylinders about the
+    bend axis (and lines across it circles), so a bent plate is a sheet metal part to
+    :func:`smlibpy.bends` and :func:`smlibpy.unfold`; the K-factor its neutral layer gives
+    (where it lies in the thickness) is kept with it. For sheet metal, :func:`smlibpy.fold`
+    bends at a line with an inside radius and a K-factor, with flat legs on both sides.
     """
     _check_shape(shape, "bend")
     a = _angle(angle, "bend")
@@ -422,7 +439,126 @@ def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane 
     if not isinstance(plane, Plane):
         raise TypeError("bend: plane must be a Plane (x_dir along the part, y_dir toward the inside of the bend)")
     plan = _plan_bend(shape, a, radius, plane, start, end, _tolerance(tolerance))
-    return _run(plan, "bend", shape)
+    result = _run(plan, "bend", shape)
+    Part, _, _ = _bodies()
+    if isinstance(result, Part) and plan.fold is not None:
+        result._folds = (*result._folds, plan.fold)
+    return result
+
+
+# =============================================================================
+# unroll
+# =============================================================================
+def _samples(shape: Any) -> np.ndarray:
+    """Points on a shape: its vertices, points along its edges and a grid inside its faces."""
+    pts = [v.point.to_tuple() for v in shape.vertices()]
+    for e in shape.edges():
+        pts += [e.point_at(t).to_tuple() for t in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0)]
+    fractions = (0.05, 0.25, 0.5, 0.75, 0.95)
+    for f in shape.faces():
+        (u0, v0), (u1, v1) = f._f.uv_domain()
+        for a in fractions:
+            for b in fractions:
+                u, v = u0 + a * (u1 - u0), v0 + b * (v1 - v0)
+                if f._f.classify_uv(u, v) != "outside":
+                    pts.append(f._f.point_at_uv(u, v))
+    return np.array(pts, dtype=float)
+
+
+def _reaches_half_plane(shape: Any, o: np.ndarray, d: np.ndarray, toward: np.ndarray, reach: float,
+                        along: tuple[float, float]) -> bool:
+    """Whether the shape touches the half-plane from the axis (``o``, ``d``) toward ``toward``,
+    within ``reach`` of the axis and ``along`` it."""
+    from .sketches import Rectangle
+
+    h0, h1 = along[0] - 1.0, along[1] + 1.0
+    center = o + toward * (reach / 2) + d * ((h0 + h1) / 2)
+    half = Rectangle(reach, h1 - h0).on(Plane(tuple(center), tuple(toward), tuple(np.cross(toward, d))))
+    return shape.distance_to(half) <= 1e-9 * max(1.0, reach)
+
+
+def _plan_unroll(shape: Any, radius: float, axis: Axis, start: VectorLike | None, tol: float) -> _Plan:
+    o = np.array(axis.origin.to_tuple(), dtype=float)
+    d = _unit(axis.direction, "unroll: axis")
+    x0 = _perpendicular(d)
+    y0 = np.cross(d, x0)
+    rel = _samples(shape) - o
+    radial = rel - np.outer(rel @ d, d)
+    r = np.linalg.norm(radial, axis=1)
+    size = max(shape.bbox().diagonal, 1.0)
+    if r.min() <= max(0.01, 1e-6 * size):
+        raise ModelingError("unroll: the part reaches the axis; it can only unroll what lies around it (move the axis, "
+                            "or cut the part off the axis)")
+    angles = np.arctan2(radial @ y0, radial @ x0)
+    reach = 2.0 * float(r.max()) + 1.0
+    along = (float((rel @ d).min()), float((rel @ d).max()))
+    if start is None:
+        # the cut (opposite the middle of the part) in a gap between the samples' angles that
+        # the part does not reach: the widest such gap (a slit's edges are samples)
+        a = np.sort(np.mod(angles, 2 * math.pi))
+        gaps = np.diff(np.append(a, a[0] + 2 * math.pi))
+        mid = None
+        for i in np.argsort(-gaps)[:64]:
+            if not gaps[i] > 1e-9:
+                break
+            cut = a[i] + gaps[i] / 2
+            toward = math.cos(cut) * x0 + math.sin(cut) * y0
+            if not _reaches_half_plane(shape, o, d, toward, reach, along):
+                mid = -toward
+                break
+        if mid is None:
+            raise ModelingError("unroll: the part goes all the way around the axis; cut it open (a slit along the "
+                                "axis) so that it covers less than a full turn")
+    else:
+        s = np.array(_vec(start).to_tuple(), dtype=float)
+        s = s - d * s.dot(d)
+        if not np.linalg.norm(s) > 1e-9:
+            raise ValueError("unroll: start must be a direction across the axis (perpendicular to it)")
+        mid = s / np.linalg.norm(s)
+        if _reaches_half_plane(shape, o, d, -mid, reach, along):
+            raise ModelingError("unroll: the part reaches the line opposite start (half a turn from it), where the "
+                                "unrolled part would tear; leave start out (the middle of the part) or turn it")
+    spec = {"axis": None, "pieces": [{"kind": "unbend", "center": list(map(float, o)), "axis": list(map(float, d)),
+                                      "mid": list(map(float, mid)), "neutral": float(radius)}], "tolerance": tol}
+    # a layer at distance r from the axis changes its length by radius / r
+    return _Plan(shape, spec, (min(1.0, radius / float(r.max())), max(1.0, radius / float(r.min()))))
+
+
+def unroll(shape: Any, *, radius: float, axis: Axis = Z, start: VectorLike | None = None,
+           tolerance: float | None = None) -> Any:
+    """Unroll a part wrapped around an axis into a flat one: the inverse of :func:`bend`.
+
+    A point at distance ``r`` from the axis and at the angle ``a`` (radians) about it from
+    ``start`` goes to distance ``r`` from the axis along ``start`` and ``radius * a`` across:
+    the layer at ``radius`` (the neutral layer) keeps its length, material inside it gets
+    longer and outside it shorter. A rolled sheet (a ring segment of inside radius ``R`` and
+    thickness ``t``) unrolls into a flat plate; as sheet metal, with ``radius = R + k_factor * t``
+    (:func:`smlibpy.unfold` does that, also for rolled parts). Cylinders about the axis become
+    planes, circles about it lines; the faces are exact where their image is a plane, cone,
+    cylinder, line or circle, and within ``tolerance`` elsewhere.
+
+    Args:
+        shape: a Part (or a Shell) around the axis: it must not reach the axis and must cover
+            less than a full turn about it.
+        radius: the radius of the neutral layer (mm, > 0).
+        axis: the axis the part is rolled about (default the world Z axis).
+        start: a direction across the axis: the line (at every distance from the axis) that
+            stays in place; the unrolled part lies in the plane through it perpendicular to
+            ``start``. Default: the middle of the part's angle about the axis. The part must
+            not reach the half-plane opposite it.
+        tolerance: largest distance of fitted faces from the exact unroll (mm).
+
+    Returns a Part (a Shell for a shell).
+    """
+    _check_shape(shape, "unroll")
+    if isinstance(radius, bool) or not isinstance(radius, (int, float, np.floating, np.integer)):
+        raise TypeError("unroll: radius must be a number")
+    if not (math.isfinite(radius) and radius > 0):
+        raise ValueError("unroll: radius must be a positive number (the radius of the layer that keeps its length)")
+    if not isinstance(axis, Axis):
+        raise TypeError("unroll: axis must be an Axis")
+    plan = _plan_unroll(shape, float(radius), axis, start, _tolerance(tolerance))
+    return _run(plan, "unroll", shape)
 
 
 # =============================================================================

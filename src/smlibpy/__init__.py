@@ -9,7 +9,7 @@
 """
 
 from .align import Align
-from .deform import Lattice, bend, taper, twist
+from .deform import Lattice, bend, taper, twist, unroll
 from .curves import (
     Bezier,
     CenterArc,
@@ -74,7 +74,7 @@ __all__ = [
     "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section", "merge",
     "thicken", "tessellate",
     # deformations
-    "twist", "taper", "bend", "Lattice",
+    "twist", "taper", "bend", "unroll", "Lattice",
     # surfaces
     "surface", "ruled", "stitch", "surface_fillet",
     # sheet metal

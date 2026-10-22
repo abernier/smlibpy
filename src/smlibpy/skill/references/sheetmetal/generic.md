@@ -55,7 +55,9 @@ unfolds them exactly with the kernel's space bend: `fold`, `flange`, `unfold`, `
 - A bend that does not cross the whole sheet (`partial=True`) needs relief cuts reaching at
   least BA/2 past the line on both ends.
 - `unfold` treats coaxial cylinder faces one thickness apart as bends. Other curved faces (holes,
-  rounded corners) stay; a corner without a radius does not unfold (`ModelingError`).
+  rounded corners) stay; a corner without a radius does not unfold (`ModelingError`). Rolled parts
+  (a ring segment, no flat), bends at a free end (a curl) and bends over 180 degrees unroll at the
+  neutral radius too (see `sheetmetal/unfold`).
 - A hole across a bend zone bends into NURBS (within 1e-4) and unfolds again, but the kernel
   integrates the volume of such a part badly (7876.9 instead of 7842.9): check it with
   `part.mesh(0.001).volume` (7842.9363). Cut such holes in the flat instead.
