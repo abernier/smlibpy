@@ -1533,6 +1533,51 @@ class Face(Shape):
         """
         return self.to_shell().trim(curves, "split").faces()
 
+    def flipped(self) -> Shell:
+        """A copy of this face, turned over: a sheet of one face whose normal points the other way
+        (see :meth:`Shell.flipped`)."""
+        return self.to_shell().flipped()
+
+    def untrimmed(self) -> Shell:
+        """The whole surface this face lies on, as a sheet of one face: its holes and cut borders
+        are gone.
+
+        A cylindrical face cut out of a box comes back as the whole cylinder the cut left it on (its
+        full height and all around), a B-spline face as its whole surface. A plane has no border of
+        its own: it comes back as the smallest rectangle around the face, along the plane's own
+        directions. The sheet's normal follows this face's (:meth:`normal_at`).
+        """
+        with kernel_call("untrimmed"):
+            b = ext.untrim_face(self._f)
+        return Shell._wrap(b)
+
+    def extended(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
+                 continuity: str = "natural") -> Shell:
+        """The face's surface grown past its sides, as a sheet of one face: to make a sheet reach
+        across a part before cutting or splitting it with it, or to give a blend room.
+
+        Args:
+            distance: How far past each side, measured along the surface (across the middle of the
+                side).
+            sides: Edges of this face: grow past the sides they lie on only. Default: past every side
+                that can grow.
+            continuity: How the surface goes on: ``"natural"`` (default) as it is (a plane stays the
+                plane, a cylinder or sphere the same cylinder or sphere, a B-spline surface follows
+                its own polynomials), ``"G1"`` straight on along its tangents, ``"G2"`` bending on
+                with the curvature it has at the side.
+
+        The sides are those of the face's surface rectangle, along its parameter directions: the
+        four edges of a box's face or of a sheet from :func:`~smlibpy.surface`, the two ends of a
+        cylinder along its axis. Trims (holes, a border cut at a slant) are dropped: the result is
+        the rectangle, grown. A side where the surface closes around (a full cylinder, around it) or
+        shrinks to a point (a sphere's pole, a cone's tip) cannot grow: it is left out by default,
+        and naming its edge raises ``ValueError``; so does an edge that does not run along a side.
+
+        Returns:
+            A sheet of one face, its normal following this face's (:meth:`normal_at`).
+        """
+        return Shell._wrap(_extended_face(self, distance, sides, continuity, "extended"))
+
     def extrude(self, amount: float, **kwargs: Any) -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
         return self.to_sketch().extrude(amount, **kwargs)
@@ -3471,6 +3516,30 @@ def _round_call(operation: str, hint: str) -> Iterator[None]:
         raise KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT) from e
 
 
+def _extended_face(face: Face, distance: float, sides: Any, continuity: str, what: str) -> Any:
+    """The brep of :meth:`Face.extended`."""
+    d = float(distance)
+    if not (d > 0 and math.isfinite(d)):
+        raise ValueError(f"{what}: the distance must be positive, got {distance}")
+    kinds = {"natural": 0, "g1": 1, "g2": 2}
+    level = kinds.get(continuity.lower()) if isinstance(continuity, str) else None
+    if level is None:
+        raise ValueError(f'{what}: continuity is "natural", "G1" or "G2", got {continuity!r}')
+    edges: list[Edge] = []
+    if sides is not None:
+        edges = [sides] if isinstance(sides, Edge) else list(sides)
+        if not edges or not all(isinstance(e, Edge) for e in edges):
+            raise TypeError(f"{what}: sides are edges of the face")
+        own = {e._identity() for e in face.edges(seams=True)}
+        if any(e._identity() not in own for e in edges):
+            raise ValueError(f"{what}: an edge in sides does not bound the face")
+    try:
+        with kernel_call(what, "try a shorter distance, or continuity G1"):
+            return ext.extend_face(face._f, d, [e._e for e in edges], level)
+    except ValueError as e:
+        raise ValueError(str(e).replace("extend_face:", f"{what}:", 1)) from None
+
+
 def _continuity(c: int | str | None) -> int | None:
     if c is None:
         return None
@@ -3656,6 +3725,44 @@ class Shell(_Body):
                                 "border to border, or close a loop on it")
         return out
 
+    def flipped(self) -> Shell:
+        """The sheet turned over: a copy whose faces' normals all point the other way.
+
+        :meth:`thicken` then grows to the other side, and the ``sides`` of
+        :func:`~smlibpy.surface_fillet` count from the new normals. A sheet that encloses a volume
+        (the face of a whole sphere) faces outward whichever way its surface runs: it cannot be
+        turned over (``ValueError``).
+        """
+        with kernel_call("flipped"):
+            b = ext.flip_faces(self._brep)
+        out = self._like(b)
+        for before, after in zip(self.faces(), out.faces()):
+            p = before.interior_point()
+            if not before.normal_at(p).dot(after.normal_at(p)) < 0:
+                raise ValueError("flipped: the sheet encloses a volume; its faces point out of it whichever way "
+                                 "their surfaces run")
+        return out
+
+    def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
+               continuity: str = "natural") -> Shell:
+        """The sheet (of one face) grown past its sides: see :meth:`Face.extended`.
+
+        Args:
+            distance: How far past each side, measured along the surface.
+            sides: Edges of the sheet: grow past the sides they lie on only. Default: every side that
+                can grow.
+            continuity: ``"natural"`` (default), ``"G1"`` or ``"G2"``.
+
+        Returns:
+            A new sheet; this one does not change. For a sheet of several faces, extend one of its
+            faces (``sheet.faces()[i].extended(...)``).
+        """
+        faces = self.faces()
+        if len(faces) != 1:
+            raise ValueError(f"extend: the sheet has {len(faces)} faces; extend one of them with "
+                             f"sheet.faces()[i].extended(...)")
+        return self._like(_extended_face(faces[0], distance, sides, continuity, "extend"))
+
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())
         for t in _bodies(other):
@@ -3689,6 +3796,13 @@ class Sketch(Shell):
 
     def _like(self, brep: Any) -> Sketch:
         return Sketch._wrap(brep, self._plane, name=self.name, color=self.color)
+
+    def flipped(self) -> Sketch:
+        """The sketch turned over: its faces and its plane face the other way (an extrusion then
+        grows to the other side)."""
+        out = super().flipped()
+        out._plane = self._plane.flipped()
+        return out
 
     @classmethod
     def _from_wires(cls, wires: Sequence[Wire], plane: Plane | None = None) -> Sketch:

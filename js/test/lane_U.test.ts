@@ -1,10 +1,20 @@
 // tests/test_lane_U.py: lane U of the kernel plan (phase 1): blends between sheet edges (U2),
-// trimming sheets with curves on them and imprinting curves on parts (U3).
+// trimming sheets with curves on them and imprinting curves on parts (U3); fills and curve networks
+// (U4), stitch with its tolerance, report and normals (U5), extending and untrimming faces (U6).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   Axis,
   Box,
+  RegularPolygon,
+  Sphere,
+  Spline,
+  StitchReport,
+  ThreePointArc,
+  fill,
+  network,
+  ruled,
+  stitch,
   CenterArc,
   Circle,
   Cylinder,
@@ -283,4 +293,198 @@ test('trim and imprint errors', () => {
   raises(() => box.imprint(Circle(4).edges().translate(100, 0, 50), [0, 0, -1]), ModelingError, /miss the part/)
   raises(() => box.imprint(Circle(4).edges(), [0, 0, 0]), RangeError, /direction must not be zero/)
   raises(() => box.imprint(Circle(4).edges(), [0, 0, -1], { closest: true } as never), TypeError, /unexpected option/)
+})
+
+// ------------------------------------------------------------------------------------- U5: stitch
+function movedFaces(box: Part, amount: number): Shell[] {
+  const shifts = [[1, -1, 0.5], [-0.5, 1, 1], [1, 0.5, -1], [-1, -1, 0.5], [0.5, 1, -1], [-1, 0.5, 1]]
+  return box.faces().map((f, i) => f.toShell().translate(amount * shifts[i][0], amount * shifts[i][1], amount * shifts[i][2]))
+}
+
+test('stitch honours the tolerance and reports the gaps', () => {
+  const pieces = movedFaces(Box(200, 100, 100), 0.03)
+  const [open, r1] = stitch(pieces, { tolerance: 1e-4, report: true })
+  assert.ok(open instanceof Shell && !(open instanceof Part))
+  assert.ok(r1 instanceof StitchReport && r1.sewnEdges === 0 && r1.openEdges >= 24 && r1.maxGap === 0)
+  const [closed, r2] = stitch(pieces, { tolerance: 0.2, report: true })
+  assert.ok(closed instanceof Part && closed.isValid())
+  assert.ok(r2.sewnEdges === 12 && r2.openEdges === 0 && r2.maxGap > 0.03 && r2.maxGap <= 0.2)
+  const [exact, r3] = stitch(Box(10, 10, 10).faces().map((f) => f.toShell()), { report: true })
+  assert.ok(exact instanceof Part)
+  approx(exact.volume, 1000, 0, 1e-9)
+  assert.equal(r3.maxGap, 0)
+  assert.throws(() => stitch(pieces, { tolerance: 0 }), /positive distance/)
+})
+
+test('stitch returns a Part when sewn shut, also across T-junctions', () => {
+  const box = Box(10, 10, 10)
+  const top = box.faces().filter((f) => f.normalAt().z > 0.5)[0]
+  const pieces = [...box.faces().filter((f) => !f.equals(top)).map((f) => f.toShell()), top.toShell().translate(0, 0, 0.1)]
+  const [body, report] = stitch(pieces, { tolerance: 0.2, report: true })
+  assert.ok(body instanceof Part && body.isValid())
+  approx(report.maxGap, 0.1, 0, 1e-9)
+  const [shut, r2] = stitch(pieces, { report: true })
+  assert.ok(!(shut instanceof Part) && r2.openEdges === 8)
+  const long = Box(20, 10, 10).translate(10, 5, 5)
+  const sides = long.faces().filter((f) => !(f.normalAt().z > 0.5)).map((f) => f.toShell())
+  const tops = [0, 1].map((i) => Box(10, 10, 10).translate(5 + 10 * i, 5, 5).faces().filter((f) => f.normalAt().z > 0.5)[0].toShell())
+  const tee = stitch(...sides, ...tops, { tolerance: 1e-3 })
+  assert.ok(tee instanceof Part)
+  approx(tee.volume, 2000, 0, 1e-6)
+})
+
+test('stitch turns open sheets to agree', () => {
+  const floor = ruled(Line([0, 0, 0], [10, 0, 0]), Line([0, 10, 0], [10, 10, 0]))
+  const wall = ruled(Line([0, 10, 10], [10, 10, 10]), Line([0, 10, 0], [10, 10, 0]))
+  const [sheet, report] = stitch(floor, wall, { report: true })
+  assert.equal(report.turnedFaces, 1)
+  const plate = (sheet as Shell).thicken(1)
+  assert.ok(plate.isValid())
+  approx(plate.volume, 190, 0, 1e-6)
+  approx((stitch(wall, floor) as Shell).thicken(1).volume, 210, 0, 1e-6)
+})
+
+test('flipped', () => {
+  const sheet = Rectangle(10, 20).faces()[0].toShell()
+  const turned = sheet.flipped()
+  approx(turned.area, 200)
+  approx(turned.faces()[0].normalAt().z, -1)
+  approx(turned.flipped().faces()[0].normalAt().z, 1)
+  approx(turned.thicken(2).bbox().min.z, -2)
+  const face = Box(10, 10, 10).faces().filter((f) => f.normalAt().x > 0.5)[0]
+  approx(face.flipped().faces()[0].normalAt().x, -1)
+  const hemi = Sphere(5).intersect(Box(20, 20, 20).translate(0, 0, 10)).faces().filter((f) => f.geomType === 'sphere')[0]
+  approx(hemi.flipped().faces()[0].normalAt([0, 0, 5]).z, -1)
+  assert.throws(() => Sphere(5).faces()[0].toShell().flipped(), /encloses a volume/)
+  const sk = Rectangle(10, 10).flipped()
+  assert.ok(sk instanceof Sketch)
+  approx(sk.plane.zDir.z, -1)
+  approx(sk.extrude(3).bbox().min.z, -3)
+})
+
+// ------------------------------------------------------------------------------------- U6: extend
+test('extended planes stay planes', () => {
+  const top = Box(10, 10, 10).faces().filter((f) => f.normalAt().z > 0.5)[0]
+  const grown = top.extended(3)
+  assert.equal(grown.faces()[0].geomType, 'plane')
+  approx(grown.area, 256)
+  const side = top.edges().maxBy((e) => e.center().x)
+  const one = top.extended(3, { sides: side })
+  approx(one.area, 130)
+  approx(one.bbox().max.x, 8)
+  approx(Circle(5).faces()[0].extended(1).area, 144)
+  approx(Circle(5).faces()[0].untrimmed().area, 100)
+})
+
+test('extended cylinders and spheres continue as themselves', () => {
+  const cyl = Cylinder(5, 10).faces().filter((f) => f.geomType === 'cylinder')[0]
+  const grown = cyl.extended(2)
+  assert.equal(grown.faces()[0].geomType, 'cylinder')
+  approx(grown.area, 2 * Math.PI * 5 * 14, 1e-9)
+  approx(grown.bbox().max.z, 7)
+  const seam = cyl.edges(true).filter((e) => e.geomType === 'line')
+  assert.throws(() => cyl.extended(2, { sides: seam }), /closes around/)
+  const cap = Sphere(5).intersect(Box(4, 4, 4).translate(0, 0, 4)).faces().filter((f) => f.geomType === 'sphere')[0]
+  const g2 = cap.extended(1)
+  assert.equal(g2.faces()[0].geomType, 'sphere')
+  assert.ok(g2.area > cap.area)
+})
+
+test('extended B-spline sheets by the distance; untrimmed', () => {
+  const rows = [0, 5, 10, 15, 20].map((x) => [0, 5, 10, 15, 20].map((y) => [x, y, 0.05 * (x - 10) ** 2] as [number, number, number]))
+  const sheet = surface(rows)
+  for (const continuity of ['natural', 'G1', 'G2']) {
+    const b = sheet.extend(3, { continuity }).bbox()
+    approx(b.min.y, -3, 0, 1e-6)
+    approx(b.max.y, 23, 0, 1e-6)
+  }
+  const cut = Box(20, 20, 20).cut(Cylinder(4, 40))
+  const whole = cut.faces().filter((f) => f.geomType === 'cylinder')[0].untrimmed()
+  approx(whole.area, 2 * Math.PI * 4 * 40, 1e-9)
+  approx(whole.bbox().max.z, 20)
+  assert.throws(() => (stitch(sheet, sheet.translate(20, 0, 0)) as Shell).extend(1), /2 faces/)
+  assert.throws(() => sheet.extend(0), /positive/)
+  assert.throws(() => sheet.extend(1, { continuity: 'G3' }), /continuity/)
+})
+
+// ------------------------------------------------------------------------------------- U4: fill, network
+function bulgedSquare(): Edge[] {
+  return [
+    Spline([0, 0, 0], [5, 0, 2], [10, 0, 0]),
+    Spline([10, 0, 0], [10, 5, 1], [10, 10, 0]),
+    Spline([10, 10, 0], [5, 10, 2], [0, 10, 0]),
+    Spline([0, 10, 0], [0, 5, 1], [0, 0, 0]),
+  ]
+}
+
+test('fill: four curves make a Coons patch, three and five an N-sided fill', () => {
+  const [a, b, c, d] = bulgedSquare()
+  const patch = fill([a, b, c, d])
+  assert.equal(patch.faces().length, 1)
+  approx(patch.area, 112.2176, 0, 1e-4)
+  for (const curve of [a, b, c, d]) for (let i = 0; i <= 8; i++) assert.ok(patch.distanceTo(curve.pointAt(i / 8)) < 1e-6)
+  approx(patch.bbox().max.z, 3, 0, 1e-6)
+  approx(fill([c, a.reversed(), d, b]).area, patch.area, 0, 1e-6)
+  const r = 10
+  const s = r / Math.SQRT2
+  const arcs = [ThreePointArc([r, 0, 0], [s, s, 0], [0, r, 0]), ThreePointArc([0, r, 0], [0, s, s], [0, 0, r]), ThreePointArc([0, 0, r], [s, 0, s], [r, 0, 0])]
+  const three = fill(arcs)
+  assert.equal(three.faces().length, 3)
+  assert.equal(free(three).length, 6)
+})
+
+test('fill a hole tangent to the sheet', () => {
+  const cut = Sphere(10).cut(Box(30, 30, 30).translate(0, 0, 8 + 15))
+  const sheet = stitch(cut.faces().filter((f) => f.geomType === 'sphere')) as Shell
+  const rim = free(sheet)
+  const cap = fill(rim)
+  let worst = 0
+  for (const e of rim) {
+    for (const t of [0.1, 0.5, 0.9]) {
+      const p = e.pointAt(t)
+      const dot = sheet.faces()[0].normalAt(p).dot(cap.faces()[0].normalAt(p))
+      assert.ok(dot > 0)
+      worst = Math.max(worst, (Math.acos(Math.min(1, dot)) * 180) / Math.PI)
+    }
+  }
+  assert.ok(worst < 0.1)
+  const ball = stitch(sheet, cap)
+  assert.ok(ball instanceof Part && ball.isValid() && ball.volume > 4141 && ball.volume < 4188.8)
+  const g = surface([-20, -15, -10, -5, 0, 5, 10, 15, 20].map((x) => [-20, -15, -10, -5, 0, 5, 10, 15, 20].map((y) => [x, y, 0.02 * (x * x + y * y)] as [number, number, number])))
+  const hole = stitch(Box(100, 100, 100).cut(RegularPolygon(5, 5).extrude(100, { both: true })).intersect(g as any)) as Shell
+  const pentagon = free(hole).filter((e) => e.center().x ** 2 + e.center().y ** 2 < 100)
+  assert.equal(fill(pentagon).faces().length, 5)
+})
+
+test('fill errors', () => {
+  const [a, b, c] = bulgedSquare()
+  assert.throws(() => fill([a, b, c]), /do not close/)
+  const sheet = Rectangle(10, 10).faces()[0].toShell()
+  assert.throws(() => fill([...free(sheet).slice(0, 3), Line([-5, 5, 0], [-5, -5, 0])]), /mixed/)
+  assert.throws(() => fill(Box(10, 10, 10).faces()[0].edges()), /between two faces/)
+  const wall = Cylinder(5, 20).faces().filter((f) => f.geomType === 'cylinder')[0].toShell()
+  const top = free(wall).filter((e) => e.center().z > 0)
+  // (natively the patch folds back over the wall; in the wasm it comes out at 90 degrees to it)
+  assert.throws(() => fill(top), (e: unknown) => e instanceof ModelingError && /folds back|not tangentially/.test((e as Error).message))
+  approx(fill(top, { tangent: false }).area, Math.PI * 25, 1e-6)
+})
+
+function networkCurves(): [Edge[], Edge[], (x: number, y: number) => number] {
+  const h = (x: number, y: number) => Math.sin((Math.PI * x) / 10) * (1 + (0.3 * y) / 10) + 0.5 * Math.sin((Math.PI * y) / 10)
+  const us = [0, 5, 10].map((y) => Spline(...[0, 2, 5, 7.5, 10].map((x) => [x, y, h(x, y)] as [number, number, number])))
+  const vs = [0, 5, 10].map((x) => Spline(...[0, 3, 5, 8, 10].map((y) => [x, y, h(x, y)] as [number, number, number])))
+  return [us, vs, h]
+}
+
+test('network runs through its curves', () => {
+  const [us, vs, h] = networkCurves()
+  const sheet = network(us, vs)
+  let deviation = 0
+  for (const c of [...us, ...vs]) for (let i = 0; i <= 32; i++) deviation = Math.max(deviation, sheet.distanceTo(c.pointAt(i / 32)))
+  assert.ok(deviation < 1e-6)
+  assert.ok(sheet.faces()[0].normalAt().z > 0.99)
+  approx(network([us[2], us[0].reversed(), us[1]], [vs[1], vs[0], vs[2].reversed()]).area, sheet.area, 0, 1e-6)
+  assert.throws(() => network(us, [vs[0]]), /at least two/)
+  assert.throws(() => network(us, [vs[0], vs[1], vs[2].translate(0, 0, 1)]), /do not cross/)
+  assert.throws(() => network(us, [vs[0], Spline(...[-3, 0, 5, 10].map((y) => [5, y, h(5, y)] as [number, number, number])), vs[2]]), /past the outer/)
 })

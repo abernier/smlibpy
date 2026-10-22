@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Extending a face's surface past its sides, and the whole surface of a face (extend.cpp). Plain
+// C++, shared by the Python extension and the JavaScript module.
+
+#pragma once
+
+#include <vector>
+
+class SmBrep;
+class SmEdge;
+class SmFace;
+
+namespace smlibpy {
+
+// A sheet of one face: the face's surface over the face's parameter rectangle, grown by `distance`
+// (measured along the surface, across the middle of each side) past the sides the given edges of
+// the face lie on, or past every side that can grow (not a pole, not where the surface closes
+// around) when there are none. `continuity` 0 continues the surface as it is (planes stay planes;
+// B-splines by their own polynomials, SM_CT_CINFINITY), 1 along its tangents (G1), 2 with its
+// curvature (SM_CT_G1_G2). The sheet's normal follows the face's outward normal. Owned by the caller.
+SmBrep* extend_face(const SmFace* face, double distance, const std::vector<SmEdge*>& edges, int continuity);
+
+// A sheet of one face: the face's whole surface, without its trims (holes, cut borders); a plane
+// over the face's parameter rectangle (a plane's own rectangle is arbitrary). The sheet's normal
+// follows the face's outward normal. Owned by the caller.
+SmBrep* untrim_face(const SmFace* face);
+
+}  // namespace smlibpy

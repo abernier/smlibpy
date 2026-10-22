@@ -113,7 +113,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
-  holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
+  holds the copies of a Boolean's operands with it), `_curvesOf` (surfaces.ts takes `fill`'s
+  curves with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
   `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
   rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts

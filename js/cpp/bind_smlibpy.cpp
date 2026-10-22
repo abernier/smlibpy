@@ -15,12 +15,15 @@
 #include "defeature.h"
 #include "deform.h"
 #include "draft.h"
+#include "extend.h"
 #include "ext_shared.h"
 #include "face_draft.h"
+#include "fill.h"
 #include "fit.h"
 #include "measure.h"
 #include "sheetmetal.h"
 #include "step_build.h"
+#include "stitch.h"
 #include "surface_eval.h"
 #include "tessellate.h"
 #include "trim.h"
@@ -630,6 +633,41 @@ uintptr_t trim_with_curves(uintptr_t b, val curves, val point, int trim_type, do
     });
 }
 
+// ---------------------------------------------------------------- ext: stitching, turning faces over
+// Sews the body in place; {sewn, open, vertex_gap, edge_gap, tolerance, turned}.
+val stitch_faces(uintptr_t b, double tolerance) { return guard([&] { return to_js(smlibpy::stitch_faces(brep(b), tolerance)); }); }
+// A copy (the caller's) with every face turned over.
+uintptr_t flip_faces(uintptr_t b) { return guard([&] { return ptr(smlibpy::flip_faces(brep(b))); }); }
+
+// ---------------------------------------------------------------- ext: extending, untrimming, filling
+// A new sheet (the caller's): the face's surface grown past the sides of the edges (all sides that can
+// grow when there are none); continuity 0 natural, 1 G1, 2 G2.
+uintptr_t extend_face(uintptr_t f, double distance, val edges, int continuity)
+{
+    return guard([&] { return ptr(smlibpy::extend_face(face(f), distance, pointers<SmEdge>(edges), continuity)); });
+}
+// A new sheet (the caller's): the face's whole surface.
+uintptr_t untrim_face(uintptr_t f) { return guard([&] { return ptr(smlibpy::untrim_face(face(f))); }); }
+// A new Brep (the caller's) of the patches filling the loop; faces and edges hold 0 for free curves.
+// The curves are not consumed.
+uintptr_t fill_loop(val curves, val faces, val edges, double tolerance)
+{
+    return guard([&] {
+        return ptr(smlibpy::fill_loop(pointers<SmCurve>(curves), pointers<SmFace>(faces), pointers<SmEdge>(edges), tolerance));
+    });
+}
+// [sheet (the caller's), deviation]; the curves are not consumed.
+val network_surface(val u, val v, double tolerance)
+{
+    return guard([&] {
+        const std::pair<SmBrep*, double> r = smlibpy::network_surface(pointers<SmCurve>(u), pointers<SmCurve>(v), tolerance);
+        val out = val::array();
+        out.call<void>("push", ptr(r.first));
+        out.call<void>("push", r.second);
+        return out;
+    });
+}
+
 // items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
 std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
 {
@@ -769,6 +807,12 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__region_shells", &region_shells);
     function("ext__edge_blend", &edge_blend);
     function("ext__trim_with_curves", &trim_with_curves);
+    function("ext__stitch_faces", &stitch_faces);
+    function("ext__flip_faces", &flip_faces);
+    function("ext__extend_face", &extend_face);
+    function("ext__untrim_face", &untrim_face);
+    function("ext__fill_loop", &fill_loop);
+    function("ext__network_surface", &network_surface);
     function("ext__usd_text", &usd_text);
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);

@@ -501,6 +501,12 @@ export class Face extends Shape {
     toSketch(): Sketch;
     toShell(): Shell;
     split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face>;
+    flipped(): Shell;
+    untrimmed(): Shell;
+    extended(distance: number, options?: {
+        sides?: Edge | Iterable<Edge> | null;
+        continuity?: string;
+    }): Shell;
     extrude(amount: number, options?: ExtrudeOptions): Part;
     equals(other: unknown): boolean;
     toString(): string;
@@ -583,6 +589,11 @@ export class Shell extends _Body {
         both?: boolean;
     }): Part;
     trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): this;
+    flipped(): this;
+    extend(distance: number, options?: {
+        sides?: Edge | Iterable<Edge> | null;
+        continuity?: string;
+    }): this;
     fuse(...others: unknown[]): Shell;
     toString(): string;
 }
@@ -592,6 +603,7 @@ export interface ExtrudeOptions {
     direction?: Axis | VectorLike | null;
 }
 export class Sketch extends Shell {
+    flipped(): this;
     get plane(): Plane;
     fuse(...others: unknown[]): Sketch;
     cut(...others: unknown[]): Sketch;
@@ -892,9 +904,25 @@ export function surface(points: readonly (readonly VectorLike[])[] | readonly Ve
     smoothing?: number;
 }): Shell;
 export function ruled(a: Edge | Wire, b: Edge | Wire): Shell;
-export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | {
+export class StitchReport {
+    readonly sewnEdges: number;
+    readonly openEdges: number;
+    readonly maxGap: number;
+    readonly turnedFaces: number;
+    readonly tolerance: number;
+    constructor(sewnEdges: number, openEdges: number, maxGap: number, turnedFaces: number, tolerance: number);
+}
+type StitchOptions = {
     tolerance?: number | null;
-})[]): Part | Shell;
+    report?: boolean;
+};
+export function stitch(...args: [
+    ...StitchPiece[],
+    StitchOptions & {
+        report: true;
+    }
+]): [Part | Shell, StitchReport];
+export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell;
 export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: {
     sides?: readonly [number, number];
     trim?: boolean;
@@ -904,6 +932,10 @@ export function blend(edgeA: Edge, edgeB: Edge, options?: {
     tension?: number | readonly [number, number];
     join?: boolean;
 }): Shell;
+export function fill(boundary: Edge | Wire | Iterable<Edge | Wire>, options?: {
+    tangent?: boolean;
+}): Shell;
+export function network(u: Iterable<Edge | Wire>, v: Iterable<Edge | Wire>): Shell;
 ```
 
 ### Sheet metal

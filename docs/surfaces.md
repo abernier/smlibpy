@@ -80,6 +80,21 @@ sheets = [f.to_shell() for f in box.faces()]
 solid = stitch(sheets)          # a Part again
 ```
 
+It closes gaps up to `tolerance` (default 1e-4 of the size of the pieces), sewing edges that
+meet closely first, and leaves wider ones open; `report=True` says what it did. An open result
+has its normals made to agree with the first piece's, so it thickens; `flipped()` turns a sheet
+over:
+
+```python
+body, report = stitch(sheets, report=True)
+print(report.sewn_edges, report.open_edges, report.max_gap)   # 12 0 0.0
+floor = ruled(Line((0, 0, 0), (10, 0, 0)), Line((0, 10, 0), (10, 10, 0)))   # normal +Z
+wall = ruled(Line((0, 10, 10), (10, 10, 10)), Line((0, 10, 0), (10, 10, 0)))  # normal +Y
+corner = stitch(floor, wall)             # the wall turned to -Y, toward the floor's side
+print(corner.thicken(1).volume)          # 190.0
+print(corner.flipped().thicken(1).volume)   # 210.0: the other side
+```
+
 Any face of a part becomes a separate surface with `face.to_shell()`, or a sketch with
 `face.to_sketch()` when it is planar.
 
@@ -155,6 +170,52 @@ pieces = floor.split(Line((-20, -20), (20, 20)))       # two triangles of 800
 
 To give a region of a part's face a face of its own (a label area, a parting line), imprint
 the curves on the part: [features](features.md#imprints).
+
+## Filling holes and curve networks
+
+`fill` closes a loop of curves with a patch: four sides make a Coons patch, three or five and
+more an N-sided fill. Where the curves are border edges of sheets, the patch meets the sheets
+tangentially (`tangent=False` runs it through the curves only):
+
+```python
+cut = Sphere(10) - Box(30, 30, 30).translate(0, 0, 8 + 15)
+dome = stitch([f for f in cut.faces() if f.geom_type == "sphere"])
+cap = fill(dome.edges().filter(lambda e: len(e.faces()) == 1))   # tangent to the sphere
+ball = stitch(dome, cap)
+print(type(ball).__name__, round(ball.volume, 2))                 # Part 4141.52
+
+sides = [Spline((0, 0, 0), (5, 0, 2), (10, 0, 0)), Spline((10, 0, 0), (10, 5, 1), (10, 10, 0)),
+         Spline((10, 10, 0), (5, 10, 2), (0, 10, 0)), Spline((0, 10, 0), (0, 5, 1), (0, 0, 0))]
+patch = fill(sides)                                               # a Coons patch, any order
+print(round(patch.area, 4))                                       # 112.2176
+```
+
+Coons patches meet their sheets to 0.02 degrees; the kernel's N-sided fill (five sides and more)
+only to about 1.4 degrees. `network` builds a surface through crossing curves (a Gordon surface):
+`u` curves that each cross every `v` curve, the outer ones bounding it. The curves are made to
+cross at common parameters first, and the surface runs through them to 1e-7 of their size:
+
+```python
+h = lambda x, y: math.sin(math.pi * x / 10) * (1 + 0.03 * y) + 0.5 * math.sin(math.pi * y / 10)
+us = [Spline(*[(x, y, h(x, y)) for x in (0, 2, 5, 7.5, 10)]) for y in (0, 5, 10)]
+vs = [Spline(*[(x, y, h(x, y)) for y in (0, 3, 5, 8, 10)]) for x in (0, 5, 10)]
+skin = network(us, vs)
+```
+
+## Extending and untrimming
+
+`extend` grows a sheet of one face past its sides (`face.extended` any face's surface), to make
+it reach across a part before it cuts or splits it, or to give a blend room: by `distance` along
+the surface, continuing it as it is (`"natural"`: planes stay planes, cylinders and spheres the
+same ones) or along its tangents (`"G1"`) or curvature (`"G2"`). `face.untrimmed()` is the whole
+surface a face lies on, without its holes and cut borders:
+
+```python
+top = Box(10, 10, 10).faces().filter(lambda f: f.normal_at().z > 0.5)[0]
+print(top.extended(3).area)                                   # 256.0: a plane 16 x 16
+wall = (Box(20, 20, 20) - Cylinder(4, 40)).faces().filter(lambda f: f.geom_type == "cylinder")[0]
+print(round(wall.untrimmed().area, 2))                        # 1005.31 = 2 pi 4 40
+```
 
 ## Curves as NURBS
 

@@ -39,8 +39,9 @@ The Part's normals are made outward whatever the input. Hollow it afterwards wit
 `surface`): add caps with `make_face(edge)` and stitch; do not thicken them.
 
 **C. Stitch an open set, then thicken** (a cover with walls, open at the bottom). An open stitch
-result keeps each face's input normal: orient every piece the same way first, or the thicken
-raises `ModelingError`. With oriented pieces, B + `shell` and C give the same body (volumes within 0.001).
+result has its normals made to agree with its first piece's (put the piece whose normal is right
+first, or turn the result with `flipped()`). B + `shell` and C give the same body (volumes within
+0.001).
 
 Trim a sheet with a solid: `stitch(solid & sheet)` returns the part of the sheet inside. Trim it
 with curves on it: `sheet.trim(curves, keep=point)` (`"split"` keeps both sides as faces).
@@ -57,8 +58,9 @@ with curves on it: `sheet.trim(curves, keep=point)` (`"split"` keeps both sides 
 ## Silent failures (no exception)
 - `thicken` of a closed `surface` grid: mostly an error, but some tubes give a Part of volume
   about 0 that `is_valid()` accepts. (A dome with a pole and a Shell with mixed normals raise.)
-- `stitch` that does not close: a Shell. With a large `tolerance`: a "valid" Part whose faces
-  stand off their edges (volume and bbox disagree).
+- `stitch` that does not close: a Shell (`stitch(..., report=True)` says how many edges stayed
+  open). With a large `tolerance`: a valid Part whose faces stand off their edges by up to the
+  `max_gap` it reports (`volume` warns that the faces do not meet).
 - `part & sheet`, `part - sheet`, `part + sheet`: invalid "Parts". Only `stitch(part & sheet)` is
   useful.
 - `surface` with repeated rows overshoots wildly.

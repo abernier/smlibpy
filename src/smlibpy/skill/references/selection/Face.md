@@ -19,6 +19,9 @@ there is no public constructor.
 | `to_sketch()` | a Sketch with a copy of a planar face, holes included |
 | `to_shell()` | a Shell with a copy of any face |
 | `split(curves)` | the pieces of a copy of the face cut along curves on it (see `trim`); the face's body does not change |
+| `flipped()` | a Shell with a copy of the face turned over (normal reversed) |
+| `untrimmed()` | a Shell of the whole surface the face lies on: holes and cut borders gone; a plane as the smallest rectangle around the face (see `extend`) |
+| `extended(distance, sides=None, continuity="natural")` | a Shell of the face's surface grown past its sides; planes stay planes, cylinders and spheres the same (see `extend`) |
 | `extrude(amount)` | a Part from a planar face, `amount` along the outward normal |
 | `distance_to(point)`, `bbox()` | true distance, tight bounding box |
 | `raycast(origin, direction)` | where a ray meets the face, nearest first (see `raycast`) |

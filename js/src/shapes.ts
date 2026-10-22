@@ -1771,6 +1771,50 @@ export class Face extends Shape {
     return this.toShell().trim(curves, 'split').faces()
   }
 
+  /** A copy of this face, turned over: a sheet of one face whose normal points the other way (see
+   * `Shell.flipped`). */
+  flipped(): Shell {
+    return this.toShell().flipped()
+  }
+
+  /**
+   * The whole surface this face lies on, as a sheet of one face: its holes and cut borders are gone.
+   *
+   * A cylindrical face cut out of a box comes back as the whole cylinder the cut left it on (its
+   * full height and all around), a B-spline face as its whole surface. A plane has no border of its
+   * own: it comes back as the smallest rectangle around the face, along the plane's own directions.
+   * The sheet's normal follows this face's (`normalAt`).
+   */
+  untrimmed(): Shell {
+    return Shell._wrap(kernelCall('untrimmed', () => ext.untrim_face(this._f)))
+  }
+
+  /**
+   * The face's surface grown past its sides, as a sheet of one face: to make a sheet reach across a
+   * part before cutting or splitting it with it, or to give a blend room.
+   *
+   * @param distance How far past each side, measured along the surface (across the middle of the
+   *   side).
+   * @param options `sides`: edges of this face: grow past the sides they lie on only (default: past
+   *   every side that can grow). `continuity`: how the surface goes on: `'natural'` (default) as it
+   *   is (a plane stays the plane, a cylinder or sphere the same cylinder or sphere, a B-spline
+   *   surface follows its own polynomials), `'G1'` straight on along its tangents, `'G2'` bending on
+   *   with the curvature it has at the side.
+   *
+   * The sides are those of the face's surface rectangle, along its parameter directions: the four
+   * edges of a box's face or of a sheet from `surface`, the two ends of a cylinder along its axis.
+   * Trims (holes, a border cut at a slant) are dropped: the result is the rectangle, grown. A side
+   * where the surface closes around (a full cylinder, around it) or shrinks to a point (a sphere's
+   * pole, a cone's tip) cannot grow: it is left out by default, and naming its edge throws a
+   * RangeError; so does an edge that does not run along a side.
+   *
+   * @returns A sheet of one face, its normal following this face's (`normalAt`).
+   */
+  extended(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+    _opts('Face.extended', options)
+    return Shell._wrap(_extendedFace(this, distance, options.sides ?? null, options.continuity ?? 'natural', 'extended'))
+  }
+
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
     return this.toSketch().extrude(amount, options)
@@ -3923,6 +3967,28 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
   }
 }
 
+/** The brep of `Face.extended`. */
+function _extendedFace(face: Face, distance: number, sides: Edge | Iterable<Edge> | null, continuity: string, what: string): number {
+  const d = Number(distance)
+  if (!(d > 0 && Number.isFinite(d))) throw new RangeError(`${what}: the distance must be positive, got ${distance}`)
+  const kinds: Record<string, number> = { natural: 0, g1: 1, g2: 2 }
+  const level = typeof continuity === 'string' ? kinds[continuity.toLowerCase()] : undefined
+  if (level === undefined) throw new RangeError(`${what}: continuity is "natural", "G1" or "G2", got '${continuity}'`)
+  let edges: Edge[] = []
+  if (sides !== null) {
+    edges = sides instanceof Edge ? [sides] : Array.from(sides as Iterable<Edge>)
+    if (!edges.length || !edges.every((e) => e instanceof Edge)) throw new TypeError(`${what}: sides are edges of the face`)
+    const own = new Set(face.edges(true).map((e) => e._identity()))
+    if (edges.some((e) => !own.has(e._identity()))) throw new RangeError(`${what}: an edge in sides does not bound the face`)
+  }
+  try {
+    return kernelCall(what, () => ext.extend_face(face._f, d, edges.map((e) => e._e), level), 'try a shorter distance, or continuity G1')
+  } catch (e) {
+    if (e instanceof RangeError) throw new RangeError(e.message.replace('extend_face:', `${what}:`))
+    throw e
+  }
+}
+
 export function _continuity(c: number | string | null | undefined): number | null {
   if (c == null) return null
   if (typeof c === 'string') c = Number.parseInt(c.toUpperCase().replace(/^G+/, ''), 10)
@@ -3948,7 +4014,7 @@ export function _flattenFaces(items: unknown): Face[] {
 }
 
 /** The edges of curves given as edges, wires or lists of them. */
-function _curvesOf(items: unknown, what: string): Edge[] {
+export function _curvesOf(items: unknown, what: string): Edge[] {
   if (items instanceof Face || items instanceof _Body || items instanceof Vertex) {
     throw new TypeError(`${what} takes curves (edges or wires), not a ${_typeName(items)}`)
   }
@@ -4103,6 +4169,44 @@ export class Shell extends _Body {
     return out
   }
 
+  /**
+   * The sheet turned over: a copy whose faces' normals all point the other way.
+   *
+   * `thicken` then grows to the other side, and the `sides` of `surfaceFillet` count from the new
+   * normals. A sheet that encloses a volume (the face of a whole sphere) faces outward whichever
+   * way its surface runs: it cannot be turned over (RangeError).
+   */
+  flipped(): this {
+    const out = this._like(kernelCall('flipped', () => ext.flip_faces(this._brep)))
+    const before = this.faces()
+    const after = out.faces()
+    for (let i = 0; i < Math.min(before.length, after.length); i++) {
+      const p = before[i].interiorPoint()
+      if (!(before[i].normalAt(p).dot(after[i].normalAt(p)) < 0)) {
+        throw new RangeError('flipped: the sheet encloses a volume; its faces point out of it whichever way their surfaces run')
+      }
+    }
+    return out
+  }
+
+  /**
+   * The sheet (of one face) grown past its sides: see `Face.extended`.
+   *
+   * @param distance How far past each side, measured along the surface.
+   * @param options `sides`: edges of the sheet: grow past the sides they lie on only (default: every
+   *   side that can grow). `continuity`: `'natural'` (default), `'G1'` or `'G2'`.
+   * @returns A new sheet; this one does not change. For a sheet of several faces, extend one of its
+   *   faces (`sheet.faces()[i].extended(...)`).
+   */
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): this {
+    _opts('Shell.extend', options)
+    const faces = this.faces()
+    if (faces.length !== 1) {
+      throw new RangeError(`extend: the sheet has ${faces.length} faces; extend one of them with sheet.faces()[i].extended(...)`)
+    }
+    return this._like(_extendedFace(faces[0], distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
+  }
+
   /** Union with other sheets (Python's `+`). */
   fuse(...others: unknown[]): Shell {
     return this._like(_held(this._copyBrep(), (h) => {
@@ -4140,6 +4244,14 @@ export class Sketch extends Shell {
 
   override _like(brep: number): this {
     return Sketch._wrap(brep, { plane: this._plane, name: this.name, color: this.color }) as this
+  }
+
+  /** The sketch turned over: its faces and its plane face the other way (an extrusion then grows to
+   * the other side). */
+  override flipped(): this {
+    const out = super.flipped()
+    out._plane = this._plane.flipped()
+    return out
   }
 
   static _fromWires(wires: readonly Wire[], plane: Plane | null = null): Sketch {

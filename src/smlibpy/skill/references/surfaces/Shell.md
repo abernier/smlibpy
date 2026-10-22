@@ -22,6 +22,11 @@ solid from a sheet, test `isinstance(x, Part)`.
   the same and also takes a `Face`.
 - `trim(curves, keep)` → Shell: cut along curves that lie on the sheet, keep the side of a point
   or (`"split"`) both sides as faces (see `trim`).
+- `flipped()` → Shell: the sheet turned over, every face's normal reversed (a Sketch's plane too).
+  A sheet that encloses a volume (a whole sphere's face) raises `ValueError`: its faces point out
+  whichever way.
+- `extend(distance, sides=None, continuity="natural")` → Shell: a sheet of one face grown past its
+  sides (see `extend`).
 - `heal()` → Shell: repairs tolerances and topology of a sewn shell (it turned a sewn but
   non-manifold stitch result into a manifold one). It does **not** sew separate faces; use
   `stitch` for that.
@@ -42,8 +47,8 @@ Missing on purpose: `volume`, `is_valid`, `solids`, `mass_properties`, `fillet`,
 
 - `t > 0` adds material on the normal side, `t < 0` on the other side. Check the normal first:
   `shell.faces()[0].normal_at(point)`. The normal rule of each source is in `surface`, `ruled`;
-  `stitch` makes normals outward only when it closes into a Part (an open stitched Shell keeps
-  the input normals); `mirror` flips them.
+  `stitch` makes normals outward when it closes into a Part, and makes an open result's normals
+  agree with its first piece's; `flipped()` turns a sheet over.
 - All faces of a multi-face Shell must agree: a floor (normal +Z) and a wall whose normal points
   away from the floor raise `ModelingError: thicken: the kernel returned a body that is not a
   closed, manifold solid; ...`.
@@ -86,4 +91,4 @@ print(type(disc).__name__, round(disc.area, 3))                  # Shell 202.344
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `trim`, `blend`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves
+`surface`, `ruled`, `stitch`, `trim`, `blend`, `fill`, `network`, `extend`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves

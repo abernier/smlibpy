@@ -39,3 +39,9 @@ void bind_usd_files(py::module_ m);
 void bind_blend(py::module_ m);
 // Trimming and splitting faces with curves on them (trim.cpp).
 void bind_trim(py::module_ m);
+// Sewing faces, turning faces over (stitch.cpp).
+void bind_stitch(py::module_ m);
+// Extending a face's surface, untrimming a face (extend.cpp).
+void bind_extend(py::module_ m);
+// Surfaces bounded by curves: fills and curve networks (fill.cpp).
+void bind_fill(py::module_ m);

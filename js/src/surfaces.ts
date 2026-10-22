@@ -4,9 +4,9 @@
 // lofting an *open* curve gives a surface (a Shell) instead of a solid. This module adds surfaces
 // through point grids, ruled surfaces and stitching.
 
-import { ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _isRuntimeError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { Vector, _vec, type VectorLike } from './geometry.ts'
-import { Edge, Face, Part, Shell, Wire, _bodies, _continuity, _t, _typeName } from './shapes.ts'
+import { Edge, Face, Part, Shell, Wire, _bodies, _continuity, _curvesOf, _t, _typeName } from './shapes.ts'
 import { _guarded, _smb } from './defeature.ts'
 import { _withOptions } from './curves.ts'
 
@@ -109,32 +109,71 @@ function _single(w: Wire): Edge {
   return edges[0]
 }
 
+/** What `stitch` sewed (`stitch(..., { report: true })`). */
+export class StitchReport {
+  /** Pairs of free edges sewn into one edge. */
+  readonly sewnEdges: number
+  /** Free edges left: the border of a sheet, and edges whose partner lies further away than the
+   * tolerance. */
+  readonly openEdges: number
+  /** The widest gap closed, between vertices or edges that were sewn (0 where the pieces met
+   * exactly). Every gap closed is at most `tolerance`. */
+  readonly maxGap: number
+  /** Faces turned over so that their normals agree with their neighbours' (on open results; a
+   * closed result faces outward anyway). */
+  readonly turnedFaces: number
+  /** The widest gap stitch looked for: the `tolerance` given, or its default, or less where every
+   * edge was sewn before. */
+  readonly tolerance: number
+
+  constructor(sewnEdges: number, openEdges: number, maxGap: number, turnedFaces: number, tolerance: number) {
+    this.sewnEdges = sewnEdges
+    this.openEdges = openEdges
+    this.maxGap = maxGap
+    this.turnedFaces = turnedFaces
+    this.tolerance = tolerance
+  }
+}
+
+type StitchOptions = { tolerance?: number | null; report?: boolean }
+type StitchPiece = Shell | Face | Part | Iterable<unknown>
+
 /**
  * Sew faces and sheets along their common edges: `stitch(a, b, c, { tolerance: 0.01 })`.
  *
- * Returns a Part when the result encloses a volume, otherwise a Shell. `tolerance` is the
- * largest gap to close (default: 1e-4 of the model size).
+ * @param args Faces, sheets, sketches or parts, and arrays of them; last, the options:
+ *   `tolerance`: the widest gap to close (default: 1e-4 of the size of all pieces together).
+ *   Edges and vertices further apart stay open: a gap is never closed silently. Edges that meet
+ *   closely are sewn first, looser ones after them, up to the tolerance. `report`: `true` returns
+ *   `[body, report]`, a `StitchReport`: the edges sewn, the free edges left and the widest gap
+ *   closed.
+ * @returns A Part when the pieces close around a volume (its faces then point outward), otherwise
+ *   a Shell. The faces of an open result are turned to agree with their neighbours; each connected
+ *   piece keeps the normal of its first face (in the order given), so that the sheet thickens.
  */
-export function stitch(...args: (Shell | Face | Part | Iterable<unknown> | { tolerance?: number | null })[]): Part | Shell {
-  const { items, options } = _withOptions<{ tolerance?: number | null }>(args)
+export function stitch(...args: [...StitchPiece[], StitchOptions & { report: true }]): [Part | Shell, StitchReport]
+export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell
+export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell | [Part | Shell, StitchReport] {
+  const { items, options } = _withOptions<StitchOptions>(args)
   _opts('stitch', options)
   const bodies = _bodies(items)
   if (!bodies.length) throw new RangeError('nothing to stitch')
+  const tolerance = options.tolerance ?? null
+  if (tolerance !== null && !(tolerance > 0 && Number.isFinite(tolerance))) {
+    throw new RangeError(`stitch: the tolerance must be a positive distance, got ${tolerance}`)
+  }
   const b = kernelCall('stitch', () => ext.combine(bodies.map((x) => x._brep)))
   const shell = Shell._wrap(b)
   const size = shell.bbox().diagonal
-  const gap = options.tolerance ?? Math.max(size * 1e-4, 1e-7)
-  kernelCall(
-    'stitch',
-    () => {
-      const [, isSolid] = k.stitch_into_solid(shell._brep)
-      if (!isSolid) k.stitch_into_shell(shell._brep, gap)
-    },
-    'the pieces may not meet within the tolerance',
-  )
-  const part = Part._wrap(shell._copyBrep())
-  if (part._solidProblem() === null) return part
-  return shell
+  const gap = tolerance !== null ? Number(tolerance) : Math.max(size * 1e-4, 1e-7)
+  const r = kernelCall('stitch', () => ext.stitch_faces(shell._brep, gap), 'the pieces may not meet within the tolerance')
+  let body: Part | Shell = shell
+  if (r.open === 0) {
+    const part = Part._wrap(shell._copyBrep())
+    if (part._solidProblem() === null) body = part
+  }
+  if (!options.report) return body
+  return [body, new StitchReport(r.sewn, r.open, Math.max(r.vertex_gap, r.edge_gap), r.turned, r.tolerance)]
 }
 
 /**
@@ -318,4 +357,146 @@ function _oneFace(x: unknown, name: string): Face {
     throw new RangeError(`surfaceFillet: ${name} is a sheet of ${faces.length} faces; pass one of them`)
   }
   throw new TypeError(`surfaceFillet takes faces (or sheets of one face), not a ${_typeName(x)}`)
+}
+
+/**
+ * A surface that fills a closed loop of curves: a hole in a sheet, or the frame of a patch.
+ *
+ * @param boundary The curves around the hole, in any order and direction: edges on the border of
+ *   sheets (`sheet.edges().filter((e) => e.faces().length === 1)`), curves (`Spline`,
+ *   `ThreePointArc`, ...) or wires. One closed curve (the round edge of a hole), or two, is cut into
+ *   four sides.
+ * @param options `tangent`: `true` (default): where the curves are edges of sheets, the patch meets
+ *   each sheet tangentially along its edge; then every curve must be such an edge, and the sheets
+ *   must meet each other tangentially where the edges meet (a hole in one smooth sheet, a corner
+ *   between three rounds). `false` runs the patch through the curves only.
+ *
+ * Four sides make a Coons patch, of one face (through curves only, it is bilinear: straight across
+ * between opposite sides, in the middle the sum of both). Five sides and more make an N-sided fill
+ * of one face per side, sewn, meeting in the middle. Three sides make an N-sided fill of three faces
+ * through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at one
+ * corner (a pole there: thickening such a patch fails).
+ *
+ * @returns The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,
+ *   it follows the right-hand rule around the loop in the direction of the first curve given. Sew it
+ *   to the sheets with `stitch` (`stitch(sheet, patch)`).
+ * @throws RangeError The curves do not close into one loop (the message names the gap), or some
+ *   curves are edges of sheets and others not while `tangent` is true.
+ * @throws ModelingError The patch misses its curves, meets a sheet at an angle, or folds back over
+ *   the sheets.
+ */
+export function fill(boundary: Edge | Wire | Iterable<Edge | Wire>, options: { tangent?: boolean } = {}): Shell {
+  _opts('fill', options)
+  const tangent = options.tangent ?? true
+  const edges = _curvesOf(boundary, 'fill')
+  const sides: [Edge, Face | null][] = []
+  for (const e of edges) {
+    const faces = e.faces()
+    if (faces.length > 1 || e._owner instanceof Part) {
+      throw new RangeError('fill: an edge lies between two faces; take edges on the border of a sheet (used by one face), or curves')
+    }
+    sides.push([e, faces.length && tangent ? faces[0] : null])
+  }
+  let box = edges[0].bbox()
+  for (const e of edges.slice(1)) box = box.union(e.bbox())
+  const size = Math.max(box.diagonal, 1e-9)
+  const curves = edges.map((e) => e._copyCurve())
+  let b: number
+  try {
+    b = ext.fill_loop(curves, sides.map(([, f]) => (f !== null ? f._f : 0)), sides.map(([e, f]) => (f !== null ? e._e : 0)), 1e-4 * size)
+  } catch (e) {
+    if (!_isRuntimeError(e) || e instanceof KernelError) throw e
+    if (e.message.startsWith('fill:')) throw new ModelingError(e.message) // (the checks of the patch)
+    throw new KernelError('fill', e.message, null,
+      'tangent sheets must meet each other tangentially where their edges meet; a steep sheet (a wall standing up from the loop) may not leave room for a patch')
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+  let patch: Shell | Part = Shell._wrap(b)
+  if (patch.faces().length > 1) patch = stitch(patch, { tolerance: 1e-5 * size })
+  return patch as Shell
+}
+
+/**
+ * A surface through a network of curves: `u` curves that each cross every `v` curve.
+ *
+ * @param u Two or more curves running one way, in any order and direction (splines, arcs, edges; a
+ *   wire is joined into one curve).
+ * @param v Two or more curves running across them: each crosses every `u` curve once. The outer
+ *   curves of each set bound the surface: every curve ends on them.
+ *
+ * The curves are made to cross at common parameters first (a Gordon surface needs that: the
+ * kernel's own missed its curves by 4e-2 on a 10 mm patch otherwise), and the surface is measured
+ * against the curves as given.
+ *
+ * @returns A sheet of one face through every curve. Its normal is the first `u` curve's direction
+ *   crossed with the first `v` curve's, where they cross.
+ * @throws RangeError Curves that do not cross (within 1e-4 of the network's size), that cross out of
+ *   order, or that run on past the outer curves of the other set.
+ * @throws ModelingError The surface misses a curve by more than 1e-4 of the network's size (a very
+ *   uneven network: curves of more even spacing, or more of them, help).
+ */
+export function network(u: Iterable<Edge | Wire>, v: Iterable<Edge | Wire>): Shell {
+  const ucs = _networkCurves(u, 'u')
+  let vcs: [number, number[][]][]
+  try {
+    vcs = _networkCurves(v, 'v')
+  } catch (e) {
+    for (const [c] of ucs) ext.delete_curve(c)
+    throw e
+  }
+  const pts = [...ucs, ...vcs].flatMap(([, p]) => p)
+  const lo = [0, 1, 2].map((i) => Math.min(...pts.map((p) => p[i])))
+  const hi = [0, 1, 2].map((i) => Math.max(...pts.map((p) => p[i])))
+  const size = Math.max(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), 1e-9)
+  let b: number
+  let deviation: number
+  try {
+    ;[b, deviation] = ext.network_surface(ucs.map(([c]) => c), vcs.map(([c]) => c), 1e-4 * size)
+  } catch (e) {
+    if (!_isRuntimeError(e) || e instanceof KernelError) throw e
+    if (e.message.startsWith('network:')) throw new ModelingError(e.message)
+    throw new KernelError('network', e.message, null, 'the curves must cross, each u curve every v curve, once')
+  } finally {
+    for (const [c] of [...ucs, ...vcs]) ext.delete_curve(c)
+  }
+  const sheet = Shell._wrap(b)
+  if (!(deviation <= 1e-4 * size)) {
+    throw new ModelingError(`network: the surface misses the curves by ${_g3(deviation)} (more than 1e-4 of the network's size); curves of more even spacing, or more of them, help`)
+  }
+  return sheet
+}
+
+function _g3(x: number): string {
+  return Number(x.toPrecision(3)).toString()
+}
+
+/** Standalone kernel curves (one per item, wires joined) and a few points of each. */
+function _networkCurves(items: unknown, name: string): [number, number[][]][] {
+  if (items instanceof Edge || items instanceof Wire || items == null || typeof (items as any)[Symbol.iterator] !== 'function') {
+    throw new TypeError(`network: ${name} is a list of curves`)
+  }
+  const out: [number, number[][]][] = []
+  for (const it of items as Iterable<unknown>) {
+    let edges: Edge[]
+    if (it instanceof Edge) edges = [it]
+    else if (it instanceof Wire) edges = Array.from(it.edges())
+    else {
+      for (const [c] of out) ext.delete_curve(c)
+      throw new TypeError(`network: ${name} holds curves (edges or wires), not a ${_typeName(it)}`)
+    }
+    const pts = edges.flatMap((e) => [0, 0.5, 1].map((t) => e.pointAt(t).toArray()))
+    let c: number
+    if (edges.length === 1) c = edges[0]._copyCurve()
+    else {
+      const parts = edges.map((e) => e._copyCurve())
+      try {
+        c = kernelCall('network', () => ext.join_curves(parts), "a wire's edges must follow one another")
+      } finally {
+        for (const p of parts) ext.delete_curve(p)
+      }
+    }
+    out.push([c, pts])
+  }
+  return out
 }
