@@ -10,8 +10,8 @@
 // thread (transferred); vectors, locations, planes, axes and boxes as their numbers; plain data as
 // itself. A call that runs longer than its timeout, or whose AbortSignal fires, ends with the
 // worker: the worker is terminated, which stops its kernel wherever it is, and the next call starts
-// a new one. So does a call whose kernel crashed or ran out of memory, so that every call finds a
-// sound kernel.
+// a new one. So does a call whose kernel crashed (also where the function caught the error) or ran
+// out of memory, so that every call finds a sound kernel.
 //
 // This module does not load the kernel: on the calling thread the package (and its kernel) loads
 // only when a body, mesh or sub-shape goes to the worker or comes back. A page that has its worker
@@ -27,8 +27,9 @@
 //     const part = await cad.call('plate', [80, 3, 6], { timeout: 10_000 })
 
 import { Axis, BoundBox, Hit, Location, Nurbs, Plane, Vector } from './geometry.ts'
-import { KernelError, ModelingError } from './_errors.ts'
+import { KernelError, ModelingError, _crashes } from './_errors.ts'
 import { _nodeWorker } from './_threads.ts'
+import type { Face } from './shapes.ts'
 
 // biome-ignore lint: the functions of a worker take and return anything
 type Any = any
@@ -447,6 +448,8 @@ function _milliseconds(name: string, key: string, value: unknown, fallback: numb
 export function expose(functions: object | (() => object | Promise<object>)): void {
   const port = _port()
   if (port === null) throw new Error('expose() answers a KernelWorker: call it in a Web Worker or a Node worker thread')
+  // (the warning of a crash of this worker's kernel says what happens next)
+  _crashes.next = 'the KernelWorker starts a new kernel for its next call'
   const post = (message: Any, transfer: Transferable[] = []) => port.postMessage(message, transfer)
   let names: string[] = []
   const loading = (async () => {
@@ -470,6 +473,9 @@ export function expose(functions: object | (() => object | Promise<object>)): vo
     } catch {
       return // (said so when the loading failed)
     }
+    // (a kernel that crashed while the function ran, also one whose error the function caught: a
+    // new one for the next call)
+    const crashes = _crashes.count
     try {
       const fn = table[data.name]
       if (typeof fn !== 'function') {
@@ -478,9 +484,9 @@ export function expose(functions: object | (() => object | Promise<object>)): vo
       const args = (await _decode(data)) as unknown[]
       const result = await fn.apply(table, args)
       const packet = await _encode(result)
-      post({ [TAG]: 'done', id, ...packet.message }, packet.transfer)
+      post({ [TAG]: 'done', id, ...packet.message, respawn: _crashes.count > crashes }, packet.transfer)
     } catch (e) {
-      post({ [TAG]: 'failed', id, error: _errorData(e), respawn: _damaged(e) })
+      post({ [TAG]: 'failed', id, error: _errorData(e), respawn: _crashes.count > crashes || _damaged(e) })
     }
   }
   if (typeof port.on === 'function') port.on('message', answer)
@@ -718,7 +724,7 @@ async function _decode(data: { value: unknown; bodies: BodyData[]; package: bool
       case 'Nurbs':
         return new Nurbs(v.degree, v.knots, v.points.map((p: number[]) => new Vector(p)), v.weights)
       case 'Hit':
-        return new Hit(new Vector(v.point), v.distance, new Vector(v.normal), dec(v.face), v.triangle)
+        return new Hit(new Vector(v.point), v.distance, new Vector(v.normal), dec(v.face) as Face | null, v.triangle)
       case 'Body':
         return bodies[v.body]
       case 'Face': {

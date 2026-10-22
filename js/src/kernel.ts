@@ -9,7 +9,7 @@
 import createSmlib from '../wasm/smlibwasm.mjs'
 import { SIGNATURES } from './signatures.ts'
 import { OPTIONS } from './_options.ts'
-import { KernelError, ModelingError } from './_errors.ts'
+import { KernelError, ModelingError, _crashes } from './_errors.ts'
 import { _createModule } from './_loader.ts'
 
 export { KernelError, ModelingError }
@@ -145,7 +145,7 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
     if (sub > 0 && typeof value === 'function') {
       const [space, fn] = [name.slice(0, sub), name.slice(sub + 2)]
       const sig = signatures[`${space}.${fn}`]
-      const call = restoring(m, value)
+      const call = restoring(m, value, `${space}.${fn}`)
       ;(out[space] ??= {})[fn] = sig ? keywords(`${space}.${fn}`, call, sig) : call
       continue
     }
@@ -159,7 +159,7 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
       continue
     }
     const sig = signatures[name]
-    const call = restoring(m, value)
+    const call = restoring(m, value, name)
     out[name] = sig ? keywords(name, call, sig) : call
   }
   return out
@@ -172,17 +172,36 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
  * some calls). Without this every failure kept 16 to 900 bytes of the 4 MB stack (a trap
  * several KB), and failures are normal: a raycast tries every face, operations retry. After
  * about 240,000 failures every call failed. A C++ exception that leaves the call becomes the
- * error the bindings of smlibpy's own C++ make of theirs (`_cppError`).
+ * error the bindings of smlibpy's own C++ make of theirs (`_cppError`); a trap is counted, and
+ * the first warns (`_crashed`).
  */
-function restoring(m: Any, fn: (...args: Any[]) => Any): (...args: Any[]) => Any {
+function restoring(m: Any, fn: (...args: Any[]) => Any, name: string): (...args: Any[]) => Any {
   return (...args: Any[]) => {
     const sp = m.stackSave()
     try {
       return fn(...args)
     } catch (e) {
       m.stackRestore(sp)
+      if (_isTrap(e)) _crashed(name, e as Error)
       throw _cppError(m, e)
     }
+  }
+}
+
+/**
+ * Counts a trap of the kernel call `name` (memoryUsage().crashes) and warns at the first. A trap
+ * leaves the kernel's memory as the crash left it: no destructor ran, and what the kernel wrote
+ * through the broken pointer before the trap stays. Natively such a crash ends smlibpy's
+ * process (or the copy of it a guarded step runs in); here the module goes on, so the warning
+ * says that its results may be wrong from now on. Traps in normal use are rare but real: the
+ * extended offset mode of a shell of a filleted box crashed now and then with "function signature
+ * mismatch", a call through a broken pointer.
+ */
+function _crashed(name: string, e: Error): void {
+  _crashes.count++
+  _crashes.last = e.message
+  if (_crashes.count === 1 && _crashes.next !== null) {
+    _warn(`the kernel crashed in ${name} (${e.message}), and its memory may be damaged: ${_crashes.next}`)
   }
 }
 
@@ -277,9 +296,12 @@ export function _isRuntimeError(e: unknown): e is Error {
 
 /**
  * A trap of the WebAssembly module: the kernel crashed (read memory it should not have, called
- * through a broken pointer). Natively such kernel defects mostly go unnoticed and the operation
- * fails or returns a broken body; here the call stops. The module stays usable (what the call had
- * allocated is lost), so a trap is a failed kernel call.
+ * through a broken pointer). The call stops, and the module answers the next one, but on memory as
+ * the crash left it (no destructor ran, what the call had allocated is lost, and what it wrote
+ * through a broken pointer stays): a trap is a failed kernel call whose error says so, it is
+ * counted (`memoryUsage().crashes`), and the first warns that results may be wrong from then on.
+ * Steps that retry (shell, offset, the defeaturing steps) stop at a trap rather than go on on that
+ * memory.
  */
 function _isTrap(e: unknown): boolean {
   return typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
@@ -318,17 +340,39 @@ function _outOfMemoryHint(): string {
   return `the kernel ran out of memory${numbers}: dispose() parts you no longer need, or let the event loop run so that the garbage collector frees them`
 }
 
+/** The hint of a KernelError for a crash of the kernel (`hint`: the operation's own). */
+function _crashHint(message: string, hint: string | null): string {
+  const crash = `the kernel crashed (${message}), and its memory may be damaged: load the module again before relying on its results (a KernelWorker does so by itself)`
+  return hint ? `${crash}; ${hint}` : crash
+}
+
+/** How often this kernel crashed so far (memoryUsage().crashes): a step that retries stops once
+ * the count goes up, rather than go on on the memory the crash left. */
+export function _crashCount(): number {
+  return _crashes.count
+}
+
+/** The KernelError of `operation` for the last crash of this kernel, for a step that saw it only by
+ * the count (its error was caught on the way, by a check). */
+export function _crashError(operation: string, hint: string | null = null): KernelError {
+  const message = _crashes.last ?? 'a trap'
+  return new KernelError(operation, `the kernel crashed (${message})`, null, _crashHint(message, hint))
+}
+
 /** Runs `fn`; a failure of the kernel becomes a KernelError with context. Memory that is used up
- * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`. */
+ * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`; a crash of the kernel (a
+ * trap) says so before `hint`. */
 export function kernelCall<T>(operation: string, fn: () => T, hint: string | null = null): T {
   try {
     return fn()
   } catch (e) {
     if (e instanceof KernelError || !_isRuntimeError(e)) throw e
-    const text = _isTrap(e) ? _crashText((e as Error).message, _usage()) : (e as Error).message
+    const trap = _isTrap(e)
+    const text = trap ? _crashText((e as Error).message, _usage()) : (e as Error).message
     const m = STATUS_RE.exec(text)
     const status = m ? m[1] : null
-    const error = new KernelError(operation, text, status, status === OUT_OF_MEMORY ? _outOfMemoryHint() : hint)
+    const why = status === OUT_OF_MEMORY ? _outOfMemoryHint() : trap ? _crashHint((e as Error).message, hint) : hint
+    const error = new KernelError(operation, text, status, why)
     ;(error as Any).cause = e
     throw error
   }
@@ -347,19 +391,26 @@ export interface MemoryUsage {
   /** The kernel objects (bodies, curves, surfaces, meshes) that JavaScript holds and that are not
    * freed yet: neither disposed nor garbage collected. A count, not bytes. */
   readonly handles: number
+  /** The times the kernel crashed (a trap of the module) since it was loaded. After a crash its
+   * memory may be damaged, and what it computes may be wrong: the first crash warns, and an app
+   * that goes on loads the module again (reloads the page) or models in a KernelWorker, which
+   * starts a new kernel after one. A count, not bytes. */
+  readonly crashes: number
 }
 
 /**
  * What the kernel's memory holds, in bytes: what its objects take (`used`), how far the module's
  * memory has grown (`heap`) and how far it can grow (`limit`, 4 GB). Each body, mesh and curve
  * lives there until it is disposed or garbage collected; a kernel call that finds the memory used
- * up fails with a KernelError of status SM_ERR_OUT_OF_MEMORY. The module of each thread (a page, a
- * worker) has its own memory. (A JavaScript-only function: smlibpy's kernel shares the memory of
- * its process.)
+ * up fails with a KernelError of status SM_ERR_OUT_OF_MEMORY. Also how many kernel objects
+ * JavaScript holds (`handles`) and how often the kernel crashed (`crashes`), after which its memory
+ * may be damaged. The module of each thread (a page, a worker) has its own memory. (A
+ * JavaScript-only function: smlibpy's kernel shares the memory of its process, which a crash
+ * ends.)
  */
 export function memoryUsage(): MemoryUsage {
   const { used, heap, limit } = k.runtime.memory_usage()
-  return { used, heap, limit, handles: live }
+  return { used, heap, limit, handles: live, crashes: _crashes.count }
 }
 
 // -------------------------------------------------------------------------------- handles

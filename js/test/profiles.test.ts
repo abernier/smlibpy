@@ -465,7 +465,7 @@ test('empty results and operand errors', () => {
   assert.equal(Rectangle(10, 10).intersect(Pos(30, 0).mul(Rectangle(10, 10))).faces().length, 0)
   raises(() => empty.extrude(5), ModelingError, /the sketch is empty/)
   raises(() => empty.center(), RangeError, /the sketch is empty/)
-  raises(() => Rectangle(10, 10).fuse(Line([0, 0], [20, 0])), TypeError, /makeFace\(\.\.\.\) or new Profile\(\.\.\.\)\.close\(\)/)
+  raises(() => Rectangle(10, 10).fuse(Line([0, 0], [20, 0]) as never), TypeError, /makeFace\(\.\.\.\) or new Profile\(\.\.\.\)\.close\(\)/)
 })
 
 // -- offset -------------------------------------------------------------------------------

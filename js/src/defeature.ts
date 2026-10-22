@@ -15,9 +15,10 @@
 // step first in a forked copy of the process (on Linux and macOS). JavaScript cannot fork; where
 // it can wait for another thread (Node, and Web Workers of a cross-origin isolated page), each
 // step runs first in a probe worker, a kernel of its own, on copies of the bodies (see
-// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does on
-// Windows: a crash of the kernel (a trap of the WebAssembly module) drops that step, but a step
-// that loops does not come back.
+// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does with
+// GUARD_SECONDS = 0: a crash of the kernel there (a trap of the WebAssembly module) ends the
+// operation with a ModelingError, as it would end smlibpy's process, and a step that loops does not
+// come back.
 
 import { BrepHandle, ModelingError, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { _formatG } from './geometry.ts'
@@ -75,15 +76,25 @@ export function setGuardSeconds(seconds: number): number {
 const _D = k.defeature
 const _VOLUMES = new WeakMap<BrepHandle, number>() // a body's handle -> its volume
 
-/** The kernel crashed in a step; `reason` says how. */
+/** The kernel crashed in a step, or did not finish; `reason` says how. `here`: it crashed in this
+ * kernel (no probe worker), whose memory may be damaged now: the operation ends there, where a crash
+ * in the probe worker only drops the step. */
 class _KernelFault extends ModelingError {
   readonly reason: string
+  readonly here: boolean
 
-  constructor(what: string, reason: string, hint: string) {
+  constructor(what: string, reason: string, hint: string, here = false) {
     super(`${what}: ${reason}; ${hint}`)
     this.name = '_KernelFault'
     this.reason = reason
+    this.here = here
   }
+}
+
+/** The _KernelFault of a trap of this kernel in the step `what`. */
+function _crashHere(what: string, e: Error): _KernelFault {
+  const hint = 'its memory may be damaged: load the module again before relying on its results, or run the step in a KernelWorker, which starts a new kernel after a crash'
+  return new _KernelFault(what, `the kernel crashed (${e.message})`, hint, true)
 }
 
 /** A kernel step for the probe worker (see _defeature_worker.ts): the step, the bodies it works on
@@ -95,7 +106,8 @@ export type _Job = { op: string; bodies: Uint8Array[]; [argument: string]: unkno
  * GUARD_SECONDS). The kernel is deterministic and the worker works on exact copies, so it does what
  * this kernel will do; a step that takes too long or crashes there becomes a _KernelFault, and the
  * step is dropped as smlibpy drops one in its forked copy. Without a probe worker (a browser's
- * main thread) a trap of the WebAssembly module here (the kernel crashed) becomes the _KernelFault.
+ * main thread) a trap of the WebAssembly module here (the kernel crashed) becomes a _KernelFault
+ * whose `here` is true: this kernel's memory may be damaged.
  * Superseded by `_isolatedValue`, which brings the worker's result back instead of doing the step
  * again here.
  */
@@ -105,9 +117,7 @@ export function _guarded<R>(what: string, work: () => R, job: (() => _Job) | nul
   try {
     return work()
   } catch (e) {
-    if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) {
-      throw new _KernelFault(what, `the kernel crashed (${e.message})`, 'the module stays usable')
-    }
+    if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) throw _crashHere(what, e)
     throw e
   }
 }
@@ -215,7 +225,7 @@ export function _isolated(what: string, work: () => number, job: () => _Job, hin
  * kernel as an Error with its message, as the kernel's bindings throw it). Python's
  * `smlibpy._guard.isolated`. Without a probe worker (a browser's main thread), or with
  * GUARD_SECONDS = 0, `work()` runs here; with `trap`, a trap there (the kernel crashed) is a
- * _KernelFault, as in the probe worker.
+ * _KernelFault whose `here` is true (this kernel's memory may be damaged).
  */
 export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, options: { trap?: boolean } = {}): R {
   const limit = Number(GUARD_SECONDS)
@@ -224,9 +234,7 @@ export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, 
     try {
       return work()
     } catch (e) {
-      if (options.trap && typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) {
-        throw new _KernelFault(what, `the kernel crashed (${e.message})`, 'the module stays usable')
-      }
+      if (options.trap && typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) throw _crashHere(what, e)
       throw e
     }
   }
@@ -492,7 +500,7 @@ function _filletBound(b: _Blends, faces: readonly Face[]): number {
 }
 
 /** The executive's patched copy of `body` without `groups` (null if it failed), and whether the
- * kernel crashed. */
+ * kernel crashed in the probe worker (a crash in this kernel ends the operation). */
 function _executive(what: string, body: Part, groups: readonly (readonly Face[])[], rebuild: string): [Part | null, boolean] {
   let res: Any
   try {
@@ -503,7 +511,7 @@ function _executive(what: string, body: Part, groups: readonly (readonly Face[])
       { trap: true },
     )
   } catch (e) {
-    if (e instanceof _KernelFault) return [null, true]
+    if (e instanceof _KernelFault && !e.here) return [null, true]
     throw e
   }
   return [res.brep === null ? null : body._like(res.brep), false]
@@ -557,7 +565,7 @@ function _removePass(
           { trap: true },
         )
       } catch (e) {
-        if (!(e instanceof _KernelFault)) throw e
+        if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)
         faulted.add(key(edge))
         res = { brep: null }
       }
@@ -754,7 +762,7 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
         { trap: true },
       )
     } catch (e) {
-      if (!(e instanceof _KernelFault)) throw e
+      if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)
       why = why || e.reason
       continue
     }

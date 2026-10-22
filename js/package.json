@@ -49,7 +49,7 @@
   ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/declarations.mjs",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "fonts": "node scripts/fonts.mjs",

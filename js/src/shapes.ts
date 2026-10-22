@@ -5,7 +5,7 @@
 // them and can be passed back to operations on that body
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
-import { BrepHandle, CurveHandle, KernelError, ModelingError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -33,7 +33,7 @@ import {
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
 import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
-import { show } from './viewer.ts'
+import { type ShowOptions, show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
 import {
@@ -127,6 +127,14 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
 
 /** A color: a CSS name ("steelblue"), "#4682b4", or [r, g, b] (0..1 or 0..255). */
 export type ColorLike = string | readonly number[]
+
+/** Edges as the operations on edges take them (`fillet`, `chamfer`): an edge, a face or a wire
+ * (their edges), or a list of them (an array, a ShapeList, a Set; also nested). */
+export type EdgesLike = Edge | Face | Wire | (Iterable<EdgesLike> & object)
+
+/** Faces as the operations on faces take them (`shell`, `removeFaces`, `draft`): a face, or a list
+ * of faces (an array, a ShapeList, a Set; also nested). */
+export type FacesLike = Face | (Iterable<FacesLike> & object)
 
 /** Metadata a body carries: a name (exporters, the viewer) and a display color. */
 export interface BodyOptions {
@@ -242,8 +250,8 @@ export abstract class Shape {
     return tessellate(this, tolerance, angle)
   }
 
-  /** Show the shape in the viewer (see `show`). */
-  show(options: Record<string, unknown> = {}): unknown {
+  /** Show the shape in the viewer (see `show`); returns the path of the page. */
+  show(options: ShowOptions = {}): string {
     return show(this, options)
   }
 
@@ -703,7 +711,7 @@ export class ShapeList<T = Shape> extends Array<T> {
   }
 
   /** Every shape placed onto a plane or face (see `Shape.on`). */
-  on(target: unknown): ShapeList<T> {
+  on(target: Plane | Face | Location | ShapeList<Face> | Sketch): ShapeList<T> {
     const loc = _asPlane(target).location
     return _list(this.map((s) => (s as Any).moved(loc) as T))
   }
@@ -1583,8 +1591,8 @@ export class Face extends Shape {
   }
 
   /** The body this face belongs to. */
-  get owner(): _Body | null {
-    return this._owner
+  get owner(): Part | Shell | null {
+    return this._owner as Part | Shell | null // (every body is one of them)
   }
 
   // -- geometry -----------------------------------------------------------------------------
@@ -1700,7 +1708,7 @@ export class Face extends Shape {
   }
 
   /** Where a ray meets this face, nearest first (see `Part.raycast`). */
-  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit<Face>[] {
     return _raycast([this], origin, direction, this.bbox())
   }
 
@@ -1927,13 +1935,13 @@ export class _Body extends Shape {
    * ray sees first; `hits.length` is odd from inside a closed part, except where the ray grazes a
    * face (to test a point, use `Part.contains`).
    */
-  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
+  raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit<Face>[] {
     return _raycast(this.faces(), origin, direction, this._looseBox())
   }
 
   // -- geometric queries --------------------------------------------------------------------
   /** The curves where this body's surface meets another body's surface, each one once. */
-  intersectionCurves(other: _Body): ShapeList<Edge> {
+  intersectionCurves(other: Part | Shell): ShapeList<Edge> {
     const [curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, other._brep))
     // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
     // borders twice (also reversed).
@@ -2318,7 +2326,7 @@ function _raycast(
   box: BoundBox,
   onePerPoint = true,
   meshes = new Map<unknown, Mesh[]>(), // a body -> its faces' meshes (for faces the kernel cannot intersect; rays of one body can share them)
-): Hit[] {
+): Hit<Face>[] {
   let o: Vector
   let d: Vector
   if (origin instanceof Axis && direction == null) {
@@ -2339,7 +2347,7 @@ function _raycast(
   reach += 1e-3 * size
   if (reach <= 0) return [] // the body is behind the start
   const tol = 1e-9 * Math.max(size, o.length)
-  const hits: Hit[] = []
+  const hits: Hit<Face>[] = []
   kernelCall('raycast', () => {
     const ray: number = k.create_line_segment(o.toArray(), o.add(d.mul(reach)).toArray())
     try {
@@ -2372,7 +2380,7 @@ function _raycast(
   })
   hits.sort((a, b) => a.distance - b.distance)
   if (!onePerPoint) return hits
-  const out: Hit[] = []
+  const out: Hit<Face>[] = []
   for (const h of hits) { // through an edge or a vertex: one hit
     const last = out[out.length - 1]
     if (!last || h.distance - last.distance > 10 * tol || h.point.sub(last.point).length > 10 * tol) out.push(h)
@@ -2673,7 +2681,7 @@ export class Part extends _Body {
    * A result whose volume is less than that of the largest part, or more than that of all parts
    * together, is wrong: `ModelingError`.
    */
-  merge(...others: unknown[]): Part {
+  merge(...others: (Part | Iterable<Part>)[]): Part {
     const tools = _bodies(others, 'merge')
     if (!tools.length) throw new RangeError('merge needs another part')
     for (const t of tools) {
@@ -3142,7 +3150,7 @@ export class Part extends _Body {
    * runs in the probe worker (see GUARD_SECONDS): the kernel's fillet code crashed on some imported
    * parts.
    */
-  fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part {
+  fillet(edges: EdgesLike, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
     const { continuity = null, fullness = 1.0 } = options
     this._requireValid('fillet')
@@ -3228,7 +3236,7 @@ export class Part extends _Body {
    * The faces of each edge must meet at the same angle all along it (within 1 degree); where they
    * do not (a hole into a tilted or curved face), use `fillet`.
    */
-  chamfer(edges: unknown, length: number): Part {
+  chamfer(edges: EdgesLike, length: number): Part {
     this._requireValid('chamfer')
     if (!(Number(length) > 0)) throw new RangeError('chamfer: the length must be positive')
     const sel = this._sharpEdges(edges, 'chamfer')
@@ -3275,7 +3283,7 @@ export class Part extends _Body {
    * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
    * raises it for large parts).
    */
-  shell(thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean } = {}): Part {
     _opts('Part.shell', options)
     const outward = options.outward ?? false
     this._requireValid('shell')
@@ -3332,7 +3340,7 @@ export class Part extends _Body {
       if (openings.includes(f._f)) continue
       let p: Vector
       let n: Vector
-      let hits: Hit[]
+      let hits: Hit<Face>[]
       try {
         const [[u0, v0], [u1, v1]] = k.face_uv_domain(f._f)
         let u = 0.5 * (u0 + u1)
@@ -3502,7 +3510,8 @@ export class Part extends _Body {
    * result. An attempt in the mode of the one before runs only when that one's result was refused,
    * within _RETRY_SECONDS: the kernel fails the same way again, and only its extended mode, which
    * depends on memory layout, ever gave a better result. A step that crashed the kernel (a trap, or
-   * a crash in the probe worker) or did not finish ends the attempts. */
+   * a crash in the probe worker) or did not finish ends the attempts, and so does a crash of this
+   * kernel while a result is checked (its memory may be damaged). */
   _checked(
     name: string,
     attempts: readonly [boolean, () => Part][],
@@ -3513,6 +3522,7 @@ export class Part extends _Body {
     const tol = 1e-6 * Math.max(box.diagonal, 1) + grow
     const before = Number(this._props(1e-4).volume)
     const start = Date.now()
+    const crashes = _crashCount()
     let error: KernelError | null = null
     let refused: string | null = null
     let last: [boolean, boolean] | null = null // the mode of the attempt before, and whether it failed
@@ -3524,13 +3534,18 @@ export class Part extends _Body {
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
         // a trap: the kernel crashed here, and its memory may be damaged
-        if (typeof WebAssembly !== 'undefined' && (e as Any).cause instanceof WebAssembly.RuntimeError) throw e
+        if (_crashCount() > crashes) throw e
         error = e
         last = [mode, true]
         continue
       }
       last = [mode, false]
       const why = _offsetProblem(result, box, tol, before, smaller) ?? (problem ? problem(result, mode) : null)
+      if (_crashCount() > crashes) {
+        // (the kernel crashed in a check, which took that for a refusal)
+        result.dispose()
+        throw _crashError(name, hint)
+      }
       if (why === null) return result
       refused ??= why
       result.dispose()
@@ -3636,7 +3651,7 @@ export class Part extends _Body {
   /** The part with fillets taken out and their edges sharp again: `faces` (fillet faces of this
    * part), or all fillets up to `maxRadius`. With `partial` the fillets the kernel cannot take
    * out stay. See the defeature module. */
-  removeFillets(faces: unknown = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
+  removeFillets(faces: FacesLike | null = null, options: { maxRadius?: number | null; partial?: boolean } = {}): Part {
     _opts('Part.removeFillets', options)
     return _removeFillets(this, faces, options)
   }
@@ -3644,7 +3659,7 @@ export class Part extends _Body {
   /** The part with `faces` (a hole, a boss, a pocket) cut out and the gap closed by the faces
    * around it. With `partial` the features the kernel cannot close stay. See the defeature
    * module. */
-  removeFaces(faces: unknown, options: { partial?: boolean } = {}): Part {
+  removeFaces(faces: FacesLike, options: { partial?: boolean } = {}): Part {
     _opts('Part.removeFaces', options)
     return _removeFaces(this, faces, options)
   }
@@ -3683,7 +3698,7 @@ export class Part extends _Body {
    *   normal points out of the part: the top face drafts for a mold that moves up, the bottom face
    *   for one that moves down (use `Plane.XY` there).
    */
-  draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part {
+  draft(faces: FacesLike, angle: number, neutralPlane: Plane | Face): Part {
     return draftFaces(this, faces, angle, neutralPlane)
   }
 
@@ -4015,7 +4030,7 @@ export class Shell extends _Body {
   }
 
   /** Union with other sheets (Python's `+`). */
-  fuse(...others: unknown[]): Shell {
+  fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell {
     return this._like(_held(this._copyBrep(), (h) => {
       for (const t of _bodies(others)) kernelCall('fuse', () => _combine(h, t, k.BooleanOp.UNION))
     }))
@@ -4428,22 +4443,22 @@ export class Sketch extends Shell {
   }
 
   /** The union with other sketches (Python's `+`). */
-  override fuse(...others: unknown[]): Sketch {
+  override fuse(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.UNION, 'fuse')
   }
 
   /** The region less other sketches (Python's `-`). */
-  cut(...others: unknown[]): Sketch {
+  cut(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.DIFFERENCE, 'cut')
   }
 
   /** The region common to this and other sketches (Python's `&`). */
-  intersect(...others: unknown[]): Sketch {
+  intersect(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.INTERSECTION, 'intersect')
   }
 
   /** The region in exactly one of the sketches (Python's `^`). */
-  xor(...others: unknown[]): Sketch {
+  xor(...others: (Sketch | Iterable<Sketch>)[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.EXCLUSIVE_OR, 'xor')
   }
 

@@ -4,7 +4,7 @@
 import {
   Axis, BoundBox, Box, Cylinder, GridLocations, Line, Location, ModelingError, Plane, Rectangle, Vector, Z, type Edge, type Face, type Part,
 } from '../src/index.ts'
-import { k, kernelCall } from '../src/kernel.ts'
+import { k, kernelCall, memoryUsage } from '../src/kernel.ts'
 import { setGuardSeconds } from '../src/defeature.ts'
 import { model } from '../examples/enclosure.ts'
 import type { Mesh } from '../src/mesh.ts'
@@ -91,3 +91,17 @@ export const later = (value: number, ms: number): Promise<number> => new Promise
 
 /** Which worker answers. */
 export const thread = (): number => (globalThis as any).process.getBuiltinModule('node:worker_threads').threadId
+
+/** A real trap of the kernel (a read far beyond its memory) whose error the function catches: it
+ * returns the crashes its kernel counted (W10). */
+export function caughtCrash(): number {
+  try {
+    k.brep_face_count(0xf0000000)
+  } catch {
+    // (the crash, caught)
+  }
+  return memoryUsage().crashes
+}
+
+/** The crashes this worker's kernel counted so far (W10). */
+export const crashes = (): number => memoryUsage().crashes

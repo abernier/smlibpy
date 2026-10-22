@@ -17,6 +17,7 @@ import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
 import { Mesh } from './mesh.ts'
 import * as regions from './regions.ts'
+import type { ShapesLike } from './exporters.ts'
 import { Edge, Face, Part, type ShapeList, Sketch, Vertex, Wire, _Body, _canonicalCurve, _list, _typeName } from './shapes.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
@@ -1067,7 +1068,7 @@ function _sketch(text: string, options: DxfReadOptions, what: string, wiresName:
  * Write sketches, faces, wires and edges to a DXF drawing (AutoCAD 2000, AC1015) at `path`
  * (Node). See `toDxf`.
  */
-export function exportDxf(shapes: unknown, path: string, options: DxfWriteOptions = {}): void {
+export function exportDxf(shapes: ShapesLike, path: string, options: DxfWriteOptions = {}): void {
   _opts('exportDxf', options)
   const text = _dxf(shapes, options, 'exportDxf')
   _fs('exportDxf').writeFileSync(path, text, 'utf8')
@@ -1082,7 +1083,7 @@ export function exportDxf(shapes: unknown, path: string, options: DxfWriteOption
  *
  * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge` or an array of them.
  */
-export function toDxf(shapes: unknown, options: DxfWriteOptions = {}): string {
+export function toDxf(shapes: ShapesLike, options: DxfWriteOptions = {}): string {
   _opts('toDxf', options)
   return _dxf(shapes, options, 'toDxf')
 }

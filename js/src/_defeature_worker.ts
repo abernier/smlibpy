@@ -16,8 +16,13 @@
 // (`_guarded`, which smlibwasm no longer uses) only runs: the caller does the step itself once it
 // is known to finish.
 
+import { _crashes } from './_errors.ts'
+
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
+
+// (a crash here kills this worker, and the caller says so: no warning of this kernel's own)
+_crashes.next = null
 
 // The kernel, imported once the message handler is in place (at the end): a browser drops the
 // messages that come while a module worker waits at its top level, and the kernel's module waits

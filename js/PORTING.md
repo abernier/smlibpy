@@ -125,7 +125,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_smbOf`, `_isolated` and `_isolatedValue` (shapes.ts runs shell,
   offset, thicken, cells, opt-in Booleans and the fillets of imported parts in them), `_spill`
-  (its test); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it).
+  (its test); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it),
+  `_crashCount` and `_crashError` (`Part._checked` stops at a crash of the kernel); `_errors.ts`:
+  `_crashes` (the crashes of this thread's kernel, which worker.ts reads without the kernel).
 - **The kernel's guard.** Python runs a step that can crash or loop in another process
   (`smlibpy._guard.isolated(what, fn, *args)`: a forked copy, or a helper process that gets the
   bodies as `.smb`); here `_isolatedValue(what, work, job)` runs it in a probe worker
@@ -154,10 +156,25 @@ the Python code works around a kernel defect, so does the TypeScript.
   the kernel's modules (which defeature's probe worker imports) import neither _guard.ts nor
   index.ts, worker options are literal, and no `new URL(..., import.meta.url)` names its file by an
   expression (lane_WN.test.ts checks all three).
+- **Types.** Public signatures say what they take and give, as precisely as the code checks it
+  (`EdgesLike` for edges, `ShapesLike` for what the exporters take, `RenderOptions` with typed
+  fields), not `unknown`; a free function whose result depends on its input's type has overloads
+  (`extrude(sketch)` is a `Part`), and Python's has the same `@overload`s. Option and selection
+  types are exported from index.ts (`export type`). `npm run build` leaves the internal names out of
+  the published declarations (scripts/declarations.mjs, by the `_` of their names rather than
+  `@internal` tags): a public signature must not name an internal type (it would stay, and the API
+  reference leaves out a constructor that takes one), nor a module of Node's (`NodeFs` in
+  exporters.ts is written out). lane_WN.test.ts type-checks an app against the declarations with
+  `skipLibCheck: false` and no Node types.
+- **Crashes of the kernel.** A trap is counted (`memoryUsage().crashes`) and warns once; its
+  KernelError says "the kernel crashed". Code that retries on a KernelError stops when the count went
+  up during the attempt (`_crashCount()`), and a step run here with `_isolatedValue(..., { trap:
+  true })` throws a `_KernelFault` whose `here` is true, which the defeaturing loops pass on rather
+  than drop. Python has nothing to port: a crash ends its process, or the copy of it.
 - **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
   `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
-  file comes from), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB; Python's
-  kernel shares its process's) and `scope(fn)` (frees the kernel objects `fn` made and does not
+  file comes from), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
+  of its kernel; Python's kernel shares its process's, which a crash ends) and `scope(fn)` (frees the kernel objects `fn` made and does not
   return: the garbage collector frees them only between tasks, Python's reference counting at
   their last reference). They follow the house style but have no smlibpy counterpart and no entry
   in `_options.ts`. The port's own temporaries are freed the same way: the public functions that

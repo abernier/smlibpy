@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { ImageDiff, Picture, _Camera, _FONT, _LABEL, _Scene, _curvatureSpec, _pngDecode, _text, _valueText, diffImages, render } from '../src/render.ts'
+import { ImageDiff, Picture, _Camera, _FONT, _LABEL, _Scene, _curvatureSpec, _pngDecode, _text, _valueText, diffImages, render, type RenderOptions } from '../src/render.ts'
 import { htmlPage, show } from '../src/viewer.ts'
 import { Box, Cylinder, Sphere } from '../src/parts.ts'
 import { Circle } from '../src/sketches.ts'
@@ -300,7 +300,7 @@ test('the same input gives the same pixels', () => {
 
 // -- cameras ------------------------------------------------------------------------------------
 test('named views match turntable and direction cameras', () => {
-  const px = (view: unknown) => Px.of(render(bored(), { view, size: [200, 150] }))
+  const px = (view: RenderOptions['view']) => Px.of(render(bored(), { view, size: [200, 150] }))
   const isoElevation = (Math.atan(1 / Math.sqrt(2)) * 180) / Math.PI
   assert.ok(px('front').equals(px({ azimuth: 0, elevation: 0 })))
   assert.ok(px('front').equals(px({ direction: [0, 1, 0] })))
@@ -363,8 +363,8 @@ test('supersampling and bad options', () => {
     { drawing: 'fourth-angle' },
     { size: [0, 10] },
   ]
-  for (const options of bad) assert.throws(() => render(bored(), options), RangeError, JSON.stringify(options))
-  assert.throws(() => render(bored(), { highlight: 5 }), TypeError)
+  for (const options of bad) assert.throws(() => render(bored(), options as never), RangeError, JSON.stringify(options))
+  assert.throws(() => render(bored(), { highlight: 5 as never }), TypeError)
   assert.throws(() => render({ size: [10, 10] }), /nothing to render/)
 })
 
@@ -448,9 +448,9 @@ test('a section takes a face, an [origin, normal] pair and an object', () => {
   const face = bored().faces().front()[0] // the face at y = -20, normal -Y: cuts nothing away
   assert.ok(!sameData(render(bored(), { section: face, size: [200, 150] }), byPlane))
   assert.ok(sameData(render(bored(), { section: { origin: [0, 0, 0], normal: [0, -1, 0], cap: false }, size: [200, 150] }), render(bored(), { section: Plane.XZ, cap: false, size: [200, 150] })))
-  assert.throws(() => render(bored(), { section: { origin: [0, 0, 0] } }), RangeError)
+  assert.throws(() => render(bored(), { section: { origin: [0, 0, 0] } as never }), RangeError)
   assert.throws(() => render(bored(), { section: [[0, 0, 0], [0, 0, 0]] }), /no length/)
-  assert.throws(() => render(bored(), { section: 'XZ' }), TypeError)
+  assert.throws(() => render(bored(), { section: 'XZ' as never }), TypeError)
 })
 
 // -- highlights and markers ---------------------------------------------------------------------
@@ -849,7 +849,7 @@ test('curvature of a sphere and a cylinder', () => {
   assert.deepEqual(_curvatureSpec({ kind: 'max', range: 0.5 }), ['max', [-0.5, 0.5]])
   assert.deepEqual(can.curvatureRange('max', [0.02, 0.5]), [0.0, 0.5]) // a range always holds zero
   for (const bad of ['sharpness', { kind: 'mean', range: [1, 0] }, 3]) {
-    assert.throws(() => render(Sphere(1), { size: [50, 50], curvature: bad }), RangeError, JSON.stringify(bad))
+    assert.throws(() => render(Sphere(1), { size: [50, 50], curvature: bad as never }), RangeError, JSON.stringify(bad))
   }
 })
 
@@ -893,7 +893,7 @@ test('the curvature map shows the ramp of a G2 blend', () => {
 test('zebra and curvature in sheets, with highlights and markers', () => {
   const p = bosses()[1]
   const side = p.faces().cylinders() // highlighted faces keep their stripes, in orange and black
-  const options = { sheet: true, zebra: true, highlight: side, markers: [[[0, 0, 30], 'top']], size: [600, 450] }
+  const options: RenderOptions = { sheet: true, zebra: true, highlight: side, markers: [[[0, 0, 30], 'top']], size: [600, 450] }
   const zebra = render(p, options)
   assert.ok(Px.of(zebra).count(orange) > 200 && Px.of(zebra).count(red) > 20)
   assert.ok(sameData(zebra, render(p, options)))

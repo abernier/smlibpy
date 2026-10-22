@@ -1,4 +1,5 @@
-"""Lane WN of the kernel plan: isolated kernel steps (N1), memory (N2), the fuzz harness (N3)."""
+"""Lane WN of the kernel plan: isolated kernel steps (N1), memory (N2), the fuzz harness (N3), the typings of
+the free functions (W11) and the API reference of the bodies (W12)."""
 
 import _thread
 import math
@@ -445,3 +446,43 @@ def test_cells_that_crash_the_stitcher_raise(mode):
     with pytest.raises(KernelError, match="cells failed") as e:
         m.cells()
     assert "the kernel crashed" in e.value.detail
+
+
+# ================================================================================ W11, W12
+def test_free_functions_say_what_a_sketch_or_face_gives():
+    """W11: what the TypeScript overloads say, Python's say too: a sketch or face gives a Part, a
+    curve a Part or a Shell; vertices give a Sketch; split(..., "both") two Parts."""
+    import typing
+
+    from smlibpy import operations as ops
+
+    returns = {f.__name__: [o.__annotations__["return"] for o in typing.get_overloads(f)]
+               for f in (ops.extrude, ops.revolve, ops.loft, ops.sweep, ops.fillet, ops.chamfer, ops.offset, ops.split)}
+    assert returns == {
+        "extrude": ["Part", "Part | Shell"], "revolve": ["Part", "Part | Shell"], "loft": ["Part", "Part | Shell"],
+        "sweep": ["Part", "Part | Shell"], "fillet": ["Sketch", "Part"], "chamfer": ["Sketch", "Part"],
+        "offset": ["Sketch", "Part"], "split": ["tuple[Part, Part]", "Part"],
+    }
+    assert typing.get_overloads(ops.extrude)[0].__annotations__["profile"] == "Sketch | Face"
+    # and so they behave
+    assert isinstance(extrude(Rectangle(10, 5), 3), Part)
+    assert isinstance(extrude(Line((0, 0), (10, 0)), 3), Shell)
+    assert isinstance(sweep(Line((0, 0, 0), (0, 5, 0)), Line((0, 0, 0), (0, 0, 10))), Shell)
+    assert isinstance(fillet(Rectangle(10, 5).vertices(), 1), Sketch)
+    above, below = split(Box(10, 10, 10), Plane.XY, "both")
+    assert above.volume == approx(500) and below.volume == approx(500)
+
+
+def test_api_reference_shows_what_every_body_has():
+    """W12: Part, Sketch and Shell in docs/api.md list every public member of the bodies' base class
+    (_Body), which mkdocstrings leaves out of a class unless told."""
+    import pathlib
+    import re
+
+    page = (pathlib.Path(__file__).parent.parent / "docs" / "api.md").read_text()
+    public = sorted(name for name in vars(shapes._Body) if not name.startswith("_"))
+    assert {"named", "colored", "raycast", "closest_point", "heal", "bbox"} <= set(public)
+    for cls in ("Part", "Sketch", "Shell"):
+        entry = re.search(rf"^::: smlibpy\.shapes\.{cls}\n    options:\n      inherited_members: \[([^\]]*)\]", page, re.M)
+        assert entry, f"{cls} has no inherited_members in docs/api.md"
+        assert sorted(entry.group(1).split(", ")) == public, cls

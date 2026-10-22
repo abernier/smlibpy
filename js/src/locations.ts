@@ -5,7 +5,7 @@
 //     part = part.cut(GridLocations(40, 30, 2, 2).mul(Hole(3, 10)).on(topFace))
 
 import { Location, Plane, Pos, Rot, type Vector, _isPointLike, _radians, _vec, type VectorLike } from './geometry.ts'
-import { Face, Shape, ShapeList, Vertex, _asPlane } from './shapes.ts'
+import { Face, Shape, ShapeList, type Sketch, Vertex, _asPlane } from './shapes.ts'
 import { _opts } from './kernel.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
@@ -56,7 +56,7 @@ export class Locations extends Array<Location> {
   }
 
   /** The pattern placed onto a plane or face. */
-  on(target: unknown): Locations {
+  on(target: Plane | Face | Location | ShapeList<Face> | Sketch): Locations {
     return this.moved(_asPlane(target).location)
   }
 

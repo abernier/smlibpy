@@ -315,3 +315,150 @@ assert.deepEqual(Object.keys(memoryUsage()).sort(), ['handles', 'heap', 'limit',
 - W9: `scope` cannot follow an async function (TypeError); objects kept outside a scope's result
   are disposed. Public functions not in the list above may still leave intermediates to the
   garbage collector (none found by the probe over 70 calls).
+
+# Lane WN, batch 3: crashes of the WebAssembly kernel (W10), the package's typings (W11), the JS API reference (W12)
+
+Items W10, W11 and W12 of ai/plan/kernel-deep-dive.md (findings `wasmbind-trap-leaves-kernel-state`,
+`offset-wasm-trap-guard`, `wasmapi-typings`, `wasmapi-docs-body-methods-missing`).
+
+## Fixed
+
+- smlibwasm, W10: a crash of the kernel (a trap of the WebAssembly module: "function signature
+  mismatch", "memory access out of bounds") no longer hides behind retries and the operation's own
+  hint. The shell of a filleted box with `setGuardSeconds(0)` (as on a page's main thread) crashed
+  on its fourth call and said `shell failed: the kernel cannot open a face whose rim meets its
+  neighbours tangentially; ...`; it now says `shell failed: the kernel crashed (function signature
+  mismatch), and its memory may be damaged: load the module again before relying on its results (a
+  KernelWorker does so by itself); the kernel cannot open a face ...`, and the first crash warns
+  (`setWarningHandler`) naming the kernel call (`the kernel crashed in shell_brep (...)`).
+  `kernel.ts` and the docs no longer say that the module "stays usable".
+- smlibwasm, W10: shell and offset stop at a crash of the kernel also when it happens in
+  the check of a result (the offset that measures a closed shell), which took it for a refusal and
+  tried the next attempt on the memory the crash left (O6 had stopped them only at a crash in the
+  attempt itself).
+- smlibwasm, W10: `removeFillets` and `removeFaces` with their steps in this kernel (a page's main
+  thread, `setGuardSeconds(0)`) dropped a step that crashed the kernel and tried the next ones on the
+  damaged memory: four crashes and "the kernel could not take out 4 of the 4 fillet faces", or with
+  `partial: true` the part given back unchanged without a word. The first crash now ends the
+  operation with a `ModelingError` that says so. A crash in the probe worker (a kernel of its own,
+  which is replaced) still only drops that step.
+- smlibwasm, W10: a `KernelWorker` whose kernel crashed while a function ran, but whose function
+  caught the error and returned, kept that kernel for the next call; it starts a new one now.
+- smlibwasm, W11: the package's declarations type-check in an app without Node's types and with
+  `skipLibCheck: false` (they named `node:fs`, and `Symbol.dispose` without the lib that declares
+  it), and leave out the internal members (`_brep`, `_like`, `_ownFaces`, ... and functions such as
+  `_fs`): `scripts/declarations.mjs`, run by `npm run build`, does what `stripInternal` does for
+  `@internal`, by the `_` of the names.
+- smlibwasm, W11: `extrude(sketch, 3).volume` did not compile (`Property 'volume' does not exist on
+  type 'Part | Shell'`); `render(part, { veiw: 'top', sise: [100, 100] })` compiled. The free
+  functions have overloads (a sketch or face gives a `Part`, an open curve `Part | Shell`; vertices
+  give `fillet`/`chamfer` a `Sketch`; `offset` of a part a `Part`, of a sketch a `Sketch`;
+  `split(part, plane, 'both')` `[Part, Part]`), and `render`, `show` and `htmlPage` take their
+  options typed (`RenderOptions`, `ShowOptions`, `PageOptions`).
+- smlibwasm, W12: the generated API section of docs/javascript.md left out every member Part, Shell
+  and Sketch inherit from the internal `_Body` (`dispose`, `named`, `colored`, `raycast`,
+  `closestPoint`, `heal`, `bbox`, `vertices`, `info`, ...), showed `class Part extends _Body` with
+  `_Body` nowhere, and the constructors only the package calls (`new Face(owner, kface)`). They are
+  members of Part, Shell and Sketch now, which extend `Shape`, and those constructors are left out.
+- smlibpy, W12: the API reference (docs/api.md, mkdocstrings) left the same members out of `Part`,
+  `Sketch` and `Shell` (`named`, `colored`, `raycast`, `closest_point`, `heal`, ...): they are listed
+  under each now.
+
+## New
+
+- smlibwasm: `memoryUsage().crashes`, how often the kernel crashed since the module was loaded
+  (after a crash its memory may be damaged). A JavaScript-only key, as `memoryUsage()` is.
+- smlibwasm: exported types, to name in an app's own code: the options (`FilletOptions`,
+  `ExtrudeOptions`, `ExtrudeFunctionOptions`, `SweepOptions`, `FoldOptions`, `FlangeOptions`,
+  `UnfoldOptions`, `BendAllowanceOptions`, `DevelopedLengthOptions`, `TwistOptions`, `TaperOptions`,
+  `BendOptions`, `RangeOptions`, `TextOptions`, `PlacementOptions`, `CornerOptions`,
+  `PolygonOptions`, `TrapezoidOptions`, `StepExportOptions`, `MeshOptions`, `GltfOptions`,
+  `DxfReadOptions`, `DxfWriteOptions`, `BodyOptions`), the selections and values (`EdgesLike`,
+  `FacesLike`, `ShapesLike`, `Renderable`, `RenderView`, `RenderPoint`, `RenderMarker`,
+  `CurvatureKind`, `ColorLike`, `FilletRadius`, `SortKey`, `Coordinates`, `Matrix`, `Movable`, `XYZ`,
+  `LatticeIndex`, `LatticeLayers`, glyph outlines `Point`, `Segment`, `Contour`) and result classes
+  (`DraftAnalysis`, `FaceDraft`, `PairAdjustment`) as types. `Hit` is generic over its face: a
+  body's `raycast` gives `Hit<Face>[]` (`hit.face.geomType` without a check), a mesh's `Hit<null>[]`.
+- smlibpy: `typing.overload`s on `extrude`, `revolve`, `loft`, `sweep`, `fillet`, `chamfer`,
+  `offset` and `split`, and `mirror` typed to give what it takes, as the TypeScript says.
+- `npm run build` makes the published declarations with `scripts/declarations.mjs`; `node
+  scripts/api.mjs <dist> <page>` writes the API section from other declarations into another page.
+
+## Behaviour changes
+
+- smlibwasm: in this kernel (a page's main thread, `setGuardSeconds(0)`), a crash of the kernel in
+  a step of `removeFillets` or `removeFaces` ends the operation with a `ModelingError` (its `name`
+  is `_KernelFault`), also with `partial: true`, where the step was dropped and the next one tried.
+  Run such steps in a `KernelWorker` (a new kernel after a crash) or where the probe worker runs
+  (Node, a cross-origin isolated page's workers), which drops only the step:
+
+  ```js
+  // before: the crash was dropped, and the part came back as it was
+  const plain = part.removeFillets(null, { partial: true })
+  // after: the operation ends at the crash; in a KernelWorker the next call gets a new kernel
+  const plain = await cad.call('withoutFillets', [part]) // (expose(() => import('./models.js')))
+  ```
+- smlibwasm: the message of a KernelError for a crash names the crash before the operation's hint;
+  code that matched the hint at the start of the message matches it anywhere:
+
+  ```js
+  // before
+  if (/^shell failed: the kernel cannot open/.test(e.message)) ...
+  // after
+  if (e instanceof KernelError && e.operation === 'shell' && /the kernel cannot open/.test(e.message)) ...
+  ```
+- smlibwasm: the first crash of the kernel warns through `setWarningHandler` (`console.warn` by
+  default). A handler that turns warnings into errors throws at the crash.
+- smlibwasm: `memoryUsage()` has the key `crashes`:
+
+  ```js
+  // before
+  assert.deepEqual(Object.keys(memoryUsage()).sort(), ['handles', 'heap', 'limit', 'used'])
+  // after
+  assert.deepEqual(Object.keys(memoryUsage()).sort(), ['crashes', 'handles', 'heap', 'limit', 'used'])
+  ```
+- smlibwasm (TypeScript only; nothing changes at run time): code that compiled because a parameter
+  was `unknown` or a result `any` may not compile now. `load(path)` gives `Part | Shell | Sketch |
+  Mesh | ShapeList<Part | Shell>` (it gave `any`); `render`/`show`/`htmlPage` options are checked,
+  also options built in a variable without a type (`size: number[]` is no `[number, number]`);
+  passing the wrong kind of value where the function threw a TypeError at run time is a compile
+  error (`toStep(3)`, `part.removeFaces(part.edges())`, `sketch.fuse(edge)`). `Face.owner` is
+  `Part | Shell | null`, `Hit.face` `Face | null` (it was `any`). The internal members (`_brep`,
+  `_h`, `_like`, ...) are not in the declarations:
+
+  ```ts
+  // before
+  const part = load('bracket.step')
+  console.log(part.volume)
+  const options = { view: 'top', size: [400, 300] }
+  render(part, options)
+  // after
+  const part = load('bracket.step')
+  if (!(part instanceof Part)) throw new Error('bracket.step holds no single part')
+  console.log(part.volume)
+  const options: RenderOptions = { view: 'top', size: [400, 300] }
+  render(part, options)
+  ```
+- smlibwasm: the declarations reference `/// <reference lib="esnext.disposable" />` where they name
+  `Symbol.dispose` (TypeScript 5.2 or later reads it): an app on an older lib gets the type of
+  `Symbol.dispose` from there. Their API section lists the inherited members under each class; the
+  constructors of `Face`, `Edge` and `Picture` are no longer shown (they take internal types).
+
+## Not done
+
+- W10: the module is not marked unusable or loaded again after a crash: every handle points into
+  its memory, so a new module would lose them; the warning, `memoryUsage().crashes` and the
+  `KernelWorker` (which does start a new kernel) are the ways out. The plan's
+  `ext.reset_after_trap()` (clearing the kernel's mark locks and DoingBoolean) was left out, as the
+  verifier advised: those flags are benign by design and were never seen stuck, and clearing them
+  would not undo what a broken pointer wrote. Retry loops other than those of shell, offset and the
+  defeaturing steps (a Boolean's fallbacks, the 2D Booleans' slab fallback, raycasts over faces)
+  still try their next way after a crash; the warning makes it visible, and the result may be
+  wrong. A crash in the probe worker leaves this kernel's count at 0 (that kernel is replaced).
+- W11: `Shape.export(path, options)`, `Mesh.export`, `exportFile` and `Part.deform` keep their
+  loose options (`Record<string, unknown>`: the options of the format the extension picks);
+  `Hull(...items)`, `new Locations(...items)` and `Locations.mul` keep `unknown`/`any`. The
+  published declarations still declare the internal base class `_Body` (Part and Shell extend it),
+  without its internal members.
+- The declarations were checked with TypeScript 5.9 (bundler and nodenext resolution, lib es2022 +
+  dom, no @types/node, `skipLibCheck: false`), not with older TypeScript versions.

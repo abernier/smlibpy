@@ -34,3 +34,16 @@ export class KernelError extends ModelingError {
     this.hint = hint
   }
 }
+
+/**
+ * The crashes of the kernel in this thread (traps of its WebAssembly module): kernel.ts counts them
+ * (`memoryUsage().crashes`) and warns at the first, with `next`, what to do now (null: no warning,
+ * in a thread whose kernel is replaced after a crash). Here, in a module without the kernel, so
+ * that the worker entry (worker.ts) reads them without loading it: a KernelWorker's worker whose
+ * kernel crashed is replaced, also where the function caught the error.
+ */
+export const _crashes: { count: number; last: string | null; next: string | null } = {
+  count: 0,
+  last: null, // (what the last one said: "function signature mismatch")
+  next: 'load the module again (reload the page) before relying on what it computes, or run the modeling in a KernelWorker, which starts a new kernel after a crash',
+}

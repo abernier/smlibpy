@@ -1,7 +1,8 @@
 // Lane WN of the kernel plan (phase 1): the worker entry (W2), loader options and bundlers (W7),
 // out-of-memory and C++ exception errors (W8), the three.js conversion of docs/javascript.md;
 // kernel steps whose result comes back from the probe worker (N1), scope() and the port's own
-// temporaries (W9), memory regressions (N2) and the fuzz harness (N3).
+// temporaries (W9), memory regressions (N2) and the fuzz harness (N3); crashes of the kernel
+// (W10), the package's typings (W11) and the API reference (W12).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -9,6 +10,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { Box, Cylinder, KernelError, Location, Mesh, ModelingError, Part, Plane, Shell, ShapeList, Sketch, Vector, memoryUsage } from '../src/index.ts'
 import { _crashText, ext, k, kernelCall } from '../src/kernel.ts'
 import { KernelWorker, expose } from '../src/worker.ts'
@@ -32,7 +34,8 @@ function run(code: string, timeout = 120_000): Record<string, unknown> {
 // ================================================================================ W8: memory, C++ exceptions
 test('memoryUsage: what the kernel holds, how far its memory grew and how far it can grow (W8)', () => {
   const before = memoryUsage()
-  assert.deepEqual(Object.keys(before).sort(), ['handles', 'heap', 'limit', 'used'])
+  assert.deepEqual(Object.keys(before).sort(), ['crashes', 'handles', 'heap', 'limit', 'used'])
+  assert.equal(before.crashes, 0) // (W10: no crash in this process yet)
   assert.equal(before.limit, 4 * 1024 * MB - 65536) // (4 GB less one page: as far as wasm32 reaches)
   assert.equal(before.heap % 65536, 0)
   assert.ok(before.used > 0 && before.used <= before.heap && before.heap <= before.limit)
@@ -853,4 +856,239 @@ test('cells() of a merge that crashes the kernel\'s stitcher throw (N1)', () => 
   assert.ok(m.volume > 113.0973 && m.volume < 150.7964)
   assert.throws(() => m.cells(), (e: unknown) => e instanceof KernelError && /cells failed/.test(e.message) && /the kernel crashed/.test(e.detail))
   assert.ok(Math.abs(Box(30, 20, 10).cut(Cylinder(4, 20)).volume - 5497.3452) < 1e-3) // (this kernel goes on)
+})
+
+// ================================================================================ W10: crashes of the kernel
+/** A real trap of the kernel: a read far beyond its memory (harmless: nothing is written). */
+const TRAP = 'k.brep_face_count(0xf0000000)'
+
+test('a crash of the kernel is counted, warns once, and its KernelError says so before the operation\'s hint (W10)', () => {
+  const out = run(`
+    import { k, kernelCall, memoryUsage, setWarningHandler, KernelError } from ${JSON.stringify(new URL('kernel.ts', SRC).href)}
+    const warnings = []
+    setWarningHandler((m) => warnings.push(m))
+    const out = { before: memoryUsage().crashes }
+    try { ${TRAP} } catch (e) { out.raw = [e.constructor.name, e.message] }
+    out.after = memoryUsage().crashes
+    try { kernelCall('measure', () => ${TRAP}, 'is the part valid?') } catch (e) {
+      out.error = [e instanceof KernelError, e.status, e.detail, e.message, e.cause instanceof WebAssembly.RuntimeError]
+    }
+    out.crashes = memoryUsage().crashes
+    out.warnings = warnings
+    out.volume = k.brep_face_count(k.create_box([0, 0, 0], 1, 2, 3)) // (the module answers)
+    console.log(JSON.stringify(out))`)
+  assert.equal(out.before, 0)
+  assert.deepEqual(out.raw, ['RuntimeError', 'memory access out of bounds'])
+  assert.equal(out.after, 1)
+  assert.equal(out.crashes, 2)
+  assert.deepEqual(out.error, [
+    true,
+    null,
+    'the kernel crashed (memory access out of bounds)',
+    'measure failed: the kernel crashed (memory access out of bounds), and its memory may be damaged: load the module again before relying on its results (a KernelWorker does so by itself); is the part valid?',
+    true,
+  ])
+  // one warning, at the first crash, naming the kernel call
+  assert.deepEqual(out.warnings, [
+    'the kernel crashed in brep_face_count (memory access out of bounds), and its memory may be damaged: load the module again (reload the page) before relying on what it computes, or run the modeling in a KernelWorker, which starts a new kernel after a crash',
+  ])
+  assert.equal(out.volume, 6)
+})
+
+test('shell and offset stop at a crash of the kernel, also one in a check of a result (W10)', () => {
+  const out = run(`
+    import { Box, setGuardSeconds, setWarningHandler, KernelError, memoryUsage } from ${JSON.stringify(new URL('index.ts', SRC).href)}
+    import { k, kernelCall } from ${JSON.stringify(new URL('kernel.ts', SRC).href)}
+    setWarningHandler(() => {})
+    setGuardSeconds(0)
+    const box = Box(20, 20, 20)
+    const out = { tried: [] }
+    // an attempt that crashes: the next one does not run (it would run on the memory the crash left)
+    const crashing = (mode) => () => { out.tried.push(mode); return kernelCall('shell', () => ${TRAP}) }
+    try { box._checked('shell', [[false, crashing('plain')], [true, crashing('extended')]], { grow: 0, smaller: true }) } catch (e) {
+      out.attempt = [e instanceof KernelError, e.detail]
+    }
+    // a check that meets a crash (and takes it for a refusal): the result is not kept, the crash is the error
+    const made = []
+    const fine = () => { const p = Box(19, 19, 19); made.push(p); return p }
+    const check = () => { try { ${TRAP} } catch {} ; return 'checked' }
+    try { box._checked('offset', [[true, fine], [true, fine]], { grow: 0, smaller: null, problem: check, hint: 'try a smaller value' }) } catch (e) {
+      out.check = [e instanceof KernelError, e.detail, /^offset failed: the kernel crashed \\(memory access out of bounds\\).*; try a smaller value$/.test(e.message)]
+    }
+    out.made = made.length
+    out.disposed = made.every((p) => !p._h.alive)
+    out.crashes = memoryUsage().crashes
+    console.log(JSON.stringify(out))`)
+  assert.deepEqual(out.tried, ['plain'])
+  assert.deepEqual(out.attempt, [true, 'the kernel crashed (memory access out of bounds)'])
+  assert.deepEqual(out.check, [true, 'the kernel crashed (memory access out of bounds)', true])
+  assert.equal(out.made, 1)
+  assert.equal(out.disposed, true)
+  assert.equal(out.crashes, 2)
+})
+
+test('removeFillets and removeFaces end at a crash of the kernel they run on, rather than try the next step on it (W10)', () => {
+  const out = run(`
+    import { Box, Cylinder, Z, setGuardSeconds, setWarningHandler, ModelingError, memoryUsage } from ${JSON.stringify(new URL('index.ts', SRC).href)}
+    import { k } from ${JSON.stringify(new URL('kernel.ts', SRC).href)}
+    setWarningHandler(() => {})
+    setGuardSeconds(0) // (as on a browser's main thread: the steps run in this kernel)
+    const box = Box(30, 20, 10)
+    const rounded = box.fillet(box.edges().parallelTo(Z), 2)
+    const holed = box.cut(Cylinder(3, 10))
+    const out = {}
+    const removal = k.defeature.remove_fillet_faces
+    const executive = k.defeature.defeature
+    k.defeature.remove_fillet_faces = () => ${TRAP}
+    k.defeature.defeature = () => ${TRAP}
+    for (const [name, run] of [['removeFillets', () => rounded.removeFillets()], ['partial', () => rounded.removeFillets(null, { partial: true })], ['removeFaces', () => holed.removeFaces(holed.faces().filter((f) => f.geomType === 'cylinder'))]]) {
+      const before = memoryUsage().crashes
+      try { run(); out[name] = 'no error' } catch (e) {
+        out[name] = [e instanceof ModelingError, e.name, e.here, e.message, memoryUsage().crashes - before]
+      }
+    }
+    k.defeature.remove_fillet_faces = removal
+    k.defeature.defeature = executive
+    out.after = [Math.round(rounded.removeFillets().volume), Math.round(holed.removeFaces(holed.faces().filter((f) => f.geomType === 'cylinder')).volume)]
+    console.log(JSON.stringify(out))`)
+  const said = 'the kernel crashed (memory access out of bounds); its memory may be damaged: load the module again before relying on its results, or run the step in a KernelWorker, which starts a new kernel after a crash'
+  // (one crash each: the operation ends there; before, the step was dropped and the next one tried)
+  assert.deepEqual(out.removeFillets, [true, '_KernelFault', true, `removeFillets: ${said}`, 1])
+  assert.deepEqual(out.partial, [true, '_KernelFault', true, `removeFillets: ${said}`, 1])
+  assert.deepEqual(out.removeFaces, [true, '_KernelFault', true, `removeFaces: ${said}`, 1])
+  assert.deepEqual(out.after, [6000, 6000])
+})
+
+test('KernelWorker: a worker whose kernel crashed is replaced, also where the function caught the error (W10)', async () => {
+  const cad = worker()
+  try {
+    const first = await cad.call('thread', [])
+    assert.equal(await cad.call('crashes', []), 0)
+    // the function goes on after the crash, and its result comes back; the next call gets a new kernel
+    assert.equal(await cad.call('caughtCrash', []), 1)
+    const second = await cad.call('thread', [])
+    assert.notEqual(second, first)
+    assert.equal(await cad.call('crashes', []), 0)
+    // a crash that ends the call: its KernelError says so, and the next call gets a new kernel too
+    await assert.rejects(cad.call('fail', ['kernel']), KernelError)
+    assert.equal(await cad.call('thread', []), second) // (an error of the kernel as usual: the same one)
+  } finally {
+    cad.terminate()
+  }
+})
+
+// ================================================================================ W11, W12: typings, the API reference
+const JS = fileURLToPath(new URL('../', import.meta.url))
+const TSC = fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url))
+
+/** The package's declarations as an app gets them (npm run build makes the same in dist): emitted
+ * from src, then made public by scripts/declarations.mjs, in a directory of their own. */
+let _declarations: string | null = null
+function declarations(): string {
+  if (_declarations !== null) return _declarations
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-dts-'))
+  const emit = spawnSync(process.execPath, [TSC, '-p', join(JS, 'tsconfig.build.json'), '--outDir', join(dir, 'dts'), '--emitDeclarationOnly'], { encoding: 'utf8' })
+  assert.equal(emit.status, 0, emit.stdout + emit.stderr)
+  const made = spawnSync(process.execPath, [join(JS, 'scripts/declarations.mjs'), join(dir, 'dts')], { encoding: 'utf8' })
+  assert.equal(made.status, 0, made.stdout + made.stderr)
+  _declarations = dir
+  return dir
+}
+
+test('an app type-checks against the declarations without Node\'s types or skipLibCheck, and its types catch mistakes (W11)', () => {
+  const dir = declarations()
+  // what an app writes: the free functions give what their input makes, options and selections
+  // have types, and each @ts-expect-error must meet an error (tsc fails on one that does not)
+  writeFileSync(join(dir, 'app.ts'), `
+    import { Box, Circle, Cylinder, Helix, Plane, Rectangle, Z, chamfer, extrude, fillet, htmlPage, load, loft, memoryUsage, offset, render, revolve, split, sweep, toGlb, toStep, type FoldOptions, type RenderOptions } from './dts/index.js'
+    import { KernelWorker } from './dts/worker.js'
+    const part = Box(30, 20, 10).cut(Cylinder(4, 20))
+    const volumes: number[] = [
+      extrude(Rectangle(10, 5), 3).volume,
+      revolve(Rectangle(10, 5).translate(20, 0, 0), null, 90).volume,
+      loft([Circle(5), Circle(3).translate(0, 0, 10)]).volume,
+      sweep(Circle(1), Helix(10, 30, 5)).volume,
+      fillet(part.edges().parallelTo(Z), 1).volume,
+      chamfer(part.edges().parallelTo(Z), 1).volume,
+      offset(part, 1).volume,
+      split(part, Plane.XY).volume,
+      ...split(part, Plane.XY, 'both').map((p) => p.volume),
+    ]
+    const area: number = fillet(Rectangle(10, 5).vertices(), 1).area + offset(Rectangle(10, 5), 1).area
+    const options: RenderOptions = { view: 'top', size: [100, 100], markers: [[[0, 0, 5], 'top']], sheet: ['top', 'iso'] }
+    render(part, part.edges(), options)
+    render(part, { zebra: { stripes: 8 }, curvature: 'mean', section: Plane.XZ })
+    htmlPage(part, { title: 'a part' })
+    toStep([part, [part]])
+    toGlb(new Set([part]))
+    const loaded = load('part.step')
+    const kind: string = part.raycast([-20, 0, 0], [1, 0, 0])[0].face.geomType
+    const crashes: number = memoryUsage().crashes
+    using box = Box(1, 1, 1)
+    const cad = new KernelWorker(new URL('file:///worker.js'))
+    // @ts-expect-error a misspelt option
+    render(part, { veiw: 'top' })
+    // @ts-expect-error an option of the wrong type
+    render(part, { size: 'large' })
+    // @ts-expect-error a number is no shape
+    toStep(3)
+    // @ts-expect-error a string is no list of shapes
+    htmlPage('part')
+    // @ts-expect-error fillet takes edges
+    part.fillet(3, 1)
+    // @ts-expect-error removeFaces takes faces
+    part.removeFaces(part.edges())
+    // @ts-expect-error what a part is made of inside is not part of its type
+    part._brep
+    // @ts-expect-error Python's spelling of an option
+    const fold: FoldOptions = { radius: 1, k_factor: 0.3 }
+    export { volumes, area, loaded, kind, crashes, box, cad, fold }
+  `)
+  // (an app for the browser: no Node types, an older lib, and the package's declarations checked)
+  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { target: 'es2022', lib: ['es2022', 'dom'], module: 'esnext', moduleResolution: 'bundler', strict: true, noEmit: true, skipLibCheck: false, types: [] },
+    files: ['app.ts'],
+  }))
+  const out = spawnSync(process.execPath, [TSC, '-p', join(dir, 'tsconfig.json')], { encoding: 'utf8' })
+  assert.equal(out.stdout + out.stderr, '')
+  assert.equal(out.status, 0)
+  // the declarations name no module of Node's and no internal member
+  const shapes = readFileSync(join(dir, 'dts/shapes.d.ts'), 'utf8')
+  for (const f of readdirSync(join(dir, 'dts'))) assert.ok(!/['"]node:/.test(readFileSync(join(dir, 'dts', f), 'utf8')), f)
+  assert.ok(!/\b_brep\b|_like\(|_ownFaces/.test(shapes))
+  assert.match(shapes, /^\/\/\/ <reference lib="esnext.disposable" \/>/)
+})
+
+test('the API reference shows what every body has as members of Part, Shell and Sketch (W12)', () => {
+  const dir = declarations()
+  const page = join(dir, 'javascript.md')
+  writeFileSync(page, readFileSync(join(JS, '../docs/javascript.md'), 'utf8'))
+  const api = spawnSync(process.execPath, [join(JS, 'scripts/api.mjs'), join(dir, 'dts'), page], { encoding: 'utf8' })
+  assert.equal(api.status, 0, api.stdout + api.stderr)
+  const section = readFileSync(page, 'utf8').split('\n## API\n')[1]
+  // (the section's code is TypeScript: the members of each class it shows)
+  const code = [...section.matchAll(/```ts\n([^]*?)```/g)].map((m) => m[1]).join('\n')
+  const shown = new Map<string, Set<string>>()
+  const file = ts.createSourceFile('api.ts', code, ts.ScriptTarget.Latest, true)
+  for (const st of file.statements) {
+    if (ts.isClassDeclaration(st) && st.name) shown.set(st.name.text, new Set(st.members.map((m) => (m.name ? m.name.getText(file) : 'constructor'))))
+  }
+  // what the declarations give each body: its own members and those of the internal _Body
+  const dts = ts.createSourceFile('shapes.d.ts', readFileSync(join(dir, 'dts/shapes.d.ts'), 'utf8'), ts.ScriptTarget.Latest, true)
+  const body = dts.statements.find((st) => ts.isClassDeclaration(st) && st.name?.text === '_Body') as ts.ClassDeclaration
+  const isPrivate = (m: ts.ClassElement) => ts.getCombinedModifierFlags(m as ts.Declaration) & ts.ModifierFlags.Private
+  const inherited = body.members.filter((m) => m.name && !ts.isComputedPropertyName(m.name) && !isPrivate(m) && !ts.isConstructorDeclaration(m)).map((m) => m.name!.getText(dts))
+  for (const name of ['dispose', 'named', 'colored', 'raycast', 'closestPoint', 'heal', 'bbox', 'vertices', 'info']) assert.ok(inherited.includes(name), name)
+  for (const cls of ['Part', 'Shell', 'Sketch']) {
+    const members = shown.get(cls)
+    assert.ok(members, `${cls} is in the API section`)
+    // (Sketch shows Shell's in Shell, which it extends)
+    if (cls !== 'Sketch') for (const name of inherited) assert.ok(members.has(name), `${cls}.${name} is missing`)
+  }
+  assert.match(code, /export class Part extends Shape \{/)
+  assert.match(code, /export class Sketch extends Shell \{/)
+  // no internal name, and no constructor that only the package calls (new Face(owner, kface))
+  assert.ok(!/\b_[A-Za-z]\w*/.test(code), code.match(/.*\b_[A-Za-z]\w*.*/)?.[0])
+  for (const cls of ['Face', 'Edge']) assert.ok(!shown.get(cls)?.has('constructor'), cls)
+  assert.ok(shown.get('Wire')?.has('constructor'))
 })

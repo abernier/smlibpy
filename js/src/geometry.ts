@@ -3,6 +3,8 @@
 // These are plain value types: they never touch the kernel, are immutable and cheap to create.
 // Angles are in degrees everywhere.
 
+import type { Face } from './shapes.ts'
+
 /** Geometric tolerance used for comparisons (model units). */
 export const TOLERANCE = 1e-6
 
@@ -622,7 +624,7 @@ export class Plane {
   /** The plane normal. */
   readonly zDir: Vector
 
-  constructor(origin: VectorLike | Plane | Location | HasFacePlane = [0, 0, 0], xDir?: VectorLike | null, zDir: VectorLike = [0, 0, 1]) {
+  constructor(origin: VectorLike | Plane | Location | Face = [0, 0, 0], xDir?: VectorLike | null, zDir: VectorLike = [0, 0, 1]) {
     let p: Plane | null = null
     if (origin instanceof Plane) p = origin
     else if (origin instanceof Location) p = origin.plane
@@ -789,14 +791,15 @@ Plane.left = new Plane([0, 0, 0], [0, -1, 0], [-1, 0, 0])
  * - `face`: the face that was hit (shapes), or `null`.
  * - `triangle`: the index of the triangle that was hit (meshes), or `null`.
  */
-export class Hit {
+export class Hit<F extends Face | null = Face | null> {
   readonly point: Vector
   readonly distance: number
   readonly normal: Vector
-  readonly face: any // (a Face of shapes.ts, or null: typed loosely here, where shapes are not known)
+  /** The face hit (null for a mesh's triangle: `Hit<null>`; a body's hits are `Hit<Face>`). */
+  readonly face: F
   readonly triangle: number | null
 
-  constructor(point: Vector, distance: number, normal: Vector, face: any = null, triangle: number | null = null) {
+  constructor(point: Vector, distance: number, normal: Vector, face: F = null as F, triangle: number | null = null) {
     this.point = point
     this.distance = distance
     this.normal = normal

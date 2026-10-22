@@ -10,7 +10,9 @@ import { spread } from './_linalg.ts'
 import { Line } from './curves.ts'
 import {
   Edge,
+  type EdgesLike,
   Face,
+  type FacesLike,
   type FilletOptions,
   type FilletRadius,
   Part,
@@ -73,6 +75,8 @@ export interface ExtrudeFunctionOptions {
  * An open curve extrudes into a surface (a Shell), along `direction` (an axis or a vector) or the
  * normal of the curve's plane.
  */
+export function extrude(profile: Sketch | Face | ShapeList<Sketch | Face>, amount: number, options?: ExtrudeFunctionOptions): Part
+export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options?: ExtrudeFunctionOptions): Part | Shell
 export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options: ExtrudeFunctionOptions = {}): Part | Shell {
   _opts('extrude', options)
   const { both = false, taper = 0, direction = null } = options
@@ -98,6 +102,8 @@ export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, a
  *
  * An open curve revolves into a surface of revolution (a Shell).
  */
+export function revolve(profile: Sketch | Face | ShapeList<Sketch | Face>, axis?: Axis | null, angle?: number): Part
+export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis?: Axis | null, angle?: number): Part | Shell
 export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis: Axis | null = null, angle = 360): Part | Shell {
   return scope(() => {
     const w = _openCurve(profile)
@@ -154,7 +160,9 @@ function _loftSolid(loops: readonly Wire[], degree: number): Part {
  *   or more sections, pass through them with a cubic surface (`false`: quadratic). Three sections
  *   always give a quadratic one.
  */
-export function loft(sections: readonly unknown[], options: { ruled?: boolean; smooth?: boolean } = {}): Part | Shell {
+export function loft(sections: readonly (Sketch | Face | ShapeList<Sketch | Face>)[], options?: { ruled?: boolean; smooth?: boolean }): Part
+export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options?: { ruled?: boolean; smooth?: boolean }): Part | Shell
+export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options: { ruled?: boolean; smooth?: boolean } = {}): Part | Shell {
   return scope(() => {
     _opts('loft', options)
     const { ruled = false, smooth = true } = options
@@ -444,6 +452,8 @@ export interface SweepOptions {
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
  */
+export function sweep(profile: Sketch | Face | ShapeList<Sketch | Face>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part
+export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options: SweepOptions = {}): Part | Shell {
   return scope(() => {
     _opts('sweep', options)
@@ -593,18 +603,24 @@ function _isPlanarPath(edges: readonly Edge[]): boolean {
 
 /** Round edges of the part they belong to (see `Part.fillet`), or corners of the sketch they
  * belong to: `fillet(s.vertices().concave(), 2)` (see `Sketch.fillet`). */
-export function fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part | Sketch {
+export function fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part
+export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sketch
+export function fillet(edges: EdgesLike | Vertex | readonly Vertex[], radius: FilletRadius, options?: FilletOptions): Part | Sketch
+export function fillet(edges: EdgesLike | Vertex | readonly Vertex[], radius: FilletRadius, options: FilletOptions = {}): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.fillet(radius as number, edges as Iterable<Vertex>)
-  return _ownerPart(edges).fillet(edges, radius, options)
+  return _ownerPart(edges).fillet(edges as EdgesLike, radius, options)
 }
 
 /** Bevel edges of the part they belong to (see `Part.chamfer`), or corners of the sketch they
  * belong to (see `Sketch.chamfer`). */
-export function chamfer(edges: unknown, length: number): Part | Sketch {
+export function chamfer(edges: EdgesLike, length: number): Part
+export function chamfer(vertices: Vertex | readonly Vertex[], length: number): Sketch
+export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: number): Part | Sketch
+export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: number): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.chamfer(length, edges as Iterable<Vertex>)
-  return _ownerPart(edges).chamfer(edges, length)
+  return _ownerPart(edges).chamfer(edges as EdgesLike, length)
 }
 
 /** The sketch that vertices belong to (null if the items are not vertices). */
@@ -626,13 +642,16 @@ function _ownerPart(items: unknown): Part {
 }
 
 /** Hollow out a part (see `Part.shell`). */
-export function shell(part: Part, thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+export function shell(part: Part, thickness: number, openings: FacesLike | null = null, options: { outward?: boolean } = {}): Part {
   _opts('shell', options)
   return part.shell(thickness, openings, options)
 }
 
 /** Grow or shrink a part or a sketch by `distance` (for a sketch also the option
  * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`). */
+export function offset(shape: Sketch, distance: number, options?: { corners?: string; round?: boolean | null }): Sketch
+export function offset(shape: Part, distance: number, options?: { corners?: string; round?: boolean | null }): Part
+export function offset(shape: Part | Sketch, distance: number, options?: { corners?: string; round?: boolean | null }): Part | Sketch
 export function offset(shape: Part | Sketch, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch {
   if (shape instanceof Sketch) return shape.offset(distance, options)
   _opts('Part.offset', options) // (a part's offset takes none)
@@ -645,6 +664,9 @@ export function mirror<S extends Shape>(shape: S, plane: Plane | Face | Axis | S
 }
 
 /** Cut a part with a plane (see `Part.split`). */
+export function split(part: Part, plane: Plane | Face, keep: 'both'): [Part, Part]
+export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below'): Part
+export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' | 'both'): Part | [Part, Part]
 export function split(part: Part, plane: Plane | Face, keep: 'above' | 'below' | 'both' = 'above'): Part | [Part, Part] {
   return keep === 'both' ? part.split(plane, 'both') : part.split(plane, keep)
 }
@@ -658,7 +680,7 @@ export function merge(...parts: (Part | Iterable<Part>)[]): Part {
   for (const p of parts) flat.push(...(p instanceof Part || !(Symbol.iterator in Object(p)) ? [p] : Array.from(p as Iterable<Part>)))
   if (flat.length < 2) throw new RangeError(`merge needs two or more parts, got ${flat.length}`)
   if (!(flat[0] instanceof Part)) throw new TypeError(`merge takes parts, not a ${_typeName(flat[0])}`)
-  return flat[0].merge(...flat.slice(1))
+  return flat[0].merge(...(flat.slice(1) as Part[])) // (Part.merge checks them)
 }
 
 /** Cross-section of a part (see `Part.section`). */

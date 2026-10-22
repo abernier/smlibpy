@@ -11,7 +11,7 @@ import { _opts, _warn, ext, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Part, Shell, ShapeList } from './shapes.ts'
-import { _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
+import { type ShapesLike, _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
 import { _MM_PER_UNIT } from './step.ts'
 
 // biome-ignore lint: kernel results are plain JSON
@@ -62,7 +62,7 @@ function _usdItems(shapes: unknown, options: UsdExportOptions): Any[] {
  * what USD viewers draw; meshes Mesh prims. The stage is in millimeters (metersPerUnit 0.001) with
  * Z up.
  */
-export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
+export function toUsd(shapes: ShapesLike, options: UsdExportOptions = {}): string {
   _opts('toUsd', options)
   const items = _usdItems(shapes, options)
   if (!items.length) throw new RangeError('toUsd: nothing to write')
@@ -70,7 +70,7 @@ export function toUsd(shapes: unknown, options: UsdExportOptions = {}): string {
 }
 
 /** Write parts, sheets and meshes to a USD file (.usda, or .usd as text); see `toUsd`. */
-export function exportUsd(shapes: unknown, path: string, options: UsdExportOptions = {}): void {
+export function exportUsd(shapes: ShapesLike, path: string, options: UsdExportOptions = {}): void {
   _opts('exportUsd', options)
   const p = String(path)
   const dot = p.lastIndexOf('.')
