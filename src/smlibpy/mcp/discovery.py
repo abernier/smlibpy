@@ -132,6 +132,15 @@ SYNONYMS.update({
     "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance", "draft"],
 })
 
+# Direct editing: faces moved and offset.
+SYNONYMS.update({
+    "resize": ["offset_faces"], "enlarge": ["offset_faces"], "widen": ["offset_faces"],
+    "thicker": ["offset_faces", "shell"],
+    "push": ["move_faces", "offset_faces"], "pushpull": ["move_faces", "offset_faces"], "relocate": ["move_faces"],
+    "reposition": ["move_faces"],
+    "direct": ["move_faces", "offset_faces"], "editing": ["move_faces", "offset_faces"],
+})
+
 _CONSTANTS = {
     "X": "the world X axis (an Axis); also a direction in selections such as parallel_to(X)",
     "Y": "the world Y axis (an Axis)",

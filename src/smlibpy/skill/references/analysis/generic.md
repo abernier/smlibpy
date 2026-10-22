@@ -29,11 +29,12 @@ the mass is in g and the inertia in g·mm². Steel is `7.85e-3` g/mm³, aluminiu
 - Position does not matter: the same body moved to 1e6 gives the same numbers to 1e-11.
   Integration runs about the body's bounding-box center.
 - The body can be less exact than its numbers. Where the kernel fits a surface or an
-  intersection curve (B-spline chamfers, variable fillets, shells and offsets of curved faces,
-  sweeps cut by planes, two cylinders crossing), the faces meet only to about 1e-6 to 2e-5 mm,
-  and the volume is defined only to that: the same body turned by 90 degrees measures 1e-7
-  (the flange example) to 4e-6 (a shelled bottle) different. Bodies whose edges are lines and
-  circles close up exactly.
+  intersection curve (fitted chamfers, G2/G3 blends, variable fillets, shells and offsets of
+  curved faces, sweeps cut by planes, two cylinders crossing), the faces meet only to about 1e-6
+  to 2e-5 mm, and the volume is defined only to that: the same body turned by 90 degrees measures
+  3e-7 (two crossing cylinders) to 4e-6 (a shelled bottle; a pin with G2-blended rims 3.4e-6)
+  different. Chamfers of full circles between coaxial faces are exact cones, not fitted. Bodies
+  whose edges are lines and circles close up exactly.
 - Curve constructions are fits: `Helix` is a NURBS approximation 2e-6 shorter than the
   formula, and bodies swept along it inherit that.
 - `mass_properties(accuracy=1e-10)` costs about as much as the default (the spring: 0.47 s

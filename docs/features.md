@@ -1,6 +1,7 @@
 # Features
 
-Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting.
+Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting,
+moving and offsetting faces.
 Each one is a method of `Part` that returns a new part.
 
 ## Fillets
@@ -22,6 +23,26 @@ well when the selection says it all:
 ```python
 rounded = fillet(box.edges().parallel_to(Z), 5)
 ```
+
+### Tangent runs
+
+An edge that runs on tangentially into the next one, as the edges around a rounded corner do,
+is rounded with the whole run: one top edge of a plate with rounded corners rounds its whole
+top outline, as in most CAD systems (and as OpenCASCADE does).
+
+```python
+plate = Rectangle(40, 30, fillet=5).extrude(10)
+edge = plate.edges().filter(lambda e: abs(e.center().z - 10) < 1e-6).sort_by("length")[-1]
+outline = plate.fillet(edge, 1)            # all 8 top edges: edge.tangent_chain()
+```
+
+`edge.tangent_chain()` (and `part.edges()....tangent_chain()` for a selection) shows the run:
+edges that leave a vertex in the direction the previous one arrives in (within 10 degrees),
+between faces that meet smoothly there. The added edges take the radius of the selected edge they
+continue. `propagate=False` rounds the selected edges only; the kernel then runs a round on past
+an end where the edge continues tangentially, and it often cannot round an edge that continues
+tangentially at both ends (the `KernelError` says which edge and where). `chamfer` takes the same
+`propagate`.
 
 ### Variable radius
 
@@ -60,6 +81,27 @@ softer = box.fillet(box.edges(), 4, continuity="G3", fullness=1.2)
 
 `fullness` shapes the blend's cross-section: above 1 is fuller, below 1 flatter.
 
+The rounds along the edges have the continuity asked for. Where three blended edges meet at a
+corner, the kernel joins them with a corner patch that is tangent continuous (G1) only, whatever
+the continuity: zebra stripes kink there (`render(part, zebra=True)`, see [Files](files.md)). For
+Class-A surfaces, keep three-edge corners out of the visible areas.
+
+### Corners
+
+Where three rounded edges meet, `corners="patch"` (the default) joins their rounds with a corner
+patch: a ball corner where the radii are equal. `corners="mitre"` runs the rounds on until they
+meet each other along mitre lines, without a patch, the look of a machined part:
+
+```python
+balls = box.fillet(box.edges(), 3)                    # 23340.8494, 26 faces
+mitred = box.fillet(box.edges(), 3, corners="mitre")  # 23354.2820, 18 faces
+```
+
+Mitred are the corners where three rounded convex edges meet and no other edge (the kernel has no
+mitre for more edges, or for a concave one); a selection without such a corner raises
+`ValueError`. `chamfer` takes `corners` too: its bevels then meet in a point instead of a small
+triangle (`box.chamfer(box.edges(), 2, corners="mitre")`: 23328.0, 23322.6667 with the triangles).
+
 ### What can't be rounded
 
 Seam edges (where a cylinder closes on itself) and edges between faces that already meet
@@ -77,6 +119,22 @@ except ModelingError as e:
 Fillet order matters where rounds meet. Where three rounded edges meet at a corner, round
 the larger radii first.
 
+When the kernel fails, the `KernelError` names what it could not build, as the kernel's fillet
+code recorded it: the corner (a vertex) or the edge, and why where it says so:
+
+```python
+part = Box(30, 30, 10) + Cylinder(5, 20).translate(10, 10, 0)   # the boss touches a side
+try:
+    part.fillet(part.edges(), 2)
+except KernelError as e:
+    print(e)   # fillet failed (SM_ERR_INVALID_INPUT): the kernel cannot round the selection as
+               # given, at any size: it could not build the corner at (15, 10, 5) (it has no
+               # corner for the way the rounded edges meet there); select fewer edges there
+```
+
+A message without such a place ("the radius may be too large for the selected edges") means the
+kernel recorded none.
+
 ## Chamfers
 
 ```python
@@ -89,18 +147,87 @@ hexagonal prism). The faces must meet at the same angle all along each edge: whe
 boss meets a tilted or curved face the angle changes, the setback would change with it, and
 `chamfer` raises a `ModelingError`. Round such an edge with `fillet`.
 
+An asymmetric bevel measures `length` on a `reference` face of each edge and `length2` on its other
+face, or tilts the bevel by `angle` degrees against the reference face (a weld preparation, a
+lead-in):
+
+```python
+top = box.faces().top()
+lead_in = box.chamfer(top.edges(), 2, length2=1, reference=top)   # 2 on the top, 1 down the sides: 23865.3333
+bevel = box.chamfer(top.edges(), 2, angle=30, reference=top)      # 2 on the top, 30 degrees to it: 23844.5003
+```
+
+Where the faces meet at 90 degrees, `angle` gives `length2 = length * tan(angle)`; on other edges
+the bevel keeps the angle and `length2` follows. Every beveled edge must lie on a reference face
+(give several faces for edges around several). Corners where asymmetric bevels meet come out as
+with equal ones: a box's top bevels meet in a mitred corner, exact (OpenCASCADE gives the same
+volumes).
+
+The bevel of a full circle between faces around the same axis (the rim of a shaft or of a hole: a
+plane at right angles to the axis, a cylinder or a cone, or the faces of a revolve) is an exact
+cone, cut (or, at a concave rim, filled in) with the solid of revolution of the bevel's line:
+
+```python
+plate = Box(40, 30, 10) - Cylinder(5, 20)
+countersunk = plate.chamfer(plate.edges().circles(), 1)   # 11181.0915, exactly the plate less 2 rings
+```
+
+The kernel fits other bevels with B-spline faces, which meet their neighbours to about 1e-5 mm.
+
 ## Shell
 
 `shell` hollows a part to walls of a given thickness, leaving the chosen faces open:
-
-Shell before rounding the rim: removing a face that is surrounded by fillets is a case
-the kernel cannot do.
 
 ```python
 cup = Cylinder(20, 30).shell(2, Cylinder(20, 30).faces().top())
 case = Box(80, 50, 30).shell(2.5)                # closed, hollow inside
 lining = Box(80, 50, 30).shell(2.5, outward=True)  # walls grow outside instead
 ```
+
+An opening whose rim meets its neighbours tangentially, such as the flat top of a box rounded on
+all edges, is one the kernel leaves with its rim open. `shell` cuts such openings out of the part
+shelled closed instead, when they are planar and the rest of their rim meets walls that stand at
+right angles to them:
+
+```python
+body = Box(60, 40, 20)
+body = body.fillet(body.edges(), 5)
+tray = body.shell(2, body.faces().planar().top())   # 11134.3949: the closed shell less the lid
+```
+
+The inner rounds then end tangentially at the opening's rim, so the wall runs out to an edge
+there. Other openings with such a rim (a curved face, a drafted wall next to it) still raise
+`ModelingError`; shell such a part before rounding the rim.
+
+Where the part's faces grow apart as the walls are built (the inside of a concave edge for walls
+that grow inward, the outside of the convex edges for walls that grow outward), the kernel can
+round the new side of the wall, keeping its thickness all round, or extend the faces until they
+meet, so that the wall is thicker in the corner. `corners` picks one; by default `shell` takes
+the round one where the kernel builds it and the sharp one where it does not, and `info()` of the
+result says which it got:
+
+```python
+L = Box(20, 20, 10) - Box(10, 10, 10).translate(5, 5, 0)    # an L-shaped block: one concave edge
+cup = L.shell(2, L.faces().top())                      # 1745.1327: a round of radius 2 in the inner corner
+print(cup.info()["corners"])                           # round
+sharp = L.shell(2, L.faces().top(), corners="sharp")   # 1752.0: the inner faces meet in a corner
+box = Box(80, 50, 30)
+lining = box.shell(2.5, box.faces().top(), outward=True, corners="sharp")   # 85 x 55 x 32.5, sharp outside
+```
+
+With `corners="round"` or `"sharp"` a shell the kernel cannot build that way raises instead of
+coming back with the other kind.
+
+`walls` gives faces walls of their own thickness: the face of the shell across such a wall is
+moved by the difference, and the faces around it are extended or trimmed to meet it (as
+[`offset_faces`](#moving-and-offsetting-faces) does):
+
+```python
+box = Box(40, 30, 10)
+tray = box.shell(2, box.faces().top(), walls=[(box.faces().bottom(), 5)])   # 7320.0: a 5 mm floor
+```
+
+Faces that meet smoothly, such as a wall and the round next to it, need one thickness.
 
 With openings, walls that do not fit into the part (measured across it from each face) raise a
 `ModelingError` before the kernel runs; results whose faces do not meet, or that have no cavity
@@ -112,8 +239,33 @@ is stopped; raise it for large parts.
 ## Offset
 
 ```python
-bigger = Box(20, 20, 20).offset(2)       # every face moves out by 2
+bigger = Box(20, 20, 20).offset(2)       # every face moves out by 2: a 24 mm cube
 smaller = Box(20, 20, 20).offset(-2)
+```
+
+The faces are extended until they meet again, so edges and corners stay sharp. An edge whose
+faces meet at an angle `a` moves out by `distance / sin(a / 2)`: the base edge of a cone, the
+edges of a tapered extrusion reach farther than `distance`. Where faces would vanish or cross
+(an acute wedge, a hole that closes, a groove narrower than twice the distance) the kernel
+cannot extend them; `corners="round"` rolls a ball along the part instead, filling in cylinders
+and spheres where faces grow apart. Every point of the result is at `distance` from the part (a
+clearance body, the skin of an overmould):
+
+```python
+envelope = Box(20, 20, 20).offset(2, corners="round")   # 13587.4926: 26 faces, planes, cylinders, spheres
+holed = Box(40, 40, 10) - Cylinder(5, 20)
+closed = holed.offset(5, corners="round")               # 47520.5034; the sharp offset raises KernelError
+```
+
+Shrinking with `corners="round"` rounds the concave edges (they grow apart inward); the convex
+ones stay sharp.
+
+Sheets and faces move along their normals and stay sheets (see [Surfaces](surfaces.md)):
+
+```python
+skin = extrude(CenterArc((0, 0), 10, 0, 180), 20)   # a half-cylinder sheet, normals outward
+outer = skin.offset(2)                               # radius 12
+lid = Box(20, 20, 20).faces().top().one().offset(5)  # a copy of the top face, 5 above it
 ```
 
 ## Split and section
@@ -270,6 +422,56 @@ Profiles can be drafted as they are extruded, all side walls at once:
 ```python
 mold_core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)
 ```
+
+A part molded in two halves is drafted away from the parting line on both sides. With a planar
+parting line, split the part there, draft each half about the plane (the lower half pulls the
+other way: `Plane.XY.flipped()`), and fuse the halves again; the result is exact:
+
+```python
+box = Box(40, 30, 20)
+upper, lower = box.split(Plane.XY, "both")
+side = lambda p: p.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+molded = upper.draft(side(upper), 3, Plane.XY) + lower.draft(side(lower), 3, Plane.XY.flipped())
+print(round(molded.volume, 4))     # 23273.6153: 40 x 30 at the parting line, 38.952 x 28.952 at top and bottom
+```
+
+`draft_analysis(Z)` of it finds 3 degrees on the upper walls and -3 on the lower ones, which
+release towards the lower mold half. A stepped parting line needs a neutral plane per step;
+`draft` takes one plane per call.
+
+## Moving and offsetting faces
+
+`move_faces` and `offset_faces` edit a part directly, without rebuilding it: the faces move, and
+the faces around them are extended or trimmed until they meet them again. This is how to change
+an imported part, which has no history:
+
+```python
+block = Box(40, 30, 10) - Cylinder(3, 20)
+taller = block.move_faces(block.faces().top(), (0, 0, 5))           # 17575.885: 15 high, the hole too
+moved = block.move_faces(block.faces().cylinders(), (8, 0, 0))      # the hole 8 to the right
+wider = block.offset_faces(block.faces().cylinders(), -2)           # 11214.6018: the hole r3 -> r5
+pushed = block.offset_faces(block.faces().top(), 2)                 # the top out by 2
+```
+
+`move_faces` takes a vector or a `Location`, which also turns the faces: to lean a wall in by 10
+degrees about its bottom edge,
+`wall.move_faces(right, Location.about(Axis((10, 0, -5), (0, -1, 0)), 10))`. `offset_faces` moves
+each face along its own normal: out of the part for a positive distance, so the part grows, a hole
+narrows and a boss widens. Faces that meet an offset face tangentially go with it, along the whole
+tangent chain: offsetting one face of a slot widens the slot:
+
+```python
+plate = Box(40, 20, 10) - Slot(16, 6).extrude(20).translate(0, 0, -10)
+wider_slot = plate.offset_faces(plate.faces().cylinders()[0], -1)   # 18 x 8; its walls and ends moved
+```
+
+`move_faces` asks for those faces instead (`ModelingError: move_faces: the plane face at (0, -3,
+0) meets the moved cylinder face at (-6.91, 0, 0) tangentially, so it must be moved with it ...;
+add it to the faces`). The results are exact: planes, cylinders, cones, spheres and tori keep
+their kind and size, and the edges where a plane meets a cylinder, cone or sphere stay circles.
+The kernel cannot change which faces meet: a face pushed past another one, or a face that would
+vanish, raises `ModelingError` (use a Boolean there), and so does a part with a cavity (the
+kernel drops cavities: edit the part first and cut the cavity afterwards).
 
 ## Removing fillets and faces
 

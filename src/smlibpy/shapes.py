@@ -9,8 +9,10 @@ for as long as you hold them and can be passed back to operations on that body
 from __future__ import annotations
 
 import contextlib
+import itertools
 import math
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, NamedTuple, Sequence, TypeVar, Union, overload
 
 import numpy as np
@@ -84,6 +86,14 @@ _OFFSET_GAPS = 1e-3
 # mode depends on memory layout), but not after this many seconds; an attempt that failed is
 # not repeated, since the kernel fails the same way again.
 _RETRY_SECONDS = 10.0
+
+# A sharp offset may reach this many times farther than its first-order reach (see
+# Part._sharp_offset_reach) before it is refused: curved faces extended past an edge bend away from
+# their tangent planes (two spherical caps offset by 1 reached 0.98 of it). The reach counts up to
+# _SHARP_OFFSET_REACH (an edge of 4.6 degrees): beyond that, and at faces that meet back to back, a
+# sharp offset is refused where it reaches farther (corners="round" builds such parts).
+_SHARP_OFFSET_SLACK = 1.25
+_SHARP_OFFSET_REACH = 25.0
 
 S = TypeVar("S", bound="Shape")
 
@@ -450,6 +460,12 @@ class ShapeList(list[T]):
         """Edges where two faces meet tangentially, such as the borders of a fillet, and the
         vertices of a sketch where two edges meet tangentially."""
         return ShapeList(s for s, kind in zip(self, _convexities(self)) if kind == "smooth")
+
+    def tangent_chain(self) -> ShapeList[T]:
+        """The edges of the list and the edges that continue them tangentially (see
+        :meth:`Edge.tangent_chain`): what ``fillet`` and ``chamfer`` round for this selection.
+        Other shapes are left out."""
+        return ShapeList(_tangent_chains([s for s in self if isinstance(s, Edge)])[0])  # type: ignore[misc]
 
     def fillets(self, max_radius: float | None = None) -> ShapeList[T]:
         """Fillet faces: rounds of convex edges and fillets of concave ones, found by geometry
@@ -1207,6 +1223,15 @@ class Edge(Shape):
             return ShapeList()
         return ShapeList(Face(self._owner, f) for f in self._e.faces())
 
+    def tangent_chain(self) -> ShapeList[Edge]:
+        """This edge and the edges that continue it tangentially, through vertices where the next
+        edge runs on in the same direction (within 10 degrees) between faces that meet this
+        edge's faces smoothly, and so on along the run: all top edges of a plate with rounded
+        corners, the outline of a slot. This edge comes first. ``fillet`` and ``chamfer`` round
+        the whole run of each selected edge (their ``propagate``). An edge of no part is its own
+        chain."""
+        return ShapeList(_tangent_chains([self])[0])
+
     # -- derived edges --------------------------------------------------------
     def reversed(self) -> Edge:
         """The same edge traversed the other way."""
@@ -1776,6 +1801,12 @@ class Face(Shape):
             b = ext.copy_faces(self._owner._brep, [self._f])
         return Shell._wrap(b)
 
+    def offset(self, distance: float) -> Shell:
+        """A sheet of this face moved by ``distance`` along its normal (:meth:`normal_at`: out of the part
+        it bounds; a negative distance moves it in): the offset surface, trimmed as the face is
+        (see :meth:`Shell.offset`)."""
+        return self.to_shell().offset(distance)
+
     def extrude(self, amount: float, **kwargs: Any) -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
         return self.to_sketch().extrude(amount, **kwargs)
@@ -1803,6 +1834,17 @@ class Face(Shape):
 # =============================================================================
 # Bodies: Part, Shell, Sketch
 # =============================================================================
+# How a body was made where its operation had a choice, by the body's handle (the record goes with
+# the body): {"corners": "round"} for the result of shell or offset. info() reports it.
+_MADE: weakref.WeakKeyDictionary[BrepHandle, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+
+def _made(body: _Body, **record: Any) -> Any:
+    """``body``, with ``record`` noted as how it was made (see ``_MADE``)."""
+    _MADE[body._h] = dict(record)
+    return body
+
+
 class _Body(Shape):
     """A shape backed by one kernel Brep."""
 
@@ -2097,15 +2139,18 @@ class _Body(Shape):
         return hash(self._identity())
 
     def info(self) -> dict[str, Any]:
-        """Counts and measures in one dictionary."""
+        """Counts and measures in one dictionary. A body made by ``shell`` or ``offset`` also says
+        how the corners of its new walls came out: ``"corners"`` is ``"round"`` or ``"sharp"``."""
         b = self.bbox()
-        return {
+        out = {
             "type": type(self).__name__,
             "faces": self._brep.face_count(),
             "edges": self._brep.edge_count(),
             "vertices": self._brep.vertex_count(),
             "bbox": (b.min.to_tuple(), b.max.to_tuple()),
         }
+        out.update(_MADE.get(self._h, {}))
+        return out
 
 
 def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
@@ -2311,13 +2356,19 @@ def _same_vertices(a: _Body, b: _Body, tol: float) -> bool:
     return all(any((c[0] + i, c[1] + j, c[2] + m) in cells for i, j, m in around) for c in grid(pa))
 
 
-def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smaller: bool | None) -> str | None:
-    """What is wrong with the result of a shell or an offset (see ``Part._checked``), or None."""
+def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smaller: bool | None,
+                    wider: Callable[[], float] | None = None) -> str | None:
+    """What is wrong with the result of a shell or an offset (see ``Part._checked``), or None.
+    ``wider`` gives the box's margin for a result that reaches beyond ``tol`` (computed only then)."""
     problem = result._solid_problem()
     if problem is not None:
         return f"a body that is {problem}"
     rb = result.bbox()
-    if any(rb.min[i] < box.min[i] - tol or rb.max[i] > box.max[i] + tol for i in range(3)):
+
+    def reaches_out(margin: float) -> bool:
+        return any(rb.min[i] < box.min[i] - margin or rb.max[i] > box.max[i] + margin for i in range(3))
+
+    if reaches_out(tol) and (wider is None or reaches_out(wider())):
         return "a body that reaches out of the box it must fit in"
     p = result._props(1e-4)
     if not p["gaps"] < _OFFSET_GAPS:
@@ -3422,10 +3473,15 @@ class Part(_Body):
             raise ValueError(f"{operation}: the selection holds only seam or smooth edges, nothing to {operation}")
         return out
 
-    def _check_round_sizes(self, edges: list[Edge], setbacks: list[float], what: str, size_name: str) -> None:
+    def _check_round_sizes(self, edges: list[Edge], setbacks: Sequence[float | dict[Any, float]], what: str,
+                           size_name: str) -> None:
         """Reject rounds that cannot fit: on a face, two edges running alongside each other
         must be further apart than their setbacks. (The kernel does not always notice and
-        may return an invalid solid.)"""
+        may return an invalid solid.) A setback is one for both faces of an edge, or one per face
+        (a dict by the face's identity: an asymmetric chamfer)."""
+        def on(setback: float | dict[Any, float], f: Face) -> float:
+            return setback.get(f._identity(), max(setback.values())) if isinstance(setback, dict) else setback
+
         setback_of = {e._identity(): s for e, s in zip(edges, setbacks)}
         for e, s in zip(edges, setbacks):
             ends = {v._identity() for v in e.vertices()}
@@ -3434,7 +3490,7 @@ class Part(_Body):
                 for g in f.edges():
                     if g._identity() == e._identity() or ends & {v._identity() for v in g.vertices()}:
                         continue  # the same edge, or a neighbour meeting it at a corner
-                    total = s + setback_of.get(g._identity(), 0.0)
+                    total = on(s, f) + (on(setback_of[g._identity()], f) if g._identity() in setback_of else 0.0)
                     dists = [_distance_to_edge(g, p) for p in samples]
                     near = min(dists)
                     if near >= total - 1e-9 or max(dists) > 1.5 * max(near, 1e-12):
@@ -3443,6 +3499,22 @@ class Part(_Body):
                     raise ModelingError(
                         f"{what}: the {size_name} is too large; the rounds on edges {near:.4g} apart would "
                         f"overlap (largest possible setback here: {limit:.4g})")
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _rounding(what: str, hint: str, sel: list[Edge], propagate: bool) -> Iterator[None]:
+        """:func:`_round_call` for a fillet or chamfer of ``sel``. Without ``propagate``, a failure
+        names a selected edge that runs on tangentially into an edge that is not selected, if there
+        is one: the kernel cannot always round such an edge alone (a top edge of a plate with
+        rounded corners, at any radius), and its own status says nothing about it."""
+        try:
+            with _round_call(what, hint):
+                yield
+        except KernelError as e:
+            better = None if propagate else _run_on_hint(sel, what)
+            if better is None:
+                raise
+            raise KernelError(e.operation, e.detail, e.status, better) from e
 
     @staticmethod
     def _check_radius_law(edges: list[Edge]) -> None:
@@ -3547,6 +3619,8 @@ class Part(_Body):
         *,
         continuity: int | str | None = None,
         fullness: float = 1.0,
+        propagate: bool = True,
+        corners: str = "patch",
     ) -> Part:
         """Round edges.
 
@@ -3561,8 +3635,27 @@ class Part(_Body):
                 curvature-continuous blend (``"G1"`` a tangent blend) instead of a circular
                 arc: no visible highlight seam, as used for consumer and Class-A surfaces.
             fullness: Shape of a blend cross-section; above 1 fuller, below 1 flatter.
+            propagate: Round the edges that continue the selected ones tangentially too
+                (:meth:`Edge.tangent_chain`): one top edge of a plate with rounded corners
+                rounds the whole outline. An added edge takes the radius of the selected edge
+                it continues. ``False`` rounds the selected edges only; where the kernel then
+                fails, the error names a selected edge that runs on tangentially into one that is
+                not selected (the kernel cannot always round such an edge alone).
+            corners: Where three rounded edges meet: ``"patch"`` joins their rounds with a corner
+                patch (a ball corner where the radii are equal); ``"mitre"`` runs the rounds on
+                until they meet each other, along mitre lines without a patch (the look of a
+                machined part). Mitred are the corners where three rounded convex edges meet and
+                no other edge; a selection without such a corner raises ``ValueError``.
+
+        Where three rounds meet, the corner patch is tangent continuous (G1) only, also with
+        ``continuity="G2"`` or ``"G3"``: zebra stripes kink there (the kernel's corner patches
+        are G1 whatever the continuity of the rounds).
+
+        A round the kernel cannot build raises :class:`KernelError` naming the corner or edge its
+        fillet code could not build, where it recorded one.
         """
         self._require_valid("fillet")
+        mitre = _corner_style("fillet", corners)
         given = [float(r) for r in (radius if isinstance(radius, (tuple, list, np.ndarray)) else [radius])]
         if any(not r > 0 for r in given):
             raise ValueError("fillet: the radius must be positive")
@@ -3571,62 +3664,117 @@ class Part(_Body):
             raise ValueError("fillet: a (start, end) radius makes circular rounds only; continuity needs a "
                              "constant radius")
         if isinstance(radius, (list, np.ndarray)):
-            edges, per_edge = self._resolved(edges, [float(r) for r in radius])
-            radius = per_edge
+            edges, sizes = self._resolved(edges, [float(r) for r in radius])
+            radius = sizes
         else:
             edges, _ = self._resolved(edges)
         sel = self._sharp_edges(edges, "fillet")
+        per_edge: list[float] | None = None
+        if isinstance(radius, (list, np.ndarray)):
+            per_edge = [float(r) for r in radius]
+            if len(per_edge) != len(sel):
+                raise ValueError(f"{len(per_edge)} radii for {len(sel)} edges")
+        selected = len(sel)
+        sel, src = _tangent_chains(sel) if propagate else (sel, list(range(len(sel))))
+        if per_edge is not None:
+            per_edge = [per_edge[i] for i in src]
         if isinstance(radius, tuple) and len(radius) == 2:
             if float(radius[0]) != float(radius[1]):
+                if len(sel) > selected:
+                    g = sel[selected]
+                    p = min((v.point for v in g.vertices()), key=lambda q: sel[src[selected]].distance_to(q))
+                    raise ValueError(
+                        f"fillet: a (start, end) radius runs along each edge on its own, and a selected edge runs on "
+                        f"tangentially into another edge at {_fmt_point(p)}, which propagate=True rounds with it; "
+                        f"give a constant radius, or propagate=False to round the selected edges only")
                 self._check_radius_law(sel)
             radii = [max(float(radius[0]), float(radius[1]))] * len(sel)
-        elif isinstance(radius, (list, np.ndarray)):
-            radii = [float(r) for r in radius]
+        elif per_edge is not None:
+            radii = per_edge
         else:
             radii = [float(radius)] * len(sel)
-        if len(radii) == len(sel):
-            self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
-        h, kedges = self._with_edges(sel)
+        self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
+        if mitre:
+            _require_mitred_corners("fillet", sel)
         cont = _continuity(continuity)
-        with _round_call("fillet", "the radius may be too large for the selected edges"):
-            if isinstance(radius, tuple) and len(radius) == 2:
-                k.variable_radius_fillet(h.brep, kedges, start_radius=float(radius[0]), end_radius=float(radius[1]),
-                                         xsect_type=1 if cont is None else 2, continuity=cont or 1)
-            elif isinstance(radius, (list, np.ndarray)):
-                radii = [float(r) for r in radius]
-                if len(radii) != len(kedges):
-                    raise ValueError(f"{len(radii)} radii for {len(kedges)} edges")
-                xs = [k.FilletXSect.BLEND if cont else k.FilletXSect.CIRCULAR] * len(kedges)
-                k.fillet_edges_per_edge(h.brep, kedges, radii, xs, continuity=cont or 1, thumbweight=fullness)
-            elif cont is None:
-                k.fillet_edges(h.brep, kedges, radius=float(radius))
-            else:
-                k.fillet_edges(h.brep, kedges, radius=float(radius), xsect_type=2, continuity=cont, thumbweight=fullness)
-        result = self._like(_take(h))
-        if isinstance(radius, tuple) and len(radius) == 2:
-            sizes = [max(float(radius[0]), float(radius[1]))] * len(sel)
-        elif isinstance(radius, (list, np.ndarray)):
-            sizes = [float(r) for r in radius]
-        else:
-            sizes = [float(radius)] * len(sel)
-        self._check_volume_change(result, sel, "fillet", sizes, "circular" if cont is None else "blend")
-        return result
+        hint = "the radius may be too large for the selected edges"
+        section = 1 if cont is None else 2  # circular, or a blend curve
 
-    def chamfer(self, edges: Any, length: float) -> Part:
+        def attempt(factor: float) -> Part:
+            h, kedges = self._with_edges(sel)
+            with self._rounding("fillet", hint, sel, propagate):
+                if isinstance(radius, tuple) and len(radius) == 2:
+                    _round_edges("fillet", hint, h.brep, kedges, sel, [float(radius[0])], [section],
+                                 law=(float(radius[0]), float(radius[1])), continuity=cont or 1,
+                                 tolerance_factor=factor, mitre=mitre)
+                elif per_edge is not None:
+                    _round_edges("fillet", hint, h.brep, kedges, sel, per_edge, [section] * len(kedges),
+                                 continuity=cont or 1, thumbweight=fullness, tolerance_factor=factor, mitre=mitre)
+                else:
+                    _round_edges("fillet", hint, h.brep, kedges, sel, [float(radius)], [section], continuity=cont or 1,
+                                 thumbweight=fullness, tolerance_factor=factor, mitre=mitre)
+            result = self._like(_take(h))
+            self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend")
+            return result
+
+        return _with_finer_rounds(attempt)
+
+    def chamfer(self, edges: Any, length: float, *, length2: float | None = None, angle: float | None = None,
+                reference: Any = None, propagate: bool = True, corners: str = "patch") -> Part:
         """Bevel edges. ``length`` is the setback measured along both adjacent faces.
 
-        The faces of each edge must meet at the same angle all along it (within 1 degree);
-        where they do not (a hole into a tilted or curved face), use ``fillet``.
+        An asymmetric bevel: ``length2`` is the setback on the other face of each edge, ``length`` the one
+        on its ``reference`` face; or ``angle`` (degrees) is the angle between the bevel and the reference
+        face (``length2`` follows from it: ``length * tan(angle)`` where the faces meet at 90 degrees).
+        ``reference`` is a face of this part (or several) that each edge lies on; ``length2`` and ``angle``
+        need it.
+
+        The faces of each edge must meet at the same angle all along it (within 1 degree); where they
+        do not (a hole into a tilted or curved face), use ``fillet``.
+
+        ``propagate`` bevels the edges that continue the selected ones tangentially too
+        (:meth:`Edge.tangent_chain`), as :meth:`fillet` does; ``False`` bevels the selected edges
+        only. The edges a run adds must lie on a reference face too.
+
+        ``corners`` sets the corners where three bevelled edges meet, as for :meth:`fillet`:
+        ``"patch"`` cuts them off with a corner face, ``"mitre"`` runs the bevels on until they meet
+        (the corners of three bevelled convex edges and no other edge).
         """
         self._require_valid("chamfer")
-        if not float(length) > 0:
+        mitre = _corner_style("chamfer", corners)
+        length = float(length)
+        if not length > 0:
             raise ValueError("chamfer: the length must be positive")
+        if length2 is not None and angle is not None:
+            raise ValueError("chamfer: give length2 or angle, not both")
+        if length2 is not None and not float(length2) > 0:
+            raise ValueError("chamfer: length2 must be positive")
+        if angle is not None and not 0 < float(angle) < 180:
+            raise ValueError("chamfer: the angle must lie between 0 and 180 degrees")
+        two = angle is not None or (length2 is not None and float(length2) != length)
+        if two and reference is None:
+            raise ValueError("chamfer: length2 and angle need reference=, the face (or faces) of each edge on which "
+                             "length is measured")
+        refs = self._own_faces(reference) if two else []
         edges, _ = self._resolved(edges)
         sel = self._sharp_edges(edges, "chamfer")
-        self._check_round_sizes(sel, [float(length)] * len(sel), "chamfer", "length")
-        radii = []
+        selected = {e._identity() for e in sel}
+        if propagate:
+            sel = _tangent_chains(sel)[0]
+        radii, radii2, firsts, setbacks = [], [], [], []
+        backwards: str | None = None  # why an unequal bevel may fail
         for e in sel:
             fs = e.faces()
+            if two:
+                on = [i for i, f in enumerate(fs) if any(f._f is r for r in refs)]
+                if len(fs) != 2 or len(on) != 1:
+                    raise ValueError(
+                        f"chamfer: the edge from {_fmt_point(e.start)} to {_fmt_point(e.end)} "
+                        f"{'lies on two reference faces' if len(on) > 1 else 'does not lie on a reference face'}; "
+                        f"give the face of each edge on which length is measured"
+                        + ("" if len(on) > 1 or e._identity() in selected else
+                           " (it continues a selected edge tangentially: add its face, or propagate=False)"))
+                fs = [fs[on[0]], fs[1 - on[0]]]
             if len(fs) == 2:
                 p = e.center()
                 theta = math.radians(fs[0].normal_at(p).angle_to(fs[1].normal_at(p)))
@@ -3637,27 +3785,223 @@ class Part(_Body):
                     raise ModelingError(
                         f"chamfer: the faces of an edge meet at an angle that changes along it (their normals are "
                         f"{min(angles):.4g} to {max(angles):.4g} degrees apart), and the bevel would reach "
-                        f"{lo:.4g} to {hi:.4g} from the edge instead of {float(length):.4g}; round such an edge "
+                        f"{lo:.4g} to {hi:.4g} from the edge instead of {length:.4g}; round such an edge "
                         f"with fillet(), whose radius stays the same along it")
-                radii.append(r)
+                if two:
+                    s1, s2 = self._chamfer_setbacks(e, theta, length, length2, angle)
+                    # the kernel bevels between the lines where the faces, offset by r1 and r2, meet: those
+                    # lines project onto the faces at the setbacks
+                    r1 = (s2 + s1 * math.cos(theta)) / math.sin(theta)
+                    r2 = (s1 + s2 * math.cos(theta)) / math.sin(theta)
+                    if backwards is None and not (r1 > 0 and r2 > 0):
+                        # (faces that meet at an acute angle, setbacks less alike than the cosine of the angle:
+                        # one face's offset runs backwards, which the kernel's solver takes only so far)
+                        backwards = (f"chamfer: the faces of the edge from {_fmt_point(e.start)} to "
+                                     f"{_fmt_point(e.end)} meet at {180 - math.degrees(theta):.4g} degrees, and the "
+                                     f"kernel could not bevel "
+                                     f"them with setbacks this different ({s1:.4g} and {s2:.4g}); bring them closer "
+                                     f"(each at least {math.cos(math.pi - theta):.4g} times the other always works)")
+                    radii.append(r1)
+                    radii2.append(r2)
+                    firsts.append(fs[0]._f)
+                    setbacks.append({fs[0]._identity(): s1, fs[1]._identity(): s2})
+                else:
+                    radii.append(r)
+                    setbacks.append(length)
             else:
                 radii.append(length)
-        h, kedges = self._with_edges(sel)
-        with _round_call("chamfer", "the length may be too large for the selected edges"):
-            if all(abs(r - radii[0]) < 1e-12 for r in radii):
-                k.fillet_edges(h.brep, kedges, radius=radii[0], xsect_type=0)
-            else:
-                # per-edge radii with a linear cross-section, in one call: a call per edge
-                # replaces the edges next to it, and the next call would use freed edges
-                k.fillet_edges_per_edge(h.brep, kedges, radii, [k.FilletXSect.LINEAR] * len(kedges))
-        result = self._like(_take(h))
-        self._check_volume_change(result, sel, "chamfer", [float(length)] * len(sel), "chamfer")
+                setbacks.append(length)
+        self._check_round_sizes(sel, setbacks, "chamfer", "length")
+        if mitre:
+            _require_mitred_corners("chamfer", sel)
+        hint = "the length may be too large for the selected edges"
+        # (the volume bound of a bevel is its triangle, half the product of its setbacks)
+        sizes = [math.sqrt(math.prod(b.values())) if isinstance(b, dict) else b for b in setbacks]
+
+        def bevel(keep: list[int]) -> Part:
+            # the kernel's bevels of the edges sel[i], i in keep
+            edges = [sel[i] for i in keep]
+            rs = [radii[i] for i in keep]
+
+            def attempt(factor: float) -> Part:
+                if two:
+                    copy, kfaces, kedges, _ = ext.copy_with_map(self._brep, [firsts[i] for i in keep],
+                                                                self._own_edges(edges), [])
+                    h = BrepHandle(copy)
+                    with self._rounding("chamfer", hint, edges, propagate):
+                        _round_edges("chamfer", hint, h.brep, kedges, edges, rs, [0], radii2=[radii2[i] for i in keep],
+                                     faces=kfaces, tolerance_factor=factor, mitre=mitre)
+                else:
+                    h, kedges = self._with_edges(edges)
+                    with self._rounding("chamfer", hint, edges, propagate):
+                        if all(abs(r - rs[0]) < 1e-12 for r in rs):
+                            _round_edges("chamfer", hint, h.brep, kedges, edges, [rs[0]], [0], tolerance_factor=factor,
+                                         mitre=mitre)
+                        else:
+                            # per-edge radii with a linear cross-section, in one call: a call per edge
+                            # replaces the edges next to it, and the next call would use freed edges
+                            _round_edges("chamfer", hint, h.brep, kedges, edges, rs, [0] * len(kedges),
+                                         tolerance_factor=factor, mitre=mitre)
+                result = self._like(_take(h))
+                self._check_volume_change(result, edges, "chamfer", [sizes[i] for i in keep], "chamfer")
+                return result
+
+            try:
+                return _with_finer_rounds(attempt)
+            except ModelingError as e:  # (a KernelError too)
+                if backwards is None:
+                    raise
+                raise ModelingError(backwards) from e
+
+        everything = list(range(len(sel)))
+        cones = self._conical_bevels(sel, setbacks)
+        if cones:
+            # the kernel's bevels of the other edges, then the exact ones; where one of those does not take
+            # what it should (other material in its way), the kernel bevels all
+            rest = [i for i in everything if i not in cones]
+            result = bevel(rest) if rest else self._like(self._copy_brep())
+            applied = result._applied_bevels(list(cones.values()))
+            return applied if applied is not None else bevel(everything)
+        return bevel(everything)
+
+    def _conical_bevels(self, edges: list[Edge], setbacks: list[Any]) -> dict[int, tuple[Part, float, bool]]:
+        """The exact bevels of the closed circular ``edges`` between faces coaxial with them (a plane at
+        right angles to the axis, a cylinder or a cone around it, a face of a revolve whose meridian is
+        straight there), by index: the solid of revolution each cuts off (a convex edge) or fills in (a
+        concave edge), its volume, and whether it fills in. ``setbacks`` holds each edge's setback, or its setback by face. The kernel fits such
+        bevels with B-splines (volumes off by up to 1e-5 of the part's); this one is a surface of
+        revolution of the bevel's line, exact."""
+        from .sketches import Polygon
+
+        out: dict[int, tuple[Part, float, bool]] = {}
+        for i, (e, setback) in enumerate(zip(edges, setbacks)):
+            if not (e.is_closed and e.geom_type == "circle"):
+                continue
+            fs = list(e.faces())
+            kind = e.convexity
+            if len(fs) != 2 or kind not in ("convex", "concave"):
+                continue
+            center, axis = e.arc_center, e.normal.normalized()
+            near = 1e-9 * max(e.radius, 1.0)
+            coaxial = True
+            for f in fs:
+                if f.geom_type not in ("plane", "cylinder", "cone", "revolution"):
+                    coaxial = False
+                    break
+                if f.geom_type == "revolution":
+                    continue  # (no axis to read: sampled below)
+                placement = f._surface_info()["placement"]
+                along = abs(Vector(placement["z_dir"]).normalized().dot(axis)) > 1.0 - 1e-12
+                off = Vector(placement["origin"]) - center
+                coaxial = coaxial and along and (f.geom_type == "plane" or (off - axis * off.dot(axis)).length <= near)
+            if not coaxial:
+                continue
+            s = [float(setback[f._identity()]) if isinstance(setback, dict) else float(setback) for f in fs]
+            c, t = e.point_at(0.0), e.tangent_at(0.0)
+            normals = [f.normal_at(c) for f in fs]
+            ways = []  # into each face, at right angles to the edge
+            for j in (0, 1):
+                w = normals[j].cross(t).normalized()
+                if (w.dot(normals[1 - j]) < 0) != (kind == "convex"):
+                    w = -w
+                ways.append(w)
+            if not all(f.geom_type != "revolution" or _straight_around(f, center, axis, c, w * sj, n)
+                       for f, w, sj, n in zip(fs, ways, s, normals)):
+                continue
+            q = c - center
+            radial = (q - axis * q.dot(axis)).normalized()
+
+            def rz(p: Vector) -> tuple[float, float]:
+                return (p - center).dot(radial), (p - center).dot(axis)
+
+            corner, p1, p2 = rz(c), rz(c + ways[0] * s[0]), rz(c + ways[1] * s[1])
+            # the bevel's line runs on a little past both faces, and the profile closes beyond the edge,
+            # so that the tool meets the faces only along the bevel (no faces on faces)
+            ext_ = 0.25
+            for a, b in ((p1, p2), (p2, p1)):
+                if a[0] < b[0]:
+                    ext_ = min(ext_, 0.5 * a[0] / (b[0] - a[0]))
+            m = (0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1]))
+            profile = [(p1[0] + (p1[0] - p2[0]) * ext_, p1[1] + (p1[1] - p2[1]) * ext_),
+                       (p2[0] + (p2[0] - p1[0]) * ext_, p2[1] + (p2[1] - p1[1]) * ext_),
+                       (2 * corner[0] - m[0], 2 * corner[1] - m[1])]
+            if min(p1[0], p2[0], profile[2][0]) <= near or ext_ <= 1e-3:
+                continue  # (the bevel reaches the axis)
+            area = 0.5 * abs((p1[0] - corner[0]) * (p2[1] - corner[1]) - (p1[1] - corner[1]) * (p2[0] - corner[0]))
+            volume = 2.0 * math.pi * (corner[0] + p1[0] + p2[0]) / 3.0 * area
+            plane = Plane(center, radial, radial.cross(axis))  # (its y direction is the axis)
+            try:
+                tool = Polygon(*profile).on(plane).revolve(Axis(center, axis), 360)
+            except ModelingError:
+                continue
+            out[i] = (tool, volume, kind == "concave")
+        return out
+
+    def _applied_bevels(self, tools: list[tuple[Part, float, bool]]) -> Part | None:
+        """The part with the ``tools`` of ``_conical_bevels`` cut away, and those that fill fused on (each
+        kind in one Boolean), or None where that does not change the volume by the tools' bevels (other
+        material in their way)."""
+        result = self
+        for fills in (False, True):
+            group = [(tool, volume) for tool, volume, f in tools if f == fills]
+            if not group:
+                continue
+            before = float(result._props(1e-6)["volume"])
+            try:
+                after = result.fuse([t for t, _ in group]) if fills else result.cut([t for t, _ in group])
+            except ModelingError:
+                return None
+            if after._solid_problem() is not None:
+                return None
+            change, volume = abs(float(after._props(1e-6)["volume"]) - before), sum(v for _, v in group)
+            if not abs(change - volume) <= 1e-6 * volume + 1e-10 * abs(before):
+                return None
+            result = after  # (a Boolean keeps the name and the color of its first operand)
         return result
 
-    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
+    @staticmethod
+    def _chamfer_setbacks(e: Edge, theta: float, length: float, length2: float | None,
+                          angle: float | None) -> tuple[float, float]:
+        """The setbacks of an asymmetric chamfer of ``e`` on its reference face and on its other face,
+        whose normals are ``theta`` (radians) apart: ``length`` and ``length2``, or the setback on the other
+        face that tilts the bevel by ``angle`` degrees against the reference face."""
+        wedge = math.pi - theta  # the angle between the faces, on the side the bevel cuts across
+        if angle is None:
+            assert length2 is not None
+            return length, float(length2)
+        a = math.radians(float(angle))
+        if wedge + a >= math.pi - 1e-9:
+            raise ValueError(
+                f"chamfer: a bevel at {float(angle):.4g} degrees to the reference face does not meet the other face "
+                f"of the edge from {_fmt_point(e.start)} to {_fmt_point(e.end)}, which meets it at "
+                f"{math.degrees(wedge):.4g} degrees; use an angle below {180 - math.degrees(wedge):.4g}")
+        return length, length * math.sin(a) / math.sin(wedge + a)
+
+    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
+              walls: Any = None) -> Part:
         """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
 
         The walls grow inward (the outside keeps its size) unless ``outward`` is true.
+
+        ``corners`` says how the new side of the walls turns where the part's faces grow apart (the
+        inside of a concave edge for walls that grow inward, the outside of a convex edge and corner
+        for walls that grow outward): ``"round"`` keeps the wall's thickness all round with a round
+        of radius ``thickness``; ``"sharp"`` extends the faces until they meet, so that the wall is
+        thicker there (up to ``thickness / sin(a / 2)`` at an edge of angle ``a``). The default,
+        None, takes ``"round"`` where the kernel builds it and ``"sharp"`` where it does not; the
+        result's ``info()["corners"]`` says which. Given ``"round"`` or ``"sharp"``, a shell the
+        kernel cannot build that way raises instead.
+
+        ``walls`` gives faces walls of their own thickness: ``(faces, thickness)`` pairs, or a dict
+        of faces to thicknesses (``walls=[(part.faces().bottom(), 5)]``). The face of the shell
+        across such a wall is offset by the difference, and the faces around it are extended or
+        trimmed to meet it (as :meth:`offset_faces`). Faces that meet smoothly (a wall and the
+        round beside it) need one thickness.
+
+        The kernel leaves the rim of an opening open where it meets its neighbours tangentially
+        (the flat top of a box rounded on all edges): planar openings of that kind, whose other rim
+        edges meet walls standing at right angles to them, are cut out of the part shelled closed
+        instead (the inner rounds then end at the rim).
 
         Walls that do not fit into the part (measured across it from each face), and results
         the kernel gets wrong (faces that do not meet, no cavity, the part given back, a closed
@@ -3667,17 +4011,41 @@ class Part(_Body):
         (20 s): raise that for large parts.
         """
         from .defeature import _isolated
+        from .face_edit import _wall_thicknesses, shell_walls
 
+        if corners not in (None, "round", "sharp"):
+            raise ValueError(f'shell: corners must be "round" or "sharp" (or None for either), not {corners!r}')
         self._require_valid("shell")
         if not abs(float(thickness)) > 0:
             raise ValueError("shell: the thickness must not be zero")
         faces = self._own_faces(openings) if openings is not None else []
         t = abs(float(thickness))
+        own = _wall_thicknesses(self, walls, t, faces) if walls is not None else []
+        if own:
+            shelled = self.shell(thickness, [Face(self, f) for f in faces], outward=outward, corners=corners)
+            mode = _MADE.get(shelled._h, {})
+            return _made(shell_walls(self, shelled, own, t, outward, not faces), **mode)
         rays = self._inward_rays(faces)
         if not outward:
             self._check_wall_fits(t, faces, rays)
         d = t if outward else -t
         hint = self._shell_hint(faces, t, rays, outward)
+        if corners is not None:
+            hint += f', or try corners="{"sharp" if corners == "round" else "round"}"'
+        cut = self._openings_to_cut(faces, t, outward)
+        if cut:
+            # The kernel leaves the rim of such an opening open (its inner rounds run up to the outer
+            # edge, and their edges lie off their faces): shell the part without them, then cut each out.
+            def by_cutting() -> Part:
+                rest = [f for f in faces if not any(f is c for c in cut)]
+                base = self.shell(thickness, [Face(self, f) for f in rest], outward=outward, corners=corners)
+                return _made(base._cut_openings([Face(self, f) for f in cut], t, outward), **_MADE.get(base._h, {}))
+
+            return self._checked("shell", [(True, by_cutting)], grow=t if outward else 0.0,
+                                 smaller=None if outward else True,
+                                 problem=lambda result, _: self._shell_problem(result, d, faces, rays, True,
+                                                                               lambda extended: 0.0),
+                                 hint=hint)
         offsets: dict[bool, float] = {}  # volume of the part offset by d, by mode (for a closed shell)
 
         def offset_volume(extended: bool) -> float:
@@ -3696,14 +4064,15 @@ class Part(_Body):
                     return k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces)
 
             # In a copy of the process: the kernel's offset code can crash, mostly in its extended
-            # mode, which depends on memory layout.
-            return self._like(_isolated("shell", work))
+            # mode, which depends on memory layout. (The plain mode rolls a ball where the faces grow
+            # apart, the extended one extends them until they meet.)
+            return _made(self._like(_isolated("shell", work)), corners="sharp" if extended else "round")
 
         def problem(result: Part, extended: bool) -> str | None:
             return self._shell_problem(result, d, faces, rays, extended, offset_volume)
 
-        return self._checked("shell", [(False, lambda: attempt(False)), (True, lambda: attempt(True)),
-                                       (True, lambda: attempt(True))],
+        modes = [False] if corners == "round" else [True, True] if corners == "sharp" else [False, True, True]
+        return self._checked("shell", [(m, lambda m=m: attempt(m)) for m in modes],
                              grow=t if outward else 0.0, smaller=None if outward else True, problem=problem,
                              hint=hint)
 
@@ -3774,6 +4143,85 @@ class Part(_Body):
                                         f"thick across the face at {at}; use a thinner wall")
                 raise ModelingError(f"shell: a wall of {t:.4g} does not fit into the part, which is {depth:.4g} deep "
                                     f"from the face at {at} to the opening; use a thinner wall")
+
+    def _openings_to_cut(self, openings: list[Any], t: float, outward: bool) -> list[Any]:
+        """The openings ``shell`` cuts out of the part shelled without them (see ``_cut_openings``): when
+        one has a rim edge that meets its neighbour tangentially (the kernel leaves such a rim open), the
+        planar ones whose rim edges all do, or (walls growing inward) meet walls that stand at right
+        angles to the opening for at least the wall's thickness (the cavity's face under the opening
+        then ends where the inner walls do). An opening next to another one is left to the kernel, and
+        so are all of them when an opening with a tangent rim is not such a face: then []."""
+        kinds = []  # (kernel face, has a tangent rim edge, can be cut out)
+        for kf in openings:
+            f = Face(self, kf)
+            smooth, fits = False, f.is_planar
+            n = f.normal_at() if fits else None
+            for e in f.edges():
+                others = [g for g in e.faces() if g._f is not kf]
+                if len(others) != 1 or any(others[0]._f is o for o in openings):
+                    fits = False  # a seam, or the edge of another opening
+                    continue
+                if e.convexity == "smooth":
+                    smooth = True
+                elif fits and (outward or not self._straight_wall(e, others[0], n, t)):  # type: ignore[arg-type]
+                    fits = False
+            kinds.append((kf, smooth, fits))
+        if not any(smooth for _, smooth, _ in kinds) or any(smooth and not fits for _, smooth, fits in kinds):
+            return []
+        return [kf for kf, smooth, fits in kinds if smooth]
+
+    @staticmethod
+    def _straight_wall(e: Edge, wall: Face, n: Vector, t: float) -> bool:
+        """True if ``wall`` stands at right angles to the opening's normal ``n`` along its edge ``e`` and
+        keeps doing so for ``t`` beneath it (a plane, or a cylinder or extrusion along ``n``)."""
+        try:
+            for u in (0.25, 0.5, 0.75):
+                p = e.point_at(u)
+                m = wall.normal_at(p)
+                q = p - n * t
+                if abs(m.dot(n)) > 1e-6 or wall.distance_to(q) > 1e-6 * max(t, 1.0):
+                    return False
+                if wall.normal_at(q).angle_to(m) > 1e-3:
+                    return False
+        except (KernelError, ValueError):
+            return False
+        return True
+
+    def _cut_openings(self, openings: list[Face], t: float, outward: bool) -> Part:
+        """This shell (of a part, made without ``openings``) with each opening cut out: the cavity's face
+        under it (the part's face offset by ``t``, or for walls grown outward the face itself) extruded
+        through the wall. Raises ModelingError where there is no such face, or where a cut takes more
+        than the wall over that face (the part reaches over the opening)."""
+        out = self
+        for f in openings:
+            n = f.normal_at()
+            depth = 0.0 if outward else t
+            under = f.interior_point() - n * depth
+            tol = 1e-6 * max(self._extent(), 1.0)
+            caps = [g for g in out.faces() if g.is_planar and g.normal_at().dot(n) < -1 + 1e-9
+                    and g.distance_to(under) <= tol]
+            if len(caps) != 1:
+                raise ModelingError(f"shell: the part shelled closed has no single face under the opening at "
+                                    f"{_fmt_point(f.center())} to cut it out from")
+            g = caps[0]
+            if g.area > f.area * (1 + 1e-9) + tol or any(f.distance_to(v.point + n * depth) > tol
+                                                          for v in g.vertices()):
+                raise ModelingError(f"shell: the face under the opening at {_fmt_point(f.center())} reaches past "
+                                    f"the opening")
+            sk = g.to_sketch()
+            amount = 1.5 * t
+            prism = sk.extrude(amount if sk.plane.z_dir.dot(n) > 0 else -amount)
+            before = float(out._props(1e-6)["volume"])
+            with kernel_call("shell", "the opening could not be cut out of the part shelled closed"):
+                cut = out - prism
+            removed = before - float(cut._props(1e-6)["volume"])
+            expect = g.area * t
+            if not abs(removed - expect) <= 1e-6 * before + 1e-4 * expect:
+                raise ModelingError(
+                    f"shell: cutting the opening at {_fmt_point(f.center())} out of the part shelled closed took "
+                    f"{removed:.10g} instead of the wall over it, {expect:.10g} (the part reaches over the opening)")
+            out = cut
+        return out
 
     def _shell_hint(self, openings: list[Any], t: float | None = None,
                     rays: Sequence[tuple[Vector, Vector, float, bool]] = (), outward: bool = False) -> str:
@@ -3893,9 +4341,19 @@ class Part(_Body):
                     f"{expect:.10g}")
         return None
 
-    def offset(self, distance: float) -> Part:
+    def offset(self, distance: float, *, corners: str = "sharp") -> Part:
         """Grow (positive) or shrink (negative) the part by ``distance`` everywhere (0 gives an
         equal copy).
+
+        ``corners="sharp"`` moves each face by ``distance`` and extends the faces until they meet
+        again: edges and corners stay sharp, and an edge whose faces meet at an angle ``a`` moves
+        out by ``distance / sin(a / 2)``. ``"round"`` rolls a ball of radius ``distance`` along the
+        part: where faces grow apart (the convex edges and corners of a growing part) it fills in
+        cylinders and spheres, so that every point of the result lies at ``distance`` from the part
+        (a clearance body, the skin of an overmould). Shrinking with ``"round"`` rounds the
+        concave edges, which grow apart inward; the convex ones stay sharp. The sharp mode fails
+        where faces would vanish or cross (an acute wedge, a hole that closes, a groove narrower
+        than twice the distance); the rounded mode builds those.
 
         Results the kernel gets wrong (faces that do not meet, a change of the wrong sign) raise
         :class:`ModelingError`. The kernel step runs in a forked copy of the process (Linux,
@@ -3903,29 +4361,81 @@ class Part(_Body):
         :meth:`shell`."""
         from .defeature import _isolated
 
+        if corners not in ("sharp", "round"):
+            raise ValueError(f'offset: corners must be "sharp" or "round" for a part, not {corners!r}')
         self._require_valid("offset")
         d = float(distance)
         if d == 0:
             return self._like(self._copy_brep())
+        extended = corners == "sharp"  # (the kernel's extended mode extends the faces, the other one rolls)
+        hint = ('try a smaller distance, or corners="round", which rounds the edges whose faces grow apart '
+                "instead of extending the faces (it builds acute wedges and holes that close)"
+                if extended else "try a smaller distance")
 
         def work() -> Any:
-            with kernel_call("offset"):
-                return k.offset_brep(self._brep, d)
+            with kernel_call("offset", hint):
+                return k.offset_brep(self._brep, d, extended_offset=extended)
 
         def attempt() -> Part:
-            # (always the extended mode, which depends on memory layout and can crash: it runs in
-            # a copy of the process)
-            return self._like(_isolated("offset", work))
+            # (the kernel's offset code can crash, mostly in its extended mode, which depends on
+            # memory layout: it runs in a copy of the process)
+            return _made(self._like(_isolated("offset", work)), corners=corners)
 
-        return self._checked("offset", [(True, attempt), (True, attempt)], grow=max(d, 0.0), smaller=d < 0)
+        if not extended:
+            # every point lies at |d| from the part: in its box grown by d; a repeat gives the same
+            return self._checked("offset", [(False, attempt)], grow=max(d, 0.0), smaller=d < 0, hint=hint)
+        # the sharp mode moves edges and corners farther than d (a cone's base edge by d / sin(a / 2))
+
+        def wider() -> float:
+            return d * _SHARP_OFFSET_SLACK * min(self._sharp_offset_reach(), _SHARP_OFFSET_REACH)
+
+        return self._checked("offset", [(True, attempt), (True, attempt)], grow=max(d, 0.0),
+                             wider=wider if d > 0 else None, smaller=d < 0, hint=hint)
+
+    def _sharp_offset_reach(self) -> float:
+        """How far a sharp offset by 1 (the kernel's extended mode) moves the points of the part, to
+        first order: 1 on its faces; 1 / cos(t / 2) at an edge whose face normals are t apart
+        (sampled at 5 points along it); and at a vertex, the point where the moved tangent planes of
+        three of its faces meet (each three whose normals span space). Infinite at an edge whose
+        faces meet back to back."""
+        reach = 1.0
+        for e in self.edges():
+            fs = e.faces()
+            if len(fs) != 2:
+                continue
+            for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+                p = e.point_at(t)
+                try:
+                    c = fs[0].normal_at(p).dot(fs[1].normal_at(p))
+                except (KernelError, ValueError):  # (the apex of a cone)
+                    continue
+                if 1.0 + c < 1e-12:
+                    return math.inf
+                reach = max(reach, math.sqrt(2.0 / (1.0 + c)))
+        for v in self.vertices():
+            normals: list[Vector] = []
+            for f in v.faces():
+                try:
+                    n = f.normal_at(v.point)
+                except (KernelError, ValueError):
+                    continue
+                if all(n.dot(m) < 1.0 - 1e-9 for m in normals):
+                    normals.append(n)
+            for a, b, c in itertools.combinations(normals, 3):
+                # the point x with a.x = b.x = c.x = 1
+                bc, ca, ab = b.cross(c), c.cross(a), a.cross(b)
+                det = a.dot(bc)
+                if abs(det) > 1e-6:
+                    reach = max(reach, ((bc + ca + ab) / det).length)
+        return reach
 
     def _checked(self, name: str, attempts: Sequence[tuple[bool, Callable[[], Part]]], *, grow: float,
                  smaller: bool | None, problem: Callable[[Part, bool], str | None] | None = None,
-                 hint: str = "try a smaller value") -> Part:
+                 hint: str = "try a smaller value", wider: Callable[[], float] | None = None) -> Part:
         """The first result of ``attempts`` that passes the checks: a valid solid within the part's
-        box (grown by ``grow``), whose faces meet (gaps below _OFFSET_GAPS), whose volume went down
-        (``smaller``), up (``smaller=False``) or changed (None), and in which ``problem`` finds
-        nothing wrong.
+        box (grown by ``grow``, or by what ``wider`` gives, asked only for a result beyond that),
+        whose faces meet (gaps below _OFFSET_GAPS), whose volume went down (``smaller``), up
+        (``smaller=False``) or changed (None), and in which ``problem`` finds nothing wrong.
 
         Each attempt is a mode (the kernel's extended offset mode or not) and a function that makes
         the result. An attempt in the mode of the one before runs only when that one's result was
@@ -3934,6 +4444,14 @@ class Part(_Body):
         kernel or did not finish (in the copy of the process it ran in) ends the attempts."""
         box = self.bbox()
         tol = 1e-6 * max(box.diagonal, 1.0) + grow
+        margin: list[float] = []  # (wider's, once asked)
+
+        def wide() -> float:
+            if not margin:
+                assert wider is not None
+                margin.append(1e-6 * max(box.diagonal, 1.0) + wider())
+            return margin[0]
+
         before = float(self._props(1e-4)["volume"])
         start = time.monotonic()
         error: KernelError | None = None
@@ -3948,7 +4466,8 @@ class Part(_Body):
                 error, last = e, (mode, True)
                 continue
             last = (mode, False)
-            why = _offset_problem(result, box, tol, before, smaller) or (problem(result, mode) if problem else None)
+            why = (_offset_problem(result, box, tol, before, smaller, wide if wider is not None else None)
+                   or (problem(result, mode) if problem else None))
             if why is None:
                 return result
             refused = refused or why
@@ -4292,6 +4811,52 @@ class Part(_Body):
 
         return draft_faces(self, faces, angle, neutral_plane)
 
+    # -- direct editing (smlibpy.face_edit) --------------------------------------
+    def move_faces(self, faces: Any, by: Location | VectorLike) -> Part:
+        """Move faces of the part, and extend or trim the faces around them to meet them again:
+        push or pull a face, move a hole, a boss or a pocket.
+
+        ``by`` is a vector or a :class:`Location` (a rotation and a translation: it also turns the
+        faces). A face moved along itself stays where it is (a plane moved within its plane); the
+        faces around it decide what changes. Faces that meet a moved face tangentially (a round, the
+        other half of a slot) must be moved with it. Exact: planes, cylinders, cones, spheres, tori
+        and free-form faces keep their shape, and the edges where a plane meets a cylinder, cone
+        or sphere stay circles.
+
+        Raises :class:`ModelingError` where the kernel cannot rebuild the part, where the moved
+        faces change which faces meet (a face vanishes; use a Boolean), and where the result's
+        faces do not meet.
+
+        Args:
+            faces: Faces of this part (a selection or a single face).
+            by: A vector, or a Location.
+        """
+        from .face_edit import move_faces
+
+        return move_faces(self, faces, by)
+
+    def offset_faces(self, faces: Any, distance: float) -> Part:
+        """Offset faces of the part along their normals by ``distance``, and extend or trim the
+        faces around them to meet them again: push-pull by a distance, resize a hole or a boss.
+
+        A positive distance moves the faces out of the material: the part grows, a hole narrows
+        and a boss widens; a negative one moves them in. Faces that meet an offset face tangentially
+        (a round, the other half of a slot, a fillet chain) are offset with it, and so on along
+        the tangent chain. Exact: a plane moves, a cylinder, cone, sphere or torus changes its
+        radius, a free-form face becomes its offset surface.
+
+        Raises :class:`ModelingError` where a radius would reach 0, where the kernel cannot
+        rebuild the part, where the offset faces change which faces meet (a face vanishes; use a
+        Boolean), and where the volume does not change the way the distance says.
+
+        Args:
+            faces: Faces of this part (a selection or a single face).
+            distance: How far to move them, along their outward normals.
+        """
+        from .face_edit import offset_faces
+
+        return offset_faces(self, faces, distance)
+
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
     def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,
              partial: bool = False) -> Part:
@@ -4349,6 +4914,65 @@ def _revolve_axis_angle(ax: Axis, angle: float) -> tuple[Axis, float]:
     if angle < 0:
         ax, angle = Axis(ax.origin, -ax.direction), -angle
     return ax, min(angle, 360.0)
+
+
+def _face_samples(f: Face) -> list[Vector]:
+    """Points on a face: an interior point and those of a 2 x 2 grid of its parameters that lie
+    inside it."""
+    out = [f.interior_point()]
+    try:
+        (u0, v0), (u1, v1) = f._f.uv_domain()
+        for a in (0.25, 0.75):
+            for b in (0.25, 0.75):
+                u, v = u0 + a * (u1 - u0), v0 + b * (v1 - v0)
+                if f._f.classify_uv(u, v) == "inside":
+                    out.append(Vector(f._f.point_at_uv(u, v)))
+    except (RuntimeError, ValueError):  # a face the kernel cannot sample: its interior point only
+        pass
+    return out
+
+
+def _sheet_offset_problem(sheet: Shell, result: Shell, d: float) -> str | None:
+    """What is wrong with ``result`` as ``sheet`` offset by ``d``, or None. Every point of an offset
+    lies at least ``|d|`` from the sheet, on the side ``d`` points to (along the normal at its nearest
+    point), and each face has points at ``|d|`` (the offset of the face it came from; corners that the
+    faces' extensions close lie farther)."""
+    faces = list(result.faces())
+    if not faces:
+        return "no faces"
+    source = [(h, h.bbox()) for h in sheet.faces()]
+    t = abs(d)
+    tol = 1e-6 * max(sheet.bbox().diagonal, t, 1.0)
+
+    def closest(q: Vector) -> tuple[float, Face]:
+        # the nearest face, trying faces by the distance to their boxes
+        best, face = math.inf, source[0][0]
+        for box_distance, h in sorted(((_box_distance(b, q), h) for h, b in source), key=lambda x: x[0]):
+            if box_distance > best:
+                break
+            dist = h.distance_to(q)
+            if dist < best:
+                best, face = dist, h
+        return best, face
+
+    for f in faces:
+        nearest = math.inf
+        for q in _face_samples(f):
+            dist, g = closest(q)
+            if dist < t - tol:
+                return f"a face {dist:.6g} from the sheet, nearer than {t:.6g}, at {_fmt_point(q)}"
+            p = Vector(g._f.closest_point(q.to_tuple())[0])
+            if (q - p).dot(g.normal_at(p)) * d < 0:
+                return f"a face on the other side of the sheet, at {_fmt_point(q)}"
+            nearest = min(nearest, dist)
+        if nearest > t + tol:
+            return f"a face that lies nowhere at {t:.6g} from the sheet (it comes no nearer than {nearest:.6g})"
+    return None
+
+
+def _box_distance(box: BoundBox, q: Vector) -> float:
+    """The distance from ``q`` to a box (0 inside it)."""
+    return math.sqrt(sum(max(box.min[i] - q[i], 0.0, q[i] - box.max[i]) ** 2 for i in range(3)))
 
 
 def _require_solid(part: Part, what: str, hint: str) -> Part:
@@ -4427,6 +5051,69 @@ def _leaving(e: Edge, p: Vector) -> list[Vector]:
     if e.start.distance_to(p) <= e.end.distance_to(p):
         return [e.tangent_at(0.0)]
     return [-e.tangent_at(1.0)]
+
+
+def _continues(e: Edge, g: Edge, v: Vertex) -> bool:
+    """True if ``g`` continues ``e`` tangentially through their vertex ``v``: it leaves ``v``
+    within the kernel's tangency angle of the direction in which ``e`` arrives there, and its two
+    faces meet those of ``e`` smoothly (their normals at ``v`` pair up within the same angle), as
+    the next edge around a rounded corner does. ``g`` must be an edge a round can follow: not a
+    seam and not smooth itself."""
+    p = v.point
+    if not any((-a).angle_to(b) < _FILLET_TANGENT_DEG for a in _leaving(e, p) for b in _leaving(g, p)):
+        return False
+    fe, fg = e.faces(), g.faces()
+    if len(fe) != 2 or len(fg) != 2:
+        return False
+    try:
+        ne = [f.normal_at(p) for f in fe]
+        ng = [f.normal_at(p) for f in fg]
+    except (KernelError, ValueError):
+        return False
+    t = _FILLET_TANGENT_DEG
+    if not ((ne[0].angle_to(ng[0]) < t and ne[1].angle_to(ng[1]) < t)
+            or (ne[0].angle_to(ng[1]) < t and ne[1].angle_to(ng[0]) < t)):
+        return False
+    return g.convexity != "smooth"
+
+
+def _tangent_chains(edges: Sequence[Edge]) -> tuple[list[Edge], list[int]]:
+    """``edges``, then the edges that continue them tangentially (:func:`_continues`), and the
+    edges that continue those, as far as the chains go; with the index in ``edges`` of the edge
+    each one was reached from (the nearest along its chain)."""
+    out = list(edges)
+    src = list(range(len(out)))
+    seen = {e._identity() for e in out}
+    i = 0
+    while i < len(out):
+        e = out[i]
+        if e._e is not None and e._owner is not None:
+            for v in e.vertices():
+                for g in v.edges():
+                    key = g._identity()
+                    if key not in seen and _continues(e, g, v):
+                        seen.add(key)
+                        out.append(g)
+                        src.append(src[i])
+        i += 1
+    return out, src
+
+
+def _run_on_hint(sel: Sequence[Edge], what: str) -> str | None:
+    """The hint for a round of ``sel`` (without propagation) that the kernel refused: the first
+    selected edge that an edge that is not selected continues tangentially, and where."""
+    keys = {e._identity() for e in sel}
+    for e in sel:
+        if e._e is None or e._owner is None:
+            continue
+        ends = [v.point for v in e.vertices()
+                if any(g._identity() not in keys and _continues(e, g, v) for g in v.edges())]
+        if ends:
+            verb = "bevel" if what == "chamfer" else "round"
+            return (f"the edge from {_fmt_point(e.start)} to {_fmt_point(e.end)} runs on tangentially into an edge "
+                    f"that is not selected at {' and '.join(_fmt_point(p) for p in ends)}, which the kernel cannot "
+                    f"always {verb} alone; select the whole run (propagate=True, the default, or edge.tangent_chain())")
+    return None
 
 
 def _distance_to_edge(e: Edge, p: Vector) -> float:
@@ -4669,21 +5356,154 @@ _ROUND_SELECTION_HINT = ("the kernel cannot round the selection as given, at any
 @contextlib.contextmanager
 def _round_call(operation: str, hint: str) -> Iterator[None]:
     """:func:`kernel_call` for fillets and chamfers, with the hint for a selection the kernel cannot
-    round, and for a failure inside the kernel (a crash, a null pointer of its own), which says
-    nothing about the size: the size passed the checks against the faces before (kernel plan B19)."""
+    round (and where the kernel failed, see :func:`_round_edges`), and for a failure inside the kernel
+    (a crash, a null pointer of its own), which says nothing about the size: the size passed the
+    checks against the faces before (kernel plan B19)."""
     try:
         with kernel_call(operation, hint):
             yield
     except KernelError as e:
         crash = _crash_note(e, operation)
+        where = getattr(e, "_where", None)
         if crash is not None:
             size = "length" if operation == "chamfer" else "radius"
+            at = f" (it could not build {where})" if where else ""
             raise KernelError(e.operation, e.detail, e.status,
-                              f"{crash}, which says nothing about the {size} (it fits the faces around the edges): "
-                              f"round the edges in smaller groups to find the one it fails at") from e
+                              f"{crash}{at}, which says nothing about the {size} (it fits the faces around the "
+                              f"edges): round the edges in smaller groups to find the one it fails at") from e
         if e.status != "SM_ERR_INVALID_INPUT":
             raise
-        raise KernelError(e.operation, e.detail, e.status, _ROUND_SELECTION_HINT) from e
+        raise KernelError(e.operation, e.detail, e.status,
+                          f"the kernel cannot round the selection as given, at any size: it could not build {where}; "
+                          f"select fewer edges there" if where else _ROUND_SELECTION_HINT) from e
+
+
+# The fillet executive's comments on failures it records, in words (lower case, without its prefix).
+_ROUND_COMMENTS = {
+    "corner case not implemented": "it has no corner for the way the rounded edges meet there",
+    "corner edge computation failure": "it could not compute the edges of the corner",
+    "vertex computation failure": "it could not compute the vertices of the corner",
+}
+
+
+def _with_finer_rounds(attempt: Callable[[float], Part]) -> Part:
+    """``attempt(4.0)``, a fillet or chamfer as SM_API makes it, and where the kernel fails or its body is
+    refused, ``attempt(1.0)``: its rounds' edges four times closer to the faces (in edge tolerances). Rounds
+    close to the largest radius that fits fail with SM_API's tolerance (a 10 mm cube rounded by 4.98 came
+    out open) and are exact with the finer one, as SmApiCircularFillet builds them; the finer one fails
+    some rounds that the coarser builds, so it comes second. Selections the kernel cannot round at any size
+    (``SM_ERR_INVALID_INPUT``) are not tried again. The error is the first attempt's."""
+    try:
+        return attempt(4.0)
+    except ModelingError as first:  # (a KernelError too)
+        if isinstance(first, KernelError) and first.status == "SM_ERR_INVALID_INPUT":
+            raise
+        try:
+            return attempt(1.0)
+        except ModelingError:
+            raise first from first.__cause__
+
+
+def _round_failure(record: dict[str, Any], edges: Sequence[Edge]) -> str | None:
+    """What the kernel's fillet executive could not build, in words (from its record, see
+    ``ext.round_edges``): the corner at a vertex, the round of a selected edge, or the round at a point,
+    and why where it says; None where it recorded none."""
+    comment = str(record.get("comment") or "")
+    for prefix in ("Fillet Corner Error:", "Fillet Edge Error:", "Fillet Error:"):
+        if comment.startswith(prefix):
+            comment = comment[len(prefix):]
+    comment = comment.strip().rstrip(".").lower()
+    why = _ROUND_COMMENTS.get(comment, comment)
+    if record.get("vertex") is not None:
+        what = f"the corner at {_fmt_point(Vector(*record['vertex']))}"
+    elif 0 <= int(record.get("edge", -1)) < len(edges):
+        e = edges[int(record["edge"])]
+        what = (f"the round of the closed edge through {_fmt_point(e.start)}" if e.is_closed else
+                f"the round of the edge from {_fmt_point(e.start)} to {_fmt_point(e.end)}")
+    elif record.get("location") is not None:
+        what = f"the round at {_fmt_point(Vector(*record['location']))}"
+    else:
+        return None
+    return what + (f" ({why})" if why else "")
+
+
+def _round_edges(operation: str, hint: str, brep: Any, kedges: Sequence[Any], edges: Sequence[Edge],
+                 radii: Sequence[float], sections: Sequence[int], *, radii2: Sequence[float] = (),
+                 faces: Sequence[Any] = (), law: Sequence[float] = (), continuity: int = 1,
+                 thumbweight: float = 1.0, tolerance_factor: float = 4.0, mitre: bool = False) -> None:
+    """Round ``kedges`` of ``brep`` (a copy; ``edges`` are this part's edges they are) in place with
+    ``ext.round_edges`` (the kernel's fillet executive, as ``k.fillet_edges`` and its siblings drive it).
+    A failure raises :class:`KernelError` whose hint begins with the corner or edge the executive names
+    (``_where``, see :func:`_round_failure`), then ``hint``."""
+    with kernel_call(operation, hint):
+        record = ext.round_edges(brep, list(kedges), [float(r) for r in radii], [int(x) for x in sections],
+                                 [float(r) for r in radii2], list(faces), [float(r) for r in law], int(continuity),
+                                 float(thumbweight), float(tolerance_factor), bool(mitre))
+    status = record["status"]
+    if status is None:
+        return
+    where = _round_failure(record, edges)
+    detail = f"{operation} failed: {status}" + (f" ({record['comment']})" if record.get("comment") else "")
+    error = KernelError(operation, detail, status, f"the kernel could not build {where}; {hint}" if where else hint)
+    error._where = where  # type: ignore[attr-defined]
+    raise error
+
+
+def _straight_around(face: Face, center: Vector, axis: Vector, start: Vector, step: Vector, normal: Vector) -> bool:
+    """Whether ``face`` runs straight from ``start`` (on a circle about ``axis`` through ``center``) by
+    ``step``, with the ``normal`` it has at ``start``, all around the axis: a surface of revolution about
+    it whose meridian is straight there (sampled halfway and at the end, at four angles)."""
+    near = 1e-7 * max(start.distance_to(center), step.length, 1.0)
+
+    def turned(v: Vector, quarter: int) -> Vector:  # (by quarter turns about the axis)
+        along = axis * v.dot(axis)
+        across = v - along
+        return along + (across if quarter == 0 else axis.cross(across) if quarter == 1 else
+                        -across if quarter == 2 else -axis.cross(across))
+
+    for quarter in range(4):
+        n = turned(normal, quarter)
+        for k in (0.5, 1.0):
+            p = center + turned(start + step * k - center, quarter)
+            try:
+                if face.distance_to(p) > near or face.normal_at(p).dot(n) < 1.0 - 1e-9:
+                    return False
+            except (KernelError, ValueError):
+                return False
+    return True
+
+
+def _corner_style(operation: str, corners: str) -> bool:
+    """Whether ``corners`` (of :meth:`Part.fillet` or :meth:`Part.chamfer`) asks for mitred corners."""
+    if corners not in ("patch", "mitre"):
+        raise ValueError(f'{operation}: corners must be "patch" or "mitre", not {corners!r}')
+    return corners == "mitre"
+
+
+def _mitred_corners(edges: Sequence[Edge]) -> list[Vector]:
+    """The corners ``corners="mitre"`` mitres: where three of ``edges`` meet, all convex, and no other
+    edge (the kernel mitres those only: SmFilletConvexNxNCorner)."""
+    rounded = {e._identity() for e in edges}
+    seen: set[Any] = set()
+    out = []
+    for e in edges:
+        for v in e.vertices():
+            if v._identity() in seen:
+                continue
+            seen.add(v._identity())
+            at = v.edges()
+            if (len(at) == 3 and all(x._identity() in rounded for x in at)
+                    and all(x.convexity == "convex" for x in at)):
+                out.append(v.point)
+    return out
+
+
+def _require_mitred_corners(operation: str, edges: Sequence[Edge]) -> None:
+    """Raise where ``corners="mitre"`` would mitre no corner of the rounded ``edges``."""
+    if not _mitred_corners(edges):
+        raise ValueError(
+            f'{operation}: corners="mitre" mitres the corners where three rounded convex edges meet and no '
+            f"other edge, and the selection has none (round all three edges of a corner)")
 
 
 def _continuity(c: int | str | None) -> int | None:
@@ -4761,6 +5581,38 @@ class Shell(_Body):
         # in a copy of the process)
         b = _isolated("thicken", work)
         return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+
+    def offset(self, distance: float) -> Shell:
+        """The sheet moved by ``distance`` along its face normals (a negative distance against them):
+        each face offset, and where faces meet, extended or trimmed to meet again (sharp edges, as
+        :meth:`Part.offset`). 0 gives an equal copy. Faces that do not share their edges (separate
+        pieces, such as faces copied one by one) move each on its own; join them with
+        :func:`~smlibpy.stitch` first.
+
+        Results the kernel gets wrong (no faces, faces closer to the sheet than ``distance``, on its
+        other side, or nowhere at that distance from it) raise :class:`ModelingError`; so does an
+        offset beyond the radius of a concave curvature. The kernel step runs in a forked copy of
+        the process (Linux, macOS), as for :meth:`thicken`."""
+        from .defeature import _isolated
+
+        d = float(distance)
+        if not math.isfinite(d):
+            raise ValueError("offset: the distance must be a finite number")
+        if d == 0:
+            return self._like(self._copy_brep())
+        hint = ("the kernel cannot offset this sheet by that much (beyond the radius of a concave curvature, "
+                "or where faces vanish); use a smaller distance")
+
+        def work() -> Any:
+            with kernel_call("offset", hint):
+                return k.offset_brep(self._brep, d)  # (its defaults: the extended mode, with self-intersections)
+
+        result = Shell._wrap(_isolated("offset", work), name=self.name, color=self.color)
+        problem = _sheet_offset_problem(self, result, d)
+        if problem is not None:
+            raise ModelingError(f"offset: the kernel could not offset the sheet by {d:.6g} (it built {problem}); "
+                                f"{hint}")
+        return result
 
     def __add__(self, other: Any) -> Shell:
         h = BrepHandle(self._copy_brep())

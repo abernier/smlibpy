@@ -90,6 +90,7 @@ PYBIND11_MODULE(_core, m)
     bind_defeature(m);
     bind_draft(m);
     bind_face_draft(m);
+    bind_face_edit(m);
     bind_measure(m.attr("ext").cast<py::module_>());
     bind_fit(m.attr("ext").cast<py::module_>());
     bind_cells(m.attr("ext").cast<py::module_>());
@@ -102,4 +103,5 @@ PYBIND11_MODULE(_core, m)
     bind_analytics(m.attr("ext").cast<py::module_>());
     bind_shells(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
+    bind_fillet(m.attr("ext").cast<py::module_>());
 }

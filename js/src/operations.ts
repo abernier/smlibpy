@@ -11,6 +11,7 @@ import { Line } from './curves.ts'
 import {
   Edge,
   Face,
+  type ChamferOptions,
   type FilletOptions,
   type FilletRadius,
   Part,
@@ -592,10 +593,10 @@ export function fillet(edges: unknown, radius: FilletRadius, options: FilletOpti
 
 /** Bevel edges of the part they belong to (see `Part.chamfer`), or corners of the sketch they
  * belong to (see `Sketch.chamfer`). */
-export function chamfer(edges: unknown, length: number): Part | Sketch {
+export function chamfer(edges: unknown, length: number, options: ChamferOptions = {}): Part | Sketch {
   const sk = _ownerSketch(edges)
   if (sk !== null) return sk.chamfer(length, edges as Iterable<Vertex>)
-  return _ownerPart(edges).chamfer(edges, length)
+  return _ownerPart(edges).chamfer(edges, length, options)
 }
 
 /** The sketch that vertices belong to (null if the items are not vertices). */
@@ -617,16 +618,27 @@ function _ownerPart(items: unknown): Part {
 }
 
 /** Hollow out a part (see `Part.shell`). */
-export function shell(part: Part, thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+export function shell(
+  part: Part,
+  thickness: number,
+  openings: unknown = null,
+  options: { outward?: boolean; corners?: string | null; walls?: unknown } = {},
+): Part {
   _opts('shell', options)
   return part.shell(thickness, openings, options)
 }
 
-/** Grow or shrink a part or a sketch by `distance` (for a sketch also the option
- * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`). */
-export function offset(shape: Part | Sketch, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch {
+/** Grow or shrink a part or a sketch by `distance` (also the option `corners`: for a part
+ * `"sharp" | "round"`, see `Part.offset`; for a sketch `"round" | "sharp" | "chamfer"`, see
+ * `Sketch.offset`), or move a sheet or a face along its normals (`Shell.offset`, `Face.offset`: a
+ * sheet). */
+export function offset(shape: Part | Sketch | Shell | Face, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch | Shell {
   if (shape instanceof Sketch) return shape.offset(distance, options)
-  _opts('Part.offset', options) // (a part's offset takes none)
+  if (shape instanceof Part) return shape.offset(distance, options)
+  if (typeof (shape as Any)?.offset !== 'function') {
+    throw new TypeError(`offset takes a part, a sketch, a sheet (Shell) or a face, not a ${_typeName(shape)}`)
+  }
+  _opts('Shell.offset', options) // (the offset of a sheet or a face takes none)
   return shape.offset(distance)
 }
 
@@ -657,11 +669,13 @@ export function section(part: Part, plane: Plane | Face = Plane.XY): Sketch {
   return part.section(plane)
 }
 
-/** Turn a face or sheet into a solid of `thickness`. */
-export function thicken(surface: Shell | Face, thickness: number): Part {
+/** Turn a face or sheet into a solid of `thickness` (`both`: half of it to each side; see
+ * `Shell.thicken`). */
+export function thicken(surface: Shell | Face, thickness: number, options: { both?: boolean } = {}): Part {
+  _opts('thicken', options)
   if (surface instanceof Part || !(surface instanceof Shell || surface instanceof Face)) {
     throw new TypeError(`thicken takes a face or a sheet (Shell, Sketch), not a ${_typeName(surface)}; use shell() or offset() for parts`)
   }
   const sh = surface instanceof Face ? surface.toShell() : surface
-  return sh.thicken(thickness)
+  return sh.thicken(thickness, { both: options.both ?? false })
 }

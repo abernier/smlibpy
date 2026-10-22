@@ -67,6 +67,17 @@ The results are exact: the walls are planes, the volumes those of the frusta.
 - `ValueError: draft: the angle is 0; nothing to do`; `ValueError: draft: the angle must be between -90 and 90 degrees (got 90)`;
   `ValueError: draft: no faces selected`; `ValueError: draft: the neutral plane must be a Plane or a planar face; ...`
 
+## Two-sided draft (a parting line in the middle)
+A part molded in two halves is drafted away from the parting line on both sides. `draft` turns a
+face crossing the neutral plane as a whole (its lower part then leans the wrong way for the lower
+mold half). With a planar parting line: `split` the part there, draft each half about the plane
+(the lower half with the plane flipped, its pull direction), and fuse the halves. Exact:
+`Box(40, 30, 20)` about `Plane.XY`, 3 degrees: 23273.6153 (= 2 * integral of (40 - 2z tan 3)(30 -
+2z tan 3) over 0..10), 40 x 30 at the parting line, 38.952 x 28.952 at top and bottom;
+`draft_analysis(Z)` finds 3 degrees on the upper walls and -3 on the lower ones (they release
+towards the lower half). A stepped parting line needs a neutral plane per step: split the part
+at each step and draft each piece about its own plane before fusing them.
+
 ## Other ways
 - All side walls of a profile: `sketch.extrude(amount, taper=deg)`. Positive `taper` narrows
   away from the sketch: a `RoundedRectangle(60, 40, 5)` with `taper=3` over 20 is 57.904 wide at
@@ -107,6 +118,15 @@ core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)  # every side wall draft
 blk = Box(60, 40, 20)
 blk -= Rectangle(30, 20).on(blk.faces().top()).extrude(-10, taper=5)  # pocket 30x20 at the top, narrower at the bottom
 ```
+Both halves drafted away from a parting line in the middle:
+```python
+box = Box(40, 30, 20)
+upper, lower = box.split(Plane.XY, "both")
+side = lambda p: p.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+molded = upper.draft(side(upper), 3, Plane.XY) + lower.draft(side(lower), 3, Plane.XY.flipped())
+print(round(molded.volume, 4), len(molded.faces()))    # 23273.6153 10
+print(sorted(round(fd.min_angle, 4) for fd in molded.draft_analysis(Z)))   # [-90.0, -3.0 (x4), 3.0 (x4), 90.0]
+```
 One drafted wall with `split`:
 ```python
 wall = Box(40, 30, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -116,6 +136,7 @@ print(round(drafted.volume, 3))                         # 23475.068
 ```
 
 ## Related
-`extrude` (taper), `split`, `loft`, `fillet` (round after drafting); `analysis/draft_analysis`
+`extrude` (taper), `split`, `loft`, `fillet` (round after drafting), `move_faces` (tilt a face
+by a Location about any axis); `analysis/draft_analysis`
 measures the draft of every face, `analysis/parting_line` finds where the mold halves meet,
 `recipes/mold-check` puts it together.

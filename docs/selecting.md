@@ -53,6 +53,7 @@ part = part.fillet(seen.edges(), 2)
 | `perpendicular_to(axis)` | straight edges across an axis, planar faces containing it |
 | `facing(direction)` | faces whose outward normal points that way (on a curved face: everywhere) |
 | `convex()`, `concave()`, `smooth()` | edges on outside / inside corners, tangent edges |
+| `tangent_chain()` | the edges and the edges that continue them tangentially (what `fillet` rounds) |
 | `filter(predicate)` | anything you can test in Python |
 
 Face types are `plane`, `cylinder`, `cone`, `sphere`, `torus`, `revolution`, `extrusion`,

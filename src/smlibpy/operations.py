@@ -552,13 +552,13 @@ def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **
     return _owner_part(edges).fillet(edges, radius, **kwargs)
 
 
-def chamfer(edges: Any, length: float) -> Part | Sketch:
+def chamfer(edges: Any, length: float, **kwargs: Any) -> Part | Sketch:
     """Bevel edges of the part they belong to (see :meth:`Part.chamfer`), or corners of the
     sketch they belong to (see :meth:`Sketch.chamfer`)."""
     sk = _owner_sketch(edges)
     if sk is not None:
         return sk.chamfer(length, edges)
-    return _owner_part(edges).chamfer(edges, length)
+    return _owner_part(edges).chamfer(edges, length, **kwargs)
 
 
 def _owner_sketch(items: Any) -> Sketch | None:
@@ -583,14 +583,19 @@ def _owner_part(items: Any) -> Part:
     return owner
 
 
-def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
+def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
+          walls: Any = None) -> Part:
     """Hollow out a part (see :meth:`Part.shell`)."""
-    return part.shell(thickness, openings, outward=outward)
+    return part.shell(thickness, openings, outward=outward, corners=corners, walls=walls)
 
 
-def offset(shape: Part | Sketch, distance: float, **kwargs: Any) -> Any:
-    """Grow or shrink a part or a sketch by ``distance`` (for a sketch also
-    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`)."""
+def offset(shape: Part | Sketch | Shell | Face, distance: float, **kwargs: Any) -> Any:
+    """Grow or shrink a part or a sketch by ``distance`` (also ``corners``: for a part
+    ``"sharp" | "round"``, see :meth:`Part.offset`; for a sketch ``"round" | "sharp" | "chamfer"``,
+    see :meth:`Sketch.offset`), or move a sheet or a face along its normals (:meth:`Shell.offset`,
+    :meth:`Face.offset`: a sheet)."""
+    if not callable(getattr(shape, "offset", None)):
+        raise TypeError(f"offset takes a part, a sketch, a sheet (Shell) or a face, not a {type(shape).__name__}")
     return shape.offset(distance, **kwargs)
 
 
@@ -622,10 +627,11 @@ def section(part: Part, plane: Plane | Face = Plane.XY) -> Sketch:
     return part.section(plane)
 
 
-def thicken(surface: Shell | Face, thickness: float) -> Part:
-    """Turn a face or sheet into a solid of ``thickness``."""
+def thicken(surface: Shell | Face, thickness: float, *, both: bool = False) -> Part:
+    """Turn a face or sheet into a solid of ``thickness`` (``both``: half of it to each side; see
+    :meth:`Shell.thicken`)."""
     if isinstance(surface, Part) or not isinstance(surface, (Shell, Face)):
         raise TypeError(f"thicken takes a face or a sheet (Shell, Sketch), not a {type(surface).__name__}; "
                         f"use shell() or offset() for parts")
     sh = surface.to_shell() if isinstance(surface, Face) else surface
-    return sh.thicken(thickness)
+    return sh.thicken(thickness, both=both)

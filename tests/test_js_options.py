@@ -32,4 +32,5 @@ def test_the_table_has_the_keyword_only_parameters_in_camel_case():
     assert table["Polyline"] == (-1, ["close"])  # (*points)
     assert table["toStl"] == (1, ["tolerance", "angle", "ascii"])  # export_stl without its path
     assert table["exportGltf"][1] == ["tolerance", "angle", "edges", "edgeColor"]  # (**kwargs passed on)
-    assert "Part.offset" not in table  # (no keyword-only parameters: it takes no options)
+    assert table["Part.offset"] == (1, ["corners"])
+    assert "Part.split" not in table  # (no keyword-only parameters: it takes no options)

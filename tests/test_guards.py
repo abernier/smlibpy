@@ -170,8 +170,11 @@ def test_fillet_close_to_the_limit_is_refused():
     for r in (4, 4.97):
         p = cube.fillet(cube.edges(), r)
         assert p.is_valid() and p.volume == approx(_rounded_cube(10, r), rel=1e-6)
-    with pytest.raises(ModelingError):
-        Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 9.98)
+    # closer to the limit the kernel's rounds come out open with SM_API's approximation tolerance;
+    # smlibpy tries again with a finer one (0.5.0: these raised)
+    for s, r in ((10, 4.98), (20, 9.98)):
+        p = Box(s, s, s).fillet(Box(s, s, s).edges(), r)
+        assert p.is_valid() and p.volume == approx(_rounded_cube(s, r), rel=1e-6)
 
 
 def test_round_sizes_must_be_positive():
@@ -191,15 +194,16 @@ def test_rounds_on_circular_edges_pass_the_volume_check():
 
 def test_rounds_that_run_on_past_their_edge_pass_the_volume_check():
     # The kernel extends a round past an end where the edge runs on into one that is not
-    # rounded (tangentially, or at a kink); these were refused as "wrong bodies".
+    # rounded (tangentially, or at a kink); these were refused as "wrong bodies". (Tangential
+    # run-ons only without propagate: with it the round follows the run.)
     p = Box(80, 50, 10) + Box(10, 50, 60).translate(-35, 0, 35)
     p = p - Cylinder(6, 100).rotate(Y, 90).translate(0, 0, 45)
     p = p.fillet(p.edges().filter_by(Y), 2)
-    bracket = p.chamfer(p.edges().group_by(Z)[-1], 1)  # into the arcs of the rounds below
+    bracket = p.chamfer(p.edges().group_by(Z)[-1], 1, propagate=False)  # into the arcs of the rounds below
     assert bracket.is_valid() and bracket.volume == approx(68689.3316, rel=1e-6)
     b = Box(40, 20, 10)
     b = b.fillet(b.edges().filter_by(Z), 4)
-    block = b.fillet(b.edges().group_by(Z)[-1].lines().sort_by(X)[-1], 1)  # into the corner arcs
+    block = b.fillet(b.edges().group_by(Z)[-1].lines().sort_by(X)[-1], 1, propagate=False)  # into the corner arcs
     assert block.is_valid() and block.volume == approx(7859.5722, rel=1e-6)
     prism = RegularPolygon(20, 24).extrude(10)
     kinked = prism.fillet(prism.edges().group_by(Z)[-1].sort_by(X)[-1], 1)  # 15 degree kinks

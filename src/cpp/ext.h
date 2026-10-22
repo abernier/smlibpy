@@ -22,6 +22,8 @@ void bind_defeature(py::module_& m);
 void bind_draft(py::module_& m);
 // Face drafts with SmBrep::LocalOperation (face_draft.cpp), registered as `_core.face_draft`.
 void bind_face_draft(py::module_& m);
+// Faces moved and offset with SmBrep::LocalOperation (face_edit.cpp), registered as `_core.face_edit`.
+void bind_face_edit(py::module_& m);
 
 // Areas, volumes, moments and curve lengths with an error bound (measure.cpp).
 void bind_measure(py::module_ m);
@@ -49,3 +51,5 @@ void bind_face_attrs(py::module_ m);
 void bind_analytics(py::module_ m);
 // The shells of a body: outside, cavities, cells (shells.cpp).
 void bind_shells(py::module_ m);
+// Fillets and chamfers with the fillet executive's record of a failure (fillet.cpp).
+void bind_fillet(py::module_ m);

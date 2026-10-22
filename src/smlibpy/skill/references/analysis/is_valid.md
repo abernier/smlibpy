@@ -31,9 +31,9 @@ measure. The same integration measures the gaps between the faces: it integrates
 with three fields, which agree only for faces that meet. Inside-out bodies, bodies without
 volume and bodies whose faces leave gaps that make the volume uncertain by 1e-2 of its value
 or more (a Boolean result that left a face out: 0.25) are not valid. Faces that the kernel
-fitted meet only to within about 1e-6 to 2e-5 mm (B-spline chamfers, shells of curved
-faces); such a body is valid, and its volume is defined only to 1e-7 to 4e-6 of its value
-(see `generic`).
+fitted meet only to within about 1e-6 to 2e-5 mm (fitted chamfers and blends, shells of curved
+faces); such a body is valid, and its volume is defined only to 1e-7 to 1e-5 of its value (the
+smaller the part, the more; see `generic`).
 
 | Body | `is_valid()` | Volume |
 |---|---|---|

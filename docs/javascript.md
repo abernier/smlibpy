@@ -385,6 +385,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     convex(): ShapeList<T>;
     concave(): ShapeList<T>;
     smooth(): ShapeList<T>;
+    tangentChain(): ShapeList<Edge>;
     fillets(maxRadius?: number | null): ShapeList<T>;
     hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
@@ -451,6 +452,7 @@ export class Edge extends Shape {
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
+    tangentChain(): ShapeList<Edge>;
     reversed(): Edge;
     nurbs(): Nurbs;
     removeKnots(): Edge;
@@ -510,6 +512,7 @@ export class Face extends Shape {
     neighbors(): ShapeList<Face>;
     toSketch(): Sketch;
     toShell(): Shell;
+    offset(distance: number): Shell;
     extrude(amount: number, options?: ExtrudeOptions): Part;
     equals(other: unknown): boolean;
     toString(): string;
@@ -540,6 +543,15 @@ export class MassProperties {
 export interface FilletOptions {
     continuity?: number | string | null;
     fullness?: number;
+    propagate?: boolean;
+    corners?: string;
+}
+export interface ChamferOptions {
+    length2?: number | null;
+    angle?: number | null;
+    reference?: unknown;
+    propagate?: boolean;
+    corners?: string;
 }
 export class Part extends _Body {
     get volume(): number;
@@ -575,9 +587,14 @@ export class Part extends _Body {
     intersect(sheet: Shell | Face): Shell;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
     fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part;
-    chamfer(edges: unknown, length: number): Part;
+    chamfer(edges: unknown, length: number, options?: ChamferOptions): Part;
     shell(thickness: number, openings?: unknown, options?: {
         outward?: boolean;
+        corners?: string | null;
+        walls?: unknown;
+    }): Part;
+    offset(distance: number, options?: {
+        corners?: string;
     }): Part;
     offset(distance: number): Part;
     split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'above' | 'below'): Part;
@@ -603,6 +620,8 @@ export class Part extends _Body {
     }): DraftAnalysis;
     partingLine(direction: Axis | VectorLike): ShapeList<Wire>;
     draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part;
+    moveFaces(faces: unknown, by: Location | VectorLike): Part;
+    offsetFaces(faces: unknown, distance: number): Part;
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
     flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
     bends(options?: {
@@ -618,6 +637,7 @@ export class Shell extends _Body {
     thicken(thickness: number, options?: {
         both?: boolean;
     }): Part;
+    offset(distance: number): Shell;
     fuse(...others: unknown[]): Shell;
     cut(...others: unknown[]): Shell;
     intersect(...others: unknown[]): Shell;
@@ -851,19 +871,23 @@ export interface SweepOptions {
 }
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
 export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;
-export function chamfer(edges: unknown, length: number): Part | Sketch;
+export function chamfer(edges: unknown, length: number, options?: ChamferOptions): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {
     outward?: boolean;
+    corners?: string | null;
+    walls?: unknown;
 }): Part;
-export function offset(shape: Part | Sketch, distance: number, options?: {
+export function offset(shape: Part | Sketch | Shell | Face, distance: number, options?: {
     corners?: string;
     round?: boolean | null;
-}): Part | Sketch;
+}): Part | Sketch | Shell;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
 export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
-export function thicken(surface: Shell | Face, thickness: number): Part;
+export function thicken(surface: Shell | Face, thickness: number, options?: {
+    both?: boolean;
+}): Part;
 export let GUARD_SECONDS: number;
 export function setGuardSeconds(seconds: number): number;
 ```

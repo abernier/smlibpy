@@ -99,6 +99,27 @@ print(round(inside.area + outside.area - sheet.area, 9))   # 0.0
 `part & sheet` is `sheet & part`; `part + sheet` and `part - sheet` raise `TypeError` (a sheet
 encloses no volume: split the part, or `imprint` the sheet's lines into its faces).
 
+## Offset surfaces
+
+`offset` moves a sheet along its face normals and keeps it a sheet: the inner skin of a molded
+panel, a clearance surface, a tool path surface. Where faces meet, they are extended or trimmed
+to meet again, as `Part.offset` does; a face of a part gives a sheet of its offset surface.
+
+```python
+skin = extrude(CenterArc((0, 0), 10, 0, 180), 20)       # normals point away from the axis
+print(round(skin.offset(2).area, 4))                    # 753.9822 = pi * 12 * 20
+cup = stitch([f for f in Box(20, 20, 20).faces() if f.normal_at().z < 0.5])
+print(round(cup.offset(-1).area, 1))                    # 1692.0: 18 x 18 and four 18 x 19
+lid = Box(20, 20, 20).faces().top().one().offset(5)     # the top face's copy, 5 above it
+```
+
+The faces must share their edges to move together; join separate faces with `stitch` first.
+smlibpy checks the result: every face at the distance from the sheet, on the side the distance
+points to. An offset beyond the radius of a concave curvature raises `ModelingError`.
+
+`thicken` and the function `thicken(surface, t, both=True)` make a solid of a sheet instead:
+`both` puts half of the thickness on each side.
+
 ## Blends between surfaces
 
 `fillet` rounds the edges of a part. Two sheets that are no part of one body, two crossing

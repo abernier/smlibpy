@@ -19,6 +19,8 @@
 #include "analytics.h"
 #include "face_attrs.h"
 #include "face_draft.h"
+#include "face_edit.h"
+#include "fillet.h"
 #include "fit.h"
 #include "history.h"
 #include "measure.h"
@@ -674,6 +676,69 @@ val face_attrs(uintptr_t b) { return guard([&] { return to_js(smlibpy::face_attr
 // the copy (the caller's) or null
 val recognize_analytics(uintptr_t b, double tolerance) { return guard([&] { return owned_or_null(smlibpy::recognize_analytics(brep(b), tolerance)); }); }
 val brep_shells(uintptr_t b) { return guard([&] { return to_js(smlibpy::brep_shells(brep(b))); }); }
+// ---------------------------------------------------------------- face_edit
+val edit_faces(uintptr_t b, val faces, val matrices, val distances, bool grow, double tangency_deg)
+{
+    return guard([&] {
+        const smlibpy::FaceEdit r = smlibpy::edit_faces(brep(b), pointers<SmFace>(faces), numbers(matrices), numbers(distances), grow, tangency_deg);
+        auto pair = [](const double* v) {
+            val a = val::array();
+            a.call<void>("push", v[0]);
+            a.call<void>("push", v[1]);
+            return a;
+        };
+        val d = val::object();
+        d.set("brep", owned_or_null(r.brep));
+        d.set("error", r.error.empty() ? val::null() : val(r.error));
+        d.set("face", static_cast<double>(r.face));
+        d.set("other", r.other ? val(ptr(r.other)) : val::null());
+        d.set("added", pointer_array(r.added));
+        d.set("gaps", r.has_gaps ? pair(r.gaps) : val::null());
+        d.set("gaps_before", r.has_gaps_before ? pair(r.gaps_before) : val::null());
+        d.set("tolerance", r.tolerance);
+        if (r.has_restored)
+            d.set("restored", static_cast<double>(r.restored));
+        return d;
+    });
+}
+
+// ---------------------------------------------------------------- ext: fillets and chamfers
+// As Python's ext.round_edges: the Brep changes in place; the result says how the executive failed.
+val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val faces, val law, int continuity,
+                double thumbweight, double tolerance_factor, bool mitre)
+{
+    return guard([&] {
+        smlibpy::RoundSpec spec;
+        spec.edges = pointers<SmEdge>(edges);
+        spec.radii = numbers(radii);
+        for (double s : numbers(sections))
+            spec.sections.push_back(static_cast<int>(s));
+        spec.radii2 = numbers(radii2);
+        spec.faces = pointers<SmFace>(faces);
+        const std::vector<double> l = numbers(law);
+        if (!l.empty())
+        {
+            if (l.size() != 2)
+                throw std::invalid_argument("round_edges: law is (start radius, end radius)");
+            spec.law = true, spec.start_radius = l[0], spec.end_radius = l[1];
+        }
+        spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
+        spec.mitre = mitre;
+        SmPyErrorTrail::clear();
+        const smlibpy::Rounded r = smlibpy::round_edges(brep(b), spec);
+        auto point = [](bool has, const double* p) { return has ? vec3(SmVector3d(p[0], p[1], p[2])) : val::null(); };
+        val d = val::object();
+        d.set("status", r.status ? val(std::string(sm_status_name(static_cast<SmStatus>(r.status)))) : val::null());
+        d.set("error", r.error);
+        d.set("edge", static_cast<double>(r.edge));
+        d.set("vertex", point(r.has_vertex, r.vertex));
+        d.set("location", point(r.has_location, r.location));
+        d.set("corner", r.corner);
+        d.set("comment", r.comment);
+        d.set("mitred", static_cast<double>(r.mitred));
+        return d;
+    });
+}
 
 }  // namespace
 
@@ -902,6 +967,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__recognize_analytics", &recognize_analytics);
     function("ext__brep_shells", &brep_shells);
     function("ext__void_shells", &void_shells);
+    function("ext__round_edges", &round_edges);
 
     function("sheetmetal__bend", &bend);
     function("sheetmetal__unbend", &unbend);
@@ -918,4 +984,5 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("draft__face_draft_range", &face_draft_range);
     function("draft__split_at_silhouettes", &split_at_silhouettes);
     function("face_draft__draft_faces", &draft_faces);
+    function("face_edit__edit_faces", &edit_faces);
 }

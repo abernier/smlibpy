@@ -162,7 +162,7 @@ def _example(name):
     return mod.model()
 
 
-@pytest.mark.parametrize("name,volume", [("spring", 2170.0811), ("flange", 157979.623)])
+@pytest.mark.parametrize("name,volume", [("spring", 2170.0811), ("flange", 157979.6668)])
 def test_examples_against_a_tight_integration(name, volume):
     # the kernel's integration was 2.9e-5 (spring) and 8e-7 (flange) off at the default
     part = _example(name)

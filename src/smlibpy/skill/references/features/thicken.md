@@ -4,12 +4,12 @@ Turns a surface (a `Shell`, a `Sketch`, or one face) into a solid of constant th
 
 ## Signature
 `shell.thicken(thickness, *, both=False)` (also on a `Sketch`, which is a sheet)
-`thicken(surface, thickness)` (a `Shell`, `Sketch` or `Face`; a part's face is copied first)
+`thicken(surface, thickness, *, both=False)` (a `Shell`, `Sketch` or `Face`; a part's face is copied first)
 
 - `thickness`: along the face normal; negative goes to the other side. Not zero.
-- `both=True` (method only): the total thickness centered on the sheet:
-  `Rectangle(20, 10).thicken(2, both=True)` spans z -1..1 (volume 400). The `thicken()`
-  function has no `both`.
+- `both=True`: the total thickness centered on the sheet:
+  `Rectangle(20, 10).thicken(2, both=True)` spans z -1..1 (volume 400); the function takes it too
+  (`thicken(face, 2, both=True)`).
 
 ## Returns
 A `Part`. Planar: exact `area * t`. Curved: exact offset volume (a half-cylinder sheet r10,
@@ -56,4 +56,5 @@ print(round(wall.volume, 2))                            # 1382.3 = pi*(12^2 - 10
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `extrude` (open curves make sheets), `offset`, `shell`.
+`surface`, `ruled`, `stitch`, `extrude` (open curves make sheets), `offset` (a sheet moved along
+its normals stays a sheet: `sheet.offset(d)`), `shell`.

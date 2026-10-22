@@ -29,6 +29,12 @@
 //   crossing holes, such as Cylinder(3, 40).translate(0, 3, 0) +
 //   Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3), read freed memory (AddressSanitizer) and
 //   crashed the process.
+//   SmEdgeDefinition::Imprint deletes, when SmBrep::MakeEdgeInFace fails, only the curves the
+//   Brep did not take (those without an owner; for Brep 2 also the copy of the curve and the UV
+//   curve it was passed). MakeEdgeInFace can fail after it gave the curve
+//   to a new Edge, and the next Boolean read the freed curve of that Edge (AddressSanitizer: a
+//   read of freed memory in SmEdge::CalculateBoundingBox): shells and offsets in the extended
+//   mode crashed the process now and then, such as the filleted boxes of issue #2.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1397,6 +1403,23 @@ SmBoolean SmEdgeDefinition::IsInteriorPoint(
 
 
 /*******************************************************************//**
+PURPOSE: smlibpy patch: forget a curve of an EdgeDefinition that a Brep took.
+
+USAGE NOTES----
+   SmBrep::MakeEdgeInFace() gives the curves it is passed to the new Edge and its Edgeuses
+   (SetCurve(), SetOwner()) before it links the Edge into the Face's loops, and it can fail
+   after that: the Edge then stays in the Brep with those curves. A curve with an owner
+   belongs to a Brep, also after such a failure, and must not be deleted with the
+   EdgeDefinition (Destruct()). The curves an EdgeDefinition makes are copies, which have no
+   owner until a Brep takes them.
+***********************************************************************/
+static void sm_ForgetCurveOfBrep( SmCurve *& rpCurve )
+{
+  if(rpCurve != NULL && rpCurve->GetOwner() != NULL )
+    { rpCurve = NULL; }
+}
+
+/*******************************************************************//**
 PURPOSE: Imprint this EdgeDefinition into both Breps.
 
 USAGE NOTES---- 
@@ -1495,6 +1518,13 @@ static int iDebugMe2=0;
 
       if(eStat != SM_SUCCESS )
       {
+          // smlibpy patch: only the curves Brep1 did not take (see sm_ForgetCurveOfBrep). It may
+          // have made an Edge of m_pXSectCurve3d before it failed, and Destruct() deleted that
+          // Edge's curve: the next Boolean read it (a read of freed memory in
+          // SmEdge::CalculateBoundingBox, AddressSanitizer), and shells and offsets in the extended
+          // mode crashed the process now and then, such as issue #2's filleted boxes.
+          sm_ForgetCurveOfBrep( m_pXSectCurve3d) ;
+          sm_ForgetCurveOfBrep( m_pXSectUVCurve1) ;
           this->Destruct(); // Get rid of our curves, which were not consumed.
           SER( eStat) ;
       }
@@ -1578,7 +1608,12 @@ static int iDebugMe2=0;
           m_pXSectCurve3d = m_pXSectUVCurve1 = NULL;
 
           // We also have to delete the copy, which would have gone into Brep2.
-          delete pCopyCurve; pCopyCurve = NULL;
+          // smlibpy patch: unless Brep2 took it, or m_pXSectUVCurve2, before it failed (as for
+          // Brep1 above; the caller Destruct()s this EdgeDefinition).
+          if(pCopyCurve != NULL && pCopyCurve->GetOwner() == NULL )
+            { delete pCopyCurve; }
+          pCopyCurve = NULL;
+          sm_ForgetCurveOfBrep( m_pXSectUVCurve2) ;
 
           SER( eStat) ;
       }

@@ -299,7 +299,13 @@ test('a fillet close to the limit is refused', () => {
     assert.ok(p.isValid())
     approx(p.volume, roundedCube(10, r), 1e-6)
   }
-  assert.throws(() => Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 9.98), ModelingError)
+  // closer to the limit the kernel's rounds come out open with SM_API's approximation tolerance;
+  // smlibwasm tries again with a finer one (0.5.0: these threw)
+  for (const [s, r] of [[10, 4.98], [20, 9.98]]) {
+    const p = Box(s, s, s).fillet(Box(s, s, s).edges(), r)
+    assert.ok(p.isValid())
+    approx(p.volume, roundedCube(s, r), 1e-6)
+  }
 })
 
 test('round sizes must be positive', () => {
@@ -317,18 +323,19 @@ test('rounds on circular edges pass the volume check', () => {
 
 test('rounds that run on past their edge pass the volume check', () => {
   // The kernel extends a round past an end where the edge runs on into one that is not rounded
-  // (tangentially, or at a kink); these were refused as "wrong bodies".
+  // (tangentially, or at a kink); these were refused as "wrong bodies". (Tangential run-ons only
+  // without propagate: with it the round follows the run.)
   let p = Box(80, 50, 10).fuse(Box(10, 50, 60).translate(-35, 0, 35))
   p = p.cut(Cylinder(6, 100).rotate(Y, 90).translate(0, 0, 45))
   p = p.fillet(p.edges().filterBy(Y), 2)
   const groups = p.edges().groupBy(Z)
-  const bracket = p.chamfer(groups[groups.length - 1], 1) // into the arcs of the rounds below
+  const bracket = p.chamfer(groups[groups.length - 1], 1, { propagate: false }) // into the arcs of the rounds below
   assert.ok(bracket.isValid())
   approx(bracket.volume, 68689.3316, 1e-6)
   let b = Box(40, 20, 10)
   b = b.fillet(b.edges().filterBy(Z), 4)
   const top = b.edges().groupBy(Z)
-  const block = b.fillet(top[top.length - 1].lines().sortBy(X).last, 1) // into the corner arcs
+  const block = b.fillet(top[top.length - 1].lines().sortBy(X).last, 1, { propagate: false }) // into the corner arcs
   assert.ok(block.isValid())
   approx(block.volume, 7859.5722, 1e-6)
   const prism = RegularPolygon(20, 24).extrude(10)
