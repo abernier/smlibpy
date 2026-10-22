@@ -177,6 +177,38 @@ blob = make_face(Spline((0, 0), (10, 5), (0, 10), (-10, 5), closed=True))
 The curve constructors (`Line`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `TangentArc`,
 `Spline`, `Bezier`, ...) are described in the curves guide.
 
+## Cutting, joining and extending curves
+
+Edges and wires are cut where they meet other shapes, trimmed, extended and joined. Positions
+along an edge are fractions of its length, as `point_at` takes them, or points on it; the
+pieces keep their curve, so a trimmed arc is still an arc with its radius and center.
+
+```python
+s = Spline((0, 0), (10, 10), (20, 0))
+x = s.intersections(Line((0, 4), (20, 4)))       # [(2.254, 4, 0), (17.746, 4, 0)]
+left, rest = s.split(x[0])                        # the lengths add up to s.length
+middle = s.trim(x[0], x[1])                       # the arch between the two crossings
+s.param_at(x[0]), s.closest_point((10, 20))      # 0.1553, (10, 10, 0)
+
+arc = CenterArc((0, 0), 10, 0, 180).trim(0.25, 0.75)    # an arc from 45 to 135 degrees
+longer = Line((0, 0), (10, 0)).extend(2, end="both")   # (-2, 0) to (12, 0)
+runout = s.extend(5, end="both", continuity="G1")       # straight on along the end tangents
+
+rail = FilletPolyline((0, 0), (30, 0), (30, 20), radius=5).to_edge()   # one B-spline edge
+a, b = Polyline((0, 0), (10, 0), (10, 10)).split(0.25)  # 5 and 15 long
+```
+
+- `intersections(other)` takes an edge, a wire, a face, a body or a list of them, and gives the
+  points in order along the edge; `intersection_params(other)` gives their fractions, ready for
+  `split` and `trim`. Where two curves run along each other, the overlap's two ends count. No
+  point is an empty list. Points within `tolerance` (1e-6, or 1e-9 of the size of the two
+  where that is larger) count as on the other shape and as one point.
+- `extend` continues lines and arcs (circles, ellipses) as themselves, other curves straight
+  along the end tangent (`continuity="G1"`), with the end curvature (`"G2"`) or as their own
+  polynomial goes on (`"natural"`), by exactly the distance given.
+- `Wire.to_edge()` joins edges that run end to end into one B-spline: a single rail for `sweep`
+  and `loft`, a single SPLINE in DXF.
+
 ## Placing a sketch
 
 Sketches move like any shape. Usually they go onto a plane or onto a face of a part:

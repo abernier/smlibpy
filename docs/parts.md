@@ -87,6 +87,10 @@ elbow = sweep(Circle(4), Wire([Line((0, 0, 0), (0, 0, 20)),
 `translational=True` keeps the profile's orientation fixed along the path instead of turning
 it.
 
+A `Helix` takes any number of turns: the kernel fits up to 120 in one go, longer ones in pieces
+of whole turns joined into one edge (`Helix(2, 400, 20)`, 200 turns, is 25135.87 long against
+25135.92 for the exact helix). Sweeps along a helix of radius 20 work up to about 60 turns.
+
 ## Booleans and patterns
 
 ```python

@@ -33,6 +33,10 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 | `plane()` | fitted plane; normal by the right-hand rule along the travel (ccw in XY: +Z, cw: -Z) |
 | `fillet(radius, vertices=None)` | rounds corners between two straight edges (below) |
 | `to_sketch()` | the region inside a closed planar wire (same as `make_face(wire)`) |
+| `split(at)` | `(before, after)` at a fraction of the length or a point; at a vertex the edges stay whole |
+| `trim(start, end)` | the part between two fractions or points |
+| `intersections(other, tolerance=None)` | points where it meets an edge, wire, face or body, in order; a point at a joint once |
+| `to_edge()` | one B-spline edge through all edges (they must meet within 1e-6) |
 
 ## fillet
 - Rounds every corner where two `line` edges meet, with tangent arcs of `radius`. Open
@@ -58,6 +62,14 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
   of the whole outline.
 - `extrude(list_of_edges, h)` raises TypeError; wrap the list: `extrude(Wire(edges), h)`.
   `make_face(list_of_edges)` works.
+
+## to_edge
+- Joins the curves into one B-spline (`SmBSplineCurve::CreateByJoining`): the same length and
+  points, one edge. At tangent joints the edge is smooth; at a corner it keeps the corner.
+- One edge is a single sweep or loft rail and a single SPLINE in DXF:
+  `sweep(Circle(1), FilletPolyline((0, 0, 0), (30, 0, 0), (30, 20, 10), radius=5).to_edge())`.
+- A gap above 1e-6 raises `ValueError: to_edge: the edges do not meet: a gap of ...`. A wire of
+  one edge returns that edge.
 
 ## Errors
 - `ValueError: a wire needs at least one edge` for `Wire([])`.

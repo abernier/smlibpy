@@ -345,7 +345,8 @@ export function Bezier(...args: (VectorLike | readonly VectorLike[] | { weights?
  * A helix around `direction` through `center`.
  *
  * `direction` is a vector or an axis (only its direction counts; `center` places the helix).
- * `endRadius` makes a conical helix; `pitch` is the rise per turn.
+ * `endRadius` makes a conical helix; `pitch` is the rise per turn. Any number of turns: beyond 120
+ * the helix is fitted in pieces of whole turns, joined into one curve.
  */
 export function Helix(
   pitch: number,
@@ -357,11 +358,36 @@ export function Helix(
   const { center = [0, 0, 0], direction = [0, 0, 1], endRadius = null, leftHanded = false } = options
   if (pitch <= 0 || height <= 0 || radius <= 0) throw new RangeError('pitch, height and radius must be positive')
   const turns = height / pitch
-  const curve = kernelCall('Helix', () =>
-    k.create_helix([0, 0, 0], Number(height), Number(radius), Number(endRadius ?? radius), Number(turns), { right_handed: !leftHanded }),
-  )
+  const r1 = Number(endRadius ?? radius)
+  const curve = kernelCall('Helix', () => _helixCurve(Number(pitch), Number(height), Number(radius), r1, Number(turns), !leftHanded))
   const plane = new Plane(_vec(center), null, _direction(direction, 'Helix'))
   return Edge._fromCurve(_transformCurve(curve, plane.location._m))
+}
+
+const _HELIX_PIECE_TURNS = 100 // (the kernel fits at most 124.25 turns in one go)
+
+/** The kernel's helix along +Z from the origin; above 120 turns, pieces of whole turns (each starts
+ * where the one before ends, on +X) joined into one B-spline. The caller owns the curve. */
+function _helixCurve(pitch: number, height: number, r0: number, r1: number, turns: number, rightHanded: boolean): number {
+  if (turns <= 120) return k.create_helix([0, 0, 0], height, r0, r1, turns, { right_handed: rightHanded })
+  const counts: number[] = new Array(Math.floor(turns / _HELIX_PIECE_TURNS)).fill(_HELIX_PIECE_TURNS)
+  const rest = turns - _HELIX_PIECE_TURNS * counts.length
+  if (rest >= 1) counts.push(rest)
+  else counts[counts.length - 1] += rest // (no sliver of a turn at the end)
+  const pieces: number[] = []
+  try {
+    let z = 0
+    counts.forEach((n, i) => {
+      const h = i === counts.length - 1 ? height - z : n * pitch // (the last one ends at the height exactly)
+      const ra = r0 + ((r1 - r0) * z) / height
+      const rb = r0 + ((r1 - r0) * (z + h)) / height
+      pieces.push(k.create_helix([0, 0, z], h, ra, rb, n, { right_handed: rightHanded }))
+      z += h
+    })
+    return ext.join_curves(pieces)
+  } finally {
+    for (const c of pieces) ext.delete_curve(c)
+  }
 }
 
 /** A polyline whose corners are rounded with `radius`:

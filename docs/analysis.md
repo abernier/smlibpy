@@ -133,7 +133,17 @@ Sphere(10).silhouette((0, 0, 1))            # outline seen along a direction
 box.project(CenterArc((0, 0, 30), 5, 0, 360), (0, 0, -1))   # curve onto the faces below
 box.outline(Plane.XZ)                       # edges projected to a plane
 Line((0, 0), (10, 10)).intersections(Line((0, 10), (10, 0)))  # [Vector(5, 5, 0)]
+Line((0, 0, -20), (0, 0, 20)).intersections(box)              # where it enters and leaves the box
+Line((0, 0, -20), (0, 0, 20)).intersection_params(box)        # [0.25, 0.75] along the line
 ```
+
+`intersections` of an edge or a wire takes edges, wires, faces and bodies, gives the points in
+order along the edge, and an empty list where there are none. A point counts when it lies within
+`tolerance` of the other shape: 1e-6 by default, or 1e-9 of the size of the two where that is
+larger, so lines that miss each other by 0.0005 do not cross. Where two curves overlap, the
+overlap's two ends count; where an edge lies on a face, the points where it starts and stops
+lying on the face. `self_intersections()` gives the points where an edge crosses itself.
+`closest_point(p)` and `param_at(p)` give the nearest point of an edge and its fraction along it.
 
 ## Draft and parting lines
 

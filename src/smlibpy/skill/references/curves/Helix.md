@@ -41,12 +41,16 @@ thread = sweep(tooth, Helix(pitch=2, height=16, radius=5.6, center=(0, 0, 2)))
 screw = rod + thread                                                   # valid, one solid
 ```
 
+## Long helices
+Any number of turns works. Up to 120 turns the kernel fits the helix in one go; beyond that
+it is fitted in pieces of 100 whole turns, joined into one edge (tangent at the joints, within
+1e-6 rad): `Helix(2, 400, 20)` (200 turns) is one `bspline` edge, 25135.87 long against 25135.92
+for the exact helix, radius within 1e-4. No manual chaining.
+
+Sweeps have a limit of their own: `sweep(Circle(1.2), Helix(3, 3 * n, 20))` works for 60 turns
+and fails for 100 (`profile may be too large for the path's curvature`).
+
 ## Gotchas
-- **Long helices fail.** About 26 turns at radius 50, 32 at radius 20, 46 at radius 5 and
-  58 at radius 2 are the most that work; beyond that `KernelError: Helix failed
-  (SM_ERR_NOT_WITHIN_TOLERANCE)`. Chain helices of whole turns; the joints are tangent and
-  `sweep` handles the wire:
-  `Wire([Helix(1, 30, 5), Helix(1, 30, 5, center=(0, 0, 30))])`.
 - `part.bbox()` of a body swept along a helix can be about 0.1 mm too large. Check sizes with
   vertices or `distance_to`.
 - `end_radius=0` (a cone to a point) fails; use a small positive radius.
@@ -54,8 +58,7 @@ screw = rod + thread                                                   # valid, 
 
 ## Errors
 - `ValueError: pitch, height and radius must be positive`.
-- `KernelError: Helix failed (SM_ERR_INVALID_INPUT)` for `end_radius <= 0` or very many turns.
-- `KernelError: Helix failed (SM_ERR_NOT_WITHIN_TOLERANCE)` for too many turns (above).
+- `KernelError: Helix failed (SM_ERR_INVALID_INPUT)` for `end_radius <= 0`.
 - `ValueError: Helix: the direction must not be zero` for `direction=(0, 0, 0)`.
 
 ## Example
@@ -63,7 +66,7 @@ screw = rod + thread                                                   # valid, 
 h = Helix(pitch=5, height=20, radius=10)               # (10, 0, 0) -> (10, 0, 20), 4 turns
 lh = Helix(5, 20, 10, left_handed=True)
 cone = sweep(Circle(0.8), Helix(5, 20, 10, end_radius=4))
-long = sweep(Circle(1), Wire([Helix(4, 12, 8), Helix(4, 12, 8, center=(0, 0, 12))]))
+coil = Helix(pitch=2, height=400, radius=20)          # 200 turns, one edge
 print(h.start, h.end, h.point_at(1 / 16))              # quarter turn: (0, 10, 1.25)
 ```
 

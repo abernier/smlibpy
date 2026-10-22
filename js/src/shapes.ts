@@ -31,7 +31,7 @@ import {
   type VectorLike,
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
-import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
+import { EllipticalArc, Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
 import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
@@ -1124,18 +1124,244 @@ export class Edge extends Shape {
     return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
   }
 
-  /** Points where this edge crosses another edge. */
-  intersections(other: Edge): Vector[] {
-    const [pts, ta, tb] = kernelCall('edge intersections', () => k.intersect_curves(this._curve(), other._curve()))
-    const [a0, a1] = this._range()
-    const [b0, b1] = other._range()
-    const out: Vector[] = []
-    for (let i = 0; i < pts.length; i++) {
-      const u = ta[i]
-      const v = tb[i]
-      if (a0 - 1e-9 <= u && u <= a1 + 1e-9 && b0 - 1e-9 <= v && v <= b1 + 1e-9) out.push(new Vector(pts[i]))
+  /** The point of the edge nearest to `point`. */
+  closestPoint(point: VectorLike | Vertex): Vector {
+    return this._closest(point)[0]
+  }
+
+  /** Where the point of the edge nearest to `point` lies along it: the fraction of the length from
+   * the start, as `pointAt` takes it (`e.pointAt(e.paramAt(p))` is `e.closestPoint(p)`). */
+  paramAt(point: VectorLike | Vertex): number {
+    return this._fraction(this._closest(point)[1])
+  }
+
+  /** The nearest point of the edge, its kernel parameter and its distance. */
+  _closest(point: VectorLike | Vertex): [Vector, number, number] {
+    const p = point instanceof Vertex ? point.point : _vec(point)
+    const [q, u, d] = this._e ? k.edge_closest_point(this._e, p.toArray()) : k.curve_closest_point(this._curve(), p.toArray())
+    const [t0, t1] = this._range()
+    return [new Vector(q), Math.min(Math.max(Number(u), t0), t1), Number(d)]
+  }
+
+  /** The fraction of the length (in edge direction) at kernel parameter `u`. */
+  _fraction(u: number): number {
+    const [t0, t1] = this._range()
+    u = Math.min(Math.max(u, t0), t1)
+    let f: number
+    if (u <= t0 || t1 <= t0) f = 0
+    else if (u >= t1) f = 1
+    else if (this.geomType === 'line') f = (u - t0) / (t1 - t0)
+    else {
+      const total = Number(ext.curve_length(this._curve(), t0, t1))
+      f = total > 0 ? Number(ext.curve_length(this._curve(), t0, u)) / total : 0
     }
-    return out
+    f = Math.min(Math.max(f, 0), 1)
+    return this._rev ? 1 - f : f
+  }
+
+  /** The kernel parameter of `at`: a fraction of the length or a point on the edge. */
+  _at(at: number | VectorLike | Vertex, what: string): number {
+    if (typeof at === 'number') {
+      if (!(at >= 0 && at <= 1)) throw new RangeError(`${what}: a fraction of the edge runs from 0 to 1, got ${_formatG(at)}`)
+      return this._param(at)
+    }
+    const p = at instanceof Vertex ? at.point : _vec(at)
+    const [q, u, d] = this._closest(p)
+    const tol = 1e-6 * Math.max(1, this.length)
+    if (d > tol) {
+      throw new RangeError(`${what}: the point ${_fmtPoint(p)} lies ${_formatG(d)} off the edge (the nearest point of the edge is ` +
+        `${_fmtPoint(q)}); pass a point on the edge or a fraction from 0 to 1`)
+    }
+    return u
+  }
+
+  /** The edge between kernel parameters lo < hi, in edge direction (a new curve). */
+  _piece(lo: number, hi: number, what: string): Edge {
+    const c = kernelCall(what, () => ext.trimmed_curve(this._curve(), lo, hi))
+    if (this._rev) ext.reverse_curve(c)
+    return Edge._fromCurve(c)
+  }
+
+  /**
+   * The part of the edge from `start` to `end`, each a fraction of the length (as in `pointAt`) or a
+   * point on the edge. The part keeps the curve: a trimmed arc is an arc, a trimmed spline the same
+   * spline. `start` must come before `end` along the edge.
+   *
+   *     const arc = CenterArc([0, 0], 10, 0, 180).trim(0.25, 0.75)   // the arc from 45 to 135 degrees
+   */
+  trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge {
+    const u0 = this._at(start, 'trim')
+    const u1 = this._at(end, 'trim')
+    const [lo, hi] = this._rev ? [u1, u0] : [u0, u1]
+    const [t0, t1] = this._range()
+    if (!(hi - lo > 1e-12 * Math.max(1, Math.abs(t1 - t0)))) {
+      throw new RangeError('trim: the start must come before the end along the edge (fractions from 0 at its start to 1 at its end)')
+    }
+    return this._piece(lo, hi, 'trim')
+  }
+
+  /**
+   * The edge cut in two at `at`, a fraction of the length or a point on the edge: the part before and
+   * the part after, each keeping the curve.
+   *
+   *     const [a, b] = Line([0, 0], [10, 0]).split(0.3)   // 3 and 7 long
+   */
+  split(at: number | VectorLike | Vertex): [Edge, Edge] {
+    const u = this._at(at, 'split')
+    const [t0, t1] = this._range()
+    const length = this.length
+    const before = u > t0 ? Number(ext.curve_length(this._curve(), t0, u)) : 0
+    if (Math.min(before, length - before) <= 1e-9 * Math.max(1, length)) {
+      throw new RangeError('split: the point is an end of the edge; there is nothing to split')
+    }
+    const a = this._piece(t0, u, 'split')
+    const b = this._piece(u, t1, 'split')
+    return this._rev ? [b, a] : [a, b]
+  }
+
+  /**
+   * The edge made longer by `distance` at its `end` ('end', 'start' or 'both'), for cut tools and
+   * paths that must run past a body.
+   *
+   * Lines and arcs (circles and ellipses) go on as themselves. Other curves are continued as
+   * `continuity` says: 'G1' straight along the end tangent, 'G2' with the curvature at the end,
+   * 'natural' as the curve's own polynomial goes on. The added length is `distance` in every case.
+   *
+   *     const groovePath = Spline([0, 0], [20, 8], [40, 0]).extend(5, { end: 'both' })
+   */
+  extend(distance: number, options: { end?: string; continuity?: string } = {}): Edge {
+    _opts('Edge.extend', options)
+    const { end = 'end', continuity = 'G1' } = options
+    if (!(typeof distance === 'number' && Number.isFinite(distance) && distance > 0)) {
+      throw new RangeError(`extend: the distance must be positive, got ${String(distance)} (use trim to shorten an edge)`)
+    }
+    if (!['start', 'end', 'both'].includes(end)) throw new RangeError(`extend: end must be 'start', 'end' or 'both', got '${end}'`)
+    const modes: Record<string, number> = { G1: 1, G2: 2, natural: 0 }
+    if (!(continuity in modes)) throw new RangeError(`extend: continuity must be 'G1', 'G2' or 'natural', got '${continuity}'`)
+    if (this.isClosed) throw new RangeError('extend: a closed edge has no ends to extend')
+    let e: Edge = this
+    if (end === 'start' || end === 'both') e = e._extended(distance, true, modes[continuity])
+    if (end === 'end' || end === 'both') e = e._extended(distance, false, modes[continuity])
+    return e
+  }
+
+  _extended(d: number, atStart: boolean, continuity: number): Edge {
+    const kind = this.geomType
+    const a = this.start
+    const b = this.end
+    if (kind === 'line') {
+      const u = b.sub(a).normalized()
+      return atStart ? Line(a.sub(u.mul(d)), b) : Line(a, b.add(u.mul(d)))
+    }
+    if (kind === 'circle' || kind === 'ellipse') {
+      const data = ext.curve_data(this._curve())
+      const pl = data.placement
+      const c = new Vector(pl.origin)
+      const xd = new Vector(pl.x_dir)
+      const zd = new Vector(pl.z_dir)
+      const yd = zd.cross(xd)
+      const [r1, r2] = kind === 'circle' ? [Number(data.radius), Number(data.radius)] : [Number(data.radius1), Number(data.radius2)]
+      const angle = (p: Vector): number => {
+        const q = p.sub(c)
+        return Math.atan2(q.dot(yd) / r2, q.dot(xd) / r1)
+      }
+      // the turn of the edge about zd: +1 counterclockwise, -1 clockwise
+      const sense = a.sub(c).cross(this.tangentAt(0)).dot(zd) > 0 ? 1 : -1
+      const turn = 2 * Math.PI
+      let span = (((sense * (angle(b) - angle(a))) % turn) + turn) % turn
+      span = span || turn
+      const add = _ellipseAngleForLength(r1, r2, angle(atStart ? a : b), d, atStart ? -sense : sense)
+      if (span + add >= turn - 1e-9) {
+        throw new RangeError(`extend: the arc would reach around its whole ${kind} (it is ${_formatG(this.length)} long); extend it less`)
+      }
+      const a0 = atStart ? angle(a) - sense * add : angle(a)
+      const total = span + add
+      const plane = new Plane(c, xd, zd)
+      if (kind === 'circle') {
+        const point = (t: number): Vector => plane.fromLocal([r1 * Math.cos(t), r1 * Math.sin(t), 0])
+        return ThreePointArc(point(a0), point(a0 + (sense * total) / 2), point(a0 + sense * total))
+      }
+      const lo = _degrees(sense > 0 ? a0 : a0 - total)
+      const arc = EllipticalArc([0, 0], r1, r2, lo, lo + _degrees(total), plane)
+      return sense > 0 ? arc : arc.reversed()
+    }
+    const c = this._copyCurve()
+    try {
+      return Edge._fromCurve(kernelCall('extend', () => ext.extend_curve(c, d, atStart, continuity),
+        "the curve cannot be extended that far with this continuity; extend it less, or with continuity: 'G1'"))
+    } finally {
+      ext.delete_curve(c)
+    }
+  }
+
+  /**
+   * Points where this edge meets `other`: an edge, a wire, a face, a body (its faces) or a list of
+   * them, in order along this edge.
+   *
+   * Where the two run along each other, the points where that overlap starts and ends. Points closer
+   * than `tolerance` to the other shape count as on it (default: 1e-6, or 1e-9 of the size of the two
+   * where that is larger); points closer than that to each other count once. No point is an empty
+   * list.
+   */
+  intersections(other: Shape | Iterable<Shape>, options: { tolerance?: number | null } = {}): Vector[] {
+    _opts('Edge.intersections', options)
+    return this._hits(other, options.tolerance ?? null, 'intersections').map((h) => h[1])
+  }
+
+  /** Where this edge meets `other` (see `intersections`), as fractions of its length (as `pointAt`
+   * and `split` take them), in order. */
+  intersectionParams(other: Shape | Iterable<Shape>, options: { tolerance?: number | null } = {}): number[] {
+    _opts('Edge.intersectionParams', options)
+    return this._hits(other, options.tolerance ?? null, 'intersectionParams').map((h) => h[0])
+  }
+
+  /** Points where the edge crosses itself (a figure eight, a looping spline), in order along it; the
+   * closing point of a closed edge does not count. */
+  selfIntersections(options: { tolerance?: number | null } = {}): Vector[] {
+    _opts('Edge.selfIntersections', options)
+    const tol = _hitTolerance(this, null, options.tolerance ?? null)
+    const [t0, t1] = this._range()
+    const sols = kernelCall('selfIntersections', () => ext.self_intersections(this._curve(), t0, t1, tol))
+    const span = 1e-9 * Math.max(1, Math.abs(t1 - t0))
+    const closed = this.isClosed
+    const hits: [number, Vector][] = []
+    for (const s of sols) {
+      const [u, v] = s.t
+      if (closed && Math.min(u, v) - t0 <= span && t1 - Math.max(u, v) <= span) continue
+      hits.push([this._fraction(u), new Vector(s.point)])
+    }
+    return _mergedHits(hits, tol, closed).map((h) => h[1])
+  }
+
+  /** (fraction along this edge, point) where it meets other, in order, merged within the tolerance. */
+  _hits(other: unknown, tolerance: number | null, what: string): [number, Vector][] {
+    const tol = _hitTolerance(this, other, tolerance)
+    const [t0, t1] = this._range()
+    let params: number[] = []
+    if (other instanceof Edge) {
+      if (other._identity() === this._identity()) {
+        throw new RangeError(`${what}: an edge lies on itself everywhere; use selfIntersections() for the points where it crosses itself`)
+      }
+      const [b0, b1] = other._range()
+      const sols = kernelCall(what, () => ext.intersect_curves(this._curve(), t0, t1, other._curve(), b0, b1, tol))
+      for (const s of sols) {
+        params.push(s.t[0])
+        if (s.end != null) params.push(s.end[0])
+      }
+    } else if (other instanceof Wire || Array.isArray(other)) {
+      const items: unknown[] = other instanceof Wire ? [...other.edges()] : other
+      const hits = items.flatMap((item) => this._hits(item, tol, what))
+      return _mergedHits(hits.sort((p, q) => p[0] - q[0]), tol, this.isClosed)
+    } else if (other instanceof Face || other instanceof _Body) {
+      const faces = [...other.faces()]
+      const sols = kernelCall(what, () => ext.intersect_curve_faces(this._curve(), t0, t1, faces.map((f) => f._f), tol))
+      params = sols.map((s: Any) => Number(s.t))
+    } else {
+      throw new TypeError(`${what}: expected an Edge, Wire, Face or body (or a list of them), got ${_typeName(other)}`)
+    }
+    const curve = this._curve()
+    const hits: [number, Vector][] = params.map((u) => [this._fraction(u), new Vector(k.curve_evaluate(curve, u))])
+    return _mergedHits(hits.sort((p, q) => p[0] - q[0]), tol, this.isClosed)
   }
 
   // -- topology -----------------------------------------------------------------------------
@@ -1221,6 +1447,54 @@ export class Edge extends Shape {
     const f = (v: number) => _formatG(v, 4)
     return `Edge(${this.geomType}, (${f(s.x)}, ${f(s.y)}, ${f(s.z)}) -> (${f(e.x)}, ${f(e.y)}, ${f(e.z)}))`
   }
+}
+
+/** The distance within which an edge or wire meets another shape: as given, else 1e-6, or 1e-9 of
+ * the size of the two where that is larger. */
+function _hitTolerance(shape: Edge | Wire, other: unknown, tolerance: number | null): number {
+  if (tolerance != null) {
+    if (!(typeof tolerance === 'number' && Number.isFinite(tolerance) && tolerance > 0)) {
+      throw new RangeError(`the tolerance must be positive, got ${String(tolerance)}`)
+    }
+    return tolerance
+  }
+  let box = shape.bbox()
+  for (const item of Array.isArray(other) ? other : [other]) if (item instanceof Shape) box = box.union(item.bbox())
+  return Math.max(TOLERANCE, 1e-9 * box.diagonal)
+}
+
+/** Hits sorted along an edge or wire, those within `tol` of the one before dropped (on a closed one
+ * also the last where it is the first, the closing point). */
+function _mergedHits(hits: [number, Vector][], tol: number, closed: boolean): [number, Vector][] {
+  const out: [number, Vector][] = []
+  for (const h of hits) {
+    if (out.length && h[1].distanceTo(out[out.length - 1][1]) <= tol) continue
+    out.push(h)
+  }
+  if (closed && out.length > 1 && out[out.length - 1][1].distanceTo(out[0][1]) <= tol) out.pop()
+  return out
+}
+
+/** The angle (radians, >= 0) to turn from `start` (radians, in the sense +-1) along the ellipse
+ * x = r1 cos t, y = r2 sin t to cover `length`. */
+function _ellipseAngleForLength(r1: number, r2: number, start: number, length: number, sense: number): number {
+  const speed = (t: number): number => Math.hypot(r1 * Math.sin(t), r2 * Math.cos(t))
+  // length from start over phi (composite Simpson, 2048 panels per turn)
+  const arc = (phi: number): number => {
+    const n = Math.max(64, 2 * Math.ceil((512 * phi) / Math.PI))
+    const h = phi / n
+    let s = speed(start) + speed(start + sense * phi)
+    for (let i = 1; i < n; i++) s += (i % 2 ? 4 : 2) * speed(start + sense * i * h)
+    return (s * h) / 3
+  }
+  let phi = Math.min(length / Math.max(Math.min(r1, r2), 1e-300), 2 * Math.PI)
+  for (let i = 0; i < 50; i++) {
+    const step = (arc(phi) - length) / speed(start + sense * phi)
+    phi -= step
+    if (phi < 0) phi = 0.5 * (phi + step)
+    if (Math.abs(step) <= 1e-15 * Math.max(1, phi)) break
+  }
+  return phi
 }
 
 function _collinear(points: readonly (readonly number[])[]): boolean {
@@ -1433,6 +1707,114 @@ export class Wire extends Shape {
 
   override distanceTo(point: VectorLike | Shape): number {
     return Math.min(...this._edges.map((e) => e.distanceTo(point)))
+  }
+
+  /** The edge (index) and the fraction along it of `at`: a fraction of the wire's length or a point
+   * on the wire. */
+  _locate(at: number | VectorLike | Vertex, what: string): [number, number] {
+    if (typeof at === 'number') {
+      if (!(at >= 0 && at <= 1)) throw new RangeError(`${what}: a fraction of the wire runs from 0 to 1, got ${_formatG(at)}`)
+      const lengths = this._edges.map((e) => e.length)
+      let s = at * lengths.reduce((x, y) => x + y, 0)
+      for (let i = 0; i < lengths.length; i++) {
+        const L = lengths[i]
+        if (s <= L || i === lengths.length - 1) return [i, Math.min(Math.max(L ? s / L : 0, 0), 1)]
+        s -= L
+      }
+    }
+    const p = at instanceof Vertex ? at.point : _vec(at as VectorLike)
+    let best = 0
+    let d = Infinity
+    this._edges.forEach((e, i) => {
+      const di = e.distanceTo(p)
+      if (di < d) [best, d] = [i, di]
+    })
+    if (d > 1e-6 * Math.max(1, this.length)) {
+      throw new RangeError(`${what}: the point ${_fmtPoint(p)} lies ${_formatG(d)} off the wire; pass a point on the wire or a fraction from 0 to 1`)
+    }
+    return [best, this._edges[best].paramAt(p)]
+  }
+
+  /** The wire cut in two at `at`, a fraction of its length or a point on it: the part before and the
+   * part after. At a vertex the edges stay as they are; elsewhere the edge there is split
+   * (`Edge.split`). */
+  split(at: number | VectorLike | Vertex): [Wire, Wire] {
+    const [i, f] = this._locate(at, 'split')
+    const edges = [...this._edges]
+    const L = edges[i].length
+    const eps = 1e-9 * Math.max(1, L)
+    let first: Edge[]
+    let second: Edge[]
+    if (f * L <= eps) [first, second] = [edges.slice(0, i), edges.slice(i)]
+    else if ((1 - f) * L <= eps) [first, second] = [edges.slice(0, i + 1), edges.slice(i + 1)]
+    else {
+      const [a, b] = edges[i].split(f)
+      ;[first, second] = [[...edges.slice(0, i), a], [b, ...edges.slice(i + 1)]]
+    }
+    if (!first.length || !second.length) throw new RangeError('split: the point is an end of the wire; there is nothing to split')
+    return [Wire._raw(first), Wire._raw(second)]
+  }
+
+  /** The part of the wire from `start` to `end`, each a fraction of its length or a point on it;
+   * `start` must come before `end` along the wire. */
+  trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Wire {
+    const [i, f] = this._locate(start, 'trim')
+    const [j, g] = this._locate(end, 'trim')
+    const edges = this._edges
+    if (j < i || (j === i && (g - f) * edges[i].length <= 1e-9 * Math.max(1, edges[i].length))) {
+      throw new RangeError('trim: the start must come before the end along the wire (fractions from 0 at its start to 1 at its end)')
+    }
+    if (i === j) return Wire._raw([edges[i].trim(f, g)])
+    const out: Edge[] = []
+    if ((1 - f) * edges[i].length > 1e-9 * Math.max(1, edges[i].length)) out.push(f <= 0 ? edges[i] : edges[i].trim(f, 1))
+    out.push(...edges.slice(i + 1, j))
+    if (g * edges[j].length > 1e-9 * Math.max(1, edges[j].length)) out.push(g >= 1 ? edges[j] : edges[j].trim(0, g))
+    if (!out.length) throw new RangeError('trim: the start and the end are the same point of the wire; there is nothing between')
+    return Wire._raw(out)
+  }
+
+  /** Points where this wire meets `other` (see `Edge.intersections`), in order along the wire; a
+   * point where two of its edges meet counts once. */
+  intersections(other: Shape | Iterable<Shape>, options: { tolerance?: number | null } = {}): Vector[] {
+    _opts('Wire.intersections', options)
+    const tol = _hitTolerance(this, other, options.tolerance ?? null)
+    const hits: [number, Vector][] = []
+    const lengths = this._edges.map((e) => e.length)
+    const total = lengths.reduce((x, y) => x + y, 0) || 1
+    let before = 0
+    this._edges.forEach((e, i) => {
+      for (const [t, p] of e._hits(other, tol, 'intersections')) hits.push([(before + t * lengths[i]) / total, p])
+      before += lengths[i]
+    })
+    return _mergedHits(hits.sort((p, q) => p[0] - q[0]), tol, this.isClosed).map((h) => h[1])
+  }
+
+  /**
+   * The wire as one edge: its curves joined into one B-spline curve (a wire of one edge gives that
+   * edge). The edges must meet end to end (within 1e-6); where they meet at a corner, the edge has a
+   * corner there too.
+   *
+   * One edge makes a single sweep or loft rail, a single SPLINE in DXF and a single curve for
+   * `makeCompatible`.
+   *
+   *     const rail = FilletPolyline([0, 0], [30, 0], [30, 20], { radius: 5 }).toEdge()
+   */
+  toEdge(): Edge {
+    const edges = this._edges
+    if (edges.length === 1) return edges[0]
+    for (let i = 0; i + 1 < edges.length; i++) {
+      const gap = edges[i].end.distanceTo(edges[i + 1].start)
+      if (gap > 1e-6) {
+        throw new RangeError(`toEdge: the edges do not meet: a gap of ${_formatG(gap)} at ${_fmtPoint(edges[i].end)}; join only edges ` +
+          'that run end to end (Wire sorts them)')
+      }
+    }
+    const curves = this._copyCurves()
+    try {
+      return Edge._fromCurve(kernelCall('toEdge', () => ext.join_curves(curves)))
+    } finally {
+      for (const c of curves) ext.delete_curve(c)
+    }
   }
 
   /** This wire closed with a straight line from its end to its start. */

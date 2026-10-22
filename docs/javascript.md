@@ -440,7 +440,23 @@ export class Edge extends Shape {
     center(): Vector;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
-    intersections(other: Edge): Vector[];
+    closestPoint(point: VectorLike | Vertex): Vector;
+    paramAt(point: VectorLike | Vertex): number;
+    trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge;
+    split(at: number | VectorLike | Vertex): [Edge, Edge];
+    extend(distance: number, options?: {
+        end?: string;
+        continuity?: string;
+    }): Edge;
+    intersections(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): Vector[];
+    intersectionParams(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): number[];
+    selfIntersections(options?: {
+        tolerance?: number | null;
+    }): Vector[];
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
@@ -468,6 +484,12 @@ export class Wire extends Shape {
     pointAt(t?: number): Vector;
     tangentAt(t?: number): Vector;
     distanceTo(point: VectorLike | Shape): number;
+    split(at: number | VectorLike | Vertex): [Wire, Wire];
+    trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Wire;
+    intersections(other: Shape | Iterable<Shape>, options?: {
+        tolerance?: number | null;
+    }): Vector[];
+    toEdge(): Edge;
     close(): Wire;
     reversed(): Wire;
     add(other: Edge | Wire): Wire;

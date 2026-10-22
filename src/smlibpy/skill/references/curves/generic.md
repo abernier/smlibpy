@@ -19,7 +19,10 @@ open surfaces (an open wire extruded or revolved gives a `Shell`).
 - `geom_type` is `"line"`, `"circle"` (arcs too), `"ellipse"` or `"bspline"`. `direction` works
   only on lines, `radius`, `arc_center`, `normal` only on circles. Otherwise they raise
   `ValueError`.
-- `edge.reversed()` swaps start and end. `edge.intersections(other)` gives crossing points.
+- `edge.reversed()` swaps start and end. `edge.intersections(other)` gives the points where it
+  meets an edge, wire, face or body ([] for none); `edge.split(at)`, `edge.trim(start, end)`
+  cut it at fractions or points, `edge.extend(d)` makes it longer, `wire.to_edge()` joins a wire
+  into one edge. See `Edge.md` (selection) and `Wire.md`.
 
 ## Wires
 
@@ -82,8 +85,8 @@ pipe = sweep(Circle(3), path)    # valid, volume = pi * 3**2 * path.length
   path; draw the profile in XY around the origin.
 - A closed path made of one edge (a full `CenterArc`, a closed `Spline`) is split into two
   halves automatically: `sweep(Circle(2), CenterArc((0, 0), 20, 0, 360))` is one ring.
-- An `EllipticalArc` cannot be a path (TypeError); see `EllipticalArc.md`.
-- `Helix` is limited to about 26 to 58 turns, depending on the radius; chain helices.
+- `Helix` takes any number of turns (one edge); see `Helix.md`.
+- `wire.to_edge()` makes one B-spline edge of a wire whose edges run end to end: a single rail.
 
 ## Gotchas
 

@@ -110,6 +110,8 @@
   `EllipticalArc(c, rx, ry, 90, 270).rotate(Z, 180)`.
 
 ### 13. `EllipticalArc` cannot be a sweep path (TypeError from the binding)
+- **Fixed:** the bindings register the kernel's ellipse (and parabola, hyperbola) curves as B-spline curves, so
+  sweep, `project`, `ruled` and the open-profile surface sweeps take ellipse edges, also those of bodies (kernel plan C3).
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, scripts `11-closed-path.py`, `13-ellipse-path-workaround.py`
 - **What happens:** `sweep(Circle(2), EllipticalArc((0, 0), 30, 20, 0, 90))` raises
   `TypeError: curve_sweep(): incompatible function arguments` (the path must be a
@@ -126,6 +128,8 @@
 - **Reproduce:** `print(TangentArc((0, 0), (10, 0), (-1, 0)).tangent_at(0))   # (1, 0, 0)`
 
 ### 15. `Helix` fails beyond roughly 26 to 79 turns
+- **Fixed:** NLib's cap on the spiral fit (NL_CCPLIM) is raised at start, and helices over 120 turns are fitted in
+  pieces of whole turns joined into one edge: any number of turns (kernel plan C4).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, scripts `10-helix-limits.py`, `13-helix-turn-limit-sizes.py`
 - **What happens:** `KernelError: Helix failed (SM_ERR_NOT_WITHIN_TOLERANCE)` (around 200 turns
   `SM_ERR_INVALID_INPUT`). Max whole turns: r 50: 26, r 20: 32, r 5: 46, r 2: 58, r 0.5: 79,

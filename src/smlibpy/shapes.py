@@ -951,16 +951,237 @@ class Edge(Shape):
         _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
         return float(d)
 
-    def intersections(self, other: Edge) -> list[Vector]:
-        """Points where this edge crosses another edge."""
-        with kernel_call("edge intersections"):
-            pts, ta, tb = k.intersect_curves(self._curve(), other._curve())
-        (a0, a1), (b0, b1) = self._range(), other._range()
-        out = []
-        for p, u, v in zip(pts, ta, tb):
-            if a0 - 1e-9 <= u <= a1 + 1e-9 and b0 - 1e-9 <= v <= b1 + 1e-9:
-                out.append(Vector(p))
-        return out
+    def closest_point(self, point: VectorLike | Vertex) -> Vector:
+        """The point of the edge nearest to ``point``."""
+        return self._closest(point)[0]
+
+    def param_at(self, point: VectorLike | Vertex) -> float:
+        """Where the point of the edge nearest to ``point`` lies along it: the fraction of the
+        length from the start, as :meth:`point_at` takes it (``e.point_at(e.param_at(p))`` is
+        ``e.closest_point(p)``)."""
+        return self._fraction(self._closest(point)[1])
+
+    def _closest(self, point: VectorLike | Vertex) -> tuple[Vector, float, float]:
+        """The nearest point of the edge, its kernel parameter and its distance."""
+        p = point.point if isinstance(point, Vertex) else _vec(point)
+        if self._e is not None:
+            q, u, d = self._e.closest_point(p.to_tuple())
+        else:
+            q, u, d = k.curve_closest_point(self._curve(), p.to_tuple())
+            q = (q.x, q.y, q.z)  # (a Vec3)
+        t0, t1 = self._range()
+        return Vector(q), float(min(max(u, t0), t1)), float(d)
+
+    def _fraction(self, u: float) -> float:
+        """The fraction of the length (in edge direction) at kernel parameter ``u``."""
+        t0, t1 = self._range()
+        u = min(max(float(u), t0), t1)
+        if u <= t0 or t1 <= t0:
+            f = 0.0
+        elif u >= t1:
+            f = 1.0
+        elif self.geom_type == "line":
+            f = (u - t0) / (t1 - t0)
+        else:
+            total = float(ext.curve_length(self._curve(), t0, t1))
+            f = float(ext.curve_length(self._curve(), t0, u)) / total if total > 0 else 0.0
+        f = min(max(f, 0.0), 1.0)
+        return 1.0 - f if self._rev else f
+
+    def _at(self, at: float | VectorLike | Vertex, what: str) -> float:
+        """The kernel parameter of ``at``: a fraction of the length or a point on the edge."""
+        if isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool):
+            t = float(at)
+            if not 0.0 <= t <= 1.0:
+                raise ValueError(f"{what}: a fraction of the edge runs from 0 to 1, got {t:g}")
+            return self._param(t)
+        p = at.point if isinstance(at, Vertex) else _vec(at)
+        q, u, d = self._closest(p)
+        tol = 1e-6 * max(1.0, self.length)
+        if d > tol:
+            raise ValueError(f"{what}: the point {_fmt_point(p)} lies {d:.6g} off the edge (the nearest point of "
+                             f"the edge is {_fmt_point(q)}); pass a point on the edge or a fraction from 0 to 1")
+        return u
+
+    def _piece(self, lo: float, hi: float, what: str) -> Edge:
+        """The edge between kernel parameters lo < hi, in edge direction (a new curve)."""
+        with kernel_call(what):
+            c = ext.trimmed_curve(self._curve(), float(lo), float(hi))
+        if self._rev:
+            ext.reverse_curve(c)
+        return Edge._from_curve(c)
+
+    def trim(self, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Edge:
+        """The part of the edge from ``start`` to ``end``, each a fraction of the length (as in
+        :meth:`point_at`) or a point on the edge. The part keeps the curve: a trimmed arc is an
+        arc, a trimmed spline the same spline. ``start`` must come before ``end`` along the edge.
+
+        ::
+
+            arc = CenterArc((0, 0), 10, 0, 180).trim(0.25, 0.75)    # the arc from 45 to 135 degrees
+            tail = Spline((0, 0), (10, 10), (20, 0)).trim((10, 10, 0), 1.0)
+        """
+        u0, u1 = self._at(start, "trim"), self._at(end, "trim")
+        lo, hi = (u1, u0) if self._rev else (u0, u1)
+        t0, t1 = self._range()
+        if not hi - lo > 1e-12 * max(1.0, abs(t1 - t0)):
+            raise ValueError("trim: the start must come before the end along the edge (fractions from 0 at its "
+                             "start to 1 at its end)")
+        return self._piece(lo, hi, "trim")
+
+    def split(self, at: float | VectorLike | Vertex) -> tuple[Edge, Edge]:
+        """The edge cut in two at ``at``, a fraction of the length or a point on the edge: the part
+        before and the part after, each keeping the curve. ::
+
+            a, b = Line((0, 0), (10, 0)).split(0.3)                 # 3 and 7 long
+            left, right = edge.split(edge.intersections(other)[0])
+        """
+        u = self._at(at, "split")
+        t0, t1 = self._range()
+        length = self.length
+        before = float(ext.curve_length(self._curve(), t0, u)) if u > t0 else 0.0
+        if min(before, length - before) <= 1e-9 * max(1.0, length):
+            raise ValueError("split: the point is an end of the edge; there is nothing to split")
+        a, b = self._piece(t0, u, "split"), self._piece(u, t1, "split")
+        return (b, a) if self._rev else (a, b)
+
+    def extend(self, distance: float, *, end: str = "end", continuity: str = "G1") -> Edge:
+        """The edge made longer by ``distance`` at its ``end`` (``"end"``, ``"start"`` or
+        ``"both"``), for cut tools and paths that must run past a body.
+
+        Lines and arcs (circles and ellipses) go on as themselves. Other curves are continued
+        as ``continuity`` says: ``"G1"`` straight along the end tangent, ``"G2"`` with the
+        curvature at the end, ``"natural"`` as the curve's own polynomial goes on. The added
+        length is ``distance`` in every case. ::
+
+            groove_path = Spline((0, 0), (20, 8), (40, 0)).extend(5, end="both")
+        """
+        if not (isinstance(distance, (int, float)) and math.isfinite(distance) and distance > 0):
+            raise ValueError(f"extend: the distance must be positive, got {distance!r} (use trim to shorten an edge)")
+        if end not in ("start", "end", "both"):
+            raise ValueError(f"extend: end must be 'start', 'end' or 'both', got {end!r}")
+        modes = {"G1": 1, "G2": 2, "natural": 0}
+        if continuity not in modes:
+            raise ValueError(f"extend: continuity must be 'G1', 'G2' or 'natural', got {continuity!r}")
+        if self.is_closed:
+            raise ValueError("extend: a closed edge has no ends to extend")
+        e = self
+        if end in ("start", "both"):
+            e = e._extended(float(distance), True, modes[continuity])
+        if end in ("end", "both"):
+            e = e._extended(float(distance), False, modes[continuity])
+        return e
+
+    def _extended(self, d: float, at_start: bool, continuity: int) -> Edge:
+        from .curves import EllipticalArc, Line, ThreePointArc
+
+        kind = self.geom_type
+        a, b = self.start, self.end
+        if kind == "line":
+            u = (b - a).normalized()
+            return Line(a - u * d, b) if at_start else Line(a, b + u * d)
+        if kind in ("circle", "ellipse"):
+            data = ext.curve_data(self._curve())
+            pl = data["placement"]
+            c, xd, zd = Vector(pl["origin"]), Vector(pl["x_dir"]), Vector(pl["z_dir"])
+            yd = zd.cross(xd)
+            r1, r2 = (data["radius"], data["radius"]) if kind == "circle" else (data["radius1"], data["radius2"])
+
+            def angle(p: Vector) -> float:
+                q = p - c
+                return math.atan2(q.dot(yd) / r2, q.dot(xd) / r1)
+
+            # the turn of the edge about zd: +1 counterclockwise, -1 clockwise
+            sense = 1.0 if (a - c).cross(self.tangent_at(0.0)).dot(zd) > 0 else -1.0
+            span = (sense * (angle(b) - angle(a))) % (2 * math.pi)
+            span = span or 2 * math.pi
+            add = _ellipse_angle_for_length(r1, r2, angle(a if at_start else b), d, -sense if at_start else sense)
+            if span + add >= 2 * math.pi - 1e-9:
+                raise ValueError(f"extend: the arc would reach around its whole {kind} (it is {self.length:.6g} long); "
+                                 f"extend it less")
+            a0 = angle(a) - sense * add if at_start else angle(a)
+            total = span + add
+            if kind == "circle":
+                plane = Plane(c, xd, zd)
+
+                def point(t: float) -> Vector:
+                    return plane.from_local(Vector(r1 * math.cos(t), r1 * math.sin(t), 0.0))
+
+                return ThreePointArc(point(a0), point(a0 + sense * total / 2), point(a0 + sense * total))
+            lo = math.degrees(a0 if sense > 0 else a0 - total)
+            arc = EllipticalArc((0, 0), r1, r2, lo, lo + math.degrees(total), plane=Plane(c, xd, zd))
+            return arc if sense > 0 else arc.reversed()
+        c = self._copy_curve()
+        try:
+            with kernel_call("extend", "the curve cannot be extended that far with this continuity; extend it less, "
+                                       "or with continuity='G1'"):
+                return Edge._from_curve(ext.extend_curve(c, d, at_start, continuity))
+        finally:
+            ext.delete_curve(c)
+
+    def intersections(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[Vector]:
+        """Points where this edge meets ``other``: an edge, a wire, a face, a body (its faces) or
+        a list of them, in order along this edge.
+
+        Where the two run along each other, the points where that overlap starts and ends.
+        Points closer than ``tolerance`` to the other shape count as on it (default: 1e-6, or
+        1e-9 of the size of the two where that is larger); points closer than that to each other
+        count once. No point is an empty list.
+        """
+        return [p for _, p in self._hits(other, tolerance, "intersections")]
+
+    def intersection_params(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[float]:
+        """Where this edge meets ``other`` (see :meth:`intersections`), as fractions of its length
+        (as :meth:`point_at` and :meth:`split` take them), in order."""
+        return [t for t, _ in self._hits(other, tolerance, "intersection_params")]
+
+    def self_intersections(self, *, tolerance: float | None = None) -> list[Vector]:
+        """Points where the edge crosses itself (a figure eight, a looping spline), in order along
+        it; the closing point of a closed edge does not count."""
+        tol = _hit_tolerance(self, None, tolerance)
+        t0, t1 = self._range()
+        with kernel_call("self_intersections"):
+            sols = ext.self_intersections(self._curve(), t0, t1, tol)
+        span = 1e-9 * max(1.0, abs(t1 - t0))
+        hits = []
+        for s in sols:
+            u, v = s["t"]
+            if self.is_closed and min(u, v) - t0 <= span and t1 - max(u, v) <= span:
+                continue
+            hits.append((self._fraction(u), Vector(s["point"])))
+        return [p for _, p in _merged_hits(hits, tol, self.is_closed)]
+
+    def _hits(self, other: Any, tolerance: float | None, what: str) -> list[tuple[float, Vector]]:
+        """(fraction along this edge, point) where it meets other, in order, merged within the tolerance."""
+        tol = _hit_tolerance(self, other, tolerance)
+        t0, t1 = self._range()
+        params: list[float] = []
+        if isinstance(other, Edge):
+            if other._identity() == self._identity():
+                raise ValueError(f"{what}: an edge lies on itself everywhere; use self_intersections() for the points "
+                                 f"where it crosses itself")
+            b0, b1 = other._range()
+            with kernel_call(what):
+                sols = ext.intersect_curves(self._curve(), t0, t1, other._curve(), b0, b1, tol)
+            for s in sols:
+                params.append(s["t"][0])
+                if s["end"] is not None:
+                    params.append(s["end"][0])
+        elif isinstance(other, (Wire, list, tuple)):
+            items = other.edges() if isinstance(other, Wire) else other
+            hits = [h for item in items for h in self._hits(item, tol, what)]
+            return _merged_hits(sorted(hits, key=lambda h: h[0]), tol, self.is_closed)
+        elif isinstance(other, (Face, _Body)):
+            faces = list(other.faces())
+            with kernel_call(what):
+                sols = ext.intersect_curve_faces(self._curve(), t0, t1, [f._f for f in faces], tol)
+            params = [s["t"] for s in sols]
+        else:
+            raise TypeError(f"{what}: expected an Edge, Wire, Face or body (or a list of them), got "
+                            f"{type(other).__name__}")
+        curve = self._curve()
+        hits = sorted(((self._fraction(u), Vector(curve.evaluate(u))) for u in params), key=lambda h: h[0])
+        return _merged_hits(hits, tol, self.is_closed)
 
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
@@ -1029,6 +1250,60 @@ class Edge(Shape):
         s, e = self.start, self.end
         return (f"Edge({self.geom_type}, ({s.x:.4g}, {s.y:.4g}, {s.z:.4g}) -> "
                 f"({e.x:.4g}, {e.y:.4g}, {e.z:.4g}))")
+
+
+def _hit_tolerance(shape: Edge | Wire, other: Any, tolerance: float | None) -> float:
+    """The distance within which an edge or wire meets another shape: as given, else 1e-6, or
+    1e-9 of the size of the two where that is larger."""
+    if tolerance is not None:
+        if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
+            raise ValueError(f"the tolerance must be positive, got {tolerance!r}")
+        return float(tolerance)
+    box = shape.bbox()
+    for item in (other if isinstance(other, (list, tuple)) else [other]):
+        if isinstance(item, Shape):
+            box = box.union(item.bbox())
+    return max(TOLERANCE, 1e-9 * box.diagonal)
+
+
+def _merged_hits(hits: list[tuple[float, Vector]], tol: float, closed: bool) -> list[tuple[float, Vector]]:
+    """Hits sorted along an edge or wire, those within ``tol`` of the one before dropped (on a
+    closed one also the last where it is the first, the closing point)."""
+    out: list[tuple[float, Vector]] = []
+    for t, p in hits:
+        if out and p.distance_to(out[-1][1]) <= tol:
+            continue
+        out.append((t, p))
+    if closed and len(out) > 1 and out[-1][1].distance_to(out[0][1]) <= tol:
+        out.pop()
+    return out
+
+
+def _ellipse_angle_for_length(r1: float, r2: float, start: float, length: float, sense: float) -> float:
+    """The angle (radians, >= 0) to turn from ``start`` (radians, in the sense +-1) along the
+    ellipse x = r1 cos t, y = r2 sin t to cover ``length``."""
+
+    def speed(t: float) -> float:
+        return math.hypot(r1 * math.sin(t), r2 * math.cos(t))
+
+    def arc(phi: float) -> float:  # length from start over phi (composite Simpson, 2048 panels per turn)
+        n = max(64, 2 * int(math.ceil(512 * phi / math.pi)))
+        h = phi / n
+        s = speed(start) + speed(start + sense * phi)
+        for i in range(1, n):
+            s += (4 if i % 2 else 2) * speed(start + sense * i * h)
+        return s * h / 3
+
+    phi = length / max(min(r1, r2), 1e-300)
+    phi = min(phi, 2 * math.pi)
+    for _ in range(50):
+        step = (arc(phi) - length) / speed(start + sense * phi)
+        phi -= step
+        if phi < 0:
+            phi = 0.5 * (phi + step)
+        if abs(step) <= 1e-15 * max(1.0, phi):
+            break
+    return phi
 
 
 def _collinear(points: np.ndarray) -> bool:
@@ -1208,6 +1483,106 @@ class Wire(Shape):
 
     def distance_to(self, point: VectorLike) -> float:
         return min(e.distance_to(point) for e in self._edges)
+
+    def _locate(self, at: float | VectorLike | Vertex, what: str) -> tuple[int, float]:
+        """The edge (index) and the fraction along it of ``at``: a fraction of the wire's length
+        or a point on the wire."""
+        if isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool):
+            t = float(at)
+            if not 0.0 <= t <= 1.0:
+                raise ValueError(f"{what}: a fraction of the wire runs from 0 to 1, got {t:g}")
+            lengths = [e.length for e in self._edges]
+            s = t * sum(lengths)
+            for i, L in enumerate(lengths):
+                if s <= L or i == len(lengths) - 1:
+                    return i, min(max(s / L if L else 0.0, 0.0), 1.0)
+                s -= L
+        p = at.point if isinstance(at, Vertex) else _vec(at)
+        best = min(range(len(self._edges)), key=lambda i: self._edges[i].distance_to(p))
+        e = self._edges[best]
+        d = e.distance_to(p)
+        if d > 1e-6 * max(1.0, self.length):
+            raise ValueError(f"{what}: the point {_fmt_point(p)} lies {d:.6g} off the wire; pass a point on the wire or "
+                             f"a fraction from 0 to 1")
+        return best, e.param_at(p)
+
+    def split(self, at: float | VectorLike | Vertex) -> tuple[Wire, Wire]:
+        """The wire cut in two at ``at``, a fraction of its length or a point on it: the part
+        before and the part after. At a vertex the edges stay as they are; elsewhere the edge
+        there is split (:meth:`Edge.split`)."""
+        i, f = self._locate(at, "split")
+        edges = list(self._edges)
+        eps = 1e-9 * max(1.0, edges[i].length)
+        if f * edges[i].length <= eps:
+            first, second = edges[:i], edges[i:]
+        elif (1.0 - f) * edges[i].length <= eps:
+            first, second = edges[:i + 1], edges[i + 1:]
+        else:
+            a, b = edges[i].split(f)
+            first, second = [*edges[:i], a], [b, *edges[i + 1:]]
+        if not first or not second:
+            raise ValueError("split: the point is an end of the wire; there is nothing to split")
+        return Wire._raw(first), Wire._raw(second)
+
+    def trim(self, start: float | VectorLike | Vertex, end: float | VectorLike | Vertex) -> Wire:
+        """The part of the wire from ``start`` to ``end``, each a fraction of its length or a
+        point on it; ``start`` must come before ``end`` along the wire."""
+        (i, f), (j, g) = self._locate(start, "trim"), self._locate(end, "trim")
+        edges = self._edges
+        if (j, g) <= (i, f) or (i == j and (g - f) * edges[i].length <= 1e-9 * max(1.0, edges[i].length)):
+            raise ValueError("trim: the start must come before the end along the wire (fractions from 0 at its start "
+                             "to 1 at its end)")
+        if i == j:
+            return Wire._raw([edges[i].trim(f, g)])
+        out: list[Edge] = []
+        if (1.0 - f) * edges[i].length > 1e-9 * max(1.0, edges[i].length):
+            out.append(edges[i] if f <= 0.0 else edges[i].trim(f, 1.0))
+        out.extend(edges[i + 1:j])
+        if g * edges[j].length > 1e-9 * max(1.0, edges[j].length):
+            out.append(edges[j] if g >= 1.0 else edges[j].trim(0.0, g))
+        if not out:
+            raise ValueError("trim: the start and the end are the same point of the wire; there is nothing between")
+        return Wire._raw(out)
+
+    def intersections(self, other: Shape | Iterable[Shape], *, tolerance: float | None = None) -> list[Vector]:
+        """Points where this wire meets ``other`` (see :meth:`Edge.intersections`), in order along
+        the wire; a point where two of its edges meet counts once."""
+        tol = _hit_tolerance(self, other, tolerance)
+        hits: list[tuple[float, Vector]] = []
+        lengths = [e.length for e in self._edges]
+        total = sum(lengths) or 1.0
+        before = 0.0
+        for e, L in zip(self._edges, lengths):
+            for t, p in e._hits(other, tol, "intersections"):
+                hits.append(((before + t * L) / total, p))
+            before += L
+        return [p for _, p in _merged_hits(sorted(hits, key=lambda h: h[0]), tol, self.is_closed)]
+
+    def to_edge(self) -> Edge:
+        """The wire as one edge: its curves joined into one B-spline curve (a wire of one edge gives
+        that edge). The edges must meet end to end (within 1e-6); where they meet at a corner,
+        the edge has a corner there too.
+
+        One edge makes a single sweep or loft rail, a single SPLINE in DXF and a single curve for
+        :func:`~smlibpy.make_compatible`. ::
+
+            rail = FilletPolyline((0, 0), (30, 0), (30, 20), radius=5).to_edge()
+        """
+        edges = self._edges
+        if len(edges) == 1:
+            return edges[0]
+        for a, b in zip(edges, edges[1:]):
+            gap = a.end.distance_to(b.start)
+            if gap > 1e-6:
+                raise ValueError(f"to_edge: the edges do not meet: a gap of {gap:.6g} at {_fmt_point(a.end)}; join only "
+                                 f"edges that run end to end (Wire sorts them)")
+        curves = self._copy_curves()
+        try:
+            with kernel_call("to_edge"):
+                return Edge._from_curve(ext.join_curves(curves))
+        finally:
+            for c in curves:
+                ext.delete_curve(c)
 
     def close(self) -> Wire:
         """This wire closed with a straight line from its end to its start."""

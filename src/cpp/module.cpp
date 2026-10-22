@@ -9,6 +9,7 @@
 
 #include "SmPyCommon.h"
 #include "ext.h"
+#include "curve_tools.h"
 
 #include <SmApiGeneral.h>
 
@@ -36,6 +37,7 @@ PYBIND11_MODULE(_core, m)
 
     SmApiCreateContext();
     install_sm_error_callback();
+    smlibpy::init_kernel_limits();
 
     // The upstream bindings look themselves up by their own module name (for example to
     // raise TessellationError), so make that name resolve to this module.
@@ -43,6 +45,7 @@ PYBIND11_MODULE(_core, m)
 
     bind_enums(m);
     bind_types(m);
+    bind_curve_types(m);
     bind_polybrep(m);
 
     auto sub = [&](const char* name, const char* doc) { return BoundModule{m, m.def_submodule(name, doc)}; };
@@ -95,4 +98,5 @@ PYBIND11_MODULE(_core, m)
     bind_cells(m.attr("ext").cast<py::module_>());
     bind_distance(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
+    bind_curve_tools(m.attr("ext").cast<py::module_>());
 }

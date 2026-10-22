@@ -35,3 +35,7 @@ void bind_cells(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Curve intersections with a tolerance, curve x face intersections, extended curves (curve_tools.cpp).
+void bind_curve_tools(py::module_ m);
+// The kernel's ellipse, parabola and hyperbola curves as classes of their own (curve_tools.cpp).
+void bind_curve_types(py::module_& m);

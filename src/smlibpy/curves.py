@@ -363,17 +363,45 @@ def Helix(
     """A helix around ``direction`` through ``center``.
 
     ``direction`` is a vector or an axis (only its direction counts; ``center`` places the
-    helix). ``end_radius`` makes a conical helix; ``pitch`` is the rise per turn.
+    helix). ``end_radius`` makes a conical helix; ``pitch`` is the rise per turn. Any number of
+    turns: beyond 120 the helix is fitted in pieces of whole turns, joined into one curve.
     """
     if pitch <= 0 or height <= 0 or radius <= 0:
         raise ValueError("pitch, height and radius must be positive")
     turns = height / pitch
+    r1 = float(end_radius if end_radius is not None else radius)
     with kernel_call("Helix"):
-        curve = k.create_helix((0.0, 0.0, 0.0), float(height), float(radius),
-                               float(end_radius if end_radius is not None else radius), float(turns),
-                               right_handed=not left_handed)
+        curve = _helix_curve(float(pitch), float(height), float(radius), r1, float(turns), not left_handed)
     plane = Plane(_vec(center), z_dir=_direction(direction, "Helix"))
     return Edge._from_curve(_transform_curve(curve, plane.location.matrix))
+
+
+_HELIX_PIECE_TURNS = 100  # (the kernel fits at most 124.25 turns in one go)
+
+
+def _helix_curve(pitch: float, height: float, r0: float, r1: float, turns: float, right_handed: bool) -> object:
+    """The kernel's helix along +Z from the origin; above 120 turns, pieces of whole turns (each
+    starts where the one before ends, on +X) joined into one B-spline. The caller owns the curve."""
+    if turns <= 120:
+        return k.create_helix((0.0, 0.0, 0.0), height, r0, r1, turns, right_handed=right_handed)
+    counts = [float(_HELIX_PIECE_TURNS)] * int(turns // _HELIX_PIECE_TURNS)
+    rest = turns - _HELIX_PIECE_TURNS * len(counts)
+    if rest >= 1.0:
+        counts.append(rest)
+    else:
+        counts[-1] += rest  # (no sliver of a turn at the end)
+    pieces = []
+    try:
+        z = 0.0
+        for i, n in enumerate(counts):
+            h = height - z if i == len(counts) - 1 else n * pitch  # (the last one ends at the height exactly)
+            ra, rb = r0 + (r1 - r0) * z / height, r0 + (r1 - r0) * (z + h) / height
+            pieces.append(k.create_helix((0.0, 0.0, z), h, ra, rb, n, right_handed=right_handed))
+            z += h
+        return ext.join_curves(pieces)
+    finally:
+        for c in pieces:
+            ext.delete_curve(c)
 
 
 def FilletPolyline(*points: VectorLike, radius: float, close: bool = False) -> Wire:
