@@ -615,7 +615,7 @@ export abstract class Shape {
     mesh(tolerance?: number | null, angle?: number, options?: {
         maxEdge?: number | null;
     }): Mesh;
-    show(options?: Record<string, unknown>): unknown;
+    show(options?: ShowOptions): string;
     export(path: string, options?: Record<string, unknown>): void;
     toString(): string;
 }
@@ -655,6 +655,8 @@ export class ShapeList<T = Shape> extends Array<T> {
     concave(): ShapeList<T>;
     smooth(): ShapeList<T>;
     tangentChain(): ShapeList<Edge>;
+    g1(): ShapeList<T>;
+    g2(): ShapeList<T>;
     fillets(maxRadius?: number | null): ShapeList<T>;
     hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
@@ -716,6 +718,11 @@ export class Edge extends Shape {
     center(): Vector;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
+    paramAtPoint(point: VectorLike | Vertex): number;
+    continuity(samples?: number, options?: {
+        angleTol?: number;
+        curvatureTol?: number;
+    }): Continuity;
     closestPoint(point: VectorLike | Vertex): Vector;
     paramAt(point: VectorLike | Vertex): number;
     trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge;
@@ -797,6 +804,11 @@ export class Wire extends Shape {
     }): Wire;
     toArcs(tolerance?: number): Wire;
     minRadius(): [number, number];
+    closestPoint(point: VectorLike): Vector;
+    continuity(options?: {
+        angleTol?: number;
+        curvatureTol?: number;
+    }): Continuity;
     close(): Wire;
     reversed(): Wire;
     add(other: Edge | Wire): Wire;
@@ -806,8 +818,7 @@ export class Wire extends Shape {
     toString(): string;
 }
 export class Face extends Shape {
-    constructor(owner: _Body | null, kface: number);
-    get owner(): _Body | null;
+    get owner(): Part | Shell | null;
     get color(): [number, number, number] | null;
     get name(): string | null;
     get cells(): number[];
@@ -831,7 +842,7 @@ export class Face extends Shape {
     minRadius(): number;
     nurbs(): NurbsSurface;
     isocurve(u?: number | null, v?: number | null): ShapeList<Edge>;
-    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
+    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
     project(curve: Edge | Wire): ShapeList<Edge>;
     iso(u?: number | null, v?: number | null): ShapeList<Edge>;
     wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at?: VectorLike | Vertex | null, options?: {
@@ -847,6 +858,13 @@ export class Face extends Shape {
     toSketch(): Sketch;
     toShell(): Shell;
     offset(distance: number): Shell;
+    split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face>;
+    flipped(): Shell;
+    untrimmed(): Shell;
+    extended(distance: number, options?: {
+        sides?: Edge | Iterable<Edge> | null;
+        continuity?: string;
+    }): Shell;
     extrude(amount: number, options?: ExtrudeOptions): Part;
     equals(other: unknown): boolean;
     toString(): string;
@@ -929,10 +947,11 @@ export class Part extends Shape {
             number[],
             number[]
         ];
+        corners?: string;
         solids: number;
         voids: number;
     };
-    merge(...others: unknown[]): Part;
+    merge(...others: (Part | Iterable<Part>)[]): Part;
     get sources(): Part[];
     cells(): ShapeList<Part>;
     classify(point: VectorLike, tol?: number | null): [string, Face | Edge | Vertex | null];
@@ -942,9 +961,9 @@ export class Part extends Shape {
     cut(...others: (Part | Iterable<Part>)[]): Part;
     intersect(sheet: Shell | Face): Shell;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
-    fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part;
-    chamfer(edges: unknown, length: number, options?: ChamferOptions): Part;
-    shell(thickness: number, openings?: unknown, options?: {
+    fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
+    chamfer(edges: EdgesLike, length: number, options?: ChamferOptions): Part;
+    shell(thickness: number, openings?: FacesLike | null, options?: {
         outward?: boolean;
         corners?: string | null;
         walls?: unknown;
@@ -952,11 +971,12 @@ export class Part extends Shape {
     offset(distance: number, options?: {
         corners?: string;
     }): Part;
-    offset(distance: number): Part;
     split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'above' | 'below'): Part;
     split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'both'): [Part, Part];
     split(plane: Plane | Face | Shell | ShapeList<Face>): Part;
-    imprint(tool: Part | Shell | Face | ShapeList<Face>): Part;
+    imprint(tool: Part | Shell | Face | ShapeList<Face> | Edge | Wire | Iterable<Edge | Wire>, direction?: Axis | VectorLike | null, options?: {
+        nearest?: boolean;
+    }): Part;
     section(plane?: Plane | Face): Sketch;
     slices(step: number, axis?: Axis | VectorLike): Sketch[];
     static fromMesh(mesh: Mesh, maxFaces?: number): Part;
@@ -978,9 +998,16 @@ export class Part extends Shape {
         minAngle?: number;
     }): DraftAnalysis;
     partingLine(direction: Axis | VectorLike): ShapeList<Wire>;
-    draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part;
+    draft(faces: FacesLike, angle: number, neutralPlane: Plane | Face): Part;
     moveFaces(faces: unknown, by: Location | VectorLike): Part;
     offsetFaces(faces: unknown, distance: number): Part;
+    push(face: Face, at: VectorLike, options?: PushOptions): Part;
+    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+        continuity?: string;
+    }): Part;
+    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+        continuity?: string;
+    }): Part;
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
     flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
     bends(options?: {
@@ -992,34 +1019,44 @@ export class Part extends Shape {
     name: string | null;
     color: ColorLike | null;
     dispose(): void;
-    named(name: string): this;
-    colored(color: ColorLike): this;
+    named(name: string | null, options?: {
+        faces?: unknown;
+    }): this;
+    colored(color: ColorLike | null, options?: {
+        faces?: unknown;
+    }): this;
     faces(): ShapeList<Face>;
     edges(seams?: boolean): ShapeList<Edge>;
     vertices(): ShapeList<Vertex>;
     wires(): ShapeList<Wire>;
     bbox(): BoundBox;
     distanceTo(other: VectorLike | Shape): number;
+    closestPoints(other: Part | Shell | Face | Edge | Wire): ClosestPoints;
     closestPoint(point: VectorLike): Vector;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
+    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit<Face> | null)[];
     compact(): void;
-    intersectionCurves(other: Part | Shell): ShapeList<Edge>;
+    intersectionCurves(other: Part | Shell | Face | Plane): ShapeList<Edge>;
     silhouette(direction?: Axis | VectorLike): ShapeList<Edge>;
-    project(curve: Edge | Wire, direction?: Axis | VectorLike): ShapeList<Edge>;
-    outline(plane?: Plane): ShapeList<Edge>;
+    project(curve: Edge | Wire, direction?: Axis | VectorLike, options?: {
+        nearest?: boolean;
+    }): ShapeList<Edge>;
+    outline(plane?: Plane, options?: {
+        hidden?: false;
+        tangentEdges?: boolean;
+    }): ShapeList<Edge>;
+    outline(plane: Plane | undefined, options: {
+        hidden: true;
+        tangentEdges?: boolean;
+    }): [ShapeList<Edge>, ShapeList<Edge>];
+    outline(plane?: Plane, options?: {
+        hidden?: boolean;
+        tangentEdges?: boolean;
+    }): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>];
     toNurbs(): this;
-    heal(): this;
+    heal(): this | Part;
+    check(level?: number): Problem[];
     equals(other: unknown): boolean;
-    info(): {
-        type: string;
-        faces: number;
-        edges: number;
-        vertices: number;
-        bbox: [
-            number[],
-            number[]
-        ];
-    };
 }
 export class Shell extends Shape {
     get area(): number;
@@ -1028,30 +1065,67 @@ export class Shell extends Shape {
         both?: boolean;
     }): Part;
     offset(distance: number): Shell;
-    fuse(...others: unknown[]): Shell;
+    trim(curves: Edge | Wire | Iterable<Edge | Wire>, keep: VectorLike | string): this;
+    flipped(): this;
+    extend(distance: number, options?: {
+        sides?: Edge | Iterable<Edge> | null;
+        continuity?: string;
+    }): this;
+    matchEdge(edge: Edge, target: Edge | Wire, options?: {
+        extent?: number;
+    }): Shell;
+    mergeFaces(a: Face, b: Face): Shell;
+    push(face: Face, at: VectorLike, options?: PushOptions): Shell;
+    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+        continuity?: string;
+    }): Shell;
+    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+        continuity?: string;
+    }): Shell;
+    fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell;
     cut(...others: unknown[]): Shell;
     intersect(...others: unknown[]): Shell;
     toString(): string;
     name: string | null;
     color: ColorLike | null;
     dispose(): void;
-    named(name: string): this;
-    colored(color: ColorLike): this;
+    named(name: string | null, options?: {
+        faces?: unknown;
+    }): this;
+    colored(color: ColorLike | null, options?: {
+        faces?: unknown;
+    }): this;
     faces(): ShapeList<Face>;
     edges(seams?: boolean): ShapeList<Edge>;
     vertices(): ShapeList<Vertex>;
     wires(): ShapeList<Wire>;
     bbox(): BoundBox;
     distanceTo(other: VectorLike | Shape): number;
+    closestPoints(other: Part | Shell | Face | Edge | Wire): ClosestPoints;
     closestPoint(point: VectorLike): Vector;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
+    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit<Face> | null)[];
     compact(): void;
-    intersectionCurves(other: Part | Shell): ShapeList<Edge>;
+    intersectionCurves(other: Part | Shell | Face | Plane): ShapeList<Edge>;
     silhouette(direction?: Axis | VectorLike): ShapeList<Edge>;
-    project(curve: Edge | Wire, direction?: Axis | VectorLike): ShapeList<Edge>;
-    outline(plane?: Plane): ShapeList<Edge>;
+    project(curve: Edge | Wire, direction?: Axis | VectorLike, options?: {
+        nearest?: boolean;
+    }): ShapeList<Edge>;
+    outline(plane?: Plane, options?: {
+        hidden?: false;
+        tangentEdges?: boolean;
+    }): ShapeList<Edge>;
+    outline(plane: Plane | undefined, options: {
+        hidden: true;
+        tangentEdges?: boolean;
+    }): [ShapeList<Edge>, ShapeList<Edge>];
+    outline(plane?: Plane, options?: {
+        hidden?: boolean;
+        tangentEdges?: boolean;
+    }): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>];
     toNurbs(): this;
-    heal(): this;
+    heal(): this | Part;
+    check(level?: number): Problem[];
     equals(other: unknown): boolean;
     info(): {
         type: string;
@@ -1062,6 +1136,7 @@ export class Shell extends Shape {
             number[],
             number[]
         ];
+        corners?: string;
     };
 }
 export interface PushOptions {
@@ -1334,17 +1409,15 @@ export function extrude(profile: Sketch | Face | ShapeList<Sketch | Face>, amoun
 export function extrude(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, amount: number, options?: ExtrudeFunctionOptions): Part | Shell;
 export function revolve(profile: Sketch | Face | ShapeList<Sketch | Face>, axis?: Axis | null, angle?: number): Part;
 export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, axis?: Axis | null, angle?: number): Part | Shell;
-export function loft(sections: readonly (Sketch | Face | ShapeList<Sketch | Face>)[], options?: {
-    ruled?: boolean;
-    smooth?: boolean;
-}): Part;
-export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options?: {
+export type LoftOptions = {
     ruled?: boolean;
     smooth?: boolean;
     startTangent?: Axis | VectorLike | null;
     endTangent?: Axis | VectorLike | null;
     closed?: boolean;
-}): Part | Shell;
+};
+export function loft(sections: readonly (Sketch | Face | ShapeList<Sketch | Face>)[], options?: LoftOptions): Part;
+export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options?: LoftOptions): Part | Shell;
 export interface SweepOptions {
     orient?: boolean;
     translational?: boolean;
@@ -1356,18 +1429,31 @@ export interface SweepOptions {
 export function sweep(profile: Sketch | Face | ShapeList<Sketch | Face>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part;
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
 export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell;
-export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;
-export function chamfer(edges: unknown, length: number, options?: ChamferOptions): Part | Sketch;
-export function shell(part: Part, thickness: number, openings?: unknown, options?: {
+export function fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
+export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sketch;
+export function fillet(edges: EdgesLike | Vertex | readonly Vertex[], radius: FilletRadius, options?: FilletOptions): Part | Sketch;
+export function chamfer(edges: EdgesLike, length: number, options?: ChamferOptions): Part;
+export function chamfer(vertices: Vertex | readonly Vertex[], length: number): Sketch;
+export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: number, options?: ChamferOptions): Part | Sketch;
+export function shell(part: Part, thickness: number, openings?: FacesLike | null, options?: {
     outward?: boolean;
     corners?: string | null;
     walls?: unknown;
 }): Part;
-export function offset(shape: Part | Sketch | Shell | Face, distance: number, options?: {
+export type OffsetFunctionOptions = {
     corners?: string;
     round?: boolean | null;
-}): Part | Sketch | Shell;
+    plane?: Plane | null;
+};
+export function offset(shape: Part, distance: number, options?: OffsetFunctionOptions): Part;
+export function offset(shape: Sketch, distance: number, options?: OffsetFunctionOptions): Sketch;
+export function offset(shape: Shell | Face, distance: number, options?: OffsetFunctionOptions): Shell;
+export function offset(shape: Wire, distance: number, options?: OffsetFunctionOptions): Wire;
+export function offset(shape: Edge, distance: number, options?: OffsetFunctionOptions): Edge;
+export function offset(shape: Part | Sketch | Shell | Face | Wire | Edge, distance: number, options?: OffsetFunctionOptions): Part | Sketch | Shell | Wire | Edge;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
+export function split(part: Part, plane: Plane | Face | Shell, keep: 'both'): [Part, Part];
+export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below'): Part;
 export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
@@ -1451,6 +1537,8 @@ export function unroll(shape: Edge, options: UnrollOptions): Edge;
 export function unroll(shape: Wire, options: UnrollOptions): Wire;
 export function unroll(shape: VectorLike, options: UnrollOptions): Vector;
 export function unroll(shape: readonly VectorLike[], options: UnrollOptions): Vector[];
+export type LatticeLayers = number | null | readonly number[];
+export type LatticeIndex = readonly [LatticeLayers, LatticeLayers, LatticeLayers];
 export class Lattice {
     points: number[][][][];
     constructor(box: BoundBox | {
@@ -1638,8 +1726,8 @@ export class Mesh {
     rotate(axis?: Axis, angle?: number): Mesh;
     mirror(plane?: Plane | Face | Axis | ShapeList<Face>): Mesh;
     scale(factor: number | VectorLike, center?: VectorLike): Mesh;
-    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
-    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit | null)[];
+    raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<null>[];
+    raycastMany(origins: Iterable<VectorLike>, directions: VectorLike | Axis | Iterable<VectorLike | Axis>): (Hit<null> | null)[];
     isClosed(): boolean;
     section(plane?: Plane | Face): ShapeList<Wire>;
     slices(step: number, axis?: Axis | VectorLike): ShapeList<Wire>[];
@@ -1665,16 +1753,18 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | 
 
 ```ts
 export type ShapesLike = Shape | Mesh | (Iterable<ShapesLike> & object);
-export function exportFile(shapes: ShapesLike, path: string, options?: Record<string, Any>): void;
-export function toFile(shapes: ShapesLike, name: string, options?: Record<string, Any>): string | Uint8Array;
-export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell>;
+export type StepItemsLike = Shape | Mesh | Vector | Plane | StepCurve | StepPoint | StepFrame | StepModel | (Iterable<StepItemsLike> & object);
+export type FileItemsLike = StepItemsLike | DxfShapesLike;
+export function exportFile(shapes: FileItemsLike, path: string, options?: Record<string, Any>): void;
+export function toFile(shapes: FileItemsLike, name: string, options?: Record<string, Any>): string | Uint8Array;
+export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> | Shape | ShapeList<Shape>;
 export interface StepExportOptions {
     unit?: string;
     name?: string | null;
     assembly?: boolean;
 }
-export function exportStep(shapes: ShapesLike, path: string, options?: StepExportOptions): void;
-export function toStep(shapes: ShapesLike, options?: StepExportOptions): string;
+export function exportStep(shapes: StepItemsLike, path: string, options?: StepExportOptions): void;
+export function toStep(shapes: StepItemsLike, options?: StepExportOptions): string;
 export interface MeshOptions {
     tolerance?: number | null;
     angle?: number;
@@ -1701,15 +1791,15 @@ export function exportGltf(shapes: ShapesLike, path: string, options?: GltfOptio
 export function toSmb(shapes: ShapesLike, options?: {
     ascii?: boolean;
 }): Uint8Array;
-export function fromSmb(data: string | Uint8Array): Part | Shell;
-export function toSmp(shapes: unknown, options?: {
+export function fromSmb(data: string | BytesLike): Part | Shell;
+export function toSmp(shapes: ShapesLike, options?: {
     ascii?: boolean;
 }): Uint8Array;
-export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape>;
-export function save(shapes: unknown, path: string, options?: {
+export function fromSmp(data: string | BytesLike): Shape | ShapeList<Shape>;
+export function save(shapes: ShapesLike, path: string, options?: {
     ascii?: boolean;
 }): void;
-export function load(path: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell>;
+export function load(path: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> | Shape | ShapeList<Shape>;
 export class StepFrame {
     readonly name: string;
     readonly plane: Plane;
@@ -1769,7 +1859,7 @@ export interface IgesImportOptions {
     heal?: boolean;
     strict?: boolean;
 }
-export function fromIges(data: string | Uint8Array, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function fromIges(data: string | BytesLike, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export function importIges(path: string, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export interface DxfReadOptions {
     layers?: Iterable<string> | string | null;
@@ -1785,9 +1875,10 @@ export interface DxfWriteOptions {
 export function importDxfWires(path: string, options?: DxfReadOptions): ShapeList<Wire>;
 export function fromDxfWires(data: string | BytesLike, options?: DxfReadOptions): ShapeList<Wire>;
 export function importDxf(path: string, options?: DxfReadOptions): Sketch;
-export function fromDxf(data: string | Uint8Array, options?: DxfReadOptions): Sketch;
-export function exportDxf(shapes: unknown, path: string, options?: DxfWriteOptions): void;
-export function toDxf(shapes: unknown, options?: DxfWriteOptions): string;
+export function fromDxf(data: string | BytesLike, options?: DxfReadOptions): Sketch;
+export type DxfShapesLike = ShapesLike | DrawingView | (Iterable<DxfShapesLike> & object);
+export function exportDxf(shapes: DxfShapesLike, path: string, options?: DxfWriteOptions): void;
+export function toDxf(shapes: DxfShapesLike, options?: DxfWriteOptions): string;
 export class DrawingView {
     readonly name: string;
     readonly direction: Vector;
@@ -1803,7 +1894,7 @@ export interface DrawingViewsOptions {
     tangentEdges?: boolean;
     gap?: number | null;
 }
-export function drawingViews(part: _Body, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
+export function drawingViews(part: Part | Shell, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
 export interface SvgOptions {
     margin?: number | null;
     stroke?: number | null;
@@ -1815,6 +1906,7 @@ export interface UsdExportOptions {
     tolerance?: number | null;
     angle?: number;
     materials?: boolean;
+    maxEdge?: number | null;
 }
 export function toUsd(shapes: ShapesLike, options?: UsdExportOptions): string;
 export function exportUsd(shapes: ShapesLike, path: string, options?: UsdExportOptions): void;
@@ -1837,7 +1929,8 @@ export interface BrepImportOptions {
 export function toBrep(shapes: unknown): string;
 export function exportBrep(shapes: unknown, path: string): void;
 export function importBrep(path: string, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
-export function fromBrep(data: string | Uint8Array, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function fromBrep(data: string | BytesLike, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export type BytesLike = Uint8Array | ArrayBufferView | ArrayBuffer;
 ```
 
 ### Pictures and the viewer
@@ -2070,9 +2163,25 @@ export function scope<T>(fn: () => T): T;
 export class BrepHandle extends Handle {
     sound: number;
     props: Any;
+    tags: [
+        number[][],
+        number[][]
+    ] | null;
+    shells: [
+        Any[],
+        number[][]
+    ] | null;
+    merged: {
+        parts: Any[];
+        placement: Float64Array;
+        cells: Any[][] | null;
+    } | null;
+    sources: Any[] | null;
+    meshes: Map<string, any>;
     imported: boolean;
     constructor(brep: number);
     get brep(): number;
+    set brep(brep: number);
 }
 export class CurveHandle extends Handle {
     constructor(curve: number);

@@ -1,7 +1,7 @@
 ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('smlibpy model'),'2;1');
-FILE_NAME('parts.step','2026-10-22T12:19:27',(''),(''),'smlibpy','smlibpy (SMLib kernel)','');
+FILE_NAME('parts.step','2026-10-22T14:34:35',(''),(''),'smlibpy','smlibpy (SMLib kernel)','');
 FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
 ENDSEC;
 DATA;
@@ -17,7 +17,7 @@ DATA;
 #10=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));
 #11=(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.));
 #12=(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT());
-#13=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#10,'distance_accuracy_value','confusion accuracy');
+#13=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-7),#10,'distance_accuracy_value','confusion accuracy');
 #14=(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#13)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#10,#11,#12)) REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'));
 #15=CARTESIAN_POINT('',(0.,0.,0.));
 #16=DIRECTION('',(0.,0.,1.0));

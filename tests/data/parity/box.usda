@@ -9,7 +9,7 @@
 def Xform "World"
 {
     def BrepArray "box" (
-        prepend apiSchemas = ["BrepPointAPI:vertexPoint", "BrepCurve3dNurbAPI:edge3dNurb", "BrepCurveUvNurbAPI", "BrepSurfacePlaneAPI"]
+        prepend apiSchemas = ["BrepPointAPI:vertexPoint", "BrepCurve3dLineAPI:edge3dLine", "BrepCurveUvNurbAPI", "BrepSurfacePlaneAPI"]
         customData = {
             string source = "smlibpy"
         }
@@ -39,7 +39,7 @@ def Xform "World"
         uniform token[] edgeuse:orientationType = ["same", "same", "opposite", "opposite", "opposite", "same", "same", "opposite", "same", "same", "opposite", "opposite", "opposite", "same", "same", "opposite", "opposite", "same", "same", "opposite", "same", "same", "opposite", "opposite"]
         uniform uint[] edgeuse:nextRadialEUIndex = [11, 23, 13, 17, 9, 19, 15, 21, 16, 4, 20, 0, 18, 2, 22, 6, 8, 3, 12, 5, 10, 7, 14, 1]
         uniform token[] edgeuse:thisRadialEntryType = ["topEntry", "topEntry", "bottomEntry", "bottomEntry", "topEntry", "bottomEntry", "topEntry", "topEntry", "bottomEntry", "bottomEntry", "topEntry", "bottomEntry", "bottomEntry", "topEntry", "topEntry", "bottomEntry", "topEntry", "topEntry", "topEntry", "topEntry", "bottomEntry", "bottomEntry", "bottomEntry", "bottomEntry"]
-        uniform token[] edge:curveType = ["BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI", "BrepCurve3dNurbAPI"]
+        uniform token[] edge:curveType = ["BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI", "BrepCurve3dLineAPI"]
         uniform double[] edge:range = [0, 20, 0, 30, 0, 20, 0, 20, 0, 20, 0, 10, 0, 10, 0, 30, 0, 10, 0, 30, 0, 10, 0, 30]
         uniform int2[] edge:vertexIndices = [(4, 0), (5, 0), (2, 6), (1, 5), (3, 7), (7, 0), (2, 1), (2, 3), (3, 4), (1, 4), (6, 5), (6, 7)]
         uniform token[] wireEdge:curveType = []
@@ -47,11 +47,8 @@ def Xform "World"
         uniform int2[] wireEdge:vertexIndices = []
         uniform token[] vertex:pointType = ["BrepPointAPI", "BrepPointAPI", "BrepPointAPI", "BrepPointAPI", "BrepPointAPI", "BrepPointAPI", "BrepPointAPI", "BrepPointAPI"]
         uniform point3d[] brep:vertexPoint:point:position = [(15, 10, 5), (-15, -10, 5), (-15, -10, -5), (15, -10, -5), (15, -10, 5), (-15, 10, 5), (-15, 10, -5), (15, 10, -5)]
-        uniform point3d[] brep:edge3dNurb:curve3d:nurb:controlVertices = [(15, -10, 5), (15, 10, 5), (-15, 10, 5), (15, 10, 5), (-15, -10, -5), (-15, 10, -5), (-15, -10, 5), (-15, 10, 5), (15, -10, -5), (15, 10, -5), (15, 10, -5), (15, 10, 5), (-15, -10, -5), (-15, -10, 5), (-15, -10, -5), (15, -10, -5), (15, -10, -5), (15, -10, 5), (-15, -10, 5), (15, -10, 5), (-15, 10, -5), (-15, 10, 5), (-15, 10, -5), (15, 10, -5)]
-        uniform uint[] brep:edge3dNurb:curve3d:nurb:vertexCount = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
-        uniform uint[] brep:edge3dNurb:curve3d:nurb:order = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
-        uniform double[] brep:edge3dNurb:curve3d:nurb:knots = [0, 0, 20, 20, 0, 0, 30, 30, 0, 0, 20, 20, 0, 0, 20, 20, 0, 0, 20, 20, 0, 0, 10, 10, 0, 0, 10, 10, 0, 0, 30, 30, 0, 0, 10, 10, 0, 0, 30, 30, 0, 0, 10, 10, 0, 0, 30, 30]
-        uniform double[] brep:edge3dNurb:curve3d:nurb:weights = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        uniform point3d[] brep:edge3dLine:curve3d:line:origin = [(15, -10, 5), (-15, 10, 5), (-15, -10, -5), (-15, -10, 5), (15, -10, -5), (15, 10, -5), (-15, -10, -5), (-15, -10, -5), (15, -10, -5), (-15, -10, 5), (-15, 10, -5), (-15, 10, -5)]
+        uniform vector3d[] brep:edge3dLine:curve3d:line:direction = [(0, 1, 0), (1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 0, 1), (0, 0, 1), (1, 0, 0), (0, 0, 1), (1, 0, 0), (0, 0, 1), (1, 0, 0)]
         uniform double2[] brep:curveUv:nurb:controlVertices = []
         uniform uint[] brep:curveUv:nurb:vertexCount = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         uniform uint[] brep:curveUv:nurb:order = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

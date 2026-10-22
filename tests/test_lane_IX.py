@@ -870,13 +870,16 @@ def test_usd_round_trip_keeps_line_circle_and_ellipse_edges(tmp_path, name, make
 
 def test_usd_edges_of_curved_b_spline_faces_stay_b_splines(tmp_path):
     # (a circle on a face the file has as a B-spline surface: its UV curve follows the B-spline's
-    # parameters, which the schema's circle does not keep)
-    part = Polygon([(0, 0), (10, 0), (10, 5), (5, 12), (0, 12)]).revolve(axis=Y)
+    # parameters, which the schema's circle does not keep). The side is a surface of revolution of a
+    # spline: revolves of lines and arcs give cylinders and cones now (lane S: S4).
+    outline = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (8, 6), (10, 12)), Line((10, 12), (0, 12)),
+                    Line((0, 12), (0, 0))])
+    part = make_face(outline).revolve(axis=Y)
     export_usd(part, tmp_path / "r.usda", mesh=False)
     back = import_usd(tmp_path / "r.usda")
     assert back.volume == pytest.approx(part.volume, rel=1e-12) and back.is_valid()
     assert {f.geom_type for f in back.faces()} == {"plane", "bspline"}
-    assert _edge_kinds(back) == {"bspline": 3}
+    assert _edge_kinds(part) == {"circle": 2} and _edge_kinds(back) == {"bspline": 2}
 
 
 def test_usd_reads_lines_and_circles_of_b_spline_edges():

@@ -155,9 +155,11 @@ function make(kernelModule: Any, job: Any): Uint8Array {
       // a fillet or chamfer of a copy's edges by the fillet executive: the kernel changes that body,
       // and its record says how it failed
       const [radii, sections, radii2, faces, law, continuity, thumbweight, toleranceFactor, mitre] = job.args as Any[]
+      ext.clear_kernel_trace()
       const record = ext.round_edges(breps[0], pick(breps[0], 'edges', job.edges), radii, sections, radii2, pick(breps[0], 'faces', faces), law,
         continuity, thumbweight, toleranceFactor, mitre)
-      value = { brep: body(breps[0]), record }
+      // (where the kernel gave up, KernelError.trace)
+      value = { brep: body(breps[0]), record: record.status == null ? record : { ...record, trace: ext.kernel_trace()[0] } }
     } else {
       throw new TypeError(`no kernel step ${job.op}`)
     }

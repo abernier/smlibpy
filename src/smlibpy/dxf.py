@@ -918,24 +918,26 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
         tolerance: For ``curves="arcs"``: the largest distance between a curve and its lines and
             arcs, in millimeters (the model's unit).
     """
-    text = _dxf(shapes, unit, plane, "export_dxf")
+    text = _dxf(shapes, unit, plane, "export_dxf", curves, tolerance)
     with open(os.fspath(path), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
 
 
-def to_dxf(shapes: Any, *, unit: str = "mm", plane: Plane | None = None) -> str:
+def to_dxf(shapes: Any, *, unit: str = "mm", plane: Plane | None = None, curves: str = "exact",
+           tolerance: float = 0.01) -> str:
     """The text of a DXF drawing (AutoCAD 2000, AC1015) of sketches, faces, wires and edges, as
-    :func:`export_dxf` writes it; ``unit`` and ``plane`` as there."""
-    return _dxf(shapes, unit, plane, "to_dxf")
+    :func:`export_dxf` writes it; ``unit``, ``plane``, ``curves`` and ``tolerance`` as there."""
+    return _dxf(shapes, unit, plane, "to_dxf", curves, tolerance)
 
 
-def _dxf(shapes: Any, unit: str, plane: Plane | None, what: str) -> str:
+def _dxf(shapes: Any, unit: str, plane: Plane | None, what: str, curves: str = "exact",
+         tolerance: float = 0.01) -> str:
     if unit not in _UNITS:
         raise ValueError(f"unknown unit {unit!r}; use {_UNIT_NAMES}")
     if curves not in ("exact", "arcs"):
-        raise ValueError(f"export_dxf: curves is 'exact' or 'arcs', not {curves!r}")
+        raise ValueError(f"{what}: curves is 'exact' or 'arcs', not {curves!r}")
     if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
-        raise ValueError(f"export_dxf: the tolerance must be positive, got {tolerance!r}")
+        raise ValueError(f"{what}: the tolerance must be positive, got {tolerance!r}")
     mm_per_unit, code = _UNITS[unit]
     items = _drawable(shapes, what)
     if not items:

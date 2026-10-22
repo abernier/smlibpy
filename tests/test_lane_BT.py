@@ -512,8 +512,9 @@ SHIFTS = [(-0.0524, 0.0088, -0.026), (0.0208, 0.0251, -0.0869), (-0.0974, 0.0675
 
 def test_a_healed_closed_sheet_is_a_part():
     faces = Box(20, 20, 20).faces()
-    sheet = stitch([f.to_shell().translate(*d) for f, d in zip(faces, SHIFTS)], tolerance=0.5)
-    assert type(sheet) is Shell
+    sewn = stitch([f.to_shell().translate(*d) for f, d in zip(faces, SHIFTS)], tolerance=0.5)
+    assert type(sewn) is Part  # (stitch gives the solid it sews shut, lane U: U5)
+    sheet = Shell._wrap(sewn._copy_brep())  # the same faces as a sheet
     healed = sheet.heal()
     assert type(healed) is Part and healed.is_valid()
     with pytest.warns(RuntimeWarning, match="do not meet exactly"):
@@ -778,11 +779,12 @@ def test_face_colors_and_names_in_files(tmp_path):
     back = import_step(tmp_path / "hollow.step")
     assert sorted(round(f.area, 6) for f in back.faces() if f.color == to_rgb("lime")) == [40, 40, 40, 40, 100, 100]
     # glTF: a primitive per color (the body's, red, gold) and the edges
-    from smlibpy.exporters import gltf_document
+    from smlibpy.exporters import _linear_rgb, gltf_document
 
     doc, _ = gltf_document(part)
     colors = [m["pbrMetallicRoughness"]["baseColorFactor"][:3] for m in doc["materials"]]
-    assert colors[:3] == [approx(list(to_rgb("steelblue"))), approx(list(RED)), approx(list(GOLD))]
+    # (glTF holds linear values, lane M: GLTF-COLOR)
+    assert colors[:3] == [approx(list(_linear_rgb(c))) for c in ("steelblue", RED, GOLD)]
     assert [p["mode"] for p in doc["meshes"][0]["primitives"]] == [4, 4, 4, 1]
     # USD: a color per triangle of the mesh
     export_usd(part, tmp_path / "plate.usda")

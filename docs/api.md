@@ -8,13 +8,13 @@ Everything below is importable from `smlibpy` directly.
      tests/test_lane_WN.py checks that the list holds every public member of _Body. -->
 ::: smlibpy.shapes.Part
     options:
-      inherited_members: [bbox, closest_point, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, silhouette, to_nurbs, vertices, wires]
+      inherited_members: [bbox, check, closest_point, closest_points, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, raycast_many, silhouette, to_nurbs, vertices, wires]
 ::: smlibpy.shapes.Sketch
     options:
-      inherited_members: [bbox, closest_point, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, silhouette, to_nurbs, vertices, wires]
+      inherited_members: [bbox, check, closest_point, closest_points, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, raycast_many, silhouette, to_nurbs, vertices, wires]
 ::: smlibpy.shapes.Shell
     options:
-      inherited_members: [bbox, closest_point, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, silhouette, to_nurbs, vertices, wires]
+      inherited_members: [bbox, check, closest_point, closest_points, color, colored, compact, distance_to, edges, faces, heal, info, intersection_curves, name, named, outline, project, raycast, raycast_many, silhouette, to_nurbs, vertices, wires]
 ::: smlibpy.shapes.Face
 ::: smlibpy.shapes.Edge
 ::: smlibpy.shapes.Wire

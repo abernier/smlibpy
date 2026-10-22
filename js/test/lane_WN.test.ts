@@ -636,19 +636,20 @@ test('fillets and chamfers of parts read from files run in the probe worker (N1)
   assert.equal(moved._h.imported, true) // (made from it)
   let rounded: Part | null = null
   let beveled: Part | null = null
-  const there = counting(k, ['fillet_edges'], () => {
+  // (the fillet executive, lane FO: F8)
+  const there = counting(ext, ['round_edges'], () => {
     rounded = moved.fillet(moved.edges().filter((e) => e.center().z > 11 && e.geomType === 'line'), 1)
     beveled = moved.chamfer(moved.edges().circles().filter((e) => e.center().z > 11), 0.5)
   })
-  assert.equal(there.fillet_edges, 0)
+  assert.equal(there.round_edges, 0)
   assert.ok(rounded!.isValid() && beveled!.isValid() && rounded!.volume < moved.volume && beveled!.volume < moved.volume)
   assert.equal(rounded!._h.imported, true)
   const own = made.translate(1, 2, 3).cut(Box(4, 4, 30).translate(11, 12, 3))
   let same = 0
-  const here = counting(k, ['fillet_edges'], () => {
+  const here = counting(ext, ['round_edges'], () => {
     same = own.fillet(own.edges().filter((e) => e.center().z > 11 && e.geomType === 'line'), 1).volume
   })
-  assert.equal(here.fillet_edges, 1) // (a part made here: in this kernel)
+  assert.equal(here.round_edges, 1) // (a part made here: in this kernel)
   assert.ok(Math.abs(same - rounded!.volume) < 1e-9 * same)
 })
 
@@ -857,8 +858,14 @@ test('cells() of a merge that crashes the kernel\'s stitcher throw (N1)', () => 
   // Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() reads a null
   // polar box (SmBezierAux2d::BuildPolarBox) on this merge; smlibwasm trapped. It runs in the probe
   // worker now, and the kernel the call runs on is left alone.
-  const m = Cone(3, 0, 4).rotate(X, 90).merge(Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3))
-  // (smlibpy's merge holds 149.19267, this one 145.98511: a divergence the fuzz run lists too)
+  // Part.merge turns the cylinder about its axis now (lane BT: B6, its seam ran along the cone): the
+  // right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge, as before,
+  // still crashes the stitcher.
+  const a = Cone(3, 0, 4).rotate(X, 90)
+  const b = Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)
+  assert.ok(Math.abs(a.merge(b).volume - 150.26185413540605) < 1e-6)
+  const m = Part._wrap(k.non_manifold_boolean(a._copyBrep(), b._copyBrep(), { operation: k.BooleanOp.MERGE }))
+  // (smlibpy's raw merge holds 149.19267, this one 145.98511: a divergence the fuzz run lists too)
   assert.ok(m.volume > 113.0973 && m.volume < 150.7964)
   assert.throws(() => m.cells(), (e: unknown) => e instanceof KernelError && /cells failed/.test(e.message) && /the kernel crashed/.test(e.detail))
   assert.ok(Math.abs(Box(30, 20, 10).cut(Cylinder(4, 20)).volume - 5497.3452) < 1e-3) // (this kernel goes on)
@@ -1286,7 +1293,7 @@ test('fromFile and toFile: load and exportFile of files in memory, the format by
   assert.match(toFile(part, 'part.obj') as string, /^v /m)
   approx((fromFile(toFile(Rectangle(10, 20), 'r.dxf'), 'R.DXF') as Sketch).area, 200, 1e-9)
   assert.equal((toFile(part, 'a.stl', { ascii: true }) as Uint8Array).subarray(0, 5).toString(), '115,111,108,105,100') // "solid"
-  assert.throws(() => fromFile('x', 'a.txt'), { name: 'RangeError', message: "unknown file type '.txt'; fromFile reads .step, .stp, .stl, .smb, .dxf and .usda" })
+  assert.throws(() => fromFile('x', 'a.txt'), { name: 'RangeError', message: "unknown file type '.txt'; fromFile reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep" })
   assert.throws(() => toFile(part, 'a.usdz'), { name: 'RangeError', message: 'toFile writes text USD (.usda, .usd), not .usdz' })
   assert.throws(() => toFile(part, 'a'), { name: 'RangeError', message: /unknown file type ''/ })
   assert.throws(() => toFile(part, 'a.stl', { asci: true }), { name: 'TypeError', message: /toStl\(\) got an unexpected option 'asci'/ })
@@ -1331,7 +1338,8 @@ test('the module\'s own bindings take the parameters SmPyLib gives them, and giv
     assert.deepEqual(sig, smpylib[name], name)
     compared++
   }
-  assert.equal(compared, 65)
+  // (65, and the hand-written create_partial_cylinder, _cone, _sphere (lane S: S13) and stitch_advanced (lane IX: I5))
+  assert.equal(compared, 69)
   // the same calls through both: the results agree
   const b = k.create_box([0, 0, 0], 10, 20, 30)
   const s = k.smpylib.create_box([0, 0, 0], 10, 20, 30)
@@ -1398,8 +1406,9 @@ test('the calls SmPyLib has that smlibwasm does not wrap work, with Python\'s de
     assert.deepEqual(Object.keys(k.tessellation_defaults()).sort(), ['chord_height_tolerance', 'curve_angle_tolerance_deg', 'max_aspect_ratio',
       'max_edge_length', 'surface_angle_tolerance_deg'])
     // errors: Python's ValueError a RangeError, its TypeError a TypeError, the kernel's an Error
-    assert.throws(() => k.create_partial_cylinder([0, 0], 10, 20, 0, 90), { name: 'RangeError', message: 'Expected a 3-tuple for vector' })
-    assert.throws(() => k.create_partial_cylinder([0, 0, 0], 'ten', 20, 0, 90), { name: 'TypeError', message: 'a number was expected, not string' })
+    // (create_pyramid: the partial primitives have hand-written bindings now, lane S: S13)
+    assert.throws(() => k.create_pyramid([0, 0], 10, 6), { name: 'RangeError', message: 'Expected a 3-tuple for vector' })
+    assert.throws(() => k.create_pyramid([0, 0, 0], 'ten', 6), { name: 'TypeError', message: 'a number was expected, not string' })
     assert.throws(() => k.create_pyramid([0, 0, 0], -10, 6), (e: unknown) => e instanceof Error && /^SmApiCreatePyramid failed: SM_ERR_/.test(e.message))
     assert.throws(() => k.brep_tessellate(a, { allow_partial: true }), { name: 'RangeError', message: /allow_partial=True requires/ })
     assert.throws(() => k.create_pyramid([0, 0, 0], 10), { name: 'TypeError', message: 'create_pyramid: missing argument height' })
@@ -1450,6 +1459,12 @@ test('@classcad/smlibwasm/kernel is an entry of the package, with its declaratio
 // ================================================================================ N6: where the kernel gave up
 const TRACE_ENTRY = /^SM_[A-Z_]+ at \w+\.cpp:\d+( \(.+\))?$/
 
+/** A cut the kernel fails (SmMerge::MakeFaceuse) in both builds. */
+const failingCut = (): Part =>
+  Box(20, 20, 20)
+    .cut(Cylinder(3, 40).rotate(Z, 45))
+    .cut(Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0))
+
 function rawFillet(b: number = Box(10, 10, 10)._copyBrep()): void {
   try {
     k.fillet_edges(b, k.brep_edges(b), { radius: 50 }) // (a kernel function's own Error)
@@ -1462,7 +1477,11 @@ test('kernel errors say where the kernel gave up: KernelError.trace (N6)', () =>
   // Release builds compiled the kernel's error reports out: a KernelError said "SM_ERR at
   // <binding>" and no more. Kernel patch K11 (SmMessages.h) reports each failure; the trail keeps
   // the last 48, the failing chain at its end.
-  assert.throws(() => Cylinder(3, 40).translate(0, 3, 0).fuse(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), (e: unknown) => {
+  // (the kernel's own Boolean: smlibwasm's turns the second cylinder about its axis and succeeds now,
+  // lane BT: B4)
+  const holeA = Cylinder(3, 40).translate(0, 3, 0)
+  const holeB = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+  assert.throws(() => kernelCall('fuse', () => k.boolean(holeA._copyBrep(), holeB._copyBrep(), { operation: k.BooleanOp.UNION })), (e: unknown) => {
     assert.ok(e instanceof KernelError)
     assert.ok(Object.isFrozen(e.trace) && e.trace.length > 0 && e.trace.every((t) => TRACE_ENTRY.test(t)), String(e.trace))
     // (the WebAssembly kernel gives up in SmMerge::MakeFaceuse where the native one stops in
@@ -1475,9 +1494,9 @@ test('kernel errors say where the kernel gave up: KernelError.trace (N6)', () =>
   const p = Box(10, 5, 20).cut(Cone(4, 5, 20))
   assert.throws(() => p.fillet(p.edges(), 0.5), (e: unknown) => {
     assert.ok(e instanceof KernelError && /cannot round the selection/.test(e.message))
-    assert.deepEqual(e.trace.map((t) => t.split(' at ')[0]), ['SM_ERR_INVALID_INPUT', 'SM_ERR_INVALID_INPUT', 'SM_ERR_INVALID_INPUT'])
+    // (the fillet executive itself, lane FO: F8; no SmApiFilletEdges around it)
+    assert.deepEqual(e.trace.map((t) => t.split(' at ')[0]), ['SM_ERR_INVALID_INPUT'])
     assert.match(e.trace[0], /\(CreateFilletCorners\)$/)
-    assert.match(e.trace[2], /\(SmApiFilletEdges\)$/)
     return true
   })
   assert.deepEqual(new KernelError('probe', 'detail').trace, [])
@@ -1505,7 +1524,8 @@ test('the kernel trace keeps the last failures (N6)', () => {
 test('the kernel trace comes back from a probe worker and from a KernelWorker (N6)', async () => {
   const old = setGuardBooleans(true)
   try {
-    assert.throws(() => Cylinder(3, 40).translate(0, 3, 0).fuse(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), (e: unknown) => {
+    // (a cut that still fails: the crossing holes fuse now, lane BT: B4)
+    assert.throws(() => failingCut(), (e: unknown) => {
       assert.ok(e instanceof KernelError && e.trace.length > 0 && /\(SmApiBoolean\)$/.test(e.trace.at(-1) as string), String((e as KernelError).trace))
       return true
     })
@@ -1535,8 +1555,11 @@ test('the vase fillets that the native arm64 build makes fail here, and say wher
     const vase = fromSmb(readFileSync(new URL(`${name}.smb`, folder))) as Part
     assert.throws(() => vase.fillet(vase.edges(), 0.2), (e: unknown) => {
       assert.ok(e instanceof KernelError && e.status === 'SM_ERR')
-      const chain = e.trace.slice(-6).map((t) => /\((\w+)\)$/.exec(t)?.[1])
-      assert.deepEqual(chain, ['LoadInitialValues', 'RailEdgeuseIntersect', 'CalcRailIntEdgeuse', 'CalcCornerVertGeom', 'DoFillet', 'SmApiFilletEdges'])
+      // (the fillet executive's own record, lane FO: F8: the corner it could not build, and the trace up
+      // to it; the executive returns its failure rather than raising it through DoFillet)
+      assert.match(e.message, /could not build the corner at/)
+      const chain = e.trace.slice(-4).map((t) => /\((\w+)\)$/.exec(t)?.[1])
+      assert.deepEqual(chain, ['LoadInitialValues', 'RailEdgeuseIntersect', 'CalcRailIntEdgeuse', 'CalcCornerVertGeom'])
       return true
     })
   }

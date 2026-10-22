@@ -8,7 +8,7 @@
 
 import { _opts } from './kernel.ts'
 import { BoundBox, Location, Plane, Vector } from './geometry.ts'
-import { Edge, Face, Part, ShapeList, Wire, _Body, _list, _typeName } from './shapes.ts'
+import { Edge, Face, Part, Shell, ShapeList, Wire, _Body, _list, _typeName } from './shapes.ts'
 import { _edgePoints, _entity, _samplesFor } from './dxf.ts'
 import { _fs } from './exporters.ts'
 
@@ -89,7 +89,7 @@ export interface DrawingViewsOptions {
  * view's x (the model's X). Write them with `exportDxf`/`toDxf` (layers VISIBLE and HIDDEN, the
  * hidden lines dashed) or `exportSvg`/`toSvg`.
  */
-export function drawingViews(part: _Body, views: string | readonly string[] = ['front', 'top', 'left'], options: DrawingViewsOptions = {}): DrawingView[] {
+export function drawingViews(part: Part | Shell, views: string | readonly string[] = ['front', 'top', 'left'], options: DrawingViewsOptions = {}): DrawingView[] {
   _opts('drawingViews', options)
   const { projection = 'first-angle', hidden = true, tangentEdges = false } = options
   let gap = options.gap ?? null

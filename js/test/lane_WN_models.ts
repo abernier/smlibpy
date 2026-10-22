@@ -107,4 +107,8 @@ export function caughtCrash(): number {
 export const crashes = (): number => memoryUsage().crashes
 
 /** Two holes whose seams lie tangent to each other: a Boolean the kernel refuses (N6's trace). */
-export const crossingHoles = (): Part => Cylinder(3, 40).translate(0, 3, 0).fuse(Cylinder(3, 40).rotate(Axis.Y, 90).translate(0, 0, 3))
+// (a cut the kernel fails: the crossing holes this was named for fuse now, lane BT: B4)
+export const crossingHoles = (): Part =>
+  Box(20, 20, 20)
+    .cut(Cylinder(3, 40).rotate(Axis.Z, 45))
+    .cut(Cylinder(2, 40).rotate(Axis.Z, 45).rotate(Axis.X, 90).translate(1, 0, 0))

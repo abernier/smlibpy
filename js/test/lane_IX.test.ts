@@ -74,7 +74,7 @@ import {
   toSmp,
   toStl,
 } from '../src/index.ts'
-import { Axis, Ellipse, exportBrep, extrude, fromBrep, importBrep, loft, toBrep } from '../src/index.ts'
+import { Axis, Ellipse, exportBrep, extrude, fromBrep, importBrep, loft, makeFace, toBrep } from '../src/index.ts'
 import { KernelError, ext, k } from '../src/kernel.ts'
 import { interpret, parse } from '../src/step_reader.ts'
 import { approx } from './_approx.ts'
@@ -986,13 +986,16 @@ for (const [name, make] of _ROUND_TRIPS) {
 
 test('usd edges of curved b-spline faces stay b-splines', () => {
   // (a circle on a face the file has as a B-spline surface: its UV curve follows the B-spline's
-  // parameters, which the schema's circle does not keep)
-  const part = Polygon([0, 0], [10, 0], [10, 5], [5, 12], [0, 12]).revolve(Y)
+  // parameters, which the schema's circle does not keep). The side is a surface of revolution of a
+  // spline: revolves of lines and arcs give cylinders and cones now (lane S: S4).
+  const outline = new Wire([Line([0, 0], [10, 0]), Spline([10, 0], [8, 6], [10, 12]), Line([10, 12], [0, 12]), Line([0, 12], [0, 0])])
+  const part = makeFace(outline).revolve(Y)
   const back = fromUsd(toUsd(part, { mesh: false })) as Part
   approx(back.volume, part.volume, 1e-12 * part.volume)
   assert.ok(back.isValid())
   assert.deepEqual([...new Set(back.faces().map((f) => f.geomType))].sort(), ['bspline', 'plane'])
-  assert.deepEqual(_edgeKinds(back), { bspline: 3 })
+  assert.deepEqual(_edgeKinds(part), { circle: 2 })
+  assert.deepEqual(_edgeKinds(back), { bspline: 2 })
 })
 
 test('usd reads lines and circles of b-spline edges', () => {
@@ -1806,7 +1809,7 @@ test('brep malformed files throw', () => {
   const looped = box.replace('So\n\n1100000\n+2 0 *', 'So\n\n1100000\n+1 0 *')
   assert.notEqual(looped, box)
   assert.throws(() => fromBrep(looped), /fromBrep: the file is malformed: shape \d+ is made of shape \d+, which is not written before it/)
-  assert.throws(() => fromBrep(3 as unknown as string), (e: unknown) => e instanceof TypeError && /fromBrep reads the contents of a .brep file as a Uint8Array or a string, not number/.test(e.message))
+  assert.throws(() => fromBrep(3 as unknown as string), (e: unknown) => e instanceof TypeError && /fromBrep reads the contents of a .brep file as a string or bytes \(a Uint8Array or an ArrayBuffer\), not number/.test(e.message))
 })
 
 function brepShapes(): Record<string, Part> {

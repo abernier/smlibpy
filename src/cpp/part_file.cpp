@@ -16,6 +16,7 @@
 // writes each of their values twice), and the format holds no assembly placements (the kernel's
 // assembly reader and writer are empty).
 
+#include "history.h"
 #include "kernel.h"
 #include "part_file.h"
 
@@ -136,6 +137,7 @@ std::string part_bytes(const std::vector<PartItem>& items, bool ascii)
         {
             SmBrep* copy = new (ctx()) SmBrep(*item.brep, nullptr, nullptr, TRUE, FALSE);
             copies.breps.Add(copy);
+            untag_topology(copy);  // (where its faces and edges came from belongs to this session, not the file)
             tag(copy, item, place);
         }
         else if (item.curve)

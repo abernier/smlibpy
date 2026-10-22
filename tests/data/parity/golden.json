@@ -72,7 +72,7 @@
    "valid": true,
    "bbox": [
     -7.000000000000001,
-    -7.0,
+    -7.000000000000001,
     -7.0,
     7.000000000000002,
     7.000000000000002,
@@ -101,7 +101,7 @@
    ]
   },
   "twist": {
-   "volume": 39999.99990742195,
+   "volume": 39999.99990742194,
    "area": 8832.777970891397,
    "faces": 6,
    "edges": 12,
@@ -168,8 +168,8 @@
    "faces": 2
   },
   "cone cylinder merge": {
-   "volume": 149.1926689941786,
-   "faces": 7,
+   "volume": 150.26185413540605,
+   "faces": 8,
    "valid": false
   },
   "vase1 fillet": {
@@ -233,15 +233,6 @@
     "status": "SM_ERR"
    },
    "why": "W16: as vase1"
-  },
-  "cone cylinder merge": {
-   "fma": true,
-   "wasm": {
-    "volume": 145.98511223791584,
-    "faces": 7,
-    "valid": false
-   },
-   "why": "the fuzz run's csg-153: a cylinder whose axis touches the cone's base circle; both results are invalid bodies (OpenCASCADE: 150.26185 for the union)"
   },
   "dxf 19": {
    "fma": false,

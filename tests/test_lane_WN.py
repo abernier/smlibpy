@@ -227,7 +227,7 @@ def test_fillets_of_parts_read_from_files_run_in_another_process(mode, monkeypat
     cut = part - Box(4, 4, 30).translate(10, 10, 0)
     moved = cut.translate(1, 2, 3)
     assert cut._h.imported and moved._h.imported  # (made from it)
-    monkeypatch.setattr(k, "fillet_edges", _counted(k.fillet_edges))
+    monkeypatch.setattr(ext, "round_edges", _counted(ext.round_edges))  # (the fillet executive, lane FO: F8)
     CALLS["n"] = 0
     rounded = moved.fillet(moved.edges().filter(lambda e: e.center().z > 11 and e.geom_type == "line"), 1)
     beveled = moved.chamfer(moved.edges().circles().filter(lambda e: e.center().z > 11), 0.5)
@@ -444,7 +444,12 @@ def test_cells_that_crash_the_stitcher_raise(mode):
     # Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() reads a null
     # polar box (SmBezierAux2d::BuildPolarBox, from SmBrep::FindInfiniteRegion's ray) on this merge
     # of a cone and a cylinder, and ended the process (exit 139). It runs in another process now.
-    m = Cone(3, 0, 4).rotate(X, 90).merge(Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3))
+    # Part.merge turns the cylinder about its axis now (lane BT: B6, its seam ran along the cone): the
+    # right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge, as before,
+    # still crashes the stitcher.
+    a, b = Cone(3, 0, 4).rotate(X, 90), Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)
+    assert a.merge(b).volume == approx(150.26185413540605, rel=1e-9)
+    m = Part._wrap(k.non_manifold_boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.MERGE))
     assert m.volume == approx(149.1926689941786, rel=1e-9)
     with pytest.raises(KernelError, match="cells failed") as e:
         m.cells()
@@ -464,7 +469,8 @@ def test_free_functions_say_what_a_sketch_or_face_gives():
     assert returns == {
         "extrude": ["Part", "Part | Shell"], "revolve": ["Part", "Part | Shell"], "loft": ["Part", "Part | Shell"],
         "sweep": ["Part", "Part | Shell"], "fillet": ["Sketch", "Part"], "chamfer": ["Sketch", "Part"],
-        "offset": ["Sketch", "Part"], "split": ["tuple[Part, Part]", "Part"],
+        # (offset also moves sheets, faces (lane FO: O7), wires and edges (lane C: C7))
+        "offset": ["Sketch", "Part", "Shell", "Wire", "Edge"], "split": ["tuple[Part, Part]", "Part"],
     }
     assert typing.get_overloads(ops.extrude)[0].__annotations__["profile"] == "Sketch | Face"
     # and so they behave
@@ -701,7 +707,11 @@ _TRACE_ENTRY = __import__("re").compile(r"^SM_[A-Z_]+ at \w+\.cpp:\d+( \(.+\))?$
 
 
 def _crossing_holes():
-    return Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+    # (the kernel's own Boolean: smlibpy's turns the second cylinder about its axis and succeeds now,
+    # lane BT: B4)
+    a, b = Cylinder(3, 40).translate(0, 3, 0), Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+    with shapes.kernel_call("fuse"):
+        return k.boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.UNION)
 
 
 def _raw_fillet(brep=None):
@@ -726,11 +736,12 @@ def test_kernel_errors_say_where_the_kernel_gave_up():
     assert e.value.status == "SM_ERR_BAD_INTERSECTIONS" and e.value.detail.startswith("SmApiBoolean failed:")
     assert "Kernel trace" not in e.value.detail and "SmTopologyIntersector" not in str(e.value)
     # a selection the kernel cannot round: raised again with its hint, with the trace of the first
+    # (the fillet executive itself, lane FO: F8; no SmApiFilletEdges around it)
     p = Box(10, 5, 20) - Cone(4, 5, 20)
     with pytest.raises(KernelError, match="cannot round the selection") as e:
         p.fillet(p.edges(), 0.5)
-    assert [t.split(" at ")[0] for t in e.value.trace] == ["SM_ERR_INVALID_INPUT"] * 3
-    assert e.value.trace[0].endswith("(CreateFilletCorners)") and e.value.trace[-1].endswith("(SmApiFilletEdges)")
+    assert [t.split(" at ")[0] for t in e.value.trace] == ["SM_ERR_INVALID_INPUT"]
+    assert e.value.trace[0].endswith("(CreateFilletCorners)")
     # errors that did not come from a kernel function have none
     assert KernelError("probe", "detail").trace == ()
     with pytest.raises(ModelingError) as e:
@@ -855,8 +866,6 @@ def test_usd_files_smlibpy_writes_again_pass_nvidias_validator(tmp_path):
     # NURBS) and which the plan exempts for them. A body read and checked (SmBrep::AssertValid) carries
     # UV curves; the loop of a sphere's face up and down its seam does not close in them, which BA.763
     # wants: such loops are written without UV curves (read back the same).
-    from test_io import _line_edges
-
     for name in ("Cube.usda", "cubeWithVoid.usda", "nonManifoldCubes.usda", "Cone_SmConnect_Brep.usda", "mouse.usda"):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # (mouse.usda: gaps of 2e-3)
@@ -864,8 +873,9 @@ def test_usd_files_smlibpy_writes_again_pass_nvidias_validator(tmp_path):
         export_usd(body, tmp_path / name, mesh=False)
         again = import_usd(tmp_path / name)
         assert again.volume == approx(body.volume, rel=1e-9) and len(again.faces()) == len(body.faces())
-    export_usd(Box(10, 10, 10), tmp_path / "box.usda", mesh=False)
-    (tmp_path / "lines.usda").write_text(_line_edges((tmp_path / "box.usda").read_text()))
+    # (export_usd writes a box's edges with the schema's line now, lane IX: X5)
+    export_usd(Box(10, 10, 10), tmp_path / "lines.usda", mesh=False)
+    assert "BrepCurve3dLineAPI:edge3dLine" in (tmp_path / "lines.usda").read_text()
     export_usd(import_usd(tmp_path / "lines.usda"), tmp_path / "Lines_again.usda", mesh=False)
     found = _validated(*(tmp_path / n for n in ("Cube.usda", "cubeWithVoid.usda", "nonManifoldCubes.usda",
                                                "Cone_SmConnect_Brep.usda", "mouse.usda", "Lines_again.usda")))
@@ -882,14 +892,8 @@ def test_usd_files_of_names_and_empty_parts_against_the_validator(tmp_path):
         pytest.xfail("X3: a name outside ASCII breaks export_usd")
     assert _validated(tmp_path / "name.usda") == {"name.usda": {}}
     empty = Box(10, 10, 10) & Box(10, 10, 10).translate((30, 0, 0))
-    try:
+    with pytest.raises(ValueError, match="is empty"):  # (X10: refused, lane IX)
         export_usd(empty, tmp_path / "empty.usda", mesh=False)
-    except ModelingError:
-        return  # (X10: refused)
-    found = _validated(tmp_path / "empty.usda")
-    if found["empty.usda"] == {"BA.025": 1, "BA.030": 1, "BA.035": 1, "BA.701": 1}:
-        pytest.xfail("X10: an empty part is written with an inverted extent and no shell")
-    assert found == {"empty.usda": {}}
 
 
 # == N5, W16: the golden files of smlibwasm's parity test (tools/parity.py) =================================
@@ -909,7 +913,8 @@ def test_the_parity_golden_files_are_current():
     # fuzz run's divergences. Both come from the arm64 build's contraction of a * b + c.
     if parity.FMA and "vase1 fillet" in golden["cases"]:
         assert golden["cases"]["vase1 fillet"]["valid"] and golden["cases"]["vase1 fillet"]["faces"] == 51
-    assert all(parity.KNOWN[n]["fma"] for n in ("vase1 fillet", "vase3 fillet", "cone cylinder merge"))
+    # (the fuzz run's cone and cylinder merge agrees now, at OpenCASCADE's 150.26185: lane BT, B6)
+    assert all(parity.KNOWN[n]["fma"] for n in ("vase1 fillet", "vase3 fillet"))
 
 
 def test_the_parity_comparison_tells_numbers_from_text():

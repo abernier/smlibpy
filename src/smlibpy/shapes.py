@@ -7173,6 +7173,8 @@ def _round_step(operation: str, hint: str, brep: Any, kedges: list[Any], radii: 
     with kernel_call(operation, hint):
         record = ext.round_edges(brep, kedges, radii, sections, radii2, faces, law, continuity, thumbweight,
                                  tolerance_factor, mitre)
+    if record["status"] is not None:  # (where the kernel gave up, KernelError.trace: from this process)
+        record = dict(record, trace=tuple(ext.kernel_trace()[0]))
     return brep, record
 
 
@@ -7299,6 +7301,7 @@ def _round_edges(operation: str, hint: str, brep: Any, kedges: Sequence[Any], ed
     detail = f"{operation} failed: {status}" + (f" ({record['comment']})" if record.get("comment") else "")
     error = KernelError(operation, detail, status, f"the kernel could not build {where}; {hint}" if where else hint)
     error._where = where  # type: ignore[attr-defined]
+    error.trace = tuple(record.get("trace") or ())
     raise error
 
 

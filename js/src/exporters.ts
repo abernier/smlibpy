@@ -27,7 +27,7 @@ import { _stepItems, _stepText, writeStep } from './step.ts'
 import { type BytesLike, _asBytes } from './_bytes.ts'
 import { type StepCurve, type StepFrame, type StepModel, type StepPoint, fromStep, importStep } from './step_import.ts'
 import { fromIges, importIges } from './iges_import.ts'
-import { exportDxf, fromDxf, importDxf, toDxf } from './dxf.ts'
+import { type DxfShapesLike, exportDxf, fromDxf, importDxf, toDxf } from './dxf.ts'
 import { exportSvg, toSvg } from './drawing.ts'
 import { exportUsd, fromUsd, importUsd, toUsd } from './usd.ts'
 import { exportBrep, fromBrep, importBrep, toBrep } from './occt.ts'
@@ -62,6 +62,11 @@ export type StepItemsLike =
   | StepFrame
   | StepModel
   | (Iterable<StepItemsLike> & object)
+
+/** What `exportFile` and `toFile` take: shapes, and what only some formats hold (the views of
+ * `drawingViews` for .dxf and .svg; points, coordinate systems and the items of `StepItemsLike`
+ * for .step). A format that cannot hold an item says so. */
+export type FileItemsLike = StepItemsLike | DxfShapesLike
 
 /**
  * Node's file system (node:fs), for the functions that read and write files. It is looked up
@@ -189,21 +194,22 @@ export function _body(brep: number, name: string | null, color: [number, number,
 }
 
 /** Write shapes to `path`; the format follows the file extension (Python's `export`). */
-export function exportFile(shapes: ShapesLike, path: string, options: Record<string, Any> = {}): void {
+export function exportFile(shapes: FileItemsLike, path: string, options: Record<string, Any> = {}): void {
+  const items = shapes as Any // (each format checks what it gets)
   const p = String(path)
   const ext_ = _splitext(p)[1].toLowerCase()
-  if (ext_ === '.step' || ext_ === '.stp') exportStep(shapes, p, options)
-  else if (ext_ === '.stl') exportStl(shapes, p, options)
-  else if (ext_ === '.glb') exportGlb(shapes, p, options)
-  else if (ext_ === '.gltf') exportGltf(shapes, p, options)
-  else if (ext_ === '.obj') exportObj(shapes, p, options)
-  else if (ext_ === '.smb' || ext_ === '.smp') save(shapes, p, options)
-  else if (ext_ === '.dxf') exportDxf(shapes, p, options)
-  else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
+  if (ext_ === '.step' || ext_ === '.stp') exportStep(items, p, options)
+  else if (ext_ === '.stl') exportStl(items, p, options)
+  else if (ext_ === '.glb') exportGlb(items, p, options)
+  else if (ext_ === '.gltf') exportGltf(items, p, options)
+  else if (ext_ === '.obj') exportObj(items, p, options)
+  else if (ext_ === '.smb' || ext_ === '.smp') save(items, p, options)
+  else if (ext_ === '.dxf') exportDxf(items, p, options)
+  else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(items, p, options)
   else if (ext_ === '.brep') {
     _opts('exportBrep', options)
-    exportBrep(shapes, p)
-  } else if (ext_ === '.svg') exportSvg(shapes, p, options)
+    exportBrep(items, p)
+  } else if (ext_ === '.svg') exportSvg(items, p, options)
   else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda or .brep`)
 }
 
@@ -216,22 +222,23 @@ export function exportFile(shapes: ShapesLike, path: string, options: Record<str
  *
  * In a browser, `new Blob([toFile(part, 'part.step')])` is the file to download.
  */
-export function toFile(shapes: ShapesLike, name: string, options: Record<string, Any> = {}): string | Uint8Array {
+export function toFile(shapes: FileItemsLike, name: string, options: Record<string, Any> = {}): string | Uint8Array {
+  const items = shapes as Any // (each format checks what it gets)
   const ext_ = _splitext(String(name))[1].toLowerCase()
-  if (ext_ === '.step' || ext_ === '.stp') return toStep(shapes, options)
-  if (ext_ === '.stl') return toStl(shapes, options)
-  if (ext_ === '.glb') return toGlb(shapes, options)
-  if (ext_ === '.gltf') return toGltf(shapes, options)
-  if (ext_ === '.obj') return toObj(shapes, options)
-  if (ext_ === '.smb') return toSmb(shapes, options)
-  if (ext_ === '.smp') return toSmp(shapes, options)
-  if (ext_ === '.dxf') return toDxf(shapes, options)
-  if (ext_ === '.svg') return toSvg(shapes, options)
-  if (ext_ === '.usda' || ext_ === '.usd') return toUsd(shapes, options)
+  if (ext_ === '.step' || ext_ === '.stp') return toStep(items, options)
+  if (ext_ === '.stl') return toStl(items, options)
+  if (ext_ === '.glb') return toGlb(items, options)
+  if (ext_ === '.gltf') return toGltf(items, options)
+  if (ext_ === '.obj') return toObj(items, options)
+  if (ext_ === '.smb') return toSmb(items, options)
+  if (ext_ === '.smp') return toSmp(items, options)
+  if (ext_ === '.dxf') return toDxf(items, options)
+  if (ext_ === '.svg') return toSvg(items, options)
+  if (ext_ === '.usda' || ext_ === '.usd') return toUsd(items, options)
   if (ext_ === '.usdc' || ext_ === '.usdz') throw new RangeError(`toFile writes text USD (.usda, .usd), not ${ext_}`)
   if (ext_ === '.brep') {
     _opts('toBrep', options)
-    return toBrep(shapes)
+    return toBrep(items)
   }
   throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda or .brep`)
 }

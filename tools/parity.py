@@ -72,12 +72,6 @@ KNOWN: dict[str, dict[str, Any]] = {
         "wasm": {"error": "KernelError", "status": "SM_ERR"},
         "why": "W16: as vase1",
     },
-    "cone cylinder merge": {
-        "fma": True,
-        "wasm": {"volume": 145.98511223791584, "faces": 7, "valid": False},
-        "why": "the fuzz run's csg-153: a cylinder whose axis touches the cone's base circle; both results are "
-               "invalid bodies (OpenCASCADE: 150.26185 for the union)",
-    },
     "dxf 19": {
         "fma": False,
         "wasm": {"area": 55817.336, "faces": 2, "holes": [0, 8]},

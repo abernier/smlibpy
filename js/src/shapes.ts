@@ -3634,7 +3634,7 @@ export class _Body extends Shape {
    * points are exact surface points (and curve points), as for `distanceTo`; where the shapes touch
    * or overlap, the distance is 0 and the points are one place where they meet.
    */
-  closestPoints(other: _Body | Face | Edge | Wire): ClosestPoints {
+  closestPoints(other: Part | Shell | Face | Edge | Wire): ClosestPoints {
     if (other instanceof Face) {
       const r = _nearestBodies(this, other.toShell())
       return new ClosestPoints(r.point, r.otherPoint, r.distance, r.face, other)
@@ -3734,7 +3734,7 @@ export class _Body extends Shape {
    * (unbounded: where it cuts this body's faces, as `Part.section` cuts a part). Bodies that do not
    * meet, apart or one inside the other, give an empty list.
    */
-  intersectionCurves(other: _Body | Face | Plane): ShapeList<Edge> {
+  intersectionCurves(other: Part | Shell | Face | Plane): ShapeList<Edge> {
     if (other instanceof Plane) {
       // (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane, fits
       // its curves to B-spline faces within 2e-3 only)
@@ -8127,7 +8127,11 @@ function _roundEdges(
 ): number {
   const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0, mitre = false, isolate = false } = options
   const args = [radii.map(Number), sections.map(Number), radii2.map(Number), [...faces], law.map(Number), continuity, thumbweight, toleranceFactor, mitre] as const
-  const here = (): { brep: number; record: Any } => ({ brep, record: kernelCall(operation, () => ext.round_edges(brep, [...kedges], ...args), hint) })
+  const here = (): { brep: number; record: Any } => {
+    const record = kernelCall(operation, () => ext.round_edges(brep, [...kedges], ...args), hint)
+    // (where the kernel gave up, KernelError.trace)
+    return { brep, record: record.status == null ? record : { ...record, trace: ext.kernel_trace()[0] } }
+  }
   const { brep: out, record } = isolate
     ? kernelCall(
         operation,
@@ -8147,7 +8151,7 @@ function _roundEdges(
   if (out !== brep) ext.delete_brep(out) // (the probe worker's copy of a failed round)
   const where = _roundFailure(record, edges)
   const detail = `${operation} failed: ${status}` + (record.comment ? ` (${record.comment})` : '')
-  const error = new KernelError(operation, detail, status, where ? `the kernel could not build ${where}; ${hint}` : hint)
+  const error = _traced(new KernelError(operation, detail, status, where ? `the kernel could not build ${where}; ${hint}` : hint), record.trace ?? [])
   ;(error as Any)._where = where
   throw error
 }

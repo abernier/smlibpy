@@ -227,7 +227,12 @@ test('Booleans that turn a seam free their copies', () => {
         await new Promise((r) => setTimeout(r, 0))
       }
     }
-    for (let i = 0; i < 10; i++) bored.cut(pin).volume
+    // (warm up past V8's tier-up of the kernel's hot WebAssembly functions, around the 20th cut,
+    // which takes several MB once)
+    for (let i = 0; i < 40; i++) {
+      bored.cut(pin).volume
+      if (i % 10 === 9) await settle()
+    }
     await settle()
     const before = process.memoryUsage().rss
     for (let i = 0; i < 100; i++) {
@@ -612,8 +617,9 @@ const SHIFTS: [number, number, number][] = [
 
 test('a healed closed sheet is a part', () => {
   const faces = Box(20, 20, 20).faces()
-  const sheet = stitch(faces.map((f, i) => f.toShell().translate(...SHIFTS[i])), { tolerance: 0.5 })
-  assert.equal(sheet.constructor, Shell)
+  const sewn = stitch(faces.map((f, i) => f.toShell().translate(...SHIFTS[i])), { tolerance: 0.5 })
+  assert.equal(sewn.constructor, Part) // (stitch gives the solid it sews shut, lane U: U5)
+  const sheet = Shell._wrap(sewn._copyBrep()) // the same faces as a sheet
   const healed = sheet.heal()
   assert.ok(healed instanceof Part && healed.isValid())
   approx((healed as Part).volume, 8000, 2e-2)
@@ -890,7 +896,10 @@ test('T5: face colors and names in files', () => {
   // glTF: a primitive per color (the body's, red, gold) and the edges
   const doc = JSON.parse(toGltf(part))
   const colors = doc.materials.map((m: Any) => m.pbrMetallicRoughness.baseColorFactor.slice(0, 3))
-  assert.deepEqual(colors.slice(0, 3), [toRgb('steelblue'), RED, GOLD])
+  // (glTF holds linear values, lane M: GLTF-COLOR)
+  const linear = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+  const expected = [toRgb('steelblue'), RED, GOLD].map((c) => c.map(linear))
+  colors.slice(0, 3).forEach((c: number[], i: number) => c.forEach((x, j) => approx(x, expected[i][j], 1e-12)))
   assert.deepEqual(doc.meshes[0].primitives.map((p: Any) => p.mode), [4, 4, 4, 1])
   // USD: a color per triangle of the mesh
   const usd = toUsd(part)
