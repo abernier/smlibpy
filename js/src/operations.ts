@@ -618,7 +618,12 @@ function _ownerPart(items: unknown): Part {
 }
 
 /** Hollow out a part (see `Part.shell`). */
-export function shell(part: Part, thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+export function shell(
+  part: Part,
+  thickness: number,
+  openings: unknown = null,
+  options: { outward?: boolean; corners?: string | null; walls?: unknown } = {},
+): Part {
   _opts('shell', options)
   return part.shell(thickness, openings, options)
 }

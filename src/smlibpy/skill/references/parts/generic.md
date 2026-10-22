@@ -21,7 +21,7 @@ Every operation returns a new Part; the input is unchanged. Reassigning is the n
 | `bbox()` | BoundBox | tight; `.min`, `.max`, `.size` |
 | `is_valid()` | bool | closed manifold solid with a positive volume; see the gotchas |
 | `solids()` | ShapeList[Part] | the separate bodies, each with the part's name and color |
-| `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox` |
+| `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox`; for the result of `shell` or `offset` also `corners` (`"round"` or `"sharp"`) |
 | `faces()`, `edges()`, `vertices()` | ShapeList | see `selection/*` |
 | `name`, `color` | None by default | set with `named()` / `colored()` |
 | `repr(part)` | `Part('plate', 10 faces, volume=18295.2)` | |

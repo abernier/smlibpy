@@ -1,7 +1,7 @@
 // tests/test_lane_FO.py: tangent chains in fillets and chamfers (kernel plan F6).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Box, CenterArc, Cone, Cylinder, Edge, KernelError, Line, ModelingError, Part, Plane, PolarLocations, Polygon, Rectangle, RegularPolygon, Shell, Slot, Vector, X, Y, Z, chamfer, extrude, fillet, offset, setGuardSeconds, stitch, surface, thicken } from '../src/index.ts'
+import { Axis, Box, CenterArc, Cone, Cylinder, Edge, KernelError, Line, Location, ModelingError, Part, Plane, PolarLocations, Polygon, Rectangle, RegularPolygon, Shell, Slot, Sphere, Vector, X, Y, Z, chamfer, extrude, fillet, offset, setGuardSeconds, shell, stitch, surface, thicken } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { _take } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
@@ -470,4 +470,142 @@ test('chamfers of circular edges are exact cones', () => {
   const kernelBevel = disc.chamfer(edge, 0.6)
   assert.ok(kernelBevel.faces().some((f) => f.geomType === 'bspline'))
   approx(kernelBevel.volume, disc.volume - 2 * Math.PI * (10 - 0.2) * 0.18, 1e-6)
+})
+
+// O10: direct editing over SmBrep::LocalOperation (src/cpp/face_edit.cpp).
+test('faces move and offset exactly', () => {
+  const box = Box(10, 10, 10)
+  approx(box.moveFaces(box.faces().top(), [0, 0, 5]).volume, 1500, 1e-12)
+  approx(box.offsetFaces(box.faces().top(), -4).volume, 600, 1e-12)
+  const block = Box(40, 30, 10).cut(Cylinder(3, 20))
+  const taller = block.moveFaces(block.faces().top(), [0, 0, 5])
+  approx(taller.volume, 18000 - Math.PI * 9 * 15, 1e-12)
+  approx(taller.bbox().size.z, 15, 0, 1e-9)
+  assert.equal(taller.faces().length, block.faces().length)
+  // a hole moved (its circles stay circles about the new axis), and resized
+  const moved = block.moveFaces(block.faces().cylinders(), new Location([8, 0, 0]))
+  approx(moved.volume, block.volume, 1e-12)
+  for (const e of moved.edges().circles()) approx(e.arcCenter.x, 8, 0, 1e-9)
+  const wider = block.offsetFaces(block.faces().cylinders(), -2)
+  approx(wider.volume, 12000 - Math.PI * 25 * 10, 1e-12)
+  for (const e of wider.edges().circles()) approx(e.radius, 5, 0, 1e-12)
+  approx(block.offsetFaces(block.faces().cylinders(), 2).volume, 12000 - Math.PI * 10, 1e-12)
+  // a boss: its top pulled up (the extended cylinder's new edge is the exact circle), its side out
+  const boss = Box(40, 30, 10).fuse(Cylinder(5, 10).translate(0, 0, 10))
+  const top = boss.faces().filter((f) => f.isPlanar && f.center().z > 14)
+  const pulled = boss.moveFaces(top, [0, 0, 5])
+  approx(pulled.volume, 12000 + Math.PI * 25 * 15, 1e-12)
+  assert.ok(pulled.edges().every((e) => e.geomType === 'line' || e.geomType === 'circle'))
+  approx(boss.offsetFaces(boss.faces().cylinders(), 1).volume, 12000 + Math.PI * 36 * 10, 1e-12)
+  const pin = Cylinder(5, 10)
+  approx(pin.offsetFaces(pin.faces().top(), 5).volume, Math.PI * 25 * 15, 1e-12)
+  // a wall leaned in by 10 degrees about its bottom edge
+  const wall = Box(20, 20, 10)
+  const right = wall.faces().filter((f) => f.center().x > 9)
+  const leaning = wall.moveFaces(right, Location.about(new Axis([10, 0, -5], [0, -1, 0]), 10))
+  approx(leaning.volume, 4000 - 0.5 * 10 * 10 * Math.tan((10 * Math.PI) / 180) * 20, 1e-12)
+  // a step's floor raised
+  const stepBlock = Box(10, 10, 10).cut(Box(5, 10, 5).translate(2.5, 0, 2.5))
+  const step = stepBlock.faces().filter((f) => f.isPlanar && Math.abs(f.center().z) < 1e-6 && f.normalAt().z > 0.5)
+  approx(stepBlock.offsetFaces(step, 3).volume, 900, 1e-12)
+  approx(box.offsetFaces(box.faces().top(), 0).volume, 1000)
+  approx(box.moveFaces(box.faces().top(), [0, 0, 0]).volume, 1000)
+})
+
+test('face edits take tangent chains or refuse them', () => {
+  const plate = Box(40, 20, 10).cut(Slot(16, 6).extrude(20).translate(0, 0, -10) as Part)
+  const end = plate.faces().cylinders()[0]
+  const wider = plate.offsetFaces(end, -1)
+  approx(wider.volume, 8000 - (10 * 8 + Math.PI * 16) * 10, 1e-12)
+  assert.ok(wider.isValid() && wider.faces().length === plate.faces().length)
+  assert.throws(() => plate.moveFaces(end, [3, 0, 0]), (e: Error) => e instanceof ModelingError && /meets the moved cylinder face at .* tangentially, so it must be moved with it .*; add it to the faces/.test(e.message))
+  const slot = plate.faces().filter((f) => Math.abs(f.normalAt(f.interiorPoint()).z) < 0.5 && Math.abs(f.center().x) < 12 && Math.abs(f.center().y) < 5)
+  approx(plate.moveFaces(slot, [5, 0, 0]).volume, plate.volume, 1e-12)
+})
+
+test('face edits refuse what the kernel cannot build', () => {
+  const box = Box(20, 20, 10)
+  const block = Box(40, 30, 10).cut(Cylinder(3, 20))
+  const throws = (fn: () => unknown, cls: Any, re: RegExp) => assert.throws(fn, (e: Error) => e instanceof cls && re.test(e.message))
+  throws(() => block.offsetFaces(block.faces().cylinders(), 3), ModelingError, /the cylinder face at \(0, 0, 0\) would shrink to nothing/)
+  throws(() => box.offsetFaces(box.faces().top(), -12), ModelingError, /do not close the part again/)
+  throws(() => box.offsetFaces(box.faces().top(), -10), ModelingError, /offsetFaces: the kernel returned a part whose edges leave its faces/)
+  const hollow = Box(20, 20, 20).cut(Box(10, 10, 10))
+  throws(() => hollow.offsetFaces(hollow.faces().top(), 1), ModelingError, /the part has a cavity/)
+  const voided = Box(20, 20, 20).cut(Sphere(5))
+  throws(() => voided.moveFaces(voided.faces().filter((f) => f.geomType === 'sphere'), [1, 0, 0]), ModelingError, /the part has a cavity/)
+  throws(() => box.moveFaces([], [0, 0, 1]), RangeError, /no faces selected/)
+  throws(() => box.moveFaces(box.faces().top(), 'up' as Any), TypeError, /by must be a Location or a vector/)
+  throws(() => box.moveFaces(box.faces().top(), new Location([[2, 0, 0, 0], [0, 2, 0, 0], [0, 0, 2, 0], [0, 0, 0, 1]])), RangeError, /rotation and a translation/)
+  throws(() => box.offsetFaces(box.faces().top(), '1' as Any), TypeError, /the distance must be a number/)
+})
+
+test('shell walls of their own thickness', () => {
+  const box = Box(40, 30, 10)
+  const right = box.faces().filter((f) => f.center().x > 19)
+  const tray = box.shell(2, box.faces().top(), { walls: [[box.faces().bottom(), 5], [right, 6]] })
+  approx(tray.volume, 12000 - 32 * 26 * 5, 1e-12)
+  assert.ok(tray.isValid())
+  approx(box.shell(2, box.faces().top(), { walls: new Map([[box.faces().bottom()[0], 5]]) }).volume, 12000 - 36 * 26 * 5, 1e-12)
+  approx(box.shell(2, box.faces().top(), { walls: [[box.faces().bottom(), 1]] }).volume, 12000 - 36 * 26 * 9, 1e-12)
+  approx(box.shell(2, box.faces().top(), { walls: [[right, 2]] }).volume, 12000 - 36 * 26 * 8, 1e-12)
+  const shut = box.shell(2, null, { walls: [[box.faces().bottom(), 4]] })
+  approx(shut.volume, 12000 - 36 * 26 * 4, 1e-12)
+  assert.equal(shut.faces().length, 12)
+  approx(box.shell(2, null, { outward: true, corners: 'sharp', walls: [[box.faces().bottom(), 4]] }).volume, 44 * 34 * 16 - 12000, 1e-12)
+  approx(box.shell(2, box.faces().top(), { outward: true, corners: 'sharp', walls: [[box.faces().bottom(), 4]] }).volume, 44 * 34 * 14 - 12000, 1e-12)
+  let rb = Box(40, 30, 10)
+  rb = rb.fillet(rb.edges().parallelTo(Z), 5)
+  const floor = rb.shell(2, rb.faces().top(), { walls: [[rb.faces().bottom(), 4]] })
+  approx(floor.volume, rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - Math.PI) * 9) * 2, 1e-9)
+  const side = rb.faces().filter((f) => f.isPlanar && f.center().x > 19)
+  assert.throws(() => rb.shell(2, rb.faces().top(), { walls: [[side, 4]] }), (e: Error) => e instanceof ModelingError && /walls that meet smoothly need one thickness/.test(e.message))
+  assert.throws(() => box.shell(2, box.faces().top(), { walls: [[box.faces().top(), 4]] }), (e: Error) => e instanceof RangeError && /is an opening; it has no wall/.test(e.message))
+  assert.throws(
+    () => box.shell(2, box.faces().top(), { walls: [[box.faces().bottom(), 4], [box.faces().bottom(), 5]] }),
+    (e: Error) => e instanceof RangeError && /given two wall thicknesses/.test(e.message),
+  )
+  assert.throws(() => box.shell(2, box.faces().top(), { walls: [box.faces().bottom()] }), (e: Error) => e instanceof TypeError && /walls takes/.test(e.message))
+})
+
+// O12: corners= picks the kernel's shell mode, info() says which a shell got.
+test('shell corners pick the kernel mode', () => {
+  const L = Box(20, 20, 10).cut(Box(10, 10, 10).translate(5, 5, 0))
+  const top = L.faces().top()
+  const plain = L.shell(2, top)
+  const round = L.shell(2, top, { corners: 'round' })
+  const sharp = L.shell(2, top, { corners: 'sharp' })
+  approx(plain.volume, round.volume, 1e-12)
+  assert.equal(plain.info().corners, 'round')
+  approx(round.volume, 1745.1327, 0, 1e-4)
+  assert.equal(round.faces().length, 16)
+  approx(sharp.volume, 1752, 1e-12)
+  assert.equal(sharp.faces().length, 15)
+  assert.equal(sharp.info().corners, 'sharp')
+  const box = Box(80, 50, 30)
+  approx(box.shell(2.5, box.faces().top(), { outward: true, corners: 'sharp' }).volume, 85 * 55 * 32.5 - 80 * 50 * 30, 1e-12)
+  assert.equal(box.shell(2.5, box.faces().top(), { outward: true }).info().corners, 'round')
+  const body = Cone(3, 4, 6).rotate(Y, 90).fuse(Cone(6, 2, 16).translate(-2, 2.5147, -4))
+  const opening = body.faces().filter((f) => f.isPlanar && Math.abs(f.center().x - 3) < 1e-6)
+  approx(body.shell(0.5, opening).volume, 274.643, 0, 1e-3)
+  approx(body.shell(0.5, opening, { corners: 'sharp' }).volume, 275.8722, 0, 1e-3)
+  approx(shell(L, 2, top, { corners: 'sharp' }).volume, 1752, 1e-12)
+  assert.equal(Box(10, 10, 10).offset(1).info().corners, 'sharp')
+  assert.equal(Box(10, 10, 10).offset(1, { corners: 'round' }).info().corners, 'round')
+  assert.ok(!('corners' in Box(10, 10, 10).info()) && !('corners' in sharp.translate(1, 0, 0).info()))
+  assert.throws(() => L.shell(2, top, { corners: 'soft' }), (e: Error) => e instanceof RangeError && /corners must be "round" or "sharp"/.test(e.message))
+})
+
+// O11: split at the parting line, draft each half about it, fuse (the recipe in docs/features.md).
+test('two-sided draft recipe is exact', () => {
+  const box = Box(40, 30, 20)
+  const [upper, lower] = box.split(Plane.XY, 'both') as [Part, Part]
+  const side = (p: Part) => p.faces().filter((f) => Math.abs(f.normalAt().z) < 0.5)
+  const molded = upper.draft(side(upper), 3, Plane.XY).fuse(lower.draft(side(lower), 3, Plane.XY.flipped()))
+  const t = Math.tan((3 * Math.PI) / 180)
+  approx(molded.volume, 2 * (1200 * 10 - 2 * t * 70 * 50 + (4 * t * t * 1000) / 3), 1e-12)
+  assert.ok(molded.isValid() && molded.faces().length === 10)
+  const angles = [...molded.draftAnalysis(Z)].map((fd) => Math.round(fd.minAngle * 1e6) / 1e6).sort((a, b) => a - b)
+  assert.deepEqual(angles, [-90, -3, -3, -3, -3, 3, 3, 3, 3, 90])
+  approx(molded.faces().top()[0].bbox().size.x, 40 - 20 * t, 0, 1e-9)
 })

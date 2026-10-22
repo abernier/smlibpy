@@ -583,9 +583,10 @@ def _owner_part(items: Any) -> Part:
     return owner
 
 
-def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
+def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
+          walls: Any = None) -> Part:
     """Hollow out a part (see :meth:`Part.shell`)."""
-    return part.shell(thickness, openings, outward=outward)
+    return part.shell(thickness, openings, outward=outward, corners=corners, walls=walls)
 
 
 def offset(shape: Part | Sketch | Shell | Face, distance: float, **kwargs: Any) -> Any:

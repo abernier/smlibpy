@@ -39,6 +39,7 @@ import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, rou
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
+import { _wallThicknesses, moveFaces as _moveFaces, offsetFaces as _offsetFaces, shellWalls } from './face_edit.ts'
 import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import { Polygon } from './sketches.ts'
@@ -1816,6 +1817,16 @@ export class Face extends Shape {
 }
 
 // =============================================================================== bodies
+// How a body was made where its operation had a choice, by the body's handle (the record goes with
+// the body): { corners: 'round' } for the result of shell or offset. info() reports it.
+const _MADE = new WeakMap<BrepHandle, Record<string, string>>()
+
+/** `body`, with `record` noted as how it was made (see `_MADE`). */
+function _made<T extends _Body>(body: T, record: Record<string, string>): T {
+  _MADE.set(body._h, { ...record })
+  return body
+}
+
 /** A shape backed by one kernel Brep: a Part, a Shell or a Sketch. */
 export class _Body extends Shape {
   _h!: BrepHandle
@@ -2019,8 +2030,9 @@ export class _Body extends Shape {
     return other instanceof _Body && this._h === other._h
   }
 
-  /** Counts and measures in one object. */
-  info(): { type: string; faces: number; edges: number; vertices: number; bbox: [number[], number[]] } {
+  /** Counts and measures in one object. A body made by `shell` or `offset` also says how the corners
+   * of its new walls came out: `corners` is `'round'` or `'sharp'`. */
+  info(): { type: string; faces: number; edges: number; vertices: number; bbox: [number[], number[]]; corners?: string } {
     const b = this.bbox()
     return {
       type: _typeName(this),
@@ -2028,6 +2040,7 @@ export class _Body extends Shape {
       edges: k.brep_edge_count(this._brep),
       vertices: k.brep_vertex_count(this._brep),
       bbox: [b.min.toArray(), b.max.toArray()],
+      ..._MADE.get(this._h),
     }
   }
 }
@@ -3574,6 +3587,19 @@ export class Part extends _Body {
    *
    * The walls grow inward (the outside keeps its size) unless `outward` is true.
    *
+   * `corners` says how the new side of the walls turns where the part's faces grow apart (the inside
+   * of a concave edge for walls that grow inward, the outside of a convex edge and corner for walls
+   * that grow outward): `'round'` keeps the wall's thickness all round with a round of radius
+   * `thickness`; `'sharp'` extends the faces until they meet, so that the wall is thicker there (up
+   * to `thickness / sin(a / 2)` at an edge of angle `a`). The default, null, takes `'round'` where
+   * the kernel builds it and `'sharp'` where it does not; the result's `info().corners` says which.
+   * Given `'round'` or `'sharp'`, a shell the kernel cannot build that way throws instead.
+   *
+   * `walls` gives faces walls of their own thickness: `[faces, thickness]` pairs, or a Map of faces
+   * to thicknesses (`walls: [[part.faces().bottom(), 5]]`). The face of the shell across such a wall
+   * is offset by the difference, and the faces around it are extended or trimmed to meet it (as
+   * `offsetFaces`). Faces that meet smoothly (a wall and the round beside it) need one thickness.
+   *
    * The kernel leaves the rim of an opening open where it meets its neighbours tangentially (the flat
    * top of a box rounded on all edges): planar openings of that kind, whose other rim edges meet walls
    * standing at right angles to them, are cut out of the part shelled closed instead (the inner
@@ -3586,25 +3612,34 @@ export class Part extends _Body {
    * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
    * raises it for large parts).
    */
-  shell(thickness: number, openings: unknown = null, options: { outward?: boolean } = {}): Part {
+  shell(thickness: number, openings: unknown = null, options: { outward?: boolean; corners?: string | null; walls?: unknown } = {}): Part {
     _opts('Part.shell', options)
     const outward = options.outward ?? false
+    const corners = options.corners ?? null
+    if (corners !== null && corners !== 'round' && corners !== 'sharp') {
+      throw new RangeError(`shell: corners must be "round" or "sharp" (or null for either), not '${corners}'`)
+    }
     this._requireValid('shell')
     if (!(Math.abs(Number(thickness)) > 0)) throw new RangeError('shell: the thickness must not be zero')
     const faces = openings != null ? this._ownFaces(openings) : []
     const t = Math.abs(Number(thickness))
+    const own = options.walls != null ? _wallThicknesses(this, options.walls, t, faces) : []
+    if (own.length) {
+      const shelled = this.shell(thickness, faces.map((f) => new Face(this, f)), { outward, corners })
+      return _made(shellWalls(this, shelled, own, t, outward, !faces.length), _MADE.get(shelled._h) ?? {})
+    }
     const rays = this._inwardRays(faces)
     if (!outward) this._checkWallFits(t, faces, rays)
     const d = outward ? t : -t
-    const hint = this._shellHint(faces)
+    const hint = corners === null ? this._shellHint(faces) : `${this._shellHint(faces)}, or try corners="${corners === 'round' ? 'sharp' : 'round'}"`
     const cut = this._openingsToCut(faces, t, outward)
     if (cut.length) {
       // The kernel leaves the rim of such an opening open (its inner rounds run up to the outer edge, and
       // their edges lie off their faces): shell the part without them, then cut each out.
       const byCutting = (): Part => {
         const rest = faces.filter((f) => !cut.includes(f))
-        const base = this.shell(thickness, rest.map((f) => new Face(this, f)), { outward })
-        return base._cutOpenings(cut.map((f) => new Face(this, f)), t, outward)
+        const base = this.shell(thickness, rest.map((f) => new Face(this, f)), { outward, corners })
+        return _made(base._cutOpenings(cut.map((f) => new Face(this, f)), t, outward), _MADE.get(base._h) ?? {})
       }
       return this._checked('shell', [[true, byCutting]], {
         grow: outward ? t : 0,
@@ -3631,15 +3666,14 @@ export class Part extends _Body {
       // In the probe worker (smlibpy: in a copy of its process): the kernel's offset code can crash,
       // mostly in its extended mode, which depends on memory layout.
       const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
-      return this._like(_isolated('shell', work, job, hint))
+      // (The plain mode rolls a ball where the faces grow apart, the extended one extends them until
+      // they meet.)
+      return _made(this._like(_isolated('shell', work, job, hint)), { corners: extended ? 'sharp' : 'round' })
     }
+    const modes = corners === 'round' ? [false] : corners === 'sharp' ? [true, true] : [false, true, true]
     return this._checked(
       'shell',
-      [
-        [false, () => attempt(false)],
-        [true, () => attempt(true)],
-        [true, () => attempt(true)],
-      ],
+      modes.map((m): [boolean, () => Part] => [m, () => attempt(m)]),
       { grow: outward ? t : 0, smaller: outward ? null : true, problem: (result, extended) => this._shellProblem(result, d, faces, rays, extended, offsetVolume), hint },
     )
   }
@@ -3914,7 +3948,9 @@ export class Part extends _Body {
     // (the kernel's offset code can crash, mostly in its extended mode, which depends on memory layout:
     // it runs in the probe worker, smlibpy: in a copy of its process)
     const attempt = (): Part =>
-      this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended } }), hint))
+      _made(this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended } }), hint)), {
+        corners,
+      })
     if (!extended) {
       // every point lies at |d| from the part: in its box grown by d; a repeat gives the same
       return this._checked('offset', [[false, attempt]], { grow: Math.max(d, 0), smaller: d < 0, hint })
@@ -4178,6 +4214,48 @@ export class Part extends _Body {
    */
   draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part {
     return draftFaces(this, faces, angle, neutralPlane)
+  }
+
+  // -- direct editing (the face_edit module) ------------------------------------------------
+  /**
+   * Move faces of the part, and extend or trim the faces around them to meet them again: push or
+   * pull a face, move a hole, a boss or a pocket.
+   *
+   * `by` is a vector or a Location (a rotation and a translation: it also turns the faces). A face
+   * moved along itself stays where it is (a plane moved within its plane); the faces around it decide
+   * what changes. Faces that meet a moved face tangentially (a round, the other half of a slot) must
+   * be moved with it. Exact: planes, cylinders, cones, spheres, tori and free-form faces keep their
+   * shape, and the edges where a plane meets a cylinder, cone or sphere stay circles.
+   *
+   * Throws a ModelingError where the kernel cannot rebuild the part, where the moved faces change
+   * which faces meet (a face vanishes; use a Boolean), and where the result's faces do not meet.
+   *
+   * @param faces Faces of this part (a selection or a single face).
+   * @param by A vector, or a Location.
+   */
+  moveFaces(faces: unknown, by: Location | VectorLike): Part {
+    return _moveFaces(this, faces, by)
+  }
+
+  /**
+   * Offset faces of the part along their normals by `distance`, and extend or trim the faces around
+   * them to meet them again: push-pull by a distance, resize a hole or a boss.
+   *
+   * A positive distance moves the faces out of the material: the part grows, a hole narrows and a
+   * boss widens; a negative one moves them in. Faces that meet an offset face tangentially (a round,
+   * the other half of a slot, a fillet chain) are offset with it, and so on along the tangent chain.
+   * Exact: a plane moves, a cylinder, cone, sphere or torus changes its radius, a free-form face
+   * becomes its offset surface.
+   *
+   * Throws a ModelingError where a radius would reach 0, where the kernel cannot rebuild the part,
+   * where the offset faces change which faces meet (a face vanishes; use a Boolean), and where the
+   * volume does not change the way the distance says.
+   *
+   * @param faces Faces of this part (a selection or a single face).
+   * @param distance How far to move them, along their outward normals.
+   */
+  offsetFaces(faces: unknown, distance: number): Part {
+    return _offsetFaces(this, faces, distance)
   }
 
   // -- sheet metal (the logic is in the sheetmetal module) ----------------------------------

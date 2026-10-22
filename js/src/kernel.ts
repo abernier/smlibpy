@@ -117,6 +117,7 @@ const OWN: Record<string, Signature> = {
   'draft.face_draft_range': ['face', 'direction', ['grid', 12]],
   'draft.split_at_silhouettes': ['brep', 'direction', 'tolerance', 'faces'],
   'face_draft.draft_faces': ['brep', 'faces', 'origin', 'normal', 'angle', ['tangency_deg', 1.0]],
+  'face_edit.edit_faces': ['brep', 'faces', ['matrices', []], ['distances', []], ['grow', false], ['tangency_deg', 1.0]],
   // Breps, faces, edges, curves, surfaces, meshes (SmPyLib's methods; the defaults are its own)
   brep_bounding_box: ['brep', ['tight', false]],
   brep_write_to_file: ['brep', 'filename', ['ascii', true]],

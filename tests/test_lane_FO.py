@@ -587,3 +587,194 @@ def test_chamfers_of_circular_edges_are_exact_cones():
     kernel = disc.chamfer(edge, 0.6)
     assert "bspline" in {f.geom_type for f in kernel.faces()}
     assert kernel.volume == approx(disc.volume - 2 * math.pi * (10 - 0.2) * 0.18, rel=1e-6)
+
+
+def test_faces_move_and_offset_exactly():
+    # O10: direct editing over SmBrep::LocalOperation (src/cpp/face_edit.cpp).
+    from smlibpy import Axis, Cylinder, Location, ModelingError
+
+    box = Box(10, 10, 10)
+    assert box.move_faces(box.faces().top(), (0, 0, 5)).volume == approx(1500.0, rel=1e-12)
+    assert box.offset_faces(box.faces().top(), -4).volume == approx(600.0, rel=1e-12)
+    block = Box(40, 30, 10) - Cylinder(3, 20)
+    taller = block.move_faces(block.faces().top(), (0, 0, 5))
+    assert taller.volume == approx(18000 - math.pi * 9 * 15, rel=1e-12)
+    assert taller.bbox().size.z == approx(15.0, abs=1e-9) and len(taller.faces()) == len(block.faces())
+    # a hole moved (its circles stay circles about the new axis), and resized
+    moved = block.move_faces(block.faces().cylinders(), Location((8, 0, 0)))
+    assert moved.volume == approx(block.volume, rel=1e-12)
+    assert sorted(e.arc_center.x for e in moved.edges().circles()) == approx([8.0, 8.0], abs=1e-9)
+    wider = block.offset_faces(block.faces().cylinders(), -2)
+    assert wider.volume == approx(12000 - math.pi * 25 * 10, rel=1e-12)
+    assert [e.radius for e in wider.edges().circles()] == approx([5.0, 5.0], abs=1e-12)
+    narrower = block.offset_faces(block.faces().cylinders(), 2)
+    assert narrower.volume == approx(12000 - math.pi * 10, rel=1e-12)
+    # a boss: its top pulled up (the extended cylinder's new edge is the exact circle), its side out
+    boss = Box(40, 30, 10) + Cylinder(5, 10).translate(0, 0, 10)
+    top = boss.faces().filter(lambda f: f.is_planar and f.center().z > 14)
+    pulled = boss.move_faces(top, (0, 0, 5))
+    assert pulled.volume == approx(12000 + math.pi * 25 * 15, rel=1e-12)
+    assert {e.geom_type for e in pulled.edges()} <= {"line", "circle"}
+    assert boss.offset_faces(boss.faces().cylinders(), 1).volume == approx(12000 + math.pi * 36 * 10, rel=1e-12)
+    pin = Cylinder(5, 10)
+    assert pin.offset_faces(pin.faces().top(), 5).volume == approx(math.pi * 25 * 15, rel=1e-12)
+    # a wall leaned in by 10 degrees about its bottom edge
+    wall = Box(20, 20, 10)
+    right = wall.faces().filter(lambda f: f.center().x > 9)
+    leaning = wall.move_faces(right, Location.about(Axis((10, 0, -5), (0, -1, 0)), 10))
+    assert leaning.volume == approx(4000 - 0.5 * 10 * 10 * math.tan(math.radians(10)) * 20, rel=1e-12)
+    # a step's floor raised: the L-block's step from z 0 to z 3
+    step_block = Box(10, 10, 10) - Box(5, 10, 5).translate(2.5, 0, 2.5)
+    step = step_block.faces().filter(lambda f: f.is_planar and abs(f.center().z) < 1e-6 and f.normal_at().z > 0.5)
+    assert step_block.offset_faces(step, 3).volume == approx(900.0, rel=1e-12)
+    # zero changes give an equal copy
+    assert box.offset_faces(box.faces().top(), 0).volume == approx(1000.0)
+    assert box.move_faces(box.faces().top(), (0, 0, 0)).volume == approx(1000.0)
+
+
+def test_face_edits_take_tangent_chains_or_refuse_them():
+    from smlibpy import ModelingError
+
+    plate = Box(40, 20, 10) - Slot(16, 6).extrude(20).translate(0, 0, -10)
+    end = plate.faces().cylinders()[0]
+    # offset_faces takes the whole slot wall (two ends, two sides) along: 18 x 8
+    wider = plate.offset_faces(end, -1)
+    assert wider.volume == approx(8000 - (10 * 8 + math.pi * 16) * 10, rel=1e-12)
+    assert wider.is_valid() and len(wider.faces()) == len(plate.faces())
+    # move_faces asks for them
+    with pytest.raises(ModelingError, match=r"meets the moved cylinder face at .* tangentially, so it must be moved "
+                                            r"with it .*; add it to the faces"):
+        plate.move_faces(end, (3, 0, 0))
+    slot = plate.faces().filter(lambda f: abs(f.normal_at(f.interior_point()).z) < 0.5 and abs(f.center().x) < 12
+                                and abs(f.center().y) < 5)
+    assert plate.move_faces(slot, (5, 0, 0)).volume == approx(plate.volume, rel=1e-12)
+
+
+def test_face_edits_refuse_what_the_kernel_cannot_build():
+    from smlibpy import Cylinder, Location, ModelingError, Sphere
+
+    box = Box(20, 20, 10)
+    block = Box(40, 30, 10) - Cylinder(3, 20)
+    with pytest.raises(ModelingError, match=r"the cylinder face at \(0, 0, 0\) would shrink to nothing"):
+        block.offset_faces(block.faces().cylinders(), 3)
+    with pytest.raises(ModelingError, match="do not close the part again"):
+        box.offset_faces(box.faces().top(), -12)
+    with pytest.raises(ModelingError, match="offset_faces: the kernel returned a part whose edges leave its faces"):
+        box.offset_faces(box.faces().top(), -10)  # (the top onto the bottom)
+    # a cavity: the kernel drops it (for any edit)
+    hollow = Box(20, 20, 20) - Box(10, 10, 10)
+    with pytest.raises(ModelingError, match="the part has a cavity"):
+        hollow.offset_faces(hollow.faces().top(), 1)
+    void = Box(20, 20, 20) - Sphere(5)
+    with pytest.raises(ModelingError, match="the part has a cavity"):
+        void.move_faces([f for f in void.faces() if f.geom_type == "sphere"], (1, 0, 0))
+    with pytest.raises(ValueError, match="no faces selected"):
+        box.move_faces([], (0, 0, 1))
+    with pytest.raises(TypeError, match="by must be a Location or a vector"):
+        box.move_faces(box.faces().top(), "up")
+    with pytest.raises(ValueError, match="rotation and a translation"):
+        import numpy as np
+        box.move_faces(box.faces().top(), Location(np.diag([2.0, 2.0, 2.0, 1.0])))
+    with pytest.raises(TypeError, match="the distance must be a number"):
+        box.offset_faces(box.faces().top(), "1")
+    with pytest.raises(ValueError, match="not a face of this part"):
+        box.offset_faces(block.faces().cylinders(), 1)
+
+
+def test_shell_walls_of_their_own_thickness():
+    # O10: shell(walls=...): the shell's face across a wall offset by the difference
+    from smlibpy import ModelingError
+
+    box = Box(40, 30, 10)
+    right = box.faces().filter(lambda f: f.center().x > 19)
+    tray = box.shell(2, box.faces().top(), walls=[(box.faces().bottom(), 5), (right, 6)])
+    assert tray.volume == approx(12000 - 32 * 26 * 5, rel=1e-12) and tray.is_valid()
+    floor5 = box.shell(2, box.faces().top(), walls={box.faces().bottom()[0]: 5})
+    assert floor5.volume == approx(12000 - 36 * 26 * 5, rel=1e-12)
+    # thinner, and a wall given the common thickness changes nothing
+    floor1 = box.shell(2, box.faces().top(), walls=[(box.faces().bottom(), 1)])
+    assert floor1.volume == approx(12000 - 36 * 26 * 9, rel=1e-12)
+    assert box.shell(2, box.faces().top(), walls=[(right, 2)]).volume == approx(12000 - 36 * 26 * 8, rel=1e-12)
+    # closed shells: the cavity (the part offset inward) is edited and cut out
+    case = box.shell(2, walls=[(box.faces().bottom(), 4)])
+    assert case.volume == approx(12000 - 36 * 26 * 4, rel=1e-12) and len(case.faces()) == 12
+    outer = box.shell(2, outward=True, corners="sharp", walls=[(box.faces().bottom(), 4)])
+    assert outer.volume == approx(44 * 34 * 16 - 12000, rel=1e-12)
+    # outward with an opening: the outside face moves
+    assert box.shell(2, box.faces().top(), outward=True, corners="sharp",
+                     walls=[(box.faces().bottom(), 4)]).volume == approx(44 * 34 * 14 - 12000, rel=1e-12)
+    # a rounded box: the floor alone is fine, a side wall meets its rounds smoothly
+    rb = Box(40, 30, 10)
+    rb = rb.fillet(rb.edges().parallel_to(Z), 5)
+    floor = rb.shell(2, rb.faces().top(), walls=[(rb.faces().bottom(), 4)])
+    assert floor.volume == approx(rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - math.pi) * 9) * 2, rel=1e-9)
+    side = rb.faces().filter(lambda f: f.is_planar and f.center().x > 19)
+    with pytest.raises(ModelingError, match="walls that meet smoothly need one thickness"):
+        rb.shell(2, rb.faces().top(), walls=[(side, 4)])
+    with pytest.raises(ValueError, match="is an opening; it has no wall"):
+        box.shell(2, box.faces().top(), walls=[(box.faces().top(), 4)])
+    with pytest.raises(ValueError, match="given two wall thicknesses"):
+        box.shell(2, box.faces().top(), walls=[(box.faces().bottom(), 4), (box.faces().bottom(), 5)])
+    with pytest.raises(TypeError, match="walls takes"):
+        box.shell(2, box.faces().top(), walls=[box.faces().bottom()])
+
+
+def test_shell_corners_pick_the_kernel_mode():
+    # O12: the plain mode rounds the cavity where the faces grow apart, the extended one keeps it sharp;
+    # corners= picks one and info() says which a shell got.
+    from smlibpy import Cone, Y, shell
+
+    L = Box(20, 20, 10) - Box(10, 10, 10).translate(5, 5, 0)
+    top = L.faces().top()
+    default, round_, sharp = L.shell(2, top), L.shell(2, top, corners="round"), L.shell(2, top, corners="sharp")
+    assert default.volume == approx(round_.volume, rel=1e-12) and default.info()["corners"] == "round"
+    assert round_.volume == approx(1745.1327, abs=1e-4) and len(round_.faces()) == 16
+    assert sharp.volume == approx(1752.0, rel=1e-12) and len(sharp.faces()) == 15
+    assert sharp.info()["corners"] == "sharp"
+    # outward: the outer corners
+    box = Box(80, 50, 30)
+    lining = box.shell(2.5, box.faces().top(), outward=True, corners="sharp")
+    assert lining.volume == approx(85 * 55 * 32.5 - 80 * 50 * 30, rel=1e-12)
+    assert box.shell(2.5, box.faces().top(), outward=True).info()["corners"] == "round"
+    # the fuzz finding's body: plain 274.643 (16 faces), extended 275.8722 (11)
+    body = Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)
+    opening = body.faces().filter(lambda f: f.is_planar and abs(f.center().x - 3) < 1e-6)
+    assert body.shell(0.5, opening).volume == approx(274.643, abs=1e-3)
+    assert body.shell(0.5, opening, corners="sharp").volume == approx(275.8722, abs=1e-3)
+    # the standalone function forwards both; offset says its corners too; other bodies say nothing
+    assert shell(L, 2, top, corners="sharp").volume == approx(1752.0, rel=1e-12)
+    assert Box(10, 10, 10).offset(1).info()["corners"] == "sharp"
+    assert Box(10, 10, 10).offset(1, corners="round").info()["corners"] == "round"
+    assert "corners" not in Box(10, 10, 10).info() and "corners" not in sharp.translate(1, 0, 0).info()
+    with pytest.raises(ValueError, match='corners must be "round" or "sharp"'):
+        L.shell(2, top, corners="soft")
+
+
+def test_two_sided_draft_recipe_is_exact():
+    # O11: split at the parting line, draft each half about it, fuse (the recipe in docs/features.md)
+    from smlibpy import Plane
+
+    box = Box(40, 30, 20)
+    upper, lower = box.split(Plane.XY, "both")
+
+    def side(p):
+        return p.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+
+    molded = upper.draft(side(upper), 3, Plane.XY) + lower.draft(side(lower), 3, Plane.XY.flipped())
+    t = math.tan(math.radians(3))
+    exact = 2 * (1200 * 10 - 2 * t * 70 * 50 + 4 * t * t * 1000 / 3)  # 2 * integral of (40 - 2zt)(30 - 2zt), 0..10
+    assert molded.volume == approx(exact, rel=1e-12) and molded.is_valid() and len(molded.faces()) == 10
+    assert sorted(round(fd.min_angle, 6) for fd in molded.draft_analysis(Z)) == [-90, -3, -3, -3, -3, 3, 3, 3, 3, 90]
+    assert molded.faces().top()[0].bbox().size.x == approx(40 - 20 * t, abs=1e-9)
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("resize a hole", "features/offset_faces"),
+    ("move a hole", "features/move_faces"),
+    ("push the top face up", "features/move_faces"),
+    ("direct editing", "features/offset_faces"),
+])
+def test_search_finds_the_face_edits(query, expected):
+    from smlibpy.mcp import discovery
+
+    assert expected in [e.key for _, e in discovery.search(query, 5)]

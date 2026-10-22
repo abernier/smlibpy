@@ -92,7 +92,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Faces on cylinders, cones, spheres and tori need a seam edge, but NX and others write them without one | adds the seam along the surface when importing STEP |
 | A few writers flag the bound of a face reversed (fillets on tori, around holes and bosses), so its loop runs the wrong way round; the kernel's seam check then reads the loop as the rest of the torus and cuts the face apart (2 to 30 % of the volume lost, and the body still "valid") | turns such loops round when importing STEP: in a closed shell each edge between two faces is used once each way, so the neighbouring faces decide |
 | The seam has to lie where the surface's angle parameter starts | turns the surface frame to the seam edge of the file |
-| The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode, which it repeats once, only after a result it refused |
+| The extended offset mode depends on memory layout and sometimes builds a face the kernel cannot integrate or mesh | `shell` uses the plain mode first, checks every result and falls back to the extended mode, which it repeats once, only after a result it refused; the two modes give differently shaped cavities (round or sharp where faces grow apart), so `corners=` picks one and `info()["corners"]` says which a shell got |
+| SM_API has no direct editing; `SmBrep::LocalOperation`, which rebuilds a Brep around new surfaces of some faces, takes faces that meet tangentially only when they change alike, fits the edges where a moved plane meets an extended cylinder, cone or sphere with B-splines (1e-7 of the radius), and drops the inner shells of a solid (its cavities), edited or not, reporting success | `move_faces` and `offset_faces` move and offset copies of the faces' own surfaces (keeping their parameters), take a tangent chain along (`offset_faces`) or ask for it (`move_faces`), put the exact circles back, check gaps, face count and volume, and refuse parts with a cavity; `shell(walls=)` of a closed shell edits its cavity as a body of its own and cuts it out |
 | The STEP builder (`SmBrepConstructor`) makes a vertex for every edge end it is not given one for: a body read edge by edge had coincident vertices (a rounded box 48 for its 24) and loops whose edges did not link | starts each edge at the vertices made for the file's vertex ids and glues the few the builder still makes twice |
 | The seam check (`SmFace::HasSeamProblem`) lost a curve on every periodic face, 3 to 13 KB per call and per STEP import | patched |
 | A body that `CopyFaces` or `RemoveFaces` failed on crashes when it is deleted (a face of an import whose faces share no edges) | never deletes such a body; the copy raises `KernelError` |
@@ -142,6 +143,11 @@ matter here:
 - Where the kernel has no corner for how the selected edges meet at a vertex (the two halves of
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.
+- `move_faces` and `offset_faces` (the kernel's `LocalOperation`) cannot change which faces meet:
+  a face pushed past another one, or one that would vanish, raises; use a Boolean there. Faces
+  around the edited ones that the kernel extends can change their kind (a vertical round of a box
+  whose top is pulled up becomes a surface of extrusion, still exact). A part with a cavity is
+  refused, and so is a draft of one (as a change of its faces).
 - `shell` cannot open a face whose rim meets its neighbours tangentially, such as a face
   bordered by fillets. smlibpy cuts planar ones out of the part shelled closed; for a curved one,
   or one next to a drafted wall, shell first, then round the rim.

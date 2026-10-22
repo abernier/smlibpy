@@ -118,7 +118,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
   rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
-  (its test).
+  (its test); `face_edit.ts`: `moveFaces`, `offsetFaces`, `_wallThicknesses`, `shellWalls`
+  (shapes.ts: Part.moveFaces, Part.offsetFaces, shell's `walls`).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
   a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
   which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and

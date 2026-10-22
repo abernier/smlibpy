@@ -12,6 +12,7 @@ import contextlib
 import itertools
 import math
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union, overload
 
 import numpy as np
@@ -1578,6 +1579,17 @@ class Face(Shape):
 # =============================================================================
 # Bodies: Part, Shell, Sketch
 # =============================================================================
+# How a body was made where its operation had a choice, by the body's handle (the record goes with
+# the body): {"corners": "round"} for the result of shell or offset. info() reports it.
+_MADE: weakref.WeakKeyDictionary[BrepHandle, dict[str, Any]] = weakref.WeakKeyDictionary()
+
+
+def _made(body: _Body, **record: Any) -> Any:
+    """``body``, with ``record`` noted as how it was made (see ``_MADE``)."""
+    _MADE[body._h] = dict(record)
+    return body
+
+
 class _Body(Shape):
     """A shape backed by one kernel Brep."""
 
@@ -1750,15 +1762,18 @@ class _Body(Shape):
         return hash(self._identity())
 
     def info(self) -> dict[str, Any]:
-        """Counts and measures in one dictionary."""
+        """Counts and measures in one dictionary. A body made by ``shell`` or ``offset`` also says
+        how the corners of its new walls came out: ``"corners"`` is ``"round"`` or ``"sharp"``."""
         b = self.bbox()
-        return {
+        out = {
             "type": type(self).__name__,
             "faces": self._brep.face_count(),
             "edges": self._brep.edge_count(),
             "vertices": self._brep.vertex_count(),
             "bbox": (b.min.to_tuple(), b.max.to_tuple()),
         }
+        out.update(_MADE.get(self._h, {}))
+        return out
 
 
 def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
@@ -3136,10 +3151,26 @@ class Part(_Body):
                 f"{math.degrees(wedge):.4g} degrees; use an angle below {180 - math.degrees(wedge):.4g}")
         return length, length * math.sin(a) / math.sin(wedge + a)
 
-    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False) -> Part:
+    def shell(self, thickness: float, openings: Any = None, *, outward: bool = False, corners: str | None = None,
+              walls: Any = None) -> Part:
         """Hollow the part out to walls of ``thickness``, removing the ``openings`` faces.
 
         The walls grow inward (the outside keeps its size) unless ``outward`` is true.
+
+        ``corners`` says how the new side of the walls turns where the part's faces grow apart (the
+        inside of a concave edge for walls that grow inward, the outside of a convex edge and corner
+        for walls that grow outward): ``"round"`` keeps the wall's thickness all round with a round
+        of radius ``thickness``; ``"sharp"`` extends the faces until they meet, so that the wall is
+        thicker there (up to ``thickness / sin(a / 2)`` at an edge of angle ``a``). The default,
+        None, takes ``"round"`` where the kernel builds it and ``"sharp"`` where it does not; the
+        result's ``info()["corners"]`` says which. Given ``"round"`` or ``"sharp"``, a shell the
+        kernel cannot build that way raises instead.
+
+        ``walls`` gives faces walls of their own thickness: ``(faces, thickness)`` pairs, or a dict
+        of faces to thicknesses (``walls=[(part.faces().bottom(), 5)]``). The face of the shell
+        across such a wall is offset by the difference, and the faces around it are extended or
+        trimmed to meet it (as :meth:`offset_faces`). Faces that meet smoothly (a wall and the
+        round beside it) need one thickness.
 
         The kernel leaves the rim of an opening open where it meets its neighbours tangentially
         (the flat top of a box rounded on all edges): planar openings of that kind, whose other rim
@@ -3154,25 +3185,35 @@ class Part(_Body):
         (20 s): raise that for large parts.
         """
         from .defeature import _isolated
+        from .face_edit import _wall_thicknesses, shell_walls
 
+        if corners not in (None, "round", "sharp"):
+            raise ValueError(f'shell: corners must be "round" or "sharp" (or None for either), not {corners!r}')
         self._require_valid("shell")
         if not abs(float(thickness)) > 0:
             raise ValueError("shell: the thickness must not be zero")
         faces = self._own_faces(openings) if openings is not None else []
         t = abs(float(thickness))
+        own = _wall_thicknesses(self, walls, t, faces) if walls is not None else []
+        if own:
+            shelled = self.shell(thickness, [Face(self, f) for f in faces], outward=outward, corners=corners)
+            mode = _MADE.get(shelled._h, {})
+            return _made(shell_walls(self, shelled, own, t, outward, not faces), **mode)
         rays = self._inward_rays(faces)
         if not outward:
             self._check_wall_fits(t, faces, rays)
         d = t if outward else -t
         hint = self._shell_hint(faces)
+        if corners is not None:
+            hint += f', or try corners="{"sharp" if corners == "round" else "round"}"'
         cut = self._openings_to_cut(faces, t, outward)
         if cut:
             # The kernel leaves the rim of such an opening open (its inner rounds run up to the outer
             # edge, and their edges lie off their faces): shell the part without them, then cut each out.
             def by_cutting() -> Part:
                 rest = [f for f in faces if not any(f is c for c in cut)]
-                base = self.shell(thickness, [Face(self, f) for f in rest], outward=outward)
-                return base._cut_openings([Face(self, f) for f in cut], t, outward)
+                base = self.shell(thickness, [Face(self, f) for f in rest], outward=outward, corners=corners)
+                return _made(base._cut_openings([Face(self, f) for f in cut], t, outward), **_MADE.get(base._h, {}))
 
             return self._checked("shell", [(True, by_cutting)], grow=t if outward else 0.0,
                                  smaller=None if outward else True,
@@ -3197,14 +3238,15 @@ class Part(_Body):
                     return k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces)
 
             # In a copy of the process: the kernel's offset code can crash, mostly in its extended
-            # mode, which depends on memory layout.
-            return self._like(_isolated("shell", work))
+            # mode, which depends on memory layout. (The plain mode rolls a ball where the faces grow
+            # apart, the extended one extends them until they meet.)
+            return _made(self._like(_isolated("shell", work)), corners="sharp" if extended else "round")
 
         def problem(result: Part, extended: bool) -> str | None:
             return self._shell_problem(result, d, faces, rays, extended, offset_volume)
 
-        return self._checked("shell", [(False, lambda: attempt(False)), (True, lambda: attempt(True)),
-                                       (True, lambda: attempt(True))],
+        modes = [False] if corners == "round" else [True, True] if corners == "sharp" else [False, True, True]
+        return self._checked("shell", [(m, lambda m=m: attempt(m)) for m in modes],
                              grow=t if outward else 0.0, smaller=None if outward else True, problem=problem,
                              hint=hint)
 
@@ -3450,7 +3492,7 @@ class Part(_Body):
         def attempt() -> Part:
             # (the kernel's offset code can crash, mostly in its extended mode, which depends on
             # memory layout: it runs in a copy of the process)
-            return self._like(_isolated("offset", work))
+            return _made(self._like(_isolated("offset", work)), corners=corners)
 
         if not extended:
             # every point lies at |d| from the part: in its box grown by d; a repeat gives the same
@@ -3685,6 +3727,52 @@ class Part(_Body):
         from .draft import draft_faces
 
         return draft_faces(self, faces, angle, neutral_plane)
+
+    # -- direct editing (smlibpy.face_edit) --------------------------------------
+    def move_faces(self, faces: Any, by: Location | VectorLike) -> Part:
+        """Move faces of the part, and extend or trim the faces around them to meet them again:
+        push or pull a face, move a hole, a boss or a pocket.
+
+        ``by`` is a vector or a :class:`Location` (a rotation and a translation: it also turns the
+        faces). A face moved along itself stays where it is (a plane moved within its plane); the
+        faces around it decide what changes. Faces that meet a moved face tangentially (a round, the
+        other half of a slot) must be moved with it. Exact: planes, cylinders, cones, spheres, tori
+        and free-form faces keep their shape, and the edges where a plane meets a cylinder, cone
+        or sphere stay circles.
+
+        Raises :class:`ModelingError` where the kernel cannot rebuild the part, where the moved
+        faces change which faces meet (a face vanishes; use a Boolean), and where the result's
+        faces do not meet.
+
+        Args:
+            faces: Faces of this part (a selection or a single face).
+            by: A vector, or a Location.
+        """
+        from .face_edit import move_faces
+
+        return move_faces(self, faces, by)
+
+    def offset_faces(self, faces: Any, distance: float) -> Part:
+        """Offset faces of the part along their normals by ``distance``, and extend or trim the
+        faces around them to meet them again: push-pull by a distance, resize a hole or a boss.
+
+        A positive distance moves the faces out of the material: the part grows, a hole narrows
+        and a boss widens; a negative one moves them in. Faces that meet an offset face tangentially
+        (a round, the other half of a slot, a fillet chain) are offset with it, and so on along
+        the tangent chain. Exact: a plane moves, a cylinder, cone, sphere or torus changes its
+        radius, a free-form face becomes its offset surface.
+
+        Raises :class:`ModelingError` where a radius would reach 0, where the kernel cannot
+        rebuild the part, where the offset faces change which faces meet (a face vanishes; use a
+        Boolean), and where the volume does not change the way the distance says.
+
+        Args:
+            faces: Faces of this part (a selection or a single face).
+            distance: How far to move them, along their outward normals.
+        """
+        from .face_edit import offset_faces
+
+        return offset_faces(self, faces, distance)
 
     # -- sheet metal (the logic is in smlibpy.sheetmetal) ------------------------
     def fold(self, line: Any, angle: float, *, radius: float, k_factor: float = 0.44, fixed: Any = None,

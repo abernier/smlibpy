@@ -83,4 +83,4 @@ separate faces (copied one by one) move each on its own; `stitch` them first.
 - A solid of a sheet is `thicken`, not `offset`.
 
 ## Related
-`shell`, `thicken`, `Sketch.offset` (2D, see sketches; its `corners` also takes `"chamfer"`), `stitch`.
+`shell`, `thicken`, `offset_faces` (some faces only), `Sketch.offset` (2D, see sketches; its `corners` also takes `"chamfer"`), `stitch`.

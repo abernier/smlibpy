@@ -16,6 +16,7 @@
 #include "draft.h"
 #include "ext_shared.h"
 #include "face_draft.h"
+#include "face_edit.h"
 #include "fillet.h"
 #include "fit.h"
 #include "measure.h"
@@ -566,6 +567,32 @@ val draft_faces(uintptr_t b, val faces, val origin, val normal, double angle, do
     });
 }
 
+// ---------------------------------------------------------------- face_edit
+val edit_faces(uintptr_t b, val faces, val matrices, val distances, bool grow, double tangency_deg)
+{
+    return guard([&] {
+        const smlibpy::FaceEdit r = smlibpy::edit_faces(brep(b), pointers<SmFace>(faces), numbers(matrices), numbers(distances), grow, tangency_deg);
+        auto pair = [](const double* v) {
+            val a = val::array();
+            a.call<void>("push", v[0]);
+            a.call<void>("push", v[1]);
+            return a;
+        };
+        val d = val::object();
+        d.set("brep", owned_or_null(r.brep));
+        d.set("error", r.error.empty() ? val::null() : val(r.error));
+        d.set("face", static_cast<double>(r.face));
+        d.set("other", r.other ? val(ptr(r.other)) : val::null());
+        d.set("added", pointer_array(r.added));
+        d.set("gaps", r.has_gaps ? pair(r.gaps) : val::null());
+        d.set("gaps_before", r.has_gaps_before ? pair(r.gaps_before) : val::null());
+        d.set("tolerance", r.tolerance);
+        if (r.has_restored)
+            d.set("restored", static_cast<double>(r.restored));
+        return d;
+    });
+}
+
 // ---------------------------------------------------------------- ext: fillets and chamfers
 // As Python's ext.round_edges: the Brep changes in place; the result says how the executive failed.
 val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val faces, val law, int continuity,
@@ -815,4 +842,5 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("draft__face_draft_range", &face_draft_range);
     function("draft__split_at_silhouettes", &split_at_silhouettes);
     function("face_draft__draft_faces", &draft_faces);
+    function("face_edit__edit_faces", &edit_faces);
 }

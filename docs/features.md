@@ -1,6 +1,7 @@
 # Features
 
-Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting.
+Features refine a part: rounding and beveling edges, hollowing, splitting, mirroring, drafting,
+moving and offsetting faces.
 Each one is a method of `Part` that returns a new part.
 
 ## Fillets
@@ -198,6 +199,36 @@ The inner rounds then end tangentially at the opening's rim, so the wall runs ou
 there. Other openings with such a rim (a curved face, a drafted wall next to it) still raise
 `ModelingError`; shell such a part before rounding the rim.
 
+Where the part's faces grow apart as the walls are built (the inside of a concave edge for walls
+that grow inward, the outside of the convex edges for walls that grow outward), the kernel can
+round the new side of the wall, keeping its thickness all round, or extend the faces until they
+meet, so that the wall is thicker in the corner. `corners` picks one; by default `shell` takes
+the round one where the kernel builds it and the sharp one where it does not, and `info()` of the
+result says which it got:
+
+```python
+L = Box(20, 20, 10) - Box(10, 10, 10).translate(5, 5, 0)    # an L-shaped block: one concave edge
+cup = L.shell(2, L.faces().top())                      # 1745.1327: a round of radius 2 in the inner corner
+print(cup.info()["corners"])                           # round
+sharp = L.shell(2, L.faces().top(), corners="sharp")   # 1752.0: the inner faces meet in a corner
+box = Box(80, 50, 30)
+lining = box.shell(2.5, box.faces().top(), outward=True, corners="sharp")   # 85 x 55 x 32.5, sharp outside
+```
+
+With `corners="round"` or `"sharp"` a shell the kernel cannot build that way raises instead of
+coming back with the other kind.
+
+`walls` gives faces walls of their own thickness: the face of the shell across such a wall is
+moved by the difference, and the faces around it are extended or trimmed to meet it (as
+[`offset_faces`](#moving-and-offsetting-faces) does):
+
+```python
+box = Box(40, 30, 10)
+tray = box.shell(2, box.faces().top(), walls=[(box.faces().bottom(), 5)])   # 7320.0: a 5 mm floor
+```
+
+Faces that meet smoothly, such as a wall and the round next to it, need one thickness.
+
 With openings, walls that do not fit into the part (measured across it from each face) raise a
 `ModelingError` before the kernel runs; results whose faces do not meet, or that have no cavity
 where no wall reaches, raise one too. `shell`, `offset` and `thicken` run the kernel in a forked
@@ -325,6 +356,56 @@ Profiles can be drafted as they are extruded, all side walls at once:
 ```python
 mold_core = RoundedRectangle(60, 40, 5).extrude(20, taper=3)
 ```
+
+A part molded in two halves is drafted away from the parting line on both sides. With a planar
+parting line, split the part there, draft each half about the plane (the lower half pulls the
+other way: `Plane.XY.flipped()`), and fuse the halves again; the result is exact:
+
+```python
+box = Box(40, 30, 20)
+upper, lower = box.split(Plane.XY, "both")
+side = lambda p: p.faces().filter(lambda f: abs(f.normal_at().z) < 0.5)
+molded = upper.draft(side(upper), 3, Plane.XY) + lower.draft(side(lower), 3, Plane.XY.flipped())
+print(round(molded.volume, 4))     # 23273.6153: 40 x 30 at the parting line, 38.952 x 28.952 at top and bottom
+```
+
+`draft_analysis(Z)` of it finds 3 degrees on the upper walls and -3 on the lower ones, which
+release towards the lower mold half. A stepped parting line needs a neutral plane per step;
+`draft` takes one plane per call.
+
+## Moving and offsetting faces
+
+`move_faces` and `offset_faces` edit a part directly, without rebuilding it: the faces move, and
+the faces around them are extended or trimmed until they meet them again. This is how to change
+an imported part, which has no history:
+
+```python
+block = Box(40, 30, 10) - Cylinder(3, 20)
+taller = block.move_faces(block.faces().top(), (0, 0, 5))           # 17575.885: 15 high, the hole too
+moved = block.move_faces(block.faces().cylinders(), (8, 0, 0))      # the hole 8 to the right
+wider = block.offset_faces(block.faces().cylinders(), -2)           # 11214.6018: the hole r3 -> r5
+pushed = block.offset_faces(block.faces().top(), 2)                 # the top out by 2
+```
+
+`move_faces` takes a vector or a `Location`, which also turns the faces: to lean a wall in by 10
+degrees about its bottom edge,
+`wall.move_faces(right, Location.about(Axis((10, 0, -5), (0, -1, 0)), 10))`. `offset_faces` moves
+each face along its own normal: out of the part for a positive distance, so the part grows, a hole
+narrows and a boss widens. Faces that meet an offset face tangentially go with it, along the whole
+tangent chain: offsetting one face of a slot widens the slot:
+
+```python
+plate = Box(40, 20, 10) - Slot(16, 6).extrude(20).translate(0, 0, -10)
+wider_slot = plate.offset_faces(plate.faces().cylinders()[0], -1)   # 18 x 8; its walls and ends moved
+```
+
+`move_faces` asks for those faces instead (`ModelingError: move_faces: the plane face at (0, -3,
+0) meets the moved cylinder face at (-6.91, 0, 0) tangentially, so it must be moved with it ...;
+add it to the faces`). The results are exact: planes, cylinders, cones, spheres and tori keep
+their kind and size, and the edges where a plane meets a cylinder, cone or sphere stay circles.
+The kernel cannot change which faces meet: a face pushed past another one, or a face that would
+vanish, raises `ModelingError` (use a Boolean there), and so does a part with a cavity (the
+kernel drops cavities: edit the part first and cut the cavity afterwards).
 
 ## Removing fillets and faces
 

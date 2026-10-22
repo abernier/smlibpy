@@ -551,6 +551,8 @@ export class Part extends _Body {
     chamfer(edges: unknown, length: number, options?: ChamferOptions): Part;
     shell(thickness: number, openings?: unknown, options?: {
         outward?: boolean;
+        corners?: string | null;
+        walls?: unknown;
     }): Part;
     offset(distance: number, options?: {
         corners?: string;
@@ -577,6 +579,8 @@ export class Part extends _Body {
     }): DraftAnalysis;
     partingLine(direction: Axis | VectorLike): ShapeList<Wire>;
     draft(faces: unknown, angle: number, neutralPlane: Plane | Face): Part;
+    moveFaces(faces: unknown, by: Location | VectorLike): Part;
+    offsetFaces(faces: unknown, distance: number): Part;
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
     flange(edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part;
     bends(options?: {
@@ -827,6 +831,8 @@ export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOpt
 export function chamfer(edges: unknown, length: number, options?: ChamferOptions): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {
     outward?: boolean;
+    corners?: string | null;
+    walls?: unknown;
 }): Part;
 export function offset(shape: Part | Sketch | Shell | Face, distance: number, options?: {
     corners?: string;

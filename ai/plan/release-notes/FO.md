@@ -1,4 +1,4 @@
-# Lane FO: fillets, chamfers, shells and offsets (F6, F7, F8, F9, F10, F11, F12, O1, O3, O7, O8, O9)
+# Lane FO: fillets, chamfers, shells, offsets and face edits (F6, F7, F8, F9, F10, F11, F12, O1, O3, O7, O8, O9, O10, O11, O12)
 
 ## Fixed
 
@@ -78,6 +78,13 @@
   Boolean for all. docs/kernel.md, docs/analysis.md and the skill's analysis references give the
   accuracy of fitted faces as up to 1e-5 of the volume on small parts.
 
+- `shell` says which cavity it built (O12): the kernel's plain mode rolls a ball where the faces grow
+  apart (constant wall, an inner round of radius `thickness` at each concave edge), its extended mode
+  extends the faces (sharp inner corners, the wall thicker there), and `shell` returned whichever
+  succeeded first without saying so: the fuzz body `Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16)...`
+  gives 274.643 (16 faces) one way and 275.8722 (11) the other, an L-shaped block 1745.1327 and 1752.0.
+  The result's `info()["corners"]` now says `"round"` or `"sharp"`, and `corners=` picks one (below).
+
 ## New
 
 - `Part.fillet(..., propagate=True)` and `Part.chamfer(edges, length, *, propagate=True)` (also
@@ -154,6 +161,53 @@
   chamfers, rounded offsets; `docs/kernel.md` rows for the offset bound, mitred corners and conical
   chamfers; skill references `features/offset`, `features/fillet`, `features/chamfer`; the
   JavaScript API section.
+
+- Direct editing (O10): `Part.move_faces(faces, by)` and `Part.offset_faces(faces, distance)`
+  (smlibwasm `moveFaces`, `offsetFaces`; the module `smlibpy.face_edit`, `js/src/face_edit.ts`). The
+  faces get new surfaces, copies of their own moved by a rigid motion (`by`: a vector or a
+  `Location`, which turns them too) or offset along their outward normals (the kernel's
+  `CreateOffsetSurface`, which keeps the parameters: planes move, cylinders, cones, spheres and tori
+  change their radius, other surfaces become offset surfaces), and `SmBrep::LocalOperation` rebuilds
+  the part around them, extending or trimming the faces around them (new C++ `src/cpp/face_edit.cpp`,
+  `_core.face_edit.edit_faces`, bound in smlibwasm as `face_edit__edit_faces`). Exact: `Box(10, 10,
+  10)` top +5 1500.0, -4 600.0; `Box(40, 30, 10) - Cylinder(3, 20)`: the hole r3 -> r5 11214.6018,
+  moved by (8, 0, 0) with its circles centred at x = 8, the top up 5 17575.885; a boss's top pulled
+  up 5 13178.0972 and its side out 1 13130.9734; a wall leaned in by 10 degrees with a Location about
+  its bottom edge 3823.673 (to 1e-12); the step of an L-block raised 3 900.0. `offset_faces` takes a
+  face's tangent chain along (one end of a `Slot(16, 6)` by -1 widens the whole slot to 18 x 8:
+  6697.3452); `move_faces` refuses a tangent neighbour that is not selected and names it. The edges
+  where a moved plane meets an extended cylinder, cone or sphere, which the kernel fits with a
+  B-spline (a pin's top pulled up 5: 1178.0971 instead of 1178.0972), are put back as the exact
+  circles. Checked: the gaps between vertices, edges and faces (as `draft`), the face count, a sound
+  solid, and the sign of the volume change for `offset_faces`; a radius that would reach 0, a face
+  that vanishes or is pushed past another, and a part with a cavity (the kernel drops cavities, edited
+  or not, and reports success) raise `ModelingError` saying so.
+- `shell(thickness, openings=None, *, outward=False, corners=None, walls=None)` (O10, O12; also the
+  function `shell`; smlibwasm `{ outward, corners, walls }`):
+  - `walls`: faces with walls of their own thickness, `(faces, thickness)` pairs or a dict of faces
+    (smlibwasm: `[faces, thickness]` pairs or a `Map`). The shell's face across each such wall is
+    offset by the difference (`offset_faces`); a closed shell's cavity is edited as a body of its own
+    (the part offset by `-thickness` in the shell's mode) and cut out, since the kernel's face edit
+    drops cavities. `Box(40, 30, 10)` open at the top, 2 thick, floor 5 and +X wall 6: 7840.0
+    (= 12000 - 32 * 26 * 5, the plan's probe); closed with a 4 mm floor 8256.0; outward and sharp
+    with a 4 mm floor 11936.0. Faces that meet smoothly need one thickness (`ModelingError` naming
+    them, with the advice).
+  - `corners`: `"round"` (the plain mode only), `"sharp"` (the extended mode only, retried once after
+    a refused result as before), or `None` (default: as before, round where the kernel builds it, else
+    sharp). A shell the kernel cannot build the way asked raises, with `or try corners="..."` in the
+    hint. `outward=True, corners="sharp"` gives sharp outer edges: `Box(80, 50, 30)` with the top
+    open, 2.5 out: 31937.5 (round: 31398.0); the guide's "use offset minus the part" is gone.
+  - `info()` of a body made by `shell` or `offset` has `"corners"` (`"round"` or `"sharp"`); the
+    record goes with the body (a moved copy is a new body and has none).
+- Two-sided drafts (O11): `docs/features.md` (Draft) and the skill's `features/draft` give the recipe
+  for a planar parting line: split there, draft each half about the plane (the lower one with
+  `Plane.XY.flipped()`), fuse. `Box(40, 30, 20)` at 3 degrees: 23273.6153, exact, 10 faces;
+  `draft_analysis(Z)` finds 3 on the upper walls and -3 on the lower ones.
+- Docs: `docs/features.md` (shell corners and walls, two-sided draft, Moving and offsetting faces),
+  `docs/kernel.md` (a row for `LocalOperation`, the shell-mode row, a limitation), skill references
+  `features/move_faces` and `features/offset_faces` (new), `features/shell`, `features/draft`,
+  `features/offset`, `parts/generic` (`info()`), `SKILL.md`; MCP search synonyms (resize, enlarge,
+  widen, thicker, push, relocate, direct editing); the JavaScript API section.
 
 ## Behaviour changes
 
@@ -238,6 +292,17 @@
   and its twin (a pin with G2 rounds keeps the faces that meet within a tolerance it is about),
   `tests/test_js_options.py` and `js/test/options.test.ts` (`Part.offset` takes `corners`).
 
+- `info()` of a body made by `shell` or `offset` has one more key, `"corners"`. Scripts that compare
+  the whole dictionary:
+  ```python
+  shelled = Box(40, 30, 10).shell(2)
+  assert shelled.info() == {"type": "Part", "faces": 12, ...}       # before; now fails on "corners"
+  assert {k: v for k, v in shelled.info().items() if k != "corners"} == {"type": "Part", "faces": 12, ...}
+  ```
+  The default `shell` (no `corners`) builds what it built before.
+- `operations.shell` (the function) passes `corners` and `walls` on; smlibwasm's `_options.ts` lists
+  them for `Part.shell` and `shell` (an unknown option still throws `TypeError`).
+
 ## Not done
 
 - The extended offset mode still crashes on some imported parts, contained by the forked copy
@@ -297,4 +362,23 @@
   on spheres or tori, straight edges between curved faces): those bevels are still the kernel's
   fitted B-splines.
 - O9: `Shell.offset` has no `corners` (the kernel's plain mode on sheets returned a multi-face sheet's
-  faces unmoved, O7). `shell` still picks its mode by what succeeds (O12, not in this lane).
+  faces unmoved, O7). `shell` still picks its mode by what succeeds unless `corners=` is given (O12:
+  the default stays as it was; it now says which).
+- O10: `move_faces` and `offset_faces` refuse parts with a cavity: `SmBrep::LocalOperation` drops a
+  solid's inner shells (edited or not) and reports success. Only `shell(walls=)` of a closed shell
+  works around it (it edits the cavity as a body and cuts it out). `draft` has the same defect: a part
+  with a cavity raises "the drafted faces change which faces of the part meet ...; use a smaller angle",
+  which names the wrong cause (not changed here; `draft.py` belongs to the molding code).
+- O10: faces around the edited ones that the kernel extends can change their kind: the vertical rounds
+  of a box whose top is pulled up come back as surfaces of extrusion (exact, but `faces().cylinders()`
+  no longer finds them), a cone extended past its end as a B-spline face (its volume within 6e-8).
+  `SmCylinder::IsNurbSurfaceCylinder`, `MakeExactBSplineIfPossible` and `CopyAndAddAnalytics` all leave
+  such an extended round as it is (rational, degree 2 by 1, 7 by 2 control points); turning it back
+  would need a new cylinder with the face's trims rebuilt. Not done.
+- O10: edits that change which faces meet (a face pushed past another, a face that vanishes) are
+  refused, as the kernel cannot add or remove faces there; use a Boolean. `move_faces` does not take
+  tangent neighbours along on its own (a rigid move of a chain can reach far, e.g. through a rounded
+  rim into the top face and every hole rounded into it); it names them. The plan's per-face neutral
+  planes for drafts (stepped parting lines, O11) are not added: the recipe covers planar parting lines,
+  as the plan asks.
+
