@@ -3,23 +3,27 @@
 Each face is rebuilt on an exact kernel surface, each edge as an exact curve spanning
 exactly that edge (lines, circular arcs, ellipses and NURBS keep their types). The
 topology of the file is kept: faces share their edges as they do in the file, so no
-stitching is needed. Bodies that still come out invalid are healed.
+stitching is needed. Bodies that still come out invalid are healed, and stitched where
+their faces do not share their edges. A body that cannot be read is left out with a
+warning; the instances of a product in an assembly are built once and placed.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-from ._kernel import KernelError, ModelingError, ext, k, kernel_call
+from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .curves import CenterArc, EllipticalArc, Line
 from .geometry import Location, Plane, Vector
 from .shapes import Edge
-from .step_reader import BodyData, interpret, interpret_extras, parse
+from .step_reader import (_BODY_ERRORS, BodyData, StepFile, _body_label, _failure, interpret, interpret_extras,
+                          parse)
 
 __all__ = ["import_step", "read_step", "StepModel", "StepFrame", "StepCurve", "StepPoint"]
 
@@ -172,7 +176,7 @@ class _Builder:
                 seam = self.tube_seam(face, tube_angle)
                 if seam is not None or (pts and not any(_winding(l, tube_angle) for l in loops)):
                     v0 = math.degrees(seam if seam is not None else _largest_gap_of(sorted(tube_angle(p) for p in pts)))
-                    spec["v_start"] = v0 - 360.0 if v0 > 0 else v0
+                    spec["v_start"] = _tube_window_start(v0)
             return spec
         if kind == "bspline":
             return {"kind": "bspline", "u_degree": s["u_degree"], "v_degree": s["v_degree"], "nu": s["nu"],
@@ -332,6 +336,16 @@ def _conic_arc(c: dict[str, Any], o: np.ndarray, z: np.ndarray, x: np.ndarray, p
     mid = p0 + d0 * s_[0]
     return {"kind": "bspline", "degree": 2, "poles": np.array([p0, mid, p1]), "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             "weights": [1.0, w, 1.0], "p0": p0, "p1": p1, "forward": True, "closed": False}
+
+
+def _tube_window_start(v0: float) -> float:
+    """Where a torus' window around the tube starts (degrees, in [-360, 0]) for a seam at
+    ``v0`` (degrees, from atan2). A seam on the outer equator comes out of atan2 as a rounding
+    error either side of 0 (OpenCASCADE's O-rings: +6e-15), and 6e-15 - 360 is a window the
+    kernel refuses: that seam starts the window at 0."""
+    if abs(v0) < 1e-9:
+        return 0.0
+    return v0 - 360.0 if v0 > 0 else v0
 
 
 def _largest_gap(o: np.ndarray, z: np.ndarray, x: np.ndarray, pts: list[np.ndarray]) -> np.ndarray:
@@ -576,6 +590,7 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     solid = body.kind == "solid"
     parts = []
     built = []  # the faces and orientation each shell was built with in the end
+    broken = []  # what is wrong with the closed shells heal and stitching could not repair
     for si, sh in enumerate(body.shells):
         closed = solid and bool(sh.get("closed", True))
         shell_faces = [faces[i] for i in sh["faces"]]
@@ -589,27 +604,31 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
             # plane, and no sense to read.)
             inverted = ext.inverted_faces(brep)
             if inverted:
-                unseamed = {d["face"] for d in ext.seam_problems(brep)}
+                unseamed = {d["face"] for d in ext.seam_problems(brep, False, inverted)}
                 inverted = [i for i in inverted if i not in unseamed]
             if inverted and 2 * len(inverted) < len(shell_faces):
                 for i in inverted:
                     shell_faces[i] = dict(shell_faces[i], same_sense=not shell_faces[i]["same_sense"])
                 ext.delete_brep(brep)
                 brep = ext.build_brep(shell_faces, edges, closed, reversed_, False)
-        part = _with_seams(Part._wrap(brep) if closed else Shell._wrap(brep))
-        if closed and not _positive(part):
-            reversed_ = not reversed_
-            with kernel_call("import STEP"):
-                part = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, reversed_, False)))
+        part, volume = _with_seams(Part._wrap(brep) if closed else Shell._wrap(brep))
+        if closed:
+            # (the kernel's coarse volume, integrated once per shell: its sign says which way
+            # round the shell was built, and the checks below take it)
+            if volume is None:
+                volume = _kernel_volume(part)
+            if not (volume is not None and volume > 0):
+                reversed_ = not reversed_
+                with kernel_call("import STEP"):
+                    part, volume = _with_seams(Part._wrap(ext.build_brep(shell_faces, edges, closed, reversed_, False)))
         built.append((shell_faces, reversed_))
-        if heal and closed and not _sound(part):
-            # Only heal what came out broken: the kernel's healer can damage good bodies.
-            try:
-                healed = part.heal()
-                if _sound(healed):
-                    part = healed
-            except KernelError:
-                pass
+        if heal and closed and not _sound(part, volume):
+            # Only repair what came out broken: the kernel's healer can damage good bodies.
+            part, problem = _repaired(part, body)
+            if problem is not None:
+                broken.append(problem)
+        elif heal and not closed and _apart(body, sh["faces"]):
+            part = _sewn(part, body)
         parts.append(part)
     if not parts:
         raise ModelingError("empty body")
@@ -619,6 +638,9 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     elif len(parts) > 1:  # a surface model of several shells stays a surface
         with kernel_call("import STEP"):
             result = Shell._wrap(ext.combine([p._brep for p in parts]))
+    if broken:
+        warnings.warn(f"import STEP: {_body_label(body.entity, body.name, body.product)} is not a valid solid "
+                      f"({broken[0]}); heal and stitching could not repair it", RuntimeWarning, stacklevel=4)
     if body.name:
         result.name = body.name
     if body.color is not None:
@@ -629,10 +651,18 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
 def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any], bool]], edges: dict[int, Any]) -> Any:
     """A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the
     solid, as the file has it. The Boolean difference is the fallback; it fails where a
-    cavity's faces come close to the solid's."""
+    cavity's faces come close to the solid's (``ModelingError``: the import names the body)."""
     from .shapes import Part
 
-    expected = outer.volume - sum(c.volume for c in cavities)
+    # The volumes as smlibpy integrates them, with the gaps between their faces: where faces do
+    # not meet exactly (a cavity of two faces 1e-5 mm3 large, gaps of 1e-2 of a volume) the
+    # void region's volume differs from the solid's less its cavities' by up to the gaps.
+    pieces = [outer._props()] + [c._props() for c in cavities]
+    expected = pieces[0]["volume"] - sum(p["volume"] for p in pieces[1:])
+    tol = max(1e-6 * max(abs(pieces[0]["volume"]), 1.0), 2 * sum(p["gaps"] * abs(p["volume"]) for p in pieces))
+    # A cavity turned the wrong way adds its volume instead: a build is the right one when it is
+    # within the tolerance and closer to the right volume than to that.
+    apart = sum(abs(p["volume"]) for p in pieces[1:])
     (faces, rev) = built[0]
     # The cavity's faces as when it was built as a solid of its own; the constructor's
     # comments say the other way round, so that is tried as well. The volume decides.
@@ -640,22 +670,29 @@ def _with_cavities(outer: Any, cavities: list[Any], built: list[tuple[list[Any],
         voids = [(f, r != flip) for f, r in built[1:]]
         try:
             with kernel_call("import STEP: cavities"):
-                part = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
-            if part._solid_problem() is None and abs(part.volume - expected) <= 1e-6 * max(abs(outer.volume), 1.0):
-                return part
+                part, _ = _with_seams(Part._wrap(ext.build_brep(faces, edges, True, rev, False, voids)))
+            if part._solid_problem() is None:
+                off = abs(part._props()["volume"] - expected)
+                if off <= tol and off < apart:
+                    return part
         except (KernelError, ModelingError):
             pass
     result = outer
-    for cavity in cavities:
-        result = result - cavity
+    try:
+        for cavity in cavities:
+            result = result - cavity
+    except (KernelError, ModelingError) as e:
+        raise ModelingError(f"its cavities could not be built, neither as void regions nor by subtracting them "
+                            f"({e})") from e
     return result
 
 
 _SWEPT = ("cylinder", "cone", "sphere", "torus", "revolution", "extrusion")
 
 
-def _with_seams(body: Any) -> Any:
-    """The body with the seams its faces lack. A face on a cylinder, cone, revolution or
+def _with_seams(body: Any) -> tuple[Any, float | None]:
+    """The body with the seams its faces lack, and the kernel's coarse volume where that was
+    integrated to check it (else None). A face on a cylinder, cone, revolution or
     extrusion around which its loops run (NX writes the shank of a drill as the circle at
     one end and the outline of its flat at the other) needs an edge along the surface's
     seam: without it the kernel can neither mesh nor integrate the face. The kernel adds
@@ -673,17 +710,20 @@ def _with_seams(body: Any) -> Any:
     if spline:
         lacking += sorted(set(spline) & _unmeshed(body))
     if not lacking:
-        return body
+        return body, None
     try:
         fixed = body._like(body._copy_brep())
         with kernel_call("import STEP: seams"):
             ext.seam_problems(fixed._brep, True, lacking)
         # a sheet cannot be checked for closure: it keeps the kernel's seams
-        if not isinstance(fixed, Part) or (fixed._solid_problem() is None and _positive(fixed)):
-            return fixed
+        if not isinstance(fixed, Part):
+            return fixed, None
+        volume = _kernel_volume(fixed)
+        if volume is not None and volume > 0 and fixed._solid_problem(volume=volume) is None:
+            return fixed, volume
     except KernelError:
         pass
-    return body
+    return body, None
 
 
 def _unmeshed(body: Any) -> set[int]:
@@ -785,18 +825,147 @@ def _turned(links: dict[int, list[tuple[int, bool]]]) -> list[int] | None:
     return out
 
 
-def _sound(part: Any) -> bool:
+def _kernel_volume(part: Any) -> float | None:
+    """The kernel's coarse volume of a built shell (1e-4), None where it cannot be integrated.
+    (Integrated once per shell: on a part of 2079 faces each integration takes 0.3 s, and the
+    checks of a shell asked for it three or four times.)"""
     try:
-        return part._solid_problem() is None and part._kernel_props(1e-4)["volume"] > 0
+        return float(part._kernel_props(1e-4)["volume"])
+    except KernelError:
+        return None
+
+
+def _sound(part: Any, volume: float | None = None) -> bool:
+    """A closed, manifold solid of positive volume (``volume``: its kernel volume, if known)."""
+    try:
+        if part._shape_problem() is not None:
+            return False
+        if volume is None:
+            volume = _kernel_volume(part)
+        return volume is not None and volume > 0 and part._solid_problem(volume=volume) is None
     except KernelError:
         return False
 
 
-def _positive(part: Any) -> bool:
+def _repaired(part: Any, body: BodyData) -> tuple[Any, str | None]:
+    """A broken solid repaired: healed, else stitched (faces that do not share their edges,
+    edges with gaps between them), each kept only if it gives a sound solid. Returns the part
+    (the one given if nothing helped) and what is still wrong with it (None: nothing)."""
     try:
-        return part._kernel_props(1e-4)["volume"] > 0
+        healed = part.heal()
+        if _sound(healed):
+            return healed, None
     except KernelError:
+        pass
+    stitched = _stitched(part, body)
+    if stitched is not None:
+        fixed, gap = stitched
+        warnings.warn(f"import STEP: the faces of {_body_label(body.entity, body.name, body.product)} did not share "
+                      f"their edges; stitched them, closing gaps of up to {gap:.2g} mm", RuntimeWarning, stacklevel=5)
+        return fixed, None
+    try:
+        return part, part._solid_problem() or "not a sound solid"
+    except KernelError:
+        return part, "a body whose volume cannot be integrated"
+
+
+def _stitched(part: Any, body: BodyData) -> tuple[Any, float] | None:
+    """A broken closed shell sewn into a valid solid, with the largest gap closed; None if no
+    stitch gives one. The kernel's stitch first (it widens its own tolerance); then explicit
+    tolerances, doubling from the larger of the file's declared uncertainty and the gaps the
+    kernel measured, up to 1e-3 of the body's size. (The declared uncertainty alone is no
+    guide: smlibpy writes 1e-7 into files whose gaps reach 1e-3.) Each stitched body is
+    healed where it needs to be (a seam the stitch joined from two edges of the file lacks its
+    face's seam), and kept only if it is a valid solid, its faces' gaps measured too."""
+    from .shapes import Part, _take
+
+    measured = 0.0
+    h = BrepHandle(part._copy_brep())
+    try:
+        with kernel_call("import STEP: stitch"):
+            _, _, _, vgap, egap = k.stitch_into_solid(h.brep)
+        measured = max(float(vgap), float(egap))
+        candidate = _valid_or_healed(Part._wrap(_take(h)))
+        if candidate is not None:
+            return candidate, measured
+    except KernelError:
+        pass
+    tol = max(body.uncertainty or 0.0, measured, 1e-7)
+    cap = 1e-3 * part._extent()
+    while tol <= cap:
+        h = BrepHandle(part._copy_brep())
+        try:
+            with kernel_call("import STEP: stitch"):
+                k.stitch_advanced(h.brep, tol)
+            candidate = _valid_or_healed(Part._wrap(_take(h)))
+            if candidate is not None:
+                return candidate, tol
+        except KernelError:
+            pass
+        tol *= 2
+    return None
+
+
+def _valid_or_healed(part: Any) -> Any:
+    """The part if it is a valid solid (``is_valid()``: its faces' gaps measured too), else it
+    healed if that is one, else None."""
+    def valid(p: Any) -> bool:
+        return _sound(p) and p._solid_problem(gaps=True) is None
+
+    if valid(part):
+        return part
+    if part._shape_problem() is None:  # closed: the healer may mend its seams and gaps
+        try:
+            healed = part.heal()
+            if valid(healed):
+                return healed
+        except KernelError:
+            pass
+    return None
+
+
+def _apart(body: BodyData, faces: list[int]) -> bool:
+    """Whether some faces of a shell share no edge with the others (in the file): the shell
+    falls apart into pieces that only stitching joins."""
+    if len(faces) < 2:
         return False
+    group = {fi: fi for fi in faces}
+
+    def root(f: int) -> int:
+        while group[f] != f:
+            group[f] = group[group[f]]
+            f = group[f]
+        return f
+
+    first: dict[int, int] = {}  # edge -> a face using it
+    for fi in faces:
+        for loop in body.faces[fi]["loops"]:
+            for ei, _ in loop.get("edges") or ():
+                if ei in first:
+                    group[root(fi)] = root(first[ei])
+                else:
+                    first[ei] = fi
+    return len({root(f) for f in faces}) > 1
+
+
+def _sewn(sheet: Any, body: BodyData) -> Any:
+    """A sheet whose faces share no edges with each other in the file, sewn along the edges
+    that meet within 1e-3 of its size (kept if anything was sewn)."""
+    from .shapes import Shell, _take
+
+    h = BrepHandle(sheet._copy_brep())
+    try:
+        tol = max(body.uncertainty or 0.0, 1e-3 * sheet._loose_box().diagonal)
+        with kernel_call("import STEP: stitch"):
+            _, _, stitched, vgap, egap = k.stitch_into_shell(h.brep, tol)
+        if int(stitched) > 0:
+            warnings.warn(f"import STEP: the faces of {_body_label(body.entity, body.name, body.product)} did not "
+                          f"share their edges; stitched {int(stitched)} edges, closing gaps of up to "
+                          f"{max(float(vgap), float(egap)):.2g} mm", RuntimeWarning, stacklevel=5)
+            return Shell._wrap(_take(h))
+    except KernelError:
+        pass
+    return sheet
 
 
 @dataclass(frozen=True)
@@ -850,12 +1019,14 @@ class StepPoint:
 class StepModel:
     """Everything :func:`read_step` reads from a STEP file: the bodies (what
     :func:`import_step` returns, always as a list), and the coordinate systems, curves and
-    points that belong to no body."""
+    points that belong to no body. ``skipped`` says which bodies could not be read, and why
+    (``"body 'b' (#99): curve type OFFSET_CURVE_3D (#203), which is not supported"``)."""
 
     bodies: Any
     frames: list[StepFrame] = field(default_factory=list)
     curves: list[StepCurve] = field(default_factory=list)
     points: list[StepPoint] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
 
     def frame(self, name: str, product: str | None = None) -> Plane:
         """The coordinate system called ``name`` as a :class:`~smlibpy.Plane`. Where several
@@ -873,10 +1044,50 @@ class StepModel:
 
     def __repr__(self) -> str:
         return (f"StepModel({len(self.bodies)} bodies, {len(self.frames)} frames, {len(self.curves)} curves, "
-                f"{len(self.points)} points)")
+                f"{len(self.points)} points" + (f", {len(self.skipped)} skipped" if self.skipped else "") + ")")
 
 
-def read_step(path: str | os.PathLike[str], *, heal: bool = True) -> StepModel:
+
+def _bodies(sf: StepFile, heal: bool, strict: bool) -> tuple[list[Any], list[str]]:
+    """The bodies of a parsed file in file order, and what was left out (one message per body
+    that could not be read, with the number of its instances). ``strict`` raises
+    ``ModelingError`` for the first body that cannot be read instead.
+
+    An assembly lists a product once per instance, all with the same data: each is built
+    once, at its first placement, and its other instances are placed copies of it (a robot
+    of 1472 instances of 714 bodies built 135,856 faces for 53,293)."""
+    skipped: list[dict[str, Any]] = []
+    found = interpret(sf, skipped=skipped)
+    if strict and skipped:
+        raise ModelingError(f"import STEP: {skipped[0]['message']}")
+    out: list[Any] = []
+    built: dict[int, tuple[Any, np.ndarray]] = {}  # id(BodyData) -> (body, the placement it was built at)
+    failed: dict[int, list[Any]] = {}  # id(BodyData) -> [message, instances]
+    for body, m in found:
+        key = id(body)
+        if key in failed:
+            failed[key][1] += 1
+            continue
+        try:
+            if key not in built:
+                built[key] = (_build_body(body, m, heal), m)
+                out.append(built[key][0])
+                continue
+            first, at = built[key]
+            out.append(first._transformed(m @ np.linalg.inv(at)))
+        except _BODY_ERRORS as e:
+            message = f"{_body_label(body.entity, body.name, body.product)}: {_failure(e)}"
+            if strict:
+                raise ModelingError(f"import STEP: {message}") from e
+            failed[key] = [message, 1]
+    notes = [s["message"] for s in skipped]
+    notes += [message + (f" ({n} instances)" if n > 1 else "") for message, n in failed.values()]
+    for note in notes:
+        warnings.warn(f"import STEP: left out {note}", RuntimeWarning, stacklevel=3)
+    return out, notes
+
+
+def read_step(path: str | os.PathLike[str], *, heal: bool = True, strict: bool = False) -> StepModel:
     """Read everything a STEP file holds that smlibpy can use: its bodies, and the
     coordinate systems, curves and points that belong to no body.
 
@@ -886,14 +1097,16 @@ def read_step(path: str | os.PathLike[str], *, heal: bool = True) -> StepModel:
     shape representations; curves and points are the wireframe geometry (contours such as a
     tool's cutting edge line, curve sets, reference points). Each carries its name and the
     product it belongs to, at its place in the assembly, in millimeters. Items on hidden
-    layers are left out. A file with no bodies gives an empty ``bodies``.
+    layers are left out. A file with no bodies gives an empty ``bodies``. A body that cannot
+    be read is left out with a warning and listed in ``skipped`` (``strict=True`` raises
+    instead), as :func:`import_step` does.
     """
     from .shapes import ShapeList
 
     with open(os.fspath(path), "r", encoding="latin-1") as fh:
         sf = parse(fh.read())
-    bodies = ShapeList(_build_body(b, m, heal) for b, m in interpret(sf))
-    model = StepModel(bodies)
+    found, skipped = _bodies(sf, heal, strict)
+    model = StepModel(ShapeList(found), skipped=skipped)
     for item in interpret_extras(sf):
         name, product, color = item["name"], item["product"], item["color"]
         if item["kind"] == "frame":
@@ -1002,20 +1215,30 @@ def _trimmed_edge(basis: dict[str, Any], trims: list[dict[str, Any]], sense: boo
     return None
 
 
-def import_step(path: str | os.PathLike[str], *, heal: bool = True) -> Any:
+def import_step(path: str | os.PathLike[str], *, heal: bool = True, strict: bool = False) -> Any:
     """Read the solids and surfaces of a STEP file (AP203, AP214, AP242 B-rep data).
 
     Returns a single :class:`~smlibpy.Part` (or :class:`~smlibpy.Shell`) when the file
     holds one body, otherwise a :class:`~smlibpy.ShapeList` of them. Lengths are converted
-    to millimeters; assembly placements are applied; names and colors are kept.
-    ``heal`` repairs bodies that come out invalid (valid ones are left alone).
+    to millimeters; assembly placements are applied; names and colors are kept. ``heal``
+    repairs bodies that come out invalid (valid ones are left alone): the
+    kernel's healer, then stitching where faces do not share their edges, each with a warning
+    when it changed the body or could not repair it.
+
+    A body that cannot be read (an entity smlibpy does not read, one the kernel cannot build)
+    is left out with a ``RuntimeWarning`` that names it, its entity and the reason; the other
+    bodies are read. ``strict=True`` raises ``ModelingError`` for it instead. A file none of
+    whose bodies can be read raises.
     """
     from .shapes import ShapeList
 
     with open(os.fspath(path), "r", encoding="latin-1") as fh:
         sf = parse(fh.read())
-    bodies = interpret(sf)
-    if not bodies:
+    found, skipped = _bodies(sf, heal, strict)
+    if not found:
+        if skipped:
+            raise ModelingError(f"import STEP: no body of the file could be read: {'; '.join(skipped[:3])}"
+                                + ("; ..." if len(skipped) > 3 else ""))
         raise ModelingError("the STEP file holds no B-rep solids or surfaces")
-    out = ShapeList(_build_body(b, m, heal) for b, m in bodies)
+    out = ShapeList(found)
     return out[0] if len(out) == 1 else out

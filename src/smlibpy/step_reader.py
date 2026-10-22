@@ -61,7 +61,12 @@ def _decode_string(s: str) -> str:
         hexs = m.group(1)
         return "".join(chr(int(hexs[i:i + 4], 16)) for i in range(0, len(hexs), 4))
 
+    def x4(m: re.Match[str]) -> str:
+        hexs = m.group(1)
+        return "".join(chr(int(hexs[i:i + 8], 16)) for i in range(0, len(hexs), 8))
+
     s = re.sub(r"\\X2\\([0-9A-Fa-f]+)\\X0\\", x2, s)
+    s = re.sub(r"\\X4\\([0-9A-Fa-f]+)\\X0\\", x4, s)
     s = re.sub(r"\\X\\([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), s)
     return s.replace("\\\\", "\\")
 
@@ -219,6 +224,9 @@ class BodyData:
     faces: list[dict[str, Any]] = field(default_factory=list)
     shells: list[dict[str, Any]] = field(default_factory=list)  # [{"faces": [...], "reversed": bool}]
     color: tuple[float, float, float] | None = None
+    product: str = ""  # the name of the product the body belongs to, if the file names one
+    entity: int = 0  # the body's entity (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, ...)
+    uncertainty: float | None = None  # the length uncertainty its context declares (mm)
 
 
 _MM_PER_METRE_PREFIXED: dict[Any, float] = {
@@ -243,6 +251,7 @@ class _Interp:
         the units a context assigns count."""
         sf = self.sf
         self.context_units: dict[int, tuple[float, float]] = {}
+        self.context_uncertainty: dict[int, float] = {}  # context -> declared length uncertainty (mm)
         for eid, parts in sf.complex.items():
             assigned = parts.get("GLOBAL_UNIT_ASSIGNED_CONTEXT")
             if not assigned:
@@ -255,6 +264,17 @@ class _Interp:
                 elif "PLANE_ANGLE_UNIT" in kinds:
                     angle = self._unit_value(int(u), {None: 1.0})
             self.context_units[eid] = (length, angle)
+            for u in (parts.get("GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT") or [[]])[0]:
+                try:  # UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), unit, name, description)
+                    t, a = sf.get(u)
+                    value = a[0].args[0] if isinstance(a[0], Typed) else a[0]
+                    kinds = sf.complex.get(int(a[1]), {})
+                    unit = self._unit_value(int(a[1]), _MM_PER_METRE_PREFIXED) if "LENGTH_UNIT" in kinds else length
+                    mm = float(value) * unit
+                    if t == "UNCERTAINTY_MEASURE_WITH_UNIT" and mm > 0 and math.isfinite(mm):
+                        self.context_uncertainty[eid] = min(mm, self.context_uncertainty.get(eid, math.inf))
+                except Exception:
+                    continue
         units = list(self.context_units.values())
         if units:  # where a representation has no context of its own, the most common one counts
             self.scale, self.angle_scale = max(set(units), key=units.count)
@@ -295,6 +315,10 @@ class _Interp:
 
     def use_units(self, rep: int | None) -> None:
         self.scale, self.angle_scale = self.units_of(rep)
+
+    def uncertainty_of(self, rep: int | None) -> float | None:
+        """The length uncertainty (mm) the context of a representation declares, or None."""
+        return self.context_uncertainty.get(self.rep_context.get(rep, -1)) if rep is not None else None
 
     # -- colors -----------------------------------------------------------------
     def _find_colors(self) -> dict[int, tuple[float, float, float]]:
@@ -427,7 +451,7 @@ class _Interp:
             return {"kind": "bspline", "degree": 1, "poles": np.array(pts), "knots": knots, "weights": None}
         if t == "TRIMMED_CURVE":
             return self.curve(a[1])
-        raise NotImplementedError(f"curve type {t}")
+        raise NotImplementedError(f"curve type {t} (#{int(ref)})")
 
     def wire_curve(self, ref: Any) -> dict[str, Any] | None:
         """A curve that stands on its own (wireframe geometry), with its trims and segments:
@@ -516,7 +540,7 @@ class _Interp:
                     vk = _default_knots(len(grid[0]), vd, form)
                 w = parts.get("RATIONAL_B_SPLINE_SURFACE")
                 return self._bspline_surface(ud, vd, grid, uk, vk, w[0] if w else None)
-        raise NotImplementedError(f"surface type {t}")
+        raise NotImplementedError(f"surface type {t} (#{int(ref)})")
 
     def _bspline_surface(self, ud: int, vd: int, grid: list[list[Any]], uk: list[float], vk: list[float],
                          weights: list[list[float]] | None) -> dict[str, Any]:
@@ -547,7 +571,7 @@ class _Interp:
             if r not in emap:
                 t, a = sf.get(r)
                 if t != "EDGE_CURVE":
-                    raise NotImplementedError(f"edge type {t}")
+                    raise NotImplementedError(f"edge type {t} (#{r})")
                 emap[r] = len(b.edges)
                 b.curves.append(self.curve(a[3]))
                 b.edges.append({"curve": len(b.curves) - 1, "v0": vertex(a[1]), "v1": vertex(a[2]),
@@ -564,7 +588,7 @@ class _Interp:
             for fref in a[1]:
                 ft, fa = sf.get(fref)
                 if ft not in ("ADVANCED_FACE", "FACE_SURFACE"):
-                    raise NotImplementedError(f"face type {ft}")
+                    raise NotImplementedError(f"face type {ft} (#{int(fref)})")
                 sref = int(fa[2])
                 if sref not in smap:
                     smap[sref] = len(b.surfaces)
@@ -578,7 +602,7 @@ class _Interp:
                         loops.append({"vertex": vertex(la[1]), "outer": bt == "FACE_OUTER_BOUND"})
                         continue
                     if lt != "EDGE_LOOP":
-                        raise NotImplementedError(f"loop type {lt}")
+                        raise NotImplementedError(f"loop type {lt} (#{int(ba[1])})")
                     items = []
                     for oref in la[1]:
                         ot, oa = sf.get(oref)
@@ -620,8 +644,33 @@ def _default_knots(n: int, degree: int, form: str) -> list[float]:
     return [0.0] * (degree + 1) + [float(i) for i in range(1, inner_n + 1)] + [float(inner_n + 1)] * (degree + 1)
 
 
-def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
-    """All bodies of the file with their world placement (4x4, mm)."""
+#: What reading one body can fail with: an entity the reader does not know
+#: (NotImplementedError), a malformed one, or the kernel (a KernelError) when it is built.
+_BODY_ERRORS = (RuntimeError, ValueError, KeyError, IndexError, TypeError, ArithmeticError)
+
+
+def _body_label(eid: int, name: str, product: str = "") -> str:
+    """How a message names a body: ``body 'b' (#99, product 'P')``, its entity and the product
+    it belongs to (where that is not its name)."""
+    of = f", product {product!r}" if product and product != name else ""
+    return f"body {name!r} (#{eid}{of})" if name else f"body #{eid}" + (f" ({of[2:]})" if of else "")
+
+
+def _failure(e: BaseException) -> str:
+    """The reason a body could not be read, for a message."""
+    if isinstance(e, NotImplementedError):
+        return f"{e}, which is not supported"
+    if isinstance(e, KeyError):  # (as StepFile.get says it in smlibwasm)
+        return f"the STEP file has no entity #{e.args[0] if e.args else '?'}"
+    return str(e) or type(e).__name__
+
+
+def interpret(sf: StepFile, *, skipped: list[dict[str, Any]] | None = None) -> list[tuple[BodyData, np.ndarray]]:
+    """All bodies of the file with their world placement (4x4, mm).
+
+    A body that cannot be read (an entity the reader does not know, a malformed one) raises,
+    unless a list is given as ``skipped``: then the body is left out and the list gets
+    ``{"name", "product", "entity", "message"}`` for it."""
     it = _Interp(sf)
     transforms, in_product = _representation_transforms(it)
     bodies: list[tuple[BodyData, np.ndarray]] = []
@@ -635,15 +684,24 @@ def interpret(sf: StepFile) -> list[tuple[BodyData, np.ndarray]]:
         reps = [r for r in owner.get(eid, []) if r in in_product] or owner.get(eid, [])
         it.use_units(reps[0] if reps else None)
         # Many exporters leave the body unnamed and name the product instead.
-        label = a[0] if isinstance(a[0], str) and a[0].strip() else next(
-            (product_names[r] for r in reps if r in product_names), "")
-        if t == "MANIFOLD_SOLID_BREP":
-            body = it.body([(a[1], False)], "solid", label)
-        elif t == "BREP_WITH_VOIDS":
-            body = it.body([(a[1], False)] + [(v, False) for v in a[2]], "solid", label)
-        else:
-            body = it.body([(s, False) for s in a[1]], "sheet", label)
+        product = next((product_names[r] for r in reps if r in product_names), "")
+        label = a[0] if isinstance(a[0], str) and a[0].strip() else product
+        try:
+            if t == "MANIFOLD_SOLID_BREP":
+                body = it.body([(a[1], False)], "solid", label)
+            elif t == "BREP_WITH_VOIDS":
+                body = it.body([(a[1], False)] + [(v, False) for v in a[2]], "solid", label)
+            else:
+                body = it.body([(s, False) for s in a[1]], "sheet", label)
+        except _BODY_ERRORS as e:
+            if skipped is None:
+                raise
+            skipped.append({"name": label, "product": product, "entity": eid,
+                            "message": f"{_body_label(eid, label, product)}: {_failure(e)}"})
+            continue
         body.color = it.colors.get(eid)
+        body.product, body.entity = product, eid
+        body.uncertainty = it.uncertainty_of(reps[0] if reps else None)
         # A body listed by several representations (some exporters put it in two that
         # are related to each other) is the same body where both put it at the same
         # place. Instances of one representation stay, even where they coincide.

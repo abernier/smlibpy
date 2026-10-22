@@ -4,6 +4,8 @@ Planes, cylinders, cones, spheres, tori, lines, circles and ellipses are written
 their analytic STEP entities, everything else as (rational) B-spline curves and
 surfaces with the kernel's exact control points and knots. Solids become
 MANIFOLD_SOLID_BREPs (BREP_WITH_VOIDS for hollow ones), sheets become open shells.
+All bodies go into one product, or, as an assembly, each body into a product of its own
+under a root product.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from ._kernel import ext, k
+from ._kernel import ext, k, kernel_call
 from .geometry import Vector
 
 __all__ = ["write_step"]
@@ -50,9 +52,21 @@ def _r(v: float) -> str:
 
 
 def _s(text: str | None) -> str:
-    """A STEP STRING literal (ASCII; quotes doubled)."""
-    t = (text or "").encode("ascii", "replace").decode("ascii").replace("'", "''")
-    return f"'{t}'"
+    """A STEP STRING literal: quotes doubled, backslashes too, and characters outside printable
+    ASCII in ISO 10303-21's ``\\X2\\...\\X0\\`` (``\\X4\\`` beyond the 16-bit range)."""
+    out = []
+    run, kind = "", ""  # hex digits of the characters encoded so far, and their encoding
+    for ch in (text or "") + "'":  # (the closing quote ends the last run)
+        c = ord(ch)
+        enc = "" if 0x20 <= c <= 0x7E else "X2" if c <= 0xFFFF else "X4"
+        if run and enc != kind:
+            out.append(f"\\{kind}\\{run}\\X0\\")
+            run = ""
+        if enc:
+            run, kind = run + (f"{c:04X}" if enc == "X2" else f"{c:08X}"), enc
+        else:
+            out.append("''" if ch == "'" else "\\\\" if ch == "\\" else ch)
+    return "'" + "".join(out)[:-2] + "'"
 
 
 def _color(c: Any) -> tuple[float, float, float] | None:
@@ -295,19 +309,28 @@ class _BodyWriter:
             return bool(use["same"])
         kf = self.kfaces[idx]
         kind = normal_fn[0]
-        p = np.array(kf.interior_point())
-        _, uvs, _ = k.surface_closest_point(kf.surface(), tuple(p))
-        u, v = uvs[0].x, uvs[0].y
-        if kind in ("cone", "torus"):
-            o, z = normal_fn[1], normal_fn[2]
-            d = p - o
-            if np.linalg.norm(d - z * d.dot(z)) < 1e-9 * max(1.0, np.linalg.norm(d)):
-                # The point is on the axis (the apex of a cone): no radial direction there.
-                # The sense is a property of the whole surface, so any other point will do.
+        with kernel_call("export STEP"):
+            try:
+                p = np.array(kf.interior_point())
+                _, uvs, _ = k.surface_closest_point(kf.surface(), tuple(p))
+                u, v = uvs[0].x, uvs[0].y
+            except RuntimeError:
+                # The kernel finds no point inside the face (it searches the face's parameter
+                # domain along 20 lines, and a narrow strip can lie between them). The sense is a
+                # property of the whole surface: the middle of the domain will do.
                 (u0, v0), (u1, v1) = kf.uv_domain()
                 u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
                 p = np.array(kf.point_at_uv(u, v))
-        n_kernel = np.array(kf.normal_at_uv(u, v))
+            if kind in ("cone", "torus"):
+                o, z = normal_fn[1], normal_fn[2]
+                d = p - o
+                if np.linalg.norm(d - z * d.dot(z)) < 1e-9 * max(1.0, np.linalg.norm(d)):
+                    # The point is on the axis (the apex of a cone): no radial direction there.
+                    # The sense is a property of the whole surface, so any other point will do.
+                    (u0, v0), (u1, v1) = kf.uv_domain()
+                    u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+                    p = np.array(kf.point_at_uv(u, v))
+            n_kernel = np.array(kf.normal_at_uv(u, v))
         n_face = n_kernel if use["same"] else -n_kernel
         if kind == "plane":
             n_step = normal_fn[1]
@@ -375,40 +398,54 @@ class _NeedsNurbs(Exception):
 
 
 def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str | None = None,
-               author: str = "", organization: str = "") -> None:
+               author: str = "", organization: str = "", assembly: bool = False) -> None:
     """Write bodies (parts and sheets) to a STEP file.
 
     The model is in millimeters; with another ``unit`` the coordinates are converted to
-    it, so the file holds the same part measured in that unit.
+    it, so the file holds the same part measured in that unit. With ``assembly`` each body
+    is a product of its own (named as the body) in a root product called ``name``; a body
+    listed more than once is written once and placed as often.
     """
-    from .shapes import Part, Shell, _Body
+    from .shapes import Part, _Body
 
     if unit not in _MM_PER_UNIT:
         raise ValueError(f"unknown unit {unit!r}; use mm, cm, m, um or inch")
+    for body in bodies:
+        if not isinstance(body, _Body):
+            raise TypeError(f"cannot write a {type(body).__name__} to STEP")
     if _MM_PER_UNIT[unit] != 1.0:
         f = 1.0 / _MM_PER_UNIT[unit]
-        bodies = [b.scale(f) if isinstance(b, _Body) else b for b in bodies]
+        scaled: dict[int, Any] = {}  # (a body listed twice stays one body)
+        for b in bodies:
+            if id(b._h) not in scaled:
+                scaled[id(b._h)] = b.scale(f)
+        bodies = [scaled[id(b._h)] for b in bodies]
     w = _Writer()
     product = name or _product_name(path)
     app = w.add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')")
     w.add(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})")
     pctx = w.add(f"PRODUCT_CONTEXT('',#{app},'mechanical')")
-    prod = w.add(f"PRODUCT({_s(product)},{_s(product)},'',(#{pctx}))")
-    w.add(f"PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#{prod}))")
-    form = w.add(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
-    dctx = w.add(f"PRODUCT_DEFINITION_CONTEXT('part definition',#{app},'design')")
-    pdef = w.add(f"PRODUCT_DEFINITION('design','',#{form},#{dctx})")
-    pshape = w.add(f"PRODUCT_DEFINITION_SHAPE('','',#{pdef})")
+    dctx_holder: list[int] = []
+
+    def new_product(label: str) -> tuple[int, int]:
+        """A PRODUCT with its definition: (PRODUCT_DEFINITION, PRODUCT_DEFINITION_SHAPE)."""
+        prod = w.add(f"PRODUCT({_s(label)},{_s(label)},'',(#{pctx}))")
+        w.add(f"PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#{prod}))")
+        form = w.add(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
+        if not dctx_holder:
+            dctx_holder.append(w.add(f"PRODUCT_DEFINITION_CONTEXT('part definition',#{app},'design')"))
+        pdef = w.add(f"PRODUCT_DEFINITION('design','',#{form},#{dctx_holder[0]})")
+        return pdef, w.add(f"PRODUCT_DEFINITION_SHAPE('','',#{pdef})")
+
+    pdef, pshape = new_product(product)
 
     if unit == "inch" or unit == "in":
         mm = w.add("(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.))")
         lm = w.add(f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE({_r(_INCH)}),#{mm})")
         dim = w.add("DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.)")
         length = w.add(f"(CONVERSION_BASED_UNIT('INCH',#{lm}) LENGTH_UNIT() NAMED_UNIT(#{dim}))")
-    elif unit in _UNITS:
-        length = w.add(_UNITS[unit])
     else:
-        raise ValueError(f"unknown unit {unit!r}; use mm, cm, m, um or inch")
+        length = w.add(_UNITS[unit])
     angle = w.add("(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))")
     solid_angle = w.add("(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())")
     unc = w.add(f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#{length},'distance_accuracy_value','confusion accuracy')")
@@ -417,39 +454,77 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
                 f"REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))")
 
     origin = w.axis2((0, 0, 0), (0, 0, 1), (1, 0, 0))
-    solid_items: list[int] = []
-    sheet_items: list[int] = []
     styled: list[tuple[int, tuple[float, float, float]]] = []
-    for i, body in enumerate(bodies):
-        if not isinstance(body, _Body):
-            raise TypeError(f"cannot write a {type(body).__name__} to STEP")
-        label = body.name or (product if len(bodies) == 1 else f"{product}_{i + 1}")
-        brep = body._brep
+
+    def items_of(body: Any, label: str) -> list[int]:
+        """The solids (or the sheet) of one body, colored as the body."""
         try:
-            bw = _BodyWriter(w, brep)
+            bw = _BodyWriter(w, body._brep)
             items = bw.solids(label) if isinstance(body, Part) else bw.sheets(label)
         except _NeedsNurbs:
-            nb = body.to_nurbs()
-            bw = _BodyWriter(w, nb._brep)
+            bw = _BodyWriter(w, body.to_nurbs()._brep)
             items = bw.solids(label) if isinstance(body, Part) else bw.sheets(label)
-        if isinstance(body, Part):
-            solid_items += items
-        else:
-            sheet_items += items
         rgb = _color(body.color)
         if rgb is not None:
-            styled += [(it, rgb) for it in items]
+            styled.extend((it, rgb) for it in items)
+        return items
 
-    reps = []
-    if solid_items:
-        reps.append(w.add(f"ADVANCED_BREP_SHAPE_REPRESENTATION({_s(product)},(#{origin},{','.join(f'#{x}' for x in solid_items)}),#{ctx})"))
-    if sheet_items:
-        reps.append(w.add(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION({_s(product)},(#{origin},{','.join(f'#{x}' for x in sheet_items)}),#{ctx})"))
-    if not reps:
-        raise ValueError("nothing to write")
-    w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{reps[0]})")
-    for extra in reps[1:]:
-        w.add(f"SHAPE_REPRESENTATION_RELATIONSHIP('','',#{reps[0]},#{extra})")
+    def representation(kind: str, label: str, axis: int, items: list[int]) -> int:
+        return w.add(f"{kind}({_s(label)},(#{axis},{','.join(f'#{x}' for x in items)}),#{ctx})")
+
+    if not assembly:
+        solid_items: list[int] = []
+        sheet_items: list[int] = []
+        for i, body in enumerate(bodies):
+            label = body.name or (product if len(bodies) == 1 else f"{product}_{i + 1}")
+            (solid_items if isinstance(body, Part) else sheet_items).extend(items_of(body, label))
+        reps = []
+        if solid_items:
+            reps.append(representation("ADVANCED_BREP_SHAPE_REPRESENTATION", product, origin, solid_items))
+        if sheet_items:
+            reps.append(representation("MANIFOLD_SURFACE_SHAPE_REPRESENTATION", product, origin, sheet_items))
+        if not reps:
+            raise ValueError("nothing to write")
+        w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{reps[0]})")
+        for extra in reps[1:]:
+            w.add(f"SHAPE_REPRESENTATION_RELATIONSHIP('','',#{reps[0]},#{extra})")
+    else:
+        # One product per body, its shape in its own representation around its own origin, and
+        # one NEXT_ASSEMBLY_USAGE_OCCURRENCE per place it has in the root product (CAx-IF's
+        # recommended practices for assemblies): the placement, an ITEM_DEFINED_TRANSFORMATION
+        # from the part's origin to an axis in the root's representation, and the shape
+        # relationship that carries it. Bodies keep their coordinates: they are placed at the
+        # root's origin.
+        parts: dict[int, tuple[int, int, int, str]] = {}  # id(handle) -> (definition, rep, origin, name)
+        places: list[tuple[int, int]] = []  # (id(handle), the axis it is placed at in the root)
+        for i, body in enumerate(bodies):
+            key = id(body._h)
+            if key not in parts:
+                label = body.name or f"{product}_{i + 1}"
+                items = items_of(body, label)
+                if not items:
+                    continue
+                part_def, part_shape = new_product(label)
+                at = w.axis2((0, 0, 0), (0, 0, 1), (1, 0, 0))
+                kind = "ADVANCED_BREP_SHAPE_REPRESENTATION" if isinstance(body, Part) else \
+                    "MANIFOLD_SURFACE_SHAPE_REPRESENTATION"
+                rep = representation(kind, label, at, items)
+                w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{part_shape},#{rep})")
+                parts[key] = (part_def, rep, at, label)
+            places.append((key, w.axis2((0, 0, 0), (0, 0, 1), (1, 0, 0))))
+        if not parts:
+            raise ValueError("nothing to write")
+        axes = ",".join(f"#{x}" for x in [origin] + [a for _, a in places])
+        root = w.add(f"SHAPE_REPRESENTATION({_s(product)},({axes}),#{ctx})")
+        w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{root})")
+        for n, (key, place) in enumerate(places, 1):
+            part_def, rep, at, label = parts[key]
+            idt = w.add(f"ITEM_DEFINED_TRANSFORMATION('','',#{at},#{place})")
+            rel = w.add(f"(REPRESENTATION_RELATIONSHIP('','',#{rep},#{root}) "
+                        f"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{idt}) SHAPE_REPRESENTATION_RELATIONSHIP())")
+            nauo = w.add(f"NEXT_ASSEMBLY_USAGE_OCCURRENCE('{n}',{_s(label)},'',#{pdef},#{part_def},$)")
+            occurrence = w.add(f"PRODUCT_DEFINITION_SHAPE({_s(label)},'',#{nauo})")
+            w.add(f"CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{rel},#{occurrence})")
 
     if styled:
         style_ids = []

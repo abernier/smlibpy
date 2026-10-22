@@ -87,23 +87,32 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
 
 // ----------------------------------------------------------------------------------------- STEP
 /** How a STEP file is written: `unit` its length unit ("mm", "cm", "m", "um" or "inch"; the
- * coordinates are converted to it), `name` the product's name (the file's name by default). */
+ * coordinates are converted to it), `name` the product's name (the file's name by default),
+ * `assembly` each body in a product of its own (default false). */
 export interface StepExportOptions {
   unit?: string
   name?: string | null
+  assembly?: boolean
 }
 
-/** Exact B-rep export to STEP AP214. Names and colors of parts are kept. */
+/**
+ * Exact B-rep export to STEP AP214. Names and colors of parts are kept.
+ *
+ * The bodies go into one product called `name` (default: the file's name), or, with
+ * `assembly: true`, each into a product of its own, named as the body, in an assembly called
+ * `name`: other CAD systems then list the parts by name. A body listed more than once is written
+ * once and used at each place.
+ */
 export function exportStep(shapes: unknown, path: string, options: StepExportOptions = {}): void {
   _opts('exportStep', options)
-  writeStep(_items(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null })
+  writeStep(_items(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
 
 /** The text of a STEP AP214 file of the shapes (see `exportStep`). Without a file the product is
  * called "part" unless `name` says otherwise. */
 export function toStep(shapes: unknown, options: StepExportOptions = {}): string {
   _opts('toStep', options)
-  return _stepText(_items(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null })
+  return _stepText(_items(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
 
 // ------------------------------------------------------------------- numbers as Python writes them

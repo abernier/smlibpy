@@ -81,11 +81,18 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda")
 
 
-def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None) -> None:
-    """Exact B-rep export to STEP AP214. Names and colors of parts are kept."""
+def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None,
+                assembly: bool = False) -> None:
+    """Exact B-rep export to STEP AP214. Names and colors of parts are kept.
+
+    The bodies go into one product called ``name`` (default: the file's name), or, with
+    ``assembly=True``, each into a product of its own, named as the body, in an assembly
+    called ``name``: other CAD systems then list the parts by name. A body listed more than
+    once is written once and used at each place.
+    """
     from .step import write_step
 
-    write_step(_items(shapes), os.fspath(path), unit=unit, name=name)
+    write_step(_items(shapes), os.fspath(path), unit=unit, name=name, assembly=assembly)
 
 
 def _meshes(shapes: Any, tolerance: float | None, angle: float) -> list[tuple[Any, Mesh]]:

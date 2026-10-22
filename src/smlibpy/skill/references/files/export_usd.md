@@ -20,7 +20,9 @@ viewer draws. For USD and Omniverse pipelines, and for showing a part in any USD
 - A stage in millimeters (`metersPerUnit = 0.001`), Z up, all prims under `/World`.
 - One `BrepArray` prim per body, named after the body (`plate`; unnamed: `body`, `body_1`, ...),
   with its color as `primvars:displayColor` (unset colors: smlibpy's default palette, as in
-  STEP). Faces, edges and vertices with their exact surfaces and curves: planes, cylinders,
+  STEP). A prim name holds ASCII letters, digits and `_` only: any other character becomes one
+  `_` (`"Größe"` is the prim `Gr__e`, `"Bracket #1"` `Bracket__1`), and the body's name is the
+  prim's `displayName`, which viewers show and `import_usd` gives back. Faces, edges and vertices with their exact surfaces and curves: planes, cylinders,
   cones, spheres, tori, lines, circles and ellipses as such, everything else as NURBS.
 - A merged part (`merge`) is one prim with its cells and the faces between them.
 - A `Mesh` prim per body (unless `mesh=False`): triangles, a normal per point (points on sharp

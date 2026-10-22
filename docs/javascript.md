@@ -997,6 +997,7 @@ export function exportFile(shapes: unknown, path: string, options?: Record<strin
 export interface StepExportOptions {
     unit?: string;
     name?: string | null;
+    assembly?: boolean;
 }
 export function exportStep(shapes: unknown, path: string, options?: StepExportOptions): void;
 export function toStep(shapes: unknown, options?: StepExportOptions): string;
@@ -1063,22 +1064,27 @@ export class StepModel {
     readonly frames: StepFrame[];
     readonly curves: StepCurve[];
     readonly points: StepPoint[];
-    constructor(bodies: ShapeList<Part | Shell>, frames?: StepFrame[], curves?: StepCurve[], points?: StepPoint[]);
+    readonly skipped: string[];
+    constructor(bodies: ShapeList<Part | Shell>, frames?: StepFrame[], curves?: StepCurve[], points?: StepPoint[], skipped?: string[]);
     frame(name: string, product?: string | null): Plane;
     equals(other: unknown): boolean;
     toString(): string;
 }
 export function fromStepModel(data: string | Uint8Array, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): StepModel;
 export function readStep(path: string, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): StepModel;
 export function fromStep(data: string | Uint8Array, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
 export function importStep(path: string, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
 export interface DxfReadOptions {
     layers?: Iterable<string> | string | null;

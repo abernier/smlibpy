@@ -1176,7 +1176,8 @@ test('faces of an import whose faces share nothing throw', () => {
   // failed, and deleting the copy then read low memory here (natively the process died). Now such a
   // copy is kept, never freed, and the call throws KernelError. (A check of parity with smlibpy: the
   // module did not trap on that read, so this passed before as well; the crash is tested natively.)
-  const part = fromStep(unshared(toStep(Box(20, 10, 10).cut(Cylinder(3, 20))), 1e-3)) as Part
+  // (heal: false: healing stitches such faces together, see lane_IX.test.ts)
+  const part = fromStep(unshared(toStep(Box(20, 10, 10).cut(Cylinder(3, 20))), 1e-3), { heal: false }) as Part
   assert.ok(part instanceof Part && !part.isValid())
   for (const face of part.faces()) assert.throws(() => face.toShell(), (e: unknown) => e instanceof KernelError && /copy face failed/.test(e.message))
   approx(Box(10, 10, 10).cut(Cylinder(2, 20)).volume, 1000 - Math.PI * 40, 1e-9) // the kernel still works

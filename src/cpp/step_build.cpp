@@ -304,6 +304,10 @@ SmSurface* make_surface(const smlibpy::Value& s)
         if (s.has("v_start"))  // the seam around the tube, where the face does not reach
         {
             double v0 = s["v_start"].num();
+            // (a window starting a rounding error after -360 is one starting at 0: the kernel
+            // refuses the first, SmEllipse::AdjustSTEPInterval)
+            if (v0 <= -360.0 + 1e-9)
+                v0 = 0.0;
             SmExtent2d dom = t->GetSTEPUVDomain();
             check(t->AdjustSTEPUVDomain(SmExtent2d(dom.GetUMin(), v0, dom.GetUMax(), v0 + 360.0)),
                   "SmTorus::AdjustSTEPUVDomain");
@@ -712,6 +716,36 @@ void glue_file_vertices(SmBrep* brep, const smlibpy::Value& edges, const Made& m
     }
 }
 
+// Each face's parameter domain around its trim curves, as faces made by the kernel's own operations
+// have it (the constructor gives a face its surface's whole domain), in the directions the face takes
+// less than half of. The kernel's search for a point
+// inside a face (SmFace::CalculateAnInternalPoint: 20 lines across the domain) misses a narrow strip
+// of a torus in the whole domain, and Face.interior_point() and STEP export failed on it. A face
+// whose trim curves cannot be made keeps the whole domain.
+void tighten_uv_domains(SmBrep* brep)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmExtent2d dom;
+        if (faces[i]->CalculateUVDomainFromUVTrimCurves(dom, TRUE) != SM_SUCCESS)
+            continue;
+        const SmExtent2d whole = faces[i]->GetUVDomain();
+        const double du = dom.GetUInterval().GetLength(), dv = dom.GetVInterval().GetLength();
+        if (!(std::isfinite(du) && std::isfinite(dv) && du > 0 && dv > 0))
+            continue;
+        // Only a direction the face takes less than half of is narrowed (a strip of a torus): where
+        // the trim curves span most of a closed surface's period (a band between two helices
+        // around a cylinder), the face can reach past their box, and the narrowed domain cut
+        // off part of the face.
+        const bool nu = du < 0.5 * whole.GetUInterval().GetLength(), nv = dv < 0.5 * whole.GetVInterval().GetLength();
+        if (nu || nv)
+            faces[i]->SetUVDomain(SmExtent2d(nu ? dom.GetUMin() : whole.GetUMin(), nv ? dom.GetVMin() : whole.GetVMin(),
+                                             nu ? dom.GetUMax() : whole.GetUMax(), nv ? dom.GetVMax() : whole.GetVMax()));
+    }
+}
+
 SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool solid, bool reversed, bool mirrored,
               const smlibpy::Value& voids)
 {
@@ -748,6 +782,7 @@ SmBrep* build(const smlibpy::Value& faces, const smlibpy::Value& edges, bool sol
             }
         check(bc.EndBrep(), "SmBrepConstructor::EndBrep");
         glue_file_vertices(brep, edges, made);
+        tighten_uv_domains(brep);
     }
     catch (...)
     {

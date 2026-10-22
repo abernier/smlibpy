@@ -945,10 +945,11 @@ class Edge(Shape):
 
     def distance_to(self, point: VectorLike) -> float:
         p = _vec(point)
-        if self._e is not None:
-            _, _, d = self._e.closest_point(p.to_tuple())
-            return float(d)
-        _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
+        with kernel_call("distance", "the kernel finds no closest point on this edge"):
+            if self._e is not None:
+                _, _, d = self._e.closest_point(p.to_tuple())
+                return float(d)
+            _, _, d = k.curve_closest_point(self._curve(), p.to_tuple())
         return float(d)
 
     def intersections(self, other: Edge) -> list[Vector]:
@@ -1384,7 +1385,8 @@ class Face(Shape):
 
     def interior_point(self) -> Vector:
         """A point guaranteed to lie on the face."""
-        return Vector(self._f.interior_point())
+        with kernel_call("interior point", "the kernel finds no point inside this face"):
+            return Vector(self._f.interior_point())
 
     def normal_at(self, point: VectorLike | None = None) -> Vector:
         """Outward unit normal at the face point closest to ``point`` (default: the center)."""
@@ -2615,7 +2617,10 @@ class Part(_Body):
                     if g._identity() == e._identity() or ends & {v._identity() for v in g.vertices()}:
                         continue  # the same edge, or a neighbour meeting it at a corner
                     total = s + setback_of.get(g._identity(), 0.0)
-                    dists = [_distance_to_edge(g, p) for p in samples]
+                    try:
+                        dists = [_distance_to_edge(g, p) for p in samples]
+                    except RuntimeError:
+                        continue  # the kernel finds no closest point on the edge: no check here
                     near = min(dists)
                     if near >= total - 1e-9 or max(dists) > 1.5 * max(near, 1e-12):
                         continue  # far enough, or not running alongside

@@ -397,12 +397,44 @@ void put_extent(std::string& out, const double lo[3], const double hi[3])
     out += ")]\n";
 }
 
-// A valid prim name, not taken yet among its siblings.
+// The length of the UTF-8 character at s[i] (1 for a byte that does not start a valid one).
+size_t utf8_length(const std::string& s, size_t i)
+{
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    const size_t n = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (n == 0 || i + n > s.size())
+        return 1;
+    for (size_t k = 1; k < n; ++k)
+        if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80)
+            return 1;
+    return n;
+}
+
+bool valid_utf8(const std::string& s)
+{
+    for (size_t i = 0; i < s.size();)
+    {
+        const size_t n = utf8_length(s, i);
+        if (n == 1 && static_cast<unsigned char>(s[i]) >= 0x80)
+            return false;
+        i += n;
+    }
+    return true;
+}
+
+// A valid prim name, not taken yet among its siblings: ASCII letters, digits and '_' stay, any other
+// character (a UTF-8 character of several bytes too) becomes one '_'. (Byte by byte, "Größe" gave
+// invalid UTF-8 on macOS and "Gr____e" in the wasm.) The name itself goes into the prim's
+// displayName.
 std::string prim_name(const std::string& wanted, std::set<std::string>& taken, const char* fallback)
 {
     std::string n;
-    for (char c : wanted)
-        n += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '_';
+    for (size_t i = 0; i < wanted.size();)
+    {
+        const unsigned char c = static_cast<unsigned char>(wanted[i]);
+        n += c < 0x80 && (std::isalnum(c) || c == '_') ? static_cast<char>(c) : '_';
+        i += utf8_length(wanted, i);
+    }
     if (n.empty())
         n = fallback;
     if (std::isdigit(static_cast<unsigned char>(n[0])))
@@ -412,6 +444,34 @@ std::string prim_name(const std::string& wanted, std::set<std::string>& taken, c
         out = n + "_" + std::to_string(k);
     taken.insert(out);
     return out;
+}
+
+// `displayName = "..."` for a prim whose name is not the one it was given (a string with its quotes,
+// backslashes and line breaks escaped; a byte that is no UTF-8 becomes U+FFFD), or "".
+std::string display_name(const std::string& given, const std::string& name, const char* indent)
+{
+    if (given.empty() || given == name)
+        return "";
+    std::string out = std::string(indent) + "displayName = \"";
+    for (size_t i = 0; i < given.size();)
+    {
+        const size_t n = utf8_length(given, i);
+        const char c = given[i];
+        if (n == 1 && static_cast<unsigned char>(c) >= 0x80)
+            out += "\xEF\xBF\xBD";
+        else if (c == '"' || c == '\\')
+            out += std::string("\\") + c;
+        else if (c == '\n')
+            out += "\\n";
+        else if (c == '\t')
+            out += "\\t";
+        else if (static_cast<unsigned char>(c) < 0x20)
+            out += ' ';
+        else
+            out += given.substr(i, n);
+        i += n;
+    }
+    return out + "\"\n";
 }
 
 std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name)
@@ -444,6 +504,7 @@ std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name)
             applied.insert(f.schema), schemas.push_back(f.schema);
 
     std::string out = "    def BrepArray \"" + name + "\" (\n";
+    out += display_name(item.name, name, "        ");
     if (!schemas.empty())
     {
         out += "        prepend apiSchemas = [";
@@ -526,7 +587,8 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
         }
         tri.assign(t.begin(), t.end());
     }
-    std::string out = "    def Mesh \"" + name + "\"\n    {\n";
+    const std::string shown = item.brep ? "" : display_name(item.name, name, "        ");
+    std::string out = "    def Mesh \"" + name + "\"\n" + (shown.empty() ? "" : "    (\n" + shown + "    )\n") + "    {\n";
     if (!p.empty())
         put_extent(out, lo, hi);
     put_color(out, item.color);
@@ -571,6 +633,7 @@ struct PrimSpec
 {
     std::string specifier, type, name;
     std::string source;  // customData's source ("smlibpy" in the files smlibpy writes)
+    std::string display;  // displayName: the name to show (smlibpy writes the body's own name there)
     int active = -1;     // -1: not said, 0: false, 1: true
     std::vector<Arc> references, payloads, deleted;
     std::map<std::string, Val> props;
@@ -1015,6 +1078,12 @@ private:
             }
             else if (w == "customData")
                 custom_data(p);
+            else if (w == "displayName")
+            {
+                const Val v = value();
+                if (v.k == Val::STR)
+                    p.display = v.s;
+            }
             else
                 skip_value();
         }
@@ -1935,6 +2004,7 @@ struct BodyPrim
     std::string path, leaf, source;
     std::map<std::string, const Val*> props;
     Matrix world;
+    std::string display;
 };
 
 class Composer
@@ -2082,7 +2152,7 @@ private:
     {
         // the strongest opinion of each: specifier (def or class over over), type, active, source,
         // properties
-        std::string specifier = "over", type, source;
+        std::string specifier = "over", type, source, display;
         int active = -1;
         std::map<std::string, const Val*> props;
         for (const Site& s : sites)
@@ -2096,6 +2166,8 @@ private:
                 active = p.active;
             if (source.empty())
                 source = p.source;
+            if (display.empty())
+                display = p.display;
             for (const auto& [name, v] : p.props)
                 props.emplace(name, &v);
         }
@@ -2134,7 +2206,7 @@ private:
             world = mul(world, local);
         }
         if (type == "BrepArray")
-            out.push_back(BodyPrim{where, path.back(), source, props, world});
+            out.push_back(BodyPrim{where, path.back(), source, props, world, display});
         Path names;
         for (const Site& s : sites)
             for (const auto& c : s.spec->children)
@@ -2404,7 +2476,10 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
                 }
                 UsdItem item;
                 item.brep = brep;
-                const std::string name = leaves[prim.leaf] > 1 ? prim.path : prim.leaf;
+                // (the name a prim shows, which smlibpy writes for names that are no prim names)
+                const std::string name = !prim.display.empty() && valid_utf8(prim.display) ? prim.display
+                                         : leaves[prim.leaf] > 1                            ? prim.path
+                                                                                            : prim.leaf;
                 item.name = count == 1 || i == 0 ? name : name + "_" + std::to_string(i);
                 item.color = color;
                 out.items.push_back(std::move(item));

@@ -6,13 +6,14 @@ cutting tools so: the tool's solids, its coordinate systems (`MCS`, `PCS`, `CSW1
 cutting edge lines and reference points (`CRP`).
 
 ## Signature
-`read_step(path, *, heal=True)`
+`read_step(path, *, heal=True, strict=False)`
 
 - `path`: `str` or `pathlib.Path`.
-- `heal`: as for `import_step`.
+- `heal`, `strict`: as for `import_step`.
 
 ## Returns
-A `StepModel` with four lists, each item at its place in the assembly, in mm:
+A `StepModel` with four lists, each item at its place in the assembly, in mm, and the bodies
+left out:
 - `bodies`: a `ShapeList` of `Part`s and `Shell`s, the same as `import_step` gives, also when there
   is one body or none.
 - `frames`: `StepFrame(name, plane, product, color)`. `plane` is a `Plane` (origin, `x_dir`,
@@ -20,6 +21,9 @@ A `StepModel` with four lists, each item at its place in the assembly, in mm:
 - `curves`: `StepCurve(name, shape, product, color)`. `shape` is an `Edge` (a `Wire` for a composite
   curve) with its exact type: B-spline, line segment, arc, ellipse.
 - `points`: `StepPoint(name, point, product, color)`, `point` a `Vector`.
+- `skipped`: one message (`str`) per body that could not be read, as the warning says it:
+  `"body 'b' (#99): curve type OFFSET_CURVE_3D (#203), which is not supported"`. Empty when every
+  body was read; `repr` then says nothing of it.
 
 `product` is the name of the part or assembly the item belongs to (`""` without product
 structure). `color` is `(r, g, b)` in 0..1 or `None`.

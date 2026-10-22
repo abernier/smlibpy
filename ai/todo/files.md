@@ -180,6 +180,9 @@
 - **Expected:** keep them (the kernel has attributes), or say "geometry only" in the docs.
 
 ### 16. STEP export replaces non-ASCII characters in names with `?`
+- **Fixed:** names are written in ISO 10303-21's `\X2\` encoding (`\X4\` beyond 16 bits) and
+  backslashes doubled; `named("Bügel")` comes back as `Bügel`, also in OpenCASCADE (kernel plan
+  I10, 2026-10-22).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `03-step-names-colors.py`
 - **What happens:** `named("Bügel")` comes back as `B?gel`.
 - **Expected:** STEP's `\X2\...\X0\` encoding (ISO 10303-21), which other CAD systems read.

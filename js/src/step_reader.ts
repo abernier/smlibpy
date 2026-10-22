@@ -7,6 +7,7 @@
 
 import { _identity, _matmul, type Matrix } from './geometry.ts'
 import { solve } from './_linalg.ts'
+import { _isRuntimeError } from './kernel.ts'
 
 // biome-ignore lint: curve and surface descriptions are plain objects of many shapes
 type Any = any
@@ -221,6 +222,11 @@ function _decodeString(s: string): string {
   s = s.replace(/\\X2\\([0-9A-Fa-f]+)\\X0\\/g, (_m, hex: string) => {
     let out = ''
     for (let i = 0; i < hex.length; i += 4) out += String.fromCharCode(Number.parseInt(hex.slice(i, i + 4), 16))
+    return out
+  })
+  s = s.replace(/\\X4\\([0-9A-Fa-f]+)\\X0\\/g, (_m, hex: string) => {
+    let out = ''
+    for (let i = 0; i < hex.length; i += 8) out += String.fromCodePoint(Number.parseInt(hex.slice(i, i + 8), 16))
     return out
   })
   s = s.replace(/\\X\\([0-9A-Fa-f]{2})/g, (_m, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
@@ -438,6 +444,12 @@ export class BodyData {
   faces: FaceData[] = []
   shells: ShellData[] = []
   color: number[] | null = null
+  /** the name of the product the body belongs to, if the file names one */
+  product = ''
+  /** the body's entity (MANIFOLD_SOLID_BREP, BREP_WITH_VOIDS, ...) */
+  entity = 0
+  /** the length uncertainty its context declares (mm) */
+  uncertainty: number | null = null
 
   constructor(kind: string, name: string) {
     this.kind = kind
@@ -485,6 +497,8 @@ class _Interp {
   /** model plane angle unit -> radians */
   angleScale = 1.0
   contextUnits = new Map<number, [number, number]>()
+  /** context -> declared length uncertainty (mm) */
+  contextUncertainty = new Map<number, number>()
   defaultUnits: [number, number] = [1.0, 1.0]
   repContext = new Map<number, number>()
   colors: Map<number, number[]>
@@ -512,6 +526,20 @@ class _Interp {
         else if (kinds.has('PLANE_ANGLE_UNIT')) angle = this._unitValue(_int(u), _RADIANS)
       }
       this.contextUnits.set(eid, [length, angle])
+      const uncertain = parts.get('GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT')
+      for (const u of _truthy(uncertain) ? _iter(_at(uncertain, 0)) : []) {
+        try {
+          // UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), unit, name, description)
+          const [t, a] = sf.get(u)
+          const first = _at(a, 0)
+          const value = first instanceof Typed ? _at(first.args, 0) : first
+          const kinds = sf.complex.get(_int(_at(a, 1))) ?? new Map<string, StepValue[]>()
+          const unit = kinds.has('LENGTH_UNIT') ? this._unitValue(_int(_at(a, 1)), _MM_PER_METRE_PREFIXED) : length
+          const mm = _float(value) * unit
+          if (t === 'UNCERTAINTY_MEASURE_WITH_UNIT' && mm > 0 && Number.isFinite(mm))
+            this.contextUncertainty.set(eid, Math.min(mm, this.contextUncertainty.get(eid) ?? Infinity))
+        } catch {}
+      }
     }
     const units = [...this.contextUnits.values()]
     if (units.length) {
@@ -575,6 +603,12 @@ class _Interp {
 
   useUnits(rep: number | null): void {
     ;[this.scale, this.angleScale] = this.unitsOf(rep)
+  }
+
+  /** The length uncertainty (mm) the context of a representation declares, or null. */
+  uncertaintyOf(rep: number | null): number | null {
+    if (rep === null) return null
+    return this.contextUncertainty.get(this.repContext.get(rep) ?? -1) ?? null
   }
 
   // -- colors -------------------------------------------------------------------------------
@@ -731,7 +765,7 @@ class _Interp {
       return { kind: 'bspline', degree: 1, poles: pts, knots, weights: null }
     }
     if (t === 'TRIMMED_CURVE') return this.curve(_at(a, 1))
-    throw new NotImplementedError(`curve type ${t}`)
+    throw new NotImplementedError(`curve type ${t} (#${_int(ref)})`)
   }
 
   /** A curve that stands on its own (wireframe geometry), with its trims and segments:
@@ -845,7 +879,7 @@ class _Interp {
         return this._bsplineSurface(ud, vd, grid, uk, vk, _truthy(w) ? _at(w, 0) : null)
       }
     }
-    throw new NotImplementedError(`surface type ${t}`)
+    throw new NotImplementedError(`surface type ${t} (#${_int(ref)})`)
   }
 
   _bsplineSurface(ud: number, vd: number, grid: StepValue, uk: number[], vk: number[], weights: StepValue | null): Any {
@@ -884,7 +918,7 @@ class _Interp {
       const r = _int(ref)
       if (!emap.has(r)) {
         const [t, a] = sf.get(r)
-        if (t !== 'EDGE_CURVE') throw new NotImplementedError(`edge type ${t}`)
+        if (t !== 'EDGE_CURVE') throw new NotImplementedError(`edge type ${t} (#${r})`)
         emap.set(r, b.edges.length)
         b.curves.push(this.curve(_at(a, 3)))
         b.edges.push({ curve: b.curves.length - 1, v0: vertex(_at(a, 1)), v1: vertex(_at(a, 2)), same_sense: String(_at(a, 4)) === 'T' })
@@ -902,7 +936,7 @@ class _Interp {
       const faces: number[] = []
       for (const fref of _iter(_at(a, 1))) {
         const [ft, fa] = sf.get(fref)
-        if (ft !== 'ADVANCED_FACE' && ft !== 'FACE_SURFACE') throw new NotImplementedError(`face type ${ft}`)
+        if (ft !== 'ADVANCED_FACE' && ft !== 'FACE_SURFACE') throw new NotImplementedError(`face type ${ft} (#${_int(fref)})`)
         const sref = _int(_at(fa, 2))
         if (!smap.has(sref)) {
           smap.set(sref, b.surfaces.length)
@@ -917,7 +951,7 @@ class _Interp {
             loops.push({ vertex: vertex(_at(la, 1)), outer: bt === 'FACE_OUTER_BOUND' })
             continue
           }
-          if (lt !== 'EDGE_LOOP') throw new NotImplementedError(`loop type ${lt}`)
+          if (lt !== 'EDGE_LOOP') throw new NotImplementedError(`loop type ${lt} (#${_int(_at(ba, 1))})`)
           let items: [number, boolean][] = []
           for (const oref of _iter(_at(la, 1))) {
             const [, oa] = sf.get(oref)
@@ -974,8 +1008,33 @@ function _defaultKnots(n: number, degree: number, form: string): number[] {
   return [...repeat(0.0, degree + 1), ...range(1, innerN + 1), ...repeat(innerN + 1, degree + 1)]
 }
 
-/** All bodies of the file with their world placement (4 x 4, mm). */
-export function interpret(sf: StepFile): [BodyData, Matrix][] {
+/** What reading one body can fail with (Python's RuntimeError, ValueError, KeyError, IndexError,
+ * TypeError, ArithmeticError): an entity the reader does not know (NotImplementedError), a
+ * malformed one, or the kernel (a KernelError) when it is built. */
+export function _bodyError(e: unknown): boolean {
+  return e instanceof NotImplementedError || e instanceof RangeError || e instanceof TypeError || _isRuntimeError(e)
+}
+
+/** How a message names a body: `body 'b' (#99, product 'P')`, its entity and the product it
+ * belongs to (where that is not its name). */
+export function _bodyLabel(eid: number, name: string, product = ''): string {
+  const of = product && product !== name ? `, product ${_repr(product)}` : ''
+  return name ? `body ${_repr(name)} (#${eid}${of})` : `body #${eid}${of ? ` (${of.slice(2)})` : ''}`
+}
+
+/** The reason a body could not be read, for a message. */
+export function _failure(e: unknown): string {
+  if (e instanceof NotImplementedError) return `${e.message}, which is not supported`
+  return (e instanceof Error && e.message) || String(e)
+}
+
+/** All bodies of the file with their world placement (4 x 4, mm).
+ *
+ * A body that cannot be read (an entity the reader does not know, a malformed one) throws, unless
+ * an array is given as `skipped`: then the body is left out and the array gets
+ * `{ name, product, entity, message }` for it. */
+export function interpret(sf: StepFile, options: { skipped?: Any[] } = {}): [BodyData, Matrix][] {
+  const { skipped } = options
   const it = new _Interp(sf)
   const [transforms, inProduct] = _representationTransforms(it)
   const bodies: [BodyData, Matrix][] = []
@@ -990,23 +1049,30 @@ export function interpret(sf: StepFile): [BodyData, Matrix][] {
     const reps = placed.length ? placed : owned
     it.useUnits(reps.length ? reps[0] : null)
     // Many exporters leave the body unnamed and name the product instead.
-    const first = _at(a, 0)
-    let label = ''
-    if (_isStr(first) && _strip(String(first))) label = String(first)
-    else {
-      for (const r of reps) {
-        const name = productNames.get(r)
-        if (name !== undefined) {
-          label = name
-          break
-        }
+    let product = ''
+    for (const r of reps) {
+      const name = productNames.get(r)
+      if (name !== undefined) {
+        product = name
+        break
       }
     }
+    const first = _at(a, 0)
+    const label = _isStr(first) && _strip(String(first)) ? String(first) : product
     let body: BodyData
-    if (t === 'MANIFOLD_SOLID_BREP') body = it.body([[_at(a, 1), false]], 'solid', label)
-    else if (t === 'BREP_WITH_VOIDS') body = it.body([[_at(a, 1), false], ..._iter(_at(a, 2)).map((v): [StepValue, boolean] => [v, false])], 'solid', label)
-    else body = it.body(_iter(_at(a, 1)).map((s): [StepValue, boolean] => [s, false]), 'sheet', label)
+    try {
+      if (t === 'MANIFOLD_SOLID_BREP') body = it.body([[_at(a, 1), false]], 'solid', label)
+      else if (t === 'BREP_WITH_VOIDS') body = it.body([[_at(a, 1), false], ..._iter(_at(a, 2)).map((v): [StepValue, boolean] => [v, false])], 'solid', label)
+      else body = it.body(_iter(_at(a, 1)).map((s): [StepValue, boolean] => [s, false]), 'sheet', label)
+    } catch (e) {
+      if (skipped === undefined || !_bodyError(e)) throw e
+      skipped.push({ name: label, product, entity: eid, message: `${_bodyLabel(eid, label, product)}: ${_failure(e)}` })
+      continue
+    }
     body.color = it.colors.get(eid) ?? null
+    body.product = product
+    body.entity = eid
+    body.uncertainty = it.uncertaintyOf(reps.length ? reps[0] : null)
     // A body listed by several representations (some exporters put it in two that are related to
     // each other) is the same body where both put it at the same place. Instances of one
     // representation stay, even where they coincide.

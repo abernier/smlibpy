@@ -21,7 +21,7 @@ from smlibpy import *
 bracket = (Box(60, 40, 8) - Cylinder(4, 10)).named("bracket").colored("steelblue")
 cover = Box(60, 40, 2).translate(0, 0, 10).named("cover").colored("#d9925a")
 
-export_step([bracket, cover], "assembly.step")
+export_step([bracket, cover], "assembly.step", assembly=True)
 export_step(bracket, "bracket_inch.step", unit="inch")
 export_stl(bracket, "bracket.stl", tolerance=0.01)
 export_glb([bracket, cover], "assembly.glb")
@@ -34,8 +34,16 @@ The STEP writer produces AP214 files with the exact geometry: planes, cylinders,
 spheres, tori, lines, circles and ellipses as analytic entities, everything else as
 (rational) B-splines with the kernel's own control points and knots. Solids become
 `MANIFOLD_SOLID_BREP`s, hollow solids `BREP_WITH_VOIDS`, sheets open shells. Part names
-and colors are kept. The output is checked in the test suite by reading it back with
-OpenCASCADE.
+and colors are kept, in any characters (`"Bügel"`, `"部品"`: as ISO 10303-21's `\X2\`
+encoding, which other CAD systems read). The output is checked in the test suite by reading
+it back with OpenCASCADE.
+
+All bodies go into one product (named `name`, by default after the file), each body a solid
+with its own name. With `assembly=True` each body becomes a product of its own, named as the
+body, in an assembly called `name`, so other CAD systems list the parts by name and can move
+or replace them one by one (the `assembly.step` above). A body listed more than once (the
+same object, `[bolt, bolt]`) is written once and placed as often. The bodies keep their
+coordinates: each product is placed at the assembly's origin.
 
 `unit` is the unit of the file: `"mm"` (default), `"cm"`, `"m"`, `"um"` or `"inch"`. The
 model (in mm) is converted to it, so `bracket_inch.step` above holds a 2.362 x 1.575 x 0.315
@@ -49,6 +57,9 @@ in a stage in millimeters with Z up. usd-brep, its usdview plugin and Omniverse 
 solids. Other USD viewers draw only meshes, so each body also gets a `Mesh` prim
 (`<name>_mesh`); `mesh=False` leaves it out, for the tools that draw the B-rep themselves and
 would show the body twice. The test suite checks the files with NVIDIA's validator and OpenUSD.
+A prim's name is the body's name with every character but ASCII letters, digits and `_` as
+`_` (`"Größe"` is the prim `Gr__e`); the name itself is the prim's `displayName`, which
+viewers show and `import_usd` gives back.
 
 ```python
 export_usd([bracket, cover], "assembly.usda")              # B-reps, and meshes for viewers
@@ -105,9 +116,22 @@ millimeters whatever unit the file uses.
 Each face is rebuilt on the exact surface from the file and each edge on its exact curve:
 a cylinder stays a cylinder, and a NURBS surface keeps its control points and knots. Faces
 share their edges and vertices as they do in the file (a body has exactly the file's vertices),
-so nothing is stitched together by tolerance.
+so a well-formed file needs nothing stitched together by tolerance.
 A body that still comes out invalid goes through the kernel's healer; valid bodies are
-left alone, and `heal=False` skips healing.
+left alone, and `heal=False` skips healing. Where the healer cannot repair it because its
+faces do not share their edges (writers that give every face edges of its own, or vertices a
+little apart), the faces are stitched: by the kernel's stitch, then with tolerances from the
+uncertainty the file declares up to 1e-3 of the body's size. The stitched body is kept only
+if it is a valid solid, with a warning that names the body and the largest gap closed; a
+body nothing repairs comes with a warning that says what is wrong with it. Surface models
+whose faces share no edges are sewn the same way.
+
+A body that cannot be read (an entity smlibpy does not read yet, such as `OFFSET_CURVE_3D`,
+or one the kernel cannot build) is left out with a warning that names the body, its entity
+and the reason, and the rest of the file is read; `strict=True` raises instead, and a file
+none of whose bodies can be read raises. `read_step` lists them in `StepModel.skipped`. In
+an assembly each product is built once, however often it is placed: its other instances are
+copies moved to their places.
 
 Some writers leave out the seams of round faces: NX writes the shank of a drill as the
 circle at one end and the outline of its flat at the other, and small roundings as

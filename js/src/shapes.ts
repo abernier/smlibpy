@@ -1120,8 +1120,14 @@ export class Edge extends Shape {
 
   override distanceTo(point: VectorLike | Shape): number {
     const p = point instanceof Vertex ? point.point : _vec(point as VectorLike)
-    if (this._e) return Number(k.edge_closest_point(this._e, p.toArray())[2])
-    return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
+    return kernelCall(
+      'distance',
+      () => {
+        if (this._e) return Number(k.edge_closest_point(this._e, p.toArray())[2])
+        return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
+      },
+      'the kernel finds no closest point on this edge',
+    )
   }
 
   /** Points where this edge crosses another edge. */
@@ -1612,7 +1618,7 @@ export class Face extends Shape {
 
   /** A point guaranteed to lie on the face. */
   interiorPoint(): Vector {
-    return new Vector(k.face_interior_point(this._f))
+    return kernelCall('interior point', () => new Vector(k.face_interior_point(this._f)), 'the kernel finds no point inside this face')
   }
 
   /** Outward unit normal at the face point closest to `point` (default: the center). */
@@ -2982,7 +2988,13 @@ export class Part extends _Body {
         for (const g of f.edges()) {
           if (g._identity() === e._identity() || g.vertices().some((v) => ends.has(v._identity()))) continue // the same edge, or a neighbour meeting it at a corner
           const total = s + (setbackOf.get(g._identity()) ?? 0)
-          const dists = samples.map((p) => _distanceToEdge(g, p))
+          let dists: number[]
+          try {
+            dists = samples.map((p) => _distanceToEdge(g, p))
+          } catch (e) {
+            if (!_isRuntimeError(e)) throw e
+            continue // the kernel finds no closest point on the edge: no check here
+          }
           const near = Math.min(...dists)
           if (near >= total - 1e-9 || Math.max(...dists) > 1.5 * Math.max(near, 1e-12)) continue // far enough, or not running alongside
           const limit = setbackOf.has(g._identity()) ? near / 2 : near

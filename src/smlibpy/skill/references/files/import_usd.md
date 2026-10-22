@@ -19,9 +19,10 @@ Reads the bodies of the `BrepArray` prims of a USD text file: the exact B-reps t
 
 ## Returns
 One body: a `Part` (or a `Shell` for a body that encloses no volume). Several: a `ShapeList`
-of them, in the order of the stage, named after their prims and colored by their
-`primvars:displayColor`. A body whose prim's name another prim has too is named by its prim's
-path (`/World/Left/Wheel`). A merged part comes back merged, with its cells. Lengths come out in
+of them, in the order of the stage, named after their prims (or the prim's `displayName`,
+where it has one: smlibpy writes the names that are no prim names there, `"Größe"`) and
+colored by their `primvars:displayColor`. A body whose prim's name another prim has too is
+named by its prim's path (`/World/Left/Wheel`). A merged part comes back merged, with its cells. Lengths come out in
 millimeters (`metersPerUnit = 0.01` scales by 10), and each body is placed as the stage has it:
 the `xformOp` transforms of its prim and of the prims above it (`translate`, `scale`, the
 `rotate` kinds, `orient`, `transform`, `!invert!`, `!resetXformStack!`), and a stage whose

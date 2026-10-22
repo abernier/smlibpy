@@ -5,7 +5,7 @@
 // kernel's exact control points and knots. Solids become MANIFOLD_SOLID_BREPs (BREP_WITH_VOIDS for
 // hollow ones), sheets become open shells.
 
-import { ext, k } from './kernel.ts'
+import { _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Part, _Body, _typeName, type ColorLike } from './shapes.ts'
 import { _fs } from './exporters.ts'
@@ -75,10 +75,26 @@ function _r(value: number): string {
 }
 
 /** A STEP STRING literal (ASCII; quotes doubled). */
+/** A STEP STRING literal: quotes doubled, backslashes too, and characters outside printable ASCII
+ * in ISO 10303-21's `\X2\...\X0\` (`\X4\` beyond the 16-bit range). */
 function _s(text: string | null | undefined): string {
-  let t = ''
-  for (const ch of text || '') t += (ch.codePointAt(0) as number) < 128 ? ch : '?'
-  return `'${t.replaceAll("'", "''")}'`
+  let out = ''
+  let run = '' // hex digits of the characters encoded so far, and their encoding
+  let kind = ''
+  for (const ch of `${text || ''}'`) {
+    // (the closing quote ends the last run)
+    const c = ch.codePointAt(0) as number
+    const enc = c >= 0x20 && c <= 0x7e ? '' : c <= 0xffff ? 'X2' : 'X4'
+    if (run && enc !== kind) {
+      out += `\\${kind}\\${run}\\X0\\`
+      run = ''
+    }
+    if (enc) {
+      run += c.toString(16).toUpperCase().padStart(enc === 'X2' ? 4 : 8, '0')
+      kind = enc
+    } else out += ch === "'" ? "''" : ch === '\\' ? '\\\\' : ch
+  }
+  return `'${out.slice(0, -2)}'`
 }
 
 function _color(c: ColorLike | null | undefined): [number, number, number] | null {
@@ -407,22 +423,36 @@ class _BodyWriter {
     // The faceuse normal is the kernel's natural normal when the faceuse is SAME.
     if (normalOf === null) return Boolean(use.same) // exported with the kernel's own parameterisation
     const kf = this.kfaces[idx]
-    let p = _vec(k.face_interior_point(kf))
-    const [, uvs] = k.surface_closest_point(k.face_surface(kf), p)
-    let [u, v] = uvs[0] as [number, number]
-    if (normalOf.kind === 'cone' || normalOf.kind === 'torus') {
-      const { o, z } = normalOf
-      const d = _sub(p, o)
-      if (_norm(_sub(d, _mul(z, _dot(d, z)))) < 1e-9 * Math.max(1.0, _norm(d))) {
+    const middle = (): [number, number, V3] => {
+      const [[u0, v0], [u1, v1]] = k.face_uv_domain(kf)
+      const [um, vm] = [0.5 * (u0 + u1), 0.5 * (v0 + v1)]
+      return [um, vm, _vec(k.face_point_at_uv(kf, um, vm))]
+    }
+    const [u, v, p] = kernelCall('export STEP', (): [number, number, V3] => {
+      let p: V3
+      let u: number
+      let v: number
+      try {
+        p = _vec(k.face_interior_point(kf))
+        const [, uvs] = k.surface_closest_point(k.face_surface(kf), p)
+        ;[u, v] = uvs[0] as [number, number]
+      } catch (e) {
+        if (!_isRuntimeError(e)) throw e
+        // The kernel finds no point inside the face (it searches the face's parameter domain
+        // along 20 lines, and a narrow strip can lie between them). The sense is a property of
+        // the whole surface: the middle of the domain will do.
+        ;[u, v, p] = middle()
+      }
+      if (normalOf.kind === 'cone' || normalOf.kind === 'torus') {
+        const { o, z } = normalOf
+        const d = _sub(p, o)
         // The point is on the axis (the apex of a cone): no radial direction there. The sense is
         // a property of the whole surface, so any other point will do.
-        const [[u0, v0], [u1, v1]] = k.face_uv_domain(kf)
-        u = 0.5 * (u0 + u1)
-        v = 0.5 * (v0 + v1)
-        p = _vec(k.face_point_at_uv(kf, u, v))
+        if (_norm(_sub(d, _mul(z, _dot(d, z)))) < 1e-9 * Math.max(1.0, _norm(d))) [u, v, p] = middle()
       }
-    }
-    const nKernel = _vec(k.face_normal_at_uv(kf, u, v))
+      return [u, v, p]
+    })
+    const nKernel = _vec(kernelCall('export STEP', () => k.face_normal_at_uv(kf, u, v)))
     const nFace = use.same ? nKernel : _mul(nKernel, -1)
     let nStep: V3
     if (normalOf.kind === 'plane') nStep = normalOf.z
@@ -498,6 +528,7 @@ export interface StepOptions {
   name?: string | null
   author?: string
   organization?: string
+  assembly?: boolean
 }
 
 /**
@@ -505,27 +536,38 @@ export interface StepOptions {
  * the file in the header and the product unless `name` does ('' for a text without a file).
  *
  * The model is in millimeters; with another `unit` the coordinates are converted to it, so the
- * file holds the same part measured in that unit.
+ * file holds the same part measured in that unit. With `assembly` each body is a product of its
+ * own (named as the body) in a root product called `name`; a body listed more than once is written
+ * once and placed as often.
  */
 export function _stepText(bodies: readonly unknown[], path: string, options: StepOptions = {}): string {
-  const { unit = 'mm', name = null, author = '', organization = '' } = options
+  const { unit = 'mm', name = null, author = '', organization = '', assembly = false } = options
   const perUnit = _MM_PER_UNIT.get(unit)
   if (perUnit === undefined) throw new RangeError(`unknown unit '${unit}'; use mm, cm, m, um or inch`)
+  for (const body of bodies) if (!(body instanceof _Body)) throw new TypeError(`cannot write a ${_typeName(body)} to STEP`)
+  let list = bodies as readonly _Body[]
   if (perUnit !== 1.0) {
     const f = 1.0 / perUnit
-    bodies = bodies.map((b) => (b instanceof _Body ? b.scale(f) : b))
+    const scaled = new Map<unknown, _Body>() // (a body listed twice stays one body)
+    for (const b of list) if (!scaled.has(b._h)) scaled.set(b._h, b.scale(f))
+    list = list.map((b) => scaled.get(b._h) as _Body)
   }
   const w = new _Writer()
   const product = name || _productName(path)
   const app = w.add("APPLICATION_CONTEXT('core data for automotive mechanical design processes')")
   w.add(`APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#${app})`)
   const pctx = w.add(`PRODUCT_CONTEXT('',#${app},'mechanical')`)
-  const prod = w.add(`PRODUCT(${_s(product)},${_s(product)},'',(#${pctx}))`)
-  w.add(`PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#${prod}))`)
-  const form = w.add(`PRODUCT_DEFINITION_FORMATION('','',#${prod})`)
-  const dctx = w.add(`PRODUCT_DEFINITION_CONTEXT('part definition',#${app},'design')`)
-  const pdef = w.add(`PRODUCT_DEFINITION('design','',#${form},#${dctx})`)
-  const pshape = w.add(`PRODUCT_DEFINITION_SHAPE('','',#${pdef})`)
+  let dctx = 0
+  /** A PRODUCT with its definition: [PRODUCT_DEFINITION, PRODUCT_DEFINITION_SHAPE]. */
+  const newProduct = (label: string): [number, number] => {
+    const prod = w.add(`PRODUCT(${_s(label)},${_s(label)},'',(#${pctx}))`)
+    w.add(`PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#${prod}))`)
+    const form = w.add(`PRODUCT_DEFINITION_FORMATION('','',#${prod})`)
+    if (!dctx) dctx = w.add(`PRODUCT_DEFINITION_CONTEXT('part definition',#${app},'design')`)
+    const pdef = w.add(`PRODUCT_DEFINITION('design','',#${form},#${dctx})`)
+    return [pdef, w.add(`PRODUCT_DEFINITION_SHAPE('','',#${pdef})`)]
+  }
+  const [pdef, pshape] = newProduct(product)
 
   let length: number
   if (unit === 'inch' || unit === 'in') {
@@ -533,8 +575,7 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
     const lm = w.add(`LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(${_r(_INCH)}),#${mm})`)
     const dim = w.add('DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.)')
     length = w.add(`(CONVERSION_BASED_UNIT('INCH',#${lm}) LENGTH_UNIT() NAMED_UNIT(#${dim}))`)
-  } else if (Object.hasOwn(_UNITS, unit)) length = w.add(_UNITS[unit])
-  else throw new RangeError(`unknown unit '${unit}'; use mm, cm, m, um or inch`)
+  } else length = w.add(_UNITS[unit])
   const angle = w.add('(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))')
   const solidAngle = w.add('(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())')
   const unc = w.add(`UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#${length},'distance_accuracy_value','confusion accuracy')`)
@@ -545,12 +586,10 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
   )
 
   const origin = w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])
-  const solidItems: number[] = []
-  const sheetItems: number[] = []
   const styled: [number, [number, number, number]][] = []
-  bodies.forEach((body, i) => {
-    if (!(body instanceof _Body)) throw new TypeError(`cannot write a ${_typeName(body)} to STEP`)
-    const label = body.name || (bodies.length === 1 ? product : `${product}_${i + 1}`)
+  const ids = (xs: number[]) => xs.map((x) => `#${x}`).join(',')
+  /** The solids (or the sheet) of one body, colored as the body. */
+  const itemsOf = (body: _Body, label: string): number[] => {
     let items: number[]
     try {
       const bw = new _BodyWriter(w, body._brep)
@@ -561,19 +600,64 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
       const bw = new _BodyWriter(w, nb._brep)
       items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
     }
-    if (body instanceof Part) solidItems.push(...items)
-    else sheetItems.push(...items)
     const rgb = _color(body.color)
     if (rgb !== null) for (const it of items) styled.push([it, rgb])
-  })
+    return items
+  }
+  const representation = (kind: string, label: string, axis: number, items: number[]): number =>
+    w.add(`${kind}(${_s(label)},(#${axis},${ids(items)}),#${ctx})`)
 
-  const reps: number[] = []
-  const list = (ids: number[]) => ids.map((x) => `#${x}`).join(',')
-  if (solidItems.length) reps.push(w.add(`ADVANCED_BREP_SHAPE_REPRESENTATION(${_s(product)},(#${origin},${list(solidItems)}),#${ctx})`))
-  if (sheetItems.length) reps.push(w.add(`MANIFOLD_SURFACE_SHAPE_REPRESENTATION(${_s(product)},(#${origin},${list(sheetItems)}),#${ctx})`))
-  if (!reps.length) throw new RangeError('nothing to write')
-  w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${reps[0]})`)
-  for (const extra of reps.slice(1)) w.add(`SHAPE_REPRESENTATION_RELATIONSHIP('','',#${reps[0]},#${extra})`)
+  if (!assembly) {
+    const solidItems: number[] = []
+    const sheetItems: number[] = []
+    list.forEach((body, i) => {
+      const label = body.name || (list.length === 1 ? product : `${product}_${i + 1}`)
+      ;(body instanceof Part ? solidItems : sheetItems).push(...itemsOf(body, label))
+    })
+    const reps: number[] = []
+    if (solidItems.length) reps.push(representation('ADVANCED_BREP_SHAPE_REPRESENTATION', product, origin, solidItems))
+    if (sheetItems.length) reps.push(representation('MANIFOLD_SURFACE_SHAPE_REPRESENTATION', product, origin, sheetItems))
+    if (!reps.length) throw new RangeError('nothing to write')
+    w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${reps[0]})`)
+    for (const extra of reps.slice(1)) w.add(`SHAPE_REPRESENTATION_RELATIONSHIP('','',#${reps[0]},#${extra})`)
+  } else {
+    // One product per body, its shape in its own representation around its own origin, and one
+    // NEXT_ASSEMBLY_USAGE_OCCURRENCE per place it has in the root product (CAx-IF's recommended
+    // practices for assemblies): the placement, an ITEM_DEFINED_TRANSFORMATION from the part's
+    // origin to an axis in the root's representation, and the shape relationship that carries it.
+    // Bodies keep their coordinates: they are placed at the root's origin.
+    const parts = new Map<unknown, [number, number, number, string]>() // handle -> [definition, rep, origin, name]
+    const places: [unknown, number][] = [] // [handle, the axis it is placed at in the root]
+    list.forEach((body, i) => {
+      const key = body._h
+      if (!parts.has(key)) {
+        const label = body.name || `${product}_${i + 1}`
+        const items = itemsOf(body, label)
+        if (!items.length) return
+        const [partDef, partShape] = newProduct(label)
+        const at = w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])
+        const kind = body instanceof Part ? 'ADVANCED_BREP_SHAPE_REPRESENTATION' : 'MANIFOLD_SURFACE_SHAPE_REPRESENTATION'
+        const rep = representation(kind, label, at, items)
+        w.add(`SHAPE_DEFINITION_REPRESENTATION(#${partShape},#${rep})`)
+        parts.set(key, [partDef, rep, at, label])
+      }
+      places.push([key, w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])])
+    })
+    if (!parts.size) throw new RangeError('nothing to write')
+    const root = w.add(`SHAPE_REPRESENTATION(${_s(product)},(${ids([origin, ...places.map(([, a]) => a)])}),#${ctx})`)
+    w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${root})`)
+    places.forEach(([key, place], n) => {
+      const [partDef, rep, at, label] = parts.get(key) as [number, number, number, string]
+      const idt = w.add(`ITEM_DEFINED_TRANSFORMATION('','',#${at},#${place})`)
+      const rel = w.add(
+        `(REPRESENTATION_RELATIONSHIP('','',#${rep},#${root}) ` +
+          `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#${idt}) SHAPE_REPRESENTATION_RELATIONSHIP())`,
+      )
+      const nauo = w.add(`NEXT_ASSEMBLY_USAGE_OCCURRENCE('${n + 1}',${_s(label)},'',#${pdef},#${partDef},$)`)
+      const occurrence = w.add(`PRODUCT_DEFINITION_SHAPE(${_s(label)},'',#${nauo})`)
+      w.add(`CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#${rel},#${occurrence})`)
+    })
+  }
 
   if (styled.length) {
     const styleIds: number[] = []
@@ -587,7 +671,7 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
       const psa = w.add(`PRESENTATION_STYLE_ASSIGNMENT((#${ssu}))`)
       styleIds.push(w.add(`STYLED_ITEM('color',(#${psa}),#${item})`))
     }
-    w.add(`MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${list(styleIds)}),#${ctx})`)
+    w.add(`MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${ids(styleIds)}),#${ctx})`)
   }
 
   const header = [
