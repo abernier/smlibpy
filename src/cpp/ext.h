@@ -43,3 +43,9 @@ void bind_history(py::module_ m);
 void bind_check(py::module_ m);
 // A solid split by a sheet (slice.cpp).
 void bind_slice(py::module_ m);
+// Colors and names of single faces (face_attrs.cpp).
+void bind_face_attrs(py::module_ m);
+// Analytic faces and edges recognized in B-splines (analytics.cpp).
+void bind_analytics(py::module_ m);
+// The shells of a body: outside, cavities, cells (shells.cpp).
+void bind_shells(py::module_ m);

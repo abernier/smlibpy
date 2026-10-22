@@ -26,7 +26,10 @@ Everything else is written as B-splines with the kernel's control points.
   back. An unnamed body gets the product name when it is alone in the file, otherwise
   `<product>_<i>` (`assembly_3`, counted from 1 over all bodies).
 - Colors: `part.colored(...)` is written as a surface color for the whole body. It comes back
-  as a float tuple `(r, g, b)` in 0..1, not as the string you gave.
+  as a float tuple `(r, g, b)` in 0..1, not as the string you gave. Faces with a color or a name
+  of their own (`colored(color, faces=...)`, `named(name, faces=...)`) get a `STYLED_ITEM` of the
+  face and the name on their `ADVANCED_FACE`; `import_step` reads both back (`face.color`,
+  `face.name`), also from other systems' files. See `files/face_colors`.
 - Order: bodies come back in the order you wrote them, at their places.
 
 ## Gotchas

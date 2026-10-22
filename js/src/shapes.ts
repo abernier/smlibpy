@@ -32,6 +32,7 @@ import {
   type VectorLike,
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
+import { toRgb } from './colors.ts'
 import { Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
 import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
@@ -113,6 +114,13 @@ const _RETRY_SECONDS = 10.0
 
 // Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
 const INTERNAL = Symbol('smlibwasm.internal')
+
+// Bodies by number (`_Body._key`, counted by `_bodyCount`), and how many bodies hold each Brep that
+// `named()` or `colored()` shares (kernel plan T8); a body that let go of a shared Brep holds
+// `_DISPOSED`.
+let _bodyCount = 0
+const _SHARES = new WeakMap<BrepHandle, number>()
+const _DISPOSED: BrepHandle = Object.assign(Object.create(BrepHandle.prototype), { _p: 0, id: 0 })
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -705,6 +713,15 @@ export class ShapeList<T = Shape> extends Array<T> {
     })
   }
 
+  /** The faces that lie between two cells of a merged part (see `Part.merge`): where two materials
+   * meet, the faces a simulation mesh must match across or a contact condition goes on.
+   * `merge(block, insert).faces().shared()`; `Face.cells` says which two cells. */
+  shared(): ShapeList<T> {
+    const odd = this.find((s) => !(s instanceof Face))
+    if (odd !== undefined) throw new TypeError(`shared selects faces, not a ${_typeName(odd)}`)
+    return this.filter((s) => (s as unknown as Face).cells.length > 1)
+  }
+
   // -- set operations and expansion ---------------------------------------------------------
   /** The shapes of both lists, each once (Python's `|`). */
   union(other: Iterable<T>): ShapeList<T> {
@@ -830,6 +847,41 @@ function _angleKind(outer: number): string {
 }
 
 /** The shapes, each once (by `_identity()`). */
+/** A body's shells (`ext.brep_shells`) and the cells each face bounds (as `Part.cells` counts them),
+ * read once (kernel plan T7). */
+function _shellsOf(body: _Body): [Any[], number[][]] {
+  const h = body._h
+  if (h.shells === null) {
+    const shells: Any[] = ext.brep_shells(h.brep)
+    const cells: Set<number>[] = Array.from({ length: k.brep_face_count(h.brep) }, () => new Set<number>())
+    for (const s of shells) if (s.kind === 'cell') for (const f of s.faces) cells[f].add(s.cell)
+    h.shells = [shells, cells.map((c) => [...c].sort((a, b) => a - b))]
+  }
+  return h.shells as [Any[], number[][]]
+}
+
+/** Per face of a body, the cells it bounds (`Face.cells`). */
+function _faceCells(body: _Body): number[][] {
+  return _shellsOf(body)[1]
+}
+
+/** Colors and names (`ext.face_attrs` of the same body, read back from a file, or from a STEP
+ * file's faces) on the faces of a Brep in its order; nothing where the counts differ. */
+export function _putFaceAttrs(brep: number, colors: readonly Any[], names: readonly Any[]): void {
+  const faces: number[] = k.brep_faces(brep)
+  if (faces.length !== colors.length || faces.length !== names.length) return
+  let pick = colors.flatMap((c, i) => (c != null && c.length === 3 ? [i] : []))
+  if (pick.length) ext.set_face_colors(brep, pick.map((i) => faces[i]), pick.map((i) => Array.from(colors[i] as ArrayLike<number>, Number)))
+  pick = names.flatMap((n, i) => (n ? [i] : []))
+  if (pick.length) ext.set_face_names(brep, pick.map((i) => faces[i]), pick.map((i) => String(names[i])))
+}
+
+/** What a kernel step in a probe worker carries of a body besides its `.smb` copy: the tags of its
+ * faces and edges and its faces' colors and names (`.smb` files hold none). */
+function _carried(brep: number): Any[] {
+  return [...ext.topology_tags(brep), ext.face_attrs(brep)]
+}
+
 /** The tags of a body's faces and edges, in its order (`ext.topology_tags`, read once). */
 function _topologyTags(body: _Body): [number[][], number[][]] {
   const h = body._h
@@ -1763,6 +1815,36 @@ export class Face extends Shape {
     return this._owner
   }
 
+  /**
+   * The face's own color as [r, g, b] from 0 to 1, or null: then it shows in its body's color.
+   *
+   * Faces get one with `body.colored(color, { faces })` and from STEP files that color single faces.
+   * It stays with the face through later operations (kernel plan T5): with both pieces of a face a
+   * Boolean splits, with the walls of a hole cut by a tool whose faces have one, with a face moved,
+   * mirrored or scaled, with the offsets of a face in a shell; faces an operation makes anew (a
+   * fillet's round, the rim around a shell's opening) have none.
+   */
+  get color(): [number, number, number] | null {
+    const [color] = ext.face_attr(this._f)
+    return color === null ? null : [Number(color[0]), Number(color[1]), Number(color[2])]
+  }
+
+  /** The face's name (`body.named(name, { faces })`, or from the `ADVANCED_FACE` of a STEP file), or
+   * null. It stays with the face as `color` does. */
+  get name(): string | null {
+    const [, name] = ext.face_attr(this._f)
+    return name
+  }
+
+  /** The cells of its part that this face bounds, as indices into `Part.cells()`: one for a face on
+   * the outside or on the wall of a cavity, two for a face between two cells of a merged part (see
+   * `ShapeList.shared`), `[]` for a face of a sheet or a sketch. */
+  get cells(): number[] {
+    if (this._owner === null) return []
+    const own: number = ext.face_indices(this._owner._brep, [this._f])[0]
+    return own >= 0 ? [..._faceCells(this._owner)[own]] : []
+  }
+
   // -- geometry -----------------------------------------------------------------------------
   _surfaceInfo(): Any {
     if (this._info === null) this._info = ext.surface_data(k.face_surface(this._f), false)
@@ -1974,6 +2056,8 @@ export class _Body extends Shape {
   _h!: BrepHandle
   name: string | null = null
   color: ColorLike | null = null
+  /** (tells bodies apart: two can share a Brep, kernel plan T8) */
+  _key: number = ++_bodyCount
 
   /** (create bodies with the constructors: Box(), Rectangle(), ...) */
   constructor(token?: symbol) {
@@ -2010,9 +2094,51 @@ export class _Body extends Shape {
     return (this.constructor as typeof _Body)._wrap.call(this.constructor as Any, brep, { name: this.name, color: this.color }) as this
   }
 
+  /** A body of the same type and metadata around the same Brep, which is not copied: its faces,
+   * edges and the measures cached of it are this body's (kernel plan T8). It is a shape of its own
+   * all the same: not equal to this one, and a member of selections apart from it; `dispose()` of
+   * one frees the Brep only once no other body holds it. */
+  _shared(): this {
+    const b = Object.assign(Object.create(Object.getPrototypeOf(this)), this) as this
+    b._key = ++_bodyCount
+    _SHARES.set(this._h, (_SHARES.get(this._h) ?? 1) + 1)
+    return b
+  }
+
+  /** A copy whose selected faces (as `Part._ownFaces` takes them) get `colors` and `names`
+   * (`ext.set_face_colors`, `ext.set_face_names`: one for all, `[]` or `''` to take them off; null
+   * leaves them as they are). */
+  _withFaceAttrs(what: string, faces: unknown, colors: number[][] | null, names: string[] | null): this {
+    const own = Part.prototype._ownFaces.call(this as unknown as Part, faces)
+    if (!own.length) throw new RangeError(`${what}: no faces selected`)
+    const [copy, mapped] = ext.copy_with_map(this._brep, own, [], [])
+    const b = this._like(
+      _held(copy, (h) =>
+        kernelCall(what, () => {
+          if (colors !== null) ext.set_face_colors(h.brep, mapped, colors)
+          if (names !== null) ext.set_face_names(h.brep, mapped, names)
+        }),
+      ),
+    )
+    // (the same body but for the attributes: what was found or measured of it holds)
+    b._h.sound = this._h.sound
+    b._h.props = this._h.props
+    b._h.tags = this._h.tags
+    b._h.shells = this._h.shells
+    _sameSources(this._h, b._h)
+    return b
+  }
+
   /** Frees the kernel's body now, not when the garbage collector gets to it. Faces, edges and
-   * vertices taken from it must not be used afterwards. */
+   * vertices taken from it must not be used afterwards. A body that shares its Brep with others
+   * (`named()`, `colored()`) lets go of it, and the last of them frees it. */
   dispose(): void {
+    const shares = _SHARES.get(this._h) ?? 1
+    if (shares > 1) {
+      _SHARES.set(this._h, shares - 1)
+      this._h = _DISPOSED
+      return
+    }
     this._h.dispose()
   }
 
@@ -2020,19 +2146,45 @@ export class _Body extends Shape {
     this.dispose()
   }
 
-  // -- metadata (returns copies; shapes are immutable) --------------------------------------
-  /** The same body with a name (used by exporters and the viewer). */
-  named(name: string): this {
-    const b = this._like(this._copyBrep())
-    _sameSources(this._h, b._h)
+  // -- metadata (returns new shapes; shapes are immutable) ----------------------------------
+  /**
+   * The same body with a name (used by exporters and the viewer).
+   *
+   * With `faces` (faces of this body, or of an earlier version of it: as `Part.fillet` takes edges),
+   * the body keeps its own name and those faces get this one (`Face.name`, null takes it off): it
+   * stays with the faces and their pieces through later operations, and STEP files write it on the
+   * face. `part.faces().filter((f) => f.name === 'seal')` finds them again.
+   */
+  named(name: string | null, options: { faces?: unknown } = {}): this {
+    _opts('_Body.named', options)
+    if (options.faces !== undefined && options.faces !== null) {
+      if (name !== null && typeof name !== 'string') throw new TypeError(`named: a name is a string, not a ${_typeName(name)}`)
+      return this._withFaceAttrs('named', options.faces, null, [name ?? ''])
+    }
+    const b = this._shared()
     b.name = name
     return b
   }
 
-  /** The same body with a display color ("steelblue", "#4682b4" or [r, g, b]). */
-  colored(color: ColorLike): this {
-    const b = this._like(this._copyBrep())
-    _sameSources(this._h, b._h)
+  /**
+   * The same body with a display color ("steelblue", "#4682b4" or [r, g, b]).
+   *
+   * With `faces` (faces of this body, or of an earlier version of it), the body keeps its own color
+   * and those faces get this one (`Face.color`; null takes it off): it stays with the faces through
+   * later operations (the walls of a hole keep the color of the tool's faces), and STEP, glTF and USD
+   * files and pictures show it on them:
+   *
+   *     const tool = Cylinder(5, 20)
+   *     let plate = Box(60, 40, 8).cut(tool.colored('red', { faces: tool.faces() }))
+   *     plate = plate.colored('steelblue', { faces: plate.faces().top() })
+   */
+  colored(color: ColorLike | null, options: { faces?: unknown } = {}): this {
+    _opts('_Body.colored', options)
+    if (options.faces !== undefined && options.faces !== null) {
+      const rgb = color === null ? [] : toRgb(color).map(Number)
+      return this._withFaceAttrs('colored', options.faces, [rgb], null)
+    }
+    const b = this._shared()
     b.color = color
     return b
   }
@@ -2161,6 +2313,19 @@ export class _Body extends Shape {
     const moved = this._like(
       _held(this._copyBrep(), (h) => {
         kernelCall('transform', () => ext.transform_brep(h.brep, columns))
+        if (!_similarity(m)) {
+          // A scale that differs between the axes (or a shear) makes every face and edge a B-spline:
+          // the kernel's recognition gives back the planes, cylinders, cones, surfaces of revolution
+          // and lines, before anything measures the copy (a measure stores refitted trim curves in it,
+          // which kept a 6.8e-7 volume error) (kernel plan T6).
+          const r = _rotation(m)
+          const size = this._looseBox().diagonal * Math.sqrt(r.reduce((s, x) => s + x * x, 0))
+          const recognized: number | null = kernelCall('transform', () => ext.recognize_analytics(h.brep, 1e-9 * Math.max(1, size)))
+          if (recognized) {
+            ext.delete_brep(h.brep)
+            h.brep = recognized
+          }
+        }
         ext.tag_topology(h.brep, true)
       }),
     )
@@ -2218,11 +2383,12 @@ export class _Body extends Shape {
   }
 
   _identity(): string {
-    return `b:${this._h.id}`
+    // (each body: a renamed or recolored one shares its Brep, kernel plan T8)
+    return `b:${this._key}`
   }
 
   equals(other: unknown): boolean {
-    return other instanceof _Body && this._h === other._h
+    return other instanceof _Body && this === other
   }
 
   /** Counts and measures in one object. */
@@ -3178,6 +3344,65 @@ export class Part extends _Body {
   }
 
   /**
+   * The closed sheets that bound the part, each a `Shell` of copies of its faces (joined along
+   * their edges): first the outside of each solid, then the wall of each cavity (and the outside of
+   * a body that floats in one). For a part with a cavity, `shells()[1]` is the cavity's wall: the
+   * faces to check the wall thickness on or to put a boundary condition on, which
+   * `part.faces().derivedFrom(part.shells()[1])` selects on the part itself. Faces between two
+   * cells of a merged part bound no space around it and lie in no shell (see `ShapeList.shared`).
+   */
+  shells(): ShapeList<Shell> {
+    const [shells] = _shellsOf(this)
+    const order = [...shells.filter((s) => s.kind === 'outside'), ...shells.filter((s) => s.kind === 'void')]
+    const kfaces: number[] = k.brep_faces(this._brep)
+    return _list(
+      order.map((s) =>
+        Shell._wrap(
+          _held(kernelCall('shells', () => ext.copy_faces(this._brep, (s.faces as number[]).map((i) => kfaces[i]))), (h) =>
+            kernelCall('shells', () => k.stitch_into_shell(h.brep)), // (the copies' edges joined again)
+          ),
+        ),
+      ),
+    )
+  }
+
+  /** The cavities of the part (closed spaces inside it, kernel plan T7), each a part of its own: the
+   * space inside a cavity's wall, less a body that floats in it. With them the part fills its
+   * outside: `part.volume` plus their volumes. Empty for a part without cavities. `info()` counts
+   * them. */
+  voids(): ShapeList<Part> {
+    const regions: number[][] = kernelCall('voids', () => ext.void_shells(this._brep))
+    const solids = regions.map((shells) => shells.map((b) => Part._wrap(b)))
+    return _list(
+      solids.map(([wall, ...inside]) => {
+        const cavity = inside.length ? wall.cut(inside) : wall
+        const problem = cavity._solidProblem()
+        if (problem !== null) throw new ModelingError(`voids: a cavity came out as a body that is ${problem}`)
+        return cavity
+      }),
+    )
+  }
+
+  /** Counts and measures in one object: as for every body, and `solids` (how many `solids()`) and
+   * `voids` (how many cavities, `voids()`). */
+  override info(): { type: string; faces: number; edges: number; vertices: number; bbox: [number[], number[]]; solids: number; voids: number } {
+    const [shells, faces] = _shellsOf(this)
+    const root = new Map<number, number>()
+    for (const s of shells) if (s.kind === 'cell') root.set(s.cell, s.cell)
+    const find = (c: number): number => {
+      while (root.get(c) !== c) {
+        root.set(c, root.get(root.get(c)!)!)
+        c = root.get(c)!
+      }
+      return c
+    }
+    for (const between of faces) for (const c of between.slice(1)) root.set(find(c), find(between[0])) // cells that share a face are one solid
+    const solids = new Set([...root.keys()].map(find)).size
+    const voids = new Set(shells.filter((s) => s.kind === 'void').map((s) => s.region)).size
+    return { ...super.info(), solids, voids }
+  }
+
+  /**
    * This part and others as one part made of cells. Where parts overlap, the overlap becomes a
    * cell of its own; cells that touch share the faces between them (each such face bounds two
    * cells: the body is non-manifold). For simulation meshes that must match across materials, and
@@ -3897,7 +4122,7 @@ export class Part extends _Body {
     const offsetVolume = (extended: boolean): number => {
       if (!offsets.has(extended)) {
         const work = (): number => kernelCall('shell', () => k.offset_brep(this._brep, d, { extended_offset: extended }))
-        const off = Part._wrap(_isolated('shell', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: extended } })))
+        const off = Part._wrap(_isolated('shell', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: { extended_offset: extended } })))
         try {
           offsets.set(extended, k.brep_face_count(off._brep) ? Number(off._props(1e-4).volume) : 0)
         } finally {
@@ -3910,7 +4135,7 @@ export class Part extends _Body {
       const work = (): number => kernelCall('shell', () => k.shell_brep(this._brep, d, { extended_offset: extended, faces_to_shell: faces }), hint)
       // In the probe worker (smlibpy: in a copy of its process): the kernel's offset code can crash,
       // mostly in its extended mode, which depends on memory layout.
-      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
+      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
       return this._like(_isolated('shell', work, job, hint))
     }
     return this._checked(
@@ -4148,7 +4373,7 @@ export class Part extends _Body {
     const work = (): number => kernelCall('offset', () => k.offset_brep(this._brep, d))
     // (always the extended mode, which depends on memory layout and can crash: it runs in the probe
     // worker, smlibpy: in a copy of its process)
-    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: true } })))
+    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: { extended_offset: true } })))
     return this._checked(
       'offset',
       [
@@ -5122,7 +5347,7 @@ export class Shell extends _Body {
     const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
     // (the kernel's extended offset mode, which depends on memory layout and can crash: it runs in the
     // probe worker, smlibpy: in a copy of its process)
-    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { create_solid: true }, faces: [] })
+    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: { create_solid: true }, faces: [] })
     const b = _isolated('thicken', work, job, hint)
     return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
   }

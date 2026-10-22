@@ -16,12 +16,15 @@
 #include "deform.h"
 #include "draft.h"
 #include "ext_shared.h"
+#include "analytics.h"
+#include "face_attrs.h"
 #include "face_draft.h"
 #include "fit.h"
 #include "history.h"
 #include "measure.h"
 #include "seams.h"
 #include "sheetmetal.h"
+#include "shells.h"
 #include "slice.h"
 #include "step_build.h"
 #include "surface_eval.h"
@@ -643,6 +646,35 @@ double vertex_tolerance(uintptr_t v) { return guard([&] { return smlibpy::vertex
 uintptr_t slice(uintptr_t b, uintptr_t sheet, bool below) { return guard([&] { return ptr(smlibpy::slice(brep(b), brep(sheet), below)); }); }
 uintptr_t extended_sheet(uintptr_t f, double distance) { return guard([&] { return ptr(smlibpy::extended_sheet(face(f), distance)); }); }
 
+// ---------------------------------------------------------------- ext: face colors and names (T5), analytics (T6), shells (T7)
+// colors: per face [r, g, b], or [] / null to take the color off
+void set_face_colors(uintptr_t b, val faces, val colors)
+{
+    guard([&] {
+        std::vector<std::vector<double>> c;
+        const unsigned n = colors["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            c.push_back(colors[i].isNull() || colors[i].isUndefined() ? std::vector<double>() : numbers(colors[i]));
+        smlibpy::set_face_colors(brep(b), pointers<SmFace>(faces), c);
+    });
+}
+// names: per face a string ('' to take the name off)
+void set_face_names(uintptr_t b, val faces, val names)
+{
+    guard([&] {
+        std::vector<std::string> s;
+        const unsigned n = names["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+            s.push_back(names[i].isNull() || names[i].isUndefined() ? std::string() : names[i].as<std::string>());
+        smlibpy::set_face_names(brep(b), pointers<SmFace>(faces), s);
+    });
+}
+val face_attr(uintptr_t f) { return guard([&] { return to_js(smlibpy::face_attr(face(f))); }); }
+val face_attrs(uintptr_t b) { return guard([&] { return to_js(smlibpy::face_attrs(brep(b))); }); }
+// the copy (the caller's) or null
+val recognize_analytics(uintptr_t b, double tolerance) { return guard([&] { return owned_or_null(smlibpy::recognize_analytics(brep(b), tolerance)); }); }
+val brep_shells(uintptr_t b) { return guard([&] { return to_js(smlibpy::brep_shells(brep(b))); }); }
+
 }  // namespace
 
 // ---------------------------------------------------------------- ext: clouds, meshes, cells, USD
@@ -688,7 +720,19 @@ val region_shells(uintptr_t b)
     });
 }
 
-// items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null]
+// Per cavity, the solids inside its shells (its wall's first), each the caller's.
+val void_shells(uintptr_t b)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& cavity : smlibpy::void_shells(brep(b)))
+            out.call<void>("push", pointer_array(cavity));
+        return out;
+    });
+}
+
+// items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null, r, g, b per
+// triangle or null]
 std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
 {
     return guard([&] {
@@ -709,6 +753,8 @@ std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
                     item.triangles.push_back(static_cast<long>(x));
             if (it["length"].as<unsigned>() > 5 && !none(it[5]))
                 item.normals = numbers(it[5]);
+            if (it["length"].as<unsigned>() > 6 && !none(it[6]))
+                item.face_colors = numbers(it[6]);
             in.push_back(std::move(item));
         }
         return smlibpy::usd_text(in, up_axis, meters_per_unit);
@@ -849,6 +895,13 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__vertex_tolerance", &vertex_tolerance);
     function("ext__slice", &slice);
     function("ext__extended_sheet", &extended_sheet);
+    function("ext__set_face_colors", &set_face_colors);
+    function("ext__set_face_names", &set_face_names);
+    function("ext__face_attr", &face_attr);
+    function("ext__face_attrs", &face_attrs);
+    function("ext__recognize_analytics", &recognize_analytics);
+    function("ext__brep_shells", &brep_shells);
+    function("ext__void_shells", &void_shells);
 
     function("sheetmetal__bend", &bend);
     function("sheetmetal__unbend", &unbend);

@@ -3,7 +3,9 @@
 // by parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks
 // (T4); the cells of a merged part named after their parts (B15); solids() separating a body in a
 // cavity (B16); the edges where two bodies meet (B17); sections by planes that only touch (B18);
-// error hints from what the operands show (B19). Ported from tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
+// error hints from what the operands show (B19); colors and names of single faces (T5); analytic
+// faces after scales that differ between the axes (T6); shells, cavities and the cells a face bounds
+// (T7); named() and colored() sharing the Brep (T8). Ported from tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
 // sections of two cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is
 // given where it differs from that by more than 1e-6.
 import { test } from 'node:test'
@@ -24,6 +26,7 @@ import {
   Plane,
   Problem,
   Rectangle,
+  ShapeList,
   Shell,
   Sphere,
   Torus,
@@ -34,10 +37,13 @@ import {
   Z,
   fromStep,
   merge,
+  render,
   split,
   stitch,
   surface,
+  toGltf,
   toStep,
+  toUsd,
 } from '../src/index.ts'
 import { toRgb } from '../src/colors.ts'
 import { ext, k, module } from '../src/kernel.ts'
@@ -814,4 +820,222 @@ test('classified empty sees long triangles', () => {
   // The side of the cylinder is a few triangles from end to end, whose corners and middles all lie
   // outside the box: the overlap was missed, and the cut above was said to only touch.
   assert.equal(_classifiedEmpty(Box(6, 16, 4), [Cylinder(1.5, 30).translate(-1.5, 0, -13)], k.BooleanOp.INTERSECTION), false)
+})
+
+// -- T5: colors and names of single faces ------------------------------------------------------
+const RED = toRgb('red')
+const GOLD = toRgb('gold')
+
+function painted(): Part {
+  let tool = Cylinder(5, 20)
+  tool = tool.colored('red', { faces: tool.faces().cylinders() }) // the hole walls it will cut
+  let plate = Box(60, 40, 8).cut(tool).colored('steelblue')
+  plate = plate.colored('gold', { faces: plate.faces().top() }).named('seal', { faces: plate.faces().bottom() })
+  return plate
+}
+
+/** [color, name] of the faces that have either, sorted. */
+const own = (part: Part): string[] =>
+  part
+    .faces()
+    .filter((f) => f.color !== null || f.name !== null)
+    .map((f) => JSON.stringify([f.color, f.name]))
+    .sort()
+
+test('T5: faces keep their colors and names through operations', () => {
+  const plate = painted()
+  assert.equal(plate.color, 'steelblue') // the body's own stay
+  assert.equal(plate.name, null)
+  assert.deepEqual(own(plate), [JSON.stringify([RED, null]), JSON.stringify([GOLD, null]), JSON.stringify([null, 'seal'])].sort())
+  assert.deepEqual(plate.faces().cylinders()[0].color, RED)
+  assert.equal(plate.faces().bottom()[0].name, 'seal')
+  assert.deepEqual(plate.check(), [])
+  approx(plate.volume, 60 * 40 * 8 - PI * 25 * 8, 1e-12)
+  // a fillet keeps the faces' (its rounds have none), so do moves, mirrors and other scales
+  assert.deepEqual(own(plate.fillet(plate.edges().top(), 1)), own(plate))
+  for (const moved of [plate.translate(10, 0, 0).rotate(Z, 30), plate.mirror(Plane.YZ), plate.scale(2), plate.scale([1, 2, 1])]) {
+    assert.deepEqual(own(moved as Part), own(plate))
+  }
+  // a Boolean splits the top: both pieces keep the color
+  const split = plate.cut(Box(10, 50, 20))
+  assert.deepEqual(split.faces().top().map((f) => f.color), [GOLD, GOLD])
+  // a shell (in a probe worker) carries them back; the offsets of colored faces keep theirs
+  const shelled = plate.shell(-1, plate.faces().bottom())
+  assert.equal(shelled.faces().filter((f) => JSON.stringify(f.color) === JSON.stringify(GOLD)).length, 2)
+  assert.equal(shelled.faces().filter((f) => JSON.stringify(f.color) === JSON.stringify(RED)).length, 2)
+  approx(shelled.volume, plate.volume - (58 * 38 * 7 - PI * 36 * 7), 1e-6)
+  // null takes them off; faces of an earlier version stand for their pieces (T3)
+  const plain = split.colored(null, { faces: plate.faces().top() })
+  assert.deepEqual(plain.faces().top().map((f) => f.color), [null, null])
+  assert.equal(plain.named(null, { faces: plain.faces().bottom() }).faces().bottom()[0].name, null)
+  assert.throws(() => plate.colored('red', { faces: [] }), /no faces selected/)
+  assert.throws(() => plate.colored('red', { faces: Box(5, 5, 5).translate(100, 0, 0).faces() }), /is not a face of this part/)
+  assert.throws(() => plate.named(3 as Any, { faces: plate.faces().top() }), /a name is a string/)
+  assert.throws(() => plate.colored('red', { face: plate.faces() } as Any), /_Body\.colored\(\) got an unexpected option 'face'; did you mean 'faces'\?/)
+})
+
+test('T5: face colors and names in files', () => {
+  const part = painted()
+  const text = toStep(part)
+  assert.equal(text.split('STYLED_ITEM(').length - 1, 3) // the body, the top, the hole
+  assert.ok(text.includes("ADVANCED_FACE('seal',"))
+  const back = fromStep(text) as Part
+  assert.deepEqual(own(back), own(part))
+  // the faces of a cavity (a BREP_WITH_VOIDS) too
+  let hollow = Box(40, 30, 10).cut(Box(10, 10, 4))
+  hollow = hollow.colored('lime', { faces: hollow.faces().derivedFrom(hollow.shells()[1]) })
+  const lime = JSON.stringify(toRgb('lime'))
+  const walls = (fromStep(toStep(hollow)) as Part).faces().filter((f) => JSON.stringify(f.color) === lime)
+  assert.deepEqual(walls.map((f) => Math.round(f.area * 1e6) / 1e6).sort((a, b) => a - b), [40, 40, 40, 40, 100, 100])
+  // glTF: a primitive per color (the body's, red, gold) and the edges
+  const doc = JSON.parse(toGltf(part))
+  const colors = doc.materials.map((m: Any) => m.pbrMetallicRoughness.baseColorFactor.slice(0, 3))
+  assert.deepEqual(colors.slice(0, 3), [toRgb('steelblue'), RED, GOLD])
+  assert.deepEqual(doc.meshes[0].primitives.map((p: Any) => p.mode), [4, 4, 4, 1])
+  // USD: a color per triangle of the mesh
+  const usd = toUsd(part)
+  const mesh = usd.slice(usd.indexOf('def Mesh "body_mesh"'))
+  assert.ok(mesh.includes('interpolation = "uniform"') && mesh.includes('(1, 0, 0)'))
+  const triangles = mesh.slice(mesh.indexOf('faceVertexCounts = [')).split(']')[0].split('3').length - 1
+  const perFace = mesh.slice(mesh.indexOf('displayColor = [')).split('] (')[0].split('(').length - 1
+  assert.equal(perFace, triangles)
+  // pictures: the top red, the sides blue, also cut open by a section
+  let slab = Box(20, 20, 4).colored('blue')
+  slab = slab.colored('red', { faces: slab.faces().top() })
+  const top = render(slab, { view: 'top', size: [160, 120], edges: false })
+  const at = (60 * top.width + 80) * 3
+  const [r, g, b] = [top.pixels[at], top.pixels[at + 1], top.pixels[at + 2]]
+  assert.ok(r > 120 && g < 60 && b < 60, `${[r, g, b]}`)
+  const cut = render(slab, { size: [160, 120], edges: false, section: Plane.XZ }).pixels
+  let red = 0
+  let blue = 0
+  for (let i = 0; i < cut.length; i += 3) {
+    if (cut[i] > 150 && cut[i + 1] < 60 && cut[i + 2] < 60) red++
+    if (cut[i + 2] > 100 && cut[i] < 100) blue++
+  }
+  assert.ok(red > 800 && blue > 300, `${red} ${blue}`) // the top, and the sides and the cut
+})
+
+test('T5: face colors of other writers', () => {
+  // A STYLED_ITEM on one ADVANCED_FACE of a file (as SolidWorks, NX and OpenCASCADE write them)
+  const text = toStep(Box(10, 10, 10))
+  const face = /#(\d+)=ADVANCED_FACE\(/.exec(text)![1]
+  const ctx = /#(\d+)=\(GEOMETRIC_REPRESENTATION_CONTEXT/.exec(text)![1]
+  const styled =
+    "#9001=COLOUR_RGB('',0.,0.,1.);\n#9002=FILL_AREA_STYLE_COLOUR('',#9001);\n#9003=FILL_AREA_STYLE('',(#9002));\n" +
+    "#9004=SURFACE_STYLE_FILL_AREA(#9003);\n#9005=SURFACE_SIDE_STYLE('',(#9004));\n" +
+    "#9006=SURFACE_STYLE_USAGE(.BOTH.,#9005);\n#9007=PRESENTATION_STYLE_ASSIGNMENT((#9006));\n" +
+    `#9008=OVER_RIDING_STYLED_ITEM('color',(#9007),#${face},#${face});\n` +
+    `#9009=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#9008),#${ctx});\n`
+  const back = fromStep(text.replace('ENDSEC;\nEND-ISO', `${styled}ENDSEC;\nEND-ISO`)) as Part
+  assert.deepEqual(back.faces().filter((f) => f.color !== null).map((f) => f.color), [[0, 0, 1]])
+  assert.equal(back.color, null)
+})
+
+// -- T6: analytic faces after a scale that differs between the axes --------------------------
+test('T6: scales along the axes keep planes and cylinders', () => {
+  const box = Box(10, 10, 10).scale([2, 1, 1]) as Part
+  assert.deepEqual(box.faces().map((f) => f.geomType), new Array(6).fill('plane'))
+  assert.deepEqual([...new Set(box.edges().map((e) => e.geomType))], ['line'])
+  approx(box.volume, 2000, 1e-14)
+  assert.deepEqual(box.check(), [])
+  const tall = Cylinder(5, 10).scale([1, 1, 2]) as Part // was 3 B-spline faces, volume -6.8e-7 off
+  assert.deepEqual(tall.faces().map((f) => f.geomType), ['cylinder', 'plane', 'plane'])
+  approx(tall.faces().cylinders()[0].radius, 5, 1e-12)
+  approx(tall.volume, PI * 25 * 20, 1e-12)
+  assert.deepEqual(tall.check(), [])
+  const flat = Cylinder(5, 10).scale([2, 1, 1]) as Part // an elliptic cylinder: a surface of extrusion
+  assert.deepEqual(flat.faces().map((f) => f.geomType), ['extrusion', 'plane', 'plane'])
+  approx(flat.volume, PI * 10 * 5 * 10, 1e-12)
+  const egg = Sphere(5).scale([1, 1, 2]) as Part
+  assert.deepEqual(egg.faces().map((f) => f.geomType), ['revolution'])
+  approx(egg.volume, (4 / 3) * PI * 250, 1e-12)
+  const holed = Box(20, 20, 10).cut(Cylinder(3, 20)).scale([1.5, 1, 1]) as Part
+  assert.deepEqual(holed.faces().map((f) => f.geomType).sort(), ['extrusion', ...new Array(6).fill('plane')])
+  approx(holed.volume, 1.5 * (4000 - PI * 90), 1e-12)
+  // STEP files get the analytic surfaces
+  const text = toStep(tall)
+  assert.ok(text.includes('CYLINDRICAL_SURFACE') && !text.includes('B_SPLINE_SURFACE'))
+  approx((fromStep(text) as Part).volume, PI * 500, 1e-12)
+  // a body with nothing to recognize is left as it is
+  const plain = Box(1, 1, 1)
+  assert.equal(ext.recognize_analytics(plain._brep, 1e-9), null)
+  const ellipsoid = Sphere(5).scale([2, 1, 1]) as Part // no analytic surface: a B-spline, as before
+  assert.deepEqual(ellipsoid.faces().map((f) => f.geomType), ['bspline'])
+  approx(ellipsoid.volume, (4 / 3) * PI * 250, 1e-12)
+})
+
+// -- T7: shells, cavities and the cells a face bounds ------------------------------------------
+test('T7: shells, voids and the cells of faces', () => {
+  const hollow = Box(20, 20, 20).cut(Box(6, 6, 6))
+  assert.equal(hollow.info().solids, 1)
+  assert.equal(hollow.info().voids, 1)
+  const [outside, wall] = hollow.shells()
+  assert.ok(wall instanceof Shell)
+  assert.equal(outside.faces().length, 6)
+  approx(wall.area, 216)
+  assert.equal(wall.edges().length, 12) // joined: closed sheets
+  assert.equal(outside.edges().length, 12)
+  assert.deepEqual(hollow.voids().map((v) => Math.round(v.volume * 1e6) / 1e6), [216])
+  approx(hollow.volume + hollow.voids().reduce((s, v) => s + v.volume, 0), 8000)
+  const walls = hollow.faces().derivedFrom(wall) // the cavity's faces of the part itself
+  assert.equal(walls.length, 6)
+  assert.ok(walls.every((f) => f.owner === hollow))
+  assert.deepEqual([...new Set(hollow.faces().map((f) => JSON.stringify(f.cells)))], ['[0]'])
+  // a body floating in the cavity: two solids, the cavity less the body
+  const caged = Box(20, 20, 20).cut(Box(10, 10, 10)).fuse(Box(4, 4, 4))
+  assert.equal(caged.info().solids, 2)
+  assert.equal(caged.solids().length, 2)
+  assert.equal(caged.info().voids, 1)
+  approx(caged.voids()[0].volume, 936)
+  assert.equal(caged.shells().length, 3)
+  const nested = Sphere(10).cut(Sphere(8)).fuse(Sphere(5)).cut(Sphere(3))
+  const cavities = nested.voids().map((v) => v.volume).sort((a, b) => a - b)
+  approx(cavities[0], (4 / 3) * PI * 27)
+  approx(cavities[1], (4 / 3) * PI * (512 - 125))
+  assert.equal(nested.info().solids, 2)
+  // the faces between two cells of a merged part
+  const m = merge(Box(40, 40, 20), Cylinder(6, 30))
+  const shared = m.faces().shared()
+  assert.deepEqual(shared.map((f) => f.geomType).sort(), ['cylinder', 'plane', 'plane'])
+  assert.deepEqual(shared.map((f) => JSON.stringify(f.cells)).sort(), ['[0,1]', '[1,2]', '[1,3]'])
+  assert.equal(m.cells().length, 4)
+  assert.equal(m.info().solids, 1)
+  assert.equal(m.info().voids, 0)
+  assert.equal(m.shells().length, 1)
+  assert.equal(Box(10, 10, 10).fuse(Box(10, 10, 10).translate(30, 0, 0)).info().solids, 2)
+  assert.equal(Box(10, 10, 10).voids().length, 0)
+  assert.deepEqual(Box(10, 10, 10).faces()[0].toShell().faces()[0].cells, [])
+  assert.throws(() => m.edges().shared(), /shared selects faces/)
+  assert.ok(!('solids' in Rectangle(4, 4).info()))
+})
+
+// -- T8: named() and colored() share the Brep ------------------------------------------------
+test('T8: named and colored share the Brep, not the identity', () => {
+  const part = Box(40, 30, 20).cut(Cylinder(5, 50))
+  const volume = part.volume
+  const named = part.named('block').colored('red')
+  assert.ok(named._h === part._h && named._h.props === part._h.props) // no copy, measures kept
+  assert.equal(named.volume, volume)
+  assert.equal(named.name, 'block')
+  assert.equal(part.name, null)
+  assert.equal(part.color, null)
+  assert.ok(!named.equals(part))
+  assert.notEqual(named._identity(), part._identity())
+  assert.equal(new ShapeList(part, named).difference([part]).length, 1)
+  assert.ok(named.faces()[0].equals(part.faces()[0])) // the same kernel faces
+  assert.ok(named.fillet(part.edges().top(), 1).isValid())
+  // dispose() of one lets go of the Brep; the last one frees it
+  const other = part.named('other')
+  other.dispose()
+  assert.throws(() => other.volume, /disposed/)
+  approx(part.faces().length, 7)
+  named.dispose()
+  approx(part.volume, volume, 1e-15)
+  part.dispose()
+  assert.equal(named._h.alive, false)
+  assert.equal(part._h.alive, false)
+  // a sketch keeps its plane
+  const s = Rectangle(10, 4).on(Plane.XZ).named('r')
+  assert.ok(s.plane.zDir.equals(Plane.XZ.zDir))
 })

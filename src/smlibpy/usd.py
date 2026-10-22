@@ -15,6 +15,8 @@ import os
 import warnings
 from typing import Any
 
+import numpy as np
+
 from ._kernel import ext, kernel_call
 from .colors import to_rgb
 
@@ -31,7 +33,7 @@ _BINARY = {
 
 def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float) -> list[tuple[Any, ...]]:
     from .exporters import _DEFAULT_COLORS, _items
-    from .mesh import Mesh, tessellate
+    from .mesh import Mesh, _colored_mesh
 
     items = []
     keep = []  # (the bodies stay alive while the C++ reads their Breps)
@@ -44,7 +46,11 @@ def _usd_items(shapes: Any, mesh: bool, tolerance: float | None, angle: float) -
             continue
         keep.append(it)
         if mesh:
-            items.append((it._brep, name, rgb, *_mesh_arrays(tessellate(it, tolerance, angle))))
+            # faces of their own color: a color per triangle (displayColor "uniform"), the others in the
+            # body's (kernel plan T5)
+            m, colors = _colored_mesh(it, tolerance, angle)
+            per = None if colors is None else np.where(np.isnan(colors), np.array(rgb), colors).ravel().tolist()
+            items.append((it._brep, name, rgb, *_mesh_arrays(m), per))
         else:
             items.append((it._brep, name, rgb, None, None, None))
     return items, keep  # type: ignore[return-value]

@@ -100,6 +100,13 @@ const OWN: Record<string, Signature> = {
   'ext.vertex_tolerance': ['vertex'],
   'ext.slice': ['brep', 'sheet', ['below', false]],
   'ext.extended_sheet': ['face', 'distance'],
+  'ext.set_face_colors': ['brep', 'faces', 'colors'],
+  'ext.set_face_names': ['brep', 'faces', 'names'],
+  'ext.face_attr': ['face'],
+  'ext.face_attrs': ['brep'],
+  'ext.recognize_analytics': ['brep', 'tolerance'],
+  'ext.brep_shells': ['brep'],
+  'ext.void_shells': ['brep'],
   'ext.usd_text': ['items', ['up_axis', 'Z'], ['meters_per_unit', 0.001]],
   'ext.usd_read': ['text', ['heal', false]],
   'ext.usd_assets': ['text'],
@@ -380,14 +387,23 @@ export function _disposed(what: string): TypeError {
 /**
  * Owns one kernel Brep and frees it with the last reference. `sound` records how far the body was
  * found a sound solid (0: not checked; the levels are in shapes.ts), `props` its integrated mass
- * properties (a body's Brep does not change once wrapped).
+ * properties.
+ *
+ * No operation changes a body's faces, edges and vertices or their geometry once it is wrapped, but
+ * measuring it stores refitted trim curves in its Brep (the first area, volume or tight box of a
+ * face): later measures can differ from the first in the last digits, and a `.smb` file written after
+ * a measure from one written before (kernel plan T6). So caches hold what was measured first, and a
+ * body scaled differently along its axes gets its analytic faces back before anything measures it.
+ * `named()` and `colored()` wrap the same handle (kernel plan T8): its caches serve both bodies, and a
+ * measure of one stores its trims for both.
  */
 export class BrepHandle extends Handle {
   sound = 0
   props: Any = null
-  /** The tags of its faces and edges (`ext.topology_tags`, read once: a body's Brep does not change
-   * once wrapped). */
+  /** The tags of its faces and edges (`ext.topology_tags`, read once). */
   tags: [number[][], number[][]] | null = null
+  /** Its shells and the cells each face bounds (`ext.brep_shells`, read once; kernel plan T7). */
+  shells: [Any[], number[][]] | null = null
   /** For a body made by `Part.merge` (or a copy of one): the parts it was merged from, the placement
    * it was moved by since, and its cells' sources once found (kernel plan B15). */
   merged: { parts: Any[]; placement: Float64Array; cells: Any[][] | null } | null = null

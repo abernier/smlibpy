@@ -3,7 +3,9 @@ checked without the kernel's brep_relationship (B13); parts split along sheets a
 parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks (T4);
 the cells of a merged part named after their parts (B15); solids() separating a body in a cavity
 (B16); the edges where two bodies meet (B17); sections by planes that only touch (B18); error hints
-from what the operands show (B19).
+from what the operands show (B19); colors and names of single faces (T5); analytic faces after scales
+that differ between the axes (T6); shells, cavities and the cells a face bounds (T7); named() and
+colored() sharing the Brep (T8).
 
 Exact volumes come from integrating the overlaps of the operands (the cross sections of two
 cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is given where it
@@ -711,3 +713,225 @@ def test_classified_empty_sees_long_triangles():
     # outside the box: the overlap was missed, and the cut above was said to only touch.
     box, pin = Box(6, 16, 4), Cylinder(1.5, 30).translate(-1.5, 0, -13)
     assert not shapes._classified_empty(box, [pin], k.BooleanOp.INTERSECTION)
+
+
+# -- T5: colors and names of single faces --------------------------------------------------
+RED, GOLD = to_rgb("red"), to_rgb("gold")
+
+
+def _painted():
+    tool = Cylinder(5, 20)
+    tool = tool.colored("red", faces=tool.faces().cylinders())     # the hole walls it will cut
+    plate = (Box(60, 40, 8) - tool).colored("steelblue")
+    plate = plate.colored("gold", faces=plate.faces().top()).named("seal", faces=plate.faces().bottom())
+    return plate
+
+
+def _own(part):
+    return sorted(((f.geom_type, f.color, f.name) for f in part.faces() if f.color or f.name), key=repr)
+
+
+def test_faces_keep_their_colors_and_names_through_operations():
+    plate = _painted()
+    assert plate.color == "steelblue" and plate.name is None              # the body's own stay
+    assert _own(plate) == sorted([("cylinder", RED, None), ("plane", None, "seal"), ("plane", GOLD, None)], key=repr)
+    assert plate.faces().top()[0].color == GOLD and plate.faces().bottom()[0].name == "seal"
+    assert plate.check() == [] and plate.is_valid()
+    assert plate.volume == approx(60 * 40 * 8 - math.pi * 25 * 8, rel=1e-12)
+    # a fillet keeps the faces' (its rounds have none), so do moves, mirrors and other scales
+    rounded = plate.fillet(plate.edges().top(), 1)
+    assert _own(rounded) == _own(plate)
+    for moved in (plate.translate(10, 0, 0).rotate(Z, 30), plate.mirror(Plane.YZ), plate.scale(2), plate.scale((1, 2, 1))):
+        assert [(c, n) for _, c, n in _own(moved)] == [(c, n) for _, c, n in _own(plate)]
+    # a Boolean splits the top: both pieces keep the color
+    split = plate - Box(10, 50, 20)
+    assert [f.color for f in split.faces().top()] == [GOLD, GOLD]
+    # a shell (a step in a forked copy of the process) carries them back; the offsets of colored
+    # faces descend from them and keep theirs
+    shelled = plate.shell(-1, plate.faces().bottom())
+    assert sum(1 for f in shelled.faces() if f.color == GOLD) == 2 and sum(1 for f in shelled.faces() if f.color == RED) == 2
+    assert shelled.volume == approx(plate.volume - (58 * 38 * 7 - math.pi * 36 * 7), rel=1e-6)
+    # None takes them off; faces of an earlier version stand for their pieces (T3)
+    plain = split.colored(None, faces=plate.faces().top())
+    assert [f.color for f in plain.faces().top()] == [None, None]
+    assert plain.named(None, faces=plain.faces().bottom()).faces().bottom()[0].name is None
+    with pytest.raises(ValueError, match="no faces selected"):
+        plate.colored("red", faces=[])
+    with pytest.raises(ValueError, match="is not a face of this part"):
+        plate.colored("red", faces=Box(5, 5, 5).translate(100, 0, 0).faces())
+    with pytest.raises(TypeError, match="a name is a string"):
+        plate.named(3, faces=plate.faces().top())
+
+
+def test_face_colors_and_names_in_files(tmp_path):
+    hollow = Box(40, 30, 10) - Box(10, 10, 4)
+    wall = hollow.faces().derived_from(hollow.shells()[1])
+    part = _painted()
+    export_step(part, tmp_path / "plate.step")
+    text = (tmp_path / "plate.step").read_text()
+    assert text.count("STYLED_ITEM(") == 3 and "ADVANCED_FACE('seal'," in text      # the body, the top, the hole
+    back = import_step(tmp_path / "plate.step")
+    assert _own(back) == _own(part) and back.color == approx(to_rgb("steelblue"))
+    # the faces of a cavity (a BREP_WITH_VOIDS) too
+    hollow = hollow.colored("lime", faces=wall)
+    export_step(hollow, tmp_path / "hollow.step")
+    back = import_step(tmp_path / "hollow.step")
+    assert sorted(round(f.area, 6) for f in back.faces() if f.color == to_rgb("lime")) == [40, 40, 40, 40, 100, 100]
+    # glTF: a primitive per color (the body's, red, gold) and the edges
+    from smlibpy.exporters import gltf_document
+
+    doc, _ = gltf_document(part)
+    colors = [m["pbrMetallicRoughness"]["baseColorFactor"][:3] for m in doc["materials"]]
+    assert colors[:3] == [approx(list(to_rgb("steelblue"))), approx(list(RED)), approx(list(GOLD))]
+    assert [p["mode"] for p in doc["meshes"][0]["primitives"]] == [4, 4, 4, 1]
+    # USD: a color per triangle of the mesh
+    export_usd(part, tmp_path / "plate.usda")
+    usd = (tmp_path / "plate.usda").read_text()
+    mesh = usd[usd.index('def Mesh "body_mesh"'):]
+    assert 'interpolation = "uniform"' in mesh and "(1, 0, 0)" in mesh
+    triangles = mesh[mesh.index("faceVertexCounts = ["):].split("]")[0].count("3")
+    colors = mesh[mesh.index("displayColor = ["):].split("] (")[0].count("(")
+    assert colors == triangles
+    # pictures: the top red, the sides blue, also cut open by a section
+    slab = Box(20, 20, 4).colored("blue")
+    slab = slab.colored("red", faces=slab.faces().top())
+    r, g, b = (int(x) for x in render(slab, view="top", size=(160, 120), edges=False).pixels[60, 80])
+    assert r > 120 and g < 60 and b < 60, (r, g, b)
+    px = render(slab, size=(160, 120), edges=False, section=Plane.XZ).pixels.astype(int)
+    red = (px[..., 0] > 150) & (px[..., 1] < 60) & (px[..., 2] < 60)
+    blue = (px[..., 2] > 100) & (px[..., 0] < 100)
+    assert red.sum() > 800 and blue.sum() > 300            # the top, and the sides and the cut
+    r, g, b = (int(x) for x in render(Box(20, 20, 4).colored("blue"), view="top", size=(160, 120), edges=False).pixels[60, 80])
+    assert b > 120 and r < 60
+
+
+def test_face_colors_of_other_writers(tmp_path):
+    # A STYLED_ITEM on one ADVANCED_FACE of a file (as SolidWorks, NX and OpenCASCADE write them)
+    export_step(Box(10, 10, 10), tmp_path / "box.step")
+    text = (tmp_path / "box.step").read_text()
+    face = int(re.search(r"#(\d+)=ADVANCED_FACE\(", text).group(1))
+    ctx = int(re.search(r"#(\d+)=\(GEOMETRIC_REPRESENTATION_CONTEXT", text).group(1))
+    styled = (f"#9001=COLOUR_RGB('',0.,0.,1.);\n#9002=FILL_AREA_STYLE_COLOUR('',#9001);\n#9003=FILL_AREA_STYLE('',(#9002));\n"
+              f"#9004=SURFACE_STYLE_FILL_AREA(#9003);\n#9005=SURFACE_SIDE_STYLE('',(#9004));\n"
+              f"#9006=SURFACE_STYLE_USAGE(.BOTH.,#9005);\n#9007=PRESENTATION_STYLE_ASSIGNMENT((#9006));\n"
+              f"#9008=OVER_RIDING_STYLED_ITEM('color',(#9007),#{face},#{face});\n"
+              f"#9009=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#9008),#{ctx});\n")
+    (tmp_path / "blue.step").write_text(text.replace("ENDSEC;\nEND-ISO", styled + "ENDSEC;\nEND-ISO", 1))
+    back = import_step(tmp_path / "blue.step")
+    assert [f.color for f in back.faces() if f.color] == [(0.0, 0.0, 1.0)] and back.color is None
+
+
+def test_face_colors_read_by_opencascade(tmp_path):
+    STEPCAFControl = pytest.importorskip("OCP.STEPCAFControl")
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.Quantity import Quantity_Color
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.XCAFDoc import XCAFDoc_ColorType, XCAFDoc_DocumentTool
+
+    def static(cls, name):  # (OCP names static methods with _s, older builds without)
+        return getattr(cls, name + "_s", None) or getattr(cls, name)
+
+    export_step(_painted(), tmp_path / "plate.step")
+    doc = TDocStd_Document(TCollection_ExtendedString("doc"))
+    reader = STEPCAFControl.STEPCAFControl_Reader()
+    reader.SetColorMode(True)
+    reader.ReadFile(str(tmp_path / "plate.step"))
+    reader.Transfer(doc)
+    colors = static(XCAFDoc_DocumentTool, "ColorTool")(doc.Main())
+    areas: dict = {}
+    ex = TopExp_Explorer(reader.Reader().OneShape(), TopAbs_FACE)
+    while ex.More():
+        face, c = static(TopoDS, "Face")(ex.Current()), Quantity_Color()
+        props = GProp_GProps()
+        static(BRepGProp, "SurfaceProperties")(face, props)
+        key = (round(c.Red(), 3), round(c.Green(), 3), round(c.Blue(), 3)) \
+            if colors.GetColor(face, XCAFDoc_ColorType.XCAFDoc_ColorSurf, c) else None
+        areas[key] = areas.get(key, 0.0) + props.Mass()
+        ex.Next()
+    # (OpenCASCADE gives linear RGB: the gold of the top, (1, 0.843, 0) in sRGB, reads (1, 0.68, 0))
+    assert areas.pop((1.0, 0.0, 0.0)) == approx(2 * math.pi * 5 * 8, rel=1e-6)
+    gold = [area for key, area in areas.items() if key is not None]
+    assert gold == [approx(60 * 40 - math.pi * 25, rel=1e-6)]
+
+
+# -- T6: analytic faces after a scale that differs between the axes -----------------------
+def test_scales_along_the_axes_keep_planes_and_cylinders(tmp_path):
+    box = Box(10, 10, 10).scale((2, 1, 1))
+    assert [f.geom_type for f in box.faces()] == ["plane"] * 6 and {e.geom_type for e in box.edges()} == {"line"}
+    assert box.volume == approx(2000, rel=1e-14) and box.check() == []
+    tall = Cylinder(5, 10).scale((1, 1, 2))           # was 3 B-spline faces, volume 1570.795256 (-6.8e-7)
+    assert [f.geom_type for f in tall.faces()] == ["cylinder", "plane", "plane"]
+    assert tall.faces().cylinders()[0].radius == approx(5, abs=1e-12)
+    assert tall.volume == approx(math.pi * 25 * 20, rel=1e-13) and tall.check() == []
+    flat = Cylinder(5, 10).scale((2, 1, 1))           # an elliptic cylinder: a surface of extrusion
+    assert [f.geom_type for f in flat.faces()] == ["extrusion", "plane", "plane"]
+    assert flat.volume == approx(math.pi * 10 * 5 * 10, rel=1e-13)
+    egg = Sphere(5).scale((1, 1, 2))
+    assert [f.geom_type for f in egg.faces()] == ["revolution"] and egg.volume == approx(4 / 3 * math.pi * 250, rel=1e-13)
+    holed = (Box(20, 20, 10) - Cylinder(3, 20)).scale((1.5, 1, 1))
+    assert sorted(f.geom_type for f in holed.faces()) == ["extrusion"] + ["plane"] * 6
+    assert holed.volume == approx(1.5 * (4000 - math.pi * 90), rel=1e-13)
+    # STEP files get the analytic surfaces
+    export_step(tall, tmp_path / "tall.step")
+    text = (tmp_path / "tall.step").read_text()
+    assert "CYLINDRICAL_SURFACE" in text and "B_SPLINE_SURFACE" not in text
+    assert import_step(tmp_path / "tall.step").volume == approx(math.pi * 500, rel=1e-13)
+    # a body with nothing to recognize is left as it is
+    plain = Box(1, 1, 1)
+    assert ext.recognize_analytics(plain._brep, 1e-9) is None
+    ellipsoid = Sphere(5).scale((2, 1, 1))            # no analytic surface: a B-spline, as before
+    assert [f.geom_type for f in ellipsoid.faces()] == ["bspline"]
+    assert ellipsoid.volume == approx(4 / 3 * math.pi * 250, rel=1e-12)
+
+
+# -- T7: shells, cavities and the cells a face bounds ---------------------------------------
+def test_shells_voids_and_the_cells_of_faces():
+    hollow = Box(20, 20, 20) - Box(6, 6, 6)
+    assert hollow.info()["solids"] == 1 and hollow.info()["voids"] == 1
+    outside, wall = hollow.shells()
+    assert isinstance(wall, Shell) and len(outside.faces()) == 6 and wall.area == approx(216)
+    assert len(wall.edges()) == 12 and len(outside.edges()) == 12          # joined: closed sheets
+    assert [v.volume for v in hollow.voids()] == [approx(216)]
+    assert hollow.volume + sum(v.volume for v in hollow.voids()) == approx(8000)
+    walls = hollow.faces().derived_from(wall)              # the cavity's faces of the part itself
+    assert len(walls) == 6 and all(f.owner is hollow for f in walls)
+    assert {f.cells for f in hollow.faces()} == {(0,)}
+    # a body floating in the cavity: two solids, the cavity less the body
+    caged = (Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)
+    assert caged.info()["solids"] == 2 == len(caged.solids()) and caged.info()["voids"] == 1
+    assert [v.volume for v in caged.voids()] == [approx(936)] and len(caged.shells()) == 3
+    nested = Sphere(10) - Sphere(8) + Sphere(5) - Sphere(3)
+    assert sorted(round(v.volume, 6) for v in nested.voids()) == [approx(4 / 3 * math.pi * 27), approx(4 / 3 * math.pi * (512 - 125))]
+    assert nested.info()["solids"] == 2
+    # the faces between two cells of a merged part
+    m = merge(Box(40, 40, 20), Cylinder(6, 30))
+    shared = m.faces().shared()
+    assert sorted(f.geom_type for f in shared) == ["cylinder", "plane", "plane"]
+    assert sorted(f.cells for f in shared) == [(0, 1), (1, 2), (1, 3)] and len(m.cells()) == 4
+    assert m.info()["solids"] == 1 and m.info()["voids"] == 0 and len(m.shells()) == 1
+    assert (Box(10, 10, 10) + Box(10, 10, 10).translate(30, 0, 0)).info()["solids"] == 2
+    assert Box(10, 10, 10).voids() == [] and Box(10, 10, 10).faces()[0].to_shell().faces()[0].cells == ()
+    with pytest.raises(TypeError, match="shared selects faces"):
+        m.edges().shared()
+    assert "solids" not in Rectangle(4, 4).info()
+
+
+# -- T8: named() and colored() share the Brep ---------------------------------------------
+def test_named_and_colored_share_the_brep_not_the_identity():
+    part = Box(40, 30, 20) - Cylinder(5, 50)
+    volume = part.volume
+    named = part.named("block").colored("red")
+    assert named._h is part._h and named._h.props is part._h.props       # no copy, measures kept
+    assert named.volume == volume and named.name == "block" and part.name is None and part.color is None
+    assert named != part and len({named, part}) == 2 and named not in ShapeList([part])
+    assert len(ShapeList([part, named]) - [part]) == 1
+    assert named.faces()[0] == part.faces()[0]                          # the same kernel faces
+    assert named.fillet(part.edges().top(), 1).is_valid()
+    # a sketch keeps its plane
+    s = Rectangle(10, 4).on(Plane.XZ).named("r")
+    assert s.plane.z_dir == Plane.XZ.z_dir and s._h is not None

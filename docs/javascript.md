@@ -392,6 +392,7 @@ export class ShapeList<T = Shape> extends Array<T> {
     newSince(since: unknown): ShapeList<T>;
     derivedFrom(...shapes: unknown[]): ShapeList<T>;
     joining(a: unknown, b: unknown): ShapeList<T>;
+    shared(): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;
     difference(other: Iterable<T>): ShapeList<T>;
     intersection(other: Iterable<T>): ShapeList<T>;
@@ -485,6 +486,9 @@ export class Wire extends Shape {
 export class Face extends Shape {
     constructor(owner: _Body | null, kface: number);
     get owner(): _Body | null;
+    get color(): [number, number, number] | null;
+    get name(): string | null;
+    get cells(): number[];
     get geomType(): string;
     get area(): number;
     center(): Vector;
@@ -546,6 +550,20 @@ export class Part extends _Body {
         strict?: boolean;
     }): boolean;
     solids(): ShapeList<Part>;
+    shells(): ShapeList<Shell>;
+    voids(): ShapeList<Part>;
+    info(): {
+        type: string;
+        faces: number;
+        edges: number;
+        vertices: number;
+        bbox: [
+            number[],
+            number[]
+        ];
+        solids: number;
+        voids: number;
+    };
     merge(...others: unknown[]): Part;
     get sources(): Part[];
     cells(): ShapeList<Part>;

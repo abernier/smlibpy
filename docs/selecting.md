@@ -159,6 +159,38 @@ rims = (block - hole).edges().joining(block, hole)   # the 4 pieces of the two r
 Either side can be a list of bodies (`joining(plate, holes)`). Edges where coplanar faces of the
 two bodies merged into one face are not taken: they lie on one surface only.
 
+## Shells, cavities and cells
+
+`part.shells()` gives the closed sheets that bound a part, each a `Shell` of copies of its faces:
+first the outside of each solid, then the wall of each cavity. `part.voids()` gives the cavities as
+parts, and `info()` counts solids and voids. To select a cavity's faces on the part itself, take
+those that descend from its shell:
+
+```python
+hollow = Box(20, 20, 20) - Box(6, 6, 6)
+print(hollow.info()["solids"], hollow.info()["voids"])          # 1 1
+outside, cavity = hollow.shells()
+walls = hollow.faces().derived_from(cavity)                     # the 6 faces of the cavity
+print(len(walls), round(hollow.voids()[0].volume, 6))           # 6 216.0
+```
+
+The faces of a merged part (see `merge`) bound one cell or two: `face.cells` gives the indices of
+the cells (into `part.cells()`), and `shared()` selects the faces between two cells, where two
+materials meet:
+
+```python
+block = merge(Box(40, 40, 20), Cylinder(6, 30))
+interfaces = block.faces().shared()               # the insert's wall and two discs
+print(len(interfaces), sorted(f.cells for f in interfaces))     # 3 [(0, 1), (1, 2), (1, 3)]
+```
+
+## Colors and names of faces
+
+Faces given a color or a name (`colored(color, faces=...)`, `named(name, faces=...)`, or read from
+a STEP file) keep it through later operations, so a selection can go by it:
+`part.faces().filter_by(lambda f: f.name == "seal")`, `part.faces().filter_by(lambda f: f.color is
+not None)`. See Files for how they are written.
+
 ## Seams
 
 Closed surfaces such as cylinders have a seam where the surface meets itself. Seams are

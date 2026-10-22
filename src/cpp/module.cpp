@@ -98,5 +98,8 @@ PYBIND11_MODULE(_core, m)
     bind_history(m.attr("ext").cast<py::module_>());
     bind_check(m.attr("ext").cast<py::module_>());
     bind_slice(m.attr("ext").cast<py::module_>());
+    bind_face_attrs(m.attr("ext").cast<py::module_>());
+    bind_analytics(m.attr("ext").cast<py::module_>());
+    bind_shells(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
 }

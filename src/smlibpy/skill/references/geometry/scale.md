@@ -13,13 +13,16 @@ factor); areas of sketches by `sx * sy`.
 ## Behavior
 - Uniform scaling keeps the face types: a scaled cylinder is still a `cylinder` face with the
   new radius, and its edges are still circles.
-- Per-axis scaling converts **every** face and edge to NURBS (`bspline`), flat ones too: a
-  `Cylinder(5, 10).scale((2, 1, 1))` is a valid elliptic cylinder, and even
-  `Box(10, 10, 10).scale((2, 1, 1))` has only bspline faces. Flat faces and straight edges
-  still count (`.planar()`, `.lines()`, `parallel_to`, `.on(face)` work), but `.cylinders()`
-  and `.circles()` find nothing and `face.radius` raises. Booleans on the result work. Build
-  the final size directly (a `Box(20, 10, 10)`, an `Ellipse` extruded) when you need to keep
-  working on curved faces.
+- Per-axis scaling makes the kernel turn every face and edge into NURBS; smlibpy then has the
+  kernel recognize the analytic ones again (as when it reads a file): planes and straight edges
+  stay `plane` and `line` (`Box(10, 10, 10).scale((2, 1, 1))` has six planes), a cylinder or cone
+  scaled along its axis stays a `cylinder` (`.cylinders()`, `face.radius` work) or `cone`, a
+  sphere or torus stretched along its axis becomes a surface of revolution (`revolution`), an
+  elliptic cylinder (`Cylinder(5, 10).scale((2, 1, 1))`) a surface of extrusion (`extrusion`).
+  The circular rims of a scaled cylinder stay `bspline` edges (`.circles()` finds none of them),
+  and a sphere stretched across its axis (an ellipsoid) stays `bspline`. Volumes are exact
+  (`Cylinder(5, 10).scale((1, 1, 2)).volume` is pi * 25 * 20) and STEP files get the analytic
+  surfaces. Booleans on the result work.
 - A sketch scales together with its plane origin: a sketch at z = 10 scaled by 2 about the
   origin ends up at z = 20.
 - Not available on `ShapeList`; scale each member.
@@ -41,7 +44,9 @@ print(big.bbox(), mid.bbox(), big.volume / cube.volume)   # volume x8
 
 oval = Cylinder(5, 10).scale((2, 1, 1))          # elliptic cylinder, 20 x 10 x 10
 print(oval.bbox().size, round(oval.volume, 2), oval.is_valid())
-print(sorted({f.geom_type for f in oval.faces()}))   # ['bspline']: no longer a cylinder
+print(sorted({f.geom_type for f in oval.faces()}))   # ['extrusion', 'plane']: no longer a cylinder
+tall = Cylinder(5, 10).scale((1, 1, 2))          # scaled along its axis: still a cylinder
+print(tall.faces().cylinders()[0].radius, round(tall.volume, 6))   # 5.0 1570.796327
 
 inch = 25.4
 part_in_mm = Box(2, 1, 0.5).scale(inch)          # a model drawn in inches

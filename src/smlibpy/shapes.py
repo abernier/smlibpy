@@ -568,6 +568,15 @@ class ShapeList(list[T]):
                 out.append(e)  # type: ignore[arg-type]
         return out
 
+    def shared(self) -> ShapeList[T]:
+        """The faces that lie between two cells of a merged part (see :meth:`Part.merge`): where two
+        materials meet, the faces a simulation mesh must match across or a contact condition goes
+        on. ``merge(block, insert).faces().shared()``; :attr:`Face.cells` says which two cells."""
+        faces = [s for s in self if isinstance(s, Face)]
+        if len(faces) != len(self):
+            raise TypeError(f"shared selects faces, not a {type(next(s for s in self if not isinstance(s, Face))).__name__}")
+        return ShapeList(f for f in faces if len(f.cells) > 1)  # type: ignore[misc]
+
     # -- set operations and expansion ----------------------------------------
     def __add__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
         return ShapeList(list.__add__(self, list(other)))
@@ -726,6 +735,40 @@ def _topology_tags(body: _Body) -> tuple[list[list[int]], list[list[int]]]:
     if h.tags is None:
         h.tags = ext.topology_tags(h.brep)
     return h.tags
+
+
+def _shells_of(body: _Body) -> tuple[list[dict[str, Any]], list[tuple[int, ...]]]:
+    """A body's shells (``ext.brep_shells``) and the cells each face bounds (as ``Part.cells`` counts
+    them), read once (kernel plan T7)."""
+    h = body._h
+    if h.shells is None:
+        shells = ext.brep_shells(h.brep)
+        cells: list[set[int]] = [set() for _ in range(h.brep.face_count())]
+        for s in shells:
+            if s["kind"] == "cell":
+                for f in s["faces"]:
+                    cells[f].add(s["cell"])
+        h.shells = (shells, [tuple(sorted(c)) for c in cells])
+    return h.shells
+
+
+def _put_face_attrs(brep: Any, colors: Sequence[Any], names: Sequence[Any]) -> None:
+    """Colors and names (``ext.face_attrs`` of the same body, read back from a file, or from a STEP
+    file's faces) on the faces of a Brep in its order; nothing where the counts differ."""
+    faces = brep.faces()
+    if len(faces) != len(colors) or len(faces) != len(names):
+        return
+    pick = [i for i, c in enumerate(colors) if c is not None and len(c) == 3]
+    if pick:
+        ext.set_face_colors(brep, [faces[i] for i in pick], [[float(x) for x in colors[i]] for i in pick])
+    pick = [i for i, n in enumerate(names) if n]
+    if pick:
+        ext.set_face_names(brep, [faces[i] for i in pick], [str(names[i]) for i in pick])
+
+
+def _face_cells(body: _Body) -> list[tuple[int, ...]]:
+    """Per face of a body, the cells it bounds (``Face.cells``)."""
+    return _shells_of(body)[1]
 
 
 def _item_tags(items: Sequence[Any], what: str) -> list[frozenset[int]]:
@@ -1531,6 +1574,34 @@ class Face(Shape):
         """The body this face belongs to."""
         return self._owner
 
+    @property
+    def color(self) -> tuple[float, float, float] | None:
+        """The face's own color as ``(r, g, b)`` from 0 to 1, or None: then it shows in its body's color.
+
+        Faces get one with ``body.colored(color, faces=...)`` and from STEP files that color single
+        faces. It stays with the face through later operations (kernel plan T5): with both pieces of a
+        face a Boolean splits, with the walls of a hole cut by a tool whose faces have one, with a
+        face moved, mirrored or scaled, with the offsets of a face in a shell; faces an operation
+        makes anew (a fillet's round, the rim around a shell's opening) have none.
+        """
+        color, _ = ext.face_attr(self._f)
+        return None if color is None else (float(color[0]), float(color[1]), float(color[2]))
+
+    @property
+    def name(self) -> str | None:
+        """The face's name (``body.named(name, faces=...)``, or from the ``ADVANCED_FACE`` of a STEP
+        file), or None. It stays with the face as :attr:`color` does."""
+        _, name = ext.face_attr(self._f)
+        return name
+
+    @property
+    def cells(self) -> tuple[int, ...]:
+        """The cells of its part that this face bounds, as indices into :meth:`Part.cells`: one for a
+        face on the outside or on the wall of a cavity, two for a face between two cells of a merged
+        part (see :meth:`ShapeList.shared`), ``()`` for a face of a sheet or a sketch."""
+        own = ext.face_indices(self._owner._brep, [self._f])[0]
+        return _face_cells(self._owner)[own] if own >= 0 else ()
+
     # -- geometry -------------------------------------------------------------
     def _surface_info(self) -> dict[str, Any]:
         if self._info is None:
@@ -1762,18 +1833,74 @@ class _Body(Shape):
         """A body of the same type and metadata around ``brep``."""
         return type(self)._wrap(brep, name=self.name, color=self.color)
 
-    # -- metadata (returns copies; shapes are immutable) ----------------------
-    def named(self, name: str) -> Any:
-        """The same body with a name (used by exporters and the viewer)."""
-        b = self._like(self._copy_brep())
+    def _shared(self) -> Any:
+        """A body of the same type and metadata around the same Brep, which is not copied: its faces,
+        edges and the measures cached of it are this body's (kernel plan T8). It is a shape of its
+        own all the same: not equal to this one, and a member of sets and selections apart from it."""
+        b = type(self).__new__(type(self))
+        for cls in type(self).__mro__:
+            slots = cls.__dict__.get("__slots__", ())
+            for s in (slots,) if isinstance(slots, str) else slots:
+                if s != "__weakref__" and hasattr(self, s):
+                    setattr(b, s, getattr(self, s))
+        return b
+
+    def _with_face_attrs(self, what: str, faces: Any, colors: Any = None, names: Any = None) -> Any:
+        """A copy whose selected faces (as :meth:`Part._own_faces` takes them) get ``colors`` and
+        ``names`` (``ext.set_face_colors``, ``ext.set_face_names``: one for all, ``[]`` or ``""`` to
+        take them off; None leaves them as they are)."""
+        own = Part._own_faces(self, faces)  # type: ignore[arg-type]
+        if not own:
+            raise ValueError(f"{what}: no faces selected")
+        copy, mapped, _, _ = ext.copy_with_map(self._brep, own, [], [])
+        h = BrepHandle(copy)
+        with kernel_call(what):
+            if colors is not None:
+                ext.set_face_colors(h.brep, mapped, colors)
+            if names is not None:
+                ext.set_face_names(h.brep, mapped, names)
+        b = self._like(_take(h))
+        # (the same body but for the attributes: what was found or measured of it holds)
+        b._h.sound, b._h.props, b._h.tags, b._h.shells = self._h.sound, self._h.props, self._h.tags, self._h.shells
         _same_sources(self._h, b._h)
+        return b
+
+    # -- metadata (returns new shapes; shapes are immutable) ------------------
+    def named(self, name: str | None, *, faces: Any = None) -> Any:
+        """The same body with a name (used by exporters and the viewer).
+
+        With ``faces`` (faces of this body, or of an earlier version of it: as :meth:`Part.fillet`
+        takes edges), the body keeps its own name and those faces get this one (:attr:`Face.name`,
+        ``None`` takes it off): it stays with the faces and their pieces through later operations,
+        and STEP files write it on the face. ``part.faces().filter_by(lambda f: f.name == "seal")``
+        finds them again.
+        """
+        if faces is not None:
+            if name is not None and not isinstance(name, str):
+                raise TypeError(f"named: a name is a string, not a {type(name).__name__}")
+            return self._with_face_attrs("named", faces, names=[name or ""])
+        b = self._shared()
         b.name = name
         return b
 
-    def colored(self, color: str | Sequence[float]) -> Any:
-        """The same body with a display color (``"steelblue"``, ``"#4682b4"`` or ``(r, g, b)``)."""
-        b = self._like(self._copy_brep())
-        _same_sources(self._h, b._h)
+    def colored(self, color: str | Sequence[float] | None, *, faces: Any = None) -> Any:
+        """The same body with a display color (``"steelblue"``, ``"#4682b4"`` or ``(r, g, b)``).
+
+        With ``faces`` (faces of this body, or of an earlier version of it), the body keeps its own
+        color and those faces get this one (:attr:`Face.color`; ``None`` takes it off): it stays with
+        the faces through later operations (the walls of a hole keep the color of the tool's faces),
+        and STEP, glTF and USD files and pictures show it on them::
+
+            tool = Cylinder(5, 20)
+            plate = Box(60, 40, 8) - tool.colored("red", faces=tool.faces())
+            plate = plate.colored("steelblue", faces=plate.faces().top())
+        """
+        if faces is not None:
+            from .colors import to_rgb
+
+            rgb = [] if color is None else [float(c) for c in to_rgb(color)]
+            return self._with_face_attrs("colored", faces, colors=[rgb])
+        b = self._shared()
         b.color = color
         return b
 
@@ -1880,6 +2007,16 @@ class _Body(Shape):
         h = BrepHandle(self._copy_brep())  # freed if the kernel fails
         with kernel_call("transform"):
             ext.transform_brep(h.brep, list(m.T.ravel()))
+        if not _similarity(m):
+            # A scale that differs between the axes (or a shear) makes every face and edge a
+            # B-spline: the kernel's recognition gives back the planes, cylinders, cones, surfaces of
+            # revolution and lines, before anything measures the copy (a measure stores refitted
+            # trim curves in it, which kept a 6.8e-7 volume error) (kernel plan T6).
+            size = self._loose_box().diagonal * float(np.linalg.norm(m[:3, :3]))
+            with kernel_call("transform"):
+                recognized = ext.recognize_analytics(h.brep, 1e-9 * max(1.0, size))
+            if recognized is not None:
+                h = BrepHandle(recognized)
         # A moved copy is a shape of its own: its faces and edges descend from none of the
         # original's (copies in a pattern can be told apart; a selection of the original is
         # not taken for the copy's).
@@ -1948,12 +2085,13 @@ class _Body(Shape):
                         r["test"], shape(r["other_kind"], r["other_index"])) for r in reports]
 
     def _identity(self) -> Any:
-        return ("b", id(self._h))
+        # (each body: a renamed or recolored one shares its Brep, kernel plan T8)
+        return ("b", id(self))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _Body):
             return NotImplemented
-        return self._h is other._h
+        return self is other
 
     def __hash__(self) -> int:
         return hash(self._identity())
@@ -2795,6 +2933,63 @@ class Part(_Body):
         out: ShapeList[Part] = ShapeList()
         for b in parts:
             out.extend(_islands(Part._wrap(b, name=self.name, color=self.color)))
+        return out
+
+    def shells(self) -> ShapeList[Shell]:
+        """The closed sheets that bound the part, each a :class:`Shell` of copies of its faces
+        (joined along their edges): first the outside of each solid, then the wall of each cavity
+        (and the outside of a body that floats in one). For a part with a cavity, ``shells()[1]``
+        is the cavity's wall: the faces to check the wall thickness on or to put a boundary
+        condition on, which ``part.faces().derived_from(part.shells()[1])`` selects on the part
+        itself. Faces between two cells of a merged part bound no space around it and lie in no
+        shell (see :meth:`ShapeList.shared`)."""
+        shells, _ = _shells_of(self)
+        order = [s for s in shells if s["kind"] == "outside"] + [s for s in shells if s["kind"] == "void"]
+        kfaces = self._brep.faces()
+        out: ShapeList[Shell] = ShapeList()
+        for s in order:
+            with kernel_call("shells"):
+                h = BrepHandle(ext.copy_faces(self._brep, [kfaces[i] for i in s["faces"]]))
+                k.stitch_into_shell(h.brep)  # (the copies' edges joined again)
+            out.append(Shell._wrap(_take(h)))
+        return out
+
+    def voids(self) -> ShapeList[Part]:
+        """The cavities of the part (closed spaces inside it, kernel plan T7), each a part of its own:
+        the space inside a cavity's wall, less a body that floats in it. With them the part fills
+        its outside: ``part.volume + sum(v.volume for v in part.voids())``. Empty for a part without
+        cavities. ``info()`` counts them."""
+        with kernel_call("voids"):
+            regions = ext.void_shells(self._brep)
+        solids = [[Part._wrap(b) for b in shells] for shells in regions]
+        out: ShapeList[Part] = ShapeList()
+        for wall, *inside in solids:
+            cavity = wall.cut(inside) if inside else wall
+            problem = cavity._solid_problem()
+            if problem is not None:
+                raise ModelingError(f"voids: a cavity came out as a body that is {problem}")
+            out.append(cavity)
+        return out
+
+    def info(self) -> dict[str, Any]:
+        """Counts and measures in one dictionary: as for every body, and ``solids`` (how many
+        :meth:`solids`) and ``voids`` (how many cavities, :meth:`voids`)."""
+        out = super().info()
+        shells, faces = _shells_of(self)
+        cells = {s["cell"] for s in shells if s["kind"] == "cell"}
+        root = {c: c for c in cells}
+
+        def find(c: int) -> int:
+            while root[c] != c:
+                root[c] = root[root[c]]
+                c = root[c]
+            return c
+
+        for between in faces:  # cells that share a face are one solid
+            for c in between[1:]:
+                root[find(c)] = find(between[0])
+        out["solids"] = len({find(c) for c in cells})
+        out["voids"] = len({s["region"] for s in shells if s["kind"] == "void"})
         return out
 
     def merge(self, *others: Part | Sequence[Part]) -> Part:

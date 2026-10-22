@@ -547,6 +547,52 @@ export function faceMeshes(shape: _Body | ShapeList<Shape>, tolerance: number | 
   }
 }
 
+/** `tessellate`, and where faces of a body have colors of their own (`Face.color`, kernel plan T5),
+ * per triangle the color of its face (r, g, b from 0 to 1, NaN for a face without one); null where no
+ * face has one. */
+export function _coloredMesh(shape: Shape, tolerance: number | null = null, angle = 15): [Mesh, Float64Array | null] {
+  if (!(shape instanceof _Body) || (ext.face_attrs(shape._brep)[0] as unknown[]).every((c) => c === null)) {
+    return [tessellate(shape, tolerance, angle), null]
+  }
+  const mesh = _tessellate(shape, tolerance, angle, true)
+  try {
+    return [mesh, _triangleColors(shape, mesh)]
+  } finally {
+    mesh.dispose()
+  }
+}
+
+/** Per triangle of a body's mesh that keeps its tessellation, the own color of its face (NaN for a
+ * face without one, three numbers per triangle); null where no face has one. */
+export function _triangleColors(shape: _Body, mesh: Mesh): Float64Array | null {
+  const [colors] = ext.face_attrs(shape._brep) as [(number[] | null)[], unknown]
+  if (colors.every((c) => c === null)) return null
+  const owner = _triangleFaces(shape, mesh)
+  const out = new Float64Array(owner.length * 3).fill(Number.NaN)
+  owner.forEach((fi, i) => {
+    const c = colors[fi]
+    if (c) for (let d = 0; d < 3; d++) out[i * 3 + d] = Number(c[d])
+  })
+  return out
+}
+
+/** Per triangle of a body's mesh that keeps its tessellation (`_tessellate(..., keep)`), the index
+ * of its face in `shape.faces()`. */
+function _triangleFaces(shape: _Body, mesh: Mesh): number[] {
+  const poly = mesh._poly !== null ? mesh._poly.poly : 0
+  if (!poly) return []
+  const owners = ext.poly_face_indices(poly, shape._brep) as Int32Array
+  const polygons = k.poly_mesh(poly, false).faces as Int32Array
+  const sizes: number[] = []
+  for (let i = 0; i < polygons.length; i += sizes[sizes.length - 1] + 1) sizes.push(polygons[i])
+  const owner: number[] = []
+  owners.forEach((fi, i) => {
+    for (let n = Math.max((sizes.length === 1 ? sizes[0] : sizes[i]) - 2, 0); n > 0; n--) owner.push(fi)
+  })
+  if (owner.length !== mesh.triangles.length / 3) throw new ModelingError('tessellate: the mesh does not say which face each triangle belongs to')
+  return owner
+}
+
 function _faceMeshes(shape: _Body | ShapeList<Shape>, mesh: Mesh): Mesh[] {
   const poly = mesh._poly !== null ? mesh._poly.poly : 0
   const count = shape.faces().length

@@ -205,6 +205,9 @@ for cell in merge(steel, brass).cells():
 # steel gray 29738.1 / steel&brass gold 2261.9 / brass gold 565.5 / brass gold 565.5
 ```
 
+The faces between two cells are the merged part's `faces().shared()`; `face.cells` says which
+cells a face bounds (see Selecting).
+
 A merged part is no manifold solid (`is_valid()` is False): model the parts first and merge
 last, or work on the cells. Its `section()` has a region per cell. STEP writes each cell as a
 solid of its own, with the cell's name and color; USD keeps the merged body with its shared

@@ -146,6 +146,10 @@ class _BodyWriter:
         self.kedges = brep.edges()
         self.vertex_ids: dict[int, int] = {}
         self.edge_ids: dict[int, int] = {}
+        # the faces' own colors and names, and the ADVANCED_FACE items written for each face (a face
+        # between two cells of a merged part is written in each) (kernel plan T5)
+        self.face_colors, self.face_names = ext.face_attrs(brep)
+        self.face_items: dict[int, list[int]] = {}
 
     # -- geometry -------------------------------------------------------------
     def bspline_curve(self, c: dict[str, Any]) -> int:
@@ -287,7 +291,10 @@ class _BodyWriter:
             bound = w.add(f"{kind}('',#{lp},.T.)")
             bounds.append(f"#{bound}")
         same = self._same_sense(idx, use, normal_fn)
-        return w.add(f"ADVANCED_FACE('',({','.join(bounds)}),#{srf},{'.T.' if same else '.F.'})")
+        name = self.face_names[idx]
+        item = w.add(f"ADVANCED_FACE({_s(name)},({','.join(bounds)}),#{srf},{'.T.' if same else '.F.'})")
+        self.face_items.setdefault(idx, []).append(item)
+        return item
 
     def _same_sense(self, idx: int, use: dict[str, Any], normal_fn: Any) -> bool:
         # The faceuse normal is the kernel's natural normal when the faceuse is SAME.
@@ -451,6 +458,11 @@ def write_step(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
             styled += [(it, c) for it, c in zip(items, colors) if c is not None]
         elif rgb is not None:
             styled += [(it, rgb) for it in items]
+        # faces of their own color: a STYLED_ITEM of the face, over the body's
+        for fi, faces in sorted(bw.face_items.items()):
+            own = bw.face_colors[fi]
+            if own is not None:
+                styled += [(it, (float(own[0]), float(own[1]), float(own[2]))) for it in faces]
 
     reps = []
     if solid_items:

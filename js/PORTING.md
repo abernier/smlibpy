@@ -116,8 +116,10 @@ the Python code works around a kernel defect, so does the TypeScript.
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
   holds the copies of a Boolean's operands with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_offsetProblem` and
-  `_intersectionProblem` (their tests); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
-  rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
+  `_intersectionProblem` (their tests), `_putFaceAttrs` (defeature.ts and step_import.ts put the
+  faces' colors and names back on a body read from a file); `mesh.ts`: `_rayTriangles`,
+  `faceMeshes` (shapes.ts casts rays with them), `_tessellate` (render.ts), `_coloredMesh`,
+  `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
   (its test).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in

@@ -25,7 +25,7 @@ import numpy as np
 
 from ._kernel import ext, k, kernel_call
 from .colors import to_rgb
-from .mesh import Mesh, tessellate
+from .mesh import Mesh, _colored_mesh, tessellate
 
 __all__ = [
     "export",
@@ -273,8 +273,9 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         else:
             body = item.to_shell() if isinstance(item, Face) else item
             # a face is meshed itself, facing out of its part; its copy gives the edges
-            m = body if isinstance(body, Mesh) else tessellate(item, tolerance, angle)
-            color = getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
+            m, face_colors = (body, None) if isinstance(body, Mesh) else _colored_mesh(item, tolerance, angle)
+            own = item.color if isinstance(item, Face) else None
+            color = own or getattr(body, "color", None) or _DEFAULT_COLORS[color_index % len(_DEFAULT_COLORS)]
             color_index += 1
             pos = m.vertices[m.triangles].reshape(-1, 3).astype(np.float32)
             if m.normals is not None:
@@ -283,9 +284,12 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
                 nrm = np.repeat(m.triangle_normals, 3, axis=0).astype(np.float32)
             ln = np.linalg.norm(nrm, axis=1, keepdims=True)
             nrm = nrm / np.where(ln > 0, ln, 1)
-            prims.append({"attributes": {"POSITION": add_accessor(pos, "VEC3", 5126, 34962, True),
-                                         "NORMAL": add_accessor(nrm, "VEC3", 5126, 34962)},
-                          "material": material(color), "mode": 4})
+            # faces of their own color: a primitive per color, the others in the body's (kernel plan T5)
+            for rgb, sel in _color_groups(face_colors, len(m.triangles), to_rgb(color)):
+                corners = np.repeat(sel, 3)
+                prims.append({"attributes": {"POSITION": add_accessor(pos[corners], "VEC3", 5126, 34962, True),
+                                             "NORMAL": add_accessor(nrm[corners], "VEC3", 5126, 34962)},
+                              "material": material(rgb), "mode": 4})
             if edges and isinstance(body, _Body):
                 lines = _edge_polylines(body)
                 if lines:
@@ -307,6 +311,23 @@ def gltf_document_mixed(shapes: Any, *, tolerance: float | None = None, angle: f
         "buffers": [{"byteLength": len(buf)}],
     }
     return doc, bytes(buf), _summary(items)
+
+
+def _color_groups(colors: np.ndarray | None, count: int, default: Any) -> list[tuple[Any, np.ndarray]]:
+    """The triangles of a mesh by color: (color, mask of the triangles) for each color in ``colors``
+    (per triangle, NaN for the ``default``; None: all ``default``), in the order they first come."""
+    if colors is None:
+        return [(default, np.ones(count, dtype=bool))]
+    plain = np.isnan(colors).any(axis=1)
+    keys = np.round(np.where(plain[:, None], -1.0, colors), 6)
+    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    out = []
+    for group in np.argsort(first):
+        sel = inverse == group
+        t = int(first[group])
+        out.append((default if plain[t] else tuple(float(x) for x in colors[t]), sel))
+    return out
 
 
 def _summary(items: list[Any]) -> str:

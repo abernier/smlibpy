@@ -211,6 +211,11 @@ class _BodyWriter {
   kedges: number[]
   vertexIds = new Map<number, number>()
   edgeIds = new Map<number, number>()
+  // the faces' own colors and names, and the ADVANCED_FACE items written for each face (a face
+  // between two cells of a merged part is written in each) (kernel plan T5)
+  faceColors: (number[] | null)[]
+  faceNames: (string | null)[]
+  faceItems = new Map<number, number[]>()
 
   constructor(w: _Writer, brep: number) {
     this.w = w
@@ -222,6 +227,7 @@ class _BodyWriter {
     }
     this.kfaces = k.brep_faces(brep)
     this.kedges = k.brep_edges(brep)
+    ;[this.faceColors, this.faceNames] = ext.face_attrs(brep)
   }
 
   // -- geometry -----------------------------------------------------------------------------
@@ -400,7 +406,9 @@ class _BodyWriter {
       bounds.push(`#${bound}`)
     }
     const same = this._sameSense(idx, use, normalOf)
-    return w.add(`ADVANCED_FACE('',(${bounds.join(',')}),#${srf},${same ? '.T.' : '.F.'})`)
+    const item = w.add(`ADVANCED_FACE(${_s(this.faceNames[idx])},(${bounds.join(',')}),#${srf},${same ? '.T.' : '.F.'})`)
+    this.faceItems.set(idx, [...(this.faceItems.get(idx) ?? []), item])
+    return item
   }
 
   _sameSense(idx: number, use: Any, normalOf: NormalOf): boolean {
@@ -583,6 +591,11 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
         if (c !== null) styled.push([it, c])
       })
     } else if (rgb !== null) for (const it of items) styled.push([it, rgb])
+    // faces of their own color: a STYLED_ITEM of the face, over the body's
+    for (const fi of [...bw.faceItems.keys()].sort((a, b) => a - b)) {
+      const own = bw.faceColors[fi]
+      if (own !== null) for (const it of bw.faceItems.get(fi)!) styled.push([it, [Number(own[0]), Number(own[1]), Number(own[2])]])
+    }
   })
 
   const reps: number[] = []

@@ -23,6 +23,8 @@ struct UsdItem
     std::vector<double> points;     // a mesh to write next to the body: x, y, z per point
     std::vector<long> triangles;    // and three point indices per triangle (counterclockwise from outside)
     std::vector<double> normals;    // and a normal per triangle corner (x, y, z), or nothing (computed)
+    std::vector<double> face_colors;  // and r, g, b per triangle (the colors of the body's faces, kernel
+                                      // plan T5), or nothing: `color` for all
 };
 
 // The .usda text of a stage: under /World, a BrepArray prim per item with a body (the exact B-rep),

@@ -55,6 +55,8 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   Triangle: [2, ['apex', 'fillet', 'chamfer', 'rotation', 'align']],
   Wedge: [4, ['align']],
   Wire: [1, ['sort']],
+  '_Body.colored': [1, ['faces']],
+  '_Body.named': [1, ['faces']],
   bend: [2, ['radius', 'plane', 'start', 'end', 'tolerance']],
   bendAllowance: [1, ['radius', 'thickness', 'kFactor']],
   bendDeduction: [1, ['radius', 'thickness', 'kFactor']],

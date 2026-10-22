@@ -1,4 +1,4 @@
-# Lane BT: Booleans along seams and beside earlier holes (B6, B4, B10); empty results, sheets, imprints, history and checks (B13, B12, B14, T3, T4); cells, solids, joints, sections and error hints (B15, B16, B17, B18, B19)
+# Lane BT: Booleans along seams and beside earlier holes (B6, B4, B10); empty results, sheets, imprints, history and checks (B13, B12, B14, T3, T4); cells, solids, joints, sections and error hints (B15, B16, B17, B18, B19); face colors and names, analytic faces after scales, shells and cavities, shared Breps (T5, T6, T7, T8)
 
 Everything applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked "native" or
 "wasm". The seam logic is C++ in `src/cpp/seams.cpp`, called from `ext.boolean`, so both builds run
@@ -140,6 +140,27 @@ report, in the kernel's fillet executive, fillet-7-185, is older and outside thi
   exceeds a little: 0.0356 for 0.0346). The ball in its own cavity, `Sphere(5) & (Box(20, 20, 20)
   - Sphere(5))`, raised "the kernel returned a result that is empty" and is the empty part now.
 
+- A body scaled differently along its axes keeps its planes, cylinders and lines (T6): every face
+  and edge came out a B-spline (`Box(10, 10, 10).scale((2, 1, 1))`: six `bspline` faces), so
+  `cylinders()` found nothing, `radius` raised and STEP files got B-splines; and the first measure
+  stored refitted trim curves in the Brep, which kept the volume of `Cylinder(5, 10).scale((1, 1,
+  2))` at 1570.795256 (exact 1570.796327, -6.8e-7, with no warning). The kernel recognizes the
+  analytic surfaces again (as it does for every `.smb` file it reads) right after the transform,
+  before anything measures the copy, and smlibpy keeps the recognized copy only where every face and
+  edge lies within 1e-9 of the body's size of the old one (sampled) and the counts are the same:
+  the box has six planes and twelve lines (2000 exactly), the cylinder is a `cylinder` of radius 5
+  again with volume pi * 500 to the last digit, an elliptic cylinder a surface of extrusion, a sphere
+  stretched along its axis a surface of revolution (exact volumes); STEP files get
+  `CYLINDRICAL_SURFACE` and `PLANE`. In the WebAssembly build the same (the cylinder's volume
+  2.3e-13 off).
+- STEP files that color single faces (a `STYLED_ITEM` or `OVER_RIDING_STYLED_ITEM` of an
+  `ADVANCED_FACE`, as SolidWorks, NX and OpenCASCADE write them) are read with those colors (T5): the
+  reader collected them and used only the solid's. A face's name (`ADVANCED_FACE('name', ...)`) is
+  read too.
+- `named()` and `colored()` no longer copy the Brep (T8): on a plate with 40 rounded holes (86
+  faces) `named()` took 0.79 ms and the next `volume` 51.3 ms (the cached measures were lost); now
+  0.01 ms and 0.00 ms.
+
 ## New
 
 - `smlibpy._core.ext.seam_contacts(a, b, tolerance=0.0)` (smlibwasm: `ext.seam_contacts`):
@@ -213,6 +234,36 @@ The new C++ (the tag attributes above all, which the kernel copies, splits, merg
 with the faces and edges) was run under AddressSanitizer over the whole Python suite (in-process
 for the lane, surface and modeling tests, `GUARD_SECONDS = 0`): no report from it; one older
 kernel defect, listed under Not done, showed up in a guard test.
+
+- Colors and names of single faces (T5): `body.colored(color, faces=...)` and `body.named(name,
+  faces=...)` (smlibwasm: `colored(color, { faces })`, `named(name, { faces })`) give the selected
+  faces a color or a name (None takes it off; the body keeps its own); `Face.color` (`(r, g, b)`
+  from 0 to 1, or None) and `Face.name` read them. They are kernel attributes (the kernel's
+  `SM_AI_COLOR` with `SmColorAttribute`, and a name attribute), which the kernel carries through its
+  operations: both pieces of a face a cut splits keep them, the walls of a hole keep the color of
+  the tool's faces (`Box(60, 40, 8) - Cylinder(5, 20).colored("red", faces=...)`), fillets and
+  chamfers keep the faces' (the rounds have none), offsets and shells give the offset faces the
+  color of the faces they come from, and moves, mirrors, scales, patterns, `split`, `imprint`,
+  `cells()`, `solids()`, `heal()`, `to_nurbs()` and the deforms keep them; smlibpy carries them
+  across its forked kernel steps (smlibwasm: its probe worker) with the faces' tags. `export_step`
+  writes a `STYLED_ITEM` per colored `ADVANCED_FACE` and the face's name (OpenCASCADE reads the
+  colors back on the faces), `import_step` reads both; glTF files and the viewer get a primitive
+  per color, USD meshes a color per triangle (`primvars:displayColor`, interpolation `uniform`),
+  and `render` / snapshots show the faces in their colors (also cut by a section). `check()` sees
+  nothing of the attributes.
+- Shells, cavities and the cells a face bounds (T7): `Part.shells()` (the closed sheets that bound
+  the part, each a `Shell` of its faces' copies joined along their edges: the outside of each
+  solid, then each cavity's wall), `Part.voids()` (the cavities as parts: `Box(20, 20, 20) - Box(6,
+  6, 6)` has one of 216), `Face.cells` (the indices into `cells()` of the cells a face bounds: one,
+  or two for a face between two cells of a merged part), `ShapeList.shared()` (those faces: the
+  insert's wall and two discs of `merge(Box(40, 40, 20), Cylinder(6, 30))`), and `"solids"` and
+  `"voids"` in `Part.info()`. `part.faces().derived_from(part.shells()[1])` selects a cavity's
+  faces on the part itself. smlibwasm: the same names (`Face.cells` an array).
+- `smlibpy._core.ext` (smlibwasm `ext`): `set_face_colors(brep, faces, colors)`,
+  `set_face_names(brep, faces, names)`, `face_attr(face)`, `face_attrs(brep)`
+  (src/cpp/face_attrs.cpp); `recognize_analytics(brep, tolerance)` (analytics.cpp);
+  `brep_shells(brep)` (shells.cpp), `void_shells(brep)` (cells.cpp); `usd_text` items take a
+  seventh element, a color per triangle. Internal, for smlibpy and its tests.
 
 ## Behaviour changes
 
@@ -350,6 +401,59 @@ kernel defect, listed under Not done, showed up in a guard test.
   its own cavity is accepted as empty (it raised), and such checks cost the classification of up
   to 4000 points (0.03 to 0.2 s) rather than two mesh Booleans.
 
+- A body scaled differently along its axes (or sheared) has analytic faces and edges where they
+  are such (T6): `geom_type` reads `plane`, `cylinder`, `cone`, `revolution` or `extrusion` where it
+  read `bspline`, straight edges `line`; volumes change in the seventh digit (to the exact ones),
+  and STEP files hold analytic surfaces. Counts of faces, edges and vertices are the same. The
+  circular rims of a scaled cylinder stay `bspline` edges, an ellipsoid a `bspline` face. Scripts
+  that found the faces of a scaled body by `of_type("bspline")`:
+
+  ```python
+  tall = Cylinder(5, 10).scale((1, 1, 2))
+  # before: wall = tall.faces().of_type("bspline").filter_by(lambda f: not f.is_planar)
+  # after: the wall is a cylinder again
+  wall = tall.faces().cylinders()[0]              # radius 5.0
+  curved = tall.faces().filter_by(lambda f: not f.is_planar)   # works before and after
+  ```
+- `named()` and `colored()` return a body that shares the Brep of the original (T8): no copy, the
+  measures already made hold for both. Each is still a shape of its own (`a.named("x") == a` is
+  False, both stay in sets and selections), but faces and edges of one are faces and edges of the
+  other: `a.faces()[0] == a.named("x").faces()[0]` is now True (it was False), and `a.faces() |
+  a.named("x").faces()` has each face once. smlibwasm: `dispose()` of a renamed or recolored body
+  no longer frees the original's Brep, only lets go of it; the Brep is freed once no body holds it
+  (before, each had a copy of its own). A measure of one stores the kernel's refitted trims for both
+  (see `BrepHandle`), so a `.smb` file of `a` written after measuring `a.named("x")` can differ in
+  its bytes from one written before. To keep two independent bodies, copy explicitly:
+
+  ```python
+  a = Box(10, 10, 10)
+  b = a.named("b")                                # shares a's Brep
+  print(a.faces()[0] == b.faces()[0])             # True (before: False)
+  c = a.translate(0, 0, 0).named("c")             # a copy of its own, with new faces (as before)
+  ```
+- `Part.info()` has two more keys, `"solids"` and `"voids"` (T7): code that compares the whole
+  dictionary should pick the keys it wants:
+
+  ```python
+  info = part.info()
+  # before: assert info == {"type": "Part", "faces": 6, ...}
+  assert {k: info[k] for k in ("type", "faces", "edges", "vertices")} == {"type": "Part", "faces": 6, "edges": 12, "vertices": 8}
+  ```
+- STEP files with face colors (T5): `import_step` gives those faces a `color` (where the body's own
+  color, if the file has one, stays `part.color`); `export_step` of a body with face colors or
+  names writes more `STYLED_ITEM`s and the names on the `ADVANCED_FACE`s (files of bodies without
+  them are unchanged). glTF of such a body has a primitive per color instead of one, USD a
+  `displayColor` per triangle instead of a constant one. Code that read `doc["meshes"][0]
+  ["primitives"][0]` as the whole triangle mesh of a body with face colors should take every
+  primitive of mode 4:
+
+  ```python
+  doc, buf = gltf_document(part)
+  triangles = [p for p in doc["meshes"][0]["primitives"] if p["mode"] == 4]   # one per color
+  ```
+- The tags carried across forked kernel steps (`tags.json`, smlibwasm's probe-worker result and
+  job `tags`) also hold the faces' colors and names: a third element, `ext.face_attrs` of the body.
+
 ## Not done
 
 - Seams that cannot be turned away keep the old behaviour: the seam of an operand that is no body
@@ -425,3 +529,25 @@ kernel defect, listed under Not done, showed up in a guard test.
   runs of the suite with this batch (it passed alone 6 of 6): the layout-dependent read of freed
   memory in the extended offset listed above, in its raw kernel steps, which this batch does not
   touch.
+
+- T5: `.smb` files (`save`, and the kernel's `SmBrep::WriteToFile`) hold no face colors or names,
+  as they hold no body name or color (X9, another lane). USD's `BrepArray` prims (usd-brep's
+  schema) have no face colors: only the mesh prim carries them, and `import_usd` reads none. The
+  Buerligons live view of the MCP server (src/smlibpy/mcp/graphic.py) shows the body's color only:
+  its per-face meshes carry no material that its format is known to read. OBJ and STL hold no
+  colors. A face merged from two takes one color (the kernel's default merge), never both.
+- T6: the circular rims of a scaled cylinder stay B-spline edges (`ConvertCurvesToAnalytics` only
+  makes lines; the kernel has no circle recognition there), so `circles()` finds none of them;
+  spheres stretched across their axis (ellipsoids) and edges and wires scaled on their own stay
+  B-splines. STEP imports are not run through the recognition (the finding suggested it for
+  B-spline faces of files; the plan's item did not, and imported bodies keep what the file says).
+- Pre-existing, found while testing, outside this lane: a box with rounded top edges scaled by (1,
+  2, 1) has edge-to-face gaps of 1.78e-5 against a tolerance of 1e-5 (`check()` names four; on
+  origin/next too, before and after the recognition); and the kernel cannot round the inner edges
+  of a box-shaped cavity (`(Box(20, 20, 20) - Box(6, 6, 6)).fillet(<its 12 inner edges>, 0.5)`:
+  `SM_ERR`, on origin/next too).
+- AddressSanitizer reported nothing for the new C++ (the name attribute, the recognition, the
+  shells) over tests/test_lane_BT.py, test_io.py, test_step_import.py, test_render.py,
+  test_modeling.py and test_surfaces.py with every kernel step in the test process
+  (`GUARD_SECONDS = 0`); two tests that bound the memory a process grows by fail under it, as in
+  batch 2 (the sanitizer's quarantine keeps freed memory).

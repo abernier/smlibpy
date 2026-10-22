@@ -21,15 +21,17 @@ Every operation returns a new Part; the input is unchanged. Reassigning is the n
 | `bbox()` | BoundBox | tight; `.min`, `.max`, `.size` |
 | `is_valid()` | bool | closed manifold solid with a positive volume; see the gotchas |
 | `solids()` | ShapeList[Part] | the separate bodies (also one inside a cavity of another), each with the part's name and color |
-| `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox` |
+| `info()` | dict | `type`, `faces`, `edges`, `vertices` (kernel counts, seams included), `bbox`, `solids`, `voids` (cavities) |
 | `faces()`, `edges()`, `vertices()` | ShapeList | see `selection/*` |
 | `name`, `color` | None by default | set with `named()` / `colored()` |
 | `repr(part)` | `Part('plate', 10 faces, volume=18295.2)` | |
 
 ## Name and color
 
-`part.named("plate")` and `part.colored("steelblue")` return copies with metadata. Exporters
-(STEP, glTF) and the viewer use them. Colors: one of about 60 CSS names (`"red"`,
+`part.named("plate")` and `part.colored("steelblue")` return the part with that metadata (a new
+shape that shares the kernel body: no copy, its measures already known). Exporters (STEP, glTF)
+and the viewer use them. With `faces=...` they name or color single faces instead (see
+`files/face_colors`). Colors: one of about 60 CSS names (`"red"`,
 `"steelblue"`, `"gold"`, ...), `"#4682b4"`, `"#48b"`, or a tuple `(r, g, b)` in 0..1 (any value
 above 1 switches to 0..255).
 
