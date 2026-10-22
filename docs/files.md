@@ -9,6 +9,7 @@ control. All of them accept a single shape or a list.
 |---|---|---|
 | STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors; curves, points and coordinate systems |
 | USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
+| OpenCASCADE (`.brep`) | `export_brep` | exact B-rep for OpenCASCADE, build123d, CadQuery and FreeCAD; no names or colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those), one body |
 | SMLib part file (`.smp`) | `save` | the kernel's part container: exact bodies and curves with their names and colors |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
@@ -31,10 +32,10 @@ save([bracket, cover], "assembly.smp")   # both, with their names and colors
 ```
 
 Every writer and reader has a twin that works in memory, for web services, notebooks and
-databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_usd`, `to_smb` and
-`to_smp` give the file's contents (text as `str`, binary formats as `bytes`), `from_step`,
-`from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`, `from_iges`, `from_smb`
-and `from_smp` read them, with the keywords of the file functions:
+databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_usd`, `to_brep`,
+`to_smb` and `to_smp` give the file's contents (text as `str`, binary formats as `bytes`),
+`from_step`, `from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`, `from_brep`,
+`from_iges`, `from_smb` and `from_smp` read them, with the keywords of the file functions:
 
 ```python
 step = to_step(bracket)                  # the text export_step writes
@@ -122,6 +123,35 @@ nothing (a `ValueError`; meshes of it fail alike, where 0.4 said `tessellate fai
 export_usd([bracket, cover], "assembly_looks.usda", materials=True)
 ```
 
+### OpenCASCADE
+
+`export_brep` writes an OpenCASCADE `.brep` file (ASCII, as OpenCASCADE's `BRepTools::Write`
+writes it): the B-rep format of OpenCASCADE and of the tools built on it, which build123d
+(`import_brep`), CadQuery (`importBrep`), FreeCAD (`Part.read`) and OpenCASCADE itself read. It
+is written with the bridge of NVIDIA's usd-brep, compiled into smlibpy (OpenCASCADE is not
+needed). Faces keep their planes, cylinders, cones, spheres, tori and B-splines, edges their
+lines, circles, ellipses and B-splines, and every edge gets the curves in the parameters of its
+faces that OpenCASCADE requires, made from the exact geometry; surfaces of revolution and
+extrusion are written as the B-splines they are in the kernel.
+
+```python
+export_brep(bracket, "bracket.brep")                 # one solid
+export_brep([bracket, cover], "assembly.brep")       # a compound of two solids
+print(to_brep(bracket).splitlines()[2])              # CASCADE Topology V3, (c) Open Cascade
+```
+
+The file holds one shape: the solid (or shell) of a single body, or a compound of the bodies;
+a part of several solids gives one solid each, and a hollow one keeps its cavities. The format
+has no names, colors or units: OpenCASCADE tools model in millimeters, as smlibpy does (write
+STEP to keep names and colors). The writer was checked with OpenCASCADE 8.0
+(`BRepCheck_Analyzer`, `BRepGProp`) on the 585 bodies of more than 400 STEP files from other CAD
+systems: 583 are written, all valid for OpenCASCADE but one (a sheet that runs through itself
+in its STEP file already), 566 with OpenCASCADE's volume within 1e-5 of smlibpy's and the rest
+within 3.4e-4 (as far as smlibpy and OpenCASCADE measure the STEP file itself apart). The test
+suite checks the files it writes for the faults OpenCASCADE's check finds. A body whose edge lies
+farther from its face than 1e-3 of the body's size, or whose face boundary does not close, raises
+`KernelError` that names the face; meshes, curves and points raise `TypeError`.
+
 ### Meshes
 
 `tolerance` is the largest distance between mesh and true surface (default: 0.1 % of the
@@ -144,8 +174,8 @@ bracket = load("bracket.step")   # exact, from any CAD system
 print(bracket.name, bracket.volume)
 ```
 
-STEP, IGES (`.igs`, `.iges`), USD (`.usda`) and SMLib's own `.smb` and `.smp` files give exact
-parts (an `.smp` file its bodies with their names and colors, and its curves as edges and
+STEP, IGES (`.igs`, `.iges`), USD (`.usda`), OpenCASCADE (`.brep`) and SMLib's own `.smb` and
+`.smp` files give exact parts (an `.smp` file its bodies with their names and colors, and its curves as edges and
 wires), a DXF file the sketch of its outlines; an STL file gives a `Mesh` (`import_stl`).
 `import_usd` reads the `BrepArray` prims of a USD text file, from smlibpy, usd-brep or Omniverse,
 with their names and colors: the color of the material bound to a body (the `diffuseColor` of
@@ -275,6 +305,35 @@ it; `strict=True` raises instead. The importer is checked against OpenCASCADE on
 writes in both forms, in millimeters and inches, and on the IGES models FreeCAD ships. Not read:
 binary and compressed IGES, offset curves (130), ruled surfaces between circles or conics,
 wireframe and annotation entities; IGES is not written (write STEP).
+
+### OpenCASCADE
+
+`import_brep(path)` (and `load` of `.brep`) reads the files of OpenCASCADE, build123d
+(`export_brep`), CadQuery (`exportBrep`) and FreeCAD, ASCII (`BRepTools::Write`) and binary
+(`BinTools::Write`) alike. Each solid of the file's shape becomes a `Part` and each shell or face
+that belongs to no solid a `Shell`: one shape, or a `ShapeList` in the order of the file's
+compound, placed as the file places them. Faces and edges keep their exact geometry: planes,
+cylinders, cones, spheres, tori and B-splines come back as those, surfaces of extrusion and
+revolution, Bezier surfaces and offset geometry as B-splines. `from_brep(data)` reads the
+contents (`str` or `bytes`).
+
+```python
+back = import_brep("bracket.brep")
+print(round(back.volume, 3), len(back.edges().circles()))   # 18797.876 2
+both = load("assembly.brep")
+print(len(both), [round(p.volume) for p in both])           # 2 [18798, 4800]
+```
+
+Each body is checked by the kernel before anything measures it, as for USD: one whose faces,
+edges and vertices leave gaps of more than 1e-3 of its size raises `ValueError`, smaller gaps
+give a warning; `check=False` skips the check, `heal=True` runs the kernel's import healer.
+Wires, edges and vertices outside faces are not read (a warning says how many), and a file
+whose shape holds no faces raises `ValueError`, as does one that is no `.brep` file or is
+broken (the error names the shape). The importer is the bridge's: it reads usd-brep's test
+files, and of the solids written above it reads 553 of 557 back (99 % with the volume they were
+written with within 4e-6, all within 1e-4); the check refuses 4, whose edges the bridge rebuilds
+running backwards, and a body whose curves on faces lie far from its edges (a swept spring) can
+come back with gaps it refuses.
 
 ## DXF
 

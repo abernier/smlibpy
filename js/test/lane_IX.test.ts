@@ -74,6 +74,7 @@ import {
   toSmp,
   toStl,
 } from '../src/index.ts'
+import { Axis, Ellipse, exportBrep, extrude, fromBrep, importBrep, loft, toBrep } from '../src/index.ts'
 import { KernelError, ext, k } from '../src/kernel.ts'
 import { interpret, parse } from '../src/step_reader.ts'
 import { approx } from './_approx.ts'
@@ -1715,4 +1716,169 @@ test('writers of bodies name what they cannot write', () => {
   assert.throws(() => toStl([Box(1, 1, 1), vertex]), /toStl writes parts, sheets, faces and meshes, not a Vertex: exportStep writes points/)
   assert.throws(() => toObj(new Wire([edge])), /toObj writes parts, sheets, faces and meshes, not a Wire/)
   assert.throws(() => toUsd(new _Location()), /not a Location/)
+})
+
+
+// ------------------------------------------------------------------------------------------------
+// X14: OpenCASCADE .brep files (usd-brep's bridge, src/cpp/occt)
+
+const _OCCT_BREPS = join(import.meta.dirname, '..', '..', 'third_party', 'usd-brep', 'TestFiles', 'occt_breps')
+const _BREPS = join(import.meta.dirname, '..', '..', 'tests', 'data', 'brep')
+
+function faceTypes(shape: Part | Shell): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const f of shape.faces()) out[f.geomType] = (out[f.geomType] ?? 0) + 1
+  return out
+}
+
+// OpenCASCADE's figures of usd-brep's test files (as tests/test_lane_IX.py)
+const OCCT_CORPUS: Record<string, [string, number, Record<string, number>]> = {
+  box: ['Part', 24.0, { plane: 6 }],
+  cone: ['Part', 21.991148575, { cone: 1, plane: 2 }],
+  cylinder: ['Part', 28.274333882, { cylinder: 1, plane: 2 }],
+  sphere: ['Part', 33.510321638, { sphere: 1 }],
+  torus: ['Part', 113.697842701, { torus: 1 }],
+  plate_with_hole: ['Shell', 20.858407346, { plane: 1 }],
+  bezier_surface: ['Shell', 21.439261848, { bspline: 1 }],
+  extrusion: ['Shell', 34.50528, { bspline: 1 }],
+  sphere_natural: ['Shell', 50.265482457, { sphere: 1 }],
+}
+
+test('brep reads usd-brep test files', { skip: !existsSync(_OCCT_BREPS) }, () => {
+  for (const [name, [kind, measure, types]] of Object.entries(OCCT_CORPUS)) {
+    const [got] = warnings(() => importBrep(join(_OCCT_BREPS, `${name}.brep`)) as Part | Shell)
+    assert.equal(got.constructor.name, kind, name)
+    approx(kind === 'Part' ? (got as Part).volume : got.area, measure, kind === 'Part' ? 1e-8 : 1e-6)
+    assert.deepEqual(faceTypes(got), types, name)
+  }
+  assert.deepEqual(new Set(fromBrep(readFileSync(join(_OCCT_BREPS, 'cylinder.brep'))).edges().map((e) => e.geomType)), new Set(['circle']))
+})
+
+test('brep cavities read as cavities', () => {
+  // usd-brep's staging read both inside out (volume 9000, "Bad Inner shells"); OpenCASCADE: 7000
+  for (const name of ['hollow', 'hollow_rev']) {
+    const part = importBrep(join(_BREPS, `${name}.brep`)) as Part
+    approx(part.volume, 7000, 1e-8)
+    assert.ok(part.isValid())
+    assert.equal(part.faces().length, 12)
+  }
+})
+
+test('brep compounds, locations and binary files', () => {
+  const want: [number, [number, number, number]][] = [
+    [226.194671058, [50, 0, 4]],
+    [226.194671058, [0, 60, 9]],
+    [268.082573106, [-20, 0, 0]],
+  ]
+  for (const name of ['located', 'located_bin']) {
+    const got = load(join(_BREPS, `${name}.brep`)) as ShapeList<Part>
+    assert.ok(got instanceof ShapeList)
+    assert.equal(got.length, 3)
+    got.forEach((part, i) => {
+      approx(part.volume, want[i][0], 1e-6)
+      const c = part.center()
+      ;[c.x, c.y, c.z].forEach((x, j) => approx(x, want[i][1][j], 1e-6, 1e-6))
+    })
+  }
+  const torus = importBrep(join(_BREPS, 'torus_bin.brep')) as Part
+  assert.deepEqual(faceTypes(torus), { torus: 1 })
+  approx(torus.volume, 1776.528792196, 1e-6)
+  const fillet = fromBrep(readFileSync(join(_BREPS, 'fillet_bin.brep'))) as Part
+  assert.deepEqual(faceTypes(fillet), { plane: 6, cylinder: 12, sphere: 8 })
+  approx(fillet.volume, 7804.696111127, 1e-6)
+})
+
+test('brep curves and points are named, not read', () => {
+  const [got, said] = warnings(() => importBrep(join(_BREPS, 'mixed.brep')) as ShapeList<Part | Shell>)
+  assert.deepEqual(said, ['importBrep: the file also holds 1 wire or edge outside faces, which are not read'])
+  assert.deepEqual(got.map((x) => x.constructor.name), ['Part', 'Shell'])
+  assert.throws(
+    () => importBrep(join(_BREPS, 'wire_only.brep')),
+    (e: unknown) => e instanceof RangeError && /importBrep: the file holds no solid, shell or face \(its shape is a wire, of curves\)/.test(e.message),
+  )
+})
+
+test('brep malformed files throw', () => {
+  const text = readFileSync(join(_BREPS, 'holed.brep'), 'utf8')
+  assert.throws(() => fromBrep('ISO-10303-21;'), /fromBrep: this is not an OpenCASCADE .brep file/)
+  assert.throws(() => fromBrep(text.slice(0, text.length / 2)), (e: unknown) => e instanceof RangeError && /fromBrep: the .brep file cannot be read/.test(e.message))
+  const box = readFileSync(join(_OCCT_BREPS, 'box.brep'), 'utf8')
+  const looped = box.replace('So\n\n1100000\n+2 0 *', 'So\n\n1100000\n+1 0 *')
+  assert.notEqual(looped, box)
+  assert.throws(() => fromBrep(looped), /fromBrep: the file is malformed: shape \d+ is made of shape \d+, which is not written before it/)
+  assert.throws(() => fromBrep(3 as unknown as string), (e: unknown) => e instanceof TypeError && /fromBrep reads the contents of a .brep file as a Uint8Array or a string, not number/.test(e.message))
+})
+
+function brepShapes(): Record<string, Part> {
+  const L = Box(30, 20, 10).fuse(Box(10, 20, 30).translate([-10, 0, 10]))
+  return {
+    holed: Box(20, 20, 10).cut(Cylinder(4, 20)),
+    sphere: Sphere(5),
+    torus: Torus(10, 3),
+    cone_apex: Cone(5, 0, 8),
+    hollow: Box(20, 20, 20).cut(Box(10, 10, 10)),
+    sphere_cavity: Box(20, 20, 20).cut(Sphere(5)),
+    concave_fillet: L.fillet(L.edges().concave(), 4),
+    fillet: Box(20, 20, 10).fillet(Box(20, 20, 10).edges(), 2),
+    capsule: Cylinder(5, 10).fuse(Sphere(5).translate([0, 0, 5])).fuse(Sphere(5).translate([0, 0, -5])),
+    cross_cylinders: Cylinder(5, 30).cut(Cylinder(4, 30).rotate(X, 90)),
+    revolve: Rectangle(5, 10).translate([10, 0, 0]).revolve(new Axis([0, 0, 0], [0, 1, 0])) as Part,
+    loft: loft([Circle(5), Rectangle(8, 8).moved(new _Location([0, 0, 10]))]) as Part,
+    ellipse_hole: Box(30, 20, 5).cut((extrude(Ellipse(6, 3), 10) as Part).translate([0, 0, -5])),
+  }
+}
+
+test('brep written files read back', () => {
+  // (0.4 had no .brep writer; usd-brep's own, as it was, gave OpenCASCADE a cavity of volume 9000 and
+  // spheres, tori and concave fillets it took for invalid)
+  for (const [name, shape] of Object.entries(brepShapes())) {
+    const text = toBrep(shape)
+    assert.ok(text.startsWith('DBRep_DrawableShape') && text.includes('CASCADE Topology V3'), name)
+    const back = fromBrep(text) as Part
+    approx(back.volume, shape.volume, 1e-9)
+    const kept = Object.fromEntries(Object.entries(faceTypes(shape)).filter(([t]) => ['plane', 'cylinder', 'cone', 'sphere', 'torus'].includes(t)))
+    assert.deepEqual(Object.fromEntries(Object.entries(faceTypes(back)).filter(([t]) => t in kept)), kept, name)
+  }
+  // a cavity's shell is forward, a sphere's poles get degenerate edges
+  const solid = /\nSo\n\n\d+\n([^*]*)\*/.exec(toBrep(brepShapes().hollow)) as RegExpExecArray
+  assert.ok(solid[1].trim().split(/\s+/).filter((_, i) => i % 2 === 0).every((r) => r.startsWith('+')))
+  assert.equal(toBrep(Sphere(5)).match(/\nEd\n\S+ 1 1 1\n/g)?.length, 2)
+  // files on disk
+  const dir = tmpPath()
+  const part = brepShapes().holed
+  exportBrep(part, join(dir, 'a.brep'))
+  exportFile(part, join(dir, 'b.brep'))
+  assert.equal(readFileSync(join(dir, 'a.brep'), 'utf8'), readFileSync(join(dir, 'b.brep'), 'utf8'))
+  approx((load(join(dir, 'b.brep')) as Part).volume, part.volume, 1e-12)
+  assert.throws(() => exportFile(part, join(dir, 'c.brep'), { unit: 'mm' }), /exportBrep\(\) got an unexpected option 'unit' \(it takes no options\)/)
+})
+
+test('brep writes bodies and sheets into one compound', () => {
+  const sheet = Box(10, 10, 10).faces().top()
+  const back = fromBrep(toBrep([Box(5, 5, 5), Sphere(2).translate([20, 0, 0]), sheet])) as ShapeList<Part | Shell>
+  assert.deepEqual(back.map((x) => x.constructor.name), ['Part', 'Part', 'Shell'])
+  approx((back[1] as Part).volume, Sphere(2).volume, 1e-9)
+  approx(back[2].area, 100, 1e-9)
+})
+
+test('brep writer refuses what it cannot write', () => {
+  assert.throws(() => toBrep(Box(1, 1, 1).mesh()), (e: unknown) => e instanceof TypeError && /toBrep: a .brep file holds exact bodies, not a Mesh/.test(e.message))
+  assert.throws(() => toBrep(Box(1, 1, 1).edges()[0]), (e: unknown) => e instanceof TypeError && /toBrep writes parts, sheets, faces and meshes, not an Edge/.test(e.message))
+  assert.throws(() => toBrep([]), (e: unknown) => e instanceof RangeError && /toBrep: nothing to write/.test(e.message))
+  assert.throws(
+    () => toBrep(Box(2, 2, 2).intersect(Box(2, 2, 2).translate([10, 0, 0]))),
+    (e: unknown) => e instanceof RangeError && /toBrep: the Part has no faces to write/.test(e.message),
+  )
+})
+
+test('brep check of a curve with zero tangent', { skip: !existsSync(_OCCT_BREPS) }, () => {
+  // usd-brep's extrusion with a zero direction: the kernel's check reads a curve's second derivative where
+  // its first is zero (the SmCurve.cpp patch: it read past the two vectors it had evaluated)
+  const text = readFileSync(join(_OCCT_BREPS, 'extrusion.brep'), 'utf8')
+  const flat = text.replace('Surfaces 1\n6 0 0 1 \n', 'Surfaces 1\n6 0 0 0 \n')
+  assert.notEqual(flat, text)
+  assert.throws(
+    () => fromBrep(flat),
+    (e: unknown) => e instanceof RangeError && /fromBrep: the shape is broken: the kernel finds a gap of 4\.02 \(0\.487 of its size\) at edge 3/.test(e.message),
+  )
 })

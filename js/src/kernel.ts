@@ -97,6 +97,8 @@ const OWN: Record<string, Signature> = {
   'ext.usd_stage': ['layers', ['heal', false], ['check', true], ['placement', true], ['units', 0.0], ['partial', false]],
   'ext.part_bytes': ['items', ['ascii', true]],
   'ext.part_items': ['data'],
+  'ext.occt_read': ['data', ['heal', false], ['check', true]],
+  'ext.occt_text': ['breps'],
   'ext.face_measure': ['face', ['tolerance', 1e-9]],
   'ext.curve_length': ['curve', 't0', 't1', ['tolerance', 1e-12]],
   'ext.curve_parameter_at_length': ['curve', 't_start', 'length', ['tolerance', 1e-12]],

@@ -1,6 +1,6 @@
 # Files: formats and what they keep
 
-STEP, IGES (read), USD, `.smb` and `.smp` keep the exact 3D geometry, DXF the exact 2D curves of sketches,
+STEP, IGES (read), USD, OpenCASCADE `.brep`, `.smb` and `.smp` keep the exact 3D geometry, DXF the exact 2D curves of sketches,
 sections and text. The other formats are triangle meshes or pictures. Every format can also be written
 to and read from memory (`to_step`, `from_step`, ...: `in_memory.md`).
 
@@ -9,6 +9,7 @@ to and read from memory (`to_step`, `from_step`, ...: `in_memory.md`).
 | STEP `.step` `.stp` | `export_step` | `import_step`; `read_step` also curves, points, coordinate systems | exact (analytic, offset + B-spline); curves, points and coordinate systems beside the bodies | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
 | IGES `.igs` `.iges` | no | `import_iges` | exact (analytic, B-spline, revolved and extruded surfaces); trimmed surfaces stitched into solids | many | yes (name property, label) | yes | converted to mm on import |
 | USD `.usda` `.usd` | `export_usd` | `import_usd` | exact (`BrepArray` prims of usd-brep), meshes as `Mesh` prims; text only | many, merged parts with their cells | yes (prim names) | yes (`displayColor`; read from bound materials too, `materials=True` writes them) | mm (`metersPerUnit = 0.001`); read in mm by `metersPerUnit`, placed by the prims' transforms |
+| OpenCASCADE `.brep` | `export_brep` | `import_brep` (ASCII and binary) | exact (planes, cylinders, cones, spheres, tori, B-splines; edges with their curves on faces), for OpenCASCADE, build123d, CadQuery, FreeCAD | many (a compound) | no | no | none (mm) |
 | SMLib `.smb` | `save` | `load` | exact geometry; B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those | **one** | no | no | none (mm) |
 | SMLib part `.smp` | `save` | `load` | as `.smb`, and curves (edges, wires) | many, merged parts with their cells | yes | yes | none (mm) |
 | DXF `.dxf` | `export_dxf` | `import_dxf` → `Sketch`, `import_dxf_wires` → `Wire`s | exact 2D curves: LINE, ARC, CIRCLE, ELLIPSE, SPLINE | 2D only, no `Part` | names become layers | no | mm or `unit=` (converted on export), `$INSUNITS` converted to mm on import |
@@ -20,13 +21,15 @@ to and read from memory (`to_step`, `from_step`, ...: `in_memory.md`).
 
 `export(shapes, path)` and `shape.export(path)` choose the writer by extension. `load(path)`
 chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.smp`, `.dxf`,
-`.usda`/`.usd`; any other extension raises `ValueError: unknown file type ...`).
+`.usda`/`.usd`, `.brep`; any other extension raises `ValueError: unknown file type ...`).
 
 ## Which format
 - **Deliver a CAD model: STEP.** Every CAD system reads it. Names, colors and exact surfaces
   survive. Read it back and compare `volume` before you hand it over.
 - **USD pipelines, Omniverse: `.usda`** with `export_usd`, the exact bodies; add `mesh=True` for
   viewers that do not read B-reps.
+- **build123d, CadQuery, FreeCAD or OpenCASCADE: `.brep`** with `export_brep` (exact, no names or
+  colors; STEP keeps those), and `import_brep` for what they write.
 - **Cache intermediate results between scripts: `.smp`** with `ascii=False` (bit-exact, several
   bodies and curves, names and colors kept); `.smb` holds one body without name or color.
 - **A web service or a notebook: the functions in memory** (`to_step`, `to_glb`, `from_step` of an
@@ -73,5 +76,5 @@ chooses the reader (`.step`/`.stp`/`.p21`, `.igs`/`.iges`, `.stl`, `.smb`, `.smp
 ## Related
 `export.md`, `in_memory.md`, `export_step.md`, `import_step.md`, `import_iges.md`, `save_load.md`, `export_stl.md`,
 `import_stl.md`, `export_glb.md`, `export_obj.md`, `export_dxf.md`, `import_dxf.md`,
-`import_dxf_wires.md`, `export_usd.md`, `import_usd.md`, `render.md`, `diff_images.md`, `show.md`,
+`import_dxf_wires.md`, `export_usd.md`, `import_usd.md`, `export_brep.md`, `import_brep.md`, `render.md`, `diff_images.md`, `show.md`,
 `Mesh.md`.

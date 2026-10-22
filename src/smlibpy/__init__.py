@@ -45,6 +45,7 @@ from .step_import import (StepCurve, StepFrame, StepModel, StepPoint, from_step,
 from .iges_import import from_iges, import_iges
 from .dxf import export_dxf, from_dxf, from_dxf_wires, import_dxf, import_dxf_wires, to_dxf
 from .usd import export_usd, from_usd, import_usd, to_usd
+from .occt import export_brep, from_brep, import_brep, to_brep
 from .render import diff_images, render
 from .viewer import show
 from .surfaces import ruled, stitch, surface, surface_fillet
@@ -83,10 +84,11 @@ __all__ = [
     # files and viewer
     "export", "export_step", "export_stl", "export_glb", "export_gltf", "export_obj", "save", "load", "import_stl", "import_step",
     "read_step", "StepModel", "StepFrame", "StepCurve", "StepPoint", "import_iges",
-    "export_dxf", "import_dxf", "import_dxf_wires", "export_usd", "import_usd",
+    "export_dxf", "import_dxf", "import_dxf_wires", "export_usd", "import_usd", "export_brep", "import_brep",
     # files in memory
     "to_step", "from_step", "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb",
-    "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges",
+    "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
+    "from_brep",
     "show", "render", "diff_images",
     # errors
     "ModelingError", "KernelError",

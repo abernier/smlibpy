@@ -98,6 +98,7 @@ undercut. `parting_line` finds the parting line.
   names and colors
 - USD in and out: exact bodies as the `BrepArray` prims of NVIDIA's usd-brep (Omniverse), with
   names and colors, meshes for plain viewers
+- OpenCASCADE `.brep` in and out (build123d, CadQuery, FreeCAD): exact bodies
 - DXF in and out with exact arcs and splines; STL in and out; glTF/GLB and OBJ out; Booleans of
   meshes (`+`, `-`, `&`), also of STL files
 - SMLib's own format (`save`, `load`)
@@ -251,7 +252,7 @@ mp.mass, mp.center, mp.inertia
 
 ### [Files](https://smlibpy.classcad.ch/docs/files)
 
-STEP, IGES (read), USD, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
+STEP, IGES (read), USD, OpenCASCADE `.brep`, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")

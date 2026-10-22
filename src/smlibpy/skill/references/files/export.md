@@ -16,6 +16,7 @@ the format functions.
 | `.obj` | `export_obj` | `tolerance`, `angle` |
 | `.smb`, `.smp` | `save` | `ascii` |
 | `.dxf` | `export_dxf` | `unit`, `plane` |
+| `.brep` | `export_brep` | (none) |
 
 - `shapes`: one shape or a list (nested lists are flattened). `path`: `str` or `pathlib.Path`.
 - `kwargs` go to the format function unchanged. A keyword argument that the format does not
@@ -36,11 +37,11 @@ the format functions.
   raises `TypeError`.
 - No extension, or `.iges`, `.3mf` and other formats, raise `ValueError` before anything is
   written.
-- `load` is the reverse for `.step`/`.stp`, `.usda`, `.stl`, `.smb`, `.smp` and `.dxf` (a `Sketch`), and
+- `load` is the reverse for `.step`/`.stp`, `.usda`, `.brep`, `.stl`, `.smb`, `.smp` and `.dxf` (a `Sketch`), and
   reads IGES (`.igs`, `.iges`), which is not written. glTF and OBJ cannot be read back.
 
 ## Errors
-- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf or .usda`.
+- `ValueError: unknown file type '.iges'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .usda or .brep`.
 - `TypeError: export_step() got an unexpected keyword argument 'tolerance'`: a mesh keyword
   argument used on an exact format, or the other way round.
 

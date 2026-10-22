@@ -9,10 +9,11 @@
 //   STL      .stl                                                 read/write
 //   OBJ      .obj                                                 write
 //   USD      .usda, .usd (exact: BrepArray prims, as text)        read/write
+//   BREP     .brep (OpenCASCADE's exact format)                   read/write
 //
 // Every format has a pair that works in memory, in the browser and in Node (`toStep` and
 // `fromStep`, `toStl` and `fromStl`, `toGlb`, `toGltf`, `toObj`, `toSmb` and `fromSmb`, `toSmp` and
-// `fromSmp`, `toUsd` and `fromUsd`), and a
+// `fromSmp`, `toUsd` and `fromUsd`, `toBrep` and `fromBrep`), and a
 // pair that reads and writes files, which needs Node (`exportStep` and `importStep`, ..., and
 // `exportFile` and `load`, which pick the format by the file's extension).
 
@@ -26,6 +27,7 @@ import { importStep } from './step_import.ts'
 import { importIges } from './iges_import.ts'
 import { exportDxf, importDxf } from './dxf.ts'
 import { exportUsd, importUsd } from './usd.ts'
+import { exportBrep, importBrep } from './occt.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
 type Any = any
@@ -167,7 +169,10 @@ export function exportFile(shapes: unknown, path: string, options: Record<string
   else if (ext_ === '.smb' || ext_ === '.smp') save(shapes, p, options)
   else if (ext_ === '.dxf') exportDxf(shapes, p, options)
   else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
-  else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf or .usda`)
+  else if (ext_ === '.brep') {
+    _opts('exportBrep', options)
+    exportBrep(shapes, p)
+  } else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .usda or .brep`)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -1104,8 +1109,8 @@ export function save(shapes: unknown, path: string, options: { ascii?: boolean }
 
 /**
  * Read a file, picking the format from the extension: STEP (`.step`, `.stp`), IGES (`.igs`, `.iges`),
- * USD (`.usda`) and SMLib (`.smb`, `.smp`) give exact parts, DXF (`.dxf`) a `Sketch` of the drawing's
- * outlines, STL a `Mesh`.
+ * USD (`.usda`), OpenCASCADE (`.brep`) and SMLib (`.smb`, `.smp`) give exact parts, DXF (`.dxf`) a
+ * `Sketch` of the drawing's outlines, STL a `Mesh`.
  *
  * A STEP or IGES file with one body gives that part, one with several a `ShapeList`. A native file comes
  * back as a `Part` when its body encloses a volume (a merged part with its cells too, and a broken
@@ -1121,8 +1126,9 @@ export function load(path: string): Any {
   if (ext_ === '.stl') return importStl(p)
   if (ext_ === '.dxf') return importDxf(p)
   if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return importUsd(p)
+  if (ext_ === '.brep') return importBrep(p)
   if (ext_ !== '.smb' && ext_ !== '.smp')
-    throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf and .usda`)
+    throw new RangeError(`unknown file type '${ext_}'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`)
   const data = _fs().readFileSync(p)
   if (ext_ === '.smp') return fromSmp(data)
   const name = _tmpName()

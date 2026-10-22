@@ -112,6 +112,9 @@ SYNONYMS.update({
     "degree": ["nurbs"], "morph": ["make_compatible", "Lattice"],
     "usd": ["export_usd", "import_usd"], "usda": ["export_usd", "import_usd"], "openusd": ["export_usd", "import_usd"],
     "omniverse": ["export_usd", "import_usd"], "pixar": ["export_usd"],
+    "brep": ["export_brep", "import_brep"], "occt": ["export_brep", "import_brep"],
+    "opencascade": ["export_brep", "import_brep", "export_step"], "build123d": ["export_brep", "import_brep"],
+    "cadquery": ["export_brep", "import_brep"], "freecad": ["export_brep", "import_brep", "export_step"],
 })
 
 # Sheet metal.

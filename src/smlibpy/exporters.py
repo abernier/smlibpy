@@ -12,12 +12,14 @@ glTF      ``.glb``, ``.gltf``                                  write
 STL       ``.stl``                                             read/write
 OBJ       ``.obj``                                             write
 USD       ``.usda``, ``.usd`` (exact: BrepArray prims, as text)  read/write
+BREP      ``.brep`` (OpenCASCADE's exact format)               read/write
 ========  ===================================================  ==========
 
 Every format has a pair that works in memory (``to_step`` and ``from_step``, ``to_stl`` and
 ``from_stl``, ``to_glb``, ``to_gltf``, ``to_obj``, ``to_smb`` and ``from_smb``, ``to_smp`` and
-``from_smp``, ``to_dxf`` and ``from_dxf``, ``to_usd`` and ``from_usd``, ``from_iges``): text as
-``str``, binary formats as ``bytes``. The functions for files read and write files around them.
+``from_smp``, ``to_dxf`` and ``from_dxf``, ``to_usd`` and ``from_usd``, ``from_iges``,
+``to_brep`` and ``from_brep``): text as ``str``, binary formats as ``bytes``. The functions for
+files read and write files around them.
 """
 
 from __future__ import annotations
@@ -193,8 +195,13 @@ def export(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
         from .usd import export_usd
 
         export_usd(shapes, p, **kwargs)
+    elif ext == ".brep":
+        from .occt import export_brep
+
+        export_brep(shapes, p, **kwargs)
     else:
-        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf or .usda")
+        raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .usda or "
+                         ".brep")
 
 
 def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", name: str | None = None,
@@ -734,8 +741,9 @@ def from_smp(data: bytes) -> Any:
 
 def load(path: str | os.PathLike[str]) -> Any:
     """Read a file, picking the format from the extension: STEP (``.step``, ``.stp``), IGES
-    (``.igs``, ``.iges``), USD (``.usda``) and SMLib (``.smb``, ``.smp``) give exact parts, DXF
-    (``.dxf``) a :class:`Sketch` of the drawing's outlines, STL a :class:`Mesh`.
+    (``.igs``, ``.iges``), USD (``.usda``), OpenCASCADE (``.brep``) and SMLib (``.smb``,
+    ``.smp``) give exact parts, DXF (``.dxf``) a :class:`Sketch` of the drawing's outlines, STL a
+    :class:`Mesh`.
 
     A STEP or IGES file with one body gives that part, one with several a :class:`ShapeList`. A
     native file comes back as a :class:`Part` when its body encloses a volume (a merged part with
@@ -762,9 +770,13 @@ def load(path: str | os.PathLike[str]) -> Any:
         from .usd import import_usd
 
         return import_usd(path)
+    if ext_ == ".brep":
+        from .occt import import_brep
+
+        return import_brep(path)
     if ext_ not in (".smb", ".smp"):
-        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf "
-                         "and .usda")
+        raise ValueError(f"unknown file type {ext_!r}; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, "
+                         ".usda and .brep")
     if not os.path.exists(os.fspath(path)):
         raise FileNotFoundError(os.fspath(path))
     if ext_ == ".smp":

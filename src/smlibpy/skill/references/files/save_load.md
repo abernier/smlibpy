@@ -2,7 +2,7 @@
 
 `save` writes SMLib's native files: one body to an `.smb` file, or any number of bodies and curves,
 with their names and colors, to an `.smp` part file. `load` reads `.smb`, `.smp`, STEP, IGES, USD,
-STL and DXF, and picks the format from the extension.
+OpenCASCADE `.brep`, STL and DXF, and picks the format from the extension.
 
 ## Signatures
 `save(shapes, path, *, ascii=True)`
@@ -21,6 +21,7 @@ the same in memory (`bytes`).
   - `.step`, `.stp`, `.p21`: same as `import_step`.
   - `.igs`, `.iges`: same as `import_iges`.
   - `.usda`, `.usd`: same as `import_usd`.
+  - `.brep`: same as `import_brep`.
   - `.stl`: same as `import_stl`, gives a `Mesh`.
   - `.dxf`: same as `import_dxf`, gives a `Sketch`.
   - `.smb`, `.smp`: the native formats; any other extension raises `ValueError`.
@@ -51,7 +52,7 @@ SMLib's own tools read. Use STEP to deliver a model.
   again with `.named()` and `.colored()`, or save to `.smp`.
 - A list of two parts raises for `.smb`. Fuse them, save each to its own file, or use `.smp`.
 - smlibpy cannot read glTF or OBJ: `load("x.glb")` raises `ValueError: unknown file type
-  '.glb'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf and .usda`.
+  '.glb'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`.
 - A `Sketch` comes back as a `Shell`: its plane is lost.
 - A body that also holds wire edges, points or faces outside its solid (files of other programs)
   comes back with a `RuntimeWarning` that names them: such a `Part` is not valid.
@@ -67,7 +68,7 @@ SMLib's own tools read. Use STEP to deliver a model.
   exact bodies and curves, not a Mesh: ...`).
 - `FileNotFoundError` for a missing file.
 - `ValueError: unknown file type '.glb'; load reads .step, .stp, .igs, .iges, .stl, .smb, .smp,
-  .dxf and .usda`.
+  .dxf, .usda and .brep`.
 - `KernelError: load failed`: an `.smb` file the native reader cannot read; `ValueError: part
   file: this is no SMLib part file (.smp): ...` for an `.smp` that is none.
 

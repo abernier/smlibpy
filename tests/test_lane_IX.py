@@ -1602,3 +1602,328 @@ def test_writers_of_bodies_name_what_they_cannot_write(tmp_path):
         to_obj(Wire([edge]))
     with pytest.raises(TypeError, match="not a Location"):
         to_usd(Location())
+
+
+# ------------------------------------------------------------------------------------------------
+# X14: OpenCASCADE .brep files (usd-brep's bridge, src/cpp/occt)
+
+_OCCT_BREPS = Path(__file__).resolve().parent.parent / "third_party" / "usd-brep" / "TestFiles" / "occt_breps"
+_BREPS = Path(__file__).resolve().parent / "data" / "brep"
+
+
+def _occt_text_check(text: str) -> list[str]:
+    """What OpenCASCADE's check would take the faces of an ASCII .brep text for invalid for, read
+    from the text alone (the subset smlibpy writes): wires whose edges do not share their vertices,
+    curved faces whose wires do not close in the parameters or run clockwise. Empty: none."""
+    lines = text.split("\n")
+    at = next(i for i, l in enumerate(lines) if l.startswith("Curve2ds"))
+    curves = []
+    for line in lines[at + 1:at + 1 + int(lines[at].split()[1])]:
+        t = line.split()
+        if t[0] == "1":
+            x, y, dx, dy = map(float, t[1:5])
+            curves.append(("line", (x, y, dx, dy)))
+        else:
+            assert t[0] == "7", line[:40]
+            rational, periodic, degree, npoles, nknots = map(int, t[1:6])
+            assert not periodic
+            step = 3 if rational else 2
+            poles = [tuple(map(float, t[6 + i * step:6 + i * step + step])) for i in range(npoles)]
+            k = t[6 + npoles * step:]
+            knots = [float(k[2 * i]) for i in range(nknots)]
+            mults = [int(k[2 * i + 1]) for i in range(nknots)]
+            assert all(b > a for a, b in zip(knots, knots[1:])) and max(mults[1:-1] or [0]) <= degree
+            flat = [kn for kn, m in zip(knots, mults) for _ in range(m)]
+            assert len(flat) == npoles + degree + 1
+            curves.append(("bspline", (degree, poles, flat, rational)))
+
+    def point(c, t):
+        kind, d = c
+        if kind == "line":
+            return (d[0] + t * d[2], d[1] + t * d[3])
+        p, poles, U, rational = d
+        n = len(poles) - 1
+        s = max(p, min(n, max(i for i in range(len(U) - 1) if U[i] <= t) if t < U[n + 1] else n))
+        pts = [list(poles[j]) if rational else [poles[j][0], poles[j][1], 1.0] for j in range(s - p, s + 1)]
+        if rational:
+            pts = [[x * w, y * w, w] for x, y, w in pts]
+        for r in range(1, p + 1):  # de Boor
+            for j in range(p, r - 1, -1):
+                i = j + s - p
+                den = U[i + p - r + 1] - U[i]
+                a = (t - U[i]) / den if den else 0.0
+                pts[j] = [(1 - a) * pts[j - 1][q] + a * pts[j][q] for q in range(3)]
+        x, y, w = pts[p]
+        return (x / w, y / w)
+
+    at = next(i for i, l in enumerate(lines) if l.startswith("TShapes"))
+    count = int(lines[at].split()[1])
+    toks = " ".join(lines[at + 1:]).split()
+    recs, k = [], 0
+    while len(recs) < count:
+        kind = toks[k]
+        k += 1
+        body = []
+        while toks[k] != "*":
+            body.append(toks[k])
+            k += 1
+        k += 1
+        recs.append((kind, body))
+
+    def refs(body):
+        return [(x[0], count - int(x[1:]) + 1) for x in body if re.fullmatch(r"[+\-ie]\d+", x)]
+
+    def reprs(body):
+        out, i = [], 4
+        while body[i] != "0":
+            kind = int(body[i])
+            if kind == 1:
+                out.append((1, int(body[i + 1]), None, float(body[i + 3]), float(body[i + 4]))), 
+                i += 5
+            elif kind == 2:
+                out.append((2, (int(body[i + 1]),), int(body[i + 2]), float(body[i + 4]), float(body[i + 5])))
+                i += 6
+            else:
+                out.append((3, (int(body[i + 1]), int(body[i + 2])), int(body[i + 4]), float(body[i + 6]), float(body[i + 7])))
+                i += 8
+        return out
+
+    problems = []
+    for fi, (kind, body) in enumerate(recs):
+        if kind != "Fa":
+            continue
+        surface = int(body[2])
+        area, curved = 0.0, False
+        for _, w in refs(body):
+            uses, ends = [], []
+            for o, e in refs(recs[w - 1][1]):
+                vs = [v for _, v in refs(recs[e - 1][1])]
+                ends.append((vs[0], vs[1]) if o == "+" else (vs[1], vs[0]))
+                on = [r for r in reprs(recs[e - 1][1]) if r[0] in (2, 3) and r[2] == surface]
+                if not on:
+                    uses.append(None)
+                    continue
+                r = on[0]
+                c = curves[(r[1][0] if r[0] == 2 or o == "+" else r[1][1]) - 1]
+                pts = [point(c, r[3] + (r[4] - r[3]) * i / 16) for i in range(17)]
+                uses.append(pts if o == "+" else pts[::-1])
+            if any(ends[i][1] != ends[(i + 1) % len(ends)][0] for i in range(len(ends))):
+                problems.append(f"face record {fi + 1}: edges that do not share their vertices")
+            if any(u is None for u in uses):
+                continue  # (a plane's edges, which OpenCASCADE projects)
+            curved = True
+            size = max(1.0, max(abs(c) for u in uses for p in u for c in p))
+            for i, u in enumerate(uses):
+                a, b = u[-1], uses[(i + 1) % len(uses)][0]
+                if math.dist(a, b) > 1e-7 * size:
+                    problems.append(f"face record {fi + 1}: a wire that does not close ({math.dist(a, b):.3g})")
+            poly = [p for u in uses for p in u]
+            area += sum(p[0] * q[1] - q[0] * p[1] for p, q in zip(poly, poly[1:] + poly[:1])) / 2
+        if curved and not area > 0:
+            problems.append(f"face record {fi + 1}: wires that run clockwise ({area:.3g})")
+    return problems
+
+
+# OpenCASCADE's figures of usd-brep's test files (OCP 8.0, BRepGProp with eps 1e-9: the parts' volumes, the
+# sheets' areas; the extrusion's as a fine mesh of it converges, where OpenCASCADE's two integrations differ)
+_OCCT_CORPUS = {
+    "box": ("Part", 24.0, {"plane": 6}),
+    "box_sparse_pcurves": ("Part", 24.0, {"plane": 6}),
+    "cone": ("Part", 21.991148575, {"cone": 1, "plane": 2}),
+    "cone_full": ("Part", 12.566370614, {"cone": 1, "plane": 1}),
+    "cylinder": ("Part", 28.274333882, {"cylinder": 1, "plane": 2}),
+    "sphere": ("Part", 33.510321638, {"sphere": 1}),
+    "torus": ("Part", 113.697842701, {"torus": 1}),
+    "plane": ("Shell", 4.0, {"plane": 1}),
+    "plate_with_hole": ("Shell", 20.858407346, {"plane": 1}),
+    "cylinder_patch": ("Shell", 9.424777961, {"cylinder": 1}),
+    "bezier_surface": ("Shell", 21.439261848, {"bspline": 1}),
+    "bspline_surface": ("Shell", 21.141890328, {"bspline": 1}),
+    "periodic_bspline": ("Shell", 31.349438235, {"bspline": 1}),
+    "extrusion": ("Shell", 34.50528, {"bspline": 1}),
+    "revolution": ("Shell", 13.108702509, {"bspline": 1}),
+    "parabola": ("Shell", 2.666666667, {"plane": 1}),
+    "hyperbola": ("Shell", 1.626860408, {"plane": 1}),
+    "sphere_natural": ("Shell", 50.265482457, {"sphere": 1}),
+    "torus_natural": ("Shell", 189.496404501, {"torus": 1}),
+}
+
+
+def _types(shape) -> dict:
+    from collections import Counter
+
+    return dict(Counter(f.geom_type for f in shape.faces()))
+
+
+def test_brep_reads_usd_brep_test_files():
+    # (0.4: no .brep reader; load("x.brep") raised "unknown file type")
+    files = sorted(_OCCT_BREPS.glob("*.brep"))
+    assert len(files) == 29
+    for f in files:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            got = import_brep(f)
+        assert isinstance(got, (Part, Shell)), f.name
+        if f.stem not in _OCCT_CORPUS:
+            continue  # (the ones OpenCASCADE itself takes for invalid: read, not measured)
+        kind, measure, types = _OCCT_CORPUS[f.stem]
+        assert type(got).__name__ == kind, f.name
+        assert (got.volume if kind == "Part" else got.area) == pytest.approx(measure, rel=1e-8 if kind == "Part" else 1e-6), f.name
+        assert _types(got) == types, f.name
+        if kind == "Part":
+            assert got.is_valid(), f.name
+    # analytic edges stay so
+    assert {e.geom_type for e in import_brep(_OCCT_BREPS / "cylinder.brep").edges()} == {"circle"}
+    assert {e.geom_type for e in import_brep(_OCCT_BREPS / "box.brep").edges()} == {"line"}
+
+
+def test_brep_cavities_read_as_cavities():
+    # an OpenCASCADE Boolean's box with a cavity (forward inner shell of reversed faces) and one built
+    # with a reversed inner shell: usd-brep's staging read both inside out (volume 9000, "Bad Inner
+    # shells"); OpenCASCADE: 7000
+    for name in ("hollow", "hollow_rev"):
+        part = import_brep(_BREPS / f"{name}.brep")
+        assert part.volume == pytest.approx(7000.0, rel=1e-12)
+        assert part.is_valid() and len(part.faces()) == 12
+        assert part.contains((10, 10, 2)) and not part.contains((10, 10, 10))
+
+
+def test_brep_compounds_located_and_binary():
+    # a compound of a cylinder placed twice (moved; turned and moved) and a sphere, ASCII and binary
+    # (BinTools); OpenCASCADE's volumes and centers of the three solids
+    want = [(226.194671058, (50, 0, 4)), (226.194671058, (0, 60, 9)), (268.082573106, (-20, 0, 0))]
+    for name in ("located", "located_bin"):
+        got = import_brep(_BREPS / f"{name}.brep")
+        assert isinstance(got, ShapeList) and len(got) == 3
+        for part, (vol, center) in zip(got, want):
+            assert isinstance(part, Part) and part.volume == pytest.approx(vol, rel=1e-8)
+            assert tuple(part.center()) == pytest.approx(center, abs=1e-6)
+    torus = import_brep(_BREPS / "torus_bin.brep")
+    assert _types(torus) == {"torus": 1} and torus.volume == pytest.approx(1776.528792196, rel=1e-9)
+    fillet = import_brep(_BREPS / "fillet_bin.brep")
+    assert _types(fillet) == {"plane": 6, "cylinder": 12, "sphere": 8}
+    assert fillet.volume == pytest.approx(7804.696111127, rel=1e-9) and fillet.is_valid()
+    assert import_brep(_BREPS / "sphere_cone.brep").volume == pytest.approx(984.439994272, rel=1e-8)
+    assert load(_BREPS / "holed.brep").volume == pytest.approx(6994.690350851, rel=1e-9)
+
+
+def test_brep_curves_and_points_are_named_not_read():
+    with pytest.warns(RuntimeWarning, match=r"import_brep: the file also holds 1 wire or edge outside faces, which "
+                                            r"are not read"):
+        got = import_brep(_BREPS / "mixed.brep")
+    assert [type(x).__name__ for x in got] == ["Part", "Shell"]
+    assert got[0].volume == pytest.approx(125.0) and got[1].area == pytest.approx(16.0)
+    with pytest.raises(ValueError, match=r"import_brep: the file holds no solid, shell or face \(its shape is a "
+                                         r"wire, of curves\)"):
+        import_brep(_BREPS / "wire_only.brep")
+
+
+def test_brep_malformed_files_raise():
+    text = (_OCCT_BREPS / "box.brep").read_text()
+    with pytest.raises(ValueError, match="from_brep: this is not an OpenCASCADE .brep file"):
+        from_brep("ISO-10303-21;")
+    with pytest.raises(ValueError, match="from_brep: the .brep file cannot be read"):
+        from_brep(text[: len(text) // 2])
+    # a solid made of itself (the bridge would follow it for ever)
+    looped = text.replace("So\n\n1100000\n+2 0 *", "So\n\n1100000\n+1 0 *", 1)
+    assert looped != text
+    with pytest.raises(ValueError, match=r"from_brep: the file is malformed: shape \d+ is made of shape \d+, which is "
+                                         r"not written before it"):
+        from_brep(looped)
+    with pytest.raises(TypeError, match="from_brep reads the contents of a .brep file as bytes or str, not int"):
+        from_brep(3)
+    # binary garbage gives a message in text
+    with pytest.raises(ValueError) as e:
+        from_brep(text.encode().replace(b"Surfaces 6", b"Surfaces \xff\xfe", 1))
+    assert "�" not in str(e.value)
+
+
+def _brep_shapes():
+    L = Box(30, 20, 10) + Box(10, 20, 30).translate((-10, 0, 10))
+    return {
+        "holed": Box(20, 20, 10) - Cylinder(4, 20),
+        "sphere": Sphere(5),
+        "torus": Torus(10, 3),
+        "cone_apex": Cone(5, 0, 8),
+        "hollow": Box(20, 20, 20) - Box(10, 10, 10),
+        "sphere_cavity": Box(20, 20, 20) - Sphere(5),
+        "concave_fillet": L.fillet(L.edges().concave(), 4),
+        "fillet": Box(20, 20, 10).fillet(Box(20, 20, 10).edges(), 2),
+        "capsule": Cylinder(5, 10) + Sphere(5).translate((0, 0, 5)) + Sphere(5).translate((0, 0, -5)),
+        "sphere_cut_pole": Sphere(5) - Box(20, 20, 10).translate((0, 0, 9)),
+        "torus_drilled": Torus(10, 3) - Cylinder(1, 20).translate((10, 0, 0)),
+        "cross_cylinders": Cylinder(5, 30) - Cylinder(4, 30).rotate(X, 90),
+        "revolve": Rectangle(5, 10).translate((10, 0, 0)).revolve(axis=Axis((0, 0, 0), (0, 1, 0))),
+        "loft": loft([Circle(5), Rectangle(8, 8).moved(Location((0, 0, 10)))]),
+        "ellipse_hole": Box(30, 20, 5) - extrude(Ellipse(6, 3), 10).translate((0, 0, -5)),
+    }
+
+
+def test_brep_written_files_read_back_and_check_as_opencascade_does(tmp_path):
+    # 0.4 had no .brep writer. usd-brep's own writer, as it was, gave OpenCASCADE a box with a cavity
+    # of volume 9000 (for 7000), spheres and tori whose wires do not close, a concave fillet of negative
+    # area and B-spline faces without curves on them (bracket.py's part: 48993 for 31287)
+    for name, shape in _brep_shapes().items():
+        text = to_brep(shape)
+        assert text.startswith("DBRep_DrawableShape") and "CASCADE Topology V3" in text
+        assert _occt_text_check(text) == [], name
+        back = from_brep(text)
+        assert back.volume == pytest.approx(shape.volume, rel=1e-9), name
+        kept = {k: v for k, v in _types(shape).items() if k in ("plane", "cylinder", "cone", "sphere", "torus")}
+        assert {k: v for k, v in _types(back).items() if k in kept} == kept, name
+    # a cavity's shell is forward (OpenCASCADE's Booleans write it so), poles get degenerate edges
+    hollow = to_brep(_brep_shapes()["hollow"])
+    solid = re.search(r"\nSo\n\n\d+\n([^*]*)\*", hollow).group(1)
+    assert solid.split()[::2] == ["+2", "+3"] or all(r.startswith("+") for r in solid.split()[::2])
+    sphere = to_brep(Sphere(5))
+    assert len(re.findall(r"\nEd\n\S+ 1 1 1\n", sphere)) == 2  # (the two poles)
+    # files on disk, by the function and by the extension
+    part = _brep_shapes()["holed"].named("plate")
+    export_brep(part, tmp_path / "a.brep")
+    part.export(tmp_path / "b.brep")
+    assert (tmp_path / "a.brep").read_text() == (tmp_path / "b.brep").read_text()
+    assert load(tmp_path / "b.brep").volume == pytest.approx(part.volume, rel=1e-12)
+    assert import_brep(tmp_path / "a.brep").name is None  # (the format has no names)
+
+
+def test_brep_writes_bodies_and_sheets_into_one_compound():
+    sheet = Box(10, 10, 10).faces().top()
+    text = to_brep([Box(5, 5, 5), Sphere(2).translate((20, 0, 0)), sheet])
+    back = from_brep(text)
+    assert [type(x).__name__ for x in back] == ["Part", "Part", "Shell"]
+    assert back[1].volume == pytest.approx(Sphere(2).volume, rel=1e-9)
+    assert back[2].area == pytest.approx(100.0)
+    assert _occt_text_check(text) == []
+    # a sheet whose faces share no edge: a shell each in a compound (OpenCASCADE takes one shell of
+    # them for invalid: "NotConnected")
+    two = stitch([Box(10, 10, 10).faces().top(), Box(10, 10, 10).faces().bottom()])
+    text = to_brep(two)
+    assert re.search(r"\nCo\n", text) and len(re.findall(r"\nSh\n", text)) + len(re.findall(r"\nFa\n", text)) >= 2
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        back = from_brep(text)
+    assert sum(b.area for b in (back if isinstance(back, ShapeList) else [back])) == pytest.approx(200.0)
+
+
+def test_brep_writer_refuses_what_it_cannot_write():
+    with pytest.raises(TypeError, match="to_brep: a .brep file holds exact bodies, not a Mesh"):
+        to_brep(Box(1, 1, 1).mesh())
+    with pytest.raises(TypeError, match="to_brep writes parts, sheets, faces and meshes, not an Edge"):
+        to_brep(Box(1, 1, 1).edges()[0])
+    with pytest.raises(ValueError, match="to_brep: nothing to write"):
+        to_brep([])
+    with pytest.raises(ValueError, match="to_brep: the Part has no faces to write"):
+        to_brep(Box(2, 2, 2) & Box(2, 2, 2).translate((10, 0, 0)))
+
+
+def test_brep_check_of_a_curve_with_zero_tangent():
+    # usd-brep's extrusion with a zero direction (found by fuzzing): the kernel's check meets a curve
+    # whose first derivative is zero in its curve/curve intersection, where sm_FilterSolution read the
+    # second derivative past the two vectors it had evaluated (AddressSanitizer: stack-buffer-overflow
+    # in sm_UnitizeTangent; the SmCurve.cpp patch). The body is refused for its gap, as it is broken.
+    text = (_OCCT_BREPS / "extrusion.brep").read_text()
+    flat = text.replace("Surfaces 1\n6 0 0 1 \n", "Surfaces 1\n6 0 0 0 \n", 1)
+    assert flat != text
+    with pytest.raises(ValueError, match=r"from_brep: the shape is broken: the kernel finds a gap of 4\.02 \(0\.487 of "
+                                         r"its size\) at edge 3"):
+        from_brep(flat)

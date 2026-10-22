@@ -94,6 +94,10 @@ Everything below is importable from `smlibpy` directly.
 ::: smlibpy.usd.to_usd
 ::: smlibpy.usd.import_usd
 ::: smlibpy.usd.from_usd
+::: smlibpy.occt.export_brep
+::: smlibpy.occt.to_brep
+::: smlibpy.occt.import_brep
+::: smlibpy.occt.from_brep
 
 ## Viewer
 

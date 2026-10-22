@@ -37,3 +37,5 @@ void bind_distance(py::module_ m);
 void bind_usd_files(py::module_ m);
 // SMLib part files (.smp): bodies and curves with names and colors (part_file.cpp).
 void bind_part_files(py::module_ m);
+// OpenCASCADE .brep files (occt.cpp): occt_read, occt_text
+void bind_occt_files(py::module_ m);

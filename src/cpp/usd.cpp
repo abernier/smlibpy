@@ -2891,6 +2891,15 @@ std::vector<UsdItem> usd_read(const std::string& text, bool heal)
     return usd_stage({UsdLayer{"", text, {}, {}}}, options).items;
 }
 
+std::string usd_check_arrays(UsdBrepArrayData& a)
+{
+    Layout layout;
+    std::string problem = check(a, layout);
+    return problem.empty() ? check_values(a, layout) : problem;
+}
+
+std::string usd_kernel_check(SmBrep* brep, bool& refuse) { return kernel_check(brep, refuse); }
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON

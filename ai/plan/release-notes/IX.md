@@ -1,4 +1,4 @@
-# Lane IX: STEP import and export, USD, IGES import, native and in-memory files (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13; batch 3: X5, X7, I14; batch 4: X9, X10, X11, X12, X13)
+# Lane IX: STEP import and export, USD, IGES import, native and in-memory files (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13; batch 3: X5, X7, I14; batch 4: X9, X10, X11, X12, X13; batch 5: X14)
 
 Everything applies to smlibpy and smlibwasm alike unless marked. Codes are the plan's items
 (ai/plan/kernel-deep-dive.md). Corpus numbers: the 154 classcad-mcp parts and 294 other local
@@ -168,6 +168,17 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   its two bodies (0.3, 0.15, 0.07) and (0.04, 0.22, 0.1), CubeBrepMaterials and CubeAllMaterials
   (0.3, 0.15, 0.07) (0.4: no color). A material without a preview surface (MDL alone) or colored by
   a texture leaves the `displayColor`.
+- A read past a stack array in the kernel's curve/curve intersection (X14, found with
+  AddressSanitizer while checking bodies read from damaged `.brep` files). `sm_FilterSolution`
+  (`SmCurve.cpp`) evaluated each curve with its first derivative only (two vectors) and handed them
+  to `sm_UnitizeTangent`, which reads the second derivative where the first is zero: the read went
+  past the array (`SmFace::HasSeamProblem` from `SmBrep::AssertValid`, so any kernel check of a
+  body with such a seam could reach it). It now evaluates the second derivative too
+  (`third_party/patches/SMLib/src/SmCurve.cpp`, marked `smlibpy patch`, README row). The value read
+  decided only a tangent's direction at a zero first derivative; no result of the test suites
+  changed. The fuzzed file was usd-brep's `extrusion.brep` with its extrusion direction zeroed:
+  `test_brep_check_of_a_curve_with_zero_tangent` (both languages) reads it (refused for its gap);
+  under AddressSanitizer the unpatched kernel aborts in that test, the patched one passes it.
 ## New
 
 - `import_step(path, *, heal=True, strict=False)` and `read_step(..., strict=False)`
@@ -283,6 +294,59 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   (`ext.usd_text(items, up_axis, meters_per_unit, materials=False)` in both builds.)
 - smlibwasm: `_body` of `exporters.ts` (a body read from a file, with the warnings above) is exported
   for usd.ts.
+- OpenCASCADE `.brep` files (X14): `export_brep(shapes, path)`, `to_brep(shapes) -> str`,
+  `import_brep(path, *, heal=False, check=True)`, `from_brep(data, *, heal=False, check=True)`
+  (`str` or `bytes`), and `.brep` in `export`/`Shape.export` and `load`; smlibwasm `exportBrep`,
+  `toBrep`, `importBrep(path, { heal, check })`, `fromBrep(data, { heal, check })` (`string` or
+  `Uint8Array`), `BrepImportOptions`, `.brep` in `exportFile` and `load`. The MCP server saves
+  `format="brep"` and loads `.brep`; `list_methods` finds them under brep, occt, opencascade,
+  build123d, cadquery and freecad. Docs: docs/files.md (OpenCASCADE, writing and reading),
+  skill references `files/export_brep.md` and `files/import_brep.md`.
+  - Writing: one shape per file (the solid or shell of one body, a compound of several; a part of
+    several solids a solid each, cavities as forward inner shells), ASCII as `BRepTools::Write`
+    writes it, faces on their planes, cylinders, cones, spheres, tori and B-splines, edges on
+    lines, circles, ellipses and B-splines, and every edge on a curved face with its curve in the
+    face's parameters (made by smlibpy, `src/cpp/occt_pcurves.cpp`: the kernel's arrays carry
+    them for B-spline faces only). Before it returns, the writer checks the model for what
+    OpenCASCADE's check refuses (`src/cpp/occt_check.cpp`: an edge of a curved face without its
+    curve on the face, curves on faces that leave their edges by more than the edge's tolerance,
+    unsound knots, wires that do not close in the surface's parameters or enclose no positive
+    area) and raises `KernelError` naming the face instead of writing a file OpenCASCADE takes for
+    invalid.
+  - Reading: ASCII and binary (`BinTools::Write`) files; a `Part` per solid (cavities kept), a
+    `Shell` per free shell or face, placed by the file's locations; analytic surfaces and curves
+    come back as those. Each body goes through the kernel check `import_usd` uses (`check=True`):
+    gaps over 1e-3 of the body's size raise `ValueError`, smaller ones warn. Malformed files
+    (forward references, counts that do not match, garbage) raise `ValueError` naming the shape;
+    wires and points outside faces are counted in a warning.
+  - Checked with OpenCASCADE 8.0 (OCP, `BRepCheck_Analyzer`, `BRepGProp` with eps 1e-9) on the
+    585 bodies of the 448-file corpus: 583 written (2 refused with the face named), 582 valid
+    (the other a sheet that crosses itself in its STEP file), 566 with OpenCASCADE's volume within
+    1e-5 of smlibpy's and all within 3.4e-4 (where smlibpy and OpenCASCADE measure the STEP file
+    itself apart; the `.brep` agrees with OpenCASCADE's reading of the STEP file); writing takes
+    2.5 ms (median), 10.7 ms (p90), 721 ms (the slowest). The 33 shapes of the zoo and the 7
+    examples: all valid, volumes within 1e-5. Reading back: 553 of the 557 solids written (99 %
+    within 3.5e-6 of their volume, all within 1e-4). usd-brep's 29 OpenCASCADE test files all
+    read, the 19 OpenCASCADE takes for valid with its volumes or areas and face types, and so do
+    the 9 files OpenCASCADE 8.0 wrote for the tests (`tests/data/brep`: cavities with forward and
+    reversed inner shells, located compounds, binary, a fillet, a torus, a sphere with a cone, a
+    solid and a sheet beside a wire; a file of a wire alone raises). AddressSanitizer: the writes,
+    137 reads and 1500 fuzzed files (truncated, tokens and lines swapped, deleted or replaced)
+    are clean after the kernel patch above.
+  - The bridge is usd-brep's (`source/OCCT_BREP_IMPORT`, `OCCT_BREP_EXPORT`, `BREP_STAGING`,
+    parts of `BREP_USD_DATA` and `USD_BREP_UTILS`), copied into `src/cpp/occt` (README there:
+    origin, files, changes) and compiled into both builds without OpenCASCADE or OpenUSD
+    (`src/cpp/usd/pxr_lite.h` grew the OpenUSD types it uses: ranges, 4 x 4 matrices with
+    OpenUSD's row vectors, spans). Defects of the published bridge fixed in the copy (marked
+    `smlibpy:`), for upstream: cavities read inside out (a box with a box cavity came in at 9000
+    for 7000), inner shells written reversed (the same 9000 in OpenCASCADE), the u offset of
+    re-aligned cylinder and cone frames (a fillet's curves a quarter turn off), no pcurves on
+    analytic faces, no degenerate edges at poles, wires of concave faces written clockwise, free
+    sheets in one shell ("NotConnected"), twin vertices at loop joints (wires OpenCASCADE takes
+    for open). `ext.occt_read(data, heal, check)` and `ext.occt_text(breps)` in both builds
+    (`kernel.ts` table, `bind_smlibpy.cpp`); `usd.cpp` exports `usd_check_arrays` and
+    `usd_kernel_check` for it.
+  - smlibwasm grows by 0.46 MB: 6,819,086 to 7,282,736 bytes (+6.8 %).
 ## Behaviour changes
 
 - A STEP file with a body that cannot be read no longer raises: the other bodies come back, with a
@@ -446,6 +510,24 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   shadowed by the import (or shadow it, defined after it).
 - The STEP, DXF and STL readers' private helpers changed shape (`dxf._read` takes text, not a path;
   `step.write_step` writes `_step_text`'s text), which only code that called them notices.
+- `load("x.brep")`, `export(shapes, "x.brep")` (and `exportFile`) read and write OpenCASCADE files
+  (X14) where they raised `ValueError: unknown file type '.brep'`; the messages for other
+  extensions list `.brep`: `use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .usda or .brep`
+  and `load reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep`. Code that
+  matched the old text matches the new one.
+  ```python
+  load("part.brep")                 # 0.4: ValueError: unknown file type '.brep'   0.5: the Part
+  part.export("part.brep")          # 0.4: ValueError                               0.5: the file
+  ```
+- `from smlibpy import *` also brings `export_brep`, `import_brep`, `to_brep` and `from_brep`: a
+  script's own names of these are shadowed by the import (or shadow it, defined after it).
+  ```python
+  from smlibpy import *
+  from build123d import import_brep as b3d_import_brep   # keep build123d's under another name
+  ```
+- The kernel's curve/curve intersection evaluates second derivatives in `sm_FilterSolution` (the
+  patch above): a little more work per call, the same results where the first derivative is not
+  zero.
 ## Not done
 
 - I6's wider coverage: reading `OFFSET_CURVE_3D` edges (the kernel's `SmOffsetCurve`) and edges
@@ -507,3 +589,20 @@ STEP files (448 in all), each imported, measured and written back to STEP before
 - X10: `export_step` of a list with an empty body among others still leaves it out silently (it
   raises only when nothing is left); `export_glb([])` and `export_obj([])` still write empty files
   (ai/todo/files.md #8).
+- X14: binary `.brep` is read, not written (`to_brep` writes ASCII, which every OpenCASCADE tool
+  reads). Names and colors are neither written nor read: the format has none (OpenCASCADE's XCAF
+  documents, `.xbf`, are not read). Curves and points outside faces are not read (a warning
+  counts them) and not written (`TypeError`); the bodies a file places are read at their
+  places, and `export_brep` writes every body where it is (no shared, located instances).
+- X14 writer: 2 of the 585 corpus bodies are refused with `KernelError` (a face whose boundary does
+  not close, crescendo part-0-1-1-12 face 1466; a face of no area, part 78), and a face that
+  crosses itself is written as it is (OpenCASCADE takes it for invalid, as `is_valid()` does).
+- X14 reader: the bridge's staging rebuilds some trimmed edges backwards: 4 of the 557 solids
+  written read back refused by the check (`an edge of length -0.0153 ...`; OpenCASCADE reads the
+  files valid), and the spring example comes back 2.4e-3 off with gaps the check refuses. Fixing
+  it needs the staging of edge parameter ranges reworked (usd-brep's `OcctStagingDriver`), which
+  was not done; `check=False` reads such files as they are.
+- X14 tests run without OpenCASCADE (OCP is not a test dependency): the figures of OpenCASCADE
+  for the test files are constants in `tests/test_lane_IX.py`, and the files written are checked
+  for the faults OpenCASCADE's check found, by a reader of the text in the test. The corpus and
+  the OpenCASCADE checks above were run by hand (OCP 8.0).

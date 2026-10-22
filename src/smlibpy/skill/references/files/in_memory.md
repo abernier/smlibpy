@@ -16,6 +16,7 @@ the same keywords.
 | DXF | `to_dxf(shapes, *, unit, plane)` | `from_dxf(data, *, layers, unit, tolerance)`, `from_dxf_wires(...)` | `str`; read from `str` or `bytes` |
 | USD | `to_usd(shapes, *, mesh, tolerance, angle, materials)` | `from_usd(data, *, ..., resolve)` | `str` (`.usda`); read from `str` or `bytes` |
 | IGES | | `from_iges(data, *, heal, strict)` | read from `str` or `bytes` |
+| OpenCASCADE `.brep` | `to_brep(shapes)` | `from_brep(data, *, heal, check)` | `str` (ASCII); read from `str` or `bytes` (ASCII or binary) |
 | SMLib | `to_smb(shapes, *, ascii)`, `to_smp(shapes, *, ascii)` | `from_smb(data)`, `from_smp(data)` | `bytes` |
 
 - `to_step` names the product `"part"` (a file: after the file) unless `name=` says otherwise.
@@ -39,4 +40,5 @@ print([s.name for s in from_smp(cache)])   # ['bracket', 'ball']
 ```
 
 ## Related
-`export`, `load`, `save_load`, `export_step`, `import_step`, `export_usd`, `import_usd`
+`export`, `load`, `save_load`, `export_step`, `import_step`, `export_usd`, `import_usd`, `export_brep`,
+`import_brep`

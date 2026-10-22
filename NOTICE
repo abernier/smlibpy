@@ -14,7 +14,9 @@ of USD BRep are in third_party/usd-brep/THIRD_PARTY_NOTICES.md. Binary distribut
 of smlibpy contain compiled USD BRep code and are subject to that license as well.
 A few USD BRep source files are compiled from copies modified by AWV Informatik AG to
 fix defects; the copies are in third_party/patches, each with a notice of what was
-changed, and third_party/patches/README.md lists the changes.
+changed, and third_party/patches/README.md lists the changes. The OpenCASCADE .brep
+bridge of USD BRep is compiled from copies in src/cpp/occt, some of them modified by AWV
+Informatik AG; src/cpp/occt/README.md lists the files and the changes.
 
 The default font of Text, Lato Regular (src/smlibpy/fonts/Lato-Regular.ttf), is included
 unmodified:

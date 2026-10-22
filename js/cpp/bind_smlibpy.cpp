@@ -18,6 +18,7 @@
 #include "face_draft.h"
 #include "fit.h"
 #include "measure.h"
+#include "occt.h"
 #include "part_file.h"
 #include "sheetmetal.h"
 #include "step_build.h"
@@ -759,6 +760,32 @@ val part_items(std::string data)
     });
 }
 
+// {bodies: [brep, ...], warnings: [...]} of an OpenCASCADE .brep file's contents (a Uint8Array or the
+// text of an ASCII file); the Breps are the caller's.
+val occt_read(std::string data, bool heal, bool check)
+{
+    return guard([&] {
+        smlibpy::OcctReadOptions options;
+        options.heal = heal, options.check = check;
+        smlibpy::OcctRead got = smlibpy::occt_read(data, options);
+        val bodies = val::array(), warnings = val::array();
+        for (SmBrep* b : got.bodies)
+            bodies.call<void>("push", ptr(b));
+        for (const std::string& w : got.warnings)
+            warnings.call<void>("push", w);
+        val out = val::object();
+        out.set("bodies", bodies);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// The ASCII OpenCASCADE .brep text of bodies (a compound when there are several).
+std::string occt_text(val breps)
+{
+    return guard([&] { return smlibpy::occt_text(pointers<SmBrep>(breps)); });
+}
+
 EMSCRIPTEN_BINDINGS(smlib_smlibpy)
 {
     function("ext__curve_data", &curve_data);
@@ -815,6 +842,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__usd_stage", &usd_stage);
     function("ext__part_bytes", &part_bytes);
     function("ext__part_items", &part_items);
+    function("ext__occt_read", &occt_read);
+    function("ext__occt_text", &occt_text);
     function("ext__face_measure", &face_measure);
     function("ext__nearest_points", &nearest_points);
     function("ext__curve_length", &curve_length);

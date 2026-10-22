@@ -66,9 +66,9 @@ geometry.setIndex(new THREE.BufferAttribute(mesh.triangles, 1))
 geometry.computeVertexNormals()
 ```
 
-Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj`, `toDxf`, `toUsd`, `toSmb`
-and `toSmp` give a file's contents, and `fromStep`, `fromIges`, `fromStl`, `fromDxf`, `fromUsd`,
-`fromSmb` and `fromSmp` read them, from text or bytes (smlibpy has the same pairs: `to_step`,
+Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj`, `toDxf`, `toUsd`, `toBrep`,
+`toSmb` and `toSmp` give a file's contents, and `fromStep`, `fromIges`, `fromStl`, `fromDxf`, `fromUsd`,
+`fromBrep`, `fromSmb` and `fromSmp` read them, from text or bytes (smlibpy has the same pairs: `to_step`,
 `from_step`, ...):
 
 ```js
@@ -1138,6 +1138,14 @@ export interface UsdReadOptions extends UsdImportOptions {
 }
 export function fromUsd(data: string | Uint8Array, options?: UsdReadOptions): Part | Shell | ShapeList<Part | Shell>;
 export function importUsd(path: string, options?: UsdImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export interface BrepImportOptions {
+    heal?: boolean;
+    check?: boolean;
+}
+export function toBrep(shapes: unknown): string;
+export function exportBrep(shapes: unknown, path: string): void;
+export function importBrep(path: string, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function fromBrep(data: string | Uint8Array, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
 ```
 
 ### Pictures and the viewer

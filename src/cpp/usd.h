@@ -11,6 +11,9 @@
 #include <vector>
 
 class SmBrep;
+namespace UsdBrepData {
+class UsdBrepArrayData;
+}
 
 namespace smlibpy {
 
@@ -83,5 +86,13 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
 // hold several: they are named prim, prim_1, ...), checked (see usd_stage), as the file has them
 // (without transforms or units). heal: run the kernel's import healer on them.
 std::vector<UsdItem> usd_read(const std::string& text, bool heal);
+
+// The checks usd_stage makes, for readers of other files that build their bodies through the BrepArray
+// arrays (occt.cpp). usd_check_arrays: what is wrong with the arrays against the rules of usd-brep's
+// validator that its conversion relies on ("" nothing; directions made unit as usd_stage does).
+// usd_kernel_check: the kernel's check of a body built from them (SmBrep::AssertValid), "" when it finds
+// nothing; `refuse` when a gap is more than 1e-3 of the body's size or not a number.
+std::string usd_check_arrays(UsdBrepData::UsdBrepArrayData& a);
+std::string usd_kernel_check(SmBrep* brep, bool& refuse);
 
 }  // namespace smlibpy
