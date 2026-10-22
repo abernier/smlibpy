@@ -9,8 +9,10 @@
 import createSmlib from '../wasm/smlibwasm.mjs'
 import { SIGNATURES } from './signatures.ts'
 import { OPTIONS } from './_options.ts'
-// (first: in a browser it starts defeature's probe worker while the module loads, see there)
-import './_guard.ts'
+import { KernelError, ModelingError } from './_errors.ts'
+import { _createModule } from './_loader.ts'
+
+export { KernelError, ModelingError }
 
 // biome-ignore lint: the module's functions take and return what their binding says
 type Any = any
@@ -25,8 +27,10 @@ export interface Kernel {
   [name: string]: Any
 }
 
-/** The module itself (its file system is `module.FS`). */
-export const module: Any = await createSmlib()
+/** The module itself (its file system is `module.FS`), loaded from the file next to its loader,
+ * or from where `init` (init.ts) said. (defeature's probe worker imports this module: it imports
+ * no module that starts a worker, see _guard.ts) */
+export const module: Any = await _createModule(createSmlib)
 module.init()
 
 /**
@@ -167,7 +171,8 @@ function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
  * through the call's own code, which would have released its stack (embind does that only for
  * some calls). Without this every failure kept 16 to 900 bytes of the 4 MB stack (a trap
  * several KB), and failures are normal: a raycast tries every face, operations retry. After
- * about 240,000 failures every call failed.
+ * about 240,000 failures every call failed. A C++ exception that leaves the call becomes the
+ * error the bindings of smlibpy's own C++ make of theirs (`_cppError`).
  */
 function restoring(m: Any, fn: (...args: Any[]) => Any): (...args: Any[]) => Any {
   return (...args: Any[]) => {
@@ -176,9 +181,39 @@ function restoring(m: Any, fn: (...args: Any[]) => Any): (...args: Any[]) => Any
       return fn(...args)
     } catch (e) {
       m.stackRestore(sp)
-      throw e
+      throw _cppError(m, e)
     }
   }
+}
+
+/**
+ * A C++ exception that left a binding of the kernel (`guard` in js/cpp/common.h catches those of
+ * smlibpy's own C++) as the error `guard` makes of it: an Error saying SM_ERR_OUT_OF_MEMORY for
+ * std::bad_alloc (the memory is used up), a RangeError for the exceptions Python makes a
+ * ValueError of, an Error with its message otherwise. It reaches JavaScript as a
+ * WebAssembly.Exception, which is no Error and has no message, and would hold its C++ object until
+ * freed: `exception_info` throws it back into C++, which tells its type and frees it. Anything
+ * else stays as it is.
+ */
+function _cppError(m: Any, e: unknown): unknown {
+  const Exception = typeof WebAssembly === 'undefined' ? undefined : (WebAssembly as Any).Exception // (not in TypeScript's lib yet)
+  if (typeof Exception !== 'function' || !(e instanceof Exception)) return e
+  const sp = m.stackSave()
+  let info: [string, string] | null = null
+  try {
+    info = m.runtime__exception_info(() => {
+      throw e
+    })
+  } catch {
+    return e // (no C++ exception)
+  } finally {
+    m.stackRestore(sp)
+  }
+  if (info === null) return e
+  const [kind, what] = info
+  if (kind === 'memory') return new Error(`SM_ERR_OUT_OF_MEMORY: the kernel ran out of memory (${what})`)
+  if (kind === 'value') return new RangeError(what)
+  return new Error(what)
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -224,38 +259,7 @@ function keywords(name: string, fn: (...args: Any[]) => Any, sig: Signature): (.
 }
 
 // -------------------------------------------------------------------------------- errors
-/** A modeling operation cannot be done (for example a fillet radius that does not fit). */
-export class ModelingError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ModelingError'
-  }
-}
-
-/**
- * An SMLib operation failed.
- *
- * `operation` names the smlibwasm call, `status` the kernel status code (e.g.
- * `SM_ERR_INVALID_INPUT`) and `hint` a suggestion when one is known.
- */
-export class KernelError extends ModelingError {
-  readonly operation: string
-  readonly status: string | null
-  readonly detail: string
-  readonly hint: string | null
-
-  constructor(operation: string, detail: string, status: string | null = null, hint: string | null = null) {
-    let msg = `${operation} failed`
-    if (status) msg += ` (${status})`
-    if (hint) msg += `: ${hint}`
-    super(msg)
-    this.name = 'KernelError'
-    this.operation = operation
-    this.status = status
-    this.detail = detail
-    this.hint = hint
-  }
-}
+// (ModelingError and KernelError: _errors.ts, a module without the kernel)
 
 const STATUS_RE = /(SM_[A-Z0-9_]+)/
 
@@ -281,18 +285,78 @@ function _isTrap(e: unknown): boolean {
   return typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
 }
 
-/** Runs `fn`; a failure of the kernel becomes a KernelError with context. */
+/** The kernel status of memory that is used up. */
+const OUT_OF_MEMORY = 'SM_ERR_OUT_OF_MEMORY'
+/** Bytes in a megabyte, as the messages count them. */
+const MB = 2 ** 20
+
+/**
+ * What a trap says. The kernel uses some memory it asked for without looking whether it got it,
+ * and crashes there when the module's memory is used up: a trap after an allocation failed, or
+ * with the memory all but at its limit, is the kernel running out of memory.
+ */
+export function _crashText(message: string, usage: { heap: number; limit: number; failed: boolean } | null): string {
+  if (usage !== null && (usage.failed || usage.limit - usage.heap < 64 * MB)) {
+    return `${OUT_OF_MEMORY}: the kernel crashed when it ran out of memory (${message})`
+  }
+  return `the kernel crashed (${message})`
+}
+
+/** The module's memory as the binding tells it (null where it cannot). */
+function _usage(): { used: number; heap: number; limit: number; failed: boolean } | null {
+  try {
+    return k.runtime.memory_usage()
+  } catch {
+    return null
+  }
+}
+
+/** The hint of a KernelError for memory that is used up. */
+function _outOfMemoryHint(): string {
+  const usage = _usage()
+  const numbers = usage === null ? '' : ` (${Math.round(usage.used / MB)} MB in use, at most ${Math.round(usage.limit / MB)} MB)`
+  return `the kernel ran out of memory${numbers}: dispose() parts you no longer need, or let the event loop run so that the garbage collector frees them`
+}
+
+/** Runs `fn`; a failure of the kernel becomes a KernelError with context. Memory that is used up
+ * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`. */
 export function kernelCall<T>(operation: string, fn: () => T, hint: string | null = null): T {
   try {
     return fn()
   } catch (e) {
     if (e instanceof KernelError || !_isRuntimeError(e)) throw e
-    const text = _isTrap(e) ? `the kernel crashed (${(e as Error).message})` : (e as Error).message
+    const text = _isTrap(e) ? _crashText((e as Error).message, _usage()) : (e as Error).message
     const m = STATUS_RE.exec(text)
-    const error = new KernelError(operation, text, m ? m[1] : null, hint)
+    const status = m ? m[1] : null
+    const error = new KernelError(operation, text, status, status === OUT_OF_MEMORY ? _outOfMemoryHint() : hint)
     ;(error as Any).cause = e
     throw error
   }
+}
+
+// -------------------------------------------------------------------------------- memory
+/** What the kernel's memory holds, in bytes (see `memoryUsage`). */
+export interface MemoryUsage {
+  /** What the kernel's objects take: the bytes its allocator has handed out and not got back. */
+  readonly used: number
+  /** The module's memory: it grows when the kernel needs more, up to `limit`, and never shrinks. */
+  readonly heap: number
+  /** What the module's memory can grow to: 4 GB (less 64 kB), as far as a 32-bit WebAssembly
+   * module reaches. */
+  readonly limit: number
+}
+
+/**
+ * What the kernel's memory holds, in bytes: what its objects take (`used`), how far the module's
+ * memory has grown (`heap`) and how far it can grow (`limit`, 4 GB). Each body, mesh and curve
+ * lives there until it is disposed or garbage collected; a kernel call that finds the memory used
+ * up fails with a KernelError of status SM_ERR_OUT_OF_MEMORY. The module of each thread (a page, a
+ * worker) has its own memory. (A JavaScript-only function: smlibpy's kernel shares the memory of
+ * its process.)
+ */
+export function memoryUsage(): MemoryUsage {
+  const { used, heap, limit } = k.runtime.memory_usage()
+  return { used, heap, limit }
 }
 
 // -------------------------------------------------------------------------------- handles

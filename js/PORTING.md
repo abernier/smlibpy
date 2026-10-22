@@ -14,9 +14,15 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
      functions, `<class>_<method>` (`brep_faces(b)` for `b.faces()`, `curve_evaluate(c, t)`).
    - bind_smlibpy.cpp: smlibpy's C++ as `<submodule>__<name>` (`ext__curve_data`,
      `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy`.
+   - bind_runtime.cpp: the module itself, `runtime__memory_usage` (`memoryUsage()`) and
+     `runtime__exception_info`, which tells kernel.ts what a C++ exception is.
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
-     message is the one Python's RuntimeError carries.
+     message is the one Python's RuntimeError carries. A C++ exception becomes the error Python
+     gets: `guard` (common.h) catches those of smlibpy's C++; those of the kernel's bindings
+     leave the module as a WebAssembly.Exception, which kernel.ts turns into the same error
+     (`_cppError`); std::bad_alloc is an Error saying SM_ERR_OUT_OF_MEMORY (Python's
+     MemoryError).
 2. **The kernel layer** (js/src/kernel.ts): `k` is Python's `smlibpy._core`: `k.create_box`,
    `k.ext.curve_data`, `k.BooleanOp.UNION`, `k.brep_faces`. Functions take Python's defaults
    and keywords from their signature (signatures.ts for the kernel's calls, the table in
@@ -130,6 +136,22 @@ the Python code works around a kernel defect, so does the TypeScript.
   and its body comes back as `.smb`) is `_isolated(what, work, job, hint)`: the probe worker hands
   the body's `.smb` contents, or the step's error, back through a SharedArrayBuffer, a piece at a
   time, while the caller waits with `Atomics.wait`; a trap there is the crash of the copy.
+
+- **Entries without the kernel.** `@classcad/smlibwasm/worker` (worker.ts) and
+  `@classcad/smlibwasm/init` (init.ts) load no kernel of their own: statically they import only
+  geometry.ts, _errors.ts (`ModelingError`, `KernelError`, which kernel.ts re-exports),
+  _threads.ts and _loader.ts, and the package's other modules with `import()` once a value needs them; worker.ts
+  makes and reads bodies with shapes.ts's `_Body._wrap`, `Edge._of`, `Vertex._of` and `Wire._raw`.
+  kernel.ts makes the module through _loader.ts (`_createModule`), with the options `init` was
+  given. Bundlers build every `new Worker(new URL('...', import.meta.url))` with what it imports:
+  the kernel's modules (which defeature's probe worker imports) import neither _guard.ts nor
+  index.ts, worker options are literal, and no `new URL(..., import.meta.url)` names its file by an
+  expression (lane_WN.test.ts checks all three).
+- **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
+  `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
+  file comes from) and `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB; Python's
+  kernel shares its process's). They follow the house style but have no smlibpy counterpart and
+  no entry in `_options.ts`.
 
 ## Status
 

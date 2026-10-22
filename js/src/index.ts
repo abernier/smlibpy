@@ -8,6 +8,9 @@
 //     plate = plate.cut(GridLocations(60, 40, 2, 2).mul(Cylinder(4, 10)))
 //     const step = toStep(plate)
 
+// (first: in a browser it starts defeature's probe worker while the kernel loads, see there)
+import './_guard.ts'
+
 export const version = '0.4.0'
 
 // geometry
@@ -100,5 +103,6 @@ export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } fr
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
-// errors and warnings
-export { KernelError, ModelingError, setWarningHandler } from './kernel.ts'
+// errors, warnings and memory
+export { KernelError, ModelingError } from './_errors.ts'
+export { memoryUsage, setWarningHandler, type MemoryUsage } from './kernel.ts'

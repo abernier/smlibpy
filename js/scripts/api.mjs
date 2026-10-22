@@ -21,7 +21,12 @@ const SECTIONS = [
   ['Meshes', ['mesh']],
   ['Files', ['exporters', 'step_import', 'dxf', 'usd']],
   ['Pictures and the viewer', ['render', 'viewer']],
-  ['Errors', ['kernel']],
+  ['Errors and memory', ['_errors', 'kernel']],
+]
+// the package's other entries (the exports of package.json), each with everything it exports
+const ENTRIES = [
+  ['The worker entry: @classcad/smlibwasm/worker', 'worker'],
+  ['Loading the kernel: @classcad/smlibwasm/init', 'init'],
 ]
 
 const parse = (name) =>
@@ -99,6 +104,14 @@ for (const [title, modules] of SECTIONS) {
           .replace(/\[\n((?:[ ]+[^\n\[\]{}]+\n)+)[ ]*\]/g, (_, items) => `[${items.trim().split(/,?\n\s*/).join(', ')}]`))
   }
   if (parts.length) out += `\n### ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
+}
+for (const [title, module] of ENTRIES) {
+  const file = parse(module)
+  const exporting = (st) => st.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+  const parts = file.statements
+    .filter((st) => exporting(st) && names(st).length && names(st).every((n) => !n.startsWith('_')))
+    .map((st) => printer.printNode(ts.EmitHint.Unspecified, declaration(st), file).replace(/^export declare /gm, 'export '))
+  out += `\n### ${title}\n\n\`\`\`ts\n${parts.join('\n')}\n\`\`\`\n`
 }
 
 const text = readFileSync(page, 'utf8')

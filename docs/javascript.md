@@ -23,8 +23,10 @@ npm install @classcad/smlibwasm
 
 The package is an ES module with type declarations. Importing it loads the kernel: the import
 waits for it once, and every call after that is synchronous. The kernel is a WebAssembly file
-next to the module, found with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite, webpack 5
-and other bundlers resolve on their own. Node needs version 22.18 or later.
+next to the module, found with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite and
+webpack 5 resolve on their own and copy into the build. esbuild and Bun bundle the package but
+not the file: copy `smlibwasm.wasm` next to the bundle, or say where it is with `init` (below).
+Node needs version 22.18 or later.
 
 Vite's dev server bundles dependencies in advance and loses the file on the way; leave the package
 out of that (a build needs nothing):
@@ -33,6 +35,25 @@ out of that (a build needs nothing):
 // vite.config.js
 export default { optimizeDeps: { exclude: ['@classcad/smlibwasm'] } }
 ```
+
+### Loading the kernel from elsewhere
+
+`init` from `@classcad/smlibwasm/init` says where the kernel comes from: a CDN or another path
+(`locateFile`), bytes fetched or cached already (`wasmBinary`), a module compiled once and handed
+to every worker (`wasmModule`), or Emscripten's own hook (`instantiateWasm`). It loads the
+package and resolves to its exports:
+
+```js
+import { init } from '@classcad/smlibwasm/init'
+
+const { Box } = await init({ locateFile: (file) => `https://cdn.example.com/smlibwasm/${file}` })
+```
+
+The options count only before the package loads the kernel, which it does when anything first
+imports `@classcad/smlibwasm`: take the package from `init`'s promise, or call `init` in a module
+that is imported before the first module that imports the package. Options that come later are an
+`Error`. A kernel that fails to load (a wrong URL, bytes that are no WebAssembly) rejects the
+promise. `@classcad/smlibwasm/init` itself does not load the kernel.
 
 ## Size
 
@@ -52,19 +73,43 @@ published, unminified; a bundler that minifies it makes it smaller.
 
 ## In the browser
 
-A part's mesh goes straight into a renderer such as three.js:
+A part's mesh and edges go into a renderer such as three.js:
 
 ```js
 import * as THREE from 'three'
 import { Box, Cylinder } from '@classcad/smlibwasm'
 
 const part = Box(40, 30, 10).cut(Cylinder(6, 20))
-const mesh = part.mesh(0.01) // chord height tolerance in mm
-const geometry = new THREE.BufferGeometry()
-geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mesh.vertices), 3))
-geometry.setIndex(new THREE.BufferAttribute(mesh.triangles, 1))
-geometry.computeVertexNormals()
+
+// faces: three corners per triangle, each with the kernel's normal of the exact surface there
+const { vertices, triangles, normals } = part.mesh(0.01) // chord height tolerance in mm
+const position = new Float32Array(triangles.length * 3)
+triangles.forEach((v, i) => position.set(vertices.subarray(3 * v, 3 * v + 3), 3 * i))
+const faces = new THREE.BufferGeometry()
+faces.setAttribute('position', new THREE.BufferAttribute(position, 3))
+faces.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+
+// edges: the part's own, as line segments
+const points = []
+for (const edge of part.edges()) {
+  const n = edge.geomType === 'line' ? 1 : 64
+  for (let i = 0; i < n; i++) points.push(edge.pointAt(i / n), edge.pointAt((i + 1) / n))
+}
+const edges = new THREE.BufferGeometry().setFromPoints(points)
+
+const model = new THREE.Group()
+model.add(new THREE.Mesh(faces, new THREE.MeshStandardMaterial({ polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })))
+model.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 'black' })))
+model.rotation.x = -Math.PI / 2 // Z up (smlibwasm) to Y up (three.js)
+scene.add(model)
 ```
+
+The mesh's vertices are shared by the triangles around them, also across the sharp edges between
+faces; its `normals` hold one normal per triangle corner, the exact surface's. Each corner gets its
+own vertex, so that the box keeps its sharp edges and the hole stays round:
+`computeVertexNormals()` on the shared vertices averages the normals of faces that meet at an
+edge, up to 89 degrees off on this part. The polygon offset keeps the edges in front of the faces
+they bound.
 
 Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj` and `toDxf` give a
 file's contents, and `fromStep`, `fromStl` and `fromDxf` read them, from text or bytes:
@@ -115,36 +160,85 @@ A mesh (`part.mesh()`, `tessellate`) is its arrays: the kernel's mesh it is made
 soon as they are copied out, and mesh Booleans build one from the arrays when they need it.
 `mesh.dispose()` frees what a mesh still holds in the kernel; the mesh stays usable.
 
+The kernel's memory can grow to 4 GB, as far as a 32-bit WebAssembly module reaches (a browser
+may stop it earlier), and it never shrinks; each thread's kernel has its own. `memoryUsage()`
+tells how much of it the kernel's objects take (`used`), how far it has grown (`heap`) and how far
+it can grow (`limit`), in bytes. A call that finds it used up fails with a `KernelError` of status
+`SM_ERR_OUT_OF_MEMORY` that says how much is in use: dispose of parts no longer needed, or let the
+event loop run, since the garbage collector frees the kernel objects of bodies that are gone only
+between tasks.
+
+```js
+const { used, limit } = memoryUsage()
+if (used > 0.8 * limit) console.warn(`the kernel holds ${(used / 2 ** 20).toFixed(0)} MB`)
+```
+
 ## Running off the main thread
 
 Every call is synchronous and runs on the thread that imported the package, so on a page's main
-thread a long call (a fine mesh of a large part, the shell of a large part) freezes
-the page until it returns. The package runs unchanged in a Web Worker, or a Node
-`worker_threads` worker, each with a kernel of its own. Bodies move between kernels exactly as the
-contents of `.smb` files, meshes as their typed arrays, which `postMessage` can transfer:
+thread a long call (a fine mesh of a large part, the shell of a large part) freezes the page
+until it returns. `@classcad/smlibwasm/worker` runs functions in a worker (a Web Worker, or a Node
+`worker_threads` worker), a kernel of its own, while the page goes on. The functions are plain
+smlibwasm, in a module of their own that the page, Node and the worker can all import:
 
 ```js
-// worker.js
-import { Cylinder, fromSmb, toSmb } from '@classcad/smlibwasm'
+// models.js
+import { Box, Cylinder, GridLocations, Z } from '@classcad/smlibwasm'
 
-onmessage = ({ data }) => {
-  const part = fromSmb(data).cut(Cylinder(6, 20))
-  const mesh = part.mesh()
-  const reply = { smb: toSmb(part, { ascii: false }), vertices: mesh.vertices, triangles: mesh.triangles }
-  postMessage(reply, [reply.smb.buffer, reply.vertices.buffer, reply.triangles.buffer])
+export function plate(width, holes, radius) {
+  const box = Box(width, 60, 10)
+  const rounded = box.fillet(box.edges().parallelTo(Z), radius)
+  return rounded.cut(GridLocations((width - 20) / (holes - 1), 40, holes, 2).mul(Cylinder(3, 10)))
 }
+
+export const grams = (part) => part.volume * 7.85e-3 // steel
+```
+
+```js
+// cad.worker.js: the whole worker
+import { expose } from '@classcad/smlibwasm/worker'
+
+expose(() => import('./models.js'))
 ```
 
 ```js
 // main.js
-import { Box, fromSmb, toSmb } from '@classcad/smlibwasm'
+import { KernelWorker } from '@classcad/smlibwasm/worker'
 
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
-worker.onmessage = ({ data }) => console.log(fromSmb(data.smb).volume, data.triangles.length / 3)
-worker.postMessage(toSmb(Box(40, 30, 10), { ascii: false }))
+const cad = new KernelWorker(() => new Worker(new URL('./cad.worker.js', import.meta.url), { type: 'module' }), { timeout: 30_000 })
+const part = await cad.call('plate', [80, 3, 6]) // a Part, made in the worker
+const weight = await cad.call('grams', [part]) // and back into it
 ```
 
-`worker.terminate()` stops a worker at once, whatever its kernel is doing.
+The worker starts with the first call (`cad.start()` starts it at once) and runs one call at a
+time, in the order they come; `cad.functions.plate(80, 3, 6)` is the same call. What crosses:
+
+- **Bodies** (`Part`, `Shell`, `Sketch`) as the contents of binary `.smb` files, exact, with their
+  name, color and sketch plane; faces, edges and vertices of a body as the body and their place in
+  it, so that `part.fillet(edge, 1)` in the worker fillets the edge picked here.
+- **Meshes** as their typed arrays, which the receiving thread takes over without a copy
+  (transferred); the sender keeps its own.
+- **Vectors, locations, planes, axes and boxes** as their numbers; numbers, strings, arrays, plain
+  objects and typed arrays as themselves. Anything else, such as a standalone `Line` or a
+  `StepModel`, is a `TypeError`: return what it holds instead.
+
+A call resolves to what the function returned, or rejects with what it threw, as the same class:
+`ModelingError`, `KernelError` (with its operation, status and hint), `TypeError`, `RangeError`.
+`call(name, args, { timeout, signal })` limits one call: a call that runs longer than `timeout`
+milliseconds (the `KernelWorker`'s `timeout` by default; none unless given) rejects with a
+`TimeoutError`, and one whose `AbortSignal` fires with the signal's reason. The time a call waits
+for the calls before it, or for the worker to start, does not count; a call that waits is simply
+dropped. A call that runs is stopped with its worker: `terminate()` stops a worker at once,
+whatever its kernel is doing, which nothing else can. The next call starts a new worker, and so
+does the call after one whose kernel crashed or ran out of memory, so that every call finds a
+sound kernel. `cad.terminate()` stops the worker and rejects the calls that wait.
+
+The page loads the kernel only for what needs it: a body, mesh, face, edge or vertex that goes to
+the worker or comes back. A page whose worker returns plain data, a file (`toGlb`, `toStep`) or a
+mesh's arrays (`{ vertices: mesh.vertices, ... }`) never loads it. In Node, give the module's URL:
+`new KernelWorker(new URL('./cad.worker.js', import.meta.url))`; an idle worker does not keep Node
+running. webpack 5 bundles the worker as it is; Vite with `worker: { format: 'es' }` in its config
+(Vite 7; Vite 4 stalls on the package's own workers inside yours).
 
 `removeFillets`, `removeFaces` and `surfaceFillet` run each kernel step first in a probe worker,
 a kernel of its own, on copies of the bodies, as smlibpy runs it first in a forked copy of its
@@ -158,9 +252,10 @@ for its worker with `Atomics.wait`, which Node allows on every thread and browse
 of a cross-origin isolated page (one served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
 isolation, the steps run directly, and a step that loops does not come back: remove fillets and
-faces in a worker. There the package starts a small worker of its own when it is imported (a
-browser starts a worker only while the thread that creates it is not busy), which starts the
-probe worker, with the kernel, for the first step. The two are the package's
+faces in a worker (a `KernelWorker` call with a timeout stops even those). There the package
+starts a small worker of its own when it is imported (a browser starts a worker only while the
+thread that creates it is not busy), which starts the probe worker, with the kernel, for the first
+step. The two are the package's
 `_defeature_supervisor.js` and `_defeature_worker.js`, loaded as
 `new Worker(new URL('./_defeature_supervisor.js', import.meta.url))`, which bundlers recognise. A
 probe worker that does not start within 30 s is given up, with a warning, and the steps run
@@ -1197,7 +1292,7 @@ export interface ShowOptions {
 export function show(...args: unknown[]): string;
 ```
 
-### Errors
+### Errors and memory
 
 ```ts
 export class ModelingError extends Error {
@@ -1210,5 +1305,55 @@ export class KernelError extends ModelingError {
     readonly hint: string | null;
     constructor(operation: string, detail: string, status?: string | null, hint?: string | null);
 }
+export interface MemoryUsage {
+    readonly used: number;
+    readonly heap: number;
+    readonly limit: number;
+}
+export function memoryUsage(): MemoryUsage;
 export function setWarningHandler(handler: (message: string) => void): void;
+```
+
+### The worker entry: @classcad/smlibwasm/worker
+
+```ts
+export type FunctionName<M> = {
+    [K in keyof M]: M[K] extends (...args: any[]) => unknown ? K : never;
+}[keyof M] & string;
+export type Remote<M> = {
+    readonly [K in FunctionName<M>]: M[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+};
+export interface WorkerLike {
+    postMessage(message: unknown, transfer?: readonly Transferable[]): void;
+    terminate(): unknown;
+}
+export interface KernelWorkerOptions {
+    timeout?: number;
+    startTimeout?: number;
+}
+export interface CallOptions {
+    timeout?: number;
+    signal?: AbortSignal;
+}
+export class KernelWorker<M extends object = Record<string, (...args: any[]) => unknown>> {
+    constructor(worker: URL | string | (() => WorkerLike), options?: KernelWorkerOptions);
+    call<K extends FunctionName<M>>(name: K, args?: M[K] extends (...a: infer A) => unknown ? A : never, options?: CallOptions): Promise<M[K] extends (...a: any[]) => infer R ? Awaited<R> : never>;
+    get functions(): Remote<M>;
+    start(): Promise<string[]>;
+    get pending(): number;
+    terminate(): void;
+}
+export function expose(functions: object | (() => object | Promise<object>)): void;
+```
+
+### Loading the kernel: @classcad/smlibwasm/init
+
+```ts
+export interface InitOptions {
+    locateFile?: (path: string, prefix: string) => string;
+    wasmBinary?: ArrayBuffer | ArrayBufferView;
+    wasmModule?: WebAssembly.Module;
+    instantiateWasm?: (imports: WebAssembly.Imports, receive: (instance: WebAssembly.Instance) => void) => unknown;
+}
+export function init(options?: InitOptions): Promise<typeof import('./index.ts')>;
 ```

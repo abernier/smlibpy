@@ -43,3 +43,8 @@ target_link_options(smlibwasm PRIVATE
   -Wl,--stack-first
   -sFILESYSTEM=1
   -sEXPORTED_RUNTIME_METHODS=FS,stackSave,stackRestore)
+
+# The loader bundles for the browser (webpack 5, esbuild, Vite): see scripts/patch-loader.cmake.
+add_custom_command(TARGET smlibwasm POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" "-DLOADER=$<TARGET_FILE:smlibwasm>" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch-loader.cmake"
+  VERBATIM)

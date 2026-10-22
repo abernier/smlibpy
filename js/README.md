@@ -28,7 +28,9 @@ The package is an ES module with type declarations. Importing it loads the kerne
 file next to the module, so the first import takes a moment and everything after it is synchronous.
 The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite and webpack 5
 resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
-to the config. Node needs version 22.18 or later.
+to the config. esbuild and Bun leave the file out of their bundles: copy it, or say where it is with
+`init` from `@classcad/smlibwasm/init`, which also takes the kernel's bytes or a compiled module.
+Node needs version 22.18 or later.
 
 A browser loads about 2.0 MB with brotli: 1.7 MB for the kernel (6.7 MB uncompressed) and 0.3 MB for
 the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
@@ -60,13 +62,16 @@ Every body lives in the kernel's memory, which the JavaScript garbage collector 
 body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
 `using part = ...`) frees it at once, which keeps memory flat in long loops. The faces, edges and
 vertices of a disposed body go with it. A mesh is its arrays: the kernel's mesh is freed once
-they are copied out.
+they are copied out. The kernel's memory can grow to 4 GB; `memoryUsage()` tells how much it holds,
+and a call that finds it used up fails with a `KernelError` of status `SM_ERR_OUT_OF_MEMORY`.
 
 ## Running off the main thread
 
-Calls are synchronous; on a page's main thread a long one freezes the page. The package runs
-unchanged in a Web Worker, with a kernel of its own; bodies move between kernels as `.smb`
-contents (`toSmb`, `fromSmb`). `removeFillets` and `removeFaces` stop a kernel step that loops
+Calls are synchronous; on a page's main thread a long one freezes the page.
+`@classcad/smlibwasm/worker` runs your functions in a worker with a kernel of its own
+(`expose` there, `new KernelWorker(...)` here): bodies, faces, edges, meshes and vectors cross as
+themselves, a call can have a timeout and an AbortSignal, and a call that runs too long ends with
+its worker, which the next call replaces. `removeFillets` and `removeFaces` stop a kernel step that loops
 after `GUARD_SECONDS` in Node and in workers of a cross-origin isolated page, not on a page's
 main thread; there `shell`, `offset` and `thicken` run their kernel steps in a kernel of their own. See [the docs](https://smlibpy.classcad.ch/docs/javascript#running-off-the-main-thread).
 
