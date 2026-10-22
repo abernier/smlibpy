@@ -2,7 +2,8 @@
 // out-of-memory and C++ exception errors (W8), the three.js conversion of docs/javascript.md;
 // kernel steps whose result comes back from the probe worker (N1), scope() and the port's own
 // temporaries (W9), memory regressions (N2) and the fuzz harness (N3); crashes of the kernel
-// (W10), the package's typings (W11) and the API reference (W12).
+// (W10), the package's typings (W11) and the API reference (W12); WOFF2, CFF2 and seac fonts
+// (W13), files in memory (W14) and the raw kernel layer with all of SmPyLib's calls (W15).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -18,6 +19,7 @@ import { init } from '../src/init.ts'
 import type * as Models from './lane_WN_models.ts'
 import { Axis, Circle, Cone, GridLocations, Polygon, Polyline, Rectangle, Slot, Sphere, Text, X, Y, Z, extrude, fromSmb, loft, revolve, scope, setGuardBooleans, setGuardSeconds, surfaceFillet, sweep, Line, toSmb } from '../src/index.ts'
 import { plate } from './lane_WN_models.ts'
+import { approx } from './_approx.ts'
 
 const WORKER = new URL('./lane_WN_worker.ts', import.meta.url)
 const SRC = new URL('../src/', import.meta.url)
@@ -1091,4 +1093,351 @@ test('the API reference shows what every body has as members of Part, Shell and 
   assert.ok(!/\b_[A-Za-z]\w*/.test(code), code.match(/.*\b_[A-Za-z]\w*.*/)?.[0])
   for (const cls of ['Face', 'Edge']) assert.ok(!shown.get(cls)?.has('constructor'), cls)
   assert.ok(shown.get('Wire')?.has('constructor'))
+})
+
+// ================================================================================ W13: fonts in the browser too
+const FONTS = new URL('../../tests/data/', import.meta.url)
+const fontFile = (name: string) => new Uint8Array(readFileSync(new URL(name, FONTS)))
+
+test('the Brotli decoder decodes the reference encoder\'s streams, and refuses damaged ones (W13)', async () => {
+  const { BrotliError, decompress } = await import('../src/_brotli.ts')
+  const { createHash } = await import('node:crypto')
+  const { vectors } = JSON.parse(readFileSync(new URL('brotli-vectors.json', FONTS), 'utf8'))
+  assert.equal(vectors.length, 13)
+  for (const v of vectors) {
+    const data = Uint8Array.from(Buffer.from(v.brotli, 'base64'))
+    if (v.error) {
+      assert.throws(() => decompress(data), BrotliError, v.name)
+      continue
+    }
+    const out = decompress(data)
+    assert.deepEqual([out.length, createHash('sha256').update(out).digest('hex')], [v.length, v.sha256], v.name)
+  }
+  const named = (name: string) => Uint8Array.from(Buffer.from(vectors.find((v: { name: string }) => v.name === name).brotli, 'base64'))
+  assert.throws(() => decompress(named('cut short')), { name: 'BrotliError', message: 'the data ends early' })
+  assert.throws(() => decompress(named('padding bits that are not zero')), { message: 'padding bits that are not zero' })
+  assert.ok(new BrotliError('x') instanceof RangeError) // (Python's ValueError)
+  // and the same as node's own decoder on what it encodes: text with the dictionary's words, binary data
+  const zlib = await import('node:zlib')
+  const words = Buffer.from('The Time of the Code: data, life and work. '.repeat(50) + 'ÜBER ÇA '.repeat(20))
+  for (const quality of [1, 5, 11]) {
+    const br = zlib.brotliCompressSync(words, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: quality } })
+    assert.deepEqual(Buffer.from(decompress(br)), words)
+  }
+})
+
+test('damaged Brotli streams fail as BrotliErrors: every bit flipped, every length cut (W13)', async () => {
+  const { BrotliError, decompress } = await import('../src/_brotli.ts')
+  const { vectors } = JSON.parse(readFileSync(new URL('brotli-vectors.json', FONTS), 'utf8'))
+  const data = Uint8Array.from(Buffer.from(vectors.find((v: { name: string }) => v.name.startsWith('text: dictionary')).brotli, 'base64'))
+  let errors = 0
+  for (let i = 0; i < data.length * 8; i++) {
+    const damaged = data.slice()
+    damaged[i >> 3] ^= 1 << (i & 7)
+    for (const d of [damaged, data.subarray(0, i >> 3)]) {
+      try {
+        decompress(d)
+      } catch (e) {
+        assert.ok(e instanceof BrotliError, String(e))
+        errors++
+      }
+    }
+  }
+  assert.ok(errors > 0)
+})
+
+test('inflate is zlib\'s, its errors too; the Brotli dictionary is RFC 7932\'s, as smlibpy has it (W13)', async () => {
+  const { inflate, ZlibError } = await import('../src/_inflate.ts')
+  const { _words } = await import('../src/_brotli.ts')
+  const zlib = await import('node:zlib')
+  const data = Buffer.concat([readFileSync(new URL('test-quadratic.ttf', FONTS)), Buffer.from('abc'.repeat(1000))])
+  for (const level of [0, 1, 9]) {
+    for (const strategy of [zlib.constants.Z_DEFAULT_STRATEGY, zlib.constants.Z_FIXED, zlib.constants.Z_HUFFMAN_ONLY]) {
+      assert.deepEqual(Buffer.from(inflate(zlib.deflateSync(data, { level, strategy }))), data)
+    }
+  }
+  const z = zlib.deflateSync(data)
+  assert.throws(() => inflate(z.subarray(0, z.length - 10)), ZlibError)
+  const bad = Buffer.from(z)
+  bad[bad.length - 1] ^= 1 // (the checksum)
+  assert.throws(() => inflate(bad), { name: 'ZlibError', message: 'incorrect data check' })
+  assert.throws(() => inflate(Uint8Array.of(0x78, 0x00, 0, 0)), { message: 'incorrect header check' })
+  // the dictionary: what smlibpy reads from src/smlibpy/_brotli_dictionary.bin
+  const { createHash } = await import('node:crypto')
+  const words = _words()
+  assert.equal(words.length, 122784)
+  assert.equal(createHash('sha256').update(words).digest('hex'), '20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70')
+  assert.deepEqual(Buffer.from(words), readFileSync(new URL('../../src/smlibpy/_brotli_dictionary.bin', import.meta.url)))
+})
+
+test('WOFF2 fonts read as the fonts they hold: transformed glyf, loca and hmtx tables, CFF (W13)', async () => {
+  const { Font } = await import('../src/font.ts')
+  const ttf = new Font(fontFile('test-quadratic.ttf'))
+  const otf = new Font(fontFile('test-cubic.otf'))
+  for (const [name, ref] of [['test-quadratic.woff2', ttf], ['test-quadratic-plain.woff2', ttf], ['test-cubic.woff2', otf]] as const) {
+    const f = new Font(fontFile(name))
+    assert.deepEqual([f.name, f.unitsPerEm, f.numGlyphs, f.capHeight], [ref.name, ref.unitsPerEm, ref.numGlyphs, ref.capHeight])
+    assert.deepEqual(f.characters(), ref.characters())
+    for (let g = 0; g < ref.numGlyphs; g++) {
+      assert.equal(f.advance(g), ref.advance(g))
+      assert.deepEqual(f.outline(g), ref.outline(g), `${name} ${g}`)
+    }
+    assert.equal(f.kerningSource, ref.kerningSource)
+  }
+  const woff2 = new Font(fontFile('test-quadratic.woff2'))
+  assert.equal(woff2.kerning(ttf.glyphIndex('H') as number, ttf.glyphIndex('O') as number).advance1, -50)
+  approx(Text('HOX', 10, { font: fontFile('test-quadratic.woff2') }).area, Text('HOX', 10, { font: fontFile('test-quadratic.ttf') }).area, 1e-12)
+})
+
+test('damaged WOFF and WOFF2 files are FontErrors (W13)', async () => {
+  const { Font, FontError } = await import('../src/font.ts')
+  const data = fontFile('test-quadratic.woff2')
+  const flipped = data.slice()
+  flipped[60] ^= 0xff
+  for (const damaged of [data.subarray(0, 200), flipped, data.subarray(0, 48)]) {
+    assert.throws(() => new Font(damaged), (e: unknown) => e instanceof FontError && e.message.startsWith('font data: a damaged WOFF2 file ('))
+  }
+  // a WOFF table whose zlib data is damaged
+  const woff = fontFile('test-quadratic.woff')
+  const dv = new DataView(woff.buffer, woff.byteOffset, woff.byteLength)
+  for (let i = 0; i < dv.getUint16(12); i++) {
+    const rec = 44 + 20 * i
+    if (dv.getUint32(rec + 8) < dv.getUint32(rec + 12)) {
+      woff[dv.getUint32(rec + 4) + 2] ^= 0xff
+      break
+    }
+  }
+  assert.throws(() => new Font(woff), (e: unknown) => e instanceof FontError && /damaged WOFF table/.test(e.message))
+})
+
+test('seac accents are their base and accent glyphs; CFF2 fonts draw their default instance (W13)', async () => {
+  const { Font } = await import('../src/font.ts')
+  const f = new Font(fontFile('test-seac.otf'))
+  const g = (c: string) => f.glyphIndex(c) as number
+  const moved = (contours: ReturnType<typeof f.outline>, dx: number, dy: number) => contours.map((c) => c.map((seg) => seg.map(([x, y]) => [x + dx, y + dy])))
+  assert.deepEqual(f.outline(g('À')), [...f.outline(g('A')), ...moved(f.outline(g('`')), 300, 750)])
+  assert.deepEqual(f.outline(g('Ã')), [...f.outline(g('A')), ...moved(f.outline(g('~')), 250, 760)])
+  const t = Text('ÀÃ', 700, { font: fontFile('test-seac.otf'), align: null })
+  assert.equal(t.faces().length, 4)
+  approx(t.area, 2 * 600 * 700 + 100 * 100 + 200 * 80, 1e-12)
+  // CFF2: blends with two item variation data (vsindex); its 400 master is test-cubic.otf's glyphs
+  const v = new Font(fontFile('test-variable.otf'))
+  const c = new Font(fontFile('test-cubic.otf'))
+  assert.ok(v._tables.has('CFF2') && v._outlines.constructor.name === '_CFF2Outlines')
+  for (const ch of 'HOS') assert.deepEqual(v.outline(v.glyphIndex(ch) as number), c.outline(c.glyphIndex(ch) as number), ch)
+  approx(Text('HOS', 700, { font: fontFile('test-variable.otf'), align: null }).area, Text('HOS', 700, { font: fontFile('test-cubic.otf'), align: null }).area, 1e-12)
+})
+
+// ================================================================================ W14: files in memory
+test('every reader of files in memory takes an ArrayBuffer and any view of one (W14)', async () => {
+  const { fromStep, toStep, fromStl, toStl, fromDxf, fromDxfWires, toDxf, fromUsd, toUsd, loadFont, Font } = await import('../src/index.ts')
+  const ab = (bytes: Uint8Array | string) => {
+    const b = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
+  }
+  const part = Box(10, 20, 30)
+  approx((fromStep(ab(toStep(part))) as Part).volume, 6000, 1e-9)
+  approx((fromStep(new DataView(ab(toStep(part)))) as Part).volume, 6000, 1e-9)
+  assert.equal(fromStl(ab(toStl(part))).triangles.length / 3, 12)
+  approx((fromSmb(ab(toSmb(part))) as Part).volume, 6000, 1e-9)
+  approx((fromUsd(ab(toUsd(part))) as Part).volume, 6000, 1e-9)
+  const dxf = toDxf(Rectangle(10, 20))
+  approx(fromDxf(ab(dxf)).area, 200, 1e-9)
+  approx(fromDxf(new Uint16Array(ab(dxf.padEnd(dxf.length + (dxf.length % 2), '\n')))).area, 200, 1e-9) // (a view of other elements)
+  assert.equal(fromDxfWires(ab(dxf)).length, 1)
+  // fonts: the bytes as an ArrayBuffer, read once per buffer
+  const buffer = ab(fontFile('test-quadratic.woff2'))
+  const font = loadFont(buffer)
+  assert.ok(font instanceof Font && loadFont(buffer) === font)
+  assert.equal(new Font(new DataView(buffer)).name, 'Smlibpy Test Quadratic')
+  // what is no bytes says so
+  assert.throws(() => fromDxf(42 as never), { name: 'TypeError', message: 'fromDxf reads a DXF drawing as a string or bytes (a Uint8Array or an ArrayBuffer), not number' })
+  assert.throws(() => fromStl({} as never), { name: 'TypeError', message: /fromStl takes the file's contents: a string or bytes/ })
+  assert.throws(() => fromStep(null as never), { name: 'TypeError', message: /fromStep takes the file's contents/ })
+  assert.throws(() => loadFont(3 as never), { name: 'TypeError', message: /^a font is a file path or the file's bytes \(a Uint8Array or an ArrayBuffer\), not / })
+})
+
+test('Text takes a Font that loadFont read (W14)', async () => {
+  const { loadFont } = await import('../src/index.ts')
+  const f = loadFont(fontFile('test-quadratic.woff2'))
+  approx(Text('H', 700, { font: f, align: null }).area, 600 * 700, 1e-12)
+  assert.throws(() => Text('Z', 10, { font: f }), { name: 'RangeError', message: /has no glyph for 'Z'/ })
+})
+
+test('fromFile and toFile: load and exportFile of files in memory, the format by the name (W14)', async () => {
+  const { fromFile, toFile } = await import('../src/index.ts')
+  const part = Box(10, 20, 30).cut(Cylinder(3, 40))
+  const volume = part.volume
+  for (const name of ['part.step', 'PART.STP', 'part.stl', 'part.smb', 'part.usda', 'dir/part.usd']) {
+    const data = toFile(part, name)
+    assert.equal(typeof data === 'string', !/\.(stl|smb)$/i.test(name), name)
+    const back = fromFile(data, name)
+    if (back instanceof Mesh) assert.ok(back.triangles.length > 0)
+    else approx((back as Part).volume, volume, 1e-6)
+    // and bytes of a text file read too
+    if (typeof data === 'string') approx((fromFile(new TextEncoder().encode(data), name) as Part).volume, volume, 1e-6)
+  }
+  assert.ok(toFile(part, 'part.glb') instanceof Uint8Array)
+  assert.equal(typeof toFile(part, 'part.gltf'), 'string')
+  assert.match(toFile(part, 'part.obj') as string, /^v /m)
+  approx((fromFile(toFile(Rectangle(10, 20), 'r.dxf'), 'R.DXF') as Sketch).area, 200, 1e-9)
+  assert.equal((toFile(part, 'a.stl', { ascii: true }) as Uint8Array).subarray(0, 5).toString(), '115,111,108,105,100') // "solid"
+  assert.throws(() => fromFile('x', 'a.txt'), { name: 'RangeError', message: "unknown file type '.txt'; fromFile reads .step, .stp, .stl, .smb, .dxf and .usda" })
+  assert.throws(() => toFile(part, 'a.usdz'), { name: 'RangeError', message: 'toFile writes text USD (.usda, .usd), not .usdz' })
+  assert.throws(() => toFile(part, 'a'), { name: 'RangeError', message: /unknown file type ''/ })
+  assert.throws(() => toFile(part, 'a.stl', { asci: true }), { name: 'TypeError', message: /toStl\(\) got an unexpected option 'asci'/ })
+})
+
+// ================================================================================ W15: the raw kernel layer
+// smlibpy._core's functions (Python: sorted(n for n in dir(_core) if a builtin function))
+const CORE_FUNCTIONS = ['boolean', 'boolean_2d', 'boolean_difference', 'boolean_intersection', 'boolean_lists', 'boolean_merge', 'boolean_union', 'boolean_with_curves', 'boolean_with_options', 'brep_bounding_box', 'brep_closest_point', 'brep_closest_point_all', 'brep_copy', 'brep_distance', 'brep_relationship', 'chamfer_fillet', 'circular_fillet', 'compute_volume', 'convert_to_lines_and_arcs', 'create_arc', 'create_blend_primitive', 'create_box', 'create_canonical_curve', 'create_circle', 'create_cone', 'create_cone_elliptic_ends', 'create_curve', 'create_curve_approx_points', 'create_curve_interp_points', 'create_cylinder', 'create_cylindrical_box', 'create_ellipse', 'create_extrude_surface', 'create_helix', 'create_line', 'create_line_segment', 'create_offset_profile', 'create_offset_surface', 'create_partial_cone', 'create_partial_cylinder', 'create_partial_sphere', 'create_partial_torus', 'create_planar_circle', 'create_planar_faces', 'create_plane', 'create_pyramid', 'create_rectangle', 'create_regular_polygon', 'create_ruled_surface', 'create_silhouette_curves', 'create_skin_from_faces', 'create_skin_primitive', 'create_skin_surface', 'create_sphere', 'create_sphere_no_pole', 'create_surface_from_corner_points', 'create_surface_from_ordered_points', 'create_surface_from_points', 'create_surface_from_random_points', 'create_surface_revolution', 'create_sweep_surface', 'create_swung_primitive', 'create_torus', 'curve_closest_point', 'curve_closest_point_all', 'curve_sweep', 'curve_sweep_from_edges', 'curve_sweep_from_faces', 'cut', 'draft_sweep', 'drop_curve_to_surface', 'edge_bounding_box', 'edge_length', 'evaluate_continuity', 'evaluate_csg_tree', 'evaluate_curve', 'evaluate_surface_derivatives', 'evaluate_surface_normal', 'evaluate_surface_point', 'face_area', 'face_bounding_box', 'fillet_edges', 'fillet_edges_per_edge', 'fillet_preview', 'find_edge', 'find_face', 'get_closest_point', 'get_edges_via_api', 'get_faces_via_api', 'heal_brep', 'intersect_brep_with_plane', 'intersect_breps', 'intersect_curve_brep', 'intersect_curve_face', 'intersect_curve_surface', 'intersect_curves', 'intersect_faces', 'intersect_surfaces', 'is_manifold_solid', 'lift_uv_curve', 'linear_sweep', 'linear_sweep_with_repetitions', 'make_curves_compatible', 'material_census', 'merge_breps', 'non_manifold_boolean', 'non_manifold_linear_sweep', 'non_manifold_rotational_sweep', 'offset_brep', 'offset_curve', 'order_curves', 'piecewise_merge', 'pipe_sweep', 'poly_boolean', 'poly_boolean_difference', 'poly_boolean_intersection', 'poly_boolean_merge', 'poly_boolean_union', 'poly_brep_is_manifold_via_api', 'poly_brep_volume_via_api', 'project_and_trim', 'project_brep_onto_plane', 'project_curve', 'project_curve_to_surface', 'read_brep_from_file', 'read_part_from_file', 'remove_curve_knots', 'remove_fillet', 'rotate', 'rotational_sweep', 'rotational_sweep_with_repetitions', 'scale', 'scale_about_point', 'set_bevel_corners', 'shell_brep', 'simple_face_stitch', 'stitch_advanced', 'stitch_brep', 'stitch_brep_with_face', 'stitch_into_shell', 'stitch_into_solid', 'surface_closest_point', 'surface_surface_fillet', 'sweep_along_planar_path', 'taper_extrude', 'tessellate', 'tessellate_boundaries', 'tessellation_defaults', 'transform', 'translate', 'trim_project_parallel', 'trim_surface_with_3d_curves', 'turn_to_nurbs', 'unify_normals', 'variable_radius_fillet', 'vertex_point']
+
+test('k has every function of smlibpy._core, every method of Brep and PolyBrep and the enums Python has (W15)', async () => {
+  const kernel = await import('../src/kernel.ts')
+  assert.equal(CORE_FUNCTIONS.length, 156)
+  for (const name of CORE_FUNCTIONS) assert.equal(typeof k[name], 'function', name)
+  assert.deepEqual(Object.keys(k.smpylib).filter((n) => typeof k.smpylib[n] === 'function').sort(), CORE_FUNCTIONS)
+  assert.deepEqual(Object.keys(k.smpylib.Brep).sort(), ['area', 'bounding_box', 'center', 'copy', 'distance_to', 'edge_count', 'edges', 'face_count',
+    'faces', 'info', 'is_manifold_solid', 'mass_properties', 'material_census', 'read_from_file', 'relationship_to', 'tessellate', 'vertex_count',
+    'vertices', 'volume', 'write_to_file'])
+  assert.deepEqual(Object.keys(k.smpylib.PolyBrep).sort(), ['calculate_bounding_box', 'compute_area_centroid', 'compute_properties', 'copy',
+    'get_edges', 'get_faces', 'get_points', 'get_tolerance', 'get_vertices', 'is_manifold_solid', 'mass_properties', 'ray_intersection',
+    'section_plane', 'to_mesh_arrays', 'to_numpy_arrays'])
+  for (const name of ['brep_area', 'brep_volume', 'brep_mass_properties', 'brep_distance_to', 'face_area', 'face_centroid', 'edge_length',
+    'edge_point_at', 'edge_start_vertex', 'poly_ray_intersection', 'poly_section_plane', 'poly_mass_properties', 'circle_radius']) {
+    assert.equal(typeof k[name], 'function', name)
+  }
+  // the enums the module's own bindings did not have, with Python's numbers
+  assert.deepEqual(k.ContinuityType, { UNDEFINED: 0, DISCONTINUOUS: 1, C0: 2, G1: 3, G1R: 4, G1_G2: 5, G1_G2_G3: 6, C1: 7, C1_G2: 8, C1_G2_G3: 9,
+    C1_C2: 10, C1_C2_G3: 11, C1_C2_C3: 12, C_INFINITY: 13 })
+  assert.deepEqual(k.CurveParameterization, { UNIFORM: 0, CHORD_LENGTH: 1, CENTRIPETAL: 2 })
+  assert.deepEqual(k.TrimType, { KEEP_POINT: 0, DELETE_POINT: 1, SPLIT: 2 })
+  // and those it had have SmPyLib's numbers
+  const enums = JSON.parse(kernel.module.smpylib__enums())
+  for (const [name, values] of Object.entries(enums)) assert.deepEqual(k[name], values, name)
+})
+
+test('the module\'s own bindings take the parameters SmPyLib gives them, and give what its own code gives (W15)', async () => {
+  const { SIGNATURES } = await import('../src/signatures.ts')
+  const kernel = await import('../src/kernel.ts')
+  const smpylib = kernel._smpylibSignatures()
+  let compared = 0
+  for (const [name, sig] of [...Object.entries(SIGNATURES), ...Object.entries(kernel._OWN)]) {
+    if (!(name in smpylib)) continue
+    assert.deepEqual(sig, smpylib[name], name)
+    compared++
+  }
+  assert.equal(compared, 65)
+  // the same calls through both: the results agree
+  const b = k.create_box([0, 0, 0], 10, 20, 30)
+  const s = k.smpylib.create_box([0, 0, 0], 10, 20, 30)
+  try {
+    assert.deepEqual(k.brep_bounding_box(b), k.smpylib.Brep.bounding_box(s))
+    assert.equal(k.brep_faces(b).length, k.smpylib.Brep.faces(s).length)
+    assert.deepEqual(k.brep_faces(s), k.smpylib.Brep.faces(s)) // (the same faces, in the same order)
+    assert.deepEqual(k.brep_edges(s), k.smpylib.Brep.edges(s))
+    const c = k.create_circle([0, 0, 0], 5)
+    approx(k.curve_length(c), k.smpylib.Curve.length(c), 1e-12)
+    assert.deepEqual(k.circle_center(c), k.smpylib.Circle.center(c))
+    ext.delete_curve(c)
+  } finally {
+    ext.delete_brep(b)
+    ext.delete_brep(s)
+  }
+})
+
+test('the calls SmPyLib has that smlibwasm does not wrap work, with Python\'s defaults and keywords (W15)', () => {
+  const made: number[] = []
+  const brep = (p: number) => {
+    made.push(p)
+    return p
+  }
+  try {
+    // partial primitives
+    approx(k.brep_volume(brep(k.create_partial_cylinder([0, 0, 0], 10, 20, 0, 90)), { relative_accuracy: 1e-9 }), (Math.PI * 100 * 20) / 4, 1e-6)
+    approx(k.compute_volume(brep(k.create_partial_sphere([0, 0, 0], 10, 0, 180)), 1e-9), (2 / 3) * Math.PI * 1000, 1e-6)
+    approx(k.brep_volume(brep(k.create_pyramid([0, 0, 0], 10, 6)), { relative_accuracy: 1e-9 }), 200, 1e-6) // (a square base 10 x 10, 6 high)
+    // a Boolean by name, the distance of two bodies, the relation of two
+    const a = brep(k.create_box([0, 0, 0], 10, 10, 10))
+    // (boolean_union consumes its operands, as Python's docstring says: they are not freed here)
+    const u = brep(k.boolean_union(k.create_box([0, 0, 0], 10, 10, 10), k.create_box([5, 5, 5], 10, 10, 10)))
+    approx(k.brep_volume(u, { relative_accuracy: 1e-9 }), 1875, 1e-6)
+    const far = brep(k.create_box([20, 0, 0], 5, 5, 5))
+    approx(k.brep_distance(a, far)[0] ?? k.brep_distance(a, far), 10, 1e-9)
+    // Brep, Face and Edge methods
+    approx(k.brep_area(a), 600, 1e-9)
+    assert.deepEqual(k.brep_center(a), [5, 5, 5])
+    const face = k.brep_faces(a)[0]
+    approx(k.face_area(face), 100, 1e-9)
+    const edge = k.brep_edges(a)[0]
+    approx(k.edge_length(edge), 10, 1e-12)
+    assert.equal(typeof k.edge_start_vertex(edge), 'number')
+    // curves: an offset, the continuity at a parameter
+    const circle = k.create_circle([0, 0, 0], 5)
+    const offset = k.offset_curve(circle, 2)
+    approx(k.curve_length(offset), 2 * Math.PI * 7, 1e-8)
+    assert.equal(k.evaluate_continuity(circle, 0.25), k.ContinuityType.C1_G2_G3) // (as in Python)
+    ext.delete_curve(circle)
+    ext.delete_curve(offset)
+    // a mesh: rays, sections, mass properties
+    const mesh = k.brep_tessellate(a)
+    try {
+      const [hit] = k.poly_ray_intersection(mesh, [5, 5, -5], [0, 0, 1], 1e-6, 1e-6)
+      assert.deepEqual(hit.point, [5, 5, 0])
+      approx(k.poly_mass_properties(mesh).volume, 1000, 1e-9)
+      assert.ok(k.poly_section_plane(mesh, [0, 0, 5], [0, 0, 1], 1e-6).length >= 4)
+      assert.ok(k.poly_to_numpy_arrays(mesh, false).points instanceof Float32Array)
+    } finally {
+      ext.delete_polybrep(mesh)
+    }
+    // defaults from SmPyLib's own table
+    assert.deepEqual(Object.keys(k.tessellation_defaults()).sort(), ['chord_height_tolerance', 'curve_angle_tolerance_deg', 'max_aspect_ratio',
+      'max_edge_length', 'surface_angle_tolerance_deg'])
+    // errors: Python's ValueError a RangeError, its TypeError a TypeError, the kernel's an Error
+    assert.throws(() => k.create_partial_cylinder([0, 0], 10, 20, 0, 90), { name: 'RangeError', message: 'Expected a 3-tuple for vector' })
+    assert.throws(() => k.create_partial_cylinder([0, 0, 0], 'ten', 20, 0, 90), { name: 'TypeError', message: 'a number was expected, not string' })
+    assert.throws(() => k.create_pyramid([0, 0, 0], -10, 6), (e: unknown) => e instanceof Error && /^SmApiCreatePyramid failed: SM_ERR_/.test(e.message))
+    assert.throws(() => k.brep_tessellate(a, { allow_partial: true }), { name: 'RangeError', message: /allow_partial=True requires/ })
+    assert.throws(() => k.create_pyramid([0, 0, 0], 10), { name: 'TypeError', message: 'create_pyramid: missing argument height' })
+  } finally {
+    for (const p of made) ext.delete_brep(p)
+  }
+})
+
+test('a TessellationError of SmPyLib\'s is an Error of that name with its report, as in Python (W15)', () => {
+  assert.throws(() => k.smpylib.tessellate(0), (e: unknown) => {
+    assert.ok(e instanceof Error)
+    assert.equal(e.name, 'TessellationError')
+    assert.match(e.message, /^SmApiTessellate failed: SM_ERR_NULL_POINTER \(1006\)/)
+    const err = e as Error & { report: { failures: unknown[]; has_mesh: boolean }; failures: unknown[]; status: number; status_name: string }
+    assert.ok(Array.isArray(err.failures) && err.report.failures === err.failures && err.report.has_mesh === false)
+    assert.deepEqual([err.status, err.status_name], [1006, 'SM_ERR_NULL_POINTER'])
+    return true
+  })
+  // and the module goes on
+  const b = k.create_box([0, 0, 0], 10, 10, 10)
+  const mesh = k.smpylib.tessellate(b)
+  approx(k.poly_mass_properties(mesh).volume, 1000, 1e-9)
+  ext.delete_polybrep(mesh)
+  ext.delete_brep(b)
+})
+
+test('@classcad/smlibwasm/kernel is an entry of the package, with its declarations (W15)', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.deepEqual(pkg.exports['./kernel'], { types: './dist/kernel.d.ts', default: './dist/kernel.js' })
+  // what it exports, run as the package's entry would be
+  const out = run(`
+    const kernel = await import(${JSON.stringify(new URL('kernel.ts', SRC).href)})
+    const k = kernel.k
+    const b = k.create_partial_torus([0, 0, 0], 10, 2, 0, 180)
+    const v = k.brep_volume(b, { relative_accuracy: 1e-9 })
+    const h = new kernel.BrepHandle(b)
+    h.dispose()
+    console.log(JSON.stringify({ v, keys: Object.keys(kernel).filter((n) => !n.startsWith('_')).sort(), alive: h.alive }))
+  `)
+  approx(out.v as number, Math.PI * 4 * Math.PI * 10, 1e-6) // (half a torus: pi r^2 * pi R)
+  assert.equal(out.alive, false)
+  for (const name of ['BrepHandle', 'CurveHandle', 'KernelError', 'ModelingError', 'PolyHandle', 'SurfaceHandle', 'ext', 'k', 'kernelCall', 'memoryUsage', 'module', 'scope', 'setWarningHandler']) {
+    assert.ok((out.keys as string[]).includes(name), name)
+  }
 })

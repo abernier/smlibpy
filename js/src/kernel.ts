@@ -1,4 +1,7 @@
-// The bridge to the WebAssembly module (js/wasm, built by `npm run wasm`).
+// The bridge to the WebAssembly module (js/wasm, built by `npm run wasm`), and the package's entry
+// `@classcad/smlibwasm/kernel`: the raw kernel layer, Python's `smlibpy._core`, for calls smlibwasm
+// does not wrap. Like `smlibpy._core` it is no stable API: names, parameters and results follow
+// SmPyLib's bindings (usd-brep's Python bindings of the kernel), and can change with them.
 //
 // Kernel objects are not garbage collected by the module itself: they are numbers, their address
 // in the module's memory. smlibwasm wraps every Brep, standalone curve, surface and mesh it creates
@@ -19,9 +22,22 @@ type Any = any
 
 /**
  * The module's functions as Python's `smlibpy._core` has them: the kernel's calls at the top
- * (`k.create_box`), smlibpy's own C++ under its submodule (`k.ext.curve_data`,
- * `k.deform.map_points`), enums as objects of numbers (`k.BooleanOp.UNION`), and the queries of
- * Breps, faces, edges and vertices as functions (`k.brep_faces(b)` for Python's `b.faces()`).
+ * (`k.create_box`, `k.intersect_surfaces`), smlibpy's own C++ under its submodule
+ * (`k.ext.curve_data`, `k.deform.map_points`), enums as objects of numbers (`k.BooleanOp.UNION`,
+ * `k.ContinuityType.G1`), and the queries of Breps, faces, edges and vertices as functions
+ * (`k.brep_faces(b)` for Python's `b.faces()`).
+ *
+ * Every function SmPyLib binds for Python's module level is here, with Python's parameters and
+ * defaults (`k.create_partial_cylinder([0, 0, 0], 10, 20, 0, 90)`, keywords in a trailing object:
+ * `k.boolean_union(a, b, { post_process: false })`), and every method of its classes
+ * (`k.brep_area(b)`, `k.poly_ray_intersection(mesh, ...)`). Most are SmPyLib's own code, compiled
+ * into the module (`k.smpylib.<name>` and `k.smpylib.<Class>.<method>` have them all); those
+ * smlibwasm calls itself have bindings of their own, with the same names, parameters and results.
+ * Kernel objects are numbers (0: none), points `[x, y, z]`, lists of numbers Float64Arrays,
+ * Python's tuples arrays and its dicts plain objects; a result that is a new Brep, curve or surface
+ * is the caller's, to free with `k.ext.delete_brep` (or to hand to a `BrepHandle`, ...). Not here:
+ * SmPyLib's USD functions, the constructors of its classes and its value classes (Vec3, Vec2,
+ * Axis2Placement: arrays, and `{origin, x, y}` from `k.Axis2Placement`).
  */
 export interface Kernel {
   [name: string]: Any
@@ -132,7 +148,50 @@ const OWN: Record<string, Signature> = {
 }
 
 export const k: Kernel = namespaced(module, { ...SIGNATURES, ...OWN })
+/** (the signatures of smlibpy's own functions; lane_WN.test.ts holds those SmPyLib has too to SmPyLib's) */
+export const _OWN: Record<string, Signature> = OWN
 export const ext: Any = k.ext
+
+// SmPyLib's own bindings, compiled into the module (js/cpp/smpylib.cpp): a table of its functions
+// (`create_box`) and of its classes' methods (`Brep.area`), each with its parameters (its py::arg
+// list; a method's object first, `self`), which smpylib__call(i, args) calls; and its enums. They
+// are `k.smpylib.<name>` and `k.smpylib.<Class>.<method>`, and `k.<name>` and `k.<class>_<method>`
+// where the module's own bindings have none.
+const SMPYLIB_TABLE: [string, Signature][] = JSON.parse(module.smpylib__table())
+const SMPYLIB_ENUMS: Record<string, Record<string, number>> = JSON.parse(module.smpylib__enums())
+// (the prefix of each class's methods, as the module's own bindings name them: brep_faces)
+const _CLASS_PREFIX: Record<string, string> = {
+  Object: 'object', Brep: 'brep', Face: 'face', Edge: 'edge', Vertex: 'vertex', Curve: 'curve', BSplineCurve: 'bspline_curve',
+  Line: 'line', Circle: 'circle', Surface: 'surface', PolyBrep: 'poly', PolyVertex: 'poly_vertex', PolyEdge: 'poly_edge',
+  PolyFace: 'poly_face',
+}
+const _smpylibSigs: Record<string, Signature> = {}
+{
+  const smpylib: Any = (k.smpylib = {})
+  // (functions first: where a method has the name of a function, `face_area` and Face.area, k has
+  // the function, as Python's module does)
+  const entries = SMPYLIB_TABLE.map((entry, i) => [entry, i] as const)
+  for (const [[name, params], i] of [...entries.filter(([[n]]) => !n.includes('.')), ...entries.filter(([[n]]) => n.includes('.'))]) {
+    const dot = name.indexOf('.')
+    const cls = dot > 0 ? name.slice(0, dot) : null
+    const prefix = cls === null ? '' : `${_CLASS_PREFIX[cls] ?? cls.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toLowerCase()}_`
+    // (a method's object is named as the module's own bindings name it: brep, face, poly)
+    const sig: Signature = params.map((p) => (p === 'self' ? prefix.slice(0, -1) : p))
+    const flat = cls === null ? name : `${prefix}${name.slice(dot + 1)}`
+    _smpylibSigs[flat] ??= sig
+    const call = keywords(flat, restoring(module, (...args: Any[]) => module.smpylib__call(i, args), flat), sig)
+    if (cls === null) smpylib[name] = call
+    else (smpylib[cls] ??= {})[name.slice(dot + 1)] = call
+    if (!(flat in k)) k[flat] = call
+  }
+  for (const [name, values] of Object.entries(SMPYLIB_ENUMS)) k[name] ??= { ...values }
+}
+
+/** SmPyLib's parameters of each function and method it binds (its py::arg lists), under the names
+ * `k` has them (`create_box`, `brep_area`); lane_WN.test.ts holds the module's own bindings to them. */
+export function _smpylibSignatures(): Record<string, Signature> {
+  return _smpylibSigs
+}
 
 // `a__b` is `b` of the submodule `a`; `Enum_VALUE` (a number) is `VALUE` of the enum `Enum`.
 // Functions with a signature take Python's defaults and keywords; every function restores the
@@ -140,6 +199,7 @@ export const ext: Any = k.ext
 function namespaced(m: Any, signatures: Record<string, Signature>): Kernel {
   const out: Kernel = {}
   for (const name of Object.keys(m)) {
+    if (name.startsWith('smpylib__')) continue // (SmPyLib's table: read where k is made)
     const value = m[name]
     const sub = name.indexOf('__')
     if (sub > 0 && typeof value === 'function') {
@@ -437,7 +497,9 @@ function free(kind: string, p: number): void {
 
 let handles = 0
 
-abstract class Handle {
+/** The owner of a kernel object: it frees the object when it is garbage collected, or at once with
+ * `dispose()` (BrepHandle, CurveHandle, SurfaceHandle, PolyHandle). */
+export abstract class Handle {
   protected _p: number
   private readonly _kind: string
 

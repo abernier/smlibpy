@@ -18,6 +18,7 @@ import { CenterArc, EllipticalArc, Line, Spline } from './curves.ts'
 import { Mesh } from './mesh.ts'
 import * as regions from './regions.ts'
 import type { ShapesLike } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 import { Edge, Face, Part, type ShapeList, Sketch, Vertex, Wire, _Body, _canonicalCurve, _list, _typeName } from './shapes.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
@@ -921,13 +922,14 @@ function _deBoor(poles: V3[], weights: number[] | null, knots: number[], deg: nu
 }
 
 /** The drawing's text: a string as it is, the bytes of a file decoded. */
-function _text(data: string | Uint8Array, what: string): string {
+function _text(data: string | BytesLike, what: string): string {
   if (typeof data === 'string') {
     if (data.startsWith('AutoCAD Binary DXF')) throw new RangeError(`${what}: a binary DXF; save the drawing as ASCII DXF`)
     return data
   }
-  if (data instanceof Uint8Array) return _readText(data, what)
-  throw new TypeError(`${what} reads a DXF drawing as a string or bytes (a Uint8Array), not ${_typeName(data)}`)
+  const bytes = _asBytes(data)
+  if (bytes !== null) return _readText(bytes, what)
+  throw new TypeError(`${what} reads a DXF drawing as a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
 }
 
 function _fileText(path: string, what: string): string {
@@ -946,8 +948,9 @@ export function importDxfWires(path: string, options: DxfReadOptions = {}): Shap
   return _wires(_fileText(path, 'importDxfWires'), options, 'importDxfWires')
 }
 
-/** `importDxfWires` of a drawing in memory: the text of a DXF file, or its bytes. */
-export function fromDxfWires(data: string | Uint8Array, options: DxfReadOptions = {}): ShapeList<Wire> {
+/** `importDxfWires` of a drawing in memory: the text of a DXF file, or its bytes (a Uint8Array or
+ * an ArrayBuffer). */
+export function fromDxfWires(data: string | BytesLike, options: DxfReadOptions = {}): ShapeList<Wire> {
   _opts('fromDxfWires', options)
   return _wires(_text(data, 'fromDxfWires'), options, 'fromDxfWires')
 }
@@ -978,8 +981,9 @@ export function importDxf(path: string, options: DxfReadOptions = {}): Sketch {
   })
 }
 
-/** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes. */
-export function fromDxf(data: string | Uint8Array, options: DxfReadOptions = {}): Sketch {
+/** `importDxf` of a drawing in memory: the text of a DXF file, or its bytes (a Uint8Array or an
+ * ArrayBuffer). */
+export function fromDxf(data: string | BytesLike, options: DxfReadOptions = {}): Sketch {
   return scope(() => {
     _opts('fromDxf', options)
     return _sketch(_text(data, 'fromDxf'), options, 'fromDxf', 'fromDxfWires')

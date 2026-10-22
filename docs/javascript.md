@@ -62,11 +62,12 @@ comparison):
 
 | | brotli | gzip | uncompressed |
 |---|---|---|---|
-| The kernel, `smlibwasm.wasm` | 1.7 MB | 2.4 MB | 6.7 MB |
-| Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 86 kB |
-| The library | 0.22 MB | 0.27 MB | 1.0 MB |
+| The kernel, `smlibwasm.wasm` | 1.8 MB | 2.6 MB | 7.6 MB |
+| Its loader, `smlibwasm.mjs` | 21 kB | 24 kB | 87 kB |
+| The library | 0.31 MB | 0.36 MB | 1.3 MB |
 | The font of `Text` | 46 kB | 59 kB | 130 kB |
-| **Together** | **2.0 MB** | **2.7 MB** | **7.9 MB** |
+| The dictionary of WOFF2 fonts (Brotli's) | 59 kB | 60 kB | 79 kB |
+| **Together** | **2.2 MB** | **3.1 MB** | **9.2 MB** |
 
 Browsers cache the kernel like any other file, so it loads once. The library is counted as
 published, unminified; a bundler that minifies it makes it smaller.
@@ -112,11 +113,22 @@ edge, up to 89 degrees off on this part. The polygon offset keeps the edges in f
 they bound.
 
 Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj` and `toDxf` give a
-file's contents, and `fromStep`, `fromStl` and `fromDxf` read them, from text or bytes:
+file's contents, and `fromStep`, `fromStl` and `fromDxf` read them, from text or bytes (a
+`Uint8Array`, an `ArrayBuffer` or another view of one: `BytesLike`). `fromFile(data, name)` and
+`toFile(shapes, name)` pick the format from the file's name, as `load` and `exportFile` do from a
+path:
 
 ```js
-const part = fromStep(await file.text()) // a File from an <input type="file">
+const part = fromFile(await file.arrayBuffer(), file.name) // a File from an <input type="file">
 const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
+const download = new Blob([toFile(part, 'bracket.step')]) // .step, .stl, .glb, .gltf, .obj, .smb, .dxf, .usda
+```
+
+`Text` takes the page's own font, also a web font as browsers download it (WOFF2, WOFF, TTF, OTF):
+
+```js
+const font = loadFont(await (await fetch('/fonts/inter.woff2')).arrayBuffer()) // read once, kept
+const label = Text('SMLIB 42', 8, { font })
 ```
 
 `fromStepModel(data)` reads a STEP file with the coordinate systems, curves and points it holds
@@ -151,9 +163,13 @@ applies. The differences come from the language:
   Node's types and without `skipLibCheck`; `load(path)` gives a union, which `instanceof Part`
   narrows.
 - **Files**: in Node, `exportStep(shapes, path)`, `importStep(path)` and the other path functions
-  write and read files as smlibpy's do; `show(part)` opens the viewer in the browser.
-  `fromUsd(text, { resolve })` gets the layers and files a stage references from
-  `resolve(asset, from)`, where `importUsd(path)` and Python's `import_usd` read them from disk.
+  write and read files as smlibpy's do; `show(part)` opens the viewer in the browser. Every format
+  also has functions for files in memory (`toStep`, `fromStep`, ..., and `toFile`/`fromFile` by
+  the file's name), which Python has no need for. `fromUsd(text, { resolve })` gets the layers and
+  files a stage references from `resolve(asset, from)`, where `importUsd(path)` and Python's
+  `import_usd` read them from disk.
+- **The kernel itself**: `@classcad/smlibwasm/kernel` is Python's `smlibpy._core`, see
+  [below](#the-raw-kernel-layer).
 
 ## Memory
 
@@ -217,6 +233,40 @@ be wrong: the first crash warns (`setWarningHandler`), `memoryUsage().crashes` c
 steps that retry (shell, offset, removing fillets and faces) end at a crash rather than try again
 on that memory. An app that goes on after one loads the module again (reloads the page), or models
 in a `KernelWorker` (below), which starts a new kernel after a crash.
+
+## The raw kernel layer
+
+`@classcad/smlibwasm/kernel` is the kernel as Python's `smlibpy._core` has it, for the calls
+smlibwasm does not wrap: `k` holds every function of `smlibpy._core` (156: intersections, offset
+curves, partial primitives, pipe sweeps, stitching, CSG trees, ...) with its names, parameters and
+defaults, the methods of its classes as functions (`k.brep_area(b)` for Python's `b.area()`,
+`k.poly_ray_intersection(mesh, ...)`) and its enums (`k.BooleanOp.UNION`, `k.ContinuityType.G1`).
+Python's keyword arguments are a trailing object:
+
+```js
+import { BrepHandle, k } from '@classcad/smlibwasm/kernel'
+
+const quarter = new BrepHandle(k.create_partial_cylinder([0, 0, 0], 10, 20, 0, 90)) // freed with it
+console.log(k.brep_volume(quarter.brep, { relative_accuracy: 1e-9 })) // 1570.796...
+const circle = k.create_circle([0, 0, 0], 5)
+const offset = k.offset_curve(circle, 2) // a circle of radius 7
+console.log(k.curve_length(offset), k.evaluate_continuity(circle, 0.25) === k.ContinuityType.C1_G2_G3)
+k.ext.delete_curve(circle)
+k.ext.delete_curve(offset)
+```
+
+Kernel objects are numbers (their address in the kernel's memory; 0 is none), points `[x, y, z]`,
+lists of numbers `Float64Array`s, Python's tuples arrays and its dicts plain objects. A result
+that is a new body, curve or surface is the caller's: free it with `k.ext.delete_brep(b)` (or
+`delete_curve`, `delete_surface`, `delete_polybrep`), or give it to a `BrepHandle` (`CurveHandle`,
+...), which frees it with the last reference. Some calls consume or change their arguments, as
+their Python docstrings say (`boolean_union` consumes both bodies). Errors are Python's: a
+`ValueError` is a `RangeError`, a `TypeError` a `TypeError`, a kernel failure an `Error` with the
+kernel's status, a `TessellationError` an `Error` of that name with its `report`.
+
+Like `smlibpy._core`, this layer is no stable API: it follows SmPyLib, the kernel's Python bindings
+in usd-brep, whose own code the module runs for most of these calls. The calls smlibwasm uses have
+bindings of their own with the same names, parameters and results.
 
 ## Running off the main thread
 
@@ -937,7 +987,7 @@ export function Stroke(path: Edge | Wire, width: number, options?: {
 export function Hull(...items: unknown[]): Sketch;
 export function makeFace(outer: Wire | Edge, ...holes: (Wire | Edge)[]): Sketch;
 export interface TextOptions {
-    font?: string | Uint8Array | null;
+    font?: string | BytesLike | Font | null;
     align?: AlignLike;
     spacing?: number;
     lineSpacing?: number;
@@ -960,14 +1010,14 @@ export class FontError extends RangeError {
     constructor(message: string);
 }
 export const DEFAULT_FONT: Uint8Array;
-export function loadFont(source?: string | Uint8Array | null): Font;
+export function loadFont(source?: string | BytesLike | null): Font;
 export class Font {
     readonly path: string | null;
     readonly name: string;
     readonly unitsPerEm: number;
     readonly numGlyphs: number;
     readonly capHeight: number;
-    constructor(source: string | Uint8Array);
+    constructor(source: string | BytesLike);
     toString(): string;
     glyphIndex(char: string): number | null;
     characters(): string[];
@@ -1279,6 +1329,8 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | 
 ```ts
 export type ShapesLike = Shape | Mesh | (Iterable<ShapesLike> & object);
 export function exportFile(shapes: ShapesLike, path: string, options?: Record<string, Any>): void;
+export function toFile(shapes: ShapesLike, name: string, options?: Record<string, Any>): string | Uint8Array;
+export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell>;
 export interface StepExportOptions {
     unit?: string;
     name?: string | null;
@@ -1296,7 +1348,7 @@ export function exportStl(shapes: ShapesLike, path: string, options?: MeshOption
     ascii?: boolean;
 }): void;
 export function importStl(path: string): Mesh;
-export function fromStl(data: string | Uint8Array): Mesh;
+export function fromStl(data: string | BytesLike): Mesh;
 export function toObj(shapes: ShapesLike, options?: MeshOptions): string;
 export function exportObj(shapes: ShapesLike, path: string, options?: MeshOptions): void;
 export interface GltfOptions extends MeshOptions {
@@ -1310,7 +1362,7 @@ export function exportGltf(shapes: ShapesLike, path: string, options?: GltfOptio
 export function toSmb(shapes: ShapesLike, options?: {
     ascii?: boolean;
 }): Uint8Array;
-export function fromSmb(data: string | Uint8Array): Part | Shell;
+export function fromSmb(data: string | BytesLike): Part | Shell;
 export function save(shapes: ShapesLike, path: string, options?: {
     ascii?: boolean;
 }): void;
@@ -1353,13 +1405,13 @@ export class StepModel {
     equals(other: unknown): boolean;
     toString(): string;
 }
-export function fromStepModel(data: string | Uint8Array, options?: {
+export function fromStepModel(data: string | BytesLike, options?: {
     heal?: boolean;
 }): StepModel;
 export function readStep(path: string, options?: {
     heal?: boolean;
 }): StepModel;
-export function fromStep(data: string | Uint8Array, options?: {
+export function fromStep(data: string | BytesLike, options?: {
     heal?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
 export function importStep(path: string, options?: {
@@ -1375,9 +1427,9 @@ export interface DxfWriteOptions {
     plane?: Plane | null;
 }
 export function importDxfWires(path: string, options?: DxfReadOptions): ShapeList<Wire>;
-export function fromDxfWires(data: string | Uint8Array, options?: DxfReadOptions): ShapeList<Wire>;
+export function fromDxfWires(data: string | BytesLike, options?: DxfReadOptions): ShapeList<Wire>;
 export function importDxf(path: string, options?: DxfReadOptions): Sketch;
-export function fromDxf(data: string | Uint8Array, options?: DxfReadOptions): Sketch;
+export function fromDxf(data: string | BytesLike, options?: DxfReadOptions): Sketch;
 export function exportDxf(shapes: ShapesLike, path: string, options?: DxfWriteOptions): void;
 export function toDxf(shapes: ShapesLike, options?: DxfWriteOptions): string;
 export interface UsdExportOptions {
@@ -1396,8 +1448,9 @@ export interface UsdImportOptions {
 export interface UsdReadOptions extends UsdImportOptions {
     resolve?: ((asset: string, from: string) => string | Uint8Array | null | undefined) | null;
 }
-export function fromUsd(data: string | Uint8Array, options?: UsdReadOptions): Part | Shell | ShapeList<Part | Shell>;
+export function fromUsd(data: string | BytesLike, options?: UsdReadOptions): Part | Shell | ShapeList<Part | Shell>;
 export function importUsd(path: string, options?: UsdImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export type BytesLike = Uint8Array | ArrayBufferView | ArrayBuffer;
 ```
 
 ### Pictures and the viewer
@@ -1594,4 +1647,56 @@ export interface InitOptions {
     instantiateWasm?: (imports: WebAssembly.Imports, receive: (instance: WebAssembly.Instance) => void) => unknown;
 }
 export function init(options?: InitOptions): Promise<typeof import('./index.ts')>;
+```
+
+### The raw kernel layer (no stable API): @classcad/smlibwasm/kernel
+
+```ts
+export interface Kernel {
+    [name: string]: Any;
+}
+export const module: Any;
+export type Signature = readonly (string | readonly [
+    string,
+    unknown
+])[];
+export const k: Kernel;
+export const ext: Any;
+export function kernelCall<T>(operation: string, fn: () => T, hint?: string | null): T;
+export interface MemoryUsage {
+    readonly used: number;
+    readonly heap: number;
+    readonly limit: number;
+    readonly handles: number;
+    readonly crashes: number;
+}
+export function memoryUsage(): MemoryUsage;
+export abstract class Handle {
+    constructor(kind: string, p: number);
+    readonly id: number;
+    release(): number;
+    get alive(): boolean;
+    dispose(): void;
+}
+export function scope<T>(fn: () => T): T;
+export class BrepHandle extends Handle {
+    sound: number;
+    props: Any;
+    imported: boolean;
+    constructor(brep: number);
+    get brep(): number;
+}
+export class CurveHandle extends Handle {
+    constructor(curve: number);
+    get curve(): number;
+}
+export class SurfaceHandle extends Handle {
+    constructor(surface: number);
+    get surface(): number;
+}
+export class PolyHandle extends Handle {
+    constructor(poly: number);
+    get poly(): number;
+}
+export function setWarningHandler(handler: (message: string) => void): void;
 ```

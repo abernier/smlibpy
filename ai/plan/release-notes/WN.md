@@ -462,3 +462,131 @@ Items W10, W11 and W12 of ai/plan/kernel-deep-dive.md (findings `wasmbind-trap-l
   without its internal members.
 - The declarations were checked with TypeScript 5.9 (bundler and nodenext resolution, lib es2022 +
   dom, no @types/node, `skipLibCheck: false`), not with older TypeScript versions.
+
+# Lane WN, batch 4: fonts without fontTools (W13), files in memory (W14), the raw kernel layer (W15)
+
+Items W13 (both languages), W14 (smlibwasm; `Text` taking a `Font` in both) and W15 (smlibwasm).
+
+## Fixed
+
+- smlibpy and smlibwasm: WOFF2 fonts, variable CFF2 fonts and CFF accents built with seac are read
+  (W13). smlibwasm threw a FontError for all three ("WOFF2 fonts are not supported; convert the font
+  to TTF or OTF", "accented glyphs built with seac are not supported"); smlibpy read them only with
+  fontTools installed, which no extra installs ("accented glyphs built with seac need the fontTools
+  package"). Both readers now do it themselves, the same way: WOFF2's table directory, collection
+  directory and Brotli-compressed data (a Brotli decoder after RFC 7932, `_brotli.py` and
+  `_brotli.ts`, with RFC 7932's dictionary), its transformed `glyf`/`loca` tables (triplet-coded
+  points, composite glyphs, explicit bounding boxes, the overlap bitmap) and `hmtx` table; CFF2
+  (32-bit INDEX counts, `blend` and `vsindex` in charstrings and private dicts, FDSelect format 4)
+  drawn at the default instance; seac composed from StandardEncoding's base and accent glyphs by the
+  font's charset (as fontTools composes it). Checked against fontTools on the generated test fonts,
+  34 WOFF2 files at hand (Inter, Inter Tight, JetBrains Mono, Big Shoulders from Google Fonts; Lato,
+  Roboto Slab, Font Awesome from mkdocs) and Apple's CFF2 fonts (SF India, October/November India):
+  cmap, advances and the exact area of every outline agree; 596 of the 599 system fonts as before
+  (the other three differ as they did: a font matrix, a font without `head`). The TypeScript reader
+  draws every glyph of those fonts to the last bit as the Python reader does.
+- smlibwasm: WOFF fonts with compressed tables are read in browsers too (W13): their zlib data was
+  inflated with `node:zlib`, which only Node has ("a WOFF font with compressed tables needs node:zlib
+  ..."). `_inflate.ts` (zlib, RFC 1950/1951; also what unpacks the Brotli dictionary) inflates them
+  everywhere, its errors as zlib's (checked against `node:zlib` on 19,200 streams, damaged ones
+  among them).
+- smlibwasm: `fromDxf`, `fromDxfWires`, `loadFont` and `new Font(...)` take an `ArrayBuffer` and any
+  view of one (W14), as `fromStep`, `fromStl`, `fromSmb` and `fromUsd` did (`fromStl`/`fromSmb` took
+  only `Uint8Array`s and `ArrayBuffer`s; they take any view now too); they threw "... a string or
+  bytes (a Uint8Array), not ArrayBuffer". `Text({ font })` takes a `Font` (it threw "... not Font").
+- smlibwasm: the raw kernel layer is reachable and complete (W15): `k` could not be imported from the
+  package, and 94 of the 156 functions of `smlibpy._core`, the methods of its classes (`Brep.area`,
+  `Face.centroid`, `Edge.point_at`, `PolyBrep.ray_intersection`, ...) and three enums
+  (`ContinuityType`, `CurveParameterization`, `TrimType`) were missing.
+
+## New
+
+- smlibpy and smlibwasm: `Text(..., font=load_font(path))` / `Text(..., { font: loadFont(bytes) })`:
+  a `Font` that was read once (W14).
+- smlibwasm: `fromFile(data, name)` and `toFile(shapes, name, options)`: `load` and `exportFile` of
+  files in memory, the format by the extension of `name` (`.step`/`.stp`/`.p21`, `.stl`, `.smb`,
+  `.dxf`, `.usda`/`.usd` read; `.step`, `.stl`, `.glb`, `.gltf`, `.obj`, `.smb`, `.dxf`, `.usda`
+  written), for `<input type="file">` and downloads (W14). The type `BytesLike` (a `Uint8Array`, an
+  `ArrayBuffer` or another view of one) is what every reader of files in memory takes.
+- smlibwasm: `@classcad/smlibwasm/kernel`, Python's `smlibpy._core`, no stable API like it (W15):
+  `k` (every function of `smlibpy._core` with its names, parameters and defaults, keywords as a
+  trailing object; the methods of its classes as `k.<class>_<method>`, `k.brep_area(b)`; its enums),
+  `ext`, `module` (`module.FS`), `kernelCall`, the handles (`BrepHandle`, ..., and their base class
+  `Handle`, now exported), `memoryUsage`, `scope`. The calls the module had no binding for are
+  SmPyLib's own code: `js/cpp/smpylib.cpp` compiles SmPyLib's binders (all but USD's) against a
+  stand-in for pybind11 (`js/cpp/pyshim`), which collects every function and method into a table
+  with its py::arg names and defaults; `k.smpylib` has them all, `k.<name>` where the module's own
+  bindings have none. Their errors are Python's: `ValueError` a RangeError, `TypeError` a TypeError,
+  a kernel failure an Error with the status, a `TessellationError` an Error of that name with its
+  `report`, `failures`, `status` and `status_name`. The hand-written bindings' parameters are held to
+  SmPyLib's (all 65 that SmPyLib has agree), and both give the same results (lane_WN.test.ts).
+- `tools/make_test_fonts.py` makes `test-seac.otf`, `test-variable.otf` (CFF2 from three masters,
+  with two item variation data) and `test-quadratic.woff2`, `test-quadratic-plain.woff2`,
+  `test-cubic.woff2` (through Node's zlib where the brotli module is missing);
+  `tests/data/brotli-vectors.json` holds streams of the reference encoder for both suites.
+
+## Behaviour changes
+
+- smlibpy: `font.py` no longer uses fontTools: WOFF2 files and CFF2 outlines, which it handed to
+  fontTools, and glyphs its reader could not draw, which it drew with fontTools when that was
+  installed, are read by the reader itself. A glyph it cannot draw (an unknown charstring operator)
+  raises its FontError also where fontTools is installed; no such glyph is known (fontTools leaves the
+  same operators out). Variable CFF2 fonts are drawn at their default instance, as fontTools drew
+  them:
+
+  ```python
+  # before: needed fontTools (pip install fonttools brotli)
+  Text("Label", 5, font="Inter.woff2")
+  # after: works without it
+  Text("Label", 5, font="Inter.woff2")
+  ```
+- smlibpy: a WOFF table whose zlib data is damaged raises a FontError (a ValueError) where it raised
+  `zlib.error`:
+
+  ```python
+  # before
+  except zlib.error: ...
+  # after
+  except FontError: ...  # (ValueError)
+  ```
+- smlibwasm: such a table is a FontError where it was node's zlib Error; WOFF tables are inflated by
+  the package's own inflate also in Node.
+- smlibwasm: the TypeErrors for what is no file contents say "a string or bytes (a Uint8Array or an
+  ArrayBuffer)" (`fromStep`, `fromStl`, `fromSmb`, `fromUsd`, `fromDxf`, `fromDxfWires`, `loadFont`,
+  `Font`); `fromStl`/`fromSmb` said "expected a string or a Uint8Array", `fromUsd` threw TextDecoder's
+  error:
+
+  ```js
+  // before
+  assert.throws(() => fromStl(42), /expected a string or a Uint8Array/)
+  // after
+  assert.throws(() => fromStl(42), /fromStl takes the file's contents: a string or bytes/)
+  ```
+- smlibwasm: `k` has more members: the 94 functions, the class methods as `<class>_<method>`
+  (`brep_area`, `face_centroid`, `poly_ray_intersection`, ...), the three enums and `k.smpylib`.
+  Code that listed `Object.keys(k)` sees them. Calls through `k` that were bound before are bound as
+  before.
+- smlibwasm: the WebAssembly module is larger, 7.6 MB (6.7 MB before), 1.81 MB with brotli (about
+  0.13 MB more): the kernel code of the 94 calls and SmPyLib's binders. The library adds the Brotli
+  dictionary for WOFF2 fonts (79 kB, 59 kB with brotli) and the WOFF2, CFF2 and inflate code. The
+  size table of docs/javascript.md has the numbers.
+
+## Not done
+
+- W13: a WOFF2 collection gives its first font (as a TTC does); variable fonts are drawn at their
+  default instance (no axis values can be chosen); the Brotli decoder holds the whole output in
+  memory (fine for fonts). Python decodes Brotli with its own decoder also where the C `brotli`
+  module is installed (a 96 kB font from 31 kB in 17 ms, so it was not worth a second path). seac
+  was checked on the generated font and against fontTools only: no font with seac accents was at
+  hand.
+- W15: `signatures.ts` is not generated from SmPyLib's py::arg lists: the module reports those lists
+  itself (`smpylib__table()`), the calls it had no binding for use them directly, and a test holds
+  the hand-written table to them; the CI check that greps smlibpy for `k.<name>` was not added, as
+  every SmPyLib call is now bound (smlibpy's own `ext` calls still need their bindings in
+  `bind_smlibpy.cpp`). Not in the table: SmPyLib's USD functions (no OpenUSD in the module), the
+  constructors and Python special methods of its classes, the value classes (`Vec3`, `Vec2`,
+  `Axis2Placement`: arrays and `{origin, x, y}` here), and the borrowed-geometry check of
+  `SmPyBorrowedGeometry.cpp` (a no-op here: nothing tracks the curves and surfaces read from a Brep,
+  as in the hand-written bindings). Results are not wrapped: new kernel objects are numbers the
+  caller frees, and calls that consume their arguments (`boolean_union`) consume them, as their
+  docstrings say.

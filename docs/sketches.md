@@ -244,9 +244,11 @@ ring = Text("ALONG AN ARC", 4, path=CenterArc((0, 0), 30, 170, -160))
 
 The default font is Lato Regular, which is bundled under the SIL Open Font License and covers
 Latin-1, Polish and common symbols such as °, ±, µ and Ø. `font=` takes the path of a TrueType
-or OpenType file (`.ttf`, `.otf`, `.ttc`, `.woff`). A character the font does not have raises an
-error that names it. Each character is one glyph: ligatures, right-to-left scripts and combining
-accents are not handled.
+or OpenType file (`.ttf`, `.otf`, `.ttc`, `.woff`, `.woff2`), or a `Font` that `load_font` read.
+Fonts are read without other packages: web fonts as browsers download them (WOFF2), CFF fonts with
+accents built from two glyphs (seac), and variable fonts (CFF2), of which the default instance is
+drawn. A character the font does not have raises an error that names it. Each character is one
+glyph: ligatures, right-to-left scripts and combining accents are not handled.
 
 ## Measuring
 

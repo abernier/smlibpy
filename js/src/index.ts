@@ -77,10 +77,12 @@ export {
   exportObj,
   exportStep,
   exportStl,
+  fromFile,
   importStl,
   load,
   save,
   fromSmb,
+  toFile,
   toSmb,
   fromStl,
   toGlb,
@@ -118,5 +120,6 @@ export type { BendOptions, LatticeIndex, LatticeLayers, RangeOptions, TaperOptio
 export type { DraftAnalysis, FaceDraft } from './draft.ts'
 export type { BendAllowanceOptions, DevelopedLengthOptions, FlangeOptions, FoldOptions, UnfoldOptions } from './sheetmetal.ts'
 export type { GltfOptions, MeshOptions, ShapesLike, StepExportOptions } from './exporters.ts'
+export type { BytesLike } from './_bytes.ts'
 export type { DxfReadOptions, DxfWriteOptions } from './dxf.ts'
 export type { CurvatureKind, RenderMarker, RenderPoint, RenderView, Renderable } from './render.ts'

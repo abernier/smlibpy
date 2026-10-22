@@ -21,6 +21,7 @@ import {
   type LoopData,
 } from './step_reader.ts'
 import { _fs } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -1230,7 +1231,7 @@ export class StepModel {
  *
  * `readStep` for the contents in memory (in the browser too); see `readStep`.
  */
-export function fromStepModel(data: string | Uint8Array, options: { heal?: boolean } = {}): StepModel {
+export function fromStepModel(data: string | BytesLike, options: { heal?: boolean } = {}): StepModel {
   _opts('fromStepModel', options)
   const { heal = true } = options
   const sf = parse(_text(data, 'fromStepModel'))
@@ -1367,14 +1368,14 @@ function _trimmedEdge(basis: Any, trims: Any[], sense: boolean): Edge | null {
 // -------------------------------------------------------------------------------- importStep
 /** The text of STEP file contents: bytes are Latin-1, as Python reads the file, and line ends
  * become "\n" (Python's universal newlines). */
-function _text(data: string | Uint8Array, caller = 'fromStep'): string {
+function _text(data: string | BytesLike, caller = 'fromStep'): string {
   let text: string
+  const bytes = _asBytes(data)
   if (typeof data === 'string') text = data
-  else if (ArrayBuffer.isView(data) || (data as unknown) instanceof ArrayBuffer) {
-    const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data as ArrayBuffer)
+  else if (bytes !== null) {
     text = ''
     for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  } else throw new TypeError(`${caller} takes the file's contents: a string or a Uint8Array`)
+  } else throw new TypeError(`${caller} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer)`)
   return text.replace(/\r\n?/g, '\n')
 }
 
@@ -1386,7 +1387,7 @@ function _text(data: string | Uint8Array, caller = 'fromStep'): string {
  * them. Lengths are converted to millimeters; assembly placements are applied; names and colors
  * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true).
  */
-export function fromStep(data: string | Uint8Array, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromStep(data: string | BytesLike, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromStep', options)
   const { heal = true } = options
   const sf = parse(_text(data))

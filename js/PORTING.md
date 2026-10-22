@@ -16,6 +16,15 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
      `deform__map_points`); mesh.cpp: `poly_mesh`, `poly_copy`.
    - bind_runtime.cpp: the module itself, `runtime__memory_usage` (`memoryUsage()`) and
      `runtime__exception_info`, which tells kernel.ts what a C++ exception is.
+   - smpylib.cpp: SmPyLib's own binders (SmPy*.cpp but USD's and the borrowed-geometry check),
+     compiled as they are against a stand-in for pybind11 (pyshim/pybind11/pybind11.h): every
+     function and class method SmPyLib binds for Python is an entry of a table that
+     `smpylib__call(i, args)` calls, and `smpylib__table()` lists with SmPyLib's py::arg names and
+     defaults (`smpylib__enums()` its enums). kernel.ts makes them `k.<name>` and
+     `k.<class>_<method>` where the hand-written bindings have none (`k.smpylib` has them all), and
+     lane_WN.test.ts holds the hand-written bindings' signatures to SmPyLib's. A kernel call
+     smlibwasm comes to use needs no new binding; one it uses often may get a hand-written one
+     (the same name, parameters and results).
    - Kernel objects cross as numbers (their address; 0 is none). Python tuples are arrays,
      dicts objects, lists of numbers Float64Arrays. A failing call throws an Error whose
      message is the one Python's RuntimeError carries. A C++ exception becomes the error Python
@@ -23,7 +32,8 @@ same modeling API, for the browser and Node. Branch `feat/js`, everything under 
      leave the module as a WebAssembly.Exception, which kernel.ts turns into the same error
      (`_cppError`); std::bad_alloc is an Error saying SM_ERR_OUT_OF_MEMORY (Python's
      MemoryError).
-2. **The kernel layer** (js/src/kernel.ts): `k` is Python's `smlibpy._core`: `k.create_box`,
+2. **The kernel layer** (js/src/kernel.ts, also the package's entry `@classcad/smlibwasm/kernel`,
+   no stable API, like `smlibpy._core`): `k` is Python's `smlibpy._core`: `k.create_box`,
    `k.ext.curve_data`, `k.BooleanOp.UNION`, `k.brep_faces`. Functions take Python's defaults
    and keywords from their signature (signatures.ts for the kernel's calls, the table in
    kernel.ts for smlibpy's own): `k.fillet_edges(b, edges, { radius: 2, xsect_type: 2 })`.
@@ -101,7 +111,10 @@ the Python code works around a kernel defect, so does the TypeScript.
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
     `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
     `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
-    `fromUsd(data)` take a `string` or `Uint8Array`. `fromUsd` takes the layers a stage names
+    `fromUsd(data)` take a `string` or bytes (`BytesLike`: a `Uint8Array`, an `ArrayBuffer` or
+    another view of one; `_bytes.ts`'s `_asBytes` makes the `Uint8Array`), as `loadFont` and the
+    `Font` constructor do. `toFile(shapes, name, options)` and `fromFile(data, name)` are the
+    in-memory `exportFile` and `load`, by the extension of `name`. `fromUsd` takes the layers a stage names
     (subLayers, references, payloads) from its `resolve` option, where Python and `importUsd` read
     the files (an option only smlibwasm has: `JS_ONLY` in tools/gen_js_options.py).
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
@@ -127,7 +140,15 @@ the Python code works around a kernel defect, so does the TypeScript.
   offset, thicken, cells, opt-in Booleans and the fillets of imported parts in them), `_spill`
   (its test); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it),
   `_crashCount` and `_crashError` (`Part._checked` stops at a crash of the kernel); `_errors.ts`:
-  `_crashes` (the crashes of this thread's kernel, which worker.ts reads without the kernel).
+  `_crashes` (the crashes of this thread's kernel, which worker.ts reads without the kernel);
+  `_inflate.ts`: `inflate` and `ZlibError` (font.ts reads WOFF tables, _brotli.ts its dictionary),
+  `_Bits`, `_prefixCode`, `_single`, `_Output` (_brotli.ts decodes with them); `_brotli.ts`:
+  `decompress` (font.ts reads WOFF2 files); `_bytes.ts`: `_asBytes`.
+- **Fonts.** font.ts and font.py are the same reader without dependencies: sfnt, TTC, WOFF (zlib:
+  Python's module, `_inflate.ts` here, also in browsers) and WOFF2 (Brotli: `_brotli.py` and
+  `_brotli.ts`, the same decoder, with RFC 7932's dictionary from `src/smlibpy/_brotli_dictionary.bin`,
+  which `scripts/fonts.mjs` packs into `_brotli_dictionary.ts`); glyf, CFF (seac accents) and CFF2
+  (the default instance). Neither uses fontTools.
 - **The kernel's guard.** Python runs a step that can crash or loop in another process
   (`smlibpy._guard.isolated(what, fn, *args)`: a forked copy, or a helper process that gets the
   bodies as `.smb`); here `_isolatedValue(what, work, job)` runs it in a probe worker
@@ -173,7 +194,8 @@ the Python code works around a kernel defect, so does the TypeScript.
   than drop. Python has nothing to port: a crash ends its process, or the copy of it.
 - **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
   `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
-  file comes from), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
+  file comes from), the files in memory (`toStep`, `fromStep`, ..., `toFile`, `fromFile`: Python
+  reads and writes paths), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
   of its kernel; Python's kernel shares its process's, which a crash ends) and `scope(fn)` (frees the kernel objects `fn` made and does not
   return: the garbage collector frees them only between tasks, Python's reference counting at
   their last reference). They follow the house style but have no smlibpy counterpart and no entry

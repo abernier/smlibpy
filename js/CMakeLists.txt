@@ -17,6 +17,16 @@ add_executable(smlibwasm ${SMLIBWASM_SOURCES} ${SMLIBPY_SHARED_SOURCES} "${SMPY_
 target_include_directories(smlibwasm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp"
                            "${CMAKE_SOURCE_DIR}/src/cpp/usd" "${SMPY_DIR}")
 target_link_libraries(smlibwasm PRIVATE sm_api smlib)
+# SmPyLib's own bindings of the kernel, compiled as they are against the stand-in for pybind11
+# (cpp/pyshim; cpp/smpylib.cpp registers them): all of its binders but USD's and the check of
+# borrowed geometry, which looks into Python itself
+set(SMPYLIB_BINDERS Booleans BrepOps Curves CutProjectTrim Enums FileIo Fillets Heal Intersectors Offset PolyBrep
+    PolyOps Primitives Queries Stitching Surfaces Sweeps Tessellation Transforms Types)
+list(TRANSFORM SMPYLIB_BINDERS PREPEND "${SMPY_DIR}/SmPy")
+list(TRANSFORM SMPYLIB_BINDERS APPEND ".cpp")
+target_sources(smlibwasm PRIVATE ${SMPYLIB_BINDERS})
+set_source_files_properties(${SMPYLIB_BINDERS} "${CMAKE_CURRENT_SOURCE_DIR}/cpp/smpylib.cpp" PROPERTIES
+  INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/cpp/pyshim" COMPILE_OPTIONS "-Os")
 # (a second build, in its own build directory, can write its module elsewhere)
 set(SMLIBWASM_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wasm" CACHE PATH "Where the module (smlibwasm.mjs, smlibwasm.wasm) is written")
 set_target_properties(smlibwasm PROPERTIES

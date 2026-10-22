@@ -1,5 +1,6 @@
 """Lane WN of the kernel plan: isolated kernel steps (N1), memory (N2), the fuzz harness (N3), the typings of
-the free functions (W11) and the API reference of the bodies (W12)."""
+the free functions (W11), the API reference of the bodies (W12), and fonts without fontTools: WOFF2 (Brotli), CFF2
+and accents built with seac (W13)."""
 
 import _thread
 import math
@@ -486,3 +487,207 @@ def test_api_reference_shows_what_every_body_has():
         entry = re.search(rf"^::: smlibpy\.shapes\.{cls}\n    options:\n      inherited_members: \[([^\]]*)\]", page, re.M)
         assert entry, f"{cls} has no inherited_members in docs/api.md"
         assert sorted(entry.group(1).split(", ")) == public, cls
+
+
+# ================================================================================ W13: fonts without fontTools
+DATA = os.path.join(os.path.dirname(__file__), "data")
+
+
+def _font(name):
+    from smlibpy.font import Font
+
+    return Font(os.path.join(DATA, name))
+
+
+def test_brotli_decodes_the_reference_encoders_streams():
+    import base64
+    import hashlib
+    import json
+
+    from smlibpy import _brotli
+
+    vectors = json.load(open(os.path.join(DATA, "brotli-vectors.json")))["vectors"]
+    assert len(vectors) == 13
+    for v in vectors:
+        data = base64.b64decode(v["brotli"])
+        if v.get("error"):
+            with pytest.raises(_brotli.BrotliError):
+                _brotli.decompress(data)
+            continue
+        out = _brotli.decompress(data)
+        assert (len(out), hashlib.sha256(out).hexdigest()) == (v["length"], v["sha256"]), v["name"]
+    # what the damaged ones say
+    by_name = {v["name"]: base64.b64decode(v["brotli"]) for v in vectors}
+    for name, message in (("cut short", "the data ends early"),
+                          ("a window size that is reserved (large-window Brotli)", "an invalid window size"),
+                          ("padding bits that are not zero", "padding bits that are not zero")):
+        with pytest.raises(_brotli.BrotliError, match=message):
+            _brotli.decompress(by_name[name])
+    assert issubclass(_brotli.BrotliError, ValueError)
+
+
+def test_brotli_damaged_streams_fail_as_brotli_errors():
+    """Every bit of a stream flipped, and every length cut: data or a BrotliError, nothing else (the
+    decoder agreed with node's on 3,000 such streams)."""
+    import base64
+    import json
+
+    from smlibpy import _brotli
+
+    vectors = json.load(open(os.path.join(DATA, "brotli-vectors.json")))["vectors"]
+    data = base64.b64decode(next(v["brotli"] for v in vectors if v["name"].startswith("text: dictionary")))
+    outcomes = {"data": 0, "error": 0}
+    for i in range(len(data) * 8):
+        damaged = bytearray(data)
+        damaged[i // 8] ^= 1 << (i % 8)
+        for d in (bytes(damaged), data[:i // 8]):
+            try:
+                _brotli.decompress(d)
+                outcomes["data"] += 1
+            except _brotli.BrotliError:
+                outcomes["error"] += 1
+    assert outcomes["error"] > 0 and sum(outcomes.values()) == 2 * len(data) * 8
+
+
+def test_brotli_dictionary_is_rfc_7932s():
+    import hashlib
+
+    from smlibpy import _brotli
+
+    words = _brotli._dictionary()
+    assert len(words) == 122784 and _brotli._WORD_OFFSETS[25] == 122784
+    assert hashlib.sha256(words).hexdigest() == "20e42eb1b511c21806d4d227d07e5dd06877d8ce7b3a817f378f313653f35c70"
+    assert words[:20] == b"timedownlifeleftback"  # (the words of length 4 come first)
+    # the transforms: an uppercased first letter with a suffix, a word without its first byte
+    assert [_brotli._transform(b"time", i) for i in range(5)] == [b"time", b"time ", b" time ", b"ime", b"Time "]
+
+
+def test_woff2_fonts_read_as_the_fonts_they_hold():
+    """test-quadratic.woff2 has transformed glyf, loca and hmtx tables (and the overlap bitmap),
+    test-quadratic-plain.woff2 none, test-cubic.woff2 is a CFF font: each reads as its TTF or OTF."""
+    ttf, otf = _font("test-quadratic.ttf"), _font("test-cubic.otf")
+    for name, ref in (("test-quadratic.woff2", ttf), ("test-quadratic-plain.woff2", ttf), ("test-cubic.woff2", otf)):
+        f = _font(name)
+        assert (f.name, f.units_per_em, f.num_glyphs, f.cap_height) == (ref.name, ref.units_per_em, ref.num_glyphs,
+                                                                       ref.cap_height)
+        assert f.characters() == ref.characters()
+        for g in range(ref.num_glyphs):
+            assert f.advance(g) == ref.advance(g)
+            if name.startswith("test-quadratic") and g == ttf.glyph_index("P"):
+                assert len(f.outline(g)) == len(ref.outline(g)) == 2  # (point matching: the same two Hs)
+            assert f.outline(g) == ref.outline(g), (name, g)
+        assert f.kerning_source == ref.kerning_source
+    assert _font("test-quadratic.woff2").kerning(ttf.glyph_index("H"), ttf.glyph_index("O")).advance1 == -50
+    # the reconstructed glyf table is found through the loca table the head table says
+    woff2 = _font("test-quadratic.woff2")
+    assert woff2._long_loca == (len(woff2._tables["loca"]) == 4 * (woff2.num_glyphs + 1))
+    # and Text draws with it what it draws with the TTF
+    woff2_text = Text("HOX", 10, font=os.path.join(DATA, "test-quadratic.woff2"))
+    assert woff2_text.area == approx(Text("HOX", 10, font=os.path.join(DATA, "test-quadratic.ttf")).area, rel=1e-12)
+
+
+def test_damaged_woff_and_woff2_files_are_font_errors(tmp_path):
+    from smlibpy.font import Font, FontError
+
+    data = open(os.path.join(DATA, "test-quadratic.woff2"), "rb").read()
+    for n, damaged in enumerate((data[:200], data[:60] + bytes([data[60] ^ 0xFF]) + data[61:], data[:48])):
+        p = tmp_path / f"bad{n}.woff2"
+        p.write_bytes(damaged)
+        with pytest.raises(FontError, match="a damaged WOFF2 file"):
+            Font(str(p))
+    # a WOFF table whose zlib data is damaged (it was zlib.error)
+    woff = bytearray(open(os.path.join(DATA, "test-quadratic.woff"), "rb").read())
+    n = int.from_bytes(woff[12:14], "big")
+    for i in range(n):
+        rec = 44 + 20 * i
+        off, comp, orig = (int.from_bytes(woff[rec + k:rec + k + 4], "big") for k in (4, 8, 12))
+        if comp < orig:
+            woff[off + 2] ^= 0xFF  # (past the zlib header: the deflate data)
+            break
+    p = tmp_path / "bad.woff"
+    p.write_bytes(bytes(woff))
+    with pytest.raises(FontError, match="damaged WOFF table"):
+        Font(str(p))
+
+
+def test_seac_accents_are_their_base_and_accent_glyphs():
+    """test-seac.otf: Agrave is endchar seac with a width (A, grave moved by (300, 750)), Atilde
+    one without (A, tilde moved by (250, 760))."""
+    f = _font("test-seac.otf")
+    g = f.glyph_index
+    a, grave, tilde = f.outline(g("A")), f.outline(g("`")), f.outline(g("~"))
+    assert len(f.outline(g("À"))) == len(f.outline(g("Ã"))) == 2
+    assert f.outline(g("À")) == a + [[tuple((x + 300, y + 750) for x, y in seg) for seg in c] for c in grave]
+    assert f.outline(g("Ã")) == a + [[tuple((x + 250, y + 760) for x, y in seg) for seg in c] for c in tilde]
+    t = Text("ÀÃ", 700, font=os.path.join(DATA, "test-seac.otf"), align=None)  # (one font unit is one mm)
+    assert len(t.faces()) == 4
+    assert t.area == approx(2 * 600 * 700 + 100 * 100 + 200 * 80, rel=1e-12)
+
+
+def test_cff2_fonts_draw_their_default_instance():
+    """test-variable.otf (CFF2: blends, two item variation data, vsindex) draws its 400 master,
+    whose glyphs are test-cubic.otf's."""
+    v, c = _font("test-variable.otf"), _font("test-cubic.otf")
+    assert "CFF2" in v._tables and type(v._outlines).__name__ == "_CFF2Outlines"
+    assert v._outlines.region_counts == [2, 1]
+    for ch in "HOS":
+        assert v.outline(v.glyph_index(ch)) == c.outline(c.glyph_index(ch)), ch
+    assert v.advance(v.glyph_index("H")) == 700 and v.cap_height == 700
+    assert Text("HOS", 700, font=os.path.join(DATA, "test-variable.otf"), align=None).area == approx(
+        Text("HOS", 700, font=os.path.join(DATA, "test-cubic.otf"), align=None).area, rel=1e-12)
+
+
+def test_fonts_read_without_fonttools():
+    import subprocess
+    import sys
+
+    code = ("import sys; sys.modules['fontTools'] = None\n"  # (an import of fontTools fails)
+            "from smlibpy.font import Font\n"
+            "import os\n"
+            "d = sys.argv[1]\n"
+            "for n in ('test-quadratic.woff2', 'test-cubic.woff2', 'test-seac.otf', 'test-variable.otf'):\n"
+            "    f = Font(os.path.join(d, n))\n"
+            "    assert all(f.outline(g) is not None for g in range(f.num_glyphs))\n"
+            "print('ok')\n")
+    out = subprocess.run([sys.executable, "-c", code, DATA], capture_output=True, text=True,
+                         env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)})
+    assert out.stdout.strip() == "ok", out.stderr
+
+
+def test_text_takes_a_font():
+    from smlibpy.font import load_font
+
+    f = load_font(os.path.join(DATA, "test-quadratic.woff2"))
+    assert Text("H", 700, font=f, align=None).area == approx(600 * 700, rel=1e-12)
+    with pytest.raises(ValueError, match="has no glyph for 'Z'"):
+        Text("Z", 10, font=f)
+
+
+def test_new_fonts_against_an_independent_reader():
+    """The fonts of the new kinds against fontTools (where it is installed, with brotli for WOFF2):
+    character map, advances and the exact area of every outline."""
+    ttlib = pytest.importorskip("fontTools.ttLib")
+    from fontTools.pens.areaPen import AreaPen
+
+    from smlibpy.text import _segment_area
+
+    names = ["test-seac.otf", "test-variable.otf"]
+    try:
+        import brotli  # noqa: F401
+
+        names += ["test-quadratic.woff2", "test-quadratic-plain.woff2", "test-cubic.woff2"]
+    except ImportError:
+        pass
+    for name in names:
+        f = _font(name)
+        tt = ttlib.TTFont(os.path.join(DATA, name))
+        gs = tt.getGlyphSet()
+        cmap = tt.getBestCmap()
+        assert {c: f.glyph_index(chr(c)) for c in cmap} == {c: tt.getGlyphID(n) for c, n in cmap.items()}
+        for gid, glyph in enumerate(tt.getGlyphOrder()):
+            assert f.advance(gid) == tt["hmtx"][glyph][0]
+            if glyph == "P":  # (point matching, which fontTools does not draw)
+                continue
+            pen = AreaPen(gs)
+            gs[glyph].draw(pen)
+            assert sum(_segment_area(s) for c in f.outline(gid) for s in c) == approx(pen.value, rel=1e-12, abs=1e-9)

@@ -20,9 +20,10 @@ import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, type ShapeList, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
 import { _stepText, writeStep } from './step.ts'
-import { importStep } from './step_import.ts'
-import { exportDxf, importDxf } from './dxf.ts'
-import { exportUsd, importUsd } from './usd.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
+import { fromStep, importStep } from './step_import.ts'
+import { exportDxf, fromDxf, importDxf, toDxf } from './dxf.ts'
+import { exportUsd, fromUsd, importUsd, toUsd } from './usd.ts'
 
 // biome-ignore lint: glTF documents are plain JSON
 type Any = any
@@ -96,6 +97,50 @@ export function exportFile(shapes: ShapesLike, path: string, options: Record<str
   else if (ext_ === '.dxf') exportDxf(shapes, p, options)
   else if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) exportUsd(shapes, p, options)
   else throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda`)
+}
+
+/**
+ * The contents of a file of the shapes, in memory, the format picked from the file's name as
+ * `exportFile` picks it from a path: the text of a STEP (`.step`, `.stp`), glTF (`.gltf`), OBJ
+ * (`.obj`), DXF (`.dxf`) or USD (`.usda`, `.usd`) file, the bytes (a Uint8Array) of an STL, GLB or
+ * SMLib (`.smb`) file. The options are those of the format's function (`toStep`, `toStl`, ...).
+ *
+ * In a browser, `new Blob([toFile(part, 'part.step')])` is the file to download.
+ */
+export function toFile(shapes: ShapesLike, name: string, options: Record<string, Any> = {}): string | Uint8Array {
+  const ext_ = _splitext(String(name))[1].toLowerCase()
+  if (ext_ === '.step' || ext_ === '.stp') return toStep(shapes, options)
+  if (ext_ === '.stl') return toStl(shapes, options)
+  if (ext_ === '.glb') return toGlb(shapes, options)
+  if (ext_ === '.gltf') return toGltf(shapes, options)
+  if (ext_ === '.obj') return toObj(shapes, options)
+  if (ext_ === '.smb') return toSmb(shapes, options)
+  if (ext_ === '.dxf') return toDxf(shapes, options)
+  if (ext_ === '.usda' || ext_ === '.usd') return toUsd(shapes, options)
+  if (ext_ === '.usdc' || ext_ === '.usdz') throw new RangeError(`toFile writes text USD (.usda, .usd), not ${ext_}`)
+  throw new RangeError(`unknown file type '${ext_}'; use .step, .stl, .glb, .gltf, .obj, .smb, .dxf or .usda`)
+}
+
+/**
+ * Read a file's contents in memory, picking the format from the file's name, as `load` does from a
+ * path: STEP (`.step`, `.stp`), USD (`.usda`) and SMLib (`.smb`) give exact parts, DXF (`.dxf`) a
+ * `Sketch` of the drawing's outlines, STL a `Mesh`. `data` is the file's text or its bytes (a
+ * Uint8Array or an ArrayBuffer, as `await file.arrayBuffer()` gives them for an
+ * `<input type="file">`); of `name`, the file's name or path, only the extension counts.
+ *
+ * A STEP file with one body gives that part, one with several a `ShapeList`. A native file comes
+ * back as a `Part` when its body encloses a volume, as a `Shell` when it does not. The layers a USD
+ * file names (subLayers, references, payloads) are not read: `fromUsd` reads them with its
+ * `resolve` option.
+ */
+export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> {
+  const ext_ = _splitext(String(name))[1].toLowerCase()
+  if (ext_ === '.step' || ext_ === '.stp' || ext_ === '.p21') return fromStep(data)
+  if (ext_ === '.stl') return fromStl(data)
+  if (ext_ === '.dxf') return fromDxf(data)
+  if (['.usda', '.usd', '.usdc', '.usdz'].includes(ext_)) return fromUsd(data)
+  if (ext_ !== '.smb') throw new RangeError(`unknown file type '${ext_}'; fromFile reads .step, .stp, .stl, .smb, .dxf and .usda`)
+  return fromSmb(data)
 }
 
 // ----------------------------------------------------------------------------------------- STEP
@@ -295,16 +340,17 @@ export function importStl(path: string): Mesh {
 }
 
 /** A mesh from the contents of an STL file (binary or ASCII; a string is the text of an ASCII
- * file). */
-export function fromStl(data: string | Uint8Array): Mesh {
-  return _readStl(_bytes(data), null)
+ * file; bytes are a Uint8Array or an ArrayBuffer, see `BytesLike`). */
+export function fromStl(data: string | BytesLike): Mesh {
+  return _readStl(_bytes(data, 'fromStl'), null)
 }
 
-function _bytes(data: string | Uint8Array | ArrayBuffer): Uint8Array {
+/** The bytes of a file's contents in memory (a string: its UTF-8 bytes). */
+function _bytes(data: string | BytesLike, what: string): Uint8Array {
   if (typeof data === 'string') return new TextEncoder().encode(data)
-  if (data instanceof ArrayBuffer) return new Uint8Array(data)
-  if (!ArrayBuffer.isView(data)) throw new TypeError(`expected a string or a Uint8Array, not ${_typeName(data)}`)
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  const bytes = _asBytes(data)
+  if (bytes === null) throw new TypeError(`${what} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  return bytes
 }
 
 // Python's str.splitlines and str.split (ASCII text)
@@ -880,14 +926,15 @@ export function toSmb(shapes: ShapesLike, options: { ascii?: boolean } = {}): Ui
   }
 }
 
-/** The body of an SMLib native `.smb` file's contents: a Part when it encloses a volume (a merged
- * part with its cells too, and a broken solid, whose `isValid()` is false), a Shell when it does
- * not. */
-export function fromSmb(data: string | Uint8Array): Part | Shell {
+/** The body of an SMLib native `.smb` file's contents (its text, or its bytes: a Uint8Array or an
+ * ArrayBuffer): a Part when it encloses a volume (a merged part with its cells too, and a broken
+ * solid, whose `isValid()` is false), a Shell when it does not. */
+export function fromSmb(data: string | BytesLike): Part | Shell {
+  const bytes = _bytes(data, 'fromSmb')
   const name = _tmpName()
   let b: number
   try {
-    module.FS.writeFile(name, _bytes(data))
+    module.FS.writeFile(name, bytes)
     b = kernelCall('load', () => k.read_brep_from_file(name, null, false))
   } finally {
     _unlink(name)

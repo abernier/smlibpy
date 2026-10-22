@@ -10,7 +10,8 @@
 import { _opts, _warn, ext, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
-import { Part, Shell, ShapeList } from './shapes.ts'
+import { Part, Shell, ShapeList, _typeName } from './shapes.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 import { type ShapesLike, _DEFAULT_COLORS, _fs, _items } from './exporters.ts'
 import { _MM_PER_UNIT } from './step.ts'
 
@@ -105,8 +106,11 @@ export interface UsdReadOptions extends UsdImportOptions {
 
 type Layers = [string, string, Record<string, string>, Record<string, string>][]
 
-function _text(data: string | Uint8Array): string {
-  return typeof data === 'string' ? data : new TextDecoder('utf-8').decode(data)
+function _text(data: string | BytesLike, what = 'fromUsd'): string {
+  if (typeof data === 'string') return data
+  const bytes = _asBytes(data)
+  if (bytes === null) throw new TypeError(`${what} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(data)}`)
+  return new TextDecoder('utf-8').decode(bytes)
 }
 
 /** The layers of the stage whose root layer is `text` (named `root`): it and every layer the layers
@@ -190,7 +194,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
  * BrepArray throws a RangeError that says what is wrong, in which body, face or edge, with the rule
  * of usd-brep's validator it breaks.
  */
-export function fromUsd(data: string | Uint8Array, options: UsdReadOptions = {}): Part | Shell | ShapeList<Part | Shell> {
+export function fromUsd(data: string | BytesLike, options: UsdReadOptions = {}): Part | Shell | ShapeList<Part | Shell> {
   _opts('fromUsd', options)
   const resolve = options.resolve
   const read = (asset: string, from: string): [string, string | Uint8Array] | string | null => {

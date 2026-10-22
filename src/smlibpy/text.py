@@ -29,7 +29,7 @@ def Text(
     text: str,
     size: float,
     *,
-    font: str | os.PathLike[str] | None = None,
+    font: str | os.PathLike[str] | Font | None = None,
     align: AlignLike = Align.CENTER,
     spacing: float = 0.0,
     line_spacing: float = 1.6,
@@ -43,8 +43,9 @@ def Text(
         size: Height of the capital letters (H, E, T) in mm, the nominal height of technical
             lettering: ``Text("H", 10)`` is 10 mm tall. Round letters overshoot it by a few
             percent; descenders go below the baseline.
-        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``).
-            Default: the bundled Lato Regular.
+        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``,
+            ``.woff2``), or a :class:`~smlibpy.font.Font` that ``load_font`` read. Default: the
+            bundled Lato Regular.
         align: Placement of the text's layout box (from the start to the end of the longest line,
             and from the baseline of the last line to the cap height of the first). ``CENTER``
             centers it on the origin; ``MIN`` starts the text at x = 0 with the last baseline on
@@ -75,7 +76,7 @@ def Text(
     if not (math.isfinite(line_spacing) and line_spacing > 0):
         raise ValueError(f"Text: line_spacing must be positive (a multiple of size), got {line_spacing!r}")
     try:
-        f = load_font(font)
+        f = font if isinstance(font, Font) else load_font(font)
     except FontError as e:
         raise ValueError(f"Text: {e}") from None
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")

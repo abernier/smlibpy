@@ -2,7 +2,8 @@
 
 import { _opts, k, scope } from './kernel.ts'
 import { Align, type AlignLike, _one } from './align.ts'
-import { type Contour, type Font, FontError, type Point, type Segment, _repr, loadFont } from './font.ts'
+import { type Contour, Font, FontError, type Point, type Segment, _repr, loadFont } from './font.ts'
+import type { BytesLike } from './_bytes.ts'
 import { Plane, _formatG } from './geometry.ts'
 import * as regions from './regions.ts'
 import { Edge, type Sketch, Wire, _canonicalCurve, _typeName } from './shapes.ts'
@@ -16,9 +17,10 @@ const _SAMPLES: Record<number, number> = { 2: 1, 3: 8, 4: 12 } // polygon points
 
 /** How `Text` sets the text. */
 export interface TextOptions {
-  /** A TrueType or OpenType font (.ttf, .otf, .ttc, .woff): the bytes of its file, or its path
-   * (Node). Default: the built-in Lato Regular. */
-  font?: string | Uint8Array | null
+  /** A TrueType or OpenType font (.ttf, .otf, .ttc, .woff, .woff2): the bytes of its file (a
+   * Uint8Array or an ArrayBuffer), its path (Node), or a `Font` that `loadFont` read. Default: the
+   * built-in Lato Regular. */
+  font?: string | BytesLike | Font | null
   /** Placement of the text's layout box (from the start to the end of the longest line, and from
    * the baseline of the last line to the cap height of the first). `CENTER` centers it on the
    * origin; `MIN` starts the text at x = 0 with the last baseline on y = 0; `MAX` ends it at
@@ -71,7 +73,7 @@ export function Text(text: string, size: number, options: TextOptions = {}): Ske
     }
     let f: Font
     try {
-      f = loadFont(font)
+      f = font instanceof Font ? font : loadFont(font)
     } catch (e) {
       if (e instanceof FontError) throw new RangeError(`Text: ${e.message}`)
       throw e

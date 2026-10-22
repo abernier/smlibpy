@@ -25,7 +25,7 @@ const SECTIONS = [
   ['Surfaces', ['surfaces']],
   ['Sheet metal', ['sheetmetal']],
   ['Meshes', ['mesh']],
-  ['Files', ['exporters', 'step_import', 'dxf', 'usd']],
+  ['Files', ['exporters', 'step_import', 'dxf', 'usd', '_bytes']],
   ['Pictures and the viewer', ['render', 'viewer']],
   ['Errors and memory', ['_errors', 'kernel']],
 ]
@@ -33,6 +33,7 @@ const SECTIONS = [
 const ENTRIES = [
   ['The worker entry: @classcad/smlibwasm/worker', 'worker'],
   ['Loading the kernel: @classcad/smlibwasm/init', 'init'],
+  ['The raw kernel layer (no stable API): @classcad/smlibwasm/kernel', 'kernel'],
 ]
 
 const parse = (name) =>

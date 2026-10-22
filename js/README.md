@@ -32,8 +32,8 @@ to the config. esbuild and Bun leave the file out of their bundles: copy it, or 
 `init` from `@classcad/smlibwasm/init`, which also takes the kernel's bytes or a compiled module.
 Node needs version 22.18 or later.
 
-A browser loads about 2.0 MB with brotli: 1.7 MB for the kernel (6.7 MB uncompressed) and 0.3 MB for
-the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
+A browser loads about 2.2 MB with brotli: 1.8 MB for the kernel (7.6 MB uncompressed) and 0.4 MB for
+the library, its font and the dictionary of WOFF2 fonts. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
 
 ## From smlibpy to smlibwasm
 
