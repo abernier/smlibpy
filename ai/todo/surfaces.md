@@ -94,6 +94,10 @@
   print(type(r).__name__, r.volume, r.is_valid())   # Part 0.0 False
   ```
 - **Workaround:** `stitch(part & sheet)` returns the trimmed sheet as a `Shell`.
+- **Fixed:** `part & sheet` and `sheet & part` return the piece of the sheet inside the part as a
+  `Shell` (the reproduction: a Shell of area 100.17), `sheet - part` the rest; `part + sheet` and
+  `part - sheet` raise `TypeError` pointing to `split` (which now takes sheets) and `imprint`
+  (kernel plan B12, B14).
 
 ### 12. `stitch`: an open result keeps mixed face normals; `thicken` of it silently gives volume 0
 - **Session:** `2026-10-12_21-26-09_surfaces-workflow`, scripts `07-cover-normals.py`, `08-cover-oriented.py`, `09-repro-normals.py`

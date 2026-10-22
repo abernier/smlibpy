@@ -68,13 +68,19 @@ function run(kernelModule: Any, job: Any): void {
   }
 }
 
-/** The contents of the .smb file of the body a step whose body comes back makes. */
+/** What comes back of a step whose body comes back: the length of the body's .smb file (4 bytes,
+ * little-endian), the file, and the tags of its faces and edges as JSON (`ext.topology_tags`; the
+ * file holds none). The job's `tags` are those of its bodies. */
 function make(kernelModule: Any, job: Any): Uint8Array {
   const { ext, k, module } = kernelModule
   const breps: number[] = []
   let made = 0
   try {
-    for (const data of job.bodies as Uint8Array[]) breps.push(load(kernelModule, data))
+    ;(job.bodies as Uint8Array[]).forEach((data, i) => {
+      breps.push(load(kernelModule, data))
+      const tags = job.tags?.[i]
+      if (tags) ext.set_topology_tags(breps[i], tags[0], tags[1])
+    })
     const all = k.brep_faces(breps[0]) as number[]
     if (job.op === 'shell_brep') {
       made = k.shell_brep(breps[0], job.distance, { ...job.options, faces_to_shell: (job.faces as number[]).map((i) => all[i]) })
@@ -85,11 +91,18 @@ function make(kernelModule: Any, job: Any): Uint8Array {
     }
     const name = '/tmp/smlibwasm-probe-result.smb'
     k.brep_write_to_file(made, name, false)
+    let smb: Uint8Array
     try {
-      return module.FS.readFile(name)
+      smb = module.FS.readFile(name)
     } finally {
       module.FS.unlink(name)
     }
+    const tags = new TextEncoder().encode(JSON.stringify(ext.topology_tags(made)))
+    const out = new Uint8Array(4 + smb.length + tags.length)
+    new DataView(out.buffer).setUint32(0, smb.length, true)
+    out.set(smb, 4)
+    out.set(tags, 4 + smb.length)
+    return out
   } finally {
     for (const brep of made ? [made, ...breps] : breps) ext.delete_brep(brep)
   }

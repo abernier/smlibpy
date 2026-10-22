@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import math
 import time
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union, overload
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, NamedTuple, Sequence, TypeVar, Union, overload
 
 import numpy as np
 
@@ -501,6 +501,39 @@ class ShapeList(list[T]):
         p = _vec(point)
         return ShapeList(s for s in self if s.distance_to(p) <= tol)  # type: ignore[attr-defined]
 
+    # -- history ------------------------------------------------------------
+    def new(self, since: Any) -> ShapeList[T]:
+        """The faces or edges that are new since the given bodies: made by the operations that
+        led from them to this list's body, descending from no face or edge of theirs.
+
+        ``since`` is a body (part, shell, sketch) or a list of them, or faces and edges (then
+        only those count as old). After a Boolean, the curves along which the bodies meet
+        (``(plate + boss).edges().new(since=[plate, boss])``: the circle where the boss
+        stands on the plate); after a fillet, chamfer or shell, its new faces
+        (``rounded.faces().new(since=part)``) and their edges.
+
+        smlibpy marks every face and edge of every body it makes, and the kernel carries the
+        marks along: a copy keeps them, both halves of a split face keep their parent's, a face
+        merged from two keeps both. A moved, turned, mirrored or scaled copy gets new marks (it
+        is a shape of its own). A body read from a file, and a section, have new marks
+        everywhere, so all of them counts as new.
+        """
+        old = _history_tags(since, "new")
+        return ShapeList(s for s, t in zip(self, _item_tags(self, "new")) if not t & old)
+
+    def derived_from(self, *shapes: Any) -> ShapeList[T]:
+        """The faces or edges that descend from the given shapes: faces from faces, edges from
+        edges, both from a body (part, shell, sketch). A face that an operation split, trimmed,
+        moved along with the part or merged with another descends from it; one the operation
+        made anew does not.
+
+        ``(plate - holes).faces().derived_from(holes)`` gives the walls of the holes;
+        ``cut.edges().derived_from(box.edges().top())`` the pieces of the top edges of a box
+        that a slot cut. A body's faces and edges are marked as described in :meth:`new`.
+        """
+        wanted = _history_tags(shapes, "derived_from")
+        return ShapeList(s for s, t in zip(self, _item_tags(self, "derived_from")) if t & wanted)
+
     # -- set operations and expansion ----------------------------------------
     def __add__(self, other: Iterable[T]) -> ShapeList[T]:  # type: ignore[override]
         return ShapeList(list.__add__(self, list(other)))
@@ -628,6 +661,78 @@ def _unique(items: Iterable[T]) -> ShapeList[T]:
     return out
 
 
+def _topology_tags(body: _Body) -> tuple[list[list[int]], list[list[int]]]:
+    """The tags of a body's faces and edges, in its order (``ext.topology_tags``, read once)."""
+    h = body._h
+    if h.tags is None:
+        h.tags = ext.topology_tags(h.brep)
+    return h.tags
+
+
+def _item_tags(items: Sequence[Any], what: str) -> list[frozenset[int]]:
+    """The tags of each face or edge of bodies (none for an edge of no body)."""
+    out: list[frozenset[int]] = [frozenset()] * len(items)
+    groups: dict[int, tuple[_Body, list[int], list[int]]] = {}
+    for i, s in enumerate(items):
+        if not isinstance(s, (Face, Edge)):
+            raise TypeError(f"{what} selects faces and edges, not a {type(s).__name__}")
+        owner = s._owner
+        if not isinstance(owner, _Body) or (isinstance(s, Edge) and s._e is None):
+            continue
+        g = groups.setdefault(id(owner._h), (owner, [], []))
+        (g[1] if isinstance(s, Face) else g[2]).append(i)
+    for owner, faces, edges in groups.values():
+        ft, et = _topology_tags(owner)
+        if faces:
+            for i, j in zip(faces, ext.face_indices(owner._brep, [items[i]._f for i in faces])):
+                out[i] = frozenset(ft[j]) if j >= 0 else frozenset()
+        if edges:
+            for i, j in zip(edges, ext.edge_indices(owner._brep, [items[i]._e for i in edges])):
+                out[i] = frozenset(et[j]) if j >= 0 else frozenset()
+    return out
+
+
+def _history_tags(shapes: Any, what: str) -> set[int]:
+    """The tags of bodies (of all their faces and edges), faces and edges, also in lists."""
+    out: set[int] = set()
+    items: list[Any] = []
+
+    def walk(x: Any) -> None:
+        if isinstance(x, _Body):
+            ft, et = _topology_tags(x)
+            for t in ft + et:
+                out.update(t)
+        elif isinstance(x, (Face, Edge)):
+            items.append(x)
+        elif isinstance(x, Wire):
+            items.extend(x.edges())
+        elif isinstance(x, Iterable) and not isinstance(x, (str, bytes, Shape)):
+            for y in x:
+                walk(y)
+        else:
+            raise TypeError(f"{what} takes bodies, faces and edges (or lists of them), not a {type(x).__name__}")
+
+    walk(shapes)
+    for t in _item_tags(items, what):
+        out.update(t)
+    return out
+
+
+def _descendants(body: _Body, items: Sequence[Any], faces: bool) -> list[list[Any]]:
+    """Per face (``faces``) or edge of another body, the kernel faces or edges of ``body`` that
+    descend from it (carry one of its tags); seam edges are left out."""
+    tags = _item_tags(items, "select")
+    ft, et = _topology_tags(body)
+    own = body._brep.faces() if faces else body._brep.edges()
+    seams = set() if faces else set(ext.seam_edges(body._brep))
+    holders: dict[int, list[int]] = {}  # tag -> the faces or edges of the body that carry it
+    for j, mine in enumerate(ft if faces else et):
+        if j not in seams:
+            for tag in mine:
+                holders.setdefault(tag, []).append(j)
+    return [[own[j] for j in sorted({j for tag in t for j in holders.get(tag, ())})] for t in tags]
+
+
 def _direction_of(s: Any) -> Vector | None:
     if isinstance(s, Edge):
         return s.direction if s._is_straight() else None
@@ -672,6 +777,16 @@ class Vertex(Shape):
     @property
     def z(self) -> float:
         return self._p.z
+
+    @property
+    def tolerance(self) -> float:
+        """How far the edges and faces that meet at this vertex may pass from its point: the
+        kernel's tolerance of the vertex (1e-5 on most parts; larger where the surfaces of an
+        imported, stitched or healed body meet less exactly). ``ValueError`` for a vertex of no
+        body (``Vertex(x, y, z)``)."""
+        if self._v is None:
+            raise ValueError("tolerance: a vertex of no body has no tolerance")
+        return float(ext.vertex_tolerance(self._v))
 
     def center(self) -> Vector:
         return self._p
@@ -802,6 +917,16 @@ class Edge(Shape):
     def geom_type(self) -> str:
         """``"line"``, ``"circle"`` (also arcs), ``"ellipse"``, ``"bspline"`` or ``"other"``."""
         return ext.curve_kind(self._curve())
+
+    @property
+    def tolerance(self) -> float:
+        """How far this edge's curve, its ends and the faces it bounds may lie apart: the
+        kernel's tolerance of the edge (1e-5 on most parts; larger where the surfaces of an
+        imported, stitched or healed body meet less exactly). ``ValueError`` for an edge of no
+        body (a curve made with ``Line``, ``Spline``, ...)."""
+        if self._e is None:
+            raise ValueError("tolerance: an edge of no body has no tolerance")
+        return float(ext.edge_tolerance(self._e))
 
     @property
     def length(self) -> float:
@@ -1560,6 +1685,9 @@ class _Body(Shape):
     def _wrap(cls, brep: Any, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         b = cls.__new__(cls)
         b._h = BrepHandle(brep)
+        # Faces and edges an operation made anew get tags of their own; the kernel carries tags
+        # along through later operations (ShapeList.new, ShapeList.derived_from).
+        ext.tag_topology(brep)
         b.name = kwargs.pop("name", None)
         b.color = kwargs.pop("color", None)
         return b
@@ -1691,6 +1819,10 @@ class _Body(Shape):
         h = BrepHandle(self._copy_brep())  # freed if the kernel fails
         with kernel_call("transform"):
             ext.transform_brep(h.brep, list(m.T.ravel()))
+        # A moved copy is a shape of its own: its faces and edges descend from none of the
+        # original's (copies in a pattern can be told apart; a selection of the original is
+        # not taken for the copy's).
+        ext.tag_topology(h.brep, True)
         return self._like(_take(h))
 
     # -- body conversions -----------------------------------------------------
@@ -1702,11 +1834,55 @@ class _Body(Shape):
         return self._like(_take(h))
 
     def heal(self) -> Any:
-        """Repair gaps, tolerances and topology (mostly needed for imported data)."""
+        """Repair gaps, tolerances and topology (mostly needed for imported data). A sheet
+        whose faces close around a volume once healed comes back as a :class:`Part`."""
         h = BrepHandle(self._copy_brep())
         with kernel_call("heal"):
             k.heal_brep(h.brep)
-        return self._like(_take(h))
+        healed = self._like(_take(h))
+        if isinstance(healed, Shell) and not isinstance(healed, Sketch) and healed._brep.is_manifold_solid():
+            part = Part._wrap(healed._copy_brep(), name=self.name, color=self.color)
+            if part._solid_problem() is None:
+                return part
+        return healed
+
+    def check(self, level: int = 2) -> list[Problem]:
+        """What the kernel's own validity checks find wrong with the body: per failed test a
+        :class:`Problem` with the face, edge or vertex it is about (or the body), a message,
+        and the value and tolerance it measured. An empty list: nothing found.
+
+        ``level`` 0 checks the structure (how faces, loops, edges and vertices connect, the
+        pointers between them) and the gaps between vertices, edges and faces against their
+        tolerances; 1 also the geometry; 2 (the default) everything, the slow tests too. That
+        takes some milliseconds on parts smlibpy makes, about 0.1 s on an imported part of
+        170 faces.
+
+        The tests look at each face, edge and vertex and its neighbours (SmBrep::AssertValid):
+        they do not see a body that runs through itself. Use them where :meth:`is_valid`
+        cannot tell what is wrong: after importing, stitching or healing, or where an operation
+        on a part fails that ``is_valid()`` accepts.
+        """
+        if level not in (0, 1, 2):
+            raise ValueError(f"check: the level must be 0, 1 or 2 (got {level!r})")
+        with kernel_call("check"):
+            reports = ext.check_brep(self._brep, level)
+        faces = edges = vertices = None
+
+        def shape(kind: str | None, index: int) -> Any:
+            nonlocal faces, edges, vertices
+            if kind == "face":
+                faces = faces if faces is not None else self._brep.faces()
+                return Face(self, faces[index])
+            if kind == "edge":
+                edges = edges if edges is not None else self._brep.edges()
+                return Edge._of(self, edges[index])
+            if kind == "vertex":
+                vertices = vertices if vertices is not None else self._brep.vertices()
+                return Vertex._of(self, vertices[index])
+            return self if kind == "body" else None
+
+        return [Problem(shape(r["kind"], r["index"]), r["message"], r["value"], r["tolerance"], r["category"],
+                        r["test"], shape(r["other_kind"], r["other_index"])) for r in reports]
 
     def _identity(self) -> Any:
         return ("b", id(self._h))
@@ -1994,13 +2170,87 @@ def _body_distance(a: _Body, b: _Body, seeds: int = 6, sample: int = 400) -> flo
     return 0.0 if best <= 1e-12 * scale else best
 
 
-def _relationship(a: _Body, b: _Body) -> str | None:
-    """``"separate"``, ``"touching"``, ``"interpenetrating"``, ``"a_contains_b"`` or
-    ``"b_contains_a"`` (None if the kernel cannot tell)."""
+def _mesh_tolerance(body: _Body, scale: float = 1.0) -> float:
+    """tessellate's default tolerance for a body (1e-3 of its box diagonal), times ``scale``."""
+    return max(body.bbox().diagonal * 1e-3 * scale, 1e-6)
+
+
+def _mesh_overlap(a: Part, tools: Sequence[Part], op: Any, scale: float = 1.0) -> float | None:
+    """The volume the meshes of a body and a tool have in common (``op`` INTERSECTION) or of the
+    body's left outside the tools (DIFFERENCE), the meshes made to ``scale`` times tessellate's
+    default tolerance; None where the kernel's mesh Boolean fails (as it can where the meshes have
+    faces in common). The meshes lie within their tolerance of the bodies, inside them where the
+    surfaces are convex: bodies that only touch have no volume in common, or (where a concave face
+    of one touches the other) a volume that shrinks with the tolerance."""
+    from .mesh import tessellate
+
     try:
-        return str(k.brep_relationship(a._brep, b._brep)["relationship"])
-    except RuntimeError:
+        mesh = tessellate(a, _mesh_tolerance(a, scale))
+        for t in tools:
+            tm = tessellate(t, _mesh_tolerance(t, scale))
+            mesh = mesh & tm if op == k.BooleanOp.INTERSECTION else mesh - tm
+            if not len(mesh.triangles):
+                return 0.0
+        return abs(mesh.volume)
+    except (KernelError, ModelingError, ValueError):
         return None
+
+
+def _surface_samples(body: _Body, near: BoundBox, tol: float, limit: int = 2000) -> list[tuple[float, float, float]]:
+    """Points on the mesh of a body (its corners and the middles of its triangles, within ``tol``
+    of the surface) that lie in a box, at most ``limit`` of them, spread over the list."""
+    from .mesh import tessellate
+
+    mesh = tessellate(body, tol)
+    pts = np.vstack([mesh.vertices, mesh.vertices[mesh.triangles].mean(axis=1)]) if len(mesh.triangles) else mesh.vertices
+    lo, hi = np.array(near.min.to_tuple()) - tol, np.array(near.max.to_tuple()) + tol
+    pts = pts[np.all((pts >= lo) & (pts <= hi), axis=1)]
+    if len(pts) > limit:
+        pts = pts[np.linspace(0, len(pts) - 1, limit).astype(int)]
+    return [tuple(float(c) for c in p) for p in pts]
+
+
+def _classified_empty(a: Part, tools: Sequence[Part], op: Any) -> bool:
+    """:func:`_empty_is_right` by classifying points instead (where the mesh Booleans fail): no
+    point of one operand's mesh lies inside the other by more than the mesh's tolerance
+    (INTERSECTION), or none of the part's lies outside every tool (DIFFERENCE)."""
+    tol = max(_mesh_tolerance(a), *(_mesh_tolerance(t) for t in tools))
+    if op == k.BooleanOp.INTERSECTION:
+        b = tools[0]
+        for x, y in ((a, b), (b, a)):
+            pts = _surface_samples(x, y._loose_box(), tol)
+            if pts and any(where == "inside" for where, _, _ in y._classify(pts, tol)):
+                return False
+        return True
+    pts = _surface_samples(a, a._loose_box(), tol)
+    covered = [False] * len(pts)
+    for t in tools:
+        for i, (where, _, _) in enumerate(t._classify(pts, tol)):
+            covered[i] = covered[i] or where != "outside"
+    return all(covered)
+
+
+def _empty_is_right(a: Part, tools: Sequence[Part], op: Any) -> bool:
+    """Whether an empty intersection (one tool) or cut is right: the meshes of the operands have
+    no volume in common (in the cut: none of the part is left outside the tools), up to 1e-6 of
+    the smaller volume, or a volume that shrinks to less than half at a tenth of the tolerance
+    (where a concave face touches the other body, the meshes overlap by about the tolerance).
+    Where the mesh Booleans fail, points of the meshes are classified (:func:`_classified_empty`).
+    (The kernel's brep_relationship is not asked: it calls overlapping bodies "touching", such as
+    spheres with 18.6 in common or a pin through a plate, its answer changes with where the bodies
+    are and with what was asked of them before, and it took 10 s for two plates of 168 faces.)"""
+    try:
+        volumes = [a._quick_volume()] + ([t._quick_volume() for t in tools] if op == k.BooleanOp.INTERSECTION else [])
+        small = 1e-6 * max(min(abs(v) for v in volumes), 1e-300)
+        coarse = _mesh_overlap(a, tools, op)
+        if coarse is not None and coarse <= small:
+            return True
+        fine = _mesh_overlap(a, tools, op, 0.1) if coarse is not None else None
+        if fine is not None:
+            return fine <= small or fine < 0.5 * coarse  # type: ignore[operator]
+        return _classified_empty(a, tools, op)
+    except (KernelError, ValueError):
+        return False
 
 
 def _bodies(items: Any, name: str = "combine") -> list[_Body]:
@@ -2121,6 +2371,29 @@ def _ray_meets_box(o: Vector, d: Vector, reach: float, box: Any, tol: float) -> 
         if t0 > t1:
             return False
     return True
+
+
+class Problem(NamedTuple):
+    """Something the kernel's validity checks find wrong with a body (see :meth:`Part.check`).
+
+    Attributes:
+        shape: The face, edge or vertex the problem is about, or the body itself.
+        message: What is wrong, with the value measured and the tolerance where there are.
+        value: The value measured (a gap, a distance, an angle), or ``None``.
+        tolerance: The tolerance it was held against, or ``None``.
+        category: The kind of test: ``"gap"``, ``"geometric"``, ``"topological"``,
+            ``"values"``, ``"degenerate"``, ... (the kernel's SmAssertType).
+        test: The test's short name (``"Bad Gap"``, ``"Bad Loop Connection Vertex"``).
+        other: A second face, edge or vertex the test compared with, or ``None``.
+    """
+
+    shape: Any
+    message: str
+    value: float | None = None
+    tolerance: float | None = None
+    category: str = ""
+    test: str = ""
+    other: Any = None
 
 
 class MassProperties:
@@ -2258,14 +2531,23 @@ class Part(_Body):
         return MassProperties(density * volume, volume, float(p["area"]), Vector(p["origin"]) + d,
                               density * i_c, density)
 
-    def is_valid(self) -> bool:
+    def is_valid(self, *, strict: bool = False) -> bool:
         """True if the part is a closed, manifold solid that encloses a positive volume and
         whose faces meet.
 
         (A body whose faces point inward, or that encloses no volume, such as a profile
         revolved about an axis through it, is not valid; nor is one whose faces leave gaps that
         make its volume uncertain by 1e-2 of its value or more.)
+
+        With ``strict``, the kernel's own checks of each face, edge and vertex (:meth:`check`,
+        all of them) must find nothing too: an imported, stitched or healed body can be closed
+        and enclose its volume while its edges and vertices lie farther from its faces than
+        their tolerances allow. (Of 1471 Boolean results of a random test campaign that
+        ``is_valid()`` accepts, 34 fail the strict test.)
         """
+        # (the checks first: measuring stores refitted trim curves in the body)
+        if strict and self._brep.face_count() and self.check(2):
+            return False
         return self._solid_problem(gaps=True) is None
 
     def _solid_problem(self, volume: float | None = None, gaps: bool = False) -> str | None:
@@ -2448,8 +2730,15 @@ class Part(_Body):
                 kind = type(t).__name__
                 extra = "; extrude it first" if isinstance(t, Sketch) else ""
                 raise TypeError(f"cannot {name} a {kind} with a Part{extra}")
-        if not all(isinstance(t, Part) for t in tools):  # sheets: imprint or trim, unchecked
-            return self._like(self._run_boolean(tools, op, name))
+        if not all(isinstance(t, Part) for t in tools):
+            # A sheet encloses no volume: the kernel's Boolean of a part and a sheet imprints the
+            # sheet or keeps a piece of it, in a body that is no solid.
+            if op == k.BooleanOp.INTERSECTION and len(tools) == 1:
+                return tools[0] & self  # the piece of the sheet inside the part
+            kind = next(type(t).__name__ for t in tools if not isinstance(t, Part))
+            raise TypeError(f"cannot {name} a {kind} with a Part: a sheet encloses no volume; to split the part "
+                            f"along it use part.split(sheet), to cut its outline into the part's faces "
+                            f"part.imprint(sheet), to trim the sheet sheet - part or sheet & part")
         try:
             result: Part | None = self._like(self._run_boolean(tools, op, name))
             failure: KernelError | None = None
@@ -2537,28 +2826,17 @@ class Part(_Body):
         if op == k.BooleanOp.INTERSECTION:
             if len(tools) > 1:
                 return None  # the common volume of several tools may well be empty
-            rel = _relationship(self, tools[0])
-            return None if rel in ("separate", "touching") else "empty"
-        # The intersection of the part and a tool that confirms an empty cut below can fail the
-        # same way as the cut (a tool beside an earlier hole in a sphere: the cut is empty, the
-        # intersection the whole part). So first the tools must be able to cover the part.
+            if _disjoint(self._loose_box(), tools[0]._loose_box()):
+                return None
+            return None if _empty_is_right(self, tools, op) else "empty"
+        # The tools must be able to cover the part, and the part's mesh must have nothing left
+        # outside theirs. (An intersection of the part and a tool, which confirmed an empty cut
+        # before, can fail the same way as the cut: a tool beside an earlier hole in a sphere
+        # made the cut empty and the intersection the whole part.)
         if not _can_cover(tools, self):
             return "empty"
-        try:
-            whole = self._kernel_props(1e-6)["volume"]
-        except KernelError:
-            return "empty"
-        for t in tools:
-            if _relationship(t, self) == "separate":
-                continue
-            # right only if the tool covers the whole part
-            try:
-                common = Part._wrap(self._run_boolean([t], k.BooleanOp.INTERSECTION, "cut"))
-                if common._kernel_props(1e-6)["volume"] >= whole * (1 - 1e-5):
-                    return None
-            except KernelError:
-                pass
-        return "empty"
+        tools = [t for t in tools if not _disjoint(t._loose_box(), self._loose_box())]
+        return None if tools and _empty_is_right(self, tools, op) else "empty"
 
     def fuse(self, *others: Part | Iterable[Part]) -> Part:
         """Union with other parts."""
@@ -2569,7 +2847,8 @@ class Part(_Body):
         return self._boolean(others, k.BooleanOp.DIFFERENCE, "cut")
 
     def intersect(self, *others: Part | Iterable[Part]) -> Part:
-        """Keep only the volume shared with the other parts."""
+        """Keep only the volume shared with the other parts. With one sheet (a Shell or a face)
+        instead: the piece of the sheet inside the part, as a Shell (``sheet & part``)."""
         return self._boolean(others, k.BooleanOp.INTERSECTION, "intersect")
 
     def __add__(self, other: Any) -> Part:
@@ -2588,16 +2867,24 @@ class Part(_Body):
 
     # -- topology selection on this part --------------------------------------
     def _own_edges(self, edges: Any) -> list[Any]:
-        """Kernel edges of this part for the given edge selection."""
+        """Kernel edges of this part for the given edge selection. An edge of an earlier version
+        of the part stands for the edges of this one that descend from it (the pieces a cut
+        left of it, the edge it was merged into); one of a body this part does not descend from,
+        for the edge in the same place."""
         sel = _flatten_edges(edges)
-        out = []
+        out: list[Any] = []
         candidates: list[tuple[Any, Vector, Vector, Vector]] | None = None
         tol = 1e-6 * max(1.0, self.bbox().diagonal)
+        foreign = [e for e in sel if not (e._e is not None and e._owner is not None and e._owner._h is self._h)]
+        mapped = dict(zip(map(id, foreign), _descendants(self, foreign, faces=False))) if foreign else {}
         for e in sel:
             if e._e is not None and e._owner is not None and e._owner._h is self._h:
                 out.append(e._e)
                 continue
-            # An edge of another body (e.g. an earlier version of this part): match by geometry.
+            if mapped.get(id(e)):
+                out.extend(mapped[id(e)])
+                continue
+            # An edge of another body: match by geometry.
             if candidates is None:
                 candidates = []
                 for ke in self._brep.edges():
@@ -2612,16 +2899,22 @@ class Part(_Body):
                 raise ValueError(f"{e!r} is not an edge of this part")
         if not out:
             raise ValueError("no edges selected")
-        return out
+        return list({id(x): x for x in out}.values())
 
     def _own_faces(self, faces: Any) -> list[Any]:
+        """Kernel faces of this part for the given face selection: as :meth:`_own_edges`."""
         sel = _flatten_faces(faces)
-        out = []
+        out: list[Any] = []
         tol = 1e-6 * max(1.0, self.bbox().diagonal)
         own_faces: list[Face] | None = None
+        foreign = [f for f in sel if not (f._owner is not None and f._owner._h is self._h)]
+        mapped = dict(zip(map(id, foreign), _descendants(self, foreign, faces=True))) if foreign else {}
         for f in sel:
             if f._owner is not None and f._owner._h is self._h:
                 out.append(f._f)
+                continue
+            if mapped.get(id(f)):
+                out.extend(mapped[id(f)])
                 continue
             # A face of another body: the face of ours that contains its interior point and
             # has the same area.
@@ -2635,7 +2928,25 @@ class Part(_Body):
                     break
             else:
                 raise ValueError(f"{f!r} is not a face of this part")
-        return out
+        return list({id(x): x for x in out}.values())
+
+    def _resolved(self, edges: Any, sizes: list[float] | None = None) -> tuple[list[Edge], list[float] | None]:
+        """A selection of edges as edges of this part: an edge of an earlier version of the part
+        becomes the edges that descend from it (its pieces, the edge it was merged into), with
+        its entry of ``sizes`` (one per selected edge) repeated for each; one of a body this part
+        does not descend from, the edge in the same place (see :meth:`_own_edges`). The checks of
+        fillets and chamfers then measure the edges that are rounded."""
+        sel = _flatten_edges(edges)
+        if all(e._e is not None and e._owner is not None and e._owner._h is self._h for e in sel):
+            return sel, sizes
+        out: list[Edge] = []
+        grown: list[float] = []
+        for i, e in enumerate(sel):
+            mine = [Edge._of(self, ke) for ke in self._own_edges([e])]
+            out.extend(mine)
+            if sizes is not None and len(sizes) == len(sel):
+                grown.extend([sizes[i]] * len(mine))
+        return out, (grown if sizes is not None and len(sizes) == len(sel) else sizes)
 
     def _sharp_edges(self, edges: Any, operation: str) -> list[Edge]:
         """The selected edges without seams and tangent (smooth) edges, which cannot be rounded."""
@@ -2805,6 +3116,11 @@ class Part(_Body):
             # the kernel makes a ruled chamfer of it, not tangent to the faces
             raise ValueError("fillet: a (start, end) radius makes circular rounds only; continuity needs a "
                              "constant radius")
+        if isinstance(radius, (list, np.ndarray)):
+            edges, per_edge = self._resolved(edges, [float(r) for r in radius])
+            radius = per_edge
+        else:
+            edges, _ = self._resolved(edges)
         sel = self._sharp_edges(edges, "fillet")
         if isinstance(radius, tuple) and len(radius) == 2:
             if float(radius[0]) != float(radius[1]):
@@ -2851,6 +3167,7 @@ class Part(_Body):
         self._require_valid("chamfer")
         if not float(length) > 0:
             raise ValueError("chamfer: the length must be positive")
+        edges, _ = self._resolved(edges)
         sel = self._sharp_edges(edges, "chamfer")
         self._check_round_sizes(sel, [float(length)] * len(sel), "chamfer", "length")
         radii = []
@@ -3124,12 +3441,26 @@ class Part(_Body):
             raise error
         raise ModelingError(f"{name}: the kernel could not build a valid result (it built {refused}); {hint}")
 
-    def split(self, plane: Plane | Face, keep: str = "above") -> Any:
-        """Cut the part with a plane.
+    def split(self, plane: Plane | Face | Shell, keep: str = "above") -> Any:
+        """Cut the part with a plane or along a sheet.
 
         ``keep="above"`` keeps the side the plane normal points to, ``"below"`` the other
         side, ``"both"`` returns ``(above, below)``.
+
+        A sheet (a :class:`Shell`, or a face that is not planar: a curved split surface, a
+        surface fitted to a scan) splits the part along its surface; "above" is the side its
+        normals point to (``normal_at``). The sheet must cut through the part. A sheet of one
+        free-form face whose edges end inside the part is extended beyond them, tangentially,
+        until it does (the face's trim is not kept); other sheets raise ``ModelingError``
+        ("the surface does not cut through the part"). The two sides together hold the part's
+        volume, which is checked. A planar face (or a sketch) stands for its plane.
         """
+        if isinstance(plane, ShapeList):
+            plane = plane.one()
+        if isinstance(plane, Face) and not plane.is_planar:
+            return self._split_by_sheet(plane.to_shell(), keep, not plane._natural_is_outward())
+        if isinstance(plane, Shell) and not isinstance(plane, Sketch):
+            return self._split_by_sheet(plane, keep, False)
         pl = _as_plane(plane)
         if keep == "both":
             return self.split(pl, "above"), self.split(pl, "below")
@@ -3149,6 +3480,151 @@ class Part(_Body):
         if kept._brep.face_count() == 0:
             raise ModelingError(f"split: nothing of the part lies {keep} the plane")
         return kept
+
+    def imprint(self, tool: Part | Shell | Face | Sketch) -> Part:
+        """The part with its faces split where a tool crosses them: split lines for drafts,
+        patches for the loads and supports of a simulation, regions to color. Nothing is added
+        or taken away: the volume stays.
+
+        ``tool`` is a part (the faces are split where its surface crosses them), a sheet or a
+        face that crosses faces of the part, or a sketch (or a planar face) lying on a face of
+        the part, whose outline is cut into that face (keep its region within the face: where
+        it reaches past the face's edges, the neighbouring faces can get split lines close to
+        them).
+
+        The pieces of the part's faces that lie inside a tool part, or inside the sketch's
+        region, descend from the tool: ``part.imprint(tool).faces().derived_from(tool)``
+        selects them. A fillet or chamfer across a split line removes it again.
+
+        ``ModelingError`` where the tool crosses no face of the part, and where the kernel's
+        result is no longer the part (another volume, or a broken body).
+        """
+        if isinstance(tool, ShapeList):
+            tool = tool.one()
+        if not isinstance(tool, (Part, Shell, Face)):
+            raise TypeError(f"imprint takes a part, a sheet, a face or a sketch, not a {type(tool).__name__}")
+        self._require_valid("imprint")
+        region: Part | None = tool if isinstance(tool, Part) else None
+        if isinstance(tool, Part):
+            tool._require_valid("imprint")
+            result = self._imprinted(tool)
+        elif isinstance(tool, Sketch) or (isinstance(tool, Face) and tool.is_planar):
+            sketch = tool if isinstance(tool, Sketch) else tool.to_sketch()
+            sheet = sketch if isinstance(tool, Sketch) else tool.to_shell()
+            # (a thin slab through the plane: the pieces of faces in the plane inside it lie in
+            # the sketch's region)
+            region = sketch.extrude(max(1e-3 * self._extent(), 1e-6), both=True)
+            result = self._imprinted(sheet)
+            if result is None and self._lies_on_face(sketch.plane):
+                # The kernel can imprint nothing of an outline in the plane of a face: the slab's
+                # walls cut it in.
+                result = self._imprinted(region)
+        else:
+            result = self._imprinted(tool.to_shell() if isinstance(tool, Face) else tool)
+        if result is None:
+            raise ModelingError("imprint: the tool crosses no face of the part")
+        if region is not None:
+            # the pieces inside the tool's region descend from the tool
+            faces = result.faces()
+            points = [f.interior_point().to_tuple() for f in faces]
+            tol = 1e-6 * max(1.0, region._extent())
+            inside = [f._f for f, (where, _, _) in zip(faces, region._classify(points, tol)) if where != "outside"]
+            if inside:  # (the result is new: nothing has read its tags yet)
+                ext.add_face_tags(result._brep, inside, sorted(_history_tags(tool, "imprint")))
+                result._h.tags = None
+        return result
+
+    def _imprinted(self, tool: _Body) -> Part | None:
+        """This part with its faces split where the tool's surface crosses them (the kernel's
+        Boolean with imprinting), checked: a valid solid of the same volume (within 1e-6, or its
+        gaps); None where no face was split."""
+        h, th = BrepHandle(self._copy_brep()), BrepHandle(tool._copy_brep())  # the kernel keeps both if it fails
+        with kernel_call("imprint", "the tool may only touch the part's faces, or run along one of its edges"):
+            h.brep = ext.boolean(h.brep, th.brep, k.BooleanOp.UNION, imprinting=True)
+        _take(th)
+        result = self._like(_take(h))
+        if result._brep.face_count() <= self._brep.face_count():
+            return None
+        problem = result._solid_problem()
+        if problem is None:
+            try:
+                a, b = self._props(), result._props()
+                slack = max(1e-6, 10 * max(float(a["gaps"]), float(b["gaps"])))
+                if not abs(float(b["volume"]) - float(a["volume"])) <= slack * abs(float(a["volume"])):
+                    problem = f"of another volume ({float(b['volume']):.10g}, the part has {float(a['volume']):.10g})"
+            except KernelError:
+                problem = "a body whose volume cannot be integrated"
+        if problem is not None:
+            raise ModelingError(f"imprint: the kernel returned a body {problem}; move the tool a little, so that its "
+                                f"surface crosses the part's faces rather than running along them")
+        return result
+
+    def _lies_on_face(self, plane: Plane) -> bool:
+        """Whether a planar face of this part lies in a plane."""
+        tol = 1e-6 * max(1.0, self._extent())
+        n = plane.z_dir.normalized()
+        for f in self.faces():
+            if f.geom_type != "plane":
+                continue
+            fp = f.plane
+            if abs(abs(fp.z_dir.normalized().dot(n)) - 1.0) <= 1e-9 and abs((fp.origin - plane.origin).dot(n)) <= tol:
+                return True
+        return False
+
+    def _split_by_sheet(self, sheet: Shell, keep: str, turned: bool) -> Any:
+        """:meth:`split` along a sheet (``turned``: whose faces' normals point against those
+        of the face it was taken from)."""
+        if keep not in ("above", "below", "both"):
+            raise ValueError('keep must be "above", "below" or "both"')
+        if sheet._brep.face_count() == 0:
+            raise ValueError("split: the sheet is empty")
+        self._require_valid("split")
+        pieces = self._sliced(sheet)
+        if pieces is None and len(sheet.faces()) == 1 and sheet.faces()[0].geom_type == "bspline":
+            # A free-form sheet whose edges end inside the part: extended beyond them (its normals
+            # point as before, the surface's).
+            reach = 2.0 * (self.bbox().diagonal + sheet.bbox().diagonal)
+            with kernel_call("split", "the sheet's surface cannot be extended"):
+                wide = Shell._wrap(ext.extended_sheet(sheet.faces()[0]._f, reach))
+            pieces = self._sliced(wide)
+        if pieces is None:
+            raise ModelingError("split: the surface does not cut through the part (its edges end inside the part, "
+                                "or it misses it); make the sheet reach past the part on every side")
+        above, below = pieces[::-1] if turned else pieces
+        return above if keep == "above" else below if keep == "below" else (above, below)
+
+    def _sliced(self, sheet: Shell) -> tuple[Part, Part] | None:
+        """The parts of this part above and below a sheet (the kernel's SLICE, keeping the side
+        its normals point to, and again with the sheet turned); None where the sheet does not
+        cut through the part: a side is empty or no solid, or the two do not add up to the
+        part's volume (a sheet that only dents the part or misses it, from which the kernel
+        returns the part less a dent, or all of it)."""
+        out: list[Part] = []
+        for below in (False, True):
+            h = BrepHandle(self._copy_brep())
+            # (the sheet turned for the other side: its faces as B-spline faces, their U and V swapped)
+            t = BrepHandle(sheet.to_nurbs()._copy_brep() if below else sheet._copy_brep())
+            try:
+                with kernel_call("split"):
+                    h.brep = ext.slice(h.brep, t.brep, below)
+                _take(t)
+            except KernelError:
+                return None
+            piece = Part._wrap(_take(h), name=self.name, color=self.color)
+            if piece._brep.face_count() == 0 or piece._solid_problem() is not None:
+                return None
+            out.append(piece)
+        try:
+            p = self._props()
+            parts = [x._props() for x in out]
+        except KernelError:
+            return None
+        whole = float(p["volume"])
+        volumes = [float(x["volume"]) for x in parts]
+        slack = max(1e-6, 10 * max([float(p["gaps"])] + [float(x["gaps"]) for x in parts]))
+        if min(volumes) <= slack * whole or not abs(sum(volumes) - whole) <= slack * whole:
+            return None
+        return out[0], out[1]
 
     def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
         """The cross-section of the part in a plane, as a sketch. Of a part made by :meth:`merge`,
@@ -3573,6 +4049,50 @@ class Shell(_Body):
             with kernel_call("fuse"):
                 _combine(h, t, k.BooleanOp.UNION)
         return self._like(_take(h))
+
+    def __sub__(self, other: Any) -> Shell:
+        """The sheet trimmed by parts: the pieces outside them (``sheet - part``)."""
+        return self._trimmed(other, k.BooleanOp.DIFFERENCE, "cut")
+
+    def __and__(self, other: Any) -> Shell:
+        """The sheet trimmed by parts: the pieces inside them (``sheet & part``; also
+        ``part & sheet``)."""
+        return self._trimmed(other, k.BooleanOp.INTERSECTION, "intersect")
+
+    def _trimmed(self, other: Any, op: Any, name: str) -> Shell:
+        """The sheet less the pieces inside (or outside) parts. The kernel's Boolean of a sheet and a
+        solid trims the sheet; checked: every face of the result lies on the sheet, and its area
+        is no more than the sheet's."""
+        tools = _bodies(other, name)
+        if not tools:
+            raise ValueError(f"{name} needs a part")
+        for t in tools:
+            if not isinstance(t, Part) or isinstance(t, Sketch):
+                raise TypeError(f"a sheet is trimmed by parts (sheet - part, sheet & part), not by a {type(t).__name__}")
+            t._require_valid(name)
+        if self._brep.face_count() == 0:
+            return self._like(self._copy_brep())
+        h = BrepHandle(self._copy_brep())
+        for t in tools:
+            if h.brep.face_count() == 0:
+                break
+            if _disjoint(BoundBox(*h.brep.bounding_box(False)), t._loose_box()):
+                if op == k.BooleanOp.INTERSECTION:
+                    h = BrepHandle(ext.combine([]))
+                continue
+            with kernel_call(name, "the sheet may only touch the part, or lie in one of its faces"):
+                _combine(h, t, op)
+        result = self._like(_take(h))
+        if result._brep.is_manifold_solid():
+            raise ModelingError(f"{name}: the kernel returned a solid, not a piece of the sheet")
+        tol = 1e-5 * max(1.0, self.bbox().diagonal)
+        for f in result.faces():
+            if self.distance_to(f.interior_point()) > tol:
+                raise ModelingError(f"{name}: the kernel returned a face that is not on the sheet")
+        if result._brep.face_count() and result.area > self.area * (1 + 1e-6) + tol:
+            raise ModelingError(f"{name}: the kernel returned more of the sheet ({result.area:.6g}) than there is "
+                                f"({self.area:.6g})")
+        return result
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._brep.face_count()} faces, area={self.area:.6g})"

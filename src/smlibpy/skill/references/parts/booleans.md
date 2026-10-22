@@ -32,7 +32,10 @@ hint (see Errors). A broken operand raises `ModelingError: cut: a tool is not a 
 together hold the part's volume and whose boxes span it, and an intersection that has as many
 faces as an operand, or reaches out of an operand's box, has points of its surface classified
 against the operands: a wrong empty cut or a whole part given back raises `ModelingError` ("a
-result that is empty", "partly outside an operand").
+result that is empty", "partly outside an operand"). An empty result is checked on meshes of
+the operands (an empty intersection where they share no volume, an empty cut where nothing of the
+part is left outside the tools), not with the kernel's `brep_relationship`, which calls
+overlapping bodies "touching" and whose answer changes with where the bodies are.
 
 ## What to expect
 
@@ -87,8 +90,11 @@ Measured on 10 mm boxes unless noted:
   and t2 do not overlap. To keep the overlap with each, fuse first: `a & (t1 + t2)`.
 - **A Sketch is not a tool.** `plate - Circle(3).on(top)` raises `TypeError: cannot cut a
   Sketch with a Part; extrude it first`. Extrude first: `plate - Circle(3).on(top).extrude(-4)`.
-- A `Shell` (a sheet, e.g. from `surface()`) is accepted and not checked: `stitch(part & shell)`
-  trims a part with a sheet. A `Face` operand is turned into a sheet.
+- **A sheet is no tool.** `part + sheet` and `part - sheet` (a `Shell` from `surface()`, or a
+  face) raise `TypeError` (they returned invalid "Parts"): split the part along it
+  (`part.split(sheet)`), or cut its lines into the faces (`part.imprint(sheet)`). `part & sheet`
+  and `sheet & part` give the piece of the sheet inside the part, `sheet - part` the rest, as
+  Shells (see `surfaces/Shell`).
 - If moving an operand does not help: check each operand's `is_valid()` and `volume`, and
   combine the tools before applying them.
 - Speed is not an issue for ordinary parts: 225 holes as one list cut in under 1 s.

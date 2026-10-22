@@ -23,7 +23,7 @@ import time
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
 
-from ._kernel import KernelError, ModelingError, k, kernel_call
+from ._kernel import KernelError, ModelingError, ext, k, kernel_call
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Part, ShapeList
@@ -115,6 +115,7 @@ def _isolated(what: str, work: Callable[[], Any]) -> Any:
         return work()
     folder = tempfile.mkdtemp(prefix="smlibpy-")
     body, error = os.path.join(folder, "body.smb"), os.path.join(folder, "error.json")
+    tags = os.path.join(folder, "tags.json")  # (the tags of its faces and edges: .smb files hold none)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
@@ -125,6 +126,8 @@ def _isolated(what: str, work: Callable[[], Any]) -> Any:
                 b = work()
                 if b is None:
                     raise KernelError(what, "the kernel returned no body")
+                with open(tags, "w") as f:
+                    json.dump(ext.topology_tags(b), f)
                 b.write_to_file(body, False)
             except BaseException as e:
                 code = 3
@@ -141,7 +144,13 @@ def _isolated(what: str, work: Callable[[], Any]) -> Any:
             os._exit(code)
         if _wait(what, pid, limit) == 0 and os.path.exists(body):
             with kernel_call(what):
-                return k.read_brep_from_file(body, None, False)
+                made = k.read_brep_from_file(body, None, False)
+            try:
+                with open(tags) as f:
+                    ext.set_topology_tags(made, *json.load(f))
+            except (OSError, ValueError, TypeError):
+                pass  # (its faces and edges then count as new)
+            return made
         try:
             with open(error) as f:
                 sent = json.load(f)

@@ -95,7 +95,8 @@ applies. The differences come from the language:
   `-` and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
 - **Lists**: a `ShapeList` is an Array. Python's selection by a point, `faces().at(point)`, is
   `atPoint(point)`, since `at` takes an index; Python's `list[-1]` is `list.at(-1)` or
-  `list.last`.
+  `list.last`. Python's `edges().new(since=part)` is `edges().newSince(part)` (`new` names no
+  method well in JavaScript).
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: in Node, `exportStep(shapes, path)`, `importStep(path)` and the other path functions
@@ -388,6 +389,8 @@ export class ShapeList<T = Shape> extends Array<T> {
     hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
     atPoint(point: VectorLike, tol?: number): ShapeList<T>;
+    newSince(since: unknown): ShapeList<T>;
+    derivedFrom(...shapes: unknown[]): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;
     difference(other: Iterable<T>): ShapeList<T>;
     intersection(other: Iterable<T>): ShapeList<T>;
@@ -409,6 +412,7 @@ export class Vertex extends Shape {
     get x(): number;
     get y(): number;
     get z(): number;
+    get tolerance(): number;
     center(): Vector;
     bbox(): BoundBox;
     vertices(): ShapeList<Vertex>;
@@ -423,6 +427,7 @@ export class Edge extends Shape {
     constructor(token?: symbol);
     dispose(): void;
     get geomType(): string;
+    get tolerance(): number;
     get length(): number;
     get start(): Vector;
     get end(): Vector;
@@ -504,6 +509,17 @@ export class Face extends Shape {
     equals(other: unknown): boolean;
     toString(): string;
 }
+export class Problem {
+    readonly shape: Face | Edge | Vertex | Part | Shell;
+    readonly message: string;
+    readonly value: number | null;
+    readonly tolerance: number | null;
+    readonly category: string;
+    readonly test: string;
+    readonly other: Face | Edge | Vertex | Part | Shell | null;
+    constructor(shape: Face | Edge | Vertex | Part | Shell, message: string, value?: number | null, tolerance?: number | null, category?: string, test?: string, other?: Face | Edge | Vertex | Part | Shell | null);
+    toString(): string;
+}
 export class MassProperties {
     readonly mass: number;
     readonly volume: number;
@@ -525,7 +541,9 @@ export class Part extends _Body {
     get area(): number;
     center(): Vector;
     massProperties(density?: number, accuracy?: number | null): MassProperties;
-    isValid(): boolean;
+    isValid(options?: {
+        strict?: boolean;
+    }): boolean;
     solids(): ShapeList<Part>;
     merge(...others: unknown[]): Part;
     cells(): ShapeList<Part>;
@@ -534,6 +552,7 @@ export class Part extends _Body {
     cellAt(point: VectorLike, tol?: number | null): Part | null;
     fuse(...others: (Part | Iterable<Part>)[]): Part;
     cut(...others: (Part | Iterable<Part>)[]): Part;
+    intersect(sheet: Shell | Face): Shell;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
     fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part;
     chamfer(edges: unknown, length: number): Part;
@@ -541,9 +560,10 @@ export class Part extends _Body {
         outward?: boolean;
     }): Part;
     offset(distance: number): Part;
-    split(plane: Plane | Face, keep: 'above' | 'below'): Part;
-    split(plane: Plane | Face, keep: 'both'): [Part, Part];
-    split(plane: Plane | Face): Part;
+    split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'above' | 'below'): Part;
+    split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'both'): [Part, Part];
+    split(plane: Plane | Face | Shell | ShapeList<Face>): Part;
+    imprint(tool: Part | Shell | Face | ShapeList<Face>): Part;
     section(plane?: Plane | Face): Sketch;
     twist(angle: number, options?: TwistOptions): Part;
     taper(scale: number, options?: TaperOptions): Part;
@@ -579,6 +599,8 @@ export class Shell extends _Body {
         both?: boolean;
     }): Part;
     fuse(...others: unknown[]): Shell;
+    cut(...others: unknown[]): Shell;
+    intersect(...others: unknown[]): Shell;
     toString(): string;
 }
 export interface ExtrudeOptions {
@@ -818,7 +840,7 @@ export function offset(shape: Part | Sketch, distance: number, options?: {
     round?: boolean | null;
 }): Part | Sketch;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
-export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
+export function split(part: Part, plane: Plane | Face | Shell, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
 export function section(part: Part, plane?: Plane | Face): Sketch;
 export function thicken(surface: Shell | Face, thickness: number): Part;

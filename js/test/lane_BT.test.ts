@@ -1,14 +1,45 @@
-// Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10); ported from
-// tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
+// Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10); empty Boolean results
+// checked without the kernel's brep_relationship (B13); parts split along sheets and sheets trimmed
+// by parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks
+// (T4). Ported from tests/test_lane_BT.py. Exact volumes come from integrating the overlaps of the operands (the cross
 // sections of two cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is
 // given where it differs from that by more than 1e-6.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 
-import { Box, Cylinder, Edge, Face, KernelError, Part, Sphere, Vector, X, Y, Z } from '../src/index.ts'
-import { ext, k } from '../src/kernel.ts'
-import { _parallelRounds } from '../src/shapes.ts'
+import {
+  Box,
+  Circle,
+  Cylinder,
+  Edge,
+  Face,
+  GridLocations,
+  KernelError,
+  Line,
+  ModelingError,
+  Part,
+  Plane,
+  Problem,
+  Rectangle,
+  Shell,
+  Sphere,
+  Torus,
+  Vector,
+  Vertex,
+  X,
+  Y,
+  Z,
+  split,
+  stitch,
+  surface,
+} from '../src/index.ts'
+import { ext, k, module } from '../src/kernel.ts'
+import { _classifiedEmpty, _parallelRounds } from '../src/shapes.ts'
+import { GUARD_SECONDS, setGuardSeconds } from '../src/defeature.ts'
+
+// biome-ignore lint: wrong types on purpose, for the errors
+type Any = any
 import { approx } from './_approx.ts'
 
 const PI = Math.PI
@@ -198,4 +229,382 @@ test('Booleans that turn a seam free their copies', () => {
   assert.equal(run.status, 0, run.stderr)
   const grown = Number(run.stdout.trim())
   assert.ok(grown < 10, `100 turned cuts took ${grown} MB`) // 0.4 MB each if the operands stayed
+})
+
+
+// -- B13: empty results are checked without brep_relationship -----------------------------
+function withoutRelationship(f: () => void): void {
+  const relationship = k.brep_relationship
+  k.brep_relationship = () => {
+    throw new Error('brep_relationship was asked')
+  }
+  try {
+    f()
+  } finally {
+    k.brep_relationship = relationship
+  }
+}
+
+test('an empty intersection of touching boxes is right wherever they are', () => {
+  // brep_relationship called these "touching" at the origin and "interpenetrating" moved, so the same
+  // right empty intersection raised there
+  withoutRelationship(() => {
+    const a = Box(10, 12, 12)
+    const b = Box(4, 20, 12).rotate(X, 90).translate(7, 0, 4)
+    for (const move of [[0, 0, 0], [101.3, -57.9, 33.1]] as const) {
+      assert.equal(a.translate(...move).intersect(b.translate(...move)).faces().length, 0)
+    }
+  })
+})
+
+test('empty intersections and cuts that are right', () => {
+  withoutRelationship(() => {
+    const cases: (() => Part)[] = [
+      () => Sphere(5).intersect(Sphere(5).translate(10.5, 0, 0)), // apart
+      () => Sphere(5).intersect(Sphere(5).translate(10, 0, 0)), // touching at a point
+      () => Box(20, 20, 10).intersect(Cylinder(3, 20).rotate(X, 90).translate(0, 0, 8)), // along a line
+      () => Box(30, 30, 30).cut(Sphere(8)).intersect(Sphere(8)), // a ball in its cavity (the mesh Booleans fail)
+      () => Box(10, 10, 10).cut(Box(10, 10, 10)),
+      () => Box(10, 10, 10).cut(Sphere(9)), // the corners at 8.66 inside the sphere
+      () => Cylinder(5, 10).cut(Cylinder(5, 10)),
+      () => Box(10, 10, 10).cut([Box(6, 12, 12).translate(-2.5, 0, 0), Box(6, 12, 12).translate(2.5, 0, 0)]),
+    ]
+    for (const make of cases) assert.equal(make().faces().length, 0)
+  })
+})
+
+test('an empty intersection of plates apart is quick', () => {
+  // brep_relationship took 10 s for these two plates of 168 faces, 3 apart (the Boolean 0.13 s)
+  const holes: Part[] = []
+  for (let x = -180; x <= 180; x += 20) for (let y = -80; y <= 80; y += 20) holes.push(Cylinder(2, 20).translate(x, y, 0))
+  const plate = Box(400, 200, 10).cut(holes)
+  const other = plate.translate(0, 0, 13)
+  const t = performance.now()
+  assert.equal(plate.intersect(other).faces().length, 0)
+  assert.ok(performance.now() - t < 3000)
+})
+
+test('a wrong empty result is refused', () => {
+  // The kernel returning nothing for bodies that overlap: brep_relationship calls the spheres
+  // "touching" (18.6 in common), which accepted the empty intersection
+  const a = Sphere(7)
+  const b = Sphere(2).translate(6, 3, 0)
+  assert.equal(k.brep_relationship(a._brep, b._brep).relationship, 'touching')
+  approx(a.intersect(b).volume, 18.6016, 1e-4)
+  const run = Part.prototype._runBoolean
+  Part.prototype._runBoolean = () => ext.combine([])
+  try {
+    assert.throws(() => a.intersect(b), (e: unknown) => e instanceof ModelingError && /empty/.test(e.message))
+    // the tool covers the box's box and volume, not its corners
+    assert.throws(() => Box(10, 10, 10).cut(Sphere(8.6)), (e: unknown) => e instanceof ModelingError && /empty/.test(e.message))
+  } finally {
+    Part.prototype._runBoolean = run
+  }
+})
+
+test('the empty checks classify points where the mesh Booleans fail', () => {
+  const a = Sphere(7)
+  assert.ok(!_classifiedEmpty(a, [Sphere(2).translate(6, 3, 0)], k.BooleanOp.INTERSECTION))
+  assert.ok(_classifiedEmpty(a, [Sphere(2).translate(9.5, 0, 0)], k.BooleanOp.INTERSECTION))
+  assert.ok(!_classifiedEmpty(Box(10, 10, 10), [Sphere(8.6)], k.BooleanOp.DIFFERENCE))
+  assert.ok(_classifiedEmpty(Box(10, 10, 10), [Sphere(9)], k.BooleanOp.DIFFERENCE))
+})
+
+// -- B12: parts split along sheets, sheets trimmed by parts -------------------------------
+const linspace = (a: number, b: number, n: number): number[] => Array.from({ length: n }, (_, i) => a + ((b - a) * i) / (n - 1))
+// z = 2 + 3 sin(x / 6), odd about x = 0 apart from its mean: a box of 20 splits 3200 / 4800
+const wave = (span = 15, width = 15): Shell =>
+  surface(linspace(-span, span, 13).map((x) => linspace(-width, width, 7).map((y) => [x, y, 2 + 3 * Math.sin(x / 6)] as [number, number, number])))
+
+test('split along a sheet', () => {
+  const box = Box(20, 20, 20)
+  const s = wave()
+  assert.ok(s.faces()[0].normalAt().z > 0) // "above" is the side the normals point to
+  const [above, below] = box.split(s, 'both')
+  approx(above.volume, 3200)
+  approx(below.volume, 4800)
+  assert.ok(above.isValid() && below.isValid())
+  assert.equal(above.faces().length, 6)
+  approx(box.split(s).volume, 3200)
+  approx(box.split(s, 'below').volume, 4800)
+  approx(box.split(s.faces()[0], 'below').volume, 4800) // a face of it
+  approx((split(box, s) as Part).volume, 3200)
+  assert.throws(() => box.split(s, 'middle' as 'above'), /keep/)
+})
+
+test('split extends a free-form sheet that ends inside', () => {
+  const [above, below] = Box(20, 20, 20).split(wave(15, 5), 'both') // 10 wide in y, in a box 20 wide
+  approx(above.volume, 3200)
+  approx(below.volume, 4800)
+})
+
+test('split along a curved face of a part', () => {
+  const wall = Cylinder(5, 40).faces().filter((f) => f.geomType === 'cylinder').one()
+  const [outside, inside] = Box(20, 20, 20).split(wall, 'both') // its normals point out of the cylinder
+  approx(inside.volume, 500 * PI)
+  approx(outside.volume, 8000 - 500 * PI)
+})
+
+test('split by a sheet that does not cut through', () => {
+  const box = Box(20, 20, 20)
+  assert.throws(() => box.split(wave().translate(0, 0, 50)), /does not cut through/) // misses the part
+  const inside = Box(4, 4, 4).faces().top().one().toShell() // a plane sheet within the part: not extended
+  assert.throws(() => box.split(inside), /does not cut through/)
+})
+
+test('sheets trimmed by parts', () => {
+  const s = wave()
+  const cyl = Cylinder(5, 30)
+  const outside = s.cut(cyl)
+  const inside = s.intersect(cyl)
+  assert.ok(outside.constructor === Shell && inside.constructor === Shell)
+  approx(outside.area + inside.area, s.area)
+  approx(inside.area, 86.43, 1e-3)
+  approx(cyl.intersect(s).area, inside.area, 1e-9) // also part & sheet
+  approx(stitch(cyl.intersect(s)).area, inside.area, 1e-9) // the old workaround still works
+  assert.equal(s.intersect(cyl.translate(100, 0, 0)).faces().length, 0)
+  approx(s.cut(cyl.translate(100, 0, 0)).area, s.area, 1e-9)
+  assert.equal(s.cut(Box(100, 100, 100)).faces().length, 0)
+  assert.throws(() => s.cut(Rectangle(4, 4)), /trimmed by parts/)
+})
+
+test('a part and a sheet do not fuse or cut', () => {
+  // they returned invalid "Parts" (the sheet imprinted, 11 faces, volume 8000)
+  const box = Box(20, 20, 20)
+  const s = wave()
+  for (const op of [() => box.fuse(s as Any), () => box.cut(s as Any), () => box.fuse(s.faces()[0] as Any), () => box.cut([Box(1, 1, 1), s as Any])]) {
+    assert.throws(op, (e: unknown) => e instanceof TypeError && /split/.test(e.message))
+  }
+})
+
+// -- B14: imprints ----------------------------------------------------------------------
+test('imprint a sketch on a face', () => {
+  const box = Box(20, 20, 10)
+  for (const [sketch, patch] of [[Rectangle(8, 6), 48], [Circle(4), 16 * PI]] as const) {
+    const sk = sketch.on(Plane.XY.offset(5))
+    const r = box.imprint(sk)
+    assert.ok(r.isValid())
+    approx(r.volume, 4000, 1e-9)
+    assert.equal(r.faces().length, 7)
+    const areas = r.faces().top().map((f) => f.area).sort((a, b) => a - b)
+    const want = [patch, 400 - patch].sort((a, b) => a - b)
+    areas.forEach((a, i) => approx(a, want[i]))
+    const patches = r.faces().derivedFrom(sk)
+    assert.equal(patches.length, 1)
+    approx(patches[0].area, patch)
+  }
+  const square = box.faces().top().one().toSketch().scale(0.5, [0, 0, 5]) // a sketch from a face, 10 x 10
+  const areas = box.imprint(square).faces().top().map((f) => f.area).sort((a, b) => a - b)
+  approx(areas[0], 100)
+  approx(areas[1], 300)
+})
+
+test('imprint a part and a sheet', () => {
+  const box = Box(20, 20, 10)
+  const pin = Cylinder(3, 30).rotate(Y, 90)
+  const r = box.imprint(pin)
+  approx(r.volume, 4000, 1e-9)
+  assert.equal(r.faces().length, 8)
+  const patches = r.faces().derivedFrom(pin)
+  assert.equal(patches.length, 2)
+  for (const f of patches) approx(f.area, 9 * PI)
+  const sheet = surface(linspace(-15, 15, 7).map((x) => linspace(-15, 15, 5).map((y) => [x, y, 1 + 0.02 * x * x] as [number, number, number])))
+  const s = box.imprint(sheet)
+  approx(s.volume, 4000, 1e-9)
+  assert.ok(s.faces().length > 6 && s.isValid())
+  const later = box.imprint(Rectangle(8, 6).on(Plane.XY.offset(5))).cut(Cylinder(2, 30).translate(7, 7, 0))
+  assert.equal(later.faces().length, 8) // the split line stays through a later cut
+})
+
+test('imprint refuses a tool that crosses nothing', () => {
+  const box = Box(20, 20, 10)
+  for (const tool of [Cylinder(3, 30).translate(100, 0, 0), Box(2, 2, 2)]) {
+    assert.throws(() => box.imprint(tool), (e: unknown) => e instanceof ModelingError && /crosses no face/.test(e.message))
+  }
+  assert.throws(() => box.imprint(new Vector(1, 2, 3) as Any), TypeError)
+})
+
+// -- T3: where faces and edges came from --------------------------------------------------
+test('new edges and faces of a Boolean', () => {
+  const plate = Box(30, 20, 5)
+  const boss = Cylinder(4, 10).translate(0, 0, 5)
+  const r = plate.fuse(boss)
+  const added = r.edges().newSince([plate, boss])
+  assert.equal(added.length, 1)
+  assert.equal(added[0].geomType, 'circle')
+  approx(added[0].radius, 4)
+  approx(added[0].center().z, 2.5)
+  assert.equal(r.faces().newSince([plate, boss]).length, 0)
+  assert.equal(r.edges().newSince(plate).length, 2) // and the boss's top circle (its seam is no edge here)
+})
+
+test('faces derived from tools and split faces', () => {
+  const plate = Box(30, 20, 5)
+  const holes = [-10, 10].map((x) => Cylinder(2, 10).translate(x, 0, 0))
+  const r = plate.cut(holes)
+  const walls = r.faces().derivedFrom(holes)
+  assert.equal(walls.length, 2)
+  assert.ok(walls.every((f) => f.geomType === 'cylinder'))
+  const first = r.faces().derivedFrom(holes[0])
+  assert.equal(first.length, 1)
+  approx(first[0].center().x, -10)
+  const pattern = GridLocations(10, 10, 2, 1).mul(Cylinder(2, 10)) // moved copies have marks of their own
+  const cut = Box(30, 30, 5).cut(pattern)
+  assert.deepEqual([...pattern].map((c) => cut.faces().derivedFrom(c).length), [1, 1])
+  const box = Box(40, 30, 10)
+  const slotted = box.cut(Box(5, 40, 4).translate(0, 0, 4))
+  const top = slotted.edges().derivedFrom(box.edges().top())
+  assert.equal(top.length, 6)
+  approx(top.reduce((sum, e) => sum + e.length, 0), 2 * 30 + 4 * 17.5)
+  const left = Box(30, 20, 5)
+  const right = Box(30, 20, 5).translate(30, 0, 0)
+  const merged = left.fuse(right)
+  for (const half of [left, right]) assert.equal(merged.faces().derivedFrom(half).length, 5) // top, bottom, front and back merged, and an end
+})
+
+test('a selection from before an edit', () => {
+  // "Edge(line, (-20, 15, 10) -> (20, 15, 10)) is not an edge of this part" before
+  const box = Box(40, 30, 10)
+  const top = box.edges().top()
+  const cut = box.cut(Box(5, 40, 4).translate(0, 0, 4))
+  const rounded = cut.fillet(top, 1)
+  assert.ok(rounded.isValid() && rounded.volume < cut.volume)
+  const rounds = rounded.faces().newSince(cut)
+  assert.equal(rounds.length, 6)
+  for (const f of rounds) {
+    assert.equal(f.geomType, 'cylinder')
+    approx(f.radius, 1)
+  }
+  const shelled = cut.shell(-2, box.faces().top()) // both halves of the top face open
+  assert.ok(shelled.isValid())
+  approx(shelled.volume, cut.shell(-2, cut.faces().top()).volume, 1e-9)
+})
+
+test('old selections are measured as the edges they stand for', () => {
+  // the fillet's checks measure the pieces and merged edges, not the edges as selected (a merged
+  // edge of 80 checked as the 40 selected was "a wrong body", at most 18.885 for 34.336)
+  const box = Box(40, 30, 10)
+  const joined = box.fuse(Box(40, 30, 10).translate(40, 0, 0))
+  const long = joined.fillet(box.edges().top().parallelTo(X), 1)
+  assert.ok(long.isValid())
+  approx(long.volume, 24000 - 160 * (1 - PI / 4))
+  const top = box.edges().top()
+  const cut = box.cut(Box(5, 40, 4).translate(0, 0, 4))
+  const perEdge = cut.fillet(top, [1, 1.5, 1, 1.5]) // each piece takes its edge's radius
+  assert.ok(perEdge.isValid())
+  assert.equal(perEdge.faces().newSince(cut).length, 6)
+  assert.ok(cut.chamfer(top, 1).isValid())
+  const sheet = Box(40, 30, 2)
+  const edge = sheet.edges().top().maxBy(Y)
+  assert.throws(() => sheet.cut(Box(4, 4, 4).translate(5, 15, 0)).flange(edge, 10, { radius: 2 }), /got 2/)
+})
+
+test('history comes back from the kernel steps in the probe worker', () => {
+  const box = Box(40, 30, 10)
+  const cut = box.cut(Box(5, 40, 4).translate(0, 0, 4))
+  const probed = cut.shell(-2, cut.faces().top())
+  const guard = GUARD_SECONDS
+  setGuardSeconds(0)
+  let here: Part
+  try {
+    here = cut.shell(-2, cut.faces().top())
+  } finally {
+    setGuardSeconds(guard)
+  }
+  const n = probed.faces().newSince(cut).length
+  assert.equal(n, here.faces().newSince(cut).length)
+  assert.ok(n < here.faces().length)
+  const floors = probed.faces().derivedFrom(cut.faces().bottom()) // the bottom, and the floor inside offset from it
+  assert.deepEqual(floors.map((f) => Math.round(f.center().z * 1e9) / 1e9).sort((a, b) => a - b), [-5, -3])
+})
+
+test('history takes faces and edges', () => {
+  const box = Box(10, 10, 10)
+  assert.throws(() => box.vertices().newSince(box), (e: unknown) => e instanceof TypeError && /faces and edges/.test(e.message))
+  assert.throws(() => box.faces().derivedFrom(new Vector(1, 2, 3)), (e: unknown) => e instanceof TypeError && /bodies, faces and edges/.test(e.message))
+  const top = box.faces().derivedFrom(box.faces().top())
+  assert.equal(top.length, 1)
+  assert.ok(top[0].equals(box.faces().top()[0]))
+  assert.equal(box.edges().newSince(box).length, 0)
+  assert.equal(Line([0, 0, 0], [1, 0, 0]).edges().newSince(box).length, 1)
+})
+
+test('tags reach no file', () => {
+  const part = Box(10, 10, 10).cut(Cylinder(2, 20))
+  const copy = k.brep_copy(part._brep)
+  ext.untag_topology(copy)
+  const read = (b: number, name: string): Uint8Array => {
+    k.brep_write_to_file(b, name, true)
+    try {
+      return module.FS.readFile(name)
+    } finally {
+      module.FS.unlink(name)
+    }
+  }
+  const a = read(part._brep, '/tmp/lane-bt-a.smb')
+  const b = read(copy, '/tmp/lane-bt-b.smb')
+  ext.delete_brep(copy)
+  assert.deepEqual(a, b)
+  assert.deepEqual(part.check(), []) // (the tags' attributes in the kernel's own context)
+})
+
+// -- T4: the kernel's validity checks -----------------------------------------------------
+// a box whose top face lies 0.002 above its walls, stitched within 0.01: valid for isValid()
+const lifted = (): Part =>
+  stitch(
+    Box(20, 20, 20)
+      .faces()
+      .map((f) => f.toShell().translate(0, 0, f.normalAt().z > 0.5 ? 0.002 : 0)),
+    { tolerance: 0.01 },
+  ) as Part
+
+test('check names the problem', () => {
+  const part = lifted()
+  assert.ok(part instanceof Part && part.isValid())
+  const problems = part.check()
+  assert.equal(problems.length, 4)
+  assert.ok(problems.every((p) => p instanceof Problem))
+  const p = problems[0]
+  assert.equal(p.test, 'Bad Vertex Gap')
+  assert.equal(p.category, 'geometric')
+  assert.ok(p.shape instanceof Vertex)
+  approx(p.shape.z, 10, 1e-9, 1e-9)
+  approx(p.value!, 0.002)
+  approx(p.tolerance!, 2e-5)
+  assert.match(p.message, /0\.002/)
+  assert.ok(!part.isValid({ strict: true }))
+  approx(Math.max(...part.edges().map((e) => e.tolerance)), 0.004)
+  assert.throws(() => part.check(3), /level/)
+  assert.throws(() => part.isValid({ strictly: true } as Any), TypeError)
+})
+
+test('check finds nothing on generated parts', () => {
+  const base = Box(30, 20, 10).cut(Cylinder(4, 20))
+  const part = base.fillet(base.edges().top(), 1)
+  for (const x of [part, part.shell(-1, part.faces().bottom()), Box(10, 10, 10).scale([1, 2, 3]), Torus(10, 3)]) {
+    assert.deepEqual(x.check(), [])
+    assert.deepEqual(x.check(0), [])
+    assert.ok(x.isValid({ strict: true }))
+  }
+  approx(Box(10, 10, 10).edges()[0].tolerance, 1e-5)
+  approx(Box(10, 10, 10).vertices()[0].tolerance, 1e-5)
+  assert.throws(() => Line([0, 0, 0], [1, 0, 0]).tolerance, /no body/)
+  assert.throws(() => new Vertex(1, 2, 3).tolerance, /no body/)
+})
+
+// the faces of a box moved apart by up to 0.1
+const SHIFTS: [number, number, number][] = [
+  [-0.0524, 0.0088, -0.026], [0.0208, 0.0251, -0.0869], [-0.0974, 0.0675, -0.0481],
+  [-0.0531, 0.0991, -0.0059], [0.0673, -0.0047, 0.0278], [-0.0699, 0.027, 0.0736],
+]
+
+test('a healed closed sheet is a part', () => {
+  const faces = Box(20, 20, 20).faces()
+  const sheet = stitch(faces.map((f, i) => f.toShell().translate(...SHIFTS[i])), { tolerance: 0.5 })
+  assert.equal(sheet.constructor, Shell)
+  const healed = sheet.heal()
+  assert.ok(healed instanceof Part && healed.isValid())
+  approx((healed as Part).volume, 8000, 2e-2)
+  assert.ok(healed.check().length > 0) // its edges are far from tight
+  assert.equal(wave().heal().constructor, Shell)
 })

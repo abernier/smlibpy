@@ -32,10 +32,12 @@ geometry (`top()`, `facing(-X)`, `cylinders()`, `filter(...)`) so the script kee
 earlier step changes.
 
 A selection taken from an earlier version of a part can still be passed to a feature of the new
-version: edges are matched by start, end and midpoint, faces by an interior point and the area.
-If the later step changed the edge or face, it fails with
+version: it stands for the faces or edges that descend from it (the pieces a cut left of an edge,
+see `history`). Where it has none (another body), edges are matched by start, end and midpoint,
+faces by an interior point and the area; if nothing matches, it fails with
 `ValueError: Edge(...) is not an edge of this part`. Moved copies (`.translate()`) do not match:
-they are free shapes somewhere else.
+they are free shapes somewhere else. `new(since=...)` and `derived_from(...)` select by where
+faces and edges came from (`history`).
 
 ## Empty selections
 Selectors never raise on empty input: an empty ShapeList chains through `top()`,

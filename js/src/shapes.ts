@@ -636,6 +636,44 @@ export class ShapeList<T = Shape> extends Array<T> {
     return this.filter((s) => (s as Any).distanceTo(p) <= tol)
   }
 
+  // -- history ------------------------------------------------------------------------------
+  /**
+   * The faces or edges that are new since the given bodies: made by the operations that led from
+   * them to this list's body, descending from no face or edge of theirs (Python's `new`).
+   *
+   * `since` is a body (part, shell, sketch) or a list of them, or faces and edges (then only those
+   * count as old). After a Boolean, the curves along which the bodies meet
+   * (`plate.fuse(boss).edges().newSince([plate, boss])`: the circle where the boss stands on the
+   * plate); after a fillet, chamfer or shell, its new faces (`rounded.faces().newSince(part)`) and
+   * their edges.
+   *
+   * smlibwasm marks every face and edge of every body it makes, and the kernel carries the marks
+   * along: a copy keeps them, both halves of a split face keep their parent's, a face merged from
+   * two keeps both. A moved, turned, mirrored or scaled copy gets new marks (it is a shape of its
+   * own). A body read from a file, and a section, have new marks everywhere, so all of them counts
+   * as new.
+   */
+  newSince(since: unknown): ShapeList<T> {
+    const old = _historyTags(since, 'newSince')
+    const tags = _itemTags(this, 'newSince')
+    return this.filter((_, i) => ![...tags[i]].some((t) => old.has(t)))
+  }
+
+  /**
+   * The faces or edges that descend from the given shapes: faces from faces, edges from edges,
+   * both from a body (part, shell, sketch). A face that an operation split, trimmed, moved along
+   * with the part or merged with another descends from it; one the operation made anew does not.
+   *
+   * `plate.cut(holes).faces().derivedFrom(holes)` gives the walls of the holes;
+   * `cut.edges().derivedFrom(box.edges().top())` the pieces of the top edges of a box that a slot
+   * cut. A body's faces and edges are marked as described in `newSince`.
+   */
+  derivedFrom(...shapes: unknown[]): ShapeList<T> {
+    const wanted = _historyTags(shapes, 'derivedFrom')
+    const tags = _itemTags(this, 'derivedFrom')
+    return this.filter((_, i) => [...tags[i]].some((t) => wanted.has(t)))
+  }
+
   // -- set operations and expansion ---------------------------------------------------------
   /** The shapes of both lists, each once (Python's `|`). */
   union(other: Iterable<T>): ShapeList<T> {
@@ -761,6 +799,85 @@ function _angleKind(outer: number): string {
 }
 
 /** The shapes, each once (by `_identity()`). */
+/** The tags of a body's faces and edges, in its order (`ext.topology_tags`, read once). */
+function _topologyTags(body: _Body): [number[][], number[][]] {
+  const h = body._h
+  if (h.tags === null) h.tags = ext.topology_tags(h.brep)
+  return h.tags as [number[][], number[][]]
+}
+
+/** The tags of each face or edge of bodies (none for an edge of no body). */
+function _itemTags(items: readonly unknown[], what: string): Set<number>[] {
+  const out: Set<number>[] = items.map(() => new Set<number>())
+  const groups = new Map<BrepHandle, [_Body, number[], number[]]>()
+  items.forEach((s, i) => {
+    if (!(s instanceof Face || s instanceof Edge)) throw new TypeError(`${what} selects faces and edges, not a ${_typeName(s)}`)
+    const owner = s._owner
+    if (!(owner instanceof _Body) || (s instanceof Edge && !s._e)) return
+    let g = groups.get(owner._h)
+    if (!g) groups.set(owner._h, (g = [owner, [], []]))
+    ;(s instanceof Face ? g[1] : g[2]).push(i)
+  })
+  for (const [owner, faces, edges] of groups.values()) {
+    const [ft, et] = _topologyTags(owner)
+    if (faces.length) {
+      const idx = ext.face_indices(owner._brep, faces.map((i) => (items[i] as Face)._f)) as number[]
+      faces.forEach((i, n) => (out[i] = new Set(idx[n] >= 0 ? ft[idx[n]] : [])))
+    }
+    if (edges.length) {
+      const idx = ext.edge_indices(owner._brep, edges.map((i) => (items[i] as Edge)._e)) as number[]
+      edges.forEach((i, n) => (out[i] = new Set(idx[n] >= 0 ? et[idx[n]] : [])))
+    }
+  }
+  return out
+}
+
+/** The tags of bodies (of all their faces and edges), faces and edges, also in lists. */
+function _historyTags(shapes: unknown, what: string): Set<number> {
+  const out = new Set<number>()
+  const items: unknown[] = []
+  const walk = (x: unknown): void => {
+    if (x instanceof _Body) {
+      const [ft, et] = _topologyTags(x)
+      for (const t of [...ft, ...et]) for (const tag of t) out.add(tag)
+    } else if (x instanceof Face || x instanceof Edge) {
+      items.push(x)
+    } else if (x instanceof Wire) {
+      items.push(...x.edges())
+    } else if (typeof x !== 'string' && !(x instanceof Shape) && _isIterable(x)) {
+      for (const y of x as Iterable<unknown>) walk(y)
+    } else {
+      throw new TypeError(`${what} takes bodies, faces and edges (or lists of them), not a ${_typeName(x)}`)
+    }
+  }
+  walk(shapes)
+  for (const t of _itemTags(items, what)) for (const tag of t) out.add(tag)
+  return out
+}
+
+/** Per face (`faces`) or edge of another body, the kernel faces or edges of `body` that descend
+ * from it (carry one of its tags); seam edges are left out. */
+function _descendants(body: _Body, items: readonly unknown[], faces: boolean): number[][] {
+  const tags = _itemTags(items, 'select')
+  const [ft, et] = _topologyTags(body)
+  const own = (faces ? k.brep_faces(body._brep) : k.brep_edges(body._brep)) as number[]
+  const seams = faces ? new Set<number>() : new Set<number>(ext.seam_edges(body._brep) as number[])
+  const holders = new Map<number, number[]>() // tag -> the faces or edges of the body that carry it
+  ;(faces ? ft : et).forEach((mine, j) => {
+    if (seams.has(j)) return
+    for (const tag of mine) {
+      let list = holders.get(tag)
+      if (!list) holders.set(tag, (list = []))
+      list.push(j)
+    }
+  })
+  return tags.map((t) => {
+    const found = new Set<number>()
+    for (const tag of t) for (const j of holders.get(tag) ?? []) found.add(j)
+    return [...found].sort((a, b) => a - b).map((j) => own[j])
+  })
+}
+
 export function _unique<T>(items: Iterable<T>): ShapeList<T> {
   const out = new ShapeList<T>()
   const seen = new Set<unknown>()
@@ -827,6 +944,14 @@ export class Vertex extends Shape {
 
   get z(): number {
     return this._p.z
+  }
+
+  /** How far the edges and faces that meet at this vertex may pass from its point: the kernel's
+   * tolerance of the vertex (1e-5 on most parts; larger where the surfaces of an imported, stitched
+   * or healed body meet less exactly). RangeError for a vertex of no body (`new Vertex(x, y, z)`). */
+  get tolerance(): number {
+    if (!this._v) throw new RangeError('tolerance: a vertex of no body has no tolerance')
+    return Number(ext.vertex_tolerance(this._v))
   }
 
   center(): Vector {
@@ -978,6 +1103,15 @@ export class Edge extends Shape {
   /** "line", "circle" (also arcs), "ellipse", "bspline" or "other". */
   get geomType(): string {
     return ext.curve_kind(this._curve())
+  }
+
+  /** How far this edge's curve, its ends and the faces it bounds may lie apart: the kernel's
+   * tolerance of the edge (1e-5 on most parts; larger where the surfaces of an imported, stitched
+   * or healed body meet less exactly). RangeError for an edge of no body (a curve made with `Line`,
+   * `Spline`, ...). */
+  get tolerance(): number {
+    if (!this._e) throw new RangeError('tolerance: an edge of no body has no tolerance')
+    return Number(ext.edge_tolerance(this._e))
   }
 
   get length(): number {
@@ -1799,6 +1933,9 @@ export class _Body extends Shape {
   static _wrap<B extends _Body>(this: new (token: symbol) => B, brep: number, options: BodyOptions = {}): B {
     const b = new this(INTERNAL)
     b._h = new BrepHandle(brep)
+    // Faces and edges an operation made anew get tags of their own; the kernel carries tags along
+    // through later operations (ShapeList.newSince, ShapeList.derivedFrom).
+    ext.tag_topology(brep)
     b.name = options.name ?? null
     b.color = options.color ?? null
     if (b instanceof Sketch) {
@@ -1964,7 +2101,15 @@ export class _Body extends Shape {
     // (the kernel takes the matrix column by column)
     const columns: number[] = []
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) columns.push(m[r * 4 + c])
-    return this._like(_held(this._copyBrep(), (h) => kernelCall('transform', () => ext.transform_brep(h.brep, columns))))
+    // A moved copy is a shape of its own: its faces and edges descend from none of the original's
+    // (copies in a pattern can be told apart; a selection of the original is not taken for the
+    // copy's).
+    return this._like(
+      _held(this._copyBrep(), (h) => {
+        kernelCall('transform', () => ext.transform_brep(h.brep, columns))
+        ext.tag_topology(h.brep, true)
+      }),
+    )
   }
 
   // -- body conversions ---------------------------------------------------------------------
@@ -1973,9 +2118,47 @@ export class _Body extends Shape {
     return this._like(_held(this._copyBrep(), (h) => kernelCall('toNurbs', () => k.turn_to_nurbs(h.brep))))
   }
 
-  /** Repair gaps, tolerances and topology (mostly needed for imported data). */
-  heal(): this {
-    return this._like(_held(this._copyBrep(), (h) => kernelCall('heal', () => k.heal_brep(h.brep))))
+  /** Repair gaps, tolerances and topology (mostly needed for imported data). A sheet whose faces
+   * close around a volume once healed comes back as a `Part`. */
+  heal(): this | Part {
+    const healed = this._like(_held(this._copyBrep(), (h) => kernelCall('heal', () => k.heal_brep(h.brep))))
+    if (healed instanceof Shell && !(healed instanceof Sketch) && k.brep_is_manifold_solid(healed._brep)) {
+      const part = Part._wrap(healed._copyBrep(), { name: this.name, color: this.color })
+      if (part._solidProblem() === null) return part
+    }
+    return healed
+  }
+
+  /**
+   * What the kernel's own validity checks find wrong with the body: per failed test a `Problem`
+   * with the face, edge or vertex it is about (or the body), a message, and the value and tolerance
+   * it measured. An empty list: nothing found.
+   *
+   * `level` 0 checks the structure (how faces, loops, edges and vertices connect, the pointers
+   * between them) and the gaps between vertices, edges and faces against their tolerances; 1 also
+   * the geometry; 2 (the default) everything, the slow tests too. That takes some milliseconds on
+   * parts smlibwasm makes, about 0.1 s on an imported part of 170 faces.
+   *
+   * The tests look at each face, edge and vertex and its neighbours (SmBrep::AssertValid): they do
+   * not see a body that runs through itself. Use them where `isValid` cannot tell what is wrong:
+   * after importing, stitching or healing, or where an operation on a part fails that `isValid()`
+   * accepts.
+   */
+  check(level = 2): Problem[] {
+    if (level !== 0 && level !== 1 && level !== 2) throw new RangeError(`check: the level must be 0, 1 or 2 (got ${level})`)
+    const reports = kernelCall('check', () => ext.check_brep(this._brep, level)) as Any[]
+    let faces: number[] | null = null
+    let edges: number[] | null = null
+    let vertices: number[] | null = null
+    const shape = (kind: string | null, index: number): Any => {
+      if (kind === 'face') return new Face(this, (faces ??= k.brep_faces(this._brep) as number[])[index])
+      if (kind === 'edge') return Edge._of(this, (edges ??= k.brep_edges(this._brep) as number[])[index])
+      if (kind === 'vertex') return Vertex._of(this, (vertices ??= k.brep_vertices(this._brep) as number[])[index])
+      return kind === 'body' ? this : null
+    }
+    return reports.map(
+      (r) => new Problem(shape(r.kind, r.index), r.message, r.value, r.tolerance, r.category, r.test, shape(r.other_kind, r.other_index)),
+    )
   }
 
   _identity(): string {
@@ -2300,14 +2483,94 @@ function _bodyDistance(a: _Body, b: _Body, seeds = 6, sample = 400): number {
   return best <= 1e-12 * scale ? 0 : best
 }
 
-/** "separate", "touching", "interpenetrating", "a_contains_b" or "b_contains_a" (null if the
- * kernel cannot tell). */
-export function _relationship(a: _Body, b: _Body): string | null {
+/** tessellate's default tolerance for a body (1e-3 of its box diagonal), times `scale`. */
+function _meshTolerance(body: _Body, scale = 1): number {
+  return Math.max(body.bbox().diagonal * 1e-3 * scale, 1e-6)
+}
+
+/** The volume the meshes of a body and a tool have in common (`op` INTERSECTION) or of the body's
+ * left outside the tools (DIFFERENCE), the meshes made to `scale` times tessellate's default
+ * tolerance; null where the kernel's mesh Boolean fails (as it can where the meshes have faces in
+ * common). The meshes lie within their tolerance of the bodies, inside them where the surfaces are
+ * convex: bodies that only touch have no volume in common, or (where a concave face of one touches
+ * the other) a volume that shrinks with the tolerance. */
+function _meshOverlap(a: Part, tools: readonly Part[], op: number, scale = 1): number | null {
   try {
-    return String(k.brep_relationship(a._brep, b._brep).relationship)
+    let mesh = tessellate(a, _meshTolerance(a, scale))
+    for (const t of tools) {
+      const tm = tessellate(t, _meshTolerance(t, scale))
+      mesh = op === k.BooleanOp.INTERSECTION ? mesh.intersect(tm) : mesh.cut(tm)
+      if (!mesh.triangles.length) return 0
+    }
+    return Math.abs(mesh.volume)
   } catch (e) {
-    if (!_isRuntimeError(e)) throw e
+    if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
     return null
+  }
+}
+
+/** Points on the mesh of a body (its corners and the middles of its triangles, within `tol` of the
+ * surface) that lie in a box, at most `limit` of them, spread over the list. */
+function _surfaceSamples(body: _Body, near: BoundBox, tol: number, limit = 2000): [number, number, number][] {
+  const mesh = tessellate(body, tol)
+  const v = mesh.vertices
+  const t = mesh.triangles
+  const all: [number, number, number][] = []
+  for (let i = 0; i < v.length; i += 3) all.push([v[i], v[i + 1], v[i + 2]])
+  for (let i = 0; i < t.length; i += 3) {
+    const [a, b, c] = [t[i] * 3, t[i + 1] * 3, t[i + 2] * 3]
+    all.push([(v[a] + v[b] + v[c]) / 3, (v[a + 1] + v[b + 1] + v[c + 1]) / 3, (v[a + 2] + v[b + 2] + v[c + 2]) / 3])
+  }
+  const lo = near.min.toArray().map((x) => x - tol)
+  const hi = near.max.toArray().map((x) => x + tol)
+  let pts = all.filter((p) => p.every((x, i) => x >= lo[i] && x <= hi[i]))
+  if (pts.length > limit) {
+    // (numpy's linspace(0, n - 1, limit).astype(int))
+    const n = pts.length
+    pts = Array.from({ length: limit }, (_, i) => pts[Math.trunc((i * (n - 1)) / (limit - 1))])
+  }
+  return pts
+}
+
+/** `_emptyIsRight` by classifying points instead (where the mesh Booleans fail): no point of one
+ * operand's mesh lies inside the other by more than the mesh's tolerance (INTERSECTION), or none
+ * of the part's lies outside every tool (DIFFERENCE). */
+export function _classifiedEmpty(a: Part, tools: readonly Part[], op: number): boolean {
+  const tol = Math.max(_meshTolerance(a), ...tools.map((t) => _meshTolerance(t)))
+  if (op === k.BooleanOp.INTERSECTION) {
+    const b = tools[0]
+    for (const [x, y] of [[a, b], [b, a]] as const) {
+      const pts = _surfaceSamples(x, y._looseBox(), tol)
+      if (pts.length && y._classify(pts, tol).some(([where]) => where === 'inside')) return false
+    }
+    return true
+  }
+  const pts = _surfaceSamples(a, a._looseBox(), tol)
+  const covered = pts.map(() => false)
+  for (const t of tools) t._classify(pts, tol).forEach(([where], i) => (covered[i] = covered[i] || where !== 'outside'))
+  return covered.every((c) => c)
+}
+
+/** Whether an empty intersection (one tool) or cut is right: the meshes of the operands have no
+ * volume in common (in the cut: none of the part is left outside the tools), up to 1e-6 of the
+ * smaller volume, or a volume that shrinks to less than half at a tenth of the tolerance (where a
+ * concave face touches the other body, the meshes overlap by about the tolerance). Where the mesh
+ * Booleans fail, points of the meshes are classified (`_classifiedEmpty`). (The kernel's
+ * brep_relationship is not asked: it calls overlapping bodies "touching", such as spheres with 18.6
+ * in common or a pin through a plate, its answer changes with where the bodies are and with what was
+ * asked of them before, and it took 10 s for two plates of 168 faces.) */
+function _emptyIsRight(a: Part, tools: readonly Part[], op: number): boolean {
+  try {
+    const volumes = [a._quickVolume(), ...(op === k.BooleanOp.INTERSECTION ? tools.map((t) => t._quickVolume()) : [])]
+    const small = 1e-6 * Math.max(Math.min(...volumes.map(Math.abs)), 1e-300)
+    const coarse = _meshOverlap(a, tools, op)
+    if (coarse !== null && coarse <= small) return true
+    const fine = coarse !== null ? _meshOverlap(a, tools, op, 0.1) : null
+    if (fine !== null) return fine <= small || fine < 0.5 * (coarse as number)
+    return _classifiedEmpty(a, tools, op)
+  } catch (e) {
+    if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+    return false
   }
 }
 
@@ -2447,6 +2710,51 @@ function _rayMeetsBox(o: Vector, d: Vector, reach: number, box: [number[], numbe
     if (t0 > t1) return false
   }
   return true
+}
+
+/**
+ * Something the kernel's validity checks find wrong with a body (see `check`): the face, edge or
+ * vertex it is about, or the body itself (`shape`); what is wrong, with the value measured and the
+ * tolerance where there are (`message`); the value measured (a gap, a distance, an angle) and the
+ * tolerance it was held against (`value`, `tolerance`, or null); the kind of test (`category`:
+ * "gap", "geometric", "topological", "values", "degenerate", ...: the kernel's SmAssertType) and
+ * its short name (`test`: "Bad Gap", "Bad Loop Connection Vertex"); a second face, edge or vertex
+ * the test compared with (`other`, or null).
+ */
+export class Problem {
+  readonly shape: Face | Edge | Vertex | Part | Shell
+  readonly message: string
+  readonly value: number | null
+  readonly tolerance: number | null
+  readonly category: string
+  readonly test: string
+  readonly other: Face | Edge | Vertex | Part | Shell | null
+
+  constructor(
+    shape: Face | Edge | Vertex | Part | Shell,
+    message: string,
+    value: number | null = null,
+    tolerance: number | null = null,
+    category = '',
+    test = '',
+    other: Face | Edge | Vertex | Part | Shell | null = null,
+  ) {
+    this.shape = shape
+    this.message = message
+    this.value = value
+    this.tolerance = tolerance
+    this.category = category
+    this.test = test
+    this.other = other
+  }
+
+  toString(): string {
+    return `Problem(${this.shape}, ${JSON.stringify(this.message)})`
+  }
+
+  [inspect](): string {
+    return this.toString()
+  }
 }
 
 export class MassProperties {
@@ -2613,8 +2921,17 @@ export class Part extends _Body {
    * (A body whose faces point inward, or that encloses no volume, such as a profile revolved
    * about an axis through it, is not valid; nor is one whose faces leave gaps that make its volume
    * uncertain by 1e-2 of its value or more.)
+   *
+   * With `strict`, the kernel's own checks of each face, edge and vertex (`check`, all of them)
+   * must find nothing too: an imported, stitched or healed body can be closed and enclose its
+   * volume while its edges and vertices lie farther from its faces than their tolerances allow. (Of
+   * 1471 Boolean results of a random test campaign that `isValid()` accepts, 34 fail the strict
+   * test.)
    */
-  isValid(): boolean {
+  isValid(options: { strict?: boolean } = {}): boolean {
+    _opts('Part.isValid', options)
+    // (the checks first: measuring stores refitted trim curves in the body)
+    if (options.strict && k.brep_face_count(this._brep) && this.check(2).length) return false
     return this._solidProblem(null, true) === null
   }
 
@@ -2805,7 +3122,16 @@ export class Part extends _Body {
         throw new TypeError(`cannot ${name} a ${_typeName(t)} with a Part${extra}`)
       }
     }
-    if (!tools.every((t) => t instanceof Part)) return this._like(this._runBoolean(tools, op, name)) // sheets: imprint or trim, unchecked
+    if (!tools.every((t) => t instanceof Part)) {
+      // A sheet encloses no volume: the kernel's Boolean of a part and a sheet imprints the sheet
+      // or keeps a piece of it, in a body that is no solid.
+      if (op === k.BooleanOp.INTERSECTION && tools.length === 1) return (tools[0] as Shell).intersect(this) as Any // the piece of the sheet inside the part
+      const kind = _typeName(tools.find((t) => !(t instanceof Part)))
+      throw new TypeError(
+        `cannot ${name} a ${kind} with a Part: a sheet encloses no volume; to split the part along it use part.split(sheet), ` +
+          `to cut its outline into the part's faces part.imprint(sheet), to trim the sheet sheet - part or sheet & part`,
+      )
+    }
     const parts = tools as Part[]
     let result: Part | null = null
     let failure: KernelError | null = null
@@ -2899,31 +3225,16 @@ export class Part extends _Body {
     if (op === k.BooleanOp.UNION) return 'empty'
     if (op === k.BooleanOp.INTERSECTION) {
       if (tools.length > 1) return null // the common volume of several tools may well be empty
-      const rel = _relationship(this, tools[0])
-      return rel === 'separate' || rel === 'touching' ? null : 'empty'
+      if (_disjoint(this._looseBox(), tools[0]._looseBox())) return null
+      return _emptyIsRight(this, tools, op) ? null : 'empty'
     }
-    // The intersection of the part and a tool that confirms an empty cut below can fail the same
-    // way as the cut (a tool beside an earlier hole in a sphere: the cut is empty, the intersection
-    // the whole part). So first the tools must be able to cover the part.
+    // The tools must be able to cover the part, and the part's mesh must have nothing left outside
+    // theirs. (An intersection of the part and a tool, which confirmed an empty cut before, can fail
+    // the same way as the cut: a tool beside an earlier hole in a sphere made the cut empty and the
+    // intersection the whole part.)
     if (!_canCover(tools, this)) return 'empty'
-    let whole: number
-    try {
-      whole = this._kernelProps(1e-6).volume
-    } catch (e) {
-      if (!(e instanceof KernelError)) throw e
-      return 'empty'
-    }
-    for (const t of tools) {
-      if (_relationship(t, this) === 'separate') continue
-      // right only if the tool covers the whole part
-      try {
-        const common = Part._wrap(this._runBoolean([t], k.BooleanOp.INTERSECTION, 'cut'))
-        if (common._kernelProps(1e-6).volume >= whole * (1 - 1e-5)) return null
-      } catch (e) {
-        if (!(e instanceof KernelError)) throw e
-      }
-    }
-    return 'empty'
+    const near = tools.filter((t) => !_disjoint(t._looseBox(), this._looseBox()))
+    return near.length && _emptyIsRight(this, near, op) ? null : 'empty'
   }
 
   /** Union with other parts (Python's `+`). */
@@ -2936,24 +3247,38 @@ export class Part extends _Body {
     return this._boolean(others, k.BooleanOp.DIFFERENCE, 'cut')
   }
 
-  /** Keep only the volume shared with the other parts (Python's `&`). */
-  intersect(...others: (Part | Iterable<Part>)[]): Part {
+  /** Keep only the volume shared with the other parts (Python's `&`). With one sheet (a Shell or
+   * a face) instead: the piece of the sheet inside the part, as a Shell (`sheet.intersect(part)`). */
+  intersect(sheet: Shell | Face): Shell
+  intersect(...others: (Part | Iterable<Part>)[]): Part
+  intersect(...others: unknown[]): Part | Shell {
     return this._boolean(others, k.BooleanOp.INTERSECTION, 'intersect')
   }
 
   // -- topology selection on this part ------------------------------------------------------
-  /** Kernel edges of this part for the given edge selection. */
+  /** Kernel edges of this part for the given edge selection. An edge of an earlier version of the
+   * part stands for the edges of this one that descend from it (the pieces a cut left of it, the
+   * edge it was merged into); one of a body this part does not descend from, for the edge in the
+   * same place. */
   _ownEdges(edges: unknown): number[] {
     const sel = _flattenEdges(edges)
     const out: number[] = []
     let candidates: [number, Vector, Vector, Vector][] | null = null
     const tol = 1e-6 * Math.max(1, this.bbox().diagonal)
+    const foreign = sel.filter((e) => !(e._e && e._owner !== null && e._owner._h === this._h))
+    const mapped = new Map<Edge, number[]>()
+    if (foreign.length) _descendants(this, foreign, false).forEach((d, i) => mapped.set(foreign[i], d))
     for (const e of sel) {
       if (e._e && e._owner !== null && e._owner._h === this._h) {
         out.push(e._e)
         continue
       }
-      // An edge of another body (e.g. an earlier version of this part): match by geometry.
+      const descendants = mapped.get(e)
+      if (descendants?.length) {
+        out.push(...descendants)
+        continue
+      }
+      // An edge of another body: match by geometry.
       if (candidates === null) {
         candidates = []
         for (const ke of k.brep_edges(this._brep) as number[]) {
@@ -2971,17 +3296,26 @@ export class Part extends _Body {
       out.push(match[0])
     }
     if (!out.length) throw new RangeError('no edges selected')
-    return out
+    return [...new Set(out)]
   }
 
+  /** Kernel faces of this part for the given face selection: as `_ownEdges`. */
   _ownFaces(faces: unknown): number[] {
     const sel = _flattenFaces(faces)
     const out: number[] = []
     const tol = 1e-6 * Math.max(1, this.bbox().diagonal)
     let ownFaces: Face[] | null = null
+    const foreign = sel.filter((f) => !(f._owner !== null && f._owner._h === this._h))
+    const mapped = new Map<Face, number[]>()
+    if (foreign.length) _descendants(this, foreign, true).forEach((d, i) => mapped.set(foreign[i], d))
     for (const f of sel) {
       if (f._owner !== null && f._owner._h === this._h) {
         out.push(f._f)
+        continue
+      }
+      const descendants = mapped.get(f)
+      if (descendants?.length) {
+        out.push(...descendants)
         continue
       }
       // A face of another body: the face of ours that contains its interior point and has the
@@ -2993,10 +3327,29 @@ export class Part extends _Body {
       if (!match) throw new RangeError(`${f} is not a face of this part`)
       out.push(match._f)
     }
-    return out
+    return [...new Set(out)]
   }
 
   /** The selected edges without seams and tangent (smooth) edges, which cannot be rounded. */
+  /** A selection of edges as edges of this part: an edge of an earlier version of the part
+   * becomes the edges that descend from it (its pieces, the edge it was merged into), with its entry
+   * of `sizes` (one per selected edge) repeated for each; one of a body this part does not descend
+   * from, the edge in the same place (see `_ownEdges`). The checks of fillets and chamfers then
+   * measure the edges that are rounded. */
+  _resolved(edges: unknown, sizes: number[] | null = null): [Edge[], number[] | null] {
+    const sel = _flattenEdges(edges)
+    if (sel.every((e) => e._e && e._owner !== null && e._owner._h === this._h)) return [sel, sizes]
+    const out: Edge[] = []
+    const grown: number[] = []
+    const perEdge = sizes !== null && sizes.length === sel.length
+    sel.forEach((e, i) => {
+      const mine = this._ownEdges([e]).map((ke) => Edge._of(this, ke))
+      out.push(...mine)
+      if (perEdge) for (const _ of mine) grown.push(sizes[i])
+    })
+    return [out, perEdge ? grown : sizes]
+  }
+
   _sharpEdges(edges: unknown, operation: string): Edge[] {
     const sel = _flattenEdges(edges).filter((e) => !e.isSeam)
     const angles = _outerAngles(sel)
@@ -3174,11 +3527,12 @@ export class Part extends _Body {
       // the kernel makes a ruled chamfer of it, not tangent to the faces
       throw new RangeError('fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius')
     }
-    const sel = this._sharpEdges(edges, 'fillet')
+    const [resolved, perEdge] = this._resolved(edges, list)
+    const sel = this._sharpEdges(resolved, 'fillet')
     if (varying && Number(varying.start) !== Number(varying.end)) Part._checkRadiusLaw(sel)
     let radii: number[]
     if (varying) radii = new Array(sel.length).fill(Math.max(varying.start, varying.end))
-    else if (list) radii = list
+    else if (perEdge) radii = perEdge
     else radii = new Array(sel.length).fill(Number(radius))
     if (radii.length === sel.length) {
       this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
@@ -3195,10 +3549,10 @@ export class Part extends _Body {
             xsect_type: cont === null ? 1 : 2,
             continuity: cont || 1,
           })
-        } else if (list) {
-          if (list.length !== kedges.length) throw new RangeError(`${list.length} radii for ${kedges.length} edges`)
+        } else if (perEdge) {
+          if (perEdge.length !== kedges.length) throw new RangeError(`${perEdge.length} radii for ${kedges.length} edges`)
           const xs = new Array(kedges.length).fill(cont ? k.FilletXSect.BLEND : k.FilletXSect.CIRCULAR)
-          k.fillet_edges_per_edge(h.brep, kedges, list, xs, { continuity: cont || 1, thumbweight: fullness })
+          k.fillet_edges_per_edge(h.brep, kedges, perEdge, xs, { continuity: cont || 1, thumbweight: fullness })
         } else if (cont === null) {
           k.fillet_edges(h.brep, kedges, { radius: Number(radius) })
         } else {
@@ -3210,7 +3564,7 @@ export class Part extends _Body {
     const result = this._like(_take(h))
     let sizes: number[]
     if (varying) sizes = new Array(sel.length).fill(Math.max(varying.start, varying.end))
-    else if (list) sizes = list
+    else if (perEdge) sizes = perEdge
     else sizes = new Array(sel.length).fill(Number(radius))
     this._checkVolumeChange(result, sel, 'fillet', sizes, cont === null ? 'circular' : 'blend')
     return result
@@ -3225,7 +3579,7 @@ export class Part extends _Body {
   chamfer(edges: unknown, length: number): Part {
     this._requireValid('chamfer')
     if (!(Number(length) > 0)) throw new RangeError('chamfer: the length must be positive')
-    const sel = this._sharpEdges(edges, 'chamfer')
+    const sel = this._sharpEdges(this._resolved(edges)[0], 'chamfer')
     this._checkRoundSizes(sel, new Array(sel.length).fill(Number(length)), 'chamfer', 'length')
     const radii: number[] = []
     for (const e of sel) {
@@ -3292,7 +3646,7 @@ export class Part extends _Body {
     const offsetVolume = (extended: boolean): number => {
       if (!offsets.has(extended)) {
         const work = (): number => kernelCall('shell', () => k.offset_brep(this._brep, d, { extended_offset: extended }))
-        const off = Part._wrap(_isolated('shell', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended } })))
+        const off = Part._wrap(_isolated('shell', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: extended } })))
         try {
           offsets.set(extended, k.brep_face_count(off._brep) ? Number(off._props(1e-4).volume) : 0)
         } finally {
@@ -3305,7 +3659,7 @@ export class Part extends _Body {
       const work = (): number => kernelCall('shell', () => k.shell_brep(this._brep, d, { extended_offset: extended, faces_to_shell: faces }), hint)
       // In the probe worker (smlibpy: in a copy of its process): the kernel's offset code can crash,
       // mostly in its extended mode, which depends on memory layout.
-      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
+      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
       return this._like(_isolated('shell', work, job, hint))
     }
     return this._checked(
@@ -3485,7 +3839,7 @@ export class Part extends _Body {
     const work = (): number => kernelCall('offset', () => k.offset_brep(this._brep, d))
     // (always the extended mode, which depends on memory layout and can crash: it runs in the probe
     // worker, smlibpy: in a copy of its process)
-    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: true } })))
+    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { extended_offset: true } })))
     return this._checked(
       'offset',
       [
@@ -3542,16 +3896,28 @@ export class Part extends _Body {
   }
 
   /**
-   * Cut the part with a plane.
+   * Cut the part with a plane or along a sheet.
    *
    * `keep = "above"` keeps the side the plane normal points to, "below" the other side, "both"
    * returns `[above, below]`.
+   *
+   * A sheet (a `Shell`, or a face that is not planar: a curved split surface, a surface fitted to a
+   * scan) splits the part along its surface; "above" is the side its normals point to (`normalAt`).
+   * The sheet must cut through the part. A sheet of one free-form face whose edges end inside the
+   * part is extended beyond them, tangentially, until it does (the face's trim is not kept); other
+   * sheets throw a ModelingError ("the surface does not cut through the part"). The two sides
+   * together hold the part's volume, which is checked. A planar face (or a sketch) stands for its
+   * plane.
    */
-  split(plane: Plane | Face, keep: 'above' | 'below'): Part
-  split(plane: Plane | Face, keep: 'both'): [Part, Part]
-  split(plane: Plane | Face): Part
-  split(plane: Plane | Face, keep: string = 'above'): Part | [Part, Part] {
-    const pl = _asPlane(plane)
+  split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'above' | 'below'): Part
+  split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'both'): [Part, Part]
+  split(plane: Plane | Face | Shell | ShapeList<Face>): Part
+  split(plane: Plane | Face | Shell | ShapeList<Face>, keep: string = 'above'): Part | [Part, Part] {
+    let tool: unknown = plane
+    if (tool instanceof ShapeList) tool = tool.one()
+    if (tool instanceof Face && !tool.isPlanar) return this._splitBySheet(tool.toShell(), keep, !tool._naturalIsOutward())
+    if (tool instanceof Shell && !(tool instanceof Sketch)) return this._splitBySheet(tool, keep, false)
+    const pl = _asPlane(tool as Any)
     if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
     if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
     this._requireValid('split')
@@ -3566,6 +3932,180 @@ export class Part extends _Body {
     const kept = kernelCall('split', () => this.intersect(halfspace))
     if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
     return kept
+  }
+
+  /**
+   * The part with its faces split where a tool crosses them: split lines for drafts, patches for
+   * the loads and supports of a simulation, regions to color. Nothing is added
+   * or taken away: the volume stays.
+   *
+   * `tool` is a part (the faces are split where its surface crosses them), a sheet or a face that
+   * crosses faces of the part, or a sketch (or a planar face) lying on a face of the part, whose
+   * outline is cut into that face (keep its region within the face: where it reaches past the
+   * face's edges, the neighbouring faces can get split lines close to them).
+   *
+   * The pieces of the part's faces that lie inside a tool part, or inside the sketch's region,
+   * descend from the tool: `part.imprint(tool).faces().derivedFrom(tool)` selects them. A fillet or
+   * chamfer across a split line removes it again.
+   *
+   * ModelingError where the tool crosses no face of the part, and where the kernel's result is no
+   * longer the part (another volume, or a broken body).
+   */
+  imprint(tool: Part | Shell | Face | ShapeList<Face>): Part {
+    if (tool instanceof ShapeList) tool = tool.one()
+    if (!(tool instanceof Part || tool instanceof Shell || tool instanceof Face)) {
+      throw new TypeError(`imprint takes a part, a sheet, a face or a sketch, not a ${_typeName(tool)}`)
+    }
+    this._requireValid('imprint')
+    let region: Part | null = tool instanceof Part ? tool : null
+    let result: Part | null
+    if (tool instanceof Part) {
+      tool._requireValid('imprint')
+      result = this._imprinted(tool)
+    } else if (tool instanceof Sketch || (tool instanceof Face && tool.isPlanar)) {
+      const sketch = tool instanceof Sketch ? tool : (tool as Face).toSketch()
+      const sheet = tool instanceof Sketch ? tool : (tool as Face).toShell()
+      // (a thin slab through the plane: the pieces of faces in the plane inside it lie in the
+      // sketch's region)
+      region = sketch.extrude(Math.max(1e-3 * this._extent(), 1e-6), { both: true })
+      result = this._imprinted(sheet)
+      if (result === null && this._liesOnFace(sketch.plane)) {
+        // The kernel can imprint nothing of an outline in the plane of a face: the slab's walls cut
+        // it in.
+        result = this._imprinted(region)
+      }
+    } else {
+      result = this._imprinted(tool instanceof Face ? tool.toShell() : tool)
+    }
+    if (result === null) throw new ModelingError('imprint: the tool crosses no face of the part')
+    if (region !== null) {
+      // the pieces inside the tool's region descend from the tool
+      const faces = [...result.faces()]
+      const points = faces.map((f) => f.interiorPoint())
+      const tol = 1e-6 * Math.max(1, region._extent())
+      const where = region._classify(points, tol)
+      const inside = faces.filter((_, i) => where[i][0] !== 'outside').map((f) => f._f)
+      if (inside.length) {
+        // (the result is new: nothing has read its tags yet)
+        ext.add_face_tags(result._brep, inside, [..._historyTags(tool, 'imprint')].sort((a, b) => a - b))
+        result._h.tags = null
+      }
+    }
+    return result
+  }
+
+  /** This part with its faces split where the tool's surface crosses them (the kernel's Boolean
+   * with imprinting), checked: a valid solid of the same volume (within 1e-6, or its gaps); null
+   * where no face was split. */
+  _imprinted(tool: _Body): Part | null {
+    const result = this._like(
+      _held(this._copyBrep(), (h) => {
+        kernelCall('imprint', () => _combineImprint(h, tool), 'the tool may only touch the part\'s faces, or run along one of its edges')
+      }),
+    )
+    if (k.brep_face_count(result._brep) <= k.brep_face_count(this._brep)) return null
+    let problem = result._solidProblem()
+    if (problem === null) {
+      try {
+        const a = this._props()
+        const b = result._props()
+        const slack = Math.max(1e-6, 10 * Math.max(Number(a.gaps), Number(b.gaps)))
+        if (!(Math.abs(Number(b.volume) - Number(a.volume)) <= slack * Math.abs(Number(a.volume)))) {
+          problem = `of another volume (${_formatG(Number(b.volume), 10)}, the part has ${_formatG(Number(a.volume), 10)})`
+        }
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        problem = 'a body whose volume cannot be integrated'
+      }
+    }
+    if (problem !== null) {
+      throw new ModelingError(
+        `imprint: the kernel returned a body ${problem}; move the tool a little, so that its surface crosses the part's faces rather than running along them`,
+      )
+    }
+    return result
+  }
+
+  /** Whether a planar face of this part lies in a plane. */
+  _liesOnFace(plane: Plane): boolean {
+    const tol = 1e-6 * Math.max(1, this._extent())
+    const n = plane.zDir.normalized()
+    for (const f of this.faces()) {
+      if (f.geomType !== 'plane') continue
+      const fp = f.plane
+      if (Math.abs(Math.abs(fp.zDir.normalized().dot(n)) - 1) <= 1e-9 && Math.abs(fp.origin.sub(plane.origin).dot(n)) <= tol) return true
+    }
+    return false
+  }
+
+  /** `split` along a sheet (`turned`: whose faces' normals point against those of the face it was
+   * taken from). */
+  _splitBySheet(sheet: Shell, keep: string, turned: boolean): Part | [Part, Part] {
+    if (keep !== 'above' && keep !== 'below' && keep !== 'both') throw new RangeError('keep must be "above", "below" or "both"')
+    if (k.brep_face_count(sheet._brep) === 0) throw new RangeError('split: the sheet is empty')
+    this._requireValid('split')
+    let pieces = this._sliced(sheet)
+    if (pieces === null && sheet.faces().length === 1 && sheet.faces()[0].geomType === 'bspline') {
+      // A free-form sheet whose edges end inside the part: extended beyond them (its normals point as
+      // before, the surface's).
+      const reach = 2 * (this.bbox().diagonal + sheet.bbox().diagonal)
+      const wide = Shell._wrap(kernelCall('split', () => ext.extended_sheet(sheet.faces()[0]._f, reach), "the sheet's surface cannot be extended"))
+      pieces = this._sliced(wide)
+    }
+    if (pieces === null) {
+      throw new ModelingError(
+        'split: the surface does not cut through the part (its edges end inside the part, or it misses it); make the sheet reach past the part on every side',
+      )
+    }
+    const [above, below] = turned ? [pieces[1], pieces[0]] : pieces
+    return keep === 'above' ? above : keep === 'below' ? below : [above, below]
+  }
+
+  /** The parts of this part above and below a sheet (the kernel's SLICE, keeping the side its
+   * normals point to, and again with the sheet turned); null where the sheet does not cut through
+   * the part: a side is empty or no solid, or the two do not add up to the part's volume (a sheet
+   * that only dents the part or misses it, from which the kernel returns the part less a dent, or
+   * all of it). */
+  _sliced(sheet: Shell): [Part, Part] | null {
+    const out: Part[] = []
+    for (const below of [false, true]) {
+      let piece: Part
+      try {
+        // (the sheet turned for the other side: its faces as B-spline faces, their U and V swapped)
+        const tool = below ? sheet.toNurbs() : sheet
+        piece = Part._wrap(
+          _held(this._copyBrep(), (h) => {
+            const t = new BrepHandle(tool._copyBrep())
+            try {
+              h.brep = kernelCall('split', () => ext.slice(h.brep, t.brep, below))
+              t.release()
+            } finally {
+              t.dispose()
+            }
+          }),
+          { name: this.name, color: this.color },
+        )
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+        return null
+      }
+      if (k.brep_face_count(piece._brep) === 0 || piece._solidProblem() !== null) return null
+      out.push(piece)
+    }
+    let p: Any
+    let parts: Any[]
+    try {
+      p = this._props()
+      parts = out.map((x) => x._props())
+    } catch (e) {
+      if (!(e instanceof KernelError)) throw e
+      return null
+    }
+    const whole = Number(p.volume)
+    const volumes = parts.map((x) => Number(x.volume))
+    const slack = Math.max(1e-6, 10 * Math.max(Number(p.gaps), ...parts.map((x) => Number(x.gaps))))
+    if (Math.min(...volumes) <= slack * whole || !(Math.abs(volumes[0] + volumes[1] - whole) <= slack * whole)) return null
+    return [out[0], out[1]]
   }
 
   /**
@@ -3923,6 +4463,18 @@ function _combine(h: BrepHandle, tool: _Body, op: number, nonManifold = false): 
   }
 }
 
+/** `_combine` with the kernel's imprinting Boolean: the faces of the Brep a handle owns split where
+ * a copy of the tool crosses them (the copy deleted). */
+function _combineImprint(h: BrepHandle, tool: _Body): void {
+  const th = new BrepHandle(tool._copyBrep())
+  try {
+    h.brep = ext.boolean(h.brep, th.brep, k.BooleanOp.UNION, false, true)
+    th.release()
+  } finally {
+    th.dispose()
+  }
+}
+
 // A fillet or chamfer that fails with SM_ERR_INVALID_INPUT fails at any size: the kernel takes an edge
 // for one it cannot round, or has no corner for the way the selected edges meet at a vertex.
 const _ROUND_SELECTION_HINT =
@@ -4011,7 +4563,7 @@ export class Shell extends _Body {
     const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
     // (the kernel's extended offset mode, which depends on memory layout and can crash: it runs in the
     // probe worker, smlibpy: in a copy of its process)
-    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { create_solid: true }, faces: [] })
+    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [ext.topology_tags(this._brep)], distance: d, options: { create_solid: true }, faces: [] })
     const b = _isolated('thicken', work, job, hint)
     return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
   }
@@ -4021,6 +4573,54 @@ export class Shell extends _Body {
     return this._like(_held(this._copyBrep(), (h) => {
       for (const t of _bodies(others)) kernelCall('fuse', () => _combine(h, t, k.BooleanOp.UNION))
     }))
+  }
+
+  /** The sheet trimmed by parts: the pieces outside them (Python's `sheet - part`). */
+  cut(...others: unknown[]): Shell {
+    return this._trimmed(others, k.BooleanOp.DIFFERENCE, 'cut')
+  }
+
+  /** The sheet trimmed by parts: the pieces inside them (Python's `sheet & part`; also
+   * `part.intersect(sheet)`). */
+  intersect(...others: unknown[]): Shell {
+    return this._trimmed(others, k.BooleanOp.INTERSECTION, 'intersect')
+  }
+
+  /** The sheet less the pieces inside (or outside) parts. The kernel's Boolean of a sheet and a
+   * solid trims the sheet; checked: every face of the result lies on the sheet, and its area is no
+   * more than the sheet's. */
+  _trimmed(others: unknown, op: number, name: string): Shell {
+    const tools = _bodies(others, name)
+    if (!tools.length) throw new RangeError(`${name} needs a part`)
+    for (const t of tools) {
+      if (!(t instanceof Part) || t instanceof Sketch) {
+        throw new TypeError(`a sheet is trimmed by parts (sheet - part, sheet & part), not by a ${_typeName(t)}`)
+      }
+      t._requireValid(name)
+    }
+    if (k.brep_face_count(this._brep) === 0) return this._like(this._copyBrep())
+    const result = this._like(
+      _held(this._copyBrep(), (h) => {
+        for (const t of tools) {
+          if (k.brep_face_count(h.brep) === 0) break
+          const [lo, hi] = k.brep_bounding_box(h.brep, false) as [number[], number[]]
+          if (_disjoint(new BoundBox(lo, hi), t._looseBox())) {
+            if (op === k.BooleanOp.INTERSECTION) h.brep = ext.combine([])
+            continue
+          }
+          kernelCall(name, () => _combine(h, t, op), 'the sheet may only touch the part, or lie in one of its faces')
+        }
+      }),
+    )
+    if (k.brep_is_manifold_solid(result._brep)) throw new ModelingError(`${name}: the kernel returned a solid, not a piece of the sheet`)
+    const tol = 1e-5 * Math.max(1, this.bbox().diagonal)
+    for (const f of result.faces()) {
+      if (this.distanceTo(f.interiorPoint()) > tol) throw new ModelingError(`${name}: the kernel returned a face that is not on the sheet`)
+    }
+    if (k.brep_face_count(result._brep) && result.area > this.area * (1 + 1e-6) + tol) {
+      throw new ModelingError(`${name}: the kernel returned more of the sheet (${_formatG(result.area)}) than there is (${_formatG(this.area)})`)
+    }
+    return result
   }
 
   override toString(): string {
@@ -4433,12 +5033,12 @@ export class Sketch extends Shell {
   }
 
   /** The region less other sketches (Python's `-`). */
-  cut(...others: unknown[]): Sketch {
+  override cut(...others: unknown[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.DIFFERENCE, 'cut')
   }
 
   /** The region common to this and other sketches (Python's `&`). */
-  intersect(...others: unknown[]): Sketch {
+  override intersect(...others: unknown[]): Sketch {
     return this._boolean2d(others, k.BooleanOp2D.INTERSECTION, 'intersect')
   }
 

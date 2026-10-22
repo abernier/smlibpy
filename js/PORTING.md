@@ -62,7 +62,8 @@ the Python code works around a kernel defect, so does the TypeScript.
     (and Node's inspect).
 - **ShapeList** extends Array: `filter`, `slice` and `concat` return ShapeLists; `map`
   returns a plain array. Python's `ShapeList.at(point)` is `atPoint(point)` (Array has `at`,
-  which throws a TypeError for anything but an index).
+  which throws a TypeError for anything but an index), and `ShapeList.new(since)` is
+  `newSince(since)`.
   `new ShapeList(...shapes)` builds one; the internal helper is `_list(iterable)`.
 - **Errors.** `ValueError` and `IndexError` -> `RangeError`; `TypeError` -> `TypeError`;
   `ModelingError` and `KernelError` are smlibwasm's classes (kernel.ts). `kernel_call` is

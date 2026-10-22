@@ -56,8 +56,11 @@ the kernel extends the round past the end until it leaves the material, so more 
 - Where rounds of different radii meet at a corner, give them in one call with a radius list,
   or round the larger radius first. Small first, then large, leaves a dented corner
   (picture in training; volume 25199.4 vs 25154.7).
-- Fillet after the Booleans that create the edges; select new edges by geometry (`circles()`,
-  `concave()`, radius filters).
+- Fillet after the Booleans that create the edges; select the new edges with
+  `part.edges().new(since=[plate, boss])` (the curves where the bodies meet, see
+  `selection/history`) or by geometry (`circles()`, `concave()`, radius filters). Edges taken
+  before a cut that split them stand for their pieces: `(box - slot).fillet(box.edges().top(), 1)`
+  rounds all of them.
 - Fillet before `shell` when the walls should follow the rounds (see `shell`).
 
 ## Errors
@@ -76,7 +79,8 @@ the kernel extends the round past the end until it leaves the material, so more 
 - `ValueError: fillet: a (start, end) radius makes circular rounds only; continuity needs a constant radius`
 - `ValueError: fillet: a (start, end) radius cannot run around a closed edge ...` and
   `ValueError: fillet: a (start, end) radius runs along each edge on its own, and two of the edges run into each other tangentially at (15, 15, 5) ...`
-- `ValueError: Edge(...) is not an edge of this part`; with the function form and edges of no
+- `ValueError: Edge(...) is not an edge of this part` (an edge of another body, with no
+  descendant in this part and none in the same place); with the function form and edges of no
   part: `ValueError: these edges do not belong to a part; call part.fillet(edges, ...) instead`.
 
 ## Example

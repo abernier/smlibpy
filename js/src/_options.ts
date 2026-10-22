@@ -25,6 +25,7 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   'Part.flange': [2, ['angle', 'radius', 'kFactor']],
   'Part.flatPattern': [0, ['kFactor', 'fixed']],
   'Part.fold': [2, ['radius', 'kFactor', 'fixed', 'partial']],
+  'Part.isValid': [0, ['strict']],
   'Part.removeFaces': [1, ['partial']],
   'Part.removeFillets': [1, ['maxRadius', 'partial']],
   'Part.shell': [2, ['outward']],

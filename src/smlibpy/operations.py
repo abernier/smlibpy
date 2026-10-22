@@ -599,8 +599,8 @@ def mirror(shape: Shape, plane: Plane = Plane.XZ) -> Any:
     return shape.mirror(plane)
 
 
-def split(part: Part, plane: Plane | Face, keep: str = "above") -> Any:
-    """Cut a part with a plane (see :meth:`Part.split`)."""
+def split(part: Part, plane: Plane | Face | Shell, keep: str = "above") -> Any:
+    """Cut a part with a plane or along a sheet (see :meth:`Part.split`)."""
     return part.split(plane, keep)
 
 

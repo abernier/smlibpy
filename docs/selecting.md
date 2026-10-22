@@ -98,6 +98,44 @@ face, `face.outer_wire()` its boundary, `face.inner_wires()` its holes and `edge
 faces meeting at an edge. Single shapes offer the same: `face.edges()`, `edge.vertices()`,
 `face.neighbors()`.
 
+## Where faces and edges came from
+
+Every face and edge remembers what it came from: smlibpy marks the faces and edges of every body
+it makes, and the kernel carries the marks through its operations. A copy keeps them, both halves
+of a face a cut split keep their parent's, a face merged from two keeps both; the faces and edges
+an operation makes anew (the circle where a boss meets a plate, the rounds of a fillet, the rims
+of a shell) are new. `new(since=...)` selects those, `derived_from(...)` the descendants of given
+bodies, faces or edges:
+
+```python
+plate = Box(60, 40, 8)
+boss = Cylinder(8, 20).translate(0, 0, 10)
+joined = plate + boss
+rim = joined.edges().new(since=[plate, boss])     # the circle where the boss stands on the plate
+rounded = joined.fillet(rim, 2)
+rounds = rounded.faces().new(since=joined)        # the round
+
+holes = GridLocations(40, 20, 2, 2) * Cylinder(3, 20)
+drilled = plate - holes
+walls = drilled.faces().derived_from(holes)       # the four hole walls
+```
+
+A moved, turned, mirrored or scaled copy is a shape of its own, with new marks (the copies of a
+pattern can be told apart); a body read from a file is new everywhere.
+
+A selection taken before an edit can still be used: a face or edge of an earlier version of the
+part stands for its descendants, so edges a later cut split are rounded in all their pieces:
+
+```python
+top = plate.edges().top()                         # before the slot
+slotted = plate - Box(6, 50, 4).translate(0, 0, 3)
+print(len(slotted.edges().derived_from(top)))     # 6: the long edges in two pieces each
+done = slotted.fillet(top, 1)
+```
+
+Where a face or edge has no descendant (it belongs to another body), it is matched by geometry
+as before, and `ValueError: ... is not an edge of this part` says that nothing matched.
+
 ## Seams
 
 Closed surfaces such as cylinders have a seam where the surface meets itself. Seams are

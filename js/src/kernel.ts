@@ -89,6 +89,17 @@ const OWN: Record<string, Signature> = {
   'ext.triangulate_poly': ['poly'],
   'ext.region_shells': ['brep'],
   'ext.seam_contacts': ['a', 'b', ['tolerance', 0.0]],
+  'ext.tag_topology': ['brep', ['fresh', false]],
+  'ext.topology_tags': ['brep'],
+  'ext.set_topology_tags': ['brep', 'faces', 'edges'],
+  'ext.add_face_tags': ['brep', 'faces', 'tags'],
+  'ext.untag_topology': ['brep'],
+  'ext.check_brep': ['brep', ['level', 2]],
+  'ext.tolerance_gaps': ['brep'],
+  'ext.edge_tolerance': ['edge'],
+  'ext.vertex_tolerance': ['vertex'],
+  'ext.slice': ['brep', 'sheet', ['below', false]],
+  'ext.extended_sheet': ['face', 'distance'],
   'ext.usd_text': ['items', ['up_axis', 'Z'], ['meters_per_unit', 0.001]],
   'ext.usd_read': ['text', ['heal', false]],
   'ext.usd_assets': ['text'],
@@ -374,6 +385,9 @@ export function _disposed(what: string): TypeError {
 export class BrepHandle extends Handle {
   sound = 0
   props: Any = null
+  /** The tags of its faces and edges (`ext.topology_tags`, read once: a body's Brep does not change
+   * once wrapped). */
+  tags: [number[][], number[][]] | null = null
 
   constructor(brep: number) {
     if (!brep) throw new KernelError('kernel', 'operation returned no body')

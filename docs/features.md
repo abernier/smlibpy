@@ -128,6 +128,41 @@ cut = part.section(Plane.XY)                       # the cross-section, as a ske
 print(cut.area)                                    # 40 * 30 - pi * 8^2
 ```
 
+A sheet splits a part along its surface (a curved parting surface, a surface fitted to a scan);
+"above" is the side its normals point to. The sheet must cut through the part; a sheet of one
+free-form face whose edges end inside is extended past them, tangentially, until it does. Both
+sides are checked to hold the part's volume together:
+
+```python
+import math
+import numpy as np
+
+wave = surface([[(x, y, 2 + 3 * math.sin(x / 6)) for y in np.linspace(-15, 15, 7)]
+                for x in np.linspace(-15, 15, 13)])
+upper, lower = Box(20, 20, 20).split(wave, keep="both")
+print(round(upper.volume, 3), round(lower.volume, 3))   # 3200.0 4800.0
+```
+
+`part + sheet` and `part - sheet` raise `TypeError`: a sheet encloses no volume. `sheet & part`
+and `sheet - part` trim the sheet (see [Surfaces](surfaces.md)).
+
+## Imprint
+
+`imprint` splits faces where a tool crosses them and adds or removes nothing: split lines for
+drafts and parting lines, patches for the loads and supports of a simulation. The tool is a part,
+a sheet, or a sketch lying on a face. The pieces inside a tool part or sketch region descend from
+the tool, so `derived_from` selects them:
+
+```python
+block = Box(40, 30, 10)
+pad = Rectangle(12, 8).on(Plane.XY.offset(5))      # on the top face
+marked = block.imprint(pad)
+print(len(marked.faces()), marked.volume)          # 7 12000.0: the volume stays
+patch = marked.faces().derived_from(pad).one()     # the 12 x 8 patch
+```
+
+A fillet across a split line removes it again; imprint after rounding.
+
 ## Cells
 
 `merge` makes one part of several, as for models of several materials whose meshes must match
@@ -250,3 +285,6 @@ crash or endless loop in its patching code only drops that step.
 healed = part.heal()          # mend gaps and tolerances, mostly for imported data
 nurbs = part.to_nurbs()       # every face and edge as NURBS
 ```
+
+A sheet whose faces close around a volume once healed comes back as a `Part`. What is still
+wrong with a body, and where, is `check()` (see [Analysis](analysis.md)).

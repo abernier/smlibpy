@@ -37,3 +37,9 @@ void bind_seams(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Where the faces and edges of a body came from: tags the kernel carries along (history.cpp).
+void bind_history(py::module_ m);
+// What is wrong with a body: the kernel's validity checks and gaps (check.cpp).
+void bind_check(py::module_ m);
+// A solid split by a sheet (slice.cpp).
+void bind_slice(py::module_ m);

@@ -46,7 +46,8 @@ The functions, classes, checks and error messages are smlibpy's, so
 - **Operators** become methods: `a.fuse(b)`, `a.cut(b)`, `a.intersect(b)` for Python's `+`, `-`
   and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
 - **Lists**: Python's `faces().at(point)` is `atPoint(point)` (`at` takes an index), and
-  Python's `list[-1]` is `list.at(-1)` or `list.last`.
+  Python's `list[-1]` is `list.at(-1)` or `list.last`; `edges().new(since=part)` is
+  `edges().newSince(part)`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: `toStep`, `toStl`, `toGlb`, `toDxf`, `toUsd` give the file's contents and `fromStep`,

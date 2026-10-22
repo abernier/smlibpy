@@ -1,4 +1,6 @@
-"""Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10).
+"""Booleans along seams and beside earlier holes (kernel plan B6, B4 and B10); empty Boolean results
+checked without the kernel's brep_relationship (B13); parts split along sheets and sheets trimmed by
+parts (B12); imprints (B14); where faces and edges came from (T3); the kernel's validity checks (T4).
 
 Exact volumes come from integrating the overlaps of the operands (the cross sections of two
 cylinders, a sphere and a cylinder), not from the kernel; OpenCASCADE's volume is given where it
@@ -9,6 +11,7 @@ import math
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 from pytest import approx
 
@@ -192,3 +195,321 @@ print(rss() - before)
     assert run.returncode == 0, run.stderr
     grown = float(run.stdout.strip())
     assert grown < 10, f"100 turned cuts took {grown:.1f} MB"  # 0.6 MB each if the operands stayed
+
+
+
+# -- B13: empty results are checked without brep_relationship ------------------------------
+def _no_relationship(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("brep_relationship was asked")
+
+    monkeypatch.setattr(k, "brep_relationship", refuse)
+
+
+def test_an_empty_intersection_of_touching_boxes_is_right_wherever_they_are(monkeypatch):
+    # brep_relationship called these "touching" at the origin and "interpenetrating" moved, so the
+    # same right empty intersection raised there
+    _no_relationship(monkeypatch)
+    a, b = Box(10, 12, 12), Box(4, 20, 12).rotate(X, 90).translate(7, 0, 4)
+    for move in ((0, 0, 0), (101.3, -57.9, 33.1)):
+        r = a.translate(*move) & b.translate(*move)
+        assert len(r.faces()) == 0
+
+
+def test_empty_intersections_and_cuts_that_are_right(monkeypatch):
+    _no_relationship(monkeypatch)
+    cases = [
+        lambda: Sphere(5) & Sphere(5).translate(10.5, 0, 0),  # apart
+        lambda: Sphere(5) & Sphere(5).translate(10, 0, 0),  # touching at a point
+        lambda: Box(20, 20, 10) & Cylinder(3, 20).rotate(X, 90).translate(0, 0, 8),  # along a line
+        lambda: (Box(30, 30, 30) - Sphere(8)) & Sphere(8),  # a ball in its cavity (the mesh Booleans fail)
+        lambda: Box(10, 10, 10) - Box(10, 10, 10),
+        lambda: Box(10, 10, 10) - Sphere(9),  # the corners at 8.66 inside the sphere
+        lambda: Cylinder(5, 10) - Cylinder(5, 10),
+        lambda: Box(10, 10, 10) - [Box(6, 12, 12).translate(-2.5, 0, 0), Box(6, 12, 12).translate(2.5, 0, 0)],
+    ]
+    for make in cases:
+        assert len(make().faces()) == 0
+
+
+def test_an_empty_intersection_of_plates_apart_is_quick(monkeypatch):
+    # brep_relationship took 10 s for these two plates of 168 faces, 3 apart (the Boolean 0.13 s)
+    import time
+
+    plate = Box(400, 200, 10) - [Cylinder(2, 20).translate(x, y, 0) for x in range(-180, 181, 20)
+                                 for y in range(-80, 81, 20)]
+    other = plate.translate(0, 0, 13)
+    t = time.perf_counter()
+    assert len((plate & other).faces()) == 0
+    assert time.perf_counter() - t < 3
+
+
+def test_a_wrong_empty_result_is_refused(monkeypatch):
+    # The kernel returning nothing for bodies that overlap: brep_relationship calls the spheres
+    # "touching" (18.6 in common), which accepted the empty intersection
+    a, b = Sphere(7), Sphere(2).translate(6, 3, 0)
+    assert k.brep_relationship(a._brep, b._brep)["relationship"] == "touching"
+    assert (a & b).volume == approx(18.6016, rel=1e-4)
+    monkeypatch.setattr(Part, "_run_boolean", lambda self, tools, op, name: ext.combine([]))
+    with pytest.raises(ModelingError, match="empty"):
+        a & b
+    with pytest.raises(ModelingError, match="empty"):
+        Box(10, 10, 10) - Sphere(8.6)  # the tool covers the box's box and volume, not its corners
+
+
+def test_the_empty_checks_fall_back_to_classifying_points(monkeypatch):
+    a, b = Sphere(7), Sphere(2).translate(6, 3, 0)
+    monkeypatch.setattr(shapes, "_mesh_overlap", lambda *args, **kwargs: None)
+    assert not shapes._empty_is_right(a, [b], k.BooleanOp.INTERSECTION)
+    assert shapes._empty_is_right(a, [Sphere(2).translate(9.5, 0, 0)], k.BooleanOp.INTERSECTION)
+    assert not shapes._empty_is_right(Box(10, 10, 10), [Sphere(8.6)], k.BooleanOp.DIFFERENCE)
+    assert shapes._empty_is_right(Box(10, 10, 10), [Sphere(9)], k.BooleanOp.DIFFERENCE)
+
+
+# -- B12: parts split along sheets, sheets trimmed by parts --------------------------------
+def _wave(span=15.0, width=15.0):
+    # z = 2 + 3 sin(x / 6), odd about x = 0 apart from its mean: a box of 20 splits 3200 / 4800
+    return surface([[(x, y, 2 + 3 * math.sin(x / 6)) for y in np.linspace(-width, width, 7)]
+                    for x in np.linspace(-span, span, 13)])
+
+
+def test_split_along_a_sheet():
+    box, s = Box(20, 20, 20), _wave()
+    assert s.faces()[0].normal_at().z > 0  # "above" is the side the normals point to
+    above, below = box.split(s, "both")
+    assert above.volume == approx(3200, rel=1e-6) and below.volume == approx(4800, rel=1e-6)
+    assert above.is_valid() and below.is_valid() and len(above.faces()) == 6
+    assert box.split(s).volume == approx(3200, rel=1e-6)
+    assert box.split(s, "below").volume == approx(4800, rel=1e-6)
+    assert box.split(s.faces()[0], "below").volume == approx(4800, rel=1e-6)  # a face of it
+    assert split(box, s).volume == approx(3200, rel=1e-6)
+    with pytest.raises(ValueError, match="keep"):
+        box.split(s, "middle")
+
+
+def test_split_extends_a_free_form_sheet_that_ends_inside():
+    narrow = _wave(width=5)  # 10 wide in y, in a box 20 wide: extended tangentially
+    above, below = Box(20, 20, 20).split(narrow, "both")
+    assert above.volume == approx(3200, rel=1e-6) and below.volume == approx(4800, rel=1e-6)
+
+
+def test_split_along_a_curved_face_of_a_part():
+    wall = Cylinder(5, 40).faces().filter_by(lambda f: f.geom_type == "cylinder").one()
+    outside, inside = Box(20, 20, 20).split(wall, "both")  # its normals point out of the cylinder
+    assert inside.volume == approx(500 * math.pi, rel=1e-6)
+    assert outside.volume == approx(8000 - 500 * math.pi, rel=1e-6)
+
+
+def test_split_by_a_sheet_that_does_not_cut_through():
+    s = _wave()
+    with pytest.raises(ModelingError, match="does not cut through"):
+        Box(20, 20, 20).split(s.translate(0, 0, 50))  # misses the part
+    inside = Box(4, 4, 4).faces().top().one().to_shell()  # a plane sheet within the part: not extended
+    with pytest.raises(ModelingError, match="does not cut through"):
+        Box(20, 20, 20).split(inside)
+
+
+def test_sheets_trimmed_by_parts():
+    s, cyl = _wave(), Cylinder(5, 30)
+    outside, inside = s - cyl, s & cyl
+    assert type(outside) is Shell and type(inside) is Shell
+    assert outside.area + inside.area == approx(s.area, rel=1e-6)
+    assert inside.area == approx(86.43, rel=1e-3)
+    assert (cyl & s).area == approx(inside.area, rel=1e-9)  # also part & sheet
+    assert stitch(cyl & s).area == approx(inside.area, rel=1e-9)  # the old workaround still works
+    assert len((s & cyl.translate(100, 0, 0)).faces()) == 0
+    assert (s - cyl.translate(100, 0, 0)).area == approx(s.area, rel=1e-9)
+    assert len((s - Box(100, 100, 100)).faces()) == 0
+    with pytest.raises(TypeError, match="trimmed by parts"):
+        s - Rectangle(4, 4)
+
+
+def test_a_part_and_a_sheet_do_not_fuse_or_cut():
+    # they returned invalid "Parts" (the sheet imprinted, 11 faces, volume 8000)
+    box, s = Box(20, 20, 20), _wave()
+    for op in (lambda: box + s, lambda: box - s, lambda: box.fuse(s.faces()[0]), lambda: box - [Box(1, 1, 1), s]):
+        with pytest.raises(TypeError, match="split"):
+            op()
+
+
+# -- B14: imprints -----------------------------------------------------------------------
+def test_imprint_a_sketch_on_a_face():
+    box = Box(20, 20, 10)
+    for sketch, patch in ((Rectangle(8, 6), 48.0), (Circle(4), 16 * math.pi)):
+        sk = sketch.on(Plane.XY.offset(5))
+        r = box.imprint(sk)
+        assert r.is_valid() and r.volume == approx(4000, rel=1e-9) and len(r.faces()) == 7
+        assert sorted(f.area for f in r.faces().top()) == approx(sorted([patch, 400 - patch]), rel=1e-6)
+        assert [f.area for f in r.faces().derived_from(sk)] == approx([patch], rel=1e-6)
+    square = box.faces().top().one().to_sketch().scale(0.5, (0, 0, 5))  # a sketch from a face, 10 x 10
+    assert sorted(f.area for f in box.imprint(square).faces().top()) == approx([100, 300])
+
+
+def test_imprint_a_part_and_a_sheet():
+    box = Box(20, 20, 10)
+    pin = Cylinder(3, 30).rotate(Y, 90)
+    r = box.imprint(pin)
+    assert r.volume == approx(4000, rel=1e-9) and len(r.faces()) == 8
+    assert [f.area for f in r.faces().derived_from(pin)] == approx([9 * math.pi] * 2, rel=1e-6)
+    sheet = surface([[(x, y, 1 + 0.02 * x * x) for y in np.linspace(-15, 15, 5)] for x in np.linspace(-15, 15, 7)])
+    r = box.imprint(sheet)
+    assert r.volume == approx(4000, rel=1e-9) and len(r.faces()) > 6 and r.is_valid()
+    later = box.imprint(Rectangle(8, 6).on(Plane.XY.offset(5))) - Cylinder(2, 30).translate(7, 7, 0)
+    assert len(later.faces()) == 8  # the split line stays through a later cut
+
+
+def test_imprint_refuses_a_tool_that_crosses_nothing():
+    box = Box(20, 20, 10)
+    for tool in (Cylinder(3, 30).translate(100, 0, 0), Box(2, 2, 2)):
+        with pytest.raises(ModelingError, match="crosses no face"):
+            box.imprint(tool)
+    with pytest.raises(TypeError):
+        box.imprint(Vector(1, 2, 3))
+
+
+# -- T3: where faces and edges came from ---------------------------------------------------
+def test_new_edges_and_faces_of_a_boolean():
+    plate, boss = Box(30, 20, 5), Cylinder(4, 10).translate(0, 0, 5)
+    r = plate + boss
+    new = r.edges().new(since=[plate, boss])
+    assert len(new) == 1 and new[0].geom_type == "circle" and new[0].radius == approx(4)
+    assert new[0].center().z == approx(2.5)
+    assert len(r.faces().new(since=[plate, boss])) == 0
+    assert len(r.edges().new(since=plate)) == 2  # and the boss's top circle (its seam is no edge here)
+
+
+def test_faces_derived_from_tools_and_split_faces():
+    plate = Box(30, 20, 5)
+    holes = [Cylinder(2, 10).translate(x, 0, 0) for x in (-10, 10)]
+    r = plate - holes
+    walls = r.faces().derived_from(holes)
+    assert len(walls) == 2 and all(f.geom_type == "cylinder" for f in walls)
+    assert [f.center().x for f in r.faces().derived_from(holes[0])] == approx([-10])
+    pattern = GridLocations(10, 10, 2, 1) * Cylinder(2, 10)  # moved copies have marks of their own
+    cut = Box(30, 30, 5) - pattern
+    assert [len(cut.faces().derived_from(c)) for c in pattern] == [1, 1]
+    box = Box(40, 30, 10)
+    slotted = box - Box(5, 40, 4).translate(0, 0, 4)
+    top = slotted.edges().derived_from(box.edges().top())
+    assert len(top) == 6 and sum(e.length for e in top) == approx(2 * 30 + 4 * 17.5)
+    left, right = Box(30, 20, 5), Box(30, 20, 5).translate(30, 0, 0)
+    merged = left + right
+    for half in (left, right):  # top, bottom, front and back merged, and an end
+        assert len(merged.faces().derived_from(half)) == 5
+
+
+def test_a_selection_from_before_an_edit():
+    # "Edge(line, (-20, 15, 10) -> (20, 15, 10)) is not an edge of this part" before
+    box = Box(40, 30, 10)
+    top = box.edges().top()
+    cut = box - Box(5, 40, 4).translate(0, 0, 4)
+    rounded = cut.fillet(top, 1)
+    assert rounded.is_valid() and rounded.volume < cut.volume
+    rounds = rounded.faces().new(since=cut)
+    assert len(rounds) == 6 and all(f.geom_type == "cylinder" and f.radius == approx(1) for f in rounds)
+    shelled = cut.shell(-2, box.faces().top())  # both halves of the top face open
+    assert shelled.is_valid() and shelled.volume == approx(cut.shell(-2, cut.faces().top()).volume, rel=1e-9)
+
+
+def test_old_selections_are_measured_as_the_edges_they_stand_for():
+    # the fillet's checks measure the pieces and merged edges, not the edges as selected (a merged
+    # edge of 80 checked as the 40 selected was "a wrong body", at most 18.885 for 34.336)
+    box = Box(40, 30, 10)
+    joined = box + Box(40, 30, 10).translate(40, 0, 0)
+    long = joined.fillet(box.edges().top().parallel_to(X), 1)
+    assert long.is_valid() and long.volume == approx(24000 - 160 * (1 - math.pi / 4), rel=1e-6)
+    top = box.edges().top()
+    cut = box - Box(5, 40, 4).translate(0, 0, 4)
+    per_edge = cut.fillet(top, [1, 1.5, 1, 1.5])  # each piece takes its edge's radius
+    assert per_edge.is_valid() and len(per_edge.faces().new(since=cut)) == 6
+    assert cut.chamfer(top, 1).is_valid()
+    sheet = Box(40, 30, 2)
+    edge = sheet.edges().top().max_by(Y)
+    with pytest.raises(ValueError, match="got 2"):
+        (sheet - Box(4, 4, 4).translate(5, 15, 0)).flange(edge, 10, radius=2)
+
+
+def test_history_comes_back_from_the_forked_kernel_steps(monkeypatch):
+    from smlibpy import defeature
+
+    box = Box(40, 30, 10)
+    cut = box - Box(5, 40, 4).translate(0, 0, 4)
+    forked = cut.shell(-2, cut.faces().top())
+    monkeypatch.setattr(defeature, "GUARD_SECONDS", 0)
+    here = cut.shell(-2, cut.faces().top())
+    assert len(forked.faces().new(since=cut)) == len(here.faces().new(since=cut)) < len(here.faces())
+    floors = forked.faces().derived_from(cut.faces().bottom())  # the bottom, and the floor inside offset from it
+    assert sorted(f.center().z for f in floors) == approx([-5, -3])
+
+
+def test_history_takes_faces_and_edges():
+    box = Box(10, 10, 10)
+    with pytest.raises(TypeError, match="faces and edges"):
+        box.vertices().new(since=box)
+    with pytest.raises(TypeError, match="bodies, faces and edges"):
+        box.faces().derived_from(Vector(1, 2, 3))
+    assert box.faces().derived_from(box.faces().top()) == box.faces().top()
+    assert len(box.edges().new(since=box)) == 0 and len(Line((0, 0, 0), (1, 0, 0)).edges().new(since=box)) == 1
+
+
+def test_tags_reach_no_file(tmp_path):
+    part = Box(10, 10, 10) - Cylinder(2, 20)
+    copy = part._brep.copy()
+    ext.untag_topology(copy)
+    part._brep.write_to_file(str(tmp_path / "a.smb"), True)
+    copy.write_to_file(str(tmp_path / "b.smb"), True)
+    ext.delete_brep(copy)
+    assert (tmp_path / "a.smb").read_bytes() == (tmp_path / "b.smb").read_bytes()
+    assert part.check() == []  # (the tags' attributes in the kernel's own context)
+
+
+# -- T4: the kernel's validity checks ------------------------------------------------------
+def _lifted():
+    # a box whose top face lies 0.002 above its walls, stitched within 0.01: valid for is_valid()
+    faces = Box(20, 20, 20).faces()
+    return stitch([f.to_shell().translate(0, 0, 0.002 if f.normal_at().z > 0.5 else 0) for f in faces], tolerance=0.01)
+
+
+def test_check_names_the_problem():
+    part = _lifted()
+    assert isinstance(part, Part) and part.is_valid()
+    problems = part.check()
+    assert len(problems) == 4 and all(isinstance(p, Problem) for p in problems)
+    p = problems[0]
+    assert p.test == "Bad Vertex Gap" and p.category == "geometric"
+    assert isinstance(p.shape, Vertex) and p.shape.z == approx(10, abs=1e-9)
+    assert p.value == approx(0.002, rel=1e-6) and p.tolerance == approx(2e-5)
+    assert "0.002" in p.message
+    assert not part.is_valid(strict=True)
+    assert max(e.tolerance for e in part.edges()) == approx(0.004)
+    with pytest.raises(ValueError, match="level"):
+        part.check(3)
+
+
+def test_check_finds_nothing_on_generated_parts():
+    part = (Box(30, 20, 10) - Cylinder(4, 20)).fillet((Box(30, 20, 10) - Cylinder(4, 20)).edges().top(), 1)
+    for x in (part, part.shell(-1, part.faces().bottom()), Box(10, 10, 10).scale((1, 2, 3)), Torus(10, 3)):
+        assert x.check() == [] and x.check(0) == [] and x.is_valid(strict=True)
+    assert Box(10, 10, 10).edges()[0].tolerance == approx(1e-5)
+    assert Box(10, 10, 10).vertices()[0].tolerance == approx(1e-5)
+    with pytest.raises(ValueError, match="no body"):
+        Line((0, 0, 0), (1, 0, 0)).tolerance
+    with pytest.raises(ValueError, match="no body"):
+        Vertex(1, 2, 3).tolerance
+
+
+# the faces of a box moved apart by up to 0.1
+SHIFTS = [(-0.0524, 0.0088, -0.026), (0.0208, 0.0251, -0.0869), (-0.0974, 0.0675, -0.0481),
+          (-0.0531, 0.0991, -0.0059), (0.0673, -0.0047, 0.0278), (-0.0699, 0.027, 0.0736)]
+
+
+def test_a_healed_closed_sheet_is_a_part():
+    faces = Box(20, 20, 20).faces()
+    sheet = stitch([f.to_shell().translate(*d) for f, d in zip(faces, SHIFTS)], tolerance=0.5)
+    assert type(sheet) is Shell
+    healed = sheet.heal()
+    assert type(healed) is Part and healed.is_valid()
+    with pytest.warns(RuntimeWarning, match="do not meet exactly"):
+        assert healed.volume == approx(8000, rel=2e-2)
+    assert healed.check()  # its edges are far from tight
+    assert type(_wave().heal()) is Shell
