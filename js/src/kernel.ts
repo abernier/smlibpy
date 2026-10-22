@@ -54,6 +54,7 @@ const OWN: Record<string, Signature> = {
   'ext.edge_angles': ['brep', 'edges'],
   'ext.nearest_points': ['a', 'b', 'near_a'],
   'ext.copy_faces': ['brep', 'faces'],
+  'ext.remove_slivers': ['brep', 'faces', 'tolerance'],
   'ext.face_from_surface': ['surface'],
   'ext.combine': ['breps'],
   'ext.separate_bodies': ['brep'],

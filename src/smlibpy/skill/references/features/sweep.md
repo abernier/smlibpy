@@ -25,10 +25,11 @@ makes a surface (`Shell`).
 ## Placement
 - The **center of the profile's box** goes to the start of the path, wherever the profile was
   drawn: its box along the axes of its plane (for a sketch in XY, `sketch.bbox().center`), also
-  on oblique and helical paths. You cannot offset a profile from its path; move the path
-  instead. (Planar paths of several edges with mitered corners place the profile as the kernel
-  does, by its box along the axes the kernel turns it by: the same for paths that start along X,
-  Y or Z.)
+  on oblique and helical paths, and on planar paths with mitered corners. You cannot offset a
+  profile from its path; move the path instead. (On a mitered planar path an asymmetric profile
+  turned off the path plane's axes is put on the path by moving the path to its offset curve,
+  which works for lines and arcs; with a spline among the edges a `RuntimeWarning` says it sits
+  by its box along the path's plane instead.)
 - The profile is turned by the smallest rotation from its normal to the path tangent. For a
   path along Z it is unchanged. For a path along X, sketch x becomes Z; along Y, sketch y
   becomes Z. Check with `bbox()`.
@@ -49,8 +50,13 @@ makes a surface (`Shell`).
   do not care; thread and spring-band profiles do. Workaround: loft through copies of the
   profile placed along the helix with `x_dir` radial (example) — exact to 0.01%.
 - A loop closed with a kink (`Spline(*pts, pts[0])`, not `closed=True`) is swept in two halves
-  fused where its ends cross; for some loops that fuse fails (`KernelError`). A smoothly closed
-  spline (`closed=True`) has no kink.
+  fused where its ends cross (a notch outside, the overlap inside: area × length less a few
+  tenths of a percent). Where that fuse fails, it is swept in pieces as before 0.5.0, and a round
+  profile with its seam turned (the same body); for a few loops all fail (`KernelError`). Faces
+  without area that such a fuse leaves are taken out, or the sweep raises `ModelingError` ("faces
+  that enclose no area"). A smoothly closed spline (`closed=True`) has no kink.
+- Mitered corners work on planar paths in any plane (a path in the YZ plane, or in an oblique
+  one, gave no closed solid before 0.5.0).
 - Nothing checks self-intersection: a profile bigger than the path's bend radius, or a spring
   wire thicker than the pitch, returns `is_valid() == True` with a volume of area × length
   (too large). Keep profile radius < bend radius and wire diameter < pitch. Inside-out and

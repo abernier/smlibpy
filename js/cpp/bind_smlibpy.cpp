@@ -19,6 +19,7 @@
 #include "fit.h"
 #include "measure.h"
 #include "sheetmetal.h"
+#include "slivers.h"
 #include "step_build.h"
 #include "surface_eval.h"
 #include "tessellate.h"
@@ -81,6 +82,7 @@ val classify_points(uintptr_t b, val points, double tolerance)
 }
 val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
+uintptr_t remove_slivers(uintptr_t b, val faces, double tolerance) { return guard([&] { return ptr(smlibpy::remove_slivers(brep(b), pointers<SmFace>(faces), tolerance)); }); }
 uintptr_t face_from_surface(uintptr_t s) { return guard([&] { return ptr(smlibpy::face_from_surface(smjs::surface(s))); }); }
 uintptr_t combine(val breps) { return guard([&] { return ptr(smlibpy::combine(pointers<SmBrep>(breps))); }); }
 val separate_bodies(uintptr_t b) { return guard([&] { return pointer_array(smlibpy::separate_bodies(brep(b))); }); }
@@ -715,6 +717,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__classify_points", &classify_points);
     function("ext__edge_angles", &edge_angles);
     function("ext__copy_faces", &copy_faces);
+    function("ext__remove_slivers", &remove_slivers);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);
     function("ext__separate_bodies", &separate_bodies);

@@ -35,3 +35,5 @@ void bind_cells(py::module_ m);
 void bind_distance(py::module_ m);
 // USD files of exact bodies: BrepArray prims as .usda text (usd.cpp).
 void bind_usd_files(py::module_ m);
+// Faces without area removed from a copy of a Brep (slivers.cpp).
+void bind_slivers(py::module_ m);

@@ -7,7 +7,7 @@
 import { ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction } from './geometry.ts'
 import { spread } from './_linalg.ts'
-import { Line } from './curves.ts'
+import { Line, ThreePointArc } from './curves.ts'
 import {
   Edge,
   Face,
@@ -432,7 +432,11 @@ export interface SweepOptions {
  * planar, the profile goes on turned by the smallest rotation from one tangent to the next. Where
  * the kernel cannot sweep an open path of several edges so, each edge is swept on its own, turned
  * to its own start, and the pieces are fused (with a warning unless the profile is round: it turns
- * where the edges meet).
+ * where the edges meet). A closed path it cannot sweep so (the fuse where the halves of a loop
+ * closed with a kink cross) is swept in pieces as before 0.5.0, where that puts the profile on the
+ * path. Faces without area that a fuse leaves are taken out (or the sweep throws `ModelingError`).
+ * The corners of a planar path of several edges are mitered, the profile placed as on any other
+ * path.
  *
  * @param profile A sketch (holes allowed), a planar face or a closed wire.
  * @param path An edge, or a wire of connected edges.
@@ -462,24 +466,17 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   const closed = edges[0].start.isClose(edges[edges.length - 1].end, 1e-6 * Math.max(1, edges[0].length))
   const tangentClosure = closed && _norm3(_sub3(_tangent(edges[edges.length - 1], 1), _tangent(edges[0], 0))) <= 1e-6
   const planar = _isPlanarPath(edges)
+  // the pieces a path was swept in before 0.5.0: its edges, or the halves of a closed edge
+  const whole = edges.length === 1 && edges[0].isClosed ? edges[0] : null
+  const pieces = whole !== null ? _halves(whole) : edges
   const halved = edges.length === 1 && edges[0].isClosed && (planar || !tangentClosure)
   // The kernel sweeps a profile along a closed single-edge path inside out (it caps the ends where
   // they meet); along the same path in two halves it works.
-  if (halved) edges = _halves(edges[0])
+  if (halved) edges = pieces
   if (sharpCorners === null) sharpCorners = planar
   if (sharpCorners && edges.length > 1) {
     if (!planar) throw new RangeError('sharp-cornered sweeps need a planar path')
-    const oriented = orient && !translational ? _orientedTo(sk, edges[0].tangentAt(0)) : sk
-    const curves = oriented.faces().flatMap((f) => f.wires().flatMap((wire) => wire._copyCurves()))
-    const pathCurves = edges.map((e) => e._copyCurve())
-    const hint = "the profile may be too large for the path's corners"
-    let b: number
-    try {
-      b = kernelCall('sweep', () => k.sweep_along_planar_path(curves.slice(), pathCurves, { move_profile: true }), hint)
-    } finally {
-      for (const c of curves) ext.delete_curve(c)
-    }
-    return _requireSolid(Part._wrap(b), 'sweep', hint)
+    return _mitredSweep(sk, edges, closed, orient && !translational)
   }
   const t0 = _tangent(edges[0], 0)
   let [axes, anchor] = _profileFrame(sk, t0)
@@ -489,11 +486,38 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   try {
     return _carriedSweep(sk, local, edges, axes, anchor, halved, tangentClosure, translational, hint)
   } catch (err) {
+    if (!(err instanceof ModelingError) || pieces.length < 2) throw err
+    if (closed) {
+      // A closed path the kernel cannot sweep carried along (the fuse where the halves of a loop
+      // closed with a kink cross fails for some loops) is swept as before 0.5.0; a round profile
+      // also turned about its center (the same profile, its seam elsewhere: the fuse goes for most
+      // loops where it failed with the seam where it was).
+      let out: Part | null = null
+      try {
+        out = _formerSweep(sk, anchor, pieces, orient, translational, hint)
+      } catch (e) {
+        if (!(e instanceof ModelingError)) throw e
+      }
+      if (out === null && _round(sk, anchor)) {
+        const tries: [Edge[], number][] = SEAM_TURNS.map((angle) => [edges, angle])
+        // (a loop closed with a kink also split elsewhere than halfway: the same body)
+        if (halved && !tangentClosure && whole !== null) for (const at of [0.4, 0.6]) tries.push([_halves(whole, at), 0])
+        for (const [split, angle] of tries) {
+          try {
+            const turned = angle ? local.rotate(new Axis([0, 0, 0], [0, 0, 1]), angle) : local
+            out = _carriedSweep(sk, turned, split, axes, anchor, halved, tangentClosure, translational, hint)
+            break
+          } catch (e) {
+            if (!(e instanceof ModelingError)) throw e
+          }
+        }
+      }
+      if (out === null) throw err
+      return out
+    }
     // An open path of several edges the kernel cannot sweep so (a circle along a 3D fillet polyline
     // joined into one curve fails at random) is swept edge by edge, each edge turned afresh, as
-    // before the profile was carried along. Not closed paths: fused so, the pieces of kinked loops
-    // crashed the kernel (4 of 60 random loops; carried, they raise).
-    if (!(err instanceof ModelingError) || closed || edges.length < 2) throw err
+    // before the profile was carried along.
     let out: Part
     try {
       out = _afreshSweep(local, edges, axes, orient, translational, hint)
@@ -508,12 +532,21 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
   }
 }
 
+// How far a round profile is turned about its center (degrees) where a closed path fails with it as
+// it is: with its seam turned by one of these (or the loop split elsewhere), most random loops
+// closed with a kink that failed go (circles of radius 1.5 along 60 random loops: all 60, 37 before
+// 0.5.0).
+const SEAM_TURNS = [20, -20, 45, -45, 70, -70, 100, -100, 135, -135]
+
 /** A profile carried along a path: tangent edges in one go, the frame carried across corners. */
 function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anchor: V3, halved: boolean, tangentClosure: boolean, translational: boolean, hint: string): Part {
   let runs = halved ? edges.map((e) => [e]) : _g1Chains(edges)
-  if (tangentClosure && runs.length === 1 && _round(sk, anchor)) {
-    // (a profile that turns into itself, as in two halves before: exact)
-    runs = _halves(_joined(edges)).map((e) => [e])
+  if (tangentClosure && edges.length === 1 && _round(sk, anchor)) {
+    // A profile that turns into itself along a smooth closed edge: in two halves, as before (exact;
+    // swept in one go and closed, a circle came out up to 5e-5 short). Not the halves of edges
+    // joined into one curve: the kernel cannot sweep a circle along most halves of a closed 3D
+    // fillet polyline (SM_ERR), and in one go it can.
+    runs = _halves(edges[0]).map((e) => [e])
   } else if (tangentClosure && runs.length === 1) {
     // A closed path without a corner: swept in one go and closed where its ends meet (the kernel
     // spreads the turn of its frame around such a path, so they meet; in two halves a rectangle
@@ -521,7 +554,7 @@ function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anc
     const chain = _joined(edges)
     const tube = _swept(local, chain, _placement(axes, _point(chain, 0)), translational, false)
     kernelCall('sweep', () => k.stitch_into_solid(tube._brep), hint)
-    return _requireSolid(Part._wrap(tube._copyBrep()), 'sweep', hint)
+    return _sound(Part._wrap(tube._copyBrep()), hint)
   }
   const chains = runs.map((run) => _joined(run))
   const size = sk.bbox().diagonal
@@ -536,7 +569,7 @@ function _carriedSweep(sk: Sketch, local: Sketch, edges: Edge[], axes: Axes, anc
     const piece = _requireSolid(_swept(local, e, placement, translational) as Part, 'sweep', hint)
     out = out === null ? piece : out.fuse(piece)
   })
-  return out as unknown as Part
+  return chains.length < 2 ? (out as unknown as Part) : _sound(out as unknown as Part, hint)
 }
 
 /** The pieces swept on their own and fused, each turned afresh: by the smallest rotation from the
@@ -554,15 +587,292 @@ function _afreshSweep(local: Sketch, pieces: Edge[], axes: Axes, orient: boolean
     const piece = _requireSolid(_swept(local, e, _placement(turned, _point(e, 0)), translational) as Part, 'sweep', hint)
     out = out === null ? piece : out.fuse(piece)
   }
-  return out as unknown as Part
+  return _sound(out as unknown as Part, hint)
 }
 
-/** A closed edge as two edges, split halfway along it. */
-function _halves(edge: Edge): Edge[] {
+/** The pieces swept as before 0.5.0, with the same kernel calls: the sketch turned to the path's
+ * start (by the smallest rotation, about the center of its box), turned from there to each piece's
+ * start and swept with the kernel's anchor (the center of the turned profile's box along the world
+ * axes), the pieces fused. Null where that anchor is not the profile's own (a profile not symmetric
+ * about it, turned off the axes): the profile went beside the path there. */
+function _formerSweep(sk: Sketch, anchor: V3, pieces: Edge[], orient: boolean, translational: boolean, hint: string): Part | null {
+  // the sketch turned to the start of e as _orientedTo turns it, and the point own with it
+  const turned = (s: Sketch, own: V3, e: Edge): [Sketch, V3] => {
+    if (!orient || translational) return [s, own]
+    const n = _unit3(s.plane.zDir.toArray())
+    const t = _tangent(e, 0)
+    const center = s.bbox().center.toArray()
+    const rot = _turn(_dot3(n, t) >= 0 ? n : [-n[0], -n[1], -n[2]], t)
+    const moved = rot(_sub3(own, center))
+    return [_orientedTo(s, e.tangentAt(0)), [center[0] + moved[0], center[1] + moved[1], center[2] + moved[2]]]
+  }
+  const tol = 1e-6 * Math.max(1, sk.bbox().diagonal)
+  const [start, startAnchor] = turned(sk, anchor, pieces[0])
+  const swept: Part[] = []
+  for (const e of pieces) {
+    const [s, own] = turned(start, startAnchor, e)
+    if (_norm3(_sub3(s.bbox().center.toArray(), own)) > tol) return null
+    const curves = s.faces().flatMap((f) => f.wires().flatMap((w) => w._copyCurves()))
+    const pathCurve = e._copyCurve()
+    let b: number
+    try {
+      b = kernelCall('sweep', () => ext.curve_sweep(curves, pathCurve, true, true, false, translational, null, null), hint)
+    } finally {
+      ext.delete_curve(pathCurve)
+      for (const c of curves) ext.delete_curve(c)
+    }
+    swept.push(_requireSolid(Part._wrap(b), 'sweep', hint))
+  }
+  let out = swept[0]
+  for (const p of swept.slice(1)) out = out.fuse(p)
+  return _sound(out, hint)
+}
+
+// A face of a fused sweep encloses no area when its area is below this times the square of the
+// body's size.
+const SLIVER_AREA = 1e-9
+
+/** The non-infinite regions of a body and their shells (ext.brep_dump). */
+const _regions = (part: Part): { shells: number[] }[] =>
+  (ext.brep_dump(part._brep, false).regions as { infinite: boolean; shells: number[] }[]).filter((r) => !r.infinite)
+
+/** A sweep that was fused or stitched from pieces, checked as `isValid()` checks it (the gaps
+ * between its faces measured), and without faces that enclose no area: the fuse of the halves of a
+ * loop closed with a kink left such faces where the loop closes (where the end caps of the halves
+ * and the surfaces of both tubes meet at a point), in 25 of about 100 random loops, and some of
+ * them a shell of their own inside the solid, which STEP writes as a void (and OpenCASCADE then
+ * reads the body inside out). They are taken out and the faces around them stitched together
+ * again; where that fails the sweep throws `ModelingError`. */
+function _sound(part: Part, hint: string): Part {
+  const problem = part._solidProblem(null, true)
+  if (problem !== null) throw new ModelingError(`sweep: the kernel returned a body that is ${problem}; ${hint}`)
+  const size = part._extent()
+  let regions = _regions(part)
+  let slivers: Face[]
+  try {
+    slivers = [...part.faces()].filter((f) => !(f.area > SLIVER_AREA * size ** 2))
+  } catch (err) {
+    if (!(err instanceof ModelingError)) throw err
+    throw new ModelingError(`sweep: a face of the fused pieces cannot be measured (${err.message}); ${hint}`)
+  }
+  if (slivers.length === 0 && regions.length === 1 && regions[0].shells.length === 1) return part
+  const what = slivers.length ? `${slivers.length} face(s) that enclose no area` : `${regions.reduce((n, r) => n + r.shells.length, 0)} shells`
+  if (slivers.length === 0) throw new ModelingError(`sweep: the fused pieces came out as a body of ${what}; ${hint}`)
+  const reach = Math.max(10 * Math.max(...slivers.map((f) => f.bbox().diagonal)), 1e-7 * size)
+  let out: Part
+  try {
+    out = Part._wrap(kernelCall('remove slivers', () => ext.remove_slivers(part._brep, slivers.map((f) => f._f), reach)))
+    if (out._solidProblem(null, true) !== null) throw new ModelingError('not a valid solid')
+    regions = _regions(out)
+    if (regions.length !== 1 || regions[0].shells.length !== 1) throw new ModelingError('not one shell')
+    if (Math.abs(out.volume - part.volume) > 1e-6 * part.volume) throw new ModelingError('another volume')
+    if ([...out.faces()].some((f) => !(f.area > SLIVER_AREA * size ** 2))) throw new ModelingError('faces without area left')
+  } catch (err) {
+    if (!(err instanceof ModelingError)) throw err
+    throw new ModelingError(`sweep: the fused pieces have ${what}, and they cannot be taken out (${err.message}); ${hint}`)
+  }
+  return out
+}
+
+// -- planar paths with mitered corners -----------------------------------------------------------
+// The kernel's sweep along a planar path of several edges (SmApiCreateSweepAlongPlanarPath) puts
+// the profile on each edge in a frame made from the world's axes: x along the edge, y the world Z
+// axis crossed with the edge (the world Y axis where the edge runs mostly along Z). Only in a
+// horizontal plane do those frames turn about the path's normal from edge to edge, so that the
+// mitered pieces meet: on a path in the YZ plane, and with a triangle on a path in the XZ plane
+// that turns back, it returned no closed solid. And it moves the profile by the center of its box
+// along the world axes, so an asymmetric profile turned off them went beside the path. So the path
+// is swept in a frame of its own (its plane horizontal, its start along X) with the profile turned
+// as on any other path, and the body is placed back.
+
+/** The normal of a planar path's plane: up (or towards +Y, +X) where that is not ambiguous. */
+function _pathNormal(edges: readonly Edge[]): V3 {
+  const pts = edges.flatMap((e) => PLANARITY_SAMPLES.map((t) => e.pointAt(t).toArray() as number[]))
+  const n = _unit3(spread(pts).directions[2])
+  for (const i of [2, 1, 0]) {
+    if (Math.abs(n[i]) > 1e-9) return n[i] > 0 ? n : [-n[0], -n[1], -n[2]]
+  }
+  return n
+}
+
+/** The columns of `axes` seen in the frame `frame` (frame^T axes). */
+const _seenIn = (frame: Axes, axes: Axes): Axes => axes.map((c) => [_dot3(frame[0], c), _dot3(frame[1], c), _dot3(frame[2], c)]) as Axes
+
+/** A profile swept along a planar path of several edges with mitered corners. */
+function _mitredSweep(sk: Sketch, edges: Edge[], closed: boolean, turn: boolean): Part {
+  const hint = "the profile may be too large for the path's corners"
+  const t0 = _tangent(edges[0], 0)
+  const normal = _pathNormal(edges)
+  const frame: Axes = [t0, _cross3(normal, t0), normal] // the path's own: start along x, plane xy
+  const start = _point(edges[0], 0)
+  const toPath = _inverse(_placement(frame, start))
+  let path = edges.map((e) => e._transformed(toPath))
+  const [axes, anchor] = _profileFrame(sk, t0)
+  const local = sk._transformed(_inverse(_placement(axes, anchor)))
+  let rot: Axes
+  if (turn) {
+    rot = _seenIn(frame, axes.map(_turn(axes[2], t0)) as Axes)
+    // (the kernel turns a profile to face the way the path starts: half a turn about the path's
+    // normal, as it did in the world's frame)
+    if (local.plane.zDir.z < 0) rot = rot.map((c) => [-c[0], -c[1], c[2]]) as Axes
+  } else {
+    // (the kernel turns the profile itself, also with orient false or translational true: as it
+    // did in the world's frame)
+    rot = _seenIn(frame, axes.map(_kernelTurn(_unit3(sk.plane.zDir.toArray()), t0)) as Axes)
+  }
+  const placed = local._transformed(_placement(rot, [0, 0, 0]))
+  // The kernel puts the center of the profile's box along the frame's axes on the path: the
+  // profile's own anchor, unless it is turned off them (by the smallest rotation to a path that
+  // does not start along X, Y or Z) and not symmetric. Then the path is moved by the difference:
+  // along its normal, and to the side (its offset curve).
+  const mid = placed.bbox().center.toArray()
+  const tol = 1e-9 * Math.max(1, sk.bbox().diagonal)
+  if (Math.abs(mid[1]) > tol) {
+    const offset = _offsetPath(path, mid[1], closed)
+    if (offset === null) {
+      _warn("sweep: the profile sits on this path by the center of its box along the path's plane, not its own: the path's edges cannot be offset (only lines and arcs can)")
+    } else {
+      path = offset
+    }
+  }
+  if (Math.abs(mid[2]) > tol) path = path.map((e) => e._transformed(_placement([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, mid[2]])))
+  const curves = placed.faces().flatMap((f) => f.wires().flatMap((w) => w._copyCurves()))
+  const pathCurves = path.map((e) => e._copyCurve())
+  let b: number
+  try {
+    b = kernelCall('sweep', () => k.sweep_along_planar_path(curves.slice(), pathCurves, { move_profile: true }), hint)
+  } finally {
+    for (const c of curves) ext.delete_curve(c)
+  }
+  return _requireSolid(Part._wrap(b), 'sweep', hint)._transformed(_placement(frame, start)) as Part
+}
+
+/** How the kernel's planar-path sweep turns a profile of this normal in the world's frame
+ * (PositionProfileCurves): by the smallest rotation to X, then X to the path's start `t0` with Y to
+ * the world Z crossed with it (to Y where it runs mostly along Z). */
+function _kernelTurn(normal: V3, t0: V3): (v: readonly number[]) => V3 {
+  const x = _unit3(t0)
+  const ref: V3 = Math.abs(x[2]) > Math.abs(x[0]) && Math.abs(x[2]) > Math.abs(x[1]) ? [0, 1, 0] : _cross3([0, 0, 1], x)
+  const y = _unit3(_sub3(ref, x.map((c) => c * _dot3(ref, x))))
+  const z = _cross3(x, y)
+  const toX = _turn(normal, [1, 0, 0])
+  return (v) => {
+    const w = toX(v)
+    return [x[0] * w[0] + y[0] * w[1] + z[0] * w[2], x[1] * w[0] + y[1] * w[1] + z[1] * w[2], x[2] * w[0] + y[2] * w[1] + z[2] * w[2]]
+  }
+}
+
+type V2 = [number, number]
+/** An offset edge: [kind, start, end, center, radius, ccw]. */
+type OffsetItem = ['line' | 'arc', V2, V2, V2 | null, number, boolean]
+
+/** A path in the XY plane of lines and arcs offset by `d` to the left (along Z x the tangent), the
+ * offset edges extended or cut back to where they meet at corners. Null where an edge is neither,
+ * an arc would lose its radius, or offset edges do not meet at a corner. */
+function _offsetPath(path: readonly Edge[], d: number, closed: boolean): Edge[] | null {
+  const left = (t: readonly number[]): V2 => [-t[1], t[0]]
+  const xy = (v: Vector): V2 => [v.x, v.y]
+  const add = (a: V2, b: V2, s = 1): V2 => [a[0] + s * b[0], a[1] + s * b[1]]
+  const items: OffsetItem[] = []
+  for (const e of path) {
+    const ts = _tangent(e, 0)
+    const te = _tangent(e, 1)
+    const p = xy(e.start)
+    const q = xy(e.end)
+    if (e.geomType === 'line') {
+      items.push(['line', add(p, left(ts), d), add(q, left(te), d), null, 0, false])
+    } else if (e.geomType === 'circle') {
+      const c = xy(e.arcCenter)
+      const r = e.radius
+      const ccw = (p[0] - c[0]) * ts[1] - (p[1] - c[1]) * ts[0] > 0
+      const r2 = ccw ? r - d : r + d
+      if (!(r2 > 1e-9 * r)) return null
+      const at = (v: V2): V2 => [c[0] + ((v[0] - c[0]) * r2) / r, c[1] + ((v[1] - c[1]) * r2) / r]
+      items.push(['arc', at(p), at(q), c, r2, ccw])
+    } else {
+      return null
+    }
+  }
+  const joints = [...Array(items.length - 1).keys(), ...(closed ? [items.length - 1] : [])]
+  for (const i of joints) {
+    const a = items[i]
+    const b = items[(i + 1) % items.length]
+    if (_norm3(_sub3(_tangent(path[i], 1), _tangent(path[(i + 1) % path.length], 0))) <= 1e-6) {
+      // (tangent: the offset ends meet)
+      const m: V2 = [0.5 * (a[2][0] + b[1][0]), 0.5 * (a[2][1] + b[1][1])]
+      a[2] = m
+      b[1] = m
+      continue
+    }
+    const corner = _meet(a, b, [0.5 * (a[2][0] + b[1][0]), 0.5 * (a[2][1] + b[1][1])])
+    if (corner === null) return null
+    a[2] = corner
+    b[1] = corner
+  }
+  const out: Edge[] = []
+  for (const [kind, p, q, c, r, ccw] of items) {
+    if (Math.hypot(q[0] - p[0], q[1] - p[1]) <= 1e-9 * Math.max(1, Math.hypot(p[0], p[1]))) return null
+    if (kind === 'line') {
+      out.push(Line([p[0], p[1], 0], [q[0], q[1], 0]))
+      continue
+    }
+    const cc = c as V2
+    const a0 = Math.atan2(p[1] - cc[1], p[0] - cc[0])
+    const a1 = Math.atan2(q[1] - cc[1], q[0] - cc[0])
+    const mod = (x: number) => ((x % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+    const span = ccw ? mod(a1 - a0) : -mod(a0 - a1)
+    const m = [cc[0] + r * Math.cos(a0 + span / 2), cc[1] + r * Math.sin(a0 + span / 2)]
+    out.push(ThreePointArc([p[0], p[1], 0], [m[0], m[1], 0], [q[0], q[1], 0]))
+  }
+  return out
+}
+
+/** Where the line or circle of offset edge a meets that of b, nearest to `near`. */
+function _meet(a: OffsetItem, b: OffsetItem, near: V2): V2 | null {
+  let cands: V2[]
+  if (a[0] === 'line' && b[0] === 'line') {
+    const [p, u] = [a[1], [a[2][0] - a[1][0], a[2][1] - a[1][1]]]
+    const [q, v] = [b[1], [b[2][0] - b[1][0], b[2][1] - b[1][1]]]
+    const det = u[0] * v[1] - u[1] * v[0]
+    if (Math.abs(det) <= 1e-12 * Math.hypot(u[0], u[1]) * Math.hypot(v[0], v[1])) return null
+    const s = ((q[0] - p[0]) * v[1] - (q[1] - p[1]) * v[0]) / det
+    return [p[0] + s * u[0], p[1] + s * u[1]]
+  }
+  if (a[0] === 'arc' && b[0] === 'arc') {
+    const [c1, r1, c2, r2] = [a[3] as V2, a[4], b[3] as V2, b[4]]
+    const dist = Math.hypot(c2[0] - c1[0], c2[1] - c1[1])
+    if (!(dist > 0) || dist > r1 + r2 || dist < Math.abs(r1 - r2)) return null
+    const x = (dist * dist + r1 * r1 - r2 * r2) / (2 * dist)
+    const h = Math.sqrt(Math.max(r1 * r1 - x * x, 0))
+    const e = [(c2[0] - c1[0]) / dist, (c2[1] - c1[1]) / dist]
+    const base = [c1[0] + x * e[0], c1[1] + x * e[1]]
+    cands = [
+      [base[0] - h * e[1], base[1] + h * e[0]],
+      [base[0] + h * e[1], base[1] - h * e[0]],
+    ]
+  } else {
+    const [ln, arc] = a[0] === 'line' ? [a, b] : [b, a]
+    const p = ln[1]
+    const u = [ln[2][0] - ln[1][0], ln[2][1] - ln[1][1]]
+    const c = arc[3] as V2
+    const r = arc[4]
+    const pc = [p[0] - c[0], p[1] - c[1]]
+    const A = u[0] * u[0] + u[1] * u[1]
+    const B = 2 * (u[0] * pc[0] + u[1] * pc[1])
+    const C = pc[0] * pc[0] + pc[1] * pc[1] - r * r
+    const disc = B * B - 4 * A * C
+    if (disc < 0) return null
+    cands = [(-B + Math.sqrt(disc)) / (2 * A), (-B - Math.sqrt(disc)) / (2 * A)].map((s) => [p[0] + s * u[0], p[1] + s * u[1]] as V2)
+  }
+  return cands.reduce((best, v) => (Math.hypot(v[0] - near[0], v[1] - near[1]) < Math.hypot(best[0] - near[0], best[1] - near[1]) ? v : best))
+}
+
+/** A closed edge as two edges, split halfway along it (or at the fraction `at` of its length). */
+function _halves(edge: Edge, at = 0.5): Edge[] {
   const c = edge._copyCurve()
   try {
     const [t0, t1] = k.curve_parameter_range(c)
-    const [u] = ext.curve_parameter_at_length(c, t0, 0.5 * ext.curve_length(c, t0, t1))
+    const [u] = ext.curve_parameter_at_length(c, t0, at * ext.curve_length(c, t0, t1))
     const tm = Number(u)
     return [Edge._fromCurve(ext.trimmed_curve(c, t0, tm)), Edge._fromCurve(ext.trimmed_curve(c, tm, t1))]
   } finally {

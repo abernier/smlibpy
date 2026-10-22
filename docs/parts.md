@@ -71,7 +71,11 @@ start of the path and turns it to face along the path, so profiles are simply dr
 Along a path of several edges the profile keeps its orientation: tangent edges are swept in one
 go, and at a corner of a 3D path it turns by the smallest rotation from one tangent to the next.
 Where the kernel cannot sweep an open path that way, each edge is swept on its own, turned to its
-own start, with a warning unless the profile is round.
+own start, with a warning unless the profile is round. A loop closed with a kink
+(`Spline(*pts, pts[0])`) is swept in two halves fused where its ends cross; where that fuse fails
+it is swept in pieces as before 0.5.0, and a round profile with its seam turned. Faces without
+area that such a fuse leaves are taken out, or the sweep raises `ModelingError`. A planar path of
+several edges gets mitered corners in any plane, with the profile placed as on any other path.
 
 ```python
 path = Spline((0, 0, 0), (0, 20, 30), (40, 20, 50))
