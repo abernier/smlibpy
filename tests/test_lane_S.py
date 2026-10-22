@@ -579,3 +579,150 @@ def test_revolves_lofts_extrusions_and_tapers_free_their_curve_copies(monkeypatc
         counts.update(copies=0, deletes=0)
         op()
         assert counts["copies"] > 0 and counts["deletes"] >= counts["copies"]  # (before: 0 deleted)
+
+
+# S12: swing, a revolve about Z whose circle is an outline of any shape
+
+
+def test_swing_carries_the_profile_around_the_outline():
+    cup = Polygon((0, 0), (30, 0), (30, 40), (0, 40)).on(Plane.front)
+    box = swing(cup, Ellipse(30, 20))
+    assert box.is_valid() and math.isclose(box.volume, math.pi * 30 * 20 * 40, rel_tol=1e-9)
+    assert cup.swing(Ellipse(30, 20)).volume == pytest.approx(box.volume, rel=1e-12)
+    # sections scale with the profile's distance from the axis: a frustum's 1 + 1/2 + 1/4 over 3
+    cone = swing(Polygon((0, 0), (30, 0), (15, 40), (0, 40)).on(Plane.front), Ellipse(30, 20))
+    assert math.isclose(cone.volume, math.pi * 30 * 20 * 40 * 1.75 / 3, rel_tol=1e-9)
+    # a circle about the origin is the revolve
+    lathe = Polygon((0, 0), (30, 0), (15, 40), (0, 40)).on(Plane.front)
+    assert math.isclose(swing(lathe, Circle(30)).volume, lathe.revolve(Z).volume, rel_tol=1e-9)
+    # the cut by the XZ plane at +X is the profile, also for an outline crossing it off a vertex: a
+    # rounded rectangle turned by 30 degrees (the kernel's own swung primitive raised SM_ERR for it), an
+    # off-centre circle (crossing +X at 5 + sqrt(391))
+    turned = RoundedRectangle(60, 40, 10).rotate(Z, 30)
+    p = swing(cup, turned)
+    for z in (5, 20, 35):
+        assert p.distance_to((30, 0, z)) < 1e-9 and p.distance_to((30.01, 0, z)) > 0.005
+    off = Circle(20).translate(5, 3)
+    r0 = 5 + math.sqrt(391)
+    assert math.isclose(swing(cup, off).volume, math.pi * 400 * (30 / r0) ** 2 * 40, rel_tol=1e-9)
+    # beside the axis (a ring), with holes, an open curve (a surface)
+    ring = swing(Polygon((20, 0), (30, 0), (30, 10), (20, 10)).on(Plane.front), Ellipse(30, 20))
+    assert math.isclose(ring.volume, math.pi * 600 * 10 * (1 - (20 / 30) ** 2), rel_tol=1e-9)
+    holed = (Rectangle(20, 30, align=(Align.MIN, Align.MIN)) - Circle(4).translate(12, 15)).on(Plane.front)
+    assert math.isclose(swing(holed, Circle(20)).volume, holed.revolve(Z).volume, rel_tol=1e-9)
+    sheet = swing(Spline((0, 0, 0), (25, 0, 10), (15, 0, 30), (20, 0, 45), (0, 0, 50)), Ellipse(30, 20))
+    assert isinstance(sheet, Shell) and sheet.area > 0
+    bottle = swing(Polygon((0, 0), (20, 0), (20, 50), (8, 60), (8, 70), (0, 70)).on(Plane.front),
+                   RoundedRectangle(40, 30, 8))
+    assert bottle.is_valid() and len(bottle.solids()) == 1
+    assert bottle.bbox().min.to_tuple() == pytest.approx((-20, -15, 0)) and bottle.bbox().max.z == pytest.approx(70)
+
+
+def test_swing_refuses_outlines_and_profiles_it_cannot_carry():
+    cup = Polygon((0, 0), (30, 0), (30, 40), (0, 40)).on(Plane.front)
+    with pytest.raises(ValueError, match="once around the Z axis"):
+        swing(cup, Rectangle(10, 10).translate(30, 0))
+    with pytest.raises(ValueError, match="every ray from the Z axis"):
+        swing(cup, Polygon((10, 0), (0, 10), (-10, 0), (0, -10), (5, 0.5)))
+    with pytest.raises(ValueError, match="XZ plane"):
+        swing(Polygon((0, 0), (30, 0), (30, 40), (0, 40)), Ellipse(30, 20))
+    with pytest.raises(ValueError, match="beside the Z axis"):
+        swing(Rectangle(10, 10).on(Plane.front), Ellipse(30, 20))
+    with pytest.raises(ValueError, match="parallel to XY"):
+        swing(cup, Ellipse(30, 20).on(Plane.front))
+    with pytest.raises(ValueError, match="holes"):
+        swing(cup, Ellipse(30, 20) - Circle(5))
+    with pytest.raises(ValueError, match="closed curve"):
+        swing(cup, Line((0, 0), (1, 1)))
+
+
+# S13: sectors of the primitives
+
+
+def _face_kinds(p):
+    out = {}
+    for f in p.faces():
+        out[f.geom_type] = out.get(f.geom_type, 0) + 1
+    return out
+
+
+def test_primitives_take_sectors():
+    pi = math.pi
+    q = Cylinder(10, 20, arc_size=90)
+    assert q.is_valid() and math.isclose(q.volume, pi * 100 * 20 / 4, rel_tol=1e-9)
+    assert _face_kinds(q) == {"plane": 4, "cylinder": 1}
+    # centered by its box like every primitive; align=None keeps the axis on Z
+    assert q.bbox().min.to_tuple() == pytest.approx((-5, -5, -10)) and q.bbox().max.to_tuple() == pytest.approx((5, 5, 10))
+    on_z = Cylinder(10, 20, arc_size=90, align=None)
+    assert on_z.bbox().min.to_tuple() == pytest.approx((0, 0, -10)) and on_z.bbox().max.to_tuple() == pytest.approx((10, 10, 10))
+    standing = Cylinder(10, 20, arc_size=270, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    assert standing.bbox().min.z == pytest.approx(0) and math.isclose(standing.volume, pi * 100 * 20 * 0.75, rel_tol=1e-9)
+    # within 0.01 degrees of 360 a whole one (the kernel's sectors there are not closed solids)
+    assert _face_kinds(Cylinder(10, 20, arc_size=359.995)) == {"cylinder": 1, "plane": 2}
+    cone = Cone(10, 5, 20, arc_size=90)
+    assert math.isclose(cone.volume, pi * 20 / 3 * 175 / 4, rel_tol=1e-9) and _face_kinds(cone) == {"plane": 4, "cone": 1}
+    assert math.isclose(Cone(10, 0, 20, arc_size=120).volume, pi * 20 / 3 * 100 / 3, rel_tol=1e-6)
+    lune = Sphere(10, arc_size3=90, align=None)
+    assert math.isclose(lune.volume, 4 / 3 * pi * 1000 / 4, rel_tol=1e-9) and _face_kinds(lune) == {"plane": 2, "sphere": 1}
+    # latitudes: planes parallel to XY
+    z1, z2 = -5.0, 10 * math.sin(math.radians(60))
+    zone = pi * ((100 * z2 - z2 ** 3 / 3) - (100 * z1 - z1 ** 3 / 3))
+    part = Sphere(10, arc_size1=-30, arc_size2=60, arc_size3=90, align=None)
+    assert math.isclose(part.volume, zone / 4, rel_tol=1e-9) and _face_kinds(part) == {"plane": 4, "sphere": 1}
+    assert part.bbox().min.z == pytest.approx(-5) and part.bbox().max.z == pytest.approx(z2)
+    assert math.isclose(Sphere(10, arc_size1=0).volume, 2 / 3 * pi * 1000, rel_tol=1e-9)
+    # a torus sector is a torus (the kernel's own is a surface of revolution)
+    ring = Torus(20, 5, major_angle=90, align=None)
+    assert math.isclose(ring.volume, 2 * pi ** 2 * 20 * 25 / 4, rel_tol=1e-9) and _face_kinds(ring) == {"plane": 2, "torus": 1}
+    sector = AnnularSector(5, 10, 20, 120, align=None)
+    assert math.isclose(sector.volume, pi * 75 * 20 / 3, rel_tol=1e-6) and _face_kinds(sector) == {"plane": 4, "cylinder": 2}
+    assert sector.bbox().min.to_tuple() == pytest.approx((-5, 0, -10)) and sector.bbox().max.to_tuple() == pytest.approx((10, 10, 10))
+    tube = AnnularSector(5, 10, 20, 360)
+    assert math.isclose(tube.volume, pi * 75 * 20, rel_tol=1e-9) and _face_kinds(tube) == {"cylinder": 2, "plane": 2}
+    assert math.isclose(AnnularSector(0, 10, 20, 90).volume, q.volume, rel_tol=1e-12)
+    for bad in (lambda: Cylinder(10, 20, arc_size=0), lambda: Cone(5, 2, 3, arc_size=400),
+                lambda: Sphere(10, arc_size1=30, arc_size2=30), lambda: Sphere(10, arc_size1=-100),
+                lambda: Torus(20, 5, major_angle=-5), lambda: AnnularSector(10, 5, 20, 90),
+                lambda: AnnularSector(5, 10, 20, 0)):
+        with pytest.raises(ValueError):
+            bad()
+
+
+# S14: extrusion directions in or near the sketch plane
+
+
+def test_extrude_direction_in_the_sketch_plane_raises_and_near_it_warns():
+    with pytest.raises(ValueError, match="lies in the sketch plane"):  # (was a bare KernelError, SM_ERR)
+        Rectangle(10, 10).extrude(5, direction=(1, 0, 0))
+    with pytest.raises(ValueError, match="lies in the sketch plane"):
+        Rectangle(10, 10).extrude(5, direction=(1, 0, 1e-6))
+    with pytest.raises(ValueError, match="lies in the sketch plane"):
+        Circle(3).on(Plane(origin=(1, 2, 3), z_dir=(1, 1, 1))).extrude(5, direction=(1, -1, 0), taper=5)
+    with pytest.warns(RuntimeWarning, match="only 0.0005 thick"):
+        thin = Rectangle(10, 10).extrude(5, direction=(1, 0, 1e-4))
+    assert thin.is_valid() and math.isclose(thin.volume, 0.05, rel_tol=1e-6)
+    slanted = _quiet(lambda: Rectangle(10, 10).extrude(5, direction=(1, 0, 1)))
+    assert math.isclose(slanted.volume, 500 / math.sqrt(2), rel_tol=1e-9)
+
+
+def test_extrusions_along_a_direction_are_valid_or_raise():
+    # In tilted planes the kernel made some extrusions of curved profiles along a direction inside out
+    # or open; they are made again turned about the normal, or raise.
+    fixed = Circle(3).on(Plane(origin=(2.00729845925639, 0, 0),
+                               z_dir=(0.9513514554730566, -0.29311120370412086, -0.09495383316337645)))
+    d = (-0.18315301020251898, -0.7616861581242306, 0.6215216580101659)
+    part = _quiet(lambda: fixed.extrude(5, direction=d))  # (was inside out: volume -1.41372)
+    sine = abs(Vector(d).normalized().dot(fixed.plane.z_dir))
+    assert part.is_valid() and math.isclose(part.volume, fixed.area * 5 * sine, rel_tol=1e-9)
+    rng = np.random.default_rng(7)
+    for i in range(24):
+        n = rng.normal(size=3)
+        sk = [Circle(3), Ellipse(4, 2), Slot(10, 3), Rectangle(6, 4)][i % 4].on(Plane(origin=(i, 0, 0), z_dir=tuple(n)))
+        t = sk.plane.z_dir.cross(Vector(0.3, 0.5, 0.7)).normalized()
+        for s in (0.01, 0.1):
+            d = t * math.sqrt(1 - s * s) + sk.plane.z_dir * s
+            try:
+                p = sk.extrude(5, direction=d)
+            except ModelingError:
+                continue
+            assert p.is_valid() and math.isclose(p.volume, sk.area * 5 * s, rel_tol=1e-6)

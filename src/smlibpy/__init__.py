@@ -30,8 +30,8 @@ from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Po
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, tessellate
 from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
-                         thicken)
-from .parts import Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
+                         swing, thicken)
+from .parts import AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
 from .profiles import Profile
 from .shapes import Edge, Face, MassProperties, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire
 from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, RegularPolygon, RoundedRectangle, Slot,
@@ -64,11 +64,11 @@ __all__ = [
     "Slot", "ArcSlot", "Stroke", "Hull", "make_face",
     "Text",
     # parts
-    "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "Hole", "CounterBoreHole", "CounterSinkHole",
+    "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "AnnularSector", "Hole", "CounterBoreHole", "CounterSinkHole",
     # patterns
     "Locations", "GridLocations", "PolarLocations", "HexLocations",
     # operations
-    "extrude", "revolve", "loft", "sweep", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section", "merge",
+    "extrude", "revolve", "loft", "sweep", "swing", "fillet", "chamfer", "shell", "offset", "mirror", "split", "section", "merge",
     "thicken", "tessellate",
     # deformations
     "twist", "taper", "bend", "Lattice",

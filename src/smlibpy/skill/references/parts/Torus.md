@@ -4,11 +4,15 @@ A ring around the Z axis, centered on the origin.
 
 ## Signature
 
-`Torus(major_radius, minor_radius, *, align=Align.CENTER)`
+`Torus(major_radius, minor_radius, *, major_angle=360.0, align=Align.CENTER)`
 
 - `major_radius`: from the Z axis to the center of the tube. `minor_radius`: the tube radius.
   Requires 0 < minor < major (no spindle or horn tori).
-- `align`: per axis, as for `Box` (bounding-box based).
+- `major_angle`: degrees, at most 360: a sector around Z from the +X axis counter-clockwise,
+  with round ends (a `torus` face and two planes). There are no angles around the tube
+  (build123d's `minor_start_angle` and `minor_end_angle`).
+- `align`: per axis, as for `Box` (bounding-box based). A sector is centered by its own box;
+  `align=None` keeps the torus's center at the origin.
 
 ## Returns
 
@@ -33,11 +37,12 @@ A `Part` with one toroidal face. `Torus(20, 4)`: bbox x, y −24..24, z −4..4;
 ```python
 ring = Torus(20, 4)                                                      # x, y -24..24, z -4..4
 standing = Torus(20, 4).rotate(X, 90)                                    # in the XZ plane
-print(ring.bbox(), standing.bbox(), round(ring.volume, 3))
+elbow = Torus(20, 4, major_angle=90, align=None)                         # the quarter from +X to +Y
+print(ring.bbox(), standing.bbox(), round(ring.volume, 3), round(elbow.volume, 3))  # ... 1579.137
 ```
 
 ## Related
 
-`Sphere`, `Cylinder`, `features/revolve` (partial torus:
-`Circle(4).translate(20, 0, 0).on(Plane.front).revolve(Z, 90)`, the quarter from +X to +Y),
+`Sphere`, `Cylinder`, `features/revolve` (`major_angle` is the revolve
+`Circle(4).translate(20, 0, 0).on(Plane.front).revolve(Z, 90)`),
 `features/sweep` (a tube along any path).

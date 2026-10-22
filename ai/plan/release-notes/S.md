@@ -1,4 +1,4 @@
-# Lane S: sweeps, revolves, tapers and lofts (S1 regressions, S2 rest, S3, S4, S6, S7, S8, S9, S10, S11)
+# Lane S: sweeps, revolves, tapers, lofts, swings and sectors (S1 regressions, S2 rest, S3, S4, S6, S7, S8, S9, S10, S11, S12, S13, S14)
 
 ## Fixed
 
@@ -156,6 +156,33 @@
   `tests/test_lane_S.py`, `tests/test_draft.py` and the probes of this batch (scaled sweeps,
   tapers, lofts with tangents and closed, twisted circles).
 
+- `extrude(..., direction=...)` with a direction in the sketch plane raised a bare
+  `KernelError: extrude failed (SM_ERR)` (S14). It raises `ValueError: extrude: the direction lies
+  in the sketch plane; it must cross the plane (its normal is (0, 0, 1))` now. The kernel refuses
+  directions within a sine of 1e-5 of the plane (measured: `(1, 0, 1e-5)` refused, `(1, 0, 1.0001e-5)`
+  made), so that is where the error starts, not at the plan's 1e-9. A direction less than 0.06
+  degrees off the plane (a sine below 1e-3) warns (`RuntimeWarning: extrude: the direction is
+  0.00573 degrees off the sketch plane, so the solid is only 0.0005 thick (amount is measured along
+  the direction)`), where it made a sliver without a word. Both builds.
+- Extrusions along a direction are checked (found while checking S14). In planes that are not
+  parallel to a principal one the kernel's linear sweep of profiles with curved edges came out
+  inside out or open: of 1200 (circles, rectangles, hexagons, ellipses and slots in 60 random planes,
+  both directions, one side and `both=True`) 1 at a sine of 0.1 (5.7 degrees off the plane), 25 at
+  0.01 and at 0.001, 192 at 1e-4, 363 at 1.05e-5; the same before 0.5.0. Rectangles and hexagons
+  never, and on XY, XZ and YZ none of 399. An extrusion along a direction that is not valid
+  (`is_valid()`, gaps measured) is now made again turned about the normal (by 113, 180 and 37
+  degrees) and turned back: every body returned is valid with the exact volume (area x amount x
+  sine); 16 of 1200 at each of the angles up to 0.6 degrees raise `ModelingError`, none above.
+  OpenCASCADE confirms such a body (a circle in a tilted plane, inside out before: volume -1.41372)
+  valid at 1.4137167. Both builds give the same results on the cases in the tests.
+- Checked through STEP: OpenCASCADE reads all 18 new bodies of this batch (sectors of cylinders,
+  cones, spheres, tori and tubes, swings around ellipses, rounded rectangles and circles, with holes,
+  beside the axis, a spline profile, the fixed oblique extrusion) as valid solids of our volumes to
+  4e-7 (its adaptive integration; its default one is off by up to 2e-3 for rational surfaces and
+  arcs of 120 degrees, before 0.5.0 too), the sectors' faces as planes, cylinders, cones, spheres and
+  tori. AddressSanitizer reports nothing for `ext.swung` (the swings above and the tests of this
+  batch).
+
 ## New
 
 - `ext.remove_slivers(brep, faces, tolerance)` (Python `smlibpy._core.ext`, wasm `ext.remove_slivers`):
@@ -229,6 +256,39 @@
   scale by about 0.017 / (sections - 1) of the change in the first and last span: the kernel's own
   scale law with 31 points, as `ext.curve_sweep` takes it, gave the cone above 1466.0801). A path of
   degree 1 is raised to 3 there. Internal.
+
+- `swing(profile, outline)` and `Sketch.swing(outline)` (S12; wasm `swing`, `sketch.swing`): a
+  revolve about Z whose circle is an outline of any shape (bottles, knobs, soap bars, lamp shades).
+  The profile is drawn as for a lathe (on `Plane.front`, x the distance from the axis); the outline
+  is a closed curve around the Z axis parallel to XY that every ray from the axis crosses once. At
+  each height the section is the outline scaled about the axis to pass through the profile on the +X
+  side, so the cut by the XZ plane at +X is the profile. Regions give solids (edges on the axis left
+  out, holes cut out), open curves surfaces. Exact: `swing(rectangle 30 x 40, Ellipse(30, 20))` is
+  75398.2236862 = pi 30 20 40; a frustum profile pi 30 20 40 (1 + 1/2 + 1/4) / 3; a circle gives the
+  revolve's volume; OpenCASCADE agrees to 1.5e-10. `ValueError` for outlines that do not go once
+  around the axis, that a ray crosses twice, that are not parallel to XY or have holes, and for
+  profiles off the XZ plane or across the axis. About 6 ms for the ellipse.
+- `ext.swung(profile, outline, scale)` (new C++ in `src/cpp/swing.cpp`, both builds): the swung faces
+  (NLib's `N_CreateSwungSrf` through `SmBSplineSurface::CreateSwungSurface`), one per profile and
+  outline curve, not stitched, with the scale from the caller. The kernel's `create_swung_primitive`
+  (bound in Python, unused) picks the scale itself from the first point where its first outline
+  curve meets the profile's plane, searched over the profile's parameter range: the -X side as
+  readily as the +X one, nothing for a rounded rectangle turned by 30 degrees (`SM_ERR`), and a
+  division by the profile's start x, 0 where it starts on the axis. `swing` measures where the outline
+  crosses the +X axis itself. Internal.
+- Sectors of the primitives (S13; wasm `{ arcSize }`, `{ arcSize1, arcSize2, arcSize3 }`,
+  `{ majorAngle }`): `Cylinder(..., arc_size=360.0)`, `Cone(..., arc_size=360.0)`,
+  `Sphere(..., arc_size1=-90.0, arc_size2=90.0, arc_size3=360.0)` (latitudes and longitude, as
+  build123d), `Torus(..., major_angle=360.0)`, and `AnnularSector(inner_radius, outer_radius, height,
+  arc_size, *, align)`, a sector of a tube. From the +X axis counter-clockwise about +Z, exact faces
+  (a cylinder, cone, sphere or torus and planes), whole within 0.01 degrees of 360 (the kernel's
+  sectors between 359.99 and 360 are not closed solids). Like every primitive a sector is centered
+  by its bounding box (as build123d); `align=None` keeps the axis on Z. Cylinders and cones are the
+  kernel's partial primitives, a sphere with the longitude only its partial sphere; spheres with
+  latitudes, tori and tube sectors are revolves (the kernel's partial torus is a surface of
+  revolution, its cylindrical box does not return for a whole turn and its `SmCylinder` faces go to
+  STEP files as B-splines). The wasm binds `create_partial_cylinder`, `create_partial_cone` and
+  `create_partial_sphere`.
 
 ## Behaviour changes
 
@@ -359,6 +419,25 @@
   ring = (Circle(10) - Circle(8)).extrude(5, taper=10)
   ```
 
+- An extrusion direction in the sketch plane (within a sine of 1e-5) raises `ValueError` (S14),
+  where it raised `KernelError` (a `ModelingError`); also with a taper, which ignores the direction.
+  Code that caught the kernel's error catches this one:
+
+  ```python
+  # before 0.5.0: except KernelError (SM_ERR); now ValueError
+  try:
+      part = sketch.extrude(5, direction=d)
+  except (KernelError, ValueError):
+      part = sketch.extrude(5)
+  ```
+- A direction less than 0.06 degrees off the sketch plane warns (`RuntimeWarning`); silence it with
+  `warnings.filterwarnings("ignore", "extrude: the direction")`, or extrude along the normal.
+- An extrusion along a direction that the kernel made invalid (inside out or open) is made again
+  turned about the normal, or raises `ModelingError` (16 of 1200 random ones within 0.6 degrees of
+  tilted planes) where it was returned broken. Every extrusion along a direction other than the
+  normal is checked: about 0.3 to 0.7 ms more for simple profiles (a rectangle 0.6 -> 1.2 ms), a few
+  ms for many faces.
+
 ## Not done
 
 - 1 of the fixer's 60 harder loops (`Circle(2)`) builds in Python and not in the wasm (the kernel's
@@ -401,3 +480,12 @@
 - A scale law along a path whose kernel curve is not parameterized by arc length runs over the
   kernel's parameter between the 65 points it is given at (the law is interpolated there, so it
   holds to the interpolation, not exactly, between them).
+- `Torus` has no angles around the tube (build123d's `minor_start_angle` and `minor_end_angle`,
+  which close the tube with planes to the axis); `Pyramid` (the kernel's `create_pyramid`, named in
+  the finding but not the plan's proposal) is not offered.
+- The faces of a swing are B-splines, the flat ends too (planar B-splines: `Face.is_planar`, not
+  `faces().planes()`), one face per profile edge and outline edge; the swing is about the Z axis
+  only (move the result).
+- 16 of 1200 random extrusions along directions within 0.6 degrees of tilted planes still raise
+  (none of three turns gives a valid body); `k.create_cylindrical_box` and `k.create_partial_torus`
+  stay unused (and unbound in the wasm), see above.

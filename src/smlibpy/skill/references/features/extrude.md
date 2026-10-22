@@ -16,7 +16,11 @@ face, one-element face list, wire or edge)
   the sketch). Holes widen where the outline narrows.
 - `direction`: a vector or an Axis to extrude along instead of the normal. `amount` is the
   length along that direction, so the height above the sketch is
-  `amount * cos(angle to the normal)`.
+  `amount * cos(angle to the normal)`. A direction in the sketch plane raises `ValueError`; one
+  less than 0.06 degrees off it (a sine of 1e-3) warns that the solid is thinner than
+  `amount / 1000`. The result is checked: where the kernel makes it invalid (some curved profiles
+  in tilted planes, mostly within a degree of the plane) it is made again, or raises
+  `ModelingError`.
 - `corners`: with a taper, the corners it pulls apart (convex ones of an outward taper, concave
   ones of an inward one): `"sharp"` (the walls extended until they meet) or `"round"` (rounded
   off, as an offset rounds them: B-spline corner faces). Anything else raises `ValueError`.
@@ -65,6 +69,13 @@ A `Part` (an open curve gives a `Shell`). The solid starts at the sketch plane:
 - `ValueError: extrude: the taper must be between -90 and 90 degrees`.
 - `ValueError: extrude: corners is 'sharp' or 'round', got 'chamfer'`.
 - `ValueError: extrude: the direction must not be zero` for `direction=(0, 0, 0)`.
+- `ValueError: extrude: the direction lies in the sketch plane; it must cross the plane (its
+  normal is (0, 0, 1))` for `Rectangle(10, 10).extrude(5, direction=(1, 0, 0))` (before 0.5.0 a
+  bare `KernelError ... (SM_ERR)`).
+- `RuntimeWarning: extrude: the direction is 0.00573 degrees off the sketch plane, so the solid is
+  only 0.0005 thick (amount is measured along the direction)`.
+- `ModelingError: extrude: the kernel made this extrusion along the direction invalid (inside out
+  or open); ...`: extrude along the normal, or along a direction further from the plane.
 - `ModelingError: extrude: the taper of 56 degrees closes the profile after 6.74509 of 10; use a smaller taper or a shorter extrusion`.
 - `TypeError: expected a sketch, face or closed wire, got Part` (pass a face, not the part).
 - `ValueError: a cylinder face has no plane; use normal_at() or a planar face` for curved faces.

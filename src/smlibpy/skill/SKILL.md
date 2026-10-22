@@ -65,10 +65,10 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 |---|---|---|
 | geometry | `geometry/*` | Vector, Axis, Plane, Location, Pos, Rot, BoundBox, Align, placement methods, patterns |
 | selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex |
-| parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
+| parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge, AnnularSector; sectors with arc_size), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
 | curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; NURBS data of an edge (nurbs), make_compatible, remove_knots |
-| features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
+| features | `features/*` | extrude, revolve, swing (revolve along an outline), loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
 | surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
 | analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |

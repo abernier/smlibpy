@@ -39,7 +39,7 @@ import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, rou
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
-import { sweep as _sweep } from './operations.ts'
+import { sweep as _sweep, swing as _swing } from './operations.ts'
 import { Box } from './parts.ts'
 import {
   type Bend,
@@ -3710,7 +3710,12 @@ export function _revolveAxisAngle(ax: Axis, angle: number): [Axis, number] {
 }
 
 // How close to 360 degrees a revolve is a whole turn (degrees).
-const WHOLE_TURN = 0.01
+export const WHOLE_TURN = 0.01
+
+// Extrusion directions: within this sine of the sketch plane the kernel refuses them (SM_ERR), below
+// the other the solid is less than a thousandth of the amount thick (a warning).
+const IN_PLANE = 1e-5
+const NEAR_PLANE = 1e-3
 
 /** A revolve's kernel body (taken over) wrapped as `cls`, with cylinders, cones, spheres and tori
  * where its surfaces of revolution are one. The kernel revolves through a whole turn into surfaces of
@@ -4011,7 +4016,9 @@ export interface ExtrudeOptions {
   both?: boolean
   /** Draft angle in degrees; positive narrows the solid away from the sketch. */
   taper?: number
-  /** Extrude along this direction (an axis or a vector) instead of the normal. */
+  /** Extrude along this direction (an axis or a vector) instead of the normal; the amount is measured
+   * along it. A direction in the sketch plane throws a `RangeError`; one less than 0.06 degrees (a sine
+   * of 1e-3) off the plane warns, as the solid is then less than amount / 1000 thick. */
   direction?: Axis | VectorLike | null
   /** With a taper, the corners the taper pulls apart: 'sharp' (the walls extended until they meet)
    * or 'round' (rounded off, as an offset rounds them). */
@@ -4557,6 +4564,7 @@ export class Sketch extends Shell {
     if (corners !== 'sharp' && corners !== 'round') throw new RangeError(`extrude: corners is 'sharp' or 'round', got ${_repr(corners)}`)
     this._requireRegion('extrude')
     const d = direction != null ? _direction(direction, 'extrude') : this._plane.zDir
+    if (direction != null) this._checkDirection(d, Math.abs(Number(amount)) * (both ? 2 : 1), !taper)
     if (taper) {
       const out = this._extrudeTaper(amount, taper, both, corners === 'round')
       out.name = this.name
@@ -4570,9 +4578,52 @@ export class Sketch extends Shell {
       dist = 2 * Math.abs(dist)
     }
     const sign = dist > 0 ? 1 : -1
-    const h = new BrepHandle(src._copyBrep())
-    kernelCall('extrude', () => k.non_manifold_linear_sweep(h.brep, d.mul(sign).toArray(), Math.abs(dist)))
-    return Part._wrap(_take(h), { name: this.name, color: this.color })
+    let part = src._sweptAlong(d.mul(sign), Math.abs(dist))
+    if (direction != null && Math.abs(d.dot(this._plane.zDir)) < 1 - 1e-12) part = src._oblique(part, d.mul(sign), Math.abs(dist))
+    part.name = this.name
+    part.color = this.color
+    return part
+  }
+
+  _sweptAlong(d: Vector, dist: number): Part {
+    const h = new BrepHandle(this._copyBrep())
+    kernelCall('extrude', () => k.non_manifold_linear_sweep(h.brep, d.toArray(), dist))
+    return Part._wrap(_take(h))
+  }
+
+  /** An extrusion along a direction across the normal, checked (`isValid`) and made again turned
+   * about the normal where the kernel made it inside out or open. In planes that are not parallel to a
+   * principal one the kernel breaks some such extrusions of profiles with curved edges: of 1200
+   * (circles, rectangles, hexagons, ellipses and slots in random planes, both directions, one side and
+   * both) 1 at 6 degrees off the plane, 25 at 0.6 and 0.06 degrees, 192 at 0.006 (the same before
+   * 0.5.0). Turned about the normal through the sketch's origin, extruded and turned back, all but 16
+   * at each of those angles come out valid with the exact volume; where none of three turns does,
+   * `ModelingError`. */
+  _oblique(part: Part, d: Vector, dist: number): Part {
+    if (part.isValid()) return part
+    const axis = new Axis(this._plane.origin, this._plane.zDir)
+    for (const angle of [113, 180, 37]) {
+      const again = this.rotate(axis, angle)._sweptAlong(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
+      if (again.isValid()) return again
+    }
+    throw new ModelingError(
+      'extrude: the kernel made this extrusion along the direction invalid (inside out or open); extrude along the sketch normal, or along a direction further from the sketch plane',
+    )
+  }
+
+  /** Throw where an extrusion direction lies in the sketch plane, warn where it nearly does (where it
+   * is `used`: a taper extrudes along the normal). The kernel refused a direction within a sine of
+   * 1e-5 of the plane with a bare `KernelError` (SM_ERR), and made a valid sliver above that (5 along
+   * a direction 1e-4 off the plane: 0.0005 thick). */
+  _checkDirection(d: Vector, thickness: number, used: boolean): void {
+    const n = this._plane.zDir
+    const sine = Math.abs(d.dot(n))
+    if (!(sine > IN_PLANE)) throw new RangeError(`extrude: the direction lies in the sketch plane; it must cross the plane (its normal is ${_fmtPoint(n)})`)
+    if (used && sine < NEAR_PLANE) {
+      _warn(
+        `extrude: the direction is ${_formatG((Math.asin(sine) * 180) / Math.PI, 3)} degrees off the sketch plane, so the solid is only ${_formatG(thickness * sine, 3)} thick (amount is measured along the direction)`,
+      )
+    }
   }
 
   _extrudeTaper(amount: number, taper: number, both: boolean, roundCorners = false): Part {
@@ -4740,6 +4791,13 @@ export class Sketch extends Shell {
   ): Part {
     _opts('Sketch.sweep', options)
     return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null, up: options.up ?? null, twist: options.twist ?? 0, scale: options.scale ?? null }) as Part
+  }
+
+  /** Swing the region around an outline: a revolve about Z whose circle is the outline (see `swing`:
+   * the region drawn as for a lathe in the XZ plane, the outline a closed curve around the Z axis
+   * parallel to XY, scaled at each height to pass through the region's outline on the +X side). */
+  swing(outline: Sketch | Face | Wire | Edge): Part {
+    return _swing(this, outline) as Part
   }
 
   override toString(): string {

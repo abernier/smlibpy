@@ -83,4 +83,4 @@ dome = revolve(CenterArc((0, 0), 10, -90, 180, plane=Plane.front), Z)  # open cu
 ```
 
 ## Related
-`extrude`, `sweep`, `Torus`, `Cone`, `Plane.front`, `Axis`.
+`extrude`, `sweep`, `swing` (an outline of any shape instead of the circle), `Torus`, `Cone`, `Plane.front`, `Axis`.

@@ -1615,6 +1615,150 @@ function _isPlanarPath(edges: readonly Edge[]): boolean {
   return s[s.length - 1] <= 1e-7 * Math.max(1, s[0])
 }
 
+/**
+ * Swing a profile around an outline: a revolve about Z whose circle is the outline.
+ *
+ * At each height the section is the outline scaled about the Z axis so that it passes through the
+ * profile's point on the +X side: the cut of the result by the XZ plane on the +X side is the
+ * profile. A circle around the origin gives the revolve. The faces are exact (NURBS products of the
+ * two curves).
+ *
+ * @param profile Drawn as for a lathe (see `revolve`): in the XZ plane (`Plane.front`), x the
+ *   distance from the Z axis (at least 0), z the height. A region (a sketch, a planar face or a closed
+ *   wire) gives a solid; its edges on the Z axis swing to nothing and are left out, its holes are swung
+ *   and cut out. An open curve gives a surface (a Shell).
+ * @param outline A closed curve around the Z axis in a plane parallel to XY (its height does not
+ *   matter), such as `Ellipse(30, 20)` or a `RoundedRectangle`: a single region or a closed wire or
+ *   edge. Every ray from the Z axis must cross it once.
+ */
+export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell {
+  const [loop, reach] = _swingOutline(outline)
+  const w = _openCurve(profile)
+  if (w !== null) {
+    const b = _swung(w, loop, reach, 'swing', 'the profile and outline curves must be B-splines (lines, arcs, splines)')
+    kernelCall('swing', () => k.stitch_into_solid(b._brep))
+    return b
+  }
+  const sk = _asSketch(profile)
+  const hint = 'the outline must go around the Z axis once and the profile lie beside it (x >= 0) in the XZ plane'
+  let result: Part | null = null
+  for (const f of sk.faces()) {
+    const loops = f.wires()
+    let piece = _swungSolid(loops[0], loop, reach, hint)
+    for (const h of loops.slice(1)) piece = piece.cut(_swungSolid(h, loop, reach, hint))
+    result = result === null ? piece : result.fuse(piece)
+  }
+  if (result === null) throw new RangeError('swing: the sketch is empty')
+  _requireSolid(result, 'swing', hint)
+  result.name = sk.name
+  result.color = sk.color
+  return result
+}
+
+function _swingSamples(e: Edge): number[] {
+  if (e.geomType === 'line') return [0, 1]
+  const ts: number[] = []
+  for (let i = 0; i <= 48; i++) ts.push(i / 48)
+  return ts
+}
+
+/** The outline as a closed wire, and how far from the Z axis it crosses the +X axis. Throws where it is
+ * not a closed curve in a plane parallel to XY that every ray from the Z axis crosses once. */
+function _swingOutline(outline: unknown): [Wire, number] {
+  if (outline instanceof ShapeList) outline = outline.one()
+  if (outline instanceof Sketch) {
+    const faces = outline.faces()
+    if (faces.length !== 1) throw new RangeError(`swing: the outline must be one closed curve, got a sketch of ${faces.length} regions`)
+    outline = faces[0]
+  }
+  let w: Wire
+  if (outline instanceof Face) {
+    const loops = outline.wires()
+    if (loops.length !== 1) throw new RangeError('swing: the outline must be one closed curve, got a region with holes')
+    w = loops[0]
+  } else if (outline instanceof Edge) w = new Wire([outline])
+  else if (outline instanceof Wire) w = outline
+  else throw new TypeError(`swing: the outline is a sketch, face, wire or edge, got ${_typeName(outline)}`)
+  if (!w.isClosed) throw new RangeError('swing: the outline must be a closed curve')
+  const box = w.bbox()
+  const tol = 1e-7 * Math.max(1, box.diagonal)
+  if (box.size.z > tol) throw new RangeError('swing: the outline must lie in a plane parallel to XY')
+  let turn = 0
+  let reach: number | null = null
+  const steps: number[] = []
+  for (const e of w.edges()) {
+    const ts = _swingSamples(e)
+    const pts = ts.map((t) => e.pointAt(t))
+    for (let i = 0; i + 1 < ts.length; i++) {
+      const p0 = pts[i]
+      const p1 = pts[i + 1]
+      if (Math.hypot(p0.x, p0.y) <= tol || Math.hypot(p1.x, p1.y) <= tol) throw new RangeError('swing: the outline must go around the Z axis, not through it')
+      const step = Math.atan2(p0.x * p1.y - p0.y * p1.x, p0.x * p1.x + p0.y * p1.y)
+      steps.push(step)
+      turn += step
+      if (reach === null && p0.y < 0 !== p1.y < 0) {
+        const x = _crossing(e, ts[i], ts[i + 1])
+        reach = x > 0 ? x : null
+      }
+    }
+  }
+  if (Math.abs(Math.abs(turn) - 2 * Math.PI) > 1e-6) throw new RangeError('swing: the outline must go once around the Z axis')
+  if (steps.some((step) => step * turn <= 0)) {
+    throw new RangeError('swing: every ray from the Z axis must cross the outline once (it turns back around the axis, or runs straight away from it)')
+  }
+  if (reach === null || !(reach > tol)) throw new RangeError('swing: the outline must cross the +X axis')
+  return [w, reach]
+}
+
+/** x where the edge crosses y = 0 between fractions t0 and t1 (where y changes sign). */
+function _crossing(e: Edge, t0: number, t1: number): number {
+  const below = e.pointAt(t0).y < 0
+  for (let i = 0; i < 64; i++) {
+    const tm = 0.5 * (t0 + t1)
+    if (e.pointAt(tm).y < 0 === below) t0 = tm
+    else t1 = tm
+  }
+  return e.pointAt(0.5 * (t0 + t1)).x
+}
+
+/** The edges of a profile loop or curve that do not lie on the Z axis; throws where it is not in the XZ
+ * plane beside the axis. */
+function _swingProfile(loop: Wire, what: string): Edge[] {
+  const box = loop.bbox()
+  const tol = 1e-7 * Math.max(1, box.diagonal)
+  if (box.size.y > tol || Math.abs(box.min.y) > tol) {
+    throw new RangeError(
+      `${what}: the profile must lie in the XZ plane (draw it in XY, x the distance from the Z axis and y the height, and place it with .on(Plane.front))`,
+    )
+  }
+  if (box.min.x < -tol) throw new RangeError(`${what}: the profile must lie beside the Z axis (x >= 0), it reaches x = ${_formatG(box.min.x)}`)
+  const edges = loop.edges().filter((e) => [..._swingSamples(e), 0.5].some((t) => Math.abs(e.pointAt(t).x) > tol))
+  if (!edges.length) throw new RangeError(`${what}: the profile lies on the Z axis`)
+  return edges
+}
+
+/** The swung faces of a profile curve around the outline, not stitched. */
+function _swung(profile: Wire, outline: Wire, reach: number, what: string, hint: string): Shell {
+  const edges = _swingProfile(profile, what)
+  const b = kernelCall(
+    what,
+    () =>
+      _freed(
+        edges.map((e) => e._copyCurve()),
+        (pc) => _freed(outline._copyCurves(), (oc) => ext.swung(pc, oc, 1 / reach)),
+      ),
+    hint,
+  )
+  return Shell._wrap(b)
+}
+
+function _swungSolid(loop: Wire, outline: Wire, reach: number, hint: string): Part {
+  const shell = _swung(loop, outline, reach, 'swing', hint)
+  const [, isSolid] = kernelCall('swing', () => k.stitch_into_solid(shell._brep), hint)
+  if (!isSolid) throw new ModelingError(`swing: the swung faces do not close into a solid; ${hint}`)
+  return _requireSolid(Part._wrap(shell._copyBrep()), 'swing', hint)
+}
+
 /** Round edges of the part they belong to (see `Part.fillet`), or corners of the sketch they
  * belong to: `fillet(s.vertices().concave(), 2)` (see `Sketch.fillet`). */
 export function fillet(edges: unknown, radius: FilletRadius, options: FilletOptions = {}): Part | Sketch {

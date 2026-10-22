@@ -25,6 +25,7 @@ __all__ = [
     "revolve",
     "loft",
     "sweep",
+    "swing",
     "fillet",
     "chamfer",
     "shell",
@@ -1448,6 +1449,146 @@ def _is_planar_path(edges: list[Edge]) -> bool:
     a = a - a.mean(axis=0)
     s = np.linalg.svd(a, compute_uv=False)
     return bool(len(s) < 3 or s[-1] <= 1e-7 * max(1.0, s[0]))
+
+
+def swing(profile: Sketch | Face | Wire | Edge, outline: Sketch | Face | Wire | Edge) -> Part | Shell:
+    """Swing a profile around an outline: a revolve about Z whose circle is the outline.
+
+    Args:
+        profile: Drawn as for a lathe (see :func:`revolve`): in the XZ plane (``Plane.front``), x the
+            distance from the Z axis (at least 0), z the height. A region (a sketch, a planar face or a
+            closed wire) gives a solid; its edges on the Z axis swing to nothing and are left out, its
+            holes are swung and cut out. An open curve gives a surface (a :class:`Shell`).
+        outline: A closed curve around the Z axis in a plane parallel to XY (its height does not
+            matter), such as ``Ellipse(30, 20)`` or a ``RoundedRectangle``: a single region or a closed
+            wire or edge. Every ray from the Z axis must cross it once.
+
+    At each height the section is the outline scaled about the Z axis so that it passes through the
+    profile's point on the +X side: the cut of the result by the XZ plane on the +X side is the
+    profile. A circle around the origin gives the revolve. The faces are exact (NURBS products of
+    the two curves).
+    """
+    loop, reach = _swing_outline(outline)
+    w = _open_curve(profile)
+    if w is not None:
+        b = _swung(w, loop, reach, "swing", "the profile and outline curves must be B-splines (lines, arcs, splines)")
+        with kernel_call("swing"):
+            k.stitch_into_solid(b._brep)
+        return b
+    sk = _as_sketch(profile)
+    hint = "the outline must go around the Z axis once and the profile lie beside it (x >= 0) in the XZ plane"
+    result: Part | None = None
+    for f in sk.faces():
+        loops = f.wires()
+        piece = _swung_solid(loops[0], loop, reach, hint)
+        for h in loops[1:]:
+            piece = piece - _swung_solid(h, loop, reach, hint)
+        result = piece if result is None else result + piece
+    if result is None:
+        raise ValueError("swing: the sketch is empty")
+    _require_solid(result, "swing", hint)
+    result.name, result.color = sk.name, sk.color
+    return result
+
+
+def _swing_samples(e: Edge) -> list[float]:
+    return [0.0, 1.0] if e.geom_type == "line" else [i / 48 for i in range(49)]
+
+
+def _swing_outline(outline: Any) -> tuple[Wire, float]:
+    """The outline as a closed wire, and how far from the Z axis it crosses the +X axis. Raises where it
+    is not a closed curve in a plane parallel to XY that every ray from the Z axis crosses once."""
+    if isinstance(outline, ShapeList):
+        outline = outline.one()
+    if isinstance(outline, Sketch):
+        faces = outline.faces()
+        if len(faces) != 1:
+            raise ValueError(f"swing: the outline must be one closed curve, got a sketch of {len(faces)} regions")
+        outline = faces[0]
+    if isinstance(outline, Face):
+        loops = outline.wires()
+        if len(loops) != 1:
+            raise ValueError("swing: the outline must be one closed curve, got a region with holes")
+        w = loops[0]
+    elif isinstance(outline, Edge):
+        w = Wire([outline])
+    elif isinstance(outline, Wire):
+        w = outline
+    else:
+        raise TypeError(f"swing: the outline is a sketch, face, wire or edge, got {type(outline).__name__}")
+    if not w.is_closed:
+        raise ValueError("swing: the outline must be a closed curve")
+    box = w.bbox()
+    tol = 1e-7 * max(1.0, box.diagonal)
+    if box.size.z > tol:
+        raise ValueError("swing: the outline must lie in a plane parallel to XY")
+    turn, steps, reach = 0.0, [], None
+    for e in w.edges():
+        ts = _swing_samples(e)
+        pts = [e.point_at(t) for t in ts]
+        for (t0, p0), (t1, p1) in zip(zip(ts, pts), zip(ts[1:], pts[1:])):
+            if math.hypot(p0.x, p0.y) <= tol or math.hypot(p1.x, p1.y) <= tol:
+                raise ValueError("swing: the outline must go around the Z axis, not through it")
+            step = math.atan2(p0.x * p1.y - p0.y * p1.x, p0.x * p1.x + p0.y * p1.y)
+            steps.append(step)
+            turn += step
+            if reach is None and (p0.y < 0) != (p1.y < 0):
+                x = _crossing(e, t0, t1)
+                reach = x if x > 0 else None
+    if abs(abs(turn) - 2 * math.pi) > 1e-6:
+        raise ValueError("swing: the outline must go once around the Z axis")
+    if any(step * turn <= 0 for step in steps):
+        raise ValueError("swing: every ray from the Z axis must cross the outline once (it turns back around "
+                         "the axis, or runs straight away from it)")
+    if reach is None or not reach > tol:
+        raise ValueError("swing: the outline must cross the +X axis")
+    return w, reach
+
+
+def _crossing(e: Edge, t0: float, t1: float) -> float:
+    """x where the edge crosses y = 0 between fractions t0 and t1 (where y changes sign)."""
+    below = e.point_at(t0).y < 0
+    for _ in range(64):
+        tm = 0.5 * (t0 + t1)
+        if (e.point_at(tm).y < 0) == below:
+            t0 = tm
+        else:
+            t1 = tm
+    return e.point_at(0.5 * (t0 + t1)).x
+
+
+def _swing_profile(loop: Wire, what: str) -> list[Edge]:
+    """The edges of a profile loop or curve that do not lie on the Z axis; raises where it is not in the
+    XZ plane beside the axis."""
+    box = loop.bbox()
+    tol = 1e-7 * max(1.0, box.diagonal)
+    if box.size.y > tol or abs(box.min.y) > tol:
+        raise ValueError(f"{what}: the profile must lie in the XZ plane (draw it in XY, x the distance from the "
+                         f"Z axis and y the height, and place it with .on(Plane.front))")
+    if box.min.x < -tol:
+        raise ValueError(f"{what}: the profile must lie beside the Z axis (x >= 0), it reaches x = {box.min.x:.6g}")
+    edges = [e for e in loop.edges() if any(abs(e.point_at(t).x) > tol for t in _swing_samples(e) + [0.5])]
+    if not edges:
+        raise ValueError(f"{what}: the profile lies on the Z axis")
+    return edges
+
+
+def _swung(profile: Wire, outline: Wire, reach: float, what: str, hint: str) -> Shell:
+    """The swung faces of a profile curve around the outline, not stitched."""
+    edges = _swing_profile(profile, what)
+    with kernel_call(what, hint), _freed([e._copy_curve() for e in edges]) as pc, \
+            _freed(outline._copy_curves()) as oc:
+        b = ext.swung(pc, oc, 1.0 / reach)
+    return Shell._wrap(b)
+
+
+def _swung_solid(loop: Wire, outline: Wire, reach: float, hint: str) -> Part:
+    shell = _swung(loop, outline, reach, "swing", hint)
+    with kernel_call("swing", hint):
+        _, is_solid, _, _, _ = k.stitch_into_solid(shell._brep)
+    if not is_solid:
+        raise ModelingError(f"swing: the swung faces do not close into a solid; {hint}")
+    return _require_solid(Part._wrap(shell._copy_brep()), "swing", hint)
 
 
 def fillet(edges: Any, radius: float | tuple[float, float] | Sequence[float], **kwargs: Any) -> Part | Sketch:

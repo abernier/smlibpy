@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Align, Axis, CenterArc, Circle, Edge, Ellipse, FilletPolyline, Helix, Line, Location, ModelingError, Plane, Polygon, Polyline, Rectangle, Spline, ThreePointArc, Vector, Wire, X, Z, exportStep, extrude, importStep, loft, revolve, sweep, type Part, type Shell } from '../src/index.ts'
 import { ext, setWarningHandler } from '../src/kernel.ts'
+import { AnnularSector, Cone, Cylinder, RoundedRectangle, Shell as ShellBody, Slot, Sphere, Torus, swing } from '../src/index.ts'
 import { approx } from './_approx.ts'
 
 type P3 = [number, number, number]
@@ -584,5 +585,160 @@ test('revolves, lofts, extrusions and tapers free their curve copies', () => {
   } finally {
     Edge.prototype._copyCurve = copy
     ext.delete_curve = del
+  }
+})
+
+// S12: swing, a revolve about Z whose circle is an outline of any shape
+
+test('swing carries the profile around the outline', () => {
+  const cup = Polygon([0, 0], [30, 0], [30, 40], [0, 40]).on(Plane.front)
+  const box = swing(cup, Ellipse(30, 20)) as Part
+  assert.ok(box.isValid())
+  approx(box.volume, PI * 30 * 20 * 40, 1e-9)
+  approx(cup.swing(Ellipse(30, 20)).volume, box.volume, 1e-12)
+  // sections scale with the profile's distance from the axis: a frustum's 1 + 1/2 + 1/4 over 3
+  const cone = swing(Polygon([0, 0], [30, 0], [15, 40], [0, 40]).on(Plane.front), Ellipse(30, 20)) as Part
+  approx(cone.volume, (PI * 30 * 20 * 40 * 1.75) / 3, 1e-9)
+  // a circle about the origin is the revolve
+  const lathe = Polygon([0, 0], [30, 0], [15, 40], [0, 40]).on(Plane.front)
+  approx((swing(lathe, Circle(30)) as Part).volume, lathe.revolve(Z).volume, 1e-9)
+  // the cut by the XZ plane at +X is the profile, also for an outline crossing it off a vertex: a rounded
+  // rectangle turned by 30 degrees (the kernel's own swung primitive raised SM_ERR for it), an off-centre
+  // circle (crossing +X at 5 + sqrt(391))
+  const p = swing(cup, RoundedRectangle(60, 40, 10).rotate(Z, 30)) as Part
+  for (const z of [5, 20, 35]) assert.ok(p.distanceTo([30, 0, z]) < 1e-9 && p.distanceTo([30.01, 0, z]) > 0.005)
+  const r0 = 5 + Math.sqrt(391)
+  approx((swing(cup, Circle(20).translate(5, 3)) as Part).volume, PI * 400 * (30 / r0) ** 2 * 40, 1e-9)
+  // beside the axis (a ring), with holes, an open curve (a surface)
+  const ring = swing(Polygon([20, 0], [30, 0], [30, 10], [20, 10]).on(Plane.front), Ellipse(30, 20)) as Part
+  approx(ring.volume, PI * 600 * 10 * (1 - (20 / 30) ** 2), 1e-9)
+  const holed = Rectangle(20, 30, { align: [Align.MIN, Align.MIN] }).cut(Circle(4).translate(12, 15)).on(Plane.front)
+  approx((swing(holed, Circle(20)) as Part).volume, holed.revolve(Z).volume, 1e-9)
+  const sheet = swing(Spline([0, 0, 0], [25, 0, 10], [15, 0, 30], [20, 0, 45], [0, 0, 50]), Ellipse(30, 20))
+  assert.ok(sheet instanceof ShellBody && sheet.area > 0)
+  const bottle = swing(Polygon([0, 0], [20, 0], [20, 50], [8, 60], [8, 70], [0, 70]).on(Plane.front), RoundedRectangle(40, 30, 8)) as Part
+  assert.ok(bottle.isValid() && bottle.solids().length === 1)
+  approx(bottle.bbox().min.x, -20)
+  approx(bottle.bbox().max.z, 70)
+})
+
+test('swing refuses outlines and profiles it cannot carry', () => {
+  const cup = Polygon([0, 0], [30, 0], [30, 40], [0, 40]).on(Plane.front)
+  assert.throws(() => swing(cup, Rectangle(10, 10).translate(30, 0)), /once around the Z axis/)
+  assert.throws(() => swing(cup, Polygon([10, 0], [0, 10], [-10, 0], [0, -10], [5, 0.5])), /every ray from the Z axis/)
+  assert.throws(() => swing(Polygon([0, 0], [30, 0], [30, 40], [0, 40]), Ellipse(30, 20)), /XZ plane/)
+  assert.throws(() => swing(Rectangle(10, 10).on(Plane.front), Ellipse(30, 20)), /beside the Z axis/)
+  assert.throws(() => swing(cup, Ellipse(30, 20).on(Plane.front)), /parallel to XY/)
+  assert.throws(() => swing(cup, Ellipse(30, 20).cut(Circle(5))), /holes/)
+  assert.throws(() => swing(cup, Line([0, 0], [1, 1])), /closed curve/)
+})
+
+// S13: sectors of the primitives
+
+function faceKinds(p: Part): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const f of p.faces()) out[f.geomType] = (out[f.geomType] ?? 0) + 1
+  return out
+}
+
+test('primitives take sectors', () => {
+  const q = Cylinder(10, 20, { arcSize: 90 })
+  assert.ok(q.isValid())
+  approx(q.volume, (PI * 100 * 20) / 4, 1e-9)
+  assert.deepEqual(faceKinds(q), { plane: 4, cylinder: 1 })
+  // centered by its box like every primitive; align: null keeps the axis on Z
+  assert.deepEqual([q.bbox().min.toArray(), q.bbox().max.toArray()].flat().map((x) => +x.toFixed(9) + 0), [-5, -5, -10, 5, 5, 10])
+  const onZ = Cylinder(10, 20, { arcSize: 90, align: null })
+  assert.deepEqual([onZ.bbox().min.toArray(), onZ.bbox().max.toArray()].flat().map((x) => +x.toFixed(9) + 0), [0, 0, -10, 10, 10, 10])
+  const standing = Cylinder(10, 20, { arcSize: 270, align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  approx(standing.bbox().min.z, 0)
+  approx(standing.volume, PI * 100 * 20 * 0.75, 1e-9)
+  // within 0.01 degrees of 360 a whole one (the kernel's sectors there are not closed solids)
+  assert.deepEqual(faceKinds(Cylinder(10, 20, { arcSize: 359.995 })), { cylinder: 1, plane: 2 })
+  const cone = Cone(10, 5, 20, { arcSize: 90 })
+  approx(cone.volume, ((PI * 20) / 3) * (175 / 4), 1e-9)
+  assert.deepEqual(faceKinds(cone), { plane: 4, cone: 1 })
+  approx(Cone(10, 0, 20, { arcSize: 120 }).volume, ((PI * 20) / 3) * (100 / 3), 1e-6)
+  const lune = Sphere(10, { arcSize3: 90, align: null })
+  approx(lune.volume, ((4 / 3) * PI * 1000) / 4, 1e-9)
+  assert.deepEqual(faceKinds(lune), { plane: 2, sphere: 1 })
+  // latitudes: planes parallel to XY
+  const z1 = -5
+  const z2 = 10 * Math.sin(PI / 3)
+  const zone = PI * (100 * z2 - z2 ** 3 / 3 - (100 * z1 - z1 ** 3 / 3))
+  const part = Sphere(10, { arcSize1: -30, arcSize2: 60, arcSize3: 90, align: null })
+  approx(part.volume, zone / 4, 1e-9)
+  assert.deepEqual(faceKinds(part), { plane: 4, sphere: 1 })
+  approx(part.bbox().min.z, -5)
+  approx(part.bbox().max.z, z2)
+  approx(Sphere(10, { arcSize1: 0 }).volume, (2 / 3) * PI * 1000, 1e-9)
+  // a torus sector is a torus (the kernel's own is a surface of revolution)
+  const ring = Torus(20, 5, { majorAngle: 90, align: null })
+  approx(ring.volume, (2 * PI ** 2 * 20 * 25) / 4, 1e-9)
+  assert.deepEqual(faceKinds(ring), { plane: 2, torus: 1 })
+  const sector = AnnularSector(5, 10, 20, 120, { align: null })
+  approx(sector.volume, (PI * 75 * 20) / 3, 1e-6)
+  assert.deepEqual(faceKinds(sector), { plane: 4, cylinder: 2 })
+  assert.deepEqual([sector.bbox().min.toArray(), sector.bbox().max.toArray()].flat().map((x) => +x.toFixed(9) + 0), [-5, 0, -10, 10, 10, 10])
+  const tube = AnnularSector(5, 10, 20, 360)
+  approx(tube.volume, PI * 75 * 20, 1e-9)
+  assert.deepEqual(faceKinds(tube), { cylinder: 2, plane: 2 })
+  approx(AnnularSector(0, 10, 20, 90).volume, q.volume, 1e-12)
+  for (const bad of [
+    () => Cylinder(10, 20, { arcSize: 0 }),
+    () => Cone(5, 2, 3, { arcSize: 400 }),
+    () => Sphere(10, { arcSize1: 30, arcSize2: 30 }),
+    () => Sphere(10, { arcSize1: -100 }),
+    () => Torus(20, 5, { majorAngle: -5 }),
+    () => AnnularSector(10, 5, 20, 90),
+    () => AnnularSector(5, 10, 20, 0),
+  ]) {
+    assert.throws(bad, RangeError)
+  }
+})
+
+// S14: extrusion directions in or near the sketch plane
+
+test('extrude: a direction in the sketch plane throws, near it warns', () => {
+  assert.throws(() => Rectangle(10, 10).extrude(5, { direction: [1, 0, 0] }), /lies in the sketch plane/) // (was a bare KernelError, SM_ERR)
+  assert.throws(() => Rectangle(10, 10).extrude(5, { direction: [1, 0, 1e-6] }), /lies in the sketch plane/)
+  assert.throws(() => Circle(3).on(new Plane([1, 2, 3], null, [1, 1, 1])).extrude(5, { direction: [1, -1, 0], taper: 5 }), /lies in the sketch plane/)
+  const [thin, said] = warned(() => Rectangle(10, 10).extrude(5, { direction: [1, 0, 1e-4] }))
+  assert.ok(said.length === 1 && /only 0.0005 thick/.test(said[0]), said.join('; '))
+  assert.ok(thin.isValid())
+  approx(thin.volume, 0.05, 1e-6)
+  approx(quiet(() => Rectangle(10, 10).extrude(5, { direction: [1, 0, 1] })).volume, 500 / Math.SQRT2, 1e-9)
+})
+
+test('extrusions along a direction are valid or throw', () => {
+  // In tilted planes the kernel made some extrusions of curved profiles along a direction inside out or
+  // open; they are made again turned about the normal, or throw.
+  const fixed = Circle(3).on(new Plane([2.00729845925639, 0, 0], null, [0.9513514554730566, -0.29311120370412086, -0.09495383316337645]))
+  const d: P3 = [-0.18315301020251898, -0.7616861581242306, 0.6215216580101659]
+  const part = quiet(() => fixed.extrude(5, { direction: d })) // (was inside out: volume -1.41372)
+  const sine = Math.abs(new Vector(d).normalized().dot(fixed.plane.zDir))
+  assert.ok(part.isValid())
+  approx(part.volume, fixed.area * 5 * sine, 1e-9)
+  let seed = 7
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return seed / 2147483648 - 0.5
+  }
+  for (let i = 0; i < 24; i++) {
+    const n: P3 = [random(), random(), random()]
+    const sk = [Circle(3), Ellipse(4, 2), Slot(10, 3), Rectangle(6, 4)][i % 4].on(new Plane([i, 0, 0], null, n))
+    const t = sk.plane.zDir.cross(new Vector(0.3, 0.5, 0.7)).normalized()
+    for (const s of [0.01, 0.1]) {
+      const dir = t.mul(Math.sqrt(1 - s * s)).add(sk.plane.zDir.mul(s))
+      let p: Part
+      try {
+        p = sk.extrude(5, { direction: dir })
+      } catch (e) {
+        if (e instanceof ModelingError) continue
+        throw e
+      }
+      assert.ok(p.isValid())
+      approx(p.volume, sk.area * 5 * s, 1e-6)
+    }
   }
 })

@@ -22,6 +22,19 @@ All are centered on the origin; `align` changes that per axis:
 Box(40, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))   # sits on the XY plane
 ```
 
+Cylinders, cones, spheres and tori also come as sectors, from the +X axis counter-clockwise
+about Z, with exact faces (planes on the cut sides); `AnnularSector` is a sector of a tube. Like
+every primitive a sector is centered by its bounding box; `align=None` keeps the axis on Z:
+
+```python
+Cylinder(10, 20, arc_size=90, align=None)        # the quarter from +X to +Y
+Cone(10, 4, 15, arc_size=120)
+Sphere(10, arc_size1=0, align=None)              # the upper half: latitudes 0 to 90
+Sphere(10, arc_size1=-30, arc_size2=60, arc_size3=90)
+Torus(20, 4, major_angle=90, align=None)         # an elbow
+AnnularSector(40, 50, 8, 30)                     # inner and outer radius, height, angle
+```
+
 ## Extrude
 
 ```python
@@ -37,6 +50,12 @@ them: selections by type find them, they draft again, and STEP files carry them 
 surfaces where the profile has other curves. `corners="round"` rounds off the corners the taper
 pulls apart (the convex ones of an outward taper, the concave ones of an inward one), as an offset
 rounds them. A taper that closes the profile before the end raises `ModelingError`.
+
+With a `direction` the amount is measured along it. A direction in the sketch plane raises
+`ValueError`, and one less than 0.06 degrees off the plane warns, since the solid is then thinner
+than a thousandth of the amount. An extrusion along a direction is checked: where the kernel
+makes it invalid (some curved profiles in tilted planes, mostly within a degree of the plane) it
+is made again turned about the normal, or raises `ModelingError`.
 
 A negative amount extrudes against the normal, which is how pockets are cut into faces:
 
@@ -65,6 +84,23 @@ The walls of a revolve are cylinders, cones, spheres and tori wherever its edges
 arcs, also for a full turn, so `tube.faces().cylinders()` finds both walls, `Face.radius` and
 drafts work on them, and STEP files carry them as such. Spline edges give surfaces of
 revolution. Angles within 0.01 degrees of 360 are a full turn.
+
+## Swing
+
+A swing revolves a profile about Z along an outline of any shape instead of a circle: at each
+height the section is the outline, scaled about the Z axis to pass through the profile on the
++X side. The profile is drawn as for a lathe (x the distance from the axis, on `Plane.front`);
+the outline is a closed curve around the Z axis in XY that every ray from the axis crosses once:
+
+```python
+cup = Polygon((0, 0), (30, 0), (30, 40), (0, 40)).on(Plane.front)
+oval = swing(cup, Ellipse(30, 20))                                   # pi * 30 * 20 * 40
+bottle = Polygon((0, 0), (20, 0), (20, 50), (8, 60), (8, 70), (0, 70)).on(Plane.front)
+flask = bottle.swing(RoundedRectangle(40, 30, 8))                    # 40 x 30, a 16 x 12 neck
+```
+
+The faces are exact products of the profile's and the outline's curves (B-splines). A circle
+about the origin gives the revolve; an open curve gives a surface.
 
 ## Loft
 

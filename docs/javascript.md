@@ -610,6 +610,7 @@ export class Sketch extends Shell {
         twist?: number | ((s: number) => number);
         scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
     }): Part;
+    swing(outline: Sketch | Face | Wire | Edge): Part;
     toString(): string;
 }
 ```
@@ -753,18 +754,27 @@ export function Box(length: number, width: number, height: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Cylinder(radius: number, height: number, options?: {
+    arcSize?: number;
     align?: AlignLike;
 }): Part;
 export function Cone(bottomRadius: number, topRadius: number, height: number, options?: {
+    arcSize?: number;
     align?: AlignLike;
 }): Part;
 export function Sphere(radius: number, options?: {
+    arcSize1?: number;
+    arcSize2?: number;
+    arcSize3?: number;
     align?: AlignLike;
 }): Part;
 export function Torus(majorRadius: number, minorRadius: number, options?: {
+    majorAngle?: number;
     align?: AlignLike;
 }): Part;
 export function Wedge(length: number, width: number, height: number, topLength?: number, options?: {
+    align?: AlignLike;
+}): Part;
+export function AnnularSector(innerRadius: number, outerRadius: number, height: number, arcSize: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Hole(radius: number, depth: number): Part;
@@ -819,6 +829,7 @@ export interface SweepOptions {
     scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
 }
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
+export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell;
 export function fillet(edges: unknown, radius: FilletRadius, options?: FilletOptions): Part | Sketch;
 export function chamfer(edges: unknown, length: number): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {

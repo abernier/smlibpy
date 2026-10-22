@@ -25,6 +25,7 @@
 #include "slivers.h"
 #include "step_build.h"
 #include "surface_eval.h"
+#include "swing.h"
 #include "tessellate.h"
 #include "usd.h"
 
@@ -111,6 +112,11 @@ val skin(val curves, val counts, unsigned degree, val start_tangent, val end_tan
         out.call<void>("push", deviation[1]);
         return out;
     });
+}
+// The faces of a swung body, not stitched; curves copied, not consumed.
+uintptr_t swung(val profile, val outline, double scale)
+{
+    return guard([&] { return ptr(smlibpy::swung(pointers<SmCurve>(profile), pointers<SmCurve>(outline), scale)); });
 }
 // [[x, y, z of a point on the axis], [x, y, z of its direction]], or null
 val helix_axis(val curves, double tolerance)
@@ -763,6 +769,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__analytic_revolutions", &analytic_revolutions);
     function("ext__oriented_sweep", &oriented_sweep);
     function("ext__skin", &skin);
+    function("ext__swung", &swung);
     function("ext__helix_axis", &helix_axis);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);

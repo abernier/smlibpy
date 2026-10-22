@@ -59,6 +59,7 @@ const OWN: Record<string, Signature> = {
   'ext.oriented_sweep': ['profile', 'path', 'params', 'x_axes', ['cap_ends', true], ['scales', null]],
   'ext.skin': ['curves', 'counts', ['degree', 3], ['start_tangent', []], ['end_tangent', []], ['closed', false], ['cap_ends', true]],
   'ext.helix_axis': ['curves', ['tolerance', 1e-5]],
+  'ext.swung': ['profile', 'outline', 'scale'],
   'ext.face_from_surface': ['surface'],
   'ext.combine': ['breps'],
   'ext.separate_bodies': ['brep'],
