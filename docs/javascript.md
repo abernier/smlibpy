@@ -100,6 +100,8 @@ applies. The differences come from the language:
   exported.
 - **Files**: in Node, `exportStep(shapes, path)`, `importStep(path)` and the other path functions
   write and read files as smlibpy's do; `show(part)` opens the viewer in the browser.
+  `fromUsd(text, { resolve })` gets the layers and files a stage references from
+  `resolve(asset, from)`, where `importUsd(path)` and Python's `import_usd` read them from disk.
 
 ## Memory
 

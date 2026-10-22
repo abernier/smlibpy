@@ -105,8 +105,27 @@ build:
   smlibpy no longer writes such files).
 - Both test suites pass.
 
-Defects that remain in the kernel (crashes and loops in the feature executive's patching) are
-described in `ai/todo/features.md` (37); `smlibpy.defeature` guards against them.
+Defects that remain in the kernel, and what smlibpy does about them:
+
+- Crashes and loops in the feature executive's patching (`ai/todo/features.md`, 37):
+  `smlibpy.defeature` runs each step of `remove_fillets`, `remove_faces` and `surface_fillet` in
+  a forked copy first (smlibwasm: in a probe worker with a kernel of its own).
+- The extended offset mode still crashes now and then on filleted boxes (issue #2's family: 1 or
+  2 of 10 runs of 3 calls), in `SmEdge::CalculateBoundingBox` on a freed Edge as a
+  `ManifoldBoolean` of `PiecewiseMerge` starts; neither AddressSanitizer nor libgmalloc takes that
+  path, so it is not located. The offset of crescendo part 81 reads a null pointer in
+  `SmBezierAux2d::BuildPolarBox`. `shell`, `offset` and `thicken` run their kernel steps only in a
+  forked copy (smlibwasm: the probe worker), so these raise `ModelingError`.
+- Booleans in which the seam of a cylinder, cone or sphere lies in a tangent plane of the other
+  operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the site
+  is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
+- `SmBrep::Point3DClassify` takes the region from one ray along +X, and once a tight bounding box
+  (or `ComputePreciseProperties`) has run on a body, `BrepPointSolve` can find no face along +X
+  where the ray crosses one. `ext.classify_points` lets rays in other directions vote;
+  `SmApiBrepRelationship`, which smlibpy does not rely on, has the same cause.
+- Small leaks on failure paths, not patched: `SmFilletCorner::Create` keeps its list of edgeuses
+  when it makes no corner, and a failed extended shell keeps about 4.7 KB of curve copies
+  (`SmOffsetGeometryCreation::ExtendTrimEdges`, found with macOS `leaks`).
 
 ## Checking with AddressSanitizer
 
@@ -117,9 +136,12 @@ over the one in `src/smlibpy`), put its `_core` module next to a copy of `src/sm
 macOS not through `env` or `timeout`, which drop the `DYLD_` variables) with
 `DYLD_INSERT_LIBRARIES=$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)` and
 `ASAN_OPTIONS=detect_leaks=0:strip_env=0` (`strip_env=0` keeps the sanitizer in the worker
-processes of the MCP session tests). With the guard on, a defect in a forked copy shows as
-"the kernel crashed (signal 6 ...)" and its report goes to stderr; `GUARD_SECONDS = 0` runs every
-step in the process, so the first report ends the run.
+processes of the MCP session tests); add `quarantine_size_mb=8192` where freed memory is read
+long after it was freed. LeakSanitizer does not run on macOS arm64: malloc zone statistics
+(`malloc_zone_statistics`), macOS `leaks` and resident-memory bounds stand in for it. With the
+guard on, a defect in a forked copy shows as "the kernel crashed (signal 6 ...)" and its report
+goes to stderr; `GUARD_SECONDS = 0` runs every step in the process, so the first report ends the
+run.
 
 ## Dropping a patch
 
@@ -140,7 +162,8 @@ When an upstream release fixes a defect:
    the changes to the offset code (`GlueCoincidentBrepVertices`, `ResolveOverlappingProtoEdges`,
    `DoExtendedOffset`), nothing for the steps of
    `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail` and the plain shell of
-   crescendo part 40 (with `quarantine_size_mb=8192`); for the plane test,
+   crescendo part 40 (with `quarantine_size_mb=8192`; the `ShellBrep` change has no check of its
+   own, as its path never ran in the runs measured); for the plane test,
    `tests/test_surfaces.py::test_bspline_faces_with_a_bump_stay_curved` must still pass; for the
    seam check, `tests/test_step_import.py::test_seam_checks_on_import_free_their_curves` must still
    pass and AddressSanitizer report nothing for `tests/test_step_import.py`; for the tight box,

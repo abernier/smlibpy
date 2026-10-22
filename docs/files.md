@@ -104,7 +104,8 @@ millimeters whatever unit the file uses.
 
 Each face is rebuilt on the exact surface from the file and each edge on its exact curve:
 a cylinder stays a cylinder, and a NURBS surface keeps its control points and knots. Faces
-share their edges as they do in the file, so nothing is stitched together by tolerance.
+share their edges and vertices as they do in the file (a body has exactly the file's vertices),
+so nothing is stitched together by tolerance.
 A body that still comes out invalid goes through the kernel's healer; valid bodies are
 left alone, and `heal=False` skips healing.
 

@@ -84,6 +84,10 @@ a.distance_to((0, 0, 30))        # to a point
 a.closest_point((0, 0, 30))      # Vector(0, 0, 5)
 ```
 
+The distance between bodies is exact, also between faces that are nearly parallel: the closest
+points are refined on the faces' own parameters until they settle, and `distance_to` warns if
+they do not.
+
 ## Rays
 
 `raycast` gives the exact points where a ray meets a body (or a face, or a mesh), nearest

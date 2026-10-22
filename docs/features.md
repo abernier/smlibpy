@@ -102,6 +102,11 @@ case = Box(80, 50, 30).shell(2.5)                # closed, hollow inside
 lining = Box(80, 50, 30).shell(2.5, outward=True)  # walls grow outside instead
 ```
 
+With openings, walls that do not fit into the part (measured across it from each face) raise a
+`ModelingError` before the kernel runs; results whose faces do not meet, or that have no cavity
+where no wall reaches, raise one too. `shell`, `offset` and `thicken` run the kernel in a forked copy of the process (Linux,
+macOS), so a crash of its offset code raises a `ModelingError` too, and this process goes on.
+
 ## Offset
 
 ```python

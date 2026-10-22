@@ -19,7 +19,8 @@ and picks the format from the extension.
 
 ## Returns
 `load` of an `.smb` gives a `Part`. A body that does not enclose a volume (a sketch, face or
-surface) comes back as a `Shell`.
+surface) comes back as a `Shell`. A merged part comes back with its cells (`cells()`, `volume`),
+and a broken solid as a `Part` whose `is_valid()` is False.
 
 ## .smb compared with STEP
 | | `.smb` | STEP |

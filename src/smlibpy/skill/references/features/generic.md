@@ -39,8 +39,12 @@ check `is_valid()` after each step and fix the step that broke it.
 ## Errors
 `ModelingError` means smlibpy rejected the input or the result (it names the limit where it
 can). `KernelError` (a `ModelingError`) carries the kernel status (`SM_ERR`, `SM_ERR_INVALID_INPUT`,
-`SM_ERR_AXIS_INSIDE_FACE`) and a hint; the hint is a guess. `ValueError`/`TypeError` mean a
-wrong argument (a radius or length that is not positive, a zero thickness or angle).
+`SM_ERR_AXIS_INSIDE_FACE`, `SM_ERR_BAD_INTERSECTIONS`) and a hint; the hint is a guess, except
+that `SM_ERR_INVALID_INPUT` from a fillet or chamfer means no size works for that selection.
+`ValueError`/`TypeError` mean a wrong argument (a radius or length that is not positive, a zero
+thickness or angle, a `(start, end)` radius where it cannot hold). Shell, offset and thicken run
+the kernel in a forked copy of the process (Linux, macOS): a crash there is a `ModelingError`
+("the kernel crashed ... in a copy of this process"), and this process goes on.
 
 ## Order
 Main body → additions → subtractions → fillets and chamfers → shell (or shell earlier when

@@ -69,6 +69,7 @@
 
 ### 6. `Part.is_valid()` is True for a self-intersecting body with negative volume
 - **Fixed:** is_valid() also requires a positive volume (coarse integration); the revolve raises before that anyway.
+- **Reopened, fixed again (kernel plan B1, B2):** Boolean results skipped the check (they were marked sound when made): `Box(10, 10, 10) - Torus(10, 3).translate(-10, 5, 0)` had volume -776.529 and was valid. `is_valid()` now integrates every result when asked; the moved torus also keeps its tolerance now (B1), and the cut is a valid 716.84.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, script `16-part-metadata-validity.py`
 - **What happens:** `Rectangle(10, 10).on(Plane.front).revolve()` (profile crosses the axis)
   gives `Part(6 faces, volume=-785.404)` and `is_valid()` → True.

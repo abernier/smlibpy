@@ -8,7 +8,8 @@ A solid through a series of cross sections (closed sections), or a surface throu
 - `sections`: two or more, in order. Closed: sketches, planar faces, closed wires (`Polyline(..., close=True)`).
   Open: edges or open wires (result is a `Shell`). Do not mix closed and open. Closed sections
   may have holes; every section needs the same number of them.
-- `ruled=True`: straight transitions between neighbouring sections (degree 1).
+- `ruled=True`: straight transitions between neighbouring sections (degree 1), for closed and
+  open sections alike (three lines: two flat faces).
 - `smooth`: only matters with **four or more** sections (cubic instead of quadratic). With three
   sections the loft is quadratic either way; with two it is always straight.
 - There is no `closed` option (no loft back to the first section).
@@ -42,7 +43,7 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
   Use `ruled=True` when a section must stay the widest.
 - Sections out of order (z 0, 20, 10) loop back and overshoot (z max 20.37) without an error.
 - Open curves must run the same way: two lines in opposite directions make a bow-tie surface
-  (area 55.9 instead of 111.8). Single-edge open curves ignore `ruled`.
+  (area 55.9 instead of 111.8).
 - Two sections in the same plane: `KernelError: loft failed (SM_ERR_INVALID_INPUT): sections
   should be closed, ordered and not intersect each other`.
 

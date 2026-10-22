@@ -140,6 +140,10 @@
 ### 37. Kernel: crashes and endless loops in the feature executive's patching
 - **Guarded:** `remove_fillets` / `remove_faces` run each kernel step first in a forked copy
   (`smlibpy.defeature.GUARD_SECONDS`, Linux and macOS); a crash or a hang only drops that step.
+- **Guarded in smlibwasm too (kernel plan W2):** `removeFillets`, `removeFaces` and `surfaceFillet`
+  run each step first in a probe worker with a kernel of its own (Node, and Web Workers of
+  cross-origin isolated pages); the enclosure's looping round is dropped after `GUARD_SECONDS`
+  instead of freezing the tab. On a page's main thread the steps still run directly.
 - **Partly fixed** in smlibpy's kernel build: `SmProtoTopologyManager::GlueCoincidentBrepVertices`
   called `Destruct()` on the edge definitions of the short edges it deletes, which freed curves
   the Breps still used (read in `SmEdge::CalculateBoundingBox` and `~SmEdgeuse`; `Ventil.stp`).
@@ -321,6 +325,7 @@
 - **Expected:** docstring "with four or more sections".
 
 ### 17. `loft` of single-edge open curves ignores `ruled`
+- **Fixed (kernel plan S5):** open sections all go through `create_skin_primitive` with the degree `ruled` and `smooth` give: the three lines with `ruled=True` make 2 flat faces of 223.607; the default surface is unchanged.
 - **Session:** `2026-10-12_21-30-02_features-loft-sweep`, script `07-loft-open-bent.py`
 - **What happens:** three lines with `ruled=True` → area 229.56 (smooth skin), ruled would be 223.61.
 

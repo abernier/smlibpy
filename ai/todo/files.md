@@ -173,6 +173,7 @@
 - **Expected:** the same meaning for both, or another name (`bbox().center`).
 
 ### 15. `.smb` drops name and color; `docs/files.md` calls it "exact and lossless"
+- **Docs fixed (kernel plan U1):** `docs/files.md`, the file guides and the docstrings no longer say "lossless": the geometry is exact, but B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those. Name and color are still dropped. Merged parts now come back with their cells (kernel plan X8).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `08-smb-save-load.py`
 - **What happens:** `load(save(...))` of a named, colored part gives `name None`, `color None`.
   The geometry is bit-exact.

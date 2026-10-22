@@ -4,6 +4,7 @@
 
 ### 1. `Part.distance_to(body)`: wrong when the nearest points form a line (parallel cylinders)
 - **Fixed:** distance_to between bodies is computed by smlibpy: mesh vertices nearest to the other body seed alternating exact closest-point projections; parallel cylinders give 12.0.
+- **Fixed again (kernel plan A1):** between nearly parallel faces the alternating projections stopped short: cylinders 2 mm apart and skew by 1, 5 and 10 degrees gave 2.1197, 2.4853 and 2.0162. `ext.nearest_points` finishes each seed with damped Newton on the faces' parameters: 2.0 for all three, and none of 101 random pairs off OpenCASCADE by more than 1e-15 of the distance; a warning comes where the points do not settle.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `05-distance-cylinders.py`, `06-distance-survey.py`, `07-distance-workaround.py`
 - **What happens:** two parallel cylinders give a distance that is too small by 1.7 to 3.6 mm,
   silently, at the origin. A cylinder beside a box face parallel to its axis: 7.22 instead of
@@ -40,6 +41,7 @@
 
 ### 3. `Part.is_valid()`: True for a body with zero volume and for a self-overlapping sweep
 - **Fixed:** is_valid() requires a positive volume and revolve raises for an axis through the region; self-overlapping sweeps are still not detected.
+- **Reopened, fixed again (kernel plan B2):** Boolean results were marked sound when they were made, so `is_valid()` never integrated them: an intersection of two cylinders larger than its operand (250.206 against 150.796) was valid. `is_valid()` now integrates every result once when asked, and is also False where the gaps between the faces make the volume uncertain by 1e-2 or more; that intersection now raises in the Boolean itself (B3).
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, scripts `13-is-valid-info.py`, `14-validity-detection.py`
 - **What happens:** a rectangle revolved about an axis through its middle returns a Part with
   `is_valid() == True` and volume -1.8e-21 (it looks like a cylinder). A circle r4 swept along
