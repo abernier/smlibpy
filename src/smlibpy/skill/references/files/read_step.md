@@ -6,13 +6,14 @@ cutting tools so: the tool's solids, its coordinate systems (`MCS`, `PCS`, `CSW1
 cutting edge lines and reference points (`CRP`).
 
 ## Signature
-`read_step(path, *, heal=True)`
+`read_step(path, *, heal=True, strict=False)`
 
 - `path`: `str` or `pathlib.Path`.
-- `heal`: as for `import_step`.
+- `heal`, `strict`: as for `import_step`.
 
 ## Returns
-A `StepModel` with four lists, each item at its place in the assembly, in mm:
+A `StepModel` with four lists, each item at its place in the assembly, in mm, and the bodies
+left out:
 - `bodies`: a `ShapeList` of `Part`s and `Shell`s, the same as `import_step` gives, also when there
   is one body or none.
 - `frames`: `StepFrame(name, plane, product, color)`. `plane` is a `Plane` (origin, `x_dir`,
@@ -20,6 +21,9 @@ A `StepModel` with four lists, each item at its place in the assembly, in mm:
 - `curves`: `StepCurve(name, shape, product, color)`. `shape` is an `Edge` (a `Wire` for a composite
   curve) with its exact type: B-spline, line segment, arc, ellipse.
 - `points`: `StepPoint(name, point, product, color)`, `point` a `Vector`.
+- `skipped`: one message (`str`) per body that could not be read, as the warning says it:
+  `"body 'b' (#99): curve type OFFSET_CURVE_3D (#203), which is not supported"`. Empty when every
+  body was read; `repr` then says nothing of it.
 
 `product` is the name of the part or assembly the item belongs to (`""` without product
 structure). `color` is `(r, g, b)` in 0..1 or `None`.
@@ -54,6 +58,10 @@ mcs = tool.frame("MCS", product="NOCUT")   # Plane.XY: the tool's mounting syste
   named points; the live view of a session shows the bodies and curves.
 - Wireframe-only files (sketches, curve sets), which `import_step` refuses: `read_step` gives
   their curves and no bodies.
+- Writing it back: `export_step(tool, "out.step")` writes the bodies with the frames, curves and
+  points (names and colors kept); `export_step([part, StepFrame("MCS", plane), StepCurve("path",
+  wire), StepPoint("CRP", Vector(0, 0, 5))], path)` writes new ones. All three are values:
+  `StepFrame(name, plane, product="", color=None)`, the same order of fields for the others.
 
 ## Gotchas
 - **Names repeat across products.** Each part of a tool assembly has its own `MCS` and `PCS`;
@@ -72,4 +80,5 @@ mcs = tool.frame("MCS", product="NOCUT")   # Plane.XY: the tool's mounting syste
 - `model.frame(...)`: `KeyError` when no coordinate system or several have the name.
 
 ## Related
-`import_step` (the bodies alone), `Plane`, `Location`, `render`, `show`, `import_dxf_wires`.
+`import_step` (the bodies alone), `export_step` (writes a `StepModel` back), `Plane`, `Location`,
+`render`, `show`, `import_dxf_wires`.

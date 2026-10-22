@@ -22,7 +22,7 @@ INDEX = ROOT / "js" / "src" / "index.ts"
 
 # smlibwasm's names that differ from Python's: `export` cannot name a function, and the files in
 # memory (toStep, fromStep, ...) take the options of Python's functions for files (toStep without
-# their path).
+# their path), which Python's own (to_step, from_step, ...) take too.
 ALIASES = {
     "exportFile": "export",
     "toStep": "export_step",
@@ -37,16 +37,14 @@ ALIASES = {
     "fromStepModel": "read_step",
     "fromDxf": "import_dxf",
     "fromDxfWires": "import_dxf_wires",
-    "fromUsd": "import_usd",
+    "fromIges": "import_iges",
 }
 
 # Functions whose **kwargs Python passes on to another function, which checks them.
 FORWARDS = {"export_gltf": "smlibpy.exporters.gltf_document_mixed"}
 
-# Options only smlibwasm has: fromUsd reads text in memory, so the layers a USD file names
-# (subLayers, references, payloads) come from a function of the caller's, where Python (and
-# importUsd) read the files.
-JS_ONLY = {"fromUsd": ["resolve"]}
+# Options only smlibwasm has (none now: fromUsd's resolve is from_usd's too).
+JS_ONLY: dict[str, list[str]] = {}
 
 HEADER = """\
 // Generated from smlibpy's signatures by tools/gen_js_options.py: do not edit. Run it after

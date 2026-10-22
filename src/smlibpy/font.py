@@ -56,8 +56,11 @@ class FontError(ValueError):
     """The file is not a font this reader can use."""
 
 
-def load_font(path: str | os.PathLike[str] | None = None) -> Font:
-    """The font at ``path`` (the bundled default without one), read once and kept."""
+def load_font(path: str | os.PathLike[str] | bytes | None = None) -> Font:
+    """The font at ``path`` (the bundled default without one), read once and kept; or the font of
+    the bytes of a font file (``bytes``, such as an upload), read once per contents."""
+    if isinstance(path, (bytes, bytearray, memoryview)):
+        return _bytes_font(bytes(path))
     p = Path(os.fspath(path)).expanduser() if path is not None else DEFAULT_FONT
     if not p.is_file():
         raise FileNotFoundError(f"no font file {str(p)!r}")
@@ -68,6 +71,11 @@ def load_font(path: str | os.PathLike[str] | None = None) -> Font:
 @functools.lru_cache(maxsize=16)
 def _cached_font(path: str, mtime: int, size: int) -> Font:
     return Font(path)
+
+
+@functools.lru_cache(maxsize=16)
+def _bytes_font(data: bytes) -> Font:
+    return Font(data)
 
 
 # =============================================================================
@@ -96,14 +104,23 @@ def _f2dot14(b: bytes, o: int) -> float:
 class Font:
     """One font: its characters, metrics, kerning and glyph outlines (font units, y up)."""
 
-    def __init__(self, path: str | os.PathLike[str]):
-        self.path = os.fspath(path)
-        with open(self.path, "rb") as fh:
-            data = fh.read()
-        self._tables, self._fonttools = _read_tables(data, self.path)
+    def __init__(self, path: str | os.PathLike[str] | bytes):
+        #: The font file's path; None for a font read from bytes.
+        self.path: str | None
+        if isinstance(path, (bytes, bytearray, memoryview)):
+            self.path = None
+            data = bytes(path)
+            self._source: str | bytes = data
+        else:
+            self.path = os.fspath(path)
+            with open(self.path, "rb") as fh:
+                data = fh.read()
+            self._source = self.path
+        label = self.path if self.path is not None else "font data"
+        self._tables, self._fonttools = _read_tables(data, label, self._source)
         for tag in ("head", "hhea", "hmtx", "maxp", "cmap"):
             if tag not in self._tables:
-                raise FontError(f"{self.path}: not a usable font (no {tag!r} table)")
+                raise FontError(f"{label}: not a usable font (no {tag!r} table)")
         head = self._tables["head"]
         self.units_per_em = _u16(head, 18)
         self._long_loca = _i16(head, 50) == 1
@@ -111,7 +128,7 @@ class Font:
         self._num_hmetrics = _u16(self._tables["hhea"], 34)
         os2 = self._tables.get("OS/2")
         cap = _i16(os2, 88) if os2 is not None and len(os2) >= 90 and _u16(os2, 0) >= 2 else 0
-        self.name = _font_name(self._tables.get("name")) or Path(self.path).stem
+        self.name = _font_name(self._tables.get("name")) or (Path(self.path).stem if self.path else "font")
         if "glyf" in self._tables and "loca" in self._tables:
             self._outlines: Any = _TrueTypeOutlines(self._tables["glyf"], self._tables["loca"], self._long_loca,
                                                     self.num_glyphs)
@@ -121,7 +138,7 @@ class Font:
             self._outlines = _FontToolsOutlines(self._fonttools)
         else:
             kind = "CFF2 (variable OpenType)" if "CFF2" in self._tables else "this kind of"
-            raise FontError(f"{self.path}: {kind} outlines need the fontTools package; "
+            raise FontError(f"{label}: {kind} outlines need the fontTools package; "
                             "install it or use a TrueType or CFF font")
         self._cmap = _read_cmap(self._tables["cmap"])
         self._kern: _Kerning | None = None
@@ -183,7 +200,7 @@ class Font:
         if self._fallback is None:
             if self._fonttools is None:
                 try:
-                    self._fonttools = _fonttools_font(self.path, "these glyphs")
+                    self._fonttools = _fonttools_font(self._source, "these glyphs")
                 except FontError:
                     return None
             self._fallback = _FontToolsOutlines(self._fonttools)
@@ -203,14 +220,15 @@ class Font:
 # =============================================================================
 # Containers: sfnt, TTC, WOFF (and WOFF2 through fontTools)
 # =============================================================================
-def _read_tables(data: bytes, path: str) -> tuple[dict[str, bytes], Any]:
+def _read_tables(data: bytes, path: str, source: str | bytes | None = None) -> tuple[dict[str, bytes], Any]:
+    source = path if source is None else source
     if len(data) < 12:
         raise FontError(f"{path}: not a font file")
     tag = data[:4]
     if tag == b"wOFF":
         return _woff_tables(data, path), None
     if tag == b"wOF2":
-        tt = _fonttools_font(path, "WOFF2 fonts")
+        tt = _fonttools_font(source, "WOFF2 fonts")
         return {t: tt.getTableData(t) for t in tt.keys() if t != "GlyphOrder"}, tt
     offset = 0
     if tag == b"ttcf":
@@ -229,7 +247,7 @@ def _read_tables(data: bytes, path: str) -> tuple[dict[str, bytes], Any]:
         tables[t] = data[off:off + length]
     tt = None
     if "CFF2" in tables and "glyf" not in tables and "CFF " not in tables:
-        tt = _fonttools_font(path, "CFF2 (variable OpenType) outlines")
+        tt = _fonttools_font(source, "CFF2 (variable OpenType) outlines")
     return tables, tt
 
 
@@ -247,16 +265,20 @@ def _woff_tables(data: bytes, path: str) -> dict[str, bytes]:
     return tables
 
 
-def _fonttools_font(path: str, what: str) -> Any:
+def _fonttools_font(source: str | bytes, what: str) -> Any:
+    """fontTools' font of a file (its path) or of the bytes of one."""
+    label = "font data" if isinstance(source, bytes) else source
     try:
         from fontTools.ttLib import TTFont
     except ImportError:
-        raise FontError(f"{path}: {what} need the fontTools package; install it or convert the font "
+        raise FontError(f"{label}: {what} need the fontTools package; install it or convert the font "
                         "to TTF or OTF") from None
     try:
-        return TTFont(path, fontNumber=0, lazy=True)
+        import io
+
+        return TTFont(io.BytesIO(source) if isinstance(source, bytes) else source, fontNumber=0, lazy=True)
     except Exception as e:  # brotli missing for WOFF2, damaged files
-        raise FontError(f"{path}: fontTools cannot read it ({e})") from None
+        raise FontError(f"{label}: fontTools cannot read it ({e})") from None
 
 
 def _font_name(table: bytes | None) -> str | None:

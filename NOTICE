@@ -16,7 +16,9 @@ A few USD BRep source files are compiled from copies modified by AWV Informatik 
 fix defects; the copies are in third_party/patches, each with a notice of what was
 changed, and third_party/patches/README.md lists the changes. A few NLib functions that
 USD BRep compiles out (surface region warp and flattening) are compiled from a copy in
-src/cpp/nlib_shape.cpp, modified by AWV Informatik AG as its notice says.
+src/cpp/nlib_shape.cpp, modified by AWV Informatik AG as its notice says. The OpenCASCADE
+.brep bridge of USD BRep is compiled from copies in src/cpp/occt, some of them modified by
+AWV Informatik AG; src/cpp/occt/README.md lists the files and the changes.
 
 The default font of Text, Lato Regular (src/smlibpy/fonts/Lato-Regular.ttf), is included
 unmodified:

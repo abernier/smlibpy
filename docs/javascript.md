@@ -66,16 +66,23 @@ geometry.setIndex(new THREE.BufferAttribute(mesh.triangles, 1))
 geometry.computeVertexNormals()
 ```
 
-Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj` and `toDxf` give a
-file's contents, and `fromStep`, `fromStl` and `fromDxf` read them, from text or bytes:
+Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj`, `toDxf`, `toUsd`, `toBrep`,
+`toSmb` and `toSmp` give a file's contents, and `fromStep`, `fromIges`, `fromStl`, `fromDxf`, `fromUsd`,
+`fromBrep`, `fromSmb` and `fromSmp` read them, from text or bytes (smlibpy has the same pairs: `to_step`,
+`from_step`, ...):
 
 ```js
 const part = fromStep(await file.text()) // a File from an <input type="file">
 const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
 ```
 
+`toSmp` writes SMLib's part file, which keeps several exact bodies with their names and colors,
+and curves; `fromSmp` reads it (and part files of other SMLib programs).
+
 `fromStepModel(data)` reads a STEP file with the coordinate systems, curves and points it holds
-besides its bodies (`readStep(path)` in Node). `htmlPage(part)` is a page with a 3D viewer for an
+besides its bodies (`readStep(path)` in Node); `toStep` writes them, a `StepModel` whole or
+`new StepCurve('path', wire)`, `new StepPoint('CRP', vector)` and `new StepFrame('MCS', plane)`
+beside the bodies (an edge, a vector or a plane alone is written unnamed). `htmlPage(part)` is a page with a 3D viewer for an
 iframe (`iframe.srcdoc = htmlPage(part)`), and `render(part)` draws a PNG (`picture.data`) without
 a GPU.
 
@@ -1311,6 +1318,7 @@ export function exportFile(shapes: unknown, path: string, options?: Record<strin
 export interface StepExportOptions {
     unit?: string;
     name?: string | null;
+    assembly?: boolean;
 }
 export function exportStep(shapes: unknown, path: string, options?: StepExportOptions): void;
 export function toStep(shapes: unknown, options?: StepExportOptions): string;
@@ -1340,6 +1348,10 @@ export function toSmb(shapes: unknown, options?: {
     ascii?: boolean;
 }): Uint8Array;
 export function fromSmb(data: string | Uint8Array): Part | Shell;
+export function toSmp(shapes: unknown, options?: {
+    ascii?: boolean;
+}): Uint8Array;
+export function fromSmp(data: string | Uint8Array): Shape | ShapeList<Shape>;
 export function save(shapes: unknown, path: string, options?: {
     ascii?: boolean;
 }): void;
@@ -1377,23 +1389,34 @@ export class StepModel {
     readonly frames: StepFrame[];
     readonly curves: StepCurve[];
     readonly points: StepPoint[];
-    constructor(bodies: ShapeList<Part | Shell>, frames?: StepFrame[], curves?: StepCurve[], points?: StepPoint[]);
+    readonly skipped: string[];
+    constructor(bodies: ShapeList<Part | Shell>, frames?: StepFrame[], curves?: StepCurve[], points?: StepPoint[], skipped?: string[]);
     frame(name: string, product?: string | null): Plane;
     equals(other: unknown): boolean;
     toString(): string;
 }
 export function fromStepModel(data: string | Uint8Array, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): StepModel;
 export function readStep(path: string, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): StepModel;
 export function fromStep(data: string | Uint8Array, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
 export function importStep(path: string, options?: {
     heal?: boolean;
+    strict?: boolean;
 }): Part | Shell | ShapeList<Part | Shell>;
+export interface IgesImportOptions {
+    heal?: boolean;
+    strict?: boolean;
+}
+export function fromIges(data: string | Uint8Array, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function importIges(path: string, options?: IgesImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export interface DxfReadOptions {
     layers?: Iterable<string> | string | null;
     unit?: string | null;
@@ -1415,6 +1438,7 @@ export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;
     angle?: number;
+    materials?: boolean;
 }
 export function toUsd(shapes: unknown, options?: UsdExportOptions): string;
 export function exportUsd(shapes: unknown, path: string, options?: UsdExportOptions): void;
@@ -1423,12 +1447,21 @@ export interface UsdImportOptions {
     units?: string | null;
     placement?: boolean;
     check?: boolean;
+    partial?: boolean;
 }
 export interface UsdReadOptions extends UsdImportOptions {
     resolve?: ((asset: string, from: string) => string | Uint8Array | null | undefined) | null;
 }
 export function fromUsd(data: string | Uint8Array, options?: UsdReadOptions): Part | Shell | ShapeList<Part | Shell>;
 export function importUsd(path: string, options?: UsdImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export interface BrepImportOptions {
+    heal?: boolean;
+    check?: boolean;
+}
+export function toBrep(shapes: unknown): string;
+export function exportBrep(shapes: unknown, path: string): void;
+export function importBrep(path: string, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
+export function fromBrep(data: string | Uint8Array, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
 ```
 
 ### Pictures and the viewer

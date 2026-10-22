@@ -6,6 +6,9 @@
 //   tight box of an edge whose B-spline runs past the edge took in points off the edge, such as
 //   (1234560, 1234560, 1234560) for the lines of a box read from a USD file that wrote them over
 //   SMLib's unbounded line interval; the body's box (Part.bbox) then reached that far.
+//   sm_FilterSolution evaluates both curves with their 2nd derivatives: sm_UnitizeTangent reads the
+//   2nd derivative where the 1st is zero, and read past the two vectors evaluated before (found
+//   with AddressSanitizer when checking bodies read from OpenCASCADE .brep files).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -4661,9 +4664,11 @@ static SmStatus sm_FilterSolution
   // If we have an inexact answer see if it lies on a boundary
 
   // Get Solution CurvePoints and CurveTangents
-  SmVector3d sPV1[2], sPV2[2];
-  SER(crCurve1.Evaluate(crSolution.m_vStart[0],1,TRUE,sPV1, TRUE));   // nonZeroTangent values
-  SER(crCurve2.Evaluate(crSolution.m_vStart[1],1,TRUE,sPV2, TRUE));   // nonZeroTangent values
+  // smlibpy patch: room for the 2nd derivative, which sm_UnitizeTangent reads below where the
+  // 1st is zero (it read past arrays of two)
+  SmVector3d sPV1[3], sPV2[3];
+  SER(crCurve1.Evaluate(crSolution.m_vStart[0],2,TRUE,sPV1, TRUE));   // nonZeroTangent values
+  SER(crCurve2.Evaluate(crSolution.m_vStart[1],2,TRUE,sPV2, TRUE));   // nonZeroTangent values
 
   // keep answers good to ScaledZero.  [tol value: 080704]
   // dScaledZero needs to be sensitive to parameter values [B628]

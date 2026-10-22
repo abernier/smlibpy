@@ -10,7 +10,8 @@ that are engraved into a part or stand out of it.
 - `size`: the height of the capital letters in mm (the nominal height of technical lettering):
   `Text("H", 10)` is exactly 10 tall. Not the font's em size (13.96 mm at size 10 for the
   default font).
-- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font) or `.woff` file. Default: Lato
+- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font) or `.woff` file, or the `bytes` of
+  one (an upload, a font from a package's data; read once per contents). Default: Lato
   Regular, bundled (263 characters: Latin-1, Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`).
 - `align`: where the *layout box* sits: from the start to the end of the longest line (advance
   widths, not ink) and from the baseline of the last line to the cap height of the first.

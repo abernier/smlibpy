@@ -103,6 +103,8 @@ export {
   save,
   fromSmb,
   toSmb,
+  fromSmp,
+  toSmp,
   fromStl,
   toGlb,
   toGltf,
@@ -116,12 +118,14 @@ export {
   fromStepModel,
   importStep,
   readStep,
-  type StepCurve,
-  type StepFrame,
-  type StepPoint,
+  StepCurve,
+  StepFrame,
+  StepPoint,
 } from './step_import.ts'
+export { fromIges, importIges, type IgesImportOptions } from './iges_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
+export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
 export { htmlPage, show, type PageOptions, type ShowOptions } from './viewer.ts'
 // errors and warnings

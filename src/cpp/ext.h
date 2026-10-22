@@ -89,3 +89,7 @@ void bind_fill(py::module_ m);
 void bind_shape_edit(py::module_ m);
 // Matching sheet edges to curves, merging faces, surfaces from NURBS data, distances (sheet_edit.cpp).
 void bind_sheet_edit(py::module_ m);
+// SMLib part files (.smp): bodies and curves with names and colors (part_file.cpp).
+void bind_part_files(py::module_ m);
+// OpenCASCADE .brep files (occt.cpp): occt_read, occt_text
+void bind_occt_files(py::module_ m);

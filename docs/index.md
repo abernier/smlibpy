@@ -20,7 +20,8 @@ feature returns a new part. Faces and edges are picked by their geometry, for ex
 `part.edges().parallel_to(Z).concave()`. Fillets can be circular, variable or G2/G3, and there
 are shells, lofts, sweeps, freeform surfaces (also fitted to point clouds), blends between
 surfaces, parts of several cells, stitching, intersections, rays and mass properties. STEP, USD
-and DXF files are read and written with the exact geometry; meshes go to glTF and STL.
+and DXF files are read and written with the exact geometry, IGES files read; meshes go to glTF and
+STL.
 Text comes from TrueType and OpenType fonts as exact outlines, ready to engrave or emboss.
 
 <div class="grid cards" markdown>

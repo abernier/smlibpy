@@ -188,8 +188,10 @@ for (const [name, make] of USD_PARTS) {
     const back = fromUsd(toUsd(part.named(name))) as Part
     assert.ok(back instanceof Part && back.name === name && back.isValid())
     assert.equal(back.faces().length, part.faces().length)
-    approx(back.volume, part.volume, 1e-12)
+    // (the kernel makes the trim curves of the cone from its circle edges, written as circles: 3e-12)
+    approx(back.volume, part.volume, 1e-11 * part.volume)
     assert.deepEqual(back.faces().map((f) => f.geomType), part.faces().map((f) => f.geomType))
+    assert.deepEqual(back.edges().map((e) => e.geomType), part.edges().map((e) => e.geomType))
   })
 }
 
@@ -333,8 +335,9 @@ test('usd values the conversion cannot take throw', () => {
     ['ring', 'brep:surface:torus:axis', '(0, 0, 0)', 'face 0: the axis has no length (BA.523-525)'],
     ['tube', 'brep:surface:cylinder:axis', '(0, 0, 0)', 'the axis has no length (BA.502-504)'],
     ['tube', 'brep:surface:cylinder:radius', '0', "the cylinder's radius is 0, not positive (BA.501)"],
-    ['cube', 'brep:edge3dNurb:curve3d:nurb:weights', '0', 'body 0, edge 0: its NURBS curve has a weight of 0, not positive (BA.350)'],
-    ['cube', 'brep:edge3dNurb:curve3d:nurb:controlVertices', '(nan, 0, 0)', 'brep:edge3dNurb:curve3d:nurb:controlVertices[0] is not a finite number (BA.660)'],
+    ['loft', 'brep:edge3dNurb:curve3d:nurb:weights', '0', 'body 0, edge 0: its NURBS curve has a weight of 0, not positive (BA.350)'],
+    ['loft', 'brep:edge3dNurb:curve3d:nurb:controlVertices', '(nan, 0, 0)', 'brep:edge3dNurb:curve3d:nurb:controlVertices[0] is not a finite number (BA.660)'],
+    ['cube', 'brep:edge3dLine:curve3d:line:direction', '(0, 0, 0)', "body 0, edge 0: the line's direction has no length (BA.541)"],
     ['cube', 'brep:intersectTol3d', '0', 'body 0: brep:intersectTol3d is 0, not positive (BA.010)'],
     ['cube', 'edge:range', 'inf', 'edge:range[0] is not a finite number (BA.660)'],
   ]
@@ -488,56 +491,66 @@ over "Nothing"
   assert.throws(() => fromUsd(`${head}def Xform "L" (\n    references = </L>\n)\n{\n}\n`), /references go round in a circle/)
 })
 
-/** A smlibwasm box's BrepArray with its edges as BrepCurve3dLineAPI lines (as usd-brep and
- * OpenCASCADE's bridge write them), from its two-point NURBS edges. */
-function lineEdges(text: string): string {
-  const cvs = /edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n/.exec(text)![1]
-  const points = Array.from(cvs.matchAll(/\(([^)]*)\)/g), (m) => m[1].split(',').map(Number))
-  const origins: string[] = []
-  const directions: string[] = []
-  for (let i = 0; i < points.length; i += 2) {
-    const [a, b] = [points[i], points[i + 1]]
-    const d = b.map((y, k) => y - a[k])
-    const n = Math.hypot(...d)
-    origins.push(`(${a.map(f).join(', ')})`)
-    directions.push(`(${d.map((c) => f(c / n)).join(', ')})`)
-  }
-  return text
-    .replace(/ {8}uniform \w+\[\] brep:edge3dNurb:[^\n]*\n/g, '')
-    .replaceAll('"BrepCurve3dNurbAPI:edge3dNurb"', '"BrepCurve3dLineAPI:edge3dLine"')
-    .replaceAll('"BrepCurve3dNurbAPI"', '"BrepCurve3dLineAPI"')
-    .replace(
-      '        uniform double[] edge:range',
-      `        uniform point3d[] brep:edge3dLine:curve3d:line:origin = [${origins.join(', ')}]\n        uniform vector3d[] brep:edge3dLine:curve3d:line:direction = [${directions.join(', ')}]\n        uniform double[] edge:range`,
-    )
-}
-
 test('usd line edges are written as long as the edges', () => {
-  // A body read with analytic line edges keeps SMLib's lines, whose interval is unbounded: they were
-  // written as B-splines 2.5 km long (control points at 1234572; usd-brep's validator: BA.365). Read
-  // back, the kernel's tight box of such an edge took in the knots past its end
-  // (SmCurve::CalculateTightBoundingBox, patched; natively bbox reached 1234560).
-  const box = fromUsd(lineEdges(toUsd(Box(10, 10, 10), { mesh: false }))) as Part
+  // SMLib's lines have an unbounded interval: they were written as B-splines 2.5 km long (control
+  // points at 1234572; usd-brep's validator: BA.365). Read back, the kernel's tight box of such an edge
+  // took in the knots past its end (SmCurve::CalculateTightBoundingBox, patched; natively bbox reached
+  // 1234560). Lines are written as lines now (X5).
+  const text = toUsd(Box(10, 10, 10), { mesh: false })
+  assert.ok(text.includes('BrepCurve3dLineAPI:edge3dLine') && !text.includes('edge3dNurb'))
+  const box = fromUsd(text) as Part
   assert.deepEqual(box.edges().map((e) => e.geomType), Array(12).fill('line'))
   approx(box.volume, 1000, 1e-9)
-  const text = toUsd(box, { mesh: false })
-  const cvs = /edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n/.exec(text)![1]
-  approx(Math.max(...Array.from(cvs.matchAll(/-?[\d.e+-]+/g), (m) => Math.abs(Number(m[0])))), 5, 1e-9) // was 1234572
-  const back = fromUsd(text) as Part
-  back.bbox().max.toArray().forEach((c) => approx(c, 5, 1e-9))
-  // such a file as it was written before: the box of the body read back is its own
-  const pts = Array.from(cvs.matchAll(/\(([^)]*)\)/g), (m) => m[1].split(',').map(Number))
-  const far: string[] = []
-  for (let i = 0; i < pts.length; i += 2) {
-    const [a, b] = [pts[i], pts[i + 1]]
-    const d = b.map((y, k) => (y - a[k]) / 10)
-    far.push(`(${a.map((x, k) => f(x - 1234567 * d[k])).join(', ')})`, `(${a.map((x, k) => f(x + 1234567 * d[k])).join(', ')})`)
-  }
-  const old = text
-    .replace(/(edge3dNurb:curve3d:nurb:knots = \[)[^\]]*/, (_, s: string) => s + Array(12).fill('-1234567, -1234567, 1234567, 1234567').join(', '))
-    .replace(cvs, far.join(', '))
-  ;(fromUsd(old) as Part).bbox().max.toArray().forEach((c) => approx(c, 5, 1e-9))
+  box.bbox().max.toArray().forEach((c) => approx(c, 5, 1e-9))
+  // such a file as smlibpy 0.4 wrote the lines of a body it had read: B-splines reaching 1234567
+  // along their parameter both ways (smlibwasm's own file: read as it is). The box of the body read
+  // back is its own.
+  const data = new URL('../../tests/data/usd_bspline_edges.usda', import.meta.url).pathname
+  const old = longLines(readFileSync(data, 'utf8').replace('string source = "another tool"', 'string source = "smlibpy"'))
+  const back = fromUsd(old) as Part
+  assert.equal(back.edges().filter((e) => e.geomType === 'bspline').length, 14)
+  const max = back.bbox().max.toArray()
+  ;[10, 10, 5].forEach((c, i) => approx(max[i], c, 1e-9)) // was 1234560
 })
+
+/** The text with each two-point NURBS edge (a line) reaching 1234567 along its parameter both ways,
+ * its edge as it was. */
+function longLines(text: string): string {
+  const values = (name: string): RegExpExecArray => new RegExp(`(edge3dNurb:curve3d:nurb:${name} = \\[)([^\\]]*)\\]`).exec(text) as RegExpExecArray
+  const counts = values('vertexCount')[2].split(', ').map(Number)
+  const orders = values('order')[2].split(', ').map(Number)
+  const knots = values('knots')[2].split(', ').map(Number)
+  const cvs = Array.from(values('controlVertices')[2].matchAll(/\(([^)]*)\)/g), (m) => m[1].split(',').map(Number))
+  const newKnots: number[] = []
+  const newCvs: number[][] = []
+  let ki = 0
+  let ci = 0
+  counts.forEach((n, i) => {
+    const o = orders[i]
+    let ks = knots.slice(ki, ki + n + o)
+    let pts = cvs.slice(ci, ci + n)
+    if (n === 2 && o === 2) {
+      const [a, b] = pts
+      const [t0, t1] = [ks[1], ks[2]]
+      const d = a.map((x, k) => (b[k] - x) / (t1 - t0))
+      pts = [-1234567, 1234567].map((t) => a.map((x, k) => x + d[k] * (t - t0)))
+      ks = [-1234567, -1234567, 1234567, 1234567]
+    }
+    newKnots.push(...ks)
+    newCvs.push(...pts)
+    ki += n + o
+    ci += n
+  })
+  for (const [name, joined] of [
+    ['knots', newKnots.map(f).join(', ')],
+    ['controlVertices', newCvs.map((p) => `(${p.map(f).join(', ')})`).join(', ')],
+  ]) {
+    const m = values(name)
+    const start = m.index + m[1].length
+    text = text.slice(0, start) + joined + text.slice(start + m[2].length)
+  }
+  return text
+}
 
 test('usd bodies that other writers left gaps in', () => {
   // The kernel's check runs on bodies smlibwasm did not write: a vertex moved off its edges by more

@@ -336,6 +336,11 @@ def _tessellate(shape: "Shape", tolerance: float | None, angle: float, keep: boo
         shape = shape.to_shell()
     if not isinstance(shape, _Body):
         raise TypeError(f"cannot tessellate a {type(shape).__name__}")
+    if shape._brep.face_count() == 0:
+        # (the kernel's own message for it was "tessellate failed")
+        name = f" {shape.name!r}" if shape.name else ""
+        raise ValueError(f"tessellate: the {type(shape).__name__}{name} is empty: it has no faces to mesh (a Boolean "
+                         "that left nothing?)")
     if tolerance is None:
         tolerance = max(shape.bbox().diagonal * 1e-3, 1e-6)
     if not tolerance > 0 or not angle > 0:

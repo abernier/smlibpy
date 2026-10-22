@@ -30,6 +30,8 @@
 #include "oriented_sweep.h"
 #include "revolutions.h"
 #include "seams.h"
+#include "occt.h"
+#include "part_file.h"
 #include "shape_edit.h"
 #include "sheetmetal.h"
 #include "shells.h"
@@ -218,7 +220,20 @@ uintptr_t build_brep(val faces, val edges, bool solid, bool reversed, bool mirro
     });
 }
 
+// The model-space curve of a curve in a surface's parameters, approximated within tolerance
+val curve_on_surface(val surface, val uv, double tolerance)
+{
+    return guard([&] { return to_js(smlibpy::curve_on_surface(from_js(surface), from_js(uv), tolerance)); });
+}
+
+// A Brep of one face that is the whole of a surface (a surface spec), within domain [u0, u1, v0, v1] or null
+uintptr_t surface_face(val surface, val domain)
+{
+    return guard([&] { return ptr(smlibpy::surface_face(from_js(surface), from_js(domain))); });
+}
+
 val inverted_faces(uintptr_t b) { return guard([&] { return to_js(smlibpy::inverted_faces(brep(b))); }); }
+val loop_areas(uintptr_t b) { return guard([&] { return to_js(smlibpy::loop_areas(brep(b))); }); }
 
 val seam_problems(uintptr_t b, bool fix, val only)
 {
@@ -956,8 +971,8 @@ uintptr_t flatten_face(uintptr_t b, uintptr_t f, val region, val origin, val nor
 }
 
 // items: [brep or null, name, [r, g, b] or null, points or null, triangles or null, normals or null, r, g, b per
-// triangle or null]
-std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
+// triangle or null
+std::string usd_text(val shapes, std::string up_axis, double meters_per_unit, bool materials)
 {
     return guard([&] {
         std::vector<smlibpy::UsdItem> in;
@@ -981,7 +996,7 @@ std::string usd_text(val shapes, std::string up_axis, double meters_per_unit)
                 item.face_colors = numbers(it[6]);
             in.push_back(std::move(item));
         }
-        return smlibpy::usd_text(in, up_axis, meters_per_unit);
+        return smlibpy::usd_text(in, up_axis, meters_per_unit, materials);
     });
 }
 
@@ -1007,9 +1022,9 @@ val usd_assets(std::string text)
     });
 }
 
-// {bodies: [[brep, name, [r, g, b] or null]], warnings, unresolved} of a stage whose layers are
+// {bodies: [[brep, name, [r, g, b] or null]], warnings, unresolved, skipped} of a stage whose layers are
 // [[id, text, {asset: id}, {asset: why not read}]], the root first; the Breps are the caller's.
-val usd_stage(val layers, bool heal, bool check, bool placement, double units)
+val usd_stage(val layers, bool heal, bool check, bool placement, double units, bool partial)
 {
     return guard([&] {
         auto strings = [](val o) {
@@ -1032,20 +1047,91 @@ val usd_stage(val layers, bool heal, bool check, bool placement, double units)
         }
         smlibpy::UsdReadOptions options;
         options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        options.partial = partial;
         smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
-        val bodies = val::array(), warnings = val::array(), unresolved = val::array();
+        val bodies = val::array(), warnings = val::array(), unresolved = val::array(), skipped = val::array();
         for (auto& item : stage.items)
             bodies.call<void>("push", items(ptr(item.brep), item.name, item.color.empty() ? val::null() : float64(item.color)));
         for (const std::string& w : stage.warnings)
             warnings.call<void>("push", w);
         for (const std::string& u : stage.unresolved)
             unresolved.call<void>("push", u);
+        for (const std::string& u : stage.skipped)
+            skipped.call<void>("push", u);
         val out = val::object();
         out.set("bodies", bodies);
         out.set("warnings", warnings);
         out.set("unresolved", unresolved);
+        out.set("skipped", skipped);
         return out;
     });
+}
+
+// The contents of a part file (.smp, a Uint8Array) of items [brep or null, curve or null, name or null,
+// [r, g, b] or null, wire]: bodies and curves, each with its name and color.
+val part_bytes(val list, bool ascii)
+{
+    return guard([&] {
+        std::vector<smlibpy::PartItem> in;
+        const unsigned n = list["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i)
+        {
+            val it = list[i];
+            smlibpy::PartItem item;
+            item.brep = maybe<SmBrep>(it[0]);
+            item.curve = maybe<SmCurve>(it[1]);
+            if (!none(it[2]))
+                item.name = it[2].as<std::string>();
+            if (!none(it[3]))
+                item.color = numbers(it[3]);
+            item.wire = static_cast<long>(it[4].as<double>());
+            in.push_back(std::move(item));
+        }
+        const std::string out = smlibpy::part_bytes(in, ascii);
+        return val::global("Uint8Array").new_(
+            typed_memory_view(out.size(), reinterpret_cast<const unsigned char*>(out.data())));
+    });
+}
+
+// [[brep or null, curve or null, name, [r, g, b] or null, wire]] of a part file's contents (a Uint8Array):
+// its bodies and curves, the caller's.
+val part_items(std::string data)
+{
+    return guard([&] {
+        val out = val::array();
+        for (auto& item : smlibpy::part_items(data))
+            out.call<void>("push", items(item.brep ? val(ptr(item.brep)) : val::null(),
+                                         item.curve ? val(ptr(item.curve)) : val::null(), item.name,
+                                         item.color.empty() ? val::null() : float64(item.color),
+                                         static_cast<double>(item.wire)));
+        return out;
+    });
+}
+
+// {bodies: [brep, ...], warnings: [...]} of an OpenCASCADE .brep file's contents (a Uint8Array or the
+// text of an ASCII file); the Breps are the caller's.
+val occt_read(std::string data, bool heal, bool check)
+{
+    return guard([&] {
+        smlibpy::OcctReadOptions options;
+        options.heal = heal, options.check = check;
+        smlibpy::OcctRead got = smlibpy::occt_read(data, options);
+        val bodies = val::array(), warnings = val::array();
+        for (SmBrep* b : got.bodies)
+            bodies.call<void>("push", ptr(b));
+        for (const std::string& w : got.warnings)
+            warnings.call<void>("push", w);
+        val out = val::object();
+        out.set("bodies", bodies);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// The ASCII OpenCASCADE .brep text of bodies (a compound when there are several).
+std::string occt_text(val breps)
+{
+    return guard([&] { return smlibpy::occt_text(pointers<SmBrep>(breps)); });
 }
 
 EMSCRIPTEN_BINDINGS(smlib_smlibpy)
@@ -1091,7 +1177,10 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__surface_kind", &surface_kind);
     function("ext__object_class", &object_class);
     function("ext__build_brep", &build_brep);
+    function("ext__surface_face", &surface_face);
+    function("ext__curve_on_surface", &curve_on_surface);
     function("ext__inverted_faces", &inverted_faces);
+    function("ext__loop_areas", &loop_areas);
     function("ext__seam_problems", &seam_problems);
     function("ext__surface_derivatives", &surface_derivatives);
     function("ext__face_curvatures", &face_curvatures);
@@ -1117,6 +1206,10 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__usd_read", &usd_read);
     function("ext__usd_assets", &usd_assets);
     function("ext__usd_stage", &usd_stage);
+    function("ext__part_bytes", &part_bytes);
+    function("ext__part_items", &part_items);
+    function("ext__occt_read", &occt_read);
+    function("ext__occt_text", &occt_text);
     function("ext__face_measure", &face_measure);
     function("ext__nearest_points", &nearest_points);
     function("ext__curve_length", &curve_length);

@@ -11,6 +11,9 @@
 #include <vector>
 
 class SmBrep;
+namespace UsdBrepData {
+class UsdBrepArrayData;
+}
 
 namespace smlibpy {
 
@@ -29,8 +32,10 @@ struct UsdItem
 
 // The .usda text of a stage: under /World, a BrepArray prim per item with a body (the exact B-rep),
 // and a Mesh prim per item with a mesh (for tools that do not read B-reps), named after the items.
-// up_axis "Y" or "Z"; meters_per_unit: 0.001 for millimetres.
-std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit);
+// up_axis "Y" or "Z"; meters_per_unit: 0.001 for millimetres. materials: a Material with a
+// UsdPreviewSurface of each color under /World/Looks, bound to the prims of the items of that color.
+std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit,
+                     bool materials = false);
 
 // The assets a .usda text names (its subLayers, the references and payloads of its prims), each once,
 // as written: the layers a caller reads for usd_stage.
@@ -54,26 +59,42 @@ struct UsdReadOptions
     bool placement = true;   // place the bodies as the stage does: the transforms of their prims and of the
                              // prims above them (xformOps), and the stage's up axis turned to Z
     double units = 0.0;      // millimeters per unit of the stage; 0: its metersPerUnit (as it is if it has none)
+    bool partial = false;    // leave out the bodies that cannot be read (UsdStage::skipped says why) instead of
+                             // throwing for the first one
 };
 
-// The bodies of a stage and what was noted on the way.
+// The bodies of a stage and what was noted on the way. A body's color is that of the material bound to
+// it (the diffuseColor of its UsdPreviewSurface), or else its prim's displayColor.
 struct UsdStage
 {
     std::vector<UsdItem> items;
     std::vector<std::string> warnings;    // bodies with small gaps, transforms that have no value, ...
     std::vector<std::string> unresolved;  // subLayers, references and payloads that were not read
+    std::vector<std::string> skipped;     // (partial) the bodies left out and why: "body 1 of the BrepArray
+                                          // \"/World/ball\" could not be built (SM_ERR)", "the BrepArray ... is malformed: ..."
 };
 
 // The bodies of the BrepArray prims of a stage, layers[0] its root layer: composed (subLayers, references
 // and payloads; class, inactive and over-only prims hold none), in the order of the stage, named after
 // their prims (by path where two have one name; a prim that holds several: prim, prim_1, ...), placed
-// and in millimeters. A malformed BrepArray throws std::invalid_argument naming the prim, the body, the
-// face or edge and the rule of usd-brep's validator.
+// and in millimeters, their B-spline edges that are lines and circles made analytic again (not in bodies
+// smlibpy wrote, whose edges are written as they are). A malformed
+// BrepArray throws std::invalid_argument naming the prim, the body, the face or edge and the rule of
+// usd-brep's validator (a body the kernel cannot build, std::runtime_error); with options.partial such
+// bodies are left out instead (UsdStage::skipped).
 UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& options);
 
 // The bodies of every BrepArray prim of a .usda text, in the order of the file (a BrepArray prim may
 // hold several: they are named prim, prim_1, ...), checked (see usd_stage), as the file has them
 // (without transforms or units). heal: run the kernel's import healer on them.
 std::vector<UsdItem> usd_read(const std::string& text, bool heal);
+
+// The checks usd_stage makes, for readers of other files that build their bodies through the BrepArray
+// arrays (occt.cpp). usd_check_arrays: what is wrong with the arrays against the rules of usd-brep's
+// validator that its conversion relies on ("" nothing; directions made unit as usd_stage does).
+// usd_kernel_check: the kernel's check of a body built from them (SmBrep::AssertValid), "" when it finds
+// nothing; `refuse` when a gap is more than 1e-3 of the body's size or not a number.
+std::string usd_check_arrays(UsdBrepData::UsdBrepArrayData& a);
+std::string usd_kernel_check(SmBrep* brep, bool& refuse);
 
 }  // namespace smlibpy

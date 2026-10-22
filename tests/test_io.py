@@ -134,6 +134,7 @@ def test_render_png(tmp_path, plate):
 
 # -- USD ---------------------------------------------------------------------------------------------
 USD_SAMPLES = Path(__file__).resolve().parent.parent / "third_party" / "usd-brep" / "TestFiles"
+DATA = Path(__file__).resolve().parent / "data"
 
 
 @pytest.mark.parametrize("name, shape", [
@@ -151,8 +152,10 @@ def test_usd_roundtrip_is_exact(tmp_path, name, shape):
     back = import_usd(tmp_path / "part.usda")
     assert isinstance(back, Part) and back.name == name and back.is_valid()
     assert len(back.faces()) == len(part.faces())
-    assert back.volume == pytest.approx(part.volume, rel=1e-12)
+    # (the kernel makes the trim curves of the cone from its circle edges, written as circles: 3e-12)
+    assert back.volume == pytest.approx(part.volume, rel=1e-11)
     assert [f.geom_type for f in back.faces()] == [f.geom_type for f in part.faces()]
+    assert [e.geom_type for e in back.edges()] == [e.geom_type for e in part.edges()]
 
 
 def test_usd_names_colors_sheets_cells_and_meshes(tmp_path, plate):
@@ -286,9 +289,10 @@ def test_usd_values_the_conversion_cannot_take_raise(tmp_path):
         ("ring", "brep:surface:torus:axis", "(0, 0, 0)", "face 0: the axis has no length (BA.523-525)"),
         ("tube", "brep:surface:cylinder:axis", "(0, 0, 0)", "the axis has no length (BA.502-504)"),
         ("tube", "brep:surface:cylinder:radius", "0", "the cylinder's radius is 0, not positive (BA.501)"),
-        ("cube", "brep:edge3dNurb:curve3d:nurb:weights", "0", "body 0, edge 0: its NURBS curve has a weight of 0, not positive (BA.350)"),
-        ("cube", "brep:edge3dNurb:curve3d:nurb:controlVertices", "(nan, 0, 0)",
+        ("loft", "brep:edge3dNurb:curve3d:nurb:weights", "0", "body 0, edge 0: its NURBS curve has a weight of 0, not positive (BA.350)"),
+        ("loft", "brep:edge3dNurb:curve3d:nurb:controlVertices", "(nan, 0, 0)",
          "brep:edge3dNurb:curve3d:nurb:controlVertices[0] is not a finite number (BA.660)"),
+        ("cube", "brep:edge3dLine:curve3d:line:direction", "(0, 0, 0)", "body 0, edge 0: the line's direction has no length (BA.541)"),
         ("cube", "brep:intersectTol3d", "0", "body 0: brep:intersectTol3d is 0, not positive (BA.010)"),
         ("cube", "edge:range", "inf", "edge:range[0] is not a finite number (BA.660)"),
     ]
@@ -440,50 +444,55 @@ over "Nothing"
         import_usd(tmp_path / "loop.usda")
 
 
-def _line_edges(text: str) -> str:
-    """A smlibpy box's BrepArray with its edges as BrepCurve3dLineAPI lines (as usd-brep and
-    OpenCASCADE's bridge write them), from its two-point NURBS edges."""
-    cvs = re.search(r"edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n", text).group(1)
-    points = [tuple(float(c) for c in p.split(",")) for p in re.findall(r"\(([^)]*)\)", cvs)]
-    origins, directions = [], []
-    for a, b in zip(points[::2], points[1::2]):
-        d = [y - x for x, y in zip(a, b)]
-        n = math.sqrt(sum(c * c for c in d))
-        origins.append("(%r, %r, %r)" % a)
-        directions.append("(%r, %r, %r)" % tuple(c / n for c in d))
-    text = re.sub(r"        uniform \w+\[\] brep:edge3dNurb:[^\n]*\n", "", text)
-    text = text.replace('"BrepCurve3dNurbAPI:edge3dNurb"', '"BrepCurve3dLineAPI:edge3dLine"')
-    text = text.replace('"BrepCurve3dNurbAPI"', '"BrepCurve3dLineAPI"')
-    return text.replace("        uniform double[] edge:range", f"        uniform point3d[] brep:edge3dLine:curve3d:line:origin = "
-                        f"[{', '.join(origins)}]\n        uniform vector3d[] brep:edge3dLine:curve3d:line:direction = "
-                        f"[{', '.join(directions)}]\n        uniform double[] edge:range", 1)
-
-
 def test_usd_line_edges_are_written_as_long_as_the_edges(tmp_path):
-    # A body read with analytic line edges keeps SMLib's lines, whose interval is unbounded: they
-    # were written as B-splines 2.5 km long (control points at 1234572; usd-brep's validator: BA.365),
-    # and reading that back gave a box (bbox) reaching to 1234560: the kernel's tight box of an edge
-    # took in the knots past its end (SmCurve::CalculateTightBoundingBox, patched).
+    # SMLib's lines have an unbounded interval: they were written as B-splines 2.5 km long (control
+    # points at 1234572; usd-brep's validator: BA.365), and reading that back gave a box (bbox)
+    # reaching to 1234560: the kernel's tight box of an edge took in the knots past its end
+    # (SmCurve::CalculateTightBoundingBox, patched). Lines are written as lines now (X5).
     export_usd(Box(10, 10, 10), tmp_path / "box.usda", mesh=False)
-    (tmp_path / "lines.usda").write_text(_line_edges((tmp_path / "box.usda").read_text()))
-    box = import_usd(tmp_path / "lines.usda")
+    text = (tmp_path / "box.usda").read_text()
+    assert "BrepCurve3dLineAPI:edge3dLine" in text and "edge3dNurb" not in text
+    box = import_usd(tmp_path / "box.usda")
     assert [e.geom_type for e in box.edges()] == ["line"] * 12 and box.volume == pytest.approx(1000)
-    export_usd(box, tmp_path / "again.usda", mesh=False)
-    text = (tmp_path / "again.usda").read_text()
-    cvs = re.search(r"edge3dNurb:curve3d:nurb:controlVertices = \[(.*?)\]\n", text).group(1)
-    assert max(abs(float(c)) for c in re.findall(r"-?[\d.e+-]+", cvs)) == pytest.approx(5)  # was 1234572
-    back = import_usd(tmp_path / "again.usda")
-    assert back.bbox().max.to_tuple() == pytest.approx((5, 5, 5)) and back.volume == pytest.approx(1000)
-    # such a file as it was written before: the box of the body read back is its own
-    old = re.sub(r"(edge3dNurb:curve3d:nurb:knots = \[)[^\]]*", lambda m: m.group(1) + ", ".join(["-1234567, -1234567, 1234567, 1234567"] * 12), text)
-    pts = [tuple(float(c) for c in p.split(",")) for p in re.findall(r"\(([^)]*)\)", cvs)]
-    far = []
-    for a, b in zip(pts[::2], pts[1::2]):
-        d = [(y - x) / 10 for x, y in zip(a, b)]
-        far += ["(%r, %r, %r)" % tuple(x - 1234567 * c for x, c in zip(a, d)), "(%r, %r, %r)" % tuple(x + 1234567 * c for x, c in zip(a, d))]
-    old = old.replace(cvs, ", ".join(far))
-    (tmp_path / "old.usda").write_text(old)
-    assert import_usd(tmp_path / "old.usda").bbox().max.to_tuple() == pytest.approx((5, 5, 5))  # was 1234560
+    assert box.bbox().max.to_tuple() == pytest.approx((5, 5, 5))
+    # such a file as smlibpy 0.4 wrote the lines of a body it had read: B-splines reaching 1234567
+    # along their parameter both ways (smlibpy's own file: read as it is). The box of the body read
+    # back is its own.
+    (tmp_path / "old.usda").write_text(_long_lines((DATA / "usd_bspline_edges.usda").read_text().replace(
+        'string source = "another tool"', 'string source = "smlibpy"')))
+    back = import_usd(tmp_path / "old.usda")
+    assert [e.geom_type for e in back.edges()].count("bspline") == 14
+    assert back.bbox().max.to_tuple() == pytest.approx((10, 10, 5))  # was 1234560
+
+
+def _long_lines(text: str) -> str:
+    """The text with each two-point NURBS edge (a line) reaching 1234567 along its parameter both
+    ways, its edge as it was."""
+    def values(name: str) -> tuple[re.Match[str], str]:
+        m = re.search(r"(edge3dNurb:curve3d:nurb:" + name + r" = \[)([^\]]*)\]", text)
+        return m, m.group(2)
+
+    counts = [int(x) for x in values("vertexCount")[1].split(", ")]
+    orders = [int(x) for x in values("order")[1].split(", ")]
+    knots = [float(x) for x in values("knots")[1].split(", ")]
+    cvs = [tuple(float(c) for c in p.split(",")) for p in re.findall(r"\(([^)]*)\)", values("controlVertices")[1])]
+    new_knots, new_cvs = [], []
+    ki = ci = 0
+    for n, o in zip(counts, orders):
+        ks, pts = knots[ki:ki + n + o], cvs[ci:ci + n]
+        if n == 2 and o == 2:
+            (a, b), (t0, t1) = pts, (ks[1], ks[2])
+            d = [(y - x) / (t1 - t0) for x, y in zip(a, b)]
+            pts = [tuple(x + c * (t - t0) for x, c in zip(a, d)) for t in (-1234567.0, 1234567.0)]
+            ks = [-1234567.0, -1234567.0, 1234567.0, 1234567.0]
+        new_knots += ks
+        new_cvs += pts
+        ki, ci = ki + n + o, ci + n
+    for name, joined in (("knots", ", ".join(repr(k) for k in new_knots)),
+                         ("controlVertices", ", ".join("(%r, %r, %r)" % p for p in new_cvs))):
+        m, _ = values(name)
+        text = text[:m.start(2)] + joined + text[m.end(2):]
+    return text
 
 
 def test_usd_bodies_that_other_writers_left_gaps_in(tmp_path):

@@ -112,6 +112,14 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   turn_to_nurbs: ['brep'],
   stitch_into_solid: ['brep'],
   stitch_into_shell: ['brep', ['max_stitching_ratio', 1.0], ['shell_is_well_formed', false]],
+  stitch_advanced: [
+    'brep',
+    'tolerance_3d',
+    ['squeeze_small_edges', true],
+    ['split_edges_with_vertices', true],
+    ['making_manifold_solid', true],
+    ['remove_laminar_slivers', false],
+  ],
   heal_brep: ['brep'],
 
   // transforms (SmPyTransforms.cpp; Axis2Placement's constructor in SmPyTypes.cpp)

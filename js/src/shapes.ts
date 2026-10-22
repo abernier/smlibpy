@@ -1478,8 +1478,14 @@ export class Edge extends Shape {
   override distanceTo(point: VectorLike | Shape): number {
     if (point instanceof _Body) return point.distanceTo(this)
     const p = point instanceof Vertex ? point.point : _vec(point as VectorLike)
-    if (this._e) return Number(k.edge_closest_point(this._e, p.toArray())[2])
-    return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
+    return kernelCall(
+      'distance',
+      () => {
+        if (this._e) return Number(k.edge_closest_point(this._e, p.toArray())[2])
+        return Number(k.curve_closest_point(this._curve(), p.toArray())[2])
+      },
+      'the kernel finds no closest point on this edge',
+    )
   }
 
   /**
@@ -2971,7 +2977,7 @@ export class Face extends Shape {
 
   /** A point guaranteed to lie on the face. */
   interiorPoint(): Vector {
-    return new Vector(k.face_interior_point(this._f))
+    return kernelCall('interior point', () => new Vector(k.face_interior_point(this._f)), 'the kernel finds no point inside this face')
   }
 
   /** Outward unit normal at the face point closest to `point` (default: the center). */
@@ -5540,7 +5546,13 @@ export class Part extends _Body {
           if (g._identity() === e._identity() || g.vertices().some((v) => ends.has(v._identity()))) continue // the same edge, or a neighbour meeting it at a corner
           const other = setbackOf.get(g._identity())
           const total = on(s, f) + (other === undefined ? 0 : on(other, f))
-          const dists = samples.map((p) => _distanceToEdge(g, p))
+          let dists: number[]
+          try {
+            dists = samples.map((p) => _distanceToEdge(g, p))
+          } catch (e) {
+            if (!_isRuntimeError(e)) throw e
+            continue // the kernel finds no closest point on the edge: no check here
+          }
           const near = Math.min(...dists)
           if (near >= total - 1e-9 || Math.max(...dists) > 1.5 * Math.max(near, 1e-12)) continue // far enough, or not running alongside
           const limit = setbackOf.has(g._identity()) ? near / 2 : near

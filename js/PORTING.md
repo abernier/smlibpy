@@ -92,13 +92,15 @@ the Python code works around a kernel defect, so does the TypeScript.
 - **Imports.** Modules import each other statically, also where Python imports inside a
   function to break a cycle. ES modules allow the cycles as long as no module uses another's
   exports while it is first evaluated: no top-level code that builds shapes.
-- **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node:
+- **Files.** Every format has an in-memory pair that works everywhere and a path pair for Node
+  (Python has the same pairs, `to_step`/`from_step` and so on, with `bytes` for `Uint8Array`):
   - `toStep(shapes, options): string`, `toStl(...)`/`toGlb(...)`: `Uint8Array`, `toGltf`,
-    `toObj`, `toDxf`, `toUsd`: `string`; `toSmb(shapes, { ascii })` (the kernel's own format): `Uint8Array`;
+    `toObj`, `toDxf`, `toUsd`, `toBrep`: `string`; `toSmb(shapes, { ascii })` and `toSmp(shapes, { ascii })`
+    (the kernel's own formats: one body; bodies and curves with names and colors): `Uint8Array`;
     `fromStep(data)`, `fromStl(data)`, `fromDxf(data)`, `fromDxfWires(data)`, `fromSmb(data)`,
-    `fromUsd(data)` take a `string` or `Uint8Array`. `fromUsd` takes the layers a stage names
-    (subLayers, references, payloads) from its `resolve` option, where Python and `importUsd` read
-    the files (an option only smlibwasm has: `JS_ONLY` in tools/gen_js_options.py).
+    `fromSmp(data)`, `fromUsd(data)`, `fromIges(data)`, `fromBrep(data)` take a `string` or `Uint8Array`. `fromUsd`
+    (and Python's `from_usd`) takes the layers a stage names (subLayers, references, payloads) from
+    its `resolve` option, where `importUsd` reads the files.
   - `exportStep(shapes, path, options)` ... and `exportFile(shapes, path, options)` (by the
     extension), `importStep(path)` ..., `save`/`load` (the kernel's own format) are Python's
     functions; they write and read through `_fs()` (node:fs via `process.getBuiltinModule`, no
@@ -107,12 +109,12 @@ the Python code works around a kernel defect, so does the TypeScript.
   - Python's `smlibpy.export(...)` is `exportFile` (`export` cannot name a function).
 - **Names between modules.** What one module imports from another, beyond the public API:
   `exporters.ts`: `exportFile`, `_items`, `_DEFAULT_COLORS`, `_curvePoints`, `_edgePolylines`,
-  `_flattenAll`, `_zUp`, `gltfDocumentMixed`, `_fs`, `_base64`; `dxf.ts`: `exportDxf`, `importDxf`,
+  `_flattenAll`, `_zUp`, `gltfDocumentMixed`, `_fs`, `_base64`, `_body` (usd.ts and occt.ts); `dxf.ts`: `exportDxf`, `importDxf`,
   `importDxfWires`, `toDxf`, `fromDxf`, `fromDxfWires`; `regions.ts`: `Plan`, `plan`, `build`,
   `polygonsCross`, `pointInPolygon`, `signedArea`, `overlappingBoxes`, `unionDisjoint` (polygons as
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
-  `step_reader.ts`: `_repr`, `interpretExtras`; `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
+  `step_reader.ts`: `_repr`, `interpretExtras` (occt.ts quotes names with `_repr`); `step.ts`: `_MM_PER_UNIT` (usd.ts reads `units`
   with it); `step_import.ts`: `StepModel` (render.ts draws it); `shapes.ts`: `_held` (deform.ts
   holds the copies of a Boolean's operands with it), `_curvesOf` (surfaces.ts takes `fill`'s
   curves with it), `_take`, `_translation`, `_reflection`,

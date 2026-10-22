@@ -53,7 +53,8 @@ SYNONYMS = {
     "cavity": ["voids", "shells"], "cavities": ["voids", "shells"], "interface": ["shared", "cells"],
     "interfaces": ["shared", "cells"], "paint": ["colored", "face_colors"], "label": ["named", "face_colors"], "provenance": ["derived_from", "new"], "descendant": ["derived_from"],
     "imprint": ["imprint"], "trim": ["split", "Shell"], "export": ["export", "export_step", "save"],
-    "import": ["load", "import_step", "read_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
+    "import": ["load", "import_step", "read_step", "import_iges", "import_stl"], "open": ["load"],
+    "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "drawing": ["render"], "technical": ["render"], "projection": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
     "diff": ["diff_images"], "before": ["diff_images"],
@@ -63,7 +64,7 @@ SYNONYMS = {
     "g": ["continuity", "zebra", "verification"],  # G1, G2, G3 split into "g" and the digit
     "blend": ["loft", "fillet", "surface_fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
-    "step": ["export_step", "import_step", "read_step"], "csys": ["read_step", "Plane"],
+    "step": ["export_step", "import_step", "read_step"], "iges": ["import_iges", "load"], "igs": ["import_iges", "load"], "csys": ["read_step", "Plane"],
     "coordinate": ["read_step", "Plane"], "wireframe": ["read_step", "import_dxf_wires"], "mcs": ["read_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft", "tilt", "tilts"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
     "tilt": ["draft"], "tilted": ["draft"], "tilting": ["draft"], "incline": ["draft"], "inclined": ["draft"],
@@ -118,6 +119,9 @@ SYNONYMS.update({
     "degree": ["nurbs"], "morph": ["make_compatible", "Lattice"],
     "usd": ["export_usd", "import_usd"], "usda": ["export_usd", "import_usd"], "openusd": ["export_usd", "import_usd"],
     "omniverse": ["export_usd", "import_usd"], "pixar": ["export_usd"],
+    "brep": ["export_brep", "import_brep"], "occt": ["export_brep", "import_brep"],
+    "opencascade": ["export_brep", "import_brep", "export_step"], "build123d": ["export_brep", "import_brep"],
+    "cadquery": ["export_brep", "import_brep"], "freecad": ["export_brep", "import_brep", "export_step"],
 })
 
 # Sheet metal.

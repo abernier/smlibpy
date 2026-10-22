@@ -126,15 +126,19 @@ file(GLOB SMPY_SOURCES CONFIGURE_DEPENDS "${USD_BREP_DIR}/source/SmPyLib/src/*.c
 # SmPyMain.cpp declares the module `_omni_solid`; we provide our own spine (src/cpp/module.cpp)
 # with the same binder calls. SmPyUsd.cpp needs OpenUSD, which we do not depend on.
 list(FILTER SMPY_SOURCES EXCLUDE REGEX ".*/SmPy(Main|Usd)\\.cpp$")
-# (src/cpp/usd: the BrepArray conversion of usd-brep, without OpenUSD; see src/cpp/usd/pxr_lite.h)
+# (src/cpp/usd: the BrepArray conversion of usd-brep, without OpenUSD; see src/cpp/usd/pxr_lite.h.
+# src/cpp/occt: usd-brep's bridge to OpenCASCADE's .brep files, see src/cpp/occt/README.md)
 file(GLOB SMLIBPY_CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/*.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/usd/*.cpp")
+file(GLOB SMLIBPY_OCCT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/occt/*.cpp")
+list(APPEND SMLIBPY_CPP_SOURCES ${SMLIBPY_OCCT_SOURCES})
 
 pybind11_add_module(_core MODULE ${SMPY_SOURCES} ${SMLIBPY_CPP_SOURCES})
 target_include_directories(_core PRIVATE
   "${USD_BREP_DIR}/source/SmPyLib/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/usd")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/usd"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/occt")
 target_link_libraries(_core PRIVATE sm_api smlib)
 # smlibpy's own C++ (src/cpp) is shared with the JavaScript module: its Python bindings sit
 # behind SMLIBPY_PYTHON.
@@ -146,6 +150,8 @@ if(MSVC)
   endif()
 else()
   target_compile_options(_core PRIVATE -Wno-deprecated-declarations)
+  # (vendor code, as the kernel: upstream keeps its own warning policy)
+  set_source_files_properties(${SMLIBPY_OCCT_SOURCES} PROPERTIES COMPILE_OPTIONS -w)
 endif()
 
 install(TARGETS _core LIBRARY DESTINATION smlibpy RUNTIME DESTINATION smlibpy)

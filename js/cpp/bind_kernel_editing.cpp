@@ -431,10 +431,25 @@ val stitch_into_shell(uintptr_t b, double max_stitching_ratio, bool shell_is_wel
     return tuple(b, shell_is_well_formed, static_cast<double>(stitched), vertex_gap, edge_gap);
 }
 
+// Mutates brep; returns [brep, stitched_edges, lamina_edges, max_vertex_gap, max_edge_gap].
+// Python defaults: squeeze_small_edges true, split_edges_with_vertices true, making_manifold_solid
+// true, remove_laminar_slivers false.
+val stitch_advanced(uintptr_t b, double tolerance_3d, bool squeeze_small_edges, bool split_edges_with_vertices,
+                    bool making_manifold_solid, bool remove_laminar_slivers)
+{
+    ULONG stitched = 0, lamina = 0;
+    double vertex_gap = 0, edge_gap = 0;
+    SMJS_CHECK(SmApiStitchAdvanced(brep(b), tolerance_3d, flag(squeeze_small_edges), flag(split_edges_with_vertices),
+                                   flag(making_manifold_solid), flag(remove_laminar_slivers), stitched, lamina, vertex_gap,
+                                   edge_gap));
+    return tuple(b, static_cast<double>(stitched), static_cast<double>(lamina), vertex_gap, edge_gap);
+}
+
 EMSCRIPTEN_BINDINGS(smlib_kernel_stitching)
 {
     function("stitch_into_solid", &stitch_into_solid);
     function("stitch_into_shell", &stitch_into_shell);
+    function("stitch_advanced", &stitch_advanced);
 }
 
 }  // namespace

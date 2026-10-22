@@ -2,7 +2,8 @@
 //
 // USD files of exact bodies (`smlibpy._core.ext`):
 //
-//   usd_text(items, up_axis, meters_per_unit)   the .usda text of a stage of bodies (and meshes)
+//   usd_text(items, up_axis, meters_per_unit, materials)
+//                                               the .usda text of a stage of bodies (and meshes)
 //   usd_assets(text)                            the layers a .usda text names (subLayers, references)
 //   usd_stage(layers, heal, check, placement, units)
 //                                               the bodies of a stage, placed, in millimeters
@@ -17,6 +18,7 @@
 // (the table below), with the applied API schemas it declares. Binary USD (.usdc, .usdz) is not read.
 
 #include "kernel.h"
+#include "analytic.h"
 #include "ext_shared.h"
 #include "usd.h"
 
@@ -40,6 +42,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -415,12 +418,44 @@ void put_extent(std::string& out, const double lo[3], const double hi[3])
     out += ")]\n";
 }
 
-// A valid prim name, not taken yet among its siblings.
+// The length of the UTF-8 character at s[i] (1 for a byte that does not start a valid one).
+size_t utf8_length(const std::string& s, size_t i)
+{
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    const size_t n = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+    if (n == 0 || i + n > s.size())
+        return 1;
+    for (size_t k = 1; k < n; ++k)
+        if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80)
+            return 1;
+    return n;
+}
+
+bool valid_utf8(const std::string& s)
+{
+    for (size_t i = 0; i < s.size();)
+    {
+        const size_t n = utf8_length(s, i);
+        if (n == 1 && static_cast<unsigned char>(s[i]) >= 0x80)
+            return false;
+        i += n;
+    }
+    return true;
+}
+
+// A valid prim name, not taken yet among its siblings: ASCII letters, digits and '_' stay, any other
+// character (a UTF-8 character of several bytes too) becomes one '_'. (Byte by byte, "Größe" gave
+// invalid UTF-8 on macOS and "Gr____e" in the wasm.) The name itself goes into the prim's
+// displayName.
 std::string prim_name(const std::string& wanted, std::set<std::string>& taken, const char* fallback)
 {
     std::string n;
-    for (char c : wanted)
-        n += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '_';
+    for (size_t i = 0; i < wanted.size();)
+    {
+        const unsigned char c = static_cast<unsigned char>(wanted[i]);
+        n += c < 0x80 && (std::isalnum(c) || c == '_') ? static_cast<char>(c) : '_';
+        i += utf8_length(wanted, i);
+    }
     if (n.empty())
         n = fallback;
     if (std::isdigit(static_cast<unsigned char>(n[0])))
@@ -432,7 +467,36 @@ std::string prim_name(const std::string& wanted, std::set<std::string>& taken, c
     return out;
 }
 
-std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name)
+// `displayName = "..."` for a prim whose name is not the one it was given (a string with its quotes,
+// backslashes and line breaks escaped; a byte that is no UTF-8 becomes U+FFFD), or "".
+std::string display_name(const std::string& given, const std::string& name, const char* indent)
+{
+    if (given.empty() || given == name)
+        return "";
+    std::string out = std::string(indent) + "displayName = \"";
+    for (size_t i = 0; i < given.size();)
+    {
+        const size_t n = utf8_length(given, i);
+        const char c = given[i];
+        if (n == 1 && static_cast<unsigned char>(c) >= 0x80)
+            out += "\xEF\xBF\xBD";
+        else if (c == '"' || c == '\\')
+            out += std::string("\\") + c;
+        else if (c == '\n')
+            out += "\\n";
+        else if (c == '\t')
+            out += "\\t";
+        else if (static_cast<unsigned char>(c) < 0x20)
+            out += ' ';
+        else
+            out += given.substr(i, n);
+        i += n;
+    }
+    return out + "\"\n";
+}
+
+// `material`: the path of the material bound to the prim ("" none)
+std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name, const std::string& material)
 {
     // (the conversion adds UV trim curves and attributes to the Brep: a copy goes in)
     SmBrep* copy = new (ctx()) SmBrep(*item.brep, nullptr, nullptr, TRUE, FALSE);
@@ -456,12 +520,15 @@ std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name)
                                  sm_status_name(st) + ")" +
                                  (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
     std::vector<std::string> schemas;
+    if (!material.empty())
+        schemas.push_back("MaterialBindingAPI");
     std::set<std::string> applied;
     for (const Field& f : fields())
         if (f.schema && !applied.count(f.schema) && f.size(a) > 0)
             applied.insert(f.schema), schemas.push_back(f.schema);
 
     std::string out = "    def BrepArray \"" + name + "\" (\n";
+    out += display_name(item.name, name, "        ");
     if (!schemas.empty())
     {
         out += "        prepend apiSchemas = [";
@@ -478,11 +545,13 @@ std::string brep_prim(const smlibpy::UsdItem& item, const std::string& name)
     for (const Field& f : fields())
         if (!f.schema || applied.count(f.schema))
             put_field(out, f, a);
+    if (!material.empty())
+        out += "        rel material:binding = <" + material + ">\n";
     out += "    }\n";
     return out;
 }
 
-std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
+std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name, const std::string& material)
 {
     const auto& p = item.points;
     const auto& t = item.triangles;
@@ -544,7 +613,10 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
         }
         tri.assign(t.begin(), t.end());
     }
-    std::string out = "    def Mesh \"" + name + "\"\n    {\n";
+    std::string meta = item.brep ? "" : display_name(item.name, name, "        ");
+    if (!material.empty())
+        meta += "        prepend apiSchemas = [\"MaterialBindingAPI\"]\n";
+    std::string out = "    def Mesh \"" + name + "\"\n" + (meta.empty() ? "" : "    (\n" + meta + "    )\n") + "    {\n";
     if (!p.empty())
         put_extent(out, lo, hi);
     // (faces of a color of their own: a color per triangle, the others in the body's)
@@ -552,6 +624,8 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
         put_face_colors(out, item.face_colors);
     else
         put_color(out, item.color);
+    if (!material.empty())
+        out += "        rel material:binding = <" + material + ">\n";
     out += "        int[] faceVertexCounts = [";
     for (size_t i = 0; i < tri.size() / 3; ++i)
         out += i ? ", 3" : "3";
@@ -571,13 +645,16 @@ std::string mesh_prim(const smlibpy::UsdItem& item, const std::string& name)
 // .usda as far as the bodies of a stage need it: prims (def, over, class) with their properties, the
 // metadata that decides what a prim is (active, references, payload, customData's source) and their
 // child prims; the layer's metadata (defaultPrim, metersPerUnit, upAxis, subLayers); values of
-// numbers, strings, tuples and lists. Other metadata, dictionaries, variant sets and relationships are
-// skipped, and so are the values of properties that nothing reads (those of meshes).
+// numbers, strings, paths, tuples and lists; the material bindings of prims (material:binding and its
+// preview purpose, with bindMaterialAs), the GeomSubsets of BrepArrays and what a material's color
+// is read from (the inputs, outputs and their connections of materials, shaders and node graphs).
+// Other metadata, dictionaries, variant sets and relationships are skipped, and so are the values of
+// properties that nothing reads (those of meshes).
 struct Val
 {
-    enum K { NUM, STR, LIST, OTHER } k = OTHER;
+    enum K { NUM, STR, PATH, LIST, OTHER } k = OTHER;
     double n = 0.0;
-    std::string s;           // STR, and the word of an OTHER (true, false, None)
+    std::string s;           // STR, PATH (as written, without <>), and the word of an OTHER (true, false, None)
     std::vector<Val> items;  // LIST, and tuples (OTHER with items)
 };
 
@@ -592,7 +669,9 @@ struct Arc
 struct PrimSpec
 {
     std::string specifier, type, name;
+    std::string parent_type;  // the type its parent prim is written with ("" at the root)
     std::string source;  // customData's source ("smlibpy" in the files smlibpy writes)
+    std::string display;  // displayName: the name to show (smlibpy writes the body's own name there)
     int active = -1;     // -1: not said, 0: false, 1: true
     std::vector<Arc> references, payloads, deleted;
     std::map<std::string, Val> props;
@@ -833,7 +912,8 @@ private:
         }
         if (c == '<')
         {
-            prim_path();
+            v.k = Val::PATH;
+            v.s = prim_path();
             return v;
         }
         if (c == '@')
@@ -967,6 +1047,37 @@ private:
         }
     }
 
+    // the metadata of a material binding: bindMaterialAs, kept as the property "<binding>@bindMaterialAs"
+    void relationship_metadata(PrimSpec& p, const std::string& rel)
+    {
+        ++i_;  // (
+        while (true)
+        {
+            skip_space();
+            if (i_ >= t_.size())
+                fail("')' at the end of the metadata of " + rel);
+            if (peek_char() == ')')
+            {
+                ++i_;
+                return;
+            }
+            if (peek_char() == '"' || peek_char() == '\'')  // its doc
+            {
+                string_literal();
+                continue;
+            }
+            const std::string w = word();
+            skip_space();
+            if (peek_char() != '=')
+                continue;
+            ++i_;
+            if (w == "bindMaterialAs")
+                p.props[rel + "@bindMaterialAs"] = value();
+            else
+                skip_value();
+        }
+    }
+
     // customData = { ... }: its source, if it says one
     void custom_data(PrimSpec& p)
     {
@@ -1037,15 +1148,22 @@ private:
             }
             else if (w == "customData")
                 custom_data(p);
+            else if (w == "displayName")
+            {
+                const Val v = value();
+                if (v.k == Val::STR)
+                    p.display = v.s;
+            }
             else
                 skip_value();
         }
     }
 
-    std::unique_ptr<PrimSpec> prim(const std::string& specifier)
+    std::unique_ptr<PrimSpec> prim(const std::string& specifier, const std::string& parent = "")
     {
         auto p = std::make_unique<PrimSpec>();
         p->specifier = specifier;
+        p->parent_type = parent;
         skip_space();
         if (peek_char() != '"' && peek_char() != '\'')
             p->type = word();
@@ -1069,7 +1187,7 @@ private:
             }
             std::string w = word();
             if (w == "def" || w == "over" || w == "class")
-                p->children.push_back(prim(w));
+                p->children.push_back(prim(w, p->type));
             else if (w == "variantSet")
             {
                 string_literal();
@@ -1092,16 +1210,27 @@ private:
             w = word();
         if (w == "rel")
         {
-            word();
+            // a material binding (all purposes, or the preview purpose): its target, and how strong it
+            // is (bindMaterialAs in its metadata); other relationships are passed over
+            const std::string name = word();
+            const bool binding = name == "material:binding" || name == "material:binding:preview";
             skip_space();
             if (peek_char() == '=')
             {
                 ++i_;
-                skip_value();
+                if (binding)
+                    p.props[name] = value();
+                else
+                    skip_value();
             }
             skip_space();
             if (peek_char() == '(')
-                skip_group();
+            {
+                if (binding)
+                    relationship_metadata(p, name);
+                else
+                    skip_group();
+            }
             return;
         }
         // a type (possibly an array of it), then the name
@@ -1116,12 +1245,19 @@ private:
         }
         std::string name = word();
         skip_space();
-        // what is read: the arrays of a BrepArray (or of a prim that may compose onto one), and
-        // the transforms of every prim
+        // what is read: the arrays of a BrepArray (or of a prim that may compose onto one), the
+        // transforms of every prim, what a GeomSubset of a BrepArray selects, and the inputs and
+        // outputs (values and connections) of materials, shaders and node graphs
+        const bool connection = name.size() > 8 && name.compare(name.size() - 8, 8, ".connect") == 0;
         const bool plain = name.find(".timeSamples") == std::string::npos && name.find(".connect") == std::string::npos &&
                            name.find(".spline") == std::string::npos;
-        const bool wanted = plain && (p.type == "BrepArray" || p.type.empty() || name == "xformOpOrder" ||
-                                      name.compare(0, 8, "xformOp:") == 0);
+        const bool shading = p.type == "Material" || p.type == "Shader" || p.type == "NodeGraph" || p.type.empty();
+        const bool port = name.compare(0, 7, "inputs:") == 0 || name.compare(0, 8, "outputs:") == 0;
+        const bool subset = p.type == "GeomSubset" && (p.parent_type == "BrepArray" || p.parent_type.empty());
+        const bool wanted = (plain && (p.type == "BrepArray" || p.type.empty() || name == "xformOpOrder" ||
+                                       name.compare(0, 8, "xformOp:") == 0)) ||
+                            (shading && (name == "info:id" || (port && (plain || connection)))) ||
+                            (subset && plain && (name == "elementType" || name == "indices"));
         if (peek_char() == '=')
         {
             ++i_;
@@ -1544,15 +1680,25 @@ std::string check(const UsdBrepArrayData& a, Layout& layout)
 // of the wrong volume that said they were valid. Directions are made unit, and a reference direction
 // that is nearly at right angles to its axis is made exactly so (frames of the conversion are not
 // orthonormalized, and the surface turned about the reference direction instead). Says what is wrong,
-// with the body, the face or edge and the rule ("" when nothing is).
-std::string check_values(UsdBrepArrayData& a, const Layout& layout)
+// with the body, the face or edge and the rule ("" when nothing is). With per_body, what is wrong with
+// a body (its first problem, without "body b, ") goes to (*per_body)[b] instead, and the check goes on
+// with the next body; what belongs to no body (numbers that are not finite) is still returned.
+std::string check_values(UsdBrepArrayData& a, const Layout& layout, std::vector<std::string>* per_body = nullptr)
 {
     using pxr::UsdBrepCurveTokens;
     using pxr::UsdBrepSurfaceTokens;
-    // (body b's face, edge, ... f: the body and its own number of it)
-    auto at = [](const std::vector<uint64_t>& starts, uint64_t i, const char* what) {
-        const auto b = std::upper_bound(starts.begin(), starts.end(), i) - starts.begin() - 1;
-        return "body " + std::to_string(b) + ", " + what + " " + std::to_string(i - starts[b]) + ": ";
+    if (per_body)
+        per_body->assign(a.m_sBrepRegionCountArray.size(), "");
+    // what is wrong with body b's face, edge, ... i (f: what, its own number of it in the body):
+    // the message, or "" where per_body takes it
+    auto at = [&](const std::vector<uint64_t>& starts, uint64_t i, const char* what, const std::string& e) {
+        const auto b = static_cast<size_t>(std::upper_bound(starts.begin(), starts.end(), i) - starts.begin() - 1);
+        const std::string where = std::string(what) + " " + std::to_string(i - starts[b]) + ": " + e;
+        if (!per_body)
+            return "body " + std::to_string(b) + ", " + where;
+        if (b < per_body->size() && (*per_body)[b].empty())
+            (*per_body)[b] = where;
+        return std::string();
     };
     auto g = [](double x) {
         char buf[32];
@@ -1580,8 +1726,12 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
     }
     for (size_t b = 0; b < a.m_sBrepRegionCountArray.size(); ++b)
         if (!(a.m_sBrepXSectTol3dArray[b] > 0))
-            return "body " + std::to_string(b) + ": brep:intersectTol3d is " + g(a.m_sBrepXSectTol3dArray[b]) +
-                   ", not positive (BA.010)";
+        {
+            const std::string e = "brep:intersectTol3d is " + g(a.m_sBrepXSectTol3dArray[b]) + ", not positive (BA.010)";
+            if (!per_body)
+                return "body " + std::to_string(b) + ": " + e;
+            (*per_body)[b] = e;
+        }
     // the weights of a NURBS block, [first, first + n), all positive
     auto weights = [&](const VtArray<double>& w, uint64_t first, uint64_t n, const char* rule) -> std::string {
         for (uint64_t i = first; i < first + n && i < w.size(); ++i)
@@ -1677,7 +1827,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
                 e = frame(a.m_sFace_SurfaceTorus_AxisArray[i], a.m_sFace_SurfaceTorus_RefDirectionArray[i], "BA.523-525");
         }
         if (!e.empty())
-            return at(layout.face, f, "face") + e;
+            if (std::string m = at(layout.face, f, "face", e); !m.empty())
+                return m;
     }
 
     // edges and wire edges: their ranges and curves
@@ -1742,7 +1893,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
                     err = frame(c.ellipse_axis[i], c.ellipse_ref[i], "BA.553-555");
             }
             if (!err.empty())
-                return at(c.starts, e, c.what) + err;
+                if (std::string m = at(c.starts, e, c.what, err); !m.empty())
+                    return m;
         }
     }
 
@@ -1752,7 +1904,8 @@ std::string check_values(UsdBrepArrayData& a, const Layout& layout)
     {
         const uint64_t n = a.m_sEdgeuse_CurveNurb_VertexCountArray[u];
         if (std::string err = weights(a.m_sEdgeuse_CurveNurb_WeightsArray, uv_cv, n, "BA.410"); !err.empty())
-            return at(layout.edgeuse, u, "edgeuse") + "its UV curve has " + err;
+            if (std::string m = at(layout.edgeuse, u, "edgeuse", "its UV curve has " + err); !m.empty())
+                return m;
         uv_cv += n;
     }
     return "";
@@ -1957,7 +2110,71 @@ struct BodyPrim
     std::string path, leaf, source;
     std::map<std::string, const Val*> props;
     Matrix world;
+    std::string display;
+    Path material;  // the material bound to its bodies (its own binding, or a prim's above it); none: empty
+    std::vector<std::pair<std::vector<long>, Path>> subsets;  // its GeomSubsets of bodies ("brep"): which, material
 };
+
+// The material bound to a prim (UsdShadeMaterialBindingAPI): its path in the stage, and whether it is
+// bound stronger than the bindings of the prims below (bindMaterialAs = "strongerThanDescendants").
+struct Bound
+{
+    Path material;
+    bool stronger = false;
+};
+
+// A prim's opinions composed: the strongest of each, and the site each property comes from.
+struct Composed
+{
+    std::string specifier = "over", type, source, display;
+    int active = -1;
+    std::map<std::string, const Val*> props;
+    std::map<std::string, const Site*> origin;
+};
+
+// A path as written (absolute, or relative to the prim `anchor`), as names.
+Path written_path(const std::string& s, const Path& anchor)
+{
+    if (!s.empty() && s[0] == '/')
+        return parse_path(s);
+    Path out = anchor;
+    for (const std::string& n : parse_path(s))
+        if (n == "..")
+        {
+            if (!out.empty())
+                out.pop_back();
+        }
+        else if (n != ".")
+            out.push_back(n);
+    return out;
+}
+
+// A path written in a layer at the prim `site` (its path there), as the stage has it, where that prim
+// is `composed`: a reference maps the prim it brings in, and everything under it, onto the prim that
+// references it (the names they end in alike).
+Path in_stage(const Path& written, const Path& site, const Path& composed)
+{
+    size_t common = 0;
+    while (common < site.size() && common < composed.size() &&
+           site[site.size() - 1 - common] == composed[composed.size() - 1 - common])
+        ++common;
+    const Path from(site.begin(), site.end() - common), to(composed.begin(), composed.end() - common);
+    if (from == to || written.size() < from.size() || !std::equal(from.begin(), from.end(), written.begin()))
+        return written;
+    Path out = to;
+    out.insert(out.end(), written.begin() + from.size(), written.end());
+    return out;
+}
+
+// "/a/b.outputs:surface" -> ("/a/b", "outputs:surface")
+std::pair<std::string, std::string> split_property(const std::string& s)
+{
+    const size_t slash = s.rfind('/');
+    const size_t dot = s.find('.', slash == std::string::npos ? 0 : slash);
+    if (dot == std::string::npos)
+        return {s, ""};
+    return {s.substr(0, dot), s.substr(dot + 1)};
+}
 
 class Composer
 {
@@ -1981,7 +2198,62 @@ public:
         for (const std::string& n : names)
         {
             std::vector<std::pair<size_t, Path>> chain;
-            visit(expand(local(root, {n}), chain), {n}, identity(), out);
+            visit(expand(local(root, {n}), chain), {n}, identity(), Bound{}, out);
+        }
+        return out;
+    }
+
+    // The color a material shows where its shading is not evaluated: the diffuseColor of the
+    // UsdPreviewSurface its surface output is connected to (through node graphs, and through the
+    // inputs that color is connected to; the shader's default, 0.18 grey, where it has none), or
+    // nothing: a material without a preview surface (MDL alone), a color from a texture.
+    std::vector<double> material_color(const Path& material)
+    {
+        if (material.empty())
+            return {};
+        if (auto it = colors_.find(material); it != colors_.end())
+            return it->second;
+        std::vector<double>& out = colors_[material];
+        Path prim = material;
+        std::string prop = "outputs:surface";
+        for (int step = 0; step < 32; ++step)
+        {
+            const std::vector<Site> sites = sites_at(prim);
+            if (sites.empty())
+                return out;
+            const Composed c = compose(sites);
+            bool preview = false;
+            if (c.type == "Shader" && prop.compare(0, 8, "outputs:") == 0)
+            {
+                auto id = c.props.find("info:id");
+                if (id == c.props.end() || id->second->s != "UsdPreviewSurface" || prop != "outputs:surface")
+                    return out;
+                prop = "inputs:diffuseColor", preview = true;
+            }
+            if (auto v = c.props.find(prop); v != c.props.end())
+            {
+                const Val& x = *v->second;
+                if (x.items.size() == 3 && std::all_of(x.items.begin(), x.items.end(), [](const Val& n) { return n.k == Val::NUM; }))
+                    out = {x.items[0].n, x.items[1].n, x.items[2].n};
+                return out;
+            }
+            const std::string name = prop + ".connect";
+            auto link = c.props.find(name);
+            if (link == c.props.end())
+            {
+                if (preview)
+                    out = {0.18, 0.18, 0.18};
+                return out;
+            }
+            const Val* target = link->second;
+            if (target->k == Val::LIST && !target->items.empty())
+                target = &target->items[0];
+            if (target->k != Val::PATH)
+                return out;
+            const auto [where, what] = split_property(target->s);
+            const Path& site = c.origin.at(name)->path;
+            prim = in_stage(written_path(where, site), site, prim);
+            prop = what;
         }
         return out;
     }
@@ -1992,6 +2264,79 @@ private:
     std::map<std::string, const Layer*> by_id_;
     std::vector<std::vector<const Layer*>> stacks_;
     std::map<const Layer*, size_t> stack_index_;
+    std::map<Path, std::vector<double>> colors_;  // material -> its color (material_color)
+
+    // the strongest opinion of each: specifier (def or class over over), type, active, source, display
+    // name, properties
+    static Composed compose(const std::vector<Site>& sites)
+    {
+        Composed c;
+        for (const Site& s : sites)
+        {
+            const PrimSpec& p = *s.spec;
+            if (c.specifier == "over" && p.specifier != "over")
+                c.specifier = p.specifier;
+            if (c.type.empty())
+                c.type = p.type;
+            if (c.active < 0)
+                c.active = p.active;
+            if (c.source.empty())
+                c.source = p.source;
+            if (c.display.empty())
+                c.display = p.display;
+            for (const auto& [name, v] : p.props)
+                if (c.props.emplace(name, &v).second)
+                    c.origin[name] = &s;
+        }
+        return c;
+    }
+
+    // the prim's own material binding, if it has one (the preview purpose's before the one for all
+    // purposes; a binding to nothing is none)
+    static std::optional<Bound> binding(const Composed& c, const Path& path)
+    {
+        for (const std::string name : {"material:binding:preview", "material:binding"})
+        {
+            auto it = c.props.find(name);
+            if (it == c.props.end())
+                continue;
+            const Val* v = it->second;
+            if (v->k == Val::LIST && !v->items.empty())
+                v = &v->items[0];
+            if (v->k != Val::PATH || v->s.empty())
+                continue;
+            const Path& site = c.origin.at(name)->path;
+            Bound b;
+            b.material = in_stage(written_path(v->s, site), site, path);
+            auto as = c.props.find(name + "@bindMaterialAs");
+            b.stronger = as != c.props.end() && as->second->k == Val::STR && as->second->s == "strongerThanDescendants";
+            return b;
+        }
+        return std::nullopt;
+    }
+
+    // the sites of the prim at a path of the stage, composed from the root down
+    std::vector<Site> sites_at(const Path& path)
+    {
+        if (path.empty())
+            return {};
+        std::vector<std::pair<size_t, Path>> chain;
+        std::vector<Site> sites = expand(local(stack_of(&layers_[0]), {path[0]}), chain);
+        for (size_t k = 1; k < path.size() && !sites.empty(); ++k)
+        {
+            std::vector<Site> children;
+            for (const Site& s : sites)
+                if (const PrimSpec* c = s.spec->child(path[k]))
+                {
+                    Path p = s.path;
+                    p.push_back(path[k]);
+                    children.push_back(Site{s.stack, s.layer, p, c});
+                }
+            chain.clear();
+            sites = expand(children, chain);
+        }
+        return sites;
+    }
 
     // the layer the asset names, as the caller read it for `from` (none: noted as unresolved)
     const Layer* linked(const Layer* from, const std::string& asset, const std::string& what)
@@ -2100,27 +2445,16 @@ private:
         return sites;
     }
 
-    void visit(const std::vector<Site>& sites, const Path& path, const Matrix& parent, std::vector<BodyPrim>& out)
+    void visit(const std::vector<Site>& sites, const Path& path, const Matrix& parent, const Bound& inherited,
+               std::vector<BodyPrim>& out)
     {
-        // the strongest opinion of each: specifier (def or class over over), type, active, source,
-        // properties
-        std::string specifier = "over", type, source;
-        int active = -1;
-        std::map<std::string, const Val*> props;
-        for (const Site& s : sites)
-        {
-            const PrimSpec& p = *s.spec;
-            if (specifier == "over" && p.specifier != "over")
-                specifier = p.specifier;
-            if (type.empty())
-                type = p.type;
-            if (active < 0)
-                active = p.active;
-            if (source.empty())
-                source = p.source;
-            for (const auto& [name, v] : p.props)
-                props.emplace(name, &v);
-        }
+        const Composed composed = compose(sites);
+        const std::string& specifier = composed.specifier;
+        const std::string& type = composed.type;
+        const std::string& source = composed.source;
+        const std::string& display = composed.display;
+        const int active = composed.active;
+        const std::map<std::string, const Val*>& props = composed.props;
         if (specifier != "def" || active == 0)  // a class, an over of nothing, inactive: no bodies
             return;
         const std::string where = path_text(path);
@@ -2155,8 +2489,15 @@ private:
             }
             world = mul(world, local);
         }
-        if (type == "BrepArray")
-            out.push_back(BodyPrim{where, path.back(), source, props, world});
+        // the material bound here: the prim's own, or the one above it (unless that one is stronger)
+        Bound bound = inherited;
+        if (!inherited.stronger)
+            if (std::optional<Bound> own = binding(composed, path))
+                bound = *own;
+        const bool brep = type == "BrepArray";
+        const size_t at = out.size();
+        if (brep)
+            out.push_back(BodyPrim{where, path.back(), source, props, world, display, bound.material, {}});
         Path names;
         for (const Site& s : sites)
             for (const auto& c : s.spec->children)
@@ -2175,7 +2516,25 @@ private:
             Path child = path;
             child.push_back(n);
             std::vector<std::pair<size_t, Path>> chain;
-            visit(expand(children, chain), child, world, out);
+            const std::vector<Site> expanded = expand(children, chain);
+            if (brep && !bound.stronger)
+            {
+                // a GeomSubset of bodies with a material of its own (one of faces: smlibpy has no colors
+                // of faces)
+                const Composed s = compose(expanded);
+                auto kind = s.props.find("elementType");
+                if (s.type == "GeomSubset" && s.specifier == "def" && kind != s.props.end() && kind->second->s == "brep")
+                    if (std::optional<Bound> own = binding(s, child))
+                    {
+                        std::vector<long> bodies;
+                        if (auto ix = s.props.find("indices"); ix != s.props.end())
+                            for (const Val& v : ix->second->items)
+                                if (v.k == Val::NUM)
+                                    bodies.push_back(static_cast<long>(v.n));
+                        out[at].subsets.emplace_back(bodies, own->material);
+                    }
+            }
+            visit(expanded, child, world, bound, out);
         }
     }
 };
@@ -2278,7 +2637,8 @@ std::string kernel_check(SmBrep* brep, bool& refuse)
 
 namespace smlibpy {
 
-std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit)
+std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_axis, double meters_per_unit,
+                     bool materials)
 {
     if (up_axis != "Y" && up_axis != "Z")
         throw std::invalid_argument("usd: the up axis is \"Y\" or \"Z\"");
@@ -2288,21 +2648,62 @@ std::string usd_text(const std::vector<UsdItem>& items, const std::string& up_ax
     put(out, meters_per_unit);
     out += "\n    upAxis = \"" + up_axis + "\"\n    doc = \"smlibpy\"\n)\n\ndef Xform \"World\"\n{\n";
     std::set<std::string> taken;
+    // with materials, one UsdPreviewSurface material per color under /World/Looks, named after the first
+    // item of that color, bound to the prims of each item that has it
+    std::map<std::vector<double>, std::string> looks;  // color -> material prim
+    std::vector<std::pair<std::string, std::vector<double>>> order;  // (material prim, color) as written
+    std::set<std::string> looks_taken;
+    if (materials)
+        taken.insert("Looks");
     bool first = true;
     for (const UsdItem& item : items)
     {
+        std::string material;
+        if (materials && item.color.size() == 3)
+        {
+            auto it = looks.find(item.color);
+            if (it == looks.end())
+            {
+                it = looks.emplace(item.color, prim_name(item.name, looks_taken, "material")).first;
+                order.emplace_back(it->second, item.color);
+            }
+            material = "/World/Looks/" + it->second;
+        }
         if (item.brep)
         {
             out += first ? "" : "\n";
-            out += brep_prim(item, prim_name(item.name, taken, "body"));
+            out += brep_prim(item, prim_name(item.name, taken, "body"), material);
             first = false;
         }
         if (!item.triangles.empty())
         {
             out += first ? "" : "\n";
-            out += mesh_prim(item, prim_name(item.brep ? item.name + "_mesh" : item.name, taken, "mesh"));
+            out += mesh_prim(item, prim_name(item.brep ? item.name + "_mesh" : item.name, taken, "mesh"), material);
             first = false;
         }
+    }
+    if (!order.empty())
+    {
+        out += first ? "" : "\n";
+        out += "    def Scope \"Looks\"\n    {\n";
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            const auto& [name, color] = order[i];
+            out += i ? "\n" : "";
+            out += "        def Material \"" + name + "\"\n        {\n";
+            out += "            token outputs:surface.connect = </World/Looks/" + name + "/PreviewSurface.outputs:surface>\n\n";
+            out += "            def Shader \"PreviewSurface\"\n            {\n";
+            out += "                uniform token info:id = \"UsdPreviewSurface\"\n";
+            out += "                color3f inputs:diffuseColor = (";
+            for (int k = 0; k < 3; ++k)
+            {
+                if (k)
+                    out += ", ";
+                put(out, color[k]);
+            }
+            out += ")\n                token outputs:surface\n            }\n        }\n";
+        }
+        out += "    }\n";
     }
     out += "}\n";
     return out;
@@ -2346,7 +2747,8 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
         parsed[i].missing = &layers[i].missing;
         parser.layer(parsed[i]);
     }
-    std::vector<BodyPrim> prims = Composer(parsed, out).bodies();
+    Composer composer(parsed, out);
+    std::vector<BodyPrim> prims = composer.bodies();
 
     // the stage's units and up axis: millimeters, Z up (a stage that says neither is taken as it is)
     const Layer& root = parsed[0];
@@ -2392,11 +2794,17 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
                 }
             }
             Layout layout;
+            std::vector<std::string> bad;  // (partial: what is wrong with each body)
             std::string problem = check(a, layout);
             if (problem.empty())
-                problem = check_values(a, layout);
+                problem = check_values(a, layout, options.partial ? &bad : nullptr);
             if (!problem.empty())
-                throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+            {
+                if (!options.partial)
+                    throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+                out.skipped.push_back("the BrepArray \"" + prim.path + "\" is malformed: " + problem);
+                continue;
+            }
             const Matrix place = mul(stage, options.placement ? prim.world : identity());
             bool moved = false;
             for (int k = 0; k < 16; ++k)
@@ -2409,43 +2817,81 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
             UsdBrepArraySpans spans;
             for (uint32_t i = 0; i < count; ++i)
             {
+                const std::string body = "body " + std::to_string(i) + " of the BrepArray \"" + prim.path + "\"";
+                if (i < bad.size() && !bad[i].empty())
+                {
+                    out.skipped.push_back(body + " is malformed: " + bad[i]);
+                    continue;
+                }
                 pxr::usd_diagnostics().clear();
                 if (!spans.SetStartsAndCountsForBrepIndex(a, i, FALSE, TRUE))
-                    throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed (body " +
-                                                std::to_string(i) + ")" +
-                                                (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
+                {
+                    const std::string why = pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics();
+                    if (!options.partial)
+                        throw std::invalid_argument("usd: the BrepArray \"" + prim.path + "\" is malformed (body " +
+                                                    std::to_string(i) + ")" + why);
+                    out.skipped.push_back(body + " is malformed" + why);
+                    continue;
+                }
                 SmBrep* brep = nullptr;
                 SmPyErrorTrail::clear();
                 SmStatus st = SMU_BrepConvert::BrepMove_OneUsdBrepToSMLib(ctx(), a, spans, i, brep, options.heal ? TRUE : FALSE);
                 if (st != SM_SUCCESS || !brep)
                 {
                     delete brep;
-                    throw std::runtime_error("usd: body " + std::to_string(i) + " of the BrepArray \"" + prim.path +
-                                             "\" could not be built (" + sm_status_name(st) + ")" +
-                                             (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics()));
+                    const std::string why = std::string("could not be built (") + sm_status_name(st) + ")" +
+                                            (pxr::usd_diagnostics().empty() ? "" : ": " + pxr::usd_diagnostics());
+                    if (!options.partial)
+                        throw std::runtime_error("usd: " + body + " " + why);
+                    out.skipped.push_back(body + " " + why);
+                    continue;
                 }
-                UsdItem item;
-                item.brep = brep;
-                const std::string name = leaves[prim.leaf] > 1 ? prim.path : prim.leaf;
-                item.name = count == 1 || i == 0 ? name : name + "_" + std::to_string(i);
-                item.color = color;
-                out.items.push_back(std::move(item));
                 // the kernel's check, before anything measures the body (smlibpy's own files are not
                 // checked: what it writes, its kernel has built)
+                std::string found;
                 if (options.check && prim.source != "smlibpy")
                 {
                     bool refuse = false;
-                    const std::string found = kernel_check(brep, refuse);
-                    const std::string body = "body " + std::to_string(i) + " of the BrepArray \"" + prim.path + "\"";
+                    found = kernel_check(brep, refuse);
                     if (refuse)
-                        throw std::invalid_argument("usd: " + body + " is broken: " + found +
-                                                    "; such a body measures and meshes wrong (turn the check off to read it "
-                                                    "as it is)");
-                    if (!found.empty())
-                        out.warnings.push_back(body + ": " + found + "; it may not mesh or measure exactly");
+                    {
+                        delete brep;
+                        if (!options.partial)
+                            throw std::invalid_argument("usd: " + body + " is broken: " + found +
+                                                        "; such a body measures and meshes wrong (turn the check off to "
+                                                        "read it as it is)");
+                        out.skipped.push_back(body + " is broken: " + found);
+                        continue;
+                    }
                 }
+                UsdItem item;
+                item.brep = brep;
+                // (the name a prim shows, which smlibpy writes for names that are no prim names)
+                const std::string name = !prim.display.empty() && valid_utf8(prim.display) ? prim.display
+                                         : leaves[prim.leaf] > 1                            ? prim.path
+                                                                                            : prim.leaf;
+                item.name = count == 1 || i == 0 ? name : name + "_" + std::to_string(i);
+                // the color of the material bound to the body (a GeomSubset's of bodies, or the prim's),
+                // where it has one a viewer without its shading shows, else the prim's displayColor
+                Path material = prim.material;
+                for (const auto& [bodies, m] : prim.subsets)
+                    if (std::find(bodies.begin(), bodies.end(), static_cast<long>(i)) != bodies.end())
+                    {
+                        material = m;
+                        break;
+                    }
+                std::vector<double> shown = composer.material_color(material);
+                item.color = shown.empty() ? color : shown;
+                out.items.push_back(std::move(item));
+                if (!found.empty())
+                    out.warnings.push_back(body + ": " + found + "; it may not mesh or measure exactly");
                 if (moved)
                     transform_brep(brep, rows);
+                // lines and circles that the file gives as B-splines (usd-brep and Omniverse write every
+                // edge so) get their analytic curves back (circles where their faces lie on analytic
+                // surfaces); smlibpy writes its lines, circles and ellipses as such, and its B-splines stay
+                if (prim.source != "smlibpy")
+                    restore_analytic_curves(brep, false);
             }
         }
     }
@@ -2467,6 +2913,15 @@ std::vector<UsdItem> usd_read(const std::string& text, bool heal)
     return usd_stage({UsdLayer{"", text, {}, {}}}, options).items;
 }
 
+std::string usd_check_arrays(UsdBrepArrayData& a)
+{
+    Layout layout;
+    std::string problem = check(a, layout);
+    return problem.empty() ? check_values(a, layout) : problem;
+}
+
+std::string usd_kernel_check(SmBrep* brep, bool& refuse) { return kernel_check(brep, refuse); }
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -2474,7 +2929,7 @@ std::vector<UsdItem> usd_read(const std::string& text, bool heal)
 
 void bind_usd_files(py::module_ m)
 {
-    m.def("usd_text", [](const py::list& items, const std::string& up_axis, double meters_per_unit) {
+    m.def("usd_text", [](const py::list& items, const std::string& up_axis, double meters_per_unit, bool materials) {
         std::vector<smlibpy::UsdItem> in;
         for (const auto& o : items)
         {
@@ -2494,11 +2949,11 @@ void bind_usd_files(py::module_ m)
                 item.face_colors = t[6].cast<std::vector<double>>();
             in.push_back(std::move(item));
         }
-        return smlibpy::usd_text(in, up_axis, meters_per_unit);
-    }, py::arg("items"), py::arg("up_axis") = "Z", py::arg("meters_per_unit") = 0.001,
+        return smlibpy::usd_text(in, up_axis, meters_per_unit, materials);
+    }, py::arg("items"), py::arg("up_axis") = "Z", py::arg("meters_per_unit") = 0.001, py::arg("materials") = false,
        "The .usda text of a stage: items are (brep or None, name, (r, g, b) or None, points or None, triangles "
        "or None[, corner normals or None[, r, g, b per triangle or None]]); a BrepArray prim per body, a Mesh prim per "
-       "mesh.");
+       "mesh. materials: a UsdPreviewSurface material per color, bound to the prims of that color.");
     m.def("usd_read", [](const std::string& text, bool heal) {
         std::vector<smlibpy::UsdItem> items = smlibpy::usd_read(text, heal);
         py::list out;
@@ -2510,7 +2965,7 @@ void bind_usd_files(py::module_ m)
        "The bodies of the BrepArray prims of a .usda text: [(brep, name, (r, g, b) or None)].");
     m.def("usd_assets", &smlibpy::usd_assets, py::arg("text"),
           "The assets a .usda text names (subLayers, references, payloads), each once, as written.");
-    m.def("usd_stage", [](const py::list& layers, bool heal, bool check, bool placement, double units) {
+    m.def("usd_stage", [](const py::list& layers, bool heal, bool check, bool placement, double units, bool partial) {
         std::vector<smlibpy::UsdLayer> in;
         for (const auto& o : layers)
         {
@@ -2524,6 +2979,7 @@ void bind_usd_files(py::module_ m)
         }
         smlibpy::UsdReadOptions options;
         options.heal = heal, options.check = check, options.placement = placement, options.units = units;
+        options.partial = partial;
         smlibpy::UsdStage stage = smlibpy::usd_stage(in, options);
         py::list bodies;
         for (auto& item : stage.items)
@@ -2533,12 +2989,14 @@ void bind_usd_files(py::module_ m)
         out["bodies"] = bodies;
         out["warnings"] = py::cast(stage.warnings);
         out["unresolved"] = py::cast(stage.unresolved);
+        out["skipped"] = py::cast(stage.skipped);
         return out;
     }, py::arg("layers"), py::arg("heal") = false, py::arg("check") = true, py::arg("placement") = true,
-       py::arg("units") = 0.0,
+       py::arg("units") = 0.0, py::arg("partial") = false,
        "The bodies of a stage: layers are (id, text, {asset: id of the layer read for it}, {asset: why none was "
        "read}), the root first. {'bodies': [(brep, name, (r, g, b) or None)], 'warnings': [...], 'unresolved': "
-       "[...]}; the bodies placed (placement: the prims' transforms and the up axis) and in millimeters (units: "
-       "millimeters per unit, 0: the stage's metersPerUnit).");
+       "[...], 'skipped': [...]}; the bodies placed (placement: the prims' transforms and the up axis) and in "
+       "millimeters (units: millimeters per unit, 0: the stage's metersPerUnit). partial: bodies that cannot be read "
+       "are left out ('skipped' says why) instead of raising.");
 }
 #endif  // SMLIBPY_PYTHON

@@ -869,13 +869,14 @@ def test_faces_of_an_import_whose_faces_share_nothing_raise(tmp_path):
     # body and removing the other faces, the removal failed, and deleting the copy then crashed the
     # process (SmBrep::~SmBrep, a null pointer). Now such a copy is kept, never freed, and the call
     # raises KernelError. In a process of its own, so that a crash fails the test, not the run.
+    # (heal=False: healing stitches such faces together, see test_lane_IX.py)
     export_step(Box(20, 10, 10) - Cylinder(3, 20), tmp_path / "block.step")
     (tmp_path / "unshared.step").write_text(_unshared((tmp_path / "block.step").read_text(), 1e-3))
     code = f"""
 import warnings
 warnings.simplefilter("ignore")
 from smlibpy import *
-part = import_step({str(tmp_path / "unshared.step")!r})
+part = import_step({str(tmp_path / "unshared.step")!r}, heal=False)
 print(type(part).__name__, part.is_valid(), flush=True)
 for f in part.faces():
     try:
