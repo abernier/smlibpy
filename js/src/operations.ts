@@ -4,8 +4,8 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction } from './geometry.ts'
+import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG } from './geometry.ts'
 import { spread } from './_linalg.ts'
 import { Line } from './curves.ts'
 import {
@@ -493,19 +493,46 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
     // joined into one curve fails at random) is swept edge by edge, each edge turned afresh, as
     // before the profile was carried along. Not closed paths: fused so, the pieces of kinked loops
     // crashed the kernel (4 of 60 random loops; carried, they raise).
-    if (!(err instanceof ModelingError) || closed || edges.length < 2) throw err
+    if (!(err instanceof ModelingError)) throw err
+    if (closed || edges.length < 2) throw _bendError(err, local, edges, hint)
     let out: Part
     try {
       out = _afreshSweep(local, edges, axes, orient, translational, hint)
     } catch (e) {
       if (!(e instanceof ModelingError)) throw e
-      throw err
+      throw _bendError(err, local, edges, hint)
     }
     if (!_round(sk, anchor)) {
       _warn(`sweep: the profile could not be carried along the path (${err.message}); each of its ${edges.length} edges was swept turned to its own start instead, so the profile turns where they meet`)
     }
     return out
   }
+}
+
+/** A sweep's error about the path's curvature with the numbers: where the path bends most tightly and
+ * how far the profile reaches from it (the same error where that is not known). */
+function _bendError(err: ModelingError, local: Sketch, edges: Edge[], hint: string): ModelingError {
+  if (!err.message.includes(hint)) return err
+  let r = Infinity
+  let t = 0
+  let e: Edge = edges[0]
+  let reach = 0
+  try {
+    for (const x of edges) {
+      const [rx, tx] = x.minRadius()
+      if (rx < r) [r, t, e] = [rx, tx, x]
+    }
+    for (const q of local.edges()) for (let i = 0; i <= 16; i++) reach = Math.max(reach, q.pointAt(i / 16).length)
+  } catch (ex) {
+    if (!(ex instanceof ModelingError || ex instanceof RangeError)) throw ex
+    return err
+  }
+  if (!Number.isFinite(r)) return err
+  const p = e.pointAt(t)
+  const g = (v: number) => _formatG(v, 4)
+  const detail = `the path bends with a radius of ${g(r)} at (${g(p.x)}, ${g(p.y)}, ${g(p.z)}) (Edge.minRadius), and the profile reaches ${g(reach)} from the path`
+  if (err instanceof KernelError) return new KernelError(err.operation, err.detail, err.status, err.hint ? `${err.hint}: ${detail}` : detail)
+  return new ModelingError(`${err.message}: ${detail}`)
 }
 
 /** A profile carried along a path: tangent edges in one go, the frame carried across corners. */
@@ -623,11 +650,15 @@ export function shell(part: Part, thickness: number, openings: unknown = null, o
 }
 
 /** Grow or shrink a part or a sketch by `distance` (for a sketch also the option
- * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`). */
-export function offset(shape: Part | Sketch, distance: number, options: { corners?: string; round?: boolean | null } = {}): Part | Sketch {
-  if (shape instanceof Sketch) return shape.offset(distance, options)
+ * `corners: "round" | "sharp" | "chamfer"`, see `Sketch.offset`), or move a wire or an edge sideways
+ * (`Wire.offset`, `Edge.offset`). */
+export function offset<S extends Part | Sketch | Wire | Edge>(shape: S, distance: number,
+  options: { corners?: string; round?: boolean | null; plane?: Plane | null } = {}): S {
+  if (shape instanceof Sketch) return shape.offset(distance, options) as S
+  if (shape instanceof Wire) return shape.offset(distance, options) as S
+  if (shape instanceof Edge) return shape.offset(distance, options) as S
   _opts('Part.offset', options) // (a part's offset takes none)
-  return shape.offset(distance)
+  return (shape as Part).offset(distance) as S
 }
 
 /** A mirrored copy of a shape. */

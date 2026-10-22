@@ -457,6 +457,14 @@ export class Edge extends Shape {
     selfIntersections(options?: {
         tolerance?: number | null;
     }): Vector[];
+    curvatureAt(t?: number): number;
+    radiusAt(t?: number): number;
+    minRadius(): [number, number];
+    inflections(): number[];
+    offset(distance: number, options?: {
+        plane?: Plane | null;
+    }): Edge;
+    toArcs(tolerance?: number): Wire;
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
@@ -490,6 +498,12 @@ export class Wire extends Shape {
         tolerance?: number | null;
     }): Vector[];
     toEdge(): Edge;
+    offset(distance: number, options?: {
+        corners?: string;
+        plane?: Plane | null;
+    }): Wire;
+    toArcs(tolerance?: number): Wire;
+    minRadius(): [number, number];
     close(): Wire;
     reversed(): Wire;
     add(other: Edge | Wire): Wire;
@@ -647,9 +661,15 @@ export function SagittaArc(start: VectorLike, end: VectorLike, sagitta: number, 
 export function TangentArc(start: VectorLike, end: VectorLike, tangent: VectorLike): Edge;
 export function EllipticalArc(center: VectorLike, xRadius: number, yRadius: number, startAngle?: number, endAngle?: number, plane?: Plane): Edge;
 export function Spline(...args: (VectorLike | readonly VectorLike[] | {
-    tangents?: readonly [VectorLike | null, VectorLike | null] | null;
+    tangents?: readonly (VectorLike | null)[] | null;
     closed?: boolean;
 })[]): Edge;
+export function fitCurve(points: Iterable<VectorLike>, options?: {
+    tolerance?: number | null;
+    degree?: number;
+    tangents?: readonly [VectorLike | null, VectorLike | null] | null;
+    closed?: boolean;
+}): Edge;
 export function Bezier(...args: (VectorLike | readonly VectorLike[] | {
     weights?: readonly number[] | null;
 })[]): Edge;
@@ -835,10 +855,11 @@ export function chamfer(edges: unknown, length: number): Part | Sketch;
 export function shell(part: Part, thickness: number, openings?: unknown, options?: {
     outward?: boolean;
 }): Part;
-export function offset(shape: Part | Sketch, distance: number, options?: {
+export function offset<S extends Part | Sketch | Wire | Edge>(shape: S, distance: number, options?: {
     corners?: string;
     round?: boolean | null;
-}): Part | Sketch;
+    plane?: Plane | null;
+}): S;
 export function mirror<S extends Shape>(shape: S, plane?: Plane | Face | Axis | ShapeList<Face>): S;
 export function split(part: Part, plane: Plane | Face, keep?: 'above' | 'below' | 'both'): Part | [Part, Part];
 export function merge(...parts: (Part | Iterable<Part>)[]): Part;
@@ -1110,6 +1131,8 @@ export interface DxfReadOptions {
 export interface DxfWriteOptions {
     unit?: string;
     plane?: Plane | null;
+    curves?: string;
+    tolerance?: number;
 }
 export function importDxfWires(path: string, options?: DxfReadOptions): ShapeList<Wire>;
 export function fromDxfWires(data: string | Uint8Array, options?: DxfReadOptions): ShapeList<Wire>;

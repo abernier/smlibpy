@@ -35,7 +35,7 @@ import { EllipticalArc, Line, ThreePointArc, _arcCurve, _filletWire } from './cu
 import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
-import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
+import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
@@ -1112,10 +1112,10 @@ export class Edge extends Shape {
       const [lo, hi] = k.edge_bounding_box(this._e, true)
       return new BoundBox(lo, hi)
     }
-    let pts: Vector[] = []
-    for (let i = 0; i <= 32; i++) pts.push(this.pointAt(i / 32))
-    if (this.geomType === 'line') pts = [this.start, this.end]
-    return BoundBox.ofPoints(pts)
+    // exact: the ends, the corners and where the tangent is perpendicular to an axis
+    const [t0, t1] = this._range()
+    const [lo, hi] = kernelCall('bbox', () => ext.curve_box(this._curve(), t0, t1))
+    return new BoundBox(lo, hi)
   }
 
   override distanceTo(point: VectorLike | Shape): number {
@@ -1364,6 +1364,135 @@ export class Edge extends Shape {
     return _mergedHits(hits.sort((p, q) => p[0] - q[0]), tol, this.isClosed)
   }
 
+  // -- curvature ----------------------------------------------------------------------------
+  /** The curvature at fraction `t` of the length (as `pointAt`): one over the radius of the circle
+   * that fits the edge best there; 0 where it runs straight. */
+  curvatureAt(t = 0.5): number {
+    const g = ext.curve_geometry(this._curve(), this._param(t))
+    return Math.hypot(g.curvature[0], g.curvature[1], g.curvature[2])
+  }
+
+  /** The radius of curvature at fraction `t` of the length (`Infinity` where the edge runs
+   * straight): the radius of the circle that fits the edge best there. */
+  radiusAt(t = 0.5): number {
+    const c = this.curvatureAt(t)
+    return c > 0 ? 1.0 / c : Infinity
+  }
+
+  /**
+   * The smallest radius of curvature of the edge and where it is: `[radius, t]`, `t` a fraction of
+   * the length (as `pointAt`). A line gives `[Infinity, 0]`, an arc its radius. A sweep profile that
+   * reaches farther from the path than this folds over itself.
+   *
+   *     const [r, t] = path.minRadius()
+   */
+  minRadius(): [number, number] {
+    const kind = this.geomType
+    if (kind === 'line' || this._isStraight()) return [Infinity, 0.0]
+    if (kind === 'circle') return [this.radius, 0.0]
+    const [t0, t1] = this._range()
+    const curve = this._curve()
+    const sols = kernelCall('minRadius', () => ext.curve_properties(curve, t0, t1, 'min_radius', 0.0, 1e-9 * Math.max(1.0, this.length)))
+    const candidates = [t0, t1]
+    for (const s of sols) {
+      candidates.push(Number(s.t))
+      if (s.end != null) candidates.push(Number(s.end))
+    }
+    let bestK = -1.0
+    let bestU = t0
+    for (const u of candidates) {
+      const g = ext.curve_geometry(curve, Math.min(Math.max(u, t0), t1))
+      const ku = Math.hypot(g.curvature[0], g.curvature[1], g.curvature[2])
+      if (ku > bestK) {
+        bestK = ku
+        bestU = u
+      }
+    }
+    return [bestK > 0 ? 1.0 / bestK : Infinity, this._fraction(bestU)]
+  }
+
+  /**
+   * Where the edge changes the side it bends to (an S-curve has one), as fractions of its length (as
+   * `pointAt`), in order: points where its curvature passes through zero. Lines, arcs and curves that
+   * bend one way only have none; a straight stretch between two bends counts once, at its middle,
+   * where the bends go opposite ways.
+   */
+  inflections(): number[] {
+    const kind = this.geomType
+    if (kind === 'line' || kind === 'circle' || kind === 'ellipse') return []
+    const [t0, t1] = this._range()
+    const curve = this._curve()
+    const sols = kernelCall('inflections', () => ext.curve_properties(curve, t0, t1, 'inflections', 0.0, 1e-9 * Math.max(1.0, this.length)))
+    const span = t1 - t0
+    const out: number[] = []
+    for (const s of sols) {
+      const u = Number(s.t)
+      const w = s.end != null ? Number(s.end) : u
+      const a = Math.min(u, w)
+      const b = Math.max(u, w)
+      const before = _binormal(curve, a, -1, t0, t1, span)
+      const after = _binormal(curve, b, 1, t0, t1, span)
+      if (before === null || after === null || before.dot(after) >= 0) continue
+      const f = this._fraction(0.5 * (a + b))
+      if (0.0 < f && f < 1.0 && !out.some((g) => Math.abs(f - g) <= 1e-9)) out.push(f)
+    }
+    return out.sort((x, y) => x - y)
+  }
+
+  // -- offsets, lines and arcs --------------------------------------------------------------
+  /**
+   * The edge moved `distance` sideways in its plane: an open edge to its left for a positive
+   * distance (seen from the side the plane's normal points to), to its right for a negative one; a
+   * closed edge (a circle, a closed spline) outward for a positive distance.
+   *
+   * Lines stay lines and arcs stay arcs, exactly. Splines and ellipses are offset by the kernel
+   * within 1e-6 of their size. Where the edge bends toward that side more tightly than the distance
+   * (a radius of curvature below it, see `minRadius`), the offset would fold over itself and a
+   * ModelingError says where.
+   *
+   * `plane`: the plane the edge lies in, whose normal tells left from right. Default: the XY plane
+   * for an edge at one height, else the plane the edge lies in, its normal toward +Z (+Y, then +X,
+   * for vertical planes).
+   *
+   *     const rail = Spline([0, 0], [20, 8], [40, 0]).offset(3) // 3 to the left (+Y side)
+   */
+  offset(distance: number, options: { plane?: Plane | null } = {}): Edge {
+    _opts('Edge.offset', options)
+    if (_offsetDistance(distance, 'offset') === 0) return this
+    return offsetWire([this], distance, 'round', options.plane ?? null, 'offset')[0]
+  }
+
+  /**
+   * The edge as lines and circular arcs within `tolerance` of it, end to end along it: for CNC,
+   * laser and plasma cutters and DXF readers that take only LINE and ARC
+   * (`exportDxf(..., { curves: 'arcs' })`). Lines and arcs come back as they are; splines and
+   * ellipses become chains of arcs that join tangentially (lines where they run straight). Both
+   * ways, every point of one lies within `tolerance` of the other.
+   *
+   *     const cut = Spline([0, 0], [10, 5], [20, -3], [30, 4]).toArcs(0.01) // 26 arcs
+   */
+  toArcs(tolerance = 0.01): Wire {
+    if (!(typeof tolerance === 'number' && Number.isFinite(tolerance) && tolerance > 0)) {
+      throw new RangeError(`toArcs: the tolerance must be positive, got ${String(tolerance)}`)
+    }
+    const kind = this.geomType
+    if (kind === 'line' || kind === 'circle') return Wire._raw([this])
+    if (this._isStraight()) return Wire._raw([Line(this.start, this.end)])
+    const c = this._copyCurve()
+    let r: Any
+    try {
+      r = kernelCall('toArcs', () => ext.lines_and_arcs(c, tolerance))
+    } finally {
+      ext.delete_curve(c)
+    }
+    const dev = Number(r.deviation)
+    if (!r.pieces.length || dev > tolerance) {
+      throw new ModelingError(`toArcs: the lines and arcs come no closer than ${_formatG(dev, 3)} to the ${kind}, more than the ` +
+        `tolerance ${_formatG(tolerance)}; use a larger tolerance`)
+    }
+    return Wire._raw(r.pieces.map((p: Any) => (p.kind === 'line' ? Line(p.start, p.end) : ThreePointArc(p.start, p.mid, p.end))))
+  }
+
   // -- topology -----------------------------------------------------------------------------
   vertices(): ShapeList<Vertex> {
     if (this._e) {
@@ -1473,6 +1602,29 @@ function _mergedHits(hits: [number, Vector][], tol: number, closed: boolean): [n
   }
   if (closed && out.length > 1 && out[out.length - 1][1].distanceTo(out[0][1]) <= tol) out.pop()
   return out
+}
+
+/** C' x C'' a little before (side -1) or after (+1) parameter u, stepping farther while the curve
+ * runs straight there; null where that leaves [t0, t1]. */
+function _binormal(curve: number, u: number, side: number, t0: number, t1: number, span: number): Vector | null {
+  let step = 1e-6 * span
+  while (step <= 0.25 * span) {
+    const w = u + side * step
+    if (!(t0 < w && w < t1)) return null
+    const d = ext.curve_eval(curve, w, 2)
+    const d1 = new Vector(d[1])
+    const b = d1.cross(new Vector(d[2]))
+    if (b.length * span > 1e-9 * d1.dot(d1)) return b // (curvature x length > 1e-9)
+    step *= 8.0
+  }
+  return null
+}
+
+function _offsetDistance(distance: unknown, what: string): number {
+  if (!(typeof distance === 'number' && Number.isFinite(distance))) {
+    throw new RangeError(`${what}: the distance must be a finite number, got ${String(distance)}`)
+  }
+  return distance
 }
 
 /** The angle (radians, >= 0) to turn from `start` (radians, in the sense +-1) along the ellipse
@@ -1815,6 +1967,58 @@ export class Wire extends Shape {
     } finally {
       for (const c of curves) ext.delete_curve(c)
     }
+  }
+
+  /**
+   * The wire moved `distance` sideways in its plane, as a parallel curve: an open wire to its left
+   * for a positive distance (seen from the side the plane's normal points to), to its right for a
+   * negative one; a closed wire outward for a positive distance, inward for a negative one (as
+   * `Sketch.offset` grows and shrinks).
+   *
+   * Lines stay lines and arcs stay arcs, exactly; splines and ellipses are offset within 1e-6 of the
+   * wire's size (`Edge.offset`). `corners` shapes the corners the offset pulls apart: 'round' (arcs
+   * of radius |distance|), 'sharp' (the sides extended until they meet) or 'chamfer' (a straight cut
+   * across); at the corners it pushes together, the sides are cut where they cross. Where the offset
+   * would fold over or run into itself (an edge bends more tightly than the distance, an edge
+   * vanishes, parts of the wire lie closer than the distance), a ModelingError says where; a region's
+   * offset that merges and drops parts is `Sketch.offset`.
+   *
+   * `plane`: the plane the wire lies in, whose normal tells left from right (see `Edge.offset` for
+   * the default).
+   *
+   *     const wall = Polyline([0, 0], [40, 0], [40, 30]).offset(2, { corners: 'sharp' })
+   */
+  offset(distance: number, options: { corners?: string; plane?: Plane | null } = {}): Wire {
+    _opts('Wire.offset', options)
+    const { corners = 'round' } = options
+    if (!CORNER_STYLES.includes(corners)) throw new RangeError(`offset: corners is 'round', 'sharp' or 'chamfer', not '${corners}'`)
+    if (_offsetDistance(distance, 'offset') === 0) return this
+    return Wire._raw(offsetWire([...this._edges], distance, corners, options.plane ?? null, 'offset'))
+  }
+
+  /** The wire as lines and circular arcs within `tolerance` (see `Edge.toArcs`). */
+  toArcs(tolerance = 0.01): Wire {
+    return Wire._raw(this._edges.flatMap((e) => [...e.toArcs(tolerance).edges()]))
+  }
+
+  /** The smallest radius of curvature of the wire's edges and where it is: `[radius, t]`, `t` a
+   * fraction of the wire's length (as `pointAt`). The corners where edges meet do not count (a corner
+   * has no radius; see `fillet`). */
+  minRadius(): [number, number] {
+    const lengths = this._edges.map((e) => e.length)
+    const total = lengths.reduce((a, b) => a + b, 0) || 1.0
+    let best = Infinity
+    let at = 0.0
+    let before = 0.0
+    this._edges.forEach((e, i) => {
+      const [r, t] = e.minRadius()
+      if (r < best) {
+        best = r
+        at = (before + t * lengths[i]) / total
+      }
+      before += lengths[i]
+    })
+    return [best, at]
   }
 
   /** This wire closed with a straight line from its end to its start. */

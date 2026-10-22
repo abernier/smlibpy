@@ -25,8 +25,12 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `split(at)` | `(before, after)`: cut at a fraction or a point on the edge |
 | `trim(start, end)` | the part between two fractions or points (start before end) |
 | `extend(d, end="end", continuity="G1")` | longer by `d` at `"end"`, `"start"` or `"both"` |
+| `offset(d, plane=None)` | a parallel edge: an open one to the left, a closed one outward (`curves/offset`) |
+| `curvature_at(t)`, `radius_at(t)` | curvature (1/radius; 0 where straight) and radius of curvature at `t` |
+| `min_radius()`, `inflections()` | `(radius, t)` of the tightest bend; fractions where the bend flips (`curves/min_radius`) |
+| `to_arcs(tolerance=0.01)` | a wire of lines and circular arcs within the tolerance (`curves/to_arcs`) |
 | `reversed()` | the same edge run the other way |
-| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures |
+| `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures; `bbox()` is exact (also of free curves) |
 
 ## Details
 - `point_at` is uniform in arc length: 400 steps along a spline were all 0.0509 long.

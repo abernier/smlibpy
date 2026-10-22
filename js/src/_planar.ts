@@ -583,7 +583,7 @@ export function describe(s: Seg, fp: (p: Complex) => string = fmtPt): string {
 }
 
 // =============================================================================== intersections
-function _lineLine(a1: Complex, d1: Complex, a2: Complex, d2: Complex): Complex[] {
+export function _lineLine(a1: Complex, d1: Complex, a2: Complex, d2: Complex): Complex[] {
   const den = cross(d1, d2)
   if (Math.abs(den) < 1e-14) return []
   const s = cross(a2.sub(a1), d2) / den

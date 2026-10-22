@@ -457,16 +457,39 @@ def sweep(profile: Sketch | Face | Wire, path: Edge | Wire, *, orient: bool = Tr
         # afresh, as before the profile was carried along. Not closed paths: fused so, the pieces
         # of kinked loops crashed the kernel (4 of 60 random loops; carried, they raise).
         if closed or len(edges) < 2:
-            raise
+            bent = _bend_error(err, local, edges, hint)
+            if bent is err:
+                raise
+            raise bent from err
         try:
             out = _afresh_sweep(local, edges, axes, orient, translational, hint)
         except ModelingError:
-            raise err from None
+            raise _bend_error(err, local, edges, hint) from None
         if not _round(sk, anchor):
             warnings.warn(f"sweep: the profile could not be carried along the path ({err}); each of its "
                           f"{len(edges)} edges was swept turned to its own start instead, so the profile turns "
                           "where they meet", RuntimeWarning, stacklevel=2)
         return out
+
+
+def _bend_error(err: ModelingError, local: Sketch, edges: list[Edge], hint: str) -> ModelingError:
+    """A sweep's error about the path's curvature with the numbers: where the path bends most
+    tightly and how far the profile reaches from it (the same error where that is not known)."""
+    if hint not in str(err):
+        return err
+    try:
+        r, t, e = min(((*e.min_radius(), e) for e in edges), key=lambda x: x[0])
+        reach = max(q.point_at(i / 16).length for q in local.edges() for i in range(17))
+    except (ModelingError, ValueError):
+        return err
+    if not math.isfinite(r):
+        return err
+    p = e.point_at(t)
+    detail = (f"the path bends with a radius of {r:.4g} at ({p.x:.4g}, {p.y:.4g}, {p.z:.4g}) (Edge.min_radius), and "
+              f"the profile reaches {reach:.4g} from the path")
+    if isinstance(err, KernelError):
+        return KernelError(err.operation, err.detail, err.status, f"{err.hint}: {detail}" if err.hint else detail)
+    return ModelingError(f"{err}: {detail}")
 
 
 def _carried_sweep(sk: Sketch, local: Sketch, edges: list[Edge], axes: np.ndarray, anchor: np.ndarray, halved: bool,
@@ -590,7 +613,8 @@ def shell(part: Part, thickness: float, openings: Any = None, *, outward: bool =
 
 def offset(shape: Part | Sketch, distance: float, **kwargs: Any) -> Any:
     """Grow or shrink a part or a sketch by ``distance`` (for a sketch also
-    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`)."""
+    ``corners="round" | "sharp" | "chamfer"``, see :meth:`Sketch.offset`), or move a wire or an
+    edge sideways (:meth:`Wire.offset`, :meth:`Edge.offset`)."""
     return shape.offset(distance, **kwargs)
 
 

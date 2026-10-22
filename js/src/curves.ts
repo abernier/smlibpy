@@ -3,10 +3,13 @@
 // All return an Edge (one curve) or a Wire (a chain). Points may be given as [x, y] (z = 0),
 // [x, y, z] or Vectors.
 
-import { _opts, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { solve } from './_linalg.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
+
+// biome-ignore lint: kernel results are what their bindings return
+type Any = any
 
 /** Python's float modulo: the result has the sign of the divisor. */
 export function _mod(a: number, b: number): number {
@@ -307,25 +310,113 @@ function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, cl
 /**
  * A smooth cubic curve through the points: `Spline([0, 0], [10, 5], [20, 0])`.
  *
- * Options: `tangents`, the `[start, end]` tangent directions (either may be null); `closed`
- * makes a closed loop (smooth at the join).
+ * Options: `tangents`, the `[start, end]` tangent directions (either may be null), or one direction
+ * for every point (an array as long as the points: the curve passes through each point in its
+ * direction); `closed` makes a closed loop (smooth at the join).
  */
 export function Spline(
-  ...args: (VectorLike | readonly VectorLike[] | { tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean })[]
+  ...args: (VectorLike | readonly VectorLike[] | { tangents?: readonly (VectorLike | null)[] | null; closed?: boolean })[]
 ): Edge {
-  const { items, options } = _withOptions<{ tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean }>(args)
+  const { items, options } = _withOptions<{ tangents?: readonly (VectorLike | null)[] | null; closed?: boolean }>(args)
   _opts('Spline', options)
   const pts = _pts(items)
   const closed = options.closed ?? false
   if (pts.length < 2) throw new RangeError('a spline needs at least two points')
   let t0: Vector | null = null
   let t1: Vector | null = null
-  if (options.tangents != null) {
-    t0 = options.tangents[0] != null ? _vec(options.tangents[0]) : null
-    t1 = options.tangents[1] != null ? _vec(options.tangents[1]) : null
+  const tangents = options.tangents
+  if (tangents != null && tangents.length === pts.length && pts.length > 2) return _throughTangents(pts, [...tangents], closed)
+  if (tangents != null) {
+    if (tangents.length !== 2) throw new RangeError(`Spline: tangents are (start, end) or one per point (${pts.length}), got ${tangents.length}`)
+    t0 = tangents[0] != null ? _vec(tangents[0]) : null
+    t1 = tangents[1] != null ? _vec(tangents[1]) : null
   }
   if (pts.length === 2 && t0 === null && t1 === null && !closed) return Line(pts[0], pts[1])
   return _interpolate(pts, t0, t1, closed)
+}
+
+/** A cubic B-spline through the points in the direction given at each. */
+function _throughTangents(pts: Vector[], tangents: (VectorLike | null)[], closed: boolean): Edge {
+  if (tangents.some((x) => x == null)) throw new RangeError('Spline: with a tangent for every point, none of them may be null')
+  let dirs = tangents.map((x) => _vec(x as VectorLike))
+  dirs.forEach((d, i) => {
+    if (!(d.length > 0)) throw new RangeError(`Spline: tangent ${i + 1} has no direction`)
+  })
+  if (closed && !pts[0].isClose(pts[pts.length - 1])) {
+    pts = [...pts, pts[0]]
+    dirs = [...dirs, dirs[0]]
+  }
+  const r = kernelCall('Spline', () => ext.interpolate_tangents(pts.flatMap((p) => p.toArray()), dirs.flatMap((d) => d.toArray()), 3),
+    'the points must be distinct')
+  return Edge._fromCurve(r[0])
+}
+
+/**
+ * A smooth curve near many points, with as few control points as keep it within `tolerance` of
+ * every one: for scanned or digitized outlines, sampled curves and long polylines, where `Spline`
+ * passes through every point, follows every wiggle and needs a control point per point.
+ *
+ * `points`: the points in order along the curve (2D points lie at z = 0). Options: `tolerance`, the
+ * largest distance from any point to the curve (default: 1/1000 of the size of the points);
+ * `degree`, the highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
+ * needs); `tangents`, optional `[start, end]` directions, either may be null (not for closed
+ * curves); `closed`, a closed curve through the first point again and tangent there.
+ *
+ * Few points (fewer than about six) give the curve through them (`Spline`). Where no fit keeps
+ * within the tolerance, a ModelingError gives the distance it reached.
+ *
+ *     const outline = fitCurve(scanPoints, { tolerance: 0.02 })
+ */
+export function fitCurve(
+  points: Iterable<VectorLike>,
+  options: { tolerance?: number | null; degree?: number; tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean } = {},
+): Edge {
+  _opts('fitCurve', options)
+  const { tolerance = null, degree = 3, tangents = null, closed = false } = options
+  let pts = [...points].map((p) => _vec(p))
+  if (pts.length < 2) throw new RangeError('fitCurve needs at least two points')
+  if (!pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))) {
+    throw new RangeError('fitCurve: the points must be finite numbers')
+  }
+  const lo = [Infinity, Infinity, Infinity]
+  const hi = [-Infinity, -Infinity, -Infinity]
+  for (const p of pts) {
+    const a = p.toArray()
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i], a[i])
+      hi[i] = Math.max(hi[i], a[i])
+    }
+  }
+  const size = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+  if (size === 0) throw new RangeError('fitCurve: the points all coincide')
+  const keep = [pts[0]]
+  for (const p of pts.slice(1)) if (p.distanceTo(keep[keep.length - 1]) > 1e-12 * size) keep.push(p)
+  if (closed && keep.length > 2 && keep[keep.length - 1].distanceTo(keep[0]) <= 1e-12 * size) keep.pop()
+  pts = keep
+  const tol = tolerance == null ? 1e-3 * size : tolerance
+  if (!(typeof tol === 'number' && Number.isFinite(tol) && tol > 0)) throw new RangeError(`fitCurve: the tolerance must be positive, got ${String(tolerance)}`)
+  if (!(Number.isInteger(degree) && degree >= 2 && degree <= 9)) throw new RangeError(`fitCurve: the degree is 2 to 9, got ${String(degree)}`)
+  if (tangents != null && tangents.length !== 2) {
+    throw new RangeError('fitCurve: tangents are [start, end]; for a direction at every point use Spline(..., { tangents: [...] })')
+  }
+  if (closed && tangents != null) throw new RangeError('fitCurve: a closed curve takes no end tangents')
+  const t0 = tangents != null && tangents[0] != null ? _vec(tangents[0]).toArray() : []
+  const t1 = tangents != null && tangents[1] != null ? _vec(tangents[1]).toArray() : []
+  let r: Any
+  try {
+    r = kernelCall('fitCurve', () => ext.approximate_points(pts.flatMap((p) => p.toArray()), degree, tol, t0, t1, closed))
+  } catch (e) {
+    // too few points for an approximation: the curve through them
+    if (!(e instanceof KernelError) || pts.length > 6) throw e
+    return Spline(...pts, { tangents, closed })
+  }
+  const edge = Edge._fromCurve(r[0])
+  const dev = Number(r[1])
+  if (dev > tol) {
+    throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; ` +
+      'use a larger tolerance or a higher degree')
+  }
+  return edge
 }
 
 /** A Bézier curve (rational if `weights` are given) from its control points. */

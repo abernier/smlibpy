@@ -145,6 +145,26 @@ overlap's two ends count; where an edge lies on a face, the points where it star
 lying on the face. `self_intersections()` gives the points where an edge crosses itself.
 `closest_point(p)` and `param_at(p)` give the nearest point of an edge and its fraction along it.
 
+## Curvature of edges
+
+```python
+s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+s.curvature_at(0.5), s.radius_at(0.5)       # 1/radius and radius at a fraction of the length
+r, t = s.min_radius()                       # 3.9975 at t 0.677: (20.78, -3.17, 0)
+s.inflections()                             # [0.484]: where it changes the side it bends to
+w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
+w.min_radius()                              # a wire: over its edges (corners do not count)
+Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y   # 1.0069: exact boxes of free curves
+```
+
+`min_radius()` is the smallest radius of curvature and where it is, found by the kernel's global
+solver, not by sampling (it agrees with OpenCASCADE to 1e-15): a sweep profile that reaches
+farther from the path than this, or an offset larger than it on the inner side, folds over
+itself. A line gives `(inf, 0.0)`, an arc its radius. Sweep errors about the path's curvature
+give the path's smallest radius, where it is and how far the profile reaches. The box of a free
+curve (one not taken from a body) is exact: its ends, its corners and the points where its
+tangent is perpendicular to an axis.
+
 ## Draft and parting lines
 
 A part that is molded or cast must come out of its mold: every face needs draft, a slight

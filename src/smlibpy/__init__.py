@@ -24,6 +24,7 @@ from .curves import (
     Spline,
     TangentArc,
     ThreePointArc,
+    fit_curve,
     make_compatible,
 )
 from .geometry import TOLERANCE, Axis, BoundBox, Hit, Location, Nurbs, Plane, Pos, Rot, Vector, X, Y, Z
@@ -58,7 +59,7 @@ __all__ = [
     "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Mesh",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
-    "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "make_compatible",
+    "EllipticalArc", "Spline", "Bezier", "Helix", "FilletPolyline", "fit_curve", "make_compatible",
     # sketches
     "Profile", "Rectangle", "RoundedRectangle", "Circle", "Ellipse", "Polygon", "RegularPolygon", "Triangle", "Trapezoid",
     "Slot", "ArcSlot", "Stroke", "Hull", "make_face",

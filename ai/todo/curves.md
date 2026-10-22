@@ -141,6 +141,8 @@
   whole turns per piece; sweep handles it (one valid solid).
 
 ### 16. `Edge.bbox()` of a constructed curve samples 33 points and misses extremes
+- **Fixed:** the box of a free curve is exact: its ends, its corners and the points where its tangent is
+  perpendicular to an axis (`ext.curve_box`); max y 1.0069069109, as OpenCASCADE (kernel plan C9).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, script `02-spline-bbox.py`
 - **What happens:** `Spline((0,0),(1,1),(2,0),(30,0)).bbox().max.y` is 0.7998; the curve passes
   through (1,1) and reaches 1.0069. Silent.

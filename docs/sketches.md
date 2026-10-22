@@ -121,12 +121,14 @@ or intersecting regions that do not meet); extruding an empty sketch raises.
 
 `Hull` makes the convex outline around points and shapes, as if a string were pulled tight
 around them; around circles it follows the arcs exactly. `Stroke` makes the region a pen of
-some width covers along a path of lines and arcs.
+some width covers along a path: lines and arcs exactly, splines and ellipses within 1e-6 of
+the path's size.
 
 ```python
 lever = Hull(Circle(10), Pos(60, 0) * Circle(6)) - Circle(5) - Pos(60, 0) * Circle(3)
 slot = Stroke(Line((10, 5), (40, 20)), 6)                 # a slot between two centers
 rib = Stroke(Polyline((0, 0), (30, 0), (30, 20)), 3, ends="flat", corners="sharp")
+groove = Stroke(Spline((0, 0), (20, 8), (40, 0)), 4)      # area 188.283
 ```
 
 ## Changing a sketch
@@ -208,6 +210,48 @@ a, b = Polyline((0, 0), (10, 0), (10, 10)).split(0.25)  # 5 and 15 long
   polynomial goes on (`"natural"`), by exactly the distance given.
 - `Wire.to_edge()` joins edges that run end to end into one B-spline: a single rail for `sweep`
   and `loft`, a single SPLINE in DXF.
+
+## Parallel curves, fitted curves, lines and arcs
+
+`offset` moves an edge or a wire sideways in its plane: an open one to its left for a positive
+distance (seen from the side the plane's normal points to; for a wire in XY, from above), a
+closed one outward. Lines and arcs stay exact; splines and ellipses are offset within 1e-6 of
+the wire's size. The corners the offset pulls apart are rounded, extended (`corners="sharp"`)
+or cut (`"chamfer"`), as for sketches; where the sides cross, they are cut there.
+
+```python
+path = Polyline((0, 0), (40, 0), (40, 30))
+wall = path.offset(2)                             # inside the turn: 66 long
+outer = path.offset(-2, corners="sharp")          # outside: 74 long, a sharp corner
+rail = Spline((0, 0), (20, 8), (40, 0)).offset(3) # a parallel spline, 3 to the left
+inner = outline.offset(-1)                        # 1 inside a closed outline
+```
+
+An offset that would fold over itself raises `ModelingError` with the place: a curve that bends
+more tightly than the distance on that side (its smallest radius of curvature, `min_radius()`,
+is below it), an edge that vanishes between two corners, or parts of the wire that lie closer
+together than the distance. The offset of the region a closed wire bounds, which merges and
+drops such parts, is `Sketch.offset`.
+
+`fit_curve` makes a smooth curve near many points, with as few control points as keep it within
+a tolerance of every point: for scans, digitized outlines and sampled curves, where `Spline`
+passes through every point and needs a control point for each. `Spline` also takes a direction
+for every point.
+
+```python
+import math
+scan_points = [(x / 10, 8 * math.sin(x / 90) + 0.01 * math.sin(37.3 * x)) for x in range(600)]
+outline = fit_curve(scan_points, tolerance=0.05)  # 14 control points (Spline: 602)
+s = Spline((0, 0), (10, 0), (20, 10), tangents=[(1, 0), (1, 1), (0, 1)])
+```
+
+`to_arcs` turns an edge or wire into lines and circular arcs within a tolerance (default 0.01
+mm), joined tangentially, for cutters and DXF readers that take only LINE and ARC; `export_dxf(...,
+curves="arcs")` writes splines and ellipses so.
+
+```python
+cut = Spline((0, 0), (10, 5), (20, -3), (30, 4)).to_arcs(0.01)   # 26 arcs (52 for 0.001)
+```
 
 ## Placing a sketch
 

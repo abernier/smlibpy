@@ -63,6 +63,13 @@ export interface DxfWriteOptions {
    * parallel to it. Default: the world XY plane when the shapes are parallel to it, otherwise the
    * plane of the first sketch (a section in `Plane.XZ` is drawn in that plane's coordinates). */
   plane?: Plane | null
+  /** 'exact' (default) writes splines and ellipses as SPLINE and ELLIPSE; 'arcs' writes them as LINE
+   * and ARC within `tolerance` (`Edge.toArcs`), for CNC, laser and plasma software that reads only
+   * lines and arcs. */
+  curves?: string
+  /** For `curves: 'arcs'`: the largest distance between a curve and its lines and arcs, in
+   * millimeters (the model's unit; default 0.01). */
+  tolerance?: number
 }
 
 // =============================================================================
@@ -1074,7 +1081,9 @@ export function exportDxf(shapes: unknown, path: string, options: DxfWriteOption
  *
  * Every curve is written exactly: LINE, ARC, CIRCLE, ELLIPSE, or SPLINE with the kernel's control
  * points, knots and weights. Circular B-splines (the edges of sections) are written as ARC and
- * CIRCLE, straight ones as LINE. A shape's name becomes its layer.
+ * CIRCLE, straight ones as LINE. A shape's name becomes its layer. `curves: 'arcs'` writes splines
+ * and ellipses as LINE and ARC within `tolerance` (`Edge.toArcs`), for software that reads only
+ * lines and arcs.
  *
  * `shapes` is a `Sketch`, `Face`, `Wire`, `Edge` or an array of them.
  */
@@ -1087,6 +1096,12 @@ function _dxf(shapes: unknown, options: DxfWriteOptions, what: string): string {
   const unit = options.unit ?? 'mm'
   const units = _UNITS.get(unit)
   if (units === undefined) throw new RangeError(`unknown unit ${_reprValue(unit)}; use ${_UNIT_NAMES}`)
+  const curves = options.curves ?? 'exact'
+  const tolerance = options.tolerance ?? 0.01
+  if (curves !== 'exact' && curves !== 'arcs') throw new RangeError(`${what}: curves is 'exact' or 'arcs', not ${_reprValue(curves)}`)
+  if (!(typeof tolerance === 'number' && Number.isFinite(tolerance) && tolerance > 0)) {
+    throw new RangeError(`${what}: the tolerance must be positive, got ${String(tolerance)}`)
+  }
   const [mmPerUnit, code] = units
   const items = _drawable(shapes, what)
   if (!items.length) throw new RangeError(`${what}: nothing to write`)
@@ -1102,11 +1117,18 @@ function _dxf(shapes: unknown, options: DxfWriteOptions, what: string): string {
   }
   const w = new _Writer()
   for (const item of items) {
-    for (const loop of item.loops) {
+    for (let loop of item.loops) {
+      if (curves === 'arcs') loop = loop.flatMap((e) => _asArcs(e, tolerance))
       for (const ent of _mergeArcs(loop.map((e) => _entity(e, local, n, f)))) w.entity(item.layer, ent)
     }
   }
   return w.text(code, !['inch', 'in', 'ft'].includes(unit))
+}
+
+/** The edge as lines and arcs: itself where it is one (circular and straight B-splines too). */
+function _asArcs(e: Edge, tolerance: number): Edge[] {
+  if (e.geomType === 'line' || e.geomType === 'circle' || _circleOf(e) !== null) return [e]
+  return [...e.toArcs(tolerance).edges()]
 }
 
 interface _Item {

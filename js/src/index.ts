@@ -31,6 +31,7 @@ export {
   Spline,
   TangentArc,
   ThreePointArc,
+  fitCurve,
   makeCompatible,
 } from './curves.ts'
 // sketches

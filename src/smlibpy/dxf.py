@@ -859,7 +859,8 @@ def import_dxf(path: str | os.PathLike[str], *, layers: Iterable[str] | str | No
 # =============================================================================
 # export_dxf
 # =============================================================================
-def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", plane: Plane | None = None) -> None:
+def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", plane: Plane | None = None,
+               curves: str = "exact", tolerance: float = 0.01) -> None:
     """Write sketches, faces, wires and edges to a DXF drawing (AutoCAD 2000, AC1015).
 
     Every curve is written exactly: LINE, ARC, CIRCLE, ELLIPSE, or SPLINE with the kernel's
@@ -875,9 +876,18 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
             in planes parallel to it. Default: the world XY plane when the shapes are parallel
             to it, otherwise the plane of the first sketch (a section in ``Plane.XZ`` is drawn in
             that plane's coordinates).
+        curves: ``"exact"`` (default) writes splines and ellipses as SPLINE and ELLIPSE;
+            ``"arcs"`` writes them as LINE and ARC within ``tolerance`` (:meth:`Edge.to_arcs`),
+            for CNC, laser and plasma software that reads only lines and arcs.
+        tolerance: For ``curves="arcs"``: the largest distance between a curve and its lines and
+            arcs, in millimeters (the model's unit).
     """
     if unit not in _UNITS:
         raise ValueError(f"unknown unit {unit!r}; use {_UNIT_NAMES}")
+    if curves not in ("exact", "arcs"):
+        raise ValueError(f"export_dxf: curves is 'exact' or 'arcs', not {curves!r}")
+    if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
+        raise ValueError(f"export_dxf: the tolerance must be positive, got {tolerance!r}")
     mm_per_unit, code = _UNITS[unit]
     items = _drawable(shapes)
     if not items:
@@ -894,9 +904,18 @@ def export_dxf(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", p
     w = _Writer()
     for item in items:
         for loop in item.loops:
+            if curves == "arcs":
+                loop = [p for e in loop for p in _as_arcs(e, float(tolerance))]
             for ent in _merge_arcs([_entity(e, local, n, f) for e in loop]):
                 w.entity(item.layer, ent)
     w.save(os.fspath(path), code, unit not in ("inch", "in", "ft"))
+
+
+def _as_arcs(e: Edge, tolerance: float) -> list[Edge]:
+    """The edge as lines and arcs: itself where it is one (circular and straight B-splines too)."""
+    if e.geom_type in ("line", "circle") or _circle_of(e) is not None:
+        return [e]
+    return list(e.to_arcs(tolerance).edges())
 
 
 @dataclass

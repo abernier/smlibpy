@@ -39,3 +39,5 @@ void bind_usd_files(py::module_ m);
 void bind_curve_tools(py::module_ m);
 // The kernel's ellipse, parabola and hyperbola curves as classes of their own (curve_tools.cpp).
 void bind_curve_types(py::module_& m);
+// Curve offsets, fits, curvature queries, exact boxes, lines and arcs (curve_ops.cpp).
+void bind_curve_ops(py::module_ m);

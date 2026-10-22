@@ -37,6 +37,9 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 | `trim(start, end)` | the part between two fractions or points |
 | `intersections(other, tolerance=None)` | points where it meets an edge, wire, face or body, in order; a point at a joint once |
 | `to_edge()` | one B-spline edge through all edges (they must meet within 1e-6) |
+| `offset(d, corners="round", plane=None)` | a parallel wire: open ones to the left, closed ones outward (`offset`) |
+| `to_arcs(tolerance=0.01)` | lines and circular arcs within the tolerance (`to_arcs`) |
+| `min_radius()` | `(radius, t)`: the smallest radius of curvature of its edges (`min_radius`) |
 
 ## fillet
 - Rounds every corner where two `line` edges meet, with tangent arcs of `radius`. Open

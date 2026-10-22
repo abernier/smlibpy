@@ -5,7 +5,7 @@ and edges, for laser cutting, CNC, 2D CAD and drawings. `export(shapes, "x.dxf")
 `shape.export("x.dxf")` do the same.
 
 ## Signature
-`export_dxf(shapes, path, *, unit="mm", plane=None)`
+`export_dxf(shapes, path, *, unit="mm", plane=None, curves="exact", tolerance=0.01)`
 
 - `shapes`: a `Sketch`, a planar `Face` or sheet, a `Wire`, an `Edge`, or a list of them.
 - `unit`: `"mm"` (default), `"cm"`, `"m"`, `"um"`, `"inch"` (or `"in"`), `"ft"`. The model (mm) is
@@ -13,6 +13,9 @@ and edges, for laser cutting, CNC, 2D CAD and drawings. `export(shapes, "x.dxf")
   back as 50.8 mm.
 - `plane`: the drawing plane; the shapes are written in its coordinates (x along `x_dir`, y
   along `y_dir`) and must lie in planes parallel to it.
+- `curves`: `"exact"` (default, the table below) or `"arcs"`: splines and ellipses are written as
+  LINE and ARC entities within `tolerance` (mm), joined tangentially (`curves/to_arcs`), for
+  software that reads only lines and arcs. `Ellipse(40, 20) - Circle(5)` gives 48 ARC + 1 CIRCLE.
 
 ## Returns
 `None`. An AutoCAD 2000 (AC1015) file with one entity per curve:
@@ -58,6 +61,7 @@ characters become `_` (`"Bügel/2"` is layer `B_gel_2`), so the file is plain AS
 - `ValueError: export_dxf: the shapes are not parallel to the drawing plane; pass the plane they lie in`.
 - `ValueError: export_dxf: the shapes are neither in planes parallel to XY nor in one sketch's plane; pass plane=...`.
 - `ValueError: unknown unit 'MM'; use mm, cm, m, um, inch or ft`.
+- `ValueError: export_dxf: curves is 'exact' or 'arcs', not 'lines'`.
 
 ## Example
 ```python

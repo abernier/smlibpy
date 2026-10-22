@@ -22,7 +22,9 @@ open surfaces (an open wire extruded or revolved gives a `Shell`).
 - `edge.reversed()` swaps start and end. `edge.intersections(other)` gives the points where it
   meets an edge, wire, face or body ([] for none); `edge.split(at)`, `edge.trim(start, end)`
   cut it at fractions or points, `edge.extend(d)` makes it longer, `wire.to_edge()` joins a wire
-  into one edge. See `Edge.md` (selection) and `Wire.md`.
+  into one edge. `offset(d)` gives a parallel edge or wire, `min_radius()` the tightest bend,
+  `to_arcs()` lines and arcs; `fit_curve(points, tolerance=...)` a curve near many points. See
+  `Edge.md` (selection) and `Wire.md`.
 
 ## Wires
 
@@ -99,8 +101,9 @@ pipe = sweep(Circle(3), path)    # valid, volume = pi * 3**2 * path.length
   `ValueError: the sweep path is not connected: a gap of ...`. Check `wire.is_closed` for
   outlines and compare `wire.start` / `wire.end` with what you expect for paths.
 - Two separately built but identical edges are not `==` (equality is identity).
-- `bbox()` of a constructed curve (not one taken from a body) samples 33 points and can miss
-  the extremes of splines: sample `point_at(i / n)` densely when extents matter.
+- `bbox()` of any curve is exact: for a constructed spline its ends, corners and the points where
+  its tangent is perpendicular to an axis (`Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y`
+  is 1.0069).
 - Pass points as separate arguments: `Polyline(*pts)`, `Spline(*pts)`. A single list of 2 or
   3 points raises TypeError.
 

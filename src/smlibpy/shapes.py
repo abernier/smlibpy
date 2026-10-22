@@ -938,10 +938,11 @@ class Edge(Shape):
         if self._e is not None:
             lo, hi = self._e.bounding_box(True)
             return BoundBox(lo, hi)
-        pts = [self.point_at(i / 32) for i in range(33)]
-        if self.geom_type == "line":
-            pts = [self.start, self.end]
-        return BoundBox.of_points(pts)
+        # exact: the ends, the corners and where the tangent is perpendicular to an axis
+        t0, t1 = self._range()
+        with kernel_call("bbox"):
+            lo, hi = ext.curve_box(self._curve(), t0, t1)
+        return BoundBox(lo, hi)
 
     def distance_to(self, point: VectorLike) -> float:
         p = _vec(point)
@@ -1183,6 +1184,126 @@ class Edge(Shape):
         hits = sorted(((self._fraction(u), Vector(curve.evaluate(u))) for u in params), key=lambda h: h[0])
         return _merged_hits(hits, tol, self.is_closed)
 
+    # -- curvature ------------------------------------------------------------
+    def curvature_at(self, t: float = 0.5) -> float:
+        """The curvature at fraction ``t`` of the length (as :meth:`point_at`): one over the radius
+        of the circle that fits the edge best there; 0 where it runs straight."""
+        g = ext.curve_geometry(self._curve(), self._param(t))
+        return float(np.linalg.norm(g["curvature"]))
+
+    def radius_at(self, t: float = 0.5) -> float:
+        """The radius of curvature at fraction ``t`` of the length (``math.inf`` where the edge runs
+        straight): the radius of the circle that fits the edge best there."""
+        c = self.curvature_at(t)
+        return 1.0 / c if c > 0 else math.inf
+
+    def min_radius(self) -> tuple[float, float]:
+        """The smallest radius of curvature of the edge and where it is: ``(radius, t)``, ``t`` a
+        fraction of the length (as :meth:`point_at`). A line gives ``(inf, 0.0)``, an arc its
+        radius. A sweep profile that reaches farther from the path than this folds over itself. ::
+
+            r, t = path.min_radius()
+            print(f"tightest bend: radius {r:.3g} at {path.point_at(t)}")
+        """
+        kind = self.geom_type
+        if kind == "line" or self._is_straight():
+            return math.inf, 0.0
+        if kind == "circle":
+            return self.radius, 0.0
+        t0, t1 = self._range()
+        curve = self._curve()
+        with kernel_call("min_radius"):
+            sols = ext.curve_properties(curve, t0, t1, "min_radius", 0.0, 1e-9 * max(1.0, self.length))
+        candidates = [t0, t1] + [u for s in sols for u in (s["t"], s["end"]) if u is not None]
+        best_k, best_u = -1.0, t0
+        for u in candidates:
+            k_u = float(np.linalg.norm(ext.curve_geometry(curve, min(max(u, t0), t1))["curvature"]))
+            if k_u > best_k:
+                best_k, best_u = k_u, u
+        return (1.0 / best_k if best_k > 0 else math.inf), self._fraction(best_u)
+
+    def inflections(self) -> list[float]:
+        """Where the edge changes the side it bends to (an S-curve has one), as fractions of its
+        length (as :meth:`point_at`), in order: points where its curvature passes through zero.
+        Lines, arcs and curves that bend one way only have none; a straight stretch between two
+        bends counts once, at its middle, where the bends go opposite ways."""
+        kind = self.geom_type
+        if kind in ("line", "circle", "ellipse"):
+            return []
+        t0, t1 = self._range()
+        curve = self._curve()
+        with kernel_call("inflections"):
+            sols = ext.curve_properties(curve, t0, t1, "inflections", 0.0, 1e-9 * max(1.0, self.length))
+        span = t1 - t0
+        out: list[float] = []
+        for s in sols:
+            a = s["t"]
+            b = s["end"] if s["end"] is not None else a
+            a, b = min(a, b), max(a, b)
+            before = _binormal(curve, a, -1, t0, t1, span)
+            after = _binormal(curve, b, 1, t0, t1, span)
+            if before is None or after is None or float(np.dot(before, after)) >= 0:
+                continue
+            f = self._fraction(0.5 * (a + b))
+            if 0.0 < f < 1.0 and not any(abs(f - g) <= 1e-9 for g in out):
+                out.append(f)
+        return sorted(out)
+
+    # -- offsets, lines and arcs ----------------------------------------------
+    def offset(self, distance: float, *, plane: Plane | None = None) -> Edge:
+        """The edge moved ``distance`` sideways in its plane: an open edge to its left for a
+        positive distance (seen from the side the plane's normal points to), to its right for a
+        negative one; a closed edge (a circle, a closed spline) outward for a positive distance.
+
+        Lines stay lines and arcs stay arcs, exactly. Splines and ellipses are offset by the
+        kernel within 1e-6 of their size. Where the edge bends toward that side more tightly than
+        the distance (a radius of curvature below it, see :meth:`min_radius`), the offset would
+        fold over itself and :class:`ModelingError` says where.
+
+        ``plane``: the plane the edge lies in, whose normal tells left from right. Default: the
+        XY plane for an edge at one height, else the plane the edge lies in, its normal toward
+        +Z (+Y, then +X, for vertical planes). ::
+
+            rail = Spline((0, 0), (20, 8), (40, 0)).offset(3)     # 3 to the left (+Y side)
+        """
+        from ._regions import offset_wire
+
+        if _offset_distance(distance, "offset") == 0:
+            return self
+        return offset_wire([self], float(distance), "round", plane, "offset")[0]
+
+    def to_arcs(self, tolerance: float = 0.01) -> Wire:
+        """The edge as lines and circular arcs within ``tolerance`` of it, end to end along it:
+        for CNC, laser and plasma cutters and DXF readers that take only LINE and ARC
+        (``export_dxf(..., curves="arcs")``). Lines and arcs come back as they are; splines and
+        ellipses become chains of arcs that join tangentially (lines where they run straight).
+        Both ways, every point of one lies within ``tolerance`` of the other. ::
+
+            cut = Spline((0, 0), (10, 5), (20, -3), (30, 4)).to_arcs(0.01)   # 26 arcs
+        """
+        from .curves import Line, ThreePointArc
+
+        if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0):
+            raise ValueError(f"to_arcs: the tolerance must be positive, got {tolerance!r}")
+        kind = self.geom_type
+        if kind in ("line", "circle"):
+            return Wire._raw([self])
+        if self._is_straight():
+            return Wire._raw([Line(self.start, self.end)])
+        c = self._copy_curve()
+        try:
+            with kernel_call("to_arcs"):
+                r = ext.lines_and_arcs(c, float(tolerance))
+        finally:
+            ext.delete_curve(c)
+        dev = float(r["deviation"])
+        if not r["pieces"] or dev > tolerance:
+            raise ModelingError(f"to_arcs: the lines and arcs come no closer than {dev:.3g} to the {kind}, more than "
+                                f"the tolerance {tolerance:g}; use a larger tolerance")
+        edges = [Line(p["start"], p["end"]) if p["kind"] == "line" else ThreePointArc(p["start"], p["mid"], p["end"])
+                 for p in r["pieces"]]
+        return Wire._raw(edges)
+
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
         if self._e is not None:
@@ -1277,6 +1398,29 @@ def _merged_hits(hits: list[tuple[float, Vector]], tol: float, closed: bool) -> 
     if closed and len(out) > 1 and out[-1][1].distance_to(out[0][1]) <= tol:
         out.pop()
     return out
+
+
+def _binormal(curve: Any, u: float, side: int, t0: float, t1: float, span: float) -> np.ndarray | None:
+    """C' x C'' a little before (side -1) or after (+1) parameter u, stepping farther while the
+    curve runs straight there; None where that leaves [t0, t1]."""
+    step = 1e-6 * span
+    while step <= 0.25 * span:
+        w = u + side * step
+        if not t0 < w < t1:
+            return None
+        d = ext.curve_eval(curve, w, 2)
+        b = np.cross(np.asarray(d[1], dtype=float), np.asarray(d[2], dtype=float))
+        if float(np.linalg.norm(b)) * span > 1e-9 * float(np.dot(d[1], d[1])):  # (curvature x length > 1e-9)
+            return b
+        step *= 8.0
+    return None
+
+
+def _offset_distance(distance: Any, what: str) -> float:
+    if not (isinstance(distance, (int, float, np.integer, np.floating)) and not isinstance(distance, bool)
+            and math.isfinite(distance)):
+        raise ValueError(f"{what}: the distance must be a finite number, got {distance!r}")
+    return float(distance)
 
 
 def _ellipse_angle_for_length(r1: float, r2: float, start: float, length: float, sense: float) -> float:
@@ -1583,6 +1727,54 @@ class Wire(Shape):
         finally:
             for c in curves:
                 ext.delete_curve(c)
+
+    def offset(self, distance: float, *, corners: str = "round", plane: Plane | None = None) -> Wire:
+        """The wire moved ``distance`` sideways in its plane, as a parallel curve: an open wire to
+        its left for a positive distance (seen from the side the plane's normal points to), to
+        its right for a negative one; a closed wire outward for a positive distance, inward for
+        a negative one (as :meth:`Sketch.offset` grows and shrinks).
+
+        Lines stay lines and arcs stay arcs, exactly; splines and ellipses are offset within
+        1e-6 of the wire's size (:meth:`Edge.offset`). ``corners`` shapes the corners the offset
+        pulls apart: ``"round"`` (arcs of radius ``|distance|``), ``"sharp"`` (the sides
+        extended until they meet) or ``"chamfer"`` (a straight cut across); at the corners it
+        pushes together, the sides are cut where they cross. Where the offset would fold over or
+        run into itself (an edge bends more tightly than the distance, an edge vanishes, parts
+        of the wire lie closer than the distance), :class:`ModelingError` says where; a region's
+        offset that merges and drops parts is :meth:`Sketch.offset`.
+
+        ``plane``: the plane the wire lies in, whose normal tells left from right (see
+        :meth:`Edge.offset` for the default). ::
+
+            path = Polyline((0, 0), (40, 0), (40, 30))
+            wall = path.offset(2, corners="sharp")        # 2 to the left, a sharp outer corner
+            toolpath = outline.offset(-3)                  # 3 inside a closed outline
+        """
+        from ._regions import CORNER_STYLES, offset_wire
+
+        if corners not in CORNER_STYLES:
+            raise ValueError(f"offset: corners is 'round', 'sharp' or 'chamfer', not {corners!r}")
+        if _offset_distance(distance, "offset") == 0:
+            return self
+        return Wire._raw(offset_wire(list(self._edges), float(distance), corners, plane, "offset"))
+
+    def to_arcs(self, tolerance: float = 0.01) -> Wire:
+        """The wire as lines and circular arcs within ``tolerance`` (see :meth:`Edge.to_arcs`)."""
+        return Wire._raw([p for e in self._edges for p in e.to_arcs(tolerance).edges()])
+
+    def min_radius(self) -> tuple[float, float]:
+        """The smallest radius of curvature of the wire's edges and where it is: ``(radius, t)``,
+        ``t`` a fraction of the wire's length (as :meth:`point_at`). The corners where edges
+        meet do not count (a corner has no radius; see :meth:`fillet`)."""
+        lengths = [e.length for e in self._edges]
+        total = sum(lengths) or 1.0
+        best, at, before = math.inf, 0.0, 0.0
+        for e, L in zip(self._edges, lengths):
+            r, t = e.min_radius()
+            if r < best:
+                best, at = r, (before + t * L) / total
+            before += L
+        return best, at
 
     def close(self) -> Wire:
         """This wire closed with a straight line from its end to its start."""

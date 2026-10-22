@@ -25,6 +25,7 @@ __all__ = [
     "SagittaArc",
     "TangentArc",
     "Spline",
+    "fit_curve",
     "Bezier",
     "Helix",
     "EllipticalArc",
@@ -316,26 +317,128 @@ def _interpolate(points: list[Vector], t0: Vector | None, t1: Vector | None, clo
 
 def Spline(
     *points: VectorLike,
-    tangents: tuple[VectorLike | None, VectorLike | None] | None = None,
+    tangents: tuple[VectorLike | None, VectorLike | None] | Sequence[VectorLike] | None = None,
     closed: bool = False,
 ) -> Edge:
     """A smooth cubic curve through the points.
 
     Args:
         points: Two or more points.
-        tangents: Optional ``(start_tangent, end_tangent)`` directions; either may be None.
+        tangents: Optional ``(start_tangent, end_tangent)`` directions; either may be None. Or one
+            direction for every point (a list as long as the points): the curve passes through each
+            point in its direction.
         closed: Make a closed loop (smooth at the join).
     """
     pts = _pts(points)
     if len(pts) < 2:
         raise ValueError("a spline needs at least two points")
     t0 = t1 = None
+    if tangents is not None and len(tangents) == len(pts) and len(pts) > 2:
+        return _through_tangents(pts, list(tangents), closed)
     if tangents is not None:
+        if len(tangents) != 2:
+            raise ValueError(f"Spline: tangents are (start, end) or one per point ({len(pts)}), got {len(tangents)}")
         t0 = _vec(tangents[0]) if tangents[0] is not None else None
         t1 = _vec(tangents[1]) if tangents[1] is not None else None
     if len(pts) == 2 and t0 is None and t1 is None and not closed:
         return Line(pts[0], pts[1])
     return _interpolate(pts, t0, t1, closed)
+
+
+def _through_tangents(pts: list[Vector], tangents: list[VectorLike | None], closed: bool) -> Edge:
+    """A cubic B-spline through the points in the direction given at each."""
+    if any(t is None for t in tangents):
+        raise ValueError("Spline: with a tangent for every point, none of them may be None")
+    dirs = [_vec(t) for t in tangents]
+    for i, d in enumerate(dirs):
+        if d.length <= 0:
+            raise ValueError(f"Spline: tangent {i + 1} has no direction")
+    if closed and not pts[0].is_close(pts[-1]):
+        pts, dirs = [*pts, pts[0]], [*dirs, dirs[0]]
+    with kernel_call("Spline", "the points must be distinct"):
+        curve, _, _ = ext.interpolate_tangents([c for p in pts for c in p], [c for d in dirs for c in d], 3)
+    return Edge._from_curve(curve)
+
+
+def fit_curve(
+    points: Sequence[VectorLike] | np.ndarray,
+    *,
+    tolerance: float | None = None,
+    degree: int = 3,
+    tangents: tuple[VectorLike | None, VectorLike | None] | None = None,
+    closed: bool = False,
+) -> Edge:
+    """A smooth curve near many points, with as few control points as keep it within
+    ``tolerance`` of every one: for scanned or digitized outlines, sampled curves and long
+    polylines, where :func:`Spline` passes through every point, follows every wiggle and needs a
+    control point per point.
+
+    Args:
+        points: The points in order along the curve: a list of points or an (n, 2) or (n, 3) array
+            (2D points lie at z = 0).
+        tolerance: The largest distance from any point to the curve. Default: 1/1000 of the size
+            of the points.
+        degree: The highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
+            needs).
+        tangents: Optional ``(start, end)`` directions; either may be None. Not for closed curves.
+        closed: A closed curve, through the first point again and tangent there.
+
+    Few points (fewer than about six) give the curve through them (:func:`Spline`). Where no fit
+    keeps within the tolerance, :class:`ModelingError` gives the distance it reached. ::
+
+        outline = fit_curve(scan_points, tolerance=0.02)
+        print(len(outline.nurbs().points), "control points")
+    """
+    from ._kernel import ModelingError
+
+    if isinstance(points, np.ndarray):
+        arr = np.asarray(points, dtype=float)
+        if arr.ndim != 2 or arr.shape[1] not in (2, 3):
+            raise ValueError(f"fit_curve: an array of points is n x 2 or n x 3, got shape {arr.shape}")
+        pts = [Vector(*row) for row in arr]
+    else:
+        pts = [_vec(p) for p in points]
+    if len(pts) < 2:
+        raise ValueError("fit_curve needs at least two points")
+    if not all(math.isfinite(c) for p in pts for c in p):
+        raise ValueError("fit_curve: the points must be finite numbers")
+    arr = np.array([p.to_tuple() for p in pts])
+    size = float(np.linalg.norm(arr.max(axis=0) - arr.min(axis=0)))
+    if size == 0:
+        raise ValueError("fit_curve: the points all coincide")
+    keep = [pts[0]]
+    for p in pts[1:]:
+        if p.distance_to(keep[-1]) > 1e-12 * size:
+            keep.append(p)
+    if closed and len(keep) > 2 and keep[-1].distance_to(keep[0]) <= 1e-12 * size:
+        keep.pop()
+    pts = keep
+    tol = 1e-3 * size if tolerance is None else tolerance
+    if not (isinstance(tol, (int, float)) and math.isfinite(tol) and tol > 0):
+        raise ValueError(f"fit_curve: the tolerance must be positive, got {tolerance!r}")
+    if not (isinstance(degree, (int, np.integer)) and 2 <= degree <= 9):
+        raise ValueError(f"fit_curve: the degree is 2 to 9, got {degree!r}")
+    if tangents is not None and len(tangents) != 2:
+        raise ValueError("fit_curve: tangents are (start, end); for a direction at every point use Spline(..., "
+                         "tangents=[...])")
+    if closed and tangents is not None:
+        raise ValueError("fit_curve: a closed curve takes no end tangents")
+    t0 = list(_vec(tangents[0])) if tangents is not None and tangents[0] is not None else []
+    t1 = list(_vec(tangents[1])) if tangents is not None and tangents[1] is not None else []
+    try:
+        with kernel_call("fit_curve"):
+            curve, dev, _ = ext.approximate_points([c for p in pts for c in p], int(degree), float(tol), t0, t1,
+                                                   bool(closed))
+    except KernelError:
+        # too few points for an approximation: the curve through them
+        if len(pts) > 6:
+            raise
+        return Spline(*pts, tangents=tangents, closed=closed)
+    edge = Edge._from_curve(curve)
+    if dev > tol:
+        raise ModelingError(f"fit_curve: the closest fit found passes {dev:.3g} from a point, more than the tolerance "
+                            f"{tol:g}; use a larger tolerance or a higher degree")
+    return edge
 
 
 def Bezier(*control_points: VectorLike, weights: Sequence[float] | None = None) -> Edge:

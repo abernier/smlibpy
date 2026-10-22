@@ -1,6 +1,8 @@
 """Curves (kernel plan, lane C): the crash of 2D unions of touching xor sketches (C1), trimming,
 splitting and locating points on edges (C2), ellipse curves in the bindings (C3), helices of any
-number of turns (C4), curve intersections with a tolerance (C5), extended and joined edges (C6)."""
+number of turns (C4), curve intersections with a tolerance (C5), extended and joined edges (C6),
+offsets of edges and wires and strokes along splines (C7), curves fitted to points (C8),
+curvature, inflections and exact boxes of curves (C9), curves as lines and arcs (C10)."""
 
 import math
 import subprocess
@@ -263,3 +265,203 @@ def test_wires_join_into_one_edge():
     assert Wire([one]).to_edge() is one
     with pytest.raises(ValueError, match="a gap of 0.1"):
         Wire([Line((0, 0), (1, 0)), Line((1, 0.1), (2, 0))], sort=False).to_edge()
+
+
+# -- C7: offsets of edges and wires, strokes along splines -------------------------------------------
+def _arc_like_path(fitted: bool) -> Wire:
+    """A line, a quarter circle and a line with corners; the arc exact or a cubic B-spline fitted to
+    it within 1e-6 (an edge that is offset by the kernel, not as an arc)."""
+    arc = CenterArc((10, 10), 10, -90, 90)
+    if fitted:
+        arc = fit_curve([arc.point_at(i / 200) for i in range(201)], tolerance=1e-6)
+        assert arc.geom_type == "bspline"
+    return Wire([Line((0, -5), (10, 0)), arc, Line((20, 10), (30, 10))])
+
+
+def test_offsets_of_lines_and_arcs_stay_exact():
+    w = Polyline((0, 0), (40, 0), (40, 30))
+    inner = w.offset(2)  # to the left: the inside of the left turn, cut where the sides cross
+    assert [e.geom_type for e in inner.edges()] == ["line", "line"] and inner.length == approx(66, abs=1e-12)
+    outer = w.offset(-2)  # to the right: the corner opens, rounded with radius 2
+    assert [e.geom_type for e in outer.edges()] == ["line", "circle", "line"]
+    assert outer.length == approx(70 + math.pi, abs=1e-12) and outer.edges()[1].radius == approx(2)
+    sharp = w.offset(-2, corners="sharp")
+    assert sharp.length == approx(74, abs=1e-12) and sharp.end.to_tuple() == approx((42, 30, 0))
+    assert w.offset(-2, corners="chamfer").length == approx(70 + 2 * math.sqrt(2), abs=1e-12)
+    rect = Rectangle(20, 10).wires()[0]  # closed: positive moves outward, whichever way it runs
+    assert rect.offset(2).length == approx(60 + 4 * math.pi, abs=1e-12)
+    assert rect.reversed().offset(2).length == approx(60 + 4 * math.pi, abs=1e-12)
+    assert rect.offset(-2).length == approx(44, abs=1e-12)
+    circle = CenterArc((0, 0), 5, 0, 360)
+    assert circle.offset(1).radius == approx(6) and circle.offset(-1).radius == approx(4)
+    assert offset(Line((0, 0), (10, 0)), 2).start.to_tuple() == approx((0, 2, 0))  # (the operation too)
+
+
+def test_spline_offsets_are_parallel_within_their_size():
+    s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+    for d in (2.0, -2.0):
+        o = s.offset(d)
+        dists = [s.distance_to(o.point_at(i / 200)) for i in range(201)]
+        assert max(abs(x - abs(d)) for x in dists) <= 1e-6 * s.bbox().diagonal  # (the kernel's own call: 7e-4)
+        normal = Vector(-s.tangent_at(0).y, s.tangent_at(0).x, 0)  # left of the direction
+        assert o.start.distance_to(s.start + normal * d) < 1e-9
+    assert s.offset(2).point_at(0.5).y > s.point_at(0.5).y  # positive: to the left (+Y here)
+    with pytest.raises(ModelingError, match="bends more tightly than the distance 5.*radius of curvature is 3.9975"):
+        s.offset(5)
+    ring = Spline((0, 0), (10, 5), (20, 0), (10, -5), closed=True)
+    assert ring.offset(1).length == approx(ring.length + 2 * math.pi, rel=1e-6)  # closed: outward
+    assert ring.offset(-1).length == approx(ring.length - 2 * math.pi, rel=1e-6)
+    # a curve in a vertical plane is seen from +Y; plane= says otherwise; a straight one needs it
+    v = Spline((0, 0, 0), (10, 0, 5), (20, 0, 0))
+    assert v.offset(1).start.to_tuple() == approx((math.sqrt(0.5), 0, -math.sqrt(0.5)))
+    assert v.offset(1, plane=Plane.XZ).start.to_tuple() == approx((-math.sqrt(0.5), 0, math.sqrt(0.5)))
+    with pytest.raises(ValueError, match="pass plane="):
+        Line((0, 0, 0), (10, 0, 10)).offset(1)
+
+
+def test_offsets_of_paths_with_curves_match_the_exact_path():
+    exact, fitted = _arc_like_path(False), _arc_like_path(True)
+    for d in (1.5, -1.5):
+        for corners in ("round", "sharp", "chamfer"):
+            a, b = exact.offset(d, corners=corners), fitted.offset(d, corners=corners)
+            assert b.length == approx(a.length, abs=1e-5), (d, corners)
+            assert b.start.distance_to(a.start) < 1e-9 and b.end.distance_to(a.end) < 1e-9
+            assert all(x.end.distance_to(y.start) < 1e-9 for x, y in zip(b.edges(), b.edges()[1:]))
+
+
+def test_closed_wires_with_splines_offset_like_their_region():
+    lens = Wire([Spline((0, 0), (10, 6), (20, 0)), Spline((20, 0), (10, -6), (0, 0))])
+    region = lens.to_sketch()
+    for d in (1.0, -1.0, 2.0):
+        for corners in ("round", "sharp"):
+            assert lens.offset(d, corners=corners).to_sketch().area == approx(region.offset(d, corners=corners).area,
+                                                                              rel=1e-5)
+    # a U whose sides would run into each other
+    u = Wire([Line((0, 0), (0, 20)), Line((0, 20), (8, 20)), Line((8, 20), (8, 0))])
+    assert u.offset(-3).length == approx(36)
+    with pytest.raises(ModelingError, match="moved by 5"):
+        u.offset(-5)
+
+
+def test_strokes_follow_splines():
+    s = Spline((0, 0), (10, 5), (20, 0))
+    band = 2 * s.length * 1e-6 * s.bbox().diagonal  # (the offsets are within 1e-6 of the size)
+    assert Stroke(s, 2).area == approx(2 * s.length + math.pi, abs=band)  # (ModelingError before)
+    assert Stroke(s, 2, ends="flat").area == approx(2 * s.length, abs=band)
+    ring = Spline((0, 0), (10, 5), (20, 0), (10, -5), closed=True)
+    assert Stroke(ring, 1).area == approx(ring.length, abs=2 * ring.length * 1e-6 * ring.bbox().diagonal)
+    exact, fitted = _arc_like_path(False), _arc_like_path(True)
+    for corners in ("round", "sharp", "chamfer"):
+        for ends in ("round", "flat"):
+            assert Stroke(fitted, 3, ends=ends, corners=corners).area == approx(
+                Stroke(exact, 3, ends=ends, corners=corners).area, rel=1e-6), (corners, ends)
+    # a spline that crosses itself: the band overlaps itself there and keeps the hole it encloses
+    loop = Spline((0, 0), (20, 0), (20, 10), (10, 10), (10, -10))
+    band = Stroke(loop, 1)
+    assert len(band.faces()) == 1 and len(band.faces()[0].wires()) == 2
+    assert band.area < loop.length + math.pi / 4  # (less than the band would cover without the overlap)
+
+
+# -- C8: curves fitted to points -------------------------------------------------------------------
+def test_fit_curve_keeps_within_the_tolerance_with_few_control_points():
+    xs = [20 * i / 199 for i in range(200)]
+    pts = [(x, 5 * math.sin(x / 3) + 0.003 * math.sin(7 * x)) for x in xs]
+    e = fit_curve(pts, tolerance=0.01)
+    assert max(e.distance_to(p) for p in pts) <= 0.01
+    assert len(e.nurbs().points) < 40  # (Spline: 202)
+    assert e.start.to_tuple() == approx((0, 0, 0), abs=1e-12) and e.end.distance_to(pts[-1]) < 1e-9
+    import numpy as np
+
+    a = fit_curve(np.array(pts), tangents=((1, 0), (0, 1)), tolerance=0.05)
+    assert a.tangent_at(0).to_tuple() == approx((1, 0, 0)) and a.tangent_at(1).to_tuple() == approx((0, 1, 0))
+    assert max(a.distance_to(p) for p in pts) <= 0.05
+    ring = [(10 * math.cos(t), 6 * math.sin(t)) for t in (2 * math.pi * i / 60 for i in range(60))]
+    c = fit_curve(ring, tolerance=0.01, closed=True)
+    assert c.is_closed and c.tangent_at(0).angle_to(c.tangent_at(1)) < 1e-6
+    assert max(c.distance_to(p) for p in ring) <= 0.01
+    few = fit_curve([(0, 0), (1, 1), (2, 0)])  # through the points
+    assert all(few.distance_to(p) < 1e-9 for p in [(0, 0), (1, 1), (2, 0)])
+    with pytest.raises(ValueError, match="degree"):
+        fit_curve(pts, degree=1)
+    with pytest.raises(ValueError, match="closed curve takes no end tangents"):
+        fit_curve(ring, closed=True, tangents=((1, 0), None))
+
+
+def test_splines_take_a_tangent_at_every_point():
+    pts = [(0, 0), (10, 0), (20, 10), (20, 20)]
+    dirs = [(1, 0), (1, 1), (0, 1), (-1, 1)]
+    s = Spline(*pts, tangents=dirs)
+    for p, d in zip(pts, dirs):
+        t = s.param_at(p)
+        assert s.point_at(t).distance_to(p) < 1e-9
+        assert s.tangent_at(t).angle_to(Vector(d)) < 1e-6  # (degrees)
+    with pytest.raises(ValueError, match="one per point"):
+        Spline(*pts, tangents=dirs[:3])
+
+
+# -- C9: curvature, inflections, exact boxes -------------------------------------------------------
+def test_curvature_minimum_radius_and_inflections():
+    s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+    r, t = s.min_radius()
+    assert r == approx(3.997484385833472, rel=1e-9)  # OpenCASCADE (GeomLProp, refined)
+    assert s.point_at(t).to_tuple() == approx((20.778561798465574, -3.1697513165695037, 0), abs=1e-6)
+    assert s.radius_at(t) == approx(r, rel=1e-9) and s.curvature_at(t) == approx(1 / r, rel=1e-9)
+    (f,) = s.inflections()
+    assert s.point_at(f).to_tuple() == approx((14.951181948137158, 0.9954275141867979, 0), abs=1e-6)  # OpenCASCADE
+    assert s.curvature_at(f) < 1e-9
+    rr, tr = s.reversed().min_radius()
+    assert rr == approx(r) and tr == approx(1 - t) and s.reversed().inflections() == [approx(1 - f)]
+    e = EllipticalArc((0, 0), 20, 10, 0, 180)
+    assert e.min_radius()[0] == approx(10 ** 2 / 20)  # b^2/a at the ends of the major axis
+    assert e.curvature_at(0.5) == approx(10 / 20 ** 2) and e.inflections() == []
+    assert Line((0, 0), (5, 5)).min_radius() == (math.inf, 0.0) and Line((0, 0), (5, 5)).radius_at() == math.inf
+    assert CenterArc((0, 0), 7, 0, 90).min_radius() == (approx(7), 0.0)
+    w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
+    rw, tw = w.min_radius()
+    assert rw == approx(w.edges()[1].min_radius()[0]) and 10 / w.length < tw < 1
+
+
+def test_free_curves_have_exact_boxes():
+    b = Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox()
+    assert b.max.y == approx(1.0069069109354301, abs=1e-12)  # OpenCASCADE (sampled before: 0.7998)
+    assert b.min.y == approx(-1.1436479595277323, abs=1e-12)
+    assert b.min.x == approx(0, abs=1e-12) and b.max.x == approx(30, abs=1e-12)
+
+
+def test_sweep_errors_name_the_tightest_bend():
+    path = Spline((0, 0, 0), (10, 0, 5), (10, 10, 10), (0, 10, 15))
+    with pytest.raises(ModelingError, match=r"bends with a radius of 4\.556 .*reaches 5\.59 from the path"):
+        sweep(Rectangle(10, 5), path)
+
+
+# -- C10: lines and arcs ---------------------------------------------------------------------------
+def test_to_arcs_keeps_within_the_tolerance():
+    s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+    for tol in (0.01, 0.001):
+        w = s.to_arcs(tol)
+        assert {e.geom_type for e in w.edges()} <= {"line", "circle"}
+        assert max(s.distance_to(e.point_at(i / 8)) for e in w.edges() for i in range(9)) <= tol
+        assert max(w.distance_to(s.point_at(i / 400)) for i in range(401)) <= tol
+        assert w.start.distance_to(s.start) < 1e-9 and w.end.distance_to(s.end) < 1e-9
+        assert all(a.tangent_at(1).angle_to(b.tangent_at(0)) < 1e-4 for a, b in zip(w.edges(), w.edges()[1:]))
+    assert len(s.to_arcs(0.01).edges()) == 26  # (the kernel's own call: one curve, 0.0037 off for 0.001)
+    e = EllipticalArc((0, 0), 20, 10, 0, 300)
+    w = e.to_arcs(0.01)
+    assert max(w.distance_to(e.point_at(i / 400)) for i in range(401)) <= 0.01
+    line = Line((0, 0), (1, 1))
+    assert line.to_arcs().edges()[0] is line
+    assert Wire([line, Line((1, 1), (2, 0))]).to_arcs().length == approx(2 * math.sqrt(2))
+
+
+def test_dxf_with_lines_and_arcs_only(tmp_path):
+    s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+    region = Ellipse(20, 10) - Circle(3)
+    path = tmp_path / "arcs.dxf"
+    export_dxf([s, region], path, curves="arcs", tolerance=0.01)
+    text = path.read_text()
+    kinds = {text.splitlines()[i + 1] for i, line in enumerate(text.splitlines()) if line.strip() == "0"}
+    assert "SPLINE" not in kinds and "ELLIPSE" not in kinds and "ARC" in kinds and "CIRCLE" in kinds
+    back = import_dxf_wires(path)
+    assert sum(w.length for w in back) == approx(s.length + region.edges()[0].length + 6 * math.pi, rel=1e-4)
+    with pytest.raises(ValueError, match="curves is 'exact' or 'arcs'"):
+        export_dxf(s, path, curves="lines")
