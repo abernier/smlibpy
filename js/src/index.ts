@@ -92,9 +92,9 @@ export {
   fromStepModel,
   importStep,
   readStep,
-  type StepCurve,
-  type StepFrame,
-  type StepPoint,
+  StepCurve,
+  StepFrame,
+  StepPoint,
 } from './step_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'

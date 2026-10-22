@@ -1,4 +1,4 @@
-# Lane IX: STEP import and export, USD names (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3)
+# Lane IX: STEP import and export, USD names (batch 1: I3, I4, I5, I6, I7, I8, I9, I10, X3; batch 2: I11, I12, I13)
 
 Everything applies to smlibpy and smlibwasm alike unless marked. Codes are the plan's items
 (ai/plan/kernel-deep-dive.md). Corpus numbers: the 154 classcad-mcp parts and 294 other local
@@ -71,6 +71,31 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   wasm wrote "Gr____e" and "______" (colliding names). Every character but ASCII letters, digits
   and `_` is now one `_` (`Gr__e`, `__`, made unique as before), the name itself is written as the
   prim's `displayName`, and `import_usd` names the body by it.
+- Offset surfaces are written exactly (I11). A body with one offset face (the fillets of SMLib's
+  `.smb` files, offsets read from STEP) went to NURBS whole (`to_nurbs`, which fits offsets
+  loosely), without a warning: `vase.smb` written and read back changed its volume by 7.7e-3, its
+  planes came back as B-splines (11 B-spline faces) and its faces left gaps of 1.9e-2. Offset faces
+  are now `OFFSET_SURFACE`s of their basis (the basis written as it is: a plane, cylinder, cone,
+  sphere or torus as such, a B-spline with its control points), the distance turned where STEP's
+  normal of the basis runs against the kernel's. `vase.smb` comes back with its 4 offset, 3 plane
+  and 4 B-spline faces and 5.1e-7 of its volume; vase1, vase2, vase3 and fillet1017 with 3.2e-6,
+  7.7e-9, 8.9e-7 and 3.6e-7 (before: 3.9e-5, 5.0e-4, 3.4e-4, 1.7e-3), what re-trimming fillets
+  costs, as for fillet bodies without offsets (bottle.smb: 8.8e-6). Offsets of
+  planes, cylinders (in and out, holes), cones, spheres and tori written and read back are exact,
+  and OpenCASCADE reads them to the same volume. Of the 144 pt_TestFiles parts both versions load,
+  written and read back, only the 5 with offsets changed.
+- Imported cylinders are written as cylinders (found with I11). The importer builds STEP
+  cylinders as the kernel's own cylinder type, which the writer wrote as rational B-splines (SMLib's
+  primitives are cones of angle 0): a file read and written again lost its `CYLINDRICAL_SURFACE`s,
+  `faces().cylinders()` found nothing after a second round trip, and OpenCASCADE dropped an offset
+  of such a cylinder (it needs a C1 basis; the rational B-spline is C0).
+- smlibpy only: a body the writer has to convert to NURBS was freed while it was written (the
+  writer kept its Brep, not the body), and `export_step` of `vase.smb` crashed with a segmentation
+  fault on the phase 1 branch (0.4 read the freed memory by luck).
+- The STEP uncertainty is the same length in any unit (I13): `1e-7` was written in the file's
+  unit, so a file in meters declared 1e-4 mm and one in inches 2.5e-6 mm. It is 1e-7 mm now,
+  converted (`1.E-10` in meters, `3.93700787401575E-9` in inches); the importer's stitching starts
+  from it (I5).
 
 ## New
 
@@ -91,6 +116,24 @@ STEP files (448 in all), each imported, measured and written back to STEP before
 - The STEP reader's body data carry the product, the entity and the declared length uncertainty
   (`BodyData.product`, `.entity`, `.uncertainty`), and `interpret(sf, skipped=[...])` collects the
   bodies it cannot read instead of raising.
+- `export_step` writes curves, points and coordinate systems (I12; `toStep`/`exportStep` too). An
+  `Edge` or `Wire` is a curve of wireframe geometry (one `GEOMETRIC_CURVE_SET` in a
+  `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`: lines, arcs and ellipses as trimmed
+  analytic curves, B-splines with their control points, a wire as one composite curve), a `Vertex`
+  or `Vector` a point, a `Plane` a coordinate system (a named `AXIS2_PLACEMENT_3D` of supplemental
+  geometry, CAx-IF's `CONSTRUCTIVE_GEOMETRY_REPRESENTATION`). `StepCurve(name, shape, product,
+  color)`, `StepPoint(name, point, ...)` and `StepFrame(name, plane, ...)` name them (curves and
+  points with their colors), and a `StepModel` from `read_step` is written whole: `read_step` ->
+  `export_step` -> `read_step` keeps the bodies, frames, curves and points with names, colors and
+  types. With `assembly=True` an item whose `product` names a body goes into that body's product,
+  the others into the root. OpenCASCADE reads such files (the solid and the curves).
+- `StepFrame`, `StepCurve` and `StepPoint` are exported (`from smlibpy import StepFrame`; in
+  smlibwasm as values, they were types only).
+- A warning when `export_step` has to convert a body to NURBS: `export STEP: 'vase' has 4 faces
+  on an offset surface that reaches past its basis, which STEP cannot hold as the kernel does:
+  the body is written converted to NURBS (to_nurbs), which approximates them`.
+- `ext.surface_data` and `ext.brep_dump` give an offset surface's `distance`, `basis` (a nested
+  offset's distances added) and the `extended` basis where the kernel made one (both builds).
 
 ## Behaviour changes
 
@@ -142,6 +185,36 @@ STEP files (448 in all), each imported, measured and written back to STEP before
   (point inside, mesh grid, draft and deformation checks) works on them, and their meshes can
   differ slightly from 0.4's.
 
+- STEP files from bodies with offset faces hold `OFFSET_SURFACE`s instead of approximating
+  B-splines. OpenCASCADE (FreeCAD) drops an offset face whose basis is a B-spline with C0 knots
+  (it needs a C1 basis); the old output is one call away:
+  ```python
+  export_step(vase, "vase.step")               # 0.5: OFFSET_SURFACE, exact
+  export_step(vase.to_nurbs(), "vase.step")    # what 0.4 wrote (volume off by up to 1e-2)
+  ```
+- Imported cylinders are written as `CYLINDRICAL_SURFACE`, and come back as cylinders, where 0.4
+  wrote and gave back B-splines:
+  ```python
+  again = import_step("in.step"); export_step(again, "out.step")
+  import_step("out.step").faces().cylinders()  # 0.4: [] (B-spline faces)  0.5: the cylinders
+  ```
+- `export_step` warns (`RuntimeWarning`) where it converts a body to NURBS, which 0.4 did silently:
+  ```python
+  warnings.filterwarnings("ignore", "export STEP")   # to silence it
+  ```
+- `export_step` writes edges, wires, vertices, Vectors and Planes, where 0.4 raised
+  `TypeError: 'Edge' object is not iterable` (`'float' object ...` for a vertex). What it cannot
+  write raises `TypeError: cannot write a Location to STEP` (0.4: `'Location' object is not
+  iterable`).
+  ```python
+  export_step([part, part.edges()[0]], "p.step")   # 0.4: TypeError  0.5: the part and a curve
+  export_step([part, *edges], "p.step")            # filter edges out first for 0.4's output
+  ```
+- The declared uncertainty of files in other units than mm changes (meters: `1.E-10` instead of
+  `1.E-07`); files in mm write `1.E-7` for `1.E-07` (the same number). A receiver that takes the
+  declared uncertainty as its tolerance works to 1e-7 mm in every unit. Nothing to migrate.
+- `from smlibpy import *` brings `StepFrame`, `StepCurve` and `StepPoint` along.
+
 ## Not done
 
 - I6's wider coverage: reading `OFFSET_CURVE_3D` edges (the kernel's `SmOffsetCurve`) and edges
@@ -157,3 +230,14 @@ STEP files (448 in all), each imported, measured and written back to STEP before
 - Mirrored assembly placements stay unread: the reader takes placements from
   `AXIS2_PLACEMENT_3D`s only, which cannot mirror (`CARTESIAN_TRANSFORMATION_OPERATOR_3D` is not
   read).
+- An offset of a whole sphere (a face bounded by its seam alone) does not import: `import_step`
+  builds it without volume (OpenCASCADE reads it). The writer writes such faces exactly, but the
+  round trip could not be tested; offsets of sphere patches round-trip. Found with I11, an importer
+  gap (the seam handling of spheres does not look through an offset).
+- A coordinate system's color (`StepFrame.color`) is not written: placements have no style other
+  CAD systems show.
+- I11's offsets of B-spline bases with C0 knots stay unreadable for OpenCASCADE (see Behaviour
+  changes); converting such faces with a checked fit, the plan's alternative, was not done: the
+  exact surface is what other systems (and `import_step`) read.
+- Only `export_step` writes curves: `save`, `export_stl` and `export_obj` still raise the
+  messages of ai/todo/files.md #8 for edges.

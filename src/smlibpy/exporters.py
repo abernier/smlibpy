@@ -89,10 +89,16 @@ def export_step(shapes: Any, path: str | os.PathLike[str], *, unit: str = "mm", 
     ``assembly=True``, each into a product of its own, named as the body, in an assembly
     called ``name``: other CAD systems then list the parts by name. A body listed more than
     once is written once and used at each place.
-    """
-    from .step import write_step
 
-    write_step(_items(shapes), os.fspath(path), unit=unit, name=name, assembly=assembly)
+    Edges and wires are written as wireframe curves, vertices and Vectors as points, Planes as
+    coordinate systems (supplemental geometry), each unnamed; :class:`~smlibpy.StepCurve`,
+    :class:`~smlibpy.StepPoint` and :class:`~smlibpy.StepFrame` give them names and colors, and
+    a :class:`~smlibpy.StepModel` (from :func:`~smlibpy.read_step`) is written whole.
+    :func:`~smlibpy.read_step` reads them back.
+    """
+    from .step import _step_items, write_step
+
+    write_step(_step_items(shapes), os.fspath(path), unit=unit, name=name, assembly=assembly)
 
 
 def _meshes(shapes: Any, tolerance: float | None, angle: float) -> list[tuple[Any, Mesh]]:

@@ -2,7 +2,9 @@
 
 I3 O-rings, I4 cavities within the gaps of their faces, I5 stitching faces that do not share
 their edges, I6 one unreadable body, I7 assembly instances built once, I8 one integration per
-shell, I9 faces' parameter domains, I10 assemblies in export_step, X3 non-ASCII names in USD.
+shell, I9 faces' parameter domains, I10 assemblies in export_step, X3 non-ASCII names in USD,
+I11 offset surfaces in export_step, I12 curves, points and coordinate systems in export_step,
+I13 the STEP uncertainty in any unit.
 """
 
 import math
@@ -16,7 +18,7 @@ from smlibpy import step_import as si
 from smlibpy._kernel import KernelError
 from smlibpy.step import _s
 from smlibpy.step_reader import _decode_string
-from test_step_import import _assembly_like_autocad, _step, _unshared
+from test_step_import import _assembly_like_autocad, _step, _tool_with_supplemental_geometry, _unshared
 
 
 def _per_face(text: str, gap: float) -> str:
@@ -271,7 +273,7 @@ def test_file_uncertainty_is_read(tmp_path):
 
     export_step(Box(1, 1, 1).named("b"), tmp_path / "b.step", unit="m")
     [(body, _)] = interpret(parse((tmp_path / "b.step").read_text()))
-    assert body.uncertainty == pytest.approx(1e-7 * 1000)  # 1e-7 m in mm
+    assert body.uncertainty == pytest.approx(1e-7)  # 1e-10 m in mm (I13: 1e-7 mm in any unit)
     assert body.name == "b" and body.entity > 0
 
 
@@ -513,3 +515,312 @@ def test_usd_names_that_map_to_one_prim_name_stay_apart(tmp_path):
     export_usd([Box(1, 1, 1).named("部品"), Box(1, 1, 1).translate(3, 0, 0).named("名前")], path, mesh=False)
     assert re.findall(r'def BrepArray "([^"]*)"', path.read_text(encoding="utf-8")) == ["__", "___1"]
     assert [b.name for b in import_usd(path)] == ["部品", "名前"]
+
+
+# -- I11: offset surfaces ------------------------------------------------------------------------------
+_PT = __import__("pathlib").Path(__file__).parents[1] / "third_party/usd-brep/TestFiles/pt_TestFiles"
+
+
+def _kinds(body) -> dict[str, int]:
+    from collections import Counter
+
+    from smlibpy._kernel import ext
+
+    return dict(Counter(f["kind"] for f in ext.brep_dump(body._brep, False)["faces"]))
+
+
+def _offset_of(text: str, pattern: str, make) -> str:
+    """A STEP text with the first surface that matches ``pattern`` replaced by an OFFSET_SURFACE of
+    the basis ``make(match)`` gives as ``(entity, distance)``, written as other CAD systems write them."""
+    head, data = text.split("DATA;\n", 1)
+    data, tail = data.split("ENDSEC;", 1)
+    n = max(int(i) for i in re.findall(r"^#(\d+)=", data, re.M))
+    m = re.search(r"^#(\d+)=" + pattern + ";$", data, re.M)
+    basis, distance = make(m)
+    data = data.replace(m.group(0), f"#{m.group(1)}=OFFSET_SURFACE('',#{n + 1},{distance!r},.F.);")
+    return head + "DATA;\n" + data + f"#{n + 1}={basis};\n" + "ENDSEC;" + tail
+
+
+def _cylinder_offset(r0: float, d: float):
+    return lambda m: (f"CYLINDRICAL_SURFACE('',#{m.group(2)},{r0!r})", d)
+
+
+_CYL = r"CYLINDRICAL_SURFACE\('',#(\d+),([-\d.E]+)\)"
+_OFFSETS = {
+    # a cylinder of radius 10 as an offset of radius 8 out (+2) and of 12 in (-2), the hole of a
+    # block (its face points to the axis) as one of radius 3 and 5, a torus' tube, a cone, a sphere
+    "cylinder out": (lambda: Cylinder(10, 20), _CYL, _cylinder_offset(8.0, 2.0)),
+    "cylinder in": (lambda: Cylinder(10, 20), _CYL, _cylinder_offset(12.0, -2.0)),
+    "hole out": (lambda: Box(20, 20, 10) - Cylinder(4, 10), _CYL, _cylinder_offset(3.0, 1.0)),
+    "hole in": (lambda: Box(20, 20, 10) - Cylinder(4, 10), _CYL, _cylinder_offset(5.0, -1.0)),
+    "torus": (lambda: Torus(20, 5), r"TOROIDAL_SURFACE\('',#(\d+),([-\d.E]+),([-\d.E]+)\)",
+              lambda m: (f"TOROIDAL_SURFACE('',#{m.group(2)},{m.group(3)},6.)", -1.0)),
+    "cone": (lambda: Cone(10, 5, 20), r"CONICAL_SURFACE\('',#(\d+),([-\d.E]+),([-\d.E]+)\)",
+             lambda m: (f"CONICAL_SURFACE('',#{m.group(2)},{float(m.group(3)) - 1 / math.cos(float(m.group(4)))!r},"
+                        f"{m.group(4)})", 1.0)),
+    "sphere patch": (lambda: Sphere(12) & Box(10, 10, 10, align=Align.MIN),
+                     r"SPHERICAL_SURFACE\('',#(\d+),([-\d.E]+)\)",
+                     lambda m: (f"SPHERICAL_SURFACE('',#{m.group(2)},10.)", 2.0)),
+}
+
+
+@pytest.mark.parametrize("case", list(_OFFSETS))
+def test_offset_surfaces_are_written_as_offset_surfaces(tmp_path, case):
+    # An offset surface went to NURBS with its whole body (to_nurbs fits offsets loosely). It is
+    # written as OFFSET_SURFACE of its basis now, the distance turned where STEP's normal of the
+    # basis runs against the kernel's (the hole, the torus' inner side).
+    make, pattern, basis = _OFFSETS[case]
+    plain = make()
+    export_step(plain, tmp_path / "plain.step")
+    (tmp_path / "offset.step").write_text(_offset_of((tmp_path / "plain.step").read_text(), pattern, basis))
+    part = import_step(tmp_path / "offset.step")
+    assert part.is_valid() and _kinds(part)["offset"] == 1
+    assert part.volume == pytest.approx(plain.volume, rel=1e-7)
+    export_step(part, tmp_path / "again.step")
+    text = (tmp_path / "again.step").read_text()
+    assert text.count("OFFSET_SURFACE(") == 1 and "B_SPLINE_SURFACE" not in text  # (the basis analytic)
+    back = import_step(tmp_path / "again.step")
+    assert back.is_valid() and _kinds(back) == _kinds(part)
+    assert back.volume == pytest.approx(part.volume, rel=1e-9)
+    assert back.area == pytest.approx(part.area, rel=1e-9)
+
+
+def test_offset_planes_are_written_as_offset_surfaces(tmp_path):
+    # every face of a block as an offset of a parallel plane, some outward, some inward
+    export_step(Box(20, 10, 6), tmp_path / "plain.step")
+    text = (tmp_path / "plain.step").read_text()
+    def coords(ref: str, kind: str) -> list[float]:
+        return [float(x) for x in re.search(rf"^#{ref}={kind}\('',\(([^)]*)\)\);$", text, re.M).group(1).split(",")]
+
+    for i, m in enumerate(re.finditer(r"^#(\d+)=PLANE\('',#(\d+)\);$", text, re.M)):
+        ax = re.search(rf"^#{m.group(2)}=AXIS2_PLACEMENT_3D\('',#(\d+),#(\d+),#(\d+)\);$", text, re.M)
+        p, z = coords(ax.group(1), "CARTESIAN_POINT"), coords(ax.group(2), "DIRECTION")
+        d = 1.5 if i % 2 else -2.5
+        q = ",".join(repr(p[k] - d * z[k]) for k in range(3))
+        n = 10000 + 3 * i
+        text = text.replace(m.group(0), f"#{m.group(1)}=OFFSET_SURFACE('',#{n + 2},{d!r},.F.);\n"
+                            f"#{n}=CARTESIAN_POINT('',({q}));\n#{n + 1}=AXIS2_PLACEMENT_3D('',#{n},#{ax.group(2)},"
+                            f"#{ax.group(3)});\n#{n + 2}=PLANE('',#{n + 1});")
+    (tmp_path / "offset.step").write_text(text)
+    part = import_step(tmp_path / "offset.step")
+    assert part.is_valid() and _kinds(part) == {"offset": 6} and part.volume == pytest.approx(1200, rel=1e-12)
+    export_step(part, tmp_path / "again.step")
+    assert (tmp_path / "again.step").read_text().count("OFFSET_SURFACE(") == 6
+    back = import_step(tmp_path / "again.step")
+    assert back.is_valid() and _kinds(back) == {"offset": 6} and back.volume == pytest.approx(1200, rel=1e-12)
+
+
+@pytest.mark.parametrize("unit", ["mm", "inch"])
+def test_offset_fillets_of_smb_files_round_trip(tmp_path, unit):
+    # vase.smb: four fillets on offset surfaces. The whole body went to NURBS: the volume changed by
+    # 7.7e-3 and the planes came back as B-splines (11 B-spline faces), without a warning. Now the
+    # faces keep their types, and the volume changes by what re-trimming the fillets costs (as for
+    # fillet bodies without offsets).
+    path = _PT / "Fillet/vase.smb"
+    if not path.exists():
+        pytest.skip("usd-brep test files not checked out")
+    vase = load(path)
+    assert _kinds(vase) == {"bspline": 4, "plane": 3, "offset": 4}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)  # (no conversion, no warning)
+        export_step(vase, tmp_path / "vase.step", unit=unit)
+    assert (tmp_path / "vase.step").read_text().count("OFFSET_SURFACE(") == 4
+    back = import_step(tmp_path / "vase.step")
+    assert back.is_valid() and _kinds(back) == _kinds(vase)
+    assert back.volume == pytest.approx(vase.volume, rel=1e-6)  # (0.4: 7.7e-3)
+
+
+def test_bodies_step_cannot_hold_exactly_are_converted_with_a_warning(tmp_path, monkeypatch):
+    # A face STEP cannot hold as the kernel has it (here: an offset whose basis the dump does not
+    # give) sends the body to NURBS, now with a warning. (The converted body was also dropped while
+    # it was written: the writer read a freed Brep.)
+    import smlibpy.step as step
+    from smlibpy._kernel import ext
+
+    dump = ext.brep_dump
+
+    def no_basis(brep, geometry):
+        d = dump(brep, geometry)
+        for f in d["faces"]:
+            if geometry and f["surface"]["kind"] == "offset":
+                del f["surface"]["basis"]
+        return d
+
+    monkeypatch.setattr(step.ext, "brep_dump", no_basis)
+    path = _PT / "Fillet/vase2.smb"
+    if not path.exists():
+        pytest.skip("usd-brep test files not checked out")
+    vase = load(path).named("vase")
+    with pytest.warns(RuntimeWarning, match=r"export STEP: 'vase' has 4 faces on an offset of a surface of kind "
+                                            r"'unknown', which STEP cannot hold .* written converted to NURBS"):
+        export_step(vase, tmp_path / "vase.step")
+    monkeypatch.undo()
+    assert "OFFSET_SURFACE" not in (tmp_path / "vase.step").read_text()
+    back = import_step(tmp_path / "vase.step")
+    assert back.is_valid() and "offset" not in _kinds(back)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # (the approximated faces leave gaps: mass properties say so)
+        assert back.volume == pytest.approx(vase.volume, rel=1e-2)
+
+
+def _opencascade(path):
+    """The shape OpenCASCADE reads from a STEP file, its volume and its curve length."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.STEPControl import STEPControl_Reader
+
+    reader = STEPControl_Reader()
+    reader.ReadFile(str(path))
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    volume, length = GProp_GProps(), GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, volume)
+    BRepGProp.LinearProperties_s(shape, length)
+    return shape, volume.Mass(), length.Mass()
+
+
+@pytest.mark.parametrize("case", ["cylinder out", "hole in", "torus", "cone"])
+def test_offset_surfaces_read_by_opencascade(tmp_path, case):
+    pytest.importorskip("OCP.STEPControl")
+    make, pattern, basis = _OFFSETS[case]
+    plain = make()
+    export_step(plain, tmp_path / "plain.step")
+    (tmp_path / "offset.step").write_text(_offset_of((tmp_path / "plain.step").read_text(), pattern, basis))
+    export_step(import_step(tmp_path / "offset.step"), tmp_path / "again.step")
+    _, volume, _ = _opencascade(tmp_path / "again.step")
+    assert volume == pytest.approx(plain.volume, rel=1e-6)
+
+
+def test_imported_cylinders_are_written_as_cylinders(tmp_path):
+    # The importer builds STEP cylinders as the kernel's cylinders, which the writer wrote as rational
+    # B-splines (SMLib's own cylinders are cones of angle 0): a read and written file lost them.
+    export_step(Box(20, 20, 10) - Cylinder(4, 10), tmp_path / "a.step")
+    part = import_step(tmp_path / "a.step")
+    assert _kinds(part) == {"plane": 6, "cylinder": 1}
+    export_step(part, tmp_path / "b.step")
+    text = (tmp_path / "b.step").read_text()
+    assert text.count("CYLINDRICAL_SURFACE(") == 1 and "B_SPLINE_SURFACE" not in text
+    back = import_step(tmp_path / "b.step")
+    assert _kinds(back) == {"plane": 6, "cylinder": 1}
+    assert back.volume == pytest.approx(20 * 20 * 10 - math.pi * 16 * 10, rel=1e-9)
+    assert back.faces().cylinders()[0].radius == pytest.approx(4)
+
+
+# -- I12: curves, points and coordinate systems -------------------------------------------------------
+def _wireframe_items():
+    spline = Spline([(0, 0, 0), (5, 5, 2), (10, 0, 4), (15, 3, 0)])
+    wire = Wire([Line((0, 0, 0), (10, 0, 0)), Line((10, 0, 0), (10, 10, 0)), CenterArc((5, 10), 5, 0, 180)])
+    box = Box(10, 10, 10).named("box").colored("red")
+    return [box, StepCurve("cut", spline, color=(1.0, 0.0, 0.0)), Line((0, 0, 0), (10, 0, 0)),
+            CenterArc((0, 0), 5, 30, 120).reversed(), EllipticalArc((0, 0), 6, 3, 10, 200), wire,
+            box.edges().sort_by(Axis.Z)[0], CenterArc((0, 0), 4, 90, 360),
+            StepPoint("P1", Vector(1, 2, 3), color=(0.0, 1.0, 0.0)), Vertex(4, 5, 6), Vector(7, 8, 9),
+            StepFrame("MCS", Plane((1, 2, 3), x_dir=(0, 1, 0), z_dir=(1, 0, 0))), Plane.XZ]
+
+
+@pytest.mark.parametrize("unit", ["mm", "inch"])
+def test_export_step_writes_curves_points_and_frames(tmp_path, unit):
+    # export_step(Line(...)) raised "TypeError: 'Edge' object is not iterable"; read_step reads curves,
+    # points and coordinate systems, but nothing wrote them.
+    items = _wireframe_items()
+    path = tmp_path / "wire.step"
+    export_step(items, path, unit=unit)
+    text = path.read_text()
+    assert "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION" in text and "GEOMETRIC_CURVE_SET" in text
+    assert "CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP('supplemental geometry'" in text
+    model = read_step(path)
+    assert repr(model) == "StepModel(1 bodies, 2 frames, 7 curves, 3 points)"
+    assert model.bodies[0].volume == pytest.approx(1000) and model.bodies[0].name == "box"
+    curves = model.curves
+    assert [c.name for c in curves] == ["cut", "", "", "", "", "", ""]
+    assert {c.product for c in curves} == {"wire"}
+    assert curves[0].color == (1.0, 0.0, 0.0) and curves[1].color is None
+    originals = [x if not isinstance(x, StepCurve) else x.shape for x in items[1:8]]
+    for c, e in zip(curves, originals):
+        assert type(c.shape) is type(e)
+        assert c.shape.length == pytest.approx(e.length, rel=1e-9)
+        assert c.shape.start.distance_to(e.start) < 1e-9 and c.shape.end.distance_to(e.end) < 1e-9
+        assert c.shape.point_at(0.3).distance_to(e.point_at(0.3)) < 1e-7
+    assert curves[4].shape.edges()[0].geom_type == "line" and curves[3].shape.geom_type == "ellipse"
+    assert curves[6].shape.is_closed and curves[6].shape.radius == pytest.approx(4)
+    p1, p2, p3 = model.points
+    assert (p1.name, p1.point, p1.color) == ("P1", Vector(1, 2, 3), (0.0, 1.0, 0.0))
+    assert (p2.name, p3.name) == ("", "") and p2.point == Vector(4, 5, 6) and p3.point == Vector(7, 8, 9)
+    mcs, xz = model.frames
+    assert mcs.name == "MCS" and model.frame("MCS") == Plane((1, 2, 3), x_dir=(0, 1, 0), z_dir=(1, 0, 0))
+    assert xz.name == "" and xz.plane == Plane.XZ
+
+
+def test_wireframe_read_by_opencascade(tmp_path):
+    pytest.importorskip("OCP.STEPControl")
+    items = _wireframe_items()
+    export_step(items, tmp_path / "wire.step", unit="inch")
+    _, volume, length = _opencascade(tmp_path / "wire.step")
+    assert volume == pytest.approx(1000, rel=1e-9)
+    curves = sum(x.length for x in items[1:8] if not isinstance(x, StepCurve)) + items[1].shape.length
+    assert length == pytest.approx(2 * 120 + curves, rel=1e-6)  # (OpenCASCADE counts each box edge twice)
+
+
+def test_export_step_writes_a_step_model_back(tmp_path):
+    # A read_step -> export_step round trip lost everything that is not a body.
+    (tmp_path / "tool.step").write_text(_tool_with_supplemental_geometry())
+    tool = read_step(tmp_path / "tool.step")
+    for assembly in (False, True):
+        path = tmp_path / f"again_{assembly}.step"
+        export_step(tool, path, name="KIT", assembly=assembly)
+        again = read_step(path)
+        assert repr(again) == repr(tool)
+        assert again.bodies[0].volume == pytest.approx(tool.bodies[0].volume, rel=1e-9)
+        assert again.bodies[0].bbox().min.z == pytest.approx(100)
+        assert [(c.name, c.color) for c in again.curves] == [(c.name, c.color) for c in tool.curves]
+        for a, b in zip(again.curves, tool.curves):
+            assert type(a.shape) is type(b.shape) and a.shape.length == pytest.approx(b.shape.length)
+            assert a.shape.end.distance_to(b.shape.end) < 1e-9
+        assert again.frame("MCS") == tool.frame("MCS") and again.frames[0].product == "KIT"
+        assert (again.points[0].name, again.points[0].point) == ("CRP", tool.points[0].point)
+
+
+def test_export_step_writes_wireframe_alone(tmp_path):
+    export_step([StepCurve("path", Line((0, 0, 0), (0, 0, 10))), Plane.XY.offset(5)], tmp_path / "w.step")
+    model = read_step(tmp_path / "w.step")
+    assert repr(model) == "StepModel(0 bodies, 1 frames, 1 curves, 0 points)"
+    assert model.curves[0].shape.length == pytest.approx(10) and model.frames[0].plane.origin == Vector(0, 0, 5)
+    export_step(StepFrame("CSW", Plane.YZ), tmp_path / "f.step")  # (a frame alone: a shape without items)
+    assert read_step(tmp_path / "f.step").frame("CSW") == Plane.YZ
+    with pytest.raises(ValueError, match="nothing to write"):
+        export_step([], tmp_path / "none.step")
+
+
+def test_export_step_assembly_puts_wireframe_with_its_body(tmp_path):
+    bracket = Box(60, 40, 8).named("bracket")
+    cover = Box(60, 40, 2).translate(0, 0, 10).named("cover")
+    mcs = StepFrame("MCS", Plane((0, 0, 4)), product="bracket")
+    edge = StepCurve("rim", Line((0, 0, 12), (60, 0, 12)), product="cover")
+    loose = StepPoint("ref", Vector(1, 1, 1))
+    export_step([bracket, cover, mcs, edge, loose], tmp_path / "asm.step", assembly=True, name="kit")
+    model = read_step(tmp_path / "asm.step")
+    assert [b.name for b in model.bodies] == ["bracket", "cover"]
+    assert (model.frames[0].product, model.curves[0].product, model.points[0].product) == ("bracket", "cover", "kit")
+    assert model.frame("MCS", product="bracket").origin == Vector(0, 0, 4)
+
+
+def test_export_step_still_refuses_what_it_cannot_write(tmp_path):
+    with pytest.raises(TypeError, match="cannot write a Mesh to STEP"):
+        export_step(tessellate(Box(1, 1, 1)), tmp_path / "m.step")
+    with pytest.raises(TypeError, match="cannot write a Location to STEP"):
+        export_step(Location((1, 2, 3)), tmp_path / "l.step")
+
+
+# -- I13: the uncertainty -------------------------------------------------------------------------------
+@pytest.mark.parametrize("unit, per_mm", [("mm", 1.0), ("cm", 0.1), ("m", 0.001), ("um", 1000.0), ("inch", 1 / 25.4)])
+def test_step_uncertainty_is_the_same_length_in_any_unit(tmp_path, unit, per_mm):
+    # 1e-7 was written in the file's unit: 1e-4 mm in a file in meters, 2.5e-6 mm in inches.
+    from smlibpy.step_reader import interpret, parse
+
+    path = tmp_path / "u.step"
+    export_step(Box(1, 1, 1), path, unit=unit)
+    text = path.read_text()
+    value = float(re.search(r"UNCERTAINTY_MEASURE_WITH_UNIT\(LENGTH_MEASURE\(([^)]*)\)", text).group(1))
+    assert value == pytest.approx(1e-7 * per_mm, rel=1e-14)
+    [(body, _)] = interpret(parse(text))
+    assert body.uncertainty == pytest.approx(1e-7, rel=1e-12)  # (mm, as the reader converts it)

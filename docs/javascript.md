@@ -75,7 +75,9 @@ const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
 ```
 
 `fromStepModel(data)` reads a STEP file with the coordinate systems, curves and points it holds
-besides its bodies (`readStep(path)` in Node). `htmlPage(part)` is a page with a 3D viewer for an
+besides its bodies (`readStep(path)` in Node); `toStep` writes them, a `StepModel` whole or
+`new StepCurve('path', wire)`, `new StepPoint('CRP', vector)` and `new StepFrame('MCS', plane)`
+beside the bodies (an edge, a vector or a plane alone is written unnamed). `htmlPage(part)` is a page with a 3D viewer for an
 iframe (`iframe.srcdoc = htmlPage(part)`), and `render(part)` draws a PNG (`picture.data`) without
 a GPU.
 

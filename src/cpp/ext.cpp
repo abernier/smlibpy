@@ -19,6 +19,7 @@
 #include <SmTorus.h>
 #include <SmSurfOfRevolution.h>
 #include <SmSurfOfExtrusion.h>
+#include <SmOffsetSurface.h>
 #include <SmLine.h>
 #include <SmCircle.h>
 #include <SmEllipse.h>
@@ -297,6 +298,27 @@ Value make_surface_data(const SmSurface* surface, bool nurbs = true)
         d.set("major_radius", val(R));
         d.set("minor_radius", val(r));
         d.set("inside_out", val(static_cast<bool>(inside_out)));
+        break;
+    }
+    case SmOffsetSurface_TYPE:
+    {
+        // The surface the kernel evaluates: the basis moved by `distance` along its natural
+        // normal (a nested offset's distances add up on its basis, as SmOffsetSurface evaluates
+        // it), and the basis extended past its domain where the kernel has made one (fillets
+        // evaluate there).
+        auto off = static_cast<const SmOffsetSurface*>(surface);
+        double dist = off->GetOffsetDistance();
+        const SmSurface* basis = off->GetBaseSurface();
+        if (basis && basis->GetType() == SmOffsetSurface_TYPE)
+        {
+            dist += static_cast<const SmOffsetSurface*>(basis)->GetOffsetDistance();
+            basis = static_cast<const SmOffsetSurface*>(basis)->GetBaseSurface();
+        }
+        d.set("distance", val(dist));
+        if (basis)
+            d.set("basis", val(make_surface_data(basis, nurbs)));
+        if (const SmSurface* extended = off->GetExtendedBaseSurface())
+            d.set("extended", val(make_surface_data(extended, nurbs)));
         break;
     }
     default: break;

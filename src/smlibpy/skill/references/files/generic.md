@@ -5,7 +5,7 @@ and text. The other formats are triangle meshes or pictures.
 
 | Format | Write | Read | Geometry | Bodies | Names | Colors | Units in file |
 |---|---|---|---|---|---|---|---|
-| STEP `.step` `.stp` | `export_step` | `import_step` | exact (analytic + B-spline) | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
+| STEP `.step` `.stp` | `export_step` | `import_step`; `read_step` also curves, points, coordinate systems | exact (analytic, offset + B-spline); curves, points and coordinate systems beside the bodies | many | yes (solid label) | yes | mm or `unit=` (converted on export), converted to mm on import |
 | USD `.usda` `.usd` | `export_usd` | `import_usd` | exact (`BrepArray` prims of usd-brep), meshes as `Mesh` prims; text only | many, merged parts with their cells | yes (prim names) | yes | mm (`metersPerUnit = 0.001`); read in mm by `metersPerUnit`, placed by the prims' transforms |
 | SMLib `.smb` | `save` | `load` | exact geometry; B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those | **one** | no | no | none (mm) |
 | DXF `.dxf` | `export_dxf` | `import_dxf` → `Sketch`, `import_dxf_wires` → `Wire`s | exact 2D curves: LINE, ARC, CIRCLE, ELLIPSE, SPLINE | 2D only, no `Part` | names become layers | no | mm or `unit=` (converted on export), `$INSUNITS` converted to mm on import |

@@ -7,7 +7,7 @@ control. All of them accept a single shape or a list.
 
 | Format | Function | Contents |
 |---|---|---|
-| STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors |
+| STEP (`.step`, `.stp`) | `export_step` | exact B-rep, names and colors; curves, points and coordinate systems |
 | USD (`.usda`, `.usd`) | `export_usd` | exact B-rep as usd-brep's `BrepArray` prims and a mesh of each body for viewers, names and colors |
 | SMLib (`.smb`) | `save` | the kernel's native format, exact (B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those) |
 | DXF (`.dxf`) | `export_dxf` | 2D drawings: sketches, sections, text, curves; exact |
@@ -31,12 +31,15 @@ save(bracket, "bracket.smb")
 ### STEP
 
 The STEP writer produces AP214 files with the exact geometry: planes, cylinders, cones,
-spheres, tori, lines, circles and ellipses as analytic entities, everything else as
-(rational) B-splines with the kernel's own control points and knots. Solids become
-`MANIFOLD_SOLID_BREP`s, hollow solids `BREP_WITH_VOIDS`, sheets open shells. Part names
-and colors are kept, in any characters (`"Bügel"`, `"部品"`: as ISO 10303-21's `\X2\`
-encoding, which other CAD systems read). The output is checked in the test suite by reading
-it back with OpenCASCADE.
+spheres, tori, lines, circles and ellipses as analytic entities, offset surfaces (the
+fillets of SMLib's own `.smb` files, offsets read from STEP) as `OFFSET_SURFACE`s of their
+basis, everything else as (rational) B-splines with the kernel's own control points and
+knots. Solids become `MANIFOLD_SOLID_BREP`s, hollow solids `BREP_WITH_VOIDS`, sheets open
+shells. Part names and colors are kept, in any characters (`"Bügel"`, `"部品"`: as ISO
+10303-21's `\X2\` encoding, which other CAD systems read). The output is checked in the test
+suite by reading it back with OpenCASCADE. A body with a face STEP cannot hold as the kernel
+has it (an offset face that reaches past its basis) is written converted to NURBS, with a
+warning.
 
 All bodies go into one product (named `name`, by default after the file), each body a solid
 with its own name. With `assembly=True` each body becomes a product of its own, named as the
@@ -47,7 +50,23 @@ coordinates: each product is placed at the assembly's origin.
 
 `unit` is the unit of the file: `"mm"` (default), `"cm"`, `"m"`, `"um"` or `"inch"`. The
 model (in mm) is converted to it, so `bracket_inch.step` above holds a 2.362 x 1.575 x 0.315
-inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm.
+inch part, which any CAD system (and `import_step`) reads as 60 x 40 x 8 mm. The file declares
+the same length uncertainty in any unit: 1e-7 mm.
+
+Curves, points and coordinate systems go into the file beside the bodies: an edge or wire is
+written as a curve of wireframe geometry (a `GEOMETRIC_CURVE_SET`), a vertex or `Vector` as a
+point, a `Plane` as a coordinate system of supplemental geometry, as tool catalogs and NX
+write them. `StepCurve`, `StepPoint` and `StepFrame` give them names and colors, and the
+`StepModel` that `read_step` gives is written whole, so a file read, changed and written
+keeps them. `read_step` reads them back (below).
+
+```python
+path = Wire([Line((0, 0, 4), (30, 0, 4)), CenterArc((30, 10), 10, -90, 180)])
+export_step([bracket, StepCurve("path", path, color=(1, 0, 0)), StepPoint("CRP", Vector(0, 0, 4)),
+             StepFrame("MCS", Plane((0, 0, 4)))], "fixture.step")
+fixture = read_step("fixture.step")
+print(fixture, fixture.frame("MCS").origin)   # StepModel(1 bodies, 1 frames, 1 curves, 1 points) Vector(0, 0, 4)
+```
 
 ### USD
 
@@ -175,7 +194,8 @@ holder = holder.moved(mcs.location)            # put something on the tool's MCS
 
 `tool.bodies` is always a `ShapeList`. `frame(name)` raises when the name is missing, or when
 several products have a coordinate system of that name (each part of an assembly has its own
-`MCS`): `product=` picks one by the beginning of its product's name. `render(tool)` and the
+`MCS`): `product=` picks one by the beginning of its product's name. `export_step(tool, path)`
+writes the model back, its curves, points and coordinate systems with it. `render(tool)` and the
 live viewer draw the bodies and curves and mark the coordinate systems and named points.
 
 ## DXF

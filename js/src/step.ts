@@ -1,13 +1,18 @@
 // STEP (ISO 10303-21, AP214) writer for exact B-rep geometry.
 //
 // Planes, cylinders, cones, spheres, tori, lines, circles and ellipses are written as their
-// analytic STEP entities, everything else as (rational) B-spline curves and surfaces with the
-// kernel's exact control points and knots. Solids become MANIFOLD_SOLID_BREPs (BREP_WITH_VOIDS for
-// hollow ones), sheets become open shells.
+// analytic STEP entities, offset surfaces as OFFSET_SURFACEs of their basis, everything else as
+// (rational) B-spline curves and surfaces with the kernel's exact control points and knots. Solids
+// become MANIFOLD_SOLID_BREPs (BREP_WITH_VOIDS for hollow ones), sheets become open shells, curves
+// and points a GEOMETRIC_CURVE_SET of wireframe geometry, coordinate systems named placements of
+// supplemental geometry (CONSTRUCTIVE_GEOMETRY_REPRESENTATION). All of it goes into one product,
+// or, as an assembly, each body into a product of its own under a root product.
 
-import { _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
+import { _isRuntimeError, _warn, ext, k, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
-import { Part, _Body, _typeName, type ColorLike } from './shapes.ts'
+import { Plane, Vector } from './geometry.ts'
+import { Edge, Face, Part, Vertex, Wire, _Body, _typeName, type ColorLike } from './shapes.ts'
+import { StepCurve, StepFrame, StepModel, StepPoint } from './step_import.ts'
 import { _fs } from './exporters.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
@@ -30,6 +35,8 @@ export const _MM_PER_UNIT = new Map<string, number>([
   ['inch', _INCH],
   ['in', _INCH],
 ])
+/** the length uncertainty a file declares, in millimeters (written in the file's unit) */
+const _UNCERTAINTY_MM = 1e-7
 
 /** Python's repr of a float: the shortest digits that read back as `v`, in exponent form below
  * 1e-4 and from 1e16 on. */
@@ -216,7 +223,55 @@ type NormalOf =
   | { kind: 'torus'; o: V3; z: V3; R: number }
   | null
 
+/** A body has faces the writer cannot write exactly (the message says which). */
 class _NeedsNurbs extends Error {}
+
+/** A surface of the dump the writer writes exactly: an analytic one, or one with control points. */
+function _writable(s: Any): boolean {
+  return ['plane', 'cylinder', 'cone', 'sphere', 'torus'].includes(s.kind) || 'poles' in s
+}
+
+/** The basis an offset face is written on: the kernel's, or the extension of it the kernel
+ * evaluates where the face reaches past the basis; null where neither holds the face or can be
+ * written. */
+function _offsetBasis(f: Any): Any {
+  const s = f.surface
+  const [[fu0, fv0], [fu1, fv1]] = f.uv_domain
+  for (const basis of [s.basis, s.extended]) {
+    if (basis == null || !_writable(basis)) continue
+    const [[u0, v0], [u1, v1]] = basis.uv_domain
+    const tol = 1e-9 * Math.max(1.0, u1 - u0, v1 - v0)
+    if (u0 - tol <= fu0 && fu1 <= u1 + tol && v0 - tol <= fv0 && fv1 <= v1 + tol) return basis
+  }
+  return null
+}
+
+/** Why the writer cannot write a face of the dump exactly, or null. */
+function _inexact(f: Any): string | null {
+  const s = f.surface
+  if (s.kind === 'offset') {
+    if (_offsetBasis(f) !== null) return null
+    const basis = s.basis
+    if (basis == null || !_writable(basis)) return `an offset of a surface of kind '${basis ? basis.kind : 'unknown'}'`
+    return 'an offset surface that reaches past its basis'
+  }
+  return _writable(s) ? null : `a surface of kind '${s.kind}'`
+}
+
+/** A (rational) B-spline curve of the kernel's control points and knots. */
+function _bsplineCurve(w: _Writer, c: Any, name = ''): number {
+  const pts = (c.poles as V3[]).map((p) => `#${w.point(p)}`).join(',')
+  const [uniq, mult] = _mults(c.knots)
+  const deg = c.degree
+  if (c.weights == null) {
+    return w.add(`B_SPLINE_CURVE_WITH_KNOTS(${_s(name)},${deg},(${pts}),.UNSPECIFIED.,.F.,.F.,${_ints(mult)},${_reals(uniq)},.UNSPECIFIED.)`)
+  }
+  return w.add(
+    `(BOUNDED_CURVE() B_SPLINE_CURVE(${deg},(${pts}),.UNSPECIFIED.,.F.,.F.) ` +
+      `B_SPLINE_CURVE_WITH_KNOTS(${_ints(mult)},${_reals(uniq)},.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() ` +
+      `RATIONAL_B_SPLINE_CURVE(${_reals(c.weights)}) REPRESENTATION_ITEM(${_s(name)}))`,
+  )
+}
 
 /** Writes the topology of one kernel Brep. */
 class _BodyWriter {
@@ -232,9 +287,9 @@ class _BodyWriter {
     this.w = w
     this.brep = brep
     this.dump = ext.brep_dump(brep, true)
-    for (const f of this.dump.faces) {
-      const srf = f.surface
-      if (!['plane', 'cone', 'sphere', 'torus'].includes(srf.kind) && !('poles' in srf)) throw new _NeedsNurbs()
+    const inexact = (this.dump.faces as Any[]).map(_inexact).filter((why): why is string => why !== null)
+    if (inexact.length) {
+      throw new _NeedsNurbs(`${inexact.length} ${inexact.length === 1 ? 'face' : 'faces'} on ${[...new Set(inexact)].sort().join('; ')}`)
     }
     this.kfaces = k.brep_faces(brep)
     this.kedges = k.brep_edges(brep)
@@ -242,18 +297,7 @@ class _BodyWriter {
 
   // -- geometry -----------------------------------------------------------------------------
   bsplineCurve(c: Any): number {
-    const w = this.w
-    const pts = (c.poles as V3[]).map((p) => `#${w.point(p)}`).join(',')
-    const [uniq, mult] = _mults(c.knots)
-    const deg = c.degree
-    if (c.weights == null) {
-      return w.add(`B_SPLINE_CURVE_WITH_KNOTS('',${deg},(${pts}),.UNSPECIFIED.,.F.,.F.,${_ints(mult)},${_reals(uniq)},.UNSPECIFIED.)`)
-    }
-    return w.add(
-      `(BOUNDED_CURVE() B_SPLINE_CURVE(${deg},(${pts}),.UNSPECIFIED.,.F.,.F.) ` +
-        `B_SPLINE_CURVE_WITH_KNOTS(${_ints(mult)},${_reals(uniq)},.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() ` +
-        `RATIONAL_B_SPLINE_CURVE(${_reals(c.weights)}) REPRESENTATION_ITEM(''))`,
-    )
+    return _bsplineCurve(this.w, c)
   }
 
   /** STEP curve for edge `idx` and whether the edge runs along its parameterisation. */
@@ -299,15 +343,37 @@ class _BodyWriter {
     return [this.bsplineCurve(c), true]
   }
 
-  /** STEP surface for face `idx` and, for analytic surfaces, how its STEP normal runs. */
-  surface(idx: number): [number, NormalOf] {
-    const s = this.dump.faces[idx].surface
+  /** STEP surface for face `idx` and whether its STEP normal runs along the kernel's natural normal
+   * of the face's surface. */
+  surface(idx: number): [number, boolean] {
+    const f = this.dump.faces[idx]
+    const s = f.surface
+    if (s.kind === 'offset') {
+      // OFFSET_SURFACE moves its basis along the basis's STEP normal, the kernel along the basis's
+      // natural normal; an offset surface's normal is its basis's in both.
+      const [ent, normalOf] = this._surface(_offsetBasis(f)) // (checked in the constructor)
+      const agrees = this._agrees(idx, normalOf)
+      const distance = agrees ? Number(s.distance) : -Number(s.distance)
+      return [this.w.add(`OFFSET_SURFACE('',#${ent},${_r(distance)},.F.)`), agrees]
+    }
+    const [ent, normalOf] = this._surface(s)
+    return [ent, this._agrees(idx, normalOf)]
+  }
+
+  /** STEP surface for a surface of the dump and, for analytic surfaces, how its STEP normal runs. */
+  _surface(s: Any): [number, NormalOf] {
     const w = this.w
     const kind = s.kind
     const pl = s.placement
     if (kind === 'plane') {
       const [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
       return [w.add(`PLANE('',#${w.axis2(pl.origin, z, x)})`), { kind: 'plane', z }]
+    }
+    if (kind === 'cylinder') {
+      // (SMLib's own cylinders are cones of angle 0; imported ones are these)
+      const [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
+      const o = _vec(pl.origin)
+      return [w.add(`CYLINDRICAL_SURFACE('',#${w.axis2(o, z, x)},${_r(s.radius)})`), { kind: 'cylinder', o, z }]
     }
     if (kind === 'cone') {
       let [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
@@ -397,7 +463,7 @@ class _BodyWriter {
   /** ADVANCED_FACE for face `idx` seen from faceuse `use` (its normal is the face normal). */
   face(idx: number, use: Any): number {
     const w = this.w
-    const [srf, normalOf] = this.surface(idx)
+    const [srf, agrees] = this.surface(idx)
     const bounds: string[] = []
     for (const loop of use.loops) {
       let lp: number
@@ -415,13 +481,17 @@ class _BodyWriter {
       const bound = w.add(`${kind}('',#${lp},.T.)`)
       bounds.push(`#${bound}`)
     }
-    const same = this._sameSense(idx, use, normalOf)
+    // The faceuse normal is the kernel's natural normal when the faceuse is SAME.
+    const same = Boolean(use.same) === agrees
     return w.add(`ADVANCED_FACE('',(${bounds.join(',')}),#${srf},${same ? '.T.' : '.F.'})`)
   }
 
-  _sameSense(idx: number, use: Any, normalOf: NormalOf): boolean {
-    // The faceuse normal is the kernel's natural normal when the faceuse is SAME.
-    if (normalOf === null) return Boolean(use.same) // exported with the kernel's own parameterisation
+  /** Whether the STEP normal of an analytic surface (`normalOf`) runs along the kernel's natural
+   * normal of face `idx`'s surface. (B-splines are written with the kernel's own parameterisation,
+   * so their normals agree.) The analytic normals are those of the whole family of parallel
+   * surfaces, so they hold on an offset of the surface too. */
+  _agrees(idx: number, normalOf: NormalOf): boolean {
+    if (normalOf === null) return true
     const kf = this.kfaces[idx]
     const middle = (): [number, number, V3] => {
       const [[u0, v0], [u1, v1]] = k.face_uv_domain(kf)
@@ -453,7 +523,6 @@ class _BodyWriter {
       return [u, v, p]
     })
     const nKernel = _vec(kernelCall('export STEP', () => k.face_normal_at_uv(kf, u, v)))
-    const nFace = use.same ? nKernel : _mul(nKernel, -1)
     let nStep: V3
     if (normalOf.kind === 'plane') nStep = normalOf.z
     else if (normalOf.kind === 'cylinder') {
@@ -476,7 +545,7 @@ class _BodyWriter {
       radial = [radial[0] / n, radial[1] / n, radial[2] / n]
       nStep = _sub(p, [o[0] + radial[0] * R, o[1] + radial[1] * R, o[2] + radial[2] * R])
     }
-    return _dot(nFace, nStep) > 0
+    return _dot(nKernel, nStep) > 0
   }
 
   /** MANIFOLD_SOLID_BREP / BREP_WITH_VOIDS items, one per material region. */
@@ -531,21 +600,158 @@ export interface StepOptions {
   assembly?: boolean
 }
 
+/** A curve, point or coordinate system written with the bodies. */
+type _Extra = StepCurve | StepPoint | StepFrame
+
+function _isExtra(x: unknown): x is _Extra {
+  return x instanceof StepCurve || x instanceof StepPoint || x instanceof StepFrame
+}
+
+/** What `exportStep` writes, in order: bodies (a face as a sheet), and curves, points and coordinate
+ * systems as `StepCurve`, `StepPoint` and `StepFrame` (an edge or wire is an unnamed curve, a vertex
+ * or Vector an unnamed point, a Plane an unnamed coordinate system, a StepModel its bodies,
+ * coordinate systems, curves and points). Anything else is left for `_stepText` to refuse. */
+export function _stepItems(shapes: unknown): unknown[] {
+  if (shapes instanceof _Body || _isExtra(shapes)) return [shapes]
+  if (shapes instanceof Face) return [shapes.toShell()]
+  if (shapes instanceof Edge || shapes instanceof Wire) return [new StepCurve('', shapes)]
+  if (shapes instanceof Vertex) return [new StepPoint('', shapes.point)]
+  if (shapes instanceof Vector) return [new StepPoint('', shapes)]
+  if (shapes instanceof Plane) return [new StepFrame('', shapes)]
+  if (shapes instanceof StepModel) return [...shapes.bodies, ...shapes.frames, ...shapes.curves, ...shapes.points]
+  if (shapes == null || typeof shapes === 'string' || typeof (shapes as Any)[Symbol.iterator] !== 'function') return [shapes]
+  const out: unknown[] = []
+  for (const s of shapes as Iterable<unknown>) out.push(..._stepItems(s))
+  return out
+}
+
+/** A bounded STEP curve along an edge, from its start to its end: a TRIMMED_CURVE of a line, circle
+ * or ellipse (its trims in length units and radians), or a B-spline (other curves approximated
+ * within 1e-7, as `Edge.nurbs` does). `scale`: file units per mm. */
+function _edgeCurve(w: _Writer, edge: Edge, name = '', scale = 1.0): number {
+  const kind = edge.geomType
+  const a = _mul(edge.start.toArray(), scale)
+  const b = _mul(edge.end.toArray(), scale)
+  const trimmed = (basis: number, t0: number, t1: number, ends = true): number => {
+    const lo = ends ? `(#${w.point(a)},PARAMETER_VALUE(${_r(t0)}))` : `(PARAMETER_VALUE(${_r(t0)}))`
+    const hi = ends ? `(#${w.point(b)},PARAMETER_VALUE(${_r(t1)}))` : `(PARAMETER_VALUE(${_r(t1)}))`
+    return w.add(`TRIMMED_CURVE(${_s(name)},#${basis},${lo},${hi},.T.,.PARAMETER.)`)
+  }
+  if (kind === 'line') {
+    const d = _sub(b, a)
+    const L = _norm(d)
+    if (!(L > 0)) throw new RangeError('cannot write a line of length 0 to STEP')
+    const vec = w.add(`VECTOR('',#${w.direction([d[0] / L, d[1] / L, d[2] / L])},1.)`) // (parameters are lengths along it)
+    return trimmed(w.add(`LINE('',#${w.point(a)},#${vec})`), 0.0, L)
+  }
+  if (kind === 'circle' || kind === 'ellipse') {
+    const c = ext.curve_data(edge._curve(), false)
+    const pl = c.placement
+    const o = _mul(_vec(pl.origin), scale)
+    let [z, x] = _orthonormal(pl.z_dir, pl.x_dir)
+    // STEP's conics run counterclockwise about their axis: this one along the edge
+    if (_dot(edge.tangentAt(0.5).toArray(), _cross(z, _sub(_mul(edge.pointAt(0.5).toArray(), scale), o))) < 0) z = _mul(z, -1)
+    let [r1, r2] = kind === 'circle' ? [Number(c.radius), Number(c.radius)] : [Number(c.radius1), Number(c.radius2)]
+    r1 *= scale
+    r2 *= scale
+    if (r1 < r2) [x, r1, r2] = [_cross(z, x), r2, r1] // STEP wants semi_axis_1 >= semi_axis_2: turn the frame by 90 degrees
+    const y = _cross(z, x)
+    const angle = (p: V3): number => {
+      const d = _sub(p, o)
+      return Math.atan2(_dot(d, y) / r2, _dot(d, x) / r1)
+    }
+    const t0 = angle(a)
+    const turn = 2 * Math.PI
+    let span = (((angle(b) - t0) % turn) + turn) % turn // (Python's modulo)
+    if (edge.isClosed || span < 1e-12) span = turn
+    const ax = w.axis2(o, z, x)
+    const basis = w.add(kind === 'circle' ? `CIRCLE('',#${ax},${_r(r1)})` : `ELLIPSE('',#${ax},${_r(r1)},${_r(r2)})`)
+    return trimmed(basis, t0, t0 + span)
+  }
+  const crv = edge._copyCurve()
+  let c: Any
+  try {
+    c = kernelCall('export STEP', () => ext.curve_data(crv, true))
+  } finally {
+    ext.delete_curve(crv)
+  }
+  c = { ...c, poles: (c.poles as V3[]).map((p) => _mul(_vec(p), scale)) }
+  const [lo, hi] = (c.interval as number[]).map(Number)
+  const knots: number[] = c.knots
+  const deg = Number(c.degree)
+  const tol = 1e-12 * Math.max(1.0, Math.abs(lo), Math.abs(hi))
+  if (Math.abs(knots[deg] - lo) <= tol && Math.abs(knots[knots.length - deg - 1] - hi) <= tol) return _bsplineCurve(w, c, name)
+  return trimmed(_bsplineCurve(w, c), lo, hi, false) // (the edge uses part of the curve)
+}
+
+/** The representations of curves, points and coordinate systems: a GEOMETRICALLY_BOUNDED_
+ * WIREFRAME_SHAPE_REPRESENTATION of one GEOMETRIC_CURVE_SET (curves, a wire as a composite curve,
+ * named points) and a CONSTRUCTIVE_GEOMETRY_REPRESENTATION of the coordinate systems (CAx-IF's
+ * supplemental geometry), as `[representation, isConstructive]`. The second list holds what is
+ * colored, as `[item, rgb, style]`. `scale`: file units per mm. */
+function _wireframe(
+  w: _Writer,
+  ctx: number,
+  label: string,
+  extras: readonly _Extra[],
+  scale = 1.0,
+): [[number, boolean][], [number, ColorLike, string][]] {
+  const elements: number[] = []
+  const frames: number[] = []
+  const styled: [number, ColorLike, string][] = []
+  const ids = (xs: number[]) => xs.map((x) => `#${x}`).join(',')
+  for (const item of extras) {
+    if (item instanceof StepCurve) {
+      let ent: number
+      if (item.shape instanceof Wire) {
+        const edges = [...item.shape.edges()]
+        const closed = item.shape.isClosed
+        const segments = edges.map((e, i) => {
+          const code = i === edges.length - 1 && !closed ? '.DISCONTINUOUS.' : '.CONTINUOUS.'
+          return w.add(`COMPOSITE_CURVE_SEGMENT(${code},.T.,#${_edgeCurve(w, e, '', scale)})`)
+        })
+        ent = w.add(`COMPOSITE_CURVE(${_s(item.name)},(${ids(segments)}),.U.)`)
+      } else ent = _edgeCurve(w, item.shape, item.name, scale)
+      elements.push(ent)
+      if (item.color !== null) styled.push([ent, item.color as ColorLike, 'curve'])
+    } else if (item instanceof StepPoint) {
+      const p = item.point.mul(scale)
+      const ent = w.add(`CARTESIAN_POINT(${_s(item.name)},(${_r(p.x)},${_r(p.y)},${_r(p.z)}))`)
+      elements.push(ent)
+      if (item.color !== null) styled.push([ent, item.color as ColorLike, 'point'])
+    } else {
+      const pl = item.plane
+      const [o, z, x] = [w.point(pl.origin.mul(scale).toArray()), w.direction(pl.zDir.toArray()), w.direction(pl.xDir.toArray())]
+      frames.push(w.add(`AXIS2_PLACEMENT_3D(${_s(item.name)},#${o},#${z},#${x})`))
+    }
+  }
+  const reps: [number, boolean][] = []
+  if (elements.length) {
+    const gcs = w.add(`GEOMETRIC_CURVE_SET('',(${ids(elements)}))`)
+    reps.push([w.add(`GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION(${_s(label)},(#${gcs}),#${ctx})`), false])
+  }
+  if (frames.length) reps.push([w.add(`CONSTRUCTIVE_GEOMETRY_REPRESENTATION('supplemental geometry',(${ids(frames)}),#${ctx})`), true])
+  return [reps, styled]
+}
+
 /**
- * The text of a STEP file of bodies (parts and sheets). `path` is the file's path, which names
- * the file in the header and the product unless `name` does ('' for a text without a file).
+ * The text of a STEP file of bodies (parts and sheets), curves, points and coordinate systems
+ * (`StepCurve`, `StepPoint`, `StepFrame`). `path` is the file's path, which names the file in the
+ * header and the product unless `name` does ('' for a text without a file).
  *
  * The model is in millimeters; with another `unit` the coordinates are converted to it, so the
  * file holds the same part measured in that unit. With `assembly` each body is a product of its
  * own (named as the body) in a root product called `name`; a body listed more than once is written
- * once and placed as often.
+ * once and placed as often. Curves, points and coordinate systems belong to the product: in an
+ * assembly to the body's whose name is their `product`, the others to the root.
  */
-export function _stepText(bodies: readonly unknown[], path: string, options: StepOptions = {}): string {
+export function _stepText(items: readonly unknown[], path: string, options: StepOptions = {}): string {
   const { unit = 'mm', name = null, author = '', organization = '', assembly = false } = options
   const perUnit = _MM_PER_UNIT.get(unit)
   if (perUnit === undefined) throw new RangeError(`unknown unit '${unit}'; use mm, cm, m, um or inch`)
-  for (const body of bodies) if (!(body instanceof _Body)) throw new TypeError(`cannot write a ${_typeName(body)} to STEP`)
-  let list = bodies as readonly _Body[]
+  for (const item of items) if (!(item instanceof _Body || _isExtra(item))) throw new TypeError(`cannot write a ${_typeName(item)} to STEP`)
+  let list = items.filter((x): x is _Body => x instanceof _Body)
+  const extras = items.filter(_isExtra)
   if (perUnit !== 1.0) {
     const f = 1.0 / perUnit
     const scaled = new Map<unknown, _Body>() // (a body listed twice stays one body)
@@ -578,7 +784,9 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
   } else length = w.add(_UNITS[unit])
   const angle = w.add('(NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.))')
   const solidAngle = w.add('(NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT())')
-  const unc = w.add(`UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#${length},'distance_accuracy_value','confusion accuracy')`)
+  // (the same uncertainty in any unit: 1e-7 mm, to 15 digits in the file's unit)
+  const uncertainty = Number((_UNCERTAINTY_MM / perUnit).toPrecision(15))
+  const unc = w.add(`UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(${_r(uncertainty)}),#${length},'distance_accuracy_value','confusion accuracy')`)
   const ctx = w.add(
     `(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#${unc})) ` +
       `GLOBAL_UNIT_ASSIGNED_CONTEXT((#${length},#${angle},#${solidAngle})) ` +
@@ -586,26 +794,46 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
   )
 
   const origin = w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])
-  const styled: [number, [number, number, number]][] = []
+  const styled: [number, ColorLike, string][] = [] // [item, color, "surface" | "curve" | "point"]
   const ids = (xs: number[]) => xs.map((x) => `#${x}`).join(',')
   /** The solids (or the sheet) of one body, colored as the body. */
   const itemsOf = (body: _Body, label: string): number[] => {
-    let items: number[]
+    let bw: _BodyWriter
+    let nurbs: _Body | null = null
     try {
-      const bw = new _BodyWriter(w, body._brep)
-      items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
+      bw = new _BodyWriter(w, body._brep)
     } catch (e) {
       if (!(e instanceof _NeedsNurbs)) throw e
-      const nb = body.toNurbs()
-      const bw = new _BodyWriter(w, nb._brep)
-      items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
+      _warn(
+        `export STEP: '${label}' has ${e.message}, which STEP cannot hold as the kernel does: the body is written ` +
+          'converted to NURBS (toNurbs), which approximates them',
+      )
+      nurbs = body.toNurbs()
+      bw = new _BodyWriter(w, nurbs._brep)
     }
-    const rgb = _color(body.color)
-    if (rgb !== null) for (const it of items) styled.push([it, rgb])
-    return items
+    try {
+      const items = body instanceof Part ? bw.solids(label) : bw.sheets(label)
+      if (body.color != null) for (const it of items) styled.push([it, body.color, 'surface'])
+      return items
+    } finally {
+      nurbs?.dispose()
+    }
   }
   const representation = (kind: string, label: string, axis: number, items: number[]): number =>
     w.add(`${kind}(${_s(label)},(#${axis},${ids(items)}),#${ctx})`)
+  /** Representations that belong to the same product as `main` (its wireframe geometry, its
+   * coordinate systems). */
+  const relate = (main: number, others: [number, boolean][]): void => {
+    for (const [rep, constructive] of others) {
+      if (constructive) w.add(`CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP('supplemental geometry','',#${main},#${rep})`)
+      else w.add(`SHAPE_REPRESENTATION_RELATIONSHIP('','',#${main},#${rep})`)
+    }
+  }
+  const wireframe = (label: string, items: readonly _Extra[]): [number, boolean][] => {
+    const [reps, colored] = _wireframe(w, ctx, label, items, 1.0 / perUnit)
+    styled.push(...colored)
+    return reps
+  }
 
   if (!assembly) {
     const solidItems: number[] = []
@@ -614,12 +842,15 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
       const label = body.name || (list.length === 1 ? product : `${product}_${i + 1}`)
       ;(body instanceof Part ? solidItems : sheetItems).push(...itemsOf(body, label))
     })
-    const reps: number[] = []
-    if (solidItems.length) reps.push(representation('ADVANCED_BREP_SHAPE_REPRESENTATION', product, origin, solidItems))
-    if (sheetItems.length) reps.push(representation('MANIFOLD_SURFACE_SHAPE_REPRESENTATION', product, origin, sheetItems))
+    const reps: [number, boolean][] = []
+    if (solidItems.length) reps.push([representation('ADVANCED_BREP_SHAPE_REPRESENTATION', product, origin, solidItems), false])
+    if (sheetItems.length) reps.push([representation('MANIFOLD_SURFACE_SHAPE_REPRESENTATION', product, origin, sheetItems), false])
+    reps.push(...wireframe(product, extras))
     if (!reps.length) throw new RangeError('nothing to write')
-    w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${reps[0]})`)
-    for (const extra of reps.slice(1)) w.add(`SHAPE_REPRESENTATION_RELATIONSHIP('','',#${reps[0]},#${extra})`)
+    // (coordinate systems alone: supplemental geometry of a shape that has no items)
+    if (reps[0][1]) reps.unshift([w.add(`SHAPE_REPRESENTATION(${_s(product)},(#${origin}),#${ctx})`), false])
+    w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${reps[0][0]})`)
+    relate(reps[0][0], reps.slice(1))
   } else {
     // One product per body, its shape in its own representation around its own origin, and one
     // NEXT_ASSEMBLY_USAGE_OCCURRENCE per place it has in the root product (CAx-IF's recommended
@@ -643,7 +874,7 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
       }
       places.push([key, w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])])
     })
-    if (!parts.size) throw new RangeError('nothing to write')
+    if (!parts.size && !extras.length) throw new RangeError('nothing to write')
     const root = w.add(`SHAPE_REPRESENTATION(${_s(product)},(${ids([origin, ...places.map(([, a]) => a)])}),#${ctx})`)
     w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${root})`)
     places.forEach(([key, place], n) => {
@@ -657,18 +888,41 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
       const occurrence = w.add(`PRODUCT_DEFINITION_SHAPE(${_s(label)},'',#${nauo})`)
       w.add(`CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#${rel},#${occurrence})`)
     })
+    // curves, points and coordinate systems: with the part their product names, or the root's
+    const byLabel = new Map<string, number>()
+    for (const [, rep, , label] of parts.values()) byLabel.set(label, rep)
+    const groups = new Map<number, _Extra[]>()
+    for (const item of extras) {
+      const rep = byLabel.get(item.product) ?? root
+      const group = groups.get(rep)
+      if (group) group.push(item)
+      else groups.set(rep, [item])
+    }
+    for (const [rep, group] of groups) {
+      const label = [...byLabel].find(([, r]) => r === rep)?.[0] ?? product
+      relate(rep, wireframe(label, group))
+    }
   }
 
   if (styled.length) {
     const styleIds: number[] = []
-    for (const [item, [r, g, b]] of styled) {
+    let font = 0
+    for (const [item, color, kind] of styled) {
+      const [r, g, b] = _color(color) as [number, number, number]
       const col = w.add(`COLOUR_RGB('',${_r(r)},${_r(g)},${_r(b)})`)
-      const fill = w.add(`FILL_AREA_STYLE_COLOUR('',#${col})`)
-      const fas = w.add(`FILL_AREA_STYLE('',(#${fill}))`)
-      const ssfa = w.add(`SURFACE_STYLE_FILL_AREA(#${fas})`)
-      const sss = w.add(`SURFACE_SIDE_STYLE('',(#${ssfa}))`)
-      const ssu = w.add(`SURFACE_STYLE_USAGE(.BOTH.,#${sss})`)
-      const psa = w.add(`PRESENTATION_STYLE_ASSIGNMENT((#${ssu}))`)
+      let style: number
+      if (kind === 'curve') {
+        if (!font) font = w.add("DRAUGHTING_PRE_DEFINED_CURVE_FONT('continuous')")
+        style = w.add(`CURVE_STYLE('',#${font},POSITIVE_LENGTH_MEASURE(0.1),#${col})`)
+      } else if (kind === 'point') style = w.add(`POINT_STYLE('',MARKER_TYPE(.DOT.),POSITIVE_LENGTH_MEASURE(1.),#${col})`)
+      else {
+        const fill = w.add(`FILL_AREA_STYLE_COLOUR('',#${col})`)
+        const fas = w.add(`FILL_AREA_STYLE('',(#${fill}))`)
+        const ssfa = w.add(`SURFACE_STYLE_FILL_AREA(#${fas})`)
+        const sss = w.add(`SURFACE_SIDE_STYLE('',(#${ssfa}))`)
+        style = w.add(`SURFACE_STYLE_USAGE(.BOTH.,#${sss})`)
+      }
+      const psa = w.add(`PRESENTATION_STYLE_ASSIGNMENT((#${style}))`)
       styleIds.push(w.add(`STYLED_ITEM('color',(#${psa}),#${item})`))
     }
     w.add(`MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${ids(styleIds)}),#${ctx})`)
@@ -683,14 +937,14 @@ export function _stepText(bodies: readonly unknown[], path: string, options: Ste
 }
 
 /**
- * Write bodies (parts and sheets) to a STEP file (Node).
+ * Write bodies (parts and sheets), curves, points and coordinate systems to a STEP file (Node).
  *
  * The model is in millimeters; with another `unit` the coordinates are converted to it, so the
  * file holds the same part measured in that unit.
  */
-export function writeStep(bodies: readonly unknown[], path: string, options: StepOptions = {}): void {
+export function writeStep(items: readonly unknown[], path: string, options: StepOptions = {}): void {
   const fs = _fs()
-  fs.writeFileSync(path, _stepText(bodies, path, options))
+  fs.writeFileSync(path, _stepText(items, path, options))
 }
 
 /** The local time without its fraction of a second (Python's datetime.now().isoformat()). */

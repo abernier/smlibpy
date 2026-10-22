@@ -58,6 +58,10 @@ mcs = tool.frame("MCS", product="NOCUT")   # Plane.XY: the tool's mounting syste
   named points; the live view of a session shows the bodies and curves.
 - Wireframe-only files (sketches, curve sets), which `import_step` refuses: `read_step` gives
   their curves and no bodies.
+- Writing it back: `export_step(tool, "out.step")` writes the bodies with the frames, curves and
+  points (names and colors kept); `export_step([part, StepFrame("MCS", plane), StepCurve("path",
+  wire), StepPoint("CRP", Vector(0, 0, 5))], path)` writes new ones. All three are values:
+  `StepFrame(name, plane, product="", color=None)`, the same order of fields for the others.
 
 ## Gotchas
 - **Names repeat across products.** Each part of a tool assembly has its own `MCS` and `PCS`;
@@ -76,4 +80,5 @@ mcs = tool.frame("MCS", product="NOCUT")   # Plane.XY: the tool's mounting syste
 - `model.frame(...)`: `KeyError` when no coordinate system or several have the name.
 
 ## Related
-`import_step` (the bodies alone), `Plane`, `Location`, `render`, `show`, `import_dxf_wires`.
+`import_step` (the bodies alone), `export_step` (writes a `StepModel` back), `Plane`, `Location`,
+`render`, `show`, `import_dxf_wires`.

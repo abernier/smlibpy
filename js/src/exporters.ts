@@ -19,7 +19,7 @@ import { _opts, ext, k, kernelCall, module } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Mesh, tessellate } from './mesh.ts'
 import { Edge, Face, Part, Shape, Shell, Sketch, Vertex, Wire, _Body, _typeName } from './shapes.ts'
-import { _stepText, writeStep } from './step.ts'
+import { _stepItems, _stepText, writeStep } from './step.ts'
 import { importStep } from './step_import.ts'
 import { exportDxf, importDxf } from './dxf.ts'
 import { exportUsd, importUsd } from './usd.ts'
@@ -102,17 +102,22 @@ export interface StepExportOptions {
  * `assembly: true`, each into a product of its own, named as the body, in an assembly called
  * `name`: other CAD systems then list the parts by name. A body listed more than once is written
  * once and used at each place.
+ *
+ * Edges and wires are written as wireframe curves, vertices and Vectors as points, Planes as
+ * coordinate systems (supplemental geometry), each unnamed; `StepCurve`, `StepPoint` and
+ * `StepFrame` give them names and colors, and a `StepModel` (from `readStep`) is written whole.
+ * `readStep` reads them back.
  */
 export function exportStep(shapes: unknown, path: string, options: StepExportOptions = {}): void {
   _opts('exportStep', options)
-  writeStep(_items(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
+  writeStep(_stepItems(shapes), String(path), { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
 
 /** The text of a STEP AP214 file of the shapes (see `exportStep`). Without a file the product is
  * called "part" unless `name` says otherwise. */
 export function toStep(shapes: unknown, options: StepExportOptions = {}): string {
   _opts('toStep', options)
-  return _stepText(_items(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
+  return _stepText(_stepItems(shapes), '', { unit: options.unit ?? 'mm', name: options.name ?? null, assembly: options.assembly ?? false })
 }
 
 // ------------------------------------------------------------------- numbers as Python writes them

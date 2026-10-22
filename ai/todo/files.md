@@ -120,6 +120,9 @@
   for a missing file.
 
 ### 8. Unhelpful errors for shapes a format cannot hold
+- **Partly fixed:** `export_step` writes edges, wires, vertices and planes (as wireframe curves,
+  points and coordinate systems; kernel plan I12) and says `TypeError: cannot write a Location to
+  STEP` for what it cannot write. The other formats still give the messages below.
 - **Session:** `files-exact` scripts `04`, `08`, `10`; `files-mesh` script `12`
 - **What happens:** `save(mesh)` and `mesh.export("x.smb")` raise
   `AttributeError: 'Mesh' object has no attribute '_brep'`. `export_step(edge)`,

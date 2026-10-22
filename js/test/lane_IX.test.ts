@@ -2,21 +2,37 @@
 // export, USD names. I3 O-rings, I4 cavities within the gaps of their faces, I5 stitching faces
 // that do not share their edges, I6 one unreadable body, I7 assembly instances built once, I8 one
 // integration per shell, I9 faces' parameter domains, I10 assemblies in exportStep, X3 non-ASCII
-// names in USD.
+// names in USD, I11 offset surfaces in exportStep, I12 curves, points and coordinate systems in
+// exportStep, I13 the STEP uncertainty in any unit.
 import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  Align,
   Box,
+  CenterArc,
+  Cone,
   Cylinder,
   Edge,
+  EllipticalArc,
+  Line,
+  Location,
   ModelingError,
   Part,
+  Plane,
   Shell,
   ShapeList,
+  Sphere,
+  Spline,
+  StepCurve,
+  StepFrame,
+  StepPoint,
   Torus,
+  Vector,
+  Vertex,
+  Wire,
   X,
   Z,
   exportStep,
@@ -27,10 +43,12 @@ import {
   load,
   setWarningHandler,
   stitch,
+  tessellate,
   toStep,
   toUsd,
 } from '../src/index.ts'
 import { KernelError, ext, k } from '../src/kernel.ts'
+import { interpret, parse } from '../src/step_reader.ts'
 import { approx } from './_approx.ts'
 
 function tmpPath(): string {
@@ -598,3 +616,304 @@ test('usd names that map to one prim name stay apart', () => {
     ['部品', '名前'],
   )
 })
+
+// -- I11: offset surfaces ------------------------------------------------------------------------------------
+const _PT = new URL('../../third_party/usd-brep/TestFiles/pt_TestFiles/', import.meta.url).pathname
+
+function _kinds(body: Part | Shell): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const f of ext.brep_dump(body._brep, false).faces) out[f.kind] = (out[f.kind] ?? 0) + 1
+  return out
+}
+
+/** A STEP text with the first surface that matches `pattern` replaced by an OFFSET_SURFACE of the
+ * basis `make(match)` gives as `[entity, distance]`, written as other CAD systems write them. */
+function _offsetOf(text: string, pattern: string, make: (m: RegExpMatchArray) => [string, number]): string {
+  const [head, rest] = text.split('DATA;\n', 2)
+  const [data, tail] = rest.split('ENDSEC;', 2)
+  const n = Math.max(...Array.from(data.matchAll(/^#(\d+)=/gm), (m) => Number(m[1])))
+  const m = data.match(new RegExp(`^#(\\d+)=${pattern};$`, 'm'))!
+  const [basis, distance] = make(m)
+  const body = data.replace(m[0], `#${m[1]}=OFFSET_SURFACE('',#${n + 1},${distance.toFixed(6)},.F.);`)
+  return `${head}DATA;\n${body}#${n + 1}=${basis};\nENDSEC;${tail}`
+}
+
+const _CYL = String.raw`CYLINDRICAL_SURFACE\('',#(\d+),([-\d.E]+)\)`
+const _cylinderOffset =
+  (r0: number, d: number) =>
+  (m: RegExpMatchArray): [string, number] => [`CYLINDRICAL_SURFACE('',#${m[2]},${r0.toFixed(6)})`, d]
+const _OFFSETS: Record<string, [() => Part, string, (m: RegExpMatchArray) => [string, number]]> = {
+  // a cylinder of radius 10 as an offset of radius 8 out (+2) and of 12 in (-2), the hole of a block
+  // (its face points to the axis) as one of radius 3 and 5, a torus' tube, a cone, a sphere patch
+  'cylinder out': [() => Cylinder(10, 20), _CYL, _cylinderOffset(8, 2)],
+  'cylinder in': [() => Cylinder(10, 20), _CYL, _cylinderOffset(12, -2)],
+  'hole out': [() => Box(20, 20, 10).cut(Cylinder(4, 10)), _CYL, _cylinderOffset(3, 1)],
+  'hole in': [() => Box(20, 20, 10).cut(Cylinder(4, 10)), _CYL, _cylinderOffset(5, -1)],
+  torus: [
+    () => Torus(20, 5),
+    String.raw`TOROIDAL_SURFACE\('',#(\d+),([-\d.E]+),([-\d.E]+)\)`,
+    (m) => [`TOROIDAL_SURFACE('',#${m[2]},${m[3]},6.)`, -1],
+  ],
+  cone: [
+    () => Cone(10, 5, 20),
+    String.raw`CONICAL_SURFACE\('',#(\d+),([-\d.E]+),([-\d.E]+)\)`,
+    (m) => [`CONICAL_SURFACE('',#${m[2]},${(Number(m[3]) - 1 / Math.cos(Number(m[4]))).toPrecision(17)},${m[4]})`, 1],
+  ],
+  'sphere patch': [
+    () => Sphere(12).intersect(Box(10, 10, 10, { align: Align.MIN })),
+    String.raw`SPHERICAL_SURFACE\('',#(\d+),([-\d.E]+)\)`,
+    (m) => [`SPHERICAL_SURFACE('',#${m[2]},10.)`, 2],
+  ],
+}
+
+for (const [name, [make, pattern, basis]] of Object.entries(_OFFSETS)) {
+  test(`offset surfaces are written as offset surfaces (${name})`, () => {
+    // An offset surface went to NURBS with its whole body (toNurbs fits offsets loosely). It is
+    // written as OFFSET_SURFACE of its basis now, the distance turned where STEP's normal of the
+    // basis runs against the kernel's (the hole, the torus' inner side).
+    const plain = make()
+    const part = fromStep(_offsetOf(toStep(plain), pattern, basis)) as Part
+    assert.ok(part.isValid())
+    assert.equal(_kinds(part).offset, 1)
+    approx(part.volume, plain.volume, 1e-7 * plain.volume)
+    const text = toStep(part)
+    assert.equal(text.split('OFFSET_SURFACE(').length - 1, 1)
+    assert.ok(!text.includes('B_SPLINE_SURFACE')) // (the basis analytic)
+    const back = fromStep(text) as Part
+    assert.ok(back.isValid())
+    assert.deepEqual(_kinds(back), _kinds(part))
+    approx(back.volume, part.volume, 1e-9 * part.volume)
+    approx(back.area, part.area, 1e-9 * part.area)
+  })
+}
+
+test('offset planes are written as offset surfaces', () => {
+  // every face of a block as an offset of a parallel plane, some outward, some inward
+  let text = toStep(Box(20, 10, 6))
+  const planes = [...text.matchAll(/^#(\d+)=PLANE\('',#(\d+)\);$/gm)]
+  planes.forEach((m, i) => {
+    const ax = text.match(new RegExp(`^#${m[2]}=AXIS2_PLACEMENT_3D\\('',#(\\d+),#(\\d+),#(\\d+)\\);$`, 'm'))!
+    const coords = (id: string, kind: string) =>
+      text.match(new RegExp(`^#${id}=${kind}\\('',\\(([^)]*)\\)\\);$`, 'm'))![1].split(',').map(Number)
+    const p = coords(ax[1], 'CARTESIAN_POINT')
+    const z = coords(ax[2], 'DIRECTION')
+    const d = i % 2 ? 1.5 : -2.5
+    const q = p.map((c, k) => (c - d * z[k]).toPrecision(17)).join(',')
+    const n = 10000 + 3 * i
+    text = text.replace(
+      m[0],
+      `#${m[1]}=OFFSET_SURFACE('',#${n + 2},${d.toFixed(1)},.F.);\n#${n}=CARTESIAN_POINT('',(${q}));\n` +
+        `#${n + 1}=AXIS2_PLACEMENT_3D('',#${n},#${ax[2]},#${ax[3]});\n#${n + 2}=PLANE('',#${n + 1});`,
+    )
+  })
+  const part = fromStep(text) as Part
+  assert.ok(part.isValid())
+  assert.deepEqual(_kinds(part), { offset: 6 })
+  approx(part.volume, 1200, 1e-9)
+  const again = toStep(part)
+  assert.equal(again.split('OFFSET_SURFACE(').length - 1, 6)
+  const back = fromStep(again) as Part
+  assert.ok(back.isValid())
+  assert.deepEqual(_kinds(back), { offset: 6 })
+  approx(back.volume, 1200, 1e-9)
+})
+
+for (const unit of ['mm', 'inch']) {
+  test(`offset fillets of smb files round trip (${unit})`, () => {
+    // vase.smb: four fillets on offset surfaces. The whole body went to NURBS: the volume changed by
+    // 7.7e-3 and the planes came back as B-splines (11 B-spline faces), without a warning. Now the
+    // faces keep their types, and the volume changes by what re-trimming the fillets costs.
+    const path = `${_PT}Fillet/vase.smb`
+    if (!existsSync(path)) return
+    const vase = load(path) as Part
+    assert.deepEqual(_kinds(vase), { bspline: 4, plane: 3, offset: 4 })
+    const [text, said] = warnings(() => toStep(vase, { unit }))
+    assert.deepEqual(said, []) // (no conversion, no warning)
+    assert.equal(text.split('OFFSET_SURFACE(').length - 1, 4)
+    const back = fromStep(text) as Part
+    assert.ok(back.isValid())
+    assert.deepEqual(_kinds(back), _kinds(vase))
+    approx(back.volume, vase.volume, 1e-6 * vase.volume) // (0.4: 7.7e-3)
+  })
+}
+
+test('bodies STEP cannot hold exactly are converted with a warning', (t) => {
+  // A face STEP cannot hold as the kernel has it (here: an offset whose basis the dump does not
+  // give) sends the body to NURBS, now with a warning.
+  const path = `${_PT}Fillet/vase2.smb`
+  if (!existsSync(path)) return
+  const vase = (load(path) as Part).named('vase')
+  const dump = ext.brep_dump
+  mock.method(ext, 'brep_dump', (brep: number, geometry: boolean) => {
+    const d = dump(brep, geometry)
+    if (geometry) for (const f of d.faces) if (f.surface.kind === 'offset') delete f.surface.basis
+    return d
+  })
+  t.after(() => mock.restoreAll())
+  const [text, said] = warnings(() => toStep(vase))
+  mock.restoreAll()
+  assert.match(
+    said.join('\n'),
+    /export STEP: 'vase' has 4 faces on an offset of a surface of kind 'unknown', which STEP cannot hold .* written converted to NURBS/,
+  )
+  assert.ok(!text.includes('OFFSET_SURFACE'))
+  const back = fromStep(text) as Part
+  assert.ok(back.isValid())
+  assert.equal(_kinds(back).offset, undefined)
+  warnings(() => approx(back.volume, vase.volume, 1e-2 * vase.volume)) // (the approximated faces leave gaps)
+})
+
+test('imported cylinders are written as cylinders', () => {
+  // The importer builds STEP cylinders as the kernel's cylinders, which the writer wrote as rational
+  // B-splines (SMLib's own cylinders are cones of angle 0): a read and written file lost them.
+  const part = fromStep(toStep(Box(20, 20, 10).cut(Cylinder(4, 10)))) as Part
+  assert.deepEqual(_kinds(part), { plane: 6, cylinder: 1 })
+  const text = toStep(part)
+  assert.equal(text.split('CYLINDRICAL_SURFACE(').length - 1, 1)
+  assert.ok(!text.includes('B_SPLINE_SURFACE'))
+  const back = fromStep(text) as Part
+  assert.deepEqual(_kinds(back), { plane: 6, cylinder: 1 })
+  approx(back.volume, 20 * 20 * 10 - Math.PI * 16 * 10, 1e-9 * 4000)
+  approx(back.faces().cylinders()[0].radius, 4, 1e-9)
+})
+
+// -- I12: curves, points and coordinate systems --------------------------------------------------------------
+function _wireframeItems(): unknown[] {
+  const spline = Spline([
+    [0, 0, 0],
+    [5, 5, 2],
+    [10, 0, 4],
+    [15, 3, 0],
+  ])
+  const wire = new Wire([Line([0, 0, 0], [10, 0, 0]), Line([10, 0, 0], [10, 10, 0]), CenterArc([5, 10], 5, 0, 180)])
+  const box = Box(10, 10, 10).named('box').colored('red')
+  return [
+    box,
+    new StepCurve('cut', spline, '', [1, 0, 0]),
+    Line([0, 0, 0], [10, 0, 0]),
+    CenterArc([0, 0], 5, 30, 120).reversed(),
+    EllipticalArc([0, 0], 6, 3, 10, 200),
+    wire,
+    box.edges().sortBy(Z)[0],
+    CenterArc([0, 0], 4, 90, 360),
+    new StepPoint('P1', new Vector(1, 2, 3), '', [0, 1, 0]),
+    new Vertex(4, 5, 6),
+    new Vector(7, 8, 9),
+    new StepFrame('MCS', new Plane([1, 2, 3], [0, 1, 0], [1, 0, 0])),
+    Plane.XZ,
+  ]
+}
+
+for (const unit of ['mm', 'inch']) {
+  test(`exportStep writes curves, points and frames (${unit})`, () => {
+    // exportStep(Line(...)) threw "'Edge' object is not iterable"; readStep reads curves, points and
+    // coordinate systems, but nothing wrote them.
+    const items = _wireframeItems()
+    const path = join(tmpPath(), 'wire.step')
+    exportStep(items, path, { unit })
+    const text = readFileSync(path, 'utf8')
+    assert.ok(text.includes('GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION') && text.includes('GEOMETRIC_CURVE_SET'))
+    assert.ok(text.includes("CONSTRUCTIVE_GEOMETRY_REPRESENTATION_RELATIONSHIP('supplemental geometry'"))
+    const model = fromStepModel(text)
+    assert.equal(String(model), 'StepModel(1 bodies, 2 frames, 7 curves, 3 points)')
+    approx((model.bodies[0] as Part).volume, 1000, 1e-9)
+    assert.equal(model.bodies[0].name, 'box')
+    const curves = model.curves
+    assert.deepEqual(
+      curves.map((c) => c.name),
+      ['cut', '', '', '', '', '', ''],
+    )
+    assert.ok(curves.every((c) => c.product === 'wire'))
+    assert.deepEqual(curves[0].color, [1, 0, 0])
+    assert.equal(curves[1].color, null)
+    const originals = items.slice(1, 8).map((x) => (x instanceof StepCurve ? x.shape : x)) as (Edge | Wire)[]
+    curves.forEach((c, i) => {
+      const e = originals[i]
+      assert.equal(c.shape.constructor, e.constructor)
+      approx(c.shape.length, e.length, 1e-9 * e.length)
+      assert.ok(c.shape.start.distanceTo(e.start) < 1e-9 && c.shape.end.distanceTo(e.end) < 1e-9)
+      assert.ok(c.shape.pointAt(0.3).distanceTo(e.pointAt(0.3)) < 1e-7)
+    })
+    assert.equal((curves[4].shape as Wire).edges()[0].geomType, 'line')
+    assert.equal((curves[3].shape as Edge).geomType, 'ellipse')
+    assert.ok(curves[6].shape.isClosed)
+    approx((curves[6].shape as Edge).radius, 4, 1e-9)
+    const [p1, p2, p3] = model.points
+    assert.equal(p1.name, 'P1')
+    assert.ok(p1.point.isClose([1, 2, 3]))
+    assert.deepEqual(p1.color, [0, 1, 0])
+    assert.ok(p2.name === '' && p2.point.isClose([4, 5, 6]) && p3.point.isClose([7, 8, 9]))
+    const [mcs, xz] = model.frames
+    assert.equal(mcs.name, 'MCS')
+    assert.ok(model.frame('MCS').equals(new Plane([1, 2, 3], [0, 1, 0], [1, 0, 0])))
+    assert.ok(xz.name === '' && xz.plane.equals(Plane.XZ))
+  })
+}
+
+test('exportStep writes a StepModel back', () => {
+  // A readStep -> exportStep round trip lost everything that is not a body.
+  const model = fromStepModel(toStep(_wireframeItems().slice(0, 9), { name: 'TOOL' }))
+  assert.equal(String(model), 'StepModel(1 bodies, 0 frames, 7 curves, 1 points)')
+  for (const assembly of [false, true]) {
+    const again = fromStepModel(toStep(model, { name: 'KIT', assembly }))
+    assert.equal(String(again), String(model))
+    approx((again.bodies[0] as Part).volume, 1000, 1e-9)
+    assert.deepEqual(
+      again.curves.map((c) => [c.name, c.color, c.product]),
+      model.curves.map((c) => [c.name, c.color, 'KIT']),
+    )
+    again.curves.forEach((c, i) => {
+      approx(c.shape.length, model.curves[i].shape.length, 1e-9)
+      assert.ok(c.shape.end.distanceTo(model.curves[i].shape.end) < 1e-9)
+    })
+    assert.ok(again.points[0].point.isClose(model.points[0].point))
+  }
+})
+
+test('exportStep writes wireframe alone', () => {
+  const model = fromStepModel(toStep([new StepCurve('path', Line([0, 0, 0], [0, 0, 10])), Plane.XY.offset(5)]))
+  assert.equal(String(model), 'StepModel(0 bodies, 1 frames, 1 curves, 0 points)')
+  approx(model.curves[0].shape.length, 10, 1e-12)
+  assert.ok(model.frames[0].plane.origin.isClose([0, 0, 5]))
+  // (a frame alone: a shape without items)
+  assert.ok(fromStepModel(toStep(new StepFrame('CSW', Plane.YZ))).frame('CSW').equals(Plane.YZ))
+  assert.throws(() => toStep([]), /nothing to write/)
+})
+
+test('exportStep assembly puts wireframe with its body', () => {
+  const bracket = Box(60, 40, 8).named('bracket')
+  const cover = Box(60, 40, 2).translate([0, 0, 10]).named('cover')
+  const mcs = new StepFrame('MCS', new Plane([0, 0, 4]), 'bracket')
+  const edge = new StepCurve('rim', Line([0, 0, 12], [60, 0, 12]), 'cover')
+  const loose = new StepPoint('ref', new Vector(1, 1, 1))
+  const model = fromStepModel(toStep([bracket, cover, mcs, edge, loose], { assembly: true, name: 'kit' }))
+  assert.deepEqual(
+    model.bodies.map((b) => b.name),
+    ['bracket', 'cover'],
+  )
+  assert.deepEqual([model.frames[0].product, model.curves[0].product, model.points[0].product], ['bracket', 'cover', 'kit'])
+  assert.ok(model.frame('MCS', 'bracket').origin.isClose([0, 0, 4]))
+})
+
+test('exportStep still refuses what it cannot write', () => {
+  assert.throws(() => toStep(tessellate(Box(1, 1, 1))), (e: unknown) => e instanceof TypeError && /cannot write a Mesh to STEP/.test(e.message))
+  assert.throws(() => toStep(new Location([1, 2, 3])), (e: unknown) => e instanceof TypeError && /cannot write a Location to STEP/.test(e.message))
+})
+
+// -- I13: the uncertainty ------------------------------------------------------------------------------------
+for (const [unit, perMm] of [
+  ['mm', 1],
+  ['cm', 0.1],
+  ['m', 0.001],
+  ['um', 1000],
+  ['inch', 1 / 25.4],
+] as [string, number][]) {
+  test(`step uncertainty is the same length in any unit (${unit})`, () => {
+    // 1e-7 was written in the file's unit: 1e-4 mm in a file in meters, 2.5e-6 mm in inches.
+    const text = toStep(Box(1, 1, 1), { unit })
+    const value = Number(text.match(/UNCERTAINTY_MEASURE_WITH_UNIT\(LENGTH_MEASURE\(([^)]*)\)/)![1])
+    approx(value, 1e-7 * perMm, 1e-14 * value)
+    const [[body]] = interpret(parse(text))
+    approx(body.uncertainty as number, 1e-7, 1e-19) // (mm, as the reader converts it)
+  })
+}
