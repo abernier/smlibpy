@@ -149,6 +149,106 @@ export function segOfEdge(e: Edge, fr: Frame): Seg {
   return new Curve2<Edge>(e, p0, p1, unit(fr.direction(e.tangentAt(0.0))), unit(fr.direction(e.tangentAt(1.0))), e.length, pts)
 }
 
+/** Fillets and chamfers at corners with curves (splines, ellipses) for `_planar.assemble`, through the
+ * kernel: a fillet's center is where the offsets of the two curves toward the inside of the corner
+ * meet (`Edge.offset`), its ends the nearest points of the curves to it; a chamfer cuts back the
+ * length along each curve. (SMLib's own `SmCurveFilletExecutive` is unused and untested in the
+ * kernel and picks its side wrongly.) */
+export class CurveCorners {
+  readonly fr: Frame
+  readonly size: number
+
+  constructor(fr: Frame, size: number) {
+    this.fr = fr
+    this.size = Math.max(1, size)
+  }
+
+  _edge(s: Seg): Edge {
+    return s instanceof Curve2 ? (s.edge as unknown as Edge) : Edge._fromCurve(curveOf(s, this.fr))
+  }
+
+  /** The part of a curve segment between two lengths from its start. */
+  piece(seg: Curve2, s0: number, s1: number): Seg {
+    if (s0 <= 0 && s1 >= seg.length) return seg
+    return segOfEdge((seg.edge as unknown as Edge).trim(Math.max(s0, 0) / seg.length, Math.min(s1 / seg.length, 1)), this.fr)
+  }
+
+  /** The edge's offset toward the corner: of the whole edge, or of its part next to the corner where
+   * the edge bends too tightly farther away. */
+  _offset(e: Edge, d: number, atEnd: boolean): Edge | null {
+    let piece = e
+    for (let i = 0; i < 8; i++) {
+      try {
+        return piece.offset(d, { plane: this.fr.plane })
+      } catch (x) {
+        if (!(x instanceof ModelingError || x instanceof RangeError)) throw x
+        const f = 0.5 ** (i + 1)
+        piece = atEnd ? e.trim(1 - f, 1) : e.trim(0, f)
+      }
+    }
+    return null
+  }
+
+  corner(kind: string, s1: Seg, s2: Seg, size: number): [number, number, Seg] {
+    const [sn, cs] = turn(s1, s2)
+    if (Math.abs(sn) < SMOOTH) {
+      throw new GeometryError(cs > 0 ? 'the segments meet tangentially there, so there is no corner' : 'the outline turns back on itself there')
+    }
+    const e1 = this._edge(s1)
+    const e2 = this._edge(s2)
+    const l1 = e1.length
+    const l2 = e2.length
+    const fr = this.fr
+    if (kind === 'chamfer') { // (a length beyond a segment: assemble reports that it does not fit)
+      return [size, size, new Line2(fr.local(e1.pointAt(Math.max(0, 1 - size / l1))), fr.local(e2.pointAt(Math.min(1, size / l2))))]
+    }
+    const side = sn > 0 ? 1 : -1
+    const o1 = this._offset(e1, side * size, true)
+    const o2 = this._offset(e2, side * size, false)
+    let best: [number, number, Vector, Vector, Vector] | null = null
+    if (o1 !== null && o2 !== null) {
+      for (const c of o1.intersections(o2)) {
+        const f1 = e1.closestPoint(c)
+        const f2 = e2.closestPoint(c)
+        if (Math.max(Math.abs(f1.distanceTo(c) - size), Math.abs(f2.distanceTo(c) - size)) > 1e-6 * this.size) continue // (a point of an end, not where the arc touches)
+        const back = (1 - e1.paramAt(f1)) * l1
+        const ahead = e2.paramAt(f2) * l2
+        if (best === null || back + ahead < best[0] + best[1]) best = [back, ahead, c, f1, f2]
+      }
+    }
+    if (best === null) throw new GeometryError(`no arc of radius ${fmt(size)} touches both segments`)
+    let [, , c, f1, f2] = best
+    // Newton on the center: its distances to the two curves become the radius (the offsets are
+    // fitted within 1e-6 of the size; the curves' nearest points are exact)
+    let cl = fr.local(c)
+    for (let it = 0; it < 8; it++) {
+      const p1 = fr.local(f1)
+      const p2 = fr.local(f2)
+      const d1 = cl.sub(p1).abs()
+      const d2 = cl.sub(p2).abs()
+      if (Math.max(Math.abs(d1 - size), Math.abs(d2 - size)) <= 1e-13 * this.size || d1 === 0 || d2 === 0) break
+      const n1 = cl.sub(p1).divs(d1)
+      const n2 = cl.sub(p2).divs(d2)
+      const det = cross(n1, n2)
+      if (Math.abs(det) < 1e-12) break
+      const r1 = size - d1
+      const r2 = size - d2
+      cl = cl.add(cx((r1 * n2.im - r2 * n1.im) / det, (n1.re * r2 - n2.re * r1) / det))
+      c = fr.world(cl)
+      f1 = e1.closestPoint(c)
+      f2 = e2.closestPoint(c)
+    }
+    const back = (1 - e1.paramAt(f1)) * l1
+    const ahead = e2.paramAt(f2) * l2
+    const v1 = fr.local(f1).sub(cl)
+    const v2 = fr.local(f2).sub(cl)
+    let delta = v2.div(v1).phase()
+    if (side > 0 && delta < 0) delta += TAU
+    if (side < 0 && delta > 0) delta -= TAU
+    return [back, ahead, new Arc2(cl, size, v1.phase(), delta)]
+  }
+}
+
 /** A new kernel curve for a segment (the caller owns it). */
 export function curveOf(s: Seg, fr: Frame): number {
   if (s instanceof Line2) {
@@ -319,23 +419,13 @@ export function roundCorners(sk: Sketch, size: number, vertices: unknown, kind: 
           }
           continue
         }
-        for (const s of [s1, s2]) {
-          if (s instanceof Curve2) {
-            if (targets === null) {
-              throw new ModelingError(
-                `${what}: the corner at ${fr.fp(v)} joins ${describe(s, fp)}; ${what} works on corners between lines and arcs. Pass the corners to change: sketch.${what}(${fmt(size)}, sketch.vertices().filter(...))`,
-              )
-            }
-            throw new ModelingError(`${what}: the corner at ${fr.fp(v)} joins ${describe(s, fp)}; ${what} works on corners between lines and arcs`)
-          }
-        }
         corners.set(i, new Corner(kind, size, `${unitName} ${fmt(size)}`))
         count += 1
       }
       let created: Seg[]
       let labels: string[]
       try {
-        ;[created, labels] = assemble(lp, new Array<string>(n).fill(''), corners, true, tol, (j) => describe(lp[j], fp), fp)
+        ;[created, labels] = assemble(lp, new Array<string>(n).fill(''), corners, true, tol, (j) => describe(lp[j], fp), fp, new CurveCorners(fr, tol * 1e9))
       } catch (e) {
         if (!(e instanceof GeometryError)) throw e
         throw new ModelingError(`${what}: ${e.message}`)

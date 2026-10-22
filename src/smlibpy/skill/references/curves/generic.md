@@ -7,7 +7,8 @@ open surfaces (an open wire extruded or revolved gives a `Shell`).
 ## Edges
 
 - `Line`, `PolarLine`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `SagittaArc`, `TangentArc`,
-  `EllipticalArc`, `Spline`, `Bezier`, `Helix` return an `Edge`.
+  `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spline`, `Bezier`, `Helix`,
+  `Spiral` return an `Edge`; `Edge.from_nurbs(data)` makes one of NURBS data.
 - `Polyline` and `FilletPolyline` return a `Wire`.
 - Edges taken from bodies (`part.edges()`, `face.outer_wire()`) are the same `Edge` type and
   mix freely with constructed ones.
@@ -23,7 +24,8 @@ open surfaces (an open wire extruded or revolved gives a `Shell`).
   meets an edge, wire, face or body ([] for none); `edge.split(at)`, `edge.trim(start, end)`
   cut it at fractions or points, `edge.extend(d)` makes it longer, `wire.to_edge()` joins a wire
   into one edge. `offset(d)` gives a parallel edge or wire, `min_radius()` the tightest bend,
-  `to_arcs()` lines and arcs; `fit_curve(points, tolerance=...)` a curve near many points. See
+  `to_arcs()` lines and arcs; `fit_curve(points, tolerance=...)` a curve near many points.
+  `edge.through(p)` bends an edge through a point, `edge.match(end=...)` moves its ends. See
   `Edge.md` (selection) and `Wire.md`.
 
 ## Wires

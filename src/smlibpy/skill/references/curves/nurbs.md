@@ -32,4 +32,4 @@ print(edge.nurbs().points == [edge.start, edge.end])   # True
 ```
 
 ## Related
-`make_compatible`, `remove_knots`, `Spline`, `Bezier`, `generic`
+`from_nurbs` (the edge of such data), `make_compatible`, `remove_knots`, `Spline`, `Bezier`, `generic`

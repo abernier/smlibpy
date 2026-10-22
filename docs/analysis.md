@@ -137,6 +137,22 @@ Line((0, 0, -20), (0, 0, 20)).intersections(box)              # where it enters 
 Line((0, 0, -20), (0, 0, 20)).intersection_params(box)        # [0.25, 0.75] along the line
 ```
 
+`project` fits its curves within 1e-7 of the size of the body and the curve. It gives pieces on
+every face the direction meets, the far side and faces seen edge-on too; `nearest=True` keeps
+what the curve sees along the direction, cut where another part of the body hides it. A curve
+that misses the body gives an empty list. On a single face, `Face.project` projects along the
+face's normals (each point to its nearest point of the surface), `Face.iso` gives the curves of
+constant surface parameter, and `Face.wrap` lays a flat drawing onto the face keeping its lengths
+along the face's parameter lines, as a label on a can:
+
+```python
+Sphere(10).project(CenterArc((0, 0, 30), 5, 0, 360), nearest=True)   # the top piece only
+side = Cylinder(10, 40).faces().cylinders()[0]
+side.project(Line((-30, -15, 5), (30, -15, -5)))        # onto the cylinder along its normals
+side.iso(v=0.5)                                          # the circle half way up
+side.wrap(Text("SMLIB", 6), (0, -10, 0), direction=(1, 0, 0))   # lettering around the cylinder
+```
+
 `intersections` of an edge or a wire takes edges, wires, faces and bodies, gives the points in
 order along the edge, and an empty list where there are none. A point counts when it lies within
 `tolerance` of the other shape: 1e-6 by default, or 1e-9 of the size of the two where that is

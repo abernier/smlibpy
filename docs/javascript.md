@@ -465,11 +465,27 @@ export class Edge extends Shape {
         plane?: Plane | null;
     }): Edge;
     toArcs(tolerance?: number): Wire;
+    through(point: VectorLike | Vertex, options?: {
+        tangent?: VectorLike | null;
+        at?: number | null;
+    }): Edge;
+    match(options?: {
+        start?: VectorLike | Vertex | null;
+        end?: VectorLike | Vertex | null;
+        startTangent?: VectorLike | null;
+        endTangent?: VectorLike | null;
+    }): Edge;
     vertices(): ShapeList<Vertex>;
     edges(): ShapeList<Edge>;
     faces(): ShapeList<Face>;
     reversed(): Edge;
     nurbs(): Nurbs;
+    static fromNurbs(nurbs: Nurbs | {
+        degree: number;
+        knots: readonly number[];
+        points: readonly VectorLike[];
+        weights?: readonly number[] | null;
+    }): Edge;
     removeKnots(): Edge;
     add(other: Edge | Wire): Wire;
     equals(other: unknown): boolean;
@@ -527,6 +543,11 @@ export class Face extends Shape {
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit[];
+    project(curve: Edge | Wire): ShapeList<Edge>;
+    iso(u?: number | null, v?: number | null): ShapeList<Edge>;
+    wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at?: VectorLike | Vertex | null, options?: {
+        direction?: VectorLike | null;
+    }): ShapeList<Edge>;
     outerWire(): Wire;
     innerWires(): ShapeList<Wire>;
     wires(): ShapeList<Wire>;
@@ -660,6 +681,9 @@ export function RadiusArc(start: VectorLike, end: VectorLike, radius: number, pl
 export function SagittaArc(start: VectorLike, end: VectorLike, sagitta: number, plane?: Plane): Edge;
 export function TangentArc(start: VectorLike, end: VectorLike, tangent: VectorLike): Edge;
 export function EllipticalArc(center: VectorLike, xRadius: number, yRadius: number, startAngle?: number, endAngle?: number, plane?: Plane): Edge;
+export function ParabolicArc(vertex: VectorLike, focalLength: number, start: number, end: number, plane?: Plane): Edge;
+export function HyperbolicArc(center: VectorLike, xRadius: number, yRadius: number, start: number, end: number, plane?: Plane): Edge;
+export function ConicArc(start: VectorLike, apex: VectorLike, end: VectorLike, rho?: number): Edge;
 export function Spline(...args: (VectorLike | readonly VectorLike[] | {
     tangents?: readonly (VectorLike | null)[] | null;
     closed?: boolean;
@@ -678,6 +702,9 @@ export function Helix(pitch: number, height: number, radius: number, options?: {
     direction?: Axis | VectorLike;
     endRadius?: number | null;
     leftHanded?: boolean;
+}): Edge;
+export function Spiral(startRadius: number, endRadius: number, turns: number, plane?: Plane, options?: {
+    clockwise?: boolean;
 }): Edge;
 export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | {
     radius: number;

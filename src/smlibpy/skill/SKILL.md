@@ -67,11 +67,11 @@ classcad.ch account). A part made here opens in ClassCAD as a solid through STEP
 | selection | `selection/*` | ShapeList and its selectors (also by a ray: hit_by), topology (faces, edges, vertices), Face, Edge, Vertex |
 | parts | `parts/*` | Part, primitives (Box, Cylinder, Cone, Sphere, Torus, Wedge), holes, Booleans |
 | sketches | `sketches/*` | Sketch, Profile (draw outlines with tangent arcs), 2D shapes (Rectangle, Circle, Slot, Triangle, ...), Hull, Stroke, Text, Booleans, offset, fillet and chamfer of corners, mirror |
-| curves | `curves/*` | Line, arcs, Spline, Bezier, Helix, Polyline, Wire; split, trim, extend, intersections; offset (parallel curves); fit_curve (a curve near many points); min_radius (curvature, inflections); to_arcs (lines and arcs for CNC); NURBS data of an edge (nurbs), make_compatible, remove_knots |
+| curves | `curves/*` | Line, arcs, conic arcs (ParabolicArc, HyperbolicArc, ConicArc), Spline, Bezier, Helix, Spiral (flat), Polyline, Wire; split, trim, extend, intersections; through (bend through a point), match (move the ends); offset (parallel curves); fit_curve (a curve near many points); min_radius (curvature, inflections); to_arcs (lines and arcs for CNC); NURBS data of an edge (nurbs) and back (from_nurbs), make_compatible, remove_knots |
 | features | `features/*` | extrude, revolve, loft, sweep, fillet, chamfer, shell, offset, mirror, split, section, thicken, draft (tilting faces for molding), heal; taking fillets and faces out again (fillets, remove_fillets, remove_faces); merge and cells (one part of several cells, as for several materials) |
 | deform | `deform/*` | twist, taper, bend and Lattice (free-form deformation) of finished parts, exact NURBS results |
-| surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell |
-| analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections, validity, draft analysis and parting lines for molding and casting |
+| surfaces | `surfaces/*` | surface (through a grid, or fitted to a cloud of points), ruled, stitch, surface_fillet (a blend between two sheets), Shell; curves on faces: iso (constant parameter), wrap (a drawing laid onto a face, as a label) |
+| analysis | `analysis/*` | mass properties, measures, distances, ray casting, intersections, silhouettes, projections (onto bodies, the near side only, onto a face along its normals), validity, draft analysis and parting lines for molding and casting |
 | files | `files/*` | STEP in and out (also coordinate systems and curves), USD in and out (exact bodies), DXF in and out, STL, glTF, OBJ, the native format, render, show, meshes and mesh Booleans |
 | sheetmetal | `sheetmetal/*` | fold, flange, unfold, flat_pattern, Part.bends, bend allowance, K-factor, developed length |
 

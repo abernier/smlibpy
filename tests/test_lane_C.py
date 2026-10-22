@@ -2,11 +2,16 @@
 splitting and locating points on edges (C2), ellipse curves in the bindings (C3), helices of any
 number of turns (C4), curve intersections with a tolerance (C5), extended and joined edges (C6),
 offsets of edges and wires and strokes along splines (C7), curves fitted to points (C8),
-curvature, inflections and exact boxes of curves (C9), curves as lines and arcs (C10)."""
+curvature, inflections and exact boxes of curves (C9), curves as lines and arcs (C10), edges from
+NURBS data (C11), projections onto bodies and faces, iso curves and wrapping (C12), splines in
+linear time and closed ones curvature continuous (C13), conic arcs and flat spirals (C14), wire
+and sketch fillets at arcs, splines and ellipses (C15), edges bent through a point or to new ends
+(C16)."""
 
 import math
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -465,3 +470,308 @@ def test_dxf_with_lines_and_arcs_only(tmp_path):
     assert sum(w.length for w in back) == approx(s.length + region.edges()[0].length + 6 * math.pi, rel=1e-4)
     with pytest.raises(ValueError, match="curves is 'exact' or 'arcs'"):
         export_dxf(s, path, curves="lines")
+
+
+# -- C11: edges from NURBS data ---------------------------------------------------------------------
+def test_from_nurbs_is_the_inverse_of_nurbs():
+    for e in (CenterArc((0, 0), 10, 0, 90), Spline((0, 0), (10, 5), (20, 0), (30, 8)), Helix(5, 20, 10),
+              Line((0, 0), (5, 5)), EllipticalArc((0, 0), 10, 5, 0, 120)):
+        f = Edge.from_nurbs(e.nurbs())
+        assert f.geom_type == "bspline"
+        assert f.start.distance_to(e.start) < 1e-12 and f.end.distance_to(e.end) < 1e-12
+        assert f.length == approx(e.length, rel=1e-12)
+        assert max(f.point_at(i / 10).distance_to(e.point_at(i / 10)) for i in range(11)) < 1e-9
+    # moving a control point keeps the ends of a clamped curve
+    n = Spline((0, 0), (10, 5), (20, 0), (30, 8)).nurbs()
+    points = list(n.points)
+    points[2] = points[2] + Vector(0, 0, 1)
+    moved = Edge.from_nurbs(n._replace(points=points))
+    assert moved.start == Vector(0, 0, 0) and moved.end == Vector(30, 8, 0)
+    assert moved.point_at(0.5).z > 0.3
+
+
+def test_from_nurbs_of_many_spans_and_unclamped_knots():
+    # a uniform cubic B-spline (unclamped knots) starts at (P0 + 4 P1 + P2) / 6
+    pts = [(0, 0), (10, 10), (20, 0), (30, 10), (40, 0), (50, 10)]
+    e = Edge.from_nurbs((3, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], pts, None))
+    assert e.start.distance_to((10, 20 / 3, 0)) < 1e-12 and e.end.distance_to((40, 10 / 3, 0)) < 1e-12
+    # rational: the quarter circle
+    q = Edge.from_nurbs(Nurbs(2, [0, 0, 0, 1, 1, 1], [Vector(10, 0, 0), Vector(10, 10, 0), Vector(0, 10, 0)],
+                              [1, math.sqrt(2) / 2, 1]))
+    assert max(abs(q.point_at(i / 20).length - 10) for i in range(21)) < 1e-12
+
+
+@pytest.mark.parametrize("data,message", [
+    ((3, [0, 0, 0, 0, 1, 1, 1, 1], [(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)], None), "take 10 knots"),
+    ((3, [0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2], [(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)], None), "got 11"),
+    ((3, [0, 0, 0, 0, 2, 1, 3, 3, 3, 3], [(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)], None), "must not decrease"),
+    ((3, [0, 0, 0, 0, 1, 1, 1, 1, 2, 2], [(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)], None), None),
+    ((2, [0, 0, 0, 1, 1, 1], [(0, 0), (1, 1), (2, 0)], [1, 0, 1]), "weights must be positive"),
+    ((2, [0, 0, 0, 1, 1, 1], [(0, 0), (1, 1), (2, 0)], [1, 1]), "one weight per control point"),
+    ((0, [0, 1], [(0, 0)], None), "degree is a whole number from 1 to 32"),
+    ((3, [0] * 8, [(0, 0)] * 4, None), "is empty"),
+    ((2, [0, 0, 0, 1, 1, 1, 2, 2, 2], [(0, 0), (1, 1), (2, 0), (3, 1), (4, 0), (5, 1)], None), "repeated 3 times"),
+])
+def test_from_nurbs_checks_its_data(data, message):
+    if message is None:  # (knots beyond the range of the curve are fine: the curve ends at knots[-4])
+        assert Edge.from_nurbs(data).end.distance_to((3, 1, 0)) < 1e-12
+        return
+    with pytest.raises(ValueError, match=message):
+        Edge.from_nurbs(data)
+    with pytest.raises(TypeError, match="takes a Nurbs or a tuple"):
+        Edge.from_nurbs(5)
+
+
+# -- C12: projections onto bodies and faces, iso curves, wrapping -----------------------------------
+def _off_sphere(edges, r=10.0):
+    return max(abs(e.point_at(i / 100).length - r) for e in edges for i in range(101))
+
+
+def test_project_fits_within_the_size_and_keeps_the_near_side():
+    dome = Sphere(10)
+    circle = CenterArc((0, 0, 30), 5, 0, 360)
+    both = dome.project(circle)
+    assert sorted(round(e.center().z, 4) for e in both) == [-8.6603, 8.6603]
+    assert _off_sphere(both) < 1e-7 * 50  # within 1e-7 of the size (the kernel's default fits were 9.4e-5 off)
+    near = dome.project(circle, nearest=True)
+    assert len(near) == 1 and near[0].center().z == approx(8.660254, abs=1e-6)
+    # a box with a through hole: only the top, cut by the hole; the bottom and the walls are hidden
+    plate = Box(40, 40, 10) - Cylinder(5, 20)
+    line = Line((-30, 0, 8), (30, 0, 8))
+    assert len(plate.project(line)) == 8
+    seen = plate.project(line, nearest=True)
+    assert sorted((round(e.start.x, 9), round(e.end.x, 9)) for e in seen) == [(-5, -20), (20, 5)]
+    assert all(abs(e.start.z - 5) < 1e-9 and abs(e.end.z - 5) < 1e-9 for e in seen)
+    # a step seen obliquely: the high step hides part of the low one
+    step = (Box(40, 20, 10, align=(Align.MIN, Align.CENTER, Align.MIN))
+            + Box(20, 20, 10, align=(Align.MIN, Align.CENTER, Align.MIN)).translate(0, 0, 10))
+    low = step.project(Line((0, 0, 40), (50, 0, 40)), (1, 0, -1), nearest=True)
+    assert len(low) == 1
+    assert low[0].start.distance_to((30, 0, 10)) < 1e-6 and low[0].end.distance_to((40, 0, 10)) < 1e-6
+    # a curve that misses: no pieces (it raised KernelError SM_ERR)
+    assert dome.project(CenterArc((0, 0, 30), 15, 0, 360)) == []
+
+
+def test_face_project_is_the_normal_projection():
+    side = Cylinder(10, 40).faces().cylinders()[0]
+    a, b = Vector(-30, -15, 5), Vector(30, -15, -5)
+    [e] = side.project(Line(a, b))
+    # onto a cylinder along its normals: radially, at the height of the point
+    assert e.start.distance_to((-30 / math.hypot(30, 15) * 10, -15 / math.hypot(30, 15) * 10, 5)) < 1e-6
+    assert e.end.distance_to((30 / math.hypot(30, 15) * 10, -15 / math.hypot(30, 15) * 10, -5)) < 1e-6
+    for i in range(21):
+        q = e.point_at(i / 20)
+        p = a + (b - a) * ((q.z - a.z) / (b.z - a.z))
+        assert abs(math.hypot(q.x, q.y) - 10) < 1e-5
+        assert abs(math.atan2(p.y, p.x) - math.atan2(q.y, q.x)) * 10 < 1e-5
+    top = (Box(40, 40, 10) - Cylinder(5, 20)).faces().sort_by(Z)[-1]
+    pieces = top.project(Line((-30, 0, 9), (30, 0, 9)))
+    assert sorted((round(p.start.x, 6), round(p.end.x, 6)) for p in pieces) == [(-20, -5), (5, 20)]
+
+
+def test_face_iso_curves():
+    side = Cylinder(10, 40).faces().cylinders()[0]
+    [ring] = side.iso(v=0.5)
+    assert ring.length == approx(20 * math.pi, rel=1e-9) and ring.is_closed and abs(ring.start.z) < 1e-9
+    [line] = side.iso(u=0.25)
+    assert line.length == approx(40, rel=1e-12) and abs(math.hypot(line.start.x, line.start.y) - 10) < 1e-9
+    top = (Box(40, 40, 10) - Cylinder(5, 20)).faces().sort_by(Z)[-1]
+    assert len(top.iso(u=0.5)) == 2  # cut by the hole
+    with pytest.raises(ValueError, match="give u or v"):
+        side.iso()
+    with pytest.raises(ValueError, match="from 0 to 1"):
+        side.iso(v=1.5)
+
+
+def test_wrap_keeps_lengths_around_a_cylinder():
+    side = Cylinder(10, 40).faces().cylinders()[0]
+    w = side.wrap(Line((-20, 0), (20, 0)), (0, -10, 0), direction=(1, 0, 0))
+    assert sum(e.length for e in w) == approx(40, abs=1e-5)  # across the seam: two pieces
+    ends = [e.start for e in w] + [e.end for e in w]
+    for a in (-math.pi / 2 - 2.0, -math.pi / 2 + 2.0):  # 20 along the circle of radius 10 from (0, -10) is 2 rad
+        assert min(p.distance_to((10 * math.cos(a), 10 * math.sin(a), 0)) for p in ends) < 1e-6
+    # on the face within 1e-7 of its size (49)
+    assert all(abs(math.hypot(e.point_at(i / 10).x, e.point_at(i / 10).y) - 10) < 5e-6 for e in w for i in range(11))
+    rect = side.wrap(Rectangle(20, 10), (0, -10, 0), direction=(1, 0, 0))
+    assert sorted(round(e.length, 5) for e in rect) == [10, 10, 20, 20]
+    assert max(e.bbox().max.z for e in rect) == approx(5, abs=1e-6)
+    # a plane keeps the drawing; what falls into a hole is cut off
+    top = (Box(40, 40, 10) - Cylinder(5, 20)).faces().sort_by(Z)[-1]
+    across = top.wrap(Line((-30, 0), (30, 0)))
+    assert sorted((round(e.start.x, 6), round(e.end.x, 6)) for e in across) == [(-20, -5), (5, 20)]
+    with pytest.raises(ValueError, match="point of the face's surface"):
+        side.wrap(Line((0, 0), (1, 0)), (0, 0, 0))
+    with pytest.raises(ValueError, match="normal to the face"):
+        side.wrap(Line((0, 0), (1, 0)), (0, -10, 0), direction=(0, -1, 0))
+
+
+# -- C13: splines in linear time, closed splines curvature continuous -------------------------------
+def test_spline_of_many_points_is_fast_and_unchanged():
+    pts = [(math.cos(t) * 50 + 3 * math.sin(7 * t), math.sin(t) * 30) for t in (6 * i / 1599 for i in range(1600))]
+    t0 = time.perf_counter()
+    e = Spline(*pts)
+    assert time.perf_counter() - t0 < 0.5  # (4.2 s with the dense system)
+    assert e.length == approx(253.31646562349, rel=1e-10)
+    # the same curve as the dense solve gave (control points of 0.5.0's Spline)
+    s = Spline((0, 0, 0), (10, 5, 3), (20, 0, -2), (30, 8, 1), (31, 9, 7))
+    p = s.nurbs().points
+    assert p[1].distance_to((3.37902164578829, 3.2869916728601445, 2.2916911737092867)) < 1e-12
+    assert p[3].distance_to((19.56508200997608, -4.983886379703627, -4.4997555548312596)) < 1e-12
+
+
+def test_closed_spline_is_curvature_continuous_at_the_seam():
+    s = Spline((0, 0), (30, -5), (50, 10), (35, 30), (10, 25), (-8, 12), closed=True)
+    assert s.is_closed and s.start == Vector(0, 0, 0)
+    assert s.tangent_at(0).angle_to(s.tangent_at(1)) < 1e-6
+    assert s.curvature_at(0) == approx(s.curvature_at(1), rel=1e-9)  # (it was 0.0135 against 0.0574)
+    assert s.curvature_at(0) == approx(0.03247170528591742, rel=1e-9)
+    with pytest.raises(ValueError, match="at least three points"):
+        Spline((0, 0), (10, 0), closed=True)
+
+
+# -- C14: conic arcs and flat spirals ----------------------------------------------------------------
+def test_conic_arcs_are_exact():
+    p = ParabolicArc((0, 0), 10, -20, 20)
+    assert p.start == Vector(-20, 10, 0) and p.end == Vector(20, 10, 0)
+    assert max(abs(q.y - q.x ** 2 / 40) for q in (p.point_at(i / 50) for i in range(51))) < 1e-12
+    h = HyperbolicArc((0, 0), 10, 20, -30, 30)
+    assert max(abs(q.x ** 2 / 100 - q.y ** 2 / 400 - 1) for q in (h.point_at(i / 50) for i in range(51))) < 1e-12
+    assert h.point_at(0.5).distance_to((10, 0, 0)) < 1e-9
+    c = ConicArc((10, 0), (10, 10), (0, 10), math.sqrt(2) - 1)
+    assert max(abs(q.length - 10) for q in (c.point_at(i / 50) for i in range(51))) < 1e-12
+    para = ConicArc((0, 0), (10, 0), (10, 10))  # rho 0.5: half way from the chord's middle to the apex
+    assert para.distance_to((7.5, 2.5, 0)) < 1e-12
+    placed = ParabolicArc((5, 5), -10, 0, 20, Plane.XZ)
+    assert placed.start == Vector(5, 0, 5) and placed.end.distance_to((25, 0, -5)) < 1e-12
+    for make, message in [(lambda: ConicArc((0, 0), (1, 0), (2, 0)), "on one line"),
+                          (lambda: ConicArc((0, 0), (1, 1), (2, 0), 1), "between 0 and 1"),
+                          (lambda: ParabolicArc((0, 0), 0, 1, 2), "must not be zero"),
+                          (lambda: HyperbolicArc((0, 0), 1, 0, 1, 2), "must be positive")]:
+        with pytest.raises(ValueError, match=message):
+            make()
+
+
+def test_spiral():
+    s = Spiral(2, 20, 5)
+    assert s.start == Vector(2, 0, 0) and s.end.distance_to((20, 0, 0)) < 1e-9
+    assert all(abs(q.z) < 1e-15 for q in (s.point_at(i / 20) for i in range(21)))
+    c, (t0, t1) = s._curve(), s._range()
+    for i in range(401):  # the radius grows evenly with the angle: 18 / (10 pi) per radian
+        q = c.evaluate(t0 + (t1 - t0) * i / 400)
+        r = math.hypot(q[0], q[1])
+        turned = (r - 2) / 18 * 10 * math.pi
+        assert abs(((math.atan2(q[1], q[0]) - turned + math.pi) % (2 * math.pi)) - math.pi) * 18 / (10 * math.pi) < 2e-4
+    assert Spiral(0, 20, 5).start == Vector(0, 0, 0)
+    inward = Spiral(20, 0, 5, Plane.XZ, clockwise=True)
+    assert inward.end == Vector(0, 0, 0) and abs(inward.point_at(0.3).y) < 1e-12
+    assert Spiral(2, 20, 150).end.distance_to((20, 0, 0)) < 1e-6  # (longer than one kernel helix)
+    groove = sweep(Rectangle(0.5, 1), s)
+    assert groove.is_valid() and groove.volume == approx(0.5 * s.length, rel=1e-3)
+    with pytest.raises(ValueError, match="must differ"):
+        Spiral(5, 5, 3)
+
+
+# -- C15: fillets of wires and sketches at arcs, splines and ellipses --------------------------------
+def test_wire_fillet_rounds_corners_with_arcs():
+    w = Wire([Line((0, 0), (10, 0)), ThreePointArc((10, 0), (13, 5), (10, 10)), Line((10, 10), (0, 10))])
+    f = w.fillet(2)
+    assert [e.geom_type for e in f.edges()] == ["line", "circle", "circle", "circle", "line"]
+    assert f.start == w.start and f.end == w.end
+    es = f.edges()
+    assert all(a.end.distance_to(b.start) < 1e-9 and a.tangent_at(1).angle_to(b.tangent_at(0)) < 1e-6
+               for a, b in zip(es, es[1:]))
+    closed = Wire([Line((0, 0), (10, 0)), ThreePointArc((10, 0), (13, 5), (10, 10)), Line((10, 10), (0, 10)),
+                   Line((0, 10), (0, 0))])
+    region = make_face(closed)
+    assert make_face(closed.fillet(1)).area == approx(region.fillet(1, region.vertices()).area, rel=1e-12)
+    assert len(w.fillet(2, [(10, 0)]).edges()) == 4
+
+
+def test_wire_fillet_names_what_it_cannot_round():
+    w = Wire([Line((0, 0), (10, 0)), ThreePointArc((10, 0), (13, 5), (10, 10)), Line((10, 10), (0, 10))])
+    with pytest.raises(ModelingError, match=r"\(55, 55\) is not a corner of the wire; its corners are at \(10, 0\)"):
+        w.fillet(2, [(55, 55)])
+    with pytest.raises(ModelingError, match="is an end of the open wire"):
+        w.fillet(2, [(0, 0)])
+    with pytest.raises(ValueError, match="selection is empty"):
+        w.fillet(2, [])
+    smooth = Wire([Line((0, 0), (10, 0)), CenterArc((10, 5), 5, -90, 180)])
+    with pytest.raises(ModelingError, match="is smooth"):
+        smooth.fillet(1, [(10, 0)])
+    assert len(smooth.fillet(1).edges()) == 2  # (nothing to round)
+    helix_like = Wire([Line((0, 0, 0), (10, 0, 0)), Spline((10, 0, 0), (12, 5, 1), (10, 10, 6))])
+    with pytest.raises(ModelingError, match="not planar"):
+        helix_like.fillet(1)
+    # polylines as before, also in 3D
+    p = FilletPolyline((0, 0, 0), (30, 0, 0), (30, 20, 10), radius=5)
+    assert [e.geom_type for e in p.edges()] == ["line", "circle", "line"]
+    with pytest.raises(ValueError, match="overlap"):
+        Polyline((0, 0), (20, 0), (20, 10), (0, 10), close=True).fillet(5.001)
+
+
+def test_fillets_at_spline_and_ellipse_corners():
+    w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (14, 4), (12, 8), (10, 10)), Line((10, 10), (0, 10))])
+    arcs = [e for e in w.fillet(2).edges() if e.geom_type == "circle"]
+    assert [round(a.radius, 12) for a in arcs] == [2, 2]
+    # OpenCASCADE (ChFi2d_FilletAPI): centers (9.507884445553, 2) and (9.316103414, 7.99999996)
+    assert arcs[0].arc_center.distance_to((9.507884445553, 2, 0)) < 1e-9
+    assert arcs[0].end.distance_to((10.45551014916122, 0.23874887484462426, 0)) < 1e-9
+    assert arcs[1].arc_center.distance_to((9.316103414, 8, 0)) < 1e-7
+    spline = w.edges()[1]
+    for a in arcs:
+        assert spline.distance_to(a.arc_center) == approx(2, abs=1e-9)
+    region = make_face(w.close())
+    rounded = region.fillet(2)  # every corner, the spline's too (this raised before)
+    outline = rounded.faces()[0].outer_wire().edges()
+    assert all(a.tangent_at(1).angle_to(b.tangent_at(0)) < 1e-6 for a, b in zip(outline, outline[1:] + outline[:1]))
+    assert rounded.area == approx(124.12092870628695, rel=1e-9)
+    assert region.chamfer(1.5).area == approx(122.3254869677154, rel=1e-9)
+    ell = Wire([Line((-20, 0), (0, 0)), EllipticalArc((10, 0), 10, 5, 180, 300),
+                Line(EllipticalArc((10, 0), 10, 5, 180, 300).end, (20, 10)), Line((20, 10), (-20, 10)),
+                Line((-20, 10), (-20, 0))])
+    r = make_face(ell).fillet(1)
+    assert "ellipse" in [e.geom_type for e in r.edges()] and r.area == approx(448.215432183746, rel=1e-9)
+    # where no arc of the radius touches both (OpenCASCADE finds none either; 2.5 fits)
+    tight = Wire([Spline((0, 0), (10, 5), (20, 0), tangents=((0, 1), (0, -1))), Line((20, 0), (0, 0))])
+    assert [e.arc_center for e in tight.fillet(2.5, [(20, 0)]).edges() if e.geom_type == "circle"][0].distance_to(
+        (10, 2.5, 0)) < 1e-6
+    with pytest.raises(ValueError, match="no arc of radius 3 touches both segments"):
+        tight.fillet(3, [(20, 0)])
+
+
+# -- C16: edges bent through a point, edges whose ends move ----------------------------------------
+def test_through_moves_the_curve_onto_the_point_and_keeps_its_ends():
+    s = Spline((0, 0, 0), (10, 8, 0), (25, 5, 0), (40, 12, 0), (52, 10, 0), (60, 0, 0))
+    e = s.through((25, 8, 3))
+    assert e.distance_to((25, 8, 3)) < 1e-12
+    assert e.start == s.start and e.end == s.end
+    assert e.tangent_at(0).angle_to(s.tangent_at(0)) < 1e-6 and e.tangent_at(1).angle_to(s.tangent_at(1)) < 1e-6
+    t = s.through((25, 8, 3), tangent=(1, 0, 0))
+    assert t.distance_to((25, 8, 3)) < 1e-12 and t.tangent_at(t.param_at((25, 8, 3))).angle_to((1, 0, 0)) < 1e-6
+    at = s.through((30, 20, 0), at=0.5)
+    assert at.distance_to((30, 20, 0)) < 1e-12
+    # lines and arcs become cubic B-splines; arcs stay rational
+    line = Line((0, 0), (10, 0)).through((5, 2))
+    assert line.distance_to((5, 2, 0)) < 1e-12 and line.tangent_at(0) == Vector(1, 0, 0) and line.nurbs().degree == 3
+    arc = CenterArc((0, 0), 10, 0, 90).through((8, 8))
+    assert arc.distance_to((8, 8, 0)) < 1e-12 and arc.nurbs().weights is not None
+    assert arc.tangent_at(0).angle_to((0, 1, 0)) < 1e-6
+    with pytest.raises(ValueError, match="nearest to an end"):
+        s.through((-5, 0, 0))
+    with pytest.raises(ValueError, match="strictly between 0 and 1"):
+        s.through((25, 8, 3), at=1)
+
+
+def test_match_moves_the_ends_exactly():
+    s = Spline((0, 0, 0), (10, 8, 0), (25, 5, 0), (40, 12, 0), (52, 10, 0), (60, 0, 0))
+    m = s.match(end=(52, 10, 4), end_tangent=(0, 1, 0))
+    assert m.end.distance_to((52, 10, 4)) < 1e-12 and m.tangent_at(1).angle_to((0, 1, 0)) < 1e-6
+    assert m.start == s.start and m.tangent_at(0).angle_to(s.tangent_at(0)) < 1e-6
+    other = Spline((52, 10, 4), (60, 20, 4), (70, 20, 0))
+    joined = s.match(end=other.start, end_tangent=other.tangent_at(0))
+    assert Wire([joined, other]).edges()[0].tangent_at(1).angle_to(other.tangent_at(0)) < 1e-6
+    moved = Line((0, 0), (10, 0)).match(start=(0, 1), start_tangent=(1, 1))
+    assert moved.start == Vector(0, 1, 0) and moved.end == Vector(10, 0, 0)
+    assert moved.tangent_at(0).angle_to((1, 1, 0)) < 1e-6 and moved.tangent_at(1).angle_to((1, 0, 0)) < 1e-6
+    with pytest.raises(ValueError, match="give start, end"):
+        s.match()

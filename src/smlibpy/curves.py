@@ -28,7 +28,11 @@ __all__ = [
     "fit_curve",
     "Bezier",
     "Helix",
+    "Spiral",
     "EllipticalArc",
+    "ParabolicArc",
+    "HyperbolicArc",
+    "ConicArc",
     "FilletPolyline",
     "make_compatible",
 ]
@@ -226,93 +230,286 @@ def EllipticalArc(
 
 
 # -----------------------------------------------------------------------------
+# Conics
+# -----------------------------------------------------------------------------
+def _conic(p0: Vector, p1: Vector, p2: Vector, w: float, plane: Plane, what: str) -> Edge:
+    """The rational quadratic Bezier p0, p1, p2 (plane coordinates) with middle weight w, placed
+    on the plane."""
+    with kernel_call(what):
+        curve = _canonical_curve(np.array([p0.to_tuple(), p1.to_tuple(), p2.to_tuple()]), [0.0] * 3 + [1.0] * 3, 2,
+                                 None if w == 1.0 else [1.0, w, 1.0])
+    return _placed(curve, plane)
+
+
+def _finite(what: str, **values: float) -> None:
+    for name, v in values.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float, np.integer, np.floating)) or not math.isfinite(v):
+            raise ValueError(f"{what}: {name} must be a finite number, got {v!r}")
+
+
+def ParabolicArc(vertex: VectorLike, focal_length: float, start: float, end: float, plane: Plane = Plane.XY) -> Edge:
+    """A piece of the parabola ``y = x² / (4 focal_length)``: its vertex at ``vertex`` (in plane
+    coordinates), opening along the plane's Y axis, from ``x = start`` to ``x = end`` (measured
+    from the vertex along the plane's X axis). Exact: a quadratic B-spline. For reflectors, horns
+    and nozzle contours; a negative focal length opens it along -Y.
+
+    ``ParabolicArc((0, 0), 10, -20, 20)`` runs from (-20, 10) through (0, 0) to (20, 10); its
+    focus is at (0, 10).
+    """
+    _finite("ParabolicArc", focal_length=focal_length, start=start, end=end)
+    if focal_length == 0:
+        raise ValueError("ParabolicArc: the focal length must not be zero")
+    if start == end:
+        raise ValueError("ParabolicArc: start and end must differ")
+    v, f = _vec(vertex), float(focal_length)
+    x0, x1 = float(start), float(end)
+    return _conic(v + Vector(x0, x0 * x0 / (4 * f)), v + Vector((x0 + x1) / 2, x0 * x1 / (4 * f)),
+                  v + Vector(x1, x1 * x1 / (4 * f)), 1.0, plane, "ParabolicArc")
+
+
+def HyperbolicArc(center: VectorLike, x_radius: float, y_radius: float, start: float, end: float,
+                  plane: Plane = Plane.XY) -> Edge:
+    """A piece of the hyperbola ``x²/x_radius² - y²/y_radius² = 1``, the branch on the +X side of
+    ``center`` (in plane coordinates), from ``y = start`` to ``y = end`` (measured from the center
+    along the plane's Y axis). Exact: a rational quadratic B-spline. Its vertex is at
+    ``(x_radius, 0)`` from the center and its asymptotes have the slopes ``±y_radius / x_radius``.
+
+    ``HyperbolicArc((0, 0), 10, 20, -30, 30)`` revolved about the Y axis is a cooling tower with a
+    waist of radius 10.
+    """
+    _finite("HyperbolicArc", x_radius=x_radius, y_radius=y_radius, start=start, end=end)
+    if x_radius <= 0 or y_radius <= 0:
+        raise ValueError("HyperbolicArc: x_radius and y_radius must be positive")
+    if start == end:
+        raise ValueError("HyperbolicArc: start and end must differ")
+    a, b = float(x_radius), float(y_radius)
+    t0, t1 = math.asinh(float(start) / b), math.asinh(float(end) / b)
+    m, d = (t0 + t1) / 2, (t1 - t0) / 2
+    c = _vec(center)
+    # the tangents at the ends meet at the middle control point; the weight cosh of half the span
+    return _conic(c + Vector(a * math.cosh(t0), b * math.sinh(t0)),
+                  c + Vector(a * math.cosh(m) / math.cosh(d), b * math.sinh(m) / math.cosh(d)),
+                  c + Vector(a * math.cosh(t1), b * math.sinh(t1)), math.cosh(d), plane, "HyperbolicArc")
+
+
+def ConicArc(start: VectorLike, apex: VectorLike, end: VectorLike, rho: float = 0.5) -> Edge:
+    """A conic arc from ``start`` to ``end``, tangent there to the lines toward ``apex`` (the
+    point where the end tangents meet), with the fullness ``rho`` (0 < rho < 1): the arc passes
+    ``rho`` of the way from the middle of the chord to the apex. 0.5 is a parabola, less an
+    ellipse (flatter), more a hyperbola (closer to the apex). The rho conic of styling: a corner
+    blend whose shape a single number sets. Exact: a rational quadratic B-spline.
+
+    ``ConicArc((0, 0), (10, 0), (10, 10), 0.4142)`` is nearly the quarter circle of radius 10
+    (exactly for rho = sqrt(2) - 1).
+    """
+    _finite("ConicArc", rho=rho)
+    if not 0 < rho < 1:
+        raise ValueError(f"ConicArc: rho is between 0 and 1 (0.5: a parabola), got {rho!r}")
+    a, p, b = _vec(start), _vec(apex), _vec(end)
+    if a.is_close(b, 1e-12) or (p - a).cross(b - a).length <= 1e-12 * max(1.0, (p - a).length * (b - a).length):
+        raise ValueError("ConicArc: start, apex and end must not lie on one line")
+    w = float(rho) / (1.0 - float(rho))
+    with kernel_call("ConicArc"):
+        return Edge._from_curve(_canonical_curve(np.array([a.to_tuple(), p.to_tuple(), b.to_tuple()]),
+                                                 [0.0] * 3 + [1.0] * 3, 2, [1.0, w, 1.0]))
+
+
+# -----------------------------------------------------------------------------
 # NURBS curves
 # -----------------------------------------------------------------------------
-def _basis(knots: np.ndarray, p: int, u: float, deriv: int = 0) -> np.ndarray:
-    """Values (or derivatives) of all B-spline basis functions of degree ``p`` at ``u``."""
+def _span(knots: Sequence[float], p: int, u: float) -> int:
+    """The index of the knot span that holds ``u`` (the last span for the end of the range)."""
     n = len(knots) - p - 1
-    # span
     if u >= knots[n]:
-        span = n - 1
-    else:
-        span = int(np.searchsorted(knots, u, side="right") - 1)
-        span = max(p, min(span, n - 1))
-    N = np.zeros(len(knots) - 1)
-    N[span] = 1.0
-    out = None
-    for d in range(1, p + 1):
-        nn = np.zeros(len(knots) - 1 - d)
-        for i in range(len(nn)):
-            a = 0.0
-            den = knots[i + d] - knots[i]
-            if den > 0:
-                a += ((u - knots[i]) / den if not (deriv and d == p) else d / den) * N[i]
-            den = knots[i + d + 1] - knots[i + 1]
-            if den > 0:
-                a += ((knots[i + d + 1] - u) / den if not (deriv and d == p) else -d / den) * N[i + 1]
-            nn[i] = a
-        N = nn
-        out = N
-    assert out is not None
-    return out[:n]
+        return n - 1
+    lo, hi = p, n
+    while hi - lo > 1:  # knots[lo] <= u < knots[hi]
+        mid = (lo + hi) // 2
+        if u < knots[mid]:
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+
+def _basis_ders(knots: Sequence[float], p: int, span: int, u: float, nd: int) -> list[list[float]]:
+    """The p + 1 B-spline basis functions of degree ``p`` that are not zero in ``span`` and their
+    derivatives up to the ``nd``-th at ``u``: ``ders[k][j]`` is the k-th derivative of the basis
+    function of control point ``span - p + j`` (Piegl and Tiller, The NURBS Book, A2.3)."""
+    ndu = [[0.0] * (p + 1) for _ in range(p + 1)]
+    ndu[0][0] = 1.0
+    left = [0.0] * (p + 1)
+    right = [0.0] * (p + 1)
+    for j in range(1, p + 1):
+        left[j] = u - knots[span + 1 - j]
+        right[j] = knots[span + j] - u
+        saved = 0.0
+        for r in range(j):
+            ndu[j][r] = right[r + 1] + left[j - r]
+            temp = ndu[r][j - 1] / ndu[j][r]
+            ndu[r][j] = saved + right[r + 1] * temp
+            saved = left[j - r] * temp
+        ndu[j][j] = saved
+    ders = [[0.0] * (p + 1) for _ in range(nd + 1)]
+    for j in range(p + 1):
+        ders[0][j] = ndu[j][p]
+    for r in range(p + 1):
+        a = [[0.0] * (p + 1), [0.0] * (p + 1)]
+        s1, s2 = 0, 1
+        a[0][0] = 1.0
+        for k in range(1, nd + 1):
+            d = 0.0
+            rk, pk = r - k, p - k
+            if r >= k:
+                a[s2][0] = a[s1][0] / ndu[pk + 1][rk]
+                d = a[s2][0] * ndu[rk][pk]
+            j1 = 1 if rk >= -1 else -rk
+            j2 = k - 1 if r - 1 <= pk else p - r
+            for j in range(j1, j2 + 1):
+                a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j]
+                d += a[s2][j] * ndu[rk + j][pk]
+            if r <= pk:
+                a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r]
+                d += a[s2][k] * ndu[r][pk]
+            ders[k][r] = d
+            s1, s2 = s2, s1
+    f = float(p)
+    for k in range(1, nd + 1):
+        for j in range(p + 1):
+            ders[k][j] *= f
+        f *= p - k
+    return ders
+
+
+def _thomas(sub: list[float], diag: list[float], sup: list[float], rhs: list[list[float]]) -> list[list[float]]:
+    """The solution of a tridiagonal system (row i: sub[i] x[i-1] + diag[i] x[i] + sup[i] x[i+1] =
+    rhs[i], each rhs a row of numbers). Without pivoting: B-spline collocation matrices are totally
+    positive (de Boor), so elimination in order is stable."""
+    n = len(diag)
+    c = [0.0] * n
+    d = [list(r) for r in rhs]
+    w = len(d[0]) if n else 0
+    for i in range(n):
+        m = diag[i] - (sub[i] * c[i - 1] if i else 0.0)
+        c[i] = sup[i] / m if i + 1 < n else 0.0
+        for q in range(w):
+            d[i][q] = (d[i][q] - (sub[i] * d[i - 1][q] if i else 0.0)) / m
+    for i in range(n - 2, -1, -1):
+        for q in range(w):
+            d[i][q] -= c[i] * d[i + 1][q]
+    return d
 
 
 def _interpolate(points: list[Vector], t0: Vector | None, t1: Vector | None, closed: bool) -> Edge:
-    """Cubic interpolation through ``points`` with end tangent conditions."""
-    Q = np.array([p.to_tuple() for p in points], dtype=float)
-    if closed:
-        if not points[0].is_close(points[-1]):
-            Q = np.vstack([Q, Q[:1]])
-        if t0 is None and t1 is None:
-            d = Q[1] - Q[-2]
-            t0 = t1 = Vector(d)
-    chords = np.linalg.norm(np.diff(Q, axis=0), axis=1)
-    if np.any(chords < 1e-12):
+    """Cubic interpolation through ``points``: with end tangent conditions, or, for a closed curve
+    without tangents, periodic (curvature continuous at the seam as everywhere else). Only the
+    basis functions that are not zero at each point are evaluated, and the system is tridiagonal
+    (one row and column more for a closed curve): linear in the number of points."""
+    Q = [list(p.to_tuple()) for p in points]
+    if closed and not points[0].is_close(points[-1]):
+        Q.append(list(Q[0]))
+    periodic = closed and t0 is None and t1 is None
+    if periodic and len(Q) < 4:
+        raise ValueError("a closed spline needs at least three points")
+    chords = [math.dist(a, b) for a, b in zip(Q, Q[1:])]
+    if any(c < 1e-12 for c in chords):
         raise ValueError("spline points must be distinct")
-    total = chords.sum()
+    total = sum(chords)
     # centripetal parameters reduce overshoot on uneven spacing
-    w = np.sqrt(chords)
-    u = np.concatenate([[0.0], np.cumsum(w) / w.sum()])
+    w = [math.sqrt(c) for c in chords]
+    wsum = sum(w)
+    u = [0.0]
+    acc = 0.0
+    for x in w[:-1]:
+        acc += x
+        u.append(acc / wsum)
+    u.append(1.0)
     n = len(Q) - 1
-
-    def bessel(i0: int, i1: int, i2: int, at: int) -> np.ndarray:
-        # derivative at u[at] of the parabola through three points
-        ua, ub, uc = u[i0], u[i1], u[i2]
-        A, B, C = Q[i0], Q[i1], Q[i2]
-        x = u[at]
-        return (A * (2 * x - ub - uc) / ((ua - ub) * (ua - uc)) + B * (2 * x - ua - uc) / ((ub - ua) * (ub - uc))
-                + C * (2 * x - ua - ub) / ((uc - ua) * (uc - ub)))
-
-    if n == 1:
-        D0 = Q[1] - Q[0] if t0 is None else np.array(t0.normalized().to_tuple()) * total
-        D1 = Q[1] - Q[0] if t1 is None else np.array(t1.normalized().to_tuple()) * total
-    else:
-        D0 = bessel(0, 1, 2, 0) if t0 is None else np.array(t0.normalized().to_tuple()) * total
-        D1 = bessel(n - 2, n - 1, n, n) if t1 is None else np.array(t1.normalized().to_tuple()) * total
     p = 3
-    knots = np.concatenate([[0.0] * 4, u[1:-1], [1.0] * 4])
-    m = n + 3
-    A = np.zeros((m, m))
-    B = np.zeros((m, 3))
-    rows = 0
-    A[rows] = _basis(knots, p, 0.0)
-    B[rows] = Q[0]
-    rows += 1
-    A[rows] = _basis(knots, p, 0.0, deriv=1)
-    B[rows] = D0
-    rows += 1
-    for i in range(1, n):
-        A[rows] = _basis(knots, p, u[i])
-        B[rows] = Q[i]
-        rows += 1
-    A[rows] = _basis(knots, p, 1.0, deriv=1)
-    B[rows] = D1
-    rows += 1
-    A[rows] = _basis(knots, p, 1.0)
-    B[rows] = Q[n]
-    P = np.linalg.solve(A, B)
+    knots = [0.0] * 4 + u[1:-1] + [1.0] * 4
+    m = n + 3  # control points
+    P: list[list[float] | None] = [None] * m
+    end0 = _basis_ders(knots, p, p, 0.0, 2)  # control points 0..3
+    end1 = _basis_ders(knots, p, m - 1, 1.0, 2)  # control points m-4..m-1
+    rows = [_basis_ders(knots, p, i + 3, u[i], 0)[0] for i in range(1, n)]  # row i: control points i..i+3
+    P[0], P[m - 1] = Q[0], Q[n]
+
+    if not periodic:
+        def bessel(i0: int, i1: int, i2: int, at: int) -> list[float]:
+            # derivative at u[at] of the parabola through three points
+            ua, ub, uc = u[i0], u[i1], u[i2]
+            x = u[at]
+            fa = (2 * x - ub - uc) / ((ua - ub) * (ua - uc))
+            fb = (2 * x - ua - uc) / ((ub - ua) * (ub - uc))
+            fc = (2 * x - ua - ub) / ((uc - ua) * (uc - ub))
+            return [Q[i0][q] * fa + Q[i1][q] * fb + Q[i2][q] * fc for q in range(3)]
+
+        def given(t: Vector) -> list[float]:
+            return [c * total for c in t.normalized().to_tuple()]
+
+        chord = [Q[1][q] - Q[0][q] for q in range(3)]
+        if n == 1:
+            D0 = chord if t0 is None else given(t0)
+            D1 = chord if t1 is None else given(t1)
+        else:
+            D0 = bessel(0, 1, 2, 0) if t0 is None else given(t0)
+            D1 = bessel(n - 2, n - 1, n, n) if t1 is None else given(t1)
+        # the end derivatives give the second and the second last control points
+        P[1] = [(D0[q] - end0[1][0] * Q[0][q]) / end0[1][1] for q in range(3)]
+        P[m - 2] = [(D1[q] - end1[1][3] * Q[n][q]) / end1[1][2] for q in range(3)]
+        # control points 2 .. m-3 from the points 1 .. n-1
+        sub, diag, sup, rhs = [], [], [], []
+        for i in range(1, n):
+            N = rows[i - 1]
+            r = list(Q[i])
+            if i == 1:
+                r = [r[q] - N[0] * P[1][q] for q in range(3)]  # type: ignore[index]
+            if i == n - 1:
+                r = [r[q] - N[2] * P[m - 2][q] for q in range(3)]  # type: ignore[index]
+            sub.append(N[0] if i > 1 else 0.0)
+            diag.append(N[1])
+            sup.append(N[2] if i < n - 1 else 0.0)
+            rhs.append(r)
+        if rhs:
+            P[2:m - 2] = _thomas(sub, diag, sup, rhs)
+    else:
+        # Unknowns: control points 1 .. m-2 (y[0] .. y[k]); the first and last are the seam point.
+        # Rows: the first and second derivatives equal at both ends of the seam, and the points
+        # 1 .. n-1. Ordered as below the matrix is tridiagonal but for corners; the last unknown is
+        # eliminated (Schur complement) and the rest solved by two tridiagonal solves.
+        k = m - 3
+
+        def seam(order: int) -> tuple[dict[int, float], list[float]]:
+            row: dict[int, float] = {}
+            rhs = [0.0, 0.0, 0.0]
+            for j, cf in [(j, end0[order][j]) for j in range(4)] + [(m - 4 + j, -end1[order][j]) for j in range(4)]:
+                if j in (0, m - 1):
+                    rhs = [rhs[q] - cf * Q[0][q] for q in range(3)]
+                elif cf:
+                    row[j - 1] = row.get(j - 1, 0.0) + cf
+            return row, rhs
+
+        first, r_first = seam(1)  # y[0] and y[k]
+        last, r_last = seam(2)  # y[0], y[1], y[k-1], y[k]
+        sub, diag, sup, rhs, col = [0.0], [first.get(0, 0.0)], [0.0], [r_first], [first.get(k, 0.0)]
+        for i in range(1, n):  # row i: y[i-1], y[i], y[i+1]
+            N = rows[i - 1]
+            sub.append(N[0])
+            diag.append(N[1])
+            sup.append(N[2] if i + 1 < k else 0.0)
+            col.append(N[2] if i + 1 == k else 0.0)
+            rhs.append(list(Q[i]))
+        X = _thomas(sub, diag, sup, rhs)
+        Z = _thomas(sub, diag, sup, [[c] for c in col])
+        a_bb = last.get(k, 0.0) - sum(cf * Z[j][0] for j, cf in last.items() if j < k)
+        if abs(a_bb) < 1e-300:
+            raise ValueError("Spline: the closed curve through these points cannot be made")
+        yk = [(r_last[q] - sum(cf * X[j][q] for j, cf in last.items() if j < k)) / a_bb for q in range(3)]
+        for j in range(k):
+            P[1 + j] = [X[j][q] - Z[j][0] * yk[q] for q in range(3)]
+        P[m - 2] = yk
     with kernel_call("Spline"):
-        return Edge._from_curve(_canonical_curve(P, list(knots), p, None))
+        return Edge._from_curve(_canonical_curve(np.array(P, dtype=float), knots, p, None))
 
 
 def Spline(
@@ -479,6 +676,45 @@ def Helix(
     return Edge._from_curve(_transform_curve(curve, plane.location.matrix))
 
 
+def Spiral(start_radius: float, end_radius: float, turns: float, plane: Plane = Plane.XY, *,
+           clockwise: bool = False) -> Edge:
+    """A flat (Archimedean) spiral around the plane's origin: its radius grows (or shrinks) evenly
+    with the angle from ``start_radius`` to ``end_radius`` over ``turns`` turns. It starts on the
+    plane's X axis and turns counterclockwise seen from the plane's normal (``clockwise=True``:
+    the other way). Either radius may be 0 (a spiral from or to the center). For spiral springs,
+    scroll grooves and coils; a B-spline within 1e-4 of the exact spiral, as :func:`Helix`, of any
+    number of turns.
+
+    ``Spiral(2, 20, 5)`` runs from (2, 0) to (20, 0) in five turns, 9/5 = 3.6 apart.
+    """
+    _finite("Spiral", start_radius=start_radius, end_radius=end_radius, turns=turns)
+    if start_radius < 0 or end_radius < 0:
+        raise ValueError("Spiral: the radii must not be negative")
+    if start_radius == end_radius:
+        raise ValueError("Spiral: start_radius and end_radius must differ (equal ones go round one circle again and "
+                         "again; use CenterArc)")
+    if turns <= 0:
+        raise ValueError("Spiral: turns must be positive")
+    # The kernel's helix of a tiny height (at least 1e-7 a piece) flattened onto the plane: its
+    # control points moved to z = 0, the exact projection of a curve within the tolerance of the helix,
+    # whose projection is the spiral. The kernel takes radii from 1e-7: a spiral from or to the
+    # center starts or ends at its first or last control point, moved there.
+    r0, r1, n = float(start_radius), float(end_radius), float(turns)
+    height = 2e-7 * max(1.0, n)
+    with kernel_call("Spiral"):
+        curve = _helix_curve(height / n, height, max(r0, 1e-7), max(r1, 1e-7), n, not clockwise)
+        d = ext.curve_data(curve)
+        ext.delete_curve(curve)
+        poles = np.array(d["poles"], dtype=float)
+        poles[:, 2] = 0.0
+        if r0 == 0:
+            poles[0, :2] = 0.0
+        if r1 == 0:
+            poles[-1, :2] = 0.0
+        flat = _canonical_curve(poles, d["knots"], d["degree"], d["weights"])
+    return _placed(flat, plane)
+
+
 _HELIX_PIECE_TURNS = 100  # (the kernel fits at most 124.25 turns in one go)
 
 
@@ -515,35 +751,108 @@ def FilletPolyline(*points: VectorLike, radius: float, close: bool = False) -> W
 # -----------------------------------------------------------------------------
 # Corner rounding for wires
 # -----------------------------------------------------------------------------
+def _fp(v: Vector) -> str:
+    from ._planar import fmt
+
+    return f"({fmt(v.x)}, {fmt(v.y)})" if abs(v.z) < 1e-9 else f"({fmt(v.x)}, {fmt(v.y)}, {fmt(v.z)})"
+
+
 def _fillet_wire(wire: Wire, radius: float, vertices: Iterable[VectorLike | Vertex] | None) -> Wire:
+    """Round the corners of a wire (Wire.fillet): a planar wire's corners between lines and arcs
+    exactly in its plane (as Sketch.fillet), a wire that is not planar its corners between lines.
+    Corners that cannot be rounded raise, named or not; points that are not corners raise."""
+    from ._kernel import ModelingError
+    from ._planar import Corner, GeometryError, assemble, describe, fmt, is_smooth
+    from ._regions import CurveCorners, curve_of, real_size, seg_of_edge, wire_frame
+
     if not radius > 0:
         raise ValueError("fillet: the radius must be positive")
     edges = list(wire.edges())
     n = len(edges)
     closed = wire.is_closed
-    targets = None
+    pts = [p for e in edges for p in (e.start, e.end)]
+    size = max(1.0, max(abs(c) for p in pts for c in p))
+    vtol = 1e-6 * size
+    joints = list(range(n if closed else n - 1))  # corner i: where edges[i] ends and edges[i + 1] starts
+    chosen = set(joints)
     if vertices is not None:
         targets = [_vec(v.point if isinstance(v, Vertex) else v) for v in vertices]
+        if not targets:
+            raise ValueError("fillet: no corners given (the selection is empty)")
+        chosen = set()
+        missing = []
+        for t in targets:
+            hits = [i for i in joints if edges[i].end.distance_to(t) <= vtol]
+            if not hits:
+                missing.append(t)
+            chosen.update(hits)
+        if missing:
+            ends = [e for e in (wire.start, wire.end) if not closed and any(e.distance_to(t) <= vtol for t in missing)]
+            if ends:
+                raise ModelingError(f"fillet: {_fp(ends[0])} is an end of the open wire, not a corner")
+            corners_at = [_fp(edges[i].end) for i in joints]
+            more = ", ..." if len(corners_at) > 12 else ""
+            listed = f"its corners are at {', '.join(corners_at[:12])}{more}" if corners_at else "it has no corners"
+            raise ModelingError(f"fillet: {', '.join(_fp(t) for t in missing)} {'is' if len(missing) == 1 else 'are'} "
+                                f"not a corner of the wire; {listed}")
+    named = vertices is not None
+    hint = "" if named else f"; name the corners to round: wire.fillet({fmt(radius)}, [corner points])"
+    try:
+        fr = wire_frame(edges, None, "fillet")
+    except ValueError:
+        fr = None  # not planar (or straight)
 
-    corners = []  # (index of incoming edge, index of outgoing edge)
-    for i in range(n if closed else n - 1):
+    if fr is not None:
+        segs = [seg_of_edge(e, fr) for e in edges]
+        tol = 1e-9 * max(1.0, real_size(segs))
+        corners: dict[int, Corner] = {}
+        for i in sorted(chosen):
+            j = (i + 1) % n
+            s1, s2 = segs[i], segs[j]
+            if n == 1 or is_smooth(s1, s2):
+                if named:
+                    raise ModelingError(f"fillet: the corner at {fr.fp(s2.start)} is smooth (its edges meet "
+                                        f"tangentially), so there is nothing to round; leave it out")
+                continue
+            corners[j] = Corner("fillet", radius, f"radius {fmt(radius)}")
+        if not corners:
+            return Wire._raw(edges)
+        try:
+            new, _ = assemble(segs, [""] * n, corners, closed, tol, what=lambda j: describe(segs[j], fr.fp), fp=fr.fp,
+                              curves=CurveCorners(fr, real_size(segs)))
+        except GeometryError as e:
+            raise ValueError(f"fillet: {e}") from None
+        kept = {id(sg): e for sg, e in zip(segs, edges)}
+        out = [kept[id(sg)] if id(sg) in kept else Edge._from_curve(curve_of(sg, fr)) for sg in new]
+        if closed and 0 in corners:
+            out = out[1:] + out[:1]  # (the wire starts where it did: the arc of the corner at its start goes last)
+        return Wire._raw(out)
+
+    # A wire that is not planar: corners between lines, each in the plane of its two lines.
+    corner_list = []  # (index of incoming edge, index of outgoing edge)
+    for i in sorted(chosen):
         j = (i + 1) % n
         a, b = edges[i], edges[j]
+        u, w = a.tangent_at(1.0), b.tangent_at(0.0)
+        if u.cross(w).length < 1e-9 and u.dot(w) > 0:
+            if named:
+                raise ModelingError(f"fillet: the corner at {_fp(a.end)} is smooth (its edges meet tangentially), so "
+                                    f"there is nothing to round; leave it out")
+            continue
         if not a._is_straight() or not b._is_straight():
-            continue
-        corner = a.end
-        if targets is not None and not any(corner.is_close(t, 1e-6) for t in targets):
-            continue
-        u, w = a.direction, b.direction
+            other = a if not a._is_straight() else b
+            raise ModelingError(f"fillet: the corner at {_fp(a.end)} joins a {other.geom_type} edge of a wire that is "
+                                f"not planar; fillet rounds the corners of such wires between lines only{hint}")
         if u.is_parallel(w):
-            continue
-        corners.append((i, j))
+            raise ModelingError(f"fillet: the wire turns back on itself at {_fp(a.end)}, so there is no corner to "
+                                f"round")
+        corner_list.append((i, j))
 
     # Each rounded corner moves the end of its incoming and the start of its outgoing line.
     setback_end = [0.0] * n
     setback_start = [0.0] * n
     arcs: dict[int, Edge] = {}
-    for i, j in corners:
+    for i, j in corner_list:
         u, w = edges[i].direction, edges[j].direction
         phi = math.radians(u.angle_to(w))
         d = radius * math.tan(phi / 2.0)

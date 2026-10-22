@@ -31,11 +31,12 @@ import {
   type VectorLike,
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
-import { EllipticalArc, Line, ThreePointArc, _arcCurve, _filletWire } from './curves.ts'
+import { EllipticalArc, Line, ThreePointArc, _arcCurve, _basisDers, _filletWire, _span } from './curves.ts'
 import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
+import { visiblePieces, wrap as _wrap } from './_face_curves.ts'
 import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
@@ -1493,6 +1494,186 @@ export class Edge extends Shape {
     return Wire._raw(r.pieces.map((p: Any) => (p.kind === 'line' ? Line(p.start, p.end) : ThreePointArc(p.start, p.mid, p.end))))
   }
 
+  // -- editing ------------------------------------------------------------------------------
+  /** A new kernel B-spline of this edge (lines and arcs as the B-splines they are). */
+  _plainBspline(): number {
+    const n = this.nurbs()
+    return _canonicalCurve(n.points.map((p) => p.toArray()), n.knots, n.degree, n.weights)
+  }
+
+  /**
+   * This edge bent to pass through `point` (and there in the direction `tangent`, if given): the
+   * smallest move of its control points that does it, with the ends of the edge and its directions
+   * at the ends kept. For "make this curve pass here" edits of splines, sweep paths and outlines;
+   * lines and arcs become cubic B-splines.
+   *
+   * Options: `tangent`, the direction of the edge at that point (its length does not count; it is
+   * the direction the edge runs in); `at`, where along the edge the point goes, as a fraction of its
+   * length (strictly between 0 and 1; default: where the edge comes closest to the point).
+   *
+   * The change is local: it moves the few control points near `at` (knots are inserted there when
+   * the edge has too few), so a point far from the edge makes a bump, not a new curve.
+   *
+   *     const path = Spline([0, 0], [20, 10], [40, 0]).through([20, 15])
+   */
+  through(point: VectorLike | Vertex, options: { tangent?: VectorLike | null; at?: number | null } = {}): Edge {
+    _opts('Edge.through', options)
+    const { tangent = null, at = null } = options
+    const p = point instanceof Vertex ? point.point : _vec(point)
+    if (![p.x, p.y, p.z].every(Number.isFinite)) throw new RangeError('through: the point must be finite')
+    let t: Vector | null = null
+    if (tangent != null) {
+      t = _vec(tangent)
+      if (!(t.length > 0) || ![t.x, t.y, t.z].every(Number.isFinite)) throw new RangeError('through: the tangent must be a direction (not zero)')
+      t = t.normalized()
+    }
+    if (at != null && !(typeof at === 'number' && at > 0 && at < 1)) {
+      throw new RangeError(`through: at is a fraction of the edge strictly between 0 and 1 (its ends stay), got ${String(at)}`)
+    }
+    const need = t === null ? 1 : 2
+    let q = 3
+    let d: Any
+    let u = 0
+    kernelCall('Edge.through', () => {
+      const base = Edge._fromCurve(this._plainBspline())
+      u = at != null ? base._param(at) : base._closest(p)[1]
+      const [t0, t1] = base._range()
+      if (!(t0 < u && u < t1)) {
+        throw new RangeError('through: the point is nearest to an end of the edge, and the ends stay; pass at to say where along the edge it goes')
+      }
+      d = ext.curve_data(base._curve(), true)
+      const degree = Number(d.degree)
+      q = Math.max(3, degree)
+      // the knots after raising the degree (every knot once more per degree)
+      const knots: number[] = Array.from(d.knots as ArrayLike<number>, Number)
+      const raised: number[] = []
+      for (let i = 0; i < knots.length;) {
+        let j = i
+        while (j < knots.length && knots[j] === knots[i]) j++
+        for (let r = 0; r < j - i + q - degree; r++) raised.push(knots[i])
+        i = j
+      }
+      // knots in the spans around u until enough control points that are free to move (not the
+      // first two or the last two) act there
+      const inserts: number[] = []
+      let enough = false
+      for (let it = 0; it < 12 && !enough; it++) {
+        const kv = [...raised, ...inserts].sort((a, b) => a - b)
+        const m = kv.length - q - 1
+        const s = _span(kv, q, u)
+        let free = 0
+        for (let i = s - q; i <= s; i++) if (i >= 2 && i <= m - 3) free++
+        if (free >= need + 1) {
+          enough = true
+          break
+        }
+        const lo = Math.max(q, s - q)
+        const hi = Math.min(m, s + q + 1) // the spans s - q .. s + q
+        const spans = [...new Set(kv.slice(lo, hi + 1))].sort((a, b) => a - b)
+        for (let i = 0; i + 1 < spans.length; i++) if (spans[i + 1] > spans[i]) inserts.push((spans[i] + spans[i + 1]) / 2)
+      }
+      if (!enough) throw new ModelingError('through: the edge cannot be refined enough to move')
+      const c = ext.refine_curve(base._curve(), q, inserts)
+      try {
+        d = ext.curve_data(c, true)
+      } finally {
+        ext.delete_curve(c)
+      }
+    })
+    const kv: number[] = Array.from(d.knots as ArrayLike<number>, Number)
+    const P: number[][] = (d.poles as number[][]).map((x) => [Number(x[0]), Number(x[1]), Number(x[2])])
+    const w: number[] | null = d.weights == null ? null : Array.from(d.weights as ArrayLike<number>, Number)
+    const m = P.length
+    const s = _span(kv, q, u)
+    const ders = _basisDers(kv, q, s, u, 1)
+    const idx = Array.from({ length: q + 1 }, (_, j) => s - q + j)
+    const N = ders[0]
+    const dN = ders[1]
+    let R = N
+    let dR = dN
+    if (w !== null) { // rational: R = N w / W, linear in the control points for fixed weights
+      const ww = idx.map((i) => w[i])
+      const W = N.reduce((a, x, j) => a + x * ww[j], 0)
+      const dW = dN.reduce((a, x, j) => a + x * ww[j], 0)
+      R = N.map((x, j) => (x * ww[j]) / W)
+      dR = N.map((x, j) => (dN[j] * ww[j] * W - x * ww[j] * dW) / (W * W))
+    }
+    const combo = (row: number[]) => [0, 1, 2].map((c) => row.reduce((a, x, j) => a + x * P[idx[j]][c], 0))
+    const here = combo(R)
+    const rows = [R]
+    const rhs = [[p.x - here[0], p.y - here[1], p.z - here[2]]]
+    if (t !== null) {
+      const slope = combo(dR)
+      const speed = Math.hypot(slope[0], slope[1], slope[2])
+      rows.push(dR)
+      rhs.push([t.x * speed - slope[0], t.y * speed - slope[1], t.z * speed - slope[2]])
+    }
+    const free = idx.map((i, j) => [i, j]).filter(([i]) => i >= 2 && i <= m - 3).map(([, j]) => j)
+    const A = rows.map((row) => free.map((j) => row[j]))
+    const G = A.map((a) => A.map((b) => a.reduce((s2, x, j) => s2 + x * b[j], 0)))
+    const scale = Math.max(1, ...G.flat().map(Math.abs))
+    // the smallest move (least squares, minimum norm): A^T (A A^T)^-1 B
+    let Y: number[][]
+    if (G.length === 1) {
+      if (Math.abs(G[0][0]) <= 1e-14 * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
+      Y = [rhs[0].map((x) => x / G[0][0])]
+    } else {
+      const det = G[0][0] * G[1][1] - G[0][1] * G[1][0]
+      if (Math.abs(det) <= 1e-14 * scale * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
+      Y = [
+        [0, 1, 2].map((c) => (G[1][1] * rhs[0][c] - G[0][1] * rhs[1][c]) / det),
+        [0, 1, 2].map((c) => (-G[1][0] * rhs[0][c] + G[0][0] * rhs[1][c]) / det),
+      ]
+    }
+    free.forEach((j, f) => {
+      for (let c = 0; c < 3; c++) P[idx[j]][c] += A.reduce((s2, row, r) => s2 + row[f] * Y[r][c], 0)
+    })
+    return kernelCall('Edge.through', () => Edge._fromCurve(_canonicalCurve(P, kv, q, w)))
+  }
+
+  /**
+   * This edge with its ends moved to `start` and `end` and its directions there set to
+   * `startTangent` and `endTangent` (each optional: what is not given stays), bent smoothly in
+   * between: the parts near the ends move as a whole, the middle blends. For closing gaps, snapping a
+   * curve onto a point or another curve, and making it leave or arrive tangentially. Lines and arcs
+   * become B-splines (cubic at least).
+   *
+   * The kernel's own end deformation (`SmCurve::DeformToEndPointTargets`); the ends land on their
+   * targets exactly.
+   *
+   *     const snapped = spline.match({ end: other.start, endTangent: other.tangentAt(0) }) // G1 joint
+   */
+  match(options: { start?: VectorLike | Vertex | null; end?: VectorLike | Vertex | null; startTangent?: VectorLike | null; endTangent?: VectorLike | null } = {}): Edge {
+    _opts('Edge.match', options)
+    const { start = null, end = null, startTangent = null, endTangent = null } = options
+    const point = (v: VectorLike | Vertex | null, what: string): number[] => {
+      if (v == null) return []
+      const q = v instanceof Vertex ? v.point : _vec(v)
+      if (![q.x, q.y, q.z].every(Number.isFinite)) throw new RangeError(`match: ${what} must be finite`)
+      return q.toArray()
+    }
+    const direction = (v: VectorLike | null, what: string): number[] => {
+      if (v == null) return []
+      const q = _vec(v)
+      if (!(q.length > 0) || ![q.x, q.y, q.z].every(Number.isFinite)) throw new RangeError(`match: ${what} must be a direction (not zero)`)
+      return q.toArray()
+    }
+    const targets = [point(start, 'start'), point(end, 'end'), direction(startTangent, 'startTangent'), direction(endTangent, 'endTangent')]
+    if (!targets.some((x) => x.length)) throw new RangeError('match: give start, end, startTangent or endTangent')
+    const [c, dev] = kernelCall('Edge.match', () => {
+      const base = this._plainBspline()
+      try {
+        return ext.deform_ends(base, ...targets)
+      } finally {
+        ext.delete_curve(base)
+      }
+    })
+    const e = Edge._fromCurve(c)
+    const size = Math.max(1, this.bbox().diagonal, ...[...targets[0], ...targets[1]].map(Math.abs))
+    if (dev > 1e-9 * size) throw new ModelingError(`match: the ends came no closer than ${_formatG(dev, 3)} to their targets`)
+    return e
+  }
+
   // -- topology -----------------------------------------------------------------------------
   vertices(): ShapeList<Vertex> {
     if (this._e) {
@@ -1540,6 +1721,29 @@ export class Edge extends Shape {
     }
     return new Nurbs(Number(d.degree), d.knots.map(Number), d.poles.map((p: number[]) => new Vector(p[0], p[1], p[2])),
       d.weights == null ? null : d.weights.map(Number))
+  }
+
+  /**
+   * The edge of a NURBS curve given by its data: the inverse of `nurbs()`, for control points read
+   * from a file or another program, curves edited by moving control points and B-splines of many
+   * spans (a `Bezier` is one span).
+   *
+   * `nurbs`: a `Nurbs`, or `{ degree, knots, points, weights }`: the degree (1 to 32), the knot
+   * vector with every knot as often as its multiplicity (`points.length + degree + 1` knots, not
+   * decreasing; the ends need not repeat), the control points (2D points lie at z = 0) and a
+   * positive weight per point, or `null` for a non-rational curve.
+   *
+   * The curve runs from `knots[degree]` to `knots[knots.length - degree - 1]`; where the ends do not
+   * repeat `degree + 1` times, it starts and ends inside the control polygon.
+   *
+   *     const n = edge.nurbs()
+   *     const points = [...n.points]
+   *     points[2] = points[2].add([0, 0, 5]) // pull one control point up
+   *     const bent = Edge.fromNurbs(new Nurbs(n.degree, n.knots, points, n.weights))
+   */
+  static fromNurbs(nurbs: Nurbs | { degree: number; knots: readonly number[]; points: readonly VectorLike[]; weights?: readonly number[] | null }): Edge {
+    const [degree, knots, points, weights] = _nurbsData(nurbs)
+    return kernelCall('Edge.fromNurbs', () => Edge._fromCurve(_canonicalCurve(points, knots, degree, weights)))
   }
 
   /**
@@ -1727,6 +1931,57 @@ export function _transformCurve(curve: number, m: Matrix): number {
   ext.delete_curve(curve)
   const poles = (d.poles as number[][]).map((p) => _apply(m, new Vector(p)).toArray())
   return _canonicalCurve(poles, d.knots, d.degree, d.weights)
+}
+
+/** The checked degree, knots, control points and weights of NURBS data (Edge.fromNurbs): clear
+ * errors where the kernel would only say SM_ERR, or would take a knot vector of the wrong length. */
+export function _nurbsData(nurbs: unknown): [number, number[], number[][], number[] | null] {
+  const what = 'Edge.fromNurbs'
+  const n = nurbs as Any
+  if (n === null || typeof n !== 'object' || !('degree' in n) || !('knots' in n) || !('points' in n)) {
+    throw new TypeError(`${what} takes a Nurbs or { degree, knots, points, weights }, not ${_typeName(nurbs)}`)
+  }
+  const degree = n.degree
+  if (typeof degree !== 'number' || !Number.isInteger(degree) || degree < 1 || degree > 32) {
+    throw new RangeError(`${what}: the degree is a whole number from 1 to 32, got ${String(degree)}`)
+  }
+  const pts = [...(n.points as Iterable<VectorLike>)].map((p) => _vec(p))
+  if (pts.length < degree + 1) throw new RangeError(`${what}: a curve of degree ${degree} needs at least ${degree + 1} control points, got ${pts.length}`)
+  if (!pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))) {
+    throw new RangeError(`${what}: the control points must be finite numbers`)
+  }
+  const kv = [...(n.knots as Iterable<number>)].map(Number)
+  if (kv.length !== pts.length + degree + 1) {
+    throw new RangeError(`${what}: ${pts.length} control points of degree ${degree} take ${pts.length + degree + 1} knots ` +
+      `(points + degree + 1, every knot as often as its multiplicity), got ${kv.length}`)
+  }
+  if (!kv.every(Number.isFinite)) throw new RangeError(`${what}: the knots must be finite numbers`)
+  for (let i = 1; i < kv.length; i++) {
+    if (kv[i] < kv[i - 1]) {
+      throw new RangeError(`${what}: the knots must not decrease, but knot ${i + 1} (${_formatG(kv[i])}) is less than knot ${i} (${_formatG(kv[i - 1])})`)
+    }
+  }
+  const lo = kv[degree]
+  const hi = kv[kv.length - degree - 1]
+  if (!(hi > lo)) {
+    throw new RangeError(`${what}: the curve's knot range, knots[${degree}] to knots[${kv.length - degree - 1}], is empty (${_formatG(lo)} to ${_formatG(hi)})`)
+  }
+  for (let i = 0; i < kv.length;) {
+    let j = i
+    while (j < kv.length && kv[j] === kv[i]) j++
+    if ((lo < kv[i] && kv[i] < hi && j - i > degree) || j - i > degree + 1) {
+      throw new RangeError(`${what}: the knot ${_formatG(kv[i])} is repeated ${j - i} times; at most ${degree} times inside ` +
+        `the curve (more would break it) and ${degree + 1} times at its ends`)
+    }
+    i = j
+  }
+  let w: number[] | null = null
+  if (n.weights != null) {
+    w = [...(n.weights as Iterable<number>)].map(Number)
+    if (w.length !== pts.length) throw new RangeError(`${what}: one weight per control point (${pts.length}), got ${w.length}`)
+    if (!w.every((x) => Number.isFinite(x) && x > 0)) throw new RangeError(`${what}: the weights must be positive numbers`)
+  }
+  return [degree, kv, pts.map((p) => p.toArray()), w]
 }
 
 export function _canonicalCurve(poles: readonly (readonly number[])[], knots: Iterable<number>, degree: number, weights: Iterable<number> | null): number {
@@ -2051,7 +2306,15 @@ export class Wire extends Shape {
     return _fitPlane(pts, this.isClosed)
   }
 
-  /** Round the corners between straight edges with tangent arcs (planar wires). */
+  /**
+   * Round corners with tangent arcs of `radius`: every sharp corner, or those at `vertices` (points
+   * or vertices). A planar wire's corners are rounded in its plane, as `Sketch.fillet` does: between
+   * lines and arcs exactly, next to splines and ellipses with the arc whose center lies at `radius`
+   * from both curves (the curves are cut where it touches them). A wire that is not planar has its
+   * corners between lines rounded. A corner a wire that is not planar has next to another curve, a
+   * smooth corner that is named and a point that is not a corner throw a ModelingError; a radius that
+   * does not fit throws a RangeError. Open wires keep their ends.
+   */
   fillet(radius: number, vertices: Iterable<VectorLike | Vertex> | null = null): Wire {
     return _filletWire(this, radius, vertices)
   }
@@ -2278,6 +2541,69 @@ export class Face extends Shape {
   /** Where a ray meets this face, nearest first (see `Part.raycast`). */
   raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
     return _raycast([this], origin, direction, this.bbox())
+  }
+
+  // -- curves on the face -------------------------------------------------------------------
+  /**
+   * The curve projected onto this face along its normals: every point to the nearest point of the
+   * face's surface, the result trimmed to the face (pieces where it leaves the face and comes back).
+   * Within 1e-7 of the size of the face and the curve. For curves drawn near a freeform face; along
+   * one direction, see `Part.project`.
+   */
+  project(curve: Edge | Wire): ShapeList<Edge> {
+    const size = Math.max(1, this.bbox().union(curve.bbox()).diagonal)
+    const out = new ShapeList<Edge>()
+    for (const e of curve.edges()) {
+      const c = e._copyCurve()
+      let res: [number, number][]
+      try {
+        // (the kernel's tolerance bounds the drop; along the surface the curve comes within about
+        // five times it)
+        res = kernelCall('Face.project', () => ext.normal_project([this._f], c, 1e-8 * size))
+      } finally {
+        ext.delete_curve(c)
+      }
+      for (const [cv] of res) out.push(Edge._fromCurve(cv))
+    }
+    return out
+  }
+
+  /**
+   * The curve of the face along which one of its surface parameters is constant: `u` or `v` as a
+   * fraction (0 to 1) of the face's range of that parameter. Trimmed to the face: several pieces
+   * where the face has holes or notches. For styling lines, inspection curves and rails on freeform
+   * faces. Which parameter runs which way depends on the surface: on a cylinder's side `v` is
+   * constant around it (`iso(null, 0.5)`: the circle half way up) and `u` along it.
+   */
+  iso(u: number | null = null, v: number | null = null): ShapeList<Edge> {
+    if ((u == null) === (v == null)) throw new RangeError('iso: give u or v (one of them)')
+    const f = Number(u ?? v)
+    if (!(f >= 0 && f <= 1)) throw new RangeError(`iso: ${u != null ? 'u' : 'v'} is a fraction of the face's range from 0 to 1, got ${_formatG(f)}`)
+    const [[u0, v0], [u1, v1]] = k.face_uv_domain(this._f)
+    const [lo, hi] = u != null ? [u0, u1] : [v0, v1]
+    const curves: number[] = kernelCall('Face.iso', () => ext.iso_curves(this._f, u != null, lo + (hi - lo) * f, 1e-7 * Math.max(1, this.bbox().diagonal)))
+    return new ShapeList<Edge>(...curves.map((c) => Edge._fromCurve(c)))
+  }
+
+  /**
+   * A drawing on XY wrapped onto this face, as a label onto a can: its origin goes to `at` (a point
+   * of the face; default its middle), its X axis along the face in `direction` (default: the face's
+   * first parameter direction there; it follows the parameter line nearest to it), its Y axis
+   * across, so that it reads from outside. Lengths stay along the two parameter lines through `at`:
+   * on planes and cylinders the whole drawing keeps its size (text around a cylinder); on cones and
+   * doubly curved faces it stretches away from those lines. Around a closed face (a cylinder) the
+   * drawing continues across the seam; what leaves the face is cut off (also in its holes). Returns
+   * the curves on the face, fitted within 1e-7 of its size, cut where they cross its seam.
+   *
+   * `shape`: an edge, a wire, a sketch or edges, drawn on XY (z is ignored). `at`: where the
+   * drawing's origin goes, a point of the face's surface (default: the middle of the face's
+   * parameter range). Options: `direction`, where its X axis points (projected onto the face).
+   *
+   *     const label = can.faces().cylinders()[0].wrap(Text('SMLIB', 8), [0, -20, 0], { direction: [1, 0, 0] })
+   */
+  wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at: VectorLike | Vertex | null = null, options: { direction?: VectorLike | null } = {}): ShapeList<Edge> {
+    _opts('Face.wrap', options)
+    return _wrap(this, shape, at, options.direction ?? null)
   }
 
   // -- topology -----------------------------------------------------------------------------
@@ -2522,18 +2848,33 @@ export class _Body extends Shape {
 
   /** Project a curve onto the body along `direction` (an axis or a vector); returns the curves on
    * its faces. */
-  project(curve: Edge | Wire, direction: Axis | VectorLike = [0, 0, -1]): ShapeList<Edge> {
+  /**
+   * Project a curve onto the body along `direction` (an axis or a vector); returns the curves on its
+   * faces, fitted within 1e-7 of the size of the body and the curve.
+   *
+   * Every face the projection meets gets its pieces: the near side and the far side of the body, and
+   * faces seen edge-on (pieces along the direction). `nearest: true` keeps what the projection
+   * reaches first: the parts seen from the curve along the direction, cut where another part of the
+   * body hides them.
+   */
+  project(curve: Edge | Wire, direction: Axis | VectorLike = [0, 0, -1], options: { nearest?: boolean } = {}): ShapeList<Edge> {
+    _opts('_Body.project', options)
+    const { nearest = false } = options
     const d = _direction(direction, 'project')
+    const faces = this.faces()
+    const size = Math.max(1, this._looseBox().union(curve.bbox()).diagonal)
     const out = new ShapeList<Edge>()
     for (const e of curve.edges()) {
       const c = e._copyCurve()
-      let res: number[]
+      let res: [number, number][]
       try {
-        res = kernelCall('project', () => k.project_curve(this._brep, c, d.toArray()))
+        res = kernelCall('project', () => ext.project_curve(faces.map((f) => f._f), c, d.toArray(), 1e-7 * size))
       } finally {
         ext.delete_curve(c)
       }
-      for (const r of res) out.push(Edge._fromCurve(r))
+      const pieces = res.map(([cv, i]): [Edge, Face] => [Edge._fromCurve(cv), faces[i]])
+      if (nearest) out.push(...visiblePieces(this, e, pieces, d, size))
+      else out.push(...pieces.map(([p]) => p))
     }
     return out
   }
@@ -5048,8 +5389,9 @@ export class Sketch extends Shell {
    *
    * `vertices`: the corners to round, as vertices of this sketch (a selection such as
    * `s.vertices().concave()`) or points; null rounds every sharp corner. Corners between lines and
-   * arcs are rounded exactly; a corner that does not fit, a point that is not a corner, or a
-   * smooth corner throws ModelingError.
+   * arcs are rounded exactly; next to a spline or an ellipse the arc's center lies at `radius` from
+   * both curves (where their offsets meet), and the curves are cut where it touches them. A corner
+   * that does not fit, a point that is not a corner, or a smooth corner throws ModelingError.
    */
   fillet(radius: number, vertices: Iterable<VectorLike | Vertex> | null = null): Sketch {
     if (!(radius > 0)) throw new RangeError('fillet: the radius must be positive')

@@ -181,6 +181,8 @@
 - **Expected:** "got tuple" or "points are not edges".
 
 ### 17. Confusing "cannot normalize a zero-length vector" errors
+- **Partly fixed (kernel plan C13):** `Spline(a, b, closed=True)` raises `a closed spline needs at least three
+  points`.
 - **Sessions:** arcs `04-radiusarc.py`, `05-sagittaarc.py`, `06-tangentarc.py`; lines-wires
   `08-wire-fillet.py`; freeform `03-spline-tangents.py`, `04-spline-closed.py`, `08-helix.py`
 - **What happens:** `RadiusArc(a, a, 5)`, `SagittaArc(a, a, 2)`, `RadiusArc` with a chord along

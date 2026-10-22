@@ -105,6 +105,88 @@ def seg_of_edge(e: Edge, fr: Frame) -> Seg:
     return Curve2(e, p0, p1, unit(fr.direction(e.tangent_at(0.0))), unit(fr.direction(e.tangent_at(1.0))), e.length, pts)
 
 
+class CurveCorners:
+    """Fillets and chamfers at corners with curves (splines, ellipses) for ``_planar.assemble``,
+    through the kernel: a fillet's center is where the offsets of the two curves toward the inside
+    of the corner meet (``Edge.offset``), its ends the nearest points of the curves to it; a chamfer
+    cuts back the length along each curve. (SMLib's own ``SmCurveFilletExecutive`` is unused and
+    untested in the kernel and picks its side wrongly.)"""
+
+    def __init__(self, fr: Frame, size: float):
+        self.fr = fr
+        self.size = max(1.0, size)
+
+    def _edge(self, s: Seg) -> Edge:
+        return s.edge if isinstance(s, Curve2) else Edge._from_curve(curve_of(s, self.fr))
+
+    def piece(self, seg: Curve2, s0: float, s1: float) -> Seg:
+        """The part of a curve segment between two lengths from its start."""
+        if s0 <= 0 and s1 >= seg.length:
+            return seg
+        return seg_of_edge(seg.edge.trim(max(s0, 0.0) / seg.length, min(s1 / seg.length, 1.0)), self.fr)
+
+    def _offset(self, e: Edge, d: float, at_end: bool) -> Edge | None:
+        """The edge's offset toward the corner: of the whole edge, or of its part next to the corner
+        where the edge bends too tightly farther away."""
+        piece = e
+        for i in range(8):
+            try:
+                return piece.offset(d, plane=self.fr.plane)
+            except (ModelingError, ValueError):
+                f = 0.5 ** (i + 1)
+                piece = e.trim(1.0 - f, 1.0) if at_end else e.trim(0.0, f)
+        return None
+
+    def corner(self, kind: str, s1: Seg, s2: Seg, size: float) -> tuple[float, float, Seg]:
+        sn, cs = turn(s1, s2)
+        if abs(sn) < SMOOTH:
+            raise GeometryError("the segments meet tangentially there, so there is no corner"
+                                if cs > 0 else "the outline turns back on itself there")
+        e1, e2 = self._edge(s1), self._edge(s2)
+        l1, l2 = e1.length, e2.length
+        fr = self.fr
+        if kind == "chamfer":  # (a length beyond a segment: assemble reports that it does not fit)
+            return size, size, Line2(fr.local(e1.point_at(max(0.0, 1.0 - size / l1))),
+                                     fr.local(e2.point_at(min(1.0, size / l2))))
+        side = 1.0 if sn > 0 else -1.0
+        o1, o2 = self._offset(e1, side * size, True), self._offset(e2, side * size, False)
+        best = None
+        if o1 is not None and o2 is not None:
+            for c in o1.intersections(o2):
+                f1, f2 = e1.closest_point(c), e2.closest_point(c)
+                if max(abs(f1.distance_to(c) - size), abs(f2.distance_to(c) - size)) > 1e-6 * self.size:
+                    continue  # (a point of an end, not where the arc touches)
+                back, ahead = (1.0 - e1.param_at(f1)) * l1, e2.param_at(f2) * l2
+                if best is None or back + ahead < best[0] + best[1]:
+                    best = (back, ahead, c, f1, f2)
+        if best is None:
+            raise GeometryError(f"no arc of radius {fmt(size)} touches both segments")
+        _, _, c, f1, f2 = best
+        # Newton on the center: its distances to the two curves become the radius (the offsets are
+        # fitted within 1e-6 of the size; the curves' nearest points are exact)
+        cl = fr.local(c)
+        for _ in range(8):
+            p1, p2 = fr.local(f1), fr.local(f2)
+            d1, d2 = abs(cl - p1), abs(cl - p2)
+            if max(abs(d1 - size), abs(d2 - size)) <= 1e-13 * self.size or d1 == 0 or d2 == 0:
+                break
+            n1, n2 = (cl - p1) / d1, (cl - p2) / d2
+            det = cross(n1, n2)
+            if abs(det) < 1e-12:
+                break
+            r1, r2 = size - d1, size - d2
+            cl += complex((r1 * n2.imag - r2 * n1.imag) / det, (n1.real * r2 - n2.real * r1) / det)
+            f1, f2 = e1.closest_point(fr.world(cl)), e2.closest_point(fr.world(cl))
+        back, ahead = (1.0 - e1.param_at(f1)) * l1, e2.param_at(f2) * l2
+        v1, v2 = fr.local(f1) - cl, fr.local(f2) - cl
+        delta = cmath.phase(v2 / v1)
+        if side > 0 and delta < 0:
+            delta += TAU
+        if side < 0 and delta > 0:
+            delta -= TAU
+        return back, ahead, Arc2(cl, size, cmath.phase(v1), delta)
+
+
 def curve_of(s: Seg, fr: Frame) -> Any:
     """A new kernel curve for a segment (the caller owns it)."""
     if isinstance(s, Line2):
@@ -269,19 +351,11 @@ def round_corners(sk: Sketch, size: float, vertices: Any, kind: str) -> Sketch:
                                             f"so there is nothing to {'round' if kind == 'fillet' else 'bevel'}; leave it "
                                             f"out (select corners with .vertices().convex() or .concave())")
                     continue
-                for s in (s1, s2):
-                    if isinstance(s, Curve2):
-                        if targets is None:
-                            raise ModelingError(f"{what}: the corner at {fr.fp(v)} joins {describe(s, fr.fp)}; {what} "
-                                                f"works on corners between lines and arcs. Pass the corners to change: "
-                                                f"sketch.{what}({fmt(size)}, sketch.vertices().filter(...))")
-                        raise ModelingError(f"{what}: the corner at {fr.fp(v)} joins {describe(s, fr.fp)}; {what} works "
-                                            f"on corners between lines and arcs")
                 corners[i] = Corner(kind, size, f"{unit_name} {fmt(size)}")
                 count += 1
             try:
                 new, labels = assemble(lp, [""] * n, corners, True, tol, what=lambda j, lp=lp: describe(lp[j], fr.fp),
-                                       fp=fr.fp)
+                                       fp=fr.fp, curves=CurveCorners(fr, tol * 1e9))
             except GeometryError as e:
                 raise ModelingError(f"{what}: {e}") from None
             new, _ = simplify(new, labels, True, tol)

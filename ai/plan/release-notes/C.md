@@ -1,4 +1,4 @@
-# Lane C: curves (kernel plan C1+, C2 to C10)
+# Lane C: curves (kernel plan C1+, C2 to C16)
 
 ## Fixed
 
@@ -46,6 +46,25 @@
 - **Sweep errors about the path's curvature give the numbers (C9).** `the profile may be too large for
   the path's curvature` now goes on `: the path bends with a radius of 4.556 at (9.259, 10.77, 10.65)
   (Edge.min_radius), and the profile reaches 5.59 from the path`.
+- **`Part.project` fits within 1e-7 of the size (C12).** It went through `SmApiProjectCurve`, which
+  passes no tolerance: a circle projected onto a sphere of radius 10 was 9.4e-5 off it, a circle of
+  radius 5 on a box top 1.7e-4 off its radius and 5.3e-4 short. Now
+  `SmBrep::CreateParallelProjectionCurves` with 1e-7 of the size of the body and the curve: 1.8e-6,
+  3.5e-6 and 1.1e-5 (the helix flattened in `analysis/project`: 251.3268 against 251.3274 for its
+  circles, was 251.3194).
+- **`Wire.fillet` no longer skips corners silently (C15).** It rounded only corners between two
+  lines and passed over corners at arcs and splines, and points that were no corner, without an
+  error (`Wire([Line, ThreePointArc, Line]).fillet(2)` came back unchanged). Planar wires are now
+  rounded as `Sketch.fillet` rounds regions: between lines and arcs exactly, next to splines and
+  ellipses too (below); what cannot be rounded raises (see Behaviour changes).
+- **Closed splines are curvature continuous at the seam (C13).** `Spline(..., closed=True)` set the
+  seam tangent from the neighbouring points, so the curvature jumped there (0.0135 against 0.0574
+  for the finding's six points, a kink in zebra and reflection pictures of extruded or lofted
+  outlines); it is now the periodic cubic spline: 0.032472 on both sides.
+- **`Spline` of many points is fast (C13).** The Python port built a dense matrix and every basis
+  function in Python loops: 1600 points took 4.2 s. It now evaluates the four basis functions that
+  are not zero at each point and solves the tridiagonal system: 5 ms (smlibwasm: 73 ms to 45 ms).
+  Open splines are the same curves (control points within 1e-13).
 
 ## New
 
@@ -121,6 +140,55 @@ Python and TypeScript (`camelCase` in smlibwasm):
   `curves/min_radius`, `curves/to_arcs` (new) and updates to `sketches/Stroke`, `curves/Spline`,
   `curves/Wire`, `curves/generic`, `selection/Edge`, `files/export_dxf`, SKILL.md; todo curves 16
   fixed, sketches 19 worked around.
+
+- **Edges from NURBS data (C11):** `Edge.from_nurbs(nurbs)` / `Edge.fromNurbs(nurbs)` takes a `Nurbs`
+  (as `edge.nurbs()` gives) or `(degree, knots, points, weights)` (smlibwasm: `{ degree, knots,
+  points, weights }`): any degree from 1 to 32, many spans, unclamped knots (a uniform B-spline starts
+  at (P0 + 4 P1 + P2) / 6), rational. The data are checked with clear errors where the kernel said
+  only `SM_ERR` (the knot count, knots that decrease or repeat too often, weights) or took a knot
+  vector of the wrong length without a word.
+- **Curves on faces (C12):** `Part.project(curve, direction, *, nearest=False)` / `project(curve,
+  direction, { nearest })`: `nearest=True` keeps what the curve sees along the direction (the near
+  side of a sphere; the top of a plate cut by its hole, not the bottom and the walls; on a step seen
+  obliquely, the part of the low step the high one does not hide), cut where that changes.
+  `Face.project(curve)`: the normal projection onto a face (each point to its nearest point of the
+  surface, `SmBrep::CreateNormalProjectionCurves` within 1e-8 of the size, trimmed to the face).
+  `Face.iso(u=None, v=None)`: the curves of constant parameter (a fraction of the face's range),
+  trimmed to the face. `Face.wrap(shape, at=None, *, direction=None)`: a drawing on XY laid onto the
+  face as a label, lengths kept along the face's two parameter lines through `at` (exact on planes
+  and cylinders: a line 40 long around a cylinder of radius 10 is 40 long, its ends 4 rad apart),
+  across a closed face's seam, cut to the face and its holes, within 1e-7 of its size.
+- **Conic arcs and flat spirals (C14):** `ParabolicArc(vertex, focal_length, start, end, plane)`,
+  `HyperbolicArc(center, x_radius, y_radius, start, end, plane)`, `ConicArc(start, apex, end,
+  rho=0.5)`: exact (rational) quadratics; `Spiral(start_radius, end_radius, turns, plane, *,
+  clockwise=False)`: a flat Archimedean spiral (the kernel's helix fit flattened onto the plane,
+  within 1e-4 as `Helix`), from or to the center, of any number of turns, sweepable.
+- **Fillets and chamfers at splines and ellipses (C15):** `Sketch.fillet`, `Sketch.chamfer` and
+  `Wire.fillet` round (bevel) corners next to splines and ellipses: the arc's center where the two
+  curves' offsets meet (`Edge.offset`, of the part next to the corner where the curve bends too
+  tightly farther away), refined by Newton until it lies at the radius from both curves; the curves
+  are cut where the arc touches them and stay what they were. Against OpenCASCADE's
+  `ChFi2d_FilletAPI`: the same centers (1.2e-13; 5e-8 where OpenCASCADE's own center is 4.4e-8 off
+  its line), and no arc where OpenCASCADE finds none. (SMLib's `SmCurveFilletExecutive` is not used:
+  unused and untested in the kernel, with side-selection bugs.)
+- **Editing edges (C16):** `Edge.through(point, *, tangent=None, at=None)`: the smallest move of the
+  control points that passes the point (and has the direction there), ends and end tangents kept,
+  knots inserted near the point when too few control points act there; exact (1e-14). Lines and
+  arcs become cubic (rational) B-splines. `Edge.match(*, start=None, end=None, start_tangent=None,
+  end_tangent=None)`: `SmCurve::DeformToEndPointTargets`, the ends exactly on their targets (to snap
+  a curve onto another with G1).
+- Kernel layer (`k.ext`, both builds; src/cpp/curve_edit.cpp, src/cpp/curve_project.cpp,
+  js/cpp/bind_curve_edit.cpp): `refine_curve(curve, degree, knots)`, `deform_ends(curve, start, end,
+  start_tangent, end_tangent)` -> `(curve, deviation)`, `project_curve(faces, curve, direction,
+  tolerance, distance=0)` and `normal_project(faces, curve, tolerance)` -> `[(curve, face index)]`,
+  `iso_curves(face, along_v, value, tolerance)`, `trim_to_face(face, curves, tolerance)`.
+- Docs: docs/sketches.md (conic arcs, spirals, NURBS data, "Editing curves", fillets at splines),
+  docs/analysis.md (projections, curves on faces), docs/surfaces.md, docs/kernel.md (five rows, the
+  SM_API projection defects under the limitations), docs/javascript.md API section; skill references
+  `curves/ParabolicArc`, `curves/HyperbolicArc`, `curves/ConicArc`, `curves/Spiral`,
+  `curves/from_nurbs`, `curves/through`, `curves/match`, `surfaces/iso`, `surfaces/wrap` (new) and
+  updates to `analysis/project`, `curves/Wire`, `curves/Spline`, `curves/generic`, `curves/nurbs`,
+  `curves/Helix`, `sketches/fillet`, `sketches/chamfer`, SKILL.md.
 
 ## Behaviour changes
 
@@ -213,6 +281,68 @@ Python and TypeScript (`camelCase` in smlibwasm):
   `readonly (VectorLike | null)[]` (it was a pair), and `exportDxf` / `toDxf` take `curves` and
   `tolerance`.
 
+- **`Part.project` returns `[]` for a curve that misses the body** (it raised `KernelError: project
+  failed (SM_ERR)`), and its pieces have more control points (fitted within 1e-7 of the size, not
+  about 1e-4).
+
+  ```python
+  # before
+  try:
+      pieces = part.project(curve)
+  except KernelError:
+      pieces = []
+  # after
+  pieces = part.project(curve)
+  ```
+
+- **`Wire.fillet` rounds corners at arcs, splines and ellipses** (planar wires), which it skipped:
+  wires with such corners come back with more edges. Scripts that relied on the skip name the
+  corners to round:
+
+  ```python
+  # before: only the line-line corner was rounded, the arc's corners stayed sharp
+  w.fillet(2)
+  # after: the same result
+  w.fillet(2, [corner])     # the line-line corner's point
+  ```
+
+- **`Wire.fillet` raises where it ignored:** a point that is not a corner (`ModelingError: fillet:
+  (55, 55) is not a corner of the wire; its corners are at ...`, an end of an open wire `... is an
+  end of the open wire, not a corner`), a named smooth corner (`... is smooth ...`), an empty list of
+  corners (`ValueError: ... the selection is empty`), and in a wire that is not planar a sharp corner
+  next to an arc or a spline (`ModelingError: ... not planar ...`). Pass only corners
+  (`[v for v in points if ...]`). A radius that does not fit still raises `ValueError`, worded as
+  `Sketch.fillet` words it (`fillet: radius 5.001 at (20, 0) and radius 5.001 at (20, 10) overlap on
+  the line ...`; it was `fillet radius 5.001 is too large for the edge ...`); match `ValueError`, not
+  the text.
+- **`Sketch.fillet` and `Sketch.chamfer` round corners next to splines and ellipses** instead of
+  raising `ModelingError: ... works on corners between lines and arcs`; with no corners named, every
+  sharp corner, those at splines too.
+
+  ```python
+  # before: the spline corners had to be left out
+  rounded = s.fillet(2, s.vertices().filter(lambda v: v.x < 5))
+  # after: the same call works, and so does
+  rounded = s.fillet(2)
+  ```
+
+- **`Spline(..., closed=True)` without tangents is periodic** (curvature continuous at the seam): the
+  curve changes (0.64 mm at most for the six uneven points of the finding; little for even ones).
+  The old curve, with the old tangent at the seam:
+
+  ```python
+  # before
+  s = Spline(*pts, closed=True)
+  # after: the same curve as before
+  d = Vector(pts[1]) - Vector(pts[-1])
+  s = Spline(*pts, tangents=(d, d), closed=True)
+  ```
+
+  A closed spline of two points raises `ValueError: a closed spline needs at least three points`
+  (it raised `ValueError: cannot normalize a zero-length vector`).
+- smlibwasm: `project(curve, direction, options)` and `Spiral(..., plane, options)` take options;
+  `Face.iso(u, v)` takes `null` for the parameter not given (`iso(null, 0.5)`).
+
 ## Not done
 
 - C1 follow-up: why the planar intersection leaves a coincident edge as a wire edge (and why only
@@ -237,3 +367,17 @@ Python and TypeScript (`camelCase` in smlibwasm):
 - C9: `Wire.continuity()` (the joints' G0/G1/G2) belongs to A4 and is not here; of
   `GlobalPropertyAnalysis` only inflections and radius extrema are public (`ext.curve_properties`
   has `radius`, `min_radius`, `max_radius` too).
+- C12: the optional kernel patch K9 (`SmApiProjectCurve` and `SmApiDropCurveToSrf` with model
+  tolerances) is not made: smlibpy calls neither (`Face.project` calls
+  `SmBrep::CreateNormalProjectionCurves`), and the defect of the raw `k.project_curve_to_surface` is
+  recorded in docs/kernel.md. `Face.wrap` keeps lengths along the two parameter lines through `at`
+  only: on cones and doubly curved faces the drawing stretches away from them (no developed or
+  geodesic mapping), and curves wrapped or projected across a closed face's seam come back cut there
+  (join them with `Wire.to_edge()`). `nearest=True` classifies 17 points of each piece (and bisects
+  between those that differ), so a visible part shorter than 1/17 of a piece between two hidden
+  points is missed.
+- C15: a wire that is not planar is rounded only between lines (its corners next to other curves
+  raise).
+- C16: `through` moves the control points near the point only (a point far from the edge makes a
+  bump; it does not fair the whole curve), and a `Wire.match_to(edge, continuity=...)` that snaps a
+  whole wire is not added.

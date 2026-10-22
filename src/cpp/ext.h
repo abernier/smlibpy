@@ -41,3 +41,7 @@ void bind_curve_tools(py::module_ m);
 void bind_curve_types(py::module_& m);
 // Curve offsets, fits, curvature queries, exact boxes, lines and arcs (curve_ops.cpp).
 void bind_curve_ops(py::module_ m);
+// B-splines refined and curves whose ends move (curve_edit.cpp).
+void bind_curve_edit(py::module_ m);
+// Curves projected onto faces, lifted from their parameter planes and iso curves (curve_project.cpp).
+void bind_curve_project(py::module_ m);

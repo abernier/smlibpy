@@ -104,7 +104,8 @@ joint = surface_fillet(pipe_a, pipe_b, 1.5)            # around both places wher
 ## Curves as NURBS
 
 `edge.nurbs()` gives the degree, knots, control points and weights of any edge (arcs as exact
-rational curves). `make_compatible` turns curves into B-splines of one degree and one knot
+rational curves), and `Edge.from_nurbs` makes an edge of such data (control points read from
+elsewhere, or moved; many spans). `make_compatible` turns curves into B-splines of one degree and one knot
 vector, whose control points correspond one to one, as code that builds surfaces between
 curves needs them; `remove_knots` takes the knots out again that a curve does not need:
 

@@ -95,6 +95,8 @@
 - **Workaround:** `mass_properties(accuracy=1e-10)` for swept bodies (seconds).
 
 ### 6. `intersection_curves` and `project` raise when nothing is hit
+- **Fixed for `project` (kernel plan C12):** a curve that misses the body gives an empty list (`intersection_curves`
+  still raises).
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `10-intersection-curves.py`, `18-project.py`
 - **What happens:** disjoint or nested bodies raise `KernelError: intersection curves failed
   (SM_ERR)`; a curve that misses the body raises `KernelError: project failed (SM_ERR)`. The
@@ -143,6 +145,8 @@
   for edges and faces.
 
 ### 10. Docstrings of the queries say too little
+- **Fixed for `project` (kernel plan C12):** its docstring says that every face gets its pieces (and `nearest=True`
+  keeps what the curve sees) and how close the fits are (now 1e-7 of the size).
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `14`..`16`, `18`, `21`, `22`
 - **What happens:** `Part.closest_point` has no docstring. `outline` says "the body's edges
   projected onto a plane", but it removes hidden lines, adds contours of curved faces, merges

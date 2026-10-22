@@ -156,6 +156,15 @@ angle = angle.chamfer(1, angle.vertices().convex())      # the five outside corn
 tab = Rectangle(30, 10).fillet(5, Rectangle(30, 10).vertices().right())
 ```
 
+Corners next to splines and ellipses are rounded and beveled too: the arc's center lies at the
+radius from both curves, and the curves are cut where it touches them.
+
+```python
+bottle = make_face(Wire([Line((0, 0), (10, 0)), Spline((10, 0), (14, 4), (12, 8), (10, 10)),
+                         Line((10, 10), (0, 10)), Line((0, 10), (0, 0))]))
+rounded = bottle.fillet(2)                                # all four corners, two of them at the spline
+```
+
 `mirror` reflects a sketch about an axis in its plane (or in a plane). The mirrored sketch
 keeps facing the same way, so it extrudes to the same side:
 
@@ -177,7 +186,21 @@ blob = make_face(Spline((0, 0), (10, 5), (0, 10), (-10, 5), closed=True))
 ```
 
 The curve constructors (`Line`, `CenterArc`, `ThreePointArc`, `RadiusArc`, `TangentArc`,
-`Spline`, `Bezier`, ...) are described in the curves guide.
+`Spline`, `Bezier`, ...) are described in the curves guide. Among them are conic arcs and flat
+spirals, exact where NURBS can be (a conic is one rational quadratic), and edges made from NURBS
+data, the inverse of `edge.nurbs()`:
+
+```python
+reflector = ParabolicArc((0, 0), 25, -40, 40)       # y = x^2 / 100 from x = -40 to 40, focus (0, 25)
+waist = HyperbolicArc((0, 0), 10, 20, -30, 30)      # x^2/10^2 - y^2/20^2 = 1; revolve about Y
+blend = ConicArc((0, 0), (10, 0), (10, 10), 0.6)    # a rho conic: 0.5 a parabola, more is fuller
+coil = Spiral(2, 20, 5)                             # flat: from radius 2 to 20 in 5 turns
+n = Spline((0, 0), (10, 5), (20, 0)).nurbs()
+pulled = Edge.from_nurbs(n._replace(points=[*n.points[:2], n.points[2] + Vector(0, 3), *n.points[3:]]))
+```
+
+A closed `Spline` is as smooth at its seam as everywhere else (curvature continuous), and
+splines through thousands of points take milliseconds.
 
 ## Cutting, joining and extending curves
 
@@ -252,6 +275,26 @@ curves="arcs")` writes splines and ellipses so.
 ```python
 cut = Spline((0, 0), (10, 5), (20, -3), (30, 4)).to_arcs(0.01)   # 26 arcs (52 for 0.001)
 ```
+
+## Editing curves
+
+`through` bends an edge so that it passes through a point (and there in a direction, if
+given), with the smallest move of its control points and its ends and end directions kept;
+`match` moves its ends and sets its directions there, bending the rest smoothly. `Wire.fillet`
+rounds the corners of a wire as `Sketch.fillet` rounds a region's: between lines and arcs
+exactly, next to splines and ellipses through their offsets.
+
+```python
+path = Spline((0, 0), (20, 10), (40, 0))
+higher = path.through((20, 15))                         # through (20, 15), the ends where they were
+level = path.through((20, 15), tangent=(1, 0))          # and running along X there
+snapped = path.match(end=(45, 5), end_tangent=(1, 0))   # the end moved, the shape kept
+route = Wire([Line((0, 0), (10, 0)), ThreePointArc((10, 0), (13, 5), (10, 10)), Line((10, 10), (0, 10))])
+smooth = route.fillet(2)                                # every corner, also those at the arc
+```
+
+A point given to `fillet` that is not a corner, or a corner that is smooth, raises
+`ModelingError`, as for sketches.
 
 ## Placing a sketch
 

@@ -100,4 +100,6 @@ PYBIND11_MODULE(_core, m)
     bind_usd_files(m.attr("ext").cast<py::module_>());
     bind_curve_tools(m.attr("ext").cast<py::module_>());
     bind_curve_ops(m.attr("ext").cast<py::module_>());
+    bind_curve_edit(m.attr("ext").cast<py::module_>());
+    bind_curve_project(m.attr("ext").cast<py::module_>());
 }

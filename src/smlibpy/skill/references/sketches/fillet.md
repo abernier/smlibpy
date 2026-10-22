@@ -1,8 +1,8 @@
 # Sketch.fillet
 
 Rounds corners of a sketch region with exact tangent arcs: every sharp corner, or the ones you
-select by geometry. Corners between lines, between lines and arcs, and between arcs; on the
-outline and on holes.
+select by geometry. Corners between lines, between lines and arcs, and between arcs, and corners
+next to splines and ellipses; on the outline and on holes.
 
 ## Signature
 `sketch.fillet(radius, vertices=None)` (and `fillet(vertices, radius)` as a function)
@@ -29,6 +29,10 @@ A new `Sketch` with `line` and `circle` edges; areas are exact.
   `.convex()` selection does not pick them up.
 - Corners between a line and an arc (a rectangle fused with a circle) and between arcs (a lens)
   are rounded too.
+- Corners next to a spline or an ellipse: the arc's center lies at the radius from both curves
+  (where the curves' offsets meet, refined to 1e-9), and the curve is cut where the arc touches
+  it, staying a spline or an ellipse. Where the curve bends more tightly than the radius near the
+  corner, no arc may touch both: `no arc of radius ... touches both segments`.
 
 ## Radius limits
 A corner cuts back `radius·tan(turn/2)` along both of its edges (`radius` at 90°). The cut
@@ -51,8 +55,9 @@ backs on one edge must fit in it, otherwise the error says how much each corner 
 - `ModelingError: fillet: the sketch has no sharp corners to round` (Slot, Circle).
 - `ModelingError: fillet: the corner at (10, 5) is smooth (its edges meet tangentially), so there
   is nothing to round; ...`: a smooth corner was selected.
-- `ModelingError: fillet: the corner at (20, 0) joins the bspline ...; fillet works on corners
-  between lines and arcs. ...`: pass only the line/arc corners.
+- `ModelingError: fillet: radius 3 at (20, 0): no arc of radius 3 touches both segments; use a
+  smaller radius`: at a spline or ellipse corner (a spline arriving along its tangent, bending
+  tightly).
 - `ValueError: fillet: the radius must be positive`.
 - `TypeError: fillet: the corners are given as vertices or points, not as an Edge ...`.
 
@@ -64,6 +69,10 @@ plate = Rectangle(60, 40) - Rectangle(20, 10)
 soft_hole = plate.fillet(2, plate.vertices().concave())       # only the hole's corners
 tab = Rectangle(30, 10).fillet(5, Rectangle(30, 10).vertices().right())   # round right end
 same = fillet(plate.vertices().concave(), 2)                  # the function form
+bottle = make_face(Wire([Line((0, 0), (10, 0)), Spline((10, 0), (14, 4), (12, 8), (10, 10)),
+                         Line((10, 10), (0, 10)), Line((0, 10), (0, 0))]))
+rounded = bottle.fillet(2)                                    # also the two corners at the spline
+print(round(rounded.area, 6))                                 # 124.120929
 ```
 
 ## Related

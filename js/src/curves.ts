@@ -5,8 +5,9 @@
 
 import { KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
-import { solve } from './_linalg.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
+import { type Complex, Corner, GeometryError, type Seg, assemble, describe, fmt, isSmooth } from './_planar.ts'
+import { CurveCorners, type Frame, curveOf, realSize, segOfEdge, wireFrame } from './_regions.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
 type Any = any
@@ -206,54 +207,193 @@ export function EllipticalArc(center: VectorLike, xRadius: number, yRadius: numb
   return Edge._fromCurve(_transformCurve(curve, plane.location.mul(new Location(_vec(center)))._m))
 }
 
+// ------------------------------------------------------------------------------- conics
+/** The rational quadratic Bezier p0, p1, p2 (plane coordinates) with middle weight w, placed on the
+ * plane. */
+function _conic(p0: Vector, p1: Vector, p2: Vector, w: number, plane: Plane, what: string): Edge {
+  const curve = kernelCall(what, () => _canonicalCurve([p0.toArray(), p1.toArray(), p2.toArray()], [0, 0, 0, 1, 1, 1], 2, w === 1 ? null : [1, w, 1]))
+  return _placed(curve, plane)
+}
+
+function _placed(curve: number, plane: Plane): Edge {
+  return Edge._fromCurve(_transformCurve(curve, plane.location._m))
+}
+
+function _finite(what: string, values: Record<string, unknown>): void {
+  for (const [name, v] of Object.entries(values)) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new RangeError(`${what}: ${name} must be a finite number, got ${String(v)}`)
+  }
+}
+
+/**
+ * A piece of the parabola `y = x² / (4 focalLength)`: its vertex at `vertex` (in plane
+ * coordinates), opening along the plane's Y axis, from `x = start` to `x = end` (measured from the
+ * vertex along the plane's X axis). Exact: a quadratic B-spline. For reflectors, horns and nozzle
+ * contours; a negative focal length opens it along -Y.
+ *
+ * `ParabolicArc([0, 0], 10, -20, 20)` runs from (-20, 10) through (0, 0) to (20, 10); its focus is
+ * at (0, 10).
+ */
+export function ParabolicArc(vertex: VectorLike, focalLength: number, start: number, end: number, plane: Plane = Plane.XY): Edge {
+  _finite('ParabolicArc', { focalLength, start, end })
+  if (focalLength === 0) throw new RangeError('ParabolicArc: the focal length must not be zero')
+  if (start === end) throw new RangeError('ParabolicArc: start and end must differ')
+  const v = _vec(vertex)
+  const f = Number(focalLength)
+  const [x0, x1] = [Number(start), Number(end)]
+  return _conic(v.add([x0, (x0 * x0) / (4 * f), 0]), v.add([(x0 + x1) / 2, (x0 * x1) / (4 * f), 0]),
+    v.add([x1, (x1 * x1) / (4 * f), 0]), 1, plane, 'ParabolicArc')
+}
+
+/**
+ * A piece of the hyperbola `x²/xRadius² - y²/yRadius² = 1`, the branch on the +X side of `center`
+ * (in plane coordinates), from `y = start` to `y = end` (measured from the center along the plane's
+ * Y axis). Exact: a rational quadratic B-spline. Its vertex is at `(xRadius, 0)` from the center and
+ * its asymptotes have the slopes `±yRadius / xRadius`.
+ *
+ * `HyperbolicArc([0, 0], 10, 20, -30, 30)` revolved about the Y axis is a cooling tower with a
+ * waist of radius 10.
+ */
+export function HyperbolicArc(center: VectorLike, xRadius: number, yRadius: number, start: number, end: number, plane: Plane = Plane.XY): Edge {
+  _finite('HyperbolicArc', { xRadius, yRadius, start, end })
+  if (xRadius <= 0 || yRadius <= 0) throw new RangeError('HyperbolicArc: xRadius and yRadius must be positive')
+  if (start === end) throw new RangeError('HyperbolicArc: start and end must differ')
+  const [a, b] = [Number(xRadius), Number(yRadius)]
+  const t0 = Math.asinh(Number(start) / b)
+  const t1 = Math.asinh(Number(end) / b)
+  const m = (t0 + t1) / 2
+  const d = (t1 - t0) / 2
+  const c = _vec(center)
+  // the tangents at the ends meet at the middle control point; the weight cosh of half the span
+  return _conic(c.add([a * Math.cosh(t0), b * Math.sinh(t0), 0]),
+    c.add([(a * Math.cosh(m)) / Math.cosh(d), (b * Math.sinh(m)) / Math.cosh(d), 0]),
+    c.add([a * Math.cosh(t1), b * Math.sinh(t1), 0]), Math.cosh(d), plane, 'HyperbolicArc')
+}
+
+/**
+ * A conic arc from `start` to `end`, tangent there to the lines toward `apex` (the point where the
+ * end tangents meet), with the fullness `rho` (0 < rho < 1): the arc passes `rho` of the way from
+ * the middle of the chord to the apex. 0.5 is a parabola, less an ellipse (flatter), more a
+ * hyperbola (closer to the apex). The rho conic of styling: a corner blend whose shape a single
+ * number sets. Exact: a rational quadratic B-spline.
+ *
+ * `ConicArc([0, 0], [10, 0], [10, 10], 0.4142)` is nearly the quarter circle of radius 10 (exactly
+ * for rho = sqrt(2) - 1).
+ */
+export function ConicArc(start: VectorLike, apex: VectorLike, end: VectorLike, rho = 0.5): Edge {
+  _finite('ConicArc', { rho })
+  if (!(rho > 0 && rho < 1)) throw new RangeError(`ConicArc: rho is between 0 and 1 (0.5: a parabola), got ${String(rho)}`)
+  const a = _vec(start)
+  const p = _vec(apex)
+  const b = _vec(end)
+  if (a.isClose(b, 1e-12) || p.sub(a).cross(b.sub(a)).length <= 1e-12 * Math.max(1, p.sub(a).length * b.sub(a).length)) {
+    throw new RangeError('ConicArc: start, apex and end must not lie on one line')
+  }
+  const w = Number(rho) / (1 - Number(rho))
+  return kernelCall('ConicArc', () => Edge._fromCurve(_canonicalCurve([a.toArray(), p.toArray(), b.toArray()], [0, 0, 0, 1, 1, 1], 2, [1, w, 1])))
+}
+
 // ------------------------------------------------------------------------------- NURBS curves
-/** Values (or derivatives) of all B-spline basis functions of degree `p` at `u`. */
-export function _basis(knots: readonly number[], p: number, u: number, deriv = 0): number[] {
+/** The index of the knot span that holds `u` (the last span for the end of the range). */
+export function _span(knots: readonly number[], p: number, u: number): number {
   const n = knots.length - p - 1
-  let span: number
-  if (u >= knots[n]) span = n - 1
-  else {
-    let right = 0 // numpy's searchsorted(knots, u, side="right")
-    while (right < knots.length && knots[right] <= u) right++
-    span = Math.max(p, Math.min(right - 1, n - 1))
+  if (u >= knots[n]) return n - 1
+  let lo = p
+  let hi = n
+  while (hi - lo > 1) { // knots[lo] <= u < knots[hi]
+    const mid = (lo + hi) >> 1
+    if (u < knots[mid]) hi = mid
+    else lo = mid
   }
-  let N = new Array<number>(knots.length - 1).fill(0)
-  N[span] = 1
-  let out: number[] | null = null
-  for (let d = 1; d <= p; d++) {
-    const nn = new Array<number>(knots.length - 1 - d).fill(0)
-    for (let i = 0; i < nn.length; i++) {
-      let a = 0
-      let den = knots[i + d] - knots[i]
-      if (den > 0) a += (deriv && d === p ? d / den : (u - knots[i]) / den) * N[i]
-      den = knots[i + d + 1] - knots[i + 1]
-      if (den > 0) a += (deriv && d === p ? -d / den : (knots[i + d + 1] - u) / den) * N[i + 1]
-      nn[i] = a
+  return lo
+}
+
+/** The p + 1 B-spline basis functions of degree `p` that are not zero in `span` and their
+ * derivatives up to the `nd`-th at `u`: `ders[k][j]` is the k-th derivative of the basis function of
+ * control point `span - p + j` (Piegl and Tiller, The NURBS Book, A2.3). */
+export function _basisDers(knots: readonly number[], p: number, span: number, u: number, nd: number): number[][] {
+  const ndu = Array.from({ length: p + 1 }, () => new Array<number>(p + 1).fill(0))
+  ndu[0][0] = 1
+  const left = new Array<number>(p + 1).fill(0)
+  const right = new Array<number>(p + 1).fill(0)
+  for (let j = 1; j <= p; j++) {
+    left[j] = u - knots[span + 1 - j]
+    right[j] = knots[span + j] - u
+    let saved = 0
+    for (let r = 0; r < j; r++) {
+      ndu[j][r] = right[r + 1] + left[j - r]
+      const temp = ndu[r][j - 1] / ndu[j][r]
+      ndu[r][j] = saved + right[r + 1] * temp
+      saved = left[j - r] * temp
     }
-    N = nn
-    out = N
+    ndu[j][j] = saved
   }
-  if (out === null) throw new Error('degree 0 basis')
-  return out.slice(0, n)
+  const ders = Array.from({ length: nd + 1 }, () => new Array<number>(p + 1).fill(0))
+  for (let j = 0; j <= p; j++) ders[0][j] = ndu[j][p]
+  for (let r = 0; r <= p; r++) {
+    const a = [new Array<number>(p + 1).fill(0), new Array<number>(p + 1).fill(0)]
+    let s1 = 0
+    let s2 = 1
+    a[0][0] = 1
+    for (let k = 1; k <= nd; k++) {
+      let d = 0
+      const rk = r - k
+      const pk = p - k
+      if (r >= k) {
+        a[s2][0] = a[s1][0] / ndu[pk + 1][rk]
+        d = a[s2][0] * ndu[rk][pk]
+      }
+      const j1 = rk >= -1 ? 1 : -rk
+      const j2 = r - 1 <= pk ? k - 1 : p - r
+      for (let j = j1; j <= j2; j++) {
+        a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j]
+        d += a[s2][j] * ndu[rk + j][pk]
+      }
+      if (r <= pk) {
+        a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r]
+        d += a[s2][k] * ndu[r][pk]
+      }
+      ders[k][r] = d
+      ;[s1, s2] = [s2, s1]
+    }
+  }
+  let f = p
+  for (let k = 1; k <= nd; k++) {
+    for (let j = 0; j <= p; j++) ders[k][j] *= f
+    f *= p - k
+  }
+  return ders
+}
+
+/** The solution of a tridiagonal system (row i: sub[i] x[i-1] + diag[i] x[i] + sup[i] x[i+1] =
+ * rhs[i], each rhs a row of numbers). Without pivoting: B-spline collocation matrices are totally
+ * positive (de Boor), so elimination in order is stable. */
+export function _thomas(sub: readonly number[], diag: readonly number[], sup: readonly number[], rhs: readonly (readonly number[])[]): number[][] {
+  const n = diag.length
+  const c = new Array<number>(n).fill(0)
+  const d = rhs.map((r) => [...r])
+  const w = n ? d[0].length : 0
+  for (let i = 0; i < n; i++) {
+    const m = diag[i] - (i ? sub[i] * c[i - 1] : 0)
+    c[i] = i + 1 < n ? sup[i] / m : 0
+    for (let q = 0; q < w; q++) d[i][q] = (d[i][q] - (i ? sub[i] * d[i - 1][q] : 0)) / m
+  }
+  for (let i = n - 2; i >= 0; i--) for (let q = 0; q < w; q++) d[i][q] -= c[i] * d[i + 1][q]
+  return d
 }
 
 type V3 = [number, number, number]
 
-const add3 = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-const sub3 = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-const mul3 = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s]
-
-/** Cubic interpolation through `points` with end tangent conditions. */
-function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, closed: boolean): Edge {
+/** Cubic interpolation through `points`: with end tangent conditions, or, for a closed curve without
+ * tangents, periodic (curvature continuous at the seam as everywhere else). Only the basis functions
+ * that are not zero at each point are evaluated, and the system is tridiagonal (one row and column
+ * more for a closed curve): linear in the number of points. */
+export function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, closed: boolean): Edge {
   const Q: V3[] = points.map((p) => p.toArray())
-  if (closed) {
-    if (!points[0].isClose(points[points.length - 1])) Q.push(Q[0])
-    if (t0 === null && t1 === null) {
-      const d = sub3(Q[1], Q[Q.length - 2])
-      t0 = t1 = new Vector(d)
-    }
-  }
-  const chords = Q.slice(1).map((q, i) => Math.hypot(...sub3(q, Q[i])))
+  if (closed && !points[0].isClose(points[points.length - 1])) Q.push([...Q[0]])
+  const periodic = closed && t0 === null && t1 === null
+  if (periodic && Q.length < 4) throw new RangeError('a closed spline needs at least three points')
+  const chords = Q.slice(1).map((q, i) => Math.hypot(q[0] - Q[i][0], q[1] - Q[i][1], q[2] - Q[i][2]))
   if (chords.some((c) => c < 1e-12)) throw new RangeError('spline points must be distinct')
   const total = chords.reduce((s, c) => s + c, 0)
   // centripetal parameters reduce overshoot on uneven spacing
@@ -261,50 +401,111 @@ function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, cl
   const wsum = w.reduce((s, x) => s + x, 0)
   const u = [0]
   let acc = 0
-  for (const x of w) {
+  for (const x of w.slice(0, -1)) {
     acc += x
     u.push(acc / wsum)
   }
+  u.push(1)
   const n = Q.length - 1
-
-  // derivative at u[at] of the parabola through three points
-  const bessel = (i0: number, i1: number, i2: number, at: number): V3 => {
-    const [ua, ub, uc] = [u[i0], u[i1], u[i2]]
-    const [A, B, C] = [Q[i0], Q[i1], Q[i2]]
-    const x = u[at]
-    return add3(
-      add3(mul3(A, (2 * x - ub - uc) / ((ua - ub) * (ua - uc))), mul3(B, (2 * x - ua - uc) / ((ub - ua) * (ub - uc)))),
-      mul3(C, (2 * x - ua - ub) / ((uc - ua) * (uc - ub))),
-    )
-  }
-
-  let D0: V3
-  let D1: V3
-  if (n === 1) {
-    D0 = t0 === null ? sub3(Q[1], Q[0]) : mul3(t0.normalized().toArray(), total)
-    D1 = t1 === null ? sub3(Q[1], Q[0]) : mul3(t1.normalized().toArray(), total)
-  } else {
-    D0 = t0 === null ? bessel(0, 1, 2, 0) : mul3(t0.normalized().toArray(), total)
-    D1 = t1 === null ? bessel(n - 2, n - 1, n, n) : mul3(t1.normalized().toArray(), total)
-  }
   const p = 3
   const knots = [0, 0, 0, 0, ...u.slice(1, -1), 1, 1, 1, 1]
-  const A: number[][] = []
-  const B: number[][] = []
-  A.push(_basis(knots, p, 0))
-  B.push(Q[0])
-  A.push(_basis(knots, p, 0, 1))
-  B.push(D0)
-  for (let i = 1; i < n; i++) {
-    A.push(_basis(knots, p, u[i]))
-    B.push(Q[i])
+  const m = n + 3 // control points
+  const P: (number[] | null)[] = new Array(m).fill(null)
+  const end0 = _basisDers(knots, p, p, 0, 2) // control points 0..3
+  const end1 = _basisDers(knots, p, m - 1, 1, 2) // control points m-4..m-1
+  const rows: number[][] = [] // row i: control points i..i+3
+  for (let i = 1; i < n; i++) rows.push(_basisDers(knots, p, i + 3, u[i], 0)[0])
+  P[0] = Q[0]
+  P[m - 1] = Q[n]
+
+  if (!periodic) {
+    // derivative at u[at] of the parabola through three points
+    const bessel = (i0: number, i1: number, i2: number, at: number): number[] => {
+      const [ua, ub, uc] = [u[i0], u[i1], u[i2]]
+      const x = u[at]
+      const fa = (2 * x - ub - uc) / ((ua - ub) * (ua - uc))
+      const fb = (2 * x - ua - uc) / ((ub - ua) * (ub - uc))
+      const fc = (2 * x - ua - ub) / ((uc - ua) * (uc - ub))
+      return [0, 1, 2].map((q) => Q[i0][q] * fa + Q[i1][q] * fb + Q[i2][q] * fc)
+    }
+    const given = (t: Vector): number[] => t.normalized().toArray().map((c) => c * total)
+    const chord = [0, 1, 2].map((q) => Q[1][q] - Q[0][q])
+    let D0: number[]
+    let D1: number[]
+    if (n === 1) {
+      D0 = t0 === null ? chord : given(t0)
+      D1 = t1 === null ? chord : given(t1)
+    } else {
+      D0 = t0 === null ? bessel(0, 1, 2, 0) : given(t0)
+      D1 = t1 === null ? bessel(n - 2, n - 1, n, n) : given(t1)
+    }
+    // the end derivatives give the second and the second last control points
+    const P1 = [0, 1, 2].map((q) => (D0[q] - end0[1][0] * Q[0][q]) / end0[1][1])
+    const Pm2 = [0, 1, 2].map((q) => (D1[q] - end1[1][3] * Q[n][q]) / end1[1][2])
+    P[1] = P1
+    P[m - 2] = Pm2
+    // control points 2 .. m-3 from the points 1 .. n-1
+    const sub: number[] = []
+    const diag: number[] = []
+    const sup: number[] = []
+    const rhs: number[][] = []
+    for (let i = 1; i < n; i++) {
+      const N = rows[i - 1]
+      let r: number[] = [...Q[i]]
+      if (i === 1) r = [0, 1, 2].map((q) => r[q] - N[0] * P1[q])
+      if (i === n - 1) r = [0, 1, 2].map((q) => r[q] - N[2] * Pm2[q])
+      sub.push(i > 1 ? N[0] : 0)
+      diag.push(N[1])
+      sup.push(i < n - 1 ? N[2] : 0)
+      rhs.push(r)
+    }
+    if (rhs.length) _thomas(sub, diag, sup, rhs).forEach((x, j) => { P[2 + j] = x })
+  } else {
+    // Unknowns: control points 1 .. m-2 (y[0] .. y[k]); the first and last are the seam point.
+    // Rows: the first and second derivatives equal at both ends of the seam, and the points
+    // 1 .. n-1. Ordered as below the matrix is tridiagonal but for corners; the last unknown is
+    // eliminated (Schur complement) and the rest solved by two tridiagonal solves.
+    const k = m - 3
+    const seam = (order: number): [Map<number, number>, number[]] => {
+      const row = new Map<number, number>()
+      let rhs = [0, 0, 0]
+      const terms: [number, number][] = [...[0, 1, 2, 3].map((j): [number, number] => [j, end0[order][j]]),
+        ...[0, 1, 2, 3].map((j): [number, number] => [m - 4 + j, -end1[order][j]])]
+      for (const [j, cf] of terms) {
+        if (j === 0 || j === m - 1) rhs = [0, 1, 2].map((q) => rhs[q] - cf * Q[0][q])
+        else if (cf) row.set(j - 1, (row.get(j - 1) ?? 0) + cf)
+      }
+      return [row, rhs]
+    }
+    const [first, rFirst] = seam(1) // y[0] and y[k]
+    const [last, rLast] = seam(2) // y[0], y[1], y[k-1], y[k]
+    const sub = [0]
+    const diag = [first.get(0) ?? 0]
+    const sup = [0]
+    const rhs: number[][] = [rFirst]
+    const col = [first.get(k) ?? 0]
+    for (let i = 1; i < n; i++) { // row i: y[i-1], y[i], y[i+1]
+      const N = rows[i - 1]
+      sub.push(N[0])
+      diag.push(N[1])
+      sup.push(i + 1 < k ? N[2] : 0)
+      col.push(i + 1 === k ? N[2] : 0)
+      rhs.push([...Q[i]])
+    }
+    const X = _thomas(sub, diag, sup, rhs)
+    const Z = _thomas(sub, diag, sup, col.map((c) => [c]))
+    let aBB = last.get(k) ?? 0
+    for (const [j, cf] of last) if (j < k) aBB -= cf * Z[j][0]
+    if (Math.abs(aBB) < 1e-300) throw new RangeError('Spline: the closed curve through these points cannot be made')
+    const yk = [0, 1, 2].map((q) => {
+      let r = rLast[q]
+      for (const [j, cf] of last) if (j < k) r -= cf * X[j][q]
+      return r / aBB
+    })
+    for (let j = 0; j < k; j++) P[1 + j] = [0, 1, 2].map((q) => X[j][q] - Z[j][0] * yk[q])
+    P[m - 2] = yk
   }
-  A.push(_basis(knots, p, 1, 1))
-  B.push(D1)
-  A.push(_basis(knots, p, 1))
-  B.push(Q[n])
-  const P = solve(A, B)
-  return kernelCall('Spline', () => Edge._fromCurve(_canonicalCurve(P, knots, p, null)))
+  return kernelCall('Spline', () => Edge._fromCurve(_canonicalCurve(P as number[][], knots, p, null)))
 }
 
 /**
@@ -455,6 +656,42 @@ export function Helix(
   return Edge._fromCurve(_transformCurve(curve, plane.location._m))
 }
 
+/**
+ * A flat (Archimedean) spiral around the plane's origin: its radius grows (or shrinks) evenly with
+ * the angle from `startRadius` to `endRadius` over `turns` turns. It starts on the plane's X axis and
+ * turns counterclockwise seen from the plane's normal (`clockwise: true`: the other way). Either
+ * radius may be 0 (a spiral from or to the center). For spiral springs, scroll grooves and coils; a
+ * B-spline within 1e-4 of the exact spiral, as `Helix`, of any number of turns.
+ *
+ * `Spiral(2, 20, 5)` runs from (2, 0) to (20, 0) in five turns, 9/5 = 3.6 apart.
+ */
+export function Spiral(startRadius: number, endRadius: number, turns: number, plane: Plane = Plane.XY, options: { clockwise?: boolean } = {}): Edge {
+  _opts('Spiral', options, arguments.length)
+  const { clockwise = false } = options
+  _finite('Spiral', { startRadius, endRadius, turns })
+  if (startRadius < 0 || endRadius < 0) throw new RangeError('Spiral: the radii must not be negative')
+  if (startRadius === endRadius) {
+    throw new RangeError('Spiral: startRadius and endRadius must differ (equal ones go round one circle again and again; use CenterArc)')
+  }
+  if (turns <= 0) throw new RangeError('Spiral: turns must be positive')
+  // The kernel's helix of a tiny height (at least 1e-7 a piece) flattened onto the plane: its
+  // control points moved to z = 0, the exact projection of a curve within the tolerance of the helix,
+  // whose projection is the spiral. The kernel takes radii from 1e-7: a spiral from or to the center
+  // starts or ends at its first or last control point, moved there.
+  const [r0, r1, n] = [Number(startRadius), Number(endRadius), Number(turns)]
+  const height = 2e-7 * Math.max(1, n)
+  const flat = kernelCall('Spiral', () => {
+    const curve = _helixCurve(height / n, height, Math.max(r0, 1e-7), Math.max(r1, 1e-7), n, !clockwise)
+    const d = ext.curve_data(curve)
+    ext.delete_curve(curve)
+    const poles: number[][] = d.poles.map((q: number[]) => [q[0], q[1], 0])
+    if (r0 === 0) poles[0] = [0, 0, 0]
+    if (r1 === 0) poles[poles.length - 1] = [0, 0, 0]
+    return _canonicalCurve(poles, d.knots, d.degree, d.weights)
+  })
+  return _placed(flat, plane)
+}
+
 const _HELIX_PIECE_TURNS = 100 // (the kernel fits at most 124.25 turns in one go)
 
 /** The kernel's helix along +Z from the origin; above 120 turns, pieces of whole turns (each starts
@@ -491,30 +728,107 @@ export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | { 
 }
 
 // ------------------------------------------------------------------------------- corner rounding
+function _fp(v: Vector): string {
+  return Math.abs(v.z) < 1e-9 ? `(${fmt(v.x)}, ${fmt(v.y)})` : `(${fmt(v.x)}, ${fmt(v.y)}, ${fmt(v.z)})`
+}
+
+/** Round the corners of a wire (Wire.fillet): a planar wire's corners between lines and arcs exactly
+ * in its plane (as Sketch.fillet), a wire that is not planar its corners between lines. Corners that
+ * cannot be rounded throw, named or not; points that are not corners throw. */
 export function _filletWire(wire: Wire, radius: number, vertices: Iterable<VectorLike | Vertex> | null): Wire {
   if (!(radius > 0)) throw new RangeError('fillet: the radius must be positive')
   const edges = [...wire.edges()]
   const n = edges.length
   const closed = wire.isClosed
-  const targets = vertices != null ? [...vertices].map((v) => (v instanceof Vertex ? v.point : _vec(v))) : null
+  let size = 1
+  for (const e of edges) for (const q of [e.start, e.end]) size = Math.max(size, Math.abs(q.x), Math.abs(q.y), Math.abs(q.z))
+  const vtol = 1e-6 * size
+  const joints = Array.from({ length: closed ? n : n - 1 }, (_, i) => i) // corner i: where edges[i] ends and edges[i + 1] starts
+  let chosen = new Set(joints)
+  if (vertices != null) {
+    const targets = [...vertices].map((v) => (v instanceof Vertex ? v.point : _vec(v)))
+    if (!targets.length) throw new RangeError('fillet: no corners given (the selection is empty)')
+    chosen = new Set()
+    const missing: Vector[] = []
+    for (const t of targets) {
+      const hits = joints.filter((i) => edges[i].end.distanceTo(t) <= vtol)
+      if (!hits.length) missing.push(t)
+      for (const i of hits) chosen.add(i)
+    }
+    if (missing.length) {
+      const ends = closed ? [] : [wire.start, wire.end].filter((e) => missing.some((t) => e.distanceTo(t) <= vtol))
+      if (ends.length) throw new ModelingError(`fillet: ${_fp(ends[0])} is an end of the open wire, not a corner`)
+      const cornersAt = joints.map((i) => _fp(edges[i].end))
+      const more = cornersAt.length > 12 ? ', ...' : ''
+      const listed = cornersAt.length ? `its corners are at ${cornersAt.slice(0, 12).join(', ')}${more}` : 'it has no corners'
+      throw new ModelingError(`fillet: ${missing.map(_fp).join(', ')} ${missing.length === 1 ? 'is' : 'are'} not a corner of the wire; ${listed}`)
+    }
+  }
+  const named = vertices != null
+  const hint = named ? '' : `; name the corners to round: wire.fillet(${fmt(radius)}, [corner points])`
+  let fr: Frame | null
+  try {
+    fr = wireFrame(edges, null, 'fillet')
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e
+    fr = null // not planar (or straight)
+  }
 
-  const corners: [number, number][] = [] // (index of incoming edge, index of outgoing edge)
-  for (let i = 0; i < (closed ? n : n - 1); i++) {
+  if (fr !== null) {
+    const f = fr
+    const fp = (z: Complex) => f.fp(z)
+    const segs = edges.map((e) => segOfEdge(e, f))
+    const tol = 1e-9 * Math.max(1, realSize(segs))
+    const corners = new Map<number, Corner>()
+    for (const i of [...chosen].sort((x, y) => x - y)) {
+      const j = (i + 1) % n
+      const s1 = segs[i]
+      const s2 = segs[j]
+      if (n === 1 || isSmooth(s1, s2)) {
+        if (named) throw new ModelingError(`fillet: the corner at ${f.fp(s2.start)} is smooth (its edges meet tangentially), so there is nothing to round; leave it out`)
+        continue
+      }
+      corners.set(j, new Corner('fillet', radius, `radius ${fmt(radius)}`))
+    }
+    if (!corners.size) return Wire._raw(edges)
+    let created: Seg[]
+    try {
+      ;[created] = assemble(segs, new Array<string>(n).fill(''), corners, closed, tol, (j) => describe(segs[j], fp), fp, new CurveCorners(f, realSize(segs)))
+    } catch (e) {
+      if (!(e instanceof GeometryError)) throw e
+      throw new RangeError(`fillet: ${e.message}`)
+    }
+    const kept = new Map<Seg, Edge>(segs.map((sg, i) => [sg, edges[i]]))
+    let out = created.map((sg) => kept.get(sg) ?? Edge._fromCurve(curveOf(sg, f)))
+    if (closed && corners.has(0)) out = [...out.slice(1), ...out.slice(0, 1)] // (the wire starts where it did: the arc of the corner at its start goes last)
+    return Wire._raw(out)
+  }
+
+  // A wire that is not planar: corners between lines, each in the plane of its two lines.
+  const cornerList: [number, number][] = [] // (index of incoming edge, index of outgoing edge)
+  for (const i of [...chosen].sort((x, y) => x - y)) {
     const j = (i + 1) % n
     const a = edges[i]
     const b = edges[j]
-    if (!a._isStraight() || !b._isStraight()) continue
-    const corner = a.end
-    if (targets !== null && !targets.some((t) => corner.isClose(t, 1e-6))) continue
-    if (a.direction.isParallel(b.direction)) continue
-    corners.push([i, j])
+    const u = a.tangentAt(1)
+    const w = b.tangentAt(0)
+    if (u.cross(w).length < 1e-9 && u.dot(w) > 0) {
+      if (named) throw new ModelingError(`fillet: the corner at ${_fp(a.end)} is smooth (its edges meet tangentially), so there is nothing to round; leave it out`)
+      continue
+    }
+    if (!a._isStraight() || !b._isStraight()) {
+      const other = !a._isStraight() ? a : b
+      throw new ModelingError(`fillet: the corner at ${_fp(a.end)} joins a ${other.geomType} edge of a wire that is not planar; fillet rounds the corners of such wires between lines only${hint}`)
+    }
+    if (u.isParallel(w)) throw new ModelingError(`fillet: the wire turns back on itself at ${_fp(a.end)}, so there is no corner to round`)
+    cornerList.push([i, j])
   }
 
   // Each rounded corner moves the end of its incoming and the start of its outgoing line.
   const setbackEnd = new Array<number>(n).fill(0)
   const setbackStart = new Array<number>(n).fill(0)
   const arcs = new Map<number, Edge>()
-  for (const [i, j] of corners) {
+  for (const [i, j] of cornerList) {
     const u = edges[i].direction
     const w = edges[j].direction
     const phi = _radians(u.angleTo(w))

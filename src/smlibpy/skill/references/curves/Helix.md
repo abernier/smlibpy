@@ -71,4 +71,4 @@ print(h.start, h.end, h.point_at(1 / 16))              # quarter turn: (0, 10, 1
 ```
 
 ## Related
-`features/sweep`, `CenterArc`, `parts/Cylinder`, `sketches/Polygon`.
+`features/sweep`, `CenterArc`, `Spiral` (a flat spiral), `parts/Cylinder`, `sketches/Polygon`.

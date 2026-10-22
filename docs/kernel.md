@@ -95,6 +95,11 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The curve offset of the API approximates within a fixed 0.001 (an offset of 2 was 1.99945 to 2.00085 from its spline) and makes a cusp or a loop where the curve bends more tightly than the distance | offsets splines itself (`SmBSplineCurve::CreateSimpleOffset`) within 1e-6 of the size, measured, with exact ends, and refuses where the curve's radius of curvature on that side reaches the distance; lines and arcs exactly |
 | The point approximation of the API takes no tolerance (a fixed share of the points as control points) | fits through `SmBSplineCurve::ApproximatePoints` with the tolerance asked for, measures the distance of every point, and fits again with less where it is off |
 | The conversion to lines and arcs of the API asks NLib for 0.001 and returns one rational B-spline 0.0037 off: NLib fits the arcs within ten times the tolerance it is given | asks for a tenth, measures both ways, asks for less while the result is off, and returns the spans as separate lines and arcs |
+| The projection of a curve onto a body of the API (`SmApiProjectCurve`) passes no tolerance: its pieces were 9.4e-5 off a sphere of radius 10 | projects with `SmBrep::CreateParallelProjectionCurves` within 1e-7 of the size (2.5e-8 off that sphere), knows each piece's face, and keeps only what the curve sees where asked (`nearest=True`) |
+| The projection onto one surface of the API takes the curve's own size as the tolerance of the drop and returned a piece of a cylinder's seam for a line in front of it; the drop of the API drops within 10 and lifts within 0.001 (7.5e-4 off a cylinder) | projects onto a face along its normals with `SmBrep::CreateNormalProjectionCurves` within 1e-8 of the size, trimmed to the face (`Face.project`) |
+| A curve of a surface's parameter plane lifted onto it (`SmSurface::LiftCurve`) follows the parameters of the surface's NURBS form, whose speed varies on cylinders, cones and spheres: a line of a cylinder's parameter plane is no helix (0.16 off) | `Face.wrap` maps points by length along the face's parameter lines itself, fits them within 1e-7 of the size and trims the result to the face (`SmFace::CreateCurvesByTrimming`) |
+| `SmBSplineCurve::ForceThroughPoint` missed its point by 1.9e-4 and moved the clamped start of the curve by 2e-4; the constraint solver of NLib is compiled out | `Edge.through` moves the control points itself (the least change that passes the point, ends kept, exact); `Edge.match` uses `SmCurve::DeformToEndPointTargets` |
+| The 2D fillet of curves (`SmCurveFilletExecutive`) is unused and untested in the kernel, cannot be told which side to round and takes the first of four offset combinations it finds | rounds corners at splines and ellipses itself: the arc's center where the curves' offsets meet, refined until it lies at the radius from both curves to 1e-9 (OpenCASCADE's 2D fillet agrees to 5e-8) |
 | The tight box of a curve (`SmCurve::CalculateTightBoundingBox`) takes the corners of the whole curve, not of the interval asked for | computes the box of a free curve from its ends, its corners in the interval and the points where its tangent is perpendicular to an axis |
 | Mass properties control their integration steps by the area alone: a volume can be 300 times worse than the accuracy asked for | integrates areas, volumes, centers and inertia itself, with an error estimate for each |
 | A curve's length leaves out a span that starts with a zero tangent (the outline of a cylinder had 30 mm top and bottom lines instead of 60) | integrates lengths and arc-length positions itself |
@@ -132,6 +137,10 @@ matter here:
   measured; compare such volumes with a formula.
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
+- Of the raw kernel calls (`smlibpy._core`), `k.project_curve_to_surface` can return unrelated
+  geometry (a slanted line in front of a cylinder came back as 25 mm of its seam: `SmApiProjectCurve`
+  takes the curve's size as the tolerance of the drop), and `k.drop_curve_to_surface` drops within
+  10 and lifts within 0.001. smlibpy calls neither; use `Face.project`.
 - Where the kernel has no corner for how the selected edges meet at a vertex (the two halves of
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.

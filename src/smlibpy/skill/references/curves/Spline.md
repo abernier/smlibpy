@@ -11,8 +11,9 @@ A smooth cubic curve exactly through the given points.
   direction for **every** point (a list as long as the points, none of them `None`): the curve
   passes through each point in that direction. Only the direction counts; the length of the
   vectors is ignored.
-- `closed=True`: closes the curve back to the first point, tangent-continuous at the join.
-  Do not repeat the first point (repeating it is harmless).
+- `closed=True`: closes the curve back to the first point, as smooth at the join as everywhere
+  else (periodic: the same tangent and curvature on both sides). At least three points. Do not
+  repeat the first point (repeating it is harmless).
 
 ## Returns
 An `Edge` with `geom_type == "bspline"` that passes through every point (deviation ~1e-14).
@@ -20,9 +21,10 @@ Without `tangents`, each end tangent comes from the parabola through the three e
 `Spline(a, b)` with two points and no tangents returns a `Line`.
 
 ## Gotchas
-- **No `periodic` option.** `closed=True` matches position and tangent at the join, not
-  curvature exactly. Fine for outlines and sweeps; not class-A.
-- `closed=True` with two different tangents makes a kink at the join without an error.
+- `closed=True` without tangents is periodic (curvature continuous at the join). With
+  `tangents=(t, t)` the join has that tangent and is only tangent continuous; with two different
+  tangents it makes a kink without an error.
+- Thousands of points take milliseconds (1600 points: 5 ms).
 - Repeating the first point without `closed=True` closes the curve with a kink.
 - **Pass points as separate arguments.** `Spline([p1, p2, p3])` (one list of 2 or 3 points)
   raises TypeError; use `Spline(*pts)`.

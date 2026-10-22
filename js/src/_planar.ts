@@ -881,6 +881,13 @@ export class Corner {
  * and `segs[i]` starts (`i = 0`: the corner between the last and the first segment of a closed
  * loop). `what(i)` names segment `i` and `fp` formats points in messages.
  */
+/** Corners and pieces of `Curve2` segments for `assemble` (`_regions.CurveCorners`): `corner` as
+ * `filletCorner`, `piece` the part of a curve between two lengths from its start. */
+export interface CornerCurves {
+  corner(kind: string, s1: Seg, s2: Seg, size: number): [number, number, Seg]
+  piece(seg: Curve2, s0: number, s1: number): Seg
+}
+
 export function assemble(
   segs: readonly Seg[],
   labels: readonly string[],
@@ -889,6 +896,7 @@ export function assemble(
   tol: number,
   what: ((i: number) => string) | null = null,
   fp: (p: Complex) => string = fmtPt,
+  curves: CornerCurves | null = null,
 ): [Seg[], string[]] {
   const n = segs.length
   const name = what ?? ((i: number) => `segment ${i + 1} (${labels[i]})`)
@@ -910,7 +918,8 @@ export function assemble(
     let ahead: number
     let piece: Seg
     try {
-      if (cn.kind === 'fillet') [back, ahead, piece] = filletCorner(s1, s2, cn.size)
+      if (curves !== null && (s1 instanceof Curve2 || s2 instanceof Curve2)) [back, ahead, piece] = curves.corner(cn.kind, s1, s2, cn.size)
+      else if (cn.kind === 'fillet') [back, ahead, piece] = filletCorner(s1, s2, cn.size)
       else [back, ahead, piece] = chamferCorner(s1, s2, cn.size)
     } catch (e) {
       if (!(e instanceof GeometryError)) throw e
@@ -953,8 +962,12 @@ export function assemble(
     }
     if (cutStart[j] || cutEnd[j]) {
       if (seg.length - cutStart[j] - cutEnd[j] > tol) {
-        if (seg instanceof Curve2) throw new GeometryError(`cannot shorten ${name(j)}: it is not a line or an arc`)
-        out.push(seg.piece(cutStart[j], seg.length - cutEnd[j]))
+        if (seg instanceof Curve2) {
+          if (curves === null) throw new GeometryError(`cannot shorten ${name(j)}: it is not a line or an arc`)
+          out.push(curves.piece(seg, cutStart[j], seg.length - cutEnd[j]))
+        } else {
+          out.push(seg.piece(cutStart[j], seg.length - cutEnd[j]))
+        }
         labs.push(labels[j])
       }
     } else {

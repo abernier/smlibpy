@@ -1304,6 +1304,164 @@ class Edge(Shape):
                  for p in r["pieces"]]
         return Wire._raw(edges)
 
+    # -- editing --------------------------------------------------------------
+    def _plain_bspline(self) -> Any:
+        """A new kernel B-spline of this edge (lines and arcs as the B-splines they are)."""
+        n = self.nurbs()
+        return _canonical_curve(np.array([p.to_tuple() for p in n.points]), n.knots, n.degree, n.weights)
+
+    def through(self, point: VectorLike | Vertex, *, tangent: VectorLike | None = None,
+                at: float | None = None) -> Edge:
+        """This edge bent to pass through ``point`` (and there in the direction ``tangent``, if
+        given): the smallest move of its control points that does it, with the ends of the edge and
+        its directions at the ends kept. For "make this curve pass here" edits of splines, sweep
+        paths and outlines; lines and arcs become cubic B-splines.
+
+        Args:
+            point: The point the edge passes through.
+            tangent: The direction of the edge at that point (its length does not count; it is the
+                direction the edge runs in).
+            at: Where along the edge the point goes, as a fraction of its length (strictly between 0
+                and 1). Default: where the edge comes closest to the point.
+
+        The change is local: it moves the few control points near ``at`` (knots are inserted there
+        when the edge has too few), so a point far from the edge makes a bump, not a new curve. ::
+
+            path = Spline((0, 0), (20, 10), (40, 0)).through((20, 15))
+        """
+        from .curves import _basis_ders, _span
+
+        p = _vec(point.point if isinstance(point, Vertex) else point)
+        if not all(math.isfinite(c) for c in p):
+            raise ValueError("through: the point must be finite")
+        t = None
+        if tangent is not None:
+            t = _vec(tangent)
+            if not t.length > 0 or not all(math.isfinite(c) for c in t):
+                raise ValueError("through: the tangent must be a direction (not zero)")
+            t = t.normalized()
+        if at is not None and not (isinstance(at, (int, float, np.integer, np.floating)) and not isinstance(at, bool)
+                                   and 0.0 < float(at) < 1.0):
+            raise ValueError(f"through: at is a fraction of the edge strictly between 0 and 1 (its ends stay), "
+                             f"got {at!r}")
+        need = 1 if t is None else 2
+        with kernel_call("Edge.through"):
+            base = Edge._from_curve(self._plain_bspline())
+            u = base._param(float(at)) if at is not None else base._closest(p)[1]
+            t0, t1 = base._range()
+            if not t0 < u < t1:
+                raise ValueError("through: the point is nearest to an end of the edge, and the ends stay; pass at= to "
+                                 "say where along the edge it goes")
+            d = ext.curve_data(base._curve(), True)
+            q = max(3, int(d["degree"]))
+            # the knots after raising the degree (every knot once more per degree)
+            knots = [float(x) for x in d["knots"]]
+            raised: list[float] = []
+            i = 0
+            while i < len(knots):
+                j = i
+                while j < len(knots) and knots[j] == knots[i]:
+                    j += 1
+                raised += [knots[i]] * (j - i + q - int(d["degree"]))
+                i = j
+            # knots in the spans around u until enough control points that are free to move (not
+            # the first two or the last two) act there
+            inserts: list[float] = []
+            for _ in range(12):
+                kv = sorted(raised + inserts)
+                m = len(kv) - q - 1
+                s = _span(kv, q, u)
+                free = [i for i in range(s - q, s + 1) if 2 <= i <= m - 3]
+                if len(free) >= need + 1:
+                    break
+                lo, hi = max(q, s - q), min(m, s + q + 1)  # the spans s - q .. s + q
+                spans = sorted({x for x in kv[lo:hi + 1]})
+                inserts += [(a + b) / 2 for a, b in zip(spans, spans[1:]) if b > a]
+            else:
+                raise ModelingError("through: the edge cannot be refined enough to move")
+            c = ext.refine_curve(base._curve(), q, inserts)
+            try:
+                d = ext.curve_data(c, True)
+            finally:
+                ext.delete_curve(c)
+        kv = [float(x) for x in d["knots"]]
+        P = np.array(d["poles"], dtype=float)
+        w = None if d["weights"] is None else np.array(d["weights"], dtype=float)
+        m = len(P)
+        s = _span(kv, q, u)
+        ders = _basis_ders(kv, q, s, u, 1)
+        idx = list(range(s - q, s + 1))
+        N, dN = np.array(ders[0]), np.array(ders[1])
+        if w is not None:  # rational: R = N w / W, linear in the control points for fixed weights
+            ww = w[idx]
+            W, dW = float(N @ ww), float(dN @ ww)
+            R = N * ww / W
+            dR = (dN * ww * W - N * ww * dW) / (W * W)
+        else:
+            R, dR = N, dN
+        here = R @ P[idx]
+        rows, rhs = [R], [np.array(p.to_tuple()) - here]
+        if t is not None:
+            slope = dR @ P[idx]
+            rows.append(dR)
+            rhs.append(np.array(t.to_tuple()) * float(np.linalg.norm(slope)) - slope)
+        free = [j for j, i in enumerate(idx) if 2 <= i <= m - 3]
+        A = np.array(rows)[:, free]
+        B = np.array(rhs)
+        G = A @ A.T
+        if abs(np.linalg.det(G)) <= 1e-14 * max(1.0, float(np.abs(G).max())) ** len(rows):
+            raise ModelingError("through: the edge cannot be bent there (its control points do not reach the point)")
+        move = A.T @ np.linalg.solve(G, B)  # the smallest move (least squares, minimum norm)
+        for j, k_ in enumerate(free):
+            P[idx[k_]] += move[j]
+        with kernel_call("Edge.through"):
+            return Edge._from_curve(_canonical_curve(P, kv, q, None if w is None else list(w)))
+
+    def match(self, *, start: VectorLike | Vertex | None = None, end: VectorLike | Vertex | None = None,
+              start_tangent: VectorLike | None = None, end_tangent: VectorLike | None = None) -> Edge:
+        """This edge with its ends moved to ``start`` and ``end`` and its directions there set to
+        ``start_tangent`` and ``end_tangent`` (each optional: what is not given stays), bent smoothly
+        in between: the parts near the ends move as a whole, the middle blends. For closing gaps,
+        snapping a curve onto a point or another curve, and making it leave or arrive tangentially.
+        Lines and arcs become B-splines (cubic at least).
+
+        The kernel's own end deformation (``SmCurve::DeformToEndPointTargets``); the ends land on
+        their targets exactly. ::
+
+            snapped = spline.match(end=other.start, end_tangent=other.tangent_at(0))   # G1 joint
+        """
+        def point(v: Any, what: str) -> list[float]:
+            if v is None:
+                return []
+            q = _vec(v.point if isinstance(v, Vertex) else v)
+            if not all(math.isfinite(c) for c in q):
+                raise ValueError(f"match: {what} must be finite")
+            return list(q)
+
+        def direction(v: Any, what: str) -> list[float]:
+            if v is None:
+                return []
+            q = _vec(v)
+            if not q.length > 0 or not all(math.isfinite(c) for c in q):
+                raise ValueError(f"match: {what} must be a direction (not zero)")
+            return list(q)
+
+        targets = (point(start, "start"), point(end, "end"), direction(start_tangent, "start_tangent"),
+                   direction(end_tangent, "end_tangent"))
+        if not any(targets):
+            raise ValueError("match: give start, end, start_tangent or end_tangent")
+        with kernel_call("Edge.match"):
+            base = self._plain_bspline()
+            try:
+                c, dev = ext.deform_ends(base, *targets)
+            finally:
+                ext.delete_curve(base)
+        e = Edge._from_curve(c)
+        size = max(1.0, self.bbox().diagonal, *(abs(x) for x in targets[0] + targets[1]))
+        if dev > 1e-9 * size:
+            raise ModelingError(f"match: the ends came no closer than {dev:.3g} to their targets")
+        return e
+
     # -- topology -------------------------------------------------------------
     def vertices(self) -> ShapeList[Vertex]:
         if self._e is not None:
@@ -1340,6 +1498,32 @@ class Edge(Shape):
             ext.delete_curve(c)
         return Nurbs(int(d["degree"]), [float(x) for x in d["knots"]], [Vector(*p) for p in d["poles"]],
                      None if d["weights"] is None else [float(w) for w in d["weights"]])
+
+    @classmethod
+    def from_nurbs(cls, nurbs: Nurbs | tuple[int, Sequence[float], Sequence[VectorLike], Sequence[float] | None]
+                   ) -> Edge:
+        """The edge of a NURBS curve given by its data: the inverse of :meth:`nurbs`, for control
+        points read from a file or another program, curves edited by moving control points and
+        B-splines of many spans (a :func:`~smlibpy.Bezier` is one span).
+
+        Args:
+            nurbs: A :class:`~smlibpy.Nurbs`, or a tuple ``(degree, knots, points, weights)``:
+                the degree (1 to 32), the knot vector with every knot as often as its multiplicity
+                (``len(points) + degree + 1`` knots, not decreasing; the ends need not repeat), the
+                control points (2D points lie at z = 0) and a positive weight per point, or
+                ``None`` for a non-rational curve.
+
+        The curve runs from ``knots[degree]`` to ``knots[-degree - 1]``; where the ends do not
+        repeat ``degree + 1`` times, it starts and ends inside the control polygon. ::
+
+            n = edge.nurbs()
+            points = list(n.points)
+            points[2] += Vector(0, 0, 5)  # pull one control point up
+            bent = Edge.from_nurbs(n._replace(points=points))
+        """
+        degree, knots, points, weights = _nurbs_data(nurbs)
+        with kernel_call("Edge.from_nurbs"):
+            return cls._from_curve(_canonical_curve(points, knots, degree, weights))
 
     def remove_knots(self) -> Edge:
         """The same curve with the knots it does not need taken out: a B-spline with fewer control
@@ -1520,6 +1704,58 @@ def _transform_curve(curve: Any, m: np.ndarray) -> Any:
     ext.delete_curve(curve)
     poles = np.array(d["poles"]) @ m[:3, :3].T + m[:3, 3]
     return _canonical_curve(poles, d["knots"], d["degree"], d["weights"])
+
+
+def _nurbs_data(nurbs: Any) -> tuple[int, list[float], np.ndarray, list[float] | None]:
+    """The checked degree, knots, control points (an n x 3 array) and weights of NURBS data
+    (Edge.from_nurbs): clear errors where the kernel would only say SM_ERR, or would take a knot
+    vector of the wrong length."""
+    what = "Edge.from_nurbs"
+    try:
+        degree, knots, points, weights = nurbs
+    except (TypeError, ValueError):
+        raise TypeError(f"{what} takes a Nurbs or a tuple (degree, knots, points, weights), "
+                        f"not {type(nurbs).__name__}") from None
+    if isinstance(degree, bool) or not isinstance(degree, (int, np.integer)) or not 1 <= degree <= 32:
+        raise ValueError(f"{what}: the degree is a whole number from 1 to 32, got {degree!r}")
+    degree = int(degree)
+    pts = [_vec(p) for p in points]
+    if len(pts) < degree + 1:
+        raise ValueError(f"{what}: a curve of degree {degree} needs at least {degree + 1} control points, "
+                         f"got {len(pts)}")
+    if not all(math.isfinite(c) for p in pts for c in p):
+        raise ValueError(f"{what}: the control points must be finite numbers")
+    kv = [float(x) for x in knots]
+    if len(kv) != len(pts) + degree + 1:
+        raise ValueError(f"{what}: {len(pts)} control points of degree {degree} take {len(pts) + degree + 1} knots "
+                         f"(points + degree + 1, every knot as often as its multiplicity), got {len(kv)}")
+    if not all(math.isfinite(x) for x in kv):
+        raise ValueError(f"{what}: the knots must be finite numbers")
+    for i in range(1, len(kv)):
+        if kv[i] < kv[i - 1]:
+            raise ValueError(f"{what}: the knots must not decrease, but knot {i + 1} ({kv[i]:g}) is less than knot "
+                             f"{i} ({kv[i - 1]:g})")
+    lo, hi = kv[degree], kv[-degree - 1]
+    if not hi > lo:
+        raise ValueError(f"{what}: the curve's knot range, knots[{degree}] to knots[{len(kv) - degree - 1}], is empty "
+                         f"({lo:g} to {hi:g})")
+    i = 0
+    while i < len(kv):
+        j = i
+        while j < len(kv) and kv[j] == kv[i]:
+            j += 1
+        if (lo < kv[i] < hi and j - i > degree) or j - i > degree + 1:
+            raise ValueError(f"{what}: the knot {kv[i]:g} is repeated {j - i} times; at most {degree} times inside "
+                             f"the curve (more would break it) and {degree + 1} times at its ends")
+        i = j
+    w = None
+    if weights is not None:
+        w = [float(x) for x in weights]
+        if len(w) != len(pts):
+            raise ValueError(f"{what}: one weight per control point ({len(pts)}), got {len(w)}")
+        if not all(math.isfinite(x) and x > 0 for x in w):
+            raise ValueError(f"{what}: the weights must be positive numbers")
+    return degree, kv, np.array([p.to_tuple() for p in pts], dtype=float), w
 
 
 def _canonical_curve(poles: np.ndarray, knots: Sequence[float], degree: int, weights: Sequence[float] | None) -> Any:
@@ -1802,7 +2038,14 @@ class Wire(Shape):
         return _fit_plane(pts, closed=self.is_closed)
 
     def fillet(self, radius: float, vertices: Iterable[VectorLike | Vertex] | None = None) -> Wire:
-        """Round the corners between straight edges with tangent arcs (planar wires)."""
+        """Round corners with tangent arcs of ``radius``: every sharp corner, or those at
+        ``vertices`` (points or vertices). A planar wire's corners are rounded in its plane, as
+        :meth:`Sketch.fillet` does: between lines and arcs exactly, next to splines and ellipses
+        with the arc whose center lies at ``radius`` from both curves (the curves are cut where
+        it touches them). A wire that is not planar has its corners between lines rounded. A
+        corner a wire that is not planar has next to another curve, a smooth corner that is named
+        and a point that is not a corner raise :class:`ModelingError`; a radius that does not fit
+        raises ``ValueError``. Open wires keep their ends."""
         from .curves import _fillet_wire
 
         return _fillet_wire(self, radius, vertices)
@@ -2029,6 +2272,77 @@ class Face(Shape):
         """Where a ray meets this face, nearest first (see :meth:`Part.raycast`)."""
         return _raycast([self], origin, direction, self.bbox())
 
+    # -- curves on the face ---------------------------------------------------
+    def project(self, curve: Edge | Wire) -> ShapeList[Edge]:
+        """The curve projected onto this face along its normals: every point to the nearest point
+        of the face's surface, the result trimmed to the face (pieces where it leaves the face and
+        comes back). Within 1e-7 of the size of the face and the curve. For curves drawn near a
+        freeform face; along one direction, see :meth:`Part.project`. ::
+
+            on_face = part.faces().sort_by(Z)[-1].project(Spline((0, 0, 30), (10, 5, 30), (20, 0, 30)))
+        """
+        size = max(1.0, self.bbox().union(curve.bbox()).diagonal)
+        out = ShapeList()
+        for e in curve.edges():
+            c = e._copy_curve()
+            try:
+                with kernel_call("Face.project"):
+                    # (the kernel's tolerance bounds the drop; along the surface the curve comes within
+                    # about five times it)
+                    res = ext.normal_project([self._f], c, 1e-8 * size)
+            finally:
+                ext.delete_curve(c)
+            out.extend(Edge._from_curve(cv) for cv, _ in res)
+        return out
+
+    def iso(self, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
+        """The curve of the face along which one of its surface parameters is constant: ``u`` or
+        ``v`` as a fraction (0 to 1) of the face's range of that parameter. Trimmed to the face:
+        several pieces where the face has holes or notches. For styling lines, inspection curves
+        and rails on freeform faces. Which parameter runs which way depends on the surface: on a
+        cylinder's side ``v`` is constant around it (``iso(v=0.5)``: the circle half way up) and
+        ``u`` along it. ::
+
+            ring = Cylinder(10, 40).faces().cylinders()[0].iso(v=0.5)
+        """
+        if (u is None) == (v is None):
+            raise ValueError("iso: give u or v (one of them)")
+        f = float(u if u is not None else v)  # type: ignore[arg-type]
+        if not 0.0 <= f <= 1.0 or not math.isfinite(f):
+            raise ValueError(f"iso: {'u' if u is not None else 'v'} is a fraction of the face's range from 0 to 1, "
+                             f"got {f:g}")
+        (u0, v0), (u1, v1) = self._f.uv_domain()
+        lo, hi = (u0, u1) if u is not None else (v0, v1)
+        with kernel_call("Face.iso"):
+            curves = ext.iso_curves(self._f, u is not None, lo + (hi - lo) * f, 1e-7 * max(1.0, self.bbox().diagonal))
+        return ShapeList(Edge._from_curve(c) for c in curves)
+
+    def wrap(self, shape: Edge | Wire | Sketch | Iterable[Edge], at: VectorLike | Vertex | None = None, *,
+             direction: VectorLike | None = None) -> ShapeList[Edge]:
+        """A drawing on XY wrapped onto this face, as a label onto a can: its origin goes to
+        ``at`` (a point of the face; default its middle), its X axis along the face in
+        ``direction`` (default: the face's first parameter direction there; it follows the
+        parameter line nearest to it), its Y axis across, so that it reads from outside. Lengths
+        stay along the two parameter lines through ``at``: on planes and cylinders the whole
+        drawing keeps its size (text around a cylinder); on cones and doubly curved faces it
+        stretches away from those lines. Around a closed face (a cylinder) the drawing continues
+        across the seam; what leaves the face is cut off (also in its holes). Returns the curves on
+        the face, fitted within 1e-7 of its size, cut where they cross its seam.
+
+        Args:
+            shape: An edge, a wire, a sketch or edges, drawn on XY (z is ignored).
+            at: Where the drawing's origin goes: a point of the face's surface. Default: the middle
+                of the face's parameter range.
+            direction: Where its X axis points (projected onto the face).
+
+        ::
+
+            label = can.faces().cylinders()[0].wrap(Text("SMLIB", 8), (0, -20, 0), direction=(1, 0, 0))
+        """
+        from ._face_curves import wrap
+
+        return wrap(self, shape, at, direction)
+
     # -- topology -------------------------------------------------------------
     def _loops(self) -> list[Wire]:
         loops = self._f.boundary_loops()
@@ -2231,19 +2545,36 @@ class _Body(Shape):
             curves = k.create_silhouette_curves(self._brep, (0.0, 0.0, 0.0), d.to_tuple())
         return ShapeList(Edge._from_curve(c) for c in curves)
 
-    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1)) -> ShapeList[Edge]:
+    def project(self, curve: Edge | Wire, direction: Axis | VectorLike = (0, 0, -1), *,
+                nearest: bool = False) -> ShapeList[Edge]:
         """Project a curve onto the body along ``direction`` (an axis or a vector); returns the
-        curves on its faces."""
+        curves on its faces, fitted within 1e-7 of the size of the body and the curve.
+
+        Every face the projection meets gets its pieces: the near side and the far side of the
+        body, and faces seen edge-on (pieces along the direction). ``nearest=True`` keeps what the
+        projection reaches first: the parts seen from the curve along the direction, cut where
+        another part of the body hides them. ::
+
+            path = part.project(Spline((0, -20, 50), (10, 0, 50), (0, 20, 50)), (0, 0, -1), nearest=True)
+        """
         d = _direction(direction, "project")
+        faces = self.faces()
+        size = max(1.0, self._loose_box().union(curve.bbox()).diagonal)
         out = ShapeList()
         for e in curve.edges():
             c = e._copy_curve()
             try:
                 with kernel_call("project"):
-                    res = k.project_curve(self._brep, c, d.to_tuple())
+                    res = ext.project_curve([f._f for f in faces], c, d.to_tuple(), 1e-7 * size)
             finally:
                 ext.delete_curve(c)
-            out.extend(Edge._from_curve(r) for r in res)
+            pieces = [(Edge._from_curve(cv), faces[i]) for cv, i in res]
+            if nearest:
+                from ._face_curves import visible_pieces
+
+                out.extend(visible_pieces(self, e, pieces, d, size))
+            else:
+                out.extend(p for p, _ in pieces)
         return out
 
     def outline(self, plane: Plane = Plane.XY) -> ShapeList[Edge]:
@@ -4542,8 +4873,10 @@ class Sketch(Shell):
 
         ``vertices``: the corners to round, as vertices of this sketch (a selection such as
         ``s.vertices().concave()``) or points; ``None`` rounds every sharp corner. Corners
-        between lines and arcs are rounded exactly; a corner that does not fit, a point that
-        is not a corner, or a smooth corner raises :class:`ModelingError`.
+        between lines and arcs are rounded exactly; next to a spline or an ellipse the arc's
+        center lies at ``radius`` from both curves (where their offsets meet), and the curves are
+        cut where it touches them. A corner that does not fit, a point that is not a corner, or a
+        smooth corner raises :class:`ModelingError`.
         """
         from ._regions import round_corners
 
