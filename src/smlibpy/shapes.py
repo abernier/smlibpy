@@ -2165,6 +2165,9 @@ class Part(_Body):
         ``cells()`` gives the cells as parts of their own; ``volume`` is the volume of the union.
         A merged part is not a manifold solid: ``is_valid()`` is False, and Booleans, fillets and
         shells take its cells rather than the part itself.
+
+        A result whose volume is less than that of the largest part, or more than that of all
+        parts together, is wrong: ``ModelingError``.
         """
         tools = _bodies(others, "merge")
         if not tools:
@@ -2176,7 +2179,12 @@ class Part(_Body):
         for t in tools:
             with kernel_call("merge", "the parts may only touch along an edge or at a point"):
                 _combine(h, t, k.BooleanOp.MERGE, non_manifold=True)
-        return Part._wrap(_take(h), name=self.name, color=self.color)
+        merged = Part._wrap(_take(h), name=self.name, color=self.color)
+        problem = _merge_problem(merged, [self, *tools])
+        if problem is not None:
+            raise ModelingError(f"merge: the kernel returned a result {problem}; a seam of one part that lies "
+                                f"tangent to another can do this: turn that part about its axis or move it a little")
+        return merged
 
     def cells(self) -> ShapeList[Part]:
         """The cells of a part made by :meth:`merge`, each as a part of its own (every closed region
@@ -2186,13 +2194,24 @@ class Part(_Body):
             return ShapeList([self])
         with kernel_call("cells"):
             regions = ext.region_shells(self._brep)
+        solids = [[Part._wrap(b, name=self.name, color=self.color) for b in shells] for shells in regions]
+        touching = ("an insert that touches the part around it at a point or along a line can do this: move it "
+                    "off the wall or into it")
         out: ShapeList[Part] = ShapeList()
-        for shells in regions:
-            outer, *cavities = [Part._wrap(b, name=self.name, color=self.color) for b in shells]
-            part = outer.cut(cavities) if cavities else outer
+        for outer, *cavities in solids:
+            try:
+                part = outer.cut(cavities) if cavities else outer
+            except ModelingError as e:
+                raise ModelingError(f"cells: the cells inside a cell could not be cut out of it ({e}); {touching}") from e
             if not part.is_valid():
                 raise ModelingError(f"cells: a cell is not a sound solid ({part._solid_problem()})")
             out.append(part)
+        # The cells fill the part: a cell that kept another inside it counts that one twice.
+        whole = float(self._props()["volume"])
+        total = sum(float(c._props()["volume"]) for c in out)
+        if not abs(total - whole) <= 1e-6 * abs(whole):
+            raise ModelingError(f"cells: the cells add up to a volume of {total:.10g}, the part has {whole:.10g}; "
+                                f"{touching}")
         return out
 
     # -- points ---------------------------------------------------------------
@@ -2704,6 +2723,7 @@ class Part(_Body):
             return self.split(pl, "above"), self.split(pl, "below")
         if keep not in ("above", "below"):
             raise ValueError('keep must be "above", "below" or "both"')
+        self._require_valid("split")
         # Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut
         # leaves the body open).
         from .parts import Box
@@ -2719,8 +2739,27 @@ class Part(_Body):
         return kept
 
     def section(self, plane: Plane | Face = Plane.XY) -> Sketch:
-        """The cross-section of the part in a plane, as a sketch."""
+        """The cross-section of the part in a plane, as a sketch. Of a part made by :meth:`merge`,
+        the sections of the cells the plane cuts, side by side (a region per cell)."""
         pl = _as_plane(plane)
+        if not self._brep.is_manifold_solid():
+            # The kernel sections the whole body, where a face between two cells bounds both: the
+            # region of a cell inside another was dropped, or the section failed.
+            cells = self.cells()
+            if len(cells) > 1:
+                regions: list[Face] = []
+                for cell in cells:
+                    try:
+                        piece = cell.section(pl)
+                    except ValueError:  # the plane misses this cell
+                        continue
+                    # a face between two cells that lies in the plane comes from both
+                    regions += [f for f in piece.faces() if not any(_same_region(f, g) for g in regions)]
+                if not regions:
+                    raise ValueError("the plane does not cut the part")
+                sheets = [f.to_shell() for f in regions]
+                with kernel_call("section"):
+                    return Sketch._wrap(ext.combine([sh._brep for sh in sheets]), pl)
         with kernel_call("section"):
             curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
         if not curves:
@@ -2959,6 +2998,35 @@ def _take(h: BrepHandle) -> Any:
     """Release a handle's Brep to a new owner."""
     b, h.brep = h.brep, None
     return b
+
+
+def _same_region(a: Face, b: Face) -> bool:
+    """Two faces of sections in one plane that are the same region (within 1e-6 of their size)."""
+    ba, bb = a.bbox(), b.bbox()
+    tol = 1e-6 * max(ba.diagonal, bb.diagonal)
+    return (ba.min.distance_to(bb.min) <= tol and ba.max.distance_to(bb.max) <= tol
+            and abs(a.area - b.area) <= 1e-6 * max(a.area, b.area) and a.center().distance_to(b.center()) <= tol)
+
+
+def _merge_problem(merged: Part, parts: Sequence[Part]) -> str | None:
+    """What is wrong with the result of a merge, or None. Its volume, that of the union, lies
+    between that of the largest part and that of all parts together (within 1e-3); a result
+    outside that is wrong. The volumes are integrated as precisely as ``volume`` asks (it costs
+    about as much as a coarse integration), so that they are there when ``volume`` and
+    ``cells()`` ask."""
+    try:
+        volumes = [float(p._props()["volume"]) for p in parts]
+    except KernelError:
+        return None  # a part whose volume cannot be integrated (not refused before either)
+    try:
+        whole = float(merged._props()["volume"])
+    except KernelError:
+        return "whose volume cannot be integrated"
+    if whole < max(volumes) * (1 - 1e-3):
+        return f"of volume {whole:.6g}, less than that of the largest part ({max(volumes):.6g})"
+    if whole > sum(volumes) * (1 + 1e-3):
+        return f"of volume {whole:.6g}, more than that of all parts together ({sum(volumes):.6g})"
+    return None
 
 
 def _combine(h: BrepHandle, tool: _Body, op: Any, non_manifold: bool = False) -> None:

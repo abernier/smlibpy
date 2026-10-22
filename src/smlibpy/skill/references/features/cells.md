@@ -17,6 +17,16 @@ cavity, 992 of 1000, and the inner box is the second cell).
   its own copy of it.
 - Order: as the kernel keeps the regions, not by size or position. Pick cells by geometry
   (`max(cells, key=lambda c: c.volume)`, `cells.filter_by(...)`) rather than by index.
+- An insert that touches the part around it at a point (a ball against a wall) is a cell of its
+  own, and a cavity in the cell around it. One that touches it along a line (a cylinder lying
+  against a wall) raises, because the cavity cannot be cut out: move the insert off the wall or
+  into it.
+
+## Errors
+- `ModelingError: cells: the cells inside a cell could not be cut out of it (...)`: an insert
+  touches the part around it along a line (above).
+- `ModelingError: cells: the cells add up to a volume of ..., the part has ...`: the kernel kept
+  two cells together; the same remedy.
 
 ## Example
 ```python

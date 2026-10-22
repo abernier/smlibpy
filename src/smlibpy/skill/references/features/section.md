@@ -23,6 +23,9 @@ normal and x direction). Holes come back as inner loops; separate pieces as sepa
 ## Gotchas
 - A plane that misses the part: `ValueError: the plane does not cut the part`.
 - A plane lying on a face of the part returns that face's area.
+- A part made by `merge`: the sections of the cells the plane cuts, a region per cell
+  (`merge(Box(40, 40, 20), Cylinder(6, 30)).section(Plane.XY)`: 2 faces, the block's 1486.903
+  around the insert's 113.097). A face between two cells that lies in the plane comes once.
 - The section's edges are B-splines, also where the part has arcs (a rounded box gives
   `geom_type == "bspline"` edges): `edges().circles()` finds nothing on a section.
 - The kernel can fail on a plane that passes exactly through a vertex or the end of a sweep

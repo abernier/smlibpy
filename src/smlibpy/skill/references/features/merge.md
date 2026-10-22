@@ -22,17 +22,24 @@ One `Part` that holds every cell:
 
 ## Gotchas
 - A merged part is **not a manifold solid**: `is_valid()` is False, and Booleans, `fillet`,
-  `shell` and the other features raise `ModelingError: ... the part is not a valid solid`. Model
-  the parts first, merge last; or work on `cells()`.
+  `shell`, `split` and the other features raise `ModelingError: ... the part is not a valid
+  solid`. Model the parts first, merge last; or work on `cells()`. `section()` works: a region per
+  cell the plane cuts.
 - Parts that do not touch stay apart: two cells, two `solids()`.
+- `merge` checks the kernel's result: its volume lies between that of the largest part and that
+  of all parts together, or it raises (below).
 - Files: STEP writes each cell as a solid of its own (they come back as a `ShapeList`). USD
   (`export_usd`) keeps the merged body with its shared faces: `import_usd` gives the merged part.
-- Fast: a plate with nine pins through it (28 cells) takes 15 ms.
+- Fast: a plate with nine pins through it (28 cells) takes about 25 ms, with the check of the
+  volume; its `cells()` about 40 ms.
 
 ## Errors
 - `TypeError: merge takes parts, not a Sketch` (also for sheets: only solids are merged).
 - `ValueError: merge needs two or more parts, got 1` (`merge(...)`), `ValueError: merge needs
   another part` (`part.merge()`).
+- `ModelingError: merge: the kernel returned a result of volume ..., less than that of the largest
+  part (...)`: the kernel merged wrongly, as where a seam of a cylinder or sphere lies tangent to
+  the other part. Turn that part about its axis or move it a little.
 
 ## Example
 ```python

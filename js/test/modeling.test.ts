@@ -37,6 +37,7 @@ import {
 } from '../src/index.ts'
 import { approx, leggauss, same } from './_approx.ts'
 import { Box as _Box, Rectangle as _Rectangle, Sphere as _Sphere, merge as _merge } from '../src/index.ts'
+import { ext } from '../src/kernel.ts'
 
 const PI = Math.PI
 
@@ -337,3 +338,59 @@ test('cells with cavities', () => {
   assert.throws(() => _merge(_Box(1, 1, 1)), /two or more/)
 })
 
+test('cells of inserts that touch the part around them', () => {
+  // An insert that touches the box's wall at a point joins its shell to the box's: the outer cell
+  // kept the insert's volume (8000 + 268.083 in a box of 8000).
+  const box = _Box(20, 20, 20)
+  const ball = _Sphere(4)
+  for (const where of [[6, 0, 0], [6, 6, 0]] as const) {
+    // touching a face, and an edge
+    const cells = box.merge(ball.translate(where)).cells().map((c) => c.volume).sort((x, y) => x - y)
+    assert.equal(cells.length, 2)
+    approx(cells[0], ball.volume)
+    approx(cells[1], 8000 - ball.volume)
+  }
+  const two = box.merge(ball.translate([6, 0, 0]), ball.translate([-6, 0, 0])).cells().map((c) => c.volume).sort((x, y) => x - y)
+  assert.equal(two.length, 3)
+  approx(two[0], ball.volume)
+  approx(two[1], ball.volume)
+  approx(two[2], 8000 - 2 * ball.volume)
+  // Along a line the cavity cannot be cut out (the kernel's cut of a tangent cylinder fails): the
+  // outer cell was 8502.655, more than the box.
+  assert.throws(() => box.merge(Cylinder(4, 10).translate([6, 0, 0])).cells(), (e: Error) => e instanceof ModelingError && /cells: the cells inside a cell could not be cut out/.test(e.message))
+})
+
+test('cells must fill the part', () => {
+  // The cells add up to the merged part, or cells() throws: here region_shells leaves the cavity out.
+  const m = _Box(10, 10, 10).merge(_Box(2, 2, 2))
+  const shells = ext.region_shells
+  ext.region_shells = (b: number) => shells(b).map((s: number[]) => {
+    for (const x of s.slice(1)) ext.delete_brep(x)
+    return s.slice(0, 1)
+  })
+  try {
+    assert.throws(() => m.cells(), (e: Error) => e instanceof ModelingError && /cells: the cells add up to a volume of 1008, the part has 1000/.test(e.message))
+  } finally {
+    ext.region_shells = shells
+  }
+})
+
+test('section of a merged part has every cell', () => {
+  const m = _merge(_Box(40, 40, 20), Cylinder(6, 30))
+  const xy = m.section(Plane.XY) // was 1 face, 1486.903: the insert's disc was dropped
+  const areas = xy.faces().map((f) => f.area).sort((x, y) => x - y)
+  assert.equal(areas.length, 2)
+  approx(areas[0], 36 * PI)
+  approx(areas[1], 1600 - 36 * PI)
+  const xz = m.section(Plane.XZ) // was KernelError: section failed (SM_ERR)
+  assert.equal(xz.faces().length, 5)
+  approx(xz.area, 40 * 20 + 12 * 10)
+  approx(m.section(Plane.XY.offset(12)).area, 36 * PI) // the pin end alone
+  assert.throws(() => m.section(Plane.XY.offset(40)), /does not cut/)
+  // a plane through the face between two cells: that face once
+  const stack = _merge(_Box(40, 40, 20), _Box(40, 40, 20).translate([0, 0, 20]))
+  const mid = stack.section(Plane.XY.offset(10)).faces()
+  assert.equal(mid.length, 1)
+  approx(mid[0].area, 1600)
+  assert.throws(() => m.split(Plane.XZ), (e: Error) => e instanceof ModelingError && /split: the part is not a valid solid/.test(e.message)) // was KernelError: split failed
+})

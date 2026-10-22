@@ -9,6 +9,14 @@
 //   EdgeDefinitions of the short Edges it deletes. Destruct() deleted the curves the Breps had
 //   taken from them, also those the other Brep's Edge still used: freed curves were read later
 //   in Booleans that glue vertices (AddressSanitizer: fillet removal on an imported valve body).
+//   SmProtoTopologyManager::SplitIntersectingProtoEdges stops once a range solution has deleted
+//   pPE2 (or pPE1), and returns SM_ERR_BAD_INTERSECTIONS if solutions are left (the patched
+//   SmTopologyIntersector::IntersectTopology then fails the Boolean). It asks pPE2, not pPE1,
+//   which ProtoVertex lies at pPE2's split parameter, and sm_WhichPVToCombine accepts ProtoEdges
+//   without end ProtoVertices. The next solution split the deleted ProtoEdge: Booleans of
+//   crossing holes, such as Cylinder(3, 40).translate(0, 3, 0) +
+//   Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3), read freed memory (AddressSanitizer) and
+//   crashed the process.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -506,9 +514,12 @@ static SmProtoVertex* sm_WhichPVToCombine
   pOrigPE->Evaluate( dSplitParam, &sSplitPt) ;
 
   // return matching End PV or NULL for none
-  if     (sStartPV->ContainsPoint(sSplitPt)) { return sStartPV ; }
-  else if(sEndPV  ->ContainsPoint(sSplitPt)) { return sEndPV ; }
-  else                                       { return NULL ; }
+  // smlibpy patch: a ProtoEdge may have no start or end ProtoVertex; test each before use.
+  //   if     (sStartPV->ContainsPoint(sSplitPt)) { return sStartPV ; }
+  //   else if(sEndPV  ->ContainsPoint(sSplitPt)) { return sEndPV ; }
+  if     (sStartPV != NULL && sStartPV->ContainsPoint(sSplitPt)) { return sStartPV ; }
+  else if(sEndPV   != NULL && sEndPV  ->ContainsPoint(sSplitPt)) { return sEndPV ; }
+  else                                                           { return NULL ; }
 
 } // end static sm_WhichPVToCombine
 
@@ -6808,7 +6819,9 @@ SmBoolean bDebugMe3=FALSE;
 
           // Combine PVs:
           SmProtoVertex * pPV1ToCombine = sm_WhichPVToCombine(pPE1, dT11, pNewPV11) ;
-          SmProtoVertex * pPV2ToCombine = sm_WhichPVToCombine(pPE1, dT21, pNewPV21) ;
+          // smlibpy patch: dT21 is a parameter of pPE2: ask pPE2 (pPE1 was evaluated at it).
+          //   SmProtoVertex * pPV2ToCombine = sm_WhichPVToCombine(pPE1, dT21, pNewPV21) ;
+          SmProtoVertex * pPV2ToCombine = sm_WhichPVToCombine(pPE2, dT21, pNewPV21) ;
 
           if(   pPV1ToCombine != NULL 
              && pPV2ToCombine != NULL
@@ -6865,8 +6878,18 @@ SmBoolean bDebugMe3=FALSE;
 
           pPE1ToCombine->CombineProtoEdge( pPE2ToCombine) ;
 
+          // smlibpy patch: the ProtoEdge deleted here can be pPE2 itself, and the next solution
+          // split it again (a read of freed memory). Stop there, and if solutions are left,
+          // which this pair cannot take any more, tell the caller, which fails the Boolean.
+          // Seen: nine ranges of pPE1, each on all of pPE2, along a seam tangent to the other
+          // body (crossing holes).
+          SmBoolean bDeletedInput = (pPE2ToCombine == pPE2 || pPE2ToCombine == pPE1) ;
+
           this->RemoveProtoEdge( pPE2ToCombine) ;
           delete pPE2ToCombine; pPE2ToCombine=NULL;
+
+          if(bDeletedInput) // smlibpy patch
+            { return (ii + 1 < lNumSols) ? SM_ERR_BAD_INTERSECTIONS : SM_SUCCESS ; }
 
         } // end Range solution branch.
 

@@ -221,3 +221,108 @@ now raise: an intersection larger than its operand (csg-8-110), a shell and an o
 leave gaps (0.066, 0.16). The offset of the extended mode depends on what was computed on the
 part before (an `is_valid()`, a tight box), so one offset that came out right before fails now and
 another one the other way round (O1).
+
+## Group Bcrash: Boolean and cells crashes
+
+Kernel patches in `third_party/patches/SMLib/src` (README rows): K1 in `SmProtoTopology.cpp`, a
+new copy of `SmTopologyIntersector.cpp` (two changes), and K3's vertex half in a new copy of
+`SmMerge.cpp`. Each was confirmed with AddressSanitizer first (`build-asan`, procedure in the
+patches README): every reproduction below read freed memory before and reads none now.
+
+**B4 · Crossing holes raise KernelError instead of killing the process** (both)
+- Now: cut, the list form, fuse, `&` and `merge` of crossing holes whose seams lie tangent to
+  the other hole, such as `Box(20, 20, 20) - Cylinder(3, 40).translate(0, 3, 0) -
+  Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)`, raise `KernelError: cut failed
+  (SM_ERR_BAD_INTERSECTIONS): the operands may touch only along an edge, at a point or
+  tangentially (move one so they overlap) ...` (30 of 30 runs). There the kernel's curve
+  intersector returns nine ranges of one ProtoEdge, each on all of the other;
+  `SplitIntersectingProtoEdges` merged and deleted the other after the first and split it again
+  for the next. K1 as planned: the NULL tests in `sm_WhichPVToCombine`, `pPE2` for `pPE2`'s
+  parameter, and no further solutions once an input ProtoEdge is deleted. Leaving the loop alone,
+  as the plan has it, gave valid bodies of the wrong volume that could not be tessellated (`h1 +
+  h2` 1697.46 instead of OpenCASCADE's 2199.24, `h1 & h2` 627.21 instead of 62.72, the box cut
+  7433.52 instead of 6931.74). So when solutions are left the function returns
+  `SM_ERR_BAD_INTERSECTIONS`, and the patched `IntersectTopology`, which ignored its status, fails
+  the Boolean on that code (its other errors stay ignored). The path where the deleted ProtoEdge
+  was the last solution is unchanged; it ran 9 times in the fuzz seeds, the failing path only on
+  these inputs. In the wasm the same inputs raised KernelError before too (after reading freed
+  memory); the two intersections there give 62.721 (OpenCASCADE 62.7197), the rest raise.
+- Before: the process died (exit 139) in 9 of the 10 reproductions; the z = 3.1 chain cut raised
+  KernelError.
+- Breaks scripts: no. These Booleans have no result either way; the seam placement of B6 would
+  let some succeed.
+
+**B5 · The end-cap cut, the rotated-box shell and cells() of a wrong merge no longer crash** (both)
+- Now, the cut: `Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5,
+  -2.504)` (a flat end cap tangent to the sphere) raises `KernelError: cut failed
+  (SM_ERR_BAD_INTERSECTIONS)`; `&` of the pair still gives 14.137072. AddressSanitizer did not
+  find the stale edge the plan assumed: the edge `BooleanPostProcess` read was alive and in the
+  body, but its faces belonged to a shell that `SmTopologyIntersector::DeleteFaces` had freed
+  with a shell vertex (`SmBrep::DeleteVertex` deletes a vertex's shell with it, and this shell
+  still owned faces). Filtering the edge list by a fresh set (K3's first half) only moved the read
+  to the deletion of the broken body, so it is not in the patch. The patched `DeleteFaces` fails
+  the Boolean before it deletes a shell that still owns faces. In the wasm the cut trapped ("the
+  kernel crashed (table index is out of bounds)"); it now raises the same KernelError.
+- Now, the shell: `BooleanPostProcess` takes only the vertices still in the body (K3's second
+  half: a set made after the edges are merged, renewed after each vertex it deletes; 7 skips in
+  36 calls). `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` crashed in 11 of 48 runs (5 of
+  36 in another loop, and in 4 of 4 processes that called it 40 times); none in 96 runs since,
+  nor in the test's 40 calls in one process. It still raises (the wall does not fit); that the
+  axis-aligned wall check lets rotated parts through is O4's.
+- Now, merge: `merge` checks its result: a volume below that of the largest part or above that of
+  all parts together raises `ModelingError: merge: the kernel returned a result of volume ..., less
+  than that of the largest part (...); a seam of one part that lies tangent to another can do
+  this: turn that part about its axis or move it a little`. The merge whose `cells()` crashed in
+  the stitcher, `(Cylinder(2.5, 30).rotate(Y, 90) - Cone(2.5, 6, 6).rotate(Y, 90).translate(15,
+  0.6687, -3.5)).merge(Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5))`, was 518.314, less than
+  the cut cylinder's 566.559 (right: 586.443, OpenCASCADE; the sphere not turned gives that).
+  It raises now, so `cells()` never sees it. The volumes are integrated at the accuracy `volume`
+  uses and kept, so `volume` and `cells()` reuse them; a merge of a plate with nine pins takes
+  24 ms instead of 8. `cells()` itself is not isolated (N1): the stitch of another broken body
+  could still crash.
+- Before: exit 139 in 3 of 3 runs of the cut and of `cells()`; about one rotated-box shell in four.
+- Breaks scripts: merges that the kernel got wrong in this way raise instead of returning a
+  part of the wrong volume.
+
+**B8 · cells() of inserts that touch the part around them** (both)
+- Now: `ext.region_shells` (src/cpp/cells.cpp, both builds) splits each shell's faces into groups
+  joined across edges the shell's faces use exactly twice; of the first shell's groups the one
+  with the largest box is the outer boundary, the others are cavities (as separate cavity shells
+  were). `Box(20, 20, 20).merge(Sphere(4).translate(6, 0, 0)).cells()` gives [7731.917,
+  268.083]; so do a ball against an edge and two balls against opposite walls. Where an insert
+  touches along a line, the cavity cannot be cut out (the kernel's cut of a tangent cylinder
+  fails): `ModelingError: cells: the cells inside a cell could not be cut out of it (...); an
+  insert that touches the part around it at a point or along a line can do this: move it off the
+  wall or into it`. And `cells()` checks that the cells add up to the merged part's volume within
+  1e-6: `ModelingError: cells: the cells add up to a volume of ..., the part has ...`.
+  `cells()` of the plate with nine pins takes 39 ms instead of 29 (the check's integrations).
+- Before: the outer cell kept the insert, with no error: [8000.0, 268.083] for the ball, [8502.655,
+  502.655] for the tangent cylinder, more than the box. Fuzz seeds 7 and 8: 6 of the 7
+  point-contact merges are now right; the line contact raises.
+- Breaks scripts: scripts that used such cells got wrong volumes; inserts touching along a line
+  now raise.
+
+**B9 · section() of a merged part has every cell; split raises ModelingError** (both)
+- Now: `section` of a merged part sections each cell the plane cuts (skipping the cells it
+  misses) and returns their regions side by side in one sketch; a face between two cells that
+  lies in the plane comes once. `merge(Box(40, 40, 20), Cylinder(6, 30)).section(Plane.XY)`: 2
+  faces, 1600 (1486.903 + 113.097); `Plane.XZ` and `Plane.YZ`: 5 faces, 920. `split` checks its
+  part first, as features do: a merged part raises `ModelingError: split: the part is not a valid
+  solid (not a closed, manifold solid); ...`.
+- Before: `Plane.XY` gave 1 face of 1486.903 (the insert dropped, no error), `Plane.XZ` raised
+  `KernelError: section failed (SM_ERR)`, `Plane.YZ` gave 5 faces of 780; `split` raised
+  `KernelError: split failed`.
+- Breaks scripts: sections of merged parts have one region more per cell. A script that caught
+  `KernelError` from `split` of a merged part no longer catches the error (`except
+  ModelingError` catches both).
+
+Fuzz, seeds 7 and 8 with the seeds' resolved parameters (Python, 2,342 operations): errors 10.5%,
+silent 0.90%, crashes 5 (after group Bcore: 10.4%, 1.20%, 8). The changes: 2 Booleans that
+crashed raise (csg-7-126 D, csg-8-145 I), the merge of csg-8-91 raises instead of crashing in
+`cells()`, 6 cells of point contacts are right and 1 line contact raises. Only offset-8-350/360
+flip otherwise, as they did for group Bcore (O1). Wasm (2,342): errors 10.3%, silent 0.98%,
+traps 5 (before: 10.3%, 1.24%, 6); the same cells and merge changes, and csg-8-23's intersection
+moves from 640.77182 to 640.77171 (both off the cells' 640.77204; the native build gives
+640.77171 too when the case's earlier operations are left out), which the analyser's 1e-6 counts
+as one more silent result. The remaining crashes are other groups': shell-8-290 dies in
+`GlueCoincidentBrepVertices` in about 6 runs of 10, before and after (K2, O1).

@@ -12,6 +12,7 @@ site/
 out/
 ai/training/*/files/
 build-wasm*/
+build-asan/
 js/wasm/
 js/node_modules/
 js/dist/

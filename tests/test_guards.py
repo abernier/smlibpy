@@ -300,6 +300,57 @@ print(rss() - before)
     assert grown < 25, f"100 failed cuts took {grown:.1f} MB"  # was 53 MB
 
 
+def test_booleans_that_read_freed_kernel_memory_raise():
+    # Each of these read freed memory in the kernel and killed the process (exit 139); in a
+    # process of their own, so that a crash fails the test rather than the run.
+    # Crossing holes whose seams lie tangent to the other hole: SplitIntersectingProtoEdges split a
+    # ProtoEdge it had just deleted (now: SM_ERR_BAD_INTERSECTIONS). A flat end cap tangent to a
+    # sphere: the Boolean deleted a Shell that Faces still used (DeleteFaces), and BooleanPostProcess
+    # read it. The shell of a rotated box: BooleanPostProcess read a deleted Vertex, in one call of
+    # four or so (40 calls).
+    code = """
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+h1 = Cylinder(3, 40).translate(0, 3, 0)
+cases = []
+for z in (3, 3.1):
+    h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+    cases += [lambda: Box(20, 20, 20) - h1 - h2, lambda: Box(20, 20, 20) - [h1, h2], lambda: h1 + h2,
+              lambda: h1 & h2, lambda: h1.merge(h2)]
+cases.append(lambda: Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504))
+box = Box(40, 30, 10).rotate(X, 45)
+opening = box.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1]
+cases += [lambda: box.shell(10, opening)] * 40
+for case in cases:
+    try:
+        case()
+        print("ok", flush=True)
+    except KernelError:
+        print("KernelError", flush=True)
+    except ModelingError:
+        print("ModelingError", flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} cases"
+    out = run.stdout.split()
+    assert out[:11] == ["KernelError"] * 11  # the crossing holes and the end cap
+    assert len(out) == 51
+    assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
+        14.137072, rel=1e-6)  # the same pair's intersection works
+
+
+def test_a_merge_that_loses_volume_raises():
+    # A sphere whose seam lies tangent to the cylinder: the kernel's merge came out smaller than the
+    # cut cylinder (518.314 against 566.559; right: 586.443), and cells() of it crashed the process.
+    pin = Cylinder(2.5, 30).rotate(Y, 90) - Cone(2.5, 6, 6).rotate(Y, 90).translate(15, 0.6687, -3.5)
+    with pytest.raises(ModelingError, match="less than that of the largest part"):
+        pin.merge(Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5))
+    right = pin.merge(Sphere(2).translate(0, -0.5, 2.5))  # the sphere not turned
+    assert right.volume == approx(586.443229, rel=1e-6)  # OpenCASCADE
+    assert sum(c.volume for c in right.cells()) == approx(586.443229, rel=1e-6)
+
+
 # -- moved bodies -------------------------------------------------------------------------
 def test_moved_bodies_keep_their_tolerances():
     # Moving a body reset its tolerances from the box of its vertices: a torus (one vertex) got 0,

@@ -2503,6 +2503,9 @@ export class Part extends _Body {
    * `cells()` gives the cells as parts of their own; `volume` is the volume of the union. A merged
    * part is not a manifold solid: `isValid()` is false, and Booleans, fillets and shells take its
    * cells rather than the part itself.
+   *
+   * A result whose volume is less than that of the largest part, or more than that of all parts
+   * together, is wrong: `ModelingError`.
    */
   merge(...others: unknown[]): Part {
     const tools = _bodies(others, 'merge')
@@ -2515,7 +2518,15 @@ export class Part extends _Body {
         kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), 'the parts may only touch along an edge or at a point')
       }
     })
-    return Part._wrap(b, { name: this.name, color: this.color })
+    const merged = Part._wrap(b, { name: this.name, color: this.color })
+    const problem = _mergeProblem(merged, [this, ...(tools as Part[])])
+    if (problem !== null) {
+      merged.dispose()
+      throw new ModelingError(
+        `merge: the kernel returned a result ${problem}; a seam of one part that lies tangent to another can do this: turn that part about its axis or move it a little`,
+      )
+    }
+    return merged
   }
 
   /**
@@ -2526,12 +2537,25 @@ export class Part extends _Body {
     const d = ext.brep_dump(this._brep, false)
     if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
     const regions: number[][] = kernelCall('cells', () => ext.region_shells(this._brep))
+    const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
+    const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
     const out = new ShapeList<Part>()
-    for (const shells of regions) {
-      const [outer, ...cavities] = shells.map((b) => Part._wrap(b, { name: this.name, color: this.color }))
-      const part = cavities.length ? outer.cut(cavities) : outer
+    for (const [outer, ...cavities] of solids) {
+      let part: Part
+      try {
+        part = cavities.length ? outer.cut(cavities) : outer
+      } catch (e) {
+        if (!(e instanceof ModelingError)) throw e
+        throw new ModelingError(`cells: the cells inside a cell could not be cut out of it (${e.message}); ${touching}`)
+      }
       if (!part.isValid()) throw new ModelingError(`cells: a cell is not a sound solid (${part._solidProblem()})`)
       out.push(part)
+    }
+    // The cells fill the part: a cell that kept another inside it counts that one twice.
+    const whole: number = this._props().volume
+    const total = out.reduce((sum, c) => sum + (c._props().volume as number), 0)
+    if (!(Math.abs(total - whole) <= 1e-6 * Math.abs(whole))) {
+      throw new ModelingError(`cells: the cells add up to a volume of ${_formatG(total, 10)}, the part has ${_formatG(whole, 10)}; ${touching}`)
     }
     return out
   }
@@ -3078,6 +3102,7 @@ export class Part extends _Body {
     const pl = _asPlane(plane)
     if (keep === 'both') return [this.split(pl, 'above'), this.split(pl, 'below')]
     if (keep !== 'above' && keep !== 'below') throw new RangeError('keep must be "above", "below" or "both"')
+    this._requireValid('split')
     // Intersect with a half-space box: exact, and caps the cut (the kernel's plane cut leaves the
     // body open).
     const bb = this.bbox()
@@ -3091,9 +3116,38 @@ export class Part extends _Body {
     return kept
   }
 
-  /** The cross-section of the part in a plane, as a sketch. */
+  /**
+   * The cross-section of the part in a plane, as a sketch. Of a part made by `merge`, the sections
+   * of the cells the plane cuts, side by side (a region per cell).
+   */
   section(plane: Plane | Face = Plane.XY): Sketch {
     const pl = _asPlane(plane)
+    if (!k.brep_is_manifold_solid(this._brep)) {
+      // The kernel sections the whole body, where a face between two cells bounds both: the region
+      // of a cell inside another was dropped, or the section failed.
+      const cells = this.cells()
+      if (cells.length > 1) {
+        const regions: Face[] = []
+        for (const cell of cells) {
+          let piece: Sketch
+          try {
+            piece = cell.section(pl)
+          } catch (e) {
+            if (e instanceof RangeError) continue // the plane misses this cell
+            throw e
+          }
+          // a face between two cells that lies in the plane comes from both
+          for (const f of piece.faces()) if (!regions.some((g) => _sameRegion(f, g))) regions.push(f)
+        }
+        if (!regions.length) throw new RangeError('the plane does not cut the part')
+        const sheets = regions.map((f) => f.toShell())
+        try {
+          return Sketch._wrap(kernelCall('section', () => ext.combine(sheets.map((sh) => sh._brep))), { plane: pl })
+        } finally {
+          for (const sh of sheets) sh.dispose()
+        }
+      }
+    }
     const curves: number[] = kernelCall('section', () => k.intersect_brep_with_plane(this._brep, pl.origin.toArray(), pl.zDir.toArray()))
     if (!curves.length) throw new RangeError('the plane does not cut the part')
     const b = kernelCall('section', () => k.create_planar_faces([...curves]))
@@ -3342,6 +3396,45 @@ export function _held(brep: number, work: (h: BrepHandle) => void): number {
   } finally {
     h.dispose() // (nothing left to free once released)
   }
+}
+
+/** Two faces of sections in one plane that are the same region (within 1e-6 of their size). */
+function _sameRegion(a: Face, b: Face): boolean {
+  const ba = a.bbox()
+  const bb = b.bbox()
+  const tol = 1e-6 * Math.max(ba.diagonal, bb.diagonal)
+  return (
+    ba.min.distanceTo(bb.min) <= tol &&
+    ba.max.distanceTo(bb.max) <= tol &&
+    Math.abs(a.area - b.area) <= 1e-6 * Math.max(a.area, b.area) &&
+    a.center().distanceTo(b.center()) <= tol
+  )
+}
+
+/** What is wrong with the result of a merge, or null. Its volume, that of the union, lies between
+ * that of the largest part and that of all parts together (within 1e-3); a result outside that is
+ * wrong. The volumes are integrated as precisely as `volume` asks (it costs about as much as a
+ * coarse integration), so that they are there when `volume` and `cells()` ask. */
+function _mergeProblem(merged: Part, parts: Part[]): string | null {
+  let volumes: number[]
+  try {
+    volumes = parts.map((p) => p._props().volume as number)
+  } catch (e) {
+    if (e instanceof KernelError) return null // a part whose volume cannot be integrated (not refused before either)
+    throw e
+  }
+  let whole: number
+  try {
+    whole = merged._props().volume
+  } catch (e) {
+    if (e instanceof KernelError) return 'whose volume cannot be integrated'
+    throw e
+  }
+  const largest = Math.max(...volumes)
+  const sum = volumes.reduce((a, v) => a + v, 0)
+  if (whole < largest * (1 - 1e-3)) return `of volume ${_formatG(whole, 6)}, less than that of the largest part (${_formatG(largest, 6)})`
+  if (whole > sum * (1 + 1e-3)) return `of volume ${_formatG(whole, 6)}, more than that of all parts together (${_formatG(sum, 6)})`
+  return null
 }
 
 /** Combine a copy of a tool into the Brep a handle owns (`ext.boolean`). The kernel changes that

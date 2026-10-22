@@ -284,3 +284,47 @@ def test_cells_with_cavities():
         Box(1, 1, 1).merge(Rectangle(1, 1))
     with pytest.raises(ValueError, match="two or more"):
         merge(Box(1, 1, 1))
+
+
+def test_cells_of_inserts_that_touch_the_part_around_them():
+    # An insert that touches the box's wall at a point joins its shell to the box's: the outer cell
+    # kept the insert's volume (8000 + 268.083 in a box of 8000).
+    box = Box(20, 20, 20)
+    ball = Sphere(4)
+    for where in [(6, 0, 0), (6, 6, 0)]:  # touching a face, and an edge
+        cells = sorted(c.volume for c in box.merge(ball.translate(where)).cells())
+        assert cells == [approx(ball.volume), approx(8000 - ball.volume)]
+    two = box.merge(ball.translate(6, 0, 0), ball.translate(-6, 0, 0)).cells()
+    assert sorted(c.volume for c in two) == [approx(ball.volume)] * 2 + [approx(8000 - 2 * ball.volume)]
+    # Along a line the cavity cannot be cut out (the kernel's cut of a tangent cylinder fails): the
+    # outer cell was 8502.655, more than the box.
+    with pytest.raises(ModelingError, match="cells: the cells inside a cell could not be cut out"):
+        box.merge(Cylinder(4, 10).translate(6, 0, 0)).cells()
+
+
+def test_cells_must_fill_the_part(monkeypatch):
+    # The cells add up to the merged part, or cells() raises: here region_shells leaves the cavity out.
+    import smlibpy.shapes
+
+    m = Box(10, 10, 10).merge(Box(2, 2, 2))
+    shells = smlibpy.shapes.ext.region_shells
+    monkeypatch.setattr(smlibpy.shapes.ext, "region_shells", lambda b: [s[:1] for s in shells(b)])
+    with pytest.raises(ModelingError, match="cells: the cells add up to a volume of 1008, the part has 1000"):
+        m.cells()
+
+
+def test_section_of_a_merged_part_has_every_cell():
+    m = merge(Box(40, 40, 20), Cylinder(6, 30))
+    xy = m.section(Plane.XY)  # was 1 face, 1486.903: the insert's disc was dropped
+    assert sorted(f.area for f in xy.faces()) == [approx(36 * math.pi), approx(1600 - 36 * math.pi)]
+    assert xy.plane == Plane.XY
+    xz = m.section(Plane.XZ)  # was KernelError: section failed (SM_ERR)
+    assert len(xz.faces()) == 5 and xz.area == approx(40 * 20 + 12 * 10)
+    assert m.section(Plane.XY.offset(12)).area == approx(36 * math.pi)  # the pin end alone
+    with pytest.raises(ValueError, match="does not cut"):
+        m.section(Plane.XY.offset(40))
+    # a plane through the face between two cells: that face once
+    stack = merge(Box(40, 40, 20), Box(40, 40, 20).translate(0, 0, 20))
+    assert [f.area for f in stack.section(Plane.XY.offset(10)).faces()] == [approx(1600)]
+    with pytest.raises(ModelingError, match="split: the part is not a valid solid"):
+        m.split(Plane.XZ)  # was KernelError: split failed

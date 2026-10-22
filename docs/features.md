@@ -129,8 +129,8 @@ print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 226
 ```
 
 A merged part is no manifold solid (`is_valid()` is False): model the parts first and merge
-last, or work on the cells. STEP writes each cell as a solid of its own; USD keeps the merged
-body with its shared faces.
+last, or work on the cells. Its `section()` has a region per cell. STEP writes each cell as a
+solid of its own; USD keeps the merged body with its shared faces.
 
 ## Mirror
 

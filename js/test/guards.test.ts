@@ -7,6 +7,7 @@ import {
   Box,
   CenterArc,
   Circle,
+  Cone,
   Cylinder,
   Hole,
   KernelError,
@@ -336,6 +337,54 @@ test('failed Booleans free their operands', () => {
   assert.equal(run.status, 0, run.stderr)
   const grown = Number(run.stdout.trim())
   assert.ok(grown < 20, `100 failed cuts took ${grown} MB`) // was 43 MB
+})
+
+test('Booleans that read freed kernel memory throw', () => {
+  // Each of these read freed memory in the kernel (natively the process died). Crossing holes whose
+  // seams lie tangent to the other hole: SplitIntersectingProtoEdges split a ProtoEdge it had just
+  // deleted. A flat end cap tangent to a sphere: the Boolean deleted a Shell that Faces still used,
+  // and the module trapped. The shell of a rotated box: BooleanPostProcess read a deleted Vertex.
+  // In a process of its own, so that a trap does not leave this one's kernel damaged.
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { Axis, Box, Cylinder, Sphere, X, Y } from '${src}index.ts'
+    const h1 = Cylinder(3, 40).translate(0, 3, 0)
+    const cases = []
+    for (const z of [3, 3.1]) {
+      const h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+      cases.push(() => Box(20, 20, 20).cut(h1).cut(h2), () => Box(20, 20, 20).cut([h1, h2]), () => h1.fuse(h2), () => h1.merge(h2))
+    }
+    cases.push(() => Sphere(1.5).rotate(Y, 90).cut(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)))
+    const box = Box(40, 30, 10).rotate(X, 45)
+    const opening = box.faces().sortBy(new Axis([0, 0, 0], [0, -1, 1])).at(-1)
+    for (let i = 0; i < 40; i++) cases.push(() => box.shell(10, opening))
+    const out = cases.map((c) => {
+      try {
+        c()
+        return 'ok'
+      } catch (e) {
+        return /crashed/.test(e.message + (e.detail ?? '')) ? 'crashed' : e.constructor.name
+      }
+    })
+    console.log(out.join(' '))
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
+  assert.equal(run.status, 0, run.stderr)
+  const out = run.stdout.trim().split(' ')
+  assert.deepEqual(out.slice(0, 9), Array(9).fill('KernelError')) // the end cap, the last, trapped
+  assert.equal(out.length, 49)
+  assert.ok(!out.includes('crashed'), out.join(' '))
+  approx(Sphere(1.5).rotate(Y, 90).intersect(Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume, 14.137072, 1e-6)
+})
+
+test('a merge that loses volume throws', () => {
+  // A sphere whose seam lies tangent to the cylinder: the kernel's merge came out smaller than the
+  // cut cylinder (518.314 against 566.559; right: 586.443), and cells() of it crashed the process.
+  const pin = Cylinder(2.5, 30).rotate(Y, 90).cut(Cone(2.5, 6, 6).rotate(Y, 90).translate(15, 0.6687, -3.5))
+  throwsMatching(() => pin.merge(Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5)), ModelingError, /less than that of the largest part/)
+  const right = pin.merge(Sphere(2).translate(0, -0.5, 2.5)) // the sphere not turned
+  approx(right.volume, 586.443229, 1e-6) // OpenCASCADE
+  approx(right.cells().reduce((sum, c) => sum + c.volume, 0), 586.443229, 1e-6)
 })
 
 // -- moved bodies ---------------------------------------------------------------------------
