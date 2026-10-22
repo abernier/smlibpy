@@ -397,7 +397,7 @@ function _zoneMaterial(
   const region = Box(width, hi - lo + 2 * margin, thickness + 2 * margin).moved(new Plane(center, across, nIn).location)
   let common: Part
   try {
-    common = kernelCall(what, () => Part._wrap(k.boolean(part._copyBrep(), region._copyBrep(), { operation: k.BooleanOp.INTERSECTION })))
+    common = Part._wrap(part._runBoolean([region], k.BooleanOp.INTERSECTION, what))
   } catch (e) {
     if (!(e instanceof KernelError)) throw e
     throw _causedBy(

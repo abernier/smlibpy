@@ -522,6 +522,9 @@ export class Part extends _Body {
     solids(): ShapeList<Part>;
     merge(...others: unknown[]): Part;
     cells(): ShapeList<Part>;
+    classify(point: VectorLike, tol?: number | null): [string, Face | Edge | Vertex | null];
+    contains(point: VectorLike, tol?: number | null): boolean;
+    cellAt(point: VectorLike, tol?: number | null): Part | null;
     fuse(...others: (Part | Iterable<Part>)[]): Part;
     cut(...others: (Part | Iterable<Part>)[]): Part;
     intersect(...others: (Part | Iterable<Part>)[]): Part;

@@ -300,8 +300,7 @@ def _zone_material(part: Part, p_in: Vector, across: Vector, along: Vector, n_in
     region = Box(width, hi - lo + 2 * margin, thickness + 2 * margin).moved(
         Plane(center, x_dir=across, z_dir=n_in).location)
     try:
-        with kernel_call(what):
-            common = Part._wrap(k.boolean(part._copy_brep(), region._copy_brep(), operation=k.BooleanOp.INTERSECTION))
+        common = Part._wrap(part._run_boolean([region], k.BooleanOp.INTERSECTION, what))
     except KernelError as e:
         raise ModelingError(f"{what}: the material in the bend zone cannot be measured; move the bend line a little "
                             "(away from edges and features)") from e

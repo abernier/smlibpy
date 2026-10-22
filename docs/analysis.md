@@ -11,7 +11,7 @@ part.volume              # 24000 - pi * 36 * 20
 part.area                # total surface area
 part.center()            # center of mass
 part.bbox()              # BoundBox: .min, .max, .size, .center
-part.is_valid()          # a closed, manifold solid with a positive volume?
+part.is_valid()          # a closed, manifold solid with a positive volume, faces that meet?
 part.info()              # counts and bounding box in one dict
 
 face = part.faces().top().one()
@@ -71,7 +71,8 @@ close up. Where they differ by more than 1e-5 (or the accuracy asked for, if tha
 of the uncertainty, and give the volume of the faces as they are. A sheet unfolded across a hole
 in a bend zone, whose NURBS faces as trimmed do not quite meet their neighbours, gets 8e-5 (its
 volume is 6e-5 off). A warning that the integration did not reach the accuracy asked for looks
-the same; each comes once per part.
+the same; each comes once per part. From 1e-2 the faces do not bound one solid (a Boolean
+result that left a face out: 0.25), and `is_valid()` is False.
 
 ## Distances
 
@@ -87,8 +88,7 @@ a.closest_point((0, 0, 30))      # Vector(0, 0, 5)
 
 `raycast` gives the exact points where a ray meets a body (or a face, or a mesh), nearest
 first, each with its distance, the face and the outward normal there. What a line of sight
-sees first, wall thicknesses along a direction, or whether a point is inside (an odd number of
-hits) all come from it:
+sees first and wall thicknesses along a direction come from it:
 
 ```python
 part = Box(40, 30, 20) - Cylinder(5, 30)
@@ -97,11 +97,26 @@ print([round(h.distance, 6) for h in hits])        # [30.0, 45.0, 55.0, 70.0]: i
 print(hits[1].face.geom_type, hits[1].normal)      # cylinder Vector(1, 0, 0): into the hole
 top = part.raycast(Axis((10, 8, 50), (0, 0, -1)))[0]
 print(top.point)                                   # Vector(10, 8, 10)
-print(len(part.raycast((10, 8, 0), Z)) % 2 == 1)   # True: the point is inside the material
 ```
 
 To select faces with a ray instead, and chain on, use `part.faces().hit_by(origin, direction)`
 (see [Selecting](selecting.md#by-position)).
+
+## Inside or outside
+
+`classify` says where a point lies: in the material, outside (a cavity is outside), or on the
+surface, with the vertex, edge or face it lies on. `contains` is True inside and on the surface.
+They are exact; the parity of `raycast` hits is not where a ray grazes a face or passes through
+an edge (a ray tangent to a cylinder hits it once):
+
+```python
+part = Box(40, 30, 20) - Cylinder(5, 30)
+print(part.classify((10, 8, 0)))                   # ('inside', None)
+print(part.classify((20, 0, 0))[0])                # on: the right side
+print(part.contains((10, 8, 0)), part.contains((0, 0, 0)))   # True False: in the hole
+cells = Box(20, 20, 20).merge(Cylinder(4, 30))
+print(round(cells.cell_at((0, 0, 0)).volume, 3))   # 1005.31: the cell of a merged part there
+```
 
 ## Intersections and projections
 

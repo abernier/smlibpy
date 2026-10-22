@@ -49,6 +49,8 @@ const OWN: Record<string, Signature> = {
   'ext.vertex_indices': ['brep', 'vertices'],
   'ext.copy_with_map': ['brep', ['faces', []], ['edges', []], ['vertices', []]],
   'ext.transform_brep': ['brep', 'matrix'],
+  'ext.boolean': ['brep1', 'brep2', 'operation', ['non_manifold', false]],
+  'ext.classify_points': ['brep', 'points', ['tolerance', 0.0]],
   'ext.copy_faces': ['brep', 'faces'],
   'ext.face_from_surface': ['surface'],
   'ext.combine': ['breps'],

@@ -77,6 +77,12 @@ const _MARGIN = 0.1
 // asked for) the volume measure says so.
 const _GAPS = 1e-5
 
+// Faces whose gaps reach 1e-2 of the volume do not bound one solid: a Boolean that left a face out
+// (0.25), a wrong shell from the fuzz campaign (0.066), a torus split along its seam (4.0). Sound
+// bodies stay below 2e-3: imported parts up to 6e-4, a sheet unfolded at a radius far below its
+// thickness 1.1e-3.
+const _BROKEN_GAPS = 1e-2
+
 // Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
 const INTERNAL = Symbol('smlibwasm.internal')
 
@@ -1841,7 +1847,8 @@ export class _Body extends Shape {
    * The ray starts at `origin` and runs along `direction` (an axis or a vector); an axis alone is a
    * ray from its origin along its direction. Points behind the start are not hits. A ray through an
    * edge or a vertex hits once, a ray along a face where it enters the face. `hits[0]` is what the
-   * ray sees first; `hits.length` is odd from inside a closed part.
+   * ray sees first; `hits.length` is odd from inside a closed part, except where the ray grazes a
+   * face (to test a point, use `Part.contains`).
    */
   raycast(origin: VectorLike | Axis, direction: VectorLike | Axis | null = null): Hit[] {
     return _raycast(this.faces(), origin, direction, this._looseBox())
@@ -1890,27 +1897,21 @@ export class _Body extends Shape {
   }
 
   _transformed(m: Matrix): Shape {
-    const b = this._copyBrep()
     // (the kernel takes the matrix column by column)
     const columns: number[] = []
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) columns.push(m[r * 4 + c])
-    kernelCall('transform', () => ext.transform_brep(b, columns))
-    return this._like(b)
+    return this._like(_held(this._copyBrep(), (h) => kernelCall('transform', () => ext.transform_brep(h.brep, columns))))
   }
 
   // -- body conversions ---------------------------------------------------------------------
   /** A copy whose faces and edges are all NURBS (analytic types converted). */
   toNurbs(): this {
-    const b = this._copyBrep()
-    kernelCall('toNurbs', () => k.turn_to_nurbs(b))
-    return this._like(b)
+    return this._like(_held(this._copyBrep(), (h) => kernelCall('toNurbs', () => k.turn_to_nurbs(h.brep))))
   }
 
   /** Repair gaps, tolerances and topology (mostly needed for imported data). */
   heal(): this {
-    const b = this._copyBrep()
-    kernelCall('heal', () => k.heal_brep(b))
-    return this._like(b)
+    return this._like(_held(this._copyBrep(), (h) => kernelCall('heal', () => k.heal_brep(h.brep))))
   }
 
   _identity(): string {
@@ -1962,6 +1963,69 @@ export function _disjoint(a: BoundBox, b: BoundBox, tol = 1e-9): boolean {
 
 /** The tools in groups whose members' boxes do not overlap (so that each group can go into one
  * Boolean); empty tools are left out. */
+/** Whether tools can cover a part, so that a cut by them can leave nothing: together they hold at
+ * least its volume, and their boxes span its box. Necessary, not sufficient; the volumes are the
+ * quick ones, with a margin of 1e-3. */
+function _canCover(tools: readonly Part[], part: Part): boolean {
+  try {
+    if (tools.reduce((sum, t) => sum + t._quickVolume(), 0) < part._quickVolume() * (1 - 1e-3)) return false
+  } catch (e) {
+    if (!(e instanceof KernelError)) throw e
+    return false
+  }
+  let hull = tools[0]._looseBox()
+  for (const t of tools.slice(1)) hull = hull.union(t._looseBox())
+  let box = part._looseBox()
+  const tol = 1e-6 * box.diagonal + 1e-5
+  if (hull.contains(box.min, tol) && hull.contains(box.max, tol)) return true
+  box = part.bbox() // the loose box can stick out of the tools' boxes where the part does not
+  return hull.contains(box.min, tol) && hull.contains(box.max, tol)
+}
+
+/** Whether points of an intersection's surface lie outside one of its operands. Checked where that
+ * is likely: the result has as many faces as an operand (one given back unchanged), or its box
+ * reaches out of an operand's. The kernel can take a tool beside an earlier hole in a curved part,
+ * or a corner box of an imported pulley, as containing the part, and return all of it. */
+function _intersectionProblem(result: Part, operands: readonly Part[]): string | null {
+  const n = k.brep_face_count(result._brep)
+  const box = result._looseBox()
+  const tol = 1e-6 * box.diagonal + 1e-5
+  if (operands.every((x) => k.brep_face_count(x._brep) !== n && x._looseBox().contains(box.min, tol) && x._looseBox().contains(box.max, tol))) return null
+  const points = _surfacePoints(result)
+  const near = Math.max(1e-4 * box.diagonal, 1e-5) // the new edges are fitted, to about 2e-5
+  for (const x of operands) {
+    if (x._classify(points, near).some(([where]) => where === 'outside')) return 'partly outside an operand (the kernel took one operand for inside the other)'
+  }
+  return null
+}
+
+/** Points on a body's surface: its vertices, the middle of each edge, and a point of each face
+ * (the middle of its parameter domain where that lies on the face, else one the kernel finds). */
+function _surfacePoints(body: _Body): number[][] {
+  const points: number[][] = (k.brep_vertices(body._brep) as number[]).map((v) => k.vertex_point(v))
+  for (const e of k.brep_edges(body._brep) as number[]) {
+    const [a, b] = k.edge_parameter_range(e)
+    points.push(k.curve_evaluate(k.edge_curve(e), 0.5 * (a + b)))
+  }
+  for (const f of k.brep_faces(body._brep) as number[]) {
+    const [[u0, v0], [u1, v1]] = k.face_uv_domain(f)
+    const u = 0.5 * (u0 + u1)
+    const v = 0.5 * (v0 + v1)
+    let inside = false
+    try {
+      inside = k.face_classify_uv(f, u, v) === 'inside'
+    } catch (e) {
+      if (!_isRuntimeError(e)) throw e // (on a face whose seam the kernel cannot resolve)
+    }
+    try {
+      points.push(inside ? k.face_point_at_uv(f, u, v) : k.face_interior_point(f))
+    } catch (e) {
+      if (!_isRuntimeError(e)) throw e // the kernel cannot place a point on this face: its edges stand in
+    }
+  }
+  return points.map((p) => Array.from(p))
+}
+
 function _disjointBatches<B extends _Body>(tools: readonly B[]): B[][] {
   const items: [B, number[]][] = []
   for (const t of tools) {
@@ -2358,34 +2422,42 @@ export class Part extends _Body {
   }
 
   /**
-   * True if the part is a closed, manifold solid that encloses a positive volume.
+   * True if the part is a closed, manifold solid that encloses a positive volume and whose faces
+   * meet.
    *
    * (A body whose faces point inward, or that encloses no volume, such as a profile revolved
-   * about an axis through it, is not valid.)
+   * about an axis through it, is not valid; nor is one whose faces leave gaps that make its volume
+   * uncertain by 1e-2 of its value or more.)
    */
   isValid(): boolean {
     return this._solidProblem() === null
   }
 
-  /** Why this is not a sound solid ("empty", "inside out (negative volume)", ...), or null. The
-   * volume is integrated coarsely (or `volume`, which the caller integrated anyway, is used):
-   * this catches broken bodies, not small errors. A body found sound is not checked again. */
+  /** Why this is not a sound solid ("empty", "inside out (negative volume)", "open between its
+   * faces, ...", ...), or null. The volume is integrated coarsely, with the gaps between the faces
+   * (or `volume`, which the caller integrated anyway, is used, and the gaps only if the part was
+   * measured): this catches broken bodies, not small errors. A body found sound is not checked
+   * again. */
   _solidProblem(volume: number | null = null): string | null {
     if (this._h.sound) return null
     let problem = this._shapeProblem()
     if (problem === null) {
-      if (volume === null && this._h.props != null) volume = Number(this._h.props.volume) // measured already
-      if (volume === null) {
+      let gaps: number | null = null
+      if (volume === null || this._h.props != null) {
+        let p: Any
         try {
-          volume = Number(this._kernelProps(1e-3).volume)
+          p = volume === null ? this._props(1e-4) : this._h.props // measured already, or now
         } catch (e) {
           if (!(e instanceof KernelError)) throw e
           return 'a body whose volume cannot be integrated'
         }
+        if (volume === null) volume = Number(p.volume)
+        gaps = Number(p.gaps)
       }
       const tiny = 1e-9 * this._extent() ** 3
       if (volume < -tiny) problem = 'inside out (negative volume)'
       else if (!(volume > tiny)) problem = 'without volume' // also a NaN volume
+      else if (gaps !== null && !(gaps < _BROKEN_GAPS)) problem = `open between its faces, so that its volume is uncertain by ${_formatE(gaps, 1)} of its value`
     }
     this._h.sound = problem === null
     return problem
@@ -2438,13 +2510,12 @@ export class Part extends _Body {
     for (const t of tools) {
       if (!(t instanceof Part) || t instanceof Sketch) throw new TypeError(`merge takes parts, not a ${_typeName(t)}`)
     }
-    let h = new BrepHandle(this._copyBrep())
-    for (const t of tools) {
-      const r: number = kernelCall('merge', () => k.non_manifold_boolean(_take(h), t._copyBrep(), { operation: k.BooleanOp.MERGE }),
-        'the parts may only touch along an edge or at a point')
-      h = new BrepHandle(r)
-    }
-    return Part._wrap(_take(h), { name: this.name, color: this.color })
+    const b = _held(this._copyBrep(), (h) => {
+      for (const t of tools) {
+        kernelCall('merge', () => _combine(h, t, k.BooleanOp.MERGE, true), 'the parts may only touch along an edge or at a point')
+      }
+    })
+    return Part._wrap(b, { name: this.name, color: this.color })
   }
 
   /**
@@ -2463,6 +2534,46 @@ export class Part extends _Body {
       out.push(part)
     }
     return out
+  }
+
+  // -- points -------------------------------------------------------------------------------
+  /**
+   * Where a point lies: `['inside', null]` in the material, `['outside', null]` (also in a cavity),
+   * or `['on', shape]` on the surface within `tol` (default: the part's own tolerance, 1e-5 for most
+   * parts), with the vertex, edge or face it lies on (the vertex rather than its edges, an edge
+   * rather than its faces).
+   *
+   * The kernel classifies the point exactly (SmBrep::Point3DClassify), also where a ray from it
+   * would graze a face or pass through an edge, which the parity of `raycast` hits gets wrong.
+   */
+  classify(point: VectorLike, tol: number | null = null): [string, Face | Edge | Vertex | null] {
+    const [where, index] = this._classify([point], tol)[0]
+    if (where === 'face') return ['on', new Face(this, k.brep_faces(this._brep)[index])]
+    if (where === 'edge') return ['on', Edge._of(this, k.brep_edges(this._brep)[index])]
+    if (where === 'vertex') return ['on', Vertex._of(this, k.brep_vertices(this._brep)[index])]
+    return [where, null]
+  }
+
+  /** True if the point lies in the material of this part or on its surface (within `tol`, see
+   * `classify`); false outside and in a cavity. */
+  contains(point: VectorLike, tol: number | null = null): boolean {
+    return this._classify([point], tol)[0][0] !== 'outside'
+  }
+
+  /** The cell of a merged part (see `merge`) that holds the point, as in `cells`; null outside, in a
+   * cavity and on a face (also one between two cells). For a part that is one solid: the part
+   * itself or null. */
+  cellAt(point: VectorLike, tol: number | null = null): Part | null {
+    const cell = this._classify([point], tol)[0][2]
+    return cell < 0 ? null : this.cells()[cell]
+  }
+
+  /** `ext.classify_points` for these points: per point [where, index, cell], where one of 'inside',
+   * 'outside', 'face', 'edge', 'vertex'. */
+  _classify(points: Iterable<VectorLike>, tol: number | null = null): [string, number, number][] {
+    if (tol != null && !(Number.isFinite(tol) && tol > 0)) throw new RangeError(`classify: the tolerance must be positive (got ${tol})`)
+    const pts = Array.from(points, (p) => _vec(p).toArray())
+    return kernelCall('classify', () => ext.classify_points(this._brep, pts, tol ?? 0.0))
   }
 
   // -- booleans -----------------------------------------------------------------------------
@@ -2520,12 +2631,9 @@ export class Part extends _Body {
   }
 
   _runBoolean(tools: readonly _Body[], op: number, name: string): number {
-    let result = this._copyBrep()
-    for (const t of tools) {
-      const current = result
-      result = kernelCall(name, () => k.boolean(current, t._copyBrep(), { operation: op }), 'the operands may touch only in a degenerate way, or an operand is broken')
-    }
-    return result
+    return _held(this._copyBrep(), (h) => {
+      for (const t of tools) kernelCall(name, () => _combine(h, t, op), 'the operands may touch only in a degenerate way, or an operand is broken')
+    })
   }
 
   /** What is wrong with a Boolean result, or null. An empty result is right where the operands
@@ -2535,10 +2643,10 @@ export class Part extends _Body {
     if (k.brep_face_count(result._brep) !== 0) {
       const problem = result._shapeProblem()
       if (problem === null && [this as Part, ...tools].every((x) => x._solidProblem() === null)) {
-        // Closed and manifold, from sound operands: the kernel does not turn such a result inside
-        // out (touching operands give empty or non-manifold results), so its volume, which costs
-        // far more than the Boolean, is not integrated.
-        result._h.sound = true
+        // Closed and manifold, from sound operands. Its volume, which costs up to twice the
+        // Boolean, is not integrated here; isValid() (and the next feature) does. The result is
+        // not taken as sound: it can be inside out or leave a face out.
+        if (op === k.BooleanOp.INTERSECTION) return _intersectionProblem(result, [this as Part, ...tools])
         return null
       }
       return problem ?? result._solidProblem()
@@ -2549,6 +2657,10 @@ export class Part extends _Body {
       const rel = _relationship(this, tools[0])
       return rel === 'separate' || rel === 'touching' ? null : 'empty'
     }
+    // The intersection of the part and a tool that confirms an empty cut below can fail the same
+    // way as the cut (a tool beside an earlier hole in a sphere: the cut is empty, the intersection
+    // the whole part). So first the tools must be able to cover the part.
+    if (!_canCover(tools, this)) return 'empty'
     let whole: number
     try {
       whole = this._kernelProps(1e-6).volume
@@ -2560,9 +2672,7 @@ export class Part extends _Body {
       if (_relationship(t, this) === 'separate') continue
       // right only if the tool covers the whole part
       try {
-        const common = Part._wrap(
-          kernelCall('cut', () => k.boolean(this._copyBrep(), t._copyBrep(), { operation: k.BooleanOp.INTERSECTION })),
-        )
+        const common = Part._wrap(this._runBoolean([t], k.BooleanOp.INTERSECTION, 'cut'))
         if (common._kernelProps(1e-6).volume >= whole * (1 - 1e-5)) return null
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
@@ -3222,6 +3332,31 @@ export function _take(h: BrepHandle): number {
   return h.release()
 }
 
+/** Runs `work` on a Brep that a handle holds until `work` is done, and gives it back: a failure
+ * frees it (the kernel keeps what it was given when it fails). */
+export function _held(brep: number, work: (h: BrepHandle) => void): number {
+  const h = new BrepHandle(brep)
+  try {
+    work(h)
+    return h.release()
+  } finally {
+    h.dispose() // (nothing left to free once released)
+  }
+}
+
+/** Combine a copy of a tool into the Brep a handle owns (`ext.boolean`). The kernel changes that
+ * Brep and deletes the copy when it succeeds, and keeps both when it fails: the handles hold them
+ * until then and free them on a failure. */
+function _combine(h: BrepHandle, tool: _Body, op: number, nonManifold = false): void {
+  const th = new BrepHandle(tool._copyBrep())
+  try {
+    ext.boolean(h.brep, th.brep, op, nonManifold) // the result is h's Brep, changed
+    th.release()
+  } finally {
+    th.dispose()
+  }
+}
+
 export function _continuity(c: number | string | null | undefined): number | null {
   if (c == null) return null
   if (typeof c === 'string') c = Number.parseInt(c.toUpperCase().replace(/^G+/, ''), 10)
@@ -3293,12 +3428,9 @@ export class Shell extends _Body {
 
   /** Union with other sheets (Python's `+`). */
   fuse(...others: unknown[]): Shell {
-    let b = this._copyBrep()
-    for (const t of _bodies(others)) {
-      const current = b
-      b = kernelCall('fuse', () => k.boolean(current, t._copyBrep(), { operation: k.BooleanOp.UNION }))
-    }
-    return this._like(b)
+    return this._like(_held(this._copyBrep(), (h) => {
+      for (const t of _bodies(others)) kernelCall('fuse', () => _combine(h, t, k.BooleanOp.UNION))
+    }))
   }
 
   override toString(): string {

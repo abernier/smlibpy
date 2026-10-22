@@ -25,6 +25,7 @@
 #include <SmPrimitiveCreation.h>
 #include <SmApiBrep.h>
 
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -547,6 +548,28 @@ CopyMap copy_with_map(const SmBrep* brep, const std::vector<SmFace*>& faces, con
     return out;
 }
 
+// Give a scaled body the tolerances SmBrep::Transform gives one (the zone tolerance of its size
+// on every vertex, edge and face), with the size taken from its whole bounding box. The kernel
+// takes it from the vertices alone: a torus (one vertex) gets tolerance 0, a thin disk 1e-6.
+static void scale_tolerances(SmBrep* brep)
+{
+    SmExtent3d box;
+    check(brep->CalculateBoundingBox(box, FALSE, FALSE, FALSE), "SmBrep::CalculateBoundingBox");
+    SmZoneTol3d tol = SmTol::SetModelSizeEstimate(*brep, box.GetSize().Length());
+    SmTArray<SmVertex*> vertices;
+    brep->GetVertices(vertices);
+    for (ULONG i = 0; i < vertices.GetSize(); ++i)
+        vertices[i]->SetTolerance(tol, FALSE, FALSE);
+    SmTArray<SmEdge*> edges;
+    brep->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+        edges[i]->SetTolerance(tol, FALSE, FALSE);
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+        faces[i]->SetTolerance(tol, FALSE, FALSE);
+}
+
 void transform_brep(SmBrep* brep, const std::vector<double>& m)
 {
     if (m.size() != 16)
@@ -555,7 +578,157 @@ void transform_brep(SmBrep* brep, const std::vector<double>& m)
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c)
             t[r][c] = m[r * 4 + c];
-    check(brep->Transform(t, TRUE), "SmBrep::Transform");
+    // Rows 0-2 are the images of the axes, row 3 the translation. SmBrep::Transform(matrix)
+    // passes even a rotation on with a scale of 1, and any scale makes it set the tolerances of
+    // the body, and the model size of the shared context, from the box of the vertices: a move
+    // took the tolerance of a torus to 0 and that of a part over 500 across to 1e-4, and
+    // Booleans with the moved body went wrong. A rotation, a reflection or a uniform scale is
+    // applied here with a placement, as SM_API's SmApiTransform applies one: the tolerances
+    // stay, and a scale sets them from the whole box.
+    SmVector3d x(t[0][0], t[0][1], t[0][2]), y(t[1][0], t[1][1], t[1][2]), z(t[2][0], t[2][1], t[2][2]);
+    SmPoint3d shift(t[3][0], t[3][1], t[3][2]);
+    double s = (x.Length() + y.Length() + z.Length()) / 3.0;
+    const double eps = 1e-10;
+    bool conformal = s > 0 && std::isfinite(s);
+    for (const SmVector3d* a : {&x, &y, &z})
+        conformal = conformal && std::fabs(a->Length() - s) <= eps * s;
+    conformal = conformal && std::fabs(x.Dot(y)) <= eps * s * s && std::fabs(y.Dot(z)) <= eps * s * s &&
+                std::fabs(z.Dot(x)) <= eps * s * s;
+    if (!conformal)
+    {
+        // Shear, or a scale that differs between the axes: the kernel's way (it turns the
+        // geometry into NURBS), then the tolerances from the whole box; the context keeps its
+        // model size.
+        SmContext& context = *SmApiGetOrCreateContext();
+        double size = SmTol::GetModelSizeEstimate(context);
+        SmStatus st = brep->Transform(t, TRUE);
+        SmTol::SetModelSizeEstimate(context, size);
+        check(st, "SmBrep::Transform");
+        scale_tolerances(brep);
+        return;
+    }
+    if ((x * y).Dot(z) < 0)  // a reflection (z is not x * y): mirror in XY first, then place as a rotation
+        check(brep->Mirror(SmAxis2Placement()), "SmBrep::Mirror");
+    SmAxis2Placement placement(shift, x / s, y / s);
+    if (std::fabs(s - 1.0) <= eps)
+    {
+        check(brep->Transform(placement, nullptr, FALSE), "SmBrep::Transform");
+        return;
+    }
+    SmVector3d scale(s, s, s);
+    check(brep->Transform(placement, &scale, FALSE), "SmBrep::Transform");
+    scale_tolerances(brep);
+}
+
+// The region a point off the boundary lies in, by vote. SmBrep::Point3DClassify takes the region
+// from one ray (along +X, the other axes only if that fails), on the near side of the nearest face
+// the ray meets. A ray can miss a face it crosses: once a tight bounding box had been computed, the
+// solver found no face along +X from a point inside a cylinder fused with a torus, and the point
+// came out outside. So two rays in directions off the axes vote too, and two more when the three
+// disagree.
+static const SmRegion* voted_region(const SmBrep* brep, const SmPoint3d& point, SmZoneTol3d tol, const SmRegion* first)
+{
+    static const SmVector3d directions[] = {SmVector3d(0.3189, 0.5296, 0.7860), SmVector3d(-0.6122, 0.2899, 0.7356),
+                                            SmVector3d(0.5774, -0.8018, 0.1547), SmVector3d(-0.2673, -0.5345, -0.8018)};
+    std::vector<std::pair<const SmRegion*, int>> votes{{first, 1}};
+    auto vote = [&](const SmVector3d& d) {
+        SmVector3d u = d;
+        u.Unitize();
+        SmRegion* region = nullptr;
+        SmPointClassification hit(tol, brep->GetContext());
+        if (brep->RayFire(point, u, tol, region, hit) != SM_SUCCESS || !region)
+            return;  // the ray starts on a face (within the solver's zero): no vote
+        for (auto& v : votes)
+            if (v.first == region)
+                return void(++v.second);
+        votes.emplace_back(region, 1);
+    };
+    vote(directions[0]);
+    vote(directions[1]);
+    if (votes.size() > 1)
+    {
+        vote(directions[2]);
+        vote(directions[3]);
+    }
+    auto best = votes.begin();
+    for (auto v = votes.begin(); v != votes.end(); ++v)
+        if (v->second > best->second)
+            best = v;
+    return best->first;
+}
+
+SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold)
+{
+    if (!brep1 || !brep2)
+        throw std::invalid_argument("brep is None");
+    if (operation != SM_BO_UNION && operation != SM_BO_DIFFERENCE && operation != SM_BO_INTERSECTION &&
+        operation != SM_BO_MERGE)
+        throw std::invalid_argument("operation: expected UNION, DIFFERENCE, INTERSECTION or MERGE (BooleanOp)");
+    const auto op = static_cast<SmBooleanOperationType>(operation);
+    SmBrep* result = nullptr;
+    const SmStatus st = non_manifold ? SmApiNonManifoldBoolean(brep1, brep2, op, result)
+                                     : SmApiBoolean(brep1, brep2, op, result);
+    if (st != SM_SUCCESS)  // SmMerge clears the mark only on its way out of a success
+        SmApiGetOrCreateContext()->SetDoingBoolean(FALSE);
+    check(st, non_manifold ? "SmApiNonManifoldBoolean" : "SmApiBoolean");
+    return result;
+}
+
+Value classify_points(const SmBrep* brep, const std::vector<double>& points, double tolerance)
+{
+    if (!brep)
+        throw std::invalid_argument("brep is None");
+    if (points.size() % 3)
+        throw std::invalid_argument("expected points with three coordinates");
+    // The cells: closed regions that are not cavities, numbered as region_shells numbers them.
+    SmTArray<SmRegion*> regions;
+    brep->GetRegions(regions);
+    std::unordered_map<const SmRegion*, long> cells;
+    for (ULONG r = 0; r < regions.GetSize(); ++r)
+        if (regions[r] != brep->GetInfiniteRegion() && regions[r]->IsVoid() != TRUE)
+            cells.emplace(regions[r], static_cast<long>(cells.size()));
+    SmTArray<SmFace*> faces;
+    SmTArray<SmEdge*> edges;
+    SmTArray<SmVertex*> vertices;
+    brep->GetFaces(faces);
+    brep->GetEdges(edges);
+    brep->GetVertices(vertices);
+    const auto fidx = index_of(faces);
+    const auto eidx = index_of(edges);
+    const auto vidx = index_of(vertices);
+    const SmZoneTol3d tol = tolerance > 0 ? SmZoneTol3d(tolerance) : SmTol::GetZoneTol3d(brep);
+    Value out = Value::make_list();
+    for (size_t i = 0; i < points.size(); i += 3)
+    {
+        const SmPoint3d point(points[i], points[i + 1], points[i + 2]);
+        SmPointClassification pc(tol, brep->GetContext());
+        check(brep->Point3DClassify(point, tol, TRUE, pc), "SmBrep::Point3DClassify");
+        const SmObject* object = pc.GetObject();
+        switch (pc.GetPointClass())
+        {
+        case SM_PC_FACE:
+            out.push(tup("face", static_cast<long>(fidx.at(static_cast<const SmFace*>(object))), -1L));
+            break;
+        case SM_PC_EDGE:
+            out.push(tup("edge", static_cast<long>(eidx.at(static_cast<const SmEdge*>(object))), -1L));
+            break;
+        case SM_PC_VERTEX:
+            out.push(tup("vertex", static_cast<long>(vidx.at(static_cast<const SmVertex*>(object))), -1L));
+            break;
+        case SM_PC_REGION:
+        {
+            auto cell = cells.find(voted_region(brep, point, tol, static_cast<const SmRegion*>(object)));
+            if (cell == cells.end())
+                out.push(tup("outside", -1L, -1L));
+            else
+                out.push(tup("inside", -1L, cell->second));
+            break;
+        }
+        default:
+            throw std::runtime_error("SmBrep::Point3DClassify gave no region, face, edge or vertex");
+        }
+    }
+    return out;
 }
 
 SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
@@ -880,6 +1053,28 @@ void bind_smlibpy_ext(py::module_ m)
 
     m.def("transform_brep", &smlibpy::transform_brep, py::arg("brep"), py::arg("matrix"),
           "Apply a row-major 4x4 matrix to a Brep in place (rigid, scaling and mirroring).");
+    m.def("boolean", [](SmBrep* brep1, SmBrep* brep2, SmBooleanOperationType operation, bool non_manifold) {
+        return smlibpy::boolean(brep1, brep2, static_cast<int>(operation), non_manifold);
+    }, py::arg("brep1"), py::arg("brep2"), py::arg("operation"), py::arg("non_manifold") = false,
+          py::return_value_policy::reference,
+          "k.boolean (or k.non_manifold_boolean with `non_manifold`) that leaves the kernel as it was when it "
+          "fails: on success the result is brep1, changed, and brep2 is deleted; on failure both stay the "
+          "caller's.");
+    m.def("classify_points", [](const SmBrep* brep, const std::vector<std::vector<double>>& points, double tolerance) {
+        std::vector<double> flat;
+        flat.reserve(points.size() * 3);
+        for (const auto& p : points)
+        {
+            if (p.size() != 3)
+                throw std::invalid_argument("expected points with three coordinates");
+            flat.insert(flat.end(), p.begin(), p.end());
+        }
+        return smlibpy::to_python(smlibpy::classify_points(brep, flat, tolerance));
+    }, py::arg("brep"), py::arg("points"), py::arg("tolerance") = 0.0,
+          "Where each point lies relative to a body (SmBrep::Point3DClassify), within `tolerance` (0: the "
+          "body's own): per point (where, index, cell), `where` one of 'inside', 'outside', 'face', 'edge', "
+          "'vertex'; `index` the face, edge or vertex in the Brep's order (-1 off the boundary); `cell` the "
+          "closed region that is not a cavity holding the point, in region_shells order (-1 if none).");
 
     m.def("copy_faces", &smlibpy::copy_faces, py::arg("brep"), py::arg("faces"), py::return_value_policy::take_ownership,
           "Copy faces of a Brep into a new Brep (no merge, no stitching).");

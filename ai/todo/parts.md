@@ -35,6 +35,7 @@
 
 ### 18. Overlapping parallel through cuts: empty part or KernelError
 - **Fixed:** several tools that fail one after the other are combined and applied at once (the hole pattern now gives 23125.2); a single tool overlapping an earlier cut raises KernelError with the hint to combine the tools.
+- **Reopened (kernel plan B3, B10):** on curved bodies a single tool still went wrong silently: `(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0, 0)` gave an empty Part and `&` the whole part (29089.8; right: 929.188). Both raise ModelingError now; the result itself needs the tools combined (28160.6) until the NURBS retry of B10.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `11-many-tools.py`, `12-overlapping-tools.py`,
   `13-overlap-scope.py`, `14-overlap-workaround.py`, `17-overlapping-holes.py`, `18-overlap-empty-repro.py`, `19-overlap-variants.py`
 - **What happens:** cutting a second parallel cylinder that overlaps an existing through hole:
@@ -209,6 +210,7 @@
 
 ### 21. Booleans with an empty result return an empty Part silently
 - **Fixed:** empty results stay where they are right (tool encloses the part, identical bodies, disjoint intersections); a wrong empty result (overlapping tools) is retried or raises.
+- **Reopened (kernel plan B3):** the check confirmed an empty cut with the kernel's intersection of the same pair, which fails the same way on curved bodies and imported pulleys (crescendo parts 19 and 40). An empty cut is accepted now only from tools that hold the part's volume and span its box.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `03-contact-cases.py`, `07-empty-part-crash.py`
 - **What happens:** `a - Box(big)`, `a & disjoint`, `a & [t1, t2]` with disjoint tools: `Part(0 faces,
   volume=0)`, `is_valid()` False, `solids()` empty. `export_step` then raises `ValueError: nothing to write`.

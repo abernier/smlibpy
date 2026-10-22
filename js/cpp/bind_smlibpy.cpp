@@ -56,6 +56,28 @@ val copy_with_map(uintptr_t b, val faces, val edges, val vertices)
 }
 
 void transform_brep(uintptr_t b, val matrix) { guard([&] { smlibpy::transform_brep(brep(b), numbers(matrix)); }); }
+// As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
+// the caller's (and the kernel's Boolean mark is cleared).
+uintptr_t boolean(uintptr_t brep1, uintptr_t brep2, int operation, bool non_manifold)
+{
+    return guard([&] { return ptr(smlibpy::boolean(brep(brep1), brep(brep2), operation, non_manifold)); });
+}
+val classify_points(uintptr_t b, val points, double tolerance)
+{
+    return guard([&] {
+        std::vector<double> flat;
+        const unsigned n = points["length"].as<unsigned>();
+        flat.reserve(n * 3);
+        for (unsigned i = 0; i < n; ++i)
+        {
+            const std::vector<double> p = numbers(points[i]);
+            if (p.size() != 3)
+                throw std::invalid_argument("expected points with three coordinates");
+            flat.insert(flat.end(), p.begin(), p.end());
+        }
+        return to_js(smlibpy::classify_points(brep(b), flat, tolerance));
+    });
+}
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
 uintptr_t face_from_surface(uintptr_t s) { return guard([&] { return ptr(smlibpy::face_from_surface(smjs::surface(s))); }); }
 uintptr_t combine(val breps) { return guard([&] { return ptr(smlibpy::combine(pointers<SmBrep>(breps))); }); }
@@ -622,6 +644,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__vertex_indices", &vertex_indices);
     function("ext__copy_with_map", &copy_with_map);
     function("ext__transform_brep", &transform_brep);
+    function("ext__boolean", &boolean);
+    function("ext__classify_points", &classify_points);
     function("ext__copy_faces", &copy_faces);
     function("ext__face_from_surface", &face_from_surface);
     function("ext__combine", &combine);

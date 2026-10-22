@@ -1,6 +1,7 @@
 // tests/test_guards.py: features refuse broken input and do not return broken bodies.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
   Align,
   Box,
@@ -9,6 +10,7 @@ import {
   Cylinder,
   Hole,
   KernelError,
+  Location,
   Locations,
   ModelingError,
   Part,
@@ -18,6 +20,7 @@ import {
   RegularPolygon,
   Sphere,
   Spline,
+  Torus,
   X,
   Y,
   Z,
@@ -253,6 +256,109 @@ test('empty Boolean results where they are right', () => {
   assert.equal(Box(10, 10, 10).cut(Box(20, 20, 20)).faces().length, 0)
   assert.equal(Box(10, 10, 10).cut(Box(10, 10, 10)).faces().length, 0)
   assert.equal(Box(10, 10, 10).intersect(Box(10, 10, 10).translate(30, 0, 0)).faces().length, 0)
+  assert.equal(Sphere(5).cut([Box(10, 10, 5).translate(0, 0, 2.5), Box(10, 10, 5).translate(0, 0, -2.5)]).faces().length, 0)
+})
+
+test('an empty cut needs tools that can cover the part', () => {
+  // A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of the
+  // same pair, which confirmed the empty cut, is the whole part. Both were accepted.
+  const holed = Sphere(20).cut(Cylinder(6, 60))
+  throwsMatching(() => holed.cut(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /empty/) // was Part(0 faces), no error
+  throwsMatching(() => holed.intersect(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /partly outside an operand/) // was the whole part, 29089.8 (right: 929.188)
+  approx(Sphere(20).cut([Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume, 28160.608174, 1e-8)
+})
+
+test('an intersection may give an operand back when the other contains it', () => {
+  const box = Box(10, 10, 10)
+  approx(box.intersect(Box(20, 20, 20)).volume, 1000)
+  approx(box.intersect(Box(10, 10, 20)).volume, 1000) // faces shared
+  approx(Sphere(5).intersect(Box(20, 20, 20)).volume, (4 / 3) * PI * 125)
+  approx(Box(30, 30, 30).intersect(Sphere(20)).volume, Sphere(20).intersect(Box(30, 30, 30)).volume)
+})
+
+test('Boolean results are checked when asked', () => {
+  // Closed, manifold results of sound operands were marked valid unchecked. Two cylinders whose
+  // lowest lines touch: the kernel's intersection leaves a face out (volume 250.206, more than its
+  // operand's 150.796; its faces leave gaps of 0.25), and the difference has no volume.
+  const a = Cylinder(2, 12)
+  const b = Cylinder(1.5, 30).rotate(Y, 90).translate(1, -0.5, 2.4787)
+  const common = Part._wrap(k.boolean(a._copyBrep(), b._copyBrep(), { operation: k.BooleanOp.INTERSECTION }))
+  assert.ok(!common.isValid() && /open between its faces/.test(common._solidProblem()!))
+  throwsMatching(() => common.fillet(common.edges(), 0.1), ModelingError, /not a valid solid/)
+  const rest = a.cut(b)
+  assert.ok(!rest.isValid() && rest._solidProblem() === 'without volume')
+  throwsMatching(() => a.intersect(b), ModelingError, /partly outside an operand/) // reaches out of the first cylinder
+  assert.ok(Box(20, 20, 20).cut(Cylinder(5, 30)).isValid())
+})
+
+const seamHoles: [string, () => Part, number][] = [
+  ['groove pin', () => Box(30, 30, 30).cut(Cylinder(5, 60)).cut(Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)), 24299.258668],
+  ['cross holes', () => Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0)).cut(Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)), 6931.747603],
+]
+for (const [name, cut, exact] of seamHoles) {
+  // kernel plan B6: a primitive's seam line in a tangent plane of the other operand (24364.1472 and
+  // 7057.1895 here, both valid)
+  test(`holes tangent to a seam: ${name}`, { todo: 'kernel plan B6' }, () => {
+    approx(cut().volume, exact, 1e-7)
+  })
+}
+
+test('failed Booleans free their operands', () => {
+  // The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.4 MB per
+  // failed cut. In a process of its own, so that what other tests left does not count.
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { Box, Cylinder, KernelError } from '${src}index.ts'
+    const fail = () => {
+      try {
+        Box(40, 30, 20).cut(Cylinder(3, 40).translate([-5, 0, 0])).cut(Cylinder(3, 40))
+      } catch (e) {
+        if (!(e instanceof KernelError)) throw e
+      }
+    }
+    const settle = async () => {
+      for (let i = 0; i < 3; i++) {
+        globalThis.gc()
+        await new Promise((r) => setTimeout(r, 0))
+      }
+    }
+    for (let i = 0; i < 10; i++) fail()
+    await settle()
+    const before = process.memoryUsage().rss
+    for (let i = 0; i < 100; i++) {
+      fail()
+      if (i % 10 === 9) await settle()
+    }
+    await settle()
+    console.log(Math.round((process.memoryUsage().rss - before) / 1048576))
+  `
+  const run = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
+  assert.equal(run.status, 0, run.stderr)
+  const grown = Number(run.stdout.trim())
+  assert.ok(grown < 20, `100 failed cuts took ${grown} MB`) // was 43 MB
+})
+
+// -- moved bodies ---------------------------------------------------------------------------
+test('moved bodies keep their tolerances', () => {
+  // Moving a body reset its tolerances from the box of its vertices: a torus (one vertex) got 0, and
+  // the Booleans of the moved torus went wrong.
+  const groove = Cylinder(10, 40).cut(Torus(10, 1.5).translate(0, 0, 10))
+  approx(groove.volume, 12358.441682, 1e-8) // was 12566.37: the groove was ignored
+  const corner = Torus(8, 1.5).intersect(Box(4, 4, 4).translate(8, 0, 0)).volume
+  approx(corner, 28.586308, 1e-6)
+  const moves: ((p: Part) => Part)[] = [
+    (p) => p.translate(0, 0, 5), // was 355.31, the whole torus
+    (p) => p.rotate(Z, 30),
+    (p) => p.mirror(Plane.YZ),
+    (p) => p.scale(-1),
+    (p) => p.moved(new Location([5, 6, 7], [10, 20, 30])),
+  ]
+  for (const move of moves) approx(move(Torus(8, 1.5)).intersect(move(Box(4, 4, 4).translate(8, 0, 0))).volume, corner, 1e-6)
+  approx(Torus(8, 1.5).scale(2).intersect(Box(8, 8, 8).translate(16, 0, 0)).volume, 8 * corner, 1e-6)
+  approx(Torus(8, 1.5).scale([1, 1, 2]).intersect(Box(4, 4, 8).translate(8, 0, 0)).volume, 2 * corner, 1e-6)
+  // a part over 500 across went from tolerance 1e-5 to 1e-4: a step of 5e-5 was absorbed
+  const step = Box(1000, 1000, 100).translate(1, 0, 0).fuse(Box(10, 10, 100.00005).translate(1, 0, 2.5e-5))
+  assert.equal(step.faces().length, 11) // was 6
 })
 
 // -- distance -------------------------------------------------------------------------------

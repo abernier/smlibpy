@@ -116,7 +116,8 @@ def test_discovery_finds_api_and_guides():
     ("ray", "analysis/raycast"),
     ("select faces with a ray", "ShapeList.hit_by"),
     ("which face does the ray hit first", "selection/hit_by"),
-    ("inside outside test", "analysis/raycast"),
+    ("inside outside test", "analysis/classify"),
+    ("is a point inside the part", "analysis/classify"),
     ("point cloud", "surfaces/surface"),
     ("fit a surface to points", "surfaces/surface"),
     ("blend two surfaces", "surfaces/surface_fillet"),
@@ -133,7 +134,7 @@ def test_search_finds_the_kernel_tools(query, expected):
     assert expected in [e.key for _, e in discovery.search(query, 5)]
 
 
-KERNEL_TOOL_GUIDES = ["analysis/raycast", "selection/hit_by", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
+KERNEL_TOOL_GUIDES = ["analysis/raycast", "analysis/classify", "selection/hit_by", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
                       "features/cells", "curves/nurbs", "curves/make_compatible", "curves/remove_knots",
                       "files/export_usd", "files/import_usd", "files/Mesh"]
 

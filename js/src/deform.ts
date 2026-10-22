@@ -22,7 +22,7 @@
 // The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmTransform) and a
 // Bezier volume for lattices and tapers.
 
-import { KernelError, ModelingError, _opts, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _opts, k, kernelCall } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -40,7 +40,7 @@ import {
   _vec,
 } from './geometry.ts'
 import { det3, mean3 } from './_linalg.ts'
-import { Part, Shell, Sketch, type _Body, _typeName } from './shapes.ts'
+import { Part, Shell, Sketch, type _Body, _held, _typeName } from './shapes.ts'
 import { Box } from './parts.ts'
 
 // biome-ignore lint: the kernel's spec and results are what their bindings take and return
@@ -172,12 +172,20 @@ function _imprint(shape: Deformable, origin: V3, normal: V3): Deformable {
   const size = 4.0 * (shape.bbox().diagonal + _norm(origin)) + 10.0
   const plane = new Plane(origin, _perpendicular(normal), normal)
   const tool = Box(size, size, size).translate(0, 0, -size / 2).moved(plane.location)
-  const b = kernelCall(
-    'deform: split the faces at the end of the range',
-    () => k.boolean_with_options(shape._copyBrep(), tool._copyBrep(), { operation: k.BooleanOp.UNION, imprinting: true }),
-    'move start or end away from edges and faces of the part, or deform the whole part',
-  )
-  return shape._like(b)
+  const th = new BrepHandle(tool._copyBrep()) // the kernel keeps both if it fails
+  try {
+    const b = _held(shape._copyBrep(), (h) =>
+      kernelCall(
+        'deform: split the faces at the end of the range',
+        () => k.boolean_with_options(h.brep, th.brep, { operation: k.BooleanOp.UNION, imprinting: true }),
+        'move start or end away from edges and faces of the part, or deform the whole part',
+      ),
+    )
+    th.release()
+    return shape._like(b)
+  } finally {
+    th.dispose()
+  }
 }
 
 /** What the kernel's map does, as smlibpy's C++ takes it (the kernel's keys). */

@@ -52,6 +52,18 @@ CopyMap copy_with_map(const SmBrep* brep, const std::vector<SmFace*>& faces, con
 
 // A row-major 4x4 matrix applied to a Brep in place (rigid, scaling and mirroring).
 void transform_brep(SmBrep* brep, const std::vector<double>& matrix);
+// A Boolean (SmApiBoolean, or SmApiNonManifoldBoolean with `non_manifold`) that leaves the kernel
+// as it was when it fails: SmMerge marks the shared context as doing a Boolean and clears the mark
+// only on its way out of a success (while it is set, the kernel builds no surface caches). As
+// k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay the
+// caller's. `operation`: SM_BO_UNION, SM_BO_DIFFERENCE, SM_BO_INTERSECTION or SM_BO_MERGE.
+SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold);
+// Where each point (x, y, z, x, y, z, ...) lies relative to a body, within `tolerance` (0: the
+// body's own; SmBrep::Point3DClassify): per point (where, index, cell). `where` is "inside",
+// "outside", "face", "edge" or "vertex"; `index` the face, edge or vertex in the Brep's own lists
+// (-1 off the boundary); `cell` the closed region that is not a cavity holding the point,
+// numbered as region_shells numbers them (-1 outside, in a cavity and on the boundary).
+Value classify_points(const SmBrep* brep, const std::vector<double>& points, double tolerance);
 // Faces of a Brep copied into a new Brep (no merge, no stitching).
 SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces);
 // A sheet Brep with one face covering the whole (copied) surface.

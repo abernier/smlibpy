@@ -51,6 +51,12 @@ _MARGIN = 0.1
 # accuracy asked for) the volume measure says so.
 _GAPS = 1e-5
 
+# Faces whose gaps reach 1e-2 of the volume do not bound one solid: a Boolean that left a face out
+# (0.25), a wrong shell from the fuzz campaign (0.066), a torus split along its seam (4.0). Sound
+# bodies stay below 2e-3: imported parts up to 6e-4, a sheet unfolded at a radius far below its
+# thickness 1.1e-3.
+_BROKEN_GAPS = 1e-2
+
 S = TypeVar("S", bound="Shape")
 
 
@@ -1572,7 +1578,8 @@ class _Body(Shape):
         alone is a ray from its origin along its direction. Points behind the start are not
         hits. A ray through an edge or a vertex hits once, a ray along a face where it enters
         the face. ``hits[0]`` is what the ray sees first; ``len(hits)`` is odd from inside a
-        closed part.
+        closed part, except where the ray grazes a face (to test a point, use
+        :meth:`Part.contains`).
         """
         return _raycast(self.faces(), origin, direction, self._loose_box())
 
@@ -1616,25 +1623,25 @@ class _Body(Shape):
         return _distinct_curves(curves, 1e-7 * max(self.bbox().diagonal, 1.0))
 
     def _transformed(self, m: np.ndarray) -> Any:
-        b = self._copy_brep()
+        h = BrepHandle(self._copy_brep())  # freed if the kernel fails
         with kernel_call("transform"):
-            ext.transform_brep(b, list(m.T.ravel()))
-        return self._like(b)
+            ext.transform_brep(h.brep, list(m.T.ravel()))
+        return self._like(_take(h))
 
     # -- body conversions -----------------------------------------------------
     def to_nurbs(self) -> Any:
         """A copy whose faces and edges are all NURBS (analytic types converted)."""
-        b = self._copy_brep()
+        h = BrepHandle(self._copy_brep())
         with kernel_call("to_nurbs"):
-            k.turn_to_nurbs(b)
-        return self._like(b)
+            k.turn_to_nurbs(h.brep)
+        return self._like(_take(h))
 
     def heal(self) -> Any:
         """Repair gaps, tolerances and topology (mostly needed for imported data)."""
-        b = self._copy_brep()
+        h = BrepHandle(self._copy_brep())
         with kernel_call("heal"):
-            k.heal_brep(b)
-        return self._like(b)
+            k.heal_brep(h.brep)
+        return self._like(_take(h))
 
     def _identity(self) -> Any:
         return ("b", id(self._h))
@@ -1676,6 +1683,67 @@ def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
 
 def _disjoint(a: BoundBox, b: BoundBox, tol: float = 1e-9) -> bool:
     return any(a.max[i] < b.min[i] - tol or b.max[i] < a.min[i] - tol for i in range(3))
+
+
+def _can_cover(tools: Sequence[Part], part: Part) -> bool:
+    """Whether tools can cover a part, so that a cut by them can leave nothing: together they
+    hold at least its volume, and their boxes span its box. Necessary, not sufficient; the
+    volumes are the quick ones, with a margin of 1e-3."""
+    try:
+        if sum(t._quick_volume() for t in tools) < part._quick_volume() * (1 - 1e-3):
+            return False
+    except KernelError:
+        return False
+    hull = tools[0]._loose_box()
+    for t in tools[1:]:
+        hull = hull.union(t._loose_box())
+    box = part._loose_box()
+    tol = 1e-6 * box.diagonal + 1e-5
+    if hull.contains(box.min, tol) and hull.contains(box.max, tol):
+        return True
+    box = part.bbox()  # the loose box can stick out of the tools' boxes where the part does not
+    return hull.contains(box.min, tol) and hull.contains(box.max, tol)
+
+
+def _intersection_problem(result: Part, operands: Sequence[Part]) -> str | None:
+    """Whether points of an intersection's surface lie outside one of its operands. Checked
+    where that is likely: the result has as many faces as an operand (one given back
+    unchanged), or its box reaches out of an operand's. The kernel can take a tool beside an
+    earlier hole in a curved part, or a corner box of an imported pulley, as containing the part,
+    and return all of it."""
+    n = result._brep.face_count()
+    box = result._loose_box()
+    tol = 1e-6 * box.diagonal + 1e-5
+    if all(x._brep.face_count() != n and x._loose_box().contains(box.min, tol) and x._loose_box().contains(box.max, tol)
+           for x in operands):
+        return None
+    points = _surface_points(result)
+    near = max(1e-4 * box.diagonal, 1e-5)  # the new edges are fitted, to about 2e-5
+    for x in operands:
+        if any(where == "outside" for where, _, _ in x._classify(points, near)):
+            return "partly outside an operand (the kernel took one operand for inside the other)"
+    return None
+
+
+def _surface_points(body: _Body) -> list[tuple[float, float, float]]:
+    """Points on a body's surface: its vertices, the middle of each edge, and a point of each face
+    (the middle of its parameter domain where that lies on the face, else one the kernel finds)."""
+    points = [v.point() for v in body._brep.vertices()]
+    for e in body._brep.edges():
+        a, b = e.parameter_range()
+        points.append(e.curve().evaluate(0.5 * (a + b)))
+    for f in body._brep.faces():
+        (u0, v0), (u1, v1) = f.uv_domain()
+        u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+        try:
+            inside = f.classify_uv(u, v) == "inside"
+        except RuntimeError:  # (on a face whose seam the kernel cannot resolve)
+            inside = False
+        try:
+            points.append(f.point_at_uv(u, v) if inside else f.interior_point())
+        except RuntimeError:  # the kernel cannot place a point on this face: its edges stand in
+            pass
+    return [Vector(p).to_tuple() for p in points]
 
 
 def _disjoint_batches(tools: Sequence[Any]) -> list[list[Any]]:
@@ -2020,34 +2088,40 @@ class Part(_Body):
                               density * i_c, density)
 
     def is_valid(self) -> bool:
-        """True if the part is a closed, manifold solid that encloses a positive volume.
+        """True if the part is a closed, manifold solid that encloses a positive volume and
+        whose faces meet.
 
         (A body whose faces point inward, or that encloses no volume, such as a profile
-        revolved about an axis through it, is not valid.)
+        revolved about an axis through it, is not valid; nor is one whose faces leave gaps that
+        make its volume uncertain by 1e-2 of its value or more.)
         """
         return self._solid_problem() is None
 
     def _solid_problem(self, volume: float | None = None) -> str | None:
         """Why this is not a sound solid (``"empty"``, ``"inside out (negative volume)"``,
-        ...), or None. The volume is integrated coarsely (or ``volume``, which the caller
-        integrated anyway, is used): this catches broken bodies, not small errors. A body
-        found sound is not checked again."""
+        ``"open between its faces, ..."``, ...), or None. The volume is integrated coarsely,
+        with the gaps between the faces (or ``volume``, which the caller integrated anyway, is
+        used, and the gaps only if the part was measured): this catches broken bodies, not
+        small errors. A body found sound is not checked again."""
         if self._h.sound:
             return None
         problem = self._shape_problem()
         if problem is None:
-            if volume is None and self._h.props is not None:
-                volume = float(self._h.props["volume"])  # measured already
-            if volume is None:
+            gaps = None
+            if volume is None or self._h.props is not None:
                 try:
-                    volume = float(self._kernel_props(1e-3)["volume"])
+                    p = self._props(1e-4) if volume is None else self._h.props  # measured already, or now
                 except KernelError:
                     return "a body whose volume cannot be integrated"
+                volume = float(p["volume"]) if volume is None else volume
+                gaps = float(p["gaps"])
             tiny = 1e-9 * self._extent() ** 3
             if volume < -tiny:
                 problem = "inside out (negative volume)"
             elif not volume > tiny:  # also a NaN volume
                 problem = "without volume"
+            elif gaps is not None and not gaps < _BROKEN_GAPS:
+                problem = f"open between its faces, so that its volume is uncertain by {gaps:.1e} of its value"
         self._h.sound = problem is None
         return problem
 
@@ -2101,8 +2175,7 @@ class Part(_Body):
         h = BrepHandle(self._copy_brep())
         for t in tools:
             with kernel_call("merge", "the parts may only touch along an edge or at a point"):
-                r = k.non_manifold_boolean(_take(h), t._copy_brep(), operation=k.BooleanOp.MERGE)
-            h = BrepHandle(r)
+                _combine(h, t, k.BooleanOp.MERGE, non_manifold=True)
         return Part._wrap(_take(h), name=self.name, color=self.color)
 
     def cells(self) -> ShapeList[Part]:
@@ -2121,6 +2194,47 @@ class Part(_Body):
                 raise ModelingError(f"cells: a cell is not a sound solid ({part._solid_problem()})")
             out.append(part)
         return out
+
+    # -- points ---------------------------------------------------------------
+    def classify(self, point: VectorLike, tol: float | None = None) -> tuple[str, Face | Edge | Vertex | None]:
+        """Where a point lies: ``("inside", None)`` in the material, ``("outside", None)``
+        (also in a cavity), or ``("on", shape)`` on the surface within ``tol`` (default: the
+        part's own tolerance, 1e-5 for most parts), with the vertex, edge or face it lies on
+        (the vertex rather than its edges, an edge rather than its faces).
+
+        The kernel classifies the point exactly (SmBrep::Point3DClassify), also where a ray
+        from it would graze a face or pass through an edge, which the parity of
+        :meth:`raycast` hits gets wrong.
+        """
+        where, index, _ = self._classify([point], tol)[0]
+        if where == "face":
+            return "on", Face(self, self._brep.faces()[index])
+        if where == "edge":
+            return "on", Edge._of(self, self._brep.edges()[index])
+        if where == "vertex":
+            return "on", Vertex._of(self, self._brep.vertices()[index])
+        return where, None
+
+    def contains(self, point: VectorLike, tol: float | None = None) -> bool:
+        """True if the point lies in the material of this part or on its surface (within
+        ``tol``, see :meth:`classify`); False outside and in a cavity."""
+        return self._classify([point], tol)[0][0] != "outside"
+
+    def cell_at(self, point: VectorLike, tol: float | None = None) -> Part | None:
+        """The cell of a merged part (see :meth:`merge`) that holds the point, as in
+        :meth:`cells`; None outside, in a cavity and on a face (also one between two cells).
+        For a part that is one solid: the part itself or None."""
+        _, _, cell = self._classify([point], tol)[0]
+        return None if cell < 0 else self.cells()[cell]
+
+    def _classify(self, points: Iterable[VectorLike], tol: float | None = None) -> list[tuple[str, int, int]]:
+        """``ext.classify_points`` for these points: per point (where, index, cell), where one of
+        "inside", "outside", "face", "edge", "vertex"."""
+        if tol is not None and not (math.isfinite(tol) and tol > 0):
+            raise ValueError(f"classify: the tolerance must be positive (got {tol!r})")
+        pts = [_vec(p).to_tuple() for p in points]
+        with kernel_call("classify"):
+            return [tuple(r) for r in ext.classify_points(self._brep, pts, tol or 0.0)]  # type: ignore[misc]
 
     # -- booleans -------------------------------------------------------------
     def _boolean(self, others: Any, op: Any, name: str) -> Part:
@@ -2167,11 +2281,11 @@ class Part(_Body):
         raise ModelingError(f"{name}: the kernel returned a result that is {problem}; {hint}")
 
     def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
-        result = self._copy_brep()
+        h = BrepHandle(self._copy_brep())
         for t in tools:
             with kernel_call(name, "the operands may touch only in a degenerate way, or an operand is broken"):
-                result = k.boolean(result, t._copy_brep(), operation=op)
-        return result
+                _combine(h, t, op)
+        return _take(h)
 
     def _boolean_problem(self, result: Part, tools: Sequence[Part], op: Any) -> str | None:
         """What is wrong with a Boolean result, or None. An empty result is right where the
@@ -2180,10 +2294,11 @@ class Part(_Body):
         if result._brep.face_count() != 0:
             problem = result._shape_problem()
             if problem is None and all(x._solid_problem() is None for x in (self, *tools)):
-                # Closed and manifold, from sound operands: the kernel does not turn such a
-                # result inside out (touching operands give empty or non-manifold results),
-                # so its volume, which costs far more than the Boolean, is not integrated.
-                result._h.sound = True
+                # Closed and manifold, from sound operands. Its volume, which costs up to twice
+                # the Boolean, is not integrated here; is_valid() (and the next feature) does.
+                # The result is not taken as sound: it can be inside out or leave a face out.
+                if op == k.BooleanOp.INTERSECTION:
+                    return _intersection_problem(result, [self, *tools])
                 return None
             return problem or result._solid_problem()
         if op == k.BooleanOp.UNION:
@@ -2193,6 +2308,11 @@ class Part(_Body):
                 return None  # the common volume of several tools may well be empty
             rel = _relationship(self, tools[0])
             return None if rel in ("separate", "touching") else "empty"
+        # The intersection of the part and a tool that confirms an empty cut below can fail the
+        # same way as the cut (a tool beside an earlier hole in a sphere: the cut is empty, the
+        # intersection the whole part). So first the tools must be able to cover the part.
+        if not _can_cover(tools, self):
+            return "empty"
         try:
             whole = self._kernel_props(1e-6)["volume"]
         except KernelError:
@@ -2202,9 +2322,7 @@ class Part(_Body):
                 continue
             # right only if the tool covers the whole part
             try:
-                with kernel_call("cut"):
-                    common = Part._wrap(k.boolean(self._copy_brep(), t._copy_brep(),
-                                                  operation=k.BooleanOp.INTERSECTION))
+                common = Part._wrap(self._run_boolean([t], k.BooleanOp.INTERSECTION, "cut"))
                 if common._kernel_props(1e-6)["volume"] >= whole * (1 - 1e-5):
                     return None
             except KernelError:
@@ -2843,6 +2961,15 @@ def _take(h: BrepHandle) -> Any:
     return b
 
 
+def _combine(h: BrepHandle, tool: _Body, op: Any, non_manifold: bool = False) -> None:
+    """Combine a copy of a tool into the Brep a handle owns (``ext.boolean``). The kernel changes
+    that Brep and deletes the copy when it succeeds, and keeps both when it fails: the handles
+    hold them until then and free them on a failure."""
+    th = BrepHandle(tool._copy_brep())
+    h.brep = ext.boolean(h.brep, th.brep, op, non_manifold)
+    _take(th)
+
+
 def _continuity(c: int | str | None) -> int | None:
     if c is None:
         return None
@@ -2909,11 +3036,11 @@ class Shell(_Body):
         return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
 
     def __add__(self, other: Any) -> Shell:
-        b = self._copy_brep()
+        h = BrepHandle(self._copy_brep())
         for t in _bodies(other):
             with kernel_call("fuse"):
-                b = k.boolean(b, t._copy_brep(), operation=k.BooleanOp.UNION)
-        return self._like(b)
+                _combine(h, t, k.BooleanOp.UNION)
+        return self._like(_take(h))
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._brep.face_count()} faces, area={self.area:.6g})"

@@ -82,6 +82,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   object (`_f`, `_e`, `_v`) is a getter that throws a TypeError once its body was disposed.
   Meshes keep no PolyBrep (`_fromPoly` frees it once the arrays are copied), except where a
   caller keeps the tessellation's own (`_tessellate(..., keep)`) and disposes it.
+  Copies that go into a kernel call which keeps them when it fails (Booleans, transforms) are
+  held by a handle until the kernel takes them: `_held(copy, (h) => ...)` gives the Brep back
+  on success and frees it on a failure; `_combine(h, tool, op)` does a Boolean (`ext.boolean`).
 - **Imports.** Modules import each other statically, also where Python imports inside a
   function to break a cycle. ES modules allow the cycles as long as no module uses another's
   exports while it is first evaluated: no top-level code that builds shapes.
@@ -104,6 +107,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   arrays of `[x, y]` points, numpy's n x 2 rows); `align.ts`: `_one`; `surfaces.ts`:
   `_shellOfSurface`; `viewer.ts`: `show`; `sketches.ts`: every constructor (`Polygon`, ...);
   `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
+  `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`;
   `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them), `_tessellate`
   (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in

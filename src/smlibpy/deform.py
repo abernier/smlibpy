@@ -34,7 +34,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from ._kernel import KernelError, ModelingError, k, kernel_call
+from ._kernel import BrepHandle, KernelError, ModelingError, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, VectorLike, X, Y, Z, _vec
 
 __all__ = ["twist", "taper", "bend", "Lattice", "MAX_DEGREE"]
@@ -129,14 +129,17 @@ def _rotation_about(origin: np.ndarray, d: np.ndarray, angle: float) -> tuple[np
 def _imprint(shape: Any, origin: np.ndarray, normal: np.ndarray) -> Any:
     """The shape with the faces it has across a plane split there (nothing added or removed)."""
     from .parts import Box
+    from .shapes import _take
 
     size = 4.0 * (shape.bbox().diagonal + float(np.linalg.norm(origin))) + 10.0
     plane = Plane(tuple(origin), tuple(_perpendicular(normal)), tuple(normal))
     tool = Box(size, size, size).translate(0, 0, -size / 2).moved(plane.location)
+    h, th = BrepHandle(shape._copy_brep()), BrepHandle(tool._copy_brep())  # the kernel keeps both if it fails
     with kernel_call("deform: split the faces at the end of the range",
                      "move start or end away from edges and faces of the part, or deform the whole part"):
-        b = k.boolean_with_options(shape._copy_brep(), tool._copy_brep(), operation=k.BooleanOp.UNION, imprinting=True)
-    return shape._like(b)
+        h.brep = k.boolean_with_options(h.brep, th.brep, operation=k.BooleanOp.UNION, imprinting=True)
+    _take(th)
+    return shape._like(_take(h))
 
 
 @dataclass

@@ -100,7 +100,7 @@ SYNONYMS = {
 # Rays, clouds of points, cells, curve data, USD.
 SYNONYMS.update({
     "ray": ["raycast"], "rays": ["raycast"], "hit": ["raycast", "hit_by"], "hits": ["raycast", "hit_by"],
-    "shoot": ["raycast"], "sight": ["raycast", "hit_by"], "inside": ["raycast"], "outside": ["raycast"],
+    "shoot": ["raycast"], "sight": ["raycast", "hit_by"], "inside": ["contains", "classify"], "outside": ["contains", "classify"],
     "pierce": ["raycast", "hit_by"], "sees": ["hit_by"], "visible": ["hit_by"],
     "cloud": ["surface"], "scan": ["surface", "import_stl"], "scanned": ["surface", "import_stl"],
     "scanner": ["surface"], "fit": ["surface"], "fitting": ["surface"], "approximate": ["surface"],

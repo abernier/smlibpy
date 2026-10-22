@@ -1,7 +1,8 @@
 # raycast
 
 Where a ray meets a body, a face or a mesh: the exact points, nearest first. For what a line of
-sight sees first, wall thicknesses along a direction, clearances, and inside/outside tests.
+sight sees first, wall thicknesses along a direction and clearances. Whether a point is inside a
+part: `contains` and `classify`, not the parity of the hits.
 
 ## Signature
 `shape.raycast(origin, direction) -> list[Hit]` on `Part`, `Shell`, `Sketch`, `Face` and `Mesh`.
@@ -26,7 +27,9 @@ A list of `Hit`, nearest first, `[]` when the ray misses. A `Hit` is a named tup
 - A ray through an edge or a vertex hits once, not once per face.
 - A ray along a face (in its plane) hits it where it enters it.
 - A ray that starts on a surface hits it at distance 0.
-- From inside a closed part the number of hits is odd, from outside it is even (0 when it misses).
+- From inside a closed part the number of hits is odd, from outside it is even (0 when it misses),
+  except where the ray grazes a face or passes through an edge: a ray tangent to a cylinder hits
+  it once. Test points with `part.contains(point)` (see `classify`), which is exact.
 
 ## Gotchas
 - To select faces with a ray (and chain on), use `part.faces().hit_by(origin, direction)`: the
@@ -55,9 +58,8 @@ for h in part.raycast((-50, 0, 0), (1, 0, 0)):    # along x, through the hole
 first = part.raycast(Axis((10, 8, 50), (0, 0, -1)))[0]   # looking down: what is seen first
 print(first.point, first.face.geom_type)                  # Vector(10, 8, 10) plane
 
-# inside or outside: an odd number of hits from inside the material
-print(len(part.raycast((10, 8, 0), (0, 0, 1))) % 2 == 1)  # True: in the material
-print(len(part.raycast((0, 0, 0), (0, 0, 1))) % 2 == 1)   # False: in the hole
+# inside or outside: classify the point (the parity of the hits miscounts grazing rays)
+print(part.contains((10, 8, 0)), part.contains((0, 0, 0)))  # True False: in the material, in the hole
 
 # wall thickness along the normal of a face
 cup = Box(40, 30, 20) - Box(36, 26, 20).translate(0, 0, 2)
@@ -70,4 +72,4 @@ print(round(hit.point.z, 3), hit.triangle is not None)   # 9.536 True (exact: 9.
 ```
 
 ## Related
-`hit_by` (select faces with a ray), `distance_to`, `closest_point`, `intersection_curves`, `Mesh`, `generic`
+`hit_by` (select faces with a ray), `classify` (inside or outside), `distance_to`, `closest_point`, `intersection_curves`, `Mesh`, `generic`

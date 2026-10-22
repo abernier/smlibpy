@@ -1,6 +1,8 @@
 """Regression tests: features refuse broken input and do not return broken bodies."""
 
 import math
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -221,6 +223,101 @@ def test_empty_boolean_results_where_they_are_right():
     assert len((Box(10, 10, 10) - Box(20, 20, 20)).faces()) == 0
     assert len((Box(10, 10, 10) - Box(10, 10, 10)).faces()) == 0
     assert len((Box(10, 10, 10) & Box(10, 10, 10).translate(30, 0, 0)).faces()) == 0
+    assert len((Sphere(5) - [Box(10, 10, 5).translate(0, 0, 2.5), Box(10, 10, 5).translate(0, 0, -2.5)]).faces()) == 0
+
+
+def test_an_empty_cut_needs_tools_that_can_cover_the_part():
+    # A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of
+    # the same pair, which confirmed the empty cut, is the whole part. Both were accepted.
+    holed = Sphere(20) - Cylinder(6, 60)
+    with pytest.raises(ModelingError, match="empty"):
+        holed - Cylinder(3, 60).translate(8, 0, 0)  # was Part(0 faces), no error
+    with pytest.raises(ModelingError, match="partly outside an operand"):
+        holed & Cylinder(3, 60).translate(8, 0, 0)  # was the whole part, 29089.8 (right: 929.188)
+    assert (Sphere(20) - [Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume == approx(28160.608174, rel=1e-8)
+
+
+def test_an_intersection_may_give_an_operand_back_when_the_other_contains_it():
+    box = Box(10, 10, 10)
+    assert (box & Box(20, 20, 20)).volume == approx(1000)
+    assert (box & Box(10, 10, 20)).volume == approx(1000)  # faces shared
+    assert (Sphere(5) & Box(20, 20, 20)).volume == approx(4 / 3 * math.pi * 125)
+    assert (Box(30, 30, 30) & Sphere(20)).volume == approx((Sphere(20) & Box(30, 30, 30)).volume)
+
+
+def test_boolean_results_are_checked_when_asked():
+    # Closed, manifold results of sound operands were marked valid unchecked. Two cylinders whose
+    # lowest lines touch: the kernel's intersection leaves a face out (volume 250.206, more than its
+    # operand's 150.796; its faces leave gaps of 0.25), and the difference has no volume.
+    a = Cylinder(2, 12)
+    b = Cylinder(1.5, 30).rotate(Y, 90).translate(1, -0.5, 2.4787)
+    common = Part._wrap(k.boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.INTERSECTION))
+    assert not common.is_valid() and "open between its faces" in common._solid_problem()
+    with pytest.raises(ModelingError, match="not a valid solid"):
+        common.fillet(common.edges(), 0.1)
+    rest = a - b
+    assert not rest.is_valid() and rest._solid_problem() == "without volume"
+    with pytest.raises(ModelingError, match="partly outside an operand"):
+        a & b  # reaches out of the first cylinder
+    assert (Box(20, 20, 20) - Cylinder(5, 30)).is_valid()
+
+
+@pytest.mark.xfail(strict=True, reason="kernel plan B6: a primitive's seam line in a tangent plane of the other operand")
+@pytest.mark.parametrize("cut, exact", [
+    (lambda: (Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0), 24299.258668),
+    (lambda: Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3),
+     6931.747603),
+], ids=["groove pin", "cross holes"])
+def test_holes_tangent_to_a_seam(cut, exact):
+    assert cut().volume == approx(exact, rel=1e-7)  # 24331.7029 and 7057.1895, both valid
+
+
+def test_failed_booleans_free_their_operands():
+    # The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.6 MB
+    # per failed cut. In a process of its own, so that what other tests left does not count.
+    code = """
+import gc, os
+from smlibpy import *
+def rss():
+    return int(os.popen(f"ps -o rss= -p {os.getpid()}").read()) / 1024
+def fail():
+    try:
+        Box(40, 30, 20) - Cylinder(3, 40).translate((-5, 0, 0)) - Cylinder(3, 40)
+    except KernelError:
+        pass
+for _ in range(10):
+    fail()
+gc.collect()
+before = rss()
+for _ in range(100):
+    fail()
+gc.collect()
+print(rss() - before)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr
+    grown = float(run.stdout.strip())
+    assert grown < 25, f"100 failed cuts took {grown:.1f} MB"  # was 53 MB
+
+
+# -- moved bodies -------------------------------------------------------------------------
+def test_moved_bodies_keep_their_tolerances():
+    # Moving a body reset its tolerances from the box of its vertices: a torus (one vertex) got 0,
+    # and the Booleans of the moved torus went wrong.
+    groove = Cylinder(10, 40) - Torus(10, 1.5).translate(0, 0, 10)
+    assert groove.volume == approx(12358.441682, rel=1e-8)  # was 12566.37: the groove was ignored
+    corner = (Torus(8, 1.5) & Box(4, 4, 4).translate(8, 0, 0)).volume
+    assert corner == approx(28.586308, rel=1e-6)
+    moves = [lambda p: p.translate(0, 0, 5),  # was 355.31, the whole torus
+             lambda p: p.rotate(Z, 30), lambda p: p.mirror(Plane.YZ), lambda p: p.scale(-1),
+             lambda p: p.moved(Location((5, 6, 7), (10, 20, 30)))]
+    for move in moves:
+        assert (move(Torus(8, 1.5)) & move(Box(4, 4, 4).translate(8, 0, 0))).volume == approx(corner, rel=1e-6)
+    assert (Torus(8, 1.5).scale(2) & Box(8, 8, 8).translate(16, 0, 0)).volume == approx(8 * corner, rel=1e-6)
+    assert (Torus(8, 1.5).scale((1, 1, 2)) & Box(4, 4, 8).translate(8, 0, 0)).volume == approx(2 * corner, rel=1e-6)
+    # a part over 500 across went from tolerance 1e-5 to 1e-4: a step of 5e-5 was absorbed
+    step = Box(1000, 1000, 100).translate(1, 0, 0) + Box(10, 10, 100.00005).translate(1, 0, 2.5e-5)
+    assert len(step.faces()) == 11  # was 6
 
 
 # -- distance -----------------------------------------------------------------------------
