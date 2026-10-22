@@ -56,6 +56,27 @@ noisy = cloud + rng.normal(0, 0.1, cloud.shape) * [0, 0, 1]
 fair = surface(noisy, controls=12)                     # follows the shape, not the noise
 ```
 
+`report=True` says how far the points lie from the surface, each to its closest point on it: a
+cloud that is not a height field gets a surface that misses it by millimetres without an error,
+and the report shows it (1500 points of a tube r 10 around 288 degrees: `max_distance` 7.37):
+
+```python
+fair, fit = surface(noisy, controls=12, report=True)
+print(round(fit.rms_distance, 2), round(fit.max_distance, 2))   # 0.09 0.36: the noise
+```
+
+`nurbs_surface` builds a surface from its NURBS data, as other programs, files or papers give it:
+control points in rows, knot vectors, degrees and weights (rational surfaces, any degree, knots that
+are not uniform or do not repeat at the ends). It is the inverse of a face's `nurbs()`:
+
+```python
+net = [[(0, 0, 0), (0, 10, 0), (0, 20, 0)],
+       [(10, 0, 5), (10, 10, 8), (10, 20, 5)],
+       [(20, 0, 0), (20, 10, 0), (20, 20, 0)]]
+dome = nurbs_surface(net, degrees=2, weights=[[1, 1, 1], [1, 0.5, 1], [1, 1, 1]])
+print(round(dome.bbox().max.z, 6))                     # 2.571429 = 18/7: the middle weight pulls less
+```
+
 `ruled(a, b)` joins two curves with straight lines:
 
 ```python
@@ -123,6 +144,17 @@ sheet, ready to thicken:
 one = surface_fillet(floor, wall, 5, trim=True)
 print(len(one.faces()), round(one.area, 4))            # 3 1514.1593: 600 + 600 + the blend
 plate = one.thicken(1)
+```
+
+`shape="chamfer"` makes the blend flat: straight across between the lines where the round of the
+same radius meets the surfaces. `radius2` gives a chamfer a second distance, from `b` (for faces at
+right angles: its edge on `b` lies `radius` from `a`, its edge on `a` lies `radius2` from `b`):
+
+```python
+bevel = surface_fillet(floor, wall, 5, shape="chamfer")
+print(round(bevel.area, 4))                            # 282.8427: 40 long, 5 sqrt(2) wide
+steep = surface_fillet(floor, wall, 2, radius2=4, shape="chamfer")
+print(round(steep.area, 4))                            # 178.8854: from y -4 on the floor to z 2 on the wall
 ```
 
 ## Bridges between sheets
@@ -216,6 +248,35 @@ print(top.extended(3).area)                                   # 256.0: a plane 1
 wall = (Box(20, 20, 20) - Cylinder(4, 40)).faces().filter(lambda f: f.geom_type == "cylinder")[0]
 print(round(wall.untrimmed().area, 2))                        # 1005.31 = 2 pi 4 40
 ```
+
+## Matching edges and merging faces
+
+`match_edge` moves an edge of a sheet onto a curve: the edge then runs along the curve exactly, and
+its face bends to follow near the edge only (within `extent`, a part of the face across from the
+edge, default 0.25). Match one sheet's edge to another's to close a gap before `stitch`, or to a
+curve to give a sheet a styling line. Where the curve's ends are not the edge's, the edges next to
+it bend near those ends, and faces beyond them follow (with a crease along those edges: matching
+keeps no tangent across them). `merge_faces` makes two faces that share a whole side one face on one
+surface; the halves of a sheet split along a curve of its surface come back as the one face they
+were:
+
+```python
+panel = surface([[(x, y, 2 * math.sin(x / 10)) for y in range(0, 25, 5)] for x in range(0, 35, 5)])
+roof = surface([[(x, y, 2 * math.sin(x / 10) + 0.4) for y in range(21, 41, 5)] for x in range(0, 35, 5)])
+edge = panel.edges().sort_by(Axis.Y)[-1]                 # y = 20; the roof starts at y = 21, 0.4 higher
+closed = panel.match_edge(edge, roof.edges().sort_by(Axis.Y)[0])
+body, report = stitch(closed, roof, tolerance=1e-6, report=True)
+print(report.sewn_edges, report.max_gap)                 # 1 0.0
+
+halves = panel.trim(panel.intersection_curves(Plane((15, 0, 0), (0, 1, 0), (1, 0, 0))), "split")
+one = halves.merge_faces(*halves.faces())
+print(len(halves.faces()), len(one.faces()), round(one.area, 6))   # 2 1 605.679201
+```
+
+Both work on faces bounded by the four sides of their surface (as `surface`, `loft`, `ruled`,
+`fill`, `network` and `nurbs_surface` make them); faces with holes or trimmed borders raise
+`ValueError`. `intersection_curves` takes a `Plane` too (above), and gives an empty list for bodies
+that do not meet.
 
 ## Shaping faces: push, warp, flatten
 

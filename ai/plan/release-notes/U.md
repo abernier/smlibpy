@@ -1,6 +1,21 @@
-# Lane U: release-note fragment (batch 1: U2, U3; batch 2: U4, U5, U6; batch 3: U7, U8)
+# Lane U: release-note fragment (batch 1: U2, U3; batch 2: U4, U5, U6; batch 3: U7, U8; batch 4: U9 to U15)
 
 ## Fixed
+
+- `intersection_curves` gives an empty list for bodies that do not meet (U14): disjoint bodies and a
+  body inside another raised `KernelError: intersection curves failed (SM_ERR)`; a `Plane` raised
+  `AttributeError: 'Plane' object has no attribute '_brep'`. Now `other` may be a body, a face (bounded
+  by its edges) or a `Plane` (unbounded), and bodies whose surfaces are measured apart (also nested)
+  give `[]`. A plane is cut as a planar sheet across the body: the kernel's own plane section
+  (`intersect_brep_with_plane`) puts its curves up to 2.1e-3 off a B-spline sheet (30 x 20), the sheet
+  9e-6; on analytic faces both give circles and ellipses (a sphere by Plane.XY: two arcs, 2π·10 to
+  1e-12).
+- U11 fixes nothing reachable: `SmBSplineSurface::CreateHelicalSweep` (keeps a pointer to an
+  `NL_SURFACE` on its own stack, then frees it) has no caller in smlibpy or smlibwasm (a test now fails
+  if one is added, as the plan's patch must come first). The new NLib bridge code (`merge_faces`,
+  `match_edge`) follows the plan's rules: NLib edits on stacks of its own or inside kernel calls that
+  copy their result out, the copying `SmBSplineSurface` constructor, analytic faces as their exact
+  B-splines (a rectangle's edge matched to an arc in its plane: area 200 + the segment, to 1e-9).
 
 - U7, U8 fix nothing scripts could reach before (they add local edits of faces). Two defects of the
   NLib code the kernel compiles out, which `warp` and `flatten` now use, are fixed in smlibpy's copy
@@ -154,6 +169,47 @@
   of docs/javascript.md; skill references `surfaces/push`, `surfaces/warp`, `surfaces/flatten`,
   SKILL.md updated.
 
+- `Shell.match_edge(edge, target, *, extent=0.25)` (smlibwasm: `matchEdge(edge, target, { extent })`)
+  (U9): an edge of a sheet moved onto a curve (an edge, or a wire joined into one), exactly (on the
+  curve to 1e-12), its face changing within `extent` of its parameter range across from the edge
+  (`SmBSplineSurface::AdjustBoundaryCurve`, degree-1 continuity into the rest; elsewhere unchanged to
+  1e-12). Where the curve's ends are not the edge's, the vertices move, the side edges take the face's
+  new sides, and the faces beyond them are matched to those in turn (the B-rep keeps its topology:
+  `ReplaceCurve`, `SetPoint`, `ReplaceSurface`; every edge measured on its faces afterwards). Measured:
+  a sheet's top edge lifted by 3 sin(πt): on the curve to 2e-13, bottom edge unchanged (0); a gap of
+  1 in y and 0.4 in z to a second sheet closed: `stitch(..., tolerance=1e-6)` sews it (before: 0 edges
+  sewn); a split sheet's corner moved 1 up: both halves follow, edges on their faces to 1e-12. 2 to 3 ms.
+- `Shell.merge_faces(a, b)` (smlibwasm: `mergeFaces(a, b)`) (U10): two faces that share a whole side
+  made one face on one surface (NLib's `N_MakeSrfsCompatible` and `N_SrfJoin` on copies, the joint's
+  knot removed where it is not needed, the result measured against both faces). A sheet split along
+  a curve of its surface comes back as it was (605.679201, the same 35 control points); a sheet of
+  three faces merges two at a time; two plates 10 x 10 give one face of 200. 3 ms.
+- `surface_fillet(..., radius2=None, shape="round")` (smlibwasm: `{ radius2, shape }`) (U12):
+  `shape="chamfer"` a flat blend between the lines where the round of the same radius meets the
+  surfaces (the kernel's linear cross-section): floor and wall r 5: 282.8427 = 40·5√2, its edges at
+  y -5 and z 5 as the round's; `radius2` a second distance from `b` (2 and 4: 178.8854 = 40·hypot(2,
+  4), edges at y -4 and z 2); with `trim=True` too (3 faces, 1482.8427, thickens).
+- `nurbs_surface(points, knots=None, degrees=None, weights=None)` (smlibwasm: `nurbsSurface(points,
+  knots, degrees, weights)`) (U13): a surface from control points in rows, full knot vectors, degrees
+  (1 to 32) and weights, checked (knot counts, not decreasing, inner multiplicities, positive
+  weights); unclamped knot vectors clamped exactly (a uniform cubic starts at (P0 + 4 P1 + P2) / 6, to
+  1e-12); defaults: uniform clamped knots, degree 3. A rational biquadratic with a middle weight 0.5:
+  18/7 at its middle exactly. Also takes a `NurbsSurface` (lane DA's `Face.nurbs()`), duck-typed: a
+  sheet's own data round-trips to 1e-12.
+- `surface(..., report=True)` (smlibwasm: `{ report: true }` gives `[sheet, report]`) (U15): returns
+  `(sheet, FitReport)`: `max_distance`, `rms_distance`, `distances` (per point, numpy; smlibwasm:
+  `maxDistance`, `rmsDistance`, `distances`), each to the point's closest point on the surface (from
+  the nearest samples of a grid by Newton's method, `ext.surface_distances`). 1500 points of a tube
+  around 288 degrees: `max_distance` 7.37 (the fit's own residual at its projected parameters said
+  19.4), 11 ms with the fit (`distance_to` per point: 0.11 s, and it missed the nearest point on that
+  folded surface: 5.83 where it is 5.71). Grids report too (through the points: below 1e-14).
+- `FitReport` exported; `from smlibpy import *` brings `nurbs_surface` and `FitReport`.
+- Docs: docs/surfaces.md (Matching edges and merging faces; the fit report, `nurbs_surface`,
+  chamfers), docs/analysis.md, docs/kernel.md (three rows of the robustness table), the API section of
+  docs/javascript.md; skill references `surfaces/match_edge`, `surfaces/merge_faces`,
+  `surfaces/nurbs_surface` (new), `surfaces/surface`, `surfaces/surface_fillet`, `surfaces/Shell`,
+  `analysis/intersection_curves` (its gotchas about raising and planes removed), SKILL.md.
+
 ## Behaviour changes
 
 U2, U3 (batch 1): none that break scripts: every change adds a function, a method or a keyword.
@@ -216,6 +272,26 @@ pillow = lat.apply(bar)
 raised = bar.warp(top, Rectangle(20, 16).on(top), 2)
 ```
 
+U9 to U15 add functions, methods and keywords, with one change scripts can notice:
+`intersection_curves` returns an empty list where it raised `KernelError` (bodies apart, or one
+inside the other), and takes a `Plane` and a `Face`:
+
+```python
+# before: wrap the call, and use a large sketch for a plane
+try:
+    curves = part.intersection_curves(Rectangle(400, 400).on(Plane.XY.offset(6)))
+except KernelError:
+    curves = []
+# after
+curves = part.intersection_curves(Plane.XY.offset(6))      # [] where nothing meets
+```
+
+A script that relied on the exception to tell that two bodies do not meet now gets `[]` (test
+`if not curves:`); bodies that touch without crossing can still raise. smlibwasm:
+`intersectionCurves` returns an empty array where it threw. `from smlibpy import *` now also brings
+`nurbs_surface` and `FitReport` (a script's own variable of that name hides them, as for `blend`).
+`surface(..., report=True)` and the other new keywords change nothing unless given.
+
 ## Not done
 
 - `blend` of closed edges (the round edge of a tube): refused with a `ValueError`. Bridging two
@@ -271,3 +347,25 @@ raised = bar.warp(top, Rectangle(20, 16).on(top), 2)
 - The plan's knot removal after a warp (1e-6 of the size) is not done: the change is added exactly on
   its own knots, so the face's B-spline grows (a box top raised over a region: 20 x 20 control points;
   a cylinder's warp is rational of degree 5 x 4 through the weight function).
+- `match_edge` keeps no tangent across the matched face's side edges: `AdjustBoundaryCurve` moves the
+  side's points only where the corners move, but changes the slope across the side wherever the curve
+  differs from the old edge, so a neighbouring face meets the matched one with a crease near the
+  matched edge (11.7 degrees in the test sheet with the ends kept, 22.5 with a corner moved 1);
+  `thicken` may then fail. One-face sheets have no such neighbour; merge faces first. Faces must be
+  bounded by the four sides of their surface (holes, trimmed borders, seams and poles raise
+  `ValueError`), the matched edge a whole side of each face it changes (a T-junction's part of a
+  side raises). The plan's `stitch(..., match=True)` is not done: match edges, then stitch.
+- `merge_faces` merges faces bounded by the four sides of their surface only, sharing one whole side;
+  faces whose parameters run at different speeds along it are refused (no reparameterization), as are
+  faces whose normals disagree. Sheets only (`Shell`), no `Part.merge_faces`; the plan's
+  `stitch(..., merge=True)` is not done.
+- `surface_fillet`: the face-to-face fillet of a part (the kernel's base trimming,
+  `SurfaceSurfaceFillet`'s `lBaseTrimType`, C++ only, "later" in the plan) is not done; a round of two
+  radii does not exist in the kernel (`SM_ERR_NULL_POINTER`), hence `radius2` for chamfers only.
+- `Face.nurbs()` is A3's (lane DA): not added here; `nurbs_surface` takes its result by its fields.
+- `Part.section` still cuts with the kernel's plane section, up to 2.1e-3 off B-spline faces; and
+  `distance_to` of a point still asks the kernel's closest point, which can miss the nearest point of
+  a folded B-spline face (5.83 where it is 5.71): for the lanes of A2 and the section.
+- U11: no kernel patch for `CreateHelicalSweep` (unwired; the plan's condition), no debug assert.
+- U15: no error or warning for a poor fit (the plan's Not planned: 3 x rms would refuse ordinary noisy
+  scans); the report is asked for.

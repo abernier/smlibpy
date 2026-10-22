@@ -117,7 +117,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   curves with it), `_take`, `_translation`, `_reflection`,
   `_scaling` (the matrices of a move; mesh.ts moves meshes with them), `_asPlane` (shaping.ts takes
   `flatten`'s plane with it), `_offsetProblem` and `_intersectionProblem` (their tests); `shaping.ts`:
-  `_push`, `_warp`, `_flatten`, `_checked` (the push, warp and flatten of Part and Shell); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
+  `_push`, `_warp`, `_flatten`, `_checked` (the push, warp and flatten of Part and Shell), `_ownFace`
+  (sheet_edit.ts takes a sheet's faces with it); `sheet_edit.ts`: `_matchEdge`, `_mergeFaces` (Shell's
+  `matchEdge` and `mergeFaces`); `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts
   rays with them), `_tessellate` (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
   blends surfaces in it), `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill`
   (its test).

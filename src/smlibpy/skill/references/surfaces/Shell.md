@@ -27,12 +27,16 @@ solid from a sheet, test `isinstance(x, Part)`.
   whichever way.
 - `extend(distance, sides=None, continuity="natural")` → Shell: a sheet of one face grown past its
   sides (see `extend`).
+- `match_edge(edge, target, extent=0.25)` → Shell: an edge moved onto a curve, its face bending
+  to follow near the edge only (see `match_edge`): close a gap before `stitch`.
+- `merge_faces(a, b)` → Shell: two faces that share a whole side made one face on one surface
+  (see `merge_faces`).
 - `heal()` → Shell: repairs tolerances and topology of a sewn shell (it turned a sewn but
   non-manifold stitch result into a manifold one). It does **not** sew separate faces; use
   `stitch` for that.
 - `to_nurbs()`, `translate`, `rotate`, `mirror`, `scale`, `moved`, `on`, `named`, `colored`:
   return a Shell.
-- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body)`,
+- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body, face or plane)`,
   `project(curve, direction)`, `silhouette`, `outline`: work on sheets.
 - `show(path=..., open_browser=False)` writes the HTML viewer; `export("x.step" / ".stl" /
   ".glb")`, `mesh()`, `save`/`load` all take Shells; `import_step` of a sheet gives a Shell.
@@ -91,4 +95,4 @@ print(type(disc).__name__, round(disc.area, 3))                  # Shell 202.344
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `trim`, `blend`, `fill`, `network`, `extend`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves
+`surface`, `nurbs_surface`, `ruled`, `stitch`, `trim`, `blend`, `fill`, `network`, `extend`, `match_edge`, `merge_faces`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves

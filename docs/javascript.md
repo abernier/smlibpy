@@ -601,6 +601,10 @@ export class Shell extends _Body {
         sides?: Edge | Iterable<Edge> | null;
         continuity?: string;
     }): this;
+    matchEdge(edge: Edge, target: Edge | Wire, options?: {
+        extent?: number;
+    }): Shell;
+    mergeFaces(a: Face, b: Face): Shell;
     push(face: Face, at: VectorLike, options?: PushOptions): Shell;
     warp(face: Face, region: unknown, by: number | VectorLike, options?: {
         continuity?: string;
@@ -919,11 +923,26 @@ export class Lattice {
 ### Surfaces
 
 ```ts
-export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: {
+export class FitReport {
+    readonly maxDistance: number;
+    readonly rmsDistance: number;
+    readonly distances: number[];
+    constructor(maxDistance: number, rmsDistance: number, distances: number[]);
+}
+type SurfaceOptions = {
     interpolate?: boolean;
     controls?: number | readonly [number, number] | null;
     smoothing?: number;
-}): Shell;
+    report?: boolean;
+};
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options: SurfaceOptions & {
+    report: true;
+}): [Shell, FitReport];
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: SurfaceOptions): Shell;
+export function nurbsSurface(points: readonly (readonly VectorLike[])[] | NurbsSurfaceData, knots?: readonly [
+    readonly number[],
+    readonly number[]
+] | null, degrees?: number | readonly [number, number] | null, weights?: readonly (readonly number[])[] | null): Shell;
 export function ruled(a: Edge | Wire, b: Edge | Wire): Shell;
 export class StitchReport {
     readonly sewnEdges: number;
@@ -945,6 +964,8 @@ export function stitch(...args: [
 ]): [Part | Shell, StitchReport];
 export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell;
 export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options?: {
+    radius2?: number | null;
+    shape?: string;
     sides?: readonly [number, number];
     trim?: boolean;
 }): Shell;

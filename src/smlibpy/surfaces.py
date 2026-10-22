@@ -17,7 +17,8 @@ from ._kernel import KernelError, ModelingError, ext, k, kernel_call
 from .geometry import Vector, VectorLike, _vec
 from .shapes import Edge, Face, Part, Shell, Wire, _bodies, _continuity, _curves_of, _t
 
-__all__ = ["surface", "ruled", "stitch", "StitchReport", "surface_fillet", "blend", "fill", "network"]
+__all__ = ["surface", "FitReport", "nurbs_surface", "ruled", "stitch", "StitchReport", "surface_fillet", "blend",
+           "fill", "network"]
 
 
 def _shell_of_surface(srf: Any) -> Shell:
@@ -29,8 +30,28 @@ def _shell_of_surface(srf: Any) -> Shell:
     return Shell._wrap(b)
 
 
+class FitReport(NamedTuple):
+    """How far the points given to :func:`surface` lie from the surface (``surface(..., report=True)``).
+
+    Attributes:
+        max_distance: The largest distance of a point from the surface, to its closest point on it.
+        rms_distance: The root mean square of the distances.
+        distances: The distance of each point (a numpy array, in the order given; a grid's rows one
+            after the other).
+
+    The distances are true ones, to each point's closest point on the surface. (A fit's own
+    residuals, at the parameters it gave the points, overstate how far a cloud that is not a height
+    field lies from its surface: 18.3 where the worst point lies 7.4 from it.)
+    """
+
+    max_distance: float
+    rms_distance: float
+    distances: np.ndarray
+
+
 def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.ndarray, *, interpolate: bool = True,
-            controls: int | tuple[int, int] | None = None, smoothing: float = 1e-2) -> Shell:
+            controls: int | tuple[int, int] | None = None, smoothing: float = 1e-2,
+            report: bool = False) -> Shell | tuple[Shell, FitReport]:
     """A freeform NURBS surface through a grid of points, or fitted to a cloud of points.
 
     Args:
@@ -45,14 +66,21 @@ def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.n
         smoothing: Clouds: how much the surface resists bending, against how close it comes to
             the points: 0 to 1, default 1e-2. For noisy points raise it (0.1 to 1), or take fewer
             control points.
+        report: True returns ``(sheet, report)``, a :class:`FitReport`: how far each point lies
+            from the surface (to its closest point), the largest and the rms distance. A few
+            milliseconds for thousands of points.
 
     A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over).
     The surface spans the smallest rectangle around the points in that plane; where there are
     no points, the smoothing shapes it. Its normal points up (+Z); for a cloud that stands
-    upright, to +Y, else to +X.
+    upright, to +Y, else to +X. A cloud that is not a height field gets a surface that misses it
+    by millimetres, without an error: check ``report.max_distance`` against the noise you expect.
     """
     if _is_cloud(points):
-        return _fit(points, controls, smoothing)
+        sheet = _fit(points, controls, smoothing)
+        if not report:
+            return sheet
+        return sheet, _fit_report(sheet, np.asarray([tuple(_vec(p)) for p in points], dtype=float))
     if controls is not None:
         raise ValueError("surface: controls are for clouds of points; a grid sets its own")
     grid = np.asarray([[tuple(_vec(p)) for p in row] for row in points], dtype=float)
@@ -69,6 +97,94 @@ def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.n
             srf = k.create_surface_from_ordered_points(flat, rows, cols)
         else:
             srf = k.create_surface_from_points(flat, rows, cols)
+    sheet = _shell_of_surface(srf)
+    if not report:
+        return sheet
+    return sheet, _fit_report(sheet, grid.reshape(-1, 3))
+
+
+def _fit_report(sheet: Shell, points: np.ndarray) -> FitReport:
+    """How far the points lie from the sheet's one surface."""
+    with kernel_call("surface"):
+        d = np.asarray(ext.surface_distances(sheet.faces()[0]._f.surface(), points.ravel().tolist()), dtype=float)
+    return FitReport(float(d.max()), float(math.sqrt(float(np.mean(d * d)))), d)
+
+
+def nurbs_surface(points: Any, knots: tuple[Sequence[float], Sequence[float]] | None = None,
+                  degrees: int | tuple[int, int] | None = None,
+                  weights: Sequence[Sequence[float]] | np.ndarray | None = None) -> Shell:
+    """A surface from its NURBS data: control points, knots, degrees and weights, as other programs,
+    files or papers give them (also rational surfaces, other degrees than 3, knots that are not
+    uniform). The inverse of ``Face.nurbs()``.
+
+    Args:
+        points: The control points in rows, ``points[i][j]`` the point ``i`` along u and ``j`` along
+            v (all rows the same length, at least ``degree + 1`` each way); or a ``NurbsSurface``
+            (``Face.nurbs()``: its degrees, knots, points and weights), with nothing else given.
+        knots: The knot vectors ``(u_knots, v_knots)``, every knot as often as its multiplicity:
+            ``len(rows) + u_degree + 1`` and ``len(row) + v_degree + 1`` knots, not decreasing.
+            The ends need not repeat: the surface spans ``knots[degree]`` to ``knots[-degree - 1]``
+            each way (inside the control net where they do not). Default: uniform and clamped (the
+            surface starts and ends at the net's corner points).
+        degrees: The degrees ``(u, v)`` (1 to 32), or one for both. Default: from the knots
+            (``len(knots) - len(points) - 1``), or 3 (less where there are fewer than 4 points).
+        weights: A positive weight per control point, in the same rows; ``None`` for a
+            non-rational surface.
+
+    Returns:
+        A sheet of one face over the whole surface, its normal along ``du x dv``.
+    """
+    if knots is None and degrees is None and weights is None and hasattr(points, "degrees") \
+            and hasattr(points, "knots") and hasattr(points, "points"):
+        degrees, knots, weights, points = points.degrees, points.knots, points.weights, points.points
+    try:
+        grid = np.asarray([[tuple(_vec(p)) for p in row] for row in points], dtype=float)
+    except (TypeError, ValueError):
+        raise ValueError("nurbs_surface: the control points are rows of points, all rows the same length") from None
+    if grid.ndim != 3 or grid.shape[0] < 2 or grid.shape[1] < 2:
+        raise ValueError("nurbs_surface: the control points are rows of points (at least 2 x 2), all rows the same "
+                         "length")
+    if not np.all(np.isfinite(grid)):
+        raise ValueError("nurbs_surface: the control points must be finite numbers")
+    nu, nv = grid.shape[:2]
+    if degrees is None:
+        if knots is None:
+            du, dv = min(3, nu - 1), min(3, nv - 1)
+        else:
+            du, dv = len(knots[0]) - nu - 1, len(knots[1]) - nv - 1
+    elif isinstance(degrees, (int, np.integer)):
+        du = dv = int(degrees)
+    else:
+        du, dv = (int(x) for x in degrees)
+    for name, d, n in (("u", du, nu), ("v", dv, nv)):
+        if not 1 <= d <= 32:
+            raise ValueError(f"nurbs_surface: the {name} degree must be 1 to 32, got {d}")
+        if n < d + 1:
+            raise ValueError(f"nurbs_surface: degree {d} needs at least {d + 1} control points along {name}, got {n}")
+    if knots is None:
+        ku = [0.0] * (du + 1) + [i / (nu - du) for i in range(1, nu - du)] + [1.0] * (du + 1)
+        kv = [0.0] * (dv + 1) + [i / (nv - dv) for i in range(1, nv - dv)] + [1.0] * (dv + 1)
+    else:
+        if len(knots) != 2:
+            raise ValueError("nurbs_surface: knots are two knot vectors, (u_knots, v_knots)")
+        ku, kv = ([float(x) for x in kn] for kn in knots)
+    for name, kn, d, n in (("u", ku, du, nu), ("v", kv, dv, nv)):
+        if len(kn) != n + d + 1:
+            raise ValueError(f"nurbs_surface: {n} control points of degree {d} along {name} need {n + d + 1} knots "
+                             f"(control points + degree + 1), got {len(kn)}")
+        if not all(math.isfinite(x) for x in kn) or any(b < a for a, b in zip(kn, kn[1:])):
+            raise ValueError(f"nurbs_surface: the {name} knots must be finite and not decrease")
+    w: list[float] = []
+    if weights is not None:
+        wa = np.asarray(weights, dtype=float)
+        if wa.shape != (nu, nv):
+            raise ValueError(f"nurbs_surface: weights are rows like the control points ({nu} x {nv}), got "
+                             f"{'x'.join(str(n) for n in wa.shape)}")
+        if not np.all(np.isfinite(wa)) or not np.all(wa > 0):
+            raise ValueError("nurbs_surface: the weights must be positive numbers")
+        w = wa.ravel().tolist()
+    with kernel_call("nurbs_surface"):
+        srf = ext.nurbs_surface(du, dv, nu, nv, grid.ravel().tolist(), ku, kv, w)
     return _shell_of_surface(srf)
 
 
@@ -191,16 +307,24 @@ def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None
                               int(r["turned"]), float(r["tolerance"]))
 
 
-def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tuple[int, int] = (1, 1),
-                   trim: bool = False) -> Shell:
+def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, radius2: float | None = None,
+                   shape: str = "round", sides: tuple[int, int] = (1, 1), trim: bool = False) -> Shell:
     """A round blend between the surfaces of two faces, as a sheet: for surfaces that are not the
-    faces of one part, such as two sheets that cross (``fillet`` rounds the edges of a part).
+    faces of one part, such as two sheets that cross (``fillet`` rounds the edges of a part). Or a
+    flat one, a chamfer, between the same lines.
 
     Args:
         a: The first face (or a sheet of one face). Its surface is blended, as far as the
             surface reaches: the blend may run past the face.
         b: The second face (or a sheet of one face), the same way.
         radius: The radius of the blend: of the ball that rolls between the two surfaces.
+        radius2: Chamfers only: a second distance, from ``b``. The chamfer then runs between the
+            lines below where ``a``'s surface moved out by ``radius`` and ``b``'s moved out by
+            ``radius2`` cross: for faces at right angles its edge on ``b`` lies ``radius`` from
+            ``a``, its edge on ``a`` ``radius2`` from ``b``. Default: ``radius``.
+        shape: ``"round"`` (default): a circular cross-section; ``"chamfer"``: a flat one,
+            straight across between the lines where the round of the same radius meets the two
+            surfaces (on faces at right angles, legs of ``radius``).
         sides: The side of each face the blend lies on: 1 the side its normal (``normal_at()``)
             points to, -1 the other. Two crossing surfaces leave four places for a ball to roll,
             one per combination.
@@ -216,12 +340,19 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     fa, fb = _one_face(a, "a"), _one_face(b, "b")
     if not radius > 0 or not math.isfinite(radius):
         raise ValueError(f"surface_fillet: the radius must be positive, got {radius}")
+    if shape not in ("round", "chamfer"):
+        raise ValueError(f'surface_fillet: shape is "round" or "chamfer", got {shape!r}')
+    if radius2 is not None:
+        if shape != "chamfer":
+            raise ValueError('surface_fillet: radius2 is for chamfers (shape="chamfer"); a round blend has one radius')
+        if not radius2 > 0 or not math.isfinite(radius2):
+            raise ValueError(f"surface_fillet: radius2 must be positive, got {radius2}")
     if len(sides) != 2 or any(x not in (1, -1) for x in sides):
         raise ValueError(f"surface_fillet: sides must be two of 1 and -1, got {sides}")
     # (the kernel's sides are those of each surface's own normal, which a face may turn around)
     r1 = radius * sides[0] * (1 if fa._natural_is_outward() else -1)
-    r2 = radius * sides[1] * (1 if fb._natural_is_outward() else -1)
-    size = max(fa.bbox().union(fb.bbox()).diagonal, radius)
+    r2 = (radius if radius2 is None else radius2) * sides[1] * (1 if fb._natural_is_outward() else -1)
+    size = max(fa.bbox().union(fb.bbox()).diagonal, radius, radius2 or 0.0)
     tolerance = max(1e-7 * size, 1e-9)
     hint = "the surfaces may not meet, or not leave room for the radius on those sides"
     # (on copies: the kernel changes the surfaces it blends, and a second blend of the same
@@ -230,7 +361,7 @@ def surface_fillet(a: Face | Shell, b: Face | Shell, radius: float, *, sides: tu
     sa, sb = ca.faces()[0]._f.surface(), cb.faces()[0]._f.surface()
     with kernel_call("surface_fillet", hint):
         brep = _guarded("surface_fillet", lambda: k.surface_surface_fillet(
-            sa, sb, radius1=r1, radius2=r2, tolerance=tolerance, xsect_type=2))
+            sa, sb, radius1=r1, radius2=r2, tolerance=tolerance, xsect_type=2 if shape == "round" else 0))
     if brep is None:
         raise ModelingError(f"surface_fillet: the kernel made no blend; {hint}")
     shell = Shell._wrap(brep)

@@ -21,6 +21,30 @@ export function _shellOfSurface(srf: number): Shell {
 }
 
 /**
+ * How far the points given to `surface` lie from the surface (`surface(points, { report: true })`).
+ *
+ * The distances are true ones, to each point's closest point on the surface. (A fit's own
+ * residuals, at the parameters it gave the points, overstate how far a cloud that is not a height
+ * field lies from its surface: 18.3 where the worst point lies 7.4 from it.)
+ */
+export class FitReport {
+  /** The largest distance of a point from the surface, to its closest point on it. */
+  readonly maxDistance: number
+  /** The root mean square of the distances. */
+  readonly rmsDistance: number
+  /** The distance of each point, in the order given (a grid's rows one after the other). */
+  readonly distances: number[]
+
+  constructor(maxDistance: number, rmsDistance: number, distances: number[]) {
+    this.maxDistance = maxDistance
+    this.rmsDistance = rmsDistance
+    this.distances = distances
+  }
+}
+
+type SurfaceOptions = { interpolate?: boolean; controls?: number | readonly [number, number] | null; smoothing?: number; report?: boolean }
+
+/**
  * A freeform NURBS surface through a grid of points, or fitted to a cloud of points.
  *
  * @param points Rows of points, `points[i][j]` (a grid: all rows the same length, at least 4 x 4:
@@ -32,19 +56,25 @@ export function _shellOfSurface(srf: number): Shell {
  *   64), "along" the longer side of the cloud; default about one per 8 points, shaped like the
  *   cloud. `smoothing` (clouds): how much the surface resists bending, against how close it comes
  *   to the points: 0 to 1, default 1e-2; for noisy points raise it (0.1 to 1), or take fewer
- *   control points.
+ *   control points. `report`: `true` returns `[sheet, report]`, a `FitReport`: how far each point
+ *   lies from the surface (to its closest point), the largest and the rms distance; a few
+ *   milliseconds for thousands of points.
  *
  * A cloud must be a height field over its best-fit plane (no overhangs, nothing folded over). The
  * surface spans the smallest rectangle around the points in that plane; where there are no
  * points, the smoothing shapes it. Its normal points up (+Z); for a cloud that stands upright, to
- * +Y, else to +X.
+ * +Y, else to +X. A cloud that is not a height field gets a surface that misses it by millimetres,
+ * without an error: check `report.maxDistance` against the noise you expect.
  */
-export function surface(
-  points: readonly (readonly VectorLike[])[] | readonly VectorLike[],
-  options: { interpolate?: boolean; controls?: number | readonly [number, number] | null; smoothing?: number } = {},
-): Shell {
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options: SurfaceOptions & { report: true }): [Shell, FitReport]
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options?: SurfaceOptions): Shell
+export function surface(points: readonly (readonly VectorLike[])[] | readonly VectorLike[], options: SurfaceOptions = {}): Shell | [Shell, FitReport] {
   _opts('surface', options)
-  if (_isCloud(points)) return _fit(points as readonly VectorLike[], options.controls ?? null, options.smoothing ?? 1e-2)
+  if (_isCloud(points)) {
+    const sheet = _fit(points as readonly VectorLike[], options.controls ?? null, options.smoothing ?? 1e-2)
+    if (!options.report) return sheet
+    return [sheet, _fitReport(sheet, Array.from(points as readonly VectorLike[], (p) => _vec(p).toArray()).flat())]
+  }
   if (options.controls != null) throw new RangeError('surface: controls are for clouds of points; a grid sets its own')
   const interpolate = options.interpolate ?? true
   const grid = Array.from(points as readonly (readonly VectorLike[])[], (row) => Array.from(row, (p) => _vec(p).toArray()))
@@ -60,6 +90,114 @@ export function surface(
   const srf = kernelCall('surface', () =>
     interpolate ? k.create_surface_from_ordered_points(flat, rows, cols) : k.create_surface_from_points(flat, rows, cols),
   )
+  const sheet = _shellOfSurface(srf)
+  if (!options.report) return sheet
+  return [sheet, _fitReport(sheet, grid.flat(2))]
+}
+
+/** How far the points (x, y, z flat) lie from the sheet's one surface. */
+function _fitReport(sheet: Shell, points: number[]): FitReport {
+  const d: number[] = Array.from(kernelCall('surface', () => ext.surface_distances(k.face_surface(sheet.faces()[0]._f), points)) as Float64Array)
+  let max = 0
+  let sum = 0
+  for (const x of d) {
+    max = Math.max(max, x)
+    sum += x * x
+  }
+  return new FitReport(max, Math.sqrt(sum / d.length), d)
+}
+
+/** A surface's NURBS data, as `Face.nurbs()` gives it. */
+type NurbsSurfaceData = {
+  readonly degrees: readonly [number, number]
+  readonly knots: readonly [readonly number[], readonly number[]]
+  readonly points: readonly (readonly VectorLike[])[]
+  readonly weights: readonly (readonly number[])[] | null
+}
+
+/**
+ * A surface from its NURBS data: control points, knots, degrees and weights, as other programs,
+ * files or papers give them (also rational surfaces, other degrees than 3, knots that are not
+ * uniform). The inverse of `Face.nurbs()`.
+ *
+ * @param points The control points in rows, `points[i][j]` the point `i` along u and `j` along v
+ *   (all rows the same length, at least `degree + 1` each way); or a `NurbsSurface`
+ *   (`Face.nurbs()`: its degrees, knots, points and weights), with nothing else given.
+ * @param knots The knot vectors `[uKnots, vKnots]`, every knot as often as its multiplicity:
+ *   `rows + uDegree + 1` and `row length + vDegree + 1` knots, not decreasing. The ends need not
+ *   repeat: the surface spans `knots[degree]` to `knots[length - degree - 1]` each way (inside the
+ *   control net where they do not). Default: uniform and clamped (the surface starts and ends at
+ *   the net's corner points).
+ * @param degrees The degrees `[u, v]` (1 to 32), or one for both. Default: from the knots
+ *   (`knots.length - points.length - 1`), or 3 (less where there are fewer than 4 points).
+ * @param weights A positive weight per control point, in the same rows; `null` for a non-rational
+ *   surface.
+ * @returns A sheet of one face over the whole surface, its normal along `du x dv`.
+ */
+export function nurbsSurface(
+  points: readonly (readonly VectorLike[])[] | NurbsSurfaceData,
+  knots: readonly [readonly number[], readonly number[]] | null = null,
+  degrees: number | readonly [number, number] | null = null,
+  weights: readonly (readonly number[])[] | null = null,
+): Shell {
+  if (knots === null && degrees === null && weights === null && !Array.isArray(points) && points != null &&
+    typeof points === 'object' && 'degrees' in points && 'knots' in points && 'points' in points) {
+    const n = points as NurbsSurfaceData
+    ;[degrees, knots, weights] = [n.degrees, n.knots, n.weights]
+    points = n.points
+  }
+  const rows = points as readonly (readonly VectorLike[])[]
+  let grid: number[][][]
+  try {
+    grid = Array.from(rows, (row) => Array.from(row, (p) => _vec(p).toArray()))
+  } catch {
+    throw new RangeError('nurbsSurface: the control points are rows of points, all rows the same length')
+  }
+  const nu = grid.length
+  const nv = nu ? grid[0].length : 0
+  if (nu < 2 || nv < 2 || !grid.every((row) => row.length === nv)) {
+    throw new RangeError('nurbsSurface: the control points are rows of points (at least 2 x 2), all rows the same length')
+  }
+  if (!grid.every((row) => row.every((p) => p.every(Number.isFinite)))) throw new RangeError('nurbsSurface: the control points must be finite numbers')
+  let du: number
+  let dv: number
+  if (degrees === null) {
+    if (knots === null) [du, dv] = [Math.min(3, nu - 1), Math.min(3, nv - 1)]
+    else [du, dv] = [knots[0].length - nu - 1, knots[1].length - nv - 1]
+  } else if (typeof degrees === 'number') {
+    du = dv = Math.trunc(degrees)
+  } else {
+    ;[du, dv] = [Math.trunc(degrees[0]), Math.trunc(degrees[1])]
+  }
+  for (const [name, d, n] of [['u', du, nu], ['v', dv, nv]] as const) {
+    if (!(d >= 1 && d <= 32)) throw new RangeError(`nurbsSurface: the ${name} degree must be 1 to 32, got ${d}`)
+    if (n < d + 1) throw new RangeError(`nurbsSurface: degree ${d} needs at least ${d + 1} control points along ${name}, got ${n}`)
+  }
+  let ku: number[]
+  let kv: number[]
+  if (knots === null) {
+    const uniform = (n: number, d: number) => [...Array(d + 1).fill(0), ...Array.from({ length: n - d - 1 }, (_, i) => (i + 1) / (n - d)), ...Array(d + 1).fill(1)]
+    ;[ku, kv] = [uniform(nu, du), uniform(nv, dv)]
+  } else {
+    if (knots.length !== 2) throw new RangeError('nurbsSurface: knots are two knot vectors, [uKnots, vKnots]')
+    ;[ku, kv] = [Array.from(knots[0], Number), Array.from(knots[1], Number)]
+  }
+  for (const [name, kn, d, n] of [['u', ku, du, nu], ['v', kv, dv, nv]] as const) {
+    if (kn.length !== n + d + 1) {
+      throw new RangeError(`nurbsSurface: ${n} control points of degree ${d} along ${name} need ${n + d + 1} knots (control points + degree + 1), got ${kn.length}`)
+    }
+    if (!kn.every(Number.isFinite) || kn.some((x, i) => i > 0 && x < kn[i - 1])) throw new RangeError(`nurbsSurface: the ${name} knots must be finite and not decrease`)
+  }
+  let w: number[] = []
+  if (weights !== null) {
+    const wa = Array.from(weights, (row) => Array.from(row, Number))
+    if (wa.length !== nu || !wa.every((row) => row.length === nv)) {
+      throw new RangeError(`nurbsSurface: weights are rows like the control points (${nu} x ${nv})`)
+    }
+    w = wa.flat()
+    if (!w.every((x) => Number.isFinite(x) && x > 0)) throw new RangeError('nurbsSurface: the weights must be positive numbers')
+  }
+  const srf = kernelCall('nurbsSurface', () => ext.nurbs_surface(du, dv, nu, nv, grid.flat(2), ku, kv, w))
   return _shellOfSurface(srf)
 }
 
@@ -178,13 +316,20 @@ export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell |
 
 /**
  * A round blend between the surfaces of two faces, as a sheet: for surfaces that are not the
- * faces of one part, such as two sheets that cross (`fillet` rounds the edges of a part).
+ * faces of one part, such as two sheets that cross (`fillet` rounds the edges of a part). Or a flat
+ * one, a chamfer, between the same lines.
  *
  * @param a The first face (or a sheet of one face). Its surface is blended, as far as it reaches:
  *   the blend may run past the face.
  * @param b The second face.
  * @param radius The radius of the blend: of the ball that rolls between the two surfaces.
- * @param options `sides`: the side of each face the blend lies on: 1 the side its normal
+ * @param options `radius2`: chamfers only: a second distance, from `b`; the chamfer then runs
+ *   between the lines below where `a`'s surface moved out by `radius` and `b`'s moved out by
+ *   `radius2` cross: for faces at right angles its edge on `b` lies `radius` from `a`, its edge on
+ *   `a` `radius2` from `b` (default `radius`). `shape`: `'round'` (default): a circular
+ *   cross-section; `'chamfer'`: a flat one, straight across between the lines where the round of
+ *   the same radius meets the two surfaces (on faces at right angles, legs of `radius`).
+ *   `sides`: the side of each face the blend lies on: 1 the side its normal
  *   (`normalAt()`) points to, -1 the other. Two crossing surfaces leave four places for a ball to
  *   roll, one per combination. Default `[1, 1]`. `trim`: `true` cuts both faces back to the blend's
  *   long edges and sews the three into one sheet; the blend's edges must run across both faces,
@@ -192,17 +337,29 @@ export function stitch(...args: (StitchPiece | StitchOptions)[]): Part | Shell |
  * @returns The blend, a sheet whose edges along its length lie on the two surfaces; with `trim` the
  *   two faces, cut back, and the blend between them as one sheet.
  */
-export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, options: { sides?: readonly [number, number]; trim?: boolean } = {}): Shell {
+export function surfaceFillet(
+  a: Face | Shell,
+  b: Face | Shell,
+  radius: number,
+  options: { radius2?: number | null; shape?: string; sides?: readonly [number, number]; trim?: boolean } = {},
+): Shell {
   _opts('surfaceFillet', options)
   const sides = options.sides ?? [1, 1]
+  const shape = options.shape ?? 'round'
+  const radius2 = options.radius2 ?? null
   const fa = _oneFace(a, 'a')
   const fb = _oneFace(b, 'b')
   if (!(radius > 0) || !Number.isFinite(radius)) throw new RangeError(`surfaceFillet: the radius must be positive, got ${radius}`)
+  if (shape !== 'round' && shape !== 'chamfer') throw new RangeError(`surfaceFillet: shape is "round" or "chamfer", got ${JSON.stringify(shape)}`)
+  if (radius2 !== null) {
+    if (shape !== 'chamfer') throw new RangeError('surfaceFillet: radius2 is for chamfers (shape: "chamfer"); a round blend has one radius')
+    if (!(radius2 > 0) || !Number.isFinite(radius2)) throw new RangeError(`surfaceFillet: radius2 must be positive, got ${radius2}`)
+  }
   if (sides.length !== 2 || sides.some((x) => x !== 1 && x !== -1)) throw new RangeError(`surfaceFillet: sides must be two of 1 and -1, got ${JSON.stringify(sides)}`)
   // (the kernel's sides are those of each surface's own normal, which a face may turn around)
   const r1 = radius * sides[0] * (fa._naturalIsOutward() ? 1 : -1)
-  const r2 = radius * sides[1] * (fb._naturalIsOutward() ? 1 : -1)
-  const size = Math.max(fa.bbox().union(fb.bbox()).diagonal, radius)
+  const r2 = (radius2 ?? radius) * sides[1] * (fb._naturalIsOutward() ? 1 : -1)
+  const size = Math.max(fa.bbox().union(fb.bbox()).diagonal, radius, radius2 ?? 0)
   const tolerance = Math.max(1e-7 * size, 1e-9)
   const hint = 'the surfaces may not meet, or not leave room for the radius on those sides'
   // (on copies: the kernel changes the surfaces it blends, and a second blend of the same surfaces
@@ -211,7 +368,7 @@ export function surfaceFillet(a: Face | Shell, b: Face | Shell, radius: number, 
   const cb = fb.toShell()
   const sa = k.face_surface(ca.faces()[0]._f)
   const sb = k.face_surface(cb.faces()[0]._f)
-  const kw = { radius1: r1, radius2: r2, tolerance, xsect_type: 2 }
+  const kw = { radius1: r1, radius2: r2, tolerance, xsect_type: shape === 'round' ? 2 : 0 }
   const brep: number = kernelCall('surfaceFillet', () =>
     _guarded('surfaceFillet', () => k.surface_surface_fillet(sa, sb, kw), () => ({ op: 'surface_fillet', bodies: [_smb(ca), _smb(cb)], options: kw })), hint)
   if (!brep) throw new ModelingError(`surfaceFillet: the kernel made no blend; ${hint}`)

@@ -44,7 +44,8 @@ from .dxf import export_dxf, import_dxf, import_dxf_wires
 from .usd import export_usd, import_usd
 from .render import diff_images, render
 from .viewer import show
-from .surfaces import StitchReport, blend, fill, network, ruled, stitch, surface, surface_fillet
+from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surface, ruled, stitch, surface,
+                       surface_fillet)
 from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
                          flat_pattern, fold, unfold)
 
@@ -73,7 +74,8 @@ __all__ = [
     # deformations
     "twist", "taper", "bend", "Lattice",
     # surfaces
-    "surface", "ruled", "stitch", "StitchReport", "surface_fillet", "blend", "fill", "network",
+    "surface", "FitReport", "nurbs_surface", "ruled", "stitch", "StitchReport", "surface_fillet", "blend", "fill",
+    "network",
     # sheet metal
     "fold", "flange", "unfold", "flat_pattern", "bend_allowance", "bend_deduction", "developed_length", "Bend",
     "FlatPattern",

@@ -8,6 +8,7 @@
 #include <vector>
 
 class SmBrep;
+class SmBSplineSurface;
 class SmFace;
 
 namespace smlibpy {
@@ -37,5 +38,10 @@ SmBrep* warp_face(const SmBrep* brep, const SmFace* face, const std::vector<doub
 // nothing moves.
 SmBrep* flatten_face(const SmBrep* brep, const SmFace* face, const std::vector<double>& region,
                      const std::vector<double>& origin, const std::vector<double>& normal, int continuity);
+
+// The face's surface as an exact B-spline (an analytic surface's NURBS) over the rectangle of its
+// parameters the face lies in, running the way the face's surface does. Owned by the caller; `what`
+// names the operation in errors.
+SmBSplineSurface* face_bspline(const SmFace* face, const char* what);
 
 }  // namespace smlibpy

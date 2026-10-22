@@ -43,6 +43,8 @@ import { sweep as _sweep } from './operations.ts'
 import { Box } from './parts.ts'
 import { ruled } from './surfaces.ts'
 import { _checked, _flatten, _push, _warp } from './shaping.ts'
+import { _matchEdge, _mergeFaces } from './sheet_edit.ts'
+import { Rectangle } from './sketches.ts'
 import {
   type Bend,
   type FlangeOptions,
@@ -1978,12 +1980,43 @@ export class _Body extends Shape {
   }
 
   // -- geometric queries --------------------------------------------------------------------
-  /** The curves where this body's surface meets another body's surface, each one once. */
-  intersectionCurves(other: _Body): ShapeList<Edge> {
-    const [curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, other._brep))
+  /**
+   * The curves where this body's surface meets another body's surface, each one once.
+   *
+   * `other` is a Part, Shell or Sketch, a face (the face itself, bounded by its edges), or a `Plane`
+   * (unbounded: where it cuts this body's faces, as `Part.section` cuts a part). Bodies that do not
+   * meet, apart or one inside the other, give an empty list.
+   */
+  intersectionCurves(other: _Body | Face | Plane): ShapeList<Edge> {
+    if (other instanceof Plane) {
+      // (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane, fits
+      // its curves to B-spline faces within 2e-3 only)
+      const box = this._looseBox()
+      const middle = box.center.sub(other.zDir.mul(box.center.sub(other.origin).dot(other.zDir)))
+      if (box.center.sub(middle).length > box.diagonal / 2 + 1e-6 * Math.max(1, box.diagonal)) return _list([])
+      const span = 2 * box.diagonal + 1
+      other = Rectangle(span, span).on(new Plane(middle, other.xDir, other.zDir))
+    }
+    if (other instanceof Face) other = other.toShell()
+    if (!(other instanceof _Body)) {
+      throw new TypeError(`intersectionCurves takes a body (Part, Shell, Sketch), a face or a plane, not a ${_typeName(other)}`)
+    }
+    const body = other
+    const a = this._looseBox()
+    const b = body._looseBox()
+    const tol = 1e-6 * Math.max(1, a.union(b).diagonal)
+    if (_disjoint(a, b, tol)) return _list([])
+    let curves: number[]
+    try {
+      ;[curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, body._brep))
+    } catch (e) {
+      // (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
+      if (e instanceof KernelError && _bodyDistance(this, body) > tol) return _list([])
+      throw e
+    }
     // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
     // borders twice (also reversed).
-    return _distinctCurves(curves, 1e-6 * Math.max(1, this._looseBox().union(other._looseBox()).diagonal))
+    return _distinctCurves(curves, tol)
   }
 
   /** Silhouette curves on the body as seen along `direction` (an axis or a vector). */
@@ -4276,6 +4309,55 @@ export class Shell extends _Body {
       throw new RangeError(`extend: the sheet has ${faces.length} faces; extend one of them with sheet.faces()[i].extended(...)`)
     }
     return this._like(_extendedFace(faces[0], distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
+  }
+
+  /**
+   * The sheet with an edge moved onto a curve: the edge runs along `target` from end to end,
+   * exactly, and its face bends to follow, smoothly, near the edge only. To close a gap between two
+   * sheets before `stitch`, match one sheet's edge to the other's; to give a sheet a styling line,
+   * match it to that curve.
+   *
+   * @param edge An edge of the sheet, a whole side of its face.
+   * @param target The curve to run along (an edge, or a wire whose edges join end to end), either way
+   *   round; its ends are where the edge's ends go.
+   * @param options `extent`: how far into the face the change reaches: a part of the face's
+   *   parameter range across from the edge (above 0, below 1; default 0.25). The face meets the rest
+   *   of itself there with continuous derivatives (up to its degree less one).
+   *
+   * Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next to it
+   * bend near those ends, and the faces on the other side of those edges follow them the same way.
+   * Every face that changes must be bounded by the four sides of its surface (as `surface`, `loft`,
+   * `ruled`, `fill` and `network` make them; no holes, no trimmed borders) and the edge a whole side
+   * of it, else RangeError. The faces become B-splines (planes too).
+   *
+   * @returns A new sheet; this one does not change. A Sketch's comes back as a Shell.
+   */
+  matchEdge(edge: Edge, target: Edge | Wire, options: { extent?: number } = {}): Shell {
+    _opts('Shell.matchEdge', options)
+    const b = _matchEdge(this, edge, target, options.extent ?? 0.25)
+    return this instanceof Sketch ? Shell._wrap(b, { name: this.name, color: this.color }) : this._like(b)
+  }
+
+  /**
+   * The sheet with two faces made one: one surface over both, where they share a whole side, such
+   * as the halves of a sheet split along a curve of its surface, or patches built through the same
+   * curves. The joint's knot goes where the faces meet smoothly enough (within the sheet's
+   * tolerance), so a split sheet comes back as it was.
+   *
+   * @param a A face of the sheet, bounded by the four sides of its surface (no holes, no trimmed
+   *   borders).
+   * @param b Another such face, sharing one whole side with `a` (and no other).
+   *
+   * The joined surface must reproduce both faces (within the sheet's tolerance), else RangeError:
+   * faces whose parameters run at different speeds along the shared side, or whose normals point to
+   * opposite sides, are not merged. The merged face's normal is `a`'s.
+   *
+   * @returns A new sheet with one face less; this one does not change. A Sketch's comes back as a
+   *   Shell.
+   */
+  mergeFaces(a: Face, b: Face): Shell {
+    const out = _mergeFaces(this, a, b)
+    return this instanceof Sketch ? Shell._wrap(out._copyBrep(), { name: this.name, color: this.color }) : this._like(out._copyBrep())
   }
 
   /** Push or pull a face of the sheet at a point: see `Part.push` (`by` as a distance moves along the

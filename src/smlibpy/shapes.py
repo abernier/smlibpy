@@ -1706,13 +1706,44 @@ class _Body(Shape):
         return _raycast(self.faces(), origin, direction, self._loose_box())
 
     # -- geometric queries ----------------------------------------------------
-    def intersection_curves(self, other: _Body) -> ShapeList[Edge]:
-        """The curves where this body's surface meets another body's surface, each one once."""
-        with kernel_call("intersection curves"):
-            curves, _ = k.intersect_breps(self._brep, other._brep)
+    def intersection_curves(self, other: _Body | Face | Plane) -> ShapeList[Edge]:
+        """The curves where this body's surface meets another body's surface, each one once.
+
+        ``other`` is a Part, Shell or Sketch, a face (the face itself, bounded by its edges), or a
+        :class:`Plane` (unbounded: where it cuts this body's faces, as :meth:`Part.section` cuts a
+        part). Bodies that do not meet, apart or one inside the other, give an empty list.
+        """
+        if isinstance(other, Plane):
+            # (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane,
+            # fits its curves to B-spline faces within 2e-3 only)
+            from .sketches import Rectangle
+
+            box = self._loose_box()
+            middle = box.center - other.z_dir * (box.center - other.origin).dot(other.z_dir)
+            if (box.center - middle).length > box.diagonal / 2 + 1e-6 * max(1.0, box.diagonal):
+                return ShapeList()
+            span = 2.0 * box.diagonal + 1.0
+            other = Rectangle(span, span).on(Plane(middle, other.x_dir, other.z_dir))
+        if isinstance(other, Face):
+            other = other.to_shell()
+        if not isinstance(other, _Body):
+            raise TypeError(f"intersection_curves takes a body (Part, Shell, Sketch), a face or a plane, not a "
+                            f"{type(other).__name__}")
+        a, b = self._loose_box(), other._loose_box()
+        tol = 1e-6 * max(1.0, a.union(b).diagonal)
+        if _disjoint(a, b, tol):
+            return ShapeList()
+        try:
+            with kernel_call("intersection curves"):
+                curves, _ = k.intersect_breps(self._brep, other._brep)
+        except KernelError:
+            # (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
+            if _body_distance(self, other) > tol:
+                return ShapeList()
+            raise
         # Where faces of the two bodies lie in one plane, the kernel hands out curves on their
         # borders twice (also reversed).
-        return _distinct_curves(curves, 1e-6 * max(1.0, self._loose_box().union(other._loose_box()).diagonal))
+        return _distinct_curves(curves, tol)
 
     def silhouette(self, direction: Axis | VectorLike = (0, 0, 1)) -> ShapeList[Edge]:
         """Silhouette curves on the body as seen along ``direction`` (an axis or a vector)."""
@@ -3843,6 +3874,61 @@ class Shell(_Body):
             raise ValueError(f"extend: the sheet has {len(faces)} faces; extend one of them with "
                              f"sheet.faces()[i].extended(...)")
         return self._like(_extended_face(faces[0], distance, sides, continuity, "extend"))
+
+    def match_edge(self, edge: Edge, target: Edge | Wire, *, extent: float = 0.25) -> Shell:
+        """The sheet with an edge moved onto a curve: the edge runs along ``target`` from end to end,
+        exactly, and its face bends to follow, smoothly, near the edge only. To close a gap between two
+        sheets before :func:`~smlibpy.stitch`, match one sheet's edge to the other's; to give a sheet a
+        styling line, match it to that curve.
+
+        Args:
+            edge: An edge of the sheet, a whole side of its face.
+            target: The curve to run along (an edge, or a wire whose edges join end to end), either
+                way round; its ends are where the edge's ends go.
+            extent: How far into the face the change reaches: a part of the face's parameter range
+                across from the edge (above 0, below 1; default 0.25). The face meets the rest of
+                itself there with continuous derivatives (up to its degree less one).
+
+        Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next
+        to it bend near those ends, and the faces on the other side of those edges follow them the
+        same way. Every face that changes must be bounded by the four sides of its surface (as
+        :func:`~smlibpy.surface`, ``loft``, :func:`~smlibpy.ruled`, :func:`~smlibpy.fill` and
+        :func:`~smlibpy.network` make them; no holes, no trimmed borders) and the edge a whole side
+        of it, else ``ValueError``. The faces become B-splines (planes too).
+
+        Returns:
+            A new sheet; this one does not change. A Sketch's comes back as a Shell.
+        """
+        from . import sheet_edit
+
+        b = sheet_edit.match_edge(self, edge, target, extent)
+        return Shell._wrap(b, name=self.name, color=self.color) if isinstance(self, Sketch) else self._like(b)
+
+    def merge_faces(self, a: Face, b: Face) -> Shell:
+        """The sheet with two faces made one: one surface over both, where they share a whole side,
+        such as the halves of a sheet split along a curve of its surface, or patches built through
+        the same curves. The joint's knot goes where the faces meet smoothly enough (within the
+        sheet's tolerance), so a split sheet comes back as it was.
+
+        Args:
+            a: A face of the sheet, bounded by the four sides of its surface (no holes, no trimmed
+                borders).
+            b: Another such face, sharing one whole side with ``a`` (and no other).
+
+        The joined surface must reproduce both faces (within the sheet's tolerance), else
+        ``ValueError``: faces whose parameters run at different speeds along the shared side, or
+        whose normals point to opposite sides, are not merged. The merged face's normal is
+        ``a``'s.
+
+        Returns:
+            A new sheet with one face less; this one does not change. A Sketch's comes back as a
+            Shell.
+        """
+        from . import sheet_edit
+
+        out = sheet_edit.merge_faces(self, a, b)
+        return Shell._wrap(out._copy_brep(), name=self.name, color=self.color) if isinstance(self, Sketch) \
+            else self._like(out._copy_brep())
 
     def push(self, face: Face, at: VectorLike, *, by: float | VectorLike | None = None, to: VectorLike | None = None,
              normal: VectorLike | None = None, radius: float | None = None, continuity: str = "G1") -> Shell:

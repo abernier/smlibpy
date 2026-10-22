@@ -1046,6 +1046,13 @@ SmBrep* flatten_face(const SmBrep* brep, const SmFace* face, const std::vector<d
     return finish(e, std::move(result), what);
 }
 
+SmBSplineSurface* face_bspline(const SmFace* face, const char* what)
+{
+    if (!face || !face->GetSurface())
+        throw std::invalid_argument(std::string(what) + ": the face has no surface");
+    return face_spline(face, face_size(face), what).release();
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON

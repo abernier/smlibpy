@@ -1,7 +1,10 @@
 // tests/test_lane_U.py: lane U of the kernel plan (phase 1): blends between sheet edges (U2),
 // trimming sheets with curves on them and imprinting curves on parts (U3); fills and curve networks
 // (U4), stitch with its tolerance, report and normals (U5), extending and untrimming faces (U6);
-// pushing a face at a point (U7), warping and flattening a region of a face (U8).
+// pushing a face at a point (U7), warping and flattening a region of a face (U8); matching a sheet's
+// edge to a curve (U9), merging faces (U10), analytic faces edited as their B-splines (U11), chamfers
+// and two distances in surfaceFillet (U12), surfaces from NURBS data (U13), intersection curves with
+// planes and of bodies that do not meet (U14), how far a fit's points lie from its surface (U15).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -33,6 +36,9 @@ import {
   extrude,
   surface,
   surfaceFillet,
+  FitReport,
+  Wire,
+  nurbsSurface,
 } from '../src/index.ts'
 import { ext, k } from '../src/kernel.ts'
 import { Face } from '../src/shapes.ts'
@@ -724,4 +730,281 @@ test('warp and flatten errors', () => {
   assert.throws(() => box.warp(top, Rectangle(10, 10).on(top), 4, { continuity: 'G3' }), /continuity/)
   assert.throws(() => box.flatten(top, Rectangle(10, 10).on(top), Plane.XY.offset(10)), /nothing to flatten/)
   assert.throws(() => box.warp(top, 5, 4), TypeError)
+})
+
+
+// ---------------------------------------------------------------------- U9: matchEdge
+
+const wave = (x: number, y: number) => 2 * Math.sin(x / 10) + 0.005 * y * y
+const lin = (a: number, b: number, n: number) => Array.from({ length: n }, (_, i) => a + ((b - a) * i) / (n - 1))
+const waveSheet = () => surface(lin(0, 30, 7).map((x) => lin(0, 20, 6).map((y) => [x, y, wave(x, y)] as [number, number, number])))
+const byY = (body: Shell, last = true): Edge => {
+  const edges = [...body.edges()].sort((a, b) => a.center().y - b.center().y)
+  return last ? edges[edges.length - 1] : edges[0]
+}
+const lifted = (edge: Edge, lift: (t: number) => Vector, n = 21) => Spline(...lin(0, 1, n).map((t) => edge.pointAt(t).add(lift(t))))
+const offCurve = (curve: Edge, edge: Edge, n = 11) => Math.max(...lin(0, 1, n).map((t) => curve.distanceTo(edge.pointAt(t))))
+const halvesOf = (whole: Shell) => whole.trim(whole.intersectionCurves(new Plane([15, 0, 0], [0, 1, 0], [1, 0, 0])), 'split')
+
+test('matchEdge puts the edge on the curve and changes the face near it only', () => {
+  const sheet = waveSheet()
+  const top = byY(sheet)
+  const bottom = byY(sheet, false)
+  const target = lifted(top, (t) => new Vector(0, 0, 3 * Math.sin(Math.PI * t)))
+  const out = sheet.matchEdge(top, target, { extent: 0.3 })
+  assert.ok(out instanceof Shell && out.faces().length === 1 && out.edges().length === 4)
+  assert.ok(offCurve(target, byY(out)) < 1e-9)
+  const newBottom = byY(out, false)
+  assert.ok(Math.max(...lin(0, 1, 11).map((t) => newBottom.pointAt(t).sub(bottom.pointAt(t)).length)) < 1e-12)
+  for (const x of [3, 15, 27]) for (const y of [2, 9]) assert.ok(out.distanceTo(sheet.closestPoint([x, y, wave(x, y)])) < 1e-9)
+  assert.ok(out.area > sheet.area + 5)
+  assert.ok(out.thicken(1).isValid())
+  approx(sheet.matchEdge(top, target.reversed(), { extent: 0.3 }).area, out.area, 1e-12)
+})
+
+test('matchEdge moves the ends and the side edges with them', () => {
+  const sheet = waveSheet()
+  const top = byY(sheet)
+  const target = lifted(top, () => new Vector(0, 1, 2))
+  const out = sheet.matchEdge(top, target)
+  const newTop = byY(out)
+  const ends = [newTop.start, newTop.end]
+  for (const p of [target.start, target.end]) assert.ok(Math.min(...ends.map((q) => q.sub(p).length)) < 1e-9)
+  for (const e of out.edges()) assert.ok(Math.max(...lin(0, 1, 9).map((t) => out.faces()[0].distanceTo(e.pointAt(t)))) < 1e-9)
+  assert.ok(out.thicken(1).isValid())
+})
+
+test('matchEdge closes a gap before stitch', () => {
+  const a = waveSheet()
+  const b = surface(lin(0, 30, 7).map((x) => lin(20.2, 40, 5).map((y) => [x, y, wave(x, y) + 0.4] as [number, number, number])))
+  const [, before] = stitch(a, b, { tolerance: 1e-6, report: true })
+  assert.equal(before.sewnEdges, 0)
+  const matched = a.matchEdge(byY(a), byY(b, false))
+  const [body, after] = stitch(matched, b, { tolerance: 1e-6, report: true })
+  assert.equal(after.sewnEdges, 1)
+  assert.ok(after.maxGap < 1e-6 && free(body).length === 6)
+})
+
+test('matchEdge carries a moved corner into the next face', () => {
+  const halves = halvesOf(waveSheet())
+  const left = [...halves.faces()].sort((p, q) => p.center().x - q.center().x)[0]
+  const top = [...left.edges()].sort((p, q) => p.center().y - q.center().y).at(-1)!
+  const target = lifted(top, (t) => new Vector(0, 0, 1 + Math.sin(Math.PI * t)), 15)
+  const out = halves.matchEdge(top, target)
+  assert.equal(out.faces().length, 2)
+  assert.equal(free(out).length, 6)
+  const shared = out.edges().filter((e) => e.faces().length === 2)
+  assert.equal(shared.length, 1)
+  assert.ok(Math.min(shared[0].start.sub(target.end).length, shared[0].end.sub(target.end).length) < 1e-9)
+  for (const f of out.faces()) for (const e of f.edges()) assert.ok(Math.max(...lin(0, 1, 9).map((t) => f.distanceTo(e.pointAt(t)))) < 1e-9)
+  const right = [...out.faces()].sort((p, q) => p.center().x - q.center().x)[1]
+  const whole = waveSheet()
+  for (const [x, y] of [[28, 18], [25, 19], [22, 2]]) assert.ok(right.distanceTo(whole.closestPoint([x, y, wave(x, y)])) < 1e-9)
+  assert.ok(right.distanceTo(whole.closestPoint([16, 19, wave(16, 19)])) > 0.1)
+})
+
+test('matchEdge of a plane face is exact', () => {
+  const plate = Rectangle(20, 10)
+  const top = [...plate.edges()].sort((p, q) => p.center().y - q.center().y).at(-1)!
+  const out = plate.matchEdge(top, ThreePointArc([-10, 5], [0, 8], [10, 5]), { extent: 0.5 })
+  assert.ok(out.constructor === Shell && out.faces()[0].geomType === 'bspline')
+  const r = (100 + 9) / 6
+  const theta = 2 * Math.asin(10 / r)
+  approx(out.area, 200 + ((r * r) / 2) * (theta - Math.sin(theta)), 1e-9)
+  approx(out.bbox().max.y, 8, 0, 1e-9)
+})
+
+test('matchEdge errors', () => {
+  const sheet = waveSheet()
+  const top = byY(sheet)
+  const target = lifted(top, () => new Vector(0, 0, 1))
+  for (const extent of [0, 1, -0.5]) assert.throws(() => sheet.matchEdge(top, target, { extent }), /extent/)
+  const holed = Rectangle(20, 20).cut(Circle(3))
+  const holedTop = [...holed.edges()].sort((p, q) => p.center().y - q.center().y).at(-1)!
+  assert.throws(() => holed.matchEdge(holedTop, Line([-10, 11], [10, 11])), /hole/)
+  assert.throws(() => sheet.matchEdge(Line([0, 0, 50], [1, 0, 50]), target), /not an edge of this sheet/)
+  assert.throws(() => sheet.matchEdge(top, 5 as unknown as Edge), TypeError)
+  assert.throws(() => sheet.matchEdge(top, new Wire(Rectangle(4, 4).edges())), /closed wire/)
+  assert.throws(() => sheet.matchEdge(top, target, { extend: 0.2 } as never), TypeError)
+  const big = nurbsSurface([[[0, 0, 0], [0, 10, 0]], [[20, 0, 0], [20, 10, 0]]], null, 1)
+  const small = [0, 10].map((x0) => nurbsSurface([[[x0, 10, 0], [x0, 20, 0]], [[x0 + 10, 10, 0], [x0 + 10, 20, 0]]], null, 1))
+  const tee = stitch(big, ...small) as Shell
+  const partOfSide = tee.edges().filter((e) => e.faces().length === 2 && Math.abs(e.center().y - 10) < 1e-9)
+  assert.equal(partOfSide.length, 2)
+  assert.throws(() => tee.matchEdge(partOfSide[0], Line([0, 10, 1], [10, 10, 1])), /only a part of a side/)
+})
+
+// ---------------------------------------------------------------------- U10: mergeFaces
+
+test('mergeFaces gives the split sheet back', () => {
+  const whole = waveSheet()
+  const halves = halvesOf(whole)
+  assert.equal(halves.faces().length, 2)
+  const merged = halves.mergeFaces(halves.faces()[0], halves.faces()[1])
+  assert.equal(merged.faces().length, 1)
+  assert.equal(merged.edges().length, 4)
+  approx(merged.area, whole.area, 1e-9)
+  const d0 = ext.surface_data(k.face_surface(whole.faces()[0]._f), true)
+  const d1 = ext.surface_data(k.face_surface(merged.faces()[0]._f), true)
+  assert.equal(d1.poles.length, d0.poles.length)
+  for (const x of [2, 14, 16, 29]) for (const y of [1, 10, 19]) approx(merged.distanceTo([x, y, wave(x, y)]), whole.distanceTo([x, y, wave(x, y)]), 0, 1e-7)
+  assert.ok(merged.thicken(1).isValid())
+})
+
+test('matchEdge and mergeFaces keep the normals of a turned sheet', () => {
+  for (const sheet of [waveSheet(), waveSheet().flipped()]) {
+    const p = sheet.closestPoint([10, 10, 5])
+    const n0 = sheet.faces()[0].normalAt(p)
+    const top = byY(sheet)
+    const out = sheet.matchEdge(top, lifted(top, (t) => new Vector(0, 0, Math.sin(Math.PI * t)), 11))
+    assert.ok(out.faces()[0].normalAt(out.closestPoint(p)).dot(n0) > 0.999)
+    const halves = halvesOf(sheet)
+    const merged = halves.mergeFaces(halves.faces()[0], halves.faces()[1])
+    assert.ok(merged.faces()[0].normalAt(merged.closestPoint(p)).dot(n0) > 0.999)
+  }
+})
+
+test('mergeFaces in a sheet of three, of planes and of patches', () => {
+  const whole = waveSheet()
+  const cuts = [10, 20].map((x) => whole.intersectionCurves(new Plane([x, 0, 0], [0, 1, 0], [1, 0, 0]))[0])
+  const thirds = whole.trim(cuts, 'split')
+  assert.equal(thirds.faces().length, 3)
+  const [left, middle, right] = [...thirds.faces()].sort((p, q) => p.center().x - q.center().x)
+  const two = thirds.mergeFaces(middle, right)
+  assert.equal(two.faces().length, 2)
+  approx(two.area, whole.area, 1e-9)
+  assert.throws(() => thirds.mergeFaces(left, right), /share no edge/)
+  const plates = stitch(Rectangle(10, 10).translate(-5, 0, 0).faces()[0], Rectangle(10, 10).translate(5, 0, 0).faces()[0]) as Shell
+  const plate = plates.mergeFaces(plates.faces()[0], plates.faces()[1])
+  assert.equal(plate.faces().length, 1)
+  approx(plate.area, 200, 1e-12)
+  const pa = [0, 5, 10].map((x) => [0, 5, 10].map((y) => [x, y, x === 5 && y === 5 ? 5 : 0] as [number, number, number]))
+  const pb = [10, 15, 20].map((x) => [0, 2, 10].map((y) => [x, y, x === 15 && y === 2 ? 5 : 0] as [number, number, number]))
+  const sheets = stitch(nurbsSurface(pa, null, 2), nurbsSurface(pb, null, 2)) as Shell
+  assert.throws(() => sheets.mergeFaces(sheets.faces()[0], sheets.faces()[1]), /do not join/)
+  const pc = [10, 15, 20].map((x) => [0, 5, 10].map((y) => [x, y, x === 15 && y === 5 ? 5 : 0] as [number, number, number]))
+  const same = stitch(nurbsSurface(pa, null, 2), nurbsSurface(pc, null, 2)) as Shell
+  approx(same.mergeFaces(same.faces()[0], same.faces()[1]).area, same.area, 1e-9)
+  assert.throws(() => same.mergeFaces(same.faces()[0], same.faces()[0]), /same face/)
+})
+
+// ---------------------------------------------------------------------- U12: chamfers in surfaceFillet
+
+test('surfaceFillet chamfers with one and two distances', () => {
+  const floor = Rectangle(40, 40).faces()[0]
+  const wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]
+  const rails = (s: Shell) => s.edges().filter((e) => e.length > 30).map((e) => [Math.round(e.center().y * 1e9) / 1e9, Math.round(e.center().z * 1e9) / 1e9]).sort()
+  const c = surfaceFillet(floor, wall, 5, { shape: 'chamfer' })
+  approx(c.area, 40 * 5 * Math.SQRT2, 1e-9)
+  assert.deepEqual(rails(c), [[-5, 0], [0, 5]])
+  assert.deepEqual(rails(surfaceFillet(floor, wall, 5)), [[-5, 0], [0, 5]])
+  const c2 = surfaceFillet(floor, wall, 2, { radius2: 4, shape: 'chamfer' })
+  approx(c2.area, 40 * Math.hypot(2, 4), 1e-9)
+  assert.deepEqual(rails(c2), [[-4, 0], [0, 2]])
+  const one = surfaceFillet(floor, wall, 5, { shape: 'chamfer', trim: true })
+  assert.equal(one.faces().length, 3)
+  approx(one.area, 1200 + 40 * 5 * Math.SQRT2, 1e-9)
+  assert.ok(one.thicken(1).isValid())
+  assert.throws(() => surfaceFillet(floor, wall, 5, { radius2: 3 }), /radius2 is for chamfers/)
+  assert.throws(() => surfaceFillet(floor, wall, 5, { shape: 'cove' }), /shape/)
+  assert.throws(() => surfaceFillet(floor, wall, 5, { radius2: 0, shape: 'chamfer' }), /radius2 must be positive/)
+})
+
+// ---------------------------------------------------------------------- U13: nurbsSurface
+
+test('nurbsSurface: rational, default and unclamped knots, round trip', () => {
+  const net: [number, number, number][][] = [[[0, 0, 0], [0, 10, 0], [0, 20, 0]], [[10, 0, 5], [10, 10, 8], [10, 20, 5]], [[20, 0, 0], [20, 10, 0], [20, 20, 0]]]
+  const s = nurbsSurface(net, null, 2, [[1, 1, 1], [1, 0.5, 1], [1, 1, 1]])
+  assert.ok(s.distanceTo([10, 10, 18 / 7]) < 1e-12)
+  approx(s.bbox().max.z, 18 / 7, 1e-9)
+  const corners = new Set(s.vertices().map((v) => [v.x, v.y, v.z].map((c) => Math.round(c * 1e12) / 1e12).join(',')))
+  assert.deepEqual([...corners].sort(), ['0,0,0', '0,20,0', '20,0,0', '20,20,0'])
+  const bez = nurbsSurface([0, 1, 2, 3].map((i) => [0, 1, 2, 3].map((j) => [i * 10, j * 10, i > 0 && i < 3 && j > 0 && j < 3 ? 6 : 0] as [number, number, number])))
+  assert.ok(bez.distanceTo([15, 15, 6 * 0.75 * 0.75]) < 1e-12)
+  const p = [0, 1, 2, 3].map((i) => [0, 1, 2, 3].map((j) => [i * 10, j * 10, (i - 1.5) * (j - 1.5)] as [number, number, number]))
+  const un = nurbsSurface(p, [[0, 1, 2, 3, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 6, 7]])
+  const w = [1 / 6, 4 / 6, 1 / 6]
+  const corner = [0, 1, 2].map((c) => w.reduce((a, wi, i) => a + w.reduce((b, wj, j) => b + wi * wj * p[i][j][c], 0), 0))
+  assert.ok(Math.min(...un.vertices().map((v) => new Vector(v.x, v.y, v.z).sub(corner).length)) < 1e-12)
+  const sheet = waveSheet()
+  const d = ext.surface_data(k.face_surface(sheet.faces()[0]._f), true)
+  const nv = d.v_knots.length - d.v_degree - 1
+  const rows: [number, number, number][][] = []
+  for (let i = 0; i < d.poles.length; i += nv) rows.push(d.poles.slice(i, i + nv))
+  const again = nurbsSurface(rows, [d.u_knots, d.v_knots], [d.u_degree, d.v_degree])
+  approx(again.area, sheet.area, 1e-12)
+  const data = { degrees: [d.u_degree, d.v_degree] as [number, number], knots: [d.u_knots, d.v_knots] as [number[], number[]], points: rows, weights: null }
+  approx(nurbsSurface(data).area, sheet.area, 1e-12)
+})
+
+test('nurbsSurface errors', () => {
+  const net = [0, 1, 2, 3].map((i) => [0, 1, 2, 3].map((j) => [i, j, 0] as [number, number, number]))
+  assert.throws(() => nurbsSurface(net, [[0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]], 3), /need 8 knots/)
+  assert.throws(() => nurbsSurface(net, [[0, 0, 0, 0, 1, 1, 0.5, 1], [0, 0, 0, 0, 1, 1, 1, 1]]), /not decrease/)
+  assert.throws(() => nurbsSurface(net, null, null, [[1, 1, 1, 1], [1, 0, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]), /weights must be positive/)
+  assert.throws(() => nurbsSurface(net, null, null, [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]]), /weights are rows/)
+  assert.throws(() => nurbsSurface(net, null, 0), /degree must be 1 to 32/)
+  assert.throws(() => nurbsSurface(net, null, 4), /at least 5 control points/)
+  assert.throws(() => nurbsSurface([[[0, 0, 0], [1, 0, 0]], [[0, 1, 0]]]), /rows of points/)
+  assert.throws(() => nurbsSurface(net, [[0, 0, 0.5, 0.5, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]], [1, 3]), /repeats more often/)
+})
+
+// ---------------------------------------------------------------------- U14: intersectionCurves
+
+test('intersectionCurves of bodies that do not meet are empty, with planes and faces', () => {
+  assert.equal(Box(10, 10, 10).intersectionCurves(Box(10, 10, 10).translate(50, 0, 0)).length, 0)
+  assert.equal(Box(20, 20, 20).intersectionCurves(Box(4, 4, 4)).length, 0)
+  assert.equal(Sphere(10).intersectionCurves(Sphere(2).translate(0, 0, 3)).length, 0)
+  const sheet = waveSheet()
+  assert.equal(sheet.intersectionCurves(Box(5, 5, 5).translate(15, 10, 30)).length, 0)
+  assert.ok(Box(10, 10, 10).intersectionCurves(Box(10, 10, 10).translate(5, 5, 5)).length > 0)
+  const curves = Sphere(10).intersectionCurves(Plane.XY)
+  approx(curves.reduce((a, e) => a + e.length, 0), 2 * Math.PI * 10, 1e-12)
+  assert.ok(curves.every((e) => e.geomType === 'circle'))
+  assert.equal(Sphere(10).intersectionCurves(Plane.XY.offset(20)).length, 0)
+  const cuts = sheet.intersectionCurves(new Plane([15, 0, 0], [0, 1, 0], [1, 0, 0]))
+  assert.equal(cuts.length, 1)
+  assert.ok(Math.max(...lin(0, 1, 41).map((t) => sheet.distanceTo(cuts[0].pointAt(t)))) < 1e-4)
+  assert.ok(Math.max(...lin(0, 1, 41).map((t) => Math.abs(cuts[0].pointAt(t).x - 15))) < 1e-12)
+  const small = Rectangle(4, 4).on(new Plane([15, 10, 2.5], [0, 1, 0], [1, 0, 0])).faces()[0]
+  const pieces = sheet.intersectionCurves(small)
+  assert.equal(pieces.length, 1)
+  approx(pieces[0].length, 4, 1e-2)
+  assert.throws(() => sheet.intersectionCurves([0, 0, 0] as never), TypeError)
+})
+
+// ---------------------------------------------------------------------- U15: surface's report
+
+test('surface report gives the true distances', () => {
+  let seed = 7
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  const tube = (deg: number) => Array.from({ length: 1500 }, () => {
+    const a = (rnd() - 0.5) * (deg * Math.PI) / 180
+    return [10 * Math.sin(a), 10 * Math.cos(a), rnd() * 40] as [number, number, number]
+  })
+  const pts = tube(288)
+  const [s, r] = surface(pts, { report: true })
+  assert.ok(s instanceof Shell && r instanceof FitReport && r.distances.length === pts.length)
+  approx(r.maxDistance, Math.max(...r.distances), 1e-12)
+  assert.ok(r.maxDistance > 5)
+  approx(r.rmsDistance, Math.sqrt(r.distances.reduce((a, x) => a + x * x, 0) / r.distances.length), 1e-12)
+  const srf = k.face_surface(s.faces()[0]._f)
+  const [[u0, v0], [u1, v1]] = ext.surface_data(srf, false).uv_domain
+  const uv: number[] = []
+  for (const u of lin(u0, u1, 120)) for (const v of lin(v0, v1, 120)) uv.push(u, v)
+  const dense = ext.surface_derivatives(srf, uv).point as Float64Array
+  for (let i = 0; i < pts.length; i += 97) {
+    let brute = Infinity
+    for (let j = 0; j < dense.length; j += 3) brute = Math.min(brute, Math.hypot(dense[j] - pts[i][0], dense[j + 1] - pts[i][1], dense[j + 2] - pts[i][2]))
+    assert.ok(r.distances[i] <= brute + 1e-9 && r.distances[i] > brute - 0.15, `${r.distances[i]} vs ${brute}`)
+    assert.ok(r.distances[i] <= s.distanceTo(pts[i]) + 1e-9)
+  }
+  const [, half] = surface(tube(180), { report: true })
+  assert.ok(half.maxDistance < 1 && half.rmsDistance < half.maxDistance)
+  assert.ok(surface(tube(180)) instanceof Shell)
+  const g = [0, 5, 10, 15, 20].map((x) => [0, 5, 10, 15, 20].map((y) => [x, y, Math.sin(x / 5) * Math.cos(y / 5)] as [number, number, number]))
+  const [, through] = surface(g, { report: true })
+  assert.ok(through.maxDistance < 1e-9 && through.distances.length === 25)
+  const [, near] = surface(g, { interpolate: false, report: true })
+  assert.ok(near.maxDistance > 0.05 && near.maxDistance < 1)
 })

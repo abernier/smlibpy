@@ -1,16 +1,19 @@
 """Lane U of the kernel plan (phase 1): blends between sheet edges (U2), trimming sheets with
 curves on them and imprinting curves on parts (U3); fills and curve networks (U4), stitch with its
 tolerance, report and normals (U5), extending and untrimming faces (U6); pushing a face at a point
-(U7), warping and flattening a region of a face (U8)."""
+(U7), warping and flattening a region of a face (U8); matching a sheet's edge to a curve (U9),
+merging faces (U10), analytic faces edited as their B-splines (U11), chamfers and two distances in
+surface_fillet (U12), surfaces from NURBS data (U13), intersection curves with planes and of bodies
+that do not meet (U14), how far a fit's points lie from its surface (U15)."""
 
 import math
 
 import numpy as np
 import pytest
 
-from smlibpy import (Axis, Box, Circle, CenterArc, Cylinder, Line, ModelingError, Part, Plane, Rectangle, Shell, Sketch,
-                     Sphere, Spline, ThreePointArc, Vector, Z, blend, extrude, fill, network, ruled, stitch, surface,
-                     surface_fillet)
+from smlibpy import (Axis, Box, Circle, CenterArc, Cylinder, FitReport, Line, ModelingError, Part, Plane, Rectangle,
+                     Shell, Sketch, Sphere, Spline, ThreePointArc, Vector, Wire, Z, blend, extrude, fill, network,
+                     nurbs_surface, ruled, stitch, surface, surface_fillet)
 from smlibpy._kernel import ext, k
 
 
@@ -872,3 +875,428 @@ def test_guides_of_u7_u8():
     for query, key in (("dent in the lid", "push"), ("a bump on a face", "push"), ("raise a region of a face", "warp"),
                        ("flatten a region onto a plane", "flatten")):
         assert key in [e.key.split("/")[-1].split(".")[-1] for _, e in discovery.search(query, 6)], query
+
+
+# ---------------------------------------------------------------------- U9: match_edge
+
+
+def _wave(x, y):
+    return 2 * math.sin(x / 10) + 0.005 * y * y
+
+
+def _wave_sheet():
+    return surface([[(x, y, _wave(x, y)) for y in np.linspace(0, 20, 6)] for x in np.linspace(0, 30, 7)])
+
+
+def _by_y(body, last=True):
+    edges = sorted(body.edges(), key=lambda e: e.center().y)
+    return edges[-1] if last else edges[0]
+
+
+def _lifted(edge, lift, n=21):
+    return Spline(*[edge.point_at(t) + lift(t) for t in np.linspace(0, 1, n)])
+
+
+def _off(curve, edge, n=11):
+    """How far points of the edge lie from the curve."""
+    return max(curve.distance_to(edge.point_at(t)) for t in np.linspace(0, 1, n))
+
+
+def test_match_edge_puts_the_edge_on_the_curve_and_changes_the_face_near_it_only():
+    sheet = _wave_sheet()
+    top, bottom = _by_y(sheet), _by_y(sheet, last=False)
+    # the same ends: the side edges keep their place
+    target = _lifted(top, lambda t: Vector(0, 0, 3 * math.sin(math.pi * t)))
+    out = sheet.match_edge(top, target, extent=0.3)
+    assert isinstance(out, Shell) and len(out.faces()) == 1 and len(out.edges()) == 4
+    assert _off(target, _by_y(out)) < 1e-9
+    new_bottom = _by_y(out, last=False)
+    assert max((new_bottom.point_at(t) - bottom.point_at(t)).length for t in np.linspace(0, 1, 11)) < 1e-12
+    # the face changes only near the edge: points of the sheet below y = 10 are still on it
+    for x in (3, 15, 27):
+        for y in (2, 9):
+            assert out.distance_to(sheet.closest_point((x, y, _wave(x, y)))) < 1e-9
+    assert out.area > sheet.area + 5
+    assert out.thicken(1).is_valid()
+    # the curve's direction does not matter
+    turned = sheet.match_edge(top, target.reversed(), extent=0.3)
+    assert turned.area == pytest.approx(out.area, rel=1e-12)
+
+
+def test_match_edge_moves_the_ends_and_the_side_edges_with_them():
+    sheet = _wave_sheet()
+    top = _by_y(sheet)
+    target = _lifted(top, lambda t: Vector(0, 1, 2))
+    out = sheet.match_edge(top, target)
+    new_top = _by_y(out)
+    assert {tuple(round(c, 9) for c in p) for p in (new_top.start, new_top.end)} == \
+        {tuple(round(c, 9) for c in p) for p in (target.start, target.end)}
+    # the side edges end at the moved corners, and still start where they did
+    sides = sorted(out.edges(), key=lambda e: e.center().x)[0], sorted(out.edges(), key=lambda e: e.center().x)[-1]
+    for side in sides:
+        ends = sorted([side.start, side.end], key=lambda p: p.y)
+        assert ends[0].y == pytest.approx(0, abs=1e-12) and ends[1].y == pytest.approx(21, abs=1e-9)
+    for e in out.edges():
+        assert max(out.faces()[0].distance_to(e.point_at(t)) for t in np.linspace(0, 1, 9)) < 1e-9
+    assert out.thicken(1).is_valid()
+
+
+def test_match_edge_closes_a_gap_before_stitch():
+    a = _wave_sheet()
+    # a second sheet beyond y = 20, 0.4 off in z and 0.2 apart in y: stitch with a tight tolerance leaves it open
+    b = surface([[(x, y, _wave(x, y) + 0.4) for y in np.linspace(20.2, 40, 5)] for x in np.linspace(0, 30, 7)])
+    _, before = stitch(a, b, tolerance=1e-6, report=True)
+    assert before.sewn_edges == 0
+    matched = a.match_edge(_by_y(a), _by_y(b, last=False))
+    body, after = stitch(matched, b, tolerance=1e-6, report=True)
+    assert after.sewn_edges == 1 and after.max_gap < 1e-6 and len(_free(body)) == 6
+    # the matched sheet meets b along b's edge (with a crease there: matching keeps no tangent)
+    assert _off(_by_y(b, last=False), _by_y(matched)) < 1e-9
+
+
+def _halves():
+    whole = _wave_sheet()
+    return whole, whole.trim(whole.intersection_curves(Plane((15, 0, 0), (0, 1, 0), (1, 0, 0))), "split")
+
+
+def test_match_edge_carries_a_moved_corner_into_the_next_face():
+    _, halves = _halves()
+    left = min(halves.faces(), key=lambda f: f.center().x)
+    top = max(left.edges(), key=lambda e: e.center().y)
+    target = _lifted(top, lambda t: Vector(0, 0, 1 + math.sin(math.pi * t)))
+    out = halves.match_edge(top, target)
+    assert len(out.faces()) == 2 and len(_free(out)) == 6
+    shared = [e for e in out.edges() if len(e.faces()) == 2]
+    assert len(shared) == 1
+    # the shared edge ends at the moved corner; every edge lies on its faces
+    assert min((p - target.end).length for p in (shared[0].start, shared[0].end)) < 1e-9
+    for f in out.faces():
+        for e in f.edges():
+            assert max(f.distance_to(e.point_at(t)) for t in np.linspace(0, 1, 9)) < 1e-9
+    # the right half changed near the shared edge only
+    right = max(out.faces(), key=lambda f: f.center().x)
+    whole = _wave_sheet()
+    for x, y in ((28, 18), (25, 19), (22, 2)):
+        assert right.distance_to(whole.closest_point((x, y, _wave(x, y)))) < 1e-9
+    assert right.distance_to(whole.closest_point((16, 19, _wave(16, 19)))) > 0.1
+
+
+def test_match_edge_of_a_plane_face_is_exact():
+    # U11: an analytic face is edited as its exact B-spline (editing a plane's NURBS data does nothing)
+    plate = Rectangle(20, 10)
+    top = max(plate.edges(), key=lambda e: e.center().y)
+    arc = ThreePointArc((-10, 5), (0, 8), (10, 5))
+    out = plate.match_edge(top, arc, extent=0.5)
+    assert type(out) is Shell and out.faces()[0].geom_type == "bspline"
+    r = (100 + 9) / 6  # the arc through a chord of 20 with a rise of 3
+    theta = 2 * math.asin(10 / r)
+    assert out.area == pytest.approx(200 + r * r / 2 * (theta - math.sin(theta)), rel=1e-9)
+    assert out.bbox().max.z == pytest.approx(0, abs=1e-12) and out.bbox().max.y == pytest.approx(8, abs=1e-9)
+
+
+def test_match_edge_errors():
+    sheet = _wave_sheet()
+    top = _by_y(sheet)
+    target = _lifted(top, lambda t: Vector(0, 0, 1))
+    for extent in (0, 1, -0.5):
+        with pytest.raises(ValueError, match="extent"):
+            sheet.match_edge(top, target, extent=extent)
+    holed = Rectangle(20, 20) - Circle(3)
+    with pytest.raises(ValueError, match="hole"):
+        holed.match_edge(max(holed.edges(), key=lambda e: e.center().y), Line((-10, 11), (10, 11)))
+    with pytest.raises(ValueError, match="not an edge of this sheet"):
+        sheet.match_edge(Line((0, 0, 50), (1, 0, 50)), target)
+    with pytest.raises(TypeError, match="Edge or a Wire"):
+        sheet.match_edge(top, 5)
+    with pytest.raises(ValueError, match="closed wire"):
+        sheet.match_edge(top, Wire(Rectangle(4, 4).edges()))
+    # an edge that is only a part of a side of its face (a T-junction: two patches on one side of a third)
+    big = nurbs_surface([[(x, y, 0) for y in (0, 10)] for x in (0, 20)], degrees=1)
+    small = [nurbs_surface([[(x, y, 0) for y in (10, 20)] for x in (x0, x0 + 10)], degrees=1) for x0 in (0, 10)]
+    tee = stitch(big, *small)
+    part_of_side = [e for e in tee.edges() if len(e.faces()) == 2 and e.center().y == pytest.approx(10)]
+    assert len(part_of_side) == 2
+    with pytest.raises(ValueError, match="only a part of a side"):
+        tee.match_edge(part_of_side[0], Line((0, 10, 1), (10, 10, 1)))
+
+
+# ---------------------------------------------------------------------- U10: merge_faces
+
+
+def test_merge_faces_gives_the_split_sheet_back():
+    whole, halves = _halves()
+    assert len(halves.faces()) == 2
+    merged = halves.merge_faces(*halves.faces())
+    assert len(merged.faces()) == 1 and len(merged.edges()) == 4
+    assert merged.area == pytest.approx(whole.area, rel=1e-9)
+    # one surface again: the knot at the joint is gone (as many control points as the sheet had)
+    d0 = ext.surface_data(whole.faces()[0]._f.surface(), True)
+    d1 = ext.surface_data(merged.faces()[0]._f.surface(), True)
+    assert len(d1["poles"]) == len(d0["poles"])
+    for x in (2, 14, 16, 29):
+        for y in (1, 10, 19):
+            assert merged.distance_to((x, y, _wave(x, y))) == pytest.approx(whole.distance_to((x, y, _wave(x, y))),
+                                                                              abs=1e-7)
+    p = Vector(10, 10, _wave(10, 10))
+    assert merged.faces()[0].normal_at(merged.closest_point(p)).dot(whole.faces()[0].normal_at(whole.closest_point(p))) > 0.999
+    assert merged.thicken(1).is_valid()
+
+
+def test_match_and_merge_keep_the_normals_of_a_turned_sheet():
+    for sheet in (_wave_sheet(), _wave_sheet().flipped()):
+        p = sheet.closest_point((10, 10, 5))
+        n0 = sheet.faces()[0].normal_at(p)
+        top = _by_y(sheet)
+        out = sheet.match_edge(top, _lifted(top, lambda t: Vector(0, 0, math.sin(math.pi * t)), 11))
+        assert out.faces()[0].normal_at(out.closest_point(p)).dot(n0) > 0.999
+        halves = sheet.trim(sheet.intersection_curves(Plane((15, 0, 0), (0, 1, 0), (1, 0, 0))), "split")
+        merged = halves.merge_faces(*halves.faces())
+        assert merged.faces()[0].normal_at(merged.closest_point(p)).dot(n0) > 0.999
+
+
+def test_merge_faces_in_a_sheet_of_three():
+    whole = _wave_sheet()
+    cuts = [whole.intersection_curves(Plane((x, 0, 0), (0, 1, 0), (1, 0, 0)))[0] for x in (10, 20)]
+    thirds = whole.trim(cuts, "split")
+    assert len(thirds.faces()) == 3
+    left, middle, right = sorted(thirds.faces(), key=lambda f: f.center().x)
+    two = thirds.merge_faces(middle, right)
+    assert len(two.faces()) == 2 and two.area == pytest.approx(whole.area, rel=1e-9)
+    assert len([e for e in two.edges() if len(e.faces()) == 2]) == 1
+    one = two.merge_faces(*two.faces())
+    assert len(one.faces()) == 1 and one.area == pytest.approx(whole.area, rel=1e-9)
+
+
+def test_merge_faces_of_planes_and_patches():
+    a = Rectangle(10, 10).translate((-5, 0, 0)).faces()[0]
+    b = Rectangle(10, 10).translate((5, 0, 0)).faces()[0]
+    plates = stitch(a, b)
+    merged = plates.merge_faces(*plates.faces())
+    assert len(merged.faces()) == 1 and merged.area == pytest.approx(200, rel=1e-12)
+    assert merged.bbox().size.to_tuple() == pytest.approx((20, 10, 0), abs=1e-12)
+    assert merged.faces()[0].normal_at().z == pytest.approx(1)
+
+
+def test_merge_faces_errors():
+    whole, halves = _halves()
+    a, b = halves.faces()
+    with pytest.raises(ValueError, match="same face"):
+        halves.merge_faces(a, a)
+    with pytest.raises(ValueError, match="not a face of this shell"):
+        halves.merge_faces(a, Box(1, 1, 1).faces()[0])
+    # faces that do not touch
+    cuts = [whole.intersection_curves(Plane((x, 0, 0), (0, 1, 0), (1, 0, 0)))[0] for x in (10, 20)]
+    thirds = whole.trim(cuts, "split")
+    left, _, right = sorted(thirds.faces(), key=lambda f: f.center().x)
+    with pytest.raises(ValueError, match="share no edge"):
+        thirds.merge_faces(left, right)
+    # a face with a hole
+    holed = stitch(Rectangle(10, 10).translate((-5, 0, 0)).faces()[0],
+                   (Rectangle(10, 10) - Circle(2)).translate((5, 0, 0)).faces()[0])
+    with pytest.raises(ValueError, match="hole"):
+        holed.merge_faces(*holed.faces())
+    # the same shared edge, run at different speeds: the joined surface would not be either face
+    pa = [[(x, y, 5 if (x, y) == (5, 5) else 0) for y in (0, 5, 10)] for x in (0, 5, 10)]
+    pb = [[(x, y, 5 if (x, y) == (15, 2) else 0) for y in (0, 2, 10)] for x in (10, 15, 20)]
+    sheets = stitch(nurbs_surface(pa, degrees=2), nurbs_surface(pb, degrees=2))
+    assert len(sheets.faces()) == 2 and len(_free(sheets)) == 6
+    with pytest.raises(ValueError, match="do not join"):
+        sheets.merge_faces(*sheets.faces())
+    # at the same speed they merge
+    pc = [[(x, y, 5 if (x, y) == (15, 5) else 0) for y in (0, 5, 10)] for x in (10, 15, 20)]
+    same = stitch(nurbs_surface(pa, degrees=2), nurbs_surface(pc, degrees=2))
+    one = same.merge_faces(*same.faces())
+    assert len(one.faces()) == 1 and one.area == pytest.approx(same.area, rel=1e-9)
+
+
+# ---------------------------------------------------------------------- U12: chamfers in surface_fillet
+
+
+def test_surface_fillet_chamfers_with_one_and_two_distances():
+    floor = Rectangle(40, 40).faces()[0]  # normal +Z
+    wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]  # normal -Y
+    c = surface_fillet(floor, wall, 5, shape="chamfer")
+    assert c.area == pytest.approx(40 * 5 * math.sqrt(2), rel=1e-9)
+    rails = sorted((round(e.center().y, 9), round(e.center().z, 9)) for e in c.edges() if e.length > 30)
+    assert rails == [(-5, 0), (0, 5)]
+    # the round of the same radius meets the faces along the same lines
+    r = surface_fillet(floor, wall, 5)
+    assert sorted((round(e.center().y, 9), round(e.center().z, 9)) for e in r.edges() if e.length > 30) == rails
+    c2 = surface_fillet(floor, wall, 2, radius2=4, shape="chamfer")
+    assert c2.area == pytest.approx(40 * math.hypot(2, 4), rel=1e-9)
+    assert sorted((round(e.center().y, 9), round(e.center().z, 9)) for e in c2.edges() if e.length > 30) == \
+        [(-4, 0), (0, 2)]
+    one = surface_fillet(floor, wall, 5, shape="chamfer", trim=True)
+    assert len(one.faces()) == 3 and one.area == pytest.approx(600 + 600 + 40 * 5 * math.sqrt(2), rel=1e-9)
+    assert one.thicken(1).is_valid()
+
+
+def test_surface_fillet_option_errors():
+    floor = Rectangle(40, 40).faces()[0]
+    wall = Rectangle(40, 40).on(Plane.XZ).faces()[0]
+    with pytest.raises(ValueError, match="radius2 is for chamfers"):
+        surface_fillet(floor, wall, 5, radius2=3)
+    with pytest.raises(ValueError, match="shape"):
+        surface_fillet(floor, wall, 5, shape="cove")
+    with pytest.raises(ValueError, match="radius2 must be positive"):
+        surface_fillet(floor, wall, 5, radius2=0, shape="chamfer")
+
+
+# ---------------------------------------------------------------------- U13: nurbs_surface
+
+
+def test_nurbs_surface_rational_and_default_knots():
+    net = [[(0, 0, 0), (0, 10, 0), (0, 20, 0)], [(10, 0, 5), (10, 10, 8), (10, 20, 5)], [(20, 0, 0), (20, 10, 0), (20, 20, 0)]]
+    s = nurbs_surface(net, degrees=2, weights=[[1, 1, 1], [1, 0.5, 1], [1, 1, 1]])
+    # the middle: z = (0.5 * (0.25 * 5 + 0.5 * 0.5 * 8 + 0.25 * 5)) / (1 - 0.25 * 0.5) = 18 / 7
+    assert s.distance_to((10, 10, 18 / 7)) < 1e-12
+    assert s.bbox().max.z == pytest.approx(18 / 7, rel=1e-9)
+    d = ext.surface_data(s.faces()[0]._f.surface(), True)
+    assert (d["u_degree"], d["v_degree"]) == (2, 2) and d["weights"][4] == pytest.approx(0.5)
+    # default knots: clamped, so the surface starts at the net's corners
+    corners = {tuple(round(c, 12) for c in (v.x, v.y, v.z)) for v in s.vertices()}
+    assert corners == {(0, 0, 0), (0, 20, 0), (20, 0, 0), (20, 20, 0)}
+    bez = nurbs_surface([[(i * 10, j * 10, 6 if 0 < i < 3 and 0 < j < 3 else 0) for j in range(4)] for i in range(4)])
+    assert bez.distance_to((15, 15, 6 * 0.75 * 0.75)) < 1e-12  # the cubic's middle: (3/8 + 3/8)^2 of the inner points
+
+
+def test_nurbs_surface_unclamped_knots_and_round_trip():
+    net = [[(i * 10, j * 10, (i - 1.5) * (j - 1.5)) for j in range(4)] for i in range(4)]
+    s = nurbs_surface(net, ([0, 1, 2, 3, 4, 5, 6, 7], [0, 1, 2, 3, 4, 5, 6, 7]))
+    p = np.array(net, dtype=float)
+    w = np.array([1, 4, 1]) / 6  # a uniform cubic starts at (P0 + 4 P1 + P2) / 6
+    corner = np.einsum("i,j,ijk->k", w, w, p[:3, :3])
+    assert min((v - Vector(*corner)).length for v in s.vertices()) < 1e-12
+    # the inverse of the surface's own data
+    sheet = _wave_sheet()
+    d = ext.surface_data(sheet.faces()[0]._f.surface(), True)
+    du, dv = d["u_degree"], d["v_degree"]
+    nu = len(d["u_knots"]) - du - 1
+    nv = len(d["v_knots"]) - dv - 1
+    rows = [d["poles"][i * nv:(i + 1) * nv] for i in range(nu)]
+    again = nurbs_surface(rows, (d["u_knots"], d["v_knots"]), (du, dv))
+    assert again.area == pytest.approx(sheet.area, rel=1e-12)
+    for x, y in ((1, 1), (15, 10), (29, 19)):
+        assert again.distance_to(sheet.closest_point((x, y, _wave(x, y)))) < 1e-12
+
+    class Data:  # what Face.nurbs() gives (a NurbsSurface)
+        degrees = (du, dv)
+        knots = (d["u_knots"], d["v_knots"])
+        points = rows
+        weights = None
+
+    assert nurbs_surface(Data()).area == pytest.approx(sheet.area, rel=1e-12)
+
+
+def test_nurbs_surface_errors():
+    net = [[(i, j, 0) for j in range(4)] for i in range(4)]
+    with pytest.raises(ValueError, match="need 8 knots"):
+        nurbs_surface(net, ([0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]), degrees=3)
+    with pytest.raises(ValueError, match="not decrease"):
+        nurbs_surface(net, ([0, 0, 0, 0, 1, 1, 0.5, 1], [0, 0, 0, 0, 1, 1, 1, 1]))
+    with pytest.raises(ValueError, match="weights must be positive"):
+        nurbs_surface(net, weights=[[1] * 4, [1, 0, 1, 1], [1] * 4, [1] * 4])
+    with pytest.raises(ValueError, match="weights are rows"):
+        nurbs_surface(net, weights=[[1] * 4] * 3)
+    with pytest.raises(ValueError, match="degree must be 1 to 32"):
+        nurbs_surface(net, degrees=0)
+    with pytest.raises(ValueError, match="at least 5 control points"):
+        nurbs_surface(net, degrees=4)
+    with pytest.raises(ValueError, match="rows of points"):
+        nurbs_surface([[(0, 0, 0), (1, 0, 0)], [(0, 1, 0)]])
+    with pytest.raises(ValueError, match="repeats more often"):
+        nurbs_surface(net, ([0, 0, 0.5, 0.5, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]), degrees=(1, 3))
+
+
+# ---------------------------------------------------------------------- U14: intersection_curves
+
+
+def test_intersection_curves_of_bodies_that_do_not_meet_are_empty():
+    assert Box(10, 10, 10).intersection_curves(Box(10, 10, 10).translate((50, 0, 0))) == []
+    assert Box(20, 20, 20).intersection_curves(Box(4, 4, 4)) == []  # nested
+    assert Sphere(10).intersection_curves(Sphere(2).translate((0, 0, 3))) == []
+    sheet = _wave_sheet()
+    assert sheet.intersection_curves(Box(5, 5, 5).translate((15, 10, 30))) == []
+    # touching and crossing still give their curves
+    assert len(Box(10, 10, 10).intersection_curves(Box(10, 10, 10).translate((5, 5, 5)))) > 0
+
+
+def test_intersection_curves_with_a_plane_and_a_face():
+    curves = Sphere(10).intersection_curves(Plane.XY)
+    assert sum(e.length for e in curves) == pytest.approx(2 * math.pi * 10, rel=1e-12)
+    assert all(e.geom_type == "circle" for e in curves)
+    assert Sphere(10).intersection_curves(Plane.XY.offset(20)) == []
+    # on a B-spline sheet the curve lies on both (the kernel's plane section is 2e-3 off the sheet)
+    sheet = _wave_sheet()
+    (cut,) = sheet.intersection_curves(Plane((15, 0, 0), (0, 1, 0), (1, 0, 0)))
+    assert max(sheet.distance_to(cut.point_at(t)) for t in np.linspace(0, 1, 41)) < 1e-4
+    assert max(abs(cut.point_at(t).x - 15) for t in np.linspace(0, 1, 41)) < 1e-12
+    assert cut.length > 20
+    # a face is the face itself, bounded
+    small = Rectangle(4, 4).on(Plane((15, 10, 2.5), (0, 1, 0), (1, 0, 0))).faces()[0]
+    (piece,) = sheet.intersection_curves(small)
+    assert piece.length == pytest.approx(4, rel=1e-2)
+    with pytest.raises(TypeError, match="a body"):
+        sheet.intersection_curves((0, 0, 0))
+
+
+# ---------------------------------------------------------------------- U15: how far a fit's points lie
+
+
+def _tube(degrees, n=1500, seed=1):
+    rng = np.random.default_rng(seed)
+    a = rng.uniform(-math.radians(degrees) / 2, math.radians(degrees) / 2, n)
+    return np.c_[10 * np.sin(a), 10 * np.cos(a), rng.uniform(0, 40, n)]
+
+
+def test_surface_report_gives_the_true_distances():
+    pts = _tube(288)
+    s, r = surface(pts, report=True)
+    assert isinstance(s, Shell) and isinstance(r, FitReport) and r.distances.shape == (len(pts),)
+    worst = np.argsort(r.distances)[-5:]
+    for i in worst:
+        assert r.distances[i] == pytest.approx(s.distance_to(tuple(pts[i])), abs=1e-6)
+    assert r.max_distance == pytest.approx(float(r.distances.max())) and r.max_distance > 5
+    assert r.rms_distance == pytest.approx(math.sqrt(float(np.mean(r.distances ** 2))))
+    # a sample of all points against the surface sampled densely: the report's distances are the nearest
+    # (the kernel's closest point, distance_to, misses the nearest one on this folded surface: 5.83 for 5.71)
+    srf = s.faces()[0]._f.surface()
+    (u0, v0), (u1, v1) = ext.surface_data(srf, False)["uv_domain"]
+    dense = np.array([k.evaluate_surface_point(srf, float(u), float(v)) for u in np.linspace(u0, u1, 160)
+                      for v in np.linspace(v0, v1, 160)])
+    for i in range(0, len(pts), 97):
+        brute = float(np.sqrt(((dense - pts[i]) ** 2).sum(1)).min())
+        assert brute - 0.1 < r.distances[i] <= brute + 1e-9
+        assert r.distances[i] <= s.distance_to(tuple(pts[i])) + 1e-9
+    half, rh = surface(_tube(180), report=True)
+    assert rh.max_distance < 1 and rh.rms_distance < rh.max_distance
+    assert isinstance(surface(_tube(180)), Shell)
+
+
+def test_surface_report_of_grids():
+    g = [[(x, y, math.sin(x / 5) * math.cos(y / 5)) for y in range(0, 25, 5)] for x in range(0, 25, 5)]
+    _, through = surface(g, report=True)
+    assert through.max_distance < 1e-9 and len(through.distances) == 25
+    _, near = surface(g, interpolate=False, report=True)
+    assert 0.05 < near.max_distance < 1
+
+
+def test_helical_sweep_stays_unwired():
+    # U11: SmBSplineSurface::CreateHelicalSweep keeps a pointer to a surface on its own stack; wiring it
+    # needs the kernel patch the plan describes first.
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    callers = [p for d in ("src/cpp", "js/cpp") for p in (root / d).rglob("*.cpp")
+               if re.search(r"CreateHelicalSweep\s*\(", p.read_text())]
+    assert callers == []
+
+
+def test_guides_of_u9_to_u15():
+    from smlibpy.mcp import discovery
+
+    for method, guide in (("Shell.match_edge", "surfaces/match_edge"), ("Shell.merge_faces", "surfaces/merge_faces"),
+                          ("nurbs_surface", "surfaces/nurbs_surface"), ("surface_fillet", "surfaces/surface_fillet"),
+                          ("surface", "surfaces/surface"), ("Part.intersection_curves", "analysis/intersection_curves")):
+        assert discovery.guide_for(discovery.find_method(method)).key == guide

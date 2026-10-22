@@ -22,7 +22,7 @@ function _level(continuity: unknown, table: Record<string, number>, what: string
 
 /** The body's face for `face`: itself, or the face of the body in its place (a face of an earlier
  * version of the body, matched by an interior point and the area). */
-function _ownFace(body: _Body, face: unknown, what: string): Face {
+export function _ownFace(body: _Body, face: unknown, what: string): Face {
   if (!(face instanceof Face)) throw new TypeError(`${what}: face must be a Face, got ${face === null ? 'null' : typeof face === 'object' ? (face as object).constructor.name : typeof face}`)
   if (face._owner !== null && face._owner._h === body._h) return face
   const tol = 1e-6 * Math.max(1, body.bbox().diagonal)

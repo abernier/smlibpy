@@ -459,6 +459,16 @@ SmExtent2d face_parameter_box(const SmFace* face)
     return SM_CAST_PTR(SmPlane, face->GetSurface()) != nullptr ? tight_box(face) : face->GetUVDomain();
 }
 
+SmVector3d face_outward_normal(const SmFace* face, const SmSurface& surface, const SmPoint2d& uv)
+{
+    return outward(face, surface, uv);
+}
+
+SmBrep* surface_sheet(SmSurface* surface, const SmExtent2d& domain, const SmPoint2d& uv, const SmVector3d& normal)
+{
+    return sheet(SurfacePtr(surface), domain, uv, normal);
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
