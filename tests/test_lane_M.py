@@ -19,7 +19,7 @@ from smlibpy import (Axis, Box, Cone, Cylinder, DrawingView, Edge, GridLocations
 from smlibpy._kernel import ext
 from smlibpy.drawing import to_svg
 from smlibpy.exporters import gltf_document
-from smlibpy.mesh import Mesh
+from smlibpy.mesh import Mesh, RepairReport
 
 
 def total(edges) -> float:
@@ -630,14 +630,14 @@ def test_repaired_merges_turns_and_reports():
     soup_triangles = np.arange(3 * len(tri)).reshape(-1, 3)
     soup = Mesh(m.vertices[tri].reshape(-1, 3), np.vstack([soup_triangles, soup_triangles[:1], [[0, 0, 1]]]))
     fixed, report = soup.repaired()
-    assert report == {"merged_vertices": 3 * len(tri) - len(m.vertices), "removed_triangles": 2,
-                      "flipped_triangles": len(tri[::5]), "filled_holes": 0, "open_holes": 0, "open_edges": 0}
+    assert report == RepairReport(merged_vertices=3 * len(tri) - len(m.vertices), removed_triangles=2,
+                                  flipped_triangles=len(tri[::5]), filled_holes=0, open_holes=0, open_edges=0)
     assert fixed.is_closed() and len(fixed.vertices) == len(m.vertices)
     assert fixed.volume == pytest.approx(m.volume, rel=1e-12)
     # a mesh that faces inward all over turns outward; normals turn with their triangles
     inward = Mesh(m.vertices, m.triangles[:, ::-1], -m.normals[:, ::-1])
     out, report = inward.repaired()
-    assert report["flipped_triangles"] == len(m) and out.volume == pytest.approx(m.volume, rel=1e-12)
+    assert report.flipped_triangles == len(m) and out.volume == pytest.approx(m.volume, rel=1e-12)
     # (each corner's normal is the one of its point in the mesh: triangles may start at another corner)
     expected = {(tuple(sorted(t)), v): n for t, n in zip(m.triangles.tolist(), m.normals) for v, n in zip(t, n)}
     assert all(np.allclose(n, expected[(tuple(sorted(t)), v)]) for t, ns in zip(out.triangles.tolist(), out.normals)
@@ -647,7 +647,7 @@ def test_repaired_merges_turns_and_reports():
     soup_n[::5] = -soup_n[::5, ::-1]  # (the turned triangles' normals face with them: inward)
     turned = Mesh(m.vertices[tri].reshape(-1, 3), soup_triangles, soup_n)
     out, report = turned.repaired()
-    assert report["merged_vertices"] > 0 and report["flipped_triangles"] == len(tri[::5])
+    assert report.merged_vertices > 0 and report.flipped_triangles == len(tri[::5])
     corner = {}
     for v, n in zip(out.vertices[out.triangles].reshape(-1, 3), out.normals.reshape(-1, 3)):
         corner.setdefault(tuple(np.round(v, 9)), []).append(n)
@@ -656,7 +656,7 @@ def test_repaired_merges_turns_and_reports():
     assert (np.einsum("ijk,ik->ij", out.normals, out.triangle_normals) > 0).all()
     # a hole and a border that does not close
     holed, report = Mesh(m.vertices, m.triangles[1:]).repaired()
-    assert holed.is_closed() and report["filled_holes"] == 1 and report["open_edges"] == 0
+    assert holed.is_closed() and report.filled_holes == 1 and report.open_edges == 0
 
 
 # =============================================================================
@@ -811,3 +811,15 @@ def test_decimate_refuses_what_the_kernel_collapses():
     with pytest.raises(ModelingError, match=r"collapsed the mesh to \d+ triangles, where about 63 were asked"):
         cone.decimate(0.5)
     assert len(cone.decimate(tolerance=0.5)) <= len(cone)  # (steps the kernel collapses are not taken)
+
+
+
+def test_drawing_views_have_exact_lines_and_circles():
+    # outline() and drawing_views() gave the kernel's projections, B-splines: a view's hole had no
+    # radius and circles() found nothing (silhouette() gave lines and circles).
+    part = Box(40, 30, 20) - Cylinder(6, 40)
+    top = drawing_views(part, ["top"])[0]
+    assert [round(e.radius, 9) for e in top.visible.circles()] == [6.0]
+    assert sorted(e.geom_type for e in part.outline(Plane.XY)) == ["circle", "line", "line", "line", "line"]
+    seen, hidden = part.outline(Plane.XZ, hidden=True)
+    assert all(e.geom_type == "line" for e in [*seen, *hidden]) and sum(e.length for e in hidden) == pytest.approx(40)

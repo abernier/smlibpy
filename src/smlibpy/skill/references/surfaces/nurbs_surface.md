@@ -6,6 +6,8 @@ knots that are not uniform. The inverse of `Face.nurbs()`.
 
 ## Signature
 `nurbs_surface(points, knots=None, degrees=None, weights=None)`
+`Shell.from_nurbs(nurbs)`: the same from a `NurbsSurface` or a tuple `(degrees, knots, points,
+weights)` in its order (as `Edge.from_nurbs` takes a curve's data).
 
 - `points`: the control points in rows: `points[i][j]` is the point `i` along u and `j` along v
   (lists of tuples, `Vector`s or an array of shape (nu, nv, 3); 2D points get z = 0). All rows the
@@ -51,11 +53,12 @@ print(round(dome.bbox().max.z, 6))                     # 2.571429 = 18/7 at the 
 
 # the data of a face, and back
 sheet = surface([[(x, y, math.sin(x / 10)) for y in range(0, 25, 5)] for x in range(0, 35, 5)])
-d = ext.surface_data(sheet.faces()[0]._f.surface(), True)    # or sheet.faces()[0].nurbs()
-nv = len(d["v_knots"]) - d["v_degree"] - 1
-rows = [d["poles"][i:i + nv] for i in range(0, len(d["poles"]), nv)]
-again = nurbs_surface(rows, (d["u_knots"], d["v_knots"]), (d["u_degree"], d["v_degree"]))
+d = sheet.faces()[0].nurbs()                           # NurbsSurface(degrees, knots, points, weights)
+again = Shell.from_nurbs(d)                            # or nurbs_surface(d), not nurbs_surface(*d)
 print(abs(again.area - sheet.area) < 1e-9)             # True
+rows = [list(row) for row in d.points]
+rows[2][2] = Vector(rows[2][2]) + (0, 0, 3)            # pull one control point up
+bumped = Shell.from_nurbs(d._replace(points=rows))
 ```
 
 ## Related

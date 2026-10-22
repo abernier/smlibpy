@@ -4,7 +4,7 @@ Reads the bodies of the `BrepArray` prims of a USD text file: the exact B-reps t
 `export_usd`, NVIDIA's usd-brep and Omniverse write (usd-brep's omniSolid schema).
 
 ## Signature
-`import_usd(path, *, heal=False, units=None, placement=True, check=True, partial=False)`
+`import_usd(path, *, heal=False, units=None, placement=True, check=True, strict=False)`
 
 - `path`: a `.usda` file, or a `.usd` file that holds text.
 - `heal=True`: runs the kernel's import healer on each body (for files from other software
@@ -14,9 +14,11 @@ Reads the bodies of the `BrepArray` prims of a USD text file: the exact B-reps t
   millimeters (USD itself would take centimeters).
 - `placement=False`: leaves each body where its prim has it (no `xformOp` transforms, no up axis).
 - `check=False`: skips the kernel's check of each body (see Errors).
-- `partial=True`: leaves out the bodies that cannot be read (malformed, broken, or that the
-  kernel cannot build), with a `RuntimeWarning` for each that says which and why, and returns the
-  others (usd-brep's `allow_partial`). A file none of whose bodies can be read raises either way.
+- `strict=True`: raises for the first body that cannot be read (malformed, broken, or that the
+  kernel cannot build; see Errors). By default such bodies are left out, with a `RuntimeWarning`
+  for each that says which and why, and the others returned (usd-brep's `allow_partial`), as
+  `import_step`, `import_iges` and `import_brep` do. A file none of whose bodies can be read raises
+  `ModelingError` either way.
 
 `load("parts.usda")` does the same with the defaults. `from_usd(data, *, ..., resolve=None)` reads USD
 text in memory (a `str` or `bytes`); the layers it names come from `resolve(asset, from_)`, which
@@ -79,8 +81,9 @@ the `xformOp` transforms of its prim and of the prims above it (`translate`, `sc
   (macOS has them); with `pip install usd-core`, in Python:
   `Sdf.Layer.FindOrOpen("in.usdc").Export("out.usda")`.
 - `ValueError: usd: not a .usda text (it does not start with #usda)`.
-- A malformed `BrepArray` (arrays of the wrong length, broken references between faces, loops
-  and edges) raises a `ValueError` that names the field that is wrong. So do values the
+- A malformed body (arrays of the wrong length, broken references between faces, loops and
+  edges) is left out with a `RuntimeWarning`, or with `strict=True` raises a `ValueError`, that
+  names the field that is wrong. So do values the
   conversion cannot take, with the body, the face or edge and the rule of usd-brep's validator:
   numbers that are not finite (BA.660), weights, radii and tolerances that are not positive, an
   axis or direction of length 0, an axis and refDirection that are parallel or not at right angles,
@@ -94,16 +97,16 @@ the `xformOp` transforms of its prim and of the prims above it (`translate`, `sc
   edge of no face), so is_valid() is False and modeling with it may fail; stitch(part.faces())
   gives the solid alone` (faces outside it: `part.solids()` takes them apart). A body of curves
   alone is a `Shell` without faces, whose `edges()` are its curves, also with a warning.
-- A body the kernel cannot build raises `KernelError: import_usd failed (SM_ERR_INVALID_INPUT):
-  body 0 of the BrepArray "/World/c" could not be built; partial=True leaves such bodies out and
-  reads the others`.
-- With `partial=True`: `RuntimeWarning: import_usd: body 0 of the BrepArray "/World/c" could not
-  be built (SM_ERR_INVALID_INPUT); it is left out`; a file of no readable body raises
-  `ValueError: import_usd: no body of the file can be read: ...`.
+- A body the kernel cannot build gives `RuntimeWarning: import_usd: body 0 of the BrepArray
+  "/World/c" could not be built (SM_ERR_INVALID_INPUT); it is left out`; a file of no readable
+  body raises `ModelingError: import_usd: no body of the file can be read: ...`.
+- With `strict=True` such a body raises `KernelError: import_usd failed (SM_ERR_INVALID_INPUT):
+  body 0 of the BrepArray "/World/c" could not be built; strict=False (the default) leaves such
+  bodies out and reads the others`, a malformed or broken one `ValueError` (below).
 - Bodies that smlibpy did not write are checked by the kernel (`SmBrep::AssertValid`) before
   anything measures them. One whose faces, edges and vertices leave gaps of more than 1e-3 of its
-  size raises `ValueError: usd: body 0 of the BrepArray "/culprit" is broken: the kernel finds a
-  gap of 377 (0.033 of its size) at face 5: ...`; smaller gaps give a `RuntimeWarning`.
+  size is left out (`strict=True`: `ValueError: usd: body 0 of the BrepArray "/culprit" is broken: the kernel finds a
+  gap of 377 (0.033 of its size) at face 5: ...`); smaller gaps give a `RuntimeWarning`.
   `check=False` reads such a body as it is.
 
 ## Example

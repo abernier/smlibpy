@@ -30,8 +30,9 @@ env:
 
 jobs:
   fuzz:
-    # seeds 7 and 8 (the regression corpus of tools/fuzz/baseline.json) and today's date as a seed;
-    # smlibwasm on the same cases on Linux
+    # seeds 7 and 8 (the regression corpus of tools/fuzz/baseline.json); nightly and on demand also
+    # today's date as a seed (on pull requests the outcome must not depend on the day); smlibwasm on
+    # the same cases on Linux
     name: fuzz / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -69,7 +70,7 @@ jobs:
           sh js/scripts/build-wasm.sh
           (cd js && npm ci)
       - name: Fuzz
-        run: python tools/fuzz/fuzz.py --seed 7 --seed 8 --seed 0 --budget 360 --out fuzz-out ${{ runner.os == 'Linux' && '--wasm' || '' }}
+        run: python tools/fuzz/fuzz.py --seed 7 --seed 8 ${{ github.event_name != 'pull_request' && '--seed 0' || '' }} --budget 360 --out fuzz-out ${{ runner.os == 'Linux' && '--wasm' || '' }}
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
@@ -92,7 +93,8 @@ jobs:
       - name: Tools
         run: |
           pip install numpy pytest pybind11 ninja
-          sudo apt-get install -y llvm
+          # (gdb: the crash signatures of the weekly fuzz run, which tells known crashes by them)
+          sudo apt-get install -y llvm gdb
       - name: Build with AddressSanitizer
         run: |
           cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON \

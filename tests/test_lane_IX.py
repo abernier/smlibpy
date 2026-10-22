@@ -923,16 +923,17 @@ def _three_bodies(tmp_path) -> Path:
 def test_usd_body_the_kernel_cannot_build_is_named_in_the_message(tmp_path):
     # str(KernelError) was "import_usd failed (SM_ERR_INVALID_INPUT)", the body only in .detail
     with pytest.raises(KernelError) as caught:
-        import_usd(_three_bodies(tmp_path))
+        import_usd(_three_bodies(tmp_path), strict=True)
     message = str(caught.value)
-    assert 'body 0 of the BrepArray "/World/c" could not be built' in message and "partial=True" in message
+    assert 'body 0 of the BrepArray "/World/c" could not be built' in message and "strict=False" in message
     assert message.count("SM_ERR_INVALID_INPUT") == 1 and caught.value.status == "SM_ERR_INVALID_INPUT"
 
 
-def test_usd_partial_import_leaves_out_what_cannot_be_read(tmp_path):
+def test_usd_import_leaves_out_what_cannot_be_read(tmp_path):
+    # (as STEP, IGES and .brep imports do, by default: strict=True raises)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        back = import_usd(_three_bodies(tmp_path), partial=True)
+        back = import_usd(_three_bodies(tmp_path))
     assert isinstance(back, Part) and back.name == "a" and back.volume == pytest.approx(24)
     assert _messages(caught) == [
         'import_usd: body 0 of the BrepArray "/World/c" could not be built (SM_ERR_INVALID_INPUT); it is left out',
@@ -941,7 +942,7 @@ def test_usd_partial_import_leaves_out_what_cannot_be_read(tmp_path):
 
 
 @pytest.mark.skipif(not USD_FILES.is_dir(), reason="usd-brep's test files are not checked out")
-def test_usd_partial_import_takes_the_bodies_of_one_prim_apart(tmp_path):
+def test_usd_import_takes_the_bodies_of_one_prim_apart(tmp_path):
     # usd-brep's own case: one BrepArray of several bodies, one of them broken (here the first face of
     # the second of its two cubes gets a weight of 0, BA.440)
     text = (USD_FILES / "brep_validator" / "CubeBrepArray.usda").read_text()
@@ -951,10 +952,10 @@ def test_usd_partial_import_takes_the_bodies_of_one_prim_apart(tmp_path):
     path = tmp_path / "packed.usda"
     path.write_text(text[:weights.start(2)] + ", ".join(values) + text[weights.end(2):])
     with pytest.raises(ValueError, match="body 1, face 0: its NURBS surface has a weight of 0"):
-        import_usd(path)
+        import_usd(path, strict=True)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        back = import_usd(path, partial=True)
+        back = import_usd(path)
     assert isinstance(back, Part) and back.name == "brepArray" and back.is_valid()
     assert back.volume == pytest.approx(import_usd(USD_FILES / "brep_validator" / "CubeBrepArray.usda")[0].volume)
     assert [m for m in _messages(caught) if "left out" in m] == [
@@ -962,13 +963,15 @@ def test_usd_partial_import_takes_the_bodies_of_one_prim_apart(tmp_path):
         "of 0, not positive (BA.440); it is left out"]  # (and the reference to a file of materials it lacks)
 
 
-def test_usd_partial_import_of_nothing_readable_raises(tmp_path):
+def test_usd_import_of_nothing_readable_raises(tmp_path):
     path = tmp_path / "bad.usda"
     export_usd(Sphere(3).named("s"), path, mesh=False)
     text = re.sub(r"(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])", r"\g<1>0\2", path.read_text())
     path.write_text(text)
-    with pytest.raises(ValueError, match="no body of the file can be read: body 0 of the BrepArray \"/World/s\" is malformed"):
-        import_usd(path, partial=True)
+    with pytest.raises(ModelingError, match="no body of the file can be read: body 0 of the BrepArray \"/World/s\" is malformed"):
+        import_usd(path)
+    with pytest.raises(ValueError, match="the BrepArray \"/World/s\" is malformed: body 0, face 0"):
+        import_usd(path, strict=True)
 
 
 # -- I14: IGES import -------------------------------------------------------------------------------------
@@ -1415,6 +1418,7 @@ def test_in_memory_functions_take_the_keywords_of_the_file_functions():
         return [p.name for p in inspect.signature(f).parameters.values() if p.kind == p.KEYWORD_ONLY]
 
     pairs = [(to_step, export_step), (to_stl, export_stl), (to_obj, export_obj), (to_glb, export_glb),
+             (to_gltf, export_gltf), (to_gltf, to_glb), (from_brep, import_brep),
              (to_smb, save), (to_smp, save), (to_dxf, export_dxf), (to_usd, export_usd), (from_step, import_step),
              (from_step_model, read_step), (from_dxf, import_dxf), (from_dxf_wires, import_dxf_wires),
              (from_iges, import_iges)]
@@ -1930,3 +1934,64 @@ def test_brep_check_of_a_curve_with_zero_tangent():
     with pytest.raises(ValueError, match=r"from_brep: the shape is broken: the kernel finds a gap of 4\.02 \(0\.487 of "
                                          r"its size\) at edge 3"):
         from_brep(flat)
+
+
+
+# -- review of 0.5.0: one option for bodies that cannot be read ------------------------------------
+def test_every_importer_takes_strict_and_leaves_out_by_default(monkeypatch):
+    # STEP and IGES took strict=, USD partial= with the opposite default, .brep neither.
+    import inspect
+
+    import smlibpy.occt
+
+    for fn in (import_step, from_step, read_step, from_step_model, import_iges, from_iges, import_usd, from_usd,
+               import_brep, from_brep):
+        p = inspect.signature(fn).parameters
+        assert "strict" in p and p["strict"].default is False and "partial" not in p, fn.__name__
+    # a .brep file whose bridge leaves a body out (as the C++ reports it): a warning, or raised
+    real = smlibpy.occt.ext
+
+    class Leaving:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        @staticmethod
+        def occt_read(data, heal, check):
+            got = real.occt_read(data, heal, check)
+            got["skipped"] = ["1 solid, shell or face of the 2 in the file cannot be read"]
+            return got
+
+    monkeypatch.setattr(smlibpy.occt, "ext", Leaving())
+    text = to_brep(Box(5, 5, 5))
+    with pytest.warns(RuntimeWarning, match=r"from_brep: 1 solid, shell or face of the 2 in the file cannot be read; "
+                                            r"left out"):
+        assert from_brep(text).volume == pytest.approx(125)
+    with pytest.raises(ModelingError, match="from_brep: 1 solid, shell or face of the 2 in the file cannot be read"):
+        from_brep(text, strict=True)
+
+
+
+def test_files_in_memory_by_their_name():
+    # to_file and from_file pick the format from a name, as export and load do from a path (they were
+    # smlibwasm's only); to_gltf named another function in its errors (its keywords were **kwargs).
+    part = (Box(20, 10, 5) - Cylinder(2, 10)).named("bracket")
+    for name, kind in [("b.step", str), ("b.STP", str), ("b.stl", bytes), ("b.glb", bytes), ("b.gltf", str),
+                       ("b.obj", str), ("b.smb", bytes), ("b.smp", bytes), ("b.usda", str), ("b.brep", str),
+                       ("b.dxf", str)]:
+        data = to_file(part if name != "b.dxf" else Rectangle(10, 5), name)
+        assert isinstance(data, kind), name
+        if name.endswith((".glb", ".gltf", ".obj")):
+            continue
+        back = from_file(data, name)
+        if name == "b.stl":
+            assert back.volume == pytest.approx(part.volume, rel=1e-2)
+        elif name == "b.dxf":
+            assert back.area == pytest.approx(50)
+        else:
+            assert back.volume == pytest.approx(part.volume, rel=1e-6), name
+    with pytest.raises(ValueError, match="unknown file type '.xyz'"):
+        to_file(part, "b.xyz")
+    with pytest.raises(ValueError, match="from_file reads"):
+        from_file(b"", "b.xyz")
+    with pytest.raises(TypeError, match="to_gltf.. got an unexpected keyword argument 'tolerence'"):
+        to_gltf(part, tolerence=0.1)

@@ -37,7 +37,7 @@ export {
 export { Align, type AlignLike } from './align.ts'
 // shapes
 export { ACCURACY, Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
-export { Mesh, tessellate } from './mesh.ts'
+export { Mesh, RepairReport, tessellate } from './mesh.ts'
 // curves
 export {
   Bezier,
@@ -129,7 +129,7 @@ export {
 } from './step_import.ts'
 export { fromIges, importIges, type IgesImportOptions } from './iges_import.ts'
 export { exportDxf, fromDxf, fromDxfWires, importDxf, importDxfWires, toDxf } from './dxf.ts'
-export { DrawingView, drawingViews, exportSvg, toSvg, type DrawingViewsOptions, type SvgOptions } from './drawing.ts'
+export { DrawingView, drawingViews, exportSvg, toSvg, type DrawingViewsOptions, type SvgItemsLike, type SvgOptions } from './drawing.ts'
 export { exportUsd, fromUsd, importUsd, toUsd, type UsdExportOptions, type UsdImportOptions, type UsdReadOptions } from './usd.ts'
 export { exportBrep, fromBrep, importBrep, toBrep, type BrepImportOptions } from './occt.ts'
 export { ImageDiff, Picture, VIEWS, diffImages, render, type Frame, type ImageLike, type RenderOptions } from './render.ts'
@@ -139,7 +139,7 @@ export { KernelError, ModelingError } from './_errors.ts'
 export { memoryUsage, scope, setWarningHandler, type MemoryUsage } from './kernel.ts'
 // the types of options, selections and results, to name them in an app's own code
 export type { Matrix, Movable, XYZ } from './geometry.ts'
-export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, SortKey } from './shapes.ts'
+export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, IsoOptions, RegionLike, SortKey, SourcesLike, WallsLike } from './shapes.ts'
 export type { Coordinates } from './profiles.ts'
 export type { CornerOptions, PlacementOptions, PolygonOptions, TrapezoidOptions } from './sketches.ts'
 export type { TextOptions } from './text.ts'

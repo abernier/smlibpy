@@ -23,6 +23,7 @@ import {
   Shell,
   Sketch,
   Vertex,
+  type WallsLike,
   Wire,
   _analyticRevolve,
   _canonicalCurve,
@@ -1240,7 +1241,7 @@ function _bendError(err: ModelingError, local: Sketch, edges: Edge[], hint: stri
   let reach = 0
   try {
     for (const x of edges) {
-      const [rx, tx] = x.minRadius()
+      const [rx, tx] = x._minRadius()
       if (rx < r) [r, t, e] = [rx, tx, x]
     }
     for (const q of local.edges()) for (let i = 0; i <= 16; i++) reach = Math.max(reach, q.pointAt(i / 16).length)
@@ -1676,6 +1677,8 @@ function _isPlanarPath(edges: readonly Edge[]): boolean {
  *   matter), such as `Ellipse(30, 20)` or a `RoundedRectangle`: a single region or a closed wire or
  *   edge. Every ray from the Z axis must cross it once.
  */
+export function swing(profile: Sketch | Face, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part
+export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell
 export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell {
   const [loop, reach] = _swingOutline(outline)
   const w = _openCurve(profile)
@@ -1849,7 +1852,7 @@ export function shell(
   part: Part,
   thickness: number,
   openings: FacesLike | null = null,
-  options: { outward?: boolean; corners?: string | null; walls?: unknown } = {},
+  options: { outward?: boolean; corners?: string | null; walls?: WallsLike | null } = {},
 ): Part {
   _opts('shell', options)
   return part.shell(thickness, openings, options)

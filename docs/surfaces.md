@@ -281,7 +281,7 @@ surface a face lies on, without its holes and cut borders:
 
 ```python
 top = Box(10, 10, 10).faces().filter(lambda f: f.normal_at().z > 0.5)[0]
-print(top.extended(3).area)                                   # 256.0: a plane 16 x 16
+print(top.extend(3).area)                                     # 256.0: a plane 16 x 16
 wall = (Box(20, 20, 20) - Cylinder(4, 40)).faces().filter(lambda f: f.geom_type == "cylinder")[0]
 print(round(wall.untrimmed().area, 2))                        # 1005.31 = 2 pi 4 40
 ```

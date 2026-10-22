@@ -23,17 +23,16 @@ bodies (`part.edges()`, `face.edges()`) or from curve constructors (`Line`, `Cen
 | `intersections(other, tolerance=None)` | points where it meets an edge, wire, face, body or a list of them, in order along the edge; `[]` for none |
 | `intersection_params(other)` | the same as fractions of the length (for `split`, `trim`, `point_at`) |
 | `self_intersections()` | points where the edge crosses itself |
-| `closest_point(p)`, `param_at(p)` | the nearest point of the edge, and its fraction along it |
+| `closest_point(p)`, `param_at_point(p)` | the nearest point of the edge, and its fraction along it |
 | `split(at)` | `(before, after)`: cut at a fraction or a point on the edge |
 | `trim(start, end)` | the part between two fractions or points (start before end) |
 | `extend(d, end="end", continuity="G1")` | longer by `d` at `"end"`, `"start"` or `"both"` |
 | `offset(d, plane=None)` | a parallel edge: an open one to the left, a closed one outward (`curves/offset`) |
 | `curvature_at(t)`, `radius_at(t)` | curvature (1/radius; 0 where straight) and radius of curvature at `t` |
-| `min_radius()`, `inflections()` | `(radius, t)` of the tightest bend; fractions where the bend flips (`curves/min_radius`) |
+| `min_radius()`, `min_radius_at()`, `inflections()` | the radius of the tightest bend and where it is; fractions where the bend flips (`curves/min_radius`) |
 | `to_arcs(tolerance=0.01)` | a wire of lines and circular arcs within the tolerance (`curves/to_arcs`) |
 | `reversed()` | the same edge run the other way |
 | `faces()`, `vertices()`, `distance_to(point)`, `bbox()` | topology and measures (`distance_to` also to a body); `bbox()` is exact (also of free curves) |
-| `param_at_point(point)` | the same as `param_at(point)` (build123d's name) |
 | `continuity(samples=16)` | how the two faces meet: G0, G1, G2 with gap, angle, curvature jump; see `continuity` |
 
 ## Details

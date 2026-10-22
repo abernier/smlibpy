@@ -16,9 +16,12 @@ the same keywords.
 | DXF | `to_dxf(shapes, *, unit, plane)` | `from_dxf(data, *, layers, unit, tolerance)`, `from_dxf_wires(...)` | `str`; read from `str` or `bytes` |
 | USD | `to_usd(shapes, *, mesh, tolerance, angle, materials)` | `from_usd(data, *, ..., resolve)` | `str` (`.usda`); read from `str` or `bytes` |
 | IGES | | `from_iges(data, *, heal, strict)` | read from `str` or `bytes` |
-| OpenCASCADE `.brep` | `to_brep(shapes)` | `from_brep(data, *, heal, check)` | `str` (ASCII); read from `str` or `bytes` (ASCII or binary) |
+| OpenCASCADE `.brep` | `to_brep(shapes)` | `from_brep(data, *, heal, check, strict)` | `str` (ASCII); read from `str` or `bytes` (ASCII or binary) |
 | SMLib | `to_smb(shapes, *, ascii)`, `to_smp(shapes, *, ascii)` | `from_smb(data)`, `from_smp(data)` | `bytes` |
 
+- `to_file(shapes, name, **keywords)` and `from_file(data, name)`: the format picked from the
+  extension of `name`, as `export` and `load` pick it from a path (`to_file(part, "x.glb")` is
+  `to_glb(part)`).
 - `to_step` names the product `"part"` (a file: after the file) unless `name=` says otherwise.
 - `from_usd` reads the layers the text names (subLayers, references, payloads) through
   `resolve(asset, from_)`: `asset` as written, `from_` the name of the layer that names it (`""`

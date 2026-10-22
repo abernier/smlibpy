@@ -1,13 +1,13 @@
 # extend
 
-Grow a face's surface past its sides: `Shell.extend` for a sheet of one face, `Face.extended` for
+Grow a face's surface past its sides: `Shell.extend` for a sheet of one face, `Face.extend` for
 any face (also of a part). To make a sheet reach across a part before cutting or splitting it
 with the sheet, or to give a blend room. `Face.untrimmed()` gives the whole surface a face lies
 on, without its holes and cut borders.
 
 ## Signature
 `sheet.extend(distance, *, sides=None, continuity="natural")`
-`face.extended(distance, *, sides=None, continuity="natural")`
+`face.extend(distance, *, sides=None, continuity="natural")`
 `face.untrimmed()`
 
 - `distance`: how far past each side, measured along the surface, across the middle of the side.
@@ -50,7 +50,7 @@ cylinder the cut left it on (all around, full height); a plane as its rectangle 
   trim edge across the surface (a hole, a slanted border).
 - `ValueError: extended: an edge in sides does not bound the face`, `TypeError: ... sides are
   edges of the face`.
-- `ValueError: extend: the sheet has 2 faces; extend one of them with sheet.faces()[i].extended(...)`.
+- `ValueError: extend: the sheet has 2 faces; extend one of them with sheet.faces()[i].extend(...)`.
 - `ValueError: ... the distance must be positive`, `... continuity is "natural", "G1" or "G2"`.
 - `KernelError` (`extend failed`): the kernel could not extend that far; try a shorter distance
   or `"G1"`.
@@ -63,7 +63,7 @@ sheet = surface([[(x, y, 5 + 0.02 * (x - 10) ** 2) for y in range(0, 21, 5)] for
 wide = sheet.extend(6)                      # 6 past every side, along the surface
 print(wide.bbox())                          # y -6..26; x -5.28..25.28 (the parabola rises)
 top = Box(10, 10, 10).faces().filter(lambda f: f.normal_at().z > 0.5)[0]
-lid = top.extended(2, sides=top.edges().sort_by(Axis.X)[-1])   # past the +X edge only
+lid = top.extend(2, sides=top.edges().sort_by(Axis.X)[-1])   # past the +X edge only
 ```
 
 ## Related

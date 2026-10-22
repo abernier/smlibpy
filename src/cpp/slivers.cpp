@@ -30,8 +30,10 @@ namespace
 
 const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 
-// A Brep that SqueezeFace failed on half way is never freed (its destructor may read what the
-// failure left behind, as after SmBrep::RemoveFaces: see keep_forever in ext.cpp).
+// A Brep that SmBrep::RemoveFaces failed on half way is never freed (its destructor may read what
+// the failure left behind: see keep_forever in ext.cpp). A copy whose faces were removed, and which
+// only the stitch or the check of its regions refused, is deleted: keeping those too lost 73 kB to
+// 262 kB per failed call (a sweep along a kinked loop that the slivers could not be taken out of).
 void keep_forever(SmBrep* brep)
 {
     static std::vector<SmBrep*> kept;
@@ -63,6 +65,11 @@ SmBrep* remove_slivers(const SmBrep* brep, const std::vector<SmFace*>& faces, do
         st = copy->RemoveFaces(drop);
     }
     const char* what = "SmBrep::RemoveFaces";
+    if (st != SM_SUCCESS)
+    {
+        keep_forever(copy);
+        SmPyRaise(st, what, __FILE__, __LINE__);
+    }
     if (st == SM_SUCCESS)
     {
         // as SmStitch::StitchIntoSolid, but only up to `tolerance`: from a tenth of the Brep's
@@ -87,7 +94,7 @@ SmBrep* remove_slivers(const SmBrep* brep, const std::vector<SmFace*>& faces, do
     }
     if (st != SM_SUCCESS)
     {
-        keep_forever(copy);
+        delete copy;
         SmPyRaise(st, what, __FILE__, __LINE__);
     }
     return copy;

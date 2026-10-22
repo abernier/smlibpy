@@ -1155,13 +1155,12 @@ std::vector<double> span_breaks(const SmCurve* curve, double t0, double t1)
     return breaks;
 }
 
-// The arc length over [t0, t1] (t0 <= t1) to a relative tolerance, integrated per knot span
-// (the speed |C'| is smooth within a span, and may vanish at its ends).
-double arc_length(const SmCurve* curve, double t0, double t1, double tolerance)
+// The arc length over the pieces between `breaks` (sorted) to a relative tolerance.
+double length_between(const SmCurve* curve, const std::vector<double>& breaks, double tolerance)
 {
+    const double t0 = breaks.front(), t1 = breaks.back();
     if (!(t1 > t0))
         return 0.0;
-    const std::vector<double> breaks = span_breaks(curve, t0, t1);
     std::vector<Span> spans;
     for (size_t i = 0; i + 1 < breaks.size(); ++i)
     {
@@ -1196,6 +1195,15 @@ double arc_length(const SmCurve* curve, double t0, double t1, double tolerance)
         spans.swap(next);
     }
     return total;
+}
+
+// The arc length over [t0, t1] (t0 <= t1) to a relative tolerance, integrated per knot span
+// (the speed |C'| is smooth within a span, and may vanish at its ends).
+double arc_length(const SmCurve* curve, double t0, double t1, double tolerance)
+{
+    if (!(t1 > t0))
+        return 0.0;
+    return length_between(curve, span_breaks(curve, t0, t1), tolerance);
 }
 
 }  // namespace
@@ -1311,7 +1319,9 @@ std::pair<double, bool> curve_parameter_at_length(const SmCurve* curve, double t
         return {t_start, false};
     const bool forward = length > 0;
     double want = std::fabs(length);
-    auto dist = [&](double a, double b) { return arc_length(curve, std::min(a, b), std::max(a, b), tolerance); };
+    // (a and b in one knot span: the knots are not looked up again, which made a point along a joined
+    // helix of 1000 turns take a second, quadratic in the turns)
+    auto dist = [&](double a, double b) { return length_between(curve, {std::min(a, b), std::max(a, b)}, tolerance); };
 
     // walk span by span to the one where the length is reached
     std::vector<double> breaks = forward ? span_breaks(curve, t_start, hi) : span_breaks(curve, lo, t_start);

@@ -12,7 +12,8 @@ body, for example a path on a curved face.
 - `direction`: the projection direction, an Axis (`-Z`) or a vector; its length does not
   matter. `(0, 0, 0)` raises `ValueError: project: the direction must not be zero`.
 - `nearest=True`: keep only what the curve sees along the direction: the parts of the pieces the
-  projection reaches first, cut where another part of the body hides them.
+  projection reaches first, cut where another part of the body hides them. (`imprint` with a
+  direction does this by default: it marks the faces an outline lands on.)
 
 ## Returns
 

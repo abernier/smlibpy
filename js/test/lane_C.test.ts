@@ -44,11 +44,11 @@ test('split a spline where it crosses a line', () => {
   assert.ok(a.end.distanceTo(x[0]) < 1e-9 && b.start.distanceTo(x[0]) < 1e-9)
   const middle = s.trim(x[0], x[1])
   approx(middle.length, s.length - 2 * a.length, 0, 1e-9)
-  const t = s.paramAt(x[0])
+  const t = s.paramAtPoint(x[0])
   assert.ok(s.pointAt(t).distanceTo(x[0]) < 1e-9)
   approx(t, a.length / s.length, 0, 1e-12)
   near(s.closestPoint([10, 20]), [10, 10, 0])
-  approx(s.paramAt([10, 20]), 0.5, 0, 1e-12)
+  approx(s.paramAtPoint([10, 20]), 0.5, 0, 1e-12)
 })
 
 test('trimmed arcs stay arcs', () => {
@@ -336,7 +336,7 @@ test('splines take a tangent at every point', () => {
   const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1]]
   const s = Spline(...pts, { tangents: dirs })
   pts.forEach((p, i) => {
-    const t = s.paramAt(p)
+    const t = s.paramAtPoint(p)
     assert.ok(s.pointAt(t).distanceTo(p) < 1e-9)
     assert.ok(s.tangentAt(t).angleTo(dirs[i]) < 1e-6)
   })
@@ -346,7 +346,7 @@ test('splines take a tangent at every point', () => {
 // -- C9 ---------------------------------------------------------------------------------------------
 test('curvature, the smallest radius and inflections', () => {
   const s = Spline([0, 0], [10, 5], [20, -3], [30, 4])
-  const [r, t] = s.minRadius()
+  const [r, t] = [s.minRadius(), s.minRadiusAt()]
   approx(r, 3.997484385833472, 1e-9) // OpenCASCADE
   near(s.pointAt(t), [20.778561798465574, -3.1697513165695037, 0], 1e-6)
   approx(s.radiusAt(t), r, 1e-9)
@@ -355,20 +355,20 @@ test('curvature, the smallest radius and inflections', () => {
   assert.equal(inf.length, 1)
   near(s.pointAt(inf[0]), [14.951181948137158, 0.9954275141867979, 0], 1e-6) // OpenCASCADE
   assert.ok(s.curvatureAt(inf[0]) < 1e-9)
-  const [rr, tr] = s.reversed().minRadius()
+  const [rr, tr] = [s.reversed().minRadius(), s.reversed().minRadiusAt()]
   approx(rr, r)
   approx(tr, 1 - t)
   approx(s.reversed().inflections()[0], 1 - inf[0])
   const e = EllipticalArc([0, 0], 20, 10, 0, 180)
-  approx(e.minRadius()[0], 5)
+  approx(e.minRadius(), 5)
   approx(e.curvatureAt(0.5), 10 / 400)
   assert.deepEqual(e.inflections(), [])
-  assert.deepEqual(Line([0, 0], [5, 5]).minRadius(), [Infinity, 0])
+  assert.deepEqual([Line([0, 0], [5, 5]).minRadius(), Line([0, 0], [5, 5]).minRadiusAt()], [Infinity, 0])
   assert.equal(Line([0, 0], [5, 5]).radiusAt(), Infinity)
-  approx(CenterArc([0, 0], 7, 0, 90).minRadius()[0], 7)
+  approx(CenterArc([0, 0], 7, 0, 90).minRadius(), 7)
   const w = new Wire([Line([0, 0], [10, 0]), Spline([10, 0], [20, 5], [30, 0])])
-  const [rw, tw] = w.minRadius()
-  approx(rw, w.edges()[1].minRadius()[0])
+  const [rw, tw] = [w.minRadius(), w.minRadiusAt()]
+  approx(rw, w.edges()[1].minRadius())
   assert.ok(10 / w.length < tw && tw < 1)
 })
 
@@ -500,14 +500,14 @@ test('Face.project is the normal projection', () => {
 
 test('Face.iso and Face.wrap', () => {
   const side = Cylinder(10, 40).faces().cylinders()[0]
-  const [ring] = side.iso(null, 0.5)
+  const [ring] = side.iso({ v: 0.5 })
   approx(ring.length, 20 * Math.PI, 1e-9)
   assert.ok(ring.isClosed)
-  const [line] = side.iso(0.25)
+  const [line] = side.iso({ u: 0.25 })
   approx(line.length, 40, 1e-12)
-  assert.equal(Box(40, 40, 10).cut(Cylinder(5, 20)).faces().sortBy(Z).at(-1)!.iso(0.5).length, 2)
+  assert.equal(Box(40, 40, 10).cut(Cylinder(5, 20)).faces().sortBy(Z).at(-1)!.iso({ u: 0.5 }).length, 2)
   assert.throws(() => side.iso(), /give u or v/)
-  assert.throws(() => side.iso(null, 1.5), /from 0 to 1/)
+  assert.throws(() => side.iso({ v: 1.5 }), /from 0 to 1/)
   const w = side.wrap(Line([-20, 0], [20, 0]), [0, -10, 0], { direction: [1, 0, 0] })
   approx(w.reduce((s, e) => s + e.length, 0), 40, 0, 1e-5)
   const ends = [...w.map((e) => e.start), ...w.map((e) => e.end)]
@@ -625,7 +625,7 @@ test('Edge.through and Edge.match', () => {
   assert.ok(e.start.equals(s.start) && e.end.equals(s.end))
   assert.ok(e.tangentAt(0).angleTo(s.tangentAt(0)) < 1e-6 && e.tangentAt(1).angleTo(s.tangentAt(1)) < 1e-6)
   const t = s.through([25, 8, 3], { tangent: [1, 0, 0] })
-  assert.ok(t.distanceTo([25, 8, 3]) < 1e-12 && t.tangentAt(t.paramAt([25, 8, 3])).angleTo([1, 0, 0]) < 1e-6)
+  assert.ok(t.distanceTo([25, 8, 3]) < 1e-12 && t.tangentAt(t.paramAtPoint([25, 8, 3])).angleTo([1, 0, 0]) < 1e-6)
   assert.ok(s.through([30, 20, 0], { at: 0.5 }).distanceTo([30, 20, 0]) < 1e-12)
   const line = Line([0, 0], [10, 0]).through([5, 2])
   assert.ok(line.distanceTo([5, 2, 0]) < 1e-12 && line.nurbs().degree === 3)
@@ -640,4 +640,18 @@ test('Edge.through and Edge.match', () => {
   near(moved.start, [0, 1, 0], 0)
   assert.ok(moved.tangentAt(0).angleTo([1, 1, 0]) < 1e-6 && moved.tangentAt(1).angleTo([1, 0, 0]) < 1e-6)
   assert.throws(() => s.match(), /give start, end/)
+})
+
+
+// -- review of 0.5.0 ------------------------------------------------------------------------------
+import * as RV from '../src/index.ts'
+
+test('points along long helices take time in proportion to their turns', () => {
+  // A point along a helix of 1000 turns took a second: each span of the arc length walk looked the
+  // knots of the whole curve up again.
+  const h = RV.Helix(0.5, 500, 3)
+  const started = performance.now()
+  const points = Array.from({ length: 21 }, (_, i) => h.pointAt(i / 20))
+  assert.ok(performance.now() - started < 5000)
+  assert.ok(Math.abs(points[10].z - 250) < 1e-3 && Math.abs(Math.hypot(points[10].x, points[10].y) - 3) < 1e-3)
 })

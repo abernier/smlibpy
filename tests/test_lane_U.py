@@ -11,7 +11,7 @@ import math
 import numpy as np
 import pytest
 
-from smlibpy import (Axis, Box, Circle, CenterArc, Cylinder, FitReport, Line, ModelingError, Part, Plane, Rectangle,
+from smlibpy import (Align, Axis, Box, Circle, CenterArc, Cylinder, FitReport, Line, ModelingError, Part, Plane, Rectangle,
                      Shell, Sketch, Sphere, Spline, ThreePointArc, Vector, Wire, Z, blend, extrude, fill, network,
                      nurbs_surface, ruled, stitch, surface, surface_fillet)
 from smlibpy._kernel import ext, k
@@ -386,30 +386,30 @@ def test_flipped():
 
 def test_extended_planes_stay_planes():
     top = Box(10, 10, 10).faces().filter(lambda f: f.normal_at().z > 0.5)[0]
-    grown = top.extended(3)
+    grown = top.extend(3)
     assert grown.faces()[0].geom_type == "plane" and grown.area == pytest.approx(256)
     assert tuple(grown.faces()[0].normal_at()) == pytest.approx((0, 0, 1))
     side = max(top.edges(), key=lambda e: e.center().x)
-    one = top.extended(3, sides=side)
+    one = top.extend(3, sides=side)
     assert one.area == pytest.approx(130) and one.bbox().max.x == pytest.approx(8)
     bottom = Box(10, 10, 10).faces().filter(lambda f: f.normal_at().z < -0.5)[0]
-    assert tuple(bottom.extended(1).faces()[0].normal_at()) == pytest.approx((0, 0, -1))
+    assert tuple(bottom.extend(1).faces()[0].normal_at()) == pytest.approx((0, 0, -1))
     # a disk: the smallest square around it, grown
-    assert Circle(5).faces()[0].extended(1).area == pytest.approx(144)
+    assert Circle(5).faces()[0].extend(1).area == pytest.approx(144)
     assert Circle(5).faces()[0].untrimmed().area == pytest.approx(100)
 
 
 def test_extended_cylinders_and_spheres_continue_as_themselves():
     cyl = Cylinder(5, 10).faces().filter(lambda f: f.geom_type == "cylinder")[0]
-    grown = cyl.extended(2)  # around it the cylinder closes: only along its axis
+    grown = cyl.extend(2)  # around it the cylinder closes: only along its axis
     assert grown.faces()[0].geom_type == "cylinder"
     assert grown.area == pytest.approx(2 * math.pi * 5 * 14, rel=1e-9)
     assert grown.bbox().min.z == pytest.approx(-7) and grown.bbox().max.z == pytest.approx(7)
     seam = [e for e in cyl.edges(seams=True) if e.geom_type == "line"]
     with pytest.raises(ValueError, match="closes around"):
-        cyl.extended(2, sides=seam)
+        cyl.extend(2, sides=seam)
     cap = (Sphere(5) & Box(4, 4, 4).translate(0, 0, 4)).faces().filter(lambda f: f.geom_type == "sphere")[0]
-    grown = cap.extended(1)
+    grown = cap.extend(1)
     assert grown.faces()[0].geom_type == "sphere" and grown.area > cap.area
     f = grown.faces()[0]
     (u0, v0), (u1, v1) = f._f.uv_domain()
@@ -419,7 +419,7 @@ def test_extended_cylinders_and_spheres_continue_as_themselves():
     box = Box(10, 10, 10)
     quarter = box.fillet(box.edges().parallel_to(Z), 2).faces().filter(lambda f: f.geom_type == "cylinder")[0]
     lo = quarter.bbox().min
-    straight = quarter.extended(1, continuity="G1").bbox().min
+    straight = quarter.extend(1, continuity="G1").bbox().min
     assert min(straight.x, straight.y) == pytest.approx(min(lo.x, lo.y) - 1, abs=1e-6)
 
 
@@ -599,7 +599,7 @@ def test_guides_of_u4_u5_u6():
 
     for method, guide in (("fill", "surfaces/fill"), ("network", "surfaces/network"), ("Shell.extend", "surfaces/extend"),
                           ("stitch", "surfaces/stitch"), ("Shell.flipped", "surfaces/Shell"),
-                          ("Face.extended", "selection/Face"), ("Face.untrimmed", "selection/Face")):
+                          ("Face.extend", "selection/Face"), ("Face.untrimmed", "selection/Face")):
         assert discovery.guide_for(discovery.find_method(method)).key == guide
 
 
@@ -1300,3 +1300,15 @@ def test_guides_of_u9_to_u15():
                           ("nurbs_surface", "surfaces/nurbs_surface"), ("surface_fillet", "surfaces/surface_fillet"),
                           ("surface", "surfaces/surface"), ("Part.intersection_curves", "analysis/intersection_curves")):
         assert discovery.guide_for(discovery.find_method(method)).key == guide
+
+
+
+def test_imprints_of_sketches_along_a_direction():
+    # project() took a sketch with a direction, imprint() raised "direction= moves curves onto the part".
+    dome = Sphere(10) & Box(40, 40, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    circle = Circle(4).on(Plane.XY.offset(20))
+    marked = dome.imprint(circle, -Z)
+    assert len(marked.faces()) == len(dome.faces()) + 1 and marked.volume == pytest.approx(dome.volume, rel=1e-9)
+    assert len(dome.imprint(circle.faces()[0], -Z).faces()) == len(marked.faces())
+    with pytest.raises(TypeError, match="a part or a sheet is imprinted where it is"):
+        dome.imprint(Box(2, 2, 2).translate(0, 0, 9), -Z)

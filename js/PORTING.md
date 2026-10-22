@@ -223,8 +223,7 @@ the Python code works around a kernel defect, so does the TypeScript.
   both.
 - **JavaScript only.** What the runtime asks for and Python has no use for: `KernelWorker` and
   `expose` (Python runs a kernel step in a forked copy of itself), `init` (where the WebAssembly
-  file comes from), the files in memory (`toStep`, `fromStep`, ..., `toFile`, `fromFile`: Python
-  reads and writes paths), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
+  file comes from), `memoryUsage()` (a WebAssembly module's memory, of at most 4 GB, and the crashes
   of its kernel; Python's kernel shares its process's, which a crash ends) and `scope(fn)` (frees the kernel objects `fn` made and does not
   return: the garbage collector frees them only between tasks, Python's reference counting at
   their last reference). They follow the house style but have no smlibpy counterpart and no entry

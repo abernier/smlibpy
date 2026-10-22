@@ -10,6 +10,7 @@
 #include "kernel.h"
 #include "ext_shared.h"
 #include "seams.h"
+#include "analytic.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -598,6 +599,27 @@ static void scale_tolerances(SmBrep* brep)
         faces[i]->SetTolerance(tol, FALSE, FALSE);
 }
 
+// SmBrep::Mirror turns every surface over (a reflection reverses Su x Sv) and moves the two sides of
+// each face to each other's shell. The regions stay right, but every face's surface normal then
+// points to the other side than in the body mirrored. The kernel's display faceting and SmPyLib's
+// outward normal take the side of a face from whether its upward faceuse lies in the infinite region,
+// which is no longer right for faces with both sides inside (cavity walls, the faces between cells)
+// or both outside (sheets): (Box(20, 20, 20) - Box(10, 10, 10)).mirror(Plane.YZ) meshed to 9000 for
+// 7000, its cavity walls' normals pointed into the material and its edges there read convex; and the
+// offset code, which builds cavity walls from the surfaces, made shells of mirrored parts with their
+// cavity inside out. Every face is turned back over (SmBrep::SwapUV: each surface and which side of
+// each face is up; the faceuses stay in their shells), so a mirrored body is laid out as the body was.
+// Mirror also gives every edge a B-spline curve; lines and circles get their exact curve back (a
+// mirrored part's straight edges were no lines, its circles no circles).
+static void finish_mirror(SmBrep* brep)
+{
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+        check(faces[i]->SwapUV(), "SmFace::SwapUV");
+    smlibpy::restore_analytic_curves(brep, false);
+}
+
 void transform_brep(SmBrep* brep, const std::vector<double>& m)
 {
     if (m.size() != 16)
@@ -636,7 +658,10 @@ void transform_brep(SmBrep* brep, const std::vector<double>& m)
         return;
     }
     if ((x * y).Dot(z) < 0)  // a reflection (z is not x * y): mirror in XY first, then place as a rotation
+    {
         check(brep->Mirror(SmAxis2Placement()), "SmBrep::Mirror");
+        finish_mirror(brep);
+    }
     SmAxis2Placement placement(shift, x / s, y / s);
     if (std::fabs(s - 1.0) <= eps)
     {

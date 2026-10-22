@@ -306,6 +306,54 @@ def test_sweeps_free_the_curves_they_hand_the_kernel(name):
     assert per_call < limit, f"{name}: {per_call:.0f} bytes a call"
 
 
+def _per_call(make, calls: int = 50) -> float:
+    """Bytes the C allocator keeps per call of ``make`` (after five calls to warm up)."""
+    import gc
+
+    for _ in range(5):
+        make()
+    gc.collect()
+    before = _heap()
+    for _ in range(calls):
+        make()
+    gc.collect()
+    return (_heap() - before) / calls
+
+
+def test_failed_sliver_removals_free_their_copies():
+    # ext.remove_slivers (the sweeps' clean-up of fused loops) kept every copy it failed on: 73 kB
+    # each here, 262 kB per sweep along a kinked loop whose slivers could not be taken out. Only a
+    # copy that SmBrep::RemoveFaces failed on half way must be kept (its destructor can crash).
+    if _heap() is None:
+        pytest.skip("no allocator statistics here")
+    part = Box(10, 20, 30) - Cylinder(3, 40)
+    wall = part.faces().filter_by(lambda f: f.geom_type == "cylinder")[0]
+
+    def fail():
+        with pytest.raises(RuntimeError, match="DoStitching"):  # (a hole the stitch cannot close)
+            ext.remove_slivers(part._brep, [wall._f], 1e-3)
+
+    assert _per_call(fail) < 2000
+
+
+def test_failed_booleans_free_the_kernel_s_intersections():
+    # A Boolean that fails while it intersects the operands (SmTopologyIntersector) kept its
+    # ProtoTopologyManager with the intersection curves (kernel patch, SmTopologyIntersector.cpp):
+    # about 450 kB per failed Boolean of the crossing holes, whose seams lie tangent to the other.
+    if _heap() is None:
+        pytest.skip("no allocator statistics here")
+    from smlibpy._kernel import BrepHandle
+
+    h1, h2 = Cylinder(3, 40).translate(0, 3, 0), Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+
+    def fail():
+        a, b = BrepHandle(h1._copy_brep()), BrepHandle(h2._copy_brep())  # (freed with the handles)
+        with pytest.raises(RuntimeError, match="SM_ERR_BAD_INTERSECTIONS"):
+            k.boolean(a.brep, b.brep, operation=k.BooleanOp.INTERSECTION)
+
+    assert _per_call(fail, 20) < 5000
+
+
 # -- N2, N3: the checks of the kernel (tools/sanitize, tools/oracles, tools/fuzz) ----------------
 TOOLS = __import__("pathlib").Path(__file__).resolve().parent.parent / "tools"
 
@@ -450,10 +498,27 @@ def test_cells_that_crash_the_stitcher_raise(mode):
     a, b = Cone(3, 0, 4).rotate(X, 90), Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)
     assert a.merge(b).volume == approx(150.26185413540605, rel=1e-9)
     m = Part._wrap(k.non_manifold_boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.MERGE))
-    assert m.volume == approx(149.1926689941786, rel=1e-9)
-    with pytest.raises(KernelError, match="cells failed") as e:
+    # (the kernel's wrong merge holds 149.19267 where the compiler fuses a * b + c, as on arm64, and
+    # 145.98511 where it does not, as in the wasm and on x86_64 (W16): the cylinder's volume is
+    # 113.0973, the right merge 150.26185)
+    assert 113.0973 < m.volume < 150.7964
+    with pytest.raises(KernelError, match="cells failed: the kernel crashed") as e:  # (it said "cells failed")
         m.cells()
     assert "the kernel crashed" in e.value.detail
+
+
+def test_steps_stopped_after_the_time_limit_say_so(monkeypatch, tmp_path):
+    # Fillets and chamfers of parts read from files run in another process (N1), stopped after
+    # GUARD_SECONDS. They raised "KernelError: fillet failed: the radius may be too large for the
+    # selected edges", the time limit only in .detail, and tried again with the finer tolerance.
+    plate = Box(60, 60, 10) - [Cylinder(2, 20).translate(x, y, 0) for x in (-20, 0, 20) for y in (-20, 0, 20)]
+    export_step(plate, tmp_path / "plate.step")
+    part = import_step(tmp_path / "plate.step")
+    monkeypatch.setattr(defeature, "GUARD_SECONDS", 0.01)
+    started = time.perf_counter()
+    with pytest.raises(_KernelFault, match=r"^fillet: the kernel did not finish within 0.01 s; smlibpy.defeature.GUARD"):
+        part.fillet(part.edges().filter_by(lambda e: e.center().z > 4.9), 0.5)
+    assert time.perf_counter() - started < 5
 
 
 # ================================================================================ W11, W12

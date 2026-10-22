@@ -119,7 +119,8 @@ def test_extended_shells_of_filleted_boxes_keep_their_curves():
     # cube, 8 and 7 of 300 for the 40 x 30 x 10 boxes): when SmBrep::MakeEdgeInFace failed after
     # it had given an intersection curve to a new Edge, SmEdgeDefinition::Imprint deleted the
     # curve, and the next Boolean of PiecewiseMerge read it. The kernel steps themselves, in
-    # processes of their own (six, as about one in eight crashed before).
+    # processes of their own: 24 of them, as about one in eight crashed before (5 of 40 on the kernel
+    # without the patch), so that the old kernel fails here with a probability above 95 %.
     code = """
 import warnings
 warnings.simplefilter("ignore")
@@ -138,7 +139,7 @@ for b, top, t in steps * 8:
         print("failed", flush=True)
 """
     runs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            for _ in range(6)]
+            for _ in range(24)]
     for run in runs:
         out, _ = run.communicate(timeout=300)
         assert run.returncode == 0, f"exit {run.returncode} after {len(out.split())} steps"
@@ -707,7 +708,9 @@ def test_shell_walls_of_their_own_thickness():
     rb = Box(40, 30, 10)
     rb = rb.fillet(rb.edges().parallel_to(Z), 5)
     floor = rb.shell(2, rb.faces().top(), walls=[(rb.faces().bottom(), 4)])
-    assert floor.volume == approx(rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - math.pi) * 9) * 2, rel=1e-9)
+    # (the extended rounds of the floor's cavity are fitted by the kernel, and the fit depends on its
+    # memory layout: in the WebAssembly build 0 to 1.3e-9 off, depending on what ran before)
+    assert floor.volume == approx(rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - math.pi) * 9) * 2, rel=1e-8)
     side = rb.faces().filter(lambda f: f.is_planar and f.center().x > 19)
     with pytest.raises(ModelingError, match="walls that meet smoothly need one thickness"):
         rb.shell(2, rb.faces().top(), walls=[(side, 4)])
@@ -778,3 +781,10 @@ def test_search_finds_the_face_edits(query, expected):
     from smlibpy.mcp import discovery
 
     assert expected in [e.key for _, e in discovery.search(query, 5)]
+
+
+
+def test_mitred_corners_take_the_american_spelling():
+    cube = Box(20, 20, 20)
+    assert cube.fillet(cube.edges(), 2, corners="miter").volume == pytest.approx(
+        cube.fillet(cube.edges(), 2, corners="mitre").volume, rel=1e-12)

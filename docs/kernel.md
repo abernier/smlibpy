@@ -370,12 +370,13 @@ for p in copies:
 
 Besides the test suites, the "Checks" workflow (`.github/workflows/checks.yml`) runs slower checks
 of the kernel every night, on demand, and the fuzz run also on pull requests that change the
-kernel, its patches or the modelling code. Each one runs locally the same way:
+kernel, its patches or the modelling code (there with the seeds 7 and 8 only; nightly also with
+the day's date as a seed). Each one runs locally the same way:
 
 | Check | Command | What fails it |
 |---|---|---|
 | Fuzz: seeded random models (Booleans, fillets, chamfers, shells, offsets, slices) of primitives placed flush, touching, centred or on a face, each in a forked process, through smlibpy and, with `--wasm`, smlibwasm on the same parameters | `python tools/fuzz/fuzz.py [--seed N] [--wasm]` | a crash of the kernel whose signature (the kernel functions at the top of its stack, from gdb or lldb) `tools/fuzz/baseline.json` does not know; any hang; for the seeds 7 and 8 (the regression corpus) a result that breaks an invariant, crashes or diverges between smlibpy and smlibwasm where the baseline's runs did not; a share of such results more than 0.3 points above the baseline's |
-| AddressSanitizer and LeakSanitizer over the tests of the guarded and patched kernel code, every kernel step in the test process | `python tools/sanitize/run.py --build build-asan` (third_party/patches/README.md says how to build it) | a memory error not in `tools/sanitize/known.txt`; a leak of the kernel or smlibpy's C++ not in `tools/sanitize/leaks.txt` |
+| AddressSanitizer and LeakSanitizer over the tests of the guarded and patched kernel code and of smlibpy's own C++ (the `tests/test_lane_*.py` files and the files of the modelling, surfaces, sheet metal, I/O and guard tests), every kernel step in the test process | `python tools/sanitize/run.py --build build-asan` (third_party/patches/README.md says how to build it) | a test that fails (tests that measure memory, reach a known memory error or cannot run there are left out, `tools/sanitize/guard_off.py`); a memory error not in `tools/sanitize/known.txt`; a leak of the kernel or smlibpy's C++ not in `tools/sanitize/leaks.txt` |
 | Upstream's kernel tests (usd-brep `prog_test`, 17 suites) against the patched kernel | configure with `-DSMLIBPY_PROG_TEST=ON`, then `python tools/oracles/prog_test.py` | a suite that does not pass |
 | Upstream's tests of its Python bindings, against `smlibpy._core` | `python tools/oracles/smpylib_tests.py` | a test that fails, but for those of the `usd` submodule, which smlibpy builds without |
 | Upstream's 200 `.smb` test files | `python tools/oracles/smb_files.py` | a file whose kind, face count, volume, validity or mesh differs from `tools/oracles/smb_files.json` |
@@ -390,9 +391,11 @@ The fuzz run's invariants: every result is a valid body within its box's volume;
 of a slice add up to the body. A new failure is made smaller (the edges a fillet rounds, the
 openings of a shell) and written as a pytest file (`repro/` in the output directory, an artifact
 of the workflow). Seeds 7 and 8 take about 55 s each language on an M-series Mac. A few Booleans
-of seed 8 come out differently from run to run, so the baseline (per platform:
-`--update-baseline --repeat 3` writes this platform's) unites three runs, and a new failure of a
-known seed counts only if two more runs repeat it. Two crash sites are known and not fixed
+of seed 8 come out differently from run to run (they depend on where the kernel's objects lie in
+memory), so the baseline (per platform: `--update-baseline --repeat 3` writes this platform's,
+`--unite` adds a run's failures to it) unites several runs, a new failure of a known seed counts
+only if two more runs, each in a fresh process, repeat it, and a divergence between a right result
+and the way the baseline knows the case to fail does not count. Two crash sites are known and not fixed
 (`KNOWN_CRASHES` in `tools/fuzz/fuzz.py`): the stitcher's ray behind `cells()`
 (`SmBezierAux2d::BuildPolarBox`) and the extended offset mode's merge on filleted boxes
 (`SmEdge::CalculateBoundingBox`); smlibpy runs both steps in another process.

@@ -296,3 +296,26 @@ test('surface fillet checks', () => {
   assert.throws(() => _surfaceFillet(floor, _Rectangle(40, 40).translate([0, 0, 50]).faces()[0], 1), (e: any) => e instanceof _ModelingError || e instanceof _KernelError)
 })
 
+
+
+// -- review of 0.5.0 ------------------------------------------------------------------------------
+import * as RV from '../src/index.ts'
+
+test('surfaces from NURBS data in their order (Shell.fromNurbs)', () => {
+  const rows: [number, number, number][][] = []
+  for (let x = 0; x <= 30; x += 5) {
+    const row: [number, number, number][] = []
+    for (let y = 0; y <= 20; y += 5) row.push([x, y, Math.sin(x / 10)])
+    rows.push(row)
+  }
+  const sheet = RV.surface(rows)
+  const data = sheet.faces()[0].nurbs()
+  approx(RV.Shell.fromNurbs(data).area, sheet.area, 1e-9)
+  approx(RV.Shell.fromNurbs({ degrees: data.degrees, knots: data.knots, points: data.points, weights: data.weights }).area, sheet.area, 1e-9)
+  assert.throws(() => RV.Shell.fromNurbs(3 as never), TypeError)
+})
+
+test('fills of a sketch outline run through the curves', () => {
+  approx(RV.fill(RV.Circle(5).edges()).area, Math.PI * 25, 1e-6)
+  approx(RV.fill(RV.Rectangle(10, 10).edges()).area, 100, 1e-9)
+})

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numbers
 import warnings
 import zlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
@@ -16,6 +16,27 @@ if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, MassProperties, Part, Shape, ShapeList, Wire
 
 __all__ = ["Mesh", "tessellate"]
+
+
+class RepairReport(NamedTuple):
+    """What :meth:`Mesh.repaired` did.
+
+    Attributes:
+        merged_vertices: Points that lay on each other (to 1e-9 of the largest coordinate), merged.
+        removed_triangles: Triangles without an area, and repeated ones, left out.
+        flipped_triangles: Triangles turned to face the way their neighbours face (a closed piece
+            outward).
+        filled_holes: Holes filled (as :meth:`Mesh.fill_holes`).
+        open_holes: Borders that do not close on themselves, left open.
+        open_edges: Edges of the result not shared by two triangles: 0 for a closed mesh.
+    """
+
+    merged_vertices: int
+    removed_triangles: int
+    flipped_triangles: int
+    filled_holes: int
+    open_holes: int
+    open_edges: int
 
 
 class Mesh:
@@ -68,7 +89,11 @@ class Mesh:
     @property
     def volume(self) -> float:
         """Enclosed volume (meaningful for closed meshes)."""
-        v = self.vertices[self.triangles]
+        if not len(self.triangles):
+            return 0.0
+        # (the triple products about the middle of the box: about the origin, a mesh far from it lost
+        # digits, 1113.1202 for 1113.121 at 1e6 mm)
+        v = self.vertices[self.triangles] - 0.5 * (self.vertices.min(axis=0) + self.vertices.max(axis=0))
         return float(np.einsum("ij,ij->i", v[:, 0], np.cross(v[:, 1], v[:, 2])).sum() / 6.0)
 
     def bbox(self) -> BoundBox:
@@ -255,9 +280,10 @@ class Mesh:
         return out
 
     def raycast_many(self, origins: Any, directions: Any) -> list[Hit | None]:
-        """The first hit of each of many rays: for each origin, the ``Hit`` that :meth:`raycast`
-        gives first (the point, the distance, the triangle's normal and its index ``triangle``),
-        ``None`` where the ray misses.
+        """The first hit of each of many rays, one per ray (``Hit`` or ``None``), not
+        :meth:`raycast` many times (which gives every hit of a ray): for each origin, the ``Hit``
+        that :meth:`raycast` gives first (the point, the distance, the triangle's normal and its
+        index ``triangle``), ``None`` where the ray misses.
 
         ``origins`` is an ``(n, 3)`` array or a sequence of points; ``directions`` one direction
         (a vector or an axis) for all of them, or one each. The kernel's ray tracer sorts the
@@ -414,22 +440,20 @@ class Mesh:
         tris = np.vstack([self.triangles, r["triangles"][r["sources"] < 0]])
         return self._repaired_mesh(r, tris, keep_all=True)
 
-    def repaired(self) -> tuple[Mesh, dict[str, int]]:
+    def repaired(self) -> tuple[Mesh, RepairReport]:
         """A repaired copy and what was done: points that lie on each other (to 1e-9 of the
         largest coordinate) are merged, triangles left without an area and repeated ones are
         left out, triangles are turned to face the way their neighbours face (a closed piece
         outward), and holes are filled (as :meth:`fill_holes`).
 
-        Returns ``(mesh, report)``; the report counts ``merged_vertices``, ``removed_triangles``,
-        ``flipped_triangles``, ``filled_holes``, ``open_holes`` (borders that do not close on
-        themselves, left open) and ``open_edges`` (edges of the result not shared by two
-        triangles: 0 for a closed mesh).
+        Returns ``(mesh, report)``, a :class:`RepairReport` that counts ``merged_vertices``,
+        ``removed_triangles``, ``flipped_triangles``, ``filled_holes``, ``open_holes`` (borders
+        that do not close on themselves, left open) and ``open_edges`` (edges of the result not
+        shared by two triangles: 0 for a closed mesh).
         """
         r = self._repair(clean=True)
         mesh = self._repaired_mesh(r, r["triangles"], keep_all=False)
-        report = {key: int(r[key]) for key in ("merged_vertices", "removed_triangles", "flipped_triangles",
-                                                "filled_holes", "open_holes", "open_edges")}
-        return mesh, report
+        return mesh, RepairReport(*(int(r[key]) for key in RepairReport._fields))
 
     def _repair(self, clean: bool) -> dict[str, Any]:
         with kernel_call("repair"):

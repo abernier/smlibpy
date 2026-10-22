@@ -36,13 +36,16 @@ Every writer and reader has a twin that works in memory, for web services, noteb
 databases: `to_step`, `to_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `to_usd`, `to_brep`,
 `to_smb` and `to_smp` give the file's contents (text as `str`, binary formats as `bytes`),
 `from_step`, `from_step_model`, `from_stl`, `from_dxf`, `from_dxf_wires`, `from_usd`, `from_brep`,
-`from_iges`, `from_smb` and `from_smp` read them, with the keywords of the file functions:
+`from_iges`, `from_smb` and `from_smp` read them, with the keywords of the file functions.
+`to_file(shapes, name)` and `from_file(data, name)` pick the format from a file name's
+extension, as `export` and `load` do from a path:
 
 ```python
 step = to_step(bracket)                  # the text export_step writes
 print(from_step(step).name)              # bracket
 glb = to_glb([bracket, cover])           # bytes, e.g. an HTTP response
 print(len(from_smp(to_smp([bracket, cover], ascii=False))))   # 2
+print(from_file(to_file(bracket, "b.stp"), "b.stp").name)    # bracket: by the extension
 ```
 
 ### STEP
@@ -234,9 +237,12 @@ the file), each body placed by the transforms of its prims and in millimeters (`
 `upAxis` turned to Z up; a stage that says neither is read as it is), and bodies from other
 software are checked by the kernel before they are measured. usd-brep and Omniverse write every
 edge as a B-spline: those that are lines, and circles on faces of analytic surfaces, come back as
-lines and circles. A body that cannot be read raises an error that names it (`body 1 of the
-BrepArray "/World/ball" could not be built`); `import_usd(path, partial=True)` leaves such bodies
-out, with a warning each, and reads the others, as usd-brep's `allow_partial` does. A body
+lines and circles. A body that cannot be read is left out, with a warning that names it and says
+why (`body 1 of the BrepArray "/World/ball" could not be built`), and the others are read, as
+usd-brep's `allow_partial` does and as `import_step`, `import_iges` and `import_brep` do;
+`import_usd(path, strict=True)` raises for it instead (`ValueError` for a malformed body or one the
+check refuses, `KernelError` for one the kernel cannot build), and a file with no readable body
+raises `ModelingError` either way. A body
 that is a solid and also holds wire edges, points or faces outside it (the schema allows mixed
 dimensions; so do `.smb` files of other programs) comes with a warning that names them: such a
 part is not valid, and `stitch(part.faces())` (or, for faces outside it, `part.solids()`) gives
@@ -244,7 +250,8 @@ the solid alone.
 
 ```python
 # not run
-parts = import_usd("plant.usda", partial=True)   # RuntimeWarning: import_usd: body 3 of ... it is left out
+parts = import_usd("plant.usda")                 # RuntimeWarning: import_usd: body 3 of ... it is left out
+parts = import_usd("plant.usda", strict=True)    # raises for body 3 instead
 ```
 
 ### STEP

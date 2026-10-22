@@ -1148,7 +1148,7 @@ def _bend_error(err: ModelingError, local: Sketch, edges: list[Edge], hint: str)
     if hint not in str(err):
         return err
     try:
-        r, t, e = min(((*e.min_radius(), e) for e in edges), key=lambda x: x[0])
+        r, t, e = min(((*e._min_radius(), e) for e in edges), key=lambda x: x[0])
         reach = max(q.point_at(i / 16).length for q in local.edges() for i in range(17))
     except (ModelingError, ValueError):
         return err
@@ -1510,6 +1510,10 @@ def _is_planar_path(edges: list[Edge]) -> bool:
     return bool(len(s) < 3 or s[-1] <= 1e-7 * max(1.0, s[0]))
 
 
+@overload
+def swing(profile: Sketch | Face, outline: Sketch | Face | Wire | Edge) -> Part: ...
+@overload
+def swing(profile: Sketch | Face | Wire | Edge, outline: Sketch | Face | Wire | Edge) -> Part | Shell: ...
 def swing(profile: Sketch | Face | Wire | Edge, outline: Sketch | Face | Wire | Edge) -> Part | Shell:
     """Swing a profile around an outline: a revolve about Z whose circle is the outline.
 

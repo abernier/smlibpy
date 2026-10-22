@@ -10,11 +10,11 @@
 // spheres, tori and B-splines, and the curves of its edges in the parameters of their faces that
 // OpenCASCADE needs, made anew from the exact geometry.
 
-import { _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { _opts, _warn, ext, k, kernelCall, ModelingError } from './kernel.ts'
 import { Mesh } from './mesh.ts'
 import { type Part, type Shell, ShapeList, _typeName } from './shapes.ts'
 import { type BytesLike, _asBytes } from './_bytes.ts'
-import { _body, _fs, _items } from './exporters.ts'
+import { type ShapesLike, _body, _fs, _items } from './exporters.ts'
 import { _repr } from './step_reader.ts'
 
 // biome-ignore lint: kernel results are plain JSON
@@ -27,6 +27,9 @@ type Any = any
 export interface BrepImportOptions {
   heal?: boolean
   check?: boolean
+  /** Throw a ModelingError where a solid, shell or face of the file cannot be read; false (the
+   * default, as for STEP, IGES and USD) leaves it out with a warning and returns the others. */
+  strict?: boolean
 }
 
 // (the kernel Breps of the parts and sheets of shapes)
@@ -64,7 +67,7 @@ function _text(shapes: unknown, what: string): string {
  * The text of an OpenCASCADE .brep file of parts and sheets, as `exportBrep` writes it:
  * BRepTools::Read and `fromBrep` read it back.
  */
-export function toBrep(shapes: unknown): string {
+export function toBrep(shapes: ShapesLike): string {
   return _text(shapes, 'toBrep')
 }
 
@@ -85,17 +88,22 @@ export function toBrep(shapes: unknown): string {
  * KernelError where a body cannot be converted (an edge that lies farther from its face than 1e-3 of
  * the body's size, a face whose boundary does not close).
  */
-export function exportBrep(shapes: unknown, path: string): void {
+export function exportBrep(shapes: ShapesLike, path: string): void {
   _fs().writeFileSync(String(path), _text(shapes, 'exportBrep'))
 }
 
 function _read(data: Uint8Array | string, options: BrepImportOptions, what: string): Part | Shell | ShapeList<Part | Shell> {
-  let got: { bodies: number[]; warnings: string[] }
+  let got: { bodies: number[]; warnings: string[]; skipped: string[] }
   try {
     got = kernelCall(what, () => ext.occt_read(data, options.heal ?? false, options.check ?? true))
   } catch (e) {
     throw _renamed(e, what)
   }
+  if ((options.strict ?? false) && got.skipped.length) {
+    for (const b of got.bodies) ext.delete_brep(b)
+    throw new ModelingError(`${what}: ${got.skipped[0]}`)
+  }
+  for (const note of got.skipped) _warn(`${what}: ${note}; left out (strict: true throws)`)
   for (const note of got.warnings) _warn(`${what}: ${note}`)
   const out = new ShapeList<Part | Shell>()
   for (const b of got.bodies) out.push(_body(b, null, null, what))

@@ -26,6 +26,16 @@ CLASS_DOMAINS = {"Part": "features", "Sketch": "sketches", "Profile": "sketches"
                  "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis",
                  "FlatPattern": "sheetmetal", "Bend": "sheetmetal", "Lattice": "deform", "StepModel": "files"}
 CLASS_GUIDES = ("Profile",)
+#: Methods and functions whose guide has another name: the guide that describes them. ``to_*`` and
+#: ``from_*`` without a guide of their own go to files/in_memory (see :func:`guide_for`).
+GUIDE_NAMES = {
+    "new": "selection/history", "derived_from": "selection/history",
+    "shells": "selection/shells", "voids": "selection/shells", "shared": "selection/shells", "Face.cells": "selection/shells",
+    "sources": "features/cells", "g1": "analysis/continuity", "g2": "analysis/continuity",
+    "from_mesh": "files/to_part", "raycast_many": "analysis/raycast", "Sketch.flipped": "surfaces/Shell",
+    "min_radius_at": "curves/min_radius", "param_at_point": "curves/split", "from_nurbs": "curves/from_nurbs",
+    "Shell.from_nurbs": "surfaces/nurbs_surface", "Face.min_radius": "analysis/curvature_at",
+}
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
@@ -330,6 +340,10 @@ def guide_for(entry: Entry) -> Entry | None:
     in the domain of the method's class first (``Sketch.fillet`` -> sketches/fillet), then any
     of that name, then the guide of the class itself (``Wire.fillet`` -> curves/Wire)."""
     names = {entry.key.lower(), entry.key.split(".")[-1].lower(), entry.key.replace(".", "-").lower()}
+    by_key = {g.key: g for g in guides()}
+    for name in (entry.key, entry.key.split(".")[-1]):
+        if name in GUIDE_NAMES and GUIDE_NAMES[name] in by_key:
+            return by_key[GUIDE_NAMES[name]]
     matches = [g for g in guides() if g.key.split("/")[-1].lower() in names]
     cls = entry.key.split(".", 1)[0] if "." in entry.key else None
     own = [g for g in guides() if cls and g.key.split("/")[-1] == cls]
@@ -344,7 +358,12 @@ def guide_for(entry: Entry) -> Entry | None:
             return g
     if matches:
         return matches[0]
-    return own[0] if own else None
+    if own:
+        return own[0]
+    tail = entry.key.split(".")[-1]
+    if (tail.startswith("to_") or tail.startswith("from_")) and "files/in_memory" in by_key:
+        return by_key["files/in_memory"]  # (the files in memory)
+    return None
 
 
 def method_index() -> str:

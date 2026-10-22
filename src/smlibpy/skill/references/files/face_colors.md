@@ -8,7 +8,9 @@ glTF, USD and pictures.
 - `body.colored(color, faces=...)`: a copy whose selected faces have `color` (a CSS name, `"#rrggbb"`
   or `(r, g, b)`); `None` takes the faces' color off. The body keeps its own `color`.
 - `body.named(name, faces=...)`: the same for names; `None` takes them off. The body keeps its `name`.
-- `face.color`: `(r, g, b)` floats from 0 to 1, or `None` (the face shows in its body's color).
+- `face.color`: `(r, g, b)` floats from 0 to 1, or `None` (the face shows in its body's color). A
+  body's `color` is what it was given (`"steelblue"`, `"#c0c0c0"`): to compare the two, turn the
+  body's into floats with `from smlibpy.colors import to_rgb; to_rgb(part.color)`.
 - `face.name`: a string or `None`.
 - smlibwasm: `body.colored(color, { faces })`, `body.named(name, { faces })`, `face.color` (`[r, g, b]`
   or null), `face.name`.

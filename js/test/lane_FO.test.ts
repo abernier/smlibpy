@@ -557,7 +557,9 @@ test('shell walls of their own thickness', () => {
   let rb = Box(40, 30, 10)
   rb = rb.fillet(rb.edges().parallelTo(Z), 5)
   const floor = rb.shell(2, rb.faces().top(), { walls: [[rb.faces().bottom(), 4]] })
-  approx(floor.volume, rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - Math.PI) * 9) * 2, 1e-9)
+  // (the extended rounds of the floor's cavity are fitted by the kernel, and the fit depends on its
+  // memory layout: 0 to 1.3e-9 off in this module, depending on what ran before)
+  approx(floor.volume, rb.shell(2, rb.faces().top()).volume + (36 * 26 - (4 - Math.PI) * 9) * 2, 1e-8)
   const side = rb.faces().filter((f) => f.isPlanar && f.center().x > 19)
   assert.throws(() => rb.shell(2, rb.faces().top(), { walls: [[side, 4]] }), (e: Error) => e instanceof ModelingError && /walls that meet smoothly need one thickness/.test(e.message))
   assert.throws(() => box.shell(2, box.faces().top(), { walls: [[box.faces().top(), 4]] }), (e: Error) => e instanceof RangeError && /is an opening; it has no wall/.test(e.message))
@@ -565,7 +567,7 @@ test('shell walls of their own thickness', () => {
     () => box.shell(2, box.faces().top(), { walls: [[box.faces().bottom(), 4], [box.faces().bottom(), 5]] }),
     (e: Error) => e instanceof RangeError && /given two wall thicknesses/.test(e.message),
   )
-  assert.throws(() => box.shell(2, box.faces().top(), { walls: [box.faces().bottom()] }), (e: Error) => e instanceof TypeError && /walls takes/.test(e.message))
+  assert.throws(() => box.shell(2, box.faces().top(), { walls: [box.faces().bottom()] as never }), (e: Error) => e instanceof TypeError && /walls takes/.test(e.message))
 })
 
 // O12: corners= picks the kernel's shell mode, info() says which a shell got.
@@ -608,4 +610,10 @@ test('two-sided draft recipe is exact', () => {
   const angles = [...molded.draftAnalysis(Z)].map((fd) => Math.round(fd.minAngle * 1e6) / 1e6).sort((a, b) => a - b)
   assert.deepEqual(angles, [-90, -3, -3, -3, -3, 3, 3, 3, 3, 90])
   approx(molded.faces().top()[0].bbox().size.x, 40 - 20 * t, 0, 1e-9)
+})
+
+
+test('mitred corners take the American spelling', () => {
+  const cube = Box(20, 20, 20)
+  approx(cube.fillet(cube.edges(), 2, { corners: 'miter' }).volume, cube.fillet(cube.edges(), 2, { corners: 'mitre' }).volume, 1e-12)
 })

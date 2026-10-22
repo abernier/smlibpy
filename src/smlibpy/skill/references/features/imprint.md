@@ -10,13 +10,15 @@ color, draft or select (a label area, a parting line, a seal track). The volume 
 - `tool`: a `Part` (the faces are split where its surface crosses them), a sheet (`Shell`) or a
   face that crosses faces of the part, or a `Sketch` (or a planar face) lying on a face of the
   part, whose outline is cut into that face. Or curves: edges or wires, or a list of them.
-- `direction` (curves only): an axis or a vector. The curves move along it onto the part, and
-  split the faces where they cross them as they move (an outline projected onto the part). Only
+- `direction` (curves, or a sketch or planar face for its outline): an axis or a vector. The
+  curves move along it onto the part, and split the faces where they cross them as they move (an
+  outline projected onto the part): `dome.imprint(Circle(4).on(Plane.XY.offset(20)), -Z)`. Only
   ahead of the curves: a part behind them is not reached. Without a direction the curves must lie
   on the part's faces already (`intersection_curves`, `project`; to 1e-5 of the size).
 - `nearest`: with a direction, split only the faces the curves meet first: the side of the part
   facing them (default). `False` splits every face they cross, also on the far side (a box's
-  top and bottom face, and the side faces they run along).
+  top and bottom face, and the side faces they run along). Note: `project` keeps both sides by
+  default (`nearest=False`): it returns curves, and an imprint marks what the outline lands on.
 
 ## Returns
 A `Part` with more faces and the same volume (checked). The pieces of the part's faces that lie
@@ -52,7 +54,7 @@ each side of the seam.
 - `ModelingError: imprint: the curves split no face: each must run across a face from border to
   border, or close a loop on it`.
 - `ValueError: imprint: the direction must not be zero`; `TypeError: imprint: direction= moves
-  curves onto the part; ...` for a direction with a part, sheet, face or sketch.
+  curves, a sketch or a planar face onto the part; ...` for a direction with a part or a sheet.
 
 ## Example
 ```python

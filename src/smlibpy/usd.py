@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ._kernel import KernelError, _traced, ext, kernel_call
+from ._kernel import KernelError, ModelingError, _traced, ext, kernel_call
 from .colors import to_rgb
 
 __all__ = ["export_usd", "import_usd", "to_usd", "from_usd"]
@@ -115,7 +115,7 @@ def export_usd(shapes: Any, path: str | os.PathLike[str], *, mesh: bool = True, 
 
 
 def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str | None = None, placement: bool = True,
-               check: bool = True, partial: bool = False) -> Any:
+               check: bool = True, strict: bool = False) -> Any:
     """Read the bodies of the ``BrepArray`` prims of a USD text file (``.usda``, ``.usd``).
 
     Returns a single :class:`~smlibpy.Part` (or :class:`~smlibpy.Shell` for a body that encloses
@@ -141,16 +141,20 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
             ``False`` leaves each body where its prim has it.
         check: Check each body with the kernel before anything measures it (bodies smlibpy wrote are
             not checked): a body whose faces, edges and vertices leave gaps of more than 1e-3 of its
-            size raises ``ValueError``, smaller gaps give a warning.
-        partial: Leave out the bodies that cannot be read, with a ``RuntimeWarning`` for each that
-            says which and why, and return the others (as usd-brep's ``allow_partial``). ``False``
-            raises for the first one. A file none of whose bodies can be read raises either way.
+            size cannot be read; smaller gaps give a warning.
+        strict: Raise for the first body that cannot be read. ``False`` (as for
+            :func:`~smlibpy.import_step` and :func:`~smlibpy.import_iges`) leaves such bodies out,
+            with a ``RuntimeWarning`` for each that says which and why, and returns the others (as
+            usd-brep's ``allow_partial``); a file none of whose bodies can be read raises
+            :class:`ModelingError` then.
 
-    A malformed ``BrepArray`` raises a ``ValueError`` that says what is wrong, in which body, face
-    or edge, with the rule of usd-brep's validator it breaks. A body the kernel cannot build raises
-    a :class:`KernelError` that names it (``body 0 of the BrepArray "/World/ball" could not be
-    built``). A solid that also holds wire edges, points or faces outside it (which the schema
-    allows) comes with a ``RuntimeWarning`` that names them: such a Part is not valid.
+    A body cannot be read where its ``BrepArray`` is malformed (with ``strict=True`` a
+    ``ValueError`` that says what is wrong, in which body, face or edge, with the rule of
+    usd-brep's validator it breaks), where the check refuses it (``ValueError``), or where the
+    kernel cannot build it (a :class:`KernelError` that names it: ``body 0 of the BrepArray
+    "/World/ball" could not be built``). A solid that also holds wire edges, points or faces
+    outside it (which the schema allows) comes with a ``RuntimeWarning`` that names them: such a
+    Part is not valid.
 
     Edges come back with the curves they had: lines, circles and ellipses that ``export_usd``
     wrote as such, and B-spline edges that are lines or circular arcs exactly (usd-brep and
@@ -170,11 +174,11 @@ def import_usd(path: str | os.PathLike[str], *, heal: bool = False, units: str |
         except OSError:
             return f"there is no file {target}"
 
-    return _stage(root, data.decode("utf-8", "replace"), read, heal, units, placement, check, partial, "import_usd")
+    return _stage(root, data.decode("utf-8", "replace"), read, heal, units, placement, check, strict, "import_usd")
 
 
 def from_usd(data: str | bytes, *, heal: bool = False, units: str | None = None, placement: bool = True,
-             check: bool = True, partial: bool = False,
+             check: bool = True, strict: bool = False,
              resolve: Callable[[str, str], str | bytes | None] | None = None) -> Any:
     """The bodies of the ``BrepArray`` prims of USD text in memory (``.usda``: the text, or the bytes
     of the file), as :func:`import_usd` reads a file; the keywords as there.
@@ -198,7 +202,7 @@ def from_usd(data: str | bytes, *, heal: bool = False, units: str | None = None,
         got = resolve(asset, from_)
         return "resolve gave nothing for it" if got is None else (_joined(from_, asset), got)
 
-    return _stage("", text, read, heal, units, placement, check, partial, "from_usd")
+    return _stage("", text, read, heal, units, placement, check, strict, "from_usd")
 
 
 def _joined(from_: str, asset: str) -> str:
@@ -214,7 +218,7 @@ def _joined(from_: str, asset: str) -> str:
 
 
 def _stage(root: str, text: str, read: Callable[[str, str], Any], heal: bool, units: str | None, placement: bool,
-           check: bool, partial: bool, what: str) -> Any:
+           check: bool, strict: bool, what: str) -> Any:
     from .exporters import _body
     from .shapes import ShapeList
 
@@ -228,14 +232,14 @@ def _stage(root: str, text: str, read: Callable[[str, str], Any], heal: bool, un
     layers = _layers(root, text, read)
     try:
         with kernel_call(what):
-            stage = ext.usd_stage(layers, heal, check, placement, per_unit, partial)
+            stage = ext.usd_stage(layers, heal, check, placement, per_unit, not strict)
     except KernelError as e:
         # (the body that could not be built, and why, in the message)
         raise _traced(KernelError(e.operation, e.detail, e.status, _built_hint(e.detail, e.status)), e) from e.__cause__
     found = stage["bodies"]
     if not found:
         if stage["skipped"]:
-            raise ValueError(f"{what}: no body of the file can be read: " + "; ".join(stage["skipped"]))
+            raise ModelingError(f"{what}: no body of the file can be read: " + "; ".join(stage["skipped"]))
         raise ValueError("the USD file holds no BrepArray prims (bodies)"
                          + "".join(f"; {note}" for note in stage["unresolved"]))
     for note in stage["skipped"]:
@@ -250,10 +254,10 @@ def _stage(root: str, text: str, read: Callable[[str, str], Any], heal: bool, un
 
 
 def _built_hint(detail: str, status: str | None) -> str:
-    """The hint of the KernelError of a body that could not be built: which, why (the status once:
-    the message has it), and partial."""
+    """The hint of the KernelError of a body that could not be built (with strict=True): which, why
+    (the status once: the message has it), and how to read the others."""
     which = detail.removeprefix("usd: ").replace(f" ({status})", "", 1) if status else detail.removeprefix("usd: ")
-    return which + "; partial=True leaves such bodies out and reads the others"
+    return which + "; strict=False (the default) leaves such bodies out and reads the others"
 
 
 def _layers(root: str, text: str,

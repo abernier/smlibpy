@@ -43,6 +43,8 @@ R - r) to 1e-9, a cone its small end to 1e-9. Points within 1e-2 of a pole (by t
 the surface's tangents) are left out there.
 
 ## Gotchas
+- `edge.curvature_at(t)` is another thing: a fraction of the edge's length in, one number out
+  (`curves/min_radius`). Both `min_radius()` give a float.
 
 - `min_radius()` of a cone whose face reaches the apex is small but not 0 (the apex is a pole).
 - `radius` of a torus is the tube's (minor) radius; `major_radius` raises `ValueError` on
@@ -68,4 +70,4 @@ print(round(CenterArc((0, 0, 0), 7, 0, 90).curvature_at(), 12))   # 0.1428571428
 ## Related
 
 `closest_points` (`uv_at`, `position_at`), `continuity`, `Face` (selection domain),
-`surfaces/isocurve`
+`surfaces/iso`

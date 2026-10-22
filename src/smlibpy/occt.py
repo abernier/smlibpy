@@ -17,7 +17,7 @@ import os
 import warnings
 from typing import Any
 
-from ._kernel import ext, kernel_call
+from ._kernel import ModelingError, ext, kernel_call
 
 __all__ = ["export_brep", "import_brep", "to_brep", "from_brep"]
 
@@ -83,7 +83,7 @@ def export_brep(shapes: Any, path: str | os.PathLike[str]) -> None:
         fh.write(text)
 
 
-def _read(data: bytes, heal: bool, check: bool, what: str) -> Any:
+def _read(data: bytes, heal: bool, check: bool, strict: bool, what: str) -> Any:
     from .exporters import _body
     from .shapes import ShapeList
 
@@ -92,13 +92,17 @@ def _read(data: bytes, heal: bool, check: bool, what: str) -> Any:
             got = ext.occt_read(data, heal, check)
     except ValueError as e:
         raise ValueError(str(e).replace("brep: ", f"{what}: ", 1)) from None
+    if strict and got["skipped"]:
+        raise ModelingError(f"{what}: {got['skipped'][0]}")  # (the bodies read are freed with got)
+    for note in got["skipped"]:
+        warnings.warn(f"{what}: {note}; left out (strict=True raises)", RuntimeWarning, stacklevel=3)
     for note in got["warnings"]:
         warnings.warn(f"{what}: {note}", RuntimeWarning, stacklevel=3)
     out = ShapeList(_body(b, None, None, what, stacklevel=4) for b in got["bodies"])
     return out[0] if len(out) == 1 else out
 
 
-def import_brep(path: str | os.PathLike[str], *, heal: bool = False, check: bool = True) -> Any:
+def import_brep(path: str | os.PathLike[str], *, heal: bool = False, check: bool = True, strict: bool = False) -> Any:
     """Read an OpenCASCADE ``.brep`` file (ASCII from ``BRepTools::Write``, binary from
     ``BinTools::Write``), as build123d (``export_brep``), CadQuery (``exportBrep``), FreeCAD and
     OpenCASCADE write it.
@@ -115,6 +119,10 @@ def import_brep(path: str | os.PathLike[str], *, heal: bool = False, check: bool
         check: Check each body with the kernel before anything measures it: one whose faces,
             edges and vertices leave gaps of more than 1e-3 of its size raises ``ValueError``,
             smaller gaps give a warning.
+        strict: Raise :class:`ModelingError` where a solid, shell or face of the file cannot be read.
+            ``False`` (as for :func:`~smlibpy.import_step`, :func:`~smlibpy.import_iges` and
+            :func:`~smlibpy.import_usd`) leaves it out with a ``RuntimeWarning`` and returns the
+            others.
 
     Curves and points outside faces (wires, edges and vertices of the compound) are not read: a
     ``RuntimeWarning`` names how many. A file that is not a ``.brep`` file, or whose shape holds
@@ -122,14 +130,14 @@ def import_brep(path: str | os.PathLike[str], *, heal: bool = False, check: bool
     """
     with open(os.fspath(path), "rb") as fh:
         data = fh.read()
-    return _read(data, heal, check, "import_brep")
+    return _read(data, heal, check, strict, "import_brep")
 
 
-def from_brep(data: str | bytes, *, heal: bool = False, check: bool = True) -> Any:
+def from_brep(data: str | bytes, *, heal: bool = False, check: bool = True, strict: bool = False) -> Any:
     """The bodies of an OpenCASCADE ``.brep`` file's contents (the text of an ASCII file, or the
     bytes of either kind), as :func:`import_brep` reads a file; the keywords as there."""
     if isinstance(data, str):
         data = data.encode("utf-8")
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise TypeError(f"from_brep reads the contents of a .brep file as bytes or str, not {type(data).__name__}")
-    return _read(bytes(data), heal, check, "from_brep")
+    return _read(bytes(data), heal, check, strict, "from_brep")

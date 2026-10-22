@@ -39,7 +39,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-DEFAULT_TESTS = ["tests/test_defeature.py", "tests/test_guards.py", "tests/test_draft.py", "tests/test_io.py"]
+#: The tests of the guarded and patched kernel code, and of all C++ smlibpy added for 0.5.0 (the
+#: tests/test_lane_*.py files). tools/sanitize/guard_off.py leaves out those that cannot pass here.
+DEFAULT_TESTS = ["tests/test_defeature.py", "tests/test_guards.py", "tests/test_draft.py", "tests/test_io.py",
+                 "tests/test_surfaces.py", "tests/test_modeling.py", "tests/test_sheet_metal.py",
+                 "tests/test_lane_BT.py", "tests/test_lane_C.py", "tests/test_lane_DA.py", "tests/test_lane_FO.py",
+                 "tests/test_lane_IX.py", "tests/test_lane_M.py", "tests/test_lane_S.py", "tests/test_lane_U.py",
+                 "tests/test_lane_WN.py", "tests/test_lane_merge.py"]
 
 #: A frame in the kernel or in smlibpy's own C++: a leak allocated through one is the kernel's.
 OURS = re.compile(r"usd-brep/source/|third_party/patches/|/src/cpp/|smlibpy::|\bin Sm[A-Z]\w*::|\bin smos_|_core\.cpython")
@@ -92,7 +98,7 @@ def leaks(text: str, known: list[str]) -> list[str]:
         block = block.split("\n\n")[0]
         if not OURS.search(block) or IMPORT.search(block):
             continue
-        if any(k in block for k in known):
+        if any(all(part in block for part in k.split(" & ")) for k in known):
             continue
         out.append(block)
     return out
@@ -169,9 +175,10 @@ def main() -> int:
             print("known:", e.splitlines()[0], "|", next((l.strip() for l in e.splitlines() if " in Sm" in l), ""))
         print(f"pytest exit {code}; {len(errors)} AddressSanitizer reports ({len(tolerated)} known); {len(counted)} "
               f"leaks of the kernel or smlibpy's C++ ({len(list(logs.iterdir()))} logs)")
-        # (with halt_on_error=0 a test can fail after a known report; such a run is decided by the
-        # reports alone)
-        return 1 if errors or counted or (code != 0 and not tolerated) else 0
+        # (pytest's verdict always counts: a test that fails under the sanitizers fails the run, also
+        # when a known report came up elsewhere; the tests that reach a known error are left out by
+        # tools/sanitize/guard_off.py)
+        return 1 if errors or counted or code != 0 else 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

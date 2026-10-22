@@ -246,7 +246,7 @@ test('drawing views, first and third angle, as DXF and SVG', () => {
   assert.ok(svg.startsWith('<?xml') && svg.includes('class="hidden"') && svg.includes('stroke-dasharray'))
   assert.ok(svg.includes(' A6 6 0 1 0 ')) // the bore in the top view: a circle, exactly
   assert.ok(toSvg(CenterArc([0, 0], 5, 0, 90), { margin: 0 }).includes('M5 0 A5 5 0 0 0 0 -5'))
-  assert.throws(() => toSvg(part), /not a Part/)
+  assert.throws(() => toSvg(part as never), /not a Part/)
   assert.throws(() => toSvg([]), /nothing to draw/)
 })
 
@@ -362,7 +362,7 @@ test('Part.raycastMany from inside, from a face and near the rims of holes; face
 
 // ============================================================================ batch 2: M6-M13
 import { Mesh as _Mesh, ModelingError, Part as _Part, fromStl, makeFace, setWarningHandler, tessellate, toStl } from '../src/index.ts'
-import { _deviation } from '../src/mesh.ts'
+import { RepairReport, _deviation } from '../src/mesh.ts'
 
 const holed = () => Box(40, 30, 20).cut(Cylinder(6, 40))
 const radialDots = (m: Mesh): number[] => {
@@ -484,7 +484,8 @@ test('Mesh.fillHoles and repaired (M9)', () => {
   }
   soupT.push(0, 1, 2, 0, 0, 1)
   const [fixed, report] = new _Mesh(soupV, soupT).repaired()
-  assert.deepEqual(report, {
+  assert.ok(report instanceof RepairReport)
+  assert.deepEqual({ ...report }, {
     mergedVertices: 3 * m.length - m.vertices.length / 3,
     removedTriangles: 2,
     flippedTriangles: Math.ceil(m.length / 5),
@@ -604,4 +605,17 @@ test('OBJ names the normal of each corner; glTF is indexed; Boolean results take
     })
   }
   assert.ok(onSphere > 1000 && worst < 1e-6, `${onSphere} ${worst}`)
+})
+
+
+test('drawing views have exact lines and circles', () => {
+  // outline() and drawingViews() gave the kernel's projections, B-splines: a view's hole had no
+  // radius and circles() found nothing (silhouette() gave lines and circles).
+  const part = Box(40, 30, 20).cut(Cylinder(6, 40))
+  const top = drawingViews(part, ['top'])[0]
+  assert.deepEqual(top.visible.circles().map((e) => Math.round(e.radius * 1e9) / 1e9), [6])
+  assert.deepEqual(part.outline(Plane.XY).map((e) => e.geomType).sort(), ['circle', 'line', 'line', 'line', 'line'])
+  const [seen, hidden] = part.outline(Plane.XZ, { hidden: true })
+  assert.ok([...seen, ...hidden].every((e) => e.geomType === 'line'))
+  approx(hidden.reduce((s, e) => s + e.length, 0), 40, 1e-9)
 })

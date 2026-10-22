@@ -13,7 +13,8 @@ two materials of a merged part meet.
   outside.
 - `face.cells -> tuple[int, ...]`: indices into `part.cells()` of the cells the face bounds: one
   for a face on the outside or on a cavity wall, two for a face between two cells of a merged part,
-  `()` for a sheet's face. smlibwasm: an array.
+  `()` for a sheet's face. smlibwasm: an array. Indices, not the cells: `part.cells()[i]` is a copy
+  of the cell, so take the cells once and index that list (`cells = part.cells()`).
 - `shapelist.shared() -> ShapeList[Face]`: the faces between two cells (faces only: `TypeError`
   for edges).
 - `part.info()` also has `"solids"` (as `len(part.solids())`) and `"voids"` (how many cavities).

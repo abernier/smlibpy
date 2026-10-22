@@ -23,7 +23,7 @@ import { Axis, Circle, Cone, GridLocations, Polygon, Polyline, Rectangle, Slot, 
 import { plate } from './lane_WN_models.ts'
 import { approx } from './_approx.ts'
 import { pathToFileURL } from 'node:url'
-import { Ellipse, fromUsd, importDxf, importStep, split, toDxf, toGltf, toObj, toStep, toStl, toUsd } from '../src/index.ts'
+import { Ellipse, fromStep, fromUsd, importDxf, importStep, split, toDxf, toGltf, toObj, toStep, toStl, toUsd } from '../src/index.ts'
 
 const WORKER = new URL('./lane_WN_worker.ts', import.meta.url)
 const SRC = new URL('../src/', import.meta.url)
@@ -871,6 +871,24 @@ test('cells() of a merge that crashes the kernel\'s stitcher throw (N1)', () => 
   assert.ok(Math.abs(Box(30, 20, 10).cut(Cylinder(4, 20)).volume - 5497.3452) < 1e-3) // (this kernel goes on)
 })
 
+test('steps stopped after the time limit say so (N1)', () => {
+  // Fillets and chamfers of parts read from files run in the probe worker, stopped after
+  // setGuardSeconds. They threw "fillet failed: the radius may be too large for the selected edges",
+  // the time limit only in .detail, and tried again with the finer tolerance.
+  const holes = []
+  for (const x of [-20, 0, 20]) for (const y of [-20, 0, 20]) holes.push(Cylinder(2, 20).translate(x, y, 0))
+  const part = fromStep(toStep(Box(60, 60, 10).cut(holes))) as Part
+  const guard = setGuardSeconds(0.01)
+  try {
+    const started = performance.now()
+    assert.throws(() => part.fillet(part.edges().filter((e) => e.center().z > 4.9), 0.5),
+      (e: unknown) => e instanceof ModelingError && !(e instanceof KernelError) && /^fillet: the kernel did not finish within 0.01 s; setGuardSeconds/.test(e.message))
+    assert.ok(performance.now() - started < 5000)
+  } finally {
+    setGuardSeconds(guard)
+  }
+})
+
 // ================================================================================ W10: crashes of the kernel
 /** A real trap of the kernel: a read far beyond its memory (harmless: nothing is written). */
 const TRAP = 'k.brep_face_count(0xf0000000)'
@@ -1013,7 +1031,7 @@ test('an app type-checks against the declarations without Node\'s types or skipL
   // what an app writes: the free functions give what their input makes, options and selections
   // have types, and each @ts-expect-error must meet an error (tsc fails on one that does not)
   writeFileSync(join(dir, 'app.ts'), `
-    import { Box, Circle, Cylinder, Helix, Plane, Rectangle, Z, chamfer, extrude, fillet, htmlPage, load, loft, memoryUsage, offset, render, revolve, split, sweep, toGlb, toStep, type FoldOptions, type RenderOptions } from './dts/index.js'
+    import { Box, Circle, Cylinder, Helix, Plane, Rectangle, Z, chamfer, extrude, fillet, htmlPage, load, loft, memoryUsage, offset, render, revolve, split, sweep, toGlb, toStep, toSvg, type FoldOptions, type RenderOptions } from './dts/index.js'
     import { KernelWorker } from './dts/worker.js'
     const part = Box(30, 20, 10).cut(Cylinder(4, 20))
     const volumes: number[] = [
@@ -1055,7 +1073,19 @@ test('an app type-checks against the declarations without Node\'s types or skipL
     part._brep
     // @ts-expect-error Python's spelling of an option
     const fold: FoldOptions = { radius: 1, k_factor: 0.3 }
-    export { volumes, area, loaded, kind, crashes, box, cad, fold }
+    // (the APIs added in parallel for 0.5.0 say what they take too)
+    // @ts-expect-error moveFaces takes faces
+    part.moveFaces(42, [0, 0, 1])
+    // @ts-expect-error the faces of colored are faces, not a word
+    part.colored('red', { faces: 'top' })
+    // @ts-expect-error toSvg draws shapes
+    toSvg(123)
+    // @ts-expect-error a region is a sketch, face, wire or points
+    part.warp(part.faces()[0], 5, 1)
+    // @ts-expect-error iso takes its parameter by name
+    part.faces()[0].iso(0.5)
+    const near: number = part.closestPoints(Box(1, 1, 1)).face?.area ?? 0
+    export { volumes, area, loaded, kind, crashes, box, cad, fold, near }
   `)
   // (an app for the browser: no Node types, an older lib, and the package's declarations checked)
   writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({

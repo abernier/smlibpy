@@ -5,8 +5,11 @@ Reads an OpenCASCADE `.brep` file: what OpenCASCADE, build123d (`export_brep`), 
 (`BinTools::Write`). Read with the bridge of NVIDIA's usd-brep, compiled into smlibpy.
 
 ## Signature
-`import_brep(path, *, heal=False, check=True)`
-`from_brep(data, *, heal=False, check=True)` reads the contents (`str` or `bytes`).
+`import_brep(path, *, heal=False, check=True, strict=False)`
+`from_brep(data, *, heal=False, check=True, strict=False)` reads the contents (`str` or `bytes`).
+
+`strict=True` raises `ModelingError` where a solid, shell or face of the file cannot be read; by
+default it is left out with a `RuntimeWarning`, as `import_step`, `import_iges` and `import_usd` do.
 
 - `heal=True`: runs the kernel's import healer on each body.
 - `check=False`: skips the kernel's check of each body (see Errors).

@@ -69,4 +69,4 @@ print(round(styled.area, 4), round(styled.bbox().max.z, 4))   # 621.8176 4.9968 
 
 ## Related
 `stitch` (sew the matched sheets), `blend` (a bridge across a gap instead), `merge_faces`,
-`Shell.trim`, `Face.extended`, `surface`, `generic`
+`Shell.trim`, `Face.extend`, `surface`, `generic`

@@ -513,10 +513,15 @@ export function kernelCall<T>(operation: string, fn: () => T, hint: string | nul
     return fn()
   } catch (e) {
     if (e instanceof KernelError || !_isRuntimeError(e)) throw e
+    // (a step in the probe worker stopped after GUARD_SECONDS: its message says so; defeature.ts's
+    // _KernelFault, which this module does not import)
+    if ((e as Any).timedOut === true) throw e
     const trap = _isTrap(e)
     const text = trap ? _crashText((e as Error).message, _usage()) : (e as Error).message
     const m = STATUS_RE.exec(text)
     const status = m ? m[1] : null
+    // (a crash in the probe worker, given no hint: what it says, not just "failed")
+    if (hint === null && typeof (e as Any).reason === 'string') hint = text.slice(text.indexOf(': ') + 2)
     const why = status === OUT_OF_MEMORY ? _outOfMemoryHint() : trap ? _crashHint((e as Error).message, hint) : hint
     const error = _traced(new KernelError(operation, text, status, why), trap ? [] : _traceOf(e))
     ;(error as Any).cause = e

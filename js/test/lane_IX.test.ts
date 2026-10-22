@@ -1037,18 +1037,18 @@ function _threeBodies(): string {
 test('usd body the kernel cannot build is named in the message', () => {
   // String(KernelError) was "fromUsd failed (SM_ERR_INVALID_INPUT)", the body only in .detail
   assert.throws(
-    () => fromUsd(_threeBodies()),
+    () => fromUsd(_threeBodies(), { strict: true }),
     (e: unknown) =>
       e instanceof KernelError &&
       e.message.includes('body 0 of the BrepArray "/World/c" could not be built') &&
-      e.message.includes('partial: true') &&
+      e.message.includes('strict: false') &&
       e.message.split('SM_ERR_INVALID_INPUT').length === 2 &&
       e.status === 'SM_ERR_INVALID_INPUT',
   )
 })
 
-test('usd partial import leaves out what cannot be read', () => {
-  const [back, said] = warnings(() => fromUsd(_threeBodies(), { partial: true }) as Part)
+test('usd import leaves out what cannot be read (strict: true throws)', () => {
+  const [back, said] = warnings(() => fromUsd(_threeBodies()) as Part)
   assert.ok(back instanceof Part && back.name === 'a')
   approx(back.volume, 24, 1e-9)
   assert.deepEqual(said, [
@@ -1057,7 +1057,7 @@ test('usd partial import leaves out what cannot be read', () => {
   ])
 })
 
-test('usd partial import takes the bodies of one prim apart', { skip: !existsSync(_USD_FILES) }, () => {
+test('usd import takes the bodies of one prim apart', { skip: !existsSync(_USD_FILES) }, () => {
   // usd-brep's own case: one BrepArray of several bodies, one of them broken (here the first face of
   // the second of its two cubes gets a weight of 0, BA.440)
   const text = readFileSync(join(_USD_FILES, 'brep_validator', 'CubeBrepArray.usda'), 'utf-8')
@@ -1066,8 +1066,8 @@ test('usd partial import takes the bodies of one prim apart', { skip: !existsSyn
   values[Math.floor(values.length / 2)] = '0'
   const start = m.index + m[1].length
   const broken = text.slice(0, start) + values.join(', ') + text.slice(start + m[2].length)
-  assert.throws(() => fromUsd(broken), /body 1, face 0: its NURBS surface has a weight of 0/)
-  const [back, said] = warnings(() => fromUsd(broken, { partial: true }) as Part)
+  assert.throws(() => fromUsd(broken, { strict: true }), /body 1, face 0: its NURBS surface has a weight of 0/)
+  const [back, said] = warnings(() => fromUsd(broken) as Part)
   assert.ok(back instanceof Part && back.name === 'brepArray' && back.isValid())
   approx(back.volume, (warnings(() => fromUsd(text))[0] as ShapeList<Part>)[0].volume, 1e-9)
   assert.deepEqual(said.filter((w) => w.includes('left out')), [ // (and the reference to a file of materials it lacks)
@@ -1075,9 +1075,10 @@ test('usd partial import takes the bodies of one prim apart', { skip: !existsSyn
   ])
 })
 
-test('usd partial import of nothing readable throws', () => {
+test('usd import of nothing readable throws', () => {
   const text = toUsd(Sphere(3).named('s'), { mesh: false }).replace(/(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])/, '$10$2')
-  assert.throws(() => fromUsd(text, { partial: true }), /no body of the file can be read: body 0 of the BrepArray "\/World\/s" is malformed/)
+  assert.throws(() => fromUsd(text), (e: unknown) => e instanceof ModelingError && /no body of the file can be read: body 0 of the BrepArray "\/World\/s" is malformed/.test(e.message))
+  assert.throws(() => fromUsd(text, { strict: true }), /the BrepArray "\/World\/s" is malformed: body 0, face 0/)
 })
 
 // -- I14: IGES import ---------------------------------------------------------------------------------------
@@ -1884,4 +1885,13 @@ test('brep check of a curve with zero tangent', { skip: !existsSync(_OCCT_BREPS)
     () => fromBrep(flat),
     (e: unknown) => e instanceof RangeError && /fromBrep: the shape is broken: the kernel finds a gap of 4\.02 \(0\.487 of its size\) at edge 3/.test(e.message),
   )
+})
+
+
+test('importers take strict, and leave bodies out by default', () => {
+  // USD took partial (the opposite default), .brep neither: one option on every importer now.
+  const text = toUsd(Sphere(3).named('s'), { mesh: false }).replace(/(uniform double\[\] brep:surface:sphere:radius = \[)[^\]]+(\])/, '$10$2')
+  assert.throws(() => fromUsd(text, { partial: true } as never), TypeError)
+  assert.throws(() => fromUsd(text, { strict: true }), RangeError)
+  approx((fromBrep(toBrep(Box(5, 5, 5)), { strict: true }) as Part).volume, 125, 1e-9)
 })

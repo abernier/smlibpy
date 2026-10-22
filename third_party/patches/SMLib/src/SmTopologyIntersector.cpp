@@ -13,6 +13,11 @@
 //   SmTopologyIntersector::ResolveIntersections fails when ResolveOverlappingProtoEdges reports
 //   SM_ERR_BAD_INTERSECTIONS: a group of overlapping ProtoEdges it cannot take out (see the
 //   patched SmProtoTopology.cpp). It ignored the status, and its other errors stay ignored.
+//   SmTopologyIntersector::IntersectInsertRelate deletes its ProtoTopologyManager, and the curves
+//   of its EdgeDefinitions (made for the imprint that does not come), when IntersectTopology or
+//   ResolveIntersections fails. It returned without, and the manager, its ProtoEdges,
+//   EdgeDefinitions and curves were never freed: about 450 kB per failed Boolean of the crossing
+//   holes above (the macOS leaks tool).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -28,6 +33,8 @@
 #include <SmTopologyIntersector.h>
 
 #include <unordered_set>  // smlibpy patch: Shells that own Faceuses, in DeleteFaces
+
+static void sm_DeleteUnimprinted(SmProtoTopologyManager *& rpMgr);  // smlibpy patch (see below)
 
 #ifndef __SMBREP_H__
 #include <SmBrep.h>
@@ -1229,6 +1236,10 @@ if ( iDebugLevel > 0 ) // Before IntersectTopology(): DumpAndDraw Brep(blue), Ot
   // Intersect Topology
   SmStatus eStat = this->IntersectTopology();
 
+  // smlibpy patch: free the ProtoTopologyManager before failing (it was never freed).
+  if (eStat != SM_SUCCESS)
+    { sm_DeleteUnimprinted(m_pProtoTopoMgr); }
+
   // If that didn't work, quit before we mess up the Breps.
   SER_MSG( eStat, _T("\nSmProtoExecutive: Failure returned from IntersectTopology().\n") );
 
@@ -1252,6 +1263,10 @@ if ( iDebugLevel > 0 ) // After IntersectTopology(): DumpAndDraw Brep(blue), Oth
 
   // Resolve Intersections
   eStat = this->ResolveIntersections();
+
+  // smlibpy patch: free the ProtoTopologyManager before failing (it was never freed).
+  if (eStat != SM_SUCCESS)
+    { sm_DeleteUnimprinted(m_pProtoTopoMgr); }
 
   // If that didn't work, quit before we mess up the Breps.
   SER_MSG( eStat, _T("\nSmProtoExecutive: Failure returned from ResolveProtoTopology().\n") );
@@ -1313,6 +1328,31 @@ if ( iDebugLevel > 0 ) // After ImprintIntersections(): DumpAndDraw Brep(blue), 
   return eStat;
 
 } // end SmTopologyIntersector::IntersectInsertRelate
+
+/*******************************************************************//**
+PURPOSE: smlibpy patch: delete a ProtoTopologyManager whose intersections are not
+  imprinted (the Boolean failed before): the curves of its EdgeDefinitions too,
+  which only an imprint hands to the Breps.
+***********************************************************************/
+static void sm_DeleteUnimprinted(SmProtoTopologyManager *& rpMgr)
+{
+  if (rpMgr == NULL)
+    { return; }
+  SmTArray<SmProtoEdge*> sPEs = rpMgr->GetProtoEdges();
+  for (ULONG ii = 0; ii < sPEs.GetSize(); ii++)
+    {
+      if (sPEs[ii] == NULL)
+        { continue; }
+      SmTArray<SmEdgeDefinition*> sDefs = sPEs[ii]->GetEdgeDefinitions();
+      for (ULONG jj = 0; jj < sDefs.GetSize(); jj++)
+        {
+          if (sDefs[jj] != NULL)
+            { sDefs[jj]->Destruct(); }
+        }
+    }
+  delete rpMgr;
+  rpMgr = NULL;
+}
 
 /*******************************************************************//**
 PURPOSE: Static helper: Return whether a PointClassificationType can be imprinted.

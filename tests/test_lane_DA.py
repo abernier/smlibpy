@@ -261,25 +261,25 @@ def test_nurbs_of_faces(make):
         assert (_nurbs_point(n, u, v) - face.position_at(a, b)).length <= 1e-9
 
 
-def test_isocurves():
+def test_iso_curves_of_faces():
     plate = (Box(40, 30, 5) - Cylinder(5, 10)).faces().top()[0]
-    pieces = plate.isocurve(u=0.5)  # across the hole: two pieces, exactly to its rim
+    pieces = plate.iso(u=0.5)  # across the hole: two pieces, exactly to its rim
     ends = sorted(abs(round(c, 12)) for e in pieces for c in (e.start.x + e.start.y, e.end.x + e.end.y))
     assert len(pieces) == 2 and ends == [5, 5, 15, 15]
     assert all(e.geom_type == "line" for e in pieces) and sum(e.length for e in pieces) == approx(20, rel=1e-12)
-    across = plate.isocurve(v=0.9)
+    across = plate.iso(v=0.9)
     assert len(across) == 1 and across[0].length == approx(40 if plate.position_at(0, 0).x != plate.position_at(1, 0).x
                                                               else 30, rel=1e-12)
-    assert len(plate.isocurve(u=0.0)) == 1  # along the boundary
+    assert len(plate.iso(u=0.0)) == 1  # along the boundary
     side = Cylinder(5, 20).faces().cylinders()[0]
-    ring = side.isocurve(v=0.5)
+    ring = side.iso(v=0.5)
     assert len(ring) == 1 and ring[0].geom_type == "circle" and ring[0].length == approx(10 * math.pi, rel=1e-12)
-    assert side.isocurve(u=0.25)[0].length == approx(20, rel=1e-12)
+    assert side.iso(u=0.25)[0].length == approx(20, rel=1e-12)
     for bad in ({}, {"u": 0.5, "v": 0.5}):
         with pytest.raises(ValueError, match="one of u and v"):
-            plate.isocurve(**bad)
+            plate.iso(**bad)
     with pytest.raises(ValueError, match="from 0 to 1"):
-        plate.isocurve(u=1.5)
+        plate.iso(u=1.5)
 
 
 def test_curvature_of_edges():

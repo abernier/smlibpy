@@ -1116,14 +1116,17 @@ val occt_read(std::string data, bool heal, bool check)
         smlibpy::OcctReadOptions options;
         options.heal = heal, options.check = check;
         smlibpy::OcctRead got = smlibpy::occt_read(data, options);
-        val bodies = val::array(), warnings = val::array();
+        val bodies = val::array(), warnings = val::array(), skipped = val::array();
         for (SmBrep* b : got.bodies)
             bodies.call<void>("push", ptr(b));
         for (const std::string& w : got.warnings)
             warnings.call<void>("push", w);
+        for (const std::string& s : got.skipped)
+            skipped.call<void>("push", s);
         val out = val::object();
         out.set("bodies", bodies);
         out.set("warnings", warnings);
+        out.set("skipped", skipped);
         return out;
     });
 }

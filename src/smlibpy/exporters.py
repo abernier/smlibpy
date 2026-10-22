@@ -647,18 +647,22 @@ def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | 
         fh.write(data)
 
 
-def to_gltf(shapes: Any, **kwargs: Any) -> str:
+def to_gltf(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
+            edge_color: Any = "#1f2328", max_edge: float | None = None) -> str:
     """The JSON text of a glTF file of the shapes with the buffer embedded as a data URI (in
     meters, like :func:`to_glb`); the keywords of :func:`to_glb`."""
-    doc, buf = gltf_document(shapes, **kwargs)
+    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                             max_edge=max_edge)
     _z_up(doc, meters=True)
     doc["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(buf).decode()
     return json.dumps(doc)
 
 
-def export_gltf(shapes: Any, path: str | os.PathLike[str], **kwargs: Any) -> None:
-    """glTF export with the buffer embedded as a data URI (in meters, like :func:`export_glb`)."""
-    text = to_gltf(shapes, **kwargs)
+def export_gltf(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
+                edges: bool = True, edge_color: Any = "#1f2328", max_edge: float | None = None) -> None:
+    """glTF export with the buffer embedded as a data URI (in meters, like :func:`export_glb`); the
+    keywords of :func:`export_glb`."""
+    text = to_gltf(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color, max_edge=max_edge)
     with open(os.fspath(path), "w") as fh:
         fh.write(text)
 
@@ -884,3 +888,89 @@ def load(path: str | os.PathLike[str]) -> Any:
     with kernel_call("load"):
         b = k.read_brep_from_file(os.fspath(path), None, False)
     return _body(b, None, None, "load")
+
+
+def to_file(shapes: Any, name: str | os.PathLike[str], **kwargs: Any) -> str | bytes:
+    """The contents of a file of the shapes, in memory, the format picked from the extension of
+    ``name`` as :func:`export` picks it from a path (only the extension counts; nothing is
+    written): text for STEP, OBJ, glTF, DXF, SVG, USD (``.usda``) and OpenCASCADE (``.brep``),
+    ``bytes`` for STL, GLB, ``.smb`` and ``.smp``. The keywords are those of the format's ``to_...``
+    function. ::
+
+        data = to_file(part, requested_name)   # a web service's download in the format asked for
+    """
+    ext = os.path.splitext(os.fspath(name))[1].lower()
+    if ext in (".step", ".stp"):
+        return to_step(shapes, **kwargs)
+    if ext == ".stl":
+        return to_stl(shapes, **kwargs)
+    if ext == ".glb":
+        return to_glb(shapes, **kwargs)
+    if ext == ".gltf":
+        return to_gltf(shapes, **kwargs)
+    if ext == ".obj":
+        return to_obj(shapes, **kwargs)
+    if ext == ".smb":
+        return to_smb(shapes, **kwargs)
+    if ext == ".smp":
+        return to_smp(shapes, **kwargs)
+    if ext == ".dxf":
+        from .dxf import to_dxf
+
+        return to_dxf(shapes, **kwargs)
+    if ext == ".svg":
+        from .drawing import to_svg
+
+        return to_svg(shapes, **kwargs)
+    if ext in (".usda", ".usd"):
+        from .usd import to_usd
+
+        return to_usd(shapes, **kwargs)
+    if ext in (".usdc", ".usdz"):
+        raise ValueError(f"to_file writes text USD (.usda, .usd), not {ext}")
+    if ext == ".brep":
+        from .occt import to_brep
+
+        return to_brep(shapes, **kwargs)
+    raise ValueError(f"unknown file type {ext!r}; use .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda or "
+                     ".brep")
+
+
+def from_file(data: str | bytes, name: str | os.PathLike[str]) -> Any:
+    """The shapes of a file's contents, in memory (its text or bytes), the format picked from the
+    extension of ``name`` as :func:`load` picks it from a path (only the extension counts): STEP,
+    IGES, USD (``.usda``), OpenCASCADE (``.brep``) and SMLib (``.smb``, ``.smp``) give exact parts,
+    DXF a :class:`Sketch` of the drawing's outlines, STL a :class:`Mesh`. The layers a USD text
+    names are not read (:func:`from_usd` reads them with ``resolve``). ::
+
+        part = from_file(upload.read(), upload.filename)
+    """
+    ext = os.path.splitext(os.fspath(name))[1].lower()
+    if ext in (".step", ".stp", ".p21"):
+        from .step_import import from_step
+
+        return from_step(data)
+    if ext in (".igs", ".iges"):
+        from .iges_import import from_iges
+
+        return from_iges(data)
+    if ext == ".stl":
+        return from_stl(data)
+    if ext == ".dxf":
+        from .dxf import from_dxf
+
+        return from_dxf(data)
+    if ext in (".usda", ".usd", ".usdc", ".usdz"):
+        from .usd import from_usd
+
+        return from_usd(data)
+    if ext == ".brep":
+        from .occt import from_brep
+
+        return from_brep(data)
+    if ext == ".smp":
+        return from_smp(data if isinstance(data, bytes) else str(data).encode())
+    if ext == ".smb":
+        return from_smb(data if isinstance(data, bytes) else str(data).encode())
+    raise ValueError(f"unknown file type {ext!r}; from_file reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, "
+                     ".usda and .brep")

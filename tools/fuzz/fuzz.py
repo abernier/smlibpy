@@ -9,17 +9,21 @@ process (run_py.py), then, with ``--wasm``, the same cases with the same paramet
   where gdb or lldb can tell; else the operation) the baseline does not know, and any hang;
 - for a seed the baseline has (7 and 8, the regression corpus): an operation that breaks an
   invariant, crashes, hangs or traps where the baseline's run of that seed did not, or a
-  smlibpy/smlibwasm divergence (class, or volume beyond 1e-6) it did not have;
+  smlibpy/smlibwasm divergence (class, or volume beyond 1e-6) it did not have, other than one
+  between a right result and the way the baseline knows the case to fail (csg-8-98 E is silent on
+  one side or both, depending on memory layout);
 - a silent rate (the share of results that break an invariant, over all operations of a side)
   more than 0.3 points above the baseline's.
 
 New failures are made smaller (minimise.py) and written as pytest stubs (``repro/`` in the output
 directory). ``--update-baseline`` writes the baseline of this machine's platform from the run;
 with ``--repeat N`` from N runs, whose failures it unites (a few Booleans and offsets of seed 8
-come out differently from run to run).
+come out differently from run to run, depending on where the kernel's objects lie in memory), and
+with ``--unite`` it adds them to the platform's baseline rather than replacing it. A new failure
+counts only if the case fails the same way when run twice more, each time in a fresh process.
 
 usage: python tools/fuzz/fuzz.py [--seed N ...] [--cases N] [--wasm] [--budget SECONDS]
-       [--out DIR] [--update-baseline]
+       [--out DIR] [--update-baseline [--repeat N] [--unite]]
 """
 
 from __future__ import annotations
@@ -128,11 +132,20 @@ def run_seed(seed: int, n: int, wasm: bool, deadline: float | None, out: Path) -
     return result
 
 
+#: A case run in a fresh interpreter (its argv: the case, the resolved parameters, this folder).
+_ONE = ("import json, sys; sys.path.insert(0, sys.argv[3]); import run_py; "
+        "print(json.dumps(run_py.run_one(json.loads(sys.argv[1]), 60.0, json.loads(sys.argv[2]))))")
+
+
 def _again(result: dict, cid: str, side: str) -> dict:
-    """A case run again (to tell a regression from a result that changes from run to run)."""
+    """A case run again (to tell a regression from a result that changes from run to run). In a
+    fresh process: a few Booleans depend on where the kernel's objects lie in memory, which differs
+    from one process to the next but not in the forks of one."""
     case, resolved = result["_cases"][cid], result["_resolved"].get(cid, {})
     if side == "python":
-        return run_py.run_one(case, 60.0, resolved)
+        run = subprocess.run([sys.executable, "-c", _ONE, json.dumps(case), json.dumps(resolved), str(HERE)],
+                             capture_output=True, text=True, timeout=180, check=True)
+        return json.loads(run.stdout.strip().splitlines()[-1])
     import tempfile
 
     with tempfile.TemporaryDirectory() as folder:
@@ -206,6 +219,11 @@ def judge(result: dict, base: dict | None, rates_base: dict[str, float]) -> list
         for key, how in result["divergence"].items():
             if key in known_seed.get("divergence", {}):
                 continue
+            known_bad = {known_seed.get(f"{side}_bad", {}).get(key) for side in ("python", "wasm")} - {None}
+            if how.startswith("class ") and set(how[len("class "):].split("/")) <= known_bad | {"ok"}:
+                # (a case the baseline knows to fail, right on one side in this run only)
+                print(f"  unsteady: divergence {key}: {how} (the baseline knows it {'/'.join(sorted(known_bad))})")
+                continue
             cid, op = key.split(" ")
             if how.startswith("volume") and not _volumes_steady(result, cid, op):
                 print(f"  unsteady: divergence {key}: {how} (smlibpy's volume changes from run to run)")
@@ -253,6 +271,8 @@ def main() -> int:
     ap.add_argument("--out", default="fuzz-out")
     ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--repeat", type=int, default=1, help="with --update-baseline: runs to unite")
+    ap.add_argument("--unite", action="store_true",
+                    help="with --update-baseline: add to this platform's baseline instead of replacing it")
     a = ap.parse_args()
     seeds = [int(datetime.date.today().strftime("%Y%m%d")) if s == 0 else s for s in (a.seed or [7, 8])]
     out = Path(a.out)
@@ -285,6 +305,9 @@ def main() -> int:
         seen = {s.split(" < ")[0] for r in results for s in r.get("signatures", {}).values() if s not in ("trap",)}
         entry: dict = {"seeds": {}, "rates": {},
                        "crash_signatures": sorted((seen | set((base or {}).get("crash_signatures", []))) - set(KNOWN_CRASHES))}
+        if a.unite and base:  # (the baseline's failures and rates, to add this run's to)
+            entry["seeds"] = json.loads(json.dumps(base.get("seeds", {})))
+            entry["rates"] = dict(base.get("rates", {}))
         for r in results:  # (the failures of every run of a seed, united)
             known = entry["seeds"].setdefault(str(r["seed"]), {"cases": r["cases"], "python_bad": {}, "wasm_bad": {},
                                                                "divergence": {}})
@@ -294,7 +317,7 @@ def main() -> int:
         for side in ("python", "wasm"):  # (the highest of the runs)
             seen = [overall(r[side]["counts"]) for r in results if side in r]
             if seen:
-                entry["rates"][side] = round(max(seen), 3)
+                entry["rates"][side] = round(max(seen + [entry["rates"].get(side, 0.0)]), 3)
         allbase[key] = entry
         BASELINE.write_text(json.dumps(allbase, indent=1, sort_keys=True) + "\n")
         print(f"wrote the baseline of {key} to {BASELINE}")

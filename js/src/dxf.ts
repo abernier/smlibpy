@@ -1327,7 +1327,7 @@ function _straight(poles: V3[]): boolean {
 /** Center, radius and axis (counterclockwise in the curve's direction) of a rational degree-2
  * B-spline edge that is a circular arc. Each span of such a curve is a conic, and a conic with
  * five points on a circle is that circle; seven points per span are tested. */
-function _circleOf(e: Edge): [V3, number, V3] | null {
+export function _circleOf(e: Edge): [V3, number, V3] | null {
   const cv = e._curve()
   const d = ext.curve_data(cv)
   if (Math.trunc(d.degree) !== 2 || d.weights == null) return null

@@ -156,7 +156,7 @@ class CurveCorners:
                 f1, f2 = e1.closest_point(c), e2.closest_point(c)
                 if max(abs(f1.distance_to(c) - size), abs(f2.distance_to(c) - size)) > 1e-6 * self.size:
                     continue  # (a point of an end, not where the arc touches)
-                back, ahead = (1.0 - e1.param_at(f1)) * l1, e2.param_at(f2) * l2
+                back, ahead = (1.0 - e1.param_at_point(f1)) * l1, e2.param_at_point(f2) * l2
                 if best is None or back + ahead < best[0] + best[1]:
                     best = (back, ahead, c, f1, f2)
         if best is None:
@@ -177,7 +177,7 @@ class CurveCorners:
             r1, r2 = size - d1, size - d2
             cl += complex((r1 * n2.imag - r2 * n1.imag) / det, (n1.real * r2 - n2.real * r1) / det)
             f1, f2 = e1.closest_point(fr.world(cl)), e2.closest_point(fr.world(cl))
-        back, ahead = (1.0 - e1.param_at(f1)) * l1, e2.param_at(f2) * l2
+        back, ahead = (1.0 - e1.param_at_point(f1)) * l1, e2.param_at_point(f2) * l2
         v1, v2 = fr.local(f1) - cl, fr.local(f2) - cl
         delta = cmath.phase(v2 / v1)
         if side > 0 and delta < 0:
@@ -848,7 +848,7 @@ def offset_curve_edge(edge: Edge, e: float, fr: Frame, tol: float, what: str, in
     name = f"edge {index + 1} ({edge.geom_type})" if index is not None else f"the {edge.geom_type}"
     if curve is None:
         assert point is not None
-        r, _ = edge.min_radius()
+        r = edge.min_radius()
         raise ModelingError(f"{what}: {name} bends more tightly than the distance {fmt(abs(e))} near "
                             f"{fr.fp(fr.local(point))} on the side it moves to (its smallest radius of curvature is "
                             f"{fmt(r)}), so its offset would fold over itself there; use a smaller distance")

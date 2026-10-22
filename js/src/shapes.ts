@@ -38,7 +38,8 @@ import {
 } from './geometry.ts'
 import { det3, eigh3, mean3, spread } from './_linalg.ts'
 import { toRgb } from './colors.ts'
-import { EllipticalArc, Line, ThreePointArc, _arcCurve, _basisDers, _filletWire, _span } from './curves.ts'
+import { CenterArc, EllipticalArc, Line, ThreePointArc, _arcCurve, _basisDers, _filletWire, _span } from './curves.ts'
+import { _circleOf } from './dxf.ts'
 import { Mesh, _levels, _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate } from './mesh.ts'
 import { type ShowOptions, show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
@@ -69,7 +70,7 @@ import { type DraftAnalysis, _contour, _joinedArcs, _range, draftAnalysis as _dr
 import { _wallThicknesses, moveFaces as _moveFaces, offsetFaces as _offsetFaces, shellWalls } from './face_edit.ts'
 import { sweep as _sweep, swing as _swing } from './operations.ts'
 import { Box } from './parts.ts'
-import { ruled } from './surfaces.ts'
+import { nurbsSurface, ruled } from './surfaces.ts'
 import { _checked, _flatten, _push, _warp } from './shaping.ts'
 import { _matchEdge, _mergeFaces } from './sheet_edit.ts'
 import { Polygon, Rectangle } from './sketches.ts'
@@ -173,6 +174,23 @@ export type EdgesLike = Edge | Face | Wire | (Iterable<EdgesLike> & object)
 /** Faces as the operations on faces take them (`shell`, `removeFaces`, `draft`): a face, or a list
  * of faces (an array, a ShapeList, a Set; also nested). */
 export type FacesLike = Face | (Iterable<FacesLike> & object)
+
+/** The bodies, faces or edges a selection is checked against (`ShapeList.newSince`, `derivedFrom`,
+ * `joining`): one or several, in lists. */
+export type SourcesLike = Part | Shell | Face | Edge | (Iterable<SourcesLike> & object)
+
+/** A region on a face (`warp`, `flatten`): a closed Wire, a Face or a Sketch placed on the face (its
+ * outline), or the corner points of a polygon on the face. */
+export type RegionLike = Sketch | Face | Wire | Edge | Iterable<VectorLike>
+
+/** Walls of their own thickness for `shell`: [faces, thickness] pairs, or a Map of face to thickness. */
+export type WallsLike = ReadonlyMap<Face, number> | Iterable<readonly [FacesLike, number]>
+
+/** The options of `Face.iso`: `u` or `v`, a fraction (0 to 1) of the face's range of that parameter. */
+export interface IsoOptions {
+  u?: number | null
+  v?: number | null
+}
 
 /** Metadata a body carries: a name (exporters, the viewer) and a display color. */
 export interface BodyOptions {
@@ -734,7 +752,7 @@ export class ShapeList<T = Shape> extends Array<T> {
    * own). A body read from a file, and a section, have new marks everywhere, so all of them counts
    * as new.
    */
-  newSince(since: unknown): ShapeList<T> {
+  newSince(since: SourcesLike): ShapeList<T> {
     const old = _historyTags(since, 'newSince')
     const tags = _itemTags(this, 'newSince')
     return this.filter((_, i) => ![...tags[i]].some((t) => old.has(t)))
@@ -749,7 +767,7 @@ export class ShapeList<T = Shape> extends Array<T> {
    * `cut.edges().derivedFrom(box.edges().top())` the pieces of the top edges of a box that a slot
    * cut. A body's faces and edges are marked as described in `newSince`.
    */
-  derivedFrom(...shapes: unknown[]): ShapeList<T> {
+  derivedFrom(...shapes: SourcesLike[]): ShapeList<T> {
     const wanted = _historyTags(shapes, 'derivedFrom')
     const tags = _itemTags(this, 'derivedFrom')
     return this.filter((_, i) => [...tags[i]].some((t) => wanted.has(t)))
@@ -768,7 +786,7 @@ export class ShapeList<T = Shape> extends Array<T> {
    * `Part.classify` puts it on the body's surface. Edges of a merged face (a face of each body lying
    * in one plane, merged by a union) are not on both surfaces and are not taken.
    */
-  joining(a: unknown, b: unknown): ShapeList<T> {
+  joining(a: SourcesLike, b: SourcesLike): ShapeList<T> {
     const firsts = _joinedBodies(a)
     const seconds = _joinedBodies(b)
     const odd = this.find((s) => !(s instanceof Edge))
@@ -1256,7 +1274,7 @@ export class Edge extends Shape {
   _ke = 0
   _c: CurveHandle | null = null
   _rev = false
-  _cache: [number, number] | null = null
+  _cache: [number, number, number | null] | null = null
 
   /** (create edges with Line(), ThreePointArc(), Spline(), ... or take them from a shape) */
   constructor(token?: symbol) {
@@ -1304,9 +1322,16 @@ export class Edge extends Shape {
   _range(): [number, number] {
     if (this._cache === null) {
       const [t0, t1] = this._e ? k.edge_parameter_range(this._e) : k.curve_parameter_range(this._curve())
-      this._cache = [Number(t0), Number(t1)]
+      this._cache = [Number(t0), Number(t1), null]
     }
-    return this._cache
+    return [this._cache[0], this._cache[1]]
+  }
+
+  /** The arc length, measured once (an edge does not change; a long helix takes a while). */
+  _length(): number {
+    const [t0, t1] = this._range()
+    if (this._cache![2] === null) this._cache = [t0, t1, Number(ext.curve_length(this._curve(), t0, t1))]
+    return this._cache![2] as number
   }
 
   /** A new standalone kernel curve with this edge's extent and direction. */
@@ -1323,7 +1348,7 @@ export class Edge extends Shape {
     if (t <= 0) return t0
     if (t >= 1) return t1
     if (this.geomType === 'line') return t0 + (t1 - t0) * t
-    const s = t * ext.curve_length(this._curve(), t0, t1)
+    const s = t * this._length()
     const [u] = ext.curve_parameter_at_length(this._curve(), t0, s)
     return Math.min(Math.max(u, t0), t1)
   }
@@ -1344,8 +1369,7 @@ export class Edge extends Shape {
   }
 
   get length(): number {
-    const [t0, t1] = this._range()
-    return Number(ext.curve_length(this._curve(), t0, t1))
+    return this._length()
   }
 
   get start(): Vector {
@@ -1509,15 +1533,6 @@ export class Edge extends Shape {
   }
 
   /**
-   * Where on the edge the point nearest to `point` lies, as a fraction of the edge's length from
-   * its start (0) to its end (1): `edge.pointAt(edge.paramAtPoint(p))` is `edge.closestPoint(p)`
-   * (the same as `paramAt`, build123d's name).
-   */
-  paramAtPoint(point: VectorLike | Vertex): number {
-    return this.paramAt(point)
-  }
-
-  /**
    * How the two faces of the edge meet, checked at `samples` points along it (`Continuity`): "G2"
    * where their curvatures across the edge agree as well, "G1" where they meet tangentially (a
    * circular fillet's border), "G0" at a crease, `null` where they leave a gap wider than the edge's
@@ -1546,9 +1561,12 @@ export class Edge extends Shape {
     return this._closest(point)[0]
   }
 
-  /** Where the point of the edge nearest to `point` lies along it: the fraction of the length from
-   * the start, as `pointAt` takes it (`e.pointAt(e.paramAt(p))` is `e.closestPoint(p)`). */
-  paramAt(point: VectorLike | Vertex): number {
+  /**
+   * Where on the edge the point nearest to `point` lies, as a fraction of the edge's length from
+   * its start (0) to its end (1), as `pointAt` takes it: `edge.pointAt(edge.paramAtPoint(p))` is
+   * `edge.closestPoint(p)` (build123d's name).
+   */
+  paramAtPoint(point: VectorLike | Vertex): number {
     return this._fraction(this._closest(point)[1])
   }
 
@@ -1797,13 +1815,25 @@ export class Edge extends Shape {
   }
 
   /**
-   * The smallest radius of curvature of the edge and where it is: `[radius, t]`, `t` a fraction of
-   * the length (as `pointAt`). A line gives `[Infinity, 0]`, an arc its radius. A sweep profile that
-   * reaches farther from the path than this folds over itself.
+   * The smallest radius of curvature of the edge (as `Face.minRadius` is the face's): Infinity for a
+   * line, an arc's radius. A sweep profile that reaches farther from the path than this folds over
+   * itself. Where it is: `minRadiusAt`.
    *
-   *     const [r, t] = path.minRadius()
+   *     const r = path.minRadius()
+   *     const p = path.pointAt(path.minRadiusAt())
    */
-  minRadius(): [number, number] {
+  minRadius(): number {
+    return this._minRadius()[0]
+  }
+
+  /** Where the edge bends most tightly (`minRadius`): a fraction of its length, as `pointAt` takes it
+   * (0 for a line or an arc). */
+  minRadiusAt(): number {
+    return this._minRadius()[1]
+  }
+
+  /** [radius, t] of `minRadius` and `minRadiusAt`. */
+  _minRadius(): [number, number] {
     const kind = this.geomType
     if (kind === 'line' || this._isStraight()) return [Infinity, 0.0]
     if (kind === 'circle') return [this.radius, 0.0]
@@ -2579,7 +2609,7 @@ export class Wire extends Shape {
     if (d > 1e-6 * Math.max(1, this.length)) {
       throw new RangeError(`${what}: the point ${_fmtPoint(p)} lies ${_formatG(d)} off the wire; pass a point on the wire or a fraction from 0 to 1`)
     }
-    return [best, this._edges[best].paramAt(p)]
+    return [best, this._edges[best].paramAtPoint(p)]
   }
 
   /** The wire cut in two at `at`, a fraction of its length or a point on it: the part before and the
@@ -2696,17 +2726,25 @@ export class Wire extends Shape {
     return Wire._raw(this._edges.flatMap((e) => [...e.toArcs(tolerance).edges()]))
   }
 
-  /** The smallest radius of curvature of the wire's edges and where it is: `[radius, t]`, `t` a
-   * fraction of the wire's length (as `pointAt`). The corners where edges meet do not count (a corner
-   * has no radius; see `fillet`). */
-  minRadius(): [number, number] {
+  /** The smallest radius of curvature of the wire's edges. The corners where edges meet do not count
+   * (a corner has no radius; see `fillet`). Where it is: `minRadiusAt`. */
+  minRadius(): number {
+    return this._minRadius()[0]
+  }
+
+  /** Where the wire bends most tightly (`minRadius`): a fraction of its length, as `pointAt` takes it. */
+  minRadiusAt(): number {
+    return this._minRadius()[1]
+  }
+
+  _minRadius(): [number, number] {
     const lengths = this._edges.map((e) => e.length)
     const total = lengths.reduce((a, b) => a + b, 0) || 1.0
     let best = Infinity
     let at = 0.0
     let before = 0.0
     this._edges.forEach((e, i) => {
-      const [r, t] = e.minRadius()
+      const [r, t] = e._minRadius()
       if (r < best) {
         best = r
         at = (before + t * lengths[i]) / total
@@ -3183,18 +3221,8 @@ export class Face extends Shape {
     return new NurbsSurface([du, dv], [ku, kv], points, weights)
   }
 
-  /**
-   * The curve of constant `u` (or constant `v`) of the face's surface, at a fraction (0 to 1) of the
-   * face's parameter box, clipped to the face: one edge per piece that lies on it (a plate with a
-   * hole in the way gives two). Exact: lines, arcs or B-splines of the surface itself. Give one of
-   * `u` and `v` (`isocurve(0.5)`, `isocurve(null, 0.5)`). The same as `iso`.
-   */
-  isocurve(u: number | null = null, v: number | null = null): ShapeList<Edge> {
-    return this._isoCurves(u, v, 'isocurve')
-  }
-
-  /** `iso` (and `isocurve`): the face's curves of constant `u` or `v`, a fraction of its parameter
-   * box, clipped to the face (`ext.face_iso_curves`). */
+  /** `iso`: the face's curves of constant `u` or `v`, a fraction of its parameter box, clipped to
+   * the face (`ext.face_iso_curves`). */
   _isoCurves(u: number | null, v: number | null, what: string): ShapeList<Edge> {
     if ((u == null) === (v == null)) throw new RangeError(`${what}: give u or v (exactly one of u and v)`)
     const t = Number(u ?? v)
@@ -3240,12 +3268,13 @@ export class Face extends Shape {
    * fraction (0 to 1) of the face's range of that parameter. Trimmed to the face: several pieces
    * where the face has holes or notches. For styling lines, inspection curves and rails on freeform
    * faces. Which parameter runs which way depends on the surface: on a cylinder's side `v` is
-   * constant around it (`iso(null, 0.5)`: the circle half way up) and `u` along it. Exact: lines,
-   * arcs or B-splines of the surface itself, ending exactly where the face's edges cross them.
-   * `isocurve` is the same.
+   * constant around it (`iso({ v: 0.5 })`: the circle half way up) and `u` along it. Exact: lines,
+   * arcs or B-splines of the surface itself, ending exactly where the face's edges cross them. Give
+   * one of `u` and `v`.
    */
-  iso(u: number | null = null, v: number | null = null): ShapeList<Edge> {
-    return this._isoCurves(u, v, 'iso')
+  iso(options: IsoOptions = {}): ShapeList<Edge> {
+    _opts('Face.iso', options)
+    return this._isoCurves(options.u ?? null, options.v ?? null, 'iso')
   }
 
   /**
@@ -3390,9 +3419,9 @@ export class Face extends Shape {
    *
    * @returns A sheet of one face, its normal following this face's (`normalAt`).
    */
-  extended(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
-    _opts('Face.extended', options)
-    return Shell._wrap(_extendedFace(this, distance, options.sides ?? null, options.continuity ?? 'natural', 'extended'))
+  extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): Shell {
+    _opts('Face.extend', options)
+    return Shell._wrap(_extendedFace(this, distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
   }
 
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
@@ -3538,7 +3567,7 @@ export class _Body extends Shape {
    * stays with the faces and their pieces through later operations, and STEP files write it on the
    * face. `part.faces().filter((f) => f.name === 'seal')` finds them again.
    */
-  named(name: string | null, options: { faces?: unknown } = {}): this {
+  named(name: string | null, options: { faces?: FacesLike | null } = {}): this {
     _opts('_Body.named', options)
     if (options.faces !== undefined && options.faces !== null) {
       if (name !== null && typeof name !== 'string') throw new TypeError(`named: a name is a string, not a ${_typeName(name)}`)
@@ -3561,7 +3590,7 @@ export class _Body extends Shape {
    *     let plate = Box(60, 40, 8).cut(tool.colored('red', { faces: tool.faces() }))
    *     plate = plate.colored('steelblue', { faces: plate.faces().top() })
    */
-  colored(color: ColorLike | null, options: { faces?: unknown } = {}): this {
+  colored(color: ColorLike | null, options: { faces?: FacesLike | null } = {}): this {
     _opts('_Body.colored', options)
     if (options.faces !== undefined && options.faces !== null) {
       const rgb = color === null ? [] : toRgb(color).map(Number)
@@ -3663,7 +3692,8 @@ export class _Body extends Shape {
   }
 
   /**
-   * The first hit of each of many rays: for each origin, the `Hit` that `raycast` gives first (the
+   * The first hit of each of many rays, one per ray (a `Hit` or `null`), not `raycast` many times
+   * (which gives every hit of a ray): for each origin, the `Hit` that `raycast` gives first (the
    * exact point on the face, the distance, the face, its outward normal), `null` where the ray
    * misses.
    *
@@ -3832,18 +3862,19 @@ export class _Body extends Shape {
   outline(plane: Plane = Plane.XY, options: { hidden?: boolean; tangentEdges?: boolean } = {}): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] {
     _opts('_Body.outline', options)
     const { hidden = false, tangentEdges = false } = options
+    const tol = 1e-7 * Math.max(this.bbox().diagonal, 1)
     if (hidden || tangentEdges) {
       const [seen, behind]: [number[], number[]] = kernelCall('outline', () =>
         ext.hidden_lines(this._brep, plane.origin.toArray(), plane.zDir.toArray(), false, Boolean(tangentEdges)),
       )
-      const visible = _list(seen.map((c) => Edge._fromCurve(c)))
-      const back = _list(behind.map((c) => Edge._fromCurve(c)))
+      const visible = _drawn(seen.map((c) => Edge._fromCurve(c)), tol)
+      const back = _drawn(behind.map((c) => Edge._fromCurve(c)), tol)
       return hidden ? [visible, back] : visible
     }
     const curves = kernelCall('outline', () => k.project_brep_onto_plane(this._brep, plane.origin.toArray(), plane.zDir.toArray()))
     // The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
     // circles seen edge-on come with a copy each); a drawing view needs each line once.
-    return _distinctCurves(curves, 1e-7 * Math.max(this.bbox().diagonal, 1))
+    return _drawn(_distinctCurves(curves, tol), tol)
   }
 
   _transformed(m: Matrix): Shape {
@@ -3951,6 +3982,30 @@ export class _Body extends Shape {
 
 /** Edges of new kernel curves, each curve once: one whose ends and midpoint lie within `tol` of
  * those of a curve kept already (either way round) is left out. */
+/** Projected edges as a drawing has them: the B-splines that are lines or circular arcs exactly (the
+ * kernel's projections fit every curve) as lines and arcs, and the arcs of one circle that meet end
+ * to end joined, so that `circles()` and `radius` find a view's holes. */
+function _drawn(edges: Iterable<Edge>, tol: number): ShapeList<Edge> {
+  const out: Edge[] = []
+  for (let e of edges) {
+    if (e.geomType === 'bspline') {
+      if (e._isStraight()) e = Line(e.start, e.end)
+      else {
+        const circle = _circleOf(e)
+        if (circle !== null) {
+          const center = new Vector(circle[0])
+          if (e.isClosed) {
+            const plane = new Plane(center, e.start.sub(center).normalized(), new Vector(circle[2]))
+            e = CenterArc([0, 0], circle[1], 0, 360, plane)
+          } else e = ThreePointArc(e.start, e.pointAt(0.5), e.end)
+        }
+      }
+    }
+    out.push(e)
+  }
+  return _list(_joinedArcs(out, tol))
+}
+
 function _distinctCurves(curves: Iterable<number>, tol: number): ShapeList<Edge> {
   const kept: [Edge, Vector, Vector, Vector][] = []
   for (const c of curves) {
@@ -5394,6 +5449,23 @@ export class Part extends _Body {
   _boolean(others: unknown, op: number, name: string): Part {
     return scope(() => {
       const tools = _bodies(others, name)
+      const result = this._combined(tools, op, name)
+      if (op !== k.BooleanOp.DIFFERENCE && result instanceof Part) {
+        // A union or an intersection holds the bends of its tools too: their K-factor records
+        // (fold, flange) go with the result as the part's do.
+        const folds = [...result._folds]
+        for (const t of tools) {
+          if (t instanceof Part) for (const f of t._folds) if (!folds.includes(f)) folds.push(f)
+        }
+        result._folds = folds
+      }
+      return result
+    })
+  }
+
+  /** The Boolean of `_boolean`, checked, retried and explained. */
+  _combined(tools: _Body[], op: number, name: string): Part {
+    return scope(() => {
       for (const t of tools) {
         if (t instanceof Sketch || !(t instanceof Part || t instanceof Shell)) {
           const extra = t instanceof Sketch ? '; extrude it first' : ''
@@ -6282,7 +6354,7 @@ export class Part extends _Body {
    * ModelingError too, and it is stopped after `GUARD_SECONDS` (20 s; `setGuardSeconds(seconds)`
    * raises it for large parts).
    */
-  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: unknown } = {}): Part {
+  shell(thickness: number, openings: FacesLike | null = null, options: { outward?: boolean; corners?: string | null; walls?: WallsLike | null } = {}): Part {
     _opts('Part.shell', options)
     const outward = options.outward ?? false
     const corners = options.corners ?? null
@@ -6859,12 +6931,14 @@ export class Part extends _Body {
    *   face's edges, the neighbouring faces can get split lines close to them). Or curves: edges or
    *   wires, which without a direction must lie on the part's faces (`intersectionCurves`,
    *   `project`).
-   * @param direction For curves only: move them along this direction (an axis or a vector) onto the
-   *   part first, where they cross its faces as they move (an outline projected onto them). Only
-   *   ahead of the curves: a part behind them is not reached.
+   * @param direction For curves, a sketch or a planar face: move their outline along this direction
+   *   (an axis or a vector) onto the part first, where it crosses the part's faces as it moves (an
+   *   outline projected onto them). Only ahead of the curves: a part behind them is not reached.
    * @param options `nearest`: with a direction, split only the faces the projection meets first: the
-   *   side of the part facing the curves (default `true`). `false` splits every face the projection
-   *   crosses, also on the far side (a box's top and bottom face).
+   *   side of the part facing the curves (default `true`: an imprint marks the faces the outline lands
+   *   on). `false` splits every face the projection crosses, also on the far side (a box's top and
+   *   bottom face). `project`, which returns the projected curves, keeps both sides by default
+   *   (`nearest: false`) and takes the same option.
    *
    * The pieces of the part's faces that lie inside a tool part, or inside the sketch's region,
    * descend from the tool: `part.imprint(tool).faces().derivedFrom(tool)` selects them. A fillet or
@@ -6883,7 +6957,9 @@ export class Part extends _Body {
     const curves = _asCurves(tool)
     if (curves !== null) return this._imprintedCurves(curves, direction, options.nearest ?? true)
     if (direction != null) {
-      throw new TypeError('imprint: direction moves curves onto the part; a part, a sheet, a face or a sketch is imprinted where it is')
+      // (a sketch's or a planar face's outline, as project takes it)
+      if (tool instanceof Sketch || (tool instanceof Face && tool.isPlanar)) return this._imprintedCurves([...tool.edges()], direction, options.nearest ?? true)
+      throw new TypeError('imprint: direction moves curves, a sketch or a planar face onto the part; a part or a sheet is imprinted where it is')
     }
     let given: unknown = tool
     if (given instanceof ShapeList) given = given.one()
@@ -7281,7 +7357,7 @@ export class Part extends _Body {
    * @param faces Faces of this part (a selection or a single face).
    * @param by A vector, or a Location.
    */
-  moveFaces(faces: unknown, by: Location | VectorLike): Part {
+  moveFaces(faces: FacesLike, by: Location | VectorLike): Part {
     return _moveFaces(this, faces, by)
   }
 
@@ -7302,7 +7378,7 @@ export class Part extends _Body {
    * @param faces Faces of this part (a selection or a single face).
    * @param distance How far to move them, along their outward normals.
    */
-  offsetFaces(faces: unknown, distance: number): Part {
+  offsetFaces(faces: FacesLike, distance: number): Part {
     return _offsetFaces(this, faces, distance)
   }
 
@@ -7350,7 +7426,7 @@ export class Part extends _Body {
    *   `'G2'` (default; curvature continuous), `'G1'` (tangent) or `'crease'` (a sharp border).
    * @returns A new part (this one does not change).
    */
-  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Part {
+  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: string } = {}): Part {
     _opts('Part.warp', options)
     return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
   }
@@ -7371,7 +7447,7 @@ export class Part extends _Body {
    *   `'G1'` or `'crease'`.
    * @returns A new part (this one does not change).
    */
-  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Part {
+  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: string } = {}): Part {
     _opts('Part.flatten', options)
     return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
   }
@@ -8061,6 +8137,7 @@ function _withFinerRounds(attempt: (factor: number) => Part): Part {
   } catch (first) {
     if (!(first instanceof ModelingError)) throw first // (a KernelError is a ModelingError)
     if (first instanceof KernelError && first.status === 'SM_ERR_INVALID_INPUT') throw first
+    if ((first as Any).timedOut === true) throw first // (stopped after GUARD_SECONDS: the finer one would take as long)
     try {
       return attempt(1.0)
     } catch (e) {
@@ -8184,8 +8261,10 @@ function _straightAround(face: Face, center: Vector, axis: Vector, start: Vector
 
 /** Whether `corners` (of `Part.fillet` or `Part.chamfer`) asks for mitred corners. */
 function _cornerStyle(operation: string, corners: string): boolean {
-  if (corners !== 'patch' && corners !== 'mitre') throw new RangeError(`${operation}: corners must be "patch" or "mitre", not '${corners}'`)
-  return corners === 'mitre'
+  if (corners !== 'patch' && corners !== 'mitre' && corners !== 'miter') {
+    throw new RangeError(`${operation}: corners must be "patch" or "mitre" (or "miter"), not '${corners}'`)
+  }
+  return corners !== 'patch'
 }
 
 /** The corners `corners: "mitre"` mitres: where three of `edges` meet, all convex, and no other edge
@@ -8214,7 +8293,7 @@ function _requireMitredCorners(operation: string, edges: readonly Edge[]): void 
   }
 }
 
-/** The brep of `Face.extended`. */
+/** The brep of `Face.extend`. */
 function _extendedFace(face: Face, distance: number, sides: Edge | Iterable<Edge> | null, continuity: string, what: string): number {
   const d = Number(distance)
   if (!(d > 0 && Number.isFinite(d))) throw new RangeError(`${what}: the distance must be positive, got ${distance}`)
@@ -8348,6 +8427,25 @@ function _notIterable(items: unknown, what: string): string {
 
 /** A sheet body: one or more faces that do not enclose a volume (surfaces). */
 export class Shell extends _Body {
+  /**
+   * The sheet of a NURBS surface given by its data: the inverse of `Face.nurbs()`, as
+   * `Edge.fromNurbs` is for curves (`nurbsSurface` with the data in `NurbsSurface`'s order).
+   * `nurbs`: a `NurbsSurface`, or `{ degrees, knots, points, weights }`: the degrees `[u, v]`, the
+   * knot vectors `[uKnots, vKnots]`, the control points in rows (`points[i][j]` the point `i` along
+   * u and `j` along v) and a weight per point in the same rows, or null for a non-rational surface.
+   */
+  static fromNurbs(nurbs: NurbsSurface | {
+    readonly degrees: readonly [number, number]
+    readonly knots: readonly [readonly number[], readonly number[]]
+    readonly points: readonly (readonly VectorLike[])[]
+    readonly weights?: readonly (readonly number[])[] | null
+  }): Shell {
+    if (nurbs == null || typeof nurbs !== 'object' || !('degrees' in nurbs && 'knots' in nurbs && 'points' in nurbs)) {
+      throw new TypeError(`Shell.fromNurbs: expected a NurbsSurface or { degrees, knots, points, weights }, got ${_typeName(nurbs)}`)
+    }
+    return nurbsSurface(nurbs.points, nurbs.knots, nurbs.degrees, nurbs.weights ?? null)
+  }
+
   get area(): number {
     let a = 0
     for (const f of this.faces()) a += f.area
@@ -8471,19 +8569,19 @@ export class Shell extends _Body {
   }
 
   /**
-   * The sheet (of one face) grown past its sides: see `Face.extended`.
+   * The sheet (of one face) grown past its sides: see `Face.extend`.
    *
    * @param distance How far past each side, measured along the surface.
    * @param options `sides`: edges of the sheet: grow past the sides they lie on only (default: every
    *   side that can grow). `continuity`: `'natural'` (default), `'G1'` or `'G2'`.
    * @returns A new sheet; this one does not change. For a sheet of several faces, extend one of its
-   *   faces (`sheet.faces()[i].extended(...)`).
+   *   faces (`sheet.faces()[i].extend(...)`).
    */
   extend(distance: number, options: { sides?: Edge | Iterable<Edge> | null; continuity?: string } = {}): this {
     _opts('Shell.extend', options)
     const faces = this.faces()
     if (faces.length !== 1) {
-      throw new RangeError(`extend: the sheet has ${faces.length} faces; extend one of them with sheet.faces()[i].extended(...)`)
+      throw new RangeError(`extend: the sheet has ${faces.length} faces; extend one of them with sheet.faces()[i].extend(...)`)
     }
     return this._like(_extendedFace(faces[0], distance, options.sides ?? null, options.continuity ?? 'natural', 'extend'))
   }
@@ -8547,14 +8645,14 @@ export class Shell extends _Body {
 
   /** Raise or sink a region of a face of the sheet: see `Part.warp`. Returns a new sheet; a Sketch's
    * comes back as a Shell. */
-  warp(face: Face, region: unknown, by: number | VectorLike, options: { continuity?: string } = {}): Shell {
+  warp(face: Face, region: RegionLike, by: number | VectorLike, options: { continuity?: string } = {}): Shell {
     _opts('Shell.warp', options)
     return _checked(this, _warp(this, face, region, by, options.continuity ?? 'G2'), 'warp')
   }
 
   /** Press a region of a face of the sheet onto a plane: see `Part.flatten`. Returns a new sheet; a
    * Sketch's comes back as a Shell. */
-  flatten(face: Face, region: unknown, plane: Plane | Face, options: { continuity?: string } = {}): Shell {
+  flatten(face: Face, region: RegionLike, plane: Plane | Face, options: { continuity?: string } = {}): Shell {
     _opts('Shell.flatten', options)
     return _checked(this, _flatten(this, face, region, plane, options.continuity ?? 'G2'), 'flatten')
   }
@@ -8566,14 +8664,15 @@ export class Shell extends _Body {
     }))
   }
 
-  /** The sheet trimmed by parts: the pieces outside them (Python's `sheet - part`). */
-  cut(...others: unknown[]): Shell {
+  /** The sheet trimmed by parts: the pieces outside them (Python's `sheet - part`). (`Sketch.cut`
+   * takes sketches: the type names both.) */
+  cut(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
     return this._trimmed(others, k.BooleanOp.DIFFERENCE, 'cut')
   }
 
   /** The sheet trimmed by parts: the pieces inside them (Python's `sheet & part`; also
    * `part.intersect(sheet)`). */
-  intersect(...others: unknown[]): Shell {
+  intersect(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell {
     return this._trimmed(others, k.BooleanOp.INTERSECTION, 'intersect')
   }
 

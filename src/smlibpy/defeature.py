@@ -74,6 +74,9 @@ def _guarded(what: str, work: Callable[[], R]) -> R:
         warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
         pid = os.fork()
     if pid == 0:  # pragma: no cover - the child
+        from ._guard import _quiet_crashes
+
+        _quiet_crashes()
         code = 0
         try:
             work()

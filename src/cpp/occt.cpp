@@ -206,9 +206,8 @@ OcctRead occt_read(const std::string& data, const OcctReadOptions& options)
 
     OcctRead out;
     if (read < found.bodies)
-        out.warnings.push_back(n_of(found.bodies - read, "solid, shell or face", "solids, shells and faces") + " of the " +
-                               std::to_string(found.bodies) + " in the file cannot be read and " +
-                               (found.bodies - read == 1 ? "is" : "are") + " left out");
+        out.skipped.push_back(n_of(found.bodies - read, "solid, shell or face", "solids, shells and faces") + " of the " +
+                              std::to_string(found.bodies) + " in the file cannot be read");
     if (found.curves || found.points)
         out.warnings.push_back("the file also holds " +
                                (found.curves ? n_of(found.curves, "wire or edge", "wires and edges") + " outside faces" : "") +
@@ -349,10 +348,12 @@ void bind_occt_files(py::module_ m)
         py::dict out;
         out["bodies"] = bodies;
         out["warnings"] = py::cast(got.warnings);
+        out["skipped"] = py::cast(got.skipped);
         return out;
     }, py::arg("data"), py::arg("heal") = false, py::arg("check") = true,
        "The bodies of an OpenCASCADE .brep file's contents (ASCII or binary bytes): {'bodies': [brep, ...] (one per "
-       "solid, shell and face, in the file's order), 'warnings': [...]}. heal: the kernel's import healer; check: "
+       "solid, shell and face, in the file's order), 'warnings': [...], 'skipped': [what cannot be read, left out]}. "
+       "heal: the kernel's import healer; check: "
        "refuse bodies with gaps above 1e-3 of their size.");
     m.def("occt_text", [](const std::vector<SmBrep*>& breps) { return smlibpy::occt_text(breps); }, py::arg("breps"),
           "The ASCII OpenCASCADE .brep text of bodies (a compound when there are several).");

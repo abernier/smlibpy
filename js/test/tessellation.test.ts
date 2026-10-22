@@ -530,3 +530,11 @@ test('mesh Booleans on any mesh', () => {
   assert.throws(() => new _Mesh([0, 0, 0], []).fuse(tet), /triangles/)
 })
 
+
+
+test('mesh volumes keep their digits far from the origin', () => {
+  for (const d of [0, 1e6, 1e7]) {
+    const m = _Box(10.3, 10.7, 10.1).translate(d, d, d).mesh(0.01)
+    approx(m.volume, 10.3 * 10.7 * 10.1, 1e-9)
+  }
+})

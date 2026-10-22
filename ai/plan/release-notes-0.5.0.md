@@ -32,8 +32,8 @@ Results that were wrong now raise an error:
   run; chamfers refuse an edge whose angle changes along it
   ([more](#radius-laws-and-chamfers-that-raise)).
 - `shell`, `offset` and `thicken` refuse results with gaps, without a cavity or of the wrong volume,
-  and walls that do not fit; a step longer than 20 s is stopped
-  ([more](#shells-and-offsets-that-raise)).
+  and walls that do not fit; a step longer than 20 s is stopped, and so are fillets and chamfers of
+  parts read from files and `cells()` ([more](#shells-and-offsets-that-raise)).
 - Sweeps, extrusions and tapers that made bodies through themselves, open bodies or bodies shorter
   than asked raise; an extrusion direction in the sketch plane is a `ValueError`
   ([more](#sweeps-and-extrusions-that-raise)).
@@ -42,8 +42,9 @@ Results that were wrong now raise an error:
   ([more](#2d-booleans)).
 - `Wire.fillet` raises for points that are not corners, and rounds corners at arcs and splines
   ([more](#wirefillet)).
-- `import_usd` refuses malformed values and broken bodies of other software; an empty body cannot be
-  meshed or written to USD ([more](#usd), [more](#empty-bodies)).
+- `import_usd` leaves out (or with `strict=True` refuses) malformed values and broken bodies of
+  other software; an empty body cannot be meshed or written to USD ([more](#usd),
+  [more](#empty-bodies)).
 
 Defaults and results that changed:
 
@@ -52,7 +53,7 @@ Defaults and results that changed:
 - `unfold`, `flat_pattern` and `bends` take each bend's own K-factor; the default `k_factor` is
   `None` ([more](#k-factors)).
 - `stitch` closes gaps up to `tolerance` only, returns Parts when closed and turns open sheets to
-  agree ([more](#stitch)).
+  agree ([more](#stitch)); a mirrored sheet faces as the sheet does ([more](#mirrored-sheets)).
 - `Edge.intersections` has a tolerance that scales with the size, returns `[]` for no hit and each
   point once ([more](#edge-intersections)).
 - `import_step` leaves out a body it cannot read, with a warning, and stitches bodies whose faces
@@ -284,7 +285,7 @@ part.fillet(edges, 2, continuity="G2")               # a blend needs a constant 
 ```
 
 ```js
-part.fillet(edge, [1, 2], { propagate: false })
+part.fillet(edge, { start: 1, end: 2 }, { propagate: false })   // an array is a radius per edge
 ```
 
 #### Chamfers of circles are cones
@@ -312,7 +313,11 @@ gaps of 1e-3 of the volume or more, shells without a cavity (`(Box(20, 20, 10) -
 fit across the part (also turned parts: `Box(40, 30, 10).rotate(X, 45).shell(6)` gave two 6 mm walls
 in a 10 mm part). They raise `ModelingError` with what was built. The kernel steps run in another
 process (a forked copy, a helper process on Windows; smlibwasm: a probe worker), and a step longer
-than `GUARD_SECONDS` (20 s) is stopped (O1, N1):
+than `GUARD_SECONDS` (20 s) is stopped (O1, N1). So are the fillets and chamfers of parts read from
+files and the stitcher of `cells()`, which had no time limit in 0.4: a large imported part whose
+fillet takes longer than 20 s raises `ModelingError` "fillet: the kernel did not finish within 20 s;
+smlibpy.defeature.GUARD_SECONDS sets the limit" (smlibwasm: "...; setGuardSeconds(seconds) sets the
+limit"). Raise the limit for such parts:
 
 ```python
 import smlibpy.defeature
@@ -358,12 +363,20 @@ offset(sheet, 2)                 # 0.4: AttributeError; now the offset sheet
   its size (a triangle at 30 degrees: 845.8564, it was 839.8564). Along a single full circle whose
   plane faced against the path's start it is no longer mirrored (S8: 279.6017, it was 285.8849).
 
-There is no option for the old frames. Drop workarounds; to put another point of the profile on the
-path, draw the profile around it:
+There is no option for the old frames, and the profile's box center always sits on the path:
+moving the sketch first changes nothing, in 0.4 as in 0.5 (`anchor=` is under Not done). Drop
+workarounds; to place the profile elsewhere, move the path (along a helix: its radius).
+
+- A thread tooth whose base lies exactly on the rod's surface only touches the rod now that the
+  tooth keeps its attitude, and `rod + thread` raises `KernelError` ("the operands touch only along
+  an edge, at a point or tangentially"; in 0.4 the rolling tooth cut into the rod). Sink the base a
+  little into the rod: a helix radius 0.05 below rod radius + half the tooth's width.
 
 ```python
 thread = sweep(Rectangle(2, 1), h)                     # 0.4: a loft through placed copies, 8 a turn
-body = sweep(tri.translate(-cx, -cy, 0), path)         # the point (cx, cy) of the profile on the path
+tooth = Polygon((0, -0.8), (0, 0.8), (1.2, 0))         # 1.2 wide, its base at x = 0
+thread = sweep(tooth, Helix(pitch=2, height=16, radius=5.55, center=(0, 0, 2)))  # 0.4: radius=5.6
+screw = Cylinder(5, 20, align=(Align.CENTER, Align.CENTER, Align.MIN)) + thread  # 1809.8079, one solid
 c = tri.bbox().center                                  # 0.4's mirrored body along a full circle:
 body = sweep(tri.mirror(Plane(c, z_dir=(1, 0, 0))), Circle(15).edges()[0])
 ```
@@ -483,7 +496,8 @@ except ModelingError:            # 0.4: a region of the wrong area, no error
 
 `Part.project` returns `[]` for a curve that misses the body (it raised `KernelError`), and its
 pieces are fitted within 1e-7 of the size, with more control points (C12). smlibwasm:
-`project(curve, direction, { nearest })`, and `Face.iso(u, v)` is positional (`iso(null, 0.5)`).
+`project(curve, direction, { nearest })`, and `Face.iso` takes its parameter by name
+(`iso({ v: 0.5 })`; Python `iso(v=0.5)`).
 
 ```python
 pieces = part.project(curve)        # 0.4: try/except KernelError
@@ -506,6 +520,17 @@ shell = stitch(skin, walls).flipped().thicken(1.5)           # the other side of
 
 ```js
 const [body, report] = stitch(...pieces, { tolerance: 0.2, report: true })
+```
+
+#### Mirrored sheets
+
+The normals of a mirrored sheet (a `Shell`) are the mirror of the sheet's: a dome mirrored about YZ
+still faces up and out. They pointed to the other side (`Shell.mirror` turned the sheet inside
+out), so a mirrored half of a symmetric sheet faced the other way than its half, and `thicken`
+grew it to the other side. Mirrored parts and sketches are unchanged. For 0.4's normals:
+
+```python
+half = sheet.mirror(Plane.YZ).flipped()     # 0.4's mirrored sheet
 ```
 
 #### Shell.heal
@@ -565,14 +590,22 @@ d = part.distance_to(edge)          # 0.4: TypeError
   M12).
 
 ```python
-pos = accessor_positions(doc, mesh=0) + doc["nodes"][0].get("translation", [0, 0, 0])
+from smlibpy.exporters import gltf_document
+
+doc, buf = gltf_document(part)
+prim = doc["meshes"][0]["primitives"][0]                        # (one per face color, mode 4)
+acc = doc["accessors"][prim["attributes"]["POSITION"]]
+view = doc["bufferViews"][acc["bufferView"]]
+positions = np.frombuffer(buf, np.float32, 3 * acc["count"], view["byteOffset"]).reshape(-1, 3)
+positions = positions + doc["nodes"][0].get("translation", [0, 0, 0])   # (the node's translation)
 acc = doc["accessors"][prim["indices"]]
 index = np.frombuffer(buf, np.uint16 if acc["componentType"] == 5123 else np.uint32,
                       acc["count"], doc["bufferViews"][acc["bufferView"]]["byteOffset"])
 tris = positions[index].reshape(-1, 3, 3)                       # 0.4: positions.reshape(-1, 3, 3)
-triangles = [p for p in doc["meshes"][0]["primitives"] if p["mode"] == 4]   # one per face color
-srgb = 1.055 * c ** (1 / 2.4) - 0.055                           # a color read back (12.92 * c below 0.0031308)
-a, b, c = (int(x.split("/")[0]) for x in line.split()[1:])     # an OBJ face line
+c = np.array(doc["materials"][prim["material"]]["pbrMetallicRoughness"]["baseColorFactor"][:3])
+srgb = np.where(c <= 0.0031308, 12.92 * c, 1.055 * c ** (1 / 2.4) - 0.055)   # the color as 0.4 wrote it
+line = "f 1//1 2//1 3//1"                                       # an OBJ face line now
+a, b, c = (int(x.split("/")[0]) for x in line.split()[1:])
 ```
 
 #### Mesh Booleans and points
@@ -705,10 +738,13 @@ warnings.filterwarnings("ignore", "export STEP")
 - `import_usd` places bodies as the stage has them (X2): `xformOp`s, `metersPerUnit` (to mm),
   `upAxis` (to Z up), subLayers, references and payloads; inactive, abstract and over-only prims
   hold no bodies; bodies of prims with the same leaf name are named by their path.
-- Malformed values raise `ValueError` naming prim, body and rule (X1), and bodies of other software
-  are checked by the kernel before they are measured (X6): gaps over 1e-3 of the size raise, smaller
-  ones warn; `check=False` reads them as they are. `partial=True` leaves out bodies that cannot be
-  read (X7), and the `KernelError` of one names it.
+- A body that cannot be read is left out with a `RuntimeWarning` that names it and says why, and
+  the others are read, as `import_step`, `import_iges` and `import_brep` do (X7); a file with no
+  readable body raises `ModelingError`. `strict=True` raises for the first one instead, as 0.4 did
+  (it raised a bare `KernelError` for a body the kernel could not build): malformed values a
+  `ValueError` naming prim, body and rule (X1), a body the kernel's check refuses a `ValueError`
+  (X6: gaps over 1e-3 of the size; smaller ones warn; `check=False` reads them as they are), one it
+  cannot build a `KernelError` that names it.
 - Names: a body is named by its prim's `displayName`, which smlibpy writes for names that are no
   prim names ("Bracket #1 (left)", "Größe", X3).
 - Edges: lines, circles and ellipses are written as the schema's analytic edges (X5); readers that
@@ -721,13 +757,14 @@ warnings.filterwarnings("ignore", "export STEP")
 
 ```python
 import_usd("a.usda", units="mm", placement=False)       # 0.4's reading of a stage
+import_usd("broken.usda", strict=True)                    # raise for a body that cannot be read
 import_usd("broken.usda", check=False)                    # read bodies the check refuses
 export_usd(part.to_nurbs(), "p.usda", mesh=False)        # B-spline edges and faces only, as 0.4
-warnings.filterwarnings("ignore", "load: .* also holds")
+warnings.filterwarnings("ignore", ".*also holds")         # (load, import_usd, from_usd, from_smb, from_smp)
 ```
 
 ```js
-importUsd('a.usda', { units: 'mm', placement: false, check: false, partial: true })
+importUsd('a.usda', { units: 'mm', placement: false, check: false, strict: true })
 ```
 
 #### SMB and SMP
@@ -793,19 +830,22 @@ except ModelingError as e:                     # a wrong result refused; str(e) 
   `fit_curve`, `swing`, `unroll`, `drawing_views`, `export_svg`, `to_svg`, `import_iges`,
   `from_iges`, `import_brep`, `export_brep`, `to_brep`, `from_brep`, `to_step`, `from_step`,
   `from_step_model`, `to_stl`, `from_stl`, `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `from_dxf`,
-  `from_dxf_wires`, `to_usd`, `from_usd`, `to_smb`, `from_smb`, `to_smp`, `from_smp`, and the
+  `from_dxf_wires`, `to_usd`, `from_usd`, `to_smb`, `from_smb`, `to_smp`, `from_smp`, `to_file`,
+  `from_file`, and the
   classes `AnnularSector`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spiral`, `StitchReport`,
   `FitReport`, `Problem`, `ClosestPoints`, `Curvature`, `Continuity`, `NurbsSurface`,
-  `SectionProperties`, `DrawingView`, `StepFrame`, `StepCurve`, `StepPoint`.
+  `SectionProperties`, `DrawingView`, `StepFrame`, `StepCurve`, `StepPoint`, `RepairReport`.
 
   ```python
   rounding = surface_fillet(floor, wall, 5)    # a variable named blend would hide the new function
   ```
 - Kernel steps that can crash run in another process (N1): `remove_fillets`, `remove_faces`,
   `surface_fillet`, `shell`, `offset`, `thicken`, `cells()`, and fillets and chamfers of parts read
-  from files. Each step runs once there (it ran again in this process). On Windows they run in a
-  helper process (`GUARD_PROCESS`), where a crash is a `ModelingError`. Code that replaced kernel
-  functions to test them runs the steps in this process:
+  from files. Each step runs once there (it ran again in this process), and is stopped after
+  `GUARD_SECONDS` (20 s; fillets of imported parts and `cells()` had no limit in 0.4), with a
+  `ModelingError` that says so. On Windows they run in a helper process (`GUARD_PROCESS`), where a
+  crash is a `ModelingError`. Code that replaced kernel functions to test them runs the steps in
+  this process:
 
   ```python
   monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)   # the kernel in this process
@@ -875,6 +915,15 @@ geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3))
 
 Booleans and cells:
 
+- Mirrored bodies with a cavity, cells or open sheets came out inside out where it shows (also in
+  0.4): `(Box(20, 20, 20) - Box(10, 10, 10)).mirror(Plane.YZ)` meshed to 9000 for 7000 (STL, OBJ
+  and glTF got an inverted cavity), its cavity walls' `normal_at()` pointed into the material and
+  their 12 edges read convex; `Box(60, 40, 20).mirror(Plane.YZ).shell(2)` meshed to 80256 for 15744;
+  a mirrored rounded box could not be shelled with an open top (O3), a mirrored pin's chamfer was the
+  kernel's fitted bevel (F12: 30.8287005 for 30.8290435), and mirrored sheet metal did not unfold
+  (D1, D3). The volume and `check()` were right. A mirror now turns every face back over
+  (`SmBrep::Mirror` turned their surfaces) and gives straight and circular edges their lines and
+  circles again.
 - Moved, rotated, mirrored and scaled bodies keep their tolerances (B1). Every transform reset them
   from the box of the body's vertices: a torus (one vertex) got tolerance 0, parts over 500 mm 1e-4.
   An O-ring groove `Cylinder(10, 40) - Torus(10, 1.5).translate(0, 0, 10)` was ignored (12566.37,
@@ -983,9 +1032,12 @@ Sketches and curves:
 
 Surfaces:
 
-- B-spline faces with a bump are no longer taken for planes (U1): `to_shell()`, `.smb` files,
-  `thicken()` and meshes flattened a face parameterized like a plane with a bump between the
-  kernel's sample points (10 of 40 random bumps).
+- B-spline faces with a bump are no longer taken for planes (U1), nor for cylinders, cones,
+  spheres, or surfaces of revolution or extrusion: `to_shell()`, `.smb` files, `thicken()`, meshes,
+  mirrors and scales that differ between the axes flattened a face parameterized like a plane, or
+  shaped like a cylinder, with a bump between the kernel's sample points (10 of 40 random bumps of
+  a plane; a cylinder sheet with its first quarter pushed out by 0.5 came back the cylinder: area
+  314.16 for 316.27, also from a `.smb` file of 0.4).
 - `stitch` ignored its tolerance (U5): the faces of a 200 mm box moved apart by 0.03 came back as a
   "valid" Part with `tolerance=1e-4`, its faces standing off their edges; open results kept mixed
   normals, so `thicken` gave volume 0.
@@ -997,7 +1049,8 @@ Meshes and drawings:
 - Meshes keep their tolerance (M2): a sphere's mesh was 0.68 off at a tolerance of 0.01, and a grid
   could miss a free-form bump between its lines.
 - Mesh points keep double precision (M3): a sphere 100 m from the origin was meshed 3.8 times the
-  tolerance off, a box 1 km out had mesh volume 1107.72 for 1113.12.
+  tolerance off, a box 1 km out had mesh volume 1107.72 for 1113.12. `Mesh.volume` takes its triple
+  products about the middle of the box: 10 km out it measured 1113.0637 for 1113.121.
 - Normals at the apex of a cone are right (MESH-APEX): the corner at the tip of `Cone(10, 0, 20)`
   had a normal up to 127 degrees off the surface (a dark wedge in glTF, the viewer and `render`);
   now within 0.02 degrees.
@@ -1137,6 +1190,11 @@ Python:
 - Revolves, lofts, open extrusions, tapers, offsets of sketches and mitered sweeps leaked the curve
   copies they gave the kernel, 320 to 2350 bytes a call (S11, N2): 1500 revolves +1.98 MB, now +0.15
   MB.
+- A Boolean that failed while the kernel intersected its operands (`SM_ERR_BAD_INTERSECTIONS` and
+  others from `IntersectTopology` and `ResolveIntersections`) kept the kernel's intersection
+  manager and its curves: about 450 kB per failed Boolean of crossing holes (kernel patch,
+  `SmTopologyIntersector.cpp`). The sweeps' clean-up of fused loops kept every copy it failed on:
+  73 to 262 kB per failed sweep.
 - smlibwasm: meshes kept the kernel's mesh until the garbage collector ran (W3): 60 meshes of a fine
   sphere failed with `std::bad_alloc` at the 51st. Each caught C++ exception kept 108 bytes (W8).
   The port's own intermediates (refused results, tool copies, sketch curves) stayed until the event
@@ -1207,8 +1265,9 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 
 ### Curves and sketches ([sketches](../../docs/sketches.md))
 
-- `Edge.trim(start, end)`, `Edge.split(at)`, `Wire.trim`, `Wire.split`, `Edge.param_at(point)`,
-  `Edge.param_at_point(point)`, `Edge.closest_point(point)`, `Wire.closest_point(point)` (C2, A2).
+- `Edge.trim(start, end)`, `Edge.split(at)`, `Wire.trim`, `Wire.split`, `Edge.param_at_point(point)`
+  (build123d's name: the fraction of the nearest point), `Edge.closest_point(point)`,
+  `Wire.closest_point(point)` (C2, A2).
 - `Edge.extend(distance, *, end="end", continuity="G1")` and `Wire.to_edge()` (C6).
 - `Edge.intersections(other, *, tolerance=None)` with edges, wires, faces and bodies,
   `Edge.intersection_params`, `Wire.intersections`, `Edge.self_intersections()` (C5).
@@ -1217,8 +1276,9 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   along splines and ellipses (C7).
 - `fit_curve(points, *, tolerance=None, degree=3, tangents=None, closed=False)`: a B-spline within a
   tolerance of every point; `Spline(..., tangents=[...])` with a direction per point (C8).
-- `Edge.curvature_at(t)`, `Edge.radius_at(t)`, `Edge.min_radius()`, `Edge.inflections()`,
-  `Wire.min_radius()`, `Edge.continuity()`, `Wire.continuity()` (C9, A4).
+- `Edge.curvature_at(t)`, `Edge.radius_at(t)`, `Edge.min_radius()` and `Edge.min_radius_at()` (a
+  float and its fraction, as `Face.min_radius()` is a float), `Edge.inflections()`,
+  `Wire.min_radius()`, `Wire.min_radius_at()`, `Edge.continuity()`, `Wire.continuity()` (C9, A4).
 - `Edge.to_arcs(tolerance=0.01)`, `Wire.to_arcs`, and `export_dxf(..., curves="arcs")`: lines and
   arcs for CNC (C10).
 - `Edge.from_nurbs(nurbs)`: an edge from degree, knots, control points and weights (C11).
@@ -1245,7 +1305,7 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   of curves, tangent to the sheets of its edges, and surfaces through curve networks (U4).
 - `stitch(..., report=True)` and `StitchReport`; `Shell.flipped()`, `Face.flipped()`,
   `Sketch.flipped()` (U5).
-- `Face.extended(distance, *, sides=None, continuity="natural")`, `Shell.extend(...)`,
+- `Face.extend(distance, *, sides=None, continuity="natural")`, `Shell.extend(...)`,
   `Face.untrimmed()` (U6).
 - `Part.push(face, at, *, by=None, to=None, normal=None, radius=None, continuity="G1")`, also on
   `Shell`: a smooth dent or bump at a point, the face's edges in place (U7).
@@ -1254,7 +1314,9 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 - `Shell.match_edge(edge, target, *, extent=0.25)`: an edge of a sheet moved onto a curve (U9).
 - `Shell.merge_faces(a, b)`: two faces that share a side made one (U10).
 - `surface_fillet(..., radius2=None, shape="round" | "chamfer")` (U12).
-- `nurbs_surface(points, knots=None, degrees=None, weights=None)`: a surface from NURBS data (U13).
+- `nurbs_surface(points, knots=None, degrees=None, weights=None)` and `Shell.from_nurbs(nurbs)` (the
+  data in `NurbsSurface`'s order, as `Edge.from_nurbs` takes a curve's): a surface from NURBS data
+  (U13).
 - `intersection_curves` with a `Plane` or a `Face` (U14).
 - `surface(..., report=True)` and `FitReport`: how far each point of a fit lies from the surface
   (U15).
@@ -1277,14 +1339,16 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   wires, with their faces; `distance_to` of faces, edges and wires (A2).
 - `Face.curvature_at(point)` and `Curvature`, `Face.min_radius()`, `Face.nurbs()` and
   `NurbsSurface`, `Face.position_at(u, v)`, `Face.uv_at(point)`, `Face.closest_point(point)`,
-  `Face.isocurve(u=, v=)`, `Face.iso(u=, v=)`, `Face.major_radius`, `Face.cone_angle` (A3, C12).
+  `Face.iso(*, u=, v=)` (smlibwasm `iso({ u, v })`), `Face.major_radius`, `Face.cone_angle` (A3,
+  C12).
 - `Edge.continuity()` and `Continuity`: G0, G1 or G2 across an edge, with the gap, angle and
   curvature jump (A4).
 - `MassProperties.inertia_about(point)`, `moment_about(axis)`, `radii_of_gyration` (A6).
 - `Part.project(curve, direction, *, nearest=False)`: only what the curve sees;
   `Face.project(curve)` (normal projection), `Face.wrap(shape, at=None)` (a drawing laid onto a
   face, lengths kept) (C12).
-- `outline(plane, *, hidden=False, tangent_edges=False)`: the hidden lines of a view too (M4).
+- `outline(plane, *, hidden=False, tangent_edges=False)`: the hidden lines of a view too, with
+  exact lines and circles where the projections are such (M4).
 - `raycast_many(origins, directions)` of bodies and meshes: the first hit of many rays at once (M5).
 - `compact()`: free what queries kept on a body (N9).
 
@@ -1295,7 +1359,8 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 - `Mesh.section(plane)`, `Mesh.slices(step)`, `Part.slices(step)`: sections chained into wires,
   sketches per layer (M7).
 - `Mesh.to_part(max_faces=5000)` and `Part.from_mesh(mesh)`: faceted parts of closed meshes (M8).
-- `Mesh.fill_holes()` and `Mesh.repaired()`: holes closed, points merged, triangles turned (M9).
+- `Mesh.fill_holes()` and `Mesh.repaired()` and `RepairReport`: holes closed, points merged,
+  triangles turned (M9).
 - `max_edge=` on `tessellate`, `mesh()` and the mesh exporters (M10).
 - `Mesh.mass_properties(density)`, `Mesh.centroid` (M11).
 - `Mesh.translate`, `rotate`, `mirror`, `scale`, `moved` and `Mesh.dispose()` (M1, W3).
@@ -1321,19 +1386,21 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 
 - IGES: `import_iges(path, *, heal=True, strict=False)`, `from_iges`, and `load` of `.igs` and
   `.iges`: solids and trimmed surfaces, in mm, named and colored (I14).
-- OpenCASCADE `.brep`: `export_brep`, `to_brep`, `import_brep(path, *, heal=False, check=True)`,
+- OpenCASCADE `.brep`: `export_brep`, `to_brep`, `import_brep(path, *, heal=False, check=True, strict=False)`,
   `from_brep`, and `.brep` in `export` and `load`: exact bodies for build123d, CadQuery and FreeCAD
   (X14).
 - SMLib part files: `save(shapes, "x.smp")`, `load`, `to_smp`, `from_smp`: several bodies and curves
   with names and colors (X9).
 - Files in memory (*Python*): `to_step`, `from_step`, `from_step_model`, `to_stl`, `from_stl`,
   `to_obj`, `to_glb`, `to_gltf`, `to_dxf`, `from_dxf`, `from_dxf_wires`, `to_usd`, `from_usd`,
-  `to_smb`, `from_smb`, `to_smp`, `from_smp`, `from_iges`, `to_brep`, `from_brep` (X11).
+  `to_smb`, `from_smb`, `to_smp`, `from_smp`, `from_iges`, `to_brep`, `from_brep` (X11), and
+  `to_file(shapes, name)` and `from_file(data, name)`, which pick the format from a name's extension
+  as `export` and `load` do (smlibwasm `toFile`, `fromFile`).
 - STEP: `import_step(..., strict=False)`, `read_step(..., strict=False)`, `StepModel.skipped` (I6);
   `export_step(..., assembly=True)`: a product per body under a root (I10); `export_step` of edges,
   wires, points and planes, and `StepCurve`, `StepPoint`, `StepFrame` (I12); offset surfaces written
   exactly (I11); face colors and names in and out (T5).
-- USD: `import_usd(path, *, units=None, placement=True, check=True, partial=False)` (X2, X6, X7);
+- USD: `import_usd(path, *, units=None, placement=True, check=True, strict=False)` (X2, X6, X7);
   `export_usd(..., materials=True)` (X12); analytic edges (X5); names of any characters (X3).
 
 ### smlibwasm ([JavaScript](../../docs/javascript.md))
@@ -1363,9 +1430,12 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 ### For contributors and the raw layer
 
 - `tools/fuzz/`: a seeded fuzz run of Booleans, fillets, shells, offsets and slices in both builds,
-  with invariants and a baseline (N3).
-- `tools/sanitize/run.py`, `tools/oracles/` (upstream's `prog_test` suites, SmPyLib's tests, 200
-  `.smb` files, crash loops, NVIDIA's USD validator on a shim) and the "Checks" workflow (N2, N4).
+  with invariants and a baseline (N3); pull requests run the seeds 7 and 8, the nightly run the
+  day's date too.
+- `tools/sanitize/run.py` (AddressSanitizer and LeakSanitizer over the tests of the patched kernel
+  code and of smlibpy's C++; pytest's verdict counts), `tools/oracles/` (upstream's `prog_test`
+  suites, SmPyLib's tests, 200 `.smb` files, crash loops, NVIDIA's USD validator on a shim) and the
+  "Checks" workflow (N2, N4).
 - `tools/parity.py`: smlibwasm's writers and modelling steps against smlibpy's golden files (N5).
 - New `ext` calls of both builds, among them `classify_points`, `boolean` (it clears the kernel's
   Boolean mark and leaves the operands to the caller on failure; it can return a new Brep),
@@ -1376,8 +1446,8 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 - smlibwasm's option table (`js/src/_options.ts`) is generated from Python's signatures (W5): after
   adding or renaming a keyword in Python, run `python tools/gen_js_options.py`;
   `tests/test_js_options.py` and `js/test/options.test.ts` fail until it is current.
-- Kernel patches: fifteen kernel files are built from patched copies in `third_party/patches`
-  (twelve more than in 0.4, among them a header, `SmMessages.h`), each listed with what it was
+- Kernel patches: sixteen kernel files are built from patched copies in `third_party/patches`
+  (thirteen more than in 0.4, among them a header, `SmMessages.h`), each listed with what it was
   measured to change and confirmed with AddressSanitizer where it fixes a memory defect.
 
 ## Behaviour changes
@@ -1407,7 +1477,10 @@ construction gets the result:
 - Queries: `Part.project` of a curve that misses (C12), `intersection_curves` of bodies apart (U14),
   `distance_to` of edges, wires and faces (A2), `Face.interior_point()` of narrow imported faces
   (I9).
-- Sheet metal: rolled parts, curls, end bends and bends over 180 degrees unfold (D3).
+- Sheet metal: rolled parts, curls, end bends and bends over 180 degrees unfold (D3); mirrored
+  sheet metal parts and files with B-spline edges unfold as 0.4 unfolded them.
+- Molding: `Torus(10, 3).parting_line((-1, 0, 0))` returns the parting line (it raised "a face
+  still faces both ways", M4).
 - Files: STEP files with O-rings (I3), cavities whose faces leave gaps (I4), or one unreadable body
   (I6); `export_step` of edges, wires, points and planes (I12); `load` of `.igs`, `.iges`, `.smp`
   and `.brep`.
@@ -1421,9 +1494,12 @@ New warnings (`RuntimeWarning`; smlibwasm: `setWarningHandler`), which scripts t
 into errors filter: a STEP body left out, stitched or not repairable (I5, I6); `export_step`
 converting a body to NURBS (I11); a USD body with gaps below the limit (X6) or of mixed dimension
 (X13); an extrusion direction close to the sketch plane (S14); a planar sweep path swept piece by
-piece (S6); an asymmetric profile on a mitered path with a spline (S2); `max_edge` that leaves a
-twisted face off the tolerance (M10); `distance_to` whose points do not settle (A1); a helper
-process that does not start (N1); smlibwasm's first kernel crash (W10).
+piece (S6); an asymmetric profile on a mitered path with a spline (S2); a sweep along a helix whose
+profile could not keep its attitude to the axis, and a profile that could not be carried along a
+3D path and was swept turned to each edge's start (S3, S1: "the profile could not ..."); `max_edge`
+that leaves a twisted face off the tolerance (M10); `distance_to` whose points do not settle (A1);
+a helper process that does not start (N1); a `.brep` body left out (X14); smlibwasm's first kernel
+crash (W10).
 
 Other differences:
 
@@ -1451,11 +1527,27 @@ Other differences:
   results.
 - MCP: the search ranks `Part.warp` before `Lattice` for "warp the part" and knows new synonyms;
   `save` writes `smp` and `brep`.
+- A tapered extrusion carries the sketch's name and color, as a plain extrusion does (S9; it had
+  none).
+- `bbox()` of a part bent with `bend` grows by about 1e-5 across the bend, where the exact cylinders
+  replace the fitted faces (D2: the bent bar of deform/bend reads y +-5.00001, it read +-5.0).
+- A USD round trip keeps volumes to 1e-11, not 1e-12 (a cone: 2.8e-12 off), now that edges are
+  written as lines, circles and ellipses (X5).
+- Mirrored bodies (`mirror`, a `Location` or matrix that reflects) are laid out as the body was:
+  their faces' surfaces face as the original's did, and their straight and circular edges are lines
+  and circles (`geom_type` said `bspline`, and `edges().circles()` of a mirrored part found none). A
+  mirrored sheet's normals are the mirror of the sheet's ([more](#mirrored-sheets)). Turning a face
+  back over swaps its u and v, so a mirrored freeform face is meshed with other triangles than the
+  mirror image of the original's mesh, within the same tolerance: the mesh of a mirrored
+  `loft([Rectangle(20, 10), Circle(4).translate((0, 0, 20))])` encloses 2174.682, the original's
+  2175.147 (`mesh(0.01)`; both within 0.005 of the exact faces).
 
 ## Speed and size
 
 Faster:
 
+- A point along a helix of many turns: 9 ms for 1000 turns (it took a second, and sampling 101
+  points 128 s), a curve's arc length walked once per span (C4).
 - An empty intersection of two perforated plates of 168 faces took 11.4 s (smlibwasm 10.9 s), now
   0.12 to 0.18 s (B13).
 - `named()` and `colored()` copy nothing: 0.79 ms to 0.01 ms on a plate of 86 faces, and the next
@@ -1492,6 +1584,14 @@ Slower:
   point take 2 to 18 ms (C1).
 - Seam detection costs at most 0.42 ms per Boolean (B6); the kernel lock about 20 ns per kernel call
   (N8).
+- `silhouette()` computes the whole contour (M4): a rounded block with three holes from (1, 1, 1)
+  24 to 140 ms, the plate of 81 holes 610 to 957 ms (smlibwasm 780 to 1173 ms).
+- `section()` checks that its regions lie in the part (B18): a section of a rounded block 0.9 to
+  1.8 ms, the plate of 81 holes 33 to 52 ms (XY) and 1.0 to 6.7 ms (XZ) (smlibwasm 44 to 71 ms).
+- Copies that add analytic surfaces (`mirror`, `.smb` files, `to_shell()`, offsets and shells)
+  check each recognized surface against the B-spline at points in every knot span (U1); a mirror
+  turns the faces back and gives edges their lines and circles: a plate of 106 faces mirrors in
+  47 ms.
 
 Size:
 
@@ -1528,7 +1628,10 @@ Kernel defects that remain (smlibpy runs the steps that can crash in another pro
   it).
 - Leaks on failure paths: the kernel's mitered planar sweep (about 10 kB a sweep),
   `CreateProtoEdge`, about 4.7 KB per failed extended shell, and a face copy the kernel fails on,
-  kept for the life of the process (T2).
+  kept for the life of the process (T2). And in two kernel steps that succeed: the N-sided fill
+  behind `fill()` of three or five and more sides (`N_FillNSidedHole`, 0.1 to 1 MB per fill), and
+  the fillet executive's corners (`SmFilletCorner::CalcCornerVertGeom`, about 180 kB per fillet of a
+  rounded plate's top run, which `propagate=True` makes common; also in 0.4).
 
 Booleans, cells and topology:
 
@@ -1597,7 +1700,7 @@ Surfaces:
 
 - `blend` of closed edges (U2); `Shell.trim` along a direction, and curves past a B-spline sheet's
   edge (U3); `fill` of mixed loops with `tangent=True`, of steep sheets, N-sided fills tangent to
-  only 1.4 degrees, three-sided tangent fills with a pole (U4); `Face.extended` keeps no trims, and
+  only 1.4 degrees, three-sided tangent fills with a pole (U4); `Face.extend` keeps no trims, and
   sheets of several faces are not extended (U6).
 - `flatten(side=)`, `Shell.bead` and knot removal after a warp; pushes at edges and seams are
   refused (U7, U8). No tangency across `match_edge`'s side edges, no `stitch(match=True)` or

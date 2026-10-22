@@ -228,3 +228,31 @@ def test_surface_fillet_checks():
         surface_fillet(Box(1, 1, 1), floor, 1)
     with pytest.raises(ModelingError, match="meet"):  # parallel planes: nowhere to roll
         surface_fillet(floor, Rectangle(40, 40).translate((0, 0, 50)).faces()[0], 1)
+
+
+
+def test_surfaces_from_nurbs_data_in_their_order():
+    # Edge.from_nurbs takes a curve's data in Nurbs' order; surfaces had nurbs_surface(points, knots,
+    # degrees, weights) only, and nurbs_surface(*face.nurbs()) raised "the control points are rows".
+    sheet = surface([[(x, y, math.sin(x / 10)) for y in range(0, 25, 5)] for x in range(0, 35, 5)])
+    data = sheet.faces()[0].nurbs()
+    for again in (Shell.from_nurbs(data), Shell.from_nurbs(tuple(data)), nurbs_surface(data)):
+        assert isinstance(again, Shell) and again.area == pytest.approx(sheet.area, rel=1e-9)
+    rows = [list(row) for row in data.points]
+    rows[2][2] = Vector(rows[2][2]) + (0, 0, 3)
+    bumped = Shell.from_nurbs(data._replace(points=rows))
+    assert bumped.bbox().max.z > sheet.bbox().max.z + 0.5
+    with pytest.raises(TypeError, match="give a NurbsSurface whole"):
+        nurbs_surface(*data)
+    with pytest.raises(TypeError, match="expected a NurbsSurface"):
+        Shell.from_nurbs(3)
+
+
+def test_fills_of_a_sketch_s_outline_run_through_the_curves():
+    # With tangent=True (the default) the patch was made tangent to the sketch's own region, which it
+    # covers, and raised "the patch folds back over the sheets".
+    assert fill(Circle(5).edges()).area == pytest.approx(math.pi * 25, rel=1e-6)
+    assert fill(Rectangle(10, 10).edges()).area == pytest.approx(100, rel=1e-9)
+    holed = Rectangle(20, 20) - Circle(4)
+    hole = [e for e in holed.edges() if e.geom_type == "circle"]
+    assert fill(hole).area == pytest.approx(math.pi * 16, rel=1e-6)  # (a hole: tangent to the region around it)

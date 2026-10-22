@@ -32,6 +32,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::IntersectTopology` fails on `SM_ERR_BAD_INTERSECTIONS` from `SplitIntersectingProtoEdges` (its other errors stay ignored) | Without it the crossing holes above gave valid bodies of the wrong volume that could not be tessellated (`h1 + h2` 1697.46 instead of 2199.24, OpenCASCADE). |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::DeleteFaces` fails with `SM_ERR_BAD_INTERSECTIONS` rather than delete a shell Vertex whose Shell still owns Faceuses | `SmBrep::DeleteVertex` deletes the Vertex's Shell with it, and the Faces left in that Shell were read when the Brep was post-processed and when it was deleted (AddressSanitizer: freed memory read in `SmEdge::GetBrep` from `SmMerge::BooleanPostProcess`, and in `~SmFaceuse`). `Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)`, a flat end cap tangent to the sphere, killed the process in 3 of 3 runs. |
 | `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::ResolveIntersections` fails on `SM_ERR_BAD_INTERSECTIONS` from `ResolveOverlappingProtoEdges` (its other errors stay ignored) | The group that function cannot take out stays as it is; the Boolean must not go on with it. |
+| `SMLib/src/SmTopologyIntersector.cpp` | `SmTopologyIntersector::IntersectInsertRelate` deletes its ProtoTopologyManager, and the curves of its EdgeDefinitions (`Destruct()`, which only an imprint hands to the Breps), when `IntersectTopology` or `ResolveIntersections` fails | It returned without freeing the manager, which only the success path deleted: every Boolean that failed there lost the manager, its ProtoEdges, EdgeDefinitions and intersection curves, about 450 kB per failed Boolean of the crossing holes above (macOS `leaks`; 0 after). smlibpy's `ext.boolean` falls back to the kernel's own Boolean where a turned seam fails at every angle. |
 | `SMLib/src/SmMerge.cpp` | `SmMerge::BooleanPostProcess` takes only the Vertices still in the Brep (a set made after the Edges are merged, renewed after every Vertex it deletes) | A Vertex deleted earlier was read in `SmVertex::GetEdges` from `IsTopologicalVertex`: `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` killed the process in 11 of 48 runs (the shell's Booleans; 0 of 96 since). |
 | `SMLib/src/SmMerge.cpp` | `SmMerge::ManifoldBoolean` marks the common Vertices again (step 3.2c) when `CloseIntersectionLoop` has deleted one of them, also when it then failed (the Vertices of both Breps taken before and after the call, compared by pointer) | `CloseIntersectionLoop` squeezes coincident Vertices together (`CheckForSqueezeVertices`) before it can fail, and reports deleted topology only when it succeeds; the marking went on with the next Vertex of its list, one it had deleted (AddressSanitizer: a read of freed memory in `SmTopology::Mark`). Fusing the two halves of a tube along some loops closed with a kink, the way `sweep` went before 0.5.0 (and goes again where the profile cannot be carried along), killed the process: 2 of 60 random loops with `Circle(2)`, and one with `Rectangle(4, 1)`. |
 | `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::CreateFilletCorners` fails with `SM_ERR_INVALID_INPUT` when `SmFilletCorner::Create` makes no corner for a vertex, after deleting the list of edgeuses it kept in the corner's place, and names the first such vertex in the executive's error record; `CollectTangentEdgeSequence` walks only to solvers of the executive, each once, and stops where a solver does not end at the corner it came from | `Create` returns no corner for some ways edges meet at a vertex ("Corner Case Not Implemented"), and the executive went on with the vertex's list of edgeuses in `m_vVertexCornerMap` where the corner belonged. `CollectTangentEdgeSequence` and `SmFilletSolver::SetExtensionFlags` then called corner methods on that list (AddressSanitizer: a call to address 0). Filleting the two halves of a box edge that a cone touches tangentially, `(Box(10, 5, 20) - Cone(4, 5, 20))`, killed the process at any radius, and so did all-edge fillets of 7 of 337 imported parts and of upstream's `revolution_mold.smb`; the WebAssembly build trapped. |
@@ -47,12 +48,22 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmShell.cpp` | `SmShell::IsInnerShellOf` takes the ray directions from wire and vertex shells from a generator of its own, seeded the same each call | As above (`srand(time(NULL))`). |
 | `SMLib/src/SmCurve.cpp` | `SmCurve::CalculateTightBoundingBox` adds the knots of a B-spline only where they lie in the interval asked for | It added the last knot (and the tangent breaks) wherever they were: the tight box of an edge whose curve runs past the edge reached the curve's end. A box whose line edges a USD file had written over SMLib's unbounded line interval (-1234567 to 1234567) read back with `bbox()` reaching 1234560, in its edges, faces and every body made from it (the WebAssembly build reached that code only now and then and gave the right box). |
 | `SMLib/src/SmCurve.cpp` | `sm_FilterSolution` (curve/curve intersection) evaluates both curves with their second derivatives | `sm_UnitizeTangent` reads the second derivative where the first is zero, and the function had evaluated only two vectors per curve: a read past the stack array (AddressSanitizer, `SmVector3d::Dot` from `sm_UnitizeTangent`), reached from `SmFace::HasSeamProblem` when `SmBrep::AssertValid` checked a body read from a damaged OpenCASCADE `.brep` file (`import_brep`, `check=True`): usd-brep's `extrusion.brep` with its extrusion direction zeroed, which `tests/test_lane_IX.py::test_brep_check_of_a_curve_with_zero_tangent` reads (the unpatched kernel aborts in it under AddressSanitizer). The value read decided only the direction of a tangent at a zero first derivative. |
+| `SMLib/src/SmBSplineSurface.cpp` | `SmBSplineSurface::CopyAndAddAnalytics` keeps the analytic surface that one of the `IsNurbSurface...` tests found (cone or cylinder, sphere, surface of revolution or of extrusion, plane) only where every point of the B-spline at its knots and at three points inside each knot span (64 even steps across more than 64 spans) lies on it within `SM_EFF_ZERO_SQRT` of the size (`SmSurface::DropPoint`); else an exact copy | The tests compare the surfaces at a few fixed parameters: the cone's at seven points of the iso curves at the ends of the straight direction (`SmCurve::IsArc`). A rational cylinder sheet with the middle control point of its first quarter pushed out by 0.5 (area 316.27) was taken for the cylinder (314.16) by every copy that adds analytic surfaces: `SmBrep::Mirror`, the `.smb` reader, `SmBrep::CopyFaces` (`Face.to_shell`), the offset code (`Shell.thicken`), and the recognition after a scale that differs between the axes (`recognize_analytics`, which samples every span itself now too). The plane test above checks control points; this one covers the other kinds. |
 | `SMLib/src/SmPlane.cpp` | `SmPlane::IsNurbSurfacePlane` also requires every control point to be the candidate plane's point at its Greville abscissae, and takes rational surfaces only with equal weights | With `HIGHER_ORDER_USE_ANALYTICS` (`SmPlane.h`) the test compared the surface with the plane at 13 fixed parameters only. A B-spline face parameterized like a plane with a bump between them was taken for a plane, and every copy that adds analytic surfaces flattened it: `SmBrep::CopyFaces` (`Face.to_shell`), the `.smb` reader, the offset code (`Shell.thicken`) and tessellation. Of 40 random single-pole bumps, `to_shell()` flattened 10. |
 | `SMLib/src/SmPrimitiveCreation.cpp` | `SmPrimitiveCreation::Boolean2D` fails with `SM_ERR_BAD_INTERSECTIONS` when an edgeuse of a coincident edge of either operand lies on no face | After intersecting the two regions it classifies the faces along each coincident edge and read the mark of each edgeuse's face; an edge the intersection had left as a wire edge of a shell has edgeuses without a face, and the call read through a null pointer (address 0x38) and killed the process. A 2D union of two exclusive-or sketches whose faces touch at points crashed in 7 of 13 runs, depending on memory layout (`tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash`); in the WebAssembly build such a read does not trap, it reads whatever lies at that address. smlibpy's checked route (C1) then takes its next way, and the union is right in every run. |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
 build:
 
+- The analytic copies (`SmBSplineSurface.cpp`): the bumped cylinder sheet stays a B-spline through
+  `scale((1, 1, 2))` (632.5432, it came back a cylinder of 628.3185), `.smb` and `to_shell()`
+  (316.2716 for 314.1593); a sheet that is the cylinder is still recognized, and the primitives,
+  fillets and mirrors keep their planes, cylinders, cones and spheres (a mirrored torus is a
+  surface of revolution, as in 0.4: the kernel's torus test is compiled out). A mirror of a plate
+  of 106 faces takes 47 ms. The failed Boolean (`SmTopologyIntersector.cpp`): three failed raw
+  Booleans of the crossing holes lost 1.33 MB (macOS `leaks`), now nothing. AddressSanitizer
+  reports nothing for `tests/test_lane_BT.py`, `tests/test_guards.py`, `tests/test_lane_S.py`,
+  `tests/test_sheet_metal.py` and `tests/test_lane_DA.py` with both changes.
 - The fuse of the halves of the two loops closed with a kink that killed the process raises
   `KernelError` (`fuse failed`) in 10 of 10 runs, and AddressSanitizer reports nothing for 255
   sweeps of random such loops (circles and rectangles, 90 of them with the halves fused as before
@@ -121,7 +132,8 @@ build:
   crashed and in none of the others. AddressSanitizer (random allocations between the calls to
   vary the layout): 6 of 200 processes reported that read before, 0 of 200 after.
   `tests/test_lane_FO.py::test_extended_shells_of_filleted_boxes_keep_their_curves` runs the calls
-  in six processes of their own (with the old kernel it failed in 6 of 9 runs).
+  in 24 processes of their own (5 of 40 such processes crashed with the old kernel, so it fails
+  there with a probability above 95 %; with six processes it failed in 6 of 9 runs).
 - The natural trim curves (`SmSurface::CreateNaturalUVTrimCurves`): crescendo part 65 (shell, then
   offset by +0.5 and -0.5, extended mode, 2 calls per process): before 17 of 40 processes crashed,
   after 0 of 40; AddressSanitizer reported the read in 97 of 100 perturbed processes before, in
@@ -235,9 +247,28 @@ Defects that remain in the kernel, and what smlibpy does about them:
   the curve stops the crash, but the bodies then come out open (a 20 mm cube, all edges r 1,
   setback 1.25: 84 open edges, 4 of its 6 planes gone). Not patched: smlibpy offers no setbacks
   (`corners="mitre"` uses the executive's bevel corners, which are sound).
+- Silent inaccuracies the fuzz baseline (`tools/fuzz/baseline.json`) records, also in 0.4: a cone
+  whose base touches a cylinder's cap, `Cone(3, 0, 16).translate(4.4987, -2, 10) - Cylinder(6, 4)`
+  (fuzz case csg-8-98 E), is valid and 2.9e-6 off (150.79601567, exact 150.79644737); the
+  difference of `Cone(6, 0, 8)` and `Box(8, 10, 16).translate(-2, 1, 0)` (csg-8-157 D) is off in
+  some runs and right in others, depending on memory layout (the fuzz run calls it unsteady).
 - Small leaks on failure paths, not patched: `SmFilletCorner::Create` keeps its list of edgeuses
   when it makes no corner, and a failed extended shell keeps about 4.7 KB of curve copies
-  (`SmOffsetGeometryCreation::ExtendTrimEdges`, found with macOS `leaks`).
+  (`SmOffsetGeometryCreation::ExtendTrimEdges`, found with macOS `leaks`) and the shell's Boolean a
+  line that `SmMerge::MergeEdge` copied; `SmBrep::CopyFaces` loses the copied surface of a face it
+  cannot build again (384 bytes); the fillet executive's circular cross-section solver now and then
+  a skinned surface (144 bytes), and a loft of a composite profile the curve it joined (1 kB).
+  `SmBrepData::FromBrep` (the `.smb` writer and usd-brep's USD export) loses the attribute index
+  arrays of the edges (`sm_ExtractAttributes`): 8 bytes an edge that carries attributes.
+  `tools/sanitize/leaks.txt` lists them (LeakSanitizer, macOS arm64, LLVM 21).
+- Leaks in steps that succeed, not patched (macOS `leaks` with `MallocStackLogging`; also in 0.4):
+  `SmBSplineSurface::CreateNSidedPatch` loses NLib's work arrays (`N_FillNSidedHole`): 0.1 to 1 MB
+  per `fill()` of three or five and more sides (92 kB for three arcs of the review, 0.8 MB for three
+  others, 23 kB for five splines); the fillet executive loses curve caches and copies made for its
+  corners (`SmFilletCorner::CalcCornerVertGeom` through `SmFilletVertex::CalcRailIntEdgeuse`, and
+  `SmFilletExecutive::CreateSmoothEdgeSequence`): about 180 kB per fillet of the top run of a
+  rounded plate, which `propagate=True` makes a common selection, and 24 kB per refused
+  `propagate=False` fillet. `tools/sanitize/leaks.txt` lists them.
 
 ## Checking with AddressSanitizer
 
@@ -246,8 +277,8 @@ configure a separate build directory with
 `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON -DCMAKE_CXX_FLAGS="-fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer"`
 (`-DSKBUILD=ON` keeps its `_core` module in the build directory rather than writing it over the
 one in `src/smlibpy`; `-fsanitize-recover=address` lets a run go on after a report), build it, and
-run `python tools/sanitize/run.py --build <dir> [tests]` (by default `tests/test_defeature.py`,
-`test_guards.py`, `test_draft.py` and `test_io.py`). It puts the module next to a copy of
+run `python tools/sanitize/run.py --build <dir> [tests]` (by default the tests of the guarded and
+patched kernel code and of the C++ added for 0.5.0: `DEFAULT_TESTS` in `run.py`). It puts the module next to a copy of
 `src/smlibpy`, preloads the sanitizer's runtime (`LD_PRELOAD`; on macOS
 `DYLD_INSERT_LIBRARIES`, for which it runs the Python binary itself, not a wrapper such as `env`
 or `timeout`, which drop the `DYLD_` variables), runs every kernel step in the test process
@@ -305,6 +336,10 @@ When an upstream release fixes a defect:
    `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel`, which
    must still pass; for the planar Boolean,
    `tests/test_lane_C.py::test_union_of_touching_xor_sketches_does_not_crash` must still pass; for
+   the analytic copies (`SmBSplineSurface.cpp`), `tests/test_modeling.py::test_bumped_cylinder_sheets_stay_bumped`
+   must still pass; for the intersection manager of a failed Boolean,
+   `tests/test_lane_WN.py::test_failed_booleans_free_the_kernel_s_intersections` must still pass and
+   AddressSanitizer report nothing for `tests/test_lane_BT.py`; for
    the error reports, `tests/test_lane_WN.py::test_kernel_errors_say_where_the_kernel_gave_up`
    (with upstream's header in a release build the trace is empty); for the curve intersection's
    filter, `tests/test_lane_IX.py::test_brep_check_of_a_curve_with_zero_tangent` must pass under

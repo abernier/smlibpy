@@ -36,6 +36,8 @@ xs = np.linspace(0, 60, 600)
 scan = np.c_[xs, 8 * np.sin(xs / 9) + np.random.default_rng(7).normal(0, 0.01, xs.size)]
 profile = fit_curve(scan, tolerance=0.05)          # 32 control points
 print(max(profile.distance_to(tuple(p)) for p in scan))   # 0.043
+angles = np.linspace(0, 2 * np.pi, 120, endpoint=False)               # a scanned closed outline
+outline_points = np.c_[20 * np.cos(angles), 12 * np.sin(angles)]
 blob = make_face(fit_curve(outline_points, tolerance=0.02, closed=True)).extrude(3)
 # through every point, in a given direction at each: Spline with one tangent per point
 s = Spline((0, 0), (10, 0), (20, 10), tangents=[(1, 0), (1, 1), (0, 1)])

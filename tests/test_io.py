@@ -195,6 +195,8 @@ def test_usd_rejects_what_it_cannot_read(tmp_path, plate):
     broken = good.read_text().replace("uniform uint[] faceuse:faceIndex = [", "uniform uint[] faceuse:faceIndex = [99, ")
     (tmp_path / "broken.usda").write_text(broken)
     with pytest.raises(ValueError, match="malformed"):
+        import_usd(tmp_path / "broken.usda", strict=True)
+    with pytest.raises(ModelingError, match="no body of the file can be read: .*malformed"):  # (left out: none left)
         import_usd(tmp_path / "broken.usda")
 
 
@@ -223,7 +225,7 @@ def test_usd_reads_usd_brep_files():
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")  # (bodies the kernel finds problems with)
-                    import_usd(path)
+                    import_usd(path, strict=True)
             except ValueError:
                 pass
     assert seen == len(good)
@@ -231,7 +233,7 @@ def test_usd_reads_usd_brep_files():
     # the check off
     revit = USD_SAMPLES / "usd_TestFiles" / "RevitWallHealerCrash.usda"
     with pytest.raises(ValueError, match="is broken: the kernel finds a gap of 377 .0.033 of its size"):
-        import_usd(revit)
+        import_usd(revit, strict=True)
     assert not import_usd(revit, check=False).is_valid()
 
 
@@ -256,7 +258,7 @@ def test_usd_refuses_the_validators_broken_bodies():
     }
     for name, message in refused.items():
         with pytest.raises(ValueError, match=message):
-            import_usd(files / name)
+            import_usd(files / name, strict=True)
     # bodies that are only types the validator dislikes read as they are
     assert [b.volume for b in import_usd(files / "Test_BA_076_Invalid_region_attribute_data_types.usda")] == \
         pytest.approx([1, 1])
@@ -305,7 +307,7 @@ warnings.simplefilter("ignore")
 from smlibpy import *
 for i in range({len(cases)}):
     try:
-        import_usd({str(tmp_path)!r} + f"/case{{i}}.usda").volume
+        import_usd({str(tmp_path)!r} + f"/case{{i}}.usda", strict=True).volume
         print("read", flush=True)
     except ValueError as e:
         print(e, flush=True)
@@ -506,7 +508,7 @@ def test_usd_bodies_that_other_writers_left_gaps_in(tmp_path):
         (tmp_path / "gap.usda").write_text(_mutated(theirs, "brep:vertexPoint:point:position", f"({x}, {y}, {z + gap})"))
         if refused:
             with pytest.raises(ValueError, match=r"is broken: the kernel finds a gap of 0.5 \(0.0\d+ of its size\) at vertex 0"):
-                import_usd(tmp_path / "gap.usda")
+                import_usd(tmp_path / "gap.usda", strict=True)
             assert import_usd(tmp_path / "gap.usda", check=False).volume == pytest.approx(1000)
         else:
             with pytest.warns(RuntimeWarning, match="the kernel finds a gap of 0.004 "):

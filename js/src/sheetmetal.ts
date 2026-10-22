@@ -776,7 +776,7 @@ export function flange(part: Part, edge: Edge | ShapeList<Edge>, length: number,
   const kedges = part._ownEdges(edge)
   if (kedges.length !== 1) throw new RangeError(`flange: give one edge of the part (got ${kedges.length}); flange edges one at a time`)
   const e = Edge._of(part, kedges[0])
-  if (e.geomType !== 'line') throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
+  if (!e._isStraight()) throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
   const a = Number(angle)
   if (a === 0 || !(Math.abs(a) < 180.0)) {
     throw new RangeError(`flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got ${String(angle)})`)
@@ -968,7 +968,8 @@ function _bendEnds(part: Part, g: _BendGeom): [Face[], Face[]] {
   const seen = new Set<string>()
   for (const f of g.faces()) {
     for (const e of f.edges()) {
-      if (e.geomType !== 'line' || !e.end.sub(e.start).isParallel(g.axis, 1e-7)) continue
+      // (straight B-splines too: mirrored parts and STEP files have them)
+      if (!e._isStraight() || !e.end.sub(e.start).isParallel(g.axis, 1e-7)) continue
       const q = e.center().sub(g.origin)
       const a = Math.atan2(q.dot(y), q.dot(x))
       const radius = Math.hypot(q.dot(x), q.dot(y))

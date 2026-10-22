@@ -54,7 +54,7 @@ def test_union_of_touching_xor_sketches_does_not_crash():
         assert (x, y) == approx((2.171761, 1.680177), abs=1e-5)
 
 
-# -- C2: trim, split, param_at, closest_point ------------------------------------------------------
+# -- C2: trim, split, param_at_point, closest_point ---------------------------------------------------
 def test_split_a_spline_where_it_crosses_a_line():
     s = Spline((0, 0), (10, 10), (20, 0))
     x = s.intersections(Line((0, 4), (20, 4)))
@@ -67,11 +67,11 @@ def test_split_a_spline_where_it_crosses_a_line():
     assert middle.start.distance_to(x[0]) < 1e-9 and middle.end.distance_to(x[1]) < 1e-9
     assert middle.length == approx(s.length - 2 * a.length, abs=1e-9)  # (the arch is symmetric)
     # the fraction of a point, and back
-    t = s.param_at(x[0])
+    t = s.param_at_point(x[0])
     assert s.point_at(t).distance_to(x[0]) < 1e-9
     assert t == approx(a.length / s.length, abs=1e-12)
     assert s.closest_point((10, 20)).to_tuple() == approx((10, 10, 0), abs=1e-9)
-    assert s.param_at((10, 20)) == approx(0.5, abs=1e-12)
+    assert s.param_at_point((10, 20)) == approx(0.5, abs=1e-12)
 
 
 def test_trimmed_arcs_stay_arcs():
@@ -93,7 +93,7 @@ def test_reversed_edges_split_and_trim_along_their_direction():
     assert b.start.to_tuple() == approx((7, 0, 0)) and b.end.to_tuple() == approx((0, 0, 0))
     t = r.trim(0.2, 0.5)
     assert (t.start.x, t.end.x) == approx((8, 5))
-    assert r.param_at((7, 0)) == approx(0.3)
+    assert r.param_at_point((7, 0)) == approx(0.3)
 
 
 def test_split_and_trim_refuse_what_is_not_on_the_edge():
@@ -397,7 +397,7 @@ def test_splines_take_a_tangent_at_every_point():
     dirs = [(1, 0), (1, 1), (0, 1), (-1, 1)]
     s = Spline(*pts, tangents=dirs)
     for p, d in zip(pts, dirs):
-        t = s.param_at(p)
+        t = s.param_at_point(p)
         assert s.point_at(t).distance_to(p) < 1e-9
         assert s.tangent_at(t).angle_to(Vector(d)) < 1e-6  # (degrees)
     with pytest.raises(ValueError, match="one per point"):
@@ -407,23 +407,25 @@ def test_splines_take_a_tangent_at_every_point():
 # -- C9: curvature, inflections, exact boxes -------------------------------------------------------
 def test_curvature_minimum_radius_and_inflections():
     s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
-    r, t = s.min_radius()
+    r, t = s.min_radius(), s.min_radius_at()
     assert r == approx(3.997484385833472, rel=1e-9)  # OpenCASCADE (GeomLProp, refined)
     assert s.point_at(t).to_tuple() == approx((20.778561798465574, -3.1697513165695037, 0), abs=1e-6)
     assert s.radius_at(t) == approx(r, rel=1e-9) and s.curvature_at(t) == approx(1 / r, rel=1e-9)
     (f,) = s.inflections()
     assert s.point_at(f).to_tuple() == approx((14.951181948137158, 0.9954275141867979, 0), abs=1e-6)  # OpenCASCADE
     assert s.curvature_at(f) < 1e-9
-    rr, tr = s.reversed().min_radius()
+    rr, tr = s.reversed().min_radius(), s.reversed().min_radius_at()
     assert rr == approx(r) and tr == approx(1 - t) and s.reversed().inflections() == [approx(1 - f)]
     e = EllipticalArc((0, 0), 20, 10, 0, 180)
-    assert e.min_radius()[0] == approx(10 ** 2 / 20)  # b^2/a at the ends of the major axis
+    assert e.min_radius() == approx(10 ** 2 / 20)  # b^2/a at the ends of the major axis
     assert e.curvature_at(0.5) == approx(10 / 20 ** 2) and e.inflections() == []
-    assert Line((0, 0), (5, 5)).min_radius() == (math.inf, 0.0) and Line((0, 0), (5, 5)).radius_at() == math.inf
-    assert CenterArc((0, 0), 7, 0, 90).min_radius() == (approx(7), 0.0)
+    assert (Line((0, 0), (5, 5)).min_radius(), Line((0, 0), (5, 5)).min_radius_at()) == (math.inf, 0.0) and Line((0, 0), (5, 5)).radius_at() == math.inf
+    assert CenterArc((0, 0), 7, 0, 90).min_radius() == approx(7) and CenterArc((0, 0), 7, 0, 90).min_radius_at() == 0.0
     w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
-    rw, tw = w.min_radius()
-    assert rw == approx(w.edges()[1].min_radius()[0]) and 10 / w.length < tw < 1
+    rw, tw = w.min_radius(), w.min_radius_at()
+    assert rw == approx(w.edges()[1].min_radius())
+    # (one kind of answer on edges, wires and faces: they compare)
+    assert min(x.min_radius() for x in [*w.edges(), *Cylinder(50, 20).faces()]) == approx(rw) and 10 / w.length < tw < 1
 
 
 def test_free_curves_have_exact_boxes():
@@ -747,7 +749,7 @@ def test_through_moves_the_curve_onto_the_point_and_keeps_its_ends():
     assert e.start == s.start and e.end == s.end
     assert e.tangent_at(0).angle_to(s.tangent_at(0)) < 1e-6 and e.tangent_at(1).angle_to(s.tangent_at(1)) < 1e-6
     t = s.through((25, 8, 3), tangent=(1, 0, 0))
-    assert t.distance_to((25, 8, 3)) < 1e-12 and t.tangent_at(t.param_at((25, 8, 3))).angle_to((1, 0, 0)) < 1e-6
+    assert t.distance_to((25, 8, 3)) < 1e-12 and t.tangent_at(t.param_at_point((25, 8, 3))).angle_to((1, 0, 0)) < 1e-6
     at = s.through((30, 20, 0), at=0.5)
     assert at.distance_to((30, 20, 0)) < 1e-12
     # lines and arcs become cubic B-splines; arcs stay rational
@@ -775,3 +777,17 @@ def test_match_moves_the_ends_exactly():
     assert moved.tangent_at(0).angle_to((1, 1, 0)) < 1e-6 and moved.tangent_at(1).angle_to((1, 0, 0)) < 1e-6
     with pytest.raises(ValueError, match="give start, end"):
         s.match()
+
+
+
+def test_points_along_long_helices_take_time_in_proportion_to_their_turns():
+    # A point along a helix of 1000 turns (joined from pieces of 100) took a second: the arc length
+    # was walked span by span, and each span looked the knots of the whole curve up again.
+    import time
+
+    h = Helix(0.5, 500, 3)  # 1000 turns
+    t = time.perf_counter()
+    points = [h.point_at(i / 20) for i in range(21)]
+    assert time.perf_counter() - t < 3  # (21 s before)
+    assert points[10].z == pytest.approx(250, abs=1e-3) and math.hypot(points[10].x, points[10].y) == pytest.approx(3, abs=1e-3)
+    assert h.length == pytest.approx(1000 * math.hypot(2 * math.pi * 3, 0.5), rel=1e-5)

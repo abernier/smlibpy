@@ -190,8 +190,8 @@ rational for circles), and its curves of constant parameter, clipped to the face
 ```python
 n = Cylinder(5, 20).faces().cylinders()[0].nurbs()
 n.degrees, len(n.knots[0]), len(n.points), len(n.points[0])   # (2, 1), 12, 9 x 2 control points
-top.isocurve(u=0.5)              # two lines: the hole is in the way
-bore.isocurve(v=0.5)[0].length   # 37.699: the circle around the bore
+top.iso(u=0.5)                   # two lines: the hole is in the way
+bore.iso(v=0.5)[0].length        # 37.699: the circle around the bore
 torus_face = Torus(20, 5).faces()[0]
 torus_face.major_radius, torus_face.radius   # 20, 5
 Cone(10, 4, 20).faces().filter_by(lambda f: f.geom_type == "cone")[0].cone_angle  # 16.7: half the opening
@@ -309,24 +309,24 @@ order along the edge, and an empty list where there are none. A point counts whe
 larger, so lines that miss each other by 0.0005 do not cross. Where two curves overlap, the
 overlap's two ends count; where an edge lies on a face, the points where it starts and stops
 lying on the face. `self_intersections()` gives the points where an edge crosses itself.
-`closest_point(p)` and `param_at(p)` give the nearest point of an edge and its fraction along it.
+`closest_point(p)` and `param_at_point(p)` give the nearest point of an edge and its fraction along it.
 
 ## Curvature of edges
 
 ```python
 s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
 s.curvature_at(0.5), s.radius_at(0.5)       # 1/radius and radius at a fraction of the length
-r, t = s.min_radius()                       # 3.9975 at t 0.677: (20.78, -3.17, 0)
+r, t = s.min_radius(), s.min_radius_at()    # 3.9975 at t 0.677: (20.78, -3.17, 0)
 s.inflections()                             # [0.484]: where it changes the side it bends to
 w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
 w.min_radius()                              # a wire: over its edges (corners do not count)
 Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y   # 1.0069: exact boxes of free curves
 ```
 
-`min_radius()` is the smallest radius of curvature and where it is, found by the kernel's global
-solver, not by sampling (it agrees with OpenCASCADE to 1e-15): a sweep profile that reaches
-farther from the path than this, or an offset larger than it on the inner side, folds over
-itself. A line gives `(inf, 0.0)`, an arc its radius. Sweep errors about the path's curvature
+`min_radius()` is the smallest radius of curvature (a float, as a face's `min_radius()`), and
+`min_radius_at()` where it is, found by the kernel's global solver, not by sampling (it agrees
+with OpenCASCADE to 1e-15): a sweep profile that reaches farther from the path than this, or an
+offset larger than it on the inner side, folds over itself. A line gives `inf`, an arc its radius. Sweep errors about the path's curvature
 give the path's smallest radius, where it is and how far the profile reaches. The box of a free
 curve (one not taken from a body) is exact: its ends, its corners and the points where its
 tangent is perpendicular to an axis.
@@ -460,7 +460,7 @@ print(len(ball.decimate(tolerance=0.01)) < 15000)   # True: within 0.01 of the f
 
 holed = Mesh(scan.vertices, scan.triangles[1:])      # a triangle missing
 fixed, report = holed.repaired()
-print(fixed.is_closed(), report["filled_holes"])    # True 1
+print(fixed.is_closed(), report.filled_holes)       # True 1
 
 block = scan.to_part()                               # faceted: 102 faces, the bore's facets and 6
 print(block.is_valid(), round(block.volume, 3))      # True 21740.176 (the mesh's volume)

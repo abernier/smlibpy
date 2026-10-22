@@ -32,6 +32,7 @@ struct OcctRead
 {
     std::vector<SmBrep*> bodies;          // the caller's: one per solid, shell or face of the file, in its order
     std::vector<std::string> warnings;    // small gaps, parts of the file that are not read (curves, points, ...)
+    std::vector<std::string> skipped;     // solids, shells and faces of the file that cannot be read (left out)
 };
 
 // The bodies of a .brep file's contents, ASCII (BRepTools) or binary (BinTools): one per solid, shell

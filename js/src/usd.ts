@@ -7,7 +7,7 @@
 // own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
 // OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
-import { _opts, _warn, ext, k, KernelError, kernelCall } from './kernel.ts'
+import { _opts, _warn, ext, k, KernelError, ModelingError, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { _traced } from './_errors.ts'
 import { Mesh, _coloredMesh } from './mesh.ts'
@@ -109,16 +109,18 @@ export function exportUsd(shapes: ShapesLike, path: string, options: UsdExportOp
  * centimeters); `placement` (default true) places the bodies as the stage does (the xformOps of
  * their prims and of the prims above them, a Y-up stage turned to Z up), false leaves each body where
  * its prim has it; `check` (default true) checks each body with the kernel before anything measures
- * it (not those smlibwasm wrote): gaps of more than 1e-3 of its size throw a RangeError, smaller ones
- * give a warning; `partial` (default false) leaves out the bodies that cannot be read, with a warning
- * for each that says which and why, and returns the others (as usd-brep's allow_partial), where false
- * throws for the first one (a text none of whose bodies can be read throws either way). */
+ * it (not those smlibwasm wrote): gaps of more than 1e-3 of its size make it unreadable, smaller ones
+ * give a warning; `strict` (default false, as for STEP and IGES) throws for the first body that
+ * cannot be read (a RangeError for a malformed or refused body, a KernelError for one the kernel
+ * cannot build), where false leaves such bodies out, with a warning for each that says which and why,
+ * and returns the others (as usd-brep's allow_partial; a text none of whose bodies can be read throws
+ * a ModelingError). */
 export interface UsdImportOptions {
   heal?: boolean
   units?: string | null
   placement?: boolean
   check?: boolean
-  partial?: boolean
+  strict?: boolean
 }
 
 /** fromUsd's options: those of `UsdImportOptions`, and `resolve(asset, from)`, which gives the text
@@ -195,7 +197,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   let stage: { bodies: [number, string, Float64Array | null][]; warnings: string[]; unresolved: string[]; skipped: string[] }
   try {
     stage = kernelCall(what, () =>
-      ext.usd_stage(layers, options.heal ?? false, options.check ?? true, options.placement ?? true, perUnit, options.partial ?? false),
+      ext.usd_stage(layers, options.heal ?? false, options.check ?? true, options.placement ?? true, perUnit, !(options.strict ?? false)),
     )
   } catch (e) {
     if (!(e instanceof KernelError)) throw e
@@ -206,7 +208,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   }
   const found = stage.bodies
   if (!found.length) {
-    if (stage.skipped.length) throw new RangeError(`${what}: no body of the file can be read: ${stage.skipped.join('; ')}`)
+    if (stage.skipped.length) throw new ModelingError(`${what}: no body of the file can be read: ${stage.skipped.join('; ')}`)
     throw new RangeError(`the USD file holds no BrepArray prims (bodies)${stage.unresolved.map((n) => `; ${n}`).join('')}`)
   }
   for (const note of stage.skipped) _warn(`${what}: ${note}; it is left out`)
@@ -219,12 +221,12 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
   return out.length === 1 ? out[0] : out
 }
 
-/** The hint of the KernelError of a body that could not be built: which, why (the status once: the
- * message has it), and partial. */
+/** The hint of the KernelError of a body that could not be built (with strict: true): which, why
+ * (the status once: the message has it), and how to read the others. */
 function _builtHint(detail: string, status: string | null): string {
   let which = detail.startsWith('usd: ') ? detail.slice(5) : detail
   if (status) which = which.replace(` (${status})`, '')
-  return `${which}; partial: true leaves such bodies out and reads the others`
+  return `${which}; strict: false (the default) leaves such bodies out and reads the others`
 }
 
 /**

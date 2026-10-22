@@ -27,7 +27,7 @@ there is no public constructor.
 | `closest_point(point)`, `uv_at(point)`, `position_at(u, v)` | nearest point on the face, its parameters (fractions of the face's parameter box), the surface point there; see `closest_points` |
 | `curvature_at(point=None)`, `min_radius()` | principal curvatures and directions; smallest radius of curvature; see `curvature_at` |
 | `major_radius`, `cone_angle` | torus: from the axis to the tube's middle; cone: half the opening angle (degrees) |
-| `nurbs()`, `isocurve(u=, v=)` | the surface as NURBS data; its curves of constant parameter, clipped to the face; see `surfaces/isocurve` |
+| `nurbs()`, `iso(u=, v=)` | the surface as NURBS data; its curves of constant parameter, clipped to the face; see `surfaces/iso` |
 | `raycast(origin, direction)` | where a ray meets the face, nearest first (see `raycast`) |
 
 ## Details

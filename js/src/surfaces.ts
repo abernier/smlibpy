@@ -566,6 +566,15 @@ export function fill(boundary: Edge | Wire | Iterable<Edge | Wire>, options: { t
     }
     sides.push([e, faces.length && tangent ? faces[0] : null])
   }
+  const first = sides.length ? sides[0][1] : null
+  if (tangent && first !== null && first.isPlanar && sides.every(([, f]) => f !== null && f.equals(first))) {
+    // The outline of a planar face (a sketch's region): the patch would cover the face it is to be
+    // tangent to, and fold back over it. The curves are taken as they are.
+    const outline = new Set(first.outerWire().edges().map((x) => x._identity()))
+    if (sides.length === outline.size && sides.every(([e]) => outline.has(e._identity()))) {
+      for (const s of sides) s[1] = null
+    }
+  }
   let box = edges[0].bbox()
   for (const e of edges.slice(1)) box = box.union(e.bbox())
   const size = Math.max(box.diagonal, 1e-9)

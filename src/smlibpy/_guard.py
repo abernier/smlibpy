@@ -52,10 +52,14 @@ _START_SECONDS = 30.0
 
 
 class _KernelFault(ModelingError):
-    """The kernel crashed or did not finish in the other process; ``reason`` says which."""
+    """The kernel crashed or did not finish in the other process; ``reason`` says which, and
+    ``timed_out`` whether it was stopped after ``GUARD_SECONDS``: such a fault keeps its own message
+    through :func:`kernel_call` (the operation's hint, "the radius may be too large", is no reason for
+    a step that took too long)."""
 
     def __init__(self, what: str, reason: str, hint: str):
         self.reason = reason
+        self.timed_out = reason.startswith("the kernel did not finish")
         super().__init__(f"{what}: {reason}; {hint}")
 
 
@@ -273,6 +277,7 @@ def _forked(what: str, fn: Callable[..., R], args: tuple[Any, ...], limit: float
             warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
             pid = os.fork()
         if pid == 0:  # pragma: no cover - the child
+            _quiet_crashes()
             code = 3
             try:
                 message = _run(fn, args, folder, [])
@@ -301,6 +306,18 @@ def _forked(what: str, fn: Callable[..., R], args: tuple[Any, ...], limit: float
         return _result(value, files)  # type: ignore[no-any-return]
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+def _quiet_crashes() -> None:  # pragma: no cover - runs in the copy or the helper
+    """A crash of the kernel in the copy or the helper process is reported by the caller (a
+    _KernelFault): Python's fault handler, inherited from pytest or ``python -X faulthandler``, would
+    print "Fatal Python error: Segmentation fault" and a traceback for it as well."""
+    try:
+        import faulthandler
+
+        faulthandler.disable()
+    except Exception:  # noqa: BLE001 - nothing to do then
+        pass
 
 
 def _wait(what: str, pid: int, limit: float) -> int:
@@ -359,6 +376,7 @@ def _read(stream: Any, n: int) -> bytes | None:
 
 def _serve() -> None:  # pragma: no cover - runs in the helper process
     """The helper process: runs the steps it is sent, one after the other, until its input ends."""
+    _quiet_crashes()
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)  # (Ctrl-C is the caller's: it stops this process)
     except (ValueError, OSError):

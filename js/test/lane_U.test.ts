@@ -374,27 +374,27 @@ test('flipped', () => {
 // ------------------------------------------------------------------------------------- U6: extend
 test('extended planes stay planes', () => {
   const top = Box(10, 10, 10).faces().filter((f) => f.normalAt().z > 0.5)[0]
-  const grown = top.extended(3)
+  const grown = top.extend(3)
   assert.equal(grown.faces()[0].geomType, 'plane')
   approx(grown.area, 256)
   const side = top.edges().maxBy((e) => e.center().x)
-  const one = top.extended(3, { sides: side })
+  const one = top.extend(3, { sides: side })
   approx(one.area, 130)
   approx(one.bbox().max.x, 8)
-  approx(Circle(5).faces()[0].extended(1).area, 144)
+  approx(Circle(5).faces()[0].extend(1).area, 144)
   approx(Circle(5).faces()[0].untrimmed().area, 100)
 })
 
 test('extended cylinders and spheres continue as themselves', () => {
   const cyl = Cylinder(5, 10).faces().filter((f) => f.geomType === 'cylinder')[0]
-  const grown = cyl.extended(2)
+  const grown = cyl.extend(2)
   assert.equal(grown.faces()[0].geomType, 'cylinder')
   approx(grown.area, 2 * Math.PI * 5 * 14, 1e-9)
   approx(grown.bbox().max.z, 7)
   const seam = cyl.edges(true).filter((e) => e.geomType === 'line')
-  assert.throws(() => cyl.extended(2, { sides: seam }), /closes around/)
+  assert.throws(() => cyl.extend(2, { sides: seam }), /closes around/)
   const cap = Sphere(5).intersect(Box(4, 4, 4).translate(0, 0, 4)).faces().filter((f) => f.geomType === 'sphere')[0]
-  const g2 = cap.extended(1)
+  const g2 = cap.extend(1)
   assert.equal(g2.faces()[0].geomType, 'sphere')
   assert.ok(g2.area > cap.area)
 })
@@ -729,7 +729,7 @@ test('warp and flatten errors', () => {
   assert.throws(() => box.warp(top, Line([0, 0, 10], [5, 0, 10]), 4), /not closed/)
   assert.throws(() => box.warp(top, Rectangle(10, 10).on(top), 4, { continuity: 'G3' }), /continuity/)
   assert.throws(() => box.flatten(top, Rectangle(10, 10).on(top), Plane.XY.offset(10)), /nothing to flatten/)
-  assert.throws(() => box.warp(top, 5, 4), TypeError)
+  assert.throws(() => box.warp(top, 5 as never, 4), TypeError)
 })
 
 
@@ -1007,4 +1007,17 @@ test('surface report gives the true distances', () => {
   assert.ok(through.maxDistance < 1e-9 && through.distances.length === 25)
   const [, near] = surface(g, { interpolate: false, report: true })
   assert.ok(near.maxDistance > 0.05 && near.maxDistance < 1)
+})
+
+
+// -- review of 0.5.0 ------------------------------------------------------------------------------
+import * as RV from '../src/index.ts'
+
+test('imprints of sketches along a direction', () => {
+  const dome = RV.Sphere(10).intersect(RV.Box(40, 40, 20, { align: [RV.Align.CENTER, RV.Align.CENTER, RV.Align.MIN] }))
+  const circle = RV.Circle(4).on(RV.Plane.XY.offset(20))
+  const marked = dome.imprint(circle, RV.Z.reversed())
+  assert.equal(marked.faces().length, dome.faces().length + 1)
+  approx(marked.volume, dome.volume, 1e-9)
+  assert.throws(() => dome.imprint(RV.Box(2, 2, 2).translate(0, 0, 9), [0, 0, -1]), /a part or a sheet is imprinted where it is/)
 })

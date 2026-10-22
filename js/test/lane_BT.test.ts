@@ -115,11 +115,17 @@ test('seam contacts', () => {
   assert.ok(Array.from(ext.seam_edges(p._brep) as ArrayLike<number>).includes(edge))
   approx(new Face(b, k.brep_faces(b._brep)[face]).radius, 5, 1e-12) // the bore
   assert.ok(new Vector(point).distanceTo([0, 5, -2]) < 1e-6) // the pin's seam (t, 5, -2) touches the bore
-  assert.deepEqual(ext.seam_contacts(pin(5, 45)._brep, b._brep), [])
+  const turned = pin(5, 45)
+  assert.deepEqual(ext.seam_contacts(turned._brep, b._brep), [])
+  turned.dispose()
   assert.deepEqual(ext.seam_contacts(b._brep, p._brep), []) // the bore's seam lies away from the pin
   // Where the faces touch (the seam is the line along which they touch) it is no contact: a cylinder
   // tangent to a flat face along its seam, a cylinder touching a hole at a point of its seam.
-  assert.deepEqual(ext.seam_contacts(Cylinder(3, 40).translate(7, 0, 0)._brep, Box(20, 20, 20)._brep), [])
+  const rod = Cylinder(3, 40).translate(7, 0, 0)
+  const box = Box(20, 20, 20)
+  assert.deepEqual(ext.seam_contacts(rod._brep, box._brep), [])
+  rod.dispose()
+  box.dispose()
   const holed = Box(20, 20, 20).cut(Cylinder(3, 40))
   const inside = Cylinder(2, 40).rotate(X, 90).translate(1, 0, 0) // its seam (3, t, 0) touches the hole at (3, 0, 0)
   assert.deepEqual(ext.seam_contacts(inside._brep, holed._brep), [])
@@ -538,7 +544,7 @@ test('history comes back from the kernel steps in the probe worker', () => {
 test('history takes faces and edges', () => {
   const box = Box(10, 10, 10)
   assert.throws(() => box.vertices().newSince(box), (e: unknown) => e instanceof TypeError && /faces and edges/.test(e.message))
-  assert.throws(() => box.faces().derivedFrom(new Vector(1, 2, 3)), (e: unknown) => e instanceof TypeError && /bodies, faces and edges/.test(e.message))
+  assert.throws(() => box.faces().derivedFrom(new Vector(1, 2, 3) as never), (e: unknown) => e instanceof TypeError && /bodies, faces and edges/.test(e.message))
   const top = box.faces().derivedFrom(box.faces().top())
   assert.equal(top.length, 1)
   assert.ok(top[0].equals(box.faces().top()[0]))
@@ -729,7 +735,7 @@ test('edges joining two bodies', () => {
   const holes = [-10, 0, 10].map((x) => Cylinder(2, 20).translate(x, 0, 0))
   assert.equal(plate.cut(holes).edges().joining(plate, holes).length, 6)
   assert.throws(() => (joined.faces() as Any).joining(plate, standing), /selects edges/)
-  assert.throws(() => joined.edges().joining(plate, [1, 2, 3]), /takes bodies/)
+  assert.throws(() => joined.edges().joining(plate, [1, 2, 3] as never), /takes bodies/)
 })
 
 // -- B18: sections by planes that only touch -----------------------------------------------------

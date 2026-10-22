@@ -442,3 +442,91 @@ def test_section_of_a_merged_part_has_every_cell():
     touching = Box(20, 20, 20).merge(Cylinder(3, 10).rotate(X, 90).translate(7, 0, 0))
     with pytest.raises(ModelingError, match="^section: cells: "):
         touching.section(Plane.XY)
+
+
+
+# -- review of 0.5.0: mirrors -----------------------------------------------------------------------
+def _mirrored_normals_follow(body, plane) -> float:
+    """The largest difference between the mirror of each face's normal and the normal of its image."""
+    from smlibpy.shapes import _reflection
+
+    m = _reflection(plane)
+    mirrored = body.mirror(plane)
+    worst = 0.0
+    for f in body.faces():
+        p = f.interior_point()
+        image = Vector(*(m[:3, :3] @ np.array(p.to_tuple()) + m[:3, 3]))
+        g = min(mirrored.faces(), key=lambda g: g.distance_to(image))
+        want = Vector(*(m[:3, :3] @ np.array(f.normal_at(p).to_tuple())))
+        worst = max(worst, (g.normal_at(image) - want).length)
+    return worst
+
+
+@pytest.mark.parametrize("plane", [Plane.YZ, Plane.XZ, Plane.XY], ids=["YZ", "XZ", "XY"])
+def test_mirrored_bodies_keep_the_sides_of_their_faces(plane):
+    # SmBrep::Mirror turned every surface over; the faces with both sides inside (cavity walls, faces
+    # between cells) or outside (sheets) came out inside out for meshes, normal_at and convexity:
+    # (Box(20) - Box(10)).mirror(Plane.YZ) meshed to 9000 for 7000 and its cavity edges read convex.
+    cavity = Box(20, 20, 20) - Box(10, 10, 10)
+    m = cavity.mirror(plane)
+    assert m.volume == pytest.approx(7000) and m.mesh(0.01).volume == pytest.approx(7000)
+    assert len(m.edges().concave()) == 12 and m.check() == [] and m.is_valid()
+    ball = (Box(20, 20, 20) - Sphere(5)).mirror(plane)
+    assert ball.mesh(0.01).volume == pytest.approx((Box(20, 20, 20) - Sphere(5)).mesh(0.01).volume, rel=1e-9)
+    dome = Sphere(10) & Box(40, 40, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    sheet = stitch(dome.faces().filter_by(lambda f: f.geom_type == "sphere"))
+    for body in (cavity, Box(20, 20, 20) - Sphere(5), merge(Box(20, 20, 20), Cylinder(4, 30)), sheet,
+                 Rectangle(10, 10).translate(3, 0, 0)):
+        assert _mirrored_normals_follow(body, plane) < 1e-9
+    # mirror twice: the body again
+    twice = cavity.mirror(plane).mirror(plane)
+    assert twice.mesh(0.01).volume == pytest.approx(7000) and len(twice.edges().concave()) == 12
+
+
+def test_mirrored_parts_shell_round_and_chamfer_as_the_part_does():
+    # The offset code builds a cavity from the surfaces: a mirrored part shelled with its cavity
+    # inside out (Box(60, 40, 20).mirror(Plane.YZ).shell(2) meshed to 80256 for 15744), and the
+    # opening of a rounded box could not be cut (O3); mirrored circles were B-splines, so a chamfer of
+    # a mirrored pin was the kernel's fitted bevel (30.8287005, 1.1e-5 off).
+    box = Box(60, 40, 20)
+    assert box.mirror(Plane.YZ).shell(2).mesh(0.01).volume == pytest.approx(15744)
+    rounded = box.fillet(box.edges(), 5)
+    m = rounded.mirror(Plane.YZ)
+    assert m.shell(2, m.faces().top()).volume == pytest.approx(rounded.shell(2, rounded.faces().top()).volume, rel=1e-9)
+    pin = Cylinder(2, 5).mirror(Plane.YZ)
+    assert len(pin.edges().circles()) == 2
+    assert pin.chamfer(pin.edges(), 1.94).volume == pytest.approx(Cylinder(2, 5).chamfer(Cylinder(2, 5).edges(), 1.94).volume,
+                                                                  rel=1e-12)
+    assert sorted(e.geom_type for e in Box(1, 2, 3).mirror(Plane.XZ).edges()) == ["line"] * 12
+
+
+def _bumped_cylinder_sheet(bump: float):
+    """A rational degree-(2, 1) cylinder sheet of radius 5 and height 10 whose control point in the
+    middle of its first quarter is pushed out by ``bump`` (in its top and bottom row)."""
+    w = math.sqrt(0.5)
+    circle = [(5, 0), (5, 5), (0, 5), (-5, 5), (-5, 0), (-5, -5), (0, -5), (5, -5), (5, 0)]
+    scale = 1 + bump / (5 * math.sqrt(2))
+    rows = [[(x * scale, y * scale, z) if i == 1 else (x, y, z) for z in (0, 10)] for i, (x, y) in enumerate(circle)]
+    weights = [[1 if i % 2 == 0 else w] * 2 for i in range(9)]
+    return nurbs_surface(rows, knots=([0, 0, 0, .25, .25, .5, .5, .75, .75, 1, 1, 1], [0, 0, 1, 1]), degrees=(2, 1),
+                         weights=weights)
+
+
+def test_bumped_cylinder_sheets_stay_bumped(tmp_path):
+    # The kernel's test for a cone or cylinder samples the sheet at fixed parameters only, and a bump
+    # between them passed: scaling it (T6's recognition), saving it as .smb, to_shell() and every
+    # copy that adds analytic surfaces turned it into the plain cylinder (area 314.16 for 316.27).
+    sheet = _bumped_cylinder_sheet(0.5)
+    area = sheet.area
+    assert sheet.faces()[0].geom_type == "bspline" and area == pytest.approx(316.2716, rel=1e-5)
+    stretched = sheet.scale((1, 1, 2))
+    assert stretched.faces()[0].geom_type == "bspline" and stretched.area == pytest.approx(632.543, rel=1e-5)
+    assert sheet.scale((1, 1, 1.0001)).faces()[0].geom_type == "bspline"
+    save(sheet, tmp_path / "bump.smb")
+    back = load(tmp_path / "bump.smb")
+    assert back.faces()[0].geom_type == "bspline" and back.area == pytest.approx(area, rel=1e-9)
+    assert sheet.faces()[0].to_shell().area == pytest.approx(area, rel=1e-9)
+    # a sheet that is the cylinder is still recognized
+    plain = _bumped_cylinder_sheet(0.0)
+    assert plain.scale((1, 1, 2)).faces()[0].geom_type == "cylinder"
+    assert plain.faces()[0].to_shell().faces()[0].geom_type == "cylinder"

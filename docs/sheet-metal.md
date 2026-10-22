@@ -61,7 +61,8 @@ print(bracket.bbox().size)                                     # 60 x 30 x 40
 
 A part keeps the K-factor each bend was folded with (`fold`, `flange`), and `unfold`,
 `flat_pattern` and `bends` take it: a blank folded with a tight hem at K 0.33 and a large bend
-at K 0.45 unfolds to the blank again. The record goes with the part through Booleans, moves and
+at K 0.45 unfolds to the blank again. The record goes with the part through Booleans (a union or
+an intersection also takes the records of its other operands, in either order), moves, mirrors and
 `named()`; a part read from a file has none, and its bends take 0.44.
 
 ```python

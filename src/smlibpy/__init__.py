@@ -34,7 +34,7 @@ from .curves import (
 from .geometry import (TOLERANCE, Axis, BoundBox, ClosestPoints, Continuity, Curvature, Hit, Location, Nurbs, NurbsSurface,
                        Plane, Pos, Rot, Vector, X, Y, Z)
 from .locations import GridLocations, HexLocations, Locations, PolarLocations
-from .mesh import Mesh, tessellate
+from .mesh import Mesh, RepairReport, tessellate
 from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
                          swing, thicken)
 from .parts import AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
@@ -45,8 +45,9 @@ from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, Regul
                        Stroke, Trapezoid, Triangle, make_face)
 from .text import Text
 from ._kernel import KernelError, ModelingError
-from .exporters import (export, export_glb, export_gltf, export_obj, export_step, export_stl, from_smb, from_smp,
-                        from_stl, import_stl, load, save, to_glb, to_gltf, to_obj, to_smb, to_smp, to_step, to_stl)
+from .exporters import (export, export_glb, export_gltf, export_obj, export_step, export_stl, from_file, from_smb,
+                        from_smp, from_stl, import_stl, load, save, to_file, to_glb, to_gltf, to_obj, to_smb, to_smp,
+                        to_step, to_stl)
 from .step_import import (StepCurve, StepFrame, StepModel, StepPoint, from_step, from_step_model, import_step,
                           read_step)
 from .iges_import import from_iges, import_iges
@@ -70,7 +71,7 @@ __all__ = [
     "Align",
     # shapes
     "Shape", "ShapeList", "Vertex", "Edge", "Wire", "Face", "Shell", "Sketch", "Part", "MassProperties", "Problem",
-    "SectionProperties", "Mesh",
+    "SectionProperties", "Mesh", "RepairReport",
     # curves
     "Line", "Polyline", "PolarLine", "CenterArc", "ThreePointArc", "RadiusArc", "SagittaArc", "TangentArc",
     "EllipticalArc", "Spline", "Bezier", "Helix", "Spiral", "ParabolicArc", "HyperbolicArc", "ConicArc",
@@ -101,7 +102,7 @@ __all__ = [
     # files in memory
     "to_step", "from_step", "from_step_model", "to_stl", "from_stl", "to_obj", "to_glb", "to_gltf", "to_smb", "from_smb",
     "to_smp", "from_smp", "to_dxf", "from_dxf", "from_dxf_wires", "to_usd", "from_usd", "from_iges", "to_brep",
-    "from_brep", "to_svg",
+    "from_brep", "to_svg", "to_file", "from_file",
     "drawing_views", "DrawingView", "export_svg",
     "show", "render", "diff_images",
     # errors

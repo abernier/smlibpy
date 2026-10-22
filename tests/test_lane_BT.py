@@ -85,11 +85,13 @@ def test_seam_contacts():
     assert edge in ext.seam_edges(pin._brep)
     assert Face(bored, bored._brep.faces()[face]).radius == approx(5)  # the bore
     assert Vector(point).distance_to((0, 5, -2)) < 1e-6  # the pin's seam (t, 5, -2) touches the bore
-    assert ext.seam_contacts(_pin(5, 45)._brep, bored._brep) == []
+    turned = _pin(5, 45)  # (held by a name: a temporary's Brep is freed before the call)
+    assert ext.seam_contacts(turned._brep, bored._brep) == []
     assert ext.seam_contacts(bored._brep, pin._brep) == []  # the bore's seam lies away from the pin
     # Where the faces touch (the seam is the line along which they touch) it is no contact: a cylinder
     # tangent to a flat face along its seam, a cylinder touching a hole at a point of its seam.
-    assert ext.seam_contacts(Cylinder(3, 40).translate(7, 0, 0)._brep, Box(20, 20, 20)._brep) == []
+    rod, box = Cylinder(3, 40).translate(7, 0, 0), Box(20, 20, 20)
+    assert ext.seam_contacts(rod._brep, box._brep) == []
     holed = Box(20, 20, 20) - Cylinder(3, 40)
     inside = Cylinder(2, 40).rotate(X, 90).translate(1, 0, 0)  # its seam (3, t, 0) touches the hole at (3, 0, 0)
     assert ext.seam_contacts(inside._brep, holed._brep) == []

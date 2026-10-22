@@ -82,12 +82,16 @@ const _VOLUMES = new WeakMap<BrepHandle, number>() // a body's handle -> its vol
 class _KernelFault extends ModelingError {
   readonly reason: string
   readonly here: boolean
+  /** Stopped after GUARD_SECONDS: such a fault keeps its own message through kernelCall (the
+   * operation's hint, "the radius may be too large", is no reason for a step that took too long). */
+  readonly timedOut: boolean
 
   constructor(what: string, reason: string, hint: string, here = false) {
     super(`${what}: ${reason}; ${hint}`)
     this.name = '_KernelFault'
     this.reason = reason
     this.here = here
+    this.timedOut = reason.startsWith('the kernel did not finish')
   }
 }
 

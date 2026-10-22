@@ -9,7 +9,8 @@ Unfolds a sheet metal part: every bend becomes flat again, in place.
 - `fixed`: a planar face of the part that stays where it is; default: the largest planar face
   (of faces that large, the one the part stands on: the rest of the part lies behind it).
 - `k_factor`: default `None`: each bend unfolds with the K-factor `fold` or `flange` made it with
-  (the part keeps it, through Booleans, moves and `named()`), else 0.44 (a part read from a
+  (the part keeps it, through Booleans, also as the second operand of `+` or `&`, moves, mirrors
+  and `named()`), else 0.44 (a part read from a
   file). Or one for all bends, per bend: a number; `{inside radius: k}`; `[(r / t, k), ...]`
   interpolated; a function `(radius, thickness, angle) -> k`; `"din6935"` (see `generic`).
 

@@ -925,10 +925,10 @@ export class ClosestPoints {
   readonly point: Vector
   readonly otherPoint: Vector
   readonly distance: number
-  readonly face: any // (a Face of shapes.ts, or null: typed loosely here, where shapes are not known)
-  readonly otherFace: any
+  readonly face: Face | null
+  readonly otherFace: Face | null
 
-  constructor(point: Vector, otherPoint: Vector, distance: number, face: any = null, otherFace: any = null) {
+  constructor(point: Vector, otherPoint: Vector, distance: number, face: Face | null = null, otherFace: Face | null = null) {
     this.point = point
     this.otherPoint = otherPoint
     this.distance = distance

@@ -43,12 +43,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, overload
 
 import numpy as np
 
 from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .geometry import TOLERANCE, Axis, BoundBox, Location, Plane, Vector, VectorLike, X, Y, Z, _vec
+
+if TYPE_CHECKING:
+    from .shapes import Edge, Part, Shell, Wire
 
 __all__ = ["twist", "taper", "bend", "unroll", "Lattice", "MAX_DEGREE"]
 
@@ -395,6 +398,25 @@ def _plan_twist(shape: Any, angle: float, axis: Axis, start: float | None, end: 
     return _Plan(work, spec, (1.0, 1.0))
 
 
+# (what each input gives, as smlibwasm's TypeScript overloads say)
+@overload
+def twist(shape: Part, angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Part: ...
+@overload
+def twist(shape: Shell, angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Shell: ...
+@overload
+def twist(shape: Edge, angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Edge: ...
+@overload
+def twist(shape: Wire, angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Wire: ...
+@overload
+def twist(shape: VectorLike, angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Vector: ...
+@overload
+def twist(shape: Sequence[VectorLike], angle: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> list[Vector]: ...
 def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = None, end: float | None = None,
           tolerance: float | None = None) -> Any:
     """Twist a part about an axis by ``angle`` degrees over its length (or from ``start`` to ``end``).
@@ -447,6 +469,25 @@ def _plan_taper(shape: Any, scale: float, axis: Axis, start: float | None, end: 
     return _Plan(work, spec, (min(1.0, scale) ** 2, max(1.0, scale) ** 2))
 
 
+# (what each input gives, as smlibwasm's TypeScript overloads say)
+@overload
+def taper(shape: Part, scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Part: ...
+@overload
+def taper(shape: Shell, scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Shell: ...
+@overload
+def taper(shape: Edge, scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Edge: ...
+@overload
+def taper(shape: Wire, scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Wire: ...
+@overload
+def taper(shape: VectorLike, scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> Vector: ...
+@overload
+def taper(shape: Sequence[VectorLike], scale: float, *, axis: Axis = ..., start: float | None = ..., end: float | None = ...,
+          tolerance: float | None = ...) -> list[Vector]: ...
 def taper(shape: Any, scale: float, *, axis: Axis = Z, start: float | None = None, end: float | None = None,
           tolerance: float | None = None) -> Any:
     """Taper a part along an axis: its cross-sections scale from 1 to ``scale`` (exact result).
@@ -546,6 +587,25 @@ def _plan_bend(shape: Any, angle: float, radius: float | None, plane: Plane, sta
     return _Plan(work, spec, ratio, fold)
 
 
+# (what each input gives, as smlibwasm's TypeScript overloads say)
+@overload
+def bend(shape: Part, angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> Part: ...
+@overload
+def bend(shape: Shell, angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> Shell: ...
+@overload
+def bend(shape: Edge, angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> Edge: ...
+@overload
+def bend(shape: Wire, angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> Wire: ...
+@overload
+def bend(shape: VectorLike, angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> Vector: ...
+@overload
+def bend(shape: Sequence[VectorLike], angle: float, *, radius: float | None = ..., plane: Plane = ...,
+         start: float | None = ..., end: float | None = ..., tolerance: float | None = ...) -> list[Vector]: ...
 def bend(shape: Any, angle: float, *, radius: float | None = None, plane: Plane = Plane.XZ,
          start: float | None = None, end: float | None = None, tolerance: float | None = None) -> Any:
     """Bend a part around an axis by ``angle`` degrees, like a bar bent over a mandrel.
@@ -693,6 +753,25 @@ def _plan_unroll(shape: Any, radius: float, axis: Axis, start: VectorLike | None
     return _Plan(shape, spec, (min(1.0, radius / float(r.max())), max(1.0, radius / float(r.min()))))
 
 
+# (what each input gives, as smlibwasm's TypeScript overloads say)
+@overload
+def unroll(shape: Part, *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> Part: ...
+@overload
+def unroll(shape: Shell, *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> Shell: ...
+@overload
+def unroll(shape: Edge, *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> Edge: ...
+@overload
+def unroll(shape: Wire, *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> Wire: ...
+@overload
+def unroll(shape: VectorLike, *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> Vector: ...
+@overload
+def unroll(shape: Sequence[VectorLike], *, radius: float, axis: Axis = ..., start: VectorLike | None = ...,
+           tolerance: float | None = ...) -> list[Vector]: ...
 def unroll(shape: Any, *, radius: float, axis: Axis = Z, start: VectorLike | None = None,
            tolerance: float | None = None) -> Any:
     """Unroll a part wrapped around an axis into a flat one: the inverse of :func:`bend`.

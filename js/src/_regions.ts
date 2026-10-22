@@ -211,8 +211,8 @@ export class CurveCorners {
         const f1 = e1.closestPoint(c)
         const f2 = e2.closestPoint(c)
         if (Math.max(Math.abs(f1.distanceTo(c) - size), Math.abs(f2.distanceTo(c) - size)) > 1e-6 * this.size) continue // (a point of an end, not where the arc touches)
-        const back = (1 - e1.paramAt(f1)) * l1
-        const ahead = e2.paramAt(f2) * l2
+        const back = (1 - e1.paramAtPoint(f1)) * l1
+        const ahead = e2.paramAtPoint(f2) * l2
         if (best === null || back + ahead < best[0] + best[1]) best = [back, ahead, c, f1, f2]
       }
     }
@@ -238,8 +238,8 @@ export class CurveCorners {
       f1 = e1.closestPoint(c)
       f2 = e2.closestPoint(c)
     }
-    const back = (1 - e1.paramAt(f1)) * l1
-    const ahead = e2.paramAt(f2) * l2
+    const back = (1 - e1.paramAtPoint(f1)) * l1
+    const ahead = e2.paramAtPoint(f2) * l2
     const v1 = fr.local(f1).sub(cl)
     const v2 = fr.local(f2).sub(cl)
     let delta = v2.div(v1).phase()
@@ -933,7 +933,7 @@ export function offsetCurveEdge(edge: Edge, e: number, fr: Frame, tol: number, w
   const [curve, dev] = [res[0] as number, Number(res[1])]
   const name = index !== null ? `edge ${index + 1} (${edge.geomType})` : `the ${edge.geomType}`
   if (!curve) {
-    const [r] = edge.minRadius()
+    const r = edge.minRadius()
     throw new ModelingError(`${what}: ${name} bends more tightly than the distance ${fmt(Math.abs(e))} near ${fr.fp(fr.local(point!))} on the ` +
       `side it moves to (its smallest radius of curvature is ${fmt(r)}), so its offset would fold over itself there; use a smaller distance`)
   }

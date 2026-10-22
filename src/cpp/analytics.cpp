@@ -17,25 +17,53 @@
 // axis-aligned scale stay B-splines (the kernel recognizes no circles there).
 //
 // The copy is checked against the Brep: the same counts of faces, edges and vertices, the vertices in
-// place, and every face's new surface within `tolerance` of the old one at a grid of points over the
-// face's parameter box, every edge's new curve at points along the edge.
+// place, and every face's new surface within `tolerance` of the old one at points in every knot span
+// of the old B-spline across the face's parameter box, every edge's new curve at points in every span
+// of the old curve along the edge. (A fixed grid of 5 x 5 points missed a bump in the middle of a
+// span: the kernel's recognition samples the iso curves of a cylinder at fixed parameters only, and a
+// cylinder sheet with its first quarter pushed out came back a cylinder after scale((1, 1, 2)).)
 
 #include "kernel.h"
 #include "analytics.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
+#include <SmBSplineCurve.h>
+#include <SmBSplineSurface.h>
 
 #include <algorithm>
 #include <memory>
+#include <vector>
 
 namespace
 {
 
 const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 
-constexpr int grid = 4;      // a face: (grid + 1)^2 points over its parameter box
-constexpr int along = 8;     // an edge: along + 1 points
+constexpr int per_span = 4;    // steps per knot span: its start and three points inside
+constexpr size_t max_spans = 64;  // more spans in one direction: 64 even steps instead
+
+// Parameters from lo to hi: the knots between them and three points inside every span (eight steps
+// across a single span), or 64 even steps where there are more than max_spans spans.
+std::vector<double> span_samples(const SmTArray<double>& knots, double lo, double hi)
+{
+    std::vector<double> breaks{lo};
+    for (ULONG i = 0; i < knots.GetSize(); ++i)
+        if (knots[i] > lo && knots[i] < hi)
+            breaks.push_back(knots[i]);
+    breaks.push_back(hi);
+    int steps = per_span;
+    if (breaks.size() - 1 > max_spans)
+        breaks = {lo, hi}, steps = 64;
+    else if (breaks.size() == 2)
+        steps = 8;
+    std::vector<double> out;
+    for (size_t s = 0; s + 1 < breaks.size(); ++s)
+        for (int i = 0; i < steps; ++i)
+            out.push_back(breaks[s] + (breaks[s + 1] - breaks[s]) * i / steps);
+    out.push_back(hi);
+    return out;
+}
 
 // The largest distance from points of a face's old surface to its new one; -1 where a point cannot
 // be evaluated or projected.
@@ -47,11 +75,19 @@ double surface_gap(const SmFace* before, const SmFace* after)
         return -1.0;
     const SmExtent2d box = before->GetUVDomain();
     const SmPoint2d lo = box.GetMin(), hi = box.GetMax();
+    SmTArray<double> uknots, vknots;
+    if (old_surface->GetType() == SmBSplineSurface_TYPE)
+    {
+        const auto* spline = static_cast<const SmBSplineSurface*>(old_surface);
+        if (spline->GetKnots(SM_SP_U, uknots) != SM_SUCCESS || spline->GetKnots(SM_SP_V, vknots) != SM_SUCCESS)
+            return -1.0;
+    }
+    const std::vector<double> us = span_samples(uknots, lo.x, hi.x), vs = span_samples(vknots, lo.y, hi.y);
     double worst = 0.0;
-    for (int i = 0; i <= grid; ++i)
-        for (int j = 0; j <= grid; ++j)
+    for (double u : us)
+        for (double v : vs)
         {
-            const SmPoint2d uv(lo.x + (hi.x - lo.x) * i / grid, lo.y + (hi.y - lo.y) * j / grid);
+            const SmPoint2d uv(u, v);
             SmPoint3d p, closest;
             SmTArray<SmPoint2d> uvs;
             double d = 0.0;
@@ -71,12 +107,16 @@ double curve_gap(const SmEdge* before, const SmEdge* after)
     if (old_curve == nullptr || new_curve == nullptr)
         return -1.0;
     const SmExtent1d ivl = before->GetInterval();
+    SmTArray<double> knots;
+    if (old_curve->GetType() == SmBSplineCurve_TYPE &&
+        static_cast<const SmBSplineCurve*>(old_curve)->GetKnots(knots) != SM_SUCCESS)
+        return -1.0;
     double worst = 0.0;
-    for (int i = 0; i <= along; ++i)
+    for (double s : span_samples(knots, ivl.GetMin(), ivl.GetMax()))
     {
         SmPoint3d p, closest;
         double t = 0.0, d = 0.0;
-        if (old_curve->EvaluatePoint(ivl.GetMin() + (ivl.GetMax() - ivl.GetMin()) * i / along, p) != SM_SUCCESS ||
+        if (old_curve->EvaluatePoint(s, p) != SM_SUCCESS ||
             SmApiCurveClosestPoint(new_curve, p, closest, t, d) != SM_SUCCESS)
             return -1.0;
         worst = std::max(worst, d);

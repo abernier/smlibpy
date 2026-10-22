@@ -42,7 +42,7 @@ ALIASES = {
 }
 
 # Functions whose **kwargs Python passes on to another function, which checks them.
-FORWARDS = {"export_gltf": "smlibpy.exporters.gltf_document_mixed"}
+FORWARDS: dict[str, str] = {}
 
 # Options only smlibwasm has (none now: fromUsd's resolve is from_usd's too).
 JS_ONLY: dict[str, list[str]] = {}

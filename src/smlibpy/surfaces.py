@@ -9,7 +9,7 @@ and stitching.
 from __future__ import annotations
 
 import math
-from typing import Any, NamedTuple, Sequence
+from typing import Any, Literal, NamedTuple, Sequence, overload
 
 import numpy as np
 
@@ -49,6 +49,14 @@ class FitReport(NamedTuple):
     distances: np.ndarray
 
 
+@overload
+def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.ndarray, *, interpolate: bool = ...,
+            controls: int | tuple[int, int] | None = ..., smoothing: float = ...,
+            report: Literal[False] = ...) -> Shell: ...
+@overload
+def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.ndarray, *, interpolate: bool = ...,
+            controls: int | tuple[int, int] | None = ..., smoothing: float = ...,
+            report: Literal[True]) -> tuple[Shell, FitReport]: ...
 def surface(points: Sequence[Sequence[VectorLike]] | Sequence[VectorLike] | np.ndarray, *, interpolate: bool = True,
             controls: int | tuple[int, int] | None = None, smoothing: float = 1e-2,
             report: bool = False) -> Shell | tuple[Shell, FitReport]:
@@ -137,6 +145,10 @@ def nurbs_surface(points: Any, knots: tuple[Sequence[float], Sequence[float]] | 
     if knots is None and degrees is None and weights is None and hasattr(points, "degrees") \
             and hasattr(points, "knots") and hasattr(points, "points"):
         degrees, knots, weights, points = points.degrees, points.knots, points.weights, points.points
+    if isinstance(points, (tuple, list)) and len(points) == 2 and all(isinstance(d, int) for d in points):
+        # (the degrees of a NurbsSurface given unpacked: nurbs_surface(*face.nurbs()))
+        raise TypeError("nurbs_surface: the control points come first; give a NurbsSurface whole "
+                        "(nurbs_surface(face.nurbs()) or Shell.from_nurbs(face.nurbs())), not unpacked")
     try:
         grid = np.asarray([[tuple(_vec(p)) for p in row] for row in points], dtype=float)
     except (TypeError, ValueError):
@@ -266,6 +278,12 @@ class StitchReport(NamedTuple):
     tolerance: float
 
 
+@overload
+def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None = ...,
+           report: Literal[False] = ...) -> Part | Shell: ...
+@overload
+def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None = ...,
+           report: Literal[True]) -> tuple[Part | Shell, StitchReport]: ...
 def stitch(*pieces: Shell | Face | Part | Sequence[Any], tolerance: float | None = None,
            report: bool = False) -> Part | Shell | tuple[Part | Shell, StitchReport]:
     """Sew faces and sheets along their common edges.
@@ -509,7 +527,8 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
         tangent: True (default): where the curves are edges of sheets, the patch meets each sheet
             tangentially along its edge; then every curve must be such an edge, and the sheets must
             meet each other tangentially where the edges meet (a hole in one smooth sheet, a corner
-            between three rounds). False runs the patch through the curves only.
+            between three rounds). False runs the patch through the curves only, and so do the
+            edges around a planar face or a sketch's region (the patch would cover that face).
 
     Four sides make a Coons patch, of one face (through curves only, it is bilinear: straight
     across between opposite sides, in the middle the sum of both). Five sides and more make an
@@ -536,6 +555,12 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
             raise ValueError("fill: an edge lies between two faces; take edges on the border of a sheet (used by one "
                              "face), or curves")
         sides.append((e, faces[0] if (faces and tangent) else None))
+    if tangent and sides and all(f is not None and f == sides[0][1] for _, f in sides) and sides[0][1].is_planar:
+        # The outline of a planar face (a sketch's region): the patch would cover the face it is to
+        # be tangent to, and fold back over it. The curves are taken as they are.
+        outline = {x._identity() for x in sides[0][1].outer_wire().edges()}
+        if {e._identity() for e, _ in sides} == outline:
+            sides = [(e, None) for e, _ in sides]
     box = edges[0].bbox()
     for e in edges[1:]:
         box = box.union(e.bbox())

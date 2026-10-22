@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'nod
 import { Shell, ShapeList, merge as _merge, surface as _surface } from '../src/index.ts'
 import { exportFile } from '../src/exporters.ts'
 import { exportUsd, fromUsd, importUsd, toUsd } from '../src/usd.ts'
-import { setWarningHandler } from '../src/kernel.ts'
+import { ModelingError, setWarningHandler } from '../src/kernel.ts'
 import { _pyRepr as f } from '../src/step.ts'
 import { Align } from '../src/index.ts'
 
@@ -230,7 +230,8 @@ test('usd rejects what it cannot read', () => {
   assert.throws(() => fromUsd(new Uint8Array([...new TextEncoder().encode('PXR-USDC'), ...new Uint8Array(100)])), /binary/)
   assert.throws(() => fromUsd('#usda 1.0\ndef Xform "World"\n{\n}\n'), /no BrepArray/)
   const broken = toUsd(p).replace('uniform uint[] faceuse:faceIndex = [', 'uniform uint[] faceuse:faceIndex = [99, ')
-  assert.throws(() => fromUsd(broken), /malformed/)
+  assert.throws(() => fromUsd(broken, { strict: true }), /malformed/)
+  assert.throws(() => fromUsd(broken), (e: unknown) => e instanceof ModelingError && /no body of the file can be read: .*malformed/.test(e.message)) // (left out: none left)
 })
 
 test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's test files are not checked out" }, () => {
@@ -267,7 +268,7 @@ test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's
         seen += 1
       } else {
         try {
-          fromUsd(text)
+          fromUsd(text, { strict: true })
         } catch (e) {
           if (!(e instanceof RangeError)) throw e
         }
@@ -280,7 +281,7 @@ test('usd reads usd-brep files', { skip: !existsSync(USD_SAMPLES) && "usd-brep's
   // its wall whose faces leave gaps of 377 (the healer crashed on it) is refused, and read with the
   // check off
   const revit = readFileSync(join(USD_SAMPLES, 'usd_TestFiles', 'RevitWallHealerCrash.usda'), 'utf8')
-  assert.throws(() => fromUsd(revit), /is broken: the kernel finds a gap of 377 .0.033 of its size/)
+  assert.throws(() => fromUsd(revit, { strict: true }), /is broken: the kernel finds a gap of 377 .0.033 of its size/)
   assert.ok(!(fromUsd(revit, { check: false }) as Part).isValid())
 })
 
@@ -301,7 +302,7 @@ test("usd refuses the validator's broken bodies", { skip: !existsSync(USD_SAMPLE
     'Test_BA_155_Invalid_U_range_order.usda': /body 0, face 0: its range in u is empty or the wrong way round .BA.155/,
     'Test_BA_235_Invalid_edge_range_order.usda': /body 0, edge 0: its range is the wrong way round .BA.235/,
   }
-  for (const [name, message] of Object.entries(refused)) assert.throws(() => importUsd(join(USD_SAMPLES, 'brep_validator', name)), message, name)
+  for (const [name, message] of Object.entries(refused)) assert.throws(() => importUsd(join(USD_SAMPLES, 'brep_validator', name), { strict: true }), message, name)
   // bodies that are only types the validator dislikes read as they are
   const typed = importUsd(join(USD_SAMPLES, 'brep_validator', 'Test_BA_076_Invalid_region_attribute_data_types.usda')) as ShapeList<Part>
   assert.deepEqual(typed.map((b) => Math.round(b.volume * 1e9) / 1e9), [1, 1])
@@ -349,7 +350,7 @@ test('usd values the conversion cannot take throw', () => {
     import { importUsd } from '${src}index.ts'
     for (let i = 0; i < ${cases.length}; i++) {
       try {
-        importUsd(${JSON.stringify(dir)} + '/case' + i + '.usda').volume
+        importUsd(${JSON.stringify(dir)} + '/case' + i + '.usda', { strict: true }).volume
         console.log('read')
       } catch (e) {
         console.log(e.message)
@@ -558,7 +559,7 @@ test('usd bodies that other writers left gaps in', () => {
   const theirs = toUsd(Box(10, 10, 10), { mesh: false }).replace('string source = "smlibpy"', 'string source = "theirs"')
   const [x, y, z] = /brep:vertexPoint:point:position = \[\(([^)]*)\)/.exec(theirs)![1].split(',').map(Number)
   const far = mutated(theirs, 'brep:vertexPoint:point:position', `(${f(x)}, ${f(y)}, ${f(z + 0.5)})`)
-  assert.throws(() => fromUsd(far), /is broken: the kernel finds a gap of 0.5 \(0.0\d+ of its size\) at vertex 0/)
+  assert.throws(() => fromUsd(far, { strict: true }), /is broken: the kernel finds a gap of 0.5 \(0.0\d+ of its size\) at vertex 0/)
   approx((fromUsd(far, { check: false }) as Part).volume, 1000, 1e-6)
   const said: string[] = []
   setWarningHandler((m) => said.push(m))

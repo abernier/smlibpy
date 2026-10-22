@@ -161,6 +161,10 @@ function _boxOf(part: _Body, name: string): BoundBox {
 }
 
 // ------------------------------------------------------------------------------------------ SVG
+/** What `toSvg` and `exportSvg` draw: drawing views, edges, wires, faces, sheets and sketches, or
+ * lists of them (a Part is drawn through `drawingViews` or `outline`). */
+export type SvgItemsLike = DrawingView | Edge | Wire | Face | Shell | readonly SvgItemsLike[]
+
 /** [kind, edge] for each edge to draw: `'visible'` or `'hidden'`. */
 function _lines(shapes: unknown): ['visible' | 'hidden', Edge][] {
   const out: ['visible' | 'hidden', Edge][] = []
@@ -231,7 +235,7 @@ export interface SvgOptions {
  * - `stroke`: width of the visible lines (the hidden ones are 0.7 of it, dashed). Default: 0.35 mm,
  *   or 1/500 of the drawing's size where that is smaller.
  */
-export function toSvg(shapes: unknown, options: SvgOptions = {}): string {
+export function toSvg(shapes: SvgItemsLike, options: SvgOptions = {}): string {
   _opts('toSvg', options)
   const lines = _lines(shapes)
   if (!lines.length) throw new RangeError('exportSvg: nothing to draw')
@@ -271,7 +275,7 @@ export function toSvg(shapes: unknown, options: SvgOptions = {}): string {
 }
 
 /** Write `toSvg` of the shapes to a file (Node). */
-export function exportSvg(shapes: unknown, path: string, options: SvgOptions = {}): void {
+export function exportSvg(shapes: SvgItemsLike, path: string, options: SvgOptions = {}): void {
   _opts('exportSvg', options)
   _fs().writeFileSync(String(path), toSvg(shapes, options))
 }

@@ -213,7 +213,7 @@ s = Spline((0, 0), (10, 10), (20, 0))
 x = s.intersections(Line((0, 4), (20, 4)))       # [(2.254, 4, 0), (17.746, 4, 0)]
 left, rest = s.split(x[0])                        # the lengths add up to s.length
 middle = s.trim(x[0], x[1])                       # the arch between the two crossings
-s.param_at(x[0]), s.closest_point((10, 20))      # 0.1553, (10, 10, 0)
+s.param_at_point(x[0]), s.closest_point((10, 20))  # 0.1553, (10, 10, 0)
 
 arc = CenterArc((0, 0), 10, 0, 180).trim(0.25, 0.75)    # an arc from 45 to 135 degrees
 longer = Line((0, 0), (10, 0)).extend(2, end="both")   # (-2, 0) to (12, 0)

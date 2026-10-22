@@ -475,3 +475,16 @@ def test_viewer_shows_a_read_step_file_and_imported_assemblies(session, tmp_path
     assert s["index"][line["id"]]["expr"].startswith("tool.curves[")
     assert max(c["properties"]["max"][2] for c in s["graphic"]["containers"]) <= 120 + 1e-6
     assert session.call("snapshot", size=(300, 200))["ok"]
+
+
+@pytest.mark.parametrize("name", ["ShapeList.new", "ShapeList.derived_from", "ShapeList.shared", "ShapeList.g1",
+                                  "ShapeList.g2", "Part.voids", "Part.shells", "Part.sources", "Part.from_mesh",
+                                  "Part.raycast_many", "Sketch.flipped", "Face.cells", "to_step", "from_step", "to_file",
+                                  "from_file", "Edge.min_radius_at", "Edge.param_at_point", "Shell.from_nurbs"])
+def test_describe_method_finds_a_guide_for_names_without_one_of_their_own(name):
+    # The guides are found by file name: the methods a guide of another name describes (history,
+    # shells, files in memory, ...) came without one in describe_method.
+    entry = discovery.find_method(name)
+    assert entry is not None, name
+    guide = discovery.guide_for(entry)
+    assert guide is not None and name.split(".")[-1] in guide.text, (name, guide and guide.key)

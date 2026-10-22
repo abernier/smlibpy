@@ -533,3 +533,45 @@ test('section of a merged part has every cell', () => {
   const touching = _Box(20, 20, 20).merge(Cylinder(3, 10).rotate(X, 90).translate(7, 0, 0))
   assert.throws(() => touching.section(Plane.XY), (e: Error) => e instanceof ModelingError && /^section: cells: /.test(e.message))
 })
+
+
+// -- review of 0.5.0: mirrors ------------------------------------------------------------------------
+import * as RV from '../src/index.ts'
+
+test('mirrored bodies keep the sides of their faces', () => {
+  for (const plane of [RV.Plane.YZ, RV.Plane.XZ, RV.Plane.XY]) {
+    const m = RV.Box(20, 20, 20).cut(RV.Box(10, 10, 10)).mirror(plane)
+    approx(m.volume, 7000, 1e-9)
+    approx(m.mesh(0.01).volume, 7000, 1e-9)
+    assert.equal(m.edges().concave().length, 12)
+    assert.deepEqual(m.check(), [])
+    const cavity = m.faces().filter((f) => f.center().length < 6)
+    for (const f of cavity) assert.ok(f.normalAt().dot(f.center()) < 0) // (into the cavity, away from the material)
+  }
+  const box = RV.Box(60, 40, 20)
+  approx(box.mirror(RV.Plane.YZ).shell(2).mesh(0.01).volume, 15744, 1e-9)
+  const rounded = box.fillet(box.edges(), 5)
+  const mr = rounded.mirror(RV.Plane.YZ)
+  approx(mr.shell(2, mr.faces().top()).volume, rounded.shell(2, rounded.faces().top()).volume, 1e-9)
+  const pin = RV.Cylinder(2, 5).mirror(RV.Plane.YZ)
+  assert.equal(pin.edges().circles().length, 2)
+  approx(pin.chamfer(pin.edges(), 1.94).volume, RV.Cylinder(2, 5).chamfer(RV.Cylinder(2, 5).edges(), 1.94).volume, 1e-12)
+})
+
+test('bumped cylinder sheets stay bumped (the kernel took them for cylinders)', () => {
+  const w = Math.SQRT1_2
+  const circle = [[5, 0], [5, 5], [0, 5], [-5, 5], [-5, 0], [-5, -5], [0, -5], [5, -5], [5, 0]]
+  const sheet = (bump: number): RV.Shell => {
+    const s = 1 + bump / (5 * Math.SQRT2)
+    const rows = circle.map(([x, y], i) => [0, 10].map((z) => (i === 1 ? [x * s, y * s, z] : [x, y, z]) as [number, number, number]))
+    const weights = circle.map((_, i) => [i % 2 ? w : 1, i % 2 ? w : 1])
+    return RV.nurbsSurface(rows, [[0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], [0, 0, 1, 1]], [2, 1], weights)
+  }
+  const bumped = sheet(0.5)
+  approx(bumped.area, 316.2716, 1e-5)
+  const stretched = bumped.scale([1, 1, 2])
+  assert.equal(stretched.faces()[0].geomType, 'bspline')
+  approx(stretched.area, 632.543, 1e-5)
+  assert.equal(RV.fromSmb(RV.toSmb(bumped)).faces()[0].geomType, 'bspline')
+  assert.equal(sheet(0).scale([1, 1, 2]).faces()[0].geomType, 'cylinder')
+})

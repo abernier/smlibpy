@@ -101,6 +101,17 @@ Mitred are the corners where three rounded convex edges meet and no other edge (
 mitre for more edges, or for a concave one); a selection without such a corner raises
 `ValueError`. `chamfer` takes `corners` too: its bevels then meet in a point instead of a small
 triangle (`box.chamfer(box.edges(), 2, corners="mitre")`: 23328.0, 23322.6667 with the triangles).
+`"miter"`, the American spelling, is taken as well.
+
+The keyword `corners` names a different choice in each operation that has it:
+
+| Operation | `corners=` | What it chooses |
+|---|---|---|
+| `fillet`, `chamfer` | `"patch"` (default), `"mitre"` (or `"miter"`) | where three rounded edges meet |
+| `offset` | `"sharp"` (default), `"round"` | the convex edges of the offset: faces extended, or rolled round |
+| `shell` | `None` (default: either), `"round"`, `"sharp"` | the edges of the cavity, as for `offset` |
+| `Sketch.extrude(taper=...)`, `extrude` | `"sharp"` (default), `"round"` | the corners of a tapered profile |
+| `Wire.offset`, `Sketch.offset` | `"round"` (default), `"sharp"`, `"chamfer"` | the corners that open up |
 
 ### What can't be rounded
 

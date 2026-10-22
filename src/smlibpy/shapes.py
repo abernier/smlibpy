@@ -1056,8 +1056,15 @@ class Edge(Shape):
                 t0, t1 = self._e.parameter_range()
             else:
                 t0, t1 = self._curve().parameter_range()
-            self._cache = (float(t0), float(t1))
-        return self._cache
+            self._cache = (float(t0), float(t1), None)
+        return self._cache[0], self._cache[1]
+
+    def _length(self) -> float:
+        """The arc length, measured once (an edge does not change; a long helix takes a while)."""
+        t0, t1 = self._range()
+        if self._cache[2] is None:  # type: ignore[index]
+            self._cache = (t0, t1, float(ext.curve_length(self._curve(), t0, t1)))
+        return self._cache[2]  # type: ignore[index,return-value]
 
     def _copy_curve(self) -> Any:
         """A new standalone kernel curve with this edge's extent and direction."""
@@ -1077,7 +1084,7 @@ class Edge(Shape):
             return t1
         if self.geom_type == "line":
             return t0 + (t1 - t0) * t
-        s = t * ext.curve_length(self._curve(), t0, t1)
+        s = t * self._length()
         u, _ = ext.curve_parameter_at_length(self._curve(), t0, s)
         return float(min(max(u, t0), t1))
 
@@ -1099,8 +1106,7 @@ class Edge(Shape):
 
     @property
     def length(self) -> float:
-        t0, t1 = self._range()
-        return float(ext.curve_length(self._curve(), t0, t1))
+        return self._length()
 
     @property
     def start(self) -> Vector:
@@ -1262,10 +1268,11 @@ class Edge(Shape):
         """The point of the edge nearest to ``point``."""
         return self._closest(point)[0]
 
-    def param_at(self, point: VectorLike | Vertex) -> float:
-        """Where the point of the edge nearest to ``point`` lies along it: the fraction of the
-        length from the start, as :meth:`point_at` takes it (``e.point_at(e.param_at(p))`` is
-        ``e.closest_point(p)``)."""
+    def param_at_point(self, point: VectorLike | Vertex) -> float:
+        """Where on the edge the point nearest to ``point`` lies, as a fraction of the edge's
+        length from its start (0) to its end (1), as :meth:`point_at` takes it:
+        ``edge.point_at(edge.param_at_point(p))`` is ``edge.closest_point(p)`` (build123d's
+        name)."""
         return self._fraction(self._closest(point)[1])
 
     def _closest(self, point: VectorLike | Vertex) -> tuple[Vector, float, float]:
@@ -1503,14 +1510,23 @@ class Edge(Shape):
         c = self.curvature_at(t)
         return 1.0 / c if c > 0 else math.inf
 
-    def min_radius(self) -> tuple[float, float]:
-        """The smallest radius of curvature of the edge and where it is: ``(radius, t)``, ``t`` a
-        fraction of the length (as :meth:`point_at`). A line gives ``(inf, 0.0)``, an arc its
-        radius. A sweep profile that reaches farther from the path than this folds over itself. ::
+    def min_radius(self) -> float:
+        """The smallest radius of curvature of the edge (as :meth:`Face.min_radius` is the face's):
+        ``inf`` for a line, an arc's radius. A sweep profile that reaches farther from the path than
+        this folds over itself. Where it is: :meth:`min_radius_at`. ::
 
-            r, t = path.min_radius()
-            print(f"tightest bend: radius {r:.3g} at {path.point_at(t)}")
+            r = path.min_radius()
+            print(f"tightest bend: radius {r:.3g} at {path.point_at(path.min_radius_at())}")
         """
+        return self._min_radius()[0]
+
+    def min_radius_at(self) -> float:
+        """Where the edge bends most tightly (:meth:`min_radius`): a fraction of its length, as
+        :meth:`point_at` takes it (0 for a line or an arc)."""
+        return self._min_radius()[1]
+
+    def _min_radius(self) -> tuple[float, float]:
+        """(radius, t) of :meth:`min_radius` and :meth:`min_radius_at`."""
         kind = self.geom_type
         if kind == "line" or self._is_straight():
             return math.inf, 0.0
@@ -1767,12 +1783,6 @@ class Edge(Shape):
         if dev > 1e-9 * size:
             raise ModelingError(f"match: the ends came no closer than {dev:.3g} to their targets")
         return e
-
-    def param_at_point(self, point: VectorLike | Vertex) -> float:
-        """Where on the edge the point nearest to ``point`` lies, as a fraction of the edge's
-        length from its start (0) to its end (1): ``edge.point_at(edge.param_at_point(p))`` is
-        ``edge.closest_point(p)`` (the same as :meth:`param_at`, build123d's name)."""
-        return self.param_at(point)
 
     def continuity(self, samples: int = 16, *, angle_tol: float = 0.5, curvature_tol: float = 0.01) -> Continuity:
         """How the two faces of the edge meet, checked at ``samples`` points along it
@@ -2243,7 +2253,7 @@ class Wire(Shape):
         if d > 1e-6 * max(1.0, self.length):
             raise ValueError(f"{what}: the point {_fmt_point(p)} lies {d:.6g} off the wire; pass a point on the wire or "
                              f"a fraction from 0 to 1")
-        return best, e.param_at(p)
+        return best, e.param_at_point(p)
 
     def split(self, at: float | VectorLike | Vertex) -> tuple[Wire, Wire]:
         """The wire cut in two at ``at``, a fraction of its length or a point on it: the part
@@ -2357,15 +2367,22 @@ class Wire(Shape):
         """The wire as lines and circular arcs within ``tolerance`` (see :meth:`Edge.to_arcs`)."""
         return Wire._raw([p for e in self._edges for p in e.to_arcs(tolerance).edges()])
 
-    def min_radius(self) -> tuple[float, float]:
-        """The smallest radius of curvature of the wire's edges and where it is: ``(radius, t)``,
-        ``t`` a fraction of the wire's length (as :meth:`point_at`). The corners where edges
-        meet do not count (a corner has no radius; see :meth:`fillet`)."""
+    def min_radius(self) -> float:
+        """The smallest radius of curvature of the wire's edges. The corners where edges meet do
+        not count (a corner has no radius; see :meth:`fillet`). Where it is: :meth:`min_radius_at`."""
+        return self._min_radius()[0]
+
+    def min_radius_at(self) -> float:
+        """Where the wire bends most tightly (:meth:`min_radius`): a fraction of its length, as
+        :meth:`point_at` takes it."""
+        return self._min_radius()[1]
+
+    def _min_radius(self) -> tuple[float, float]:
         lengths = [e.length for e in self._edges]
         total = sum(lengths) or 1.0
         best, at, before = math.inf, 0.0, 0.0
         for e, L in zip(self._edges, lengths):
-            r, t = e.min_radius()
+            r, t = e._min_radius()
             if r < best:
                 best, at = r, (before + t * L) / total
             before += L
@@ -2804,13 +2821,6 @@ class Face(Shape):
         weights = None if w is None else [[float(x) for x in w[i * nv:(i + 1) * nv]] for i in range(nu)]
         return NurbsSurface((du, dv), (ku, kv), points, weights)
 
-    def isocurve(self, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
-        """The curve of constant ``u`` (or constant ``v``) of the face's surface, at a fraction (0
-        to 1) of the face's parameter box, clipped to the face: one edge per piece that lies on it
-        (a plate with a hole in the way gives two). Exact: lines, arcs or B-splines of the surface
-        itself. Give one of ``u`` and ``v``. The same as :meth:`iso`."""
-        return self._iso_curves(u, v, "isocurve")
-
     def raycast(self, origin: VectorLike | Axis, direction: VectorLike | Axis | None = None) -> list[Hit]:
         """Where a ray meets this face, nearest first (see :meth:`Part.raycast`)."""
         return _raycast([self], origin, direction, self.bbox())
@@ -2838,7 +2848,7 @@ class Face(Shape):
             out.extend(Edge._from_curve(cv) for cv, _ in res)
         return out
 
-    def iso(self, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
+    def iso(self, *, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
         """The curve of the face along which one of its surface parameters is constant: ``u`` or
         ``v`` as a fraction (0 to 1) of the face's range of that parameter. Trimmed to the face:
         several pieces where the face has holes or notches. For styling lines, inspection curves
@@ -2849,13 +2859,13 @@ class Face(Shape):
             ring = Cylinder(10, 40).faces().cylinders()[0].iso(v=0.5)
 
         Exact: lines, arcs or B-splines of the surface itself, ending exactly where the face's
-        edges cross them. :meth:`isocurve` is the same.
+        edges cross them. Give one of ``u`` and ``v``, by name.
         """
         return self._iso_curves(u, v, "iso")
 
     def _iso_curves(self, u: float | None, v: float | None, what: str) -> ShapeList[Edge]:
-        """:meth:`iso` (and :meth:`isocurve`): the face's curves of constant ``u`` or ``v``, a fraction
-        of its parameter box, clipped to the face (``ext.face_iso_curves``)."""
+        """:meth:`iso`: the face's curves of constant ``u`` or ``v``, a fraction of its parameter box,
+        clipped to the face (``ext.face_iso_curves``)."""
         if (u is None) == (v is None):
             raise ValueError(f"{what}: give u or v (exactly one of u and v)")
         t = float(u if u is not None else v)  # type: ignore[arg-type]
@@ -2989,8 +2999,8 @@ class Face(Shape):
             b = ext.untrim_face(self._f)
         return Shell._wrap(b)
 
-    def extended(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
-                 continuity: str = "natural") -> Shell:
+    def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
+               continuity: str = "natural") -> Shell:
         """The face's surface grown past its sides, as a sheet of one face: to make a sheet reach
         across a part before cutting or splitting it with it, or to give a blend room.
 
@@ -3002,7 +3012,10 @@ class Face(Shape):
             continuity: How the surface goes on: ``"natural"`` (default) as it is (a plane stays the
                 plane, a cylinder or sphere the same cylinder or sphere, a B-spline surface follows
                 its own polynomials), ``"G1"`` straight on along its tangents, ``"G2"`` bending on
-                with the curvature it has at the side.
+                with the curvature it has at the side. (:meth:`Edge.extend` defaults to ``"G1"``:
+                lines and arcs go on as themselves there whatever it says, and a spline's own
+                polynomial can turn away past its end; a face's natural extension keeps planes,
+                cylinders, cones and spheres what they are.)
 
         The sides are those of the face's surface rectangle, along its parameter directions: the
         four edges of a box's face or of a sheet from :func:`~smlibpy.surface`, the two ends of a
@@ -3014,7 +3027,7 @@ class Face(Shape):
         Returns:
             A sheet of one face, its normal following this face's (:meth:`normal_at`).
         """
-        return Shell._wrap(_extended_face(self, distance, sides, continuity, "extended"))
+        return Shell._wrap(_extended_face(self, distance, sides, continuity, "extend"))
 
     def extrude(self, amount: float, **kwargs: Any) -> Part:
         """Extrude a planar face along its normal (see :meth:`Sketch.extrude`)."""
@@ -3224,9 +3237,10 @@ class _Body(Shape):
         return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
 
     def raycast_many(self, origins: Any, directions: Any) -> list[Hit | None]:
-        """The first hit of each of many rays: for each origin, the ``Hit`` that :meth:`raycast`
-        gives first (the exact point on the face, the distance, the face, its outward normal),
-        ``None`` where the ray misses.
+        """The first hit of each of many rays, one per ray (``Hit`` or ``None``), not
+        :meth:`raycast` many times (which gives every hit of a ray): for each origin, the ``Hit``
+        that :meth:`raycast` gives first (the exact point on the face, the distance, the face, its
+        outward normal), ``None`` where the ray misses.
 
         ``origins`` is an ``(n, 3)`` array or a sequence of points; ``directions`` one direction
         (a vector or an axis) for all of them, or one each. The rays are traced through a mesh of
@@ -3354,7 +3368,8 @@ class _Body(Shape):
         Every face the projection meets gets its pieces: the near side and the far side of the
         body, and faces seen edge-on (pieces along the direction). ``nearest=True`` keeps what the
         projection reaches first: the parts seen from the curve along the direction, cut where
-        another part of the body hides them. ::
+        another part of the body hides them (the default of :meth:`imprint` with a direction, which
+        marks the faces an outline lands on). ::
 
             path = part.project(Spline((0, -20, 50), (10, 0, 50), (0, 20, 50)), (0, 0, -1), nearest=True)
         """
@@ -3388,18 +3403,19 @@ class _Body(Shape):
         (the tangent lines of fillets) are drawn too. Either way each line comes once: hidden
         pieces under visible lines are cut away, seams of closed faces and edges seen end-on are
         left out. See also :func:`drawing_views`."""
+        tol = 1e-7 * max(self.bbox().diagonal, 1.0)
         if hidden or tangent_edges:
             with kernel_call("outline"):
                 seen, behind = ext.hidden_lines(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple(), False,
                                                 bool(tangent_edges))
-            visible = ShapeList(Edge._from_curve(c) for c in seen)
-            back = ShapeList(Edge._from_curve(c) for c in behind)
+            visible = _drawn((Edge._from_curve(c) for c in seen), tol)
+            back = _drawn((Edge._from_curve(c) for c in behind), tol)
             return (visible, back) if hidden else visible
         with kernel_call("outline"):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
         # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
         # circles seen edge-on come with a copy each); a drawing view needs each line once.
-        return _distinct_curves(curves, 1e-7 * max(self.bbox().diagonal, 1.0))
+        return _drawn(_distinct_curves(curves, tol), tol)
 
     def _transformed(self, m: np.ndarray) -> Any:
         h = BrepHandle(self._copy_brep())  # freed if the kernel fails
@@ -3507,6 +3523,32 @@ class _Body(Shape):
         }
         out.update(_MADE.get(self._h, {}))
         return out
+
+
+def _drawn(edges: Iterable[Edge], tol: float) -> ShapeList[Edge]:
+    """Projected edges as a drawing has them: the B-splines that are lines or circular arcs exactly
+    (the kernel's projections fit every curve) as lines and arcs, and the arcs of one circle that
+    meet end to end joined, so that ``circles()`` and ``radius`` find a view's holes."""
+    from .curves import CenterArc, Line, ThreePointArc
+    from .draft import _joined_arcs
+    from .dxf import _circle_of
+
+    out: list[Edge] = []
+    for e in edges:
+        if e.geom_type == "bspline":
+            if e._is_straight():
+                e = Line(e.start, e.end)
+            else:
+                circle = _circle_of(e)
+                if circle is not None:
+                    center, axis = Vector(*circle[0]), Vector(*circle[2])
+                    if e.is_closed:
+                        plane = Plane(center, x_dir=(e.start - center).normalized(), z_dir=axis)
+                        e = CenterArc((0, 0), float(circle[1]), 0.0, 360.0, plane)
+                    else:
+                        e = ThreePointArc(e.start, e.point_at(0.5), e.end)
+        out.append(e)
+    return ShapeList(_joined_arcs(out, tol))
 
 
 def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
@@ -4778,6 +4820,18 @@ class Part(_Body):
     # -- booleans -------------------------------------------------------------
     def _boolean(self, others: Any, op: Any, name: str) -> Part:
         tools = _bodies(others, name)
+        result = self._combined(tools, op, name)
+        if op != k.BooleanOp.DIFFERENCE and isinstance(result, Part):
+            # A union or an intersection holds the bends of its tools too: their K-factor records
+            # (fold, flange) go with the result as the part's do.
+            folds = list(result._folds)
+            for t in tools:
+                folds += [f for f in getattr(t, "_folds", ()) if f not in folds]
+            result._folds = tuple(folds)
+        return result
+
+    def _combined(self, tools: list[Any], op: Any, name: str) -> Part:
+        """The Boolean of :meth:`_boolean`, checked, retried and explained."""
         for t in tools:
             if isinstance(t, Sketch) or not isinstance(t, (Part, Shell)):
                 kind = type(t).__name__
@@ -6131,12 +6185,15 @@ class Part(_Body):
                 where it reaches past the face's edges, the neighbouring faces can get split lines
                 close to them). Or curves: edges or wires, which without a direction must lie on the
                 part's faces (:meth:`intersection_curves`, :meth:`project`).
-            direction: For curves only: move them along this direction (an axis or a vector) onto
-                the part first, where they cross its faces as they move (an outline projected onto
-                them). Only ahead of the curves: a part behind them is not reached.
+            direction: For curves, a sketch or a face: move their outline along this direction (an
+                axis or a vector) onto the part first, where it crosses the part's faces as it moves
+                (an outline projected onto them). Only ahead of the curves: a part behind them is
+                not reached.
             nearest: With a direction, split only the faces the projection meets first: the side of
-                the part facing the curves (default). ``False`` splits every face the projection
-                crosses, also on the far side (a box's top and bottom face).
+                the part facing the curves (default: an imprint marks the faces the outline lands
+                on). ``False`` splits every face the projection crosses, also on the far side (a
+                box's top and bottom face). :meth:`project`, which returns the projected curves,
+                keeps both sides by default (``nearest=False``) and takes the same keyword.
 
         The pieces of the part's faces that lie inside a tool part, or inside the sketch's
         region, descend from the tool: ``part.imprint(tool).faces().derived_from(tool)``
@@ -6150,8 +6207,11 @@ class Part(_Body):
         if curves is not None:
             return self._imprinted_curves(curves, direction, nearest)
         if direction is not None:
-            raise TypeError("imprint: direction= moves curves onto the part; a part, a sheet, a face or a sketch is "
-                            "imprinted where it is")
+            if isinstance(tool, Sketch) or (isinstance(tool, Face) and tool.is_planar):
+                # (a sketch's or a planar face's outline, as project takes it)
+                return self._imprinted_curves(list(tool.edges()), direction, nearest)
+            raise TypeError("imprint: direction= moves curves, a sketch or a planar face onto the part; a part or a "
+                            "sheet is imprinted where it is")
         if isinstance(tool, ShapeList):
             tool = tool.one()
         if not isinstance(tool, (Part, Shell, Face)):
@@ -7240,8 +7300,8 @@ def _with_finer_rounds(attempt: Callable[[float], Part]) -> Part:
     try:
         return attempt(4.0)
     except ModelingError as first:  # (a KernelError too)
-        if isinstance(first, KernelError) and first.status == "SM_ERR_INVALID_INPUT":
-            raise
+        if isinstance(first, KernelError) and first.status == "SM_ERR_INVALID_INPUT" or getattr(first, "timed_out", False):
+            raise  # (nor after GUARD_SECONDS ran out: the finer one would take as long)
         try:
             return attempt(1.0)
         except ModelingError:
@@ -7330,10 +7390,11 @@ def _straight_around(face: Face, center: Vector, axis: Vector, start: Vector, st
 
 
 def _corner_style(operation: str, corners: str) -> bool:
-    """Whether ``corners`` (of :meth:`Part.fillet` or :meth:`Part.chamfer`) asks for mitred corners."""
-    if corners not in ("patch", "mitre"):
-        raise ValueError(f'{operation}: corners must be "patch" or "mitre", not {corners!r}')
-    return corners == "mitre"
+    """Whether ``corners`` (of :meth:`Part.fillet` or :meth:`Part.chamfer`) asks for mitred corners
+    (``"mitre"``, or the American ``"miter"``)."""
+    if corners not in ("patch", "mitre", "miter"):
+        raise ValueError(f'{operation}: corners must be "patch" or "mitre" (or "miter"), not {corners!r}')
+    return corners != "patch"
 
 
 def _mitred_corners(edges: Sequence[Edge]) -> list[Vector]:
@@ -7363,7 +7424,7 @@ def _require_mitred_corners(operation: str, edges: Sequence[Edge]) -> None:
 
 
 def _extended_face(face: Face, distance: float, sides: Any, continuity: str, what: str) -> Any:
-    """The brep of :meth:`Face.extended`."""
+    """The brep of :meth:`Face.extend`."""
     d = float(distance)
     if not (d > 0 and math.isfinite(d)):
         raise ValueError(f"{what}: the distance must be positive, got {distance}")
@@ -7502,6 +7563,35 @@ class Shell(_Body):
 
     __slots__ = ()
 
+    @classmethod
+    def from_nurbs(cls, nurbs: Any) -> Shell:
+        """The sheet of a NURBS surface given by its data: the inverse of :meth:`Face.nurbs`, as
+        :meth:`Edge.from_nurbs` is for curves (:func:`~smlibpy.nurbs_surface` with the data in
+        :class:`~smlibpy.NurbsSurface`'s order).
+
+        Args:
+            nurbs: A :class:`~smlibpy.NurbsSurface` (what ``Face.nurbs()`` returns), or a tuple
+                ``(degrees, knots, points, weights)``: the degrees ``(u, v)``, the knot vectors
+                ``(u_knots, v_knots)``, the control points in rows (``points[i][j]`` the point
+                ``i`` along u and ``j`` along v) and a weight per point in the same rows, or
+                ``None`` for a non-rational surface. ::
+
+            n = face.nurbs()
+            rows = [list(row) for row in n.points]
+            rows[1][1] = Vector(rows[1][1]) + (0, 0, 2)  # pull one control point up
+            bumped = Shell.from_nurbs(n._replace(points=rows))
+        """
+        from .surfaces import nurbs_surface
+
+        if all(hasattr(nurbs, a) for a in ("degrees", "knots", "points")):
+            degrees, knots, points, weights = nurbs.degrees, nurbs.knots, nurbs.points, getattr(nurbs, "weights", None)
+        elif isinstance(nurbs, (tuple, list)) and len(nurbs) == 4:
+            degrees, knots, points, weights = nurbs
+        else:
+            raise TypeError(f"Shell.from_nurbs: expected a NurbsSurface or (degrees, knots, points, weights), got "
+                            f"{type(nurbs).__name__}")
+        return nurbs_surface(points, knots, degrees, weights)
+
     @property
     def area(self) -> float:
         return sum(f.area for f in self.faces())
@@ -7634,7 +7724,7 @@ class Shell(_Body):
 
     def extend(self, distance: float, *, sides: Edge | Iterable[Edge] | None = None,
                continuity: str = "natural") -> Shell:
-        """The sheet (of one face) grown past its sides: see :meth:`Face.extended`.
+        """The sheet (of one face) grown past its sides: see :meth:`Face.extend`.
 
         Args:
             distance: How far past each side, measured along the surface.
@@ -7644,12 +7734,12 @@ class Shell(_Body):
 
         Returns:
             A new sheet; this one does not change. For a sheet of several faces, extend one of its
-            faces (``sheet.faces()[i].extended(...)``).
+            faces (``sheet.faces()[i].extend(...)``).
         """
         faces = self.faces()
         if len(faces) != 1:
             raise ValueError(f"extend: the sheet has {len(faces)} faces; extend one of them with "
-                             f"sheet.faces()[i].extended(...)")
+                             f"sheet.faces()[i].extend(...)")
         return self._like(_extended_face(faces[0], distance, sides, continuity, "extend"))
 
     def match_edge(self, edge: Edge, target: Edge | Wire, *, extent: float = 0.25) -> Shell:

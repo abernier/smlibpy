@@ -34,6 +34,7 @@ valid solid, otherwise a `Shell`.
 Free edges are edges with one face:
 
 ```python
+pieces = Box(20, 20, 10).faces()                       # sheets read from a file, say
 body, report = stitch(pieces, report=True)
 print(report.open_edges, report.max_gap)
 free = [e for e in body.edges() if len(e.faces()) == 1]

@@ -50,6 +50,7 @@ inner, outer = path.offset(2), path.offset(-2, corners="sharp")
 wall = make_face(Wire([*inner.edges(), Line(inner.end, outer.end), *outer.reversed().edges(),
                        Line(outer.start, inner.start)])).extrude(10)          # (Stroke does this)
 rail = Spline((0, 0), (20, 8), (40, 0)).offset(3)
+outline_wire = Polyline((0, 0), (40, 0), (40, 25), (0, 25), close=True)
 toolpath = outline_wire.offset(-3)                    # 3 inside a closed outline
 side = Spline((0, 0, 0), (10, 0, 5), (20, 0, 0)).offset(1, plane=Plane.XZ)
 ```

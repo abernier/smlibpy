@@ -354,3 +354,14 @@ def test_mesh_booleans_on_any_mesh(tmp_path):
     assert (tet & tet).volume == pytest.approx(1 / 6)
     with pytest.raises(ValueError, match="triangles"):
         Mesh([(0, 0, 0)], []) + tet
+
+
+
+def test_mesh_volumes_keep_their_digits_far_from_the_origin():
+    # Mesh.volume took its triple products about the origin: a box 1e6 mm out measured 1113.1202019,
+    # 1e7 mm out 1113.0637, for 1113.121 (mass_properties, about the box's middle, was right).
+    for d in (0.0, 1e6, 1e7):
+        m = Box(10.3, 10.7, 10.1).translate(d, d, d).mesh(0.01)
+        assert m.volume == pytest.approx(10.3 * 10.7 * 10.1, rel=1e-9)
+        assert m.volume == pytest.approx(m.mass_properties().volume, rel=1e-12)
+    assert Mesh(np.zeros((0, 3)), np.zeros((0, 3), dtype=int)).volume == 0.0

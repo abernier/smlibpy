@@ -27,6 +27,31 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
  * `fillHoles` and `repaired` close them, `massProperties` measures what they enclose and `toPart`
  * makes a faceted part of them.
  */
+/** What `Mesh.repaired` did. */
+export class RepairReport {
+  /** Points that lay on each other (to 1e-9 of the largest coordinate), merged. */
+  readonly mergedVertices: number
+  /** Triangles without an area, and repeated ones, left out. */
+  readonly removedTriangles: number
+  /** Triangles turned to face the way their neighbours face (a closed piece outward). */
+  readonly flippedTriangles: number
+  /** Holes filled (as `Mesh.fillHoles`). */
+  readonly filledHoles: number
+  /** Borders that do not close on themselves, left open. */
+  readonly openHoles: number
+  /** Edges of the result not shared by two triangles: 0 for a closed mesh. */
+  readonly openEdges: number
+
+  constructor(mergedVertices: number, removedTriangles: number, flippedTriangles: number, filledHoles: number, openHoles: number, openEdges: number) {
+    this.mergedVertices = mergedVertices
+    this.removedTriangles = removedTriangles
+    this.flippedTriangles = flippedTriangles
+    this.filledHoles = filledHoles
+    this.openHoles = openHoles
+    this.openEdges = openEdges
+  }
+}
+
 export class Mesh {
   vertices: Float64Array
   triangles: Uint32Array
@@ -116,8 +141,12 @@ export class Mesh {
 
   /** Enclosed volume (meaningful for closed meshes). */
   get volume(): number {
-    const v = this.vertices
     const t = this.triangles
+    if (!t.length) return 0
+    // (the triple products about the middle of the box: about the origin, a mesh far from it lost
+    // digits, 1113.1204 for 1113.121 at 1e6 mm)
+    const m = this.bbox().center
+    const v = Float64Array.from(this.vertices, (x, i) => x - (i % 3 === 0 ? m.x : i % 3 === 1 ? m.y : m.z))
     let s = 0
     for (let i = 0; i < t.length; i += 3) {
       const [a, b, c] = [t[i] * 3, t[i + 1] * 3, t[i + 2] * 3]
@@ -384,7 +413,8 @@ export class Mesh {
   }
 
   /**
-   * The first hit of each of many rays: for each origin, the `Hit` that `raycast` gives first (the
+   * The first hit of each of many rays, one per ray (a `Hit` or `null`), not `raycast` many times
+   * (which gives every hit of a ray): for each origin, the `Hit` that `raycast` gives first (the
    * point, the distance, the triangle's normal and its index `triangle`), `null` where the ray
    * misses.
    *
@@ -579,17 +609,10 @@ export class Mesh {
    * `flippedTriangles`, `filledHoles`, `openHoles` (borders that do not close on themselves, left
    * open) and `openEdges` (edges of the result not shared by two triangles: 0 for a closed mesh).
    */
-  repaired(): [Mesh, Record<string, number>] {
+  repaired(): [Mesh, RepairReport] {
     const r = this._repair(true)
     const mesh = this._repairedMesh(r, Uint32Array.from(r.triangles), false)
-    const report: Record<string, number> = {
-      mergedVertices: r.merged_vertices,
-      removedTriangles: r.removed_triangles,
-      flippedTriangles: r.flipped_triangles,
-      filledHoles: r.filled_holes,
-      openHoles: r.open_holes,
-      openEdges: r.open_edges,
-    }
+    const report = new RepairReport(r.merged_vertices, r.removed_triangles, r.flipped_triangles, r.filled_holes, r.open_holes, r.open_edges)
     return [mesh, report]
   }
 

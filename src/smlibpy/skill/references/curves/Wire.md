@@ -41,7 +41,7 @@ A chain of edges, open or closed. Outlines, sweep paths and loft sections are wi
 | `to_edge()` | one B-spline edge through all edges (they must meet within 1e-6) |
 | `offset(d, corners="round", plane=None)` | a parallel wire: open ones to the left, closed ones outward (`offset`) |
 | `to_arcs(tolerance=0.01)` | lines and circular arcs within the tolerance (`to_arcs`) |
-| `min_radius()` | `(radius, t)`: the smallest radius of curvature of its edges (`min_radius`) |
+| `min_radius()`, `min_radius_at()` | the smallest radius of curvature of its edges, and where (`min_radius`) |
 
 ## fillet
 - Rounds every sharp corner with tangent arcs of `radius`, as `Sketch.fillet` rounds a region's:

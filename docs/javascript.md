@@ -113,7 +113,7 @@ Files are read and written in memory: `toStep`, `toStl`, `toGlb`, `toObj`, `toDx
 ```js
 const part = fromFile(await file.arrayBuffer(), file.name) // a File from an <input type="file">
 const glb = new Blob([toGlb(part)], { type: 'model/gltf-binary' })
-const download = new Blob([toFile(part, 'bracket.step')]) // .step, .stl, .glb, .gltf, .obj, .smb, .dxf, .usda
+const download = new Blob([toFile(part, 'bracket.step')]) // .step, .stl, .glb, .gltf, .obj, .smb, .smp, .dxf, .svg, .usda, .brep
 ```
 
 `Text` takes the page's own font, also a web font as browsers download it (WOFF2, WOFF, TTF, OTF):
@@ -561,9 +561,9 @@ export class ClosestPoints {
     readonly point: Vector;
     readonly otherPoint: Vector;
     readonly distance: number;
-    readonly face: any;
-    readonly otherFace: any;
-    constructor(point: Vector, otherPoint: Vector, distance: number, face?: any, otherFace?: any);
+    readonly face: Face | null;
+    readonly otherFace: Face | null;
+    constructor(point: Vector, otherPoint: Vector, distance: number, face?: Face | null, otherFace?: Face | null);
 }
 export class BoundBox {
     min: Vector;
@@ -593,6 +593,13 @@ export const ACCURACY = 1e-7;
 export type ColorLike = string | readonly number[];
 export type EdgesLike = Edge | Face | Wire | (Iterable<EdgesLike> & object);
 export type FacesLike = Face | (Iterable<FacesLike> & object);
+export type SourcesLike = Part | Shell | Face | Edge | (Iterable<SourcesLike> & object);
+export type RegionLike = Sketch | Face | Wire | Edge | Iterable<VectorLike>;
+export type WallsLike = ReadonlyMap<Face, number> | Iterable<readonly [FacesLike, number]>;
+export interface IsoOptions {
+    u?: number | null;
+    v?: number | null;
+}
 export interface BodyOptions {
     name?: string | null;
     color?: ColorLike | null;
@@ -661,9 +668,9 @@ export class ShapeList<T = Shape> extends Array<T> {
     hitBy(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): ShapeList<T>;
     within(box: BoundBox): ShapeList<T>;
     atPoint(point: VectorLike, tol?: number): ShapeList<T>;
-    newSince(since: unknown): ShapeList<T>;
-    derivedFrom(...shapes: unknown[]): ShapeList<T>;
-    joining(a: unknown, b: unknown): ShapeList<T>;
+    newSince(since: SourcesLike): ShapeList<T>;
+    derivedFrom(...shapes: SourcesLike[]): ShapeList<T>;
+    joining(a: SourcesLike, b: SourcesLike): ShapeList<T>;
     shared(): ShapeList<T>;
     union(other: Iterable<T>): ShapeList<T>;
     difference(other: Iterable<T>): ShapeList<T>;
@@ -718,13 +725,12 @@ export class Edge extends Shape {
     center(): Vector;
     bbox(): BoundBox;
     distanceTo(point: VectorLike | Shape): number;
-    paramAtPoint(point: VectorLike | Vertex): number;
     continuity(samples?: number, options?: {
         angleTol?: number;
         curvatureTol?: number;
     }): Continuity;
     closestPoint(point: VectorLike | Vertex): Vector;
-    paramAt(point: VectorLike | Vertex): number;
+    paramAtPoint(point: VectorLike | Vertex): number;
     trim(start: number | VectorLike | Vertex, end: number | VectorLike | Vertex): Edge;
     split(at: number | VectorLike | Vertex): [Edge, Edge];
     extend(distance: number, options?: {
@@ -742,7 +748,8 @@ export class Edge extends Shape {
     }): Vector[];
     curvatureAt(t?: number): number;
     radiusAt(t?: number): number;
-    minRadius(): [number, number];
+    minRadius(): number;
+    minRadiusAt(): number;
     inflections(): number[];
     offset(distance: number, options?: {
         plane?: Plane | null;
@@ -803,7 +810,8 @@ export class Wire extends Shape {
         plane?: Plane | null;
     }): Wire;
     toArcs(tolerance?: number): Wire;
-    minRadius(): [number, number];
+    minRadius(): number;
+    minRadiusAt(): number;
     closestPoint(point: VectorLike): Vector;
     continuity(options?: {
         angleTol?: number;
@@ -841,10 +849,9 @@ export class Face extends Shape {
     curvatureAt(point?: VectorLike | null): Curvature;
     minRadius(): number;
     nurbs(): NurbsSurface;
-    isocurve(u?: number | null, v?: number | null): ShapeList<Edge>;
     raycast(origin: VectorLike | Axis, direction?: VectorLike | Axis | null): Hit<Face>[];
     project(curve: Edge | Wire): ShapeList<Edge>;
-    iso(u?: number | null, v?: number | null): ShapeList<Edge>;
+    iso(options?: IsoOptions): ShapeList<Edge>;
     wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at?: VectorLike | Vertex | null, options?: {
         direction?: VectorLike | null;
     }): ShapeList<Edge>;
@@ -861,7 +868,7 @@ export class Face extends Shape {
     split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face>;
     flipped(): Shell;
     untrimmed(): Shell;
-    extended(distance: number, options?: {
+    extend(distance: number, options?: {
         sides?: Edge | Iterable<Edge> | null;
         continuity?: string;
     }): Shell;
@@ -966,7 +973,7 @@ export class Part extends Shape {
     shell(thickness: number, openings?: FacesLike | null, options?: {
         outward?: boolean;
         corners?: string | null;
-        walls?: unknown;
+        walls?: WallsLike | null;
     }): Part;
     offset(distance: number, options?: {
         corners?: string;
@@ -999,13 +1006,13 @@ export class Part extends Shape {
     }): DraftAnalysis;
     partingLine(direction: Axis | VectorLike): ShapeList<Wire>;
     draft(faces: FacesLike, angle: number, neutralPlane: Plane | Face): Part;
-    moveFaces(faces: unknown, by: Location | VectorLike): Part;
-    offsetFaces(faces: unknown, distance: number): Part;
+    moveFaces(faces: FacesLike, by: Location | VectorLike): Part;
+    offsetFaces(faces: FacesLike, distance: number): Part;
     push(face: Face, at: VectorLike, options?: PushOptions): Part;
-    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+    warp(face: Face, region: RegionLike, by: number | VectorLike, options?: {
         continuity?: string;
     }): Part;
-    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+    flatten(face: Face, region: RegionLike, plane: Plane | Face, options?: {
         continuity?: string;
     }): Part;
     fold(line: Axis | Edge, angle: number, options: FoldOptions): Part;
@@ -1020,10 +1027,10 @@ export class Part extends Shape {
     color: ColorLike | null;
     dispose(): void;
     named(name: string | null, options?: {
-        faces?: unknown;
+        faces?: FacesLike | null;
     }): this;
     colored(color: ColorLike | null, options?: {
-        faces?: unknown;
+        faces?: FacesLike | null;
     }): this;
     faces(): ShapeList<Face>;
     edges(seams?: boolean): ShapeList<Edge>;
@@ -1059,6 +1066,15 @@ export class Part extends Shape {
     equals(other: unknown): boolean;
 }
 export class Shell extends Shape {
+    static fromNurbs(nurbs: NurbsSurface | {
+        readonly degrees: readonly [number, number];
+        readonly knots: readonly [
+            readonly number[],
+            readonly number[]
+        ];
+        readonly points: readonly (readonly VectorLike[])[];
+        readonly weights?: readonly (readonly number[])[] | null;
+    }): Shell;
     get area(): number;
     center(): Vector;
     thicken(thickness: number, options?: {
@@ -1076,24 +1092,24 @@ export class Shell extends Shape {
     }): Shell;
     mergeFaces(a: Face, b: Face): Shell;
     push(face: Face, at: VectorLike, options?: PushOptions): Shell;
-    warp(face: Face, region: unknown, by: number | VectorLike, options?: {
+    warp(face: Face, region: RegionLike, by: number | VectorLike, options?: {
         continuity?: string;
     }): Shell;
-    flatten(face: Face, region: unknown, plane: Plane | Face, options?: {
+    flatten(face: Face, region: RegionLike, plane: Plane | Face, options?: {
         continuity?: string;
     }): Shell;
     fuse(...others: (Shell | Part | Face | Iterable<Shell | Part | Face>)[]): Shell;
-    cut(...others: unknown[]): Shell;
-    intersect(...others: unknown[]): Shell;
+    cut(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell;
+    intersect(...others: (Part | Sketch | Iterable<Part | Sketch>)[]): Shell;
     toString(): string;
     name: string | null;
     color: ColorLike | null;
     dispose(): void;
     named(name: string | null, options?: {
-        faces?: unknown;
+        faces?: FacesLike | null;
     }): this;
     colored(color: ColorLike | null, options?: {
-        faces?: unknown;
+        faces?: FacesLike | null;
     }): this;
     faces(): ShapeList<Face>;
     edges(seams?: boolean): ShapeList<Edge>;
@@ -1428,6 +1444,7 @@ export interface SweepOptions {
 }
 export function sweep(profile: Sketch | Face | ShapeList<Sketch | Face>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part;
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;
+export function swing(profile: Sketch | Face, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part;
 export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell;
 export function fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
 export function fillet(vertices: Vertex | readonly Vertex[], radius: number): Sketch;
@@ -1438,7 +1455,7 @@ export function chamfer(edges: EdgesLike | Vertex | readonly Vertex[], length: n
 export function shell(part: Part, thickness: number, openings?: FacesLike | null, options?: {
     outward?: boolean;
     corners?: string | null;
-    walls?: unknown;
+    walls?: WallsLike | null;
 }): Part;
 export type OffsetFunctionOptions = {
     corners?: string;
@@ -1707,6 +1724,15 @@ export function flatPattern(part: Part, options?: UnfoldOptions): FlatPattern;
 ### Meshes
 
 ```ts
+export class RepairReport {
+    readonly mergedVertices: number;
+    readonly removedTriangles: number;
+    readonly flippedTriangles: number;
+    readonly filledHoles: number;
+    readonly openHoles: number;
+    readonly openEdges: number;
+    constructor(mergedVertices: number, removedTriangles: number, flippedTriangles: number, filledHoles: number, openHoles: number, openEdges: number);
+}
 export class Mesh {
     vertices: Float64Array;
     triangles: Uint32Array;
@@ -1736,7 +1762,7 @@ export class Mesh {
         tolerance?: number | null;
     }): Mesh;
     fillHoles(): Mesh;
-    repaired(): [Mesh, Record<string, number>];
+    repaired(): [Mesh, RepairReport];
     toPart(maxFaces?: number): Part;
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
@@ -1895,12 +1921,13 @@ export interface DrawingViewsOptions {
     gap?: number | null;
 }
 export function drawingViews(part: Part | Shell, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
+export type SvgItemsLike = DrawingView | Edge | Wire | Face | Shell | readonly SvgItemsLike[];
 export interface SvgOptions {
     margin?: number | null;
     stroke?: number | null;
 }
-export function toSvg(shapes: unknown, options?: SvgOptions): string;
-export function exportSvg(shapes: unknown, path: string, options?: SvgOptions): void;
+export function toSvg(shapes: SvgItemsLike, options?: SvgOptions): string;
+export function exportSvg(shapes: SvgItemsLike, path: string, options?: SvgOptions): void;
 export interface UsdExportOptions {
     mesh?: boolean;
     tolerance?: number | null;
@@ -1915,7 +1942,7 @@ export interface UsdImportOptions {
     units?: string | null;
     placement?: boolean;
     check?: boolean;
-    partial?: boolean;
+    strict?: boolean;
 }
 export interface UsdReadOptions extends UsdImportOptions {
     resolve?: ((asset: string, from: string) => string | Uint8Array | null | undefined) | null;
@@ -1925,9 +1952,10 @@ export function importUsd(path: string, options?: UsdImportOptions): Part | Shel
 export interface BrepImportOptions {
     heal?: boolean;
     check?: boolean;
+    strict?: boolean;
 }
-export function toBrep(shapes: unknown): string;
-export function exportBrep(shapes: unknown, path: string): void;
+export function toBrep(shapes: ShapesLike): string;
+export function exportBrep(shapes: ShapesLike, path: string): void;
 export function importBrep(path: string, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export function fromBrep(data: string | BytesLike, options?: BrepImportOptions): Part | Shell | ShapeList<Part | Shell>;
 export type BytesLike = Uint8Array | ArrayBufferView | ArrayBuffer;

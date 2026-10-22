@@ -30,8 +30,10 @@ An `Edge` (`geom_type == "bspline"`).
 face along the helix. For the default axis, the sketch's **X axis points radially out** and
 its **Y axis along the helix axis**. So:
 - `Rectangle(2, 1)` on `Helix(4, 12, 8)` is 2 radial (x 7..9) and 1 axial.
-- A thread tooth points along sketch +X; set the helix radius to rod radius + the half
-  width of the tooth's bounding box in X, so its base sits on the rod.
+- A thread tooth points along sketch +X; set the helix radius a little below rod radius + the
+  half width of the tooth's bounding box in X, so its base sinks into the rod (0.05 below).
+  A base exactly on the rod's surface only touches the rod, and `rod + thread` raises
+  `KernelError` ("the operands touch only along an edge ... or tangentially").
 - The profile keeps that attitude along the whole helix (it turns with the helix about its
   axis, not about the path): a `Rectangle(2, 1)` stays 2 radial and 1 axial at every turn, also
   on a conical helix and on a chain of helices. `twist=` turns it on top of that; `up=` sets
@@ -41,8 +43,8 @@ its **Y axis along the helix axis**. So:
 spring = sweep(Circle(1.2), Helix(pitch=6, height=48, radius=10))     # valid, volume pi*1.44*L
 rod = Cylinder(5, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
 tooth = Polygon((0, -0.8), (0, 0.8), (1.2, 0))                         # tip towards +X
-thread = sweep(tooth, Helix(pitch=2, height=16, radius=5.6, center=(0, 0, 2)))
-screw = rod + thread                                                   # valid, one solid
+thread = sweep(tooth, Helix(pitch=2, height=16, radius=5.55, center=(0, 0, 2)))  # base 0.05 in
+screw = rod + thread                                                   # valid, one solid: 1809.81
 ```
 
 ## Long helices

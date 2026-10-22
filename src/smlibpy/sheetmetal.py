@@ -619,7 +619,7 @@ def flange(part: Part, edge: Edge | ShapeList[Edge], length: float, *, angle: fl
     if len(kedges) != 1:
         raise ValueError(f"flange: give one edge of the part (got {len(kedges)}); flange edges one at a time")
     e = Edge._of(part, kedges[0])
-    if e.geom_type != "line":
+    if not e._is_straight():
         raise ValueError(f"flange: the edge must be straight, not a {e.geom_type}")
     a = float(angle)
     if a == 0 or not abs(a) < 180.0:
@@ -782,7 +782,8 @@ def _bend_ends(part: Part, g: _BendGeom) -> tuple[list[Face], list[Face]]:
     seen: set[Any] = set()
     for f in g.faces():
         for e in f.edges():
-            if e.geom_type != "line" or not (e.end - e.start).is_parallel(g.axis, 1e-7):
+            # (straight B-splines too: mirrored parts and STEP files have them)
+            if not e._is_straight() or not (e.end - e.start).is_parallel(g.axis, 1e-7):
                 continue
             q = e.center() - g.origin
             a = math.atan2(q.dot(y), q.dot(x))

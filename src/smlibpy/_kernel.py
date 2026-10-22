@@ -64,8 +64,12 @@ def kernel_call(operation: str, hint: str | None = None) -> Iterator[None]:
     except KernelError:
         raise
     except RuntimeError as e:
+        if getattr(e, "timed_out", False):
+            raise  # (a step in another process stopped after GUARD_SECONDS: its message says so)
         text = str(e)
         m = _STATUS_RE.search(text)
+        if hint is None and getattr(e, "reason", None):
+            hint = text.split(": ", 1)[-1]  # (a crash in another process: what it says, not just "failed")
         error = KernelError(operation, text, m.group(1) if m else None, hint)
         error.trace = _trace_of(e)
         raise error from e
