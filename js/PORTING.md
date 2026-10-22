@@ -109,7 +109,9 @@ the Python code works around a kernel defect, so does the TypeScript.
   `step_reader.ts`: `_repr`, `interpretExtras`; `step_import.ts`: `StepModel` (render.ts draws it);
   `shapes.ts`: `_held` (deform.ts holds the copies of a Boolean's operands with it), `_take`;
   `mesh.ts`: `_rayTriangles`, `faceMeshes` (shapes.ts casts rays with them), `_tessellate`
-  (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it).
+  (render.ts); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts blends surfaces in it),
+  `_isolated` (shapes.ts runs shell, offset and thicken in it), `_spill` (its test);
+  `shapes.ts`: `_offsetProblem` (its test).
 - **The defeature guard.** Python forks; here `_guarded(what, work, job)` runs the step first in
   a probe worker (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying
   which step with which faces (by index), and waits for it with `Atomics.wait` (Node, and
@@ -117,7 +119,10 @@ the Python code works around a kernel defect, so does the TypeScript.
   A supervisor worker without a kernel (`_defeature_supervisor.ts`, started by `_guard.ts`)
   starts the probe workers and terminates one that takes too long: a browser cannot start a
   worker from a thread that waits, so there `_guard.ts` starts the supervisor when the package is
-  imported.
+  imported. Python's `_isolated` (shell, offset and thicken: the step runs only in the forked copy,
+  and its body comes back as `.smb`) is `_isolated(what, work, job, hint)`: the probe worker hands
+  the body's `.smb` contents, or the step's error, back through a SharedArrayBuffer, a piece at a
+  time, while the caller waits with `Atomics.wait`; a trap there is the crash of the copy.
 
 ## Status
 

@@ -35,7 +35,18 @@ export function _probeSupervisor(): Any {
     if (threads) {
       // (the TypeScript of the repository, or the package's JavaScript)
       const url = new URL(import.meta.url.endsWith('.ts') ? './_defeature_supervisor.ts' : './_defeature_supervisor.js', import.meta.url)
-      const worker = new threads.Worker(url, { execArgv: _workerArgv((globalThis as Any).process.execArgv ?? []) })
+      const argv = _workerArgv((globalThis as Any).process.execArgv ?? [])
+      let worker: Any
+      try {
+        worker = new threads.Worker(url, { execArgv: argv })
+      } catch (e) {
+        // Node refuses options that apply to a whole process, which some runners pass on (`node
+        // --test` gives its test processes --stack-trace-limit, --secure-heap and others): without
+        // those.
+        const refused = /invalid execArgv flags: (.*)$/.exec((e as Error).message)?.[1].split(', ') ?? []
+        if ((e as Any).code !== 'ERR_WORKER_INVALID_EXEC_ARGV' || !refused.length) throw e
+        worker = new threads.Worker(url, { execArgv: argv.filter((a) => !refused.includes(a)) })
+      }
       worker.unref() // (an idle supervisor does not keep Node running)
       worker.on('error', () => lost(worker))
       worker.on('exit', () => lost(worker))

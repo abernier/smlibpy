@@ -7,6 +7,10 @@
 //   were freed: the side walls of lamina edges (BuildSideWallOfEdgeuse) and the merge
 //   (PiecewiseMerge). A sheet whose offset collapses (a half cylinder of radius 10 thickened by
 //   -12) read freed memory natively and trapped in WebAssembly. Found with AddressSanitizer.
+//   SmOffsetExecutive::DoExtendedOffset fails when two faces it extends use one surface, which its
+//   extension of the faces' surfaces cannot handle: an extension it deleted was handed out again
+//   and read (AddressSanitizer: shells of two cones fused at an angle crashed in every run).
+//   SmOffsetExecutive::ShellBrep deletes the offset body when ReplaceImplicitOffsets fails.
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -275,7 +279,10 @@ SmStatus SmOffsetExecutive::ShellBrep
   double dAngleTol = 20.0*SM_PI/180.0;
 
   // Replace all SmOffsetSurfaces with approximate SmBSplineSurfaces
-  SER( ReplaceImplicitOffsets( pBrepShell, dTolerance ));
+  // smlibpy patch: delete the offset body when this fails (it was kept, a leak), as the
+  // stitching below does.
+  //   SER( ReplaceImplicitOffsets( pBrepShell, dTolerance ));
+  SER_DELETE( ReplaceImplicitOffsets( pBrepShell, dTolerance ), pBrepShell );
   // Changed tolerance arg from 10.0*dTolerance to improve downstream tolerance consistency [B577]
 #ifdef SM_DEBUG_CODE
   SmBoolean bDebugMe = FALSE;
@@ -1623,6 +1630,25 @@ SmBoolean bDebugMe2 = FALSE;
   // See what we need to do with each face in terms of extensions.
   SmTArray<SmFace*> sOffsetFaces;
   m_pOffsetBrep->GetFaces(sOffsetFaces);
+
+  // smlibpy patch: the loop below cannot extend a surface that two of its faces use, or that
+  // belongs to another face. ReplaceSurface() gives the surface's owner face the new surface, not
+  // the face it is called for, and the extension deleted for the one face was handed out again,
+  // from m_vSurfExtSurf, for the other (AddressSanitizer: a read of freed memory in
+  // GetCreateExtendedSurface; a shell of two cones fused at an angle crashed in every run).
+  // Fail instead.
+  {
+    std::unordered_set<SmSurface*> sSurfaces;
+    for (ii=0; ii<sOffsetFaces.GetSize(); ii++)
+      {
+        SmFace *pF = sOffsetFaces[ii];
+        if (pF->IsMarked(eMarkType) || m_sClosingFaces.IsIn( pF )) { continue; }
+        SmSurface *pSurf = pF->GetSurface();
+        if (pSurf == NULL || pSurf->GetFace() != pF || !sSurfaces.insert(pSurf).second)
+          { SER(SM_ERR); }
+      }
+  }
+
   for (ii=0; ii<sOffsetFaces.GetSize(); ii++) 
     {
        SmFace *pF = sOffsetFaces[ii];

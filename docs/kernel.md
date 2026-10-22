@@ -85,6 +85,8 @@ Some kernel behaviour is wrapped so that it is predictable:
 | Point classification (`SmBrep::Point3DClassify`) takes the region from one ray along +X; once a tight bounding box was computed, that ray can miss a face it crosses (a point inside a cylinder fused with a torus came out outside) | `classify` lets rays in two more directions off the axes vote, two more when they disagree |
 | A Boolean that misclassifies the operands can return an empty cut, and the intersection of the same pair, its natural check, then returns the whole part (a tool beside an earlier hole in a sphere, a corner box on an imported pulley) | accepts an empty cut only from tools that hold the part's volume and span its box, and checks points of an intersection that reaches out of an operand's box against the operands |
 | A failed Boolean keeps both operands and leaves the context marked as doing a Boolean (it then builds no surface caches) | holds the operands' copies until the kernel takes them and clears the mark (`ext.boolean`) |
+| The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, and handed out an extended surface after deleting it, and the process crashed now and then | patches the three sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
+| shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below), and trusts the arrays of a file it reads (a malformed one crashes it) | writes such cones as cylinders or turned around; checks every array and reference before converting |
 
 ## Known kernel limitations
@@ -96,7 +98,10 @@ From usd-brep's own list of known issues, the ones that can matter here:
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
 - `shell` cannot remove a face that is bordered by fillets; shell first, then round the rim.
-- `offset` can take a few attempts on complex parts, each as long as the operation itself.
+- The offset code behind `shell`, `offset` and `thicken` depends on memory layout in its extended
+  mode: the same call can fail, succeed or crash. smlibpy runs it in a forked copy of the process
+  (Linux, macOS; smlibwasm: in a kernel of its own) and tries a mode again only after a result it
+  refused, not after an error.
 
 ## Building the kernel
 

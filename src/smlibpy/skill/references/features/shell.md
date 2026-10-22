@@ -27,17 +27,26 @@ bosses work too.
   not fit into the part, which is 10 thick along Z; use a thinner wall`;
   `Box(40, 30, 10).shell(10, top)` raises `ModelingError: shell: a wall of 10 does not fit
   into the part, which is 10 deep along Z from the opening; use a thinner wall`.
-- The check sees only the bounding box: a part with thin regions can still fail in the kernel
-  (`KernelError` or `ModelingError`). Keep the wall below half the thinnest region.
-- Opening every face: `ModelingError: shell: the kernel could not build a valid result; try a smaller value`.
+- With openings it also measures the part across each face, into it (a turned or angled part):
+  `ModelingError: shell: two walls of 2.94 do not fit into the part, which is 4 thick across the
+  face at (-1, -5, -7.5); use a thinner wall`. Keep the wall below half the thinnest region.
+- A closed shell is checked on its result: it must be the part less the part shrunk by the wall,
+  and hollow where no wall reaches. A part too thin for its walls raises `ModelingError: shell:
+  the kernel could not build a valid result (it built a body with a cavity where its walls meet:
+  ...)`.
+- Opening every face: `ModelingError: shell: the kernel could not build a valid result (it built
+  a body that is empty); try a smaller value`.
 - `thickness=0`: `ValueError: shell: the thickness must not be zero`.
 - An invalid input part: `ModelingError: shell: the part is not a valid solid (...)`.
 
 ## With fillets
 - Fillet first, then shell, when the inside should follow the rounds. The inner rounds get
   radius `r - t`; with `t > r` the shell fails (all-edge r5 box, t6: `shell failed`).
-- Pick the opening face of a rounded box with `faces().planar().top()`: `faces().top()` also
-  returns rounds whose center is high.
+- The kernel cannot open a face whose rim meets its neighbours tangentially: the flat top of a
+  box rounded on all edges leaves its rim open (faces off their edges). That raises
+  `KernelError: shell failed (SM_ERR): the kernel cannot open a face whose rim meets its
+  neighbours tangentially; shell the part before rounding the rim, or shell it closed and cut
+  the opening out`. Round only the edges that do not meet the opening, or shell first.
 - Shell first and fillet the outer edges after when the walls are thin; then fillet the inner
   edges with `r_outer - t` for an even wall.
 
@@ -45,14 +54,19 @@ bosses work too.
 - Opening a curved end face can fail where a planar one works: a rectangle-to-circle loft
   shells with the bottom open but not with the circular top open (`shell failed (SM_ERR)`).
   Subtract an inner body instead.
-- smlibpy retries the kernel up to eight times and checks validity, bbox and volume; slow parts
-  take a few tenths of a second.
+- smlibpy checks every result: a valid solid in the part's box, faces that meet (gaps below
+  1e-3 of the volume), a volume that drops (inward), and a cavity where no wall reaches. It
+  tries the kernel's plain mode, then its extended mode, and that once more only when its
+  result was refused. The kernel runs in a forked copy of the process (Linux, macOS): a crash
+  or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s) raises `ModelingError` there,
+  and this process goes on.
 - Check: `volume` drops (inward) and `bbox()` stays the same; compare with outer minus inner.
 
 ## Errors
 - `KernelError: shell failed (SM_ERR): the wall may be thicker than the part allows`
-- `ModelingError: shell: the kernel could not build a valid result; try a smaller value`
+- `ModelingError: shell: the kernel could not build a valid result (it built a body whose faces do not meet, ...); try a smaller value`
 - `ModelingError: shell: two walls of 6 do not fit into the part, which is 10 thick along Z; use a thinner wall`
+- `ModelingError: shell: the kernel crashed (signal 11, in a copy of this process); this process is fine`
 
 ## Example
 ```python
@@ -66,11 +80,12 @@ print(lining.bbox().size.to_tuple(), round(lining.volume, 1))  # (85.0, 55.0, 32
 
 cup = Cylinder(20, 30).shell(2, Cylinder(20, 30).faces().top())
 
-# rounded box: fillet first with radius > wall, then shell; the inner corners get r - t
+# rounded box: fillet first with radius > wall, then shell; the inner corners get r - t.
+# Round the edges that do not meet the opening: a rim the rounds meet tangentially cannot open.
 body = Box(60, 40, 20)
-body = body.fillet(body.edges(), 5)
-shelled = body.shell(2, body.faces().planar().top())   # the flat top face, inside the rounds
-print(shelled.is_valid(), round(shelled.volume, 1))     # True 11134.4
+body = body.fillet(body.edges().parallel_to(Z) + body.edges().bottom(), 5)
+shelled = body.shell(2, body.faces().top())
+print(shelled.is_valid(), round(shelled.volume, 1))     # True 10769.9
 ```
 
 ## Related

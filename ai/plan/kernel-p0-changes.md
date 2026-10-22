@@ -425,3 +425,135 @@ and `Part.chamfer` in `shapes.py` and `shapes.ts`; the docs (`docs/features.md`,
   1.07 -> 2.93 on one line, 2.46 -> 1.04 on another and 1.65 -> 1.99 -> 1.07 on the arcs.
 - Breaks scripts: yes, for those selections; they got bent radii. Laws along a whole chain need
   C++ (F8).
+
+## Group O: shell, offset and remove_faces
+
+Kernel patches in the copies `SmProtoTopology.cpp`, `SmTopologyIntersector.cpp` and
+`SmOffsetExecutive.cpp` of `third_party/patches` (six README rows), each confirmed with
+AddressSanitizer first (`build-asan`). `shell`, `offset` and `thicken` in `shapes.py` and
+`shapes.ts` run their kernel steps out of process and check their results; `remove_faces` in
+`defeature.py` and `defeature.ts`. The docs (`docs/kernel.md`, `docs/javascript.md`,
+`js/README.md`, `js/PORTING.md`, the skill's `shell.md`, `offset.md`, `thicken.md` and
+`remove_faces.md`) say what changed. Measured on 154 imported STEP files (the largest part of each,
+up to 250 faces: shell open at the top and closed, offset by +-0.5, as the plan's corpus runs):
+HEAD's code on the patched kernel against the new code.
+
+**O1 · shell, offset and thicken no longer kill the process** (both)
+- Now: the kernel steps of `shell` (both modes), `offset` and `thicken` run in a forked copy of
+  the process (Linux, macOS), whose body comes back as an exact binary `.smb` copy; this process
+  never runs them. A crash there raises `ModelingError: shell: the kernel crashed (signal 11, in a
+  copy of this process); this process is fine`, a step longer than `GUARD_SECONDS` (20 s,
+  `smlibpy.defeature.GUARD_SECONDS`) `ModelingError: offset: the kernel did not finish within 20 s;
+  smlibpy.defeature.GUARD_SECONDS sets the limit`, and the kernel's errors are raised as before.
+  Ctrl-C stops the copy. smlibwasm runs them in its probe worker (a kernel of its own), which hands
+  the body's `.smb` contents, or the error, back through a SharedArrayBuffer a piece at a time (a
+  15 MB body came back intact); a trap there is the crash. Where there is no probe worker (a page's
+  main thread, `GUARD_SECONDS = 0`, Windows) the steps run directly, and in smlibwasm a trap there
+  ends the attempts.
+- Kernel (K2, and two more sites the reproductions showed under AddressSanitizer):
+  `GlueCoincidentBrepVertices` glued a Vertex it had already deleted (an Edge to it squeezed, or
+  glued along another common Edge); `ResolveOverlappingProtoEdges` deleted ProtoEdges that other
+  ProtoFaces still listed as coincident (the plain shell of imported part 40 crashed in every
+  run), and read the missing ProtoVertex of a ProtoEdge; `DoExtendedOffset` handed out an extended
+  surface after deleting it when two faces shared one surface (two cones fused at an angle). The
+  first now stops at the deleted Vertex, the second cleans every list and fails such a group
+  (`SM_ERR_BAD_INTERSECTIONS`; `ResolveIntersections` then fails the Boolean), the third fails the
+  extended mode for shared surfaces. Of the plan's other K2 parts: the inline short-edge path no
+  longer calls `Destruct()` either (in 73 calls it never deleted a curve a Brep used; the README is
+  right now); the deleted-vertex sets stay per ProtoVertex, since the function already deletes
+  every VertexDefinition of a deleted Vertex after each one.
+- Measured natively with HEAD's Python (eight attempts in this process), before and after the
+  kernel patches: the L-shaped body 6 of 30 runs crashed -> 1 of 30, a second L-shaped body
+  (fuzz shell-8-290) 22 of 30 -> 0 of 30, the cone offset and the two cones 10 of 10 each -> 0 of
+  10 (3 calls per run), imported parts 15 and 34 6 of 6 -> 0 of 6. The filleted boxes of issue #2
+  (`Box(40, 30, 10)`, all edges r1, t 0.5 or r2, t 1; `Box(20, 20, 20)`, r2, t 1) still crash in
+  the kernel now and then (2, 1 and 2 of 10 runs of 3 calls; raw extended steps 1 process in 20
+  of 8 calls): `SmEdge::CalculateBoundingBox` on a freed Edge as a `ManifoldBoolean` of
+  `PiecewiseMerge` starts. AddressSanitizer (about 480 extended steps) and libgmalloc never take
+  that path, so its site is not known; it is contained by the copy. With the new code no case
+  crashed. Imported parts: 6 files crashed with HEAD's code on the patched kernel, none now (the
+  offset of part 81 reads a null pointer in `SmBezierAux2d::BuildPolarBox` under
+  AddressSanitizer, not patched); 6 plain shells ran longer than 20 s in the copy and were stopped
+  (parts 37, 40, 47, 101 and 118), which failed or crashed with HEAD's code too, except part 47's.
+- Cost: a fork and an `.smb` write and read per step, about 1 ms on small parts; the 406-face
+  plate with 400 holes: offset 16.1 s through the probe worker against 15.4 s without.
+- Before: exit 139 at random (a shell of the L-shaped body in 1 of 4, every offset of the fused
+  cone, issue #2's filleted box in 1 of 10); the wasm trapped and went on with a damaged heap.
+- Breaks scripts: a step that takes longer than `GUARD_SECONDS` now fails (the slowest steps of
+  the corpus that succeeded took 14 s; raise the limit for big parts): part 47's closed shell took
+  30 s and gave a body without a cavity. In smlibwasm the extended mode can give another result
+  than the caller's kernel would have (the probe's kernel has another history): fuzz offset-8-350
+  now fails where it gave 325.9596. And `node --test` gives its test processes options that Node
+  refuses for workers: the probe worker now starts without them (before, it never started there,
+  so W2's guard did not run under `node --test`).
+
+**O2 · shell and offset refuse bodies whose faces do not meet, or that have no cavity** (both)
+- Now: a result is refused when its faces leave gaps of 1e-3 of its volume or more (`is_valid()`
+  draws the line at 1e-2), when an inward shell does not lose volume, when a point of the part that
+  no wall reaches is not in the shell's cavity, and, for a closed shell, when its volume is not the
+  part's less its offset by the wall (the same kernel mode; equal to 1e-16 on the bodies tried).
+  When every attempt is refused: `ModelingError: shell: the kernel could not build a valid result
+  (it built a body whose faces do not meet, so that its volume is uncertain by 2.7e-01 of its
+  value); ...`. `offset(0)` gives an equal copy without asking the kernel.
+- Imported parts: closed shells of parts 50 and 163 gave 176918 and 232528, near the parts' own
+  volume; now 84151 and 109940 (wall times area, as expected). Closed shells of parts 32, 47, 92,
+  100, 111, 112, 122 and 124 gave the part back, or nearly (the equality clause accepted the
+  kernel's extended mode returning the input), and are refused; so are the open shells of parts
+  42, 92, 100, 124 and 137, which removed less than 0.1%, while those of 134 and 156 now have
+  their cavity (1085.78 -> 524.04, 779.37 -> 375.65). Part 118's closed shell and part 57's offset
+  (gaps 2.2e-3 and 2.0e-3) are refused. Fuzz seeds 7 and 8: 4 shells that returned the part or a
+  body of one face are refused.
+- Before: `(Box(20, 20, 10) - Cylinder(3, 20)).shell(4)` returned the plate itself (3717.2567,
+  valid); shells without a cavity and bodies with open rims passed.
+- Breaks scripts: yes, those that used such bodies. The shell guide's rounded box (all edges r5,
+  open at the flat top) is one: its rim stays open (gaps 0.27); the error now says that the kernel
+  cannot open a face whose rim meets its neighbours tangentially, and the guide rounds only the
+  edges away from the opening (O3 is to make the original work).
+
+**O4 · shell measures the walls across the part** (both)
+- Now: with openings, `shell` measures the part across each face that is not an opening, into it
+  (a ray from the middle of the face along its inward normal), and refuses two walls that do not
+  fit (or one, to an opening) before the kernel runs: `ModelingError: shell: two walls of 2.94 do
+  not fit into the part, which is 4 thick across the face at (-1, -5, -7.5); use a thinner wall`.
+  A closed shell is checked on its result instead (as the plan has it): solid where the part is
+  too thin for two walls, hollow where no wall reaches, the part less its offset. The axis test
+  stays the first check. The rays cost about 6 ms per face on an imported part (0.9 s for 151).
+- Before: the walls were measured along the world axes only: `Box(40, 30, 10).rotate(X, 45)`
+  shelled by 6 gave a valid 10992.0 and by 10 the plate itself (10 faces); with an opening it
+  crashed in 4 of 36 runs.
+- Breaks scripts: yes, open shells of parts with a region thinner than two walls now raise, also
+  where the kernel could cope: fuzz shell-8-349 (a sphere less a cylinder, a sliver 0.39 thick,
+  walls 1.86) gave 311.16, which OpenCASCADE confirms; shell-7-297 (no reference: OpenCASCADE
+  fails) and imported part 30 (a sliver 0.012 thick, walls 0.079; it gave 200.49, close to wall
+  times area) raise too. The other 4 open shells of imported parts refused this way had removed
+  less than 0.1% of the volume.
+
+**O5 · remove_faces keeps the face its rounds enclose** (both)
+- Now: a face that the selection encloses goes with it only where it is a feature's floor: one of
+  its edges is a corner, or the selection's rim is. The top of a box with its rounded top edges
+  selected stays, and a selection of rounds only goes to `remove_fillets`:
+  `b = Box(20, 20, 10).fillet(top edges, 2); b.remove_faces(b.faces().fillets())` is 4000.0 with
+  6 faces. A boss whose rim round alone is selected keeps its top (16785.398, the sharp boss). A
+  pocket's floor inside its rounds still goes with the pocket's walls. Where the rim gives no
+  direction (tangent or mixed edges), the result may change the volume by no more than the faces'
+  area times the size of their box, and the part's box may not shrink.
+- Before: 3200.0, the box 2 lower, valid; the rounded boss came back 1 lower (16706.858).
+- Breaks scripts: no, except those that relied on the lowered body. Chamfers around a face still
+  cannot be removed (the face goes with them, and the kernel cannot close the gap: an error).
+
+**O6 · shell and offset do not repeat what fails** (both)
+- Now: `shell` runs the kernel's plain mode once, then its extended mode, and that once more only
+  when its result was refused; `offset` once, and once more after a refused result. No attempt
+  follows a kernel error in the same mode, a crash, a step that did not finish, or (for a repeat)
+  10 s of attempts.
+- Before: shell tried 8 times (plain twice, extended six times), offset 8 times; over 420 runs on
+  imported parts no repeat ever helped, and a failure cost up to 115 s (wasm 176 s). The imported
+  parts' 536 steps took 1687 s with HEAD's code and take 591 s now.
+- K12: `ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails (hygiene; that path
+  never ran here). LeakSanitizer is not available on macOS arm64; macOS `leaks` finds about 4.7 KB
+  per failed extended shell, curve copies in `SmOffsetGeometryCreation::ExtendTrimEdges` (not
+  patched), and the wasm's resident memory stays flat over 160 failed raw extended shells after the
+  first 40 (old and new kernel). The plan's 2 MB per failed attempt (a measure of heap in use) is
+  not seen in either.
+- Breaks scripts: no. A part that only a later repeat could shell fails sooner (on the imported
+  parts, every such late result was the part given back unchanged).

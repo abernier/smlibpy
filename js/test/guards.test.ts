@@ -4,11 +4,13 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import {
   Align,
+  Axis,
   Box,
   CenterArc,
   Circle,
   Cone,
   Cylinder,
+  GridLocations,
   Hole,
   KernelError,
   Location,
@@ -33,7 +35,12 @@ import {
   sweep,
 } from '../src/index.ts'
 import { k } from '../src/kernel.ts'
+import { setGuardSeconds } from '../src/defeature.ts'
+import { _offsetProblem } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
+
+// biome-ignore lint: test helpers
+type Any = any
 
 const PI = Math.PI
 
@@ -99,6 +106,179 @@ test('shell walls that do not fit are refused', () => {
   approx(box.shell(6, box.faces().top()).volume, 40 * 30 * 10 - 28 * 18 * 4)
   approx(box.shell(4).volume, 40 * 30 * 10 - 32 * 22 * 2)
   approx(box.shell(10, box.faces().top().concat(box.faces().bottom())).volume, 40 * 30 * 10 - 20 * 10 * 10)
+})
+
+test('shell walls are measured across the part', () => {
+  // The check measured the walls along the world axes only: the plate turned by 10 or 45 degrees got
+  // two 6 mm walls in its 10 mm (valid, 10992.0), and 10 mm walls gave the plate back (10 faces). A
+  // closed shell is checked on its result: where the walls meet, there is no cavity.
+  for (const angle of [10, 45]) {
+    const plate = Box(40, 30, 10).rotate(X, angle)
+    for (const t of [6, 10]) throwsMatching(() => plate.shell(t), ModelingError, /do not fit|it built a body with a cavity where its walls meet/)
+    approx(plate.shell(4.9).volume, 40 * 30 * 10 - 30.2 * 20.2 * 0.2)
+  }
+  const plate = Box(40, 30, 10).rotate(X, 45)
+  throwsMatching(
+    () => plate.shell(10, plate.faces().sortBy(new Axis([0, 0, 0], [0, -1, 1])).at(-1)),
+    ModelingError,
+    /a wall of 10 does not fit into the part, which is 10 deep from the face/,
+  )
+  // an L-shaped body whose leg is thinner than two walls (the kernel crashed in 1 run of 4)
+  const body = Box(6, 20, 12).fuse(Box(4, 10, 6).translate(1, -5, -6))
+  throwsMatching(
+    () => body.shell(2.94, body.faces().filter((f) => Math.abs(f.center().z + 9) < 1e-6)),
+    ModelingError,
+    /two walls of 2.94 do not fit into the part, which is 4 thick across/,
+  )
+  // a plate with a hole: shell(4) gave the plate back (3717.2567, 7 faces, valid)
+  const holed = Box(20, 20, 10).cut(Cylinder(3, 20))
+  throwsMatching(() => holed.shell(4), ModelingError, /shell: the kernel could not build a valid result/)
+  approx(holed.shell(3).volume, 3385.646, 1e-6)
+})
+
+/** Runs fn with kernel functions replaced (and the probe worker off, so that they run here). */
+function patched(replace: Record<string, unknown>, fn: () => void): void {
+  const kernel = k as Any
+  const saved = Object.fromEntries(Object.keys(replace).map((name) => [name, kernel[name]]))
+  const guard = setGuardSeconds(0)
+  Object.assign(kernel, replace)
+  try {
+    fn()
+  } finally {
+    Object.assign(kernel, saved)
+    setGuardSeconds(guard)
+  }
+}
+
+test('shell and offset results are checked', () => {
+  const box = Box(40, 30, 20)
+  const shellBrep = k.shell_brep
+  // the kernel giving the part back unchanged (it did, for walls that left no cavity)
+  patched({ shell_brep: (brep: number) => k.brep_copy(brep) }, () => {
+    throwsMatching(() => box.shell(2, box.faces().top()), ModelingError, /it built a body whose volume did not go down/)
+  })
+  // ... or with a corner cut off: less volume, but no cavity
+  const notch = Box(2, 2, 2).translate(19, 14, 9)
+  patched({ shell_brep: (brep: number) => Part._wrap(k.brep_copy(brep)).cut(notch)._copyBrep() }, () => {
+    throwsMatching(() => box.shell(2, box.faces().top()), ModelingError, /it built a body without its cavity: \(.*\), which no wall reaches/)
+  })
+  // ... or walls of another thickness, closed: not the part less its offset
+  patched({ shell_brep: (brep: number, d: number, options: Any) => shellBrep(brep, d / 2, options) }, () => {
+    throwsMatching(() => box.shell(2), ModelingError, /of volume 4848, where the part less its offset by -2 has 9024/)
+  })
+  // faces that do not meet: refused from 1e-3 of the volume (isValid() from 1e-2)
+  const result = Box(40, 30, 19)
+  result._props(1e-4).gaps = 2e-3
+  assert.ok(_offsetProblem(result, box.bbox(), 1e-6, 24000, true)!.startsWith('a body whose faces do not meet, so that its volume is uncertain by 2.0e-03'))
+  // offset(0) is an equal copy, without the kernel
+  patched({ offset_brep: null }, () => {
+    const copy = box.offset(0)
+    approx(copy.volume, 24000)
+    assert.notEqual(copy._brep, box._brep)
+  })
+})
+
+test('shell and offset do not repeat what fails', () => {
+  // Shell tried the kernel eight times (twice in its plain mode, six times in its extended mode) and
+  // offset eight times; over 420 runs on imported parts no repeat helped, and a failure cost up to
+  // 176 s. Now: the plain mode once, the extended mode once, and once more only after a result that
+  // was refused; offset once, and once more after a refused result.
+  const calls: boolean[] = []
+  const failing = (_brep: number, _d: number, options: Any = {}) => {
+    calls.push(options.extended_offset ?? true)
+    throw new Error('SmApiShellBrepFull failed: SM_ERR (1001)')
+  }
+  const unchanged = (brep: number, _d: number, options: Any = {}) => {
+    calls.push(options.extended_offset ?? true)
+    return k.brep_copy(brep)
+  }
+  const box = Box(40, 30, 20)
+  for (const [kernel, expect] of [
+    [failing, [false, true]],
+    [unchanged, [false, true, true]],
+  ] as const) {
+    calls.length = 0
+    patched({ shell_brep: kernel }, () => assert.throws(() => box.shell(2, box.faces().top()), ModelingError))
+    assert.deepEqual(calls, expect)
+  }
+  for (const [kernel, expect] of [
+    [failing, [true]],
+    [unchanged, [true, true]],
+  ] as const) {
+    calls.length = 0
+    patched({ offset_brep: kernel }, () => assert.throws(() => box.offset(1), ModelingError))
+    assert.deepEqual(calls, expect)
+  }
+})
+
+test('offsets that read freed kernel memory fail', () => {
+  // The kernel's offset code read memory it had freed (natively the process died now and then; the
+  // module trapped for the fused cone offset by 6 and the shell of two cones): GlueCoincidentBrepVertices
+  // glued a Vertex it had deleted, a ProtoEdge it deleted stayed in the lists of other ProtoFaces, and an
+  // extended surface was handed out after it was deleted. The kernel steps themselves, in their extended
+  // mode, in a process of their own, so that a trap does not leave this one's kernel damaged.
+  const src = new URL('../src/', import.meta.url).href
+  const code = `
+    import { Box, Cone, Cylinder, Y } from '${src}index.ts'
+    import { k } from '${src}kernel.ts'
+    const lbox = Box(6, 20, 12).fuse(Box(4, 10, 6).translate(1, -5, -6))
+    const foot = lbox.faces().filter((f) => Math.abs(f.center().z + 9) < 1e-6).map((f) => f._f)
+    const cone = Cone(6, 0, 8).rotate(Y, 90).fuse(Cylinder(4, 12).translate(-6.7843, 0, 0))
+    const cones = Cone(3, 4, 6).rotate(Y, 90).fuse(Cone(6, 2, 16).translate(-2, 2.5147, -4))
+    const end = [[...cones.faces()].sort((a, b) => Math.abs(a.center().x - 3) - Math.abs(b.center().x - 3))[0]._f]
+    const steps = [() => k.shell_brep(lbox._brep, -2.94, { extended_offset: true, faces_to_shell: foot }),
+      () => k.offset_brep(cone._brep, 6), () => k.shell_brep(cones._brep, -2.4, { extended_offset: true, faces_to_shell: end })]
+    const out = []
+    for (let i = 0; i < 8; i++) {
+      for (const step of steps) {
+        try {
+          step()
+          out.push('ok')
+        } catch (e) {
+          out.push(e instanceof WebAssembly.RuntimeError ? 'crashed' : 'failed')
+        }
+      }
+    }
+    console.log(out.join(' '))
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
+  assert.equal(run.status, 0, run.stderr)
+  const out = run.stdout.trim().split(' ')
+  assert.equal(out.length, 24)
+  assert.ok(!out.includes('crashed'), out.join(' '))
+})
+
+test('shell, offset and thicken run the kernel in the probe worker', () => {
+  // They ran the kernel's offset code in this kernel, where its traps could leave the memory damaged:
+  // now in the probe worker (a kernel of its own; smlibpy: a forked copy of its process), whose body
+  // comes back as an exact (.smb) copy.
+  const box = Box(20, 20, 20)
+  const kernel = k as Any
+  const saved = [kernel.offset_brep, kernel.shell_brep]
+  kernel.offset_brep = kernel.shell_brep = () => {
+    throw new Error('not in this kernel')
+  }
+  try {
+    const shelled = box.shell(2, box.faces().top())
+    assert.ok(shelled.isValid())
+    approx(shelled.volume, 8000 - 16 * 16 * 18)
+    approx(box.offset(2).volume, 24 ** 3)
+    approx(Rectangle(10, 10).thicken(1).volume, 100)
+    // an error there is thrown here
+    throwsMatching(() => Box(40, 40, 10).cut(Cylinder(5, 20)).offset(5), KernelError, /offset failed \(SM_ERR/)
+  } finally {
+    ;[kernel.offset_brep, kernel.shell_brep] = saved
+  }
+  // a step that does not finish is dropped after GUARD_SECONDS
+  const plate = Box(200, 200, 5).cut(GridLocations(8, 8, 20, 20).mul(Cylinder(2, 20)))
+  const guard = setGuardSeconds(1)
+  try {
+    const start = Date.now()
+    throwsMatching(() => plate.offset(-0.5), ModelingError, /offset: the kernel did not finish within 1 s/)
+    assert.ok(Date.now() - start < 10_000)
+  } finally {
+    setGuardSeconds(guard)
+  }
 })
 
 // -- fillet and chamfer ---------------------------------------------------------------------

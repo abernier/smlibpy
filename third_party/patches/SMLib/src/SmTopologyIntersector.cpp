@@ -10,6 +10,9 @@
 //   Vertex, and the Faces left in it were read later, when the Brep was edited or deleted:
 //   Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504) (an
 //   end cap tangent to the sphere) read the freed Shell (AddressSanitizer) and crashed the process.
+//   SmTopologyIntersector::ResolveIntersections fails when ResolveOverlappingProtoEdges reports
+//   SM_ERR_BAD_INTERSECTIONS: a group of overlapping ProtoEdges it cannot take out (see the
+//   patched SmProtoTopology.cpp). It ignored the status, and its other errors stay ignored.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2333,6 +2336,10 @@ SmStatus SmTopologyIntersector::ResolveIntersections()
 
   // Resolve OverlappingPEs
   SmStatus sStatus = m_pProtoTopoMgr->ResolveOverlappingProtoEdges() ;
+  // smlibpy patch: fail on SM_ERR_BAD_INTERSECTIONS (see the patched SmProtoTopology.cpp); the
+  // other errors stay ignored.
+  if(sStatus == SM_ERR_BAD_INTERSECTIONS)
+    { SER(sStatus) ; }
   SE_MSG(sStatus, _T( "Warning: problem in ResolveProtoTopology()" ) );
   
   // all done

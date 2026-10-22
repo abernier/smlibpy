@@ -79,6 +79,12 @@
 
 ### 24. `shell`: segmentation fault when the wall equals the depth to the opening
 - **Fixed:** shell refuses walls that do not fit along an axis of the bounding box before calling the kernel; ModelingError every time.
+- **Reopened, fixed again (kernel plan O1, O4):** the box check missed turned parts:
+  `Box(40, 30, 10).rotate(X, 45).shell(10, opening)` crashed in 4 of 36 runs. With openings
+  shell now also measures the part across each face, into it, and refuses the walls first; the
+  crash itself (a deleted Vertex read in `SmMerge::BooleanPostProcess`, and the extended offset
+  mode's reads of freed memory) is patched in the kernel, and the kernel steps run in a forked
+  copy of the process.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, scripts `02-shell-limits.py`, `04-shell-crash-repro.py`
 - **What happens:** the Python process dies with exit code 139 (SIGSEGV) in 7 of 20 runs; the
   other runs raise `ModelingError: shell: the kernel could not build a valid result`. The
@@ -93,6 +99,10 @@
 
 ### 25. `shell`: a closed shell thicker than half the part returns a wrong "valid" body
 - **Fixed:** same check: two walls of 6 in a 10 mm part raise ModelingError.
+- **Reopened, fixed again (kernel plan O4):** turned by 10 or 45 degrees, the same plate gave the
+  same wrong bodies (10992.0; 10 faces for walls of 10). A closed shell is now checked on its
+  result: hollow where no wall reaches, solid where the walls meet, and the part less its offset
+  by the wall.
 - **Session:** `2026-10-12_21-40-40_features-shell-offset-thicken`, script `02-shell-limits.py`
 - **What happens:** `Box(40, 30, 10).shell(6)` → valid, volume 10992; `shell(10)` → valid,
   volume 10000, 10 faces. No 6 or 10 mm wall fits in a 10 mm part. `_checked` accepts it because

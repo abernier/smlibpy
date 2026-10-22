@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Sequence, TypeVar, Union, overload
 
 import numpy as np
@@ -66,6 +67,16 @@ _FILLET_TANGENT_DEG = 10.0
 # the faces meet at the angle measured; along an edge whose angle changes by more than this
 # (degrees) the setback would change with it.
 _CHAMFER_ANGLE_SPREAD = 1.0
+
+# A shell or offset whose faces leave gaps of this much of its volume or more is refused. Over
+# 1018 shells and offsets of imported parts, the sound ones stayed below 6.5e-4 and those with
+# 1e-3 or more were wrong (faces off their edges, rims left open, meshes that do not close).
+_OFFSET_GAPS = 1e-3
+
+# A shell or offset attempt whose result was refused is tried once more (the kernel's extended
+# mode depends on memory layout), but not after this many seconds; an attempt that failed is
+# not repeated, since the kernel fails the same way again.
+_RETRY_SECONDS = 10.0
 
 S = TypeVar("S", bound="Shape")
 
@@ -1735,6 +1746,28 @@ def _intersection_problem(result: Part, operands: Sequence[Part]) -> str | None:
     return None
 
 
+def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smaller: bool | None) -> str | None:
+    """What is wrong with the result of a shell or an offset (see ``Part._checked``), or None."""
+    problem = result._solid_problem()
+    if problem is not None:
+        return f"a body that is {problem}"
+    rb = result.bbox()
+    if any(rb.min[i] < box.min[i] - tol or rb.max[i] > box.max[i] + tol for i in range(3)):
+        return "a body that reaches out of the box it must fit in"
+    p = result._props(1e-4)
+    if not p["gaps"] < _OFFSET_GAPS:
+        return f"a body whose faces do not meet, so that its volume is uncertain by {p['gaps']:.1e} of its value"
+    after = float(p["volume"])
+    slack = 1e-9 * abs(before)
+    if smaller is True and not after < before - slack:
+        return f"a body whose volume did not go down ({before:.10g} -> {after:.10g})"
+    if smaller is False and not after > before + slack:
+        return f"a body whose volume did not go up ({before:.10g} -> {after:.10g})"
+    if smaller is None and not abs(after - before) > slack:
+        return f"a body of the part's own volume ({after:.10g})"
+    return None
+
+
 def _surface_points(body: _Body) -> list[tuple[float, float, float]]:
     """Points on a body's surface: its vertices, the middle of each edge, and a point of each face
     (the middle of its parameter domain where that lies on the face, else one the kernel finds)."""
@@ -1858,7 +1891,7 @@ def _bodies(items: Any, name: str = "combine") -> list[_Body]:
 
 
 def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: VectorLike | Axis | None,
-             box: BoundBox, one_per_point: bool = True) -> list[Hit]:
+             box: BoundBox, one_per_point: bool = True, meshes: dict[int, Any] | None = None) -> list[Hit]:
     if isinstance(origin, Axis) and direction is None:
         o, d = origin.origin, origin.direction.normalized()
     elif direction is None:
@@ -1875,7 +1908,8 @@ def _raycast(faces: Sequence[Face], origin: VectorLike | Axis, direction: Vector
         return []
     tol = 1e-9 * max(size, o.length)
     hits: list[Hit] = []
-    meshes: dict[int, Any] = {}  # id of a body -> its faces' meshes (for faces the kernel cannot intersect)
+    if meshes is None:  # (rays of one body can share them)
+        meshes = {}  # id of a body -> its faces' meshes (for faces the kernel cannot intersect)
     with kernel_call("raycast"):
         ray = k.create_line_segment(o.to_tuple(), (o + d * reach).to_tuple())
         try:
@@ -2686,30 +2720,82 @@ class Part(_Body):
 
         The walls grow inward (the outside keeps its size) unless ``outward`` is true.
         """
+        from .defeature import _isolated
+
         self._require_valid("shell")
         if not abs(float(thickness)) > 0:
             raise ValueError("shell: the thickness must not be zero")
         faces = self._own_faces(openings) if openings is not None else []
+        t = abs(float(thickness))
+        rays = self._inward_rays(faces)
         if not outward:
-            self._check_wall_fits(abs(float(thickness)), faces)
-        d = abs(thickness) if outward else -abs(thickness)
+            self._check_wall_fits(t, faces, rays)
+        d = t if outward else -t
+        hint = self._shell_hint(faces)
+        offsets: dict[bool, float] = {}  # volume of the part offset by d, by mode (for a closed shell)
 
-        tries = iter([False, False] + [True] * 6)
+        def offset_volume(extended: bool) -> float:
+            if extended not in offsets:
+                def work() -> Any:
+                    with kernel_call("shell"):
+                        return k.offset_brep(self._brep, d, extended_offset=extended)
 
-        def attempt() -> Part:
-            # The kernel's "extended" offset mode is not deterministic; the plain mode is,
-            # and handles most parts. Fall back to the extended mode when needed.
-            extended = next(tries, True)
-            with kernel_call("shell", "the wall may be thicker than the part allows"):
-                return self._like(k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces))
+                off = Part._wrap(_isolated("shell", work))
+                offsets[extended] = float(off._props(1e-4)["volume"]) if off._brep.face_count() else 0.0
+            return offsets[extended]
 
-        grow = abs(thickness) if outward else 0.0
-        return self._checked("shell", attempt, grow=grow, smaller=True)  # a wall has less volume
+        def attempt(extended: bool) -> Part:
+            def work() -> Any:
+                with kernel_call("shell", hint):
+                    return k.shell_brep(self._brep, d, extended_offset=extended, faces_to_shell=faces)
 
-    def _check_wall_fits(self, t: float, openings: list[Any]) -> None:
-        """Refuse inward walls that cannot fit: along each axis the part must be thicker than
-        its walls (two, or one where an opening faces that way). The kernel returns wrong
-        bodies there, or crashes."""
+            # In a copy of the process: the kernel's offset code can crash, mostly in its extended
+            # mode, which depends on memory layout.
+            return self._like(_isolated("shell", work))
+
+        def problem(result: Part, extended: bool) -> str | None:
+            return self._shell_problem(result, d, faces, rays, extended, offset_volume)
+
+        return self._checked("shell", [(False, lambda: attempt(False)), (True, lambda: attempt(True)),
+                                       (True, lambda: attempt(True))],
+                             grow=t if outward else 0.0, smaller=None if outward else True, problem=problem,
+                             hint=hint)
+
+    def _inward_rays(self, openings: list[Any]) -> list[tuple[Vector, Vector, float, bool]]:
+        """For each face that is not an opening: a point on it, the direction into the part there,
+        how deep the part is along it (to the face it meets first), and whether that face is an
+        opening. The checks of ``shell`` measure the part along these."""
+        faces = self.faces()
+        box = self._loose_box()
+        # (a face is met again at the start within its tolerance, and so is a face that meets it
+        # there at a sharp angle, or lies on it in an imported part)
+        near = 1e-4 * max(box.diagonal, 1.0)
+        meshes: dict[int, Any] = {}
+        out = []
+        for f in faces:
+            if any(f._f is o for o in openings):
+                continue
+            try:
+                (u0, v0), (u1, v1) = f._f.uv_domain()
+                u, v = 0.5 * (u0 + u1), 0.5 * (v0 + v1)
+                if f._f.classify_uv(u, v) != "inside":
+                    _, uvs, _ = k.surface_closest_point(f._f.surface(), f.interior_point().to_tuple())
+                    u, v = uvs[0].x, uvs[0].y
+                p = Vector(f._f.point_at_uv(u, v))
+                n = -Vector(f._f.outward_normal_at_uv(u, v)).normalized()
+                hits = [h for h in _raycast(faces, p, n, box, meshes=meshes) if h.distance >= near]
+            except (RuntimeError, ValueError):  # a face the kernel cannot place a point on
+                continue
+            if hits:
+                out.append((p, n, hits[0].distance, any(hits[0].face._f is o for o in openings)))
+        return out
+
+    def _check_wall_fits(self, t: float, openings: list[Any], rays: list[tuple[Vector, Vector, float, bool]]) -> None:
+        """Refuse inward walls that cannot fit: along each axis the part must be thicker than its
+        walls (two, or one where an opening faces that way). With openings, so must it be across
+        each face, into the part (``rays``, see ``_inward_rays``), since a rotated or angled part
+        bypasses the axes. The kernel returns wrong bodies there, or crashes. (A closed shell is
+        checked on its result: see ``_shell_problem``.)"""
         box = self.bbox()
         tol = 1e-6 * max(box.diagonal, 1.0)
         open_sides: set[tuple[int, int]] = set()
@@ -2733,50 +2819,130 @@ class Part(_Body):
                                         f"thick along {axis}; use a thinner wall")
                 raise ModelingError(f"shell: a wall of {t:.4g} does not fit into the part, which is {size:.4g} deep "
                                     f"along {axis} from the opening; use a thinner wall")
+        for p, _, depth, opening in rays if openings else []:
+            walls = 1 if opening else 2
+            if walls * t >= depth - tol:
+                at = f"({p.x:.4g}, {p.y:.4g}, {p.z:.4g})"
+                if walls == 2:
+                    raise ModelingError(f"shell: two walls of {t:.4g} do not fit into the part, which is {depth:.4g} "
+                                        f"thick across the face at {at}; use a thinner wall")
+                raise ModelingError(f"shell: a wall of {t:.4g} does not fit into the part, which is {depth:.4g} deep "
+                                    f"from the face at {at} to the opening; use a thinner wall")
+
+    def _shell_hint(self, openings: list[Any]) -> str:
+        """What a failed shell says: that the kernel cannot open a face whose rim meets its
+        neighbours tangentially (the flat top of a rounded box), or else that the wall may be too
+        thick."""
+        for kf in openings:
+            for e in Face(self, kf).edges():
+                if e.convexity == "smooth":
+                    return ("the kernel cannot open a face whose rim meets its neighbours tangentially; shell the "
+                            "part before rounding the rim, or shell it closed and cut the opening out")
+        return "the wall may be thicker than the part allows"
+
+    def _shell_problem(self, result: Part, d: float, openings: list[Any],
+                       rays: list[tuple[Vector, Vector, float, bool]], extended: bool,
+                       offset_volume: Callable[[bool], float]) -> str | None:
+        """What is wrong with ``result`` as this part shelled by ``d`` (inward when negative), or
+        None. Checked at the middle of each ray (``rays``) into the part: where walls grow inward
+        and the part is too thin for two (a closed shell; with openings ``shell`` refuses such a
+        part), the walls meet, and the point lies in the material. Where the point is farther
+        from the faces than the walls reach (any point of the part, for walls that grow outward),
+        it lies in the cavity; the extended mode's walls reach farther at inside corners, which it
+        makes sharp. A closed shell is the part less its offset by ``d`` (``offset_volume`` of the
+        mode), or that offset less the part."""
+        t = abs(d)
+        tol = 1e-6 * max(self._extent(), 1.0)
+        reach = 0.0 if d > 0 else 4 * t if extended else t
+        solid, hollow = [], []
+        for p, n, depth, opening in rays:
+            if d < 0 and not opening and depth <= 2 * t:
+                solid.append(p + n * (depth / 2))
+                continue
+            q = p + n * ((depth + t) / 2 if opening and d < 0 else depth / 2)
+            if self.distance_to(q) > reach + tol:
+                hollow.append(q)
+        where = result._classify(solid + hollow) if solid or hollow else []
+        for i, (q, (w, _, _)) in enumerate(zip(solid + hollow, where)):
+            at = f"({q.x:.4g}, {q.y:.4g}, {q.z:.4g})"
+            if i < len(solid) and w == "outside":
+                return (f"a body with a cavity where its walls meet: {at}, within {t:.4g} of the faces on both "
+                        f"sides, is not in its material")
+            if i >= len(solid) and w == "inside":
+                return f"a body without its cavity: {at}, which no wall reaches, lies in its material"
+        if openings:
+            return None
+        try:
+            moved = offset_volume(extended)
+        except ModelingError as e:  # (also a KernelError, or a crash in the copy of the process)
+            return f"a hollow body that cannot be checked: the kernel cannot offset the part by {d:.4g} ({e})"
+        if d < 0 and not moved > 0:
+            return (f"a hollow body, but two walls of {t:.4g} do not fit into the part: the kernel finds nothing of "
+                    f"it left when it shrinks it by {t:.4g}")
+        whole = float(self._props(1e-4)["volume"])
+        expect, got = abs(whole - moved), float(result._props(1e-4)["volume"])
+        if not abs(got - expect) <= 1e-4 * whole:
+            return (f"a hollow body of volume {got:.10g}, where the part less its offset by {d:.4g} has "
+                    f"{expect:.10g}")
+        return None
 
     def offset(self, distance: float) -> Part:
-        """Grow (positive) or shrink (negative) the part by ``distance`` everywhere."""
+        """Grow (positive) or shrink (negative) the part by ``distance`` everywhere (0 gives an
+        equal copy)."""
+        from .defeature import _isolated
+
         self._require_valid("offset")
+        d = float(distance)
+        if d == 0:
+            return self._like(self._copy_brep())
+
+        def work() -> Any:
+            with kernel_call("offset"):
+                return k.offset_brep(self._brep, d)
 
         def attempt() -> Part:
-            with kernel_call("offset"):
-                return self._like(k.offset_brep(self._brep, float(distance)))
+            # (always the extended mode, which depends on memory layout and can crash: it runs in
+            # a copy of the process)
+            return self._like(_isolated("offset", work))
 
-        return self._checked("offset", attempt, grow=max(float(distance), 0.0), smaller=distance < 0)
+        return self._checked("offset", [(True, attempt), (True, attempt)], grow=max(d, 0.0), smaller=d < 0)
 
-    def _checked(self, name: str, attempt: Callable[[], Part], *, grow: float, smaller: bool,
-                 attempts: int = 8) -> Part:
-        """Run a kernel operation whose result the kernel does not always get right, check the
-        result and retry. (SMLib's offset machinery depends on memory order and occasionally
-        returns a solid with misplaced faces.)"""
+    def _checked(self, name: str, attempts: Sequence[tuple[bool, Callable[[], Part]]], *, grow: float,
+                 smaller: bool | None, problem: Callable[[Part, bool], str | None] | None = None,
+                 hint: str = "try a smaller value") -> Part:
+        """The first result of ``attempts`` that passes the checks: a valid solid within the part's
+        box (grown by ``grow``), whose faces meet (gaps below _OFFSET_GAPS), whose volume went down
+        (``smaller``), up (``smaller=False``) or changed (None), and in which ``problem`` finds
+        nothing wrong.
+
+        Each attempt is a mode (the kernel's extended offset mode or not) and a function that makes
+        the result. An attempt in the mode of the one before runs only when that one's result was
+        refused, within _RETRY_SECONDS: the kernel fails the same way again, and only its extended
+        mode, which depends on memory layout, ever gave a better result. A step that crashed the
+        kernel or did not finish (in the copy of the process it ran in) ends the attempts."""
         box = self.bbox()
         tol = 1e-6 * max(box.diagonal, 1.0) + grow
-        try:
-            before = self._kernel_props(1e-4)["volume"]
-        except KernelError:
-            before = None
-        last: Exception | None = None
-        for _ in range(attempts):
+        before = float(self._props(1e-4)["volume"])
+        start = time.monotonic()
+        error: KernelError | None = None
+        refused: str | None = None
+        last: tuple[bool, bool] | None = None  # the mode of the attempt before, and whether it failed
+        for mode, attempt in attempts:
+            if last is not None and last[0] == mode and (last[1] or time.monotonic() - start > _RETRY_SECONDS):
+                continue
             try:
                 result = attempt()
             except KernelError as e:
-                last = e
+                error, last = e, (mode, True)
                 continue
-            if not result.is_valid():
-                continue
-            rb = result.bbox()
-            if any(rb.min[i] < box.min[i] - tol or rb.max[i] > box.max[i] + tol for i in range(3)):
-                continue
-            try:
-                # a misbuilt face shows up as a failing integration at this accuracy
-                after = result._kernel_props(1e-6)["volume"]
-            except KernelError:
-                continue
-            if before is not None and after > 0 and ((after < before) == smaller or abs(after - before) < 1e-9 * before):
+            last = (mode, False)
+            why = _offset_problem(result, box, tol, before, smaller) or (problem(result, mode) if problem else None)
+            if why is None:
                 return result
-        if last is not None:
-            raise last
-        raise ModelingError(f"{name}: the kernel could not build a valid result; try a smaller value")
+            refused = refused or why
+        if error is not None:
+            raise error
+        raise ModelingError(f"{name}: the kernel could not build a valid result (it built {refused}); {hint}")
 
     def split(self, plane: Plane | Face, keep: str = "above") -> Any:
         """Cut the part with a plane.
@@ -3185,8 +3351,15 @@ class Shell(_Body):
         if both:
             # one side, then the other, fused: the two halves share the sheet
             return self.thicken(d / 2) + self.thicken(-d / 2)
-        with kernel_call("thicken", hint):
-            b = k.shell_brep(self._brep, d, create_solid=True)
+        from .defeature import _isolated
+
+        def work() -> Any:
+            with kernel_call("thicken", hint):
+                return k.shell_brep(self._brep, d, create_solid=True)
+
+        # (the kernel's extended offset mode, which depends on memory layout and can crash: it runs
+        # in a copy of the process)
+        b = _isolated("thicken", work)
         return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
 
     def __add__(self, other: Any) -> Shell:

@@ -9,6 +9,18 @@
 //   EdgeDefinitions of the short Edges it deletes. Destruct() deleted the curves the Breps had
 //   taken from them, also those the other Brep's Edge still used: freed curves were read later
 //   in Booleans that glue vertices (AddressSanitizer: fillet removal on an imported valve body).
+//   SmProtoTopologyManager::GlueCoincidentBrepVertices stops gluing a Vertex once it has deleted
+//   it (an Edge to it squeezed, or the Vertex glued), and does not look up the mate of a deleted
+//   Vertex. With two common Edges it glued the deleted Vertex again: a read of freed memory in
+//   SmBrep::GlueVertices (AddressSanitizer), and shells and offsets in the extended mode crashed
+//   the process at random, such as the shell of an L-shaped body of two boxes.
+//   SmProtoTopologyManager::ResolveOverlappingProtoEdges returns SM_ERR_BAD_INTERSECTIONS (the
+//   patched SmTopologyIntersector::ResolveIntersections then fails the Boolean) for a group of
+//   overlapping ProtoEdges of which one has no start or end ProtoVertex, which it read.
+//   SmProtoTopologyManager::ResolveOverlappingProtoEdges takes the ProtoEdges of a group it
+//   deletes out of the lists of coincident ProtoEdges of all ProtoFaces, not only of the first
+//   one that lists them: GlueCoincidentBrepVertices read the others (a read of freed memory,
+//   AddressSanitizer: the shell of an imported part crashed in every run).
 //   SmProtoTopologyManager::SplitIntersectingProtoEdges stops once a range solution has deleted
 //   pPE2 (or pPE1), and returns SM_ERR_BAD_INTERSECTIONS if solutions are left (the patched
 //   SmTopologyIntersector::IntersectTopology then fails the Boolean). It asks pPE2, not pPE1,
@@ -6035,6 +6047,11 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
           }
           else
           {
+              // smlibpy patch: pBrep1Vtx2 is deleted once an Edge to it is squeezed or the two
+              // Vertices are glued; the common Edges left then run from pBrep1Vtx1 to itself.
+              // The next long Edge glued the deleted Vertex again (a read of freed memory in
+              // SmBrep::GlueVertices, AddressSanitizer: shells and offsets in the extended mode).
+              SmBoolean bVtx2Deleted1 = FALSE;
               for(kk=0;kk<lNumEdges1;kk++)
               {
                   SmEdge *pE1 = sBrep1Edges[kk];
@@ -6044,7 +6061,9 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                       // If any to-be-deleted topology is mated, remove the relationship when done.
                       // (They shouldn't be mated at this point though, but just in case.)
                       SmEdge   *pEdgeMate     = SM_CAST_PTR( SmEdge,   m_pTI->GetOtherMate( pE1 ));
-                      SmVertex *pOtherVtxMate = SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep1Vtx2 ));
+                      // smlibpy patch: not the mate of a deleted Vertex (its address may be in use again).
+                      //   SmVertex *pOtherVtxMate = SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep1Vtx2 ));
+                      SmVertex *pOtherVtxMate = bVtx2Deleted1 ? NULL : SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep1Vtx2 ));
 
                       SmVertex *pOtherVtx = pE1->GetOtherVertex( pBrep1Vtx1) ;
                       SmCurve  *pCurve    = pE1->GetCurve();
@@ -6056,6 +6075,7 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                       {
                           eStat = this->GetWhichBrep(1)->SqueezeEdge( pE1, pBrep1Vtx1) ;  // This deletes pBrep1Vtx2.
                           sDeletedVertices1[jj] = pBrep1Vtx2;
+                          bVtx2Deleted1 = TRUE; // smlibpy patch
                       }
                       sDeletedEdges1.Add( pE1) ;
 
@@ -6086,7 +6106,10 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                               // Don't remove the PE if empty.  Else would have to keep track,
                               // and remove them from the PFs.  And, empty PEs don't hurt anything.
                               this->RemoveEdgeDefinition( pEDToDelete, FALSE) ;
-                              pEDToDelete->Destruct();
+                              // smlibpy patch: no Destruct() here either (see below): it deleted a
+                              // 3D curve that a Brep's Edge may still use; the destructor deletes it
+                              // where no Brep took it.
+                              //   pEDToDelete->Destruct();
                               delete pEDToDelete; pEDToDelete = NULL;
                           }
                       }
@@ -6098,12 +6121,15 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                   {
                       // Here we have coincident Vertices connected by a long Edge.
                       // We should Glue these.
-                      if(pBrep1Vtx1 != pBrep1Vtx2 )
+                      // smlibpy patch: unless pBrep1Vtx2 is already deleted (see above).
+                      //   if(pBrep1Vtx1 != pBrep1Vtx2 )
+                      if(pBrep1Vtx1 != pBrep1Vtx2  &&  !bVtx2Deleted1 )
                       {
                           GetWhichBrep(1)->GlueVertices( pBrep1Vtx1, pBrep1Vtx2) ;
                           sDeletedVertices1[jj] = pBrep1Vtx2;
                           pVD2->SetFinalVertex( 1, NULL) ;
                           bDeleted1 = TRUE;
+                          bVtx2Deleted1 = TRUE; // smlibpy patch
                       }
                   }
 
@@ -6127,6 +6153,7 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
           }
           else
           {
+              SmBoolean bVtx2Deleted2 = FALSE; // smlibpy patch: as for Brep 1 above
               for(kk=0;kk<lNumEdges2;kk++)
               {
                   SmEdge *pE2 = sBrep2Edges[kk];
@@ -6136,7 +6163,9 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                       // If any to-be-deleted topology is mated, remove the relationship when done.
                       // (Note, they shouldn't be mated at this point though, but just in case.)
                       SmEdge   *pEdgeMate     = SM_CAST_PTR( SmEdge,   m_pTI->GetOtherMate( pE2 ));
-                      SmVertex *pOtherVtxMate = SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep2Vtx2 ));
+                      // smlibpy patch: not the mate of a deleted Vertex (its address may be in use again).
+                      //   SmVertex *pOtherVtxMate = SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep2Vtx2 ));
+                      SmVertex *pOtherVtxMate = bVtx2Deleted2 ? NULL : SM_CAST_PTR( SmVertex, m_pTI->GetOtherMate( pBrep2Vtx2 ));
 
                       SmVertex *pOtherVtx = pE2->GetOtherVertex( pBrep2Vtx1) ;
                       if(pOtherVtx == pBrep2Vtx1 )
@@ -6147,6 +6176,7 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                       {
                           eStat = this->GetWhichBrep(2)->SqueezeEdge( pE2, pBrep2Vtx1) ;  // This deletes pBrep2Vtx2.
                           sDeletedVertices2[jj] = pBrep2Vtx2;
+                          bVtx2Deleted2 = TRUE; // smlibpy patch
                       }
                       sDeletedEdges2.Add( pE2) ;
 
@@ -6178,7 +6208,10 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                               // Don't remove the PE if empty.  Else would have to keep track,
                               // and remove them from the PFs.  And, empty PEs don't hurt anything.
                               this->RemoveEdgeDefinition( pEDToDelete, FALSE) ;
-                              pEDToDelete->Destruct();
+                              // smlibpy patch: no Destruct() here either (see below): it deleted a
+                              // 3D curve that a Brep's Edge may still use; the destructor deletes it
+                              // where no Brep took it.
+                              //   pEDToDelete->Destruct();
                               delete pEDToDelete; pEDToDelete = NULL;
                           }
                       }
@@ -6190,12 +6223,15 @@ SmStatus SmProtoTopologyManager::GlueCoincidentBrepVertices()
                   {
                       // Here we have coincident Vertices connected by a long Edge.
                       // We should Glue these.
-                      if(pBrep2Vtx1 != pBrep2Vtx2 )
+                      // smlibpy patch: unless pBrep2Vtx2 is already deleted (see above).
+                      //   if(pBrep2Vtx1 != pBrep2Vtx2 )
+                      if(pBrep2Vtx1 != pBrep2Vtx2  &&  !bVtx2Deleted2 )
                       {
                           GetWhichBrep(2)->GlueVertices( pBrep2Vtx1, pBrep2Vtx2) ;
                           sDeletedVertices2[jj] = pBrep2Vtx2;
                           pVD2->SetFinalVertex( 2, NULL) ;
                           bDeleted2 = TRUE;
+                          bVtx2Deleted2 = TRUE; // smlibpy patch
                       }
                   }
 
@@ -7094,6 +7130,17 @@ SmBoolean bDebugMe=FALSE;
       // skip PEs not in a Overlapping PE Group
       if(bFoundOverlapGroup == FALSE )
         { continue ; }
+
+      // smlibpy patch: the group is taken out below through the ProtoVertices of its ProtoEdges;
+      // a ProtoEdge may have none (see sm_WhichPVToCombine), and its NULL start ProtoVertex was
+      // read (an offset in the extended mode crashed in 1 of 10 runs). Tell the caller, which
+      // fails the Boolean, before anything is changed.
+      for(jj=0;jj<sOverLappingGroup.GetSize();jj++)
+        {
+          if(   sOverLappingGroup[jj]->GetStartProtoVertex() == NULL
+             || sOverLappingGroup[jj]->GetEndProtoVertex()   == NULL )
+            { return SM_ERR_BAD_INTERSECTIONS ; }
+        }
   
       // arrive here when 
       //  sOverlappingPEs = accumulated list of pPE[ii]->OverlappingPE[jj]->OverlappingPEs
@@ -7165,10 +7212,17 @@ SmBoolean bDebugMe=FALSE;
       // PFs keep a list of coincident PEs. Remember when any Overlap PE is also a PF coincident PE so that stale pointers can be refreshed.
       
       // remember the first pPF where any of the sOverLappingGroup are listed as a pPF->CoinProtoEdge - gwc: should we check all pPF and keep a list?
+      // smlibpy patch: yes. The group's ProtoEdges are deleted below, and the ProtoFaces after the
+      // first one that listed them kept them in their lists of coincident ProtoEdges, which
+      // GlueCoincidentBrepVertices read (AddressSanitizer: a read of freed memory; a shell of an
+      // imported part crashed in every run). Take them out of every list, and put the new ProtoEdges
+      // into each list that had them.
+      SmTArray<SmProtoFace *> sReplacePFs ;
       for(jj=0;jj<sPFs.GetSize();jj++)
         {
           // remember 1st ProtoFace found with CoinPEs from this OverlappingPE group - gwc: should we check all pPF and keep a list?
           pPF = sPFs[jj] ; 
+          if(pPF == NULL) { continue ; } // smlibpy patch
 
           // locals
           SmTArray<SmProtoEdge *> * pCoinPEs = pPF->GetCoincProtoEdges() ;
@@ -7181,7 +7235,8 @@ SmBoolean bDebugMe=FALSE;
           if(pCoinPEs->GetSize() != sSize )
             {
               bReplaceCoinPE = TRUE ;
-              break ;
+              sReplacePFs.Add(pPF) ; // smlibpy patch
+              //   break ;
             }
         } // end check for these PEs on existing PFs
   
@@ -7504,12 +7559,15 @@ SmBoolean bDebugMe=FALSE;
                                                        //                FALSE = rpNewPE was found
                                                        // 
               // when any OverlappingPE was a CoinPE in pPF - add all New or Found PEs back into the PF->CoincPE list
-              if(pNewPE && bReplaceCoinPE)
-                {
-                  SmTArray< SmProtoEdge* > * pCoinPEs;
-                  pCoinPEs = pPF->GetCoincProtoEdges();
-                  pCoinPEs->AddUnique(pNewPE) ;
-                }
+              // smlibpy patch: into the list of each ProtoFace that had them (see above).
+              //   if(pNewPE && bReplaceCoinPE)
+              //     {
+              //       SmTArray< SmProtoEdge* > * pCoinPEs;
+              //       pCoinPEs = pPF->GetCoincProtoEdges();
+              //       pCoinPEs->AddUnique(pNewPE) ;
+              //     }
+              for(ULONG ff=0; pNewPE && bReplaceCoinPE && ff<sReplacePFs.GetSize(); ff++)
+                { sReplacePFs[ff]->GetCoincProtoEdges()->AddUnique(pNewPE) ; }
             } // end for each curve interval
         } // end for each curve classification
 

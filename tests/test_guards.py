@@ -65,6 +65,95 @@ def test_shell_walls_that_do_not_fit_are_refused():
     assert box.shell(10, box.faces().top() + box.faces().bottom()).volume == approx(40 * 30 * 10 - 20 * 10 * 10)
 
 
+def test_shell_walls_are_measured_across_the_part():
+    # The check measured the walls along the world axes only: the plate turned by 10 or 45 degrees
+    # got two 6 mm walls in its 10 mm (valid, 10992.0), and 10 mm walls gave the plate back (10 faces).
+    # A closed shell is checked on its result: where the walls meet, there is no cavity.
+    for angle in (10, 45):
+        plate = Box(40, 30, 10).rotate(X, angle)
+        for t in (6, 10):
+            with pytest.raises(ModelingError, match="do not fit|it built a body with a cavity where its walls meet"):
+                plate.shell(t)
+        assert plate.shell(4.9).volume == approx(40 * 30 * 10 - 30.2 * 20.2 * 0.2)
+    plate = Box(40, 30, 10).rotate(X, 45)
+    with pytest.raises(ModelingError, match="a wall of 10 does not fit into the part, which is 10 deep from the face"):
+        plate.shell(10, plate.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1])
+    # an L-shaped body whose leg is thinner than two walls (the kernel crashed in 1 run of 4)
+    body = Box(6, 20, 12) + Box(4, 10, 6).translate(1, -5, -6)
+    with pytest.raises(ModelingError, match="two walls of 2.94 do not fit into the part, which is 4 thick across"):
+        body.shell(2.94, body.faces().filter(lambda f: abs(f.center().z + 9) < 1e-6))
+    # a plate with a hole: shell(4) gave the plate back (3717.2567, 7 faces, valid)
+    holed = Box(20, 20, 10) - Cylinder(3, 20)
+    with pytest.raises(ModelingError, match="shell: the kernel could not build a valid result"):
+        holed.shell(4)
+    assert holed.shell(3).volume == approx(3385.646, rel=1e-6)
+
+
+def test_shell_and_offset_results_are_checked(monkeypatch):
+    import smlibpy.shapes
+
+    box = Box(40, 30, 20)
+    shell_brep = k.shell_brep
+    # the kernel giving the part back unchanged (it did, for walls that left no cavity)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", lambda brep, d, **kw: brep.copy())
+    with pytest.raises(ModelingError, match=r"it built a body whose volume did not go down"):
+        box.shell(2, box.faces().top())
+    # ... or with a corner cut off: less volume, but no cavity
+    notch = Box(2, 2, 2).translate(19, 14, 9)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep",
+                        lambda brep, d, **kw: (Part._wrap(brep.copy()) - notch)._copy_brep())
+    with pytest.raises(ModelingError, match=r"it built a body without its cavity: \(.*\), which no wall reaches"):
+        box.shell(2, box.faces().top())
+    # ... or walls of another thickness, closed: not the part less its offset
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", lambda brep, d, **kw: shell_brep(brep, d / 2, **kw))
+    with pytest.raises(ModelingError, match="of volume 4848, where the part less its offset by -2 has 9024"):
+        box.shell(2)
+    monkeypatch.undo()
+    # faces that do not meet: refused from 1e-3 of the volume (is_valid() from 1e-2)
+    result = Box(40, 30, 19)
+    result._props(1e-4)["gaps"] = 2e-3
+    assert smlibpy.shapes._offset_problem(result, box.bbox(), 1e-6, 24000.0, True).startswith(
+        "a body whose faces do not meet, so that its volume is uncertain by 2.0e-03")
+    # offset(0) is an equal copy, without the kernel
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", None)
+    copy = box.offset(0)
+    assert copy.volume == approx(24000) and copy._brep is not box._brep
+
+
+def test_shell_and_offset_do_not_repeat_what_fails(monkeypatch):
+    # Shell tried the kernel eight times (twice in its plain mode, six times in its extended mode)
+    # and offset eight times; over 420 runs on imported parts no repeat helped, and a failure cost
+    # up to 115 s. Now: the plain mode once, the extended mode once, and once more only after a
+    # result that was refused; offset once, and once more after a refused result.
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)  # (counted in this process)
+    calls = []
+
+    def failing(brep, d, extended_offset=True, **kw):
+        calls.append(extended_offset)
+        raise RuntimeError("SmApiShellBrepFull failed: SM_ERR (1001)")
+
+    def unchanged(brep, d, extended_offset=True, **kw):
+        calls.append(extended_offset)
+        return brep.copy()
+
+    box = Box(40, 30, 20)
+    for kernel, expect in ((failing, [False, True]), (unchanged, [False, True, True])):
+        calls.clear()
+        monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", kernel)
+        with pytest.raises(ModelingError):
+            box.shell(2, box.faces().top())
+        assert calls == expect
+    for kernel, expect in ((failing, [True]), (unchanged, [True, True])):
+        calls.clear()
+        monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", kernel)
+        with pytest.raises(ModelingError):
+            box.offset(1)
+        assert calls == expect
+
+
 # -- fillet and chamfer -------------------------------------------------------------------
 def _rounded_cube(s, r):
     a = s - 2 * r
@@ -415,6 +504,77 @@ for case in cases:
     assert len(out) == 51
     assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
         14.137072, rel=1e-6)  # the same pair's intersection works
+
+
+def test_offsets_that_read_freed_kernel_memory_fail():
+    # The kernel's offset code read memory it had freed, and the process died now and then (an
+    # L-shaped body in 1 run of 4, a fused cone offset by 6 and a shell of two cones in every run):
+    # GlueCoincidentBrepVertices glued a Vertex it had deleted, a ProtoEdge it deleted stayed in
+    # the lists of other ProtoFaces, and an extended surface was handed out after it was deleted.
+    # The kernel steps themselves, in their extended mode, in a process of their own.
+    code = """
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+from smlibpy._kernel import k
+lbox = Box(6, 20, 12) + Box(4, 10, 6).translate(1, -5, -6)
+foot = [f._f for f in lbox.faces() if abs(f.center().z + 9) < 1e-6]
+cone = Cone(6, 0, 8).rotate(Y, 90) + Cylinder(4, 12).translate(-6.7843, 0, 0)
+cones = Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)
+end = [min(cones.faces(), key=lambda f: abs(f.center().x - 3))._f]
+steps = [lambda: k.shell_brep(lbox._brep, -2.94, extended_offset=True, faces_to_shell=foot),
+         lambda: k.offset_brep(cone._brep, 6),
+         lambda: k.shell_brep(cones._brep, -2.4, extended_offset=True, faces_to_shell=end)]
+for step in steps * 8:
+    try:
+        step()
+        print("ok", flush=True)
+    except RuntimeError:
+        print("failed", flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} steps"
+    assert len(run.stdout.split()) == 24
+
+
+def test_shell_offset_and_thicken_run_the_kernel_in_a_copy_of_the_process(monkeypatch):
+    # They ran the kernel's offset code in this process, where its crashes killed it: now in a forked
+    # copy, whose body comes back as an exact (.smb) copy. A crash there costs only the copy.
+    import os
+    import signal
+    import time
+
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    if not hasattr(os, "fork"):
+        pytest.skip("no fork: the kernel runs in this process")
+    box = Box(20, 20, 20)
+    shelled = box.shell(2, box.faces().top())
+    assert shelled.volume == approx(8000 - 16 * 16 * 18) and shelled.is_valid()
+    assert box.offset(2).volume == approx(24 ** 3) and Rectangle(10, 10).thicken(1).volume == approx(100)
+    with pytest.raises(KernelError, match=r"offset failed \(SM_ERR"):
+        (Box(40, 40, 10) - Cylinder(5, 20)).offset(5)  # an error there is raised here
+
+    def crash(*args, **kwargs):
+        import faulthandler
+
+        faulthandler.disable()  # (no report of the copy's crash)
+        os.kill(os.getpid(), signal.SIGSEGV)
+
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", crash)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", crash)
+    for call, name in ((lambda: box.offset(1), "offset"), (lambda: box.shell(1, box.faces().top()), "shell"),
+                       (lambda: Rectangle(10, 10).thicken(1), "thicken")):
+        crashed = fr"{name}: the kernel crashed \(signal \d+, in a copy of this process\)"  # (6 under ASan)
+        with pytest.raises(ModelingError, match=crashed):
+            call()
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", lambda *a, **kw: time.sleep(10))
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0.5)
+    start = time.monotonic()
+    with pytest.raises(ModelingError, match="offset: the kernel did not finish within 0.5 s"):
+        box.offset(1)
+    assert time.monotonic() - start < 5
 
 
 def test_a_merge_that_loses_volume_raises():

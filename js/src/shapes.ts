@@ -36,7 +36,7 @@ import { _rayTriangles, faceMeshes, tessellate, type Mesh } from './mesh.ts'
 import { show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, rebuiltBrep, roundCorners } from './_regions.ts'
-import { filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
+import { type _Job, _isolated, _smb, filletFaces, removeFaces as _removeFaces, removeFillets as _removeFillets } from './defeature.ts'
 import { type BendOptions, type TaperOptions, type TwistOptions, bend as _bend, taper as _taper, twist as _twist } from './deform.ts'
 import { type DraftAnalysis, _range, draftAnalysis as _draftAnalysis, draftFaces, partingLine as _partingLine } from './draft.ts'
 import { sweep as _sweep } from './operations.ts'
@@ -91,6 +91,16 @@ const _FILLET_TANGENT_DEG = 10.0
 // the faces meet at the angle measured; along an edge whose angle changes by more than this
 // (degrees) the setback would change with it.
 const _CHAMFER_ANGLE_SPREAD = 1.0
+
+// A shell or offset whose faces leave gaps of this much of its volume or more is refused. Over 1018
+// shells and offsets of imported parts, the sound ones stayed below 6.5e-4 and those with 1e-3 or
+// more were wrong (faces off their edges, rims left open, meshes that do not close).
+const _OFFSET_GAPS = 1e-3
+
+// A shell or offset attempt whose result was refused is tried once more (the kernel's extended mode
+// depends on memory layout), but not after this many seconds; an attempt that failed is not
+// repeated, since the kernel fails the same way again.
+const _RETRY_SECONDS = 10.0
 
 // Shapes that only smlibwasm makes (edges, bodies) take this as their constructor's argument.
 const INTERNAL = Symbol('smlibwasm.internal')
@@ -2008,6 +2018,28 @@ function _intersectionProblem(result: Part, operands: readonly Part[]): string |
   return null
 }
 
+/** What is wrong with the result of a shell or an offset (see `Part._checked`), or null. */
+export function _offsetProblem(result: Part, box: BoundBox, tol: number, before: number, smaller: boolean | null): string | null {
+  const problem = result._solidProblem()
+  if (problem !== null) return `a body that is ${problem}`
+  const rb = result.bbox()
+  const [lo, hi, rlo, rhi] = [box.min.toArray(), box.max.toArray(), rb.min.toArray(), rb.max.toArray()]
+  if ([0, 1, 2].some((i) => rlo[i] < lo[i] - tol || rhi[i] > hi[i] + tol)) return 'a body that reaches out of the box it must fit in'
+  const p = result._props(1e-4)
+  if (!(p.gaps < _OFFSET_GAPS)) return `a body whose faces do not meet, so that its volume is uncertain by ${_formatE(p.gaps, 1)} of its value`
+  const after = Number(p.volume)
+  const slack = 1e-9 * Math.abs(before)
+  if (smaller === true && !(after < before - slack)) return `a body whose volume did not go down (${_formatG(before, 10)} -> ${_formatG(after, 10)})`
+  if (smaller === false && !(after > before + slack)) return `a body whose volume did not go up (${_formatG(before, 10)} -> ${_formatG(after, 10)})`
+  if (smaller === null && !(Math.abs(after - before) > slack)) return `a body of the part's own volume (${_formatG(after, 10)})`
+  return null
+}
+
+/** The indices of kernel faces in their body, for the probe worker. */
+function _faceIndices(body: _Body, faces: readonly number[]): number[] {
+  return Array.from(ext.face_indices(body._brep, [...faces]) as ArrayLike<number>, Number)
+}
+
 /** Points on a body's surface: its vertices, the middle of each edge, and a point of each face
  * (the middle of its parameter domain where that lies on the face, else one the kernel finds). */
 function _surfacePoints(body: _Body): number[][] {
@@ -2159,7 +2191,14 @@ export function _bodies(items: unknown, name = 'combine'): _Body[] {
  * `inertia` is the inertia tensor about the center of mass (axes parallel to the world axes),
  * row by row; `principalMoments` and `principalAxes` are its eigen-decomposition.
  */
-function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: VectorLike | Axis | null, box: BoundBox, onePerPoint = true): Hit[] {
+function _raycast(
+  faces: Iterable<Face>,
+  origin: VectorLike | Axis,
+  direction: VectorLike | Axis | null,
+  box: BoundBox,
+  onePerPoint = true,
+  meshes = new Map<unknown, Mesh[]>(), // a body -> its faces' meshes (for faces the kernel cannot intersect; rays of one body can share them)
+): Hit[] {
   let o: Vector
   let d: Vector
   if (origin instanceof Axis && direction == null) {
@@ -2181,7 +2220,6 @@ function _raycast(faces: Iterable<Face>, origin: VectorLike | Axis, direction: V
   if (reach <= 0) return [] // the body is behind the start
   const tol = 1e-9 * Math.max(size, o.length)
   const hits: Hit[] = []
-  const meshes = new Map<unknown, Mesh[]>() // a body -> its faces' meshes (for faces the kernel cannot intersect)
   kernelCall('raycast', () => {
     const ray: number = k.create_line_segment(o.toArray(), o.add(d.mul(reach)).toArray())
     try {
@@ -3059,27 +3097,84 @@ export class Part extends _Body {
     this._requireValid('shell')
     if (!(Math.abs(Number(thickness)) > 0)) throw new RangeError('shell: the thickness must not be zero')
     const faces = openings != null ? this._ownFaces(openings) : []
-    if (!outward) this._checkWallFits(Math.abs(Number(thickness)), faces)
-    const d = outward ? Math.abs(thickness) : -Math.abs(thickness)
-    const tries = [false, false, true, true, true, true, true, true]
-    const attempt = (): Part => {
-      // The kernel's "extended" offset mode is not deterministic; the plain mode is, and handles
-      // most parts. Fall back to the extended mode when needed.
-      const extended = tries.length ? tries.shift()! : true
-      return kernelCall(
-        'shell',
-        () => this._like(k.shell_brep(this._brep, d, { extended_offset: extended, faces_to_shell: faces })),
-        'the wall may be thicker than the part allows',
-      )
+    const t = Math.abs(Number(thickness))
+    const rays = this._inwardRays(faces)
+    if (!outward) this._checkWallFits(t, faces, rays)
+    const d = outward ? t : -t
+    const hint = this._shellHint(faces)
+    const offsets = new Map<boolean, number>() // volume of the part offset by d, by mode (for a closed shell)
+    const offsetVolume = (extended: boolean): number => {
+      if (!offsets.has(extended)) {
+        const work = (): number => kernelCall('shell', () => k.offset_brep(this._brep, d, { extended_offset: extended }))
+        const off = Part._wrap(_isolated('shell', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended } })))
+        try {
+          offsets.set(extended, k.brep_face_count(off._brep) ? Number(off._props(1e-4).volume) : 0)
+        } finally {
+          off.dispose()
+        }
+      }
+      return offsets.get(extended)!
     }
-    const grow = outward ? Math.abs(thickness) : 0
-    return this._checked('shell', attempt, { grow, smaller: true }) // a wall has less volume
+    const attempt = (extended: boolean): Part => {
+      const work = (): number => kernelCall('shell', () => k.shell_brep(this._brep, d, { extended_offset: extended, faces_to_shell: faces }), hint)
+      // In the probe worker (smlibpy: in a copy of its process): the kernel's offset code can crash,
+      // mostly in its extended mode, which depends on memory layout.
+      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: extended }, faces: _faceIndices(this, faces) })
+      return this._like(_isolated('shell', work, job, hint))
+    }
+    return this._checked(
+      'shell',
+      [
+        [false, () => attempt(false)],
+        [true, () => attempt(true)],
+        [true, () => attempt(true)],
+      ],
+      { grow: outward ? t : 0, smaller: outward ? null : true, problem: (result, extended) => this._shellProblem(result, d, faces, rays, extended, offsetVolume), hint },
+    )
+  }
+
+  /** For each face that is not an opening: a point on it, the direction into the part there, how
+   * deep the part is along it (to the face it meets first), and whether that face is an opening.
+   * The checks of `shell` measure the part along these. */
+  _inwardRays(openings: readonly number[]): [Vector, Vector, number, boolean][] {
+    const faces = this.faces()
+    const box = this._looseBox()
+    // (a face is met again at the start within its tolerance, and so is a face that meets it there at
+    // a sharp angle, or lies on it in an imported part)
+    const near = 1e-4 * Math.max(box.diagonal, 1)
+    const meshes = new Map<unknown, Mesh[]>()
+    const out: [Vector, Vector, number, boolean][] = []
+    for (const f of faces) {
+      if (openings.includes(f._f)) continue
+      let p: Vector
+      let n: Vector
+      let hits: Hit[]
+      try {
+        const [[u0, v0], [u1, v1]] = k.face_uv_domain(f._f)
+        let u = 0.5 * (u0 + u1)
+        let v = 0.5 * (v0 + v1)
+        if (k.face_classify_uv(f._f, u, v) !== 'inside') {
+          const [, uvs] = k.surface_closest_point(k.face_surface(f._f), f.interiorPoint().toArray())
+          ;[u, v] = [uvs[0][0], uvs[0][1]]
+        }
+        p = new Vector(k.face_point_at_uv(f._f, u, v))
+        n = new Vector(k.face_outward_normal_at_uv(f._f, u, v)).normalized().neg()
+        hits = _raycast(faces, p, n, box, true, meshes).filter((h) => h.distance >= near)
+      } catch (e) {
+        if (!_isRuntimeError(e)) throw e // a face the kernel cannot place a point on
+        continue
+      }
+      if (hits.length) out.push([p, n, hits[0].distance, openings.includes(hits[0].face._f)])
+    }
+    return out
   }
 
   /** Refuse inward walls that cannot fit: along each axis the part must be thicker than its walls
-   * (two, or one where an opening faces that way). The kernel returns wrong bodies there, or
-   * crashes. */
-  _checkWallFits(t: number, openings: readonly number[]): void {
+   * (two, or one where an opening faces that way). With openings, so must it be across each face,
+   * into the part (`rays`, see `_inwardRays`), since a rotated or angled part bypasses the axes. The
+   * kernel returns wrong bodies there, or crashes. (A closed shell is checked on its result: see
+   * `_shellProblem`.) */
+  _checkWallFits(t: number, openings: readonly number[], rays: readonly [Vector, Vector, number, boolean][]): void {
     const box = this.bbox()
     const tol = 1e-6 * Math.max(box.diagonal, 1)
     const lo = box.min.toArray()
@@ -3108,58 +3203,152 @@ export class Part extends _Body {
         throw new ModelingError(`shell: a wall of ${_formatG(t, 4)} does not fit into the part, which is ${_formatG(size, 4)} deep along ${axis} from the opening; use a thinner wall`)
       }
     })
+    for (const [p, , depth, opening] of openings.length ? rays : []) {
+      const walls = opening ? 1 : 2
+      if (walls * t >= depth - tol) {
+        const at = `(${_formatG(p.x, 4)}, ${_formatG(p.y, 4)}, ${_formatG(p.z, 4)})`
+        if (walls === 2) {
+          throw new ModelingError(`shell: two walls of ${_formatG(t, 4)} do not fit into the part, which is ${_formatG(depth, 4)} thick across the face at ${at}; use a thinner wall`)
+        }
+        throw new ModelingError(`shell: a wall of ${_formatG(t, 4)} does not fit into the part, which is ${_formatG(depth, 4)} deep from the face at ${at} to the opening; use a thinner wall`)
+      }
+    }
   }
 
-  /** Grow (positive) or shrink (negative) the part by `distance` everywhere. */
+  /** What a failed shell says: that the kernel cannot open a face whose rim meets its neighbours
+   * tangentially (the flat top of a rounded box), or else that the wall may be too thick. */
+  _shellHint(openings: readonly number[]): string {
+    for (const kf of openings) {
+      for (const e of new Face(this, kf).edges()) {
+        if (e.convexity === 'smooth') {
+          return 'the kernel cannot open a face whose rim meets its neighbours tangentially; shell the part before rounding the rim, or shell it closed and cut the opening out'
+        }
+      }
+    }
+    return 'the wall may be thicker than the part allows'
+  }
+
+  /** What is wrong with `result` as this part shelled by `d` (inward when negative), or null. Checked
+   * at the middle of each ray (`rays`) into the part: where walls grow inward and the part is too
+   * thin for two (a closed shell; with openings `shell` refuses such a part), the walls meet, and the
+   * point lies in the material. Where the point is farther from the faces than the walls reach (any
+   * point of the part, for walls that grow outward), it lies in the cavity; the extended mode's walls
+   * reach farther at inside corners, which it makes sharp. A closed shell is the part less its offset
+   * by `d` (`offsetVolume` of the mode), or that offset less the part. */
+  _shellProblem(
+    result: Part,
+    d: number,
+    openings: readonly number[],
+    rays: readonly [Vector, Vector, number, boolean][],
+    extended: boolean,
+    offsetVolume: (extended: boolean) => number,
+  ): string | null {
+    const t = Math.abs(d)
+    const tol = 1e-6 * Math.max(this._extent(), 1)
+    const reach = d > 0 ? 0 : extended ? 4 * t : t
+    const solid: Vector[] = []
+    const hollow: Vector[] = []
+    for (const [p, n, depth, opening] of rays) {
+      if (d < 0 && !opening && depth <= 2 * t) {
+        solid.push(p.add(n.mul(depth / 2)))
+        continue
+      }
+      const q = p.add(n.mul(opening && d < 0 ? (depth + t) / 2 : depth / 2))
+      if (this.distanceTo(q) > reach + tol) hollow.push(q)
+    }
+    const points = [...solid, ...hollow]
+    const where = points.length ? result._classify(points) : []
+    for (let i = 0; i < points.length; i++) {
+      const q = points[i]
+      const at = `(${_formatG(q.x, 4)}, ${_formatG(q.y, 4)}, ${_formatG(q.z, 4)})`
+      if (i < solid.length && where[i][0] === 'outside') {
+        return `a body with a cavity where its walls meet: ${at}, within ${_formatG(t, 4)} of the faces on both sides, is not in its material`
+      }
+      if (i >= solid.length && where[i][0] === 'inside') return `a body without its cavity: ${at}, which no wall reaches, lies in its material`
+    }
+    if (openings.length) return null
+    let moved: number
+    try {
+      moved = offsetVolume(extended)
+    } catch (e) {
+      if (!(e instanceof ModelingError)) throw e // (also a KernelError, or a crash in the probe worker)
+      return `a hollow body that cannot be checked: the kernel cannot offset the part by ${_formatG(d, 4)} (${e.message})`
+    }
+    if (d < 0 && !(moved > 0)) {
+      return `a hollow body, but two walls of ${_formatG(t, 4)} do not fit into the part: the kernel finds nothing of it left when it shrinks it by ${_formatG(t, 4)}`
+    }
+    const whole = Number(this._props(1e-4).volume)
+    const expect = Math.abs(whole - moved)
+    const got = Number(result._props(1e-4).volume)
+    if (!(Math.abs(got - expect) <= 1e-4 * whole)) {
+      return `a hollow body of volume ${_formatG(got, 10)}, where the part less its offset by ${_formatG(d, 4)} has ${_formatG(expect, 10)}`
+    }
+    return null
+  }
+
+  /** Grow (positive) or shrink (negative) the part by `distance` everywhere (0 gives an equal
+   * copy). */
   offset(distance: number): Part {
     this._requireValid('offset')
-    const attempt = (): Part => kernelCall('offset', () => this._like(k.offset_brep(this._brep, Number(distance))))
-    return this._checked('offset', attempt, { grow: Math.max(Number(distance), 0), smaller: distance < 0 })
+    const d = Number(distance)
+    if (d === 0) return this._like(this._copyBrep())
+    const work = (): number => kernelCall('offset', () => k.offset_brep(this._brep, d))
+    // (always the extended mode, which depends on memory layout and can crash: it runs in the probe
+    // worker, smlibpy: in a copy of its process)
+    const attempt = (): Part => this._like(_isolated('offset', work, () => ({ op: 'offset_brep', bodies: [_smb(this)], distance: d, options: { extended_offset: true } })))
+    return this._checked(
+      'offset',
+      [
+        [true, attempt],
+        [true, attempt],
+      ],
+      { grow: Math.max(d, 0), smaller: d < 0 },
+    )
   }
 
-  /** Run a kernel operation whose result the kernel does not always get right, check the result
-   * and retry. (SMLib's offset machinery depends on memory order and occasionally returns a solid
-   * with misplaced faces.) */
-  _checked(name: string, attempt: () => Part, options: { grow: number; smaller: boolean; attempts?: number }): Part {
-    const { grow, smaller, attempts = 8 } = options
+  /** The first result of `attempts` that passes the checks: a valid solid within the part's box
+   * (grown by `grow`), whose faces meet (gaps below _OFFSET_GAPS), whose volume went down
+   * (`smaller`), up (`smaller: false`) or changed (null), and in which `problem` finds nothing wrong.
+   *
+   * Each attempt is a mode (the kernel's extended offset mode or not) and a function that makes the
+   * result. An attempt in the mode of the one before runs only when that one's result was refused,
+   * within _RETRY_SECONDS: the kernel fails the same way again, and only its extended mode, which
+   * depends on memory layout, ever gave a better result. A step that crashed the kernel (a trap, or
+   * a crash in the probe worker) or did not finish ends the attempts. */
+  _checked(
+    name: string,
+    attempts: readonly [boolean, () => Part][],
+    options: { grow: number; smaller: boolean | null; problem?: ((result: Part, extended: boolean) => string | null) | null; hint?: string },
+  ): Part {
+    const { grow, smaller, problem = null, hint = 'try a smaller value' } = options
     const box = this.bbox()
     const tol = 1e-6 * Math.max(box.diagonal, 1) + grow
-    let before: number | null
-    try {
-      before = this._kernelProps(1e-4).volume
-    } catch (e) {
-      if (!(e instanceof KernelError)) throw e
-      before = null
-    }
-    let last: Error | null = null
-    const lo = box.min.toArray()
-    const hi = box.max.toArray()
-    for (let i = 0; i < attempts; i++) {
+    const before = Number(this._props(1e-4).volume)
+    const start = Date.now()
+    let error: KernelError | null = null
+    let refused: string | null = null
+    let last: [boolean, boolean] | null = null // the mode of the attempt before, and whether it failed
+    for (const [mode, attempt] of attempts) {
+      if (last !== null && last[0] === mode && (last[1] || Date.now() - start > _RETRY_SECONDS * 1000)) continue
       let result: Part
       try {
         result = attempt()
       } catch (e) {
         if (!(e instanceof KernelError)) throw e
-        last = e
+        // a trap: the kernel crashed here, and its memory may be damaged
+        if (typeof WebAssembly !== 'undefined' && (e as Any).cause instanceof WebAssembly.RuntimeError) throw e
+        error = e
+        last = [mode, true]
         continue
       }
-      if (!result.isValid()) continue
-      const rb = result.bbox()
-      const rlo = rb.min.toArray()
-      const rhi = rb.max.toArray()
-      if ([0, 1, 2].some((j) => rlo[j] < lo[j] - tol || rhi[j] > hi[j] + tol)) continue
-      let after: number
-      try {
-        // a misbuilt face shows up as a failing integration at this accuracy
-        after = result._kernelProps(1e-6).volume
-      } catch (e) {
-        if (!(e instanceof KernelError)) throw e
-        continue
-      }
-      if (before !== null && after > 0 && (after < before === smaller || Math.abs(after - before) < 1e-9 * before)) return result
+      last = [mode, false]
+      const why = _offsetProblem(result, box, tol, before, smaller) ?? (problem ? problem(result, mode) : null)
+      if (why === null) return result
+      refused ??= why
+      result.dispose()
     }
-    if (last !== null) throw last
-    throw new ModelingError(`${name}: the kernel could not build a valid result; try a smaller value`)
+    if (error !== null) throw error
+    throw new ModelingError(`${name}: the kernel could not build a valid result (it built ${refused}); ${hint}`)
   }
 
   /**
@@ -3605,7 +3794,11 @@ export class Shell extends _Body {
       // one side, then the other, fused: the two halves share the sheet
       return this.thicken(d / 2).fuse(this.thicken(-d / 2))
     }
-    const b = kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
+    const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
+    // (the kernel's extended offset mode, which depends on memory layout and can crash: it runs in the
+    // probe worker, smlibpy: in a copy of its process)
+    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], distance: d, options: { create_solid: true }, faces: [] })
+    const b = _isolated('thicken', work, job, hint)
     return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
   }
 

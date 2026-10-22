@@ -19,9 +19,9 @@
 // Windows: a crash of the kernel (a trap of the WebAssembly module) drops that step, but a step
 // that loops does not come back.
 
-import { BrepHandle, ModelingError, _warn, ext, k } from './kernel.ts'
+import { BrepHandle, ModelingError, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { _formatG } from './geometry.ts'
-import { Face, type Part, ShapeList, type _Body, _flattenFaces } from './shapes.ts'
+import { type Edge, Face, type Part, ShapeList, type _Body, _flattenFaces } from './shapes.ts'
 import { toSmb } from './exporters.ts'
 import { _giveUp, _noProbe, _probeSupervisor } from './_guard.ts'
 
@@ -37,7 +37,9 @@ export const TANGENCY = 2.0
  * and Web Workers of a cross-origin isolated page), the kernel first does the work in a probe
  * worker, a kernel of its own, on copies of the bodies: if it crashes there or takes longer than
  * this, a ModelingError says so and this kernel is left alone (SMLib's patching and Boolean code
- * can crash or loop on some parts). `0` runs the kernel directly, as on a browser's main thread,
+ * can crash or loop on some parts). The steps of defeaturing and `surfaceFillet` then run again
+ * here; those of `shell`, `offset` and `thicken` run only there, and their result comes back as an
+ * exact copy. `0` runs the kernel directly, as on a browser's main thread,
  * where a step that loops does not come back. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
  */
 export let GUARD_SECONDS = 20.0
@@ -99,10 +101,14 @@ export function _indices(body: _Body, faces: readonly Face[]): number[] {
   return Array.from(ext.face_indices(body._brep, faces.map((f) => f._f)) as ArrayLike<number>, Number)
 }
 
-// The states of a job, as _defeature_worker.ts sets them.
+// The states of a job, as _defeature_worker.ts sets them (see there).
 const _QUEUED = 0
 const _RUNNING = 1
 const _CRASHED = 3
+const _PIECE = 4
+const _FAILED = 5
+/** Bytes of a result that the probe worker hands over at a time. */
+const _PIECE_BYTES = 1 << 20
 /** Seconds a new probe worker may take to load its kernel and start the first step. */
 const _START_SECONDS = 30.0
 
@@ -132,6 +138,78 @@ function _probe(what: string, job: () => _Job, limit: number): void {
     throw new _KernelFault(what, 'the kernel crashed (in a probe worker, a kernel of its own)', 'this kernel is fine')
   }
 }
+
+/**
+ * The body (a kernel Brep) `work()` makes, made by the probe worker (a kernel of its own, see
+ * GUARD_SECONDS) from exact copies of the bodies (`job`) and read back from an exact copy (a
+ * binary .smb file). This kernel never runs the step: one that crashes the kernel there or does
+ * not finish is a _KernelFault, and the kernel error it fails with there is thrown here, as a
+ * KernelError of `what` with `hint`. For the kernel's offset code (its extended mode above all),
+ * which reads memory it has freed. Python's `_isolated`, which uses a forked copy of its process.
+ * Without a probe worker (a browser's main thread), or with GUARD_SECONDS = 0, `work()` runs here.
+ */
+export function _isolated(what: string, work: () => number, job: () => _Job, hint: string | null = null): number {
+  const limit = Number(GUARD_SECONDS)
+  const supervisor = limit > 0 ? _probeSupervisor() : null
+  if (supervisor === null) return work()
+  const j = job()
+  const state = new Int32Array(new SharedArrayBuffer(8))
+  const data = new Uint8Array(new SharedArrayBuffer(_PIECE_BYTES))
+  supervisor.postMessage({ ...j, state: state.buffer, data: data.buffer }, j.bodies.map((b) => b.buffer))
+  // (a new probe worker loads its kernel first)
+  Atomics.wait(state, 0, _QUEUED, _START_SECONDS * 1000)
+  if (Atomics.load(state, 0) === _QUEUED) {
+    _giveUp(`the probe worker did not start within ${_formatG(_START_SECONDS)} s`)
+    _warn(`${what}: ${_noProbe()}; the kernel steps of shell, offset and thicken run in this kernel from now on`)
+    return work()
+  }
+  const deadline = Date.now() + limit * 1000
+  const pieces: Uint8Array[] = []
+  for (;;) {
+    // (once the first piece came, the step is done, and the rest comes at once)
+    Atomics.wait(state, 0, _RUNNING, pieces.length ? _START_SECONDS * 1000 : Math.max(deadline - Date.now(), 0))
+    const outcome = Atomics.load(state, 0)
+    if (outcome === _PIECE) {
+      pieces.push(data.slice(0, Atomics.load(state, 1)))
+      Atomics.store(state, 0, _RUNNING)
+      Atomics.notify(state, 0)
+      continue
+    }
+    if (outcome === _RUNNING) {
+      supervisor.postMessage({ kill: true })
+      throw new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
+    }
+    if (outcome === _CRASHED) {
+      supervisor.postMessage({ kill: true }) // (its kernel may be damaged)
+      throw new _KernelFault(what, 'the kernel crashed (in a probe worker, a kernel of its own)', 'this kernel is fine')
+    }
+    const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0))
+    pieces.reduce((at, p) => (bytes.set(p, at), at + p.length), 0)
+    if (outcome === _FAILED) {
+      const message = String(JSON.parse(new TextDecoder().decode(bytes)).message)
+      return kernelCall(
+        what,
+        () => {
+          throw new Error(message)
+        },
+        hint,
+      )
+    }
+    return _loaded(bytes)
+  }
+}
+
+/** The Brep of an .smb file's contents. */
+function _loaded(bytes: Uint8Array): number {
+  const name = `/tmp/smlibwasm-result-${++_results}.smb`
+  module.FS.writeFile(name, bytes)
+  try {
+    return kernelCall('load', () => k.read_brep_from_file(name, null, false))
+  } finally {
+    module.FS.unlink(name)
+  }
+}
+let _results = 0
 
 // ============================================================================= recognising fillets
 /** Cached blend data of faces (kernel face -> object or null). */
@@ -494,25 +572,41 @@ export function removeFillets(part: Part, faces: unknown = null, options: { maxR
 }
 
 /** The selection with the faces it encloses: a face all of whose neighbours are selected (the
- * floor of a blind hole, the top of a boss) goes with them. */
+ * floor of a blind hole, the top of a boss) goes with them. Not a face that the selection only
+ * rounds off: one that meets all its neighbours tangentially where the selection, too, meets the
+ * faces around it tangentially (the top of a box whose top edges are rounded, with those rounds
+ * selected). Such a face is the part, not a feature's floor; a pocket's floor inside its rounds
+ * goes with the pocket's walls, whose rim is sharp. */
 function _complete(faces: readonly Face[]): Face[] {
   const out = [...faces]
   let changed = true
   while (changed) {
     changed = false
     const ids = new Set(out.map((f) => f._identity()))
+    const enclosed: Face[] = []
     for (const f of [...out]) {
       for (const g of f.neighbors()) {
-        if (ids.has(g._identity())) continue
-        if (g.neighbors().every((n) => ids.has(n._identity()))) {
-          out.push(g)
-          ids.add(g._identity())
-          changed = true
-        }
+        if (ids.has(g._identity()) || _has(enclosed, g)) continue
+        if (g.neighbors().every((n) => ids.has(n._identity()))) enclosed.push(g)
+      }
+    }
+    const inside = new Set([...ids, ...enclosed.map((g) => g._identity())])
+    const rimSharp = out.some((f) => f.edges().some((e) => e.faces().some((x) => !inside.has(x._identity())) && _sharp(e)))
+    for (const g of enclosed) {
+      if (rimSharp || g.edges().some((e) => _sharp(e))) {
+        out.push(g)
+        ids.add(g._identity())
+        changed = true
       }
     }
   }
   return out
+}
+
+/** Whether an edge between two faces is a corner (its faces do not meet tangentially). */
+function _sharp(e: Edge): boolean {
+  const fs = e.faces()
+  return fs.length === 2 && !fs[0].equals(fs[1]) && e.convexity !== 'smooth'
 }
 
 /** +1 for a depression (hole, pocket: its rim edges are convex), -1 for a protrusion (boss:
@@ -532,10 +626,19 @@ function _featureKind(group: readonly Face[]): number {
   return 0
 }
 
-/** `body` without one connected set of faces, the gap closed and checked; or null and why. */
+/** `body` without one connected set of faces, the gap closed and checked; or null and why. Where
+ * the faces' rim says nothing about the direction (tangent or mixed edges), the volume may change
+ * by no more than the faces span (their area times the size of their box), and the part's box may
+ * not shrink: closing the gap there must not take away the part around it. */
 function _close(body: Part, group: readonly Face[]): [Part | null, string] {
   const expect = _featureKind(group)
   const before = _volume(body)
+  let bound: number | null = null
+  if (expect === 0) {
+    let span = group[0].bbox()
+    for (const f of group.slice(1)) span = span.union(f.bbox())
+    bound = group.reduce((a, f) => a + f.area, 0) * span.diagonal
+  }
   let why = ''
   for (const rebuild of ['extend', 'planar_cap']) {
     let res: Any
@@ -560,18 +663,37 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
       continue
     }
     const candidate = body._like(res.brep)
-    const problem = _problem(before, candidate, expect, null)
+    const problem = _problem(before, candidate, expect, null) ?? (bound !== null ? _spill(body, candidate, before, bound) : null)
     if (problem === null) return [candidate, '']
     why = why || `the kernel returned ${problem}`
   }
   return [null, why]
 }
 
+/** What is wrong with a result whose volume may change either way: a change beyond `bound`, or a
+ * box that shrank (the gap was closed by taking the part around it away). */
+export function _spill(body: Part, result: Part, before: number, bound: number): string | null {
+  const change = Math.abs(_volume(result) - before)
+  if (change > bound) return `a volume change of ${_formatG(change)}, more than the faces span (${_formatG(bound)})`
+  const a = body.bbox()
+  const b = result.bbox()
+  const tol = 1e-6 * Math.max(1, a.diagonal)
+  const [alo, ahi, blo, bhi] = [a.min.toArray(), a.max.toArray(), b.min.toArray(), b.max.toArray()]
+  for (let i = 0; i < 3; i++) {
+    if (blo[i] > alo[i] + tol || bhi[i] < ahi[i] - tol) {
+      return `a part that shrank along ${'XYZ'[i]} (${_formatG(alo[i])}..${_formatG(ahi[i])} -> ${_formatG(blo[i])}..${_formatG(bhi[i])})`
+    }
+  }
+  return null
+}
+
 /** See `Part.removeFaces`. */
 export function removeFaces(part: Part, faces: unknown, options: { partial?: boolean } = {}): Part {
   const partial = options.partial ?? false
   part._requireValid('removeFaces')
-  const sel = _complete(_facesOf(part, faces, 'removeFaces'))
+  const given = _facesOf(part, faces, 'removeFaces')
+  if (filletFaces(given).length === given.length) return removeFillets(part, given, { partial }) // rounds only: taken out by what takes out rounds
+  const sel = _complete(given)
   if (sel.length === part.faces().length) throw new ModelingError('removeFaces: that is every face of the part; nothing would be left')
   let body = part
   const failed: [Face[], string][] = []

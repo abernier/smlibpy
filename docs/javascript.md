@@ -149,7 +149,9 @@ a kernel of its own, on copies of the bodies, as smlibpy runs it first in a fork
 process. A step that crashes the kernel there or takes longer than `GUARD_SECONDS` (20 s;
 `setGuardSeconds(seconds)` sets it, `0` turns the probe off) is dropped, as in Python, and the
 kernel the call runs on is left alone: SMLib's patching code loops for good on some parts (the
-outer round of the enclosure example). The probe waits for its worker with `Atomics.wait`, which
+outer round of the enclosure example). The kernel steps of `shell`, `offset` and `thicken` run only
+in the probe worker, whose body comes back as an exact copy (`.smb`): the kernel's offset code can
+read memory it has freed, and the kernel the call runs on never runs it. The probe waits for its worker with `Atomics.wait`, which
 Node allows on every thread and browsers only in workers of a cross-origin isolated page (one
 served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
