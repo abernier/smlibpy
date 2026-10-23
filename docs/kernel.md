@@ -89,14 +89,16 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The planar Boolean read the face of an edge that bounds no face through a null pointer (an edge the intersection left as a wire edge, in unions of exclusive-or sketches whose faces touch at points) and killed the process in about half the runs | patched (`third_party/patches`): it fails with `SM_ERR_BAD_INTERSECTIONS`, and the checked route takes its next way |
 | Fillets larger than the geometry allows can come back as a "valid" solid | checks the radius against neighbouring edges and the volume change |
 | The fillet code has no corner for some ways the selected edges meet at a vertex, went on without one, and killed the process (and shrank fillet surfaces it had deleted) | patched (`third_party/patches`): such fillets raise `KernelError` (`SM_ERR_INVALID_INPUT`), with a hint that no size works |
-| A (start, end) radius with `continuity` gives a ruled chamfer; on a closed edge or across edges that run into each other tangentially it bends the radii | refuses those combinations (`ValueError`) |
+| A (start, end) radius with `continuity` gives a ruled chamfer; SM_API's law runs along each edge on its own, so on a closed edge it jumps back at the seam and across edges that run into each other tangentially the executive bends the radii to one | refuses continuity with a varying radius and laws that jump (`ValueError`), and spreads a law over each run of edges that meet tangentially itself (`SmFilletExecutive::CreateSequenceOfLaws`), linear or smooth through radii at points (`SmBSplineFilletLaw`) |
 | A chamfer is a round of straight section with one radius per edge, so its setback follows the angle between the faces at the edge | sets each edge's radius from its angle, all edges in one call, and refuses edges whose angle changes by more than 1 degree along them |
-| SM_API's fillet calls keep the fillet executive's record of a failure to themselves (which corner or edge, and why): every failure read "the radius may be too large" | drives the executive itself (`ext.round_edges`, the same calls and defaults) and names the corner or edge it could not build |
-| SM_API has no chamfer with a different setback on each face, although the executive's solver takes two offsets | offsets the two faces of each edge so that the bevel meets them at the setbacks given (`length2`, `angle`) |
+| SM_API's fillet calls keep the fillet executive's record of a failure to themselves (which corner or edge, why, and the step that failed): every failure read "the radius may be too large" | drives the executive itself (`ext.round_edges`, the same calls and defaults) and names the corner or edge it could not build, and the step that failed (its private status, read through a pointer to the member) |
+| SM_API has no chamfer with a different setback on each face, although the executive's solver takes two offsets | offsets the two faces of each edge so that the bevel meets them at the setbacks given (`length2`, `angle`); where one face's offset runs backwards farther than the solver takes (a sharp wedge, setbacks less alike than the cosine of its angle), a straight edge between planes with ends on planes at right angles to it is bevelled by cutting the bevel's prism |
 | SM_API's fillets build the rounds' edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits then come out open (a 10 mm cube rounded by 4.98, a 20 mm cube by 9.98) | tries a failed or refused fillet or chamfer once more within 1 times the edge's tolerance, as the kernel's own all-edge fillet does: those rounds are exact |
 | SM_API mitres corners (the rounds run on until they meet, no corner patch) only for circular rounds of one radius | `corners="mitre"` sets the executive's corners of three convex rounded edges to mitres for every round and chamfer (its other corners skip their patch and would leave a hole, so they keep it) |
-| The kernel fits the bevel of a circular edge with a B-spline: the volume of a chamfered pin of radius 2 was 1.1e-5 off | bevels full circles between faces around one axis (planes at right angles to it, cylinders, cones, straight faces of revolves) with a cut, or at a concave rim a fuse, of the solid of revolution of the bevel's line: an exact cone, checked against its volume; the kernel bevels the other edges, and a circle where that solid would take other material |
-| A shell opening whose rim meets its neighbours tangentially keeps an open rim: the inner rounds run up to the outer edge and their edges lie off their faces | cuts planar openings of that kind out of the part shelled closed (their other rim edges must meet walls standing at right angles to them) |
+| The kernel fits the bevel of a circular edge with a B-spline: the volume of a chamfered pin of radius 2 was 1.1e-5 off | bevels full circles between faces around one axis (planes at right angles to it, cylinders, cones, straight faces of revolves) with a cut, or at a concave rim a fuse, of the solid of revolution of the bevel's line: an exact cone, checked against its volume; the kernel bevels the other edges, and a circle where that solid would take other material; the edges where such a cone meets a cylinder or cone, which the kernel's intersection fits (8e-6 short on a pin of radius 2), get their exact circles |
+| A shell opening whose rim meets its neighbours tangentially keeps an open rim: the inner rounds run up to the outer edge and their edges lie off their faces | cuts planar openings of that kind out of the part shelled closed (their other rim edges must meet walls standing at right angles to them, or an ordinary opening, which the kernel opens) |
+| `SmBrep::LocalOperation` (face edits, drafts) drops the cavities of a solid, and gives the faces it extends around the edited ones surfaces of its own (a cylinder a surface of extrusion of its rim, a cone a B-spline) | edits the outside and each cavity's solid apart and cuts the cavities out again (checked: they take what they should), and gives extended faces their cylinder or cone back where they lie on it |
+| The kernel's offset moves the faces of a sheet that share no edges each on its own, and closes nothing between them (an open box of five separate faces offset inwards came back with no faces) | sews faces that touch along edges they do not share before the offset, where that turns no face |
 | Sweeps anchor the profile at the start point of its first curve, and the frame of each edge of a path is its own | sweeps the profile in its own frame with the center of its box (in its plane) on the start of the path, and along 3D paths joins tangent edges and carries the profile's orientation from edge to edge |
 | The sweep along a planar path of several edges frames each edge with the world's Z axis, so in a plane that is not horizontal its mitered pieces do not meet (no closed solid: any path in the YZ plane), and it moves the profile by the center of its box along the world axes | sweeps such a path in a frame of its own (its plane horizontal, its start along X), with the profile turned as on other paths, and moves the path by the difference between the kernel's anchor and the profile's own: along its normal and to the side (its offset curve; lines and arcs, otherwise a warning) |
 | The fuse of two tubes whose end caps meet where a loop closes with a kink leaves faces without area (and now and then a shell of one such face: a void without volume, which OpenCASCADE reads from STEP as a body inside out); where `CloseIntersectionLoop` deleted a vertex and then failed, the Boolean read it after it was freed and the process died | takes such faces out of fused sweeps and stitches the faces around them again (`ext.remove_slivers`), or raises; patched (`third_party/patches`): the Boolean marks its vertices again |
@@ -224,7 +226,12 @@ matter here:
   blends (`SmApiBrep.h`: "three-edge corner boundaries guarantee only G1").
 - The fillet executive's set-back corners (`SmFilletCorner::SetSetBackDist`: the rounds end short
   of the vertex and a larger patch joins them) read freed memory in every case tried (the kernel's
-  own test case too), and with that read fixed came out as open bodies; smlibpy offers no setbacks.
+  own test case too: patched, `SmCurveClass.cpp`), and then fail where the corner's edges are merged
+  into the faces (`SmTopologyIntersector::Relate`, conflicting mates); smlibpy offers no setbacks.
+- A radius that varies around a closed run of several edges (the top outline of a rounded plate)
+  gives broken rounds (an extra face, open), whatever edge the run starts at and also with the
+  same radius and slope where it closes; smlibpy refuses it. Along open runs and around a single
+  closed edge such laws are right.
 - Of the raw kernel calls (`smlibpy._core`), `k.project_curve_to_surface` can return unrelated
   geometry (a slanted line in front of a cylinder came back as 25 mm of its seam: `SmApiProjectCurve`
   takes the curve's size as the tolerance of the drop), and `k.drop_curve_to_surface` drops within
@@ -233,13 +240,16 @@ matter here:
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.
 - `move_faces` and `offset_faces` (the kernel's `LocalOperation`) cannot change which faces meet:
-  a face pushed past another one, or one that would vanish, raises; use a Boolean there. Faces
-  around the edited ones that the kernel extends can change their kind (a vertical round of a box
-  whose top is pulled up becomes a surface of extrusion, still exact). A part with a cavity is
-  refused, and so is a draft of one (as a change of its faces).
+  a face pushed past another one, or one that would vanish, raises; use a Boolean there. The
+  kernel gives the faces around the edited ones that it extends surfaces of its own (a vertical
+  round of a box whose top is pulled up a surface of extrusion, a cone a B-spline): smlibpy puts
+  their cylinders and cones back where they still lie on them. It drops cavities: smlibpy edits
+  (and drafts) the outside and the cavities apart and cuts the cavities out again; a part with a
+  body inside a cavity is refused.
 - `shell` cannot open a face whose rim meets its neighbours tangentially, such as a face
-  bordered by fillets. smlibpy cuts planar ones out of the part shelled closed; for a curved one,
-  or one next to a drafted wall, shell first, then round the rim.
+  bordered by fillets. smlibpy cuts planar ones out of the part shelled closed, also next to an
+  ordinary opening; for a curved one, one next to a drafted wall, or two such openings that meet,
+  shell first, then round the rim.
 - SM_API asks the fillet executive for its global merge before `SetFilletParameters`, which turns it
   off again, so fillets run without it. Turning it on for real changed no near-limit fillet and
   broke chamfers and G2 rounds of a box with a hole, so smlibpy leaves it off as well. What does

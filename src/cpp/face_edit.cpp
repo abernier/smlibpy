@@ -19,10 +19,14 @@
 //     gaps between the vertices, edges and faces of the result are measured;
 //   * it drops the inner shells of a solid (its cavities), edited or not: a part with a cavity is
 //     refused ('void');
-//   * it edits the Brep in place, also when it fails: it works on a copy.
+//   * it edits the Brep in place, also when it fails: it works on a copy;
+//   * the faces around the edited ones that it extends or trims come back on surfaces of its own (a
+//     cylinder as a surface of extrusion of its rim, a cone as a B-spline): where they still lie on
+//     their cone or cylinder, they get it back (restore_analytic_surfaces).
 
 #include "kernel.h"
 #include "face_edit.h"
+#include "analytic.h"
 
 #include <SmApiGeneral.h>
 #include <SmCopyBrepMap.h>
@@ -228,113 +232,10 @@ SmCurve* as_line(const SmCurve* curve)
     return new (ctx()) SmLine(p0 - scaled(direction, t0 * len / (t1 - t0)), direction, ivl, len / (t1 - t0), 3);
 }
 
-// The circle where a plane meets a cylinder or cone whose axis runs along the plane's normal, or a
-// sphere: the edge between a face pulled along a cylinder and the extended cylinder, which the kernel
-// fits with a B-spline (to about 1e-7 of the radius). False if the edge is not such an edge.
-bool exact_circle(SmEdge* edge, SmPoint3d& center, SmVector3d& normal, double& radius)
-{
-    SmTArray<SmFace*> faces;
-    edge->GetFaces(faces);
-    if (faces.GetSize() != 2 || faces[0] == faces[1])
-        return false;
-    for (int k = 0; k < 2; ++k)
-    {
-        const SmSurface* plane = faces[k]->GetSurface();
-        const SmSurface* other = faces[1 - k]->GetSurface();
-        if (plane == nullptr || other == nullptr || !plane->IsKindOf(SmPlane_TYPE))
-            continue;
-        const SmAxis2Placement& pp = static_cast<const SmPlane*>(plane)->GetPosition();
-        const SmPoint3d p0 = pp.GetOriginRef();
-        SmVector3d n = cross(pp.GetXAxisRef(), pp.GetYAxisRef());
-        if (!(length(n) > 0))
-            return false;
-        n = scaled(n, 1.0 / length(n));
-        if (other->IsKindOf(SmCone_TYPE))
-        {
-            const SmCone* cone = static_cast<const SmCone*>(other);
-            const SmAxis2Placement& pos = cone->GetPosition();
-            SmVector3d axis = cross(pos.GetXAxisRef(), pos.GetYAxisRef());
-            if (!(length(axis) > 0))
-                return false;
-            axis = scaled(axis, 1.0 / length(axis));
-            if (length(cross(axis, n)) > 1e-9)
-                return false;
-            const SmPoint3d origin = pos.GetOriginRef();
-            const double along = dot(p0 - origin, n) / dot(axis, n);
-            center = origin + scaled(axis, along);
-            radius = cone->GetRadius(along);
-            normal = n;
-            return radius > 0;
-        }
-        if (other->IsKindOf(SmSphere_TYPE))
-        {
-            const SmSphere* sphere = static_cast<const SmSphere*>(other);
-            const SmPoint3d c = sphere->GetOrigin();
-            const double h = dot(c - p0, n), r = sphere->GetRadius();
-            if (!(r * r - h * h > 0))
-                return false;
-            center = c - scaled(n, h);
-            radius = std::sqrt(r * r - h * h);
-            normal = n;
-            return true;
-        }
-        return false;
-    }
-    return false;
-}
-
-// The edge's curve as an exact arc or circle (see exact_circle), from its start to its end and the
-// same way round, or null. The curve must lie on the circle within 1e-5 of its radius.
-SmCurve* as_circle(SmEdge* edge, const SmCurve* curve)
-{
-    SmPoint3d center;
-    SmVector3d normal;
-    double radius = 0.0;
-    if (!exact_circle(edge, center, normal, radius))
-        return nullptr;
-    SmExtent1d ivl = curve->GetNaturalInterval();
-    const double t0 = ivl.GetMin(), t1 = ivl.GetMax();
-    if (!(t1 > t0))
-        return nullptr;
-    // on the circle: in its plane and at its radius from its center
-    auto onto = [&](const SmPoint3d& p, SmPoint3d& q) {
-        SmVector3d v = p - center;
-        v = v - scaled(normal, dot(v, normal));
-        const double l = length(v);
-        if (!(l > 0))
-            return false;
-        q = center + scaled(v, radius / l);
-        return length(q - p) <= 1e-5 * (1.0 + radius);
-    };
-    SmPoint3d samples[17];
-    for (int i = 0; i <= 16; ++i)
-    {
-        SmPoint3d p;
-        if (curve->EvaluatePoint(t0 + (t1 - t0) * i / 16.0, p) != SM_SUCCESS || !onto(p, samples[i]))
-            return nullptr;
-    }
-    const bool closed = length(samples[0] - samples[16]) <= 1e-9 * (1.0 + radius);
-    SmCircle* circle = closed ? new (ctx()) SmCircle(samples[0], samples[5], samples[11], 3, TRUE, &ctx())
-                              : new (ctx()) SmCircle(samples[0], samples[8], samples[16], 3, FALSE, &ctx());
-    // the same way round (the circle's parameters are not the curve's: its point a third of the way
-    // lies near the curve's, not on it), and from the same start
-    SmExtent1d civl = circle->GetNaturalInterval();
-    SmPoint3d a, b, m;
-    if (circle->EvaluatePoint(civl.GetMin(), a) != SM_SUCCESS || circle->EvaluatePoint(civl.GetMax(), b) != SM_SUCCESS ||
-        circle->EvaluatePoint(civl.GetMin() + (civl.GetMax() - civl.GetMin()) * (closed ? 5.0 : 8.0) / 16.0, m) != SM_SUCCESS ||
-        length(a - samples[0]) > 1e-9 * (1.0 + radius) || length(b - samples[closed ? 0 : 16]) > 1e-9 * (1.0 + radius) ||
-        length(m - samples[closed ? 5 : 8]) > 0.25 * radius)
-    {
-        delete circle;
-        return nullptr;
-    }
-    return circle;
-}
-
 // Lines and circles among the edges the kernel rebuilt as B-splines get their exact analytic curve
 // back, keeping the parameters of the B-spline (as face_draft.cpp); a fitted B-spline where a plane
 // meets a cylinder, cone or sphere becomes the exact circle.
-long restore_analytic_curves(SmBrep* brep)
+long exact_edge_curves(SmBrep* brep)
 {
     SmTArray<SmEdge*> edges;
     brep->GetEdges(edges);
@@ -344,11 +245,16 @@ long restore_analytic_curves(SmBrep* brep)
         SmCurve* curve = edges[i]->GetCurve();
         if (curve == nullptr || curve->GetType() != SmBSplineCurve_TYPE)
             continue;
-        SmCurve* exact = nullptr;
-        if (curve->CreateAnalyticCurve(ctx(), curve->GetNaturalInterval(), exact) != SM_SUCCESS || exact == nullptr)
+        // (the exact circle first, where the faces meet in one: the kernel's own test can take a fitted
+        // B-spline for a curve of its own kind and give back a B-spline)
+        SmCurve* exact = smlibpy::as_circle(edges[i], curve);
+        if (exact == nullptr &&
+            (curve->CreateAnalyticCurve(ctx(), curve->GetNaturalInterval(), exact) != SM_SUCCESS || exact == nullptr ||
+             exact->GetType() == SmBSplineCurve_TYPE))
+        {
+            delete exact;
             exact = as_line(curve);
-        if (exact == nullptr)
-            exact = as_circle(edges[i], curve);
+        }
         if (exact == nullptr)
             continue;
         if (brep->ReplaceCurve(edges[i], exact) == SM_SUCCESS)
@@ -357,6 +263,206 @@ long restore_analytic_curves(SmBrep* brep)
             delete exact;
     }
     return changed;
+}
+
+// Points of a face: along its edges (9 a piece) and on a 5 x 5 grid of its parameters, inside it.
+std::vector<SmPoint3d> face_points(const SmFace* face)
+{
+    std::vector<SmPoint3d> pts;
+    SmTArray<SmEdge*> edges;
+    face->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        const SmCurve* c = edges[i]->GetCurve();
+        if (c == nullptr)
+            continue;
+        const SmExtent1d ivl = edges[i]->GetInterval();
+        for (int k = 0; k <= 8; ++k)
+        {
+            SmPoint3d p;
+            if (c->EvaluatePoint(ivl.Evaluate(k / 8.0), p) == SM_SUCCESS)
+                pts.push_back(p);
+        }
+    }
+    const SmSurface* s = face->GetSurface();
+    const SmExtent2d dom = face->GetUVDomain();
+    for (int i = 0; s && i <= 4; ++i)
+        for (int j = 0; j <= 4; ++j)
+        {
+            SmPoint3d p;
+            const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * i / 4.0,
+                               dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * j / 4.0);
+            if (uv_inside(face, uv) && s->EvaluatePoint(uv, p) == SM_SUCCESS)
+                pts.push_back(p);
+        }
+    return pts;
+}
+
+// A copy of the cone or cylinder `cone` whose parameters reach over the points `pts` (angles about
+// its axis and heights along it: its STEP domain widened), where every point lies on it within `tol`
+// and it does not reach its apex there; else null.
+SmSurface* cone_over(const SmCone* cone, const std::vector<SmPoint3d>& pts, double tol)
+{
+    SmAxis2Placement pos;
+    double r0 = 0.0, semi = 0.0;
+    if (pts.empty() || cone->GetCanonical(pos, r0, semi) != SM_SUCCESS)
+        return nullptr;
+    const SmPoint3d o = pos.GetOriginRef();
+    SmVector3d x = pos.GetXAxisRef(), y = pos.GetYAxisRef();
+    SmVector3d z = cross(x, y);
+    if (!(length(x) > 0) || !(length(y) > 0) || !(length(z) > 0))
+        return nullptr;
+    x = scaled(x, 1.0 / length(x)), y = scaled(y, 1.0 / length(y)), z = scaled(z, 1.0 / length(z));
+    const SmExtent2d step = cone->GetSTEPUVDomain();  // degrees about the axis, heights along it
+    double a0 = step.GetUMin(), a1 = step.GetUMax(), h0 = step.GetVMin(), h1 = step.GetVMax();
+    const double mid = 0.5 * (a0 + a1);
+    for (const SmPoint3d& p : pts)
+    {
+        const SmVector3d v = p - o;
+        const double h = dot(v, z);
+        const SmVector3d radial = v - scaled(z, h);
+        const double r = length(radial);
+        if (std::fabs(r - cone->GetRadius(h)) > tol)
+            return nullptr;
+        if (r > tol)
+        {
+            double deg = std::atan2(dot(radial, y), dot(radial, x)) * 180.0 / SM_PI;
+            while (deg - mid > 180.0)
+                deg -= 360.0;
+            while (deg - mid < -180.0)
+                deg += 360.0;
+            a0 = std::min(a0, deg), a1 = std::max(a1, deg);
+        }
+        h0 = std::min(h0, h), h1 = std::max(h1, h);
+    }
+    if (a1 - a0 > 360.0 + 1e-6 || !(cone->GetRadius(h0) > tol) || !(cone->GetRadius(h1) > tol))
+        return nullptr;
+    SmSurface* copy = nullptr;
+    if (cone->Copy(ctx(), copy) != SM_SUCCESS || copy == nullptr)
+        return nullptr;
+    const SmExtent2d want(SmPoint2d(a0, h0), SmPoint2d(std::min(a1, a0 + 360.0), h1));
+    const bool same = std::fabs(a0 - step.GetUMin()) <= 1e-12 && std::fabs(a1 - step.GetUMax()) <= 1e-12 &&
+                      std::fabs(h0 - step.GetVMin()) <= 1e-12 && std::fabs(h1 - step.GetVMax()) <= 1e-12;
+    if (!same && static_cast<SmCone*>(copy)->AdjustSTEPUVDomain(want) != SM_SUCCESS)
+    {
+        delete copy;
+        return nullptr;
+    }
+    return copy;
+}
+
+// Whether the normals of `face`'s surface and of `exact` agree at the face's interior point.
+bool same_side(const SmFace* face, const SmSurface* exact)
+{
+    SmPoint2d uv;
+    SmPoint3d p;
+    SmVector3d n, m;
+    SmBoolean ok = FALSE, multi = FALSE;
+    SmPoint2d st;
+    double gap = 0.0;
+    const SmSurface* s = face->GetSurface();
+    if (!s || !interior_uv(face, uv) || s->EvaluatePoint(uv, p) != SM_SUCCESS ||
+        s->EvaluateNormal(uv, TRUE, TRUE, n) != SM_SUCCESS ||
+        exact->DropPoint(p, exact->GetNaturalUVDomain(), nullptr, ok, st, gap, multi) != SM_SUCCESS || !ok ||
+        exact->EvaluateNormal(st, TRUE, TRUE, m) != SM_SUCCESS)
+        return false;
+    return dot(n, m) > 0.999 * length(n) * length(m);
+}
+
+// A Brep that ReplaceSurface failed on half way is never freed (its destructor may read what the
+// failure left behind; see revolutions.cpp).
+void keep_forever(SmBrep* brep)
+{
+    static std::vector<SmBrep*> kept;
+    kept.push_back(brep);
+}
+
+// The largest gaps between the vertices and the edges and faces they lie on.
+std::pair<double, double> gaps(SmBrep* brep);
+
+// The faces around the edited ones that LocalOperation extended or trimmed come back as new faces on
+// surfaces of its own: a cylinder as a surface of extrusion of its rim, a cone as a B-spline (within
+// about 1e-7 of the size). A face of `copy` that is on no cone or cylinder but lies on one of
+// `cones` (the surfaces of the faces of the given Brep that were not edited) gets that surface back,
+// its parameters widened over the face and its trims made again (SmBrep::ReplaceSurface), in a copy
+// of `copy`; that copy replaces `copy` unless its edges then leave the faces by more than before (10
+// times, or 10 tolerances). Returns the number of faces changed.
+std::vector<const SmCone*> cone_surfaces(const SmBrep* brep, const std::vector<SmFace*>& edited)
+{
+    std::vector<const SmCone*> out;
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        const SmSurface* s = faces[i]->GetSurface();
+        if (s != nullptr && s->IsKindOf(SmCone_TYPE) &&
+            std::find(edited.begin(), edited.end(), faces[i]) == edited.end())
+            out.push_back(static_cast<const SmCone*>(s));
+    }
+    return out;
+}
+
+long restore_analytic_surfaces(const std::vector<const SmCone*>& cones, SmBrep*& copy, double tol)
+{
+    if (cones.empty())
+        return 0;
+    SmTArray<SmFace*> faces;
+    copy->GetFaces(faces);
+    std::vector<std::pair<SmFace*, SmSurface*>> found;  // a face of copy, its analytic surface
+    SmExtent3d box;
+    copy->CalculateBoundingBox(box);
+    const double on = 1e-6 * (1.0 + box.GetSize().Length());
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmFace* g = faces[i];
+        const SmSurface* now = g->GetSurface();
+        if (now == nullptr || now->IsKindOf(SmCone_TYPE) || now->IsKindOf(SmPlane_TYPE) || now->IsKindOf(SmSphere_TYPE))
+            continue;
+        const std::vector<SmPoint3d> pts = face_points(g);
+        for (const SmCone* cone : cones)
+        {
+            SmSurface* exact = cone_over(cone, pts, on);
+            if (exact == nullptr)
+                continue;
+            if (!same_side(g, exact))
+            {
+                delete exact;
+                continue;
+            }
+            found.emplace_back(g, exact);
+            break;
+        }
+    }
+    if (found.empty())
+        return 0;
+    SmCopyBrepMap second;  // copy -> its copy
+    SmBrep* again = new (ctx()) SmBrep(*copy, nullptr, &second, TRUE, FALSE);
+    SmStatus st = SM_SUCCESS;
+    size_t done = 0;
+    for (; done < found.size() && st == SM_SUCCESS; ++done)
+    {
+        SmFace* face = static_cast<SmFace*>(second.GetAt(found[done].first));
+        st = face ? again->ReplaceSurface(face, found[done].second, FALSE, nullptr, TRUE) : SM_ERR;
+        if (st != SM_SUCCESS && found[done].second->GetOwner() == nullptr)
+            delete found[done].second;
+    }
+    for (; done < found.size(); ++done)
+        delete found[done].second;
+    if (st != SM_SUCCESS)
+    {
+        keep_forever(again);
+        return 0;
+    }
+    const auto g0 = gaps(copy), g1 = gaps(again);
+    const double was = std::max(g0.first, g0.second), now = std::max(g1.first, g1.second);
+    if (!again->IsManifoldSolid() || !(now <= std::max(10.0 * was, 10.0 * tol)))
+    {
+        delete again;
+        return 0;
+    }
+    delete copy;
+    copy = again;
+    return static_cast<long>(found.size());
 }
 
 // The largest gaps between the vertices and the edges and faces they lie on.
@@ -520,6 +626,7 @@ FaceEdit edit_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, const
     SmTArray<SmFace*> targets;
     for (SmFace* f : edited)
         targets.Add(static_cast<SmFace*>(reverse.GetAt(f)));
+    const auto cones = cone_surfaces(brep, edited);
     auto g0 = gaps(copy);
     d.has_gaps_before = true;
     d.gaps_before[0] = g0.first, d.gaps_before[1] = g0.second;
@@ -539,7 +646,10 @@ FaceEdit edit_faces(const SmBrep* brep, const std::vector<SmFace*>& faces, const
         return d;
     }
     d.has_restored = true;
-    d.restored = restore_analytic_curves(copy);
+    d.restored = exact_edge_curves(copy);
+    d.surfaces = restore_analytic_surfaces(cones, copy, tol);
+    if (d.surfaces > 0)
+        d.restored += exact_edge_curves(copy);  // (the edges where a plane meets a cone it got back)
     auto g = gaps(copy);
     d.has_gaps = true;
     d.gaps[0] = g.first, d.gaps[1] = g.second;
@@ -574,6 +684,7 @@ void bind_face_edit(py::module_& root)
         d["tolerance"] = r.tolerance;
         if (r.has_restored)
             d["restored"] = r.restored;
+        d["surfaces"] = r.surfaces;
         return d;
     }, py::arg("brep"), py::arg("faces"), py::arg("matrices") = std::vector<double>(),
           py::arg("distances") = std::vector<double>(), py::arg("grow") = false, py::arg("tangency_deg") = 1.0,
@@ -587,6 +698,7 @@ void bind_face_edit(py::module_& root)
           "added), 'other': for 'tangent' and 'conflict' the face that meets it tangentially, 'added': the faces "
           "grow added, 'gaps' and 'gaps_before': (largest vertex-edge gap, largest vertex-face gap) of the "
           "result and of the given Brep, 'tolerance': the Brep's tolerance, 'restored': the number of B-spline "
-          "edges that became lines and circles}.");
+          "edges that became lines and circles, 'surfaces': the number of faces around the edited ones that got "
+          "their cone or cylinder back (LocalOperation extends them as surfaces of extrusion or B-splines)}.");
 }
 #endif  // SMLIBPY_PYTHON

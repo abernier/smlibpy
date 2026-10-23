@@ -457,6 +457,16 @@ def draft_faces(part: Part, faces: Any, angle: float, neutral_plane: Plane | Fac
     for kf in part._own_faces(faces):
         if all(kf is not f._f for f in sel):
             sel.append(Face(part, kf))
+    from .face_edit import _with_cavities
+
+    # (a part with cavities: the solid inside its outside and those inside its cavities' walls, each drafted on
+    # its own, the cavities' faces the other way round, since they face the other way; see face_edit)
+    return _with_cavities(part, "draft", "drafted", sel,
+                          lambda body, faces, inside: _drafted(body, faces, -a if inside else a, plane))
+
+
+def _drafted(part: Part, sel: list[Face], a: float, plane: Plane) -> Part:
+    """The kernel's draft of the faces ``sel`` of a part without cavities, checked (see :func:`draft_faces`)."""
     d = plane.z_dir.normalized()
     with kernel_call("draft"):
         res = _FD.draft_faces(part._brep, [f._f for f in sel], list(plane.origin.to_tuple()), list(d.to_tuple()),

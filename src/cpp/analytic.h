@@ -7,6 +7,10 @@
 #pragma once
 
 class SmBrep;
+class SmCurve;
+class SmEdge;
+class SmPoint3d;
+class SmVector3d;
 
 namespace smlibpy {
 
@@ -19,5 +23,20 @@ namespace smlibpy {
 // surfaces (UV curves that a file gives on B-spline surfaces stay: made again from a circle, the
 // kernel's can go wrong; from a line they do not). Returns the number of edges changed.
 long restore_analytic_curves(SmBrep* brep, bool circles_on_nurbs = true);
+
+// The exact circle where the two faces of an edge meet: a plane and a cylinder, cone or sphere about an
+// axis along the plane's normal, or two cylinders or cones about one axis (where their radii agree).
+// False if the edge is not such an edge.
+bool exact_circle(SmEdge* edge, SmPoint3d& center, SmVector3d& normal, double& radius);
+
+// The edge's B-spline curve as the exact arc or circle of exact_circle, from its start to its end and
+// the same way round (its own parameters), or null. The curve must lie on the circle within 1e-5 of
+// its radius. The caller owns it.
+SmCurve* as_circle(SmEdge* edge, const SmCurve* curve);
+
+// A copy of the Brep (the caller's) whose B-spline edges that are such circles (as_circle: the
+// kernel fits the circle where a cone meets a cylinder, to about 1e-6 of the radius) have their
+// exact curve, or null where it has none.
+SmBrep* exact_circles(const SmBrep* brep);
 
 }  // namespace smlibpy

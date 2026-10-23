@@ -67,12 +67,14 @@ print(round(envelope.volume, 4), len(envelope.faces())) # 13587.4926 26
 
 ## Sheets and faces
 `Shell.offset` keeps a sheet a sheet: each face moves by `distance`, and where faces meet they
-are extended or trimmed to meet again (sharp, as for parts). The faces must share their edges:
-separate faces (copied one by one) move each on its own; `stitch` them first.
+are extended or trimmed to meet again (sharp, as for parts). Faces that touch along edges they do
+not share (copied one by one, or put together with `+`) are joined along them first where their
+normals agree (as `stitch`, without turning a face); faces apart from the others, or whose normals
+disagree with their neighbours', move each on its own (`stitch` turns them to agree).
 - A half-cylinder sheet r10 (`extrude(CenterArc((0, 0), 10, 0, 180), 20)`, normals away from the
   axis): `offset(2)` is the r12 sheet (area 753.9822 = π·12·20), `offset(-2)` r8.
-- An open box (`stitch` of the 5 faces of `Box(20, 20, 20)` without the top): `offset(-1)` 1692.0
-  (18 x 18 and four 18 x 19), `offset(1)` 2332.0.
+- An open box (the 5 faces of `Box(20, 20, 20)` without the top, stitched or not): `offset(-1)`
+  1692.0 (18 x 18 and four 18 x 19), `offset(1)` 2332.0.
 - `Box(20, 20, 20).faces().top().one().offset(5)`: a 20 x 20 sheet at z = 15.
 - Checked: every face at `|distance|` from the sheet, on its side. Beyond the radius of a concave
   curvature, or where all faces vanish: `ModelingError: offset: the kernel could not offset the

@@ -41,6 +41,10 @@ The results are exact: the walls are planes, the volumes those of the frusta.
   degrees is the extrusion with `taper=5`, by -3 it is straight again (cylinders, not cones).
 - The faces around the drafted ones are extended or trimmed: planes, cylinders, cones and
   B-spline faces (a free-form top). Straight edges stay lines and circles stay circles.
+- A part with cavities is drafted as its outside and its cavities apart (the kernel drops
+  cavities), and the cavities are cut out again: the walls of a cavity drafted by a positive
+  angle widen along the pull direction, as a pocket's do. A draft that makes a cavity reach the
+  outside raises `ModelingError` (`draft: the drafted faces reach a cavity of the part ...`).
 
 ## Refused
 `ModelingError`; the part is not changed:

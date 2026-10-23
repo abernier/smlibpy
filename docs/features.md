@@ -46,17 +46,33 @@ tangentially at both ends (the `KernelError` says which edge and where). `chamfe
 
 ### Variable radius
 
-A `(start, end)` tuple changes the radius linearly along each edge:
+A `(start, end)` tuple changes the radius linearly along each run of selected edges that meet
+tangentially: a single edge, or a chain such as the top run of a plate with rounded corners, which
+`propagate` adds. It runs in proportion to the length along the run, the way of the run's first
+selected edge (from its start to its end), from the end of the run that way begins:
 
 ```python
 ramp = box.fillet(box.edges().parallel_to(Z).first, (2, 8))
 ```
 
-The radius runs along each edge on its own, so it makes circular rounds only (with
-`continuity` it raises `ValueError`), and it cannot run around a closed edge such as a hole's
-rim, or across edges that run into each other tangentially: where two such rounds meet the
-kernel gives them one radius and bends both. Those raise `ValueError` too; give a constant
-radius there.
+A dict `{position: radius}` sets the radius at positions along each run (0 its start, 1 its end;
+a missing 0 or 1 takes the radius given nearest it) and joins them smoothly without overshooting
+them (flat at the ends and at each largest and smallest radius):
+
+```python
+rim = Cylinder(10, 20).edges().top()
+swell = Cylinder(10, 20).fillet(rim, {0: 1, 0.5: 3})     # around the rim: 1, 3 halfway, 1
+```
+
+A varying radius makes circular rounds only (with `continuity` it raises `ValueError`). A
+`(start, end)` radius cannot run around a closed edge or a closed run (it would jump back to the
+start radius); a dict can run around a single closed edge, with one radius at 0 and 1, but not
+vary around a closed run of several edges (the kernel builds broken rounds there). Selected edges
+of different runs that still meet tangentially are refused (the kernel would bend both laws to one
+radius where they meet). Those raise `ValueError`; give a constant radius there.
+
+`fillet_preview(edges, radius)` gives the surfaces of a circular fillet's rounds as sheets, one per
+edge, untrimmed, without changing the part: for a look at a fillet before making it.
 
 ### Different radii
 
@@ -499,8 +515,11 @@ wider_slot = plate.offset_faces(plate.faces().cylinders()[0], -1)   # 18 x 8; it
 add it to the faces`). The results are exact: planes, cylinders, cones, spheres and tori keep
 their kind and size, and the edges where a plane meets a cylinder, cone or sphere stay circles.
 The kernel cannot change which faces meet: a face pushed past another one, or a face that would
-vanish, raises `ModelingError` (use a Boolean there), and so does a part with a cavity (the
-kernel drops cavities: edit the part first and cut the cavity afterwards).
+vanish, raises `ModelingError` (use a Boolean there). The kernel drops cavities: a part with
+cavities is edited (and drafted) as its outside and the solids inside its cavities' walls, each
+with the faces of it that are selected, and the cavities are cut out again; an edit that makes a
+cavity reach the outside or another cavity raises `ModelingError`, and so does a part with a body
+inside a cavity. Faces around the edited ones that the kernel extends keep their cylinder or cone.
 
 ## Removing fillets and faces
 

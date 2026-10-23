@@ -7,8 +7,12 @@
 // them and the faces around them (src/cpp/face_edit.cpp), as it does for drafts. It takes faces that
 // meet an edited face tangentially only when they are edited alike, and it can close the part with
 // faces that do not meet: the result is checked.
+//
+// LocalOperation drops the cavities of a solid. A part with cavities is edited as the solid inside its
+// outside and the solids inside its cavities' walls, each with the selected faces it has, and the
+// cavities are cut out of the edited outside again (`_withCavities`, also for drafts).
 
-import { ModelingError, _isRuntimeError, k, kernelCall } from './kernel.ts'
+import { ModelingError, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
 import { Location, Vector, type VectorLike, _formatG, _isPointLike, _vec } from './geometry.ts'
 import { Face, type Part, _flattenFaces } from './shapes.ts'
 
@@ -89,7 +93,7 @@ function _refusal(what: string, verb: string, res: Any, part: Part, faces: reado
   const every = [...faces, ...(res.added as number[]).map((f) => new Face(part, f))]
   const f = (i >= 0 && i < every.length ? every[i] : null) as Face
   if (code === 'void') {
-    return `${what}: the part has a cavity (a closed void inside it), and the kernel's face edit drops cavities; edit the part without it and cut the cavity out afterwards`
+    return `${what}: the part has a body inside a cavity (a closed void inside it), and the kernel's face edit drops cavities; edit the parts one by one (part.solids()) and combine them afterwards`
   }
   if (code === 'tangent') {
     const g = new Face(part, res.other)
@@ -161,7 +165,7 @@ export function moveFaces(part: Part, faces: unknown, by: Location | VectorLike)
   const m = _moveMatrix(by)
   const sel = _selected(part, faces, 'moveFaces')
   if (m.every((v, i) => v === (i % 5 === 0 ? 1 : 0))) return part._like(part._copyBrep()) as Part
-  return _edit(part, 'moveFaces', 'moved', sel, m, [], false, null)
+  return _withCavities(part, 'moveFaces', 'moved', sel, (body, faces) => _edit(body, 'moveFaces', 'moved', faces, m, [], false, null))
 }
 
 /** See `Part.offsetFaces`. */
@@ -169,7 +173,59 @@ export function offsetFaces(part: Part, faces: unknown, distance: number): Part 
   const d = _distance(distance, 'offsetFaces')
   const sel = _selected(part, faces, 'offsetFaces')
   if (d === 0) return part._like(part._copyBrep()) as Part
-  return _edit(part, 'offsetFaces', 'offset', sel, [], [d], true, d > 0)
+  return _withCavities(part, 'offsetFaces', 'offset', sel, (body, faces, inside) => {
+    const e = inside ? -d : d // (a face of a cavity's wall moves into the cavity: out of the solid inside the wall)
+    return _edit(body, 'offsetFaces', 'offset', faces, [], [e], true, e > 0)
+  })
+}
+
+/** The solid inside the outside of `part` and the solids inside the walls of its cavities (each a part of
+ * its own, the outside's first), or null where it has no cavity. A part with a body inside a cavity, or of
+ * several solids, has more than one cell: null too (the kernel refuses it with 'void'). */
+function _cavitySolids(part: Part): Part[] | null {
+  if (part.info().voids === 0) return null
+  const cells: number[][] = kernelCall('cavities', () => ext.region_shells(part._brep))
+  const solids = cells.map((cell) => cell.map((b) => part._like(b) as Part))
+  if (solids.length !== 1 || solids[0].length < 2) return null
+  return solids[0]
+}
+
+/** The body among `bodies` (copies of the shells of `f`'s part) that has a face where `f` is, and that face. */
+function _faceIn(bodies: readonly Part[], f: Face, what: string): [number, Face] {
+  const p = f.interiorPoint()
+  const a = f.area
+  const tol = 1e-7 * Math.max((f._owner as Part)._extent(), 1)
+  for (let i = 0; i < bodies.length; i++) {
+    for (const g of bodies[i].faces()) {
+      if (g.geomType === f.geomType && Math.abs(g.area - a) <= 1e-6 * Math.max(a, 1e-12) + 1e-12 && g.distanceTo(p) <= tol) return [i, g]
+    }
+  }
+  throw new ModelingError(`${what}: the ${_where(f)} lies in no shell of the part (its cavities could not be told apart)`)
+}
+
+/** `edit(part, sel, false)`, or for a part with cavities (which the kernel's face edit drops): `edit` of the
+ * solid inside the part's outside and of the solids inside its cavities' walls, each with the selected faces
+ * it has (`inside` true for a cavity's: its faces face the other way), and the cavities cut out of the
+ * outside again. Checked: the cavities stay inside the edited outside, apart from each other. */
+export function _withCavities(part: Part, what: string, verb: string, sel: readonly Face[], edit: (body: Part, faces: Face[], inside: boolean) => Part): Part {
+  const solids = _cavitySolids(part)
+  if (solids === null) return edit(part, [...sel], false)
+  const groups = new Map<number, Face[]>()
+  for (const f of sel) {
+    const [i, g] = _faceIn(solids, f, what)
+    if (!groups.has(i)) groups.set(i, [])
+    groups.get(i)!.push(g)
+  }
+  const edited = solids.map((b, i) => (groups.has(i) ? edit(b, groups.get(i)!, i > 0) : b))
+  const [outside, ...cavities] = edited
+  const result = kernelCall(what, () => outside.cut(cavities), 'the cavities could not be cut out of the edited part')
+  const whole = Number(outside._props(1e-6).volume)
+  const expect = whole - cavities.reduce((s, c) => s + Number(c._props(1e-6).volume), 0)
+  const got = Number(result._props(1e-6).volume)
+  if (!(Math.abs(got - expect) <= 1e-6 * whole) || result.info().voids !== cavities.length || result.faces().length !== part.faces().length) {
+    throw new ModelingError(`${what}: the ${verb} faces reach a cavity of the part (or a cavity reaches the outside or another cavity); use a smaller change, or a Boolean`)
+  }
+  return result
 }
 
 /** The faces of `part` and their own wall thickness from `shell`'s `walls`: [faces, thickness] pairs,

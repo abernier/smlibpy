@@ -61,11 +61,13 @@ bosses work too.
   it: `Box(60, 40, 20).fillet(all, 5).shell(2, faces().planar().top())` gives 11134.3949, the
   closed shell 14134.3949 less the 50 x 30 x 2 lid. The inner rounds end tangentially at the rim,
   so the wall runs out to an edge there. Works for side openings and outward walls too (outward:
-  only where the whole rim is tangent).
-- Other openings with such a rim (a curved face, a drafted wall beside it, an opening next to
-  another one) raise `ModelingError: shell: the kernel could not build a valid result (...); the
-  kernel cannot open a face whose rim meets its neighbours tangentially; shell the part before
-  rounding the rim, or shell it closed and cut the opening out`. Shell first, then round.
+  only where the whole rim is tangent), and for such an opening next to an ordinary one (a box
+  with rounded vertical and bottom edges, top and +x side open: the side's wall goes up to the
+  open top).
+- Other openings with such a rim (a curved face, a drafted wall beside it, two such openings that
+  meet) raise `ModelingError: shell: the kernel could not build a valid result (...); the kernel
+  cannot open a face whose rim meets its neighbours tangentially; shell the part before rounding
+  the rim, or shell it closed and cut the opening out`. Shell first, then round.
 - Shell first and fillet the outer edges after when the walls are thin; then fillet the inner
   edges with `r_outer - t` for an even wall.
 

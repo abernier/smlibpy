@@ -275,12 +275,12 @@ def test_a_variable_radius_runs_along_each_edge_on_its_own():
         cylinder.fillet(rim, (1, 3))
     assert cylinder.fillet(rim, (2, 2)).volume == approx(cylinder.fillet(rim, 2).volume, rel=1e-9)
     # Edges that run into each other tangentially: the kernel gave the rounds one radius where they
-    # meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs.
+    # meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs. Since
+    # 0.5.0 the radius runs along the whole run (tests/test_closeout_F.py).
     plate = Box(40, 30, 10)
     plate = plate.fillet(plate.edges().parallel_to(Z).filter(lambda e: e.center().x > 0), 5)
     chain = plate.edges().filter(lambda e: e.center().z > 4.9 and e.center().x > -19.9)
-    with pytest.raises(ValueError, match=r"run into each other tangentially at \(15, 15, 5\)"):
-        plate.fillet(chain, (1, 3))
+    assert plate.fillet(chain, (1, 3)).is_valid()
     assert plate.fillet(chain, 2).is_valid()
 
 

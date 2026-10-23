@@ -1368,8 +1368,9 @@ test('the module\'s own bindings take the parameters SmPyLib gives them, and giv
     assert.deepEqual(sig, smpylib[name], name)
     compared++
   }
-  // (65, and the hand-written create_partial_cylinder, _cone, _sphere (lane S: S13) and stitch_advanced (lane IX: I5))
-  assert.equal(compared, 69)
+  // (65, and the hand-written create_partial_cylinder, _cone, _sphere (lane S: S13), stitch_advanced (lane IX: I5)
+  // and fillet_preview (close-out F: F11))
+  assert.equal(compared, 70)
   // the same calls through both: the results agree
   const b = k.create_box([0, 0, 0], 10, 20, 30)
   const s = k.smpylib.create_box([0, 0, 0], 10, 20, 30)

@@ -39,6 +39,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::DoFilleting` shrinks only the fillet surfaces whose faces are still in the fillet Brep | The stitching of the fillet faces (`SmBrep::StitchFaces` in `CreateFilletBrep`) deletes degenerate lamina faces with their surfaces, and the FilletGeom of such a face still pointed to its surface: AddressSanitizer found it read freed memory in all-edge fillets of 2 imported parts, which killed the process. |
 | `SMLib/src/SmFilletGeom.cpp` | `SmFilletGeom::MakeFaceBrep` leaves a missing (null) boundary curve to its copy loop, which fails the fillet face (`SM_ERR_NULL_POINTER`), instead of asking it whether it is degenerate | A read of address 0: chamfering all edges of `Box(30, 20, 15) + Cylinder(5.0231, 20).rotate(X, 90).translate(8.998, 6.843, 3.2765)` by 0.25 killed the process (AddressSanitizer: SEGV in `MakeFaceBrep`); the WebAssembly build read its memory at 0 and built a broken body. |
 | `SMLib/src/SmFilletSolver.cpp` | `SmFilletSolver::CreateCliffRollOverSideFG` fails (`SM_ERR_NULL_POINTER`) without a side face | `ProcessRollOver` sets a rail's side edge on its last segment without looking for the face beyond it, and passed the missing face on: the all-edge fillet (r 0.5) of `Box(30, 20, 15) + Cone(3.7793, 0.8306, 12).translate(9.4467, -7.915, 6.1887)` killed the process (AddressSanitizer: SEGV reading address 0x98 in `SmFace::GetSurface`). |
+| `SMLib/src/SmCurveClass.cpp` | `sm_SetDoFilletingGeometry` hands an edge's old curve to the curve classification that is classifying it, which frees it when done, instead of the edge deleting it when it takes the curve of the edge it coincides with | Where the curve classified is the edge's own (the corners of set-back fillets: `SmFilletCorner::InsertIntersectionTopology` merges a fillet edge's own curve into the faces it lies on), the classification went on with the freed curve (AddressSanitizer: a read of freed memory in `SmCurveClassification::MergeInterval`), and every set-back corner killed the process, the kernel's own test case too (`smFilletTest.cpp`, case 303). smlibpy offers no setbacks: their merge then fails (see below). |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::DoExtendedOffset` fails when two of the faces whose surfaces it extends use one surface, or a face uses a surface that belongs to another face | `ReplaceSurface()` gives the surface's owner face the new surface, not the face it is called for, and the extension deleted for the one face was handed out again, from the executive's table of extensions, for the other (AddressSanitizer: a read of freed memory in `GetCreateExtendedSurface`). `(Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)).shell(2.4, <the face at x = 3>)` crashed in every run, and the WebAssembly build trapped. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails | It was kept (a leak), unlike after a failed stitch. Code reading; not seen in the runs measured. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
@@ -240,13 +241,19 @@ Defects that remain in the kernel, and what smlibpy does about them:
   `examples/gear` that SM_API's builds, so it comes second (`smlibpy/shapes.py`, `_with_finer_rounds`).
 - The fillet executive's set-back corners (`SmFilletCorner::SetSetBackDist`; SM_API has no entry
   for them): `SmFilletCorner::InsertIntersectionTopology` merges a fillet edge's own curve into the
-  faces it lies on, and `sm_SetDoFilletingGeometry` gives that edge a new curve and deletes the old
-  one while `SmCurveClassification::MergeInterval` is still classifying it (AddressSanitizer: a
+  faces it lies on, and `sm_SetDoFilletingGeometry` gave that edge a new curve and deleted the old
+  one while `SmCurveClassification::MergeInterval` was still classifying it (AddressSanitizer: a
   read of freed memory). Every set-back corner tried killed the process, the kernel's own test
-  case too (`smFilletTest.cpp`, case 303: all edges of a box, r 1, setback 1.25). Merging a copy of
-  the curve stops the crash, but the bodies then come out open (a 20 mm cube, all edges r 1,
-  setback 1.25: 84 open edges, 4 of its 6 planes gone). Not patched: smlibpy offers no setbacks
-  (`corners="mitre"` uses the executive's bevel corners, which are sound).
+  case too (`smFilletTest.cpp`, case 303: all edges of a box, r 1, setback 1.25). The copy of
+  `SmCurveClass.cpp` above stops that read (all edges of a 20 mm cube, r 1 with setback 1.25 and
+  r 2 with setback 3, and of a 10 mm cube, r 1 with setback 1.5, with the kernel test's solver
+  settings and SM_API's, built from `SmApiCreateBox` in a program of its own: AddressSanitizer
+  found a read of freed memory in each before, nothing after), but
+  the merge then fails: `SmTopologyIntersector::Relate` finds a vertex or edge already mated to
+  another (`SM_ERR` from `MergeCurveOnSurfaces`, the fillet half merged: 7 faces, 25 open edges).
+  Merging a copy of the curve instead (tried before) gave open bodies (84 open edges, 4 of the 6
+  planes gone). Not solved: smlibpy offers no setbacks (`corners="mitre"` uses the executive's
+  bevel corners, which are sound).
 - Silent inaccuracies the fuzz baseline (`tools/fuzz/baseline.json`) records, also in 0.4: a cone
   whose base touches a cylinder's cap, `Cone(3, 0, 16).translate(4.4987, -2, 10) - Cylinder(6, 4)`
   (fuzz case csg-8-98 E), is valid and 2.9e-6 off (150.79601567, exact 150.79644737); the

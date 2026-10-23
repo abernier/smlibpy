@@ -7,13 +7,17 @@ offset surfaces of themselves). The kernel's ``SmBrep::LocalOperation`` then reb
 them and the faces around them (src/cpp/face_edit.cpp), as it does for drafts. It takes faces that
 meet an edited face tangentially only when they are edited alike, and it can close the part with
 faces that do not meet: the result is checked.
+
+``LocalOperation`` drops the cavities of a solid. A part with cavities is edited as the solid inside
+its outside and the solids inside its cavities' walls, each with the selected faces it has, and the
+cavities are cut out of the edited outside again (:func:`_with_cavities`, also for drafts).
 """
 
 from __future__ import annotations
 
 import math
 import numbers
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from ._kernel import ModelingError, k, kernel_call
 from .geometry import Location, Vector, VectorLike, _vec
@@ -94,8 +98,8 @@ def _refusal(what: str, verb: str, res: dict[str, Any], part: Part, faces: list[
     every = faces + [Face(part, f) for f in res["added"]]
     f: Face = every[i] if 0 <= i < len(every) else None  # type: ignore[assignment]  # (none for the kernel's)
     if code == "void":
-        return (f"{what}: the part has a cavity (a closed void inside it), and the kernel's face edit drops "
-                f"cavities; edit the part without it and cut the cavity out afterwards")
+        return (f"{what}: the part has a body inside a cavity (a closed void inside it), and the kernel's face edit "
+                f"drops cavities; edit the parts one by one (part.solids()) and combine them afterwards")
     if code == "tangent":
         g = Face(part, res["other"])
         return (f"{what}: the {_where(g)} meets the {verb} {_where(f)} tangentially, so it must be {verb} with it "
@@ -157,7 +161,8 @@ def move_faces(part: Part, faces: Any, by: Location | VectorLike) -> Part:
     sel = _selected(part, faces, "move_faces")
     if m[:12] == [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] and m[12:15] == [0.0, 0.0, 0.0]:
         return part._like(part._copy_brep())
-    return _edit(part, "move_faces", "moved", sel, m, [], False, None)
+    return _with_cavities(part, "move_faces", "moved", sel,
+                          lambda body, faces, inside: _edit(body, "move_faces", "moved", faces, m, [], False, None))
 
 
 def offset_faces(part: Part, faces: Any, distance: float) -> Part:
@@ -166,7 +171,71 @@ def offset_faces(part: Part, faces: Any, distance: float) -> Part:
     sel = _selected(part, faces, "offset_faces")
     if d == 0:
         return part._like(part._copy_brep())
-    return _edit(part, "offset_faces", "offset", sel, [], [d], True, d > 0)
+
+    def edit(body: Part, faces: list[Face], inside: bool) -> Part:
+        # (a face of a cavity's wall moves into the cavity: out of the solid inside the wall)
+        e = -d if inside else d
+        return _edit(body, "offset_faces", "offset", faces, [], [e], True, e > 0)
+
+    return _with_cavities(part, "offset_faces", "offset", sel, edit)
+
+
+def _cavity_solids(part: Part) -> list[Part] | None:
+    """The solid inside the outside of ``part`` and the solids inside the walls of its cavities (each a part of
+    its own, the outside's first), or None where it has no cavity. A part with a body inside a cavity, or of
+    several solids, has more than one cell: None too (the kernel refuses it with 'void')."""
+    from .shapes import _shells_of, ext
+
+    shells, _ = _shells_of(part)
+    if not any(s["kind"] == "void" for s in shells):
+        return None
+    with kernel_call("cavities"):
+        cells = ext.region_shells(part._brep)
+    solids = [[part._like(b) for b in cell] for cell in cells]
+    if len(solids) != 1 or len(solids[0]) < 2:
+        return None
+    return solids[0]
+
+
+def _face_in(bodies: list[Part], f: Face, what: str) -> tuple[int, Face]:
+    """The body among ``bodies`` (copies of the shells of ``f``'s part) that has a face where ``f`` is, and that
+    face."""
+    p = f.interior_point()
+    a = f.area
+    tol = 1e-7 * max(f._owner._extent(), 1.0)
+    for i, b in enumerate(bodies):
+        for g in b.faces():
+            if (g.geom_type == f.geom_type and abs(g.area - a) <= 1e-6 * max(a, 1e-12) + 1e-12
+                    and g.distance_to(p) <= tol):
+                return i, g
+    raise ModelingError(f"{what}: the {_where(f)} lies in no shell of the part (its cavities could not be told apart)")
+
+
+def _with_cavities(part: Part, what: str, verb: str, sel: list[Face],
+                   edit: Callable[[Part, list[Face], bool], Part]) -> Part:
+    """``edit(part, sel, False)``, or for a part with cavities (which the kernel's face edit drops): ``edit`` of
+    the solid inside the part's outside and of the solids inside its cavities' walls, each with the selected
+    faces it has (``inside`` True for a cavity's: its faces face the other way), and the cavities cut out of
+    the outside again. Checked: the cavities stay inside the edited outside, apart from each other."""
+    solids = _cavity_solids(part)
+    if solids is None:
+        return edit(part, sel, False)
+    groups: dict[int, list[Face]] = {}
+    for f in sel:
+        i, g = _face_in(solids, f, what)
+        groups.setdefault(i, []).append(g)
+    edited = [edit(b, groups[i], i > 0) if i in groups else b for i, b in enumerate(solids)]
+    outside, cavities = edited[0], edited[1:]
+    with kernel_call(what, "the cavities could not be cut out of the edited part"):
+        result = outside.cut(cavities)
+    whole = float(outside._props(1e-6)["volume"])
+    expect = whole - sum(float(c._props(1e-6)["volume"]) for c in cavities)
+    got = float(result._props(1e-6)["volume"])
+    if (not abs(got - expect) <= 1e-6 * whole or result.info()["voids"] != len(cavities)
+            or len(result.faces()) != len(part.faces())):
+        raise ModelingError(f"{what}: the {verb} faces reach a cavity of the part (or a cavity reaches the outside "
+                            f"or another cavity); use a smaller change, or a Boolean")
+    return result
 
 
 def _wall_thicknesses(part: Part, walls: Any, t: float, openings: list[Any]) -> list[tuple[Face, float]]:

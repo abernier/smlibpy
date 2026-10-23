@@ -253,10 +253,15 @@ SmBrep* analytic_revolutions(const SmBrep* brep)
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
+#include "analytic.h"
 #include "ext.h"
 
 void bind_revolutions(py::module_ m)
 {
+    m.def("exact_circles", &smlibpy::exact_circles, py::arg("brep"), py::return_value_policy::take_ownership,
+          "A copy of the Brep whose B-spline edges are circles where its two faces meet in one exactly (a plane and "
+          "a cylinder, cone or sphere about an axis along its normal, two cylinders or cones about one axis: the "
+          "kernel fits the circle where a cone meets a cylinder), or None where it has no such edge.");
     m.def("analytic_revolutions", &smlibpy::analytic_revolutions, py::arg("brep"), py::return_value_policy::take_ownership,
           "A copy of the Brep whose surfaces of revolution are cylinders, cones, spheres and tori wherever they are "
           "one (their faces' trimming curves made again), or None where it has no such face.");
