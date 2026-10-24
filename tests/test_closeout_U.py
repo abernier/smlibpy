@@ -1,7 +1,7 @@
 """Close-out of lane U's "Not done" (kernel plan phase 1): surfaces, deformation, sheet metal and
 measuring. Plane sections within a tolerance, the nearest point of a folded B-spline face, rays beside
 a seam (the kernel's seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend
-zone unfolded into a valid part (D5); K-factor records in .smp files (D1); blends between two closed
+zone unfolded into a valid part, and the faces of bend zones as the exact bend (D5); K-factor records in .smp files (D1); blends between two closed
 edges (U2); trimming with curves that run past a sheet's border or across a hole (U3); the knots a warp
 or a flattening does not need removed (U8)."""
 
@@ -131,6 +131,27 @@ def test_hole_inside_a_bend_unfolds_into_a_valid_part():
     fp = flat_pattern(part)
     assert tuple(fp.size) == pytest.approx((200, 60, 3), abs=1e-7)
     assert sorted(e.geom_type for e in fp.outline.edges()) == ["circle", "circle", "line", "line", "line", "line"]
+
+
+def test_bend_zone_faces_are_the_exact_bend():
+    # the faces of a bend zone were the kernel's fits within 1e-4: the slanted walls of a square hole
+    # came back from a fold and an unfold 1.6e-6 off (area 23.99998 for 24), a round hole's plate
+    # 7842.9195 for 7842.9204
+    blank = _plate(200, 60, 3) - Box(8, 8, 10).rotate(Axis.Z, 30).translate(30, 10, 0)
+    part = fold(blank, Axis((20, 0, 3), (0, 1, 0)), 120, radius=20)
+    walls = [f for f in part.faces() if f.geom_type == "bspline"]
+    assert len(walls) == 4 and part.is_valid()
+    flat = part.unfold()
+    assert flat.is_valid() and flat.volume == pytest.approx(blank.volume, rel=1e-12)
+    back = [f for f in flat.faces() if f.geom_type == "bspline"]
+    assert len(back) == 4
+    for f in back:
+        assert f.area == pytest.approx(24, rel=1e-10)
+        pts = [f.position_at(u, v) for u in np.linspace(0, 1, 15) for v in np.linspace(0, 1, 4)]
+        assert max(blank.distance_to(p) for p in pts if f.distance_to(p) < 1e-9) < 1e-11
+    plate = Box(100, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN)) - Cylinder(5, 10)
+    bent = fold(plate, Axis((0, 0, 2), (0, 1, 0)), 90, radius=4)
+    assert bent.unfold().volume == pytest.approx(plate.volume, rel=1e-12)
 
 
 def test_k_factors_are_kept_in_part_files():

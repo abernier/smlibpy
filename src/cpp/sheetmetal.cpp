@@ -353,14 +353,16 @@ void build_trim_curves(SmFace* face)
 }
 
 // The edges of the bend region are fitted within kCurveTolerance of the exact bend (deform.cpp's
-// parameter-keeping fit, else the kernel's curve approximation), its faces within the kernel's
-// tolerance (GetApproxTol, which it clamps to 1e-4). The curve fits cost nothing: a hole across a
-// bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the flat
-// pattern's outline gets it back as one circle. The kernel's surface fits at 1e-6 cost up to
-// twenty times as long (7 s instead of 0.3 s to unfold an R20 bend with two holes in it), so the
-// faces stay at the kernel's tolerance. Where a curve fit at 1e-7 fails, the kernel's tolerance
-// is the fallback.
+// parameter-keeping fit, else the kernel's curve approximation), its faces within kSurfaceTolerance
+// (deform.cpp's parameter-keeping surface fit, on the original's knots, exact where it can be),
+// else within the kernel's tolerance (GetApproxTol, which it clamps to 1e-4). The fits cost nothing:
+// a hole across a bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the
+// flat pattern's outline gets it back as one circle, and the slanted walls of a square hole in the
+// bend zone come back to 3e-14 instead of 1.6e-6 (the kernel's surface fits at 1e-6 cost up to
+// twenty times as long: 7 s instead of 0.3 s to unfold an R20 bend with two holes in it). Where a
+// fit fails, the kernel's tolerance is the fallback.
 constexpr double kCurveTolerance = 1e-7;
+constexpr double kSurfaceTolerance = 1e-6;
 
 // Step 4: map the region, move the rest, then replace the mapped (volume) geometry by exact
 // analytic geometry where the kernel can make it, else by NURBS within `tolerance` (faces) and
@@ -401,6 +403,7 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
     };
     std::vector<SmExtent2d> domains;
     std::vector<std::array<bool, 2>> closed;
+    std::vector<bool> refit(p.in_faces.GetSize(), false);  // fitted keeping the parameters
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
     {
         p.in_faces[i]->ShrinkGeometry();
@@ -435,14 +438,19 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             if (brep.ReplaceSurface(face, exact, FALSE, nullptr, FALSE) != SM_SUCCESS)
                 result = SM_ERR;
         }
-        else if (closed[i][0] || closed[i][1])
+        else
         {
-            // (see overshoots: kept parameters over the domain the face had, else the kernel's fit)
+            // the exact image fitted keeping the original's parameters over the domain the face had
+            // (deform.cpp's fit, within kSurfaceTolerance: its trims stay as they were), else the
+            // kernel's fit within its tolerance (see overshoots for faces that close around)
             const SmSurface* base =
                 surface->IsKindOf(SmSrfInVolume_TYPE) ? static_cast<SmSrfInVolume*>(surface)->GetSurface() : nullptr;
             const SmExtent2d& dom = domains[i];
-            SmBSplineSurface* fit = smlibpy::fit_surface_keeping_parameters(surface, base, dom.GetUMin(), dom.GetUMax(),
-                                                                            dom.GetVMin(), dom.GetVMax(), tolerance);
+            SmBSplineSurface* fit = smlibpy::fit_surface_keeping_parameters(
+                surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(), dom.GetVMax(), std::min(kSurfaceTolerance, tolerance));
+            if (!fit && (closed[i][0] || closed[i][1]))
+                fit = smlibpy::fit_surface_keeping_parameters(surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(),
+                                                              dom.GetVMax(), tolerance);
             if (fit)
             {
                 if (brep.ReplaceSurface(face, fit, FALSE, nullptr, FALSE) != SM_SUCCESS)
@@ -451,13 +459,12 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
                         delete fit;
                     result = SM_ERR;
                 }
+                refit[i] = true;
             }
             else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS ||
-                     overshoots(face->GetSurface(), dom, closed[i].data()))
+                     ((closed[i][0] || closed[i][1]) && overshoots(face->GetSurface(), dom, closed[i].data())))
                 result = SM_ERR;
         }
-        else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
-            result = SM_ERR;
     }
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
@@ -504,7 +511,7 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             return SM_ERR_NOT_WITHIN_TOLERANCE;
     }
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
-        if (closed[i][0] || closed[i][1])
+        if (refit[i] || closed[i][0] || closed[i][1])
             build_trim_curves(p.in_faces[i]);
     return SM_SUCCESS;
 }

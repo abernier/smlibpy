@@ -7769,7 +7769,10 @@ class Shell(_Body):
 
         Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next
         to it bend near those ends, and the faces on the other side of those edges follow them the
-        same way. Every face that changes must be bounded by the four sides of its surface (as
+        same way, but meet the matched face with a crease near the matched edge (no tangent is kept
+        across those side edges: 10 to 20 degrees in a sheet of two faces; merge faces first with
+        :meth:`merge_faces` to keep a sheet smooth). Every face that changes must be bounded by the
+        four sides of its surface (as
         :func:`~smlibpy.surface`, ``loft``, :func:`~smlibpy.ruled`, :func:`~smlibpy.fill` and
         :func:`~smlibpy.network` make them; no holes, no trimmed borders) and the edge a whole side
         of it, else ``ValueError``. The faces become B-splines (planes too).

@@ -541,9 +541,10 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
 
     Four sides make a Coons patch, of one face (through curves only, it is bilinear: straight
     across between opposite sides, in the middle the sum of both). Five sides and more make an
-    N-sided fill of one face per side, sewn, meeting in the middle. Three sides make an N-sided
-    fill of three faces through curves only; tangent to sheets, a Coons patch whose fourth side
-    shrinks to a point at one corner (a pole there: thickening such a patch fails).
+    N-sided fill of one face per side, sewn, meeting in the middle (tangent to the sheets only to
+    about 1.4 degrees: the kernel's N-sided fill). Three sides make an N-sided fill of three faces
+    through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at
+    one corner (a pole there: thickening such a patch fails).
 
     Returns:
         The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,

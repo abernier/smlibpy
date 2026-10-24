@@ -8610,8 +8610,11 @@ export class Shell extends _Body {
    *   of itself there with continuous derivatives (up to its degree less one).
    *
    * Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next to it
-   * bend near those ends, and the faces on the other side of those edges follow them the same way.
-   * Every face that changes must be bounded by the four sides of its surface (as `surface`, `loft`,
+   * bend near those ends, and the faces on the other side of those edges follow them the same way, but
+   * meet the matched face with a crease near the matched edge (no tangent is kept across those side
+   * edges: 10 to 20 degrees in a sheet of two faces; merge faces first with `mergeFaces` to keep a
+   * sheet smooth). Every face that changes must be bounded by the four sides of its surface (as
+   * `surface`, `loft`,
    * `ruled`, `fill` and `network` make them; no holes, no trimmed borders) and the edge a whole side
    * of it, else RangeError. The faces become B-splines (planes too).
    *

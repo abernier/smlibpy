@@ -1,9 +1,9 @@
 // tests/test_closeout_U.py: the close-out of lane U's "Not done" (kernel plan phase 1): plane sections
 // within a tolerance, the nearest point of a folded B-spline face, rays beside a seam (the kernel's
 // seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend zone unfolded into
-// a valid part (D5); K-factor records in .smp files (D1); blends between two closed edges (U2);
-// trimming with curves that run past a sheet's border or across a hole (U3); the knots a warp or a
-// flattening does not need removed (U8).
+// a valid part, and the faces of bend zones as the exact bend (D5); K-factor records in .smp files
+// (D1); blends between two closed edges (U2); trimming with curves that run past a sheet's border or
+// across a hole (U3); the knots a warp or a flattening does not need removed (U8).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -173,6 +173,33 @@ test('a hole inside a bend unfolds into a valid part', () => {
   near(fp.size.y, 60, 1e-7)
   near(fp.size.z, 3, 1e-7)
   assert.deepEqual(fp.outline.edges().map((e) => e.geomType).sort(), ['circle', 'circle', 'line', 'line', 'line', 'line'])
+})
+
+test('bend-zone faces are the exact bend', () => {
+  // the faces of a bend zone were the kernel's fits within 1e-4: the slanted walls of a square hole came
+  // back from a fold and an unfold 1.6e-6 off (area 23.99998 for 24), a round hole's plate 7842.9195
+  // for 7842.9204
+  const blank = plate(200, 60, 3).cut(Box(8, 8, 10).rotate(Axis.Z, 30).translate(30, 10, 0))
+  const part = fold(blank, new Axis([20, 0, 3], [0, 1, 0]), 120, { radius: 20 })
+  assert.equal(part.faces().filter((f) => f.geomType === 'bspline').length, 4)
+  assert.ok(part.isValid())
+  const flat = part.unfold()
+  assert.ok(flat.isValid())
+  approx(flat.volume, blank.volume, 1e-12)
+  const back = flat.faces().filter((f) => f.geomType === 'bspline')
+  assert.equal(back.length, 4)
+  for (const f of back) {
+    approx(f.area, 24, 1e-10)
+    let worst = 0
+    for (const u of lin(0, 1, 15)) for (const v of lin(0, 1, 4)) {
+      const p = f.positionAt(u, v)
+      if (f.distanceTo(p) < 1e-9) worst = Math.max(worst, blank.distanceTo(p))
+    }
+    assert.ok(worst < 1e-11, `${worst}`)
+  }
+  const plate2 = Box(100, 40, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] }).cut(Cylinder(5, 10))
+  const bent = fold(plate2, new Axis([0, 0, 2], [0, 1, 0]), 90, { radius: 4 })
+  approx(bent.unfold().volume, plate2.volume, 1e-12)
 })
 
 test('K-factors are kept in part files', () => {
