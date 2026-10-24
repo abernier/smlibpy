@@ -94,9 +94,12 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   tilted by 30 degrees (fuzz slice-7-390) gave 5.8069 + 1842.7020 for 1894.9640 and the intersection
   with a half-space 11.61 or 52.26 by the box's size; now 5.80689 + 1889.15715 in both builds (the cap
   integrated on a grid: 5.80697), and `Torus(10, 3)` at z = 13 3.27792 + 1773.25087 in both (smlibwasm
-  gave 696.07 above). Over the 160 campaign cases (holes, NURBS parts, torus slices) no result that was
-  right before changes or raises; the fuzz seeds' silent rate of slices fell from 0.93 % to 0 natively.
-  The check costs about 0.02 to 0.15 s per Boolean in which a seam touches, nothing otherwise.
+  gave 696.07 above). Over the 160 campaign cases (holes, NURBS parts, torus slices) no result that
+  agreed with OpenCASCADE changes or raises, 15 results of NURBS parts that were about 1e-3 off now
+  agree with it, and A-25's union and intersection are right. In the fuzz seeds 7 and 8 the silent
+  rate of slices fell from 0.93 % (smlibpy) and 1.85 % (smlibwasm) to 0, seed 7's divergences between
+  the builds from 6 to 1. The check costs about 0.02 to 0.15 s per Boolean in which a seam touches,
+  nothing otherwise (the Boolean timing of fuzz seed 8's cases is within the noise of 5c7666f's).
 - **Merges of more than two parts turn and move seams for every part merged in.** A part merged into
   an earlier merge (a body of several cells) goes in turned or with its seams moved, as in a merge of
   two (`part.merge(other).merge(pin)` of the groove pin: cells adding up to the union, the part's
@@ -114,7 +117,6 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   the part". It is now extended as itself (`Face.extend`, which keeps a cylinder a cylinder): a face
   of `Cylinder(30, 8).translate(0, -25, 0)` splits `Box(20, 20, 20)` into 2226.0814 and 5773.9181
   (the integral: 5773.9216).
-
 - **Circular rims after a scale along the axis are circles (T6).** The kernel's recognition after a
   scale that differs between the axes gave back cylinders, cones and planes, but their rims stayed
   B-spline edges: `Cylinder(5, 10).scale((1, 1, 2)).edges().circles()` found none, and STEP files got
