@@ -130,7 +130,8 @@ CI at the first push (GitHub Actions runs the jobs on Linux), not here.
     The oracle lists the 5 tests and why; 361 pass.
 - **N3, the fuzz baseline of Linux x86_64.** `tools/fuzz/baseline.json` has `linux-x86_64` (the
   platform of CI's `ubuntu-latest`), from three runs of seeds 7 and 8 with smlibwasm, after the
-  fixes above; it is verified on CI at the first push. The CI fuzz run on Linux had compared
+  fixes above. Those runs were made locally in an emulated Linux x86_64 container (Rosetta), not
+  on CI; CI's fuzz job confirms or replaces the baseline at the first push. The CI fuzz run on Linux had compared
   nothing but crashes and rates. The baseline knows the crashes of seeds 7 and 8 by case, not by
   kernel function (among them the all-edge fillet of two cones, `fillet-7-185`, the defect under
   "Kernel defects that remain", which kills the process on Linux x86_64 where macOS raises).
