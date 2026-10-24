@@ -14,13 +14,17 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
  * A list of locations. `new Locations([0, 0], [10, 5], ...)` takes points, locations, planes,
  * faces (their center planes) or vertices.
  */
+/** What a pattern of locations is made of (`new Locations(...)`): locations, planes, faces (their
+ * center planes), vertices and points (positions), other patterns, and lists of faces. */
+export type LocationLike = Location | Plane | Locations | Face | Vertex | VectorLike | ShapeList<Face>
+
 export class Locations extends Array<Location> {
   // (map, filter and slice give plain arrays)
   static override get [Symbol.species](): ArrayConstructor {
     return Array
   }
 
-  constructor(...items: unknown[]) {
+  constructor(...items: LocationLike[]) {
     super()
     for (const it of items) {
       if (it instanceof Location) this.push(it)

@@ -7,7 +7,7 @@
 // body that cannot be read is left out with a warning; the instances of a product in an assembly
 // are built once and placed.
 
-import { BrepHandle, KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { type Location, type Matrix, Plane, Vector, _matmul } from './geometry.ts'
 import { det3, solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line } from './curves.ts'
@@ -952,7 +952,7 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
         if (off <= tol && off < apart) return part
       }
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e // (a KernelError is one)
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e) // (a KernelError is one)
     }
     part?.dispose()
   }
@@ -960,7 +960,7 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
   try {
     for (const cavity of cavities) result = result.cut(cavity)
   } catch (e) {
-    if (!(e instanceof ModelingError)) throw e
+    if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
     throw new ModelingError(`its cavities could not be built, neither as void regions nor by subtracting them (${e.message})`)
   }
   return result
@@ -1007,7 +1007,7 @@ function _withSeams<B extends Part | Shell>(body: B): [B, number | null] {
       return [copy, volume]
     }
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
   }
   fixed?.dispose()
   return [body, null]
@@ -1128,7 +1128,7 @@ export function _kernelVolume(part: Part): number | null {
   try {
     return Number(part._kernelProps(1e-4).volume)
   } catch (e) {
-    if (e instanceof KernelError) return null
+    if ((e instanceof KernelError) && !_isCrash(e)) return null
     throw e
   }
 }
@@ -1140,7 +1140,7 @@ function _sound(part: Part, volume: number | null = null): boolean {
     const v = volume ?? _kernelVolume(part)
     return v !== null && v > 0 && part._solidProblem(v) === null
   } catch (e) {
-    if (e instanceof KernelError) return false
+    if ((e instanceof KernelError) && !_isCrash(e)) return false
     throw e
   }
 }
@@ -1154,7 +1154,7 @@ function _repaired(part: Part, body: BodyData): [Part, string | null] {
     if (_sound(healed)) return [healed, null]
     healed.dispose()
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
   }
   const stitched = _stitched(part, body)
   if (stitched !== null) {
@@ -1167,7 +1167,7 @@ function _repaired(part: Part, body: BodyData): [Part, string | null] {
   try {
     return [part, part._solidProblem() ?? 'not a sound solid']
   } catch (e) {
-    if (e instanceof KernelError) return [part, 'a body whose volume cannot be integrated']
+    if ((e instanceof KernelError) && !_isCrash(e)) return [part, 'a body whose volume cannot be integrated']
     throw e
   }
 }
@@ -1199,7 +1199,7 @@ function _stitched(part: Part, body: BodyData): [Part, number] | null {
       kernelCall(_op(': stitch'), () => stitch(h.brep))
       return _validOrHealed(Part._wrap(_take(h)))
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       return null
     } finally {
       h.dispose() // (nothing left to free once taken)
@@ -1236,7 +1236,7 @@ function _validOrHealed(part: Part): Part | null {
       }
       healed.dispose()
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     }
   }
   part.dispose()
@@ -1279,7 +1279,7 @@ function _sewn(sheet: Shell, body: BodyData): Shell {
       return Shell._wrap(_take(h))
     }
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
   } finally {
     h.dispose()
   }
@@ -1326,7 +1326,7 @@ function _bodies(sf: StepFile, heal: boolean, strict: boolean): [(Part | Shell)[
       }
       out.push(first[0]._transformed(_matmul(m, _inv4(first[1]))) as Part | Shell)
     } catch (e) {
-      if (!_bodyError(e)) throw e
+      if (!_bodyError(e) || _isCrash(e)) throw _crashOf(e)
       const message = `${_bodyLabel(body.entity, body.name, body.product)}: ${_failure(e)}`
       if (strict) throw new ModelingError(`import STEP: ${message}`)
       failed.set(body, [message, 1])
@@ -1551,7 +1551,7 @@ export function fromStepModel(data: string | BytesLike, options: { heal?: boolea
       try {
         shape = _curveShape(item.curve)
       } catch (e) {
-        if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+        if (!(e instanceof KernelError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
         shape = null
       }
       if (shape !== null) curves.push(new StepCurve(name, shape, product, color))

@@ -18,6 +18,15 @@
 //   ResolveIntersections fails. It returned without, and the manager, its ProtoEdges,
 //   EdgeDefinitions and curves were never freed: about 450 kB per failed Boolean of the crossing
 //   holes above (the macOS leaks tool).
+//   SmTopologyIntersector::IntersectTopology tests smlibpy's deadline (SMLIBPY_DEADLINE_ER in
+//   third_party/patches/SMLib/inc/SmMessages.h; changed on 2026-10-23) before each pair of faces it
+//   intersects and each pair of ProtoEdges it splits, where it already fails on a failed face
+//   intersection: a Boolean that takes too long fails before it edits either Brep.
+//   SmTopologyIntersector::CloseIntersectionLoop tests it when it starts and before each edge at the
+//   vertex it tries, where it already fails when an edge's intersection fails (before it relates or
+//   inserts anything; SmMerge::ManifoldBoolean ignores its failures and goes on with the next vertex).
+//   The gap closing of a Boolean of the enclosure example's patching spent seconds here in smlibwasm
+//   once the deadline had passed.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1826,6 +1835,8 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
       // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
       for ( jj=0; jj<lNumFaces2; jj++ )
         {
+          SMLIBPY_DEADLINE_ER() ; // smlibpy patch: give up past smlibpy's deadline (see SmMessages.h)
+
           SmFace *pF2 = sFaces2[jj];
 
 #ifdef SM_DEBUG_CODE
@@ -2215,6 +2226,8 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
       SmProtoEdge *pPE1 = rPEs[ii];
       for(jj=ii+1;jj<rPEs.GetSize();jj++)
         {
+          SMLIBPY_DEADLINE_ER() ; // smlibpy patch: give up past smlibpy's deadline (see SmMessages.h)
+
           SmProtoEdge *pPE2 = rPEs[jj];
 
           // Split intersecting ProtoEdges at the ProtoEdge/ProtoEdge XSect points
@@ -6213,6 +6226,8 @@ SmStatus SmTopologyIntersector::CloseIntersectionLoop
   // init output
   rbMadeNewTopology = FALSE;
 
+  SMLIBPY_DEADLINE_ER() ; // smlibpy patch: give up past smlibpy's deadline (see SmMessages.h)
+
   // locals
   SM_PTR_ARRAY(sOCommonEdges,SmEdge,32);
   ULONG ii, jj;
@@ -6226,6 +6241,8 @@ SmStatus SmTopologyIntersector::CloseIntersectionLoop
       // for every edge connected to target vertex
       for (ii=0; ii<sBrepEdges.GetSize(); ii++)
         {
+          SMLIBPY_DEADLINE_ER() ; // smlibpy patch: give up past smlibpy's deadline (see SmMessages.h)
+
           // target edge and any mated edge from m_pOther brep
           SmEdge *pBE = sBrepEdges[ii];
           SmEdge *pOE = SM_CAST_PTR(SmEdge,GetOtherMate(pBE));
@@ -6369,6 +6386,8 @@ SmBoolean bDebugMe = FALSE;
       // for every edge connected to otherVertex
       for (ii=0; ii<sOtherEdges.GetSize(); ii++)
         {
+          SMLIBPY_DEADLINE_ER() ; // smlibpy patch: give up past smlibpy's deadline (see SmMessages.h)
+
           // get target edge and any mated edge within m_pBrep
           SmEdge *pOE = sOtherEdges[ii];
           SmEdge *pBE = SM_CAST_PTR(SmEdge,GetBrepMate(pOE));

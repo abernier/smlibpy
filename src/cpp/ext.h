@@ -108,5 +108,7 @@ void bind_poly_ray_intersection(py::module_ m);
 void bind_kernel_trace(py::module_ m);
 // Freeing the caches kernel queries left on a body (caches.cpp).
 void bind_caches(py::module_ m);
+// A deadline for long kernel steps (deadline.cpp).
+void bind_deadline(py::module_ m);
 // SmPyLib's long kernel calls again, with the GIL let go while the kernel works (nogil.cpp).
 void bind_nogil(py::module_ m);

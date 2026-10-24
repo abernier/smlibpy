@@ -8,7 +8,7 @@
 // meet an edited face tangentially only when they are edited alike, and it can close the part with
 // faces that do not meet: the result is checked.
 
-import { ModelingError, _isRuntimeError, k, kernelCall } from './kernel.ts'
+import { ModelingError, _crashOf, _isCrash, _isRuntimeError, k, kernelCall } from './kernel.ts'
 import { Location, Vector, type VectorLike, _formatG, _isPointLike, _vec } from './geometry.ts'
 import { Face, type Part, _flattenFaces } from './shapes.ts'
 
@@ -213,7 +213,7 @@ function _pointsAndNormals(f: Face): [Vector, Vector][] {
       }
     }
   } catch (e) {
-    if (!(_isRuntimeError(e) || e instanceof RangeError)) throw e // a face the kernel cannot sample: its interior point only
+    if (!(_isRuntimeError(e) || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e) // a face the kernel cannot sample: its interior point only
   }
   const p = f.interiorPoint()
   out.push([p, f.normalAt(p)])

@@ -7,7 +7,7 @@
 // own conversion (compiled in, without OpenUSD). Binary USD (.usdc, .usdz) is not written or read:
 // OpenUSD's usdcat converts between text and .usdc, usdzip packs a .usdz.
 
-import { _opts, _warn, ext, k, KernelError, ModelingError, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { _traced } from './_errors.ts'
 import { Mesh, _coloredMesh } from './mesh.ts'
@@ -200,7 +200,7 @@ function _stage(root: string, text: string, read: Parameters<typeof _layers>[2],
       ext.usd_stage(layers, options.heal ?? false, options.check ?? true, options.placement ?? true, perUnit, !(options.strict ?? false)),
     )
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     // (the body that could not be built, and why, in the message)
     const error = _traced(new KernelError(e.operation, e.detail, e.status, _builtHint(e.detail, e.status)), e.trace)
     ;(error as Any).cause = (e as Any).cause

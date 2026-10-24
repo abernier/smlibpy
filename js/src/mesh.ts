@@ -1,10 +1,10 @@
 // Triangle meshes: tessellation of exact shapes, mesh Booleans, mesh files.
 
-import { ModelingError, PolyHandle, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, PolyHandle, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { Axis, BoundBox, Hit, Location, Plane, Vector, Z, _direction, _formatG, _vec, type Matrix, type VectorLike } from './geometry.ts'
 import { Face, MassProperties, Part, ShapeList, Wire, _Body, _asPlane, _list, _reflection, _scaling, _translation, _typeName, type Shape } from './shapes.ts'
 import { Polyline } from './curves.ts'
-import { exportFile } from './exporters.ts'
+import { type FileOptions, exportFile } from './exporters.ts'
 import { _repr } from './step_reader.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
@@ -543,7 +543,7 @@ export class Mesh {
       try {
         trial = best._decimated(step, this)
       } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
+        if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
         step /= 2
         continue
       }
@@ -749,8 +749,8 @@ export class Mesh {
     }
   }
 
-  /** Write the mesh to a file (stl, obj, glb, ...; see `exportFile`). */
-  export(path: string, options: Record<string, unknown> = {}): void {
+  /** Write the mesh to a file (stl, obj, glb, ...; see `exportFile`, whose options it takes). */
+  export(path: string, options: FileOptions = {}): void {
     exportFile(this, path, options)
   }
 

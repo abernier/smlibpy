@@ -35,6 +35,13 @@
 //   to a new Edge, and the next Boolean read the freed curve of that Edge (AddressSanitizer: a
 //   read of freed memory in SmEdge::CalculateBoundingBox): shells and offsets in the extended
 //   mode crashed the process now and then, such as the filleted boxes of issue #2.
+//   SmProtoTopologyManager::SplitIntersectingProtoEdges (changed on 2026-10-23), where a range
+//   solution combines a ProtoEdge into another and deletes it: the ProtoEdge it was combined into
+//   takes its place in the lists of coincident ProtoEdges of the ProtoFaces that list it (UpdateFaces
+//   read it there, AddressSanitizer: the sweep along a closed spline with a kink killed the process
+//   on Linux x86_64), and in the lists of overlapping ProtoEdges of the ProtoEdges that list it, on
+//   both sides (ResolveOverlappingProtoEdges read it there, in SmProtoEdge::GetOverlappingPEGroup:
+//   the extended offset of a fused cone trapped in the WebAssembly build, depending on memory layout).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -6955,6 +6962,61 @@ SmBoolean bDebugMe3=FALSE;
           // Seen: nine ranges of pPE1, each on all of pPE2, along a seam tangent to the other
           // body (crossing holes).
           SmBoolean bDeletedInput = (pPE2ToCombine == pPE2 || pPE2ToCombine == pPE1) ;
+
+          // smlibpy patch: the ProtoFaces that list the ProtoEdge deleted here among their coincident
+          // ProtoEdges kept it in their lists, and UpdateFaces read it there when the Boolean
+          // imprinted its EdgeDefinitions (AddressSanitizer: a read of freed memory in
+          // SmProtoTopologyManager::UpdateFaces from SmEdgeDefinition::Imprint). Its EdgeDefinitions
+          // went to pPE1ToCombine: that ProtoEdge takes its place in those lists, as
+          // ResolveOverlappingProtoEdges puts the new ProtoEdges in place of those it deletes.
+          // Seen: the sweep of a circle along a closed spline with a kink killed the process on
+          // Linux x86_64 and in a native build without the contraction of a * b + c.
+          if(pPE2ToCombine != pPE1ToCombine)
+            {
+              SmTArray<SmProtoFace *> & rCoincPFs = *pPE2ToCombine->GetCoincProtoFaces() ;
+              for(ULONG ff=0; ff<rCoincPFs.GetSize(); ff++)
+                {
+                  SmProtoFace * pPF = rCoincPFs[ff] ;
+                  if(pPF == NULL) { continue ; }
+                  while(pPF->GetCoincProtoEdges()->Remove( pPE2ToCombine)) {}
+                  pPE1ToCombine->RelateCoincidentPF( pPF) ;
+                }
+              rCoincPFs.RemoveAll() ;
+            }
+
+          // smlibpy patch: the ProtoEdges that overlap the ProtoEdge deleted here kept it in their
+          // lists of overlapping ProtoEdges (FindOrCreateProtoEdge lists each overlap on both
+          // ProtoEdges; CombineProtoEdge gave its own list to pPE1ToCombine but left the others), and
+          // ResolveOverlappingProtoEdges read it there (SmProtoEdge::GetOverlappingPEGroup): the
+          // WebAssembly build trapped in the extended offset of a fused cone, depending on memory
+          // layout. pPE1ToCombine takes its place in those lists, on both sides, and lists neither
+          // itself nor the deleted ProtoEdge.
+          if(pPE2ToCombine != pPE1ToCombine)
+            {
+              SmTArray<SmProtoEdge *> & rAllPEs = this->GetProtoEdges() ;
+              for(ULONG oo=0; oo<rAllPEs.GetSize(); oo++)
+                {
+                  SmProtoEdge * pOPE = rAllPEs[oo] ;
+                  if(pOPE == NULL || pOPE == pPE2ToCombine) { continue ; }
+                  SmTArray<SmProtoEdge *> & rTheirs = pOPE->GetOverlappingPEs() ;
+                  SmBoolean bListed = FALSE ;
+                  while(rTheirs.Remove( pPE2ToCombine)) { bListed = TRUE ; }
+                  if(bListed && pOPE != pPE1ToCombine)
+                    {
+                      rTheirs.AddUnique( pPE1ToCombine) ;
+                      pPE1ToCombine->GetOverlappingPEs().AddUnique( pOPE) ;
+                    }
+                }
+              SmTArray<SmProtoEdge *> & rMine = pPE1ToCombine->GetOverlappingPEs() ;
+              SmTArray<SmProtoEdge *>   sKept ;
+              for(ULONG oo=0; oo<rMine.GetSize(); oo++)
+                {
+                  if(rMine[oo] != pPE2ToCombine && rMine[oo] != pPE1ToCombine && rMine[oo] != NULL)
+                    { sKept.AddUnique( rMine[oo]) ; }
+                }
+              rMine = sKept ;
+              pPE2ToCombine->GetOverlappingPEs().RemoveAll() ;
+            }
 
           this->RemoveProtoEdge( pPE2ToCombine) ;
           delete pPE2ToCombine; pPE2ToCombine=NULL;

@@ -604,8 +604,8 @@ for step in steps * 8:
     except RuntimeError:
         print("failed", flush=True)
 """
-    # A crash that depends on the memory layout remains (third_party/patches/README.md, "Defects that
-    # remain": a deleted ProtoEdge read in ResolveOverlappingProtoEdges, about 1 to 3 runs in 100):
+    # A read that depends on the memory layout remains (third_party/patches/README.md, "Defects that
+    # remain": past a curve classification's points in FindInterval, from sm_FixProblemsBySqueezing):
     # one more run then. A crash in both runs is not that one.
     for _ in range(2):
         run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)

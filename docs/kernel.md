@@ -75,7 +75,12 @@ lists every change and what it was measured to change. Where smlibpy needs more 
   build and fails in the other: all-edge fillets of usd-brep's `vase1.smb` and `vase3.smb` succeed
   on arm64 and fail in smlibwasm, and in a native build without the contraction
   (`-ffp-contract=off`), where the kernel's drop of a corner's guess point onto the filleted edge
-  finds not one point. `tools/parity.py` lists the known cases.
+  finds not one point. `tools/parity.py` lists the known cases. The native build keeps the
+  contraction: built without it on arm64, the test suite lost the two vase fillets and found a
+  crash of the kernel (a sweep along a closed spline with a kink; Linux x86_64 crashed there too,
+  fixed now), and seeds 7 and 8 of the fuzz run diverged from smlibwasm in 12 operations, not
+  10. Without the contraction the native build does not compute as smlibwasm does (libm and the
+  order of the kernel's work differ too), so turning it off buys no parity.
 
 ## Robustness work in smlibpy
 
@@ -93,7 +98,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A chamfer is a round of straight section with one radius per edge, so its setback follows the angle between the faces at the edge | sets each edge's radius from its angle, all edges in one call, and refuses edges whose angle changes by more than 1 degree along them |
 | SM_API's fillet calls keep the fillet executive's record of a failure to themselves (which corner or edge, and why): every failure read "the radius may be too large" | drives the executive itself (`ext.round_edges`, the same calls and defaults) and names the corner or edge it could not build |
 | SM_API has no chamfer with a different setback on each face, although the executive's solver takes two offsets | offsets the two faces of each edge so that the bevel meets them at the setbacks given (`length2`, `angle`) |
-| SM_API's fillets build the rounds' edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits then come out open (a 10 mm cube rounded by 4.98, a 20 mm cube by 9.98) | tries a failed or refused fillet or chamfer once more within 1 times the edge's tolerance, as the kernel's own all-edge fillet does: those rounds are exact |
+| SM_API's fillets build the rounds' edges within 4 times each edge's tolerance, and rounds close to the largest radius that fits then come out open (a 10 mm cube rounded by 4.98, a 20 mm cube by 9.98) | tries a failed or refused fillet or chamfer once more within 1 times the edge's tolerance, as the kernel's own all-edge fillet does: those rounds are exact. Where the rounds fill more than 90% of the room between two edges that run alongside, the check of the result measures the gaps between its faces too (on Linux x86_64 the 20 mm cube's open round, gaps of 4e-2 of its volume, passed the cheaper checks) |
 | SM_API mitres corners (the rounds run on until they meet, no corner patch) only for circular rounds of one radius | `corners="mitre"` sets the executive's corners of three convex rounded edges to mitres for every round and chamfer (its other corners skip their patch and would leave a hole, so they keep it) |
 | The kernel fits the bevel of a circular edge with a B-spline: the volume of a chamfered pin of radius 2 was 1.1e-5 off | bevels full circles between faces around one axis (planes at right angles to it, cylinders, cones, straight faces of revolves) with a cut, or at a concave rim a fuse, of the solid of revolution of the bevel's line: an exact cone, checked against its volume; the kernel bevels the other edges, and a circle where that solid would take other material |
 | A shell opening whose rim meets its neighbours tangentially keeps an open rim: the inner rounds run up to the outer edge and their edges lie off their faces | cuts planar openings of that kind out of the part shelled closed (their other rim edges must meet walls standing at right angles to them) |
@@ -310,8 +315,16 @@ per step (Linux, macOS; about 1.5 ms); `"helper"`, one helper process for the se
 the first step and again after one crashed it or ran too long, which gets the bodies as `.smb`
 files (Windows, and processes that must not fork); `"auto"` (the default), a fork where the system
 can fork and the helper elsewhere. A frozen application, or a helper that does not start, runs the
-steps in its own process, as `GUARD_SECONDS = 0` does (with a warning, once). smlibwasm runs the
-same steps in a probe worker, a kernel of its own (`setGuardSeconds`, `setGuardBooleans`).
+steps in its own process (with a warning, once). There the kernel's deadline still holds a step to
+`GUARD_SECONDS`: smlibpy sets it around the step (`smlibpy._core.ext.set_deadline`), and the loops
+of the kernel's surface and topology intersections, where the steps found looping for good spend
+their time, give up once it has passed (a patch, `SMLIBPY_DEADLINE_ER` in
+`third_party/patches/SMLib/inc/SmMessages.h`); the step then fails as one that did not finish in
+another process, within a few seconds of the deadline. A crash still ends the process there, and a
+step that spends its time elsewhere in the kernel is not stopped. `GUARD_SECONDS = 0` runs the steps
+in this process without a limit. smlibwasm runs the same steps in a probe worker, a kernel of its
+own (`setGuardSeconds`, `setGuardBooleans`), and holds them to the deadline on a page's main
+thread, where no probe worker runs.
 
 ```python
 # not run
@@ -399,6 +412,25 @@ and the way the baseline knows the case to fail does not count. Two crash sites 
 (`KNOWN_CRASHES` in `tools/fuzz/fuzz.py`): the stitcher's ray behind `cells()`
 (`SmBezierAux2d::BuildPolarBox`) and the extended offset mode's merge on filleted boxes
 (`SmEdge::CalculateBoundingBox`); smlibpy runs both steps in another process.
+
+`baseline.json` has two platforms: darwin-arm64 (an M-series Mac) and linux-x86_64, which CI's
+`ubuntu-latest` runs. The Linux baseline was made in a `linux/amd64` container (Python 3.12, Node
+24), whose x86_64 arithmetic is the CI runners'; gdb cannot trace a process under that emulation,
+so the crashes of its seeds 7 and 8 are known by case (the all-edge fillet of two cones, case
+`fillet-7-185`, kills the process on Linux x86_64 where macOS raises), not by their kernel functions.
+
+The checks ran on Linux for the first time in a container (`linux/amd64`, as CI's runners): the
+test suite, upstream's `prog_test` suites, SmPyLib's tests, the 200 `.smb` files, the crash loops,
+the fuzz run against both baselines and the sanitizers. Three things held on macOS only and are
+fixed: a round close to the largest radius that fits came back open (now measured, see
+[Robustness work in smlibpy](#robustness-work-in-smlibpy)), a sweep along a closed spline with a kink
+crashed the kernel (a ProtoEdge left in the lists of its ProtoFaces, `third_party/patches`), and
+`tools/parity.py` compared files written from bodies the platform made. CI's Linux job also runs
+NVIDIA's validator itself (`pip install "usd-brep[validation]"`, `validate_file`) on what
+`export_usd` writes: every file passes the BrepArray rules; of the asset validator's general rules
+only `UsdAsciiPerformanceChecker` complains, which asks for large arrays in binary (crate) files.
+The helper process for guarded steps (`GUARD_PROCESS = "helper"`, Windows' default) is tested on
+macOS and Linux by choosing it; it has not run on Windows itself.
 
 ## Building the kernel
 

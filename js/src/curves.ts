@@ -3,7 +3,7 @@
 // All return an Edge (one curve) or a Wire (a chain). Points may be given as [x, y] (z = 0),
 // [x, y, z] or Vectors.
 
-import { KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _opts, ext, k, kernelCall } from './kernel.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
 import { type Complex, Corner, GeometryError, type Seg, assemble, describe, fmt, isSmooth } from './_planar.ts'
@@ -618,7 +618,7 @@ export function fitCurve(
     r = kernelCall('fitCurve', () => ext.approximate_points(pts.flatMap((p) => p.toArray()), degree, tol, t0, t1, closed))
   } catch (e) {
     // too few points for an approximation: the curve through them
-    if (!(e instanceof KernelError) || pts.length > 6) throw e
+    if (!(e instanceof KernelError) || pts.length > 6 || _isCrash(e)) throw _crashOf(e)
     return Spline(...pts, { tangents, closed })
   }
   const edge = Edge._fromCurve(r[0])

@@ -82,7 +82,7 @@ export { DEFAULT_FONT, Font, FontError, loadFont } from './font.ts'
 // parts
 export { AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge } from './parts.ts'
 // patterns
-export { GridLocations, HexLocations, Locations, PolarLocations } from './locations.ts'
+export { GridLocations, HexLocations, Locations, PolarLocations, type LocationLike } from './locations.ts'
 // operations
 export { chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep, swing, thicken } from './operations.ts'
 // removing fillets and faces: the time limit of a kernel step
@@ -141,14 +141,14 @@ export { memoryUsage, scope, setWarningHandler, type MemoryUsage } from './kerne
 export type { Matrix, Movable, XYZ } from './geometry.ts'
 export type { BodyOptions, ColorLike, EdgesLike, ExtrudeOptions, FacesLike, FilletOptions, FilletRadius, IsoOptions, RegionLike, SortKey, SourcesLike, WallsLike } from './shapes.ts'
 export type { Coordinates } from './profiles.ts'
-export type { CornerOptions, PlacementOptions, PolygonOptions, TrapezoidOptions } from './sketches.ts'
+export type { CornerOptions, HullItem, PlacementOptions, PolygonOptions, TrapezoidOptions } from './sketches.ts'
 export type { TextOptions } from './text.ts'
 export type { Contour, PairAdjustment, Point, Segment } from './font.ts'
 export type { ExtrudeFunctionOptions, SweepOptions } from './operations.ts'
 export type { BendOptions, LatticeIndex, LatticeLayers, RangeOptions, TaperOptions, TwistOptions } from './deform.ts'
 export type { DraftAnalysis, FaceDraft } from './draft.ts'
 export type { BendAllowanceOptions, DevelopedLengthOptions, FlangeOptions, FoldOptions, UnfoldOptions } from './sheetmetal.ts'
-export type { FileItemsLike, GltfOptions, MeshOptions, ShapesLike, StepExportOptions, StepItemsLike } from './exporters.ts'
+export type { FileItemsLike, FileOptions, GltfOptions, MeshOptions, ShapesLike, StepExportOptions, StepItemsLike } from './exporters.ts'
 export type { BytesLike } from './_bytes.ts'
 export type { DxfReadOptions, DxfShapesLike, DxfWriteOptions } from './dxf.ts'
 export type { CurvatureKind, RenderMarker, RenderPoint, RenderView, Renderable } from './render.ts'

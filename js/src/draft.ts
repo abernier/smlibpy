@@ -15,7 +15,7 @@
 // (src/cpp/face_draft.cpp); the result is checked, because the kernel can return a closed body
 // whose edges leave its faces.
 
-import { ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _crashOf, _isCrash, ext, k, kernelCall } from './kernel.ts'
 import { CenterArc } from './curves.ts'
 import { type Axis, Plane, Vector, type VectorLike, _degrees as _toDegrees, _direction, _formatG, _radians } from './geometry.ts'
 import { Edge, Face, Part, ShapeList, Shell, Wire, _Body, _asPlane, _flattenFaces, _list } from './shapes.ts'
@@ -307,13 +307,13 @@ export function _contour(part: _Body, d: Vector, what: string): [_Body, Edge[]] 
   try {
     return _splitHalves(part, d, d, what)
   } catch (e) {
-    if (!(e instanceof ModelingError)) throw e
+    if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
     // The kernel traces the silhouettes of a face differently for -d (the same curves): a torus
     // split for -X kept a face that faces both ways, split for +X it splits cleanly.
     try {
       return _splitHalves(part, d, d.neg(), what)
     } catch (e2) {
-      if (!(e2 instanceof ModelingError)) throw e2
+      if (!(e2 instanceof ModelingError) || _isCrash(e2)) throw _crashOf(e2)
     }
     throw e
   }

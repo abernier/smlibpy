@@ -70,7 +70,7 @@ test('memory that is used up is a KernelError SM_ERR_OUT_OF_MEMORY that says wha
   assert.throws(() => kernelCall('make faces', () => k.create_planar_faces({ length: 2 ** 30 - 1 }), 'is the outline closed?'), (e: unknown) => {
     assert.ok(e instanceof KernelError)
     assert.equal(e.status, 'SM_ERR_OUT_OF_MEMORY')
-    assert.match(e.message, /^make faces failed \(SM_ERR_OUT_OF_MEMORY\): the kernel ran out of memory \(\d+ MB in use, at most 4096 MB\): dispose\(\) parts/)
+    assert.match(e.message, /^make faces failed \(SM_ERR_OUT_OF_MEMORY\): the kernel ran out of memory \(\d+ MB in use, the module's memory at \d+ MB of at most 4096 MB\): dispose\(\) parts/)
     assert.ok(!e.message.includes('outline'), 'the out-of-memory hint takes the place of the operation\'s')
     return true
   })
@@ -1326,6 +1326,8 @@ test('fromFile and toFile: load and exportFile of files in memory, the format by
   assert.throws(() => fromFile('x', 'a.txt'), { name: 'RangeError', message: "unknown file type '.txt'; fromFile reads .step, .stp, .igs, .iges, .stl, .smb, .smp, .dxf, .usda and .brep" })
   assert.throws(() => toFile(part, 'a.usdz'), { name: 'RangeError', message: 'toFile writes text USD (.usda, .usd), not .usdz' })
   assert.throws(() => toFile(part, 'a'), { name: 'RangeError', message: /unknown file type ''/ })
+  // (TypeScript sees the typo too: FileOptions, W11)
+  // @ts-expect-error
   assert.throws(() => toFile(part, 'a.stl', { asci: true }), { name: 'TypeError', message: /toStl\(\) got an unexpected option 'asci'/ })
 })
 

@@ -5122,15 +5122,18 @@ class Part(_Body):
         return out
 
     def _check_round_sizes(self, edges: list[Edge], setbacks: Sequence[float | dict[Any, float]], what: str,
-                           size_name: str) -> None:
+                           size_name: str) -> float:
         """Reject rounds that cannot fit: on a face, two edges running alongside each other
         must be further apart than their setbacks. (The kernel does not always notice and
         may return an invalid solid.) A setback is one for both faces of an edge, or one per face
-        (a dict by the face's identity: an asymmetric chamfer)."""
+        (a dict by the face's identity: an asymmetric chamfer). Returns how much of the room the
+        setbacks take where they come closest (0 where no edges run alongside): above
+        ``_NEAR_LIMIT`` the result's gaps are measured (see :meth:`_check_volume_change`)."""
         def on(setback: float | dict[Any, float], f: Face) -> float:
             return setback.get(f._identity(), max(setback.values())) if isinstance(setback, dict) else setback
 
         setback_of = {e._identity(): s for e, s in zip(edges, setbacks)}
+        fill = 0.0
         for e, s in zip(edges, setbacks):
             ends = {v._identity() for v in e.vertices()}
             samples = [e.point_at(t) for t in (0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0)]
@@ -5144,12 +5147,16 @@ class Part(_Body):
                     except RuntimeError:
                         continue  # the kernel finds no closest point on the edge: no check here
                     near = min(dists)
-                    if near >= total - 1e-9 or max(dists) > 1.5 * max(near, 1e-12):
-                        continue  # far enough, or not running alongside
+                    if max(dists) > 1.5 * max(near, 1e-12):
+                        continue  # not running alongside
+                    fill = max(fill, total / max(near, 1e-12))
+                    if near >= total - 1e-9:
+                        continue  # far enough
                     limit = near / 2 if g._identity() in setback_of else near
                     raise ModelingError(
                         f"{what}: the {size_name} is too large; the rounds on edges {near:.4g} apart would "
                         f"overlap (largest possible setback here: {limit:.4g})")
+        return fill
 
     @staticmethod
     @contextlib.contextmanager
@@ -5215,13 +5222,17 @@ class Part(_Body):
         return radius * math.tan(theta / 2) if theta > 1e-6 else radius
 
     def _check_volume_change(self, result: Part, edges: list[Edge], what: str, sizes: list[float],
-                             shape: str) -> None:
+                             shape: str, near_limit: bool = False) -> None:
         """Check a fillet or chamfer result: a valid solid whose volume changed in the right
         direction and by no more than the rounds can take away or add.
 
         ``sizes`` are the radii (``shape`` "circular" or "blend") or the setbacks
         (``shape`` "chamfer"). Near the size limit the kernel can return a valid-looking
-        body with whole regions missing.
+        body with whole regions missing. With ``near_limit`` (rounds that fill most of the room
+        between two edges, see :meth:`_check_round_sizes`) the gaps between the result's faces
+        are measured too: there SM_API's tolerance can leave its rounds open (a 20 mm cube
+        rounded by 9.97 came out with gaps of 4e-2 of its volume on Linux x86_64), which only
+        that measure sees.
         """
         size = sizes[0] if len(set(sizes)) == 1 else max(sizes)
         bound = _round_volume_bound(edges, sizes, shape)
@@ -5234,7 +5245,7 @@ class Part(_Body):
                 after = result._kernel_props(accuracy)["volume"]
             except KernelError:
                 pass
-            problem = result._solid_problem(after)  # integrates once more only if that failed
+            problem = result._solid_problem(after, gaps=near_limit)  # integrates once more only if that failed
         if problem is not None:
             raise KernelError(what, f"kernel result is {problem}", None,
                               f"the {'radius' if shape != 'chamfer' else 'length'} may be too large for the "
@@ -5348,7 +5359,8 @@ class Part(_Body):
             radii = per_edge
         else:
             radii = [float(radius)] * len(sel)
-        self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
+        near_limit = self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet",
+                                             "radius") > _NEAR_LIMIT
         if mitre:
             _require_mitred_corners("fillet", sel)
         cont = _continuity(continuity)
@@ -5374,7 +5386,7 @@ class Part(_Body):
             # (a step that ran in this process rounded the copy h holds: h gives it up; one from another
             # process is a Brep of its own, and h frees its copy)
             result = self._like(_take(h) if out is h.brep else out)
-            self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend")
+            self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend", near_limit)
             return result
 
         return _with_finer_rounds(attempt)
@@ -5471,7 +5483,7 @@ class Part(_Body):
             else:
                 radii.append(length)
                 setbacks.append(length)
-        self._check_round_sizes(sel, setbacks, "chamfer", "length")
+        near_limit = self._check_round_sizes(sel, setbacks, "chamfer", "length") > _NEAR_LIMIT
         if mitre:
             _require_mitred_corners("chamfer", sel)
         hint = "the length may be too large for the selected edges"
@@ -5505,7 +5517,7 @@ class Part(_Body):
                             out = _round_edges("chamfer", hint, h.brep, kedges, edges, rs, [0] * len(kedges),
                                                tolerance_factor=factor, mitre=mitre, isolate=isolate)
                 result = self._like(_take(h) if out is h.brep else out)
-                self._check_volume_change(result, edges, "chamfer", [sizes[i] for i in keep], "chamfer")
+                self._check_volume_change(result, edges, "chamfer", [sizes[i] for i in keep], "chamfer", near_limit)
                 return result
 
             try:
@@ -7288,6 +7300,11 @@ _ROUND_COMMENTS = {
     "corner edge computation failure": "it could not compute the edges of the corner",
     "vertex computation failure": "it could not compute the vertices of the corner",
 }
+
+
+#: How much of the room between two edges that run alongside rounds may fill before their result's
+#: gaps are measured (see Part._check_volume_change).
+_NEAR_LIMIT = 0.9
 
 
 def _with_finer_rounds(attempt: Callable[[float], Part]) -> Part:

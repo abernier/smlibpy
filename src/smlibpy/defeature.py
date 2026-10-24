@@ -19,7 +19,7 @@ import os
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
 
-from ._guard import _KernelFault, _how, _wait, isolated
+from ._guard import _KernelFault, _how, _wait, here, isolated
 from ._kernel import KernelError, ModelingError, k
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -40,14 +40,17 @@ TANGENCY = 2.0
 #: process. The steps are those of :func:`remove_fillets`, :func:`remove_faces`,
 #: ``surface_fillet``, ``shell``, ``offset``, ``thicken`` and ``Part.cells()``, fillets and
 #: chamfers of parts read from files (STEP, ``.smb``, USD) and, with GUARD_BOOLEANS, Booleans.
-#: ``0`` runs the kernel in this process.
+#: Where no other process can run a step (see GUARD_PROCESS), it runs in this process, held to this
+#: many seconds by the kernel's deadline: past it, the loops of the kernel's surface and topology
+#: intersections give up and the step fails as one that did not finish (a step that spends its time
+#: elsewhere in the kernel is not stopped). ``0`` runs the kernel in this process, without a limit.
 GUARD_SECONDS = 20.0
 
 #: Where the guarded steps run: ``"fork"``, a forked copy of this process per step (Linux,
 #: macOS); ``"helper"``, one helper process for the session that gets the bodies as ``.smb``
 #: files (for Windows, and for processes that must not fork); ``"auto"``, a fork where the
 #: system can fork and the helper elsewhere. Without either (a frozen application) the steps run
-#: in this process.
+#: in this process, held to GUARD_SECONDS by the kernel's deadline.
 GUARD_PROCESS = "auto"
 
 #: Run every Boolean (``+``, ``-``, ``&``, ``merge``) in another process too, as the steps above
@@ -92,7 +95,7 @@ def _isolated(what: str, work: Callable[[], Any]) -> Any:
     exact copy (``smlibpy._guard.isolated``). ``work`` may be a closure: where the steps run in the
     helper process, which takes functions of modules only, it runs here."""
     if _how(GUARD_PROCESS) == "helper" and "<" in getattr(work, "__qualname__", "<"):
-        return work()
+        return here(what, work)
     b = isolated(what, work)
     if b is None:
         raise KernelError(what, "the kernel returned no body")

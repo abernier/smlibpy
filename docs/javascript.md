@@ -162,7 +162,9 @@ applies. The differences come from the language:
   byte but for the writer's name.
 - **Types**: the free functions say what they give (`extrude(sketch, 3)` is a `Part`, an open curve
   a `Part | Shell`; `split(part, plane, 'both')` two parts), `render`, `show` and `htmlPage` check
-  their options (`{ veiw: 'top' }` does not compile), and the types of options and selections can
+  their options (`{ veiw: 'top' }` does not compile), so do `exportFile`, `toFile`, `Shape.export`
+  and `Mesh.export` (`FileOptions`: the options of the formats), `Part.deform` (a `Lattice`), `Hull`
+  (`HullItem`) and `new Locations(...)` (`LocationLike`), and the types of options and selections can
   be named (`RenderOptions`, `FilletOptions`, `FoldOptions`, `EdgesLike`, `ShapesLike`, ...). The
   declarations leave out the internal members (names that start with `_`) and type-check without
   Node's types and without `skipLibCheck`; `load(path)` gives a union, which `instanceof Part`
@@ -211,7 +213,10 @@ promise (an async function goes on after its first `await`, where the scope cann
 must not keep what it makes anywhere but in its result: a body stored in a variable outside is
 disposed with the rest. smlibwasm frees its own intermediates the same way (the tools and refused
 results of Booleans, the half space of `split`, the curves of sketches and text, the cells of a
-merge), so a call leaves behind only what it returns.
+merge, the unplaced body of a primitive with `align`, the loops of a revolve or a tapered or
+two-sided extrusion, the sheets of a face's `extrude`, `offset` and `thicken`, the views of
+`drawingViews`, the bends of `fold` and `flange`), so a call leaves behind only what it returns, as
+in Python: a loop that disposes each result stays flat.
 
 A mesh (`part.mesh()`, `tessellate`) is its arrays: the kernel's mesh it is made from is freed as
 soon as they are copied out, and mesh Booleans build one from the arrays when they need it.
@@ -236,8 +241,9 @@ may stop it earlier), and it never shrinks; each thread's kernel has its own. `m
 tells how much of it the kernel's objects take (`used`), how far it has grown (`heap`) and how far
 it can grow (`limit`), in bytes, and how many kernel objects JavaScript holds that are not freed
 yet (`handles`). A call that finds it used up fails with a `KernelError` of status
-`SM_ERR_OUT_OF_MEMORY` that says how much is in use: dispose of parts no longer needed, use
-`scope`, or let the event loop run.
+`SM_ERR_OUT_OF_MEMORY` that says how much is in use and how far the memory has grown (a browser
+that refuses to grow it further stops it below its limit): dispose of parts no longer needed, use
+`scope`, or let the event loop run. Once they are disposed the kernel works again.
 
 ```js
 const { used, limit, handles } = memoryUsage()
@@ -249,9 +255,12 @@ smlibpy's process, or the copy of it a guarded step runs in. Here the WebAssembl
 call (a trap), and the call fails with a `KernelError` that says "the kernel crashed". The module
 answers the next call, but on its memory as the crash left it, so what it computes from then on may
 be wrong: the first crash warns (`setWarningHandler`), `memoryUsage().crashes` counts them, and the
-steps that retry (shell, offset, removing fillets and faces) end at a crash rather than try again
-on that memory. An app that goes on after one loads the module again (reloads the page), or models
-in a `KernelWorker` (below), which starts a new kernel after a crash.
+steps that retry or fall back on another way (shell, offset, removing fillets and faces, Booleans
+that turn a seam, sweeps that try another mode, raycasts that ask a face's mesh, ...) end at a
+crash rather than go on on that memory. For the rest of the task the crash happened in, no step
+falls back: one that needs to fails with the error it met (the next task of the event loop has the
+fallbacks again). An app that goes on after a crash loads the module again (reloads the page), or
+models in a `KernelWorker` (below), which starts a new kernel after a crash.
 
 ## The raw kernel layer
 
@@ -353,7 +362,10 @@ the worker or comes back. A page whose worker returns plain data, a file (`toGlb
 mesh's arrays (`{ vertices: mesh.vertices, ... }`) never loads it. In Node, give the module's URL:
 `new KernelWorker(new URL('./cad.worker.js', import.meta.url))`; an idle worker does not keep Node
 running. webpack 5 bundles the worker as it is; Vite with `worker: { format: 'es' }` in its config
-(Vite 7; Vite 4 stalls on the package's own workers inside yours).
+(Vite 5 and later). Vite 4 cannot: it stalls on workers nested three deep ("Unexpected early exit",
+also for three files that only start each other), and a worker of yours that imports the package
+starts the package's supervisor, which starts its probe worker. With Vite 4, use the package on the
+page's main thread, or bundle the worker with Vite 5 or webpack.
 
 The kernel steps that can crash or loop run in a probe worker, a kernel of its own, on copies of
 the bodies, as smlibpy runs them in another process: those of `removeFillets`, `removeFaces`,
@@ -370,9 +382,13 @@ for its worker with `Atomics.wait`, which Node allows on every thread and browse
 of a cross-origin isolated page (one served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`). On a page's main thread, or without cross-origin
 isolation, the steps run directly: a step that crashes the kernel there ends the operation with a
-`ModelingError` (its memory may be damaged, see "Memory"), and a step that loops does not come
-back: remove fillets and faces in a worker (a `KernelWorker` call with a timeout stops even
-those). There the package
+`ModelingError` (its memory may be damaged, see "Memory"), and the kernel's deadline holds a step
+to `GUARD_SECONDS`: the loops of the kernel's surface and topology intersections, where the steps
+found looping for good spend their time (the outer round of the enclosure example), give up once it
+has passed, and the step fails as one that took too long (`removeFillets` and `removeFaces` drop it
+and go on). It returns at the next test in those loops, within a few seconds of the deadline; a
+step that spends its time elsewhere in the kernel is not stopped, and a `KernelWorker` call with a
+timeout stops any call. There the package
 starts a small worker of its own when it is imported (a browser starts a worker only while the
 thread that creates it is not busy), which starts the probe worker, with the kernel, for the first
 step. The two are the package's
@@ -623,7 +639,7 @@ export abstract class Shape {
         maxEdge?: number | null;
     }): Mesh;
     show(options?: ShowOptions): string;
-    export(path: string, options?: Record<string, unknown>): void;
+    export(path: string, options?: FileOptions): void;
     toString(): string;
 }
 export type SortKey = Axis | string | ((s: Any) => number);
@@ -991,9 +1007,9 @@ export class Part extends Shape {
     taper(scale: number, options?: TaperOptions): Part;
     bend(angle: number, options?: BendOptions): Part;
     unroll(options: UnrollOptions): Part;
-    deform(lattice: {
-        apply(part: Part, options?: Record<string, unknown>): Part;
-    }, options?: Record<string, unknown>): Part;
+    deform(lattice: Lattice, options?: {
+        tolerance?: number | null;
+    }): Part;
     removeFillets(faces?: FacesLike | null, options?: {
         maxRadius?: number | null;
         partial?: boolean;
@@ -1313,7 +1329,8 @@ export function Stroke(path: Edge | Wire, width: number, options?: {
     ends?: string;
     corners?: string;
 }): Sketch;
-export function Hull(...items: unknown[]): Sketch;
+export type HullItem = VectorLike | Vertex | Edge | Wire | Sketch | Face | readonly HullItem[];
+export function Hull(...items: HullItem[]): Sketch;
 export function makeFace(outer: Wire | Edge, ...holes: (Wire | Edge)[]): Sketch;
 export interface TextOptions {
     font?: string | BytesLike | Font | null;
@@ -1390,8 +1407,9 @@ export function AnnularSector(innerRadius: number, outerRadius: number, height: 
 export function Hole(radius: number, depth: number): Part;
 export function CounterBoreHole(radius: number, counterBoreRadius: number, counterBoreDepth: number, depth: number): Part;
 export function CounterSinkHole(radius: number, counterSinkRadius: number, depth: number, angle?: number): Part;
+export type LocationLike = Location | Plane | Locations | Face | Vertex | VectorLike | ShapeList<Face>;
 export class Locations extends Array<Location> {
-    constructor(...items: unknown[]);
+    constructor(...items: LocationLike[]);
     mul(other: Location | Locations): Locations;
     mul<T>(other: Shape | Iterable<T>): ShapeList<Any>;
     moved(location: Location): Locations;
@@ -1767,7 +1785,7 @@ export class Mesh {
     fuse(other: Mesh): Mesh;
     cut(other: Mesh): Mesh;
     intersect(other: Mesh): Mesh;
-    export(path: string, options?: Record<string, unknown>): void;
+    export(path: string, options?: FileOptions): void;
     toString(): string;
 }
 export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | null, angle?: number, options?: {
@@ -1781,8 +1799,11 @@ export function tessellate(shape: Shape | Iterable<Shape>, tolerance?: number | 
 export type ShapesLike = Shape | Mesh | (Iterable<ShapesLike> & object);
 export type StepItemsLike = Shape | Mesh | Vector | Plane | StepCurve | StepPoint | StepFrame | StepModel | (Iterable<StepItemsLike> & object);
 export type FileItemsLike = StepItemsLike | DxfShapesLike;
-export function exportFile(shapes: FileItemsLike, path: string, options?: Record<string, Any>): void;
-export function toFile(shapes: FileItemsLike, name: string, options?: Record<string, Any>): string | Uint8Array;
+export type FileOptions = StepExportOptions | (MeshOptions & {
+    ascii?: boolean;
+}) | GltfOptions | DxfWriteOptions | SvgOptions | UsdExportOptions;
+export function exportFile(shapes: FileItemsLike, path: string, options?: FileOptions): void;
+export function toFile(shapes: FileItemsLike, name: string, options?: FileOptions): string | Uint8Array;
 export function fromFile(data: string | BytesLike, name: string): Part | Shell | Sketch | Mesh | ShapeList<Part | Shell> | Shape | ShapeList<Shape>;
 export interface StepExportOptions {
     unit?: string;

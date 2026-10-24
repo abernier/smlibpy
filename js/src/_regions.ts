@@ -8,7 +8,7 @@
 // Also here: the operands of the 2D Booleans, rebuilt from their curves (the kernel's planar
 // Boolean is unreliable on bodies that were moved, see ai/plan/2d.md).
 
-import { KernelError, ModelingError, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
 import { Axis, BoundBox, Location, Plane, Vector, _formatG, _isPointLike, _vec, type VectorLike } from './geometry.ts'
 import { Line, _arcCurve } from './curves.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _asPlane, _fitPlane, _typeName } from './shapes.ts'
@@ -181,7 +181,7 @@ export class CurveCorners {
       try {
         return piece.offset(d, { plane: this.fr.plane })
       } catch (x) {
-        if (!(x instanceof ModelingError || x instanceof RangeError)) throw x
+        if (!(x instanceof ModelingError || x instanceof RangeError) || _isCrash(x)) throw _crashOf(x)
         const f = 0.5 ** (i + 1)
         piece = atEnd ? e.trim(1 - f, 1) : e.trim(0, f)
       }
@@ -504,7 +504,7 @@ export function offsetRegion(sk: Sketch, distance: number, corners: string): Ske
     const result = build(newFaces, fr, sk, 'offset')
     if (_offsetValid(result, sk, faces, d, corners)) return result
   } catch (e) {
-    if (!(e instanceof NeedBooleans || e instanceof KernelError)) throw e
+    if (!(e instanceof NeedBooleans || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     // built from pieces below
   }
   const pieces: Piece[] = []
@@ -684,7 +684,7 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
     try {
       inner = base.offset(-h, { corners })
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       return outer
     }
     return outer.cut(inner)
@@ -711,7 +711,7 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
     ;[loop] = simplify(loop, new Array<string>(loop.length).fill(''), true, tol)
     return build([[loop, []]], fr, null, 'Stroke')
   } catch (e) {
-    if (!(e instanceof NeedBooleans || e instanceof KernelError)) throw e
+    if (!(e instanceof NeedBooleans || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     // built from pieces below
   }
   const pieces: Piece[] = []
@@ -748,7 +748,7 @@ function _strokeCurves(segs: Seg[], fr: Frame, h: number, ends: string, corners:
     if (hit === null) return build([[orientCcw(loop.map((e) => segOfEdge(e, fr))), []]], fr, null, 'Stroke')
     problem = new ModelingError(`Stroke: the band runs into itself near ${fr.fp(fr.local(hit))}`)
   } catch (e) {
-    if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+    if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
     problem = e
   }
   try {
@@ -763,7 +763,7 @@ function _strokeCurves(segs: Seg[], fr: Frame, h: number, ends: string, corners:
     }
     return unionAll(sketches)
   } catch (e) {
-    if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+    if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
     throw problem
   }
 }
@@ -1167,7 +1167,7 @@ export function rebuiltBrep(sk: Sketch): number | null {
         for (const w of f.wires()) curves.push(...w._copyCurves())
         pieces.push(k.create_planar_faces(curves))
       } catch (e) {
-        if (!_isRuntimeError(e)) throw e
+        if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
         for (const c of curves) ext.delete_curve(c)
         return null
       }
