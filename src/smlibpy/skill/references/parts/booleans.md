@@ -58,7 +58,8 @@ Measured on 10 mm boxes unless noted:
 | face or cylinder **tangent** to a cylinder (line contact) in a fuse | **raises `ModelingError`** |
 | sphere or cylinder tangent to a flat face, coaxial cylinders, crossed cylinders | valid |
 | crossing holes whose seams lie tangent to the other hole (`Box(20, 20, 20) - Cylinder(3, 40).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)`) | right: 6931.7476 (the second hole goes in turned about its axis); `&` of the two holes 62.721 |
-| a groove pin tangent to a bore (`(Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)`) | right: 24299.2587 (the pin goes in turned about its axis) |
+| a groove pin tangent to a bore (`(Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)`) | right: 24299.2587 (the pin goes in turned about its axis); also with `to_nurbs()` copies of the part or the pin |
+| a ball tangent to the seam of an earlier hole (`(Box(20, 20, 20) - Cylinder(3.174, 40).translate(-2.051, -2.981, 0)) & Sphere(3.159).translate(1.123, 0.178, 2.221)`) | right: 111.1921 (the hole's seam is moved on its face first); it gave 6.9039 |
 | a tool beside an earlier parallel hole (`(Box(40, 40, 10) - Cylinder(6, 30)) - Cylinder(3, 30).translate(8, 0, 0)`), also in a curved part (`(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0, 0)`) | right: 14612.2528 and 28160.6083 (tried again with a NURBS copy of the tool); within about 1e-8, where both tools at once are exact |
 
 ## Gotchas
@@ -71,10 +72,12 @@ Measured on 10 mm boxes unless noted:
   24331.7029 instead of 24299.2587). smlibpy finds such seams and turns the operand whose seam
   it is about its own axis first (as `Cylinder(2, 60).rotate(Z, 45)` before placing it would),
   where that keeps its shape: a cylinder, cone, sphere, hole tool or other body whose faces are
-  all planes across one axis or round about it. The seam edge of that operand then lies
-  elsewhere in the result (select by geometry, not by seam vertices). Not covered: the seam of
-  an operand that is no such body (an earlier hole of the part), a torus' outer equator (no turn
-  moves it), and seams touching free-form faces. Compare such volumes with a formula.
+  all planes across one axis or round about it. The seam of an earlier hole (or boss) of the part
+  is moved on its face instead: the hole's cylinder, cone or sphere is added and cut again turned.
+  B-spline faces that are such shapes (NURBS copies, imported parts) are recognized first. The
+  seam edge then lies elsewhere in the result (select by geometry, not by seam vertices). Not
+  covered: a torus' outer equator (no turn moves it) and seams of free-form faces. Compare such
+  volumes with a formula.
 - **Overlapping parallel through cuts**: a single tool that overlaps an earlier parallel hole
   (keyholes, slots made of holes) makes the kernel fail; smlibpy then tries again with a NURBS
   copy of the tool, which works: `Box(40, 40, 10) - Cylinder(6, 30) -

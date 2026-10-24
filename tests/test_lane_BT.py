@@ -313,9 +313,13 @@ def test_split_by_a_sheet_that_does_not_cut_through():
     s = _wave()
     with pytest.raises(ModelingError, match="does not cut through"):
         Box(20, 20, 20).split(s.translate(0, 0, 50))  # misses the part
-    inside = Box(4, 4, 4).faces().top().one().to_shell()  # a plane sheet within the part: not extended
+    # a plane sheet within the part is extended as its plane (closeout K1); one of two faces is not
+    small = Box(4, 4, 4)
+    above, below = Box(20, 20, 20).split(small.faces().top().one().to_shell(), "both")
+    assert (above.volume, below.volume) == (approx(3200), approx(4800))
+    two = stitch(small.faces().top().one(), small.faces().sort_by(X)[-1])
     with pytest.raises(ModelingError, match="does not cut through"):
-        Box(20, 20, 20).split(inside)
+        Box(20, 20, 20).split(two)
 
 
 def test_sheets_trimmed_by_parts():

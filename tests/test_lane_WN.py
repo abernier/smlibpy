@@ -1249,6 +1249,7 @@ def test_a_fork_waits_for_another_threads_kernel_call():
 _NOGIL_SOURCES = {
     "boolean": "8791083e676041d1",  # SmPyBooleans.cpp
     "boolean_with_options": "73e44a942abac7ac",  # SmPyBooleans.cpp
+    "boolean_with_curves": "07d63c5316f1aeeb",  # SmPyBooleans.cpp (its edges by classification: closeout K1)
     "boolean_2d": "0a680a7224916a78",  # SmPyBooleans.cpp
     "non_manifold_boolean": "a51d755a24de47ff",  # SmPyBooleans.cpp
     "chamfer_fillet": "1b8473e1f1c7c8ad",  # SmPyFillets.cpp

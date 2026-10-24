@@ -327,10 +327,12 @@ def test_touching_faces_far_from_the_rest_are_checked_to_their_own_size():
     for i, j in [(0, 0), (0, 3), (1, 0), (1, 1), (4, 1)]:
         squares = squares + Rectangle(1, 1).translate(i + 0.5, j + 0.5)
     assert squares.area == approx(6)
+    # Faces apart from the other operand's go around the kernel (closeout K1): the squares that touch
+    # at corners, which raised, and the far one keep their area.
     squares = Rectangle(1, 1).translate(1000.5, 0.5)
-    with pytest.raises(ModelingError, match="touch each other at a point"):
-        for i, j in [(0, 2), (3, 2), (3, 3), (4, 1), (4, 3)]:
-            squares = squares + Rectangle(1, 1).translate(i + 0.5, j + 0.5)
+    for i, j in [(0, 2), (3, 2), (3, 3), (4, 1), (4, 3)]:
+        squares = squares + Rectangle(1, 1).translate(i + 0.5, j + 0.5)
+    assert squares.area == approx(6) and sorted(round(f.area, 9) for f in squares.faces())[0] == approx(1)
 
 
 def test_empty_results_and_operand_errors():

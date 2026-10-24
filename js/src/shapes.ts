@@ -4249,15 +4249,58 @@ export function _intersectionProblem(result: Part, operands: readonly Part[]): s
   return null
 }
 
+/** What is wrong with a union or a cut where quick evidence says to look, or null. Both lie within
+ * their operands (a cut within the part): points of the result's surface beyond the operands' loose
+ * boxes are wrong. A union holds every point of its operands' surfaces, and a cut none of its tools'
+ * inside it: these are classified where the result may be an operand given back (as many faces, and
+ * its vertices among the result's), and for a union where an operand's loose box reaches out of the
+ * result's. The kernel can take an operand that reaches out of the other for inside it and return
+ * the other one, with a vertex or two imprinted: `Cylinder(5, 5).fuse(Box(20, 4, 16).rotate(X,
+ * 90).translate(0, -3, -0.5)).fuse(Cylinder(2, 12).translate(2, -2.3693, 3.5))` gave the first
+ * operand (1358.54 for 1446.61); and return a cut that reaches out of the part: `Cylinder(2,
+ * 12).cut(Cylinder(1.5, 30).rotate(Y, 90).translate(1, -0.5, 2.4787))`, of volume 0, reached to x =
+ * 16 (right: 125.96). */
+export function _unionOrCutProblem(result: Part, part: Part, tools: readonly Part[], op: number): string | null {
+  const box = result._looseBox()
+  const tol = 1e-6 * box.diagonal + 1e-5
+  const near = Math.max(1e-4 * box.diagonal, 1e-5) // the new edges are fitted, to about 2e-5
+  const operands = [part, ...tools]
+  let hull = part._looseBox()
+  if (op === k.BooleanOp.UNION) for (const t of tools) hull = hull.union(t._looseBox())
+  if (!(hull.contains(box.min, tol) && hull.contains(box.max, tol))) {
+    if (!_surfacePoints(result).every((p) => hull.contains(p, near))) {
+      return op === k.BooleanOp.UNION ? 'partly outside its operands' : 'partly outside the part'
+    }
+  }
+  const n = k.brep_face_count(result._brep)
+  const given = operands.map((x) => k.brep_face_count(x._brep) === n && _sameVertices(x, result, tol, true))
+  if (op === k.BooleanOp.UNION) {
+    for (const [i, x] of operands.entries()) {
+      const xb = x._looseBox()
+      const out = !(box.contains(xb.min, tol) && box.contains(xb.max, tol))
+      if ((out || given.some((g, j) => g && j !== i)) && result._classify(_surfacePoints(x), near).some(([w]) => w === 'outside')) {
+        return 'an operand left out, although it reaches out of the other (the kernel took it for inside the other operand)'
+      }
+    }
+  } else if (op === k.BooleanOp.DIFFERENCE && given[0]) {
+    for (const t of tools) {
+      if (result._classify(_surfacePoints(t), near).some(([w]) => w === 'inside')) {
+        return 'the part given back uncut, although a tool reaches into it (the kernel took the tool for outside the part)'
+      }
+    }
+  }
+  return null
+}
+
 /** Whether two bodies have as many vertices and each vertex of `a` lies near one of `b` (within
  * `tol`, or up to 4 `tol`: cells of a grid; for the quick test of a body given back unchanged,
- * where too many is safe). */
-function _sameVertices(a: _Body, b: _Body, tol: number): boolean {
+ * where too many is safe). With `among`, `b` may have more vertices. */
+function _sameVertices(a: _Body, b: _Body, tol: number, among = false): boolean {
   const cellsOf = (body: _Body): number[][] =>
     (k.brep_vertices(body._brep) as number[]).map((v) => (k.vertex_point(v) as number[]).map((c) => Math.floor(c / tol)))
   const pa = cellsOf(a)
   const pb = cellsOf(b)
-  if (pa.length !== pb.length) return false
+  if (among ? pa.length > pb.length : pa.length !== pb.length) return false
   const cells = new Set(pb.map((c) => c.join(',')))
   const around = [0, -1, 1].flatMap((i) => [0, -1, 1].flatMap((j) => [0, -1, 1].map((m) => [i, j, m])))
   return pa.every((c) => around.some(([i, j, m]) => cells.has(`${c[0] + i},${c[1] + j},${c[2] + m}`)))
@@ -5497,7 +5540,7 @@ export class Part extends _Body {
       }
       if (result !== null && problem === null) return result
       if (parts.length === 1) {
-        const retry = this._nurbsRetry(parts, op, name)
+        const retry = this._nurbsRetry(parts, op, name) ?? this._swappedRetry(parts[0], op, name)
         if (retry !== null) return retry
       } else {
         // Tools that overlap each other (two holes side by side) can fail one after the other where
@@ -5585,6 +5628,24 @@ export class Part extends _Body {
     }
   }
 
+  /** A union or an intersection again with the operands the other way round, which the kernel can
+   * get right where it failed or took one operand for inside the other; checked as the first try,
+   * against the operands' volume bounds and as `isValid()` checks (the gaps between its faces: the
+   * other way round, the kernel can also return a body that is open). Null for a cut, or where the
+   * retry fails or is wrong too. */
+  _swappedRetry(tool: Part, op: number, name: string): Part | null {
+    if (op !== k.BooleanOp.UNION && op !== k.BooleanOp.INTERSECTION) return null
+    try {
+      const retry = this._like(tool._runBoolean([this], op, name))
+      if (this._booleanProblem(retry, [tool], op) !== null || _volumeProblem(retry, this, [tool], op)) return null
+      if (k.brep_face_count(retry._brep) && retry._solidProblem() !== null) return null
+      return retry
+    } catch (e) {
+      if (!(e instanceof KernelError)) throw e
+      return null
+    }
+  }
+
   _runBoolean(tools: readonly _Body[], op: number, name: string): number {
     const hint = 'the operands may touch only in a degenerate way, or an operand is broken'
     const local = (): number =>
@@ -5606,7 +5667,7 @@ export class Part extends _Body {
         // Boolean, is not integrated here, so that a chain of Booleans integrates nothing: the next
         // Boolean trusts it. isValid() and the next feature check it (it can be inside out or leave
         // a face out).
-        const found = op === k.BooleanOp.INTERSECTION ? _intersectionProblem(result, [this as Part, ...tools]) : null
+        const found = op === k.BooleanOp.INTERSECTION ? _intersectionProblem(result, [this as Part, ...tools]) : _unionOrCutProblem(result, this as Part, tools, op)
         if (found === null) result._h.sound = _TRUSTED
         return found
       }
@@ -6886,9 +6947,10 @@ export class Part extends _Body {
    *
    * A sheet (a `Shell`, or a face that is not planar: a curved split surface, a surface fitted to a
    * scan) splits the part along its surface; "above" is the side its normals point to (`normalAt`).
-   * The sheet must cut through the part. A sheet of one free-form face whose edges end inside the
-   * part is extended beyond them, tangentially, until it does (the face's trim is not kept); other
-   * sheets throw a ModelingError ("the surface does not cut through the part"). The two sides
+   * The sheet must cut through the part. A sheet of one face whose edges end inside the part is
+   * extended beyond them until it does (the face's trim is not kept): a free-form face tangentially,
+   * a plane, cylinder, cone or sphere as itself (`Face.extend`; around a closed face it cannot grow);
+   * sheets of several faces throw a ModelingError ("the surface does not cut through the part"). The two sides
    * together hold the part's volume, which is checked. A planar face (or a sketch) stands for its
    * plane.
    */
@@ -7056,12 +7118,24 @@ export class Part extends _Body {
     if (k.brep_face_count(sheet._brep) === 0) throw new RangeError('split: the sheet is empty')
     this._requireValid('split')
     let pieces = this._sliced(sheet)
-    if (pieces === null && sheet.faces().length === 1 && sheet.faces()[0].geomType === 'bspline') {
-      // A free-form sheet whose edges end inside the part: extended beyond them (its normals point as
-      // before, the surface's).
+    if (pieces === null && sheet.faces().length === 1) {
+      // A sheet of one face whose edges end inside the part: extended beyond them (its normals point as
+      // before, the surface's): a free-form face along its surface, a plane, cylinder, cone or sphere as
+      // itself (Face.extend; closed sides stay).
       const reach = 2 * (this.bbox().diagonal + sheet.bbox().diagonal)
-      const wide = Shell._wrap(kernelCall('split', () => ext.extended_sheet(sheet.faces()[0]._f, reach), "the sheet's surface cannot be extended"))
-      pieces = this._sliced(wide)
+      const face = sheet.faces()[0]
+      let wide: Shell | null = null
+      if (face.geomType === 'bspline') {
+        wide = Shell._wrap(kernelCall('split', () => ext.extended_sheet(face._f, reach), "the sheet's surface cannot be extended"))
+      } else {
+        try {
+          wide = face.extend(reach)
+        } catch (e) {
+          if (!(e instanceof RangeError || e instanceof ModelingError || e instanceof KernelError)) throw e
+          wide = null // (no side that can grow)
+        }
+      }
+      if (wide !== null) pieces = this._sliced(wide)
     }
     if (pieces === null) {
       throw new ModelingError(
@@ -8850,6 +8924,8 @@ export class Sketch extends Shell {
       return this._empty()
     }
     if (split) {
+      const apart = this._boolean2dApart(tools, op, name)
+      if (apart !== null) return apart
       let contact = this._contact()
       for (const t of tools) contact = contact ?? t._contact()
       if (contact !== null) return this._boolean2dByFaces(tools, op, name, contact)
@@ -8899,6 +8975,80 @@ export class Sketch extends Shell {
 
   _empty(): Sketch {
     return this._like(ext.copy_faces(this._brep, []))
+  }
+
+  /** The planar Boolean group by group where the faces of the operands lie in groups far apart (the
+   * whole spans ten times the largest group in which both operands have faces), or null. A group is
+   * the faces linked by overlapping boxes; groups of one operand's faces only are kept as they are
+   * (dropped where the Boolean leaves nothing of them). The kernel's planar Boolean takes its
+   * tolerances from the extent of its operands: a unit square fused to its neighbour at a corner,
+   * with a third square 1000 away, became a sliver of 0.2778 (kernel plan C1). */
+  _boolean2dApart(tools: readonly Sketch[], op: number, name: string): Sketch | null {
+    const own = k.brep_faces(this._brep) as number[]
+    const other: [Sketch, number][] = tools.flatMap((t) => (k.brep_faces(t._brep) as number[]).map((f): [Sketch, number] => [t, f]))
+    const n = own.length
+    if (n + other.length < 3) return null
+    const boxes = [...own, ...other.map(([, f]) => f)].map((f) => {
+      const [lo, hi] = k.face_bounding_box(f, false) as number[][]
+      return [...lo, ...hi]
+    })
+    const span = (ids: readonly number[]): number => {
+      let s = 0
+      for (let a = 0; a < 3; a++) {
+        const d = Math.max(...ids.map((i) => boxes[i][a + 3])) - Math.min(...ids.map((i) => boxes[i][a]))
+        s += d * d
+      }
+      return Math.sqrt(s)
+    }
+    const all = boxes.map((_, i) => i)
+    const whole = span(all)
+    const tol = 1e-6 * Math.max(1, whole)
+    const root = all.slice()
+    const find = (i: number): number => {
+      while (root[i] !== i) {
+        root[i] = root[root[i]]
+        i = root[i]
+      }
+      return i
+    }
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const [a, b] = [boxes[i], boxes[j]]
+        if (![0, 1, 2].some((c) => a[c + 3] < b[c] - tol || b[c + 3] < a[c] - tol)) root[find(i)] = find(j)
+      }
+    }
+    const groups = new Map<number, number[]>()
+    for (const i of all) {
+      const r = find(i)
+      if (!groups.has(r)) groups.set(r, [])
+      groups.get(r)!.push(i)
+    }
+    if (groups.size < 2) return null
+    const both = [...groups.values()].filter((g) => g[0] < n && g[g.length - 1] >= n)
+    const size = both.length ? Math.max(...both.map(span)) : 0
+    if (!(whole > 10 * size)) return null
+    const pieces: Sketch[] = []
+    kernelCall(name, () => {
+      for (const g of groups.values()) {
+        const mine = g.filter((i) => i < n).map((i) => own[i])
+        const theirs = new Map<Sketch, number[]>()
+        for (const i of g.filter((i) => i >= n)) {
+          const [t, f] = other[i - n]
+          if (!theirs.has(t)) theirs.set(t, [])
+          theirs.get(t)!.push(f)
+        }
+        const parts = tools.filter((t) => theirs.has(t)).map((t) => t._like(ext.copy_faces(t._brep, theirs.get(t)!)))
+        if (mine.length && parts.length) {
+          const tool = parts.length === 1 ? parts[0] : parts[0]._like(ext.combine(parts.map((x) => x._brep)))
+          pieces.push(this._like(ext.copy_faces(this._brep, mine))._boolean2dWith([tool], op, name))
+        } else if (mine.length && op !== k.BooleanOp2D.INTERSECTION) {
+          pieces.push(this._like(ext.copy_faces(this._brep, mine)))
+        } else if (parts.length && (op === k.BooleanOp2D.UNION || op === k.BooleanOp2D.EXCLUSIVE_OR)) {
+          pieces.push(...parts)
+        }
+      }
+    })
+    return this._combined(pieces)
   }
 
   _slabOrEmpty(other: Sketch, op: number, name: string): Sketch {

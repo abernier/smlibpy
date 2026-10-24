@@ -10,6 +10,7 @@
 #include "kernel.h"
 #include "ext_shared.h"
 #include "seams.h"
+#include "analytics.h"
 #include "analytic.h"
 
 #include <SmApiGeneral.h>
@@ -710,6 +711,13 @@ static const SmRegion* voted_region(const SmBrep* brep, const SmPoint3d& point, 
     return best->first;
 }
 
+// The diagonal of a body's loose box (1 where it has none).
+static double brep_size(const SmBrep* brep)
+{
+    SmExtent3d box;
+    return brep->CalculateBoundingBox(box) == SM_SUCCESS ? box.GetSize().Length() : 1.0;
+}
+
 // The kernel's coarse volume of a body (SmBrep::ComputePreciseProperties to 1e-4), NaN where that
 // fails.
 static double coarse_volume(const SmBrep* brep)
@@ -727,7 +735,9 @@ static double coarse_volume(const SmBrep* brep)
 }
 
 // Whether the result of a Boolean of bodies of volumes va and vb can be right: a closed, manifold
-// solid (any body for a merge) whose volume lies within the bounds theirs set, within 1e-3 of the
+// solid (any body for a merge) with a volume (more than 1e-6 of the larger body's: the kernel can
+// return a closed body of two faces and no volume for an intersection of a turned or re-seamed
+// body) that lies within the bounds theirs set, within 1e-3 of the
 // larger body (a union), the smaller (an intersection) or the first (a difference): a union, or a
 // merge, holds the larger body and no more than both; an intersection no more than the smaller; a
 // difference no more than the first body and no less than what the second can take of it.
@@ -736,7 +746,7 @@ static bool plausible(SmBrep* result, double va, double vb, SmBooleanOperationTy
     if (result->GetNumFaces() == 0 || (!non_manifold && !result->IsManifoldSolid()))
         return false;
     const double v = coarse_volume(result);
-    if (!(v > 0))  // (also NaN)
+    if (!(v > 1e-6 * std::max(va, vb)))  // (also NaN; a closed body of no volume is no result either)
         return false;
     switch (op)
     {
@@ -771,34 +781,63 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, 
             SmApiGetOrCreateContext()->SetDoingBoolean(FALSE);
         return st;
     };
-    if (!imprinting && brep1->IsManifoldSolid() && brep2->IsManifoldSolid())
+    const bool solid1 = brep1->IsManifoldSolid(), solid2 = brep2->IsManifoldSolid();
+    // (a merge of a part into an earlier merge: the part's seams against the merged cells)
+    const bool merging = non_manifold && op == SM_BO_MERGE;
+    if (!imprinting && solid2 && (solid1 || merging))
     {
         // Where the faces cross along a curve tangent to a seam of either body, the kernel's Boolean
         // goes wrong (a valid body of the wrong volume, or an error; seams.cpp, kernel plan B6). The
         // body that seam belongs to is turned about its axis first where that keeps its shape (a
-        // body of revolution): on copies, at up to three angles that clear the seam. A result that
-        // cannot be right (a union smaller than one of the bodies: the turned one taken for inside
-        // the other) is passed over too; where the kernel fails with each, the bodies go in as they
-        // are.
+        // body of revolution): on copies, at up to three angles that clear the seam. A body of
+        // another shape (a part with a hole) goes in with the seams moved on their faces instead
+        // (seams.h, reseamed). A result that cannot be right (a union smaller than one of the
+        // bodies: the turned one taken for inside the other) is passed over too; where the kernel
+        // fails with each, the bodies go in as they are.
         SeamTurns turns1, turns2;
+        SmBrep *moved1 = nullptr, *moved2 = nullptr;  // (copies with seams moved on their faces)
+        SmBrep *seen1 = nullptr, *seen2 = nullptr;    // (copies with B-spline faces recognized as analytic)
         try
         {
-            turns2 = seam_turns(brep2, brep1, 0.0, 3);
-            turns1 = seam_turns(brep1, brep2, 0.0, 3);
+            // A seam of a B-spline face (a NURBS copy, an imported part) is turned or moved on a copy
+            // whose faces are recognized as cylinders, cones, spheres or tori, where they are such.
+            if (solid1 && freeform_seam_touches(brep1, brep2, 0.0))
+                seen1 = recognize_analytics(brep1, 1e-9 * std::max(1.0, brep_size(brep1)));
+            const SmBrep* base1 = seen1 ? seen1 : brep1;
+            if (freeform_seam_touches(brep2, base1, 0.0))
+                seen2 = recognize_analytics(brep2, 1e-9 * std::max(1.0, brep_size(brep2)));
+            const SmBrep* base2 = seen2 ? seen2 : brep2;
+            turns2 = seam_turns(base2, base1, 0.0, 3);
+            if (solid1)
+                turns1 = seam_turns(base1, base2, 0.0, 3);
+            if (solid1 && turns1.angles.empty())
+                moved1 = reseamed(base1, base2, 0.0);
+            if (turns2.angles.empty())
+                moved2 = reseamed(base2, moved1 ? moved1 : base1, 0.0);
         }
         catch (const std::exception&)  // (a seam that cannot be evaluated: the bodies as they are)
         {
             turns1 = turns2 = SeamTurns();
+            delete moved1, delete moved2, delete seen1, delete seen2;
+            moved1 = moved2 = seen1 = seen2 = nullptr;
         }
-        const size_t tries = std::max(turns1.angles.size(), turns2.angles.size());
+        const SmBrep* from1 = moved1 ? moved1 : seen1 ? seen1 : brep1;
+        const SmBrep* from2 = moved2 ? moved2 : seen2 ? seen2 : brep2;
+        const size_t tries =
+            std::max({turns1.angles.size(), turns2.angles.size(), size_t(moved1 || moved2 || seen1 || seen2 ? 1 : 0)});
         const double va = tries ? coarse_volume(brep1) : 0.0, vb = tries ? coarse_volume(brep2) : 0.0;
         for (size_t i = 0; i < tries; ++i)
         {
             SmBrep *c1 = nullptr, *c2 = nullptr;
-            check(SmApiBrepCopy(brep1, c1), "SmApiBrepCopy");
-            if (SmApiBrepCopy(brep2, c2) != SM_SUCCESS)
+            if (SmApiBrepCopy(from1, c1) != SM_SUCCESS)
+            {
+                delete moved1, delete moved2, delete seen1, delete seen2;
+                check(SM_ERR, "SmApiBrepCopy");
+            }
+            if (SmApiBrepCopy(from2, c2) != SM_SUCCESS)
             {
                 delete c1;
+                delete moved1, delete moved2, delete seen1, delete seen2;
                 check(SM_ERR, "SmApiBrepCopy");
             }
             SmBrep* result = nullptr;
@@ -815,6 +854,7 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, 
             {
                 delete c1;
                 delete c2;
+                delete moved1, delete moved2, delete seen1, delete seen2;
                 throw;
             }
             if (st == SM_SUCCESS)  // the result is c1, changed; c2 is deleted
@@ -823,6 +863,7 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, 
                 {
                     delete brep1;
                     delete brep2;
+                    delete moved1, delete moved2, delete seen1, delete seen2;
                     return result;
                 }
                 delete result;
@@ -831,6 +872,7 @@ SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, 
             delete c1;
             delete c2;
         }
+        delete moved1, delete moved2, delete seen1, delete seen2;
     }
     SmBrep* result = nullptr;
     const SmStatus st = run(brep1, brep2, result);
@@ -893,6 +935,75 @@ Value classify_points(const SmBrep* brep, const std::vector<double>& points, dou
         }
     }
     return out;
+}
+
+std::pair<SmBrep*, std::vector<SmEdge*>> boolean_with_curves(SmBrep* brep1, SmBrep* brep2, int operation)
+{
+    if (!brep1 || !brep2)
+        throw std::invalid_argument("brep is None");
+    // (the operands as they were, to test the result's edges against: on success boolean() takes both)
+    SmBrep *first = nullptr, *second = nullptr;
+    check(SmApiBrepCopy(brep1, first), "SmApiBrepCopy");
+    if (SmApiBrepCopy(brep2, second) != SM_SUCCESS)
+    {
+        delete first;
+        check(SM_ERR, "SmApiBrepCopy");
+    }
+    SmBrep* result = nullptr;
+    try
+    {
+        result = boolean(brep1, brep2, operation, false);
+    }
+    catch (...)
+    {
+        delete first, delete second;
+        throw;
+    }
+    // An edge joins the two bodies where it lies on the surface of both: at a quarter, half and three
+    // quarters of the way along it, each classified on the boundary of each body (within the edge's
+    // tolerance, at least 1e-6 of the bodies' size), as ShapeList.joining tests them.
+    std::vector<SmEdge*> out;
+    try
+    {
+        const double size = std::max(brep_size(first), brep_size(second));
+        SmTArray<SmEdge*> edges;
+        result->GetEdges(edges);
+        for (ULONG i = 0; i < edges.GetSize(); ++i)
+        {
+            const SmCurve* curve = edges[i]->GetCurve();
+            const SmExtent1d ivl = edges[i]->GetInterval();
+            if (!curve)
+                continue;
+            std::vector<double> points;
+            for (double t : {0.25, 0.5, 0.75})
+            {
+                SmPoint3d p;
+                check(curve->EvaluatePoint(ivl.GetMin() + t * (ivl.GetMax() - ivl.GetMin()), p), "SmCurve::EvaluatePoint");
+                points.insert(points.end(), {p.x, p.y, p.z});
+            }
+            const double tol = std::max(SmTol::GetZoneTol3d(edges[i]).val, 1e-6 * size);
+            bool on_both = true;
+            for (const SmBrep* body : {static_cast<const SmBrep*>(first), static_cast<const SmBrep*>(second)})
+            {
+                const Value where = classify_points(body, points, tol);
+                for (size_t j = 0; j < 3 && on_both; ++j)
+                {
+                    const std::string& w = where.at(j).at(0).str();
+                    on_both = w == "face" || w == "edge" || w == "vertex";
+                }
+            }
+            if (on_both)
+                out.push_back(edges[i]);
+        }
+    }
+    catch (...)
+    {
+        delete first, delete second;
+        delete result;
+        throw;
+    }
+    delete first, delete second;
+    return {result, out};
 }
 
 Value edge_angles(const SmBrep* brep, const std::vector<SmEdge*>& edges)

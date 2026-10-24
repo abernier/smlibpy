@@ -597,8 +597,8 @@ test('Boolean results are checked when asked', () => {
   const common = Part._wrap(k.boolean(a._copyBrep(), b._copyBrep(), { operation: k.BooleanOp.INTERSECTION }))
   assert.ok(!common.isValid() && /open between its faces/.test(common._solidProblem()!))
   throwsMatching(() => common.fillet(common.edges(), 0.1), ModelingError, /not a valid solid/)
-  const rest = a.cut(b)
-  assert.ok(!rest.isValid() && rest._solidProblem() === 'without volume')
+  // The difference had no volume and reached out of the part (to x = 16): refused now (closeout K1).
+  throwsMatching(() => a.cut(b), ModelingError, /partly outside the part/)
   throwsMatching(() => a.intersect(b), ModelingError, /partly outside an operand/) // reaches out of the first cylinder
   assert.ok(Box(20, 20, 20).cut(Cylinder(5, 30)).isValid())
 })

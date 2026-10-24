@@ -182,7 +182,11 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The bend volume's exact surfaces (`SmBendVolume::MakeExactBSpline1stOutSurface`) put bend cylinders at the axis point and sample the surface's parameter box, not the face, so deformed faces are fitted B-splines | samples the exact map on each face and edge and builds planes, cylinders, cones, lines and circles where the image is one (`src/cpp/deform_analytic.cpp`), with trims rebuilt within 1e-8, else the fit |
 | The sheet-metal unbend fits the edges of a bend zone within 1e-4 (a hole across a bend became 3 arcs and 2 B-splines, 1.8e-5 off its circle) | takes the kernel's exact lines and arcs where it has them, else a fit within 1e-7 that keeps the curve's parameters, and makes the flat pattern's outline of lines, arcs and circles |
 | SM_API's projection of a body onto a plane keeps only the visible half of what the hidden-curve removal (`SmHCR`) computes, and SmHCR's seam and smooth-edge flags turned a cylinder's front rim hidden | `outline(hidden=True)` calls SmHCR itself, filters seams and tangent edges by geometry, and drops edges seen end-on, slivers and hidden pieces under visible lines |
-| `SmApiBooleanWithCurves` hands out the common edges of a merge after `BooleanPostProcess` deleted some of them (AddressSanitizer: freed edges in its result) | is not used; `ShapeList.joining` selects the edges where two bodies meet by exact classification |
+| `SmApiBooleanWithCurves` hands out the common edges of a merge after `BooleanPostProcess` deleted some of them (AddressSanitizer: freed edges in its result) | is not used; `ShapeList.joining` selects the edges where two bodies meet by exact classification, and the raw `_core.boolean_with_curves` is smlibpy's Boolean with the edges found that way |
+| A union can return one operand with a vertex or two imprinted although the other reaches out of it (1358.54 for 1446.61), and a cut can return a body of no volume that reaches out of the part | the result's surface is checked to lie within the operands' boxes, and the operands' surfaces are classified against the result where it may be an operand given back or an operand's box reaches out of it; the union is tried again the other way round |
+| Two Vertices of the faces a Boolean deletes can share one vertex Shell, which `DeleteVertex` deletes with the first, so that the second named a freed Shell (a torus touching a plate at a point killed the process) | patched: `DeleteFaces` deletes the Vertices the Shell does not list first |
+| `CombineProtoEdge` and the deletion of an overlapping group leave the deleted ProtoEdge in the overlap and coincidence lists of other ProtoEdges and ProtoFaces (read in `ResolveOverlappingProtoEdges`; extended offsets) | patched: they are taken out of every list, and the ProtoEdge that took the deleted one's EdgeDefinitions is listed in its place |
+| The kernel's planar Boolean takes its tolerances from the extent of its operands: faces hundreds of times their size apart made it misjudge faces that touch (a unit square fused at a corner became a sliver of 0.2778 by a square 1000 away) | faces apart from the other operand's are set aside, and the groups of faces near each other go into the kernel one by one |
 | A torus whose seam lies on its outer equator (OpenCASCADE's O-rings) gave a seam window from -359.99999999999994 to 0, which `SmEllipse::AdjustSTEPInterval` refuses | lets the window start at 0 (the importer and the builder) |
 | The STEP builder gives each face its surface's whole parameter domain, so the kernel's search for a point inside a face missed narrow torus strips (`SmApiFaceInternalPoint` failed on valid imports) | narrows each face's domain to its trims once the body is built, in the directions the face takes less than half of |
 | The part file's assembly reader and writer (`SmBrepData::WriteAssemblyToDB`, `ReadAssemblyFromDB`) are empty, and its binary writer writes each value of a Boolean tree twice | `.smp` files hold bodies and curves, with names and colors as attributes on copies; no placements or trees |
@@ -195,17 +199,11 @@ From usd-brep's own list of known issues and from smlibpy's own testing, the one
 matter here:
 
 - `heal` may report success without repairing everything; check `is_valid()` afterwards.
-- A union can return its first operand unchanged although the other reaches out of it, and no
-  check catches it yet (`(Cylinder(5, 5) + Box(20, 4, 16).rotate(X, 90).translate(0, -3, -0.5)) +
-  Cylinder(2, 12).translate(2, -2.3693, 3.5)`: 1358.54, right 1446.61). Compare the volume with the
-  operands' where it matters.
-- Some Booleans still kill the process: `(Box(20, 16, 4) - Sphere(6).rotate(X, 90).translate(1.4007,
-  0, -1.5863)) & Torus(6, 2.5).rotate(Y, 90).translate(7.5, 0, 10.5)` is the one known case. Batch
-  runs over unknown inputs set `smlibpy.defeature.GUARD_BOOLEANS = True` (below).
+- No Boolean is known to kill the process any more (the torus touching a plate at a point did, until
+  0.5.0); batch runs over unknown inputs can still set `smlibpy.defeature.GUARD_BOOLEANS = True`
+  (below).
 - The kernel's Boolean of meshes (`Mesh` `+ - &`) kills the process for the meshes of two internally
   tangent cylinders at a fine tolerance.
-- 2D Booleans of faces hundreds of times their size apart can come out wrong where faces share
-  edges (a unit square fused to its neighbour, with a third square 1000 away).
 - `Part.section` cuts with the kernel's plane section, which fits its curves to B-spline faces
   within about 2e-3 (`intersection_curves` with a plane is closer, 9e-6); `distance_to` of a point
   can miss the nearest point of a folded B-spline face; `raycast` can miss a hit next to a
@@ -214,10 +212,13 @@ matter here:
   takes any number).
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - A Boolean in which the faces cross along a curve tangent to a seam can still return a valid
-  body of the wrong volume where smlibpy cannot turn the seam away: the seam of a part that is
-  no body of revolution (an earlier hole in it), the outer equator of a torus (no turn about the
-  axis moves it), or a seam touching a free-form (B-spline) face, which is not looked at. Its
-  faces meet, so no check catches it; compare such volumes with a formula.
+  body of the wrong volume where smlibpy cannot move the seam away: the outer equator of a torus
+  (no turn about the axis moves it, and the kernel's torus has no other place for it), and seams
+  of free-form faces that are no cylinder, cone, sphere or torus. Seams of bodies of revolution are
+  turned with the body, seams of other bodies (an earlier hole in a part) are moved on their face
+  (the face's solid added and taken away again turned), and B-spline faces that are cylinders,
+  cones, spheres or tori are recognized as such first. Its faces meet, so no check catches it;
+  compare such volumes with a formula.
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
 - The corner patch where three rounds meet is tangent continuous (G1) only, also for G2 and G3

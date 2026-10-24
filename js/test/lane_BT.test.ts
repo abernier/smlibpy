@@ -371,8 +371,13 @@ test('split along a curved face of a part', () => {
 test('split by a sheet that does not cut through', () => {
   const box = Box(20, 20, 20)
   assert.throws(() => box.split(wave().translate(0, 0, 50)), /does not cut through/) // misses the part
-  const inside = Box(4, 4, 4).faces().top().one().toShell() // a plane sheet within the part: not extended
-  assert.throws(() => box.split(inside), /does not cut through/)
+  // a plane sheet within the part is extended as its plane (closeout K1); one of two faces is not
+  const small = Box(4, 4, 4)
+  const [above, below] = box.split(small.faces().top().one().toShell(), 'both')
+  approx(above.volume, 3200)
+  approx(below.volume, 4800)
+  const two = stitch(small.faces().top().one(), small.faces().sortBy(X).at(-1)!) as Shell
+  assert.throws(() => box.split(two), /does not cut through/)
 })
 
 test('sheets trimmed by parts', () => {

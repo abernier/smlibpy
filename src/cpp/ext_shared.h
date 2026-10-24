@@ -62,6 +62,11 @@ void transform_brep(SmBrep* brep, const std::vector<double>& matrix);
 // Brep of its own, and brep1 and brep2 are deleted. `operation`: SM_BO_UNION, SM_BO_DIFFERENCE,
 // SM_BO_INTERSECTION or SM_BO_MERGE.
 SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, bool imprinting = false);
+// A Boolean as boolean() (both operands taken on success) and the edges of the result that lie on
+// the surfaces of both operands (where they meet: the intersection curves, and the rims where one
+// stands on the other), tested at three points along each edge. In place of SmApiBooleanWithCurves,
+// which hands out edges that its post-processing deleted.
+std::pair<SmBrep*, std::vector<SmEdge*>> boolean_with_curves(SmBrep* brep1, SmBrep* brep2, int operation);
 // Where each point (x, y, z, x, y, z, ...) lies relative to a body, within `tolerance` (0: the
 // body's own; SmBrep::Point3DClassify): per point (where, index, cell). `where` is "inside",
 // "outside", "face", "edge" or "vertex"; `index` the face, edge or vertex in the Brep's own lists

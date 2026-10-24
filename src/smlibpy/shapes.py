@@ -3738,13 +3738,54 @@ def _intersection_problem(result: Part, operands: Sequence[Part]) -> str | None:
     return None
 
 
-def _same_vertices(a: _Body, b: _Body, tol: float) -> bool:
+def _union_or_cut_problem(result: Part, part: Part, tools: Sequence[Part], op: Any) -> str | None:
+    """What is wrong with a union or a cut where quick evidence says to look, or None. Both lie
+    within their operands (a cut within the part): points of the result's surface beyond the
+    operands' loose boxes are wrong. A union holds every point of its operands' surfaces, and a cut
+    none of its tools' inside it: these are classified where the result may be an operand given back
+    (as many faces, and its vertices among the result's), and for a union where an operand's loose
+    box reaches out of the result's. The kernel can take an operand that reaches out of the other
+    for inside it and return the other one, with a vertex or two imprinted: ``(Cylinder(5, 5) +
+    Box(20, 4, 16).rotate(X, 90).translate(0, -3, -0.5)) + Cylinder(2, 12).translate(2, -2.3693,
+    3.5)`` gave the first operand (1358.54 for 1446.61); and return a cut that reaches out of the
+    part: ``Cylinder(2, 12) - Cylinder(1.5, 30).rotate(Y, 90).translate(1, -0.5, 2.4787)``, of
+    volume 0, reached to x = 16 (right: 125.96)."""
+    box = result._loose_box()
+    tol = 1e-6 * box.diagonal + 1e-5
+    near = max(1e-4 * box.diagonal, 1e-5)  # the new edges are fitted, to about 2e-5
+    operands = [part, *tools]
+    hull = part._loose_box()
+    if op == k.BooleanOp.UNION:
+        for t in tools:
+            hull = hull.union(t._loose_box())
+    if not (hull.contains(box.min, tol) and hull.contains(box.max, tol)):
+        if not all(hull.contains(p, near) for p in _surface_points(result)):
+            return "partly outside its operands" if op == k.BooleanOp.UNION else "partly outside the part"
+    n = result._brep.face_count()
+    given = [x._brep.face_count() == n and _same_vertices(x, result, tol, among=True) for x in operands]
+    if op == k.BooleanOp.UNION:
+        for i, x in enumerate(operands):
+            xb = x._loose_box()
+            out = not (box.contains(xb.min, tol) and box.contains(xb.max, tol))
+            if (out or any(g for j, g in enumerate(given) if j != i)) and any(
+                    w == "outside" for w, _, _ in result._classify(_surface_points(x), near)):
+                return "an operand left out, although it reaches out of the other (the kernel took it for " \
+                       "inside the other operand)"
+    elif op == k.BooleanOp.DIFFERENCE and given[0]:
+        for t in tools:
+            if any(w == "inside" for w, _, _ in result._classify(_surface_points(t), near)):
+                return "the part given back uncut, although a tool reaches into it (the kernel took the tool " \
+                       "for outside the part)"
+    return None
+
+
+def _same_vertices(a: _Body, b: _Body, tol: float, among: bool = False) -> bool:
     """Whether two bodies have as many vertices and each vertex of ``a`` lies near one of ``b``
     (within ``tol``, or up to 4 ``tol``: cells of a grid; for the quick test of a body given back
-    unchanged, where too many is safe)."""
+    unchanged, where too many is safe). With ``among``, ``b`` may have more vertices."""
     pa = [v.point() for v in a._brep.vertices()]
     pb = [v.point() for v in b._brep.vertices()]
-    if len(pa) != len(pb):
+    if len(pa) > len(pb) if among else len(pa) != len(pb):
         return False
     def grid(points: list[Any]) -> list[list[int]]:
         return np.floor(np.asarray(points, dtype=float).reshape(-1, 3) / tol).astype(np.int64).tolist()
@@ -4856,6 +4897,8 @@ class Part(_Body):
             return result
         if len(tools) == 1:
             retry = self._nurbs_retry(tools, op, name)
+            if retry is None:
+                retry = self._swapped_retry(tools[0], op, name)
             if retry is not None:
                 return retry
         else:
@@ -4944,6 +4987,23 @@ class Part(_Body):
             return None
         return retry
 
+    def _swapped_retry(self, tool: Part, op: Any, name: str) -> Part | None:
+        """A union or an intersection again with the operands the other way round, which the kernel
+        can get right where it failed or took one operand for inside the other; checked as the
+        first try, against the operands' volume bounds and as ``is_valid()`` checks (the gaps
+        between its faces: the other way round, the kernel can also return a body that is open).
+        None for a cut, or where the retry fails or is wrong too."""
+        if op not in (k.BooleanOp.UNION, k.BooleanOp.INTERSECTION):
+            return None
+        try:
+            retry = self._like(tool._run_boolean([self], op, name))
+            if self._boolean_problem(retry, [tool], op) is not None or _volume_problem(retry, self, [tool], op) \
+                    or (retry._brep.face_count() and retry._solid_problem() is not None):
+                return None
+        except KernelError:
+            return None
+        return retry
+
     def _run_boolean(self, tools: Sequence[_Body], op: Any, name: str) -> Any:
         from . import defeature
 
@@ -4970,6 +5030,8 @@ class Part(_Body):
                 # (it can be inside out or leave a face out).
                 if op == k.BooleanOp.INTERSECTION:
                     problem = _intersection_problem(result, [self, *tools])
+                else:
+                    problem = _union_or_cut_problem(result, self, tools, op)
                 if problem is None:
                     result._h.sound = _TRUSTED
                 return problem
@@ -6140,9 +6202,10 @@ class Part(_Body):
         A sheet (a :class:`Shell`, or a face that is not planar: a curved split surface, a
         surface fitted to a scan) splits the part along its surface; "above" is the side its
         normals point to (``normal_at``). The sheet must cut through the part. A sheet of one
-        free-form face whose edges end inside the part is extended beyond them, tangentially,
-        until it does (the face's trim is not kept); other sheets raise ``ModelingError``
-        ("the surface does not cut through the part"). The two sides together hold the part's
+        face whose edges end inside the part is extended beyond them until it does (the face's
+        trim is not kept): a free-form face tangentially, a plane, cylinder, cone or sphere as
+        itself (:meth:`Face.extend`; around a closed face it cannot grow); sheets of several faces
+        raise ``ModelingError`` ("the surface does not cut through the part"). The two sides together hold the part's
         volume, which is checked. A planar face (or a sketch) stands for its plane.
         """
         if isinstance(plane, ShapeList):
@@ -6294,13 +6357,23 @@ class Part(_Body):
             raise ValueError("split: the sheet is empty")
         self._require_valid("split")
         pieces = self._sliced(sheet)
-        if pieces is None and len(sheet.faces()) == 1 and sheet.faces()[0].geom_type == "bspline":
-            # A free-form sheet whose edges end inside the part: extended beyond them (its normals
-            # point as before, the surface's).
+        if pieces is None and len(sheet.faces()) == 1:
+            # A sheet of one face whose edges end inside the part: extended beyond them (its normals
+            # point as before, the surface's): a free-form face along its surface, a plane, cylinder,
+            # cone or sphere as itself (Face.extend; closed sides stay).
             reach = 2.0 * (self.bbox().diagonal + sheet.bbox().diagonal)
-            with kernel_call("split", "the sheet's surface cannot be extended"):
-                wide = Shell._wrap(ext.extended_sheet(sheet.faces()[0]._f, reach))
-            pieces = self._sliced(wide)
+            face = sheet.faces()[0]
+            wide: Shell | None = None
+            if face.geom_type == "bspline":
+                with kernel_call("split", "the sheet's surface cannot be extended"):
+                    wide = Shell._wrap(ext.extended_sheet(face._f, reach))
+            else:
+                try:
+                    wide = face.extend(reach)
+                except (ValueError, ModelingError, KernelError):
+                    wide = None  # (no side that can grow)
+            if wide is not None:
+                pieces = self._sliced(wide)
         if pieces is None:
             raise ModelingError("split: the surface does not cut through the part (its edges end inside the part, "
                                 "or it misses it); make the sheet reach past the part on every side")
@@ -7984,6 +8057,9 @@ class Sketch(Shell):
                 return self
             return self._empty()
         if split:
+            apart = self._boolean2d_apart(tools, op, name)
+            if apart is not None:
+                return apart
             contact = self._contact()
             for t in tools:
                 if contact is None:
@@ -8032,6 +8108,63 @@ class Sketch(Shell):
 
     def _empty(self) -> Sketch:
         return self._like(ext.copy_faces(self._brep, []))
+
+    def _boolean2d_apart(self, tools: list[Sketch], op: Any, name: str) -> Sketch | None:
+        """The planar Boolean group by group where the faces of the operands lie in groups far apart
+        (the whole spans ten times the largest group in which both operands have faces), or None.
+        A group is the faces linked by overlapping boxes; groups of one operand's faces only are
+        kept as they are (dropped where the Boolean leaves nothing of them). The kernel's planar
+        Boolean takes its tolerances from the extent of its operands: a unit square fused to its
+        neighbour at a corner, with a third square 1000 away, became a sliver of 0.2778 (kernel
+        plan C1)."""
+        own = list(self._brep.faces())
+        other = [(t, f) for t in tools for f in t._brep.faces()]
+        n = len(own)
+        if n + len(other) < 3:
+            return None
+        boxes = np.array([[*lo, *hi] for lo, hi in (f.bounding_box(False) for f in [*own, *(f for _, f in other)])],
+                         dtype=float)
+        whole = float(np.linalg.norm(boxes[:, 3:].max(axis=0) - boxes[:, :3].min(axis=0)))
+        tol = 1e-6 * max(1.0, whole)
+        apart = (boxes[:, None, 3:] < boxes[None, :, :3] - tol) | (boxes[None, :, 3:] < boxes[:, None, :3] - tol)
+        linked = ~apart.any(axis=2)
+        root = list(range(len(boxes)))
+
+        def find(i: int) -> int:
+            while root[i] != i:
+                root[i] = root[root[i]]
+                i = root[i]
+            return i
+
+        for i, j in zip(*np.nonzero(np.triu(linked, 1))):
+            root[find(int(i))] = find(int(j))
+        groups: dict[int, list[int]] = {}
+        for i in range(len(boxes)):
+            groups.setdefault(find(i), []).append(i)
+        if len(groups) < 2:
+            return None
+        both = [g for g in groups.values() if g[0] < n <= g[-1]]
+        size = max((float(np.linalg.norm(boxes[g, 3:].max(axis=0) - boxes[g, :3].min(axis=0))) for g in both),
+                   default=0.0)
+        if not whole > 10 * size:
+            return None
+        pieces: list[Sketch] = []
+        with kernel_call(name):
+            for g in groups.values():
+                mine = [own[i] for i in g if i < n]
+                theirs: dict[int, list[Any]] = {}
+                for i in g:
+                    if i >= n:
+                        theirs.setdefault(id(other[i - n][0]), []).append(other[i - n][1])
+                parts = [t._like(ext.copy_faces(t._brep, theirs[id(t)])) for t in tools if id(t) in theirs]
+                if mine and parts:
+                    tool = parts[0] if len(parts) == 1 else parts[0]._like(ext.combine([x._brep for x in parts]))
+                    pieces.append(self._like(ext.copy_faces(self._brep, mine))._boolean2d_with([tool], op, name))
+                elif mine and op != k.BooleanOp2D.INTERSECTION:
+                    pieces.append(self._like(ext.copy_faces(self._brep, mine)))
+                elif parts and op in (k.BooleanOp2D.UNION, k.BooleanOp2D.EXCLUSIVE_OR):
+                    pieces.extend(parts)
+        return self._combined(pieces)
 
     def _slab_or_empty(self, other: Sketch, op: Any, name: str) -> Sketch:
         try:

@@ -15,6 +15,7 @@
 
 #include "SmPyCommon.h"
 #include "ext.h"
+#include "ext_shared.h"
 #include "kernel_lock.h"
 
 #include <SmApiBrep.h>
@@ -97,6 +98,17 @@ void bind_nogil(py::module_ m)
     }, ref, py::arg("brep1"), py::arg("brep2"), py::kw_only(), py::arg("operation"),
        py::arg("cookie_cutter") = false, py::arg("imprinting") = false, py::arg("post_process") = true,
        py::arg("imprint_and_classify") = false, py::arg("keep_other_brep") = false);
+
+    // (Not SmApiBooleanWithCurves, which hands out common edges that its post-processing deleted
+    // (AddressSanitizer: a read of freed memory where pybind11 casts them; the process crashed):
+    // smlibpy's Boolean, and the edges of the result that lie on the surfaces of both operands,
+    // tested by classification (smlibpy::boolean_with_curves, ext.cpp). Same arguments, result and
+    // docstring.)
+    rebind(m, "booleans", "boolean_with_curves", [](SmBrep* a, SmBrep* b, SmBooleanOperationType op) {
+        std::pair<SmBrep*, std::vector<SmEdge*>> r;
+        without_gil([&] { r = smlibpy::boolean_with_curves(a, b, static_cast<int>(op)); });
+        return py::make_tuple(r.first, r.second);
+    }, ref, py::arg("brep1"), py::arg("brep2"), py::kw_only(), py::arg("operation"));
 
     rebind(m, "booleans", "boolean_2d", [](SmBrep* a, SmBrep* b, Sm2DBooleanOperationType op) {
         SmBrep* r = nullptr;
