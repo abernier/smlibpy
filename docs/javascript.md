@@ -1192,6 +1192,7 @@ export class Sketch extends Shell {
         up?: Axis | VectorLike | string | null;
         twist?: number | ((s: number) => number);
         scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
+        anchor?: 'center' | 'origin' | VectorLike | Vertex;
     }): Part;
     swing(outline: Sketch | Face | Wire | Edge): Part;
     toString(): string;
@@ -1222,7 +1223,7 @@ export function Spline(...args: (VectorLike | readonly VectorLike[] | {
 export function fitCurve(points: Iterable<VectorLike>, options?: {
     tolerance?: number | null;
     degree?: number;
-    tangents?: readonly [VectorLike | null, VectorLike | null] | null;
+    tangents?: readonly [VectorLike | null, VectorLike | null] | readonly VectorLike[] | null;
     closed?: boolean;
 }): Edge;
 export function Bezier(...args: (VectorLike | readonly VectorLike[] | {
@@ -1378,7 +1379,12 @@ export function Sphere(radius: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Torus(majorRadius: number, minorRadius: number, options?: {
+    minorStartAngle?: number;
+    minorEndAngle?: number;
     majorAngle?: number;
+    align?: AlignLike;
+}): Part;
+export function Pyramid(length: number, width: number, height: number, options?: {
     align?: AlignLike;
 }): Part;
 export function Wedge(length: number, width: number, height: number, topLength?: number, options?: {
@@ -1428,9 +1434,10 @@ export function revolve(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, a
 export type LoftOptions = {
     ruled?: boolean;
     smooth?: boolean;
-    startTangent?: Axis | VectorLike | null;
-    endTangent?: Axis | VectorLike | null;
+    startTangent?: Axis | VectorLike | Face | ShapeList<Face> | null;
+    endTangent?: Axis | VectorLike | Face | ShapeList<Face> | null;
     closed?: boolean;
+    rails?: Edge | Wire | readonly (Edge | Wire)[] | null;
 };
 export function loft(sections: readonly (Sketch | Face | ShapeList<Sketch | Face>)[], options?: LoftOptions): Part;
 export function loft(sections: readonly (Sketch | Face | Wire | Edge | ShapeList<Any>)[], options?: LoftOptions): Part | Shell;
@@ -1441,6 +1448,8 @@ export interface SweepOptions {
     up?: Axis | VectorLike | string | null;
     twist?: number | ((s: number) => number);
     scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null;
+    anchor?: 'center' | 'origin' | VectorLike | Vertex;
+    rails?: Edge | Wire | null;
 }
 export function sweep(profile: Sketch | Face | ShapeList<Sketch | Face>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part;
 export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, path: Edge | Wire | ShapeList<Edge>, options?: SweepOptions): Part | Shell;

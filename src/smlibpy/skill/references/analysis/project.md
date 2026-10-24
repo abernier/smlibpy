@@ -31,6 +31,14 @@ A `ShapeList` of standalone `bspline` edges on the body's faces, in no order.
 - A curve that misses the body gives an empty list.
 - A projected closed curve stays closed (`is_closed` True). The direction of a piece may be
   reversed relative to the input.
+- A piece that a closed face's seam cuts apart (around a cylinder or a sphere) comes back as one
+  edge: a curve across the seam of `Cylinder(10, 40)` projected with `nearest=True` is one edge
+  (two halves before the 0.5.0 close-out). `Face.project` and `Face.wrap` join them too, and
+  `Face.project` of a curve across a seam gives the piece (it gave nothing).
+- With `nearest=True` each piece is checked between every two places where its projection
+  crosses an edge or a silhouette of the body seen along the direction, so obstacles narrower
+  than the samples are found: a bridge 1 wide over a plate 100 long cuts the plate's piece (before
+  the 0.5.0 close-out the piece came back whole, 17 samples missed the bridge).
 
 ## Accuracy
 

@@ -180,14 +180,18 @@ bool continuation(const SmFace* face, const SmPoint3d& p, const SmVector3d& t, d
     if (!(c.Length() > 0.0))
         return false;
     c = c / c.Length();
-    // away from the face: a little way along c must not lie on it
-    const SmPoint3d ahead = p + c * (1e-4 * size);
-    if (SmApiSurfaceClosestPoint(surface, ahead, q, uvs, d) == SM_SUCCESS && uvs.GetSize())
-    {
-        int cls = 0;
-        if (SmApiFaceClassifyUV(face, uvs[0], cls) == SM_SUCCESS && cls == SM_PC_FACE)
-            c = -c;
-    }
+    // away from the face: a little way along c must not lie on it (the distance to the trimmed face;
+    // classifying the surface's closest point failed on a seam, where it lies on the seam edge, and
+    // the surface's closest point stops at the end of its domain)
+    const double step = 1e-4 * size;
+    SmPoint3d on;
+    double ahead = 0.0, behind = 0.0;
+    SmFace* f = const_cast<SmFace*>(face);
+    if (SmApiFaceClosestPoint(f, p + c * step, on, ahead) != SM_SUCCESS ||
+        SmApiFaceClosestPoint(f, p - c * step, on, behind) != SM_SUCCESS)
+        return false;
+    if (ahead < behind)
+        c = -c;
     out = c;
     return true;
 }

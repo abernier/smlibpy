@@ -3300,7 +3300,7 @@ export class Face extends Shape {
    * on planes and cylinders the whole drawing keeps its size (text around a cylinder); on cones and
    * doubly curved faces it stretches away from those lines. Around a closed face (a cylinder) the
    * drawing continues across the seam; what leaves the face is cut off (also in its holes). Returns
-   * the curves on the face, fitted within 1e-7 of its size, cut where they cross its seam.
+   * the curves on the face, fitted within 1e-7 of its size; a curve across the seam comes back as one edge.
    *
    * `shape`: an edge, a wire, a sketch or edges, drawn on XY (z is ignored). `at`: where the
    * drawing's origin goes, a point of the face's surface (default: the middle of the face's

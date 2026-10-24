@@ -12,7 +12,10 @@ through every point instead, follows every wiggle and needs a control point per 
 - `tolerance`: the largest distance from any point to the curve. Default: 1/1000 of the size
   (bounding box diagonal) of the points.
 - `degree`: the highest degree, 2 to 9; the fit starts at 2 and raises it as it needs.
-- `tangents`: `(start, end)` directions, either may be None. Not with `closed`.
+- `tangents`: `(start, end)` directions, either may be None. Or a direction at **every** point
+  (as many as there are points, none None): the curve leaves each point near that direction, as
+  `Spline(*points, tangents=[...])` through them does, simplified within the tolerance (a cubic;
+  the closer the tolerance, the closer the directions too). Not with `closed`.
 - `closed=True`: the curve runs back through the first point, tangent there (do not repeat the
   first point; repeating it is harmless).
 
@@ -27,7 +30,10 @@ point (measured; the kernel's fit is made again with less where it is off).
 - `ModelingError: fit_curve: the closest fit found passes 0.012 from a point, more than the
   tolerance 0.01; use a larger tolerance or a higher degree`.
 - `ValueError: fit_curve: the degree is 2 to 9, got 1`; `ValueError: fit_curve: a closed curve
-  takes no end tangents`; `ValueError: fit_curve: the points all coincide`.
+  takes no end tangents, nor a direction at every point`; `ValueError: fit_curve: the points all
+  coincide`.
+- `ValueError: fit_curve: tangents are (start, end), or a direction at each of the 400 points, got 3`;
+  `ValueError: fit_curve: with a direction at every point, tangent 2 is None`.
 
 ## Example
 ```python
@@ -41,6 +47,10 @@ outline_points = np.c_[20 * np.cos(angles), 12 * np.sin(angles)]
 blob = make_face(fit_curve(outline_points, tolerance=0.02, closed=True)).extrude(3)
 # through every point, in a given direction at each: Spline with one tangent per point
 s = Spline((0, 0), (10, 0), (20, 10), tangents=[(1, 0), (1, 1), (0, 1)])
+# near 400 points with a direction at each (a digitized path with headings): 36 control points
+ts = np.linspace(0, 4 * np.pi, 400)
+path = fit_curve(np.c_[5 * ts, 10 * np.sin(ts)], tolerance=0.05, tangents=np.c_[np.full(400, 5.0), 10 * np.cos(ts)])
+print(len(path.nurbs().points))                    # 36
 ```
 
 ## Related
