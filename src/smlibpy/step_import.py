@@ -1089,7 +1089,7 @@ class StepModel:
     """Everything :func:`read_step` reads from a STEP file: the bodies (what
     :func:`import_step` returns, always as a list), and the coordinate systems, curves and
     points that belong to no body. ``skipped`` says which bodies could not be read, and why
-    (``"body 'b' (#99): curve type OFFSET_CURVE_3D (#203), which is not supported"``)."""
+    (``"body 'b' (#99): curve type CLOTHOID (#203), which is not supported"``)."""
 
     bodies: Any
     frames: list[StepFrame] = field(default_factory=list)

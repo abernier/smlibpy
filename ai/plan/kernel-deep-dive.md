@@ -30,6 +30,24 @@ have theirs under the table. Of the 176 items, 162 are done and 14 partial (B6, 
 F11, O1, S10, U9, U12, I6, I10, X14, W16, N2); none is left undone. What users see, and what is
 still open, is in [release-notes-0.5.0.md](release-notes-0.5.0.md), the release notes for 0.5.0.
 
+Status (close-out, 2026-10-23): the release notes' "Not done" entries were triaged in eight lanes
+and merged into `fix/kernel-review` (48f6074, 1240edf): R, regressions and documentation errors the
+final verification found (f9fdcf2, 289ae5b, e024388); K1, Booleans, cells and topology (ffb80d9,
+2b79952, b8d52ea, b7e74c2); K2, kernel memory defects and leaks (2ebcb64, 36e0f59); F, fillets,
+chamfers, shell and offset (36825f7, 912c830, 5076b93); S, sweeps, lofts, primitives and curves
+(34ab364, 2315ce7, 861f164); U, surfaces, deformation, sheet metal and measuring (dc07edb, 0a3538c,
+5744724, 86027ab); M, meshes, drawings and files (7bd25a9, b4462a6); W, the smlibwasm runtime and
+infrastructure (c10f34c, 9947011). Each entry was finished (every defect), blocked (a kernel defect
+or limit kept after a real attempt, with its evidence) or left for later (beyond the item's "Do").
+The items it touched have a "Status (close-out)" note. No item is partial any more in the plan's
+sense: what remains is a known kernel limitation (B6, F5, F7, F9, F10, O1, S1, U4, D1, M4, and the
+builds' last bits, W16), cannot run here (W7 with Vite 4; N2's Linux and Windows jobs, verified on CI
+at the first push), or is later work; the release notes list them under "Known kernel limitations"
+and "Later". At 1240edf: Python 1474 passed, 31 skipped; JS 1171 tests, 1155 pass, 0 fail, 16
+skipped; the sanitizer job over the default tests and the close-out tests reports no memory
+error and no counted leak (875 passed; the 7 heap-growth tests of `test_closeout_K2.py` measure
+nothing under AddressSanitizer's allocator).
+
 How to read it:
 
 - Backticked IDs are finding IDs; the appendix lists all of them. Where several slices found
@@ -192,6 +210,13 @@ been checked, not assumed.
 - Status (phase 1): done, 3d1d3aa: the volume and box evidence for empty cuts, and
   intersections classified with B11 when they have an operand's face count or reach out of an
   operand's box (the face count alone missed the pulleys). parts.md #18/#21 reopened.
+- Status (close-out): done, K1 (ffb80d9, b8d52ea): where a union or intersection may be an operand
+  given back, or an operand's box reaches out of the result, points of the operands' surfaces are
+  classified against it, and a result reaching out of the operands' boxes is refused; a refused
+  union or intersection of one tool is tried again the other way round. `(Cylinder(5, 5) + Box(20,
+  4, 16).rotate(X, 90).translate(0, -3, -0.5)) + Cylinder(2, 12).translate(2, -2.3693, 3.5)` is
+  1446.6121 (OpenCASCADE 1446.612107; it was 1358.54); fuzz csg-8-110 D, a cut of no volume reaching
+  to x = 16, raises.
 - Wrong: an empty DIFFERENCE is accepted when a kernel INTERSECTION of the same pair covers
   the part, and that intersection fails the same way, so the misclassification confirms
   itself. On a holed sphere, a cut beside the hole gives `Part(0 faces)`, no error, in both
@@ -243,6 +268,14 @@ been checked, not assumed.
   `cells()` never sees the crashing body; `cells()` is not isolated (N1).
 - Status (phase 1, follow-up): done, 6a10005 (lane WN, N1): `cells()` runs its stitcher in another
   process; the BuildPolarBox crash of a cone and cylinder merge is a KernelError.
+- Status (close-out): done, K1 (ffb80d9) and K2 (2ebcb64): `DeleteFaces` deletes first the shell
+  Vertices whose Vertexuse names a vertex Shell that lists another Vertex (ASan: a freed Shell read
+  in `SmVertexuse::GetShell`), so the torus touching a plate at a point (`(Box(20, 16, 4) -
+  Sphere(6).rotate(X, 90).translate(1.4007, 0, -1.5863)) & Torus(6, 2.5).rotate(Y,
+  90).translate(7.5, 0, 10.5)`) no longer kills the process: the intersection is empty, the union
+  1616.2075, the cuts the operands, in both builds. The null polar box the stitcher read is patched
+  (`SmSurfaceCache.cpp`): `cells()` of fuzz csg-153's merge gives three valid cells that add up to
+  it.
 - Wrong: the cut below exits with 139 in 3 of 3 runs, in `SmMerge::BooleanPostProcess`
   (IsTopological on a stale edge of `m_sIntersectionEdges`); `&` of the same pair works
   (14.137071). The wasm reports "operands may touch" over a trap. Separately, `Part.cells()`
@@ -269,6 +302,19 @@ been checked, not assumed.
   cases) silent 76 -> 72 natively, 79 -> 72 in the wasm. Not done: seams of operands that are no
   body of revolution, a torus' outer equator (slice-7-390; a revolve normalises to the same torus,
   so the retry does not help), seams on B-spline faces. The strict xfails became tests.
+- Status (close-out): done, with a known kernel limitation, K1 (ffb80d9, b8d52ea):
+  `src/cpp/seams.cpp` moves the seam of an earlier hole or boss on its face (the face's solid filled
+  and recut turned, kept where the volume stays to 1e-7), looks at B-spline faces of the other
+  operand, and recognizes a B-spline seam face as analytic first; parts merged into an earlier merge
+  are turned or moved too. Where a seam touches at a point (new `ext.seam_touches`), 16 x 16 points
+  of each result face near it are classified against the operands, and a wrong result is done again
+  with NURBS copies (`_seam_retry`) or refused; a split by a plane touching such a seam keeps only
+  sides that add up. 160 cases against OpenCASCADE: silent wrong 106 -> 7 (torus caps 1e-4 to 2e-4,
+  a torus tool 3.6e-5), errors 38 -> 8; A-25's union 23635.9574 and intersection 194.5466, its cut
+  raises; slice-7-390 5.80689 + 1889.15715 in both builds; fuzz slices silent 0.93 % and 1.85 % ->
+  0. Blocked: the kernel's defect along a torus' outer equator or a free-form seam (no turn, fill
+  and recut, NURBS copy, swapped operands or revolve from another latitude moves it;
+  `SmFace::MoveSeam` takes no seam edge), so some such Booleans raise.
 - Wrong: when a primitive's seam line lies in a tangent plane of the other operand, the
   manifold Boolean returns a closed, valid body of the wrong volume; the mesh volume
   disagrees too, so the B-rep itself is inconsistent. A groove pin tangent to a bore gives
@@ -393,6 +439,10 @@ been checked, not assumed.
   to lie on the sheet, `part & sheet` a Shell, `part +/- sheet` a TypeError; surfaces.md #11 fixed.
   Not done: sheets of several faces or analytic sheets that end inside the part (U6's
   `Face.extended` is the general tool), `Part.merge(sheet)`.
+- Status (close-out): done for one-face sheets, K1 (ffb80d9): a plane, cylinder, cone or sphere face
+  that ends inside the part is extended as itself (`Face.extend`): `Box(20, 20, 20)` split by a face
+  of `Cylinder(30, 8).translate(0, -25, 0)` gives 2226.0814 + 5773.9181 (integral 5773.9216). Later:
+  sheets of several faces (`ModelingError`) and `Part.merge(sheet)`.
 - Gap: `split` takes planes only, and `sheet - part` raises TypeError. `part ± sheet`
   returning invalid "Parts" (11 faces, volume 8000) is already open as ai/todo/surfaces.md
   #11. The kernel's SM_BO_SLICE (value 10; SmApiBoolean accepts it, but it is not bound by
@@ -448,6 +498,8 @@ Status (phase 1) of the items in the table:
 - B14: done, 3305dfe (lane BT), one method with U3's since the merge: `Part.imprint` of parts,
   sheets, faces and sketches (a thin slab for coplanar ones), the pieces tagged as the tool's
   descendants, checked (more faces, same volume, valid).
+- B14 (close-out): later: pieces descending from the sheet that imprints them is a provenance rule
+  beyond the Do.
 - B15: done, 163033d (lane BT): `Part.sources`, cells named and colored after their sources, STEP
   solids too. glTF, OBJ, STL and USD of a merged part are unchanged.
 - B16: done, 163033d (lane BT): `solids()` groups solid regions by shared faces; parts.md LOW #2
@@ -455,12 +507,20 @@ Status (phase 1) of the items in the table:
 - B17: done another way, 163033d (lane BT): `ShapeList.joining(a, b)` by exact classification.
   `k.boolean_with_curves` is not used or bound: ASan shows it hands out edges `BooleanPostProcess`
   freed.
+- B17 (close-out): done, K1 (ffb80d9): the kernel function stays unpatched (nothing calls it); the
+  raw `_core.boolean_with_curves` is bound again (`nogil.cpp`) as smlibpy's Boolean plus the
+  result's edges on both operands' surfaces: the probe that killed Python runs clean under ASan and
+  gives `ShapeList.joining`'s edges in all 8 test cases. Python only.
 - B18: done, 163033d (lane BT): ValueError where the kernel fails or a region lies outside and a
   plane moved by 1e-5 of the size misses; every section checked to lie in the part.
 - B19: partial, 163033d (lane BT): hints from evidence (a tangent round face, operands that only
   touch, coincident faces with their place, a tool beside a parallel hole, several tools, crash
   notes), shell hints with the place, `cells()` naming the insert. The fillet 'degenerate vertex' is
   F8's naming of the corner instead.
+- B19 (close-out): done, K1 (2b79952): `SM_ERR_NULL_POINTER` fillets say the kernel failed inside
+  (never "the radius may be too large") and name what the executive recorded, now in smlibwasm too
+  (fuzz fillet-7-161). Later: a search for a vertex where the executive recorded nothing, offset
+  hints beyond the crash note.
 
 ### F. Fillets and chamfers
 
@@ -484,6 +544,11 @@ cause; no process deaths.
   corner (`CreateFilletCorners` went on), not a stale pointer; a second fix in `DoFilleting`'s
   shrink loop. The crashes raise `SM_ERR_INVALID_INPUT` with a new hint. The single-edge crash
   did not reproduce (0 of 80).
+- Status (close-out): done, K2 (2ebcb64): the all-edge fillet of `Cone(3, 0, 10).rotate(Y, 90) -
+  Cone(1.5, 0, 8).rotate(X, 90).translate(0, 1, 0)` (fuzz fillet-7-185) wrote freed memory in
+  `SmLoopuse::CollectEdgeuses` (it killed the process on Linux x86_64): `SmBrep::DeleteEdge` refuses
+  a manifold Edge between the two sides of one Face before it changes anything. `KernelError`
+  `SM_ERR`, ASan clean at six radii; r 0.3 still 90.0851.
 - Wrong: on `Box(10,5,20) - Cone(4,5,20)`, filleting the two 2.5 mm halves of the box edge
   that the cone touches tangentially exits with 139 (3 of 3, also at r = 0.02); one half
   alone crashed in 1 of 7 runs. Imported part 100 crashes with edges 0 and 1 at 0.15875 (3 of
@@ -535,6 +600,12 @@ cause; no process deaths.
 **F5 · P0 · (start, end) radii bend on tangent chains and closed edges** · `fillet-variable-law-chains` · small · both
 - Status (phase 1): done, f1edb4f: ValueError/RangeError on closed edges and for selected edges
   meeting within 10 degrees of tangent; laws along whole chains are F8's.
+- Status (close-out): done, with a known kernel limitation, F (36825f7): a `(start, end)` radius or
+  a `{position: radius}` map runs along each tangent run (`ext.round_edges` `chains`, `law_at`,
+  `law_radii`; `CreateSequenceOfLaws`, `SmBSplineFilletLaw`), a map also around a single closed
+  edge: a box's 5-edge top run with (1, 3) 11795.8763, 1.02 rising linearly to 3.0; a rim with {0:
+  1, 0.5: 3} 1, 2, 3, 2, 1. Blocked: varying laws around closed runs of several edges (a 19-face
+  open body from every start, also with the edgeuses reordered): `ValueError`.
 - Wrong: the law is per edge, and where tangent rounds meet the kernel forces equal radii.
   On a 5-edge open chain with (1, 3) the radius runs [1.07, 2.0, 2.93], [2.46, 1.85, 1.04]
   and, on the arcs, [1.65, 1.99, 1.07]. On a closed rim it rises linearly to 2.90 and snaps
@@ -551,6 +622,11 @@ cause; no process deaths.
   `Edge.tangent_chain()` and `ShapeList.tangent_chain()`, radii carried to the added edges, and with
   `propagate=False` a hint naming the run-on vertices. OpenCASCADE's volumes to 1e-12. No pre-check:
   the kernel rounds some edges that run on tangentially at both ends.
+- Status (close-out): K2 (2ebcb64): `CreateSmoothEdgeSequence` gives each Edge of a smooth run the
+  joined curve as its own, so the curves and the corner caches built on them (`CalcCornerVertGeom`)
+  are freed: 189 kB to 0 per fillet of a rounded plate's top run (smlibwasm 153.5 kB to 0). Refused
+  and failed fillets free their intersection curves, solver surfaces and fillet Brep (24.5 kB to 45
+  B; 348 kB to 16.4 kB, the rest a `MergeInterval` curve copy, blocked).
 - Wrong/gap: an edge that runs tangentially into unselected edges at both ends fails at every
   radius with "the radius may be too large": the top edge of a rounded-rectangle plate, one
   straight edge of a slot. Tangent at one end works. `fillet.md:24-27` says both work.
@@ -574,22 +650,47 @@ Status (phase 1) of the items in the table:
   tolerance: fillet and chamfer try again within 1 times the edge tolerance
   (`ext.round_edges(tolerance_factor)`), and cubes 10 (r 4.98), 20 (9.97, 9.98) and 40 (19.96) are
   exact. r 4.99 and the stepped block's rollover still fail.
+- F7 (close-out): blocked, F (5076b93): r 4.99 and the rollover fail at every approximation
+  tolerance tried (4 to 0.1 times the edge's: a 14-face body with gaps of 3.6), with mitred corners
+  and with the edgeuse order that fixed set-back corners; both are refused. W (c10f34c): rounds
+  whose setbacks fill more than 90 % of the room between two edges measure the result's gaps (on
+  Linux x86_64 the 20 mm cube at 9.97 came back open, 2132.03, and passed).
 - F8: done, 90cc398 (lane FO): `ext.round_edges` (src/cpp/fillet.cpp) drives the executive as SM_API
   does (bit-identical bodies) and returns its SmFilletErrorInfo: errors name the corner or edge (37
   of 38 failures of 514 random cases). The executive's status (SmFilStatus) is private.
+- F8 (close-out): done, F (36825f7): `ext.round_edges` returns the executive's private status as
+  `stage` (read through a pointer to the member), and the errors say the failed step in words.
 - F9: done, 90cc398 (lane FO): `chamfer(length2=, angle=, reference=)` through SmConstantRadiusFS's
   second radius; OpenCASCADE's volumes to 1e-12; features.md #23 fixed.
+- F9 (close-out): done for straight edges between planes, F (36825f7): where a sharp wedge's
+  setbacks differ more than its cosine allows, such an edge with ends on planes at right angles to
+  it is bevelled by a prism cut, checked against its triangle times its length (the 60 degree edge
+  with 4/1, 6/1 and 8/0.5: exact). Blocked beyond it (curved edges, slanted ends): `ModelingError`.
 - F12: done beyond the plan, 6802aa4 (lane FO): full circles between coaxial faces are bevelled by
   a Boolean with the bevel's solid of revolution (exact cones, checked against Pappus), the docs
   corrected. Other edges keep the kernel's fitted bevels. Since the merge the tool's faces are cones
   (S4), and the bevel's edge on a cylinder comes back as a fitted B-spline (8e-6 short on a pin of
   radius 2; the volume stays exact); its edge on a plane is a circle.
+- F12 (close-out): done, F (36825f7): `ext.exact_circles` makes the bevel's edge on a cylinder or
+  cone, between coaxial cones or cylinders and for a plane across a cone, cylinder or sphere an
+  exact circle (it was 8e-6 short). Later: exact bevels of edges that are not full circles.
 - F10: partial, 6802aa4 (lane FO): `corners='mitre'` (SetBevel on convex corners of three edges) for
   every round and chamfer. Not done: setbacks; every set-back corner read freed memory
   (MergeInterval), and the fixed copy gave open bodies (patches README).
+- F10 (close-out): done, with known kernel limitations, F (36825f7, 912c830): `fillet(setback=)`
+  over `ext.round_edges(setback=)`. The kernel merges set-back corners only where each edge lists
+  its `SM_OT_SAME` edgeuse first (the kernel's `box.smb` does; `SmApiCreateBox` not at 5 of 12
+  edges), so the edgeuses are reordered first (`SmEdge::ResetPrimaryEdgeuse`); `SmCurveClass.cpp`
+  patched for the read of freed memory, `SmBSplineSurfaceNLib.cpp` for the N-sided corner patch's
+  leak (20.7 kB to 0). A 20 mm cube r 2 setback 3: 7781.609270, valid; 240 random parts: no crash.
+  Blocked: corners where a face turns inward (`SmFilletConcaveNxNCorner`), between slanted faces,
+  and laws with setbacks: refused.
 - F11: partial, 6802aa4 (lane FO): the G1 corner note in docs/features.md, the skill's fillet guide,
   the docstrings and docs/kernel.md. `fillet_preview` not added (crash-prone, would need isolation,
   untrimmed surfaces only).
+- F11 (close-out): done, F (36825f7): `Part.fillet_preview` and `filletPreview` over
+  `SmApiFilletPreview` (bound by hand in smlibwasm; parts read from files previewed in another
+  process); 100 random Boolean parts without a crash.
 
 ### O. Shell, offset and direct editing
 
@@ -608,6 +709,15 @@ and fail fast when the kernel cannot do them.
   Still crashing, contained by the other process: crescendo part 52 (a half-made edge in
   ImprintIntersections), parts 81 and 19 (BuildPolarBox), and the layout-dependent ASan reports in
   FindInterval and of a deleted ProtoEdge.
+- Status (close-out): done, with known kernel limitations, K1 (b8d52ea), K2 (2ebcb64) and W
+  (c10f34c): a deleted ProtoEdge leaves every overlap and coincidence list and every ProtoVertex
+  list as often as it is listed (`SmProtoTopology.cpp`); the half-made Edge fails the Boolean
+  (`SM_ERR_BAD_INTERSECTIONS`) and `CreateUVTrimCurve` refuses it; the polar box takes its tree's
+  surface (`SmSurfaceCache.cpp`); `MakeEdgeInFaceWithVU`, `SqueezeEdge`, `DeleteEdge` and `FixGaps`
+  leave no freed uses behind. Raw steps: part 52 crashes in 1 of 20 processes (15 before), part 81
+  in 3 of 30 (11 of 20), part 19 never; the guard test's steps report in 0 of 48 perturbed ASan
+  processes (15 before). Blocked: the rest of parts 81 and 52 (not located) and the `FindInterval`
+  overflow (not reproduced), contained by the forked copy.
 - Wrong: the extended mode, used by every `offset_brep` and by shell from its third attempt,
   crashes in `SmBrep::GlueVertices` <- `GlueCoincidentBrepVertices` <-
   `ImprintIntersections` <- `ManifoldBoolean` <- `PiecewiseMerge` <- `DoExtendedOffset`, or
@@ -638,6 +748,10 @@ and fail fast when the kernel cannot do them.
 - Status (phase 1): done, 8194dcd: gaps >= 1e-3, cavity points classified, closed shells
   against V - V(offset). The plan's 0.5·t·area heuristic refused correct thick shells and was
   not used.
+- Status (close-out): R (289ae5b): the box check grants a face that reaches out of the part's box
+  the largest tolerance of its edges and vertices, at most 1e-4 of the box's size
+  (`SmFace::CalculateTightBoundingBox` takes in surface points within a vertex's tolerance, off the
+  face): the deform recipe's twisted vase shells in 12 of 12 runs (5 of 12 were refused).
 - Wrong: `_checked` accepts any closed manifold result with the right box and kernel-volume
   sign. On the corpora, 35 of 1018 accepted results were wrong: gaps from 1e-3 to 5.6, open
   meshes, e.g. crescendo part 58 shell with field volumes [6061.47, 943.66, 943.66]. 8 shells
@@ -700,6 +814,9 @@ and fail fast when the kernel cannot do them.
 - Status (phase 1): done, 8194dcd: plain, extended, and one repeat only after a refused result;
   no repeat after an error, crash or timeout. K12 is in (hygiene; its path never ran); the 2 MB
   per attempt was not seen.
+- Status (close-out): K2 (2ebcb64): a failed extended shell frees the offset body (`ShellBrep`), the
+  trim curves of a failed extension (`ExtendTrimEdges`) and `MergeEdge`'s curve copy: three raw
+  extended shells of filleted boxes 879 kB to 128 B (smlibwasm 437 kB to 163 B).
 - Wrong: shell tries [plain, plain, extended x6] and offset 8 times. Over 420 corpus runs no
   offset retry ever succeeded, and of the shells only the first extended attempt did.
   Failures cost up to 115 s natively and 176 s in the wasm (on the main thread). In the wasm,
@@ -721,6 +838,9 @@ and fail fast when the kernel cannot do them.
   wall; their other rim edges must meet walls at right angles to them (outward: the whole rim
   tangent). Not done: curved openings, openings next to another or to a drafted wall, K12's
   tangent-sector cap.
+- Status (close-out): done next to an ordinary opening, F (36825f7): the cavity face reaches that
+  opening's plane before the prism cut (a box rounded on its vertical and bottom edges, open at the
+  top and +x: 9869.8523). Later: curved openings, next to a drafted wall, two that meet.
 - Wrong/gap: a shell with a planar opening whose rim is tangent to its neighbours (every
   rounded enclosure, tray or cup; the guide's own example) leaves the rim open. The inner
   rounds run up to the outer edge, edges lie off their faces, the mesh is 8-11% off (10199.96
@@ -741,6 +861,9 @@ and fail fast when the kernel cannot do them.
 - Status (phase 1): done, 90cc398 (lane FO): `Shell.offset`, `Face.offset` and `offset()` of sheets
   and faces in the other process, checked by the distance of every face (in place of the bbox
   bound); `thicken(..., both=)`. Sheets whose faces share no edges offset face by face.
+- Status (close-out): done, F (36825f7): faces that touch along edges they do not share are sewn
+  first (within 1e-7 of the size, where no face turns): an open box of five separate faces offset by
+  -1 gives 1692.0.
 - Gap: Shell has no offset (`offset(sheet, 2)` raises AttributeError, and TypeError in the
   wasm), and `operations.thicken` lacks `both=`. `k.offset_brep` works on sheets with its
   default flags: a single face gives an exact offset surface (distance 2.0 at every sample),
@@ -764,11 +887,18 @@ Status (phase 1) of the items in the table:
   edges and corners; the sharp mode's error suggests `corners='round'`.
 - O9: done, 6802aa4 (lane FO): `offset(d, corners='sharp'|'round')`, the TS options fixed; Steiner's
   2610.50144.
+- O9 (close-out): later: `Shell.offset(corners=)` (the kernel's rounded mode returns inward offsets
+  of sheets unchanged).
 - O10: done, 9757bdf (lane FO): `face_edit.edit_faces` (src/cpp/face_edit.cpp over LocalOperation,
   exact circles restored), `move_faces`, `offset_faces`, `shell(walls=)`. Parts with cavities are
   refused (LocalOperation drops inner shells); extended rounds can come back as extrusions.
+- O10 (close-out): done, F (36825f7): parts with cavities are edited, and drafted, outside and
+  cavity apart, the cavities cut out again and checked (a box with a cavity: top +2 25400, the
+  cavity's top +1 23100); extended faces get their cylinder or cone back where they lie on it (four
+  cylinders r 3; a cone hole 13694.272626297588, exact). Later: edits that change which faces meet.
 - O11: done, 9757bdf (lane FO): the recipe in docs/features.md and the skill's draft guide
   (23273.6153, exact). No per-face neutral planes.
+- O11 (close-out): later: per-face neutral planes for stepped parting lines.
 - O12: done, 9757bdf (lane FO): `shell(corners=None|'round'|'sharp')`, `info()['corners']`.
 
 ### S. Sweeps, lofts, extrusions and primitives
@@ -792,6 +922,11 @@ wherever the geometry is analytic.
   turned seams or other split points where the carried one fails (60 of 60 random loops; 0.4: 37),
   fused sweeps are cleaned of faces without area (`ext.remove_slivers`) and checked, and
   `SmMerge::ManifoldBoolean` is patched.
+- Status (close-out): blocked for 4 of 60 hard kinked loops, S (34ab364): which fallback goes
+  depends on rounding in the kernel's fuse; 12 more retries got 2 more loops through in both builds,
+  and a native build without FMA differs on 4 others. With K1's `SmProtoTopology.cpp` patch the two
+  loops that crashed natively now and then (ASan: `UpdateFaces`) are clean, and so is the Linux
+  x86_64 crash of the second kinked loop (W). A failing loop raises.
 - Wrong: each piece is re-oriented by the smallest rotation from the sketch normal to that
   edge's start tangent (`operations.py:209-218, 262, 293-294`), not by carrying the frame
   along the path. A non-round profile turns by up to 90 deg at a joint; the body stays valid
@@ -816,6 +951,11 @@ wherever the geometry is analytic.
 - Status (phase 1, follow-up): done but the optional `anchor=`, ae96cce (lane S): mitered planar
   paths are swept in a frame of their own and moved onto the profile's own box center (offset
   curves; a warning where a spline has none).
+- Status (close-out): done, S (34ab364): `sweep(anchor='center'|'origin'|point|Vertex)` on every
+  route; kernel patch `smlibpy_SetSweepProfileReference` (`SmPrimitiveCreation.cpp`, through
+  `ext.curve_sweep(reference=)` and the new `ext.planar_path_sweep`) puts the given point on the
+  path, not the middle of the control points' box: an 80-degree sector sat 0.0211 to 0.075 off, now
+  exact; mitered paths with splines sit by their own box, without the warning.
 - Wrong: the kernel anchors the profile at the centre of the world-axis bbox of the
   already-turned profile. On oblique and helical paths, asymmetric profiles (triangles, L and
   T sections, thread teeth) shift by an amount that depends on the path direction; paths
@@ -845,6 +985,11 @@ wherever the geometry is analytic.
   helix axis (`ext.helix_axis`) by default along helices. The #10 section is 2.0001 x 1.0039. Not
   done: an option for the kernel's rolling frame, frenet on straight pieces, a twist along closed
   paths with corners.
+- Status (close-out): done, S (34ab364): the turn a profile gains round a non-planar loop with
+  corners is spread along the length (it jumped 8.5064, 5.7148 and 29.7502 degrees at the closing
+  corner; now the shares match the lengths to 1e-4 degrees), with split fallbacks and a warning;
+  `up='frenet'` where the profile would spin raises a clear `ValueError` after 8 doublings. Later: a
+  named rolling-frame mode, the helix default for near-helices.
 - Gap: along a helix the profile rolls about 30 deg per turn (ai/todo/features.md #10,
   open). NLib's `N_CreateSweepScale` takes `curZ`, the local Z vector at every path point,
   but its only caller (`SmBSplineSurfaceNLib.cpp:5821-5832`) passes NULL. The loft workaround
@@ -896,23 +1041,43 @@ Status (phase 1) of the items in the table:
 - S7: done, e969994 (lane S): `sweep(scale=)` (pairs, points with a monotone cubic, functions)
   through the kernel's scale curves or `ext.oriented_sweep(scales=)`; the frustum 1466.07658 (exact
   1466.07657).
+- S7 (close-out): done, S (34ab364): the scale curve's points are doubled up to 257 while it is more
+  than 1e-7 off the law (radius within 1.3e-6, was 1.2e-3). Later: mitered planar paths with `up`,
+  `twist` or `scale`.
 - S8: done, e969994 (lane S): single lines as extrusions, single arcs as revolves, with the
   axis-crossing check (features #13 for single arcs).
+- S8 (close-out): done, S (34ab364): new `ext.planar_faces` turns the flat B-spline walls of oblique
+  extrusions into planes; `extrude(taper=, direction=)` across the normal and a taper of an open
+  curve raise `ValueError` (they were ignored). Later: analytic walls of translational arc sweeps.
 - S9: done, e969994 (lane S): straight extrusion and `Part.draft` where the volumes agree,
   `corners='round'`, flat B-spline faces drafted, the hole-widening check.
 - S10: partial, e969994 (lane S): `loft(start_tangent=, end_tangent=, closed=)` over `ext.skin`,
   tangency measured. Not done: rails, spine and `sweep(rails=)`; the skin's rails need a section per
   rail control point, and the two-rail sweep approximates its rails (0.31 off with 4 points, 1.6e-4
   with 1024).
+- S10 (close-out): done for open sections and profiles, S (34ab364, 2315ce7): `loft(rails=)` and
+  `sweep(rails=)` through Gordon surfaces (new `ext.gordon` on `N_CreateGordonSrf`, the network made
+  compatible within 1e-8), rails and sections within 1e-7; `start_tangent` and `end_tangent` take a
+  face (`ext.skin(start_face=, end_face=)`). Later: a spine, closed sections or profiles along rails
+  (a 22 degree crease).
 - S11: done, e969994 (lane S, `_freed` at every copy site) and 6a10005 (lane WN, the sweeps, skins
   and offset profiles).
+- S11 (close-out): K2 (2ebcb64): the kernel's mitered planar sweep frees its temporary curves,
+  extensions, cutting lines and failed segments (12.7 kB to 0 a sweep, smlibwasm 10.5 kB to 0), and
+  `CreateCone` its apex's iso curve (72 B a pointed cone).
 - S12: done, e6a8a48 (lane S): `swing()` over its own `ext.swung` (N_CreateSwungSrf with the scale
   measured at +X); `create_swung_primitive` picks the wrong side and divides by 0, so it is not
   used.
+- S12 (close-out): later: analytic faces and other axes for `swing`.
 - S13: done, e6a8a48 (lane S): `arc_size`, `arc_size1/2/3`, `major_angle`, `AnnularSector`; the
   partial primitives bound in the wasm. Not done: a torus' minor angles, Pyramid.
+- S13 (close-out): done, S (34ab364): `Torus(minor_start_angle=, minor_end_angle=)` (the half torus
+  4934.802201, exact) and `Pyramid(l, w, h, align=)`.
 - S14: done, e6a8a48 (lane S): ValueError below a sine of 1e-5 (the kernel's own limit, not 1e-9), a
   warning below 1e-3, and oblique extrusions checked and made again turned.
+- S14 (close-out): done, S (34ab364): where the turned extrusions fail, the profile is swept along
+  the line and checked against the volume: 7200 of 7200 valid with the exact volume (16 of 1200 per
+  angle raised).
 
 ### C. Curves
 
@@ -929,6 +1094,10 @@ scale with the model.
   `SmPrimitiveCreation::Boolean2D` (a wire edge's missing face) and patched to fail with
   SM_ERR_BAD_INTERSECTIONS; 24 of 24 runs right. Not done: why the intersection leaves the wire
   edge; the far-apart lattice sliver.
+- Status (close-out): done, K1 (ffb80d9): `Sketch._boolean2d_apart` runs groups of faces near each
+  other alone where the whole spans more than ten times the largest group (the kernel takes its
+  planar tolerances from the operands' extent): 60 of 60 random lattices right in both builds (9 and
+  12 slivers, 46 and 43 errors before).
 - Wrong: `boolean_2d` misclassifies a face of the left operand that the tool's boundary does
   not cross, when that face touches the operand's other faces at vertices (as xor results
   do). The wasm gives different wrong values (54.9061 and 55.6337). The order matters
@@ -977,6 +1146,8 @@ scale with the model.
 - Status (phase 1): done, 97384e9 (lane C): `NL_CCPLIM = 2^20` at init in both modules, and above
   120 turns pieces of 100 turns joined into one edge (200 turns: radius within 7.8e-5). Sweeps along
   helices keep their own limit (about 60 turns).
+- Status (close-out): done, S (34ab364): sweeps with the kernel's frame (`orient=False`) along more
+  than about 60 turns go in 2, 4 or 8 pieces: 80 turns valid within 8.6e-5, 100 and 150 within 4e-6.
 - Gap: helices above about 26-79 turns fail (ai/todo/curves.md #15). Cause: NLib's mutable
   global `NL_CCPLIM = 1000` caps the spiral fit (`NL_Spiral.cpp:128`). `SmApiCreateHelix`
   also has a hard cap of 124.25 turns and its own dense 3D tolerance check. With
@@ -1027,7 +1198,12 @@ Status (phase 1) of the items in the table:
 - C6: done, 97384e9 (lane C): `Edge.extend`, `Wire.to_edge`, `ext.extend_curve`.
 - C7: done, f097364 (lane C): `ext.offset_curve` (CreateSimpleOffset, src/cpp/curve_ops.cpp),
   `Edge.offset`, `Wire.offset`, Stroke along splines. No 3D offset.
+- C7 (close-out): done, S (34ab364): a closed edge with a corner where it starts offsets into one
+  closed edge both ways (it gave the rounding arc alone at +1 and raised at -1). Later: offsets of
+  non-planar curves, trimmed cusps.
 - C8: done, f097364 (lane C): `fit_curve`, `Spline(tangents=)` per point.
+- C8 (close-out): done, S (34ab364): `fit_curve(points, tangents=[one per point], tolerance=)` over
+  the new `ext.approximate_tangents` (400 points: 36 control points within 0.05, 60 within 0.005).
 - C9: done, f097364 (lane C): `ext.curve_geometry`, `curve_properties`, `curve_box`;
   `Edge.curvature_at`, `radius_at`, `min_radius`, `inflections`, `Wire.min_radius`; exact free-curve
   boxes; the sweep hint. Wire.continuity is A4's.
@@ -1036,13 +1212,19 @@ Status (phase 1) of the items in the table:
 - C12: done, 126bb76 (lane C): `ext.project_curve` within 1e-7, `project(nearest=True)`,
   `Face.project`, `Face.iso`, `Face.wrap`. K9 not made: smlibpy calls neither SM_API projection
   (recorded in docs/kernel.md).
+- C12 (close-out): done, S (34ab364): pieces a closed face's seam cuts are joined (`Face.project`
+  across a seam gave nothing; `wrap` and `Part.project` gave two or three pieces), and
+  `nearest=True` checks each piece between its crossings of the body's edges and silhouettes (a 1 mm
+  bridge splits a plate's piece). Later: `Face.wrap` keeping every length.
 - C13: done, 126bb76 (lane C): banded interpolation in linear time, periodic closed splines.
 - C14: done, 126bb76 (lane C): `ParabolicArc`, `HyperbolicArc`, `ConicArc`, `Spiral`.
 - C15: done beyond the minimum, 126bb76 (lane C): planar wires through `_planar`; spline and ellipse
   corners by an own offset-based fillet (OpenCASCADE agrees to 5e-8). SmCurveFilletExecutive is not
   used.
+- C15 (close-out): later: rounding arc and spline corners of non-planar wires.
 - C16: done, 126bb76 (lane C): `Edge.through` (minimum-norm move), `Edge.match`
   (DeformToEndPointTargets).
+- C16 (close-out): later: a global `Edge.through`, `Wire.match_to`.
 
 ### U. Surfaces and sheets
 
@@ -1079,6 +1261,10 @@ smlibpy, and exact faces stay exact.
   `CreateEdgeEdgeBlend` and `CreateBlendSurface` without their defects (the twist was a double
   reversal of the second rail; the rescale of every derivative; all statuses checked) and `blend()`.
   Closed edges are refused.
+- Status (close-out): done, U (dc07edb): closed edges too: both rails rebuilt as cubic interpolants
+  of the same knots through points at equal steps of length, run on an eighth round, skinned, cut
+  back to two faces and sewn along two seams (tubes r 10 and r 6: area 1033.631, tangent to 4e-6
+  degrees); a closed and an open edge are refused.
 - Gap: nothing bridges two free sheet edges tangentially. `k.create_blend_primitive` is
   bound in Python, unused and not in the wasm. It gives tangent rails (normal angle at most
   3.3e-4 deg), and its result stitches and thickens (338.553). But the face/edge SM_API
@@ -1100,6 +1286,9 @@ smlibpy, and exact faces stay exact.
   `Face.split`, `surface_fillet(trim=True)`, and `Part.imprint(tool, direction, nearest=)`, one
   method with B14's since the merge. `trim_project_parallel` is not bound in the wasm (nothing uses
   it).
+- Status (close-out): done, U (dc07edb): `src/cpp/trim.cpp` cuts a curve where it leaves the faces
+  and where it comes back, so curves past a B-spline sheet's border or across a hole trim and split
+  (to 1e-9). Later: `Shell.trim` along a direction.
 - Gap (corrected): holes and outlines projected along a direction are already reachable:
   `stitch((big_box - prism) & sheet)` equals the kernel trim to 1e-7. Two things are missing.
   (1) Trimming or splitting a sheet with curves already on it (`surface_fillet` rails,
@@ -1117,6 +1306,11 @@ smlibpy, and exact faces stay exact.
   (src/cpp/fill.cpp, not surfaces.cpp; `N_CreateGordonSrf` with compatible crossing parameters, 3e-8
   on the probe network) with the guards in the wrappers; `fill()` and `network()`. Not done: mixed
   loops with `tangent=True`, steep sheets, N-sided tangency better than about 1.4 degrees.
+- Status (close-out): blocked, U (5744724) and K2 (2ebcb64): steep sheets fold back in every
+  construction tried, N-sided fills stay at 1.346 to 1.348 degrees for every tolerance tried (`fill`
+  checks 2 degrees, the docstrings say so), and three-sided tangent fills keep the pole whose offset
+  does not finish; the N-sided fill's own leak (`N_FillNSidedHole`, 91.9 and 23.3 kB a fill) is
+  patched (`NL_SrfAdv.cpp`). Later: mixed loops with `tangent=True`.
 - Gap: no surface from boundary curves. C++ probes: a Coons patch matches its boundary
   midpoints; an N-sided fill gives 3 patches; a Gordon surface missed its own curves by up to
   4.15e-2 on a 10 mm patch, most likely because the probe's network was incompatible
@@ -1167,20 +1361,31 @@ Status (phase 1) of the items in the table:
 
 - U6: done, b2bad32 (lane U): `ext.extend_face` and `ext.untrim_face` (src/cpp/extend.cpp),
   `Face.extended`, `Shell.extend`, `Face.untrimmed`. Trims are not kept; one face only.
+- U6 (close-out): later: keeping trims, and extending sheets of several faces.
 - U7: done, d88756e (lane U): `push_face` (src/cpp/shape_edit.cpp), `Part.push` and `Shell.push`.
+- U7 (close-out): later: pushes that move edges or cross a seam.
 - U8: done, d88756e (lane U): NLib's region warp and flatten copied into src/cpp/nlib_shape.cpp with
   two upstream bugs fixed; `warp`, `flatten`. Not done: `bead`, `side=`, knot removal after a warp.
+- U8 (close-out): done, U (0a3538c): knot removal within 1e-6 of the size after `warp` and `flatten`
+  (a box top flattened: 21 x 21 control points instead of 39 x 39). Later: `side=`, `bead`.
 - U9: partial, a311eab (lane U): `Shell.match_edge` (AdjustBoundaryCurve; neighbours follow moved
   corners). Not done: tangency across the side edges, `stitch(match=True)`.
+- U9 (close-out): later: tangency across the side edges and `stitch(match=True)`; the crease is
+  documented in both docstrings.
 - U10: done, a311eab (lane U): `Shell.merge_faces` (N_MakeSrfsCompatible and N_SrfJoin on stacks of
   its own). Not done: `Part.merge_faces`, `stitch(merge=True)`.
+- U10 (close-out): later: `stitch(merge=True)`, `Part.merge_faces`.
 - U11: done, a311eab (lane U): nothing reachable needed a fix; a test keeps `CreateHelicalSweep`
   unwired, and the new NLib code follows the notes.
 - U12: partial, a311eab (lane U): `surface_fillet(radius2=, shape='chamfer')`. Not done: the
   face-to-face fillet with base trimming.
+- U12 (close-out): later: the face-to-face fillet with base trimming.
 - U13: done, a311eab (lane U): `nurbs_surface()` with checks and exact clamping.
 - U14: done, a311eab (lane U): a Plane (as a sheet across the body) and a Face accepted, [] for
   bodies apart or nested.
+- U14 (close-out): U (dc07edb): `Part.section` asks `CreatePlanarSectionCurves` for 1e-7 of the
+  part's size (`ext.plane_section`): curves on a thickened B-spline sheet 3.2e-6 off (the kernel's
+  up to 1.5e-2, its areas up to 0.13 % too large).
 - U15: done, a311eab (lane U): `surface(report=True)` and `FitReport` with true distances
   (`ext.surface_distances`).
 
@@ -1210,6 +1415,10 @@ Goal: selections and validity answers can be trusted on imported and edited bodi
 **T2 · P0 · Face copies segfault after a failed RemoveFaces** · `heal-copyfaces-crash-after-failed-removefaces` · small · both
 - Status (phase 1): done, 90677eb: failed copies are kept for the life of the process and raise
   KernelError; the later step (single-face sheets through `SmBrepConstructor`) is not done.
+- Status (close-out): K2 (2ebcb64): failed face copies are freed: `DeleteFace` deletes a Face
+  without Faceuses also when its bookkeeping fails, `~SmBrep` deletes such a Face, and `CopyFaces`
+  frees what it made for a face it could not build; `ext.copy_faces` and `slivers.cpp` delete the
+  copies (117.8 kB to 0 per failed copy, smlibwasm 82 kB to 0).
 - Wrong: `ext.copy_faces` (`ext.cpp:561-593`) falls back to copy + `RemoveFaces` when
   `CopyFaces` fails, and deletes the copy when `RemoveFaces` fails too; `~SmBrep` then
   crashes (EXC_BAD_ACCESS at 0xa0). Callers: `Face.to_shell`, `Face.translate/rotate`,
@@ -1232,6 +1441,7 @@ Goal: selections and validity answers can be trusted on imported and edited bodi
   Coincident take the union), `ShapeList.new(since)` and `derived_from`, old selections mapped to
   their descendants before geometry, tags carried across the other process. Not done: bodies read
   from files get new tags, vertices have none.
+- Status (close-out): later: tags for bodies read from files, and on vertices.
 - Gap: a selection taken before an edit that splits faces cannot be used after it
   (`cut.fillet(box.edges().top(), 1)` raises "is not an edge of this part"). Kernel attribute
   propagation keeps tags through Booleans (both halves of a split face keep their parent's
@@ -1248,6 +1458,7 @@ Goal: selections and validity answers can be trusted on imported and edited bodi
   indices), `tolerance_gaps`, `body.check()` and `Problem`, `is_valid(strict=True)`,
   `Edge.tolerance`, `Vertex.tolerance`, `Shell.heal()` returning a Part when closed. Not done:
   `heal(report=True)` from SmHealData.
+- Status (close-out): later: `heal(report=True)` from `SmHealData`, as the Do says.
 - Gap: `is_valid()` checks closed, manifold, finite box and volume sign only. The kernel's
   `SmBrep::AssertValid` is built in release, runs `ValidatePointers` and a check-only
   `ValidateAndUpdateTolerances`, and names the entity, test and value. The imported valve is
@@ -1276,8 +1487,12 @@ Status (phase 1) of the items in the table:
 - T5: done, 8525ff9 (lane BT): `ext.set_face_colors` and `set_face_names` (SM_AI_COLOR and a name
   attribute), `colored`/`named(faces=)`, `Face.color`, `Face.name`; STEP in and out, glTF, USD
   meshes, render; X9's `.smp` keeps them. `.smb` and USD BrepArrays hold none.
+- T5 (close-out): later: face colors and names in `.smb`, USD `BrepArray`, OBJ and the live view.
 - T6: done, 8525ff9 (lane BT): `ext.recognize_analytics` right after non-similarity transforms, kept
   only within 1e-9 of the size; the BrepHandle docstring corrected. Circular rims stay B-splines.
+- T6 (close-out): done, K1 (2b79952): circles are restored too (`restore_analytic_curves`):
+  `Cylinder(5, 10).scale((1, 1, 2))` has 2 circle edges, and STEP writes `CIRCLE`. Later:
+  ellipsoids, recognition of STEP imports.
 - T7: done, 8525ff9 (lane BT): `ext.brep_shells`, `Part.shells`, `Part.voids`, `Face.cells`,
   `ShapeList.shared`, the info keys.
 - T8: done, 8525ff9 (lane BT): the handle shared with an identity per wrapper; smlibwasm counts the
@@ -1370,6 +1585,8 @@ other CAD systems need.
 - Status (phase 1): partial, 8952bee (lane IX): bodies built one by one, a failing one left out with
   a warning, `strict=`, `StepModel.skipped`, entity ids in the reader's messages. Not done:
   OFFSET_CURVE_3D and PCURVE-only edges, which no real file at hand holds.
+- Status (close-out): done, M (7bd25a9): `OFFSET_CURVE_3D` (lines and circles exact, others through
+  the new `ext.offset_curve_3d` within 1e-9) and `PCURVE` edges are read.
 - Wrong: any exception in one body ends `import_step`/`read_step` with a bare
   NotImplementedError that names neither entity, body nor product.
 - Do: build each body in try/except, warn with name, entity id and reason, return the rest;
@@ -1404,13 +1621,22 @@ Status (phase 1) of the items in the table:
   than half of), kernel queries in kernel_call, the fillet pre-check.
 - I10: partial, 8952bee (lane IX): `export_step(assembly=True)`, names encoded (files.md #16). Not
   done: instances of moved copies (no provenance).
+- I10 (close-out): done for placements, M (7bd25a9): `CARTESIAN_TRANSFORMATION_OPERATOR_3D`
+  placements that mirror or scale are read. Later: moved copies written as instances.
 - I11: done, eb2cb77 (lane IX): OFFSET_SURFACE with the kernel's basis or its extension; SmCylinder
   as CYLINDRICAL_SURFACE; a warning where a body still goes to NURBS. Not done: offsets of C0
   B-spline bases stay unreadable for OpenCASCADE; an offset of a whole sphere does not import.
+- I11 (close-out): done, M (7bd25a9): closed shells of offsets of planes, spheres, cylinders, cones
+  and tori are also built on those surfaces, which are taken where the offset build fails or has
+  another volume (a sphere's offset imports exact; smlibwasm had a quarter of the volume). Later: C0
+  bases for OpenCASCADE.
 - I12: done, eb2cb77 (lane IX): curves, points and frames in `export_step`; `StepCurve`,
   `StepPoint`, `StepFrame` exported.
+- I12 (close-out): done, M (b4462a6): `StepFrame` colors written.
 - I13: done, eb2cb77 (lane IX): 1e-7 mm converted to the file's unit.
 - I14: done, 970f486 (lane IX): `iges_reader.py`/`.ts` into the STEP builder; a reader only.
+- I14 (close-out): done, M (b4462a6): entity 130 at one distance read. Later: writing, binary and
+  compressed IGES, more entity forms.
 
 ### X. USD, SMB and other formats
 
@@ -1443,6 +1669,7 @@ raise errors instead of crashing.
   payloads (`import_usd(..., units, placement, check)`, `fromUsd(..., { resolve })`). A stage
   without `metersPerUnit`/`upAxis` is read as is (mm, Z up), unlike USD's fallback; inherits,
   specializes and variants are not composed.
+- Status (close-out): later: inherits, specializes and variant sets.
 - Wrong: `usd_read` reads only the BrepArray arrays, extent and displayColor. xformOps on
   the prim and its ancestors, `metersPerUnit` and `upAxis` are ignored, without a warning:
   assemblies collapse onto their local origins and sizes are off by 10x or 1000x. Prims
@@ -1546,20 +1773,31 @@ Status (phase 1) of the items in the table:
 
 - X5: done, 970f486 (lane IX): line, circle and ellipse edges written with the schema's APIs;
   `restore_analytic_curves` (now in analytic.cpp) on import, circles only on analytic faces.
+- X5 (close-out): later: circles on NURBS faces, other writers' ellipses.
 - X7: done, 970f486 (lane IX): `partial=`, the body named in the error.
 - X9: done, 6e43570 (lane IX): `.smp` part files (`ext.part_bytes`, `ext.part_items`) with names,
   colors and curves; `.smb` unchanged.
+- X9 (close-out): later: `.smp` placements, points and meshes; `.smb` names and colors.
 - X10: done, 6e43570 (lane IX): ValueError for empty bodies in `export_usd` and `tessellate`.
   `export_step` still leaves an empty body among others out silently.
+- X10 (close-out): done, M (7bd25a9): `export_step` of a list with an empty body, and the mesh
+  writers of nothing, raise.
 - X11: done, 6e43570 (lane IX): Python's in-memory I/O, fonts from bytes.
 - X12: done, 6e43570 (lane IX): material bindings read (preview surfaces, node graphs, references),
   `export_usd(materials=True)`. Not done: materials of faces, collection bindings, textures.
+- X12 (close-out): later: face materials, collection bindings, textures.
 - X13: done, 6e43570 (lane IX): warnings for bodies of mixed dimension; TypeErrors naming the
   writers that take curves.
+- X13 (close-out): later: USD curves.
 - X14: partial, 97195f6 (lane IX): usd-brep's OCCT bridge vendored in src/cpp/occt with its defects
   fixed, import and export, pcurves, the writer's check, the SmCurve `sm_FilterSolution` patch. Not
   done: binary writing, names and colors, loose curves, the edges the staging rebuilds backwards (4
   of 557 corpus solids).
+- X14 (close-out): done, M (7bd25a9, b4462a6): tolerances per edge, vertex and face in the reader
+  and writer (`usd_tighten_tolerances`), sliver faces, caps round a pole, loops that overshoot a
+  period, a check at 128 points an edge, planes boxed by 256 points and the spans' control points:
+  of the corpus 585 of 585 bodies written and 557 of 559 solids read back; the spring example within
+  2e-7. Later: binary writing, names and colors, loose curves and points.
 
 ### M. Meshes and drawings
 
@@ -1626,6 +1864,13 @@ exact vectors.
 - Status (phase 1): done, 1f1023d (lane M): `ext.hidden_lines` (SmHCR, post-processed),
   `outline(plane, hidden=, tangent_edges=)`, `silhouette()` as contour generators (draft's
   `_contour`, also on Shells), `drawing_views`, `export_svg`, DXF layers VISIBLE and HIDDEN.
+- Status (close-out): done, with a known kernel limitation, R (f9fdcf2, e024388) and M (b4462a6):
+  `_drawn` leaves out specks within 10 times the tolerance (judged by control points), keeps a piece
+  it cannot rebuild as projected and draws a line lying on a longer one once: `Torus(20,
+  5).outline(Plane.YZ)` no longer raises (8 edges, 111.416); 27 shapes x 6 views, with and without
+  hidden lines: 0 errors in both builds. `drawing_views` takes a list of bodies. Blocked: SmHCR
+  misjudges pieces of tilted views (the flange along (1, 1, 1) natively 61.4 mm short; not located).
+  Later: dimensions and a title block.
 - Gap: drawings exist only as raster images; `outline()` gives visible lines only. SmHCR
   computes hidden curves and SM_API discards them (84 ms per view on the valve).
   `silhouette()` returns SmHCR's visible curves, not contour generators: a box seen along
@@ -1656,13 +1901,23 @@ Status (phase 1) of the items in the table:
 
 - M5: done, 1f1023d (lane M): `raycast_many` (the kernel's ray tracer, hits moved onto the faces),
   face meshes cached.
+- M5 (close-out): done, M (7bd25a9): a ray that passes within twice the mesh's tolerance of a
+  triangle before its hit (or anywhere, for a miss) is cast exactly (`src/cpp/rays.cpp`, a box
+  tree): of 2000 rays across a sphere's outline 297 differed from `raycast`, now none. U (dc07edb):
+  `raycast` beside a seam, kernel patch `SmEllipse.cpp` (`ConvertToPolarParameter` asked
+  `STEPInversion` with the zone tolerance).
 - M6: done, bd60eab (lane M): `Mesh.decimate` (SmPolyDecimate with its folds repaired, the distance
   measured).
+- M6 (close-out): done, M (7bd25a9): folded slivers collapsed after decimation (0 in 9 cases), and
+  `feature_angle=`.
 - M7: done, bd60eab (lane M): `Mesh.section`, `Mesh.slices`, `Part.slices`.
 - M8: done, bd60eab (lane M): `Mesh.to_part`, `Part.from_mesh` (CreateFromPolyBrep after a strict
   coplanar merge).
+- M8 (close-out): later: non-planar regions.
 - M9: done, bd60eab (lane M): `Mesh.fill_holes`, `Mesh.repaired`.
+- M9 (close-out): later: a faired patch.
 - M10: done, bd60eab (lane M): `max_edge=` with the twisted-face warning.
+- M10 (close-out): later: `max_edge` with halving, `max_aspect_ratio`.
 - M11: done, bd60eab (lane M): `Mesh.mass_properties`, `Mesh.centroid`, the empty-mesh error.
 - M12: done, bd60eab (lane M): OBJ normals, indexed glTF, normals of mesh Booleans.
 - M13: done, bd60eab (lane M): `PolyBrep.ray_intersection` bound again with the mesh as parent
@@ -1700,6 +1955,10 @@ Goal: distances, closest points, curvature and continuity are numbers a user can
 - Status (phase 1): done, 17d7458 (lane DA): `closest_points` and `ClosestPoints`, distances to
   faces, edges and wires (`ext.nearest_curve_points`), `Face.closest_point`, `uv_at`, `position_at`,
   `Edge.closest_point`, `param_at_point`, `Wire.closest_point`; on A1's Newton.
+- Status (close-out): U (dc07edb, 0a3538c): `distance_to(point)` and `closest_point` find the
+  nearest point of a B-spline face that folds back (`ext.nearest_point`: every face and knot span
+  that could hold a nearer point): none of 215 cloud points farther than a 300 x 300 sampling (the
+  kernel: 5, up to 0.245); about 2 ms on a thickened sheet.
 - Gap: `Part.distance_to` returns only the number, although `_body_distance` holds the
   witness pair; edges and wires raise TypeError. Face and Edge have no `closest_point`,
   although `k.Face.closest_point` and `k.Edge.closest_point` are bound in both builds, respect
@@ -1739,6 +1998,10 @@ analytic faces where the image is analytic.
 - Status (phase 1): done, 17d7458 (lane DA): fold, flange and bend record their K on the part;
   `k_factor=` takes a function, a mapping, (r/t, k) pairs or 'din6935'; resolved per bend,
   `Bend.k_factor`. Not done: records in files (a part read back unfolds at 0.44).
+- Status (close-out): done for `.smp`, U (dc07edb): fold records (axis, inside radius, K) written as
+  a smlibpy attribute in `.smp` (ASCII and binary) and restored by `from_smp` and `load`: a part
+  folded at 0.33 and 0.45 and read back unfolds to 200 (it was 200.314). Blocked: `.smb` (the
+  kernel's body writer keeps no attributes). Later: STEP.
 - Gap: `unfold`, `flat_pattern` and `bends` take one K-factor for every bend, and
   `fold()`/`flange()` do not record theirs, so a fold round trip is lossy: a 200 mm blank
   folded at R1 with k 0.33 and at R6 with k 0.45 unfolds to 199.623 or 200.377, never 200.
@@ -1762,15 +2025,30 @@ Status (phase 1) of the items in the table:
 - D2: done, 312d0bc (lane DA): src/cpp/deform_analytic.cpp, a recognition of its own by sampling the
   exact map (MakeExactBSpline1st... not used); a bent plate is sheet metal; STEP writes the
   cylinders. No torus or sphere images.
+- D2 (close-out): R (f9fdcf2): a twist keeps the cylinders, cones, spheres and tori about its axis
+  that full circles about it bound (`src/cpp/deform.cpp`: the faces, edges and vertices a twist
+  leaves in place): `twist(Cylinder(5, 40), 90)` is a cylinder and two planes, 3141.592654, exact;
+  54 of 162 survey results have no B-spline face (0 before). Later (U): torus and sphere images of
+  bends (the torus' seam).
 - D3: done, 312d0bc (lane DA): an unbend piece, `unroll`, rolled parts, curls and bends over 180
   degrees.
+- D3 (close-out): later: rolled parts and end bends that span only part of the width.
 - D4: done, 312d0bc (lane DA): the docs and deform #2.
 - D5: done, 197d83e (lane DA): the outline as lines, arcs and circles; bend-zone edges within 1e-7;
   the depth by edges. Bend-zone faces stay 1e-4 fits.
+- D5 (close-out): done, U (dc07edb, 5744724): bend-zone faces fitted keeping their parameters
+  (`fit_surface_keeping_parameters`) within 1e-6, exact where they can be, their trims rebuilt after
+  the edges: a hole wholly inside a bend zone unfolds valid (its wall's area was 2.6 for 113), a
+  square hole's walls round trip to 3e-14.
 - D6: done, 197d83e (lane DA): `deform_curve`; the deformations take edges, wires and points (in
   place of a `map_point` each).
+- D6 (close-out): done, U (86027ab): checked: `twist`, `taper`, `bend`, `unroll` and `Lattice.map`
+  map points as they map bodies (vertex images on the deformed body to 1e-9); no separate
+  `map_point`.
 - D7: done, 197d83e (lane DA) and the release's docs commit (the pointer to `Part.push`); unmoved
   faces keep their type with D2. DegreeReduction not used.
+- D7 (close-out): done, R (f9fdcf2): the `Lattice` docstrings and docs/deform.md say a lattice is a
+  global map and point a local bump to `Part.push` and `Part.warp`.
 
 ### W. smlibwasm runtime and parity
 
@@ -1806,6 +2084,13 @@ frozen tabs, no silently wrong answers from stale objects or ignored options.
 - Status (phase 1, follow-up): done, b660ed1 (lane WN): `@classcad/smlibwasm/worker` (`expose`,
   `KernelWorker` with timeouts, AbortSignal and respawn; bodies as `.smb`). Not done: the deadline
   counter in the feature executive and main-thread async variants.
+- Status (close-out): done, W (c10f34c): a deadline inside the kernel (`ext.set_deadline`,
+  `SMLIBPY_DEADLINE_ER` in the patched `SmMessages.h`, checked in `SmAdvSurfaceIntersector`,
+  `SmSurfaceIntersector`, `SmTopologyIntersector`, `SmSurfaceDropCurve` and
+  `SmFeatureExecutive::ExtSurfaceRebuild`, where samples and profiles found the looping steps; lldb
+  saw no new entries into the executive's loops the plan named). A guarded step run in this kernel
+  is held to `GUARD_SECONDS`: the enclosure's round with 2 s raises after 2.10 s (Python) and 2.05 s
+  (smlibwasm); ASan 747 passed, 0 reports.
 - Wrong: `removeFillets(partial=true)` on the shipped enclosure and bottle examples
   busy-loops forever in the wasm (killed after 200-300 s at 99% CPU); Python's fork guard
   finishes the same calls (enclosure: 39 of 51 removed, 49.9 s). In a browser the
@@ -1898,6 +2183,9 @@ frozen tabs, no silently wrong answers from stale objects or ignored options.
   (`js/scripts/patch-loader.cmake`) and `@classcad/smlibwasm/init` takes locateFile, wasmBinary,
   wasmModule or instantiateWasm; webpack 5, esbuild and Vite 4.5 and 7.3 bundle the package. Not
   done: Vite 4 bundling a module worker that imports the package.
+- Status (close-out): blocked (Vite 4), W (c10f34c): Vite 4.5.14 cannot build module workers nested
+  three deep (three trivial files reproduce it); Vite 5.4.21 and webpack 5 build it, and
+  docs/javascript.md gives the way round.
 - Wrong/gap: the generated loader's `import("node:module")` breaks webpack 5 web builds
   (UnhandledSchemeError) and esbuild browser bundles, contrary to `docs/javascript.md:26-28`;
   Vite builds with a warning; bun does not emit the .wasm. The module is created at import
@@ -1915,6 +2203,9 @@ frozen tabs, no silently wrong answers from stale objects or ignored options.
   (`runtime__exception_info`), `_cppError`, status SM_ERR_OUT_OF_MEMORY with a hint,
   `memoryUsage()`; `guard()` catches bad_alloc. EXPORT_EXCEPTION_HANDLING_HELPERS not used
   (deprecated, allocates).
+- Status (close-out): done, W (c10f34c): a test caps the module at 160 MB and fills it until the
+  kernel fails (`SM_ERR_OUT_OF_MEMORY`; the kernel works again after the parts are disposed); the
+  hint says how far the memory grew.
 - Wrong: `bind_kernel*.cpp` and `bind_topology.cpp` have no `guard()`, so C++ exceptions
   (std::bad_alloc when memory runs out) reach JS as an opaque `WebAssembly.Exception`: not an
   Error, no message, not a KernelError. Every later call throws the same object until an
@@ -1929,6 +2220,9 @@ frozen tabs, no silently wrong answers from stale objects or ignored options.
 - Status (phase 1): done, 6a10005 (lane WN): `scope(fn)`, internal scopes in the public functions
   that make intermediates (35 left of 70 calls before, 0 now), `memoryUsage().handles` (the plan's
   kernelMemory), the Memory docs corrected.
+- Status (close-out): done, R (f9fdcf2) and W (c10f34c): 26 methods and constructors that kept their
+  intermediates (`Sketch.revolve`: +267 MB over 400 calls) run in `scope`; 400 disposed revolves
+  leave no object. Later: `scope` following async functions.
 - Wrong: finalizers run only between tasks, and the port disposes almost nothing itself (10
   `dispose()` calls in `js/src`). 1,000 synchronous regenerations grow wasm memory from 64 to
   476 MB while the JS heap stays at 14-22 MB; yielding every 10 iterations stays at 64 MB.
@@ -1954,17 +2248,26 @@ Status (phase 1) of the items in the table:
 - W10: done, 45602fd (lane WN): crashes counted, warned once and named; shell, offset and the
   defeaturing steps stop at one; a KernelWorker respawns. The module is not loaded again;
   `reset_after_trap` stays Not planned.
+- W10 (close-out): done, W (c10f34c): about 110 fallbacks pass a crash on, and none runs for the
+  rest of that event-loop task. Later: loading the module again.
 - W11: done, 45602fd and 8c92eec (lane WN, integration): overloads, typed render options, exported
   types, `scripts/declarations.mjs`. A few options stay loosely typed.
+- W11 (close-out): done, W (c10f34c): `FileOptions`, a `Lattice` and `{ tolerance }` for
+  `Part.deform`, `HullItem`, `LocationLike`.
 - W12: done, 45602fd (lane WN): inherited members in both API references.
 - W13: done, 911b1f9 (lane WN): WOFF2, CFF2 and seac in both readers (own Brotli and inflate);
   fontTools no longer used.
+- W13 (close-out): R (f9fdcf2): `Text` raises `FontError`, which `smlibpy` exports. Later: variable
+  font instances, fonts of a collection other than the first.
 - W14: done, 911b1f9 (lane WN): `_asBytes`, `fromFile`, `toFile`, `Text` takes a Font.
 - W15: done, 911b1f9 (lane WN): `@classcad/smlibwasm/kernel`, SmPyLib's binders compiled against a
   pybind11 stand-in; signatures.ts is held to SmPyLib's py::arg lists by a test, not generated.
 - W16: partial, 13fb24c (lane WN): traced (LoadInitialValues from CalcCornerVertGeom) and explained
   (native FMA: a build with -ffp-contract=off fails as the wasm does), listed in tools/parity.py's
   KNOWN. The build flags are left as a decision.
+- W16 (close-out): done (the decision), W (c10f34c): the native build keeps contracting: without it
+  the suite lost the two vase fillets and the fuzz seeds diverged in 12 operations instead of 10;
+  recorded in docs/kernel.md and `tools/parity.py`'s KNOWN.
 
 W2's worker entry and the docs' three.js snippet (DOCS-SNIPPET) are done, b660ed1 (lane WN).
 
@@ -2000,6 +2303,12 @@ regressions are found by CI rather than by users.
   21), `tools/oracles` (prog_test 17 of 17, SmPyLib 366 passed, 200 `.smb` files, crash loops); it
   found smlibpy's leaked curve copies (fixed). Not done: a run on Linux; found and not fixed: the
   FindInterval overflow and the leaks in CreateSweepAlongPlanarPath and CreateProtoEdge.
+- Status (close-out): W (c10f34c) and K2 (2ebcb64): the Linux-only defects found in an emulated
+  container are fixed (an open round near the largest radius, a freed ProtoEdge in
+  `SplitIntersectingProtoEdges`, parity files from platform bodies, the IX evaluator's first span,
+  the oracle list); the leaks of `CreateSweepAlongPlanarPath` are patched and `CreateProtoEdge`'s in
+  part. Blocked here: the `FindInterval` overflow (not reproduced), the rest of `CreateProtoEdge`'s
+  leak, and the Linux and Windows runs, which CI verifies at the first push.
 - Gap: CI runs Release builds only; the ASan procedure in `third_party/patches/README.md` is
   manual, macOS-only and sets `detect_leaks=0`; there are no RSS tests (B7 and I2 went
   unnoticed; a leak checker reports I2 immediately).
@@ -2017,6 +2326,8 @@ regressions are found by CI rather than by users.
 - Status (phase 1): done, 6a10005 (lane WN): `tools/fuzz` (generator, fork-per-case runners for both
   builds, invariants, minimiser, repro writer, baseline of seeds 7 and 8). The baseline is
   darwin-arm64 only.
+- Status (close-out): done, W (c10f34c, 9947011): a linux-x86_64 baseline from three emulated runs
+  of seeds 7 and 8, which CI's first fuzz job confirms or replaces.
 - Gap: no randomized modelling tests and no randomized Python/wasm cross-check. The scratch
   harness found most crash signatures in this plan.
 - Do: `tools/fuzz/`: a seeded generator biased toward degenerate placements, a fork-per-case
@@ -2044,14 +2355,22 @@ Status (phase 1) of the items in the table:
 - N4: done, 13fb24c (lane WN): `tools/oracles/usd_validator.py` on a pxr shim, run on export_usd and
   toUsd output; it found BA.763 (fixed); the docs line corrected. No CI step with the real
   usd-brep[validation].
+- N4 (close-out): done, W (c10f34c): CI's Linux job installs `usd-brep[validation]`, and a test runs
+  NVIDIA's `validate_file` on 40 files of both builds.
 - N5: done, 13fb24c (lane WN): `tools/parity.py`, golden files in tests/data/parity, the JS
   comparisons, the docs' js blocks run; 18 modelling steps.
+- N5 (close-out): done, W (c10f34c): 56 capability steps in `tools/parity.py`; smlibwasm agrees to
+  1e-7.
 - N6: done, 13fb24c (lane WN): K11 (`SmMessages.h`), src/cpp/trace.cpp, `KernelError.trace`.
+- N6 (close-out): R (f9fdcf2): smlibwasm's `section` and the fillet's crash note keep the kernel
+  trace of the error they replace.
 - N7: done, 90677eb (K10), its test in 13fb24c. SM_DEFINED_HASH_ORDER not attempted.
 - N8: done, ba28379 (lane WN): one recursive kernel lock on every entry point, the GIL let go in
   long calls, 22 SmPyLib functions bound again, fork hooks.
+- N8 (close-out): later: the GIL in SmPyLib's short methods, free-threaded Python, the fork warning.
 - N9: done, ba28379 (lane WN): `ext.drop_caches`, `compact()`; nothing compacts by itself (the
   measured trade-off).
+- N9 (close-out): later: automatic compaction.
 
 ## Kernel patches
 
@@ -2137,6 +2456,26 @@ through guarded wrappers, A4 through `ext.edge_continuity`, B17 through `ShapeLi
 functions of U8 copied into `src/cpp/nlib_shape.cpp` with two fixes. `CreateHelicalSweep` stays
 unwired (a test checks it), and there is no deadline counter in the feature executive (W2 stops
 steps from outside instead).
+
+Status (close-out): twelve more kernel files are built from patched copies, twenty-eight in all
+(three in 0.4.0), each with rows and checks in `third_party/patches/README.md` and confirmed under
+AddressSanitizer where it fixes a memory defect. New copies: `NL_SrfAdv.cpp` (the N-sided fill's
+stack, K2), `SmBrep.cpp` (`DeleteEdge` refuses an Edge between the two sides of one Face and leaves
+no Loopuse on a deleted Edgeuse, `SqueezeEdge`, `MakeEdgeInFaceWithVU`, `DeleteFace`, `~SmBrep` and
+`CopyFaces`, K2), `SmEdgeuse.cpp` (a half-made Edge refused, K2), `SmSurfaceCache.cpp` (the null polar
+box, K2), `SmOffsetGeometryCreation.cpp` (`ExtendTrimEdges`' clean-up, K2), `SmCurveClass.cpp` (the
+set-back corners' read of freed memory, F), `SmBSplineSurfaceNLib.cpp` (the corner patches' UV
+curves, F), `SmEllipse.cpp` (the evaluation beside a seam, U), and for W2's deadline
+`SmAdvSurfaceIntersector.cpp`, `SmSurfaceIntersector.cpp`, `SmSurfaceDropCurve.cpp` and
+`SmFeatureExecutive.cpp`. Changed copies: `SmMessages.h` (`SMLIBPY_DEADLINE_ER`), `SmProtoTopology.cpp`
+(a deleted ProtoEdge leaves every list, K1 and W; `CombineProtoEdge` frees what it leaves, K2),
+`SmTopologyIntersector.cpp` (the vertex Shell order in `DeleteFaces`, K1; the half-made Edge and
+`FixGaps`, K2; the deadline, W), `SmPrimitiveCreation.cpp` (the sweep's profile reference, S; the
+mitered sweep's and `CreateCone`'s leaks, K2), `SmMerge.cpp`, `SmOffsetExecutive.cpp`,
+`SmFilletExecutive.cpp` and `SmFilletGeom.cpp` (leaks on failure paths, K2). The deadline counter
+the plan put in the feature executive's loops went into the intersection loops instead, where the
+looping steps spend their time (W2). `SmApiBooleanWithCurves` stays unpatched: nothing calls it, and
+`_core.boolean_with_curves` is bound again (B17).
 
 ## Overlap with the smlibpy-three draft
 

@@ -213,8 +213,14 @@ matter here:
   (below).
 - The kernel's Boolean of meshes (`Mesh` `+ - &`) kills the process for the meshes of two internally
   tangent cylinders at a fine tolerance.
-- Sweeps along helices of more than about 60 turns fail in the kernel's sweep (`Helix` itself
-  takes any number).
+- The kernel's sweep places at most about 1000 sections along a path, so with its own frame
+  (`orient=False`) it fails along more than about 60 turns of a helix: smlibpy sweeps such an edge
+  in 2, 4 or 8 pieces of equal length and fuses them (`Helix` itself takes any number).
+- Which way a sweep along a loop closed with a kink (`Spline(*pts, pts[0])`) goes depends on
+  rounding inside the kernel's fuse of its halves, so a few such loops sweep in one build and
+  raise in the other (4 of 60 hard loops, 2 each way; a native build without the contraction of
+  `a * b + c` differs on 4 others). None gives a wrong body; close such paths smoothly where you
+  can (`Spline(..., closed=True)`).
 - The kernel's hidden curve removal behind `outline` and `drawing_views` (`SmHCR`) can judge a
   piece of a tilted view wrongly: seen along (1, 1, 1), the flange example as built
   (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.4
@@ -243,7 +249,8 @@ matter here:
   boxes do not, and the merge failed on conflicting mates): `fillet(setback=)` reorders the edges'
   edgeuses first. Corners where a face turns inward (a pocket's rim) come out broken: only corners
   of all convex or all concave edges are set back. Corners between slanted faces (a frustum's) come
-  out with gaps: refused (`KernelError`).
+  out with gaps: refused (`KernelError`). Radius laws with set-back corners crashed the executive:
+  refused (`ValueError`).
 - A radius that varies around a closed run of several edges (the top outline of a rounded plate)
   gives broken rounds (an extra face, open), whatever edge the run starts at and also with the
   same radius and slope where it closes; smlibpy refuses it. Along open runs and around a single
@@ -255,6 +262,11 @@ matter here:
 - Where the kernel has no corner for how the selected edges meet at a vertex (the two halves of
   an edge that another face touches tangentially), the fillet fails at any size
   (`SM_ERR_INVALID_INPUT`); select fewer edges there.
+- A chamfer with different setbacks on a sharp wedge (setbacks less alike than the cosine of the
+  angle between the faces) offsets one face backwards farther than the kernel's solver takes:
+  smlibpy cuts the bevel's prism along a straight edge between planes whose ends lie on planes at
+  right angles to it; other such edges (curved, ending on a slanted face or where another bevelled
+  edge ends) raise `ModelingError`.
 - `move_faces` and `offset_faces` (the kernel's `LocalOperation`) cannot change which faces meet:
   a face pushed past another one, or one that would vanish, raises; use a Boolean there. The
   kernel gives the faces around the edited ones that it extends surfaces of its own (a vertical
@@ -273,17 +285,37 @@ matter here:
 - Very close to the limit rounds still fail (all edges of a 10 mm cube with r 4.99); fillets and
   chamfers of some parts made of Booleans fail where the kernel's rounds roll over an edge, and
   the error then names the corner or edge.
-- No loft or sweep along rails. The skin with side-boundary rails needs as many sections as the
-  rails have control points (the fillets that use it place one at every knot of their rails), and
-  the two-rail sweep only approximates its rails: 40 mm wavy rails were missed by 0.31 with its
-  default 4 points between profiles, by 5e-3 with 64 and by 1.6e-4 with 1024 (1.5 s, 61065
-  control points).
+- The kernel's skin with side-boundary rails needs as many sections as the rails have control
+  points (the fillets that use it place one at every knot of their rails), and its two-rail sweep
+  only approximates its rails: 40 mm wavy rails were missed by 0.31 with its default 4 points
+  between profiles, by 5e-3 with 64 and by 1.6e-4 with 1024 (1.5 s, 61065 control points).
+  `loft(sections, rails=)` and `sweep(profile, path, rails=)` build Gordon surfaces instead
+  (`N_CreateGordonSrf` on a network made to cross at common parameters), through sections and rails
+  exactly; a Gordon surface is open, so closed sections and profiles along rails raise `ValueError`.
+- `fill(..., tangent=True)` cannot meet sheets that stand steep to the loop (a cylinder's wall
+  round its open top, a sphere cut at its equator): a four-sided patch over a smooth closed loop has
+  both parameter directions along the loop at its corners, and every construction of the kernel's
+  corner blend folds back over the wall (`ModelingError`; use `tangent=False`). Its N-sided fills
+  (five sides and more) approximate the cross tangents and meet the sheets within about 1.4 degrees
+  whatever tolerances it is given (`fill` checks 2 degrees). A three-sided tangent fill has a pole,
+  and the kernel's offset of such a patch does not finish (`thicken` stops at `GUARD_SECONDS`); the
+  patch sewn to its sheets is a valid part.
+- The kernel's body writer (`.smb`) writes no attributes: names, colors and the K-factors of
+  folded parts go into `.smp` files; a part read from `.smb` unfolds at 0.44 unless `k_factor=` is
+  given.
 - The offset code behind `shell`, `offset` and `thicken` depends on memory layout in its extended
-  mode: the same call can fail, succeed or crash (and some imported parts still crash it now and then).
-  smlibpy runs it in another process (a forked copy on Linux and macOS, a helper process on Windows; smlibwasm: in a kernel of its
-  own), so a crash raises `ModelingError` and this process goes on, and it tries a mode again only
-  after a result it refused, not after an error. A step longer than
-  `smlibpy.defeature.GUARD_SECONDS` (20 s) is stopped.
+  mode: the same call can fail, succeed or crash (some imported parts still crash it now and then,
+  on a freed Vertex in `SmBrep::GlueVertices` or a Loopuse naming a freed Edgeuse, neither located,
+  and AddressSanitizer once saw a read past the points of a curve classification in
+  `sm_FixProblemsBySqueezing`, not seen again). smlibpy runs it in another process (a forked copy
+  on Linux and macOS, a helper process on Windows; smlibwasm: in a kernel of its own), so a crash
+  raises `ModelingError` and this process goes on, and it tries a mode again only after a result it
+  refused, not after an error. A step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s) is
+  stopped.
+- A few small leaks remain on the kernel's failure paths: the curve copies of EdgeDefinitions that
+  some Booleans drop without imprinting them (152 bytes each, about 24 in a failed extended shell),
+  and a curve copy of the classification of a fillet that fails after making its faces (about 16
+  kB). `third_party/patches/README.md` lists them.
 
 ## Where the kernel gave up
 

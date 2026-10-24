@@ -469,7 +469,23 @@ When an upstream release fixes a defect:
    Edge and `FixGaps` of `SmTopologyIntersector.cpp`), AddressSanitizer must report nothing for the
    fillets of the two cones and for the extended offsets of crescendo parts 81, 19 and 52 with random
    allocations between them, and `tests/test_closeout_K2.py::test_all_edge_fillet_of_two_cones_fails_cleanly`
-   and `tests/test_lane_WN.py::test_cells_of_a_merge_that_crashed_the_stitcher_come_back` must pass.
+   and `tests/test_lane_WN.py::test_cells_of_a_merge_that_crashed_the_stitcher_come_back` must pass;
+   for the order in which `DeleteFaces` deletes shell Vertices (close-out K1),
+   `tests/test_closeout_K1.py::test_a_torus_touching_a_plate_at_a_point_no_longer_kills_the_process`
+   must pass and AddressSanitizer report nothing for its cases; for the ProtoEdge lists
+   (`SplitIntersectingProtoEdges`, `ResolveOverlappingProtoEdges`, `~SmProtoEdge`), nothing for the
+   extended offset of `Cone(6, 0, 8).rotate(Y, 90) + Cylinder(4, 12).translate(-6.7843, 0, 0)` by 6
+   and the loops of `tests/test_lane_S.py::test_the_former_sweep_of_kinked_loops_does_not_crash_the_kernel`;
+   for set-back corners (`SmCurveClass.cpp`, `SmBSplineSurfaceNLib.cpp`),
+   `tests/test_closeout_F.py::test_set_back_corners` must pass with no AddressSanitizer report and no
+   leak; for the sweep's profile reference (`SmPrimitiveCreation.cpp`),
+   `tests/test_closeout_S.py::test_arcs_that_do_not_span_whole_quadrants_sit_by_their_own_box` must
+   pass; for the polar conversion (`SmEllipse.cpp`), `tests/test_closeout_U.py::test_raycast_beside_a_seam`
+   and `test_seam_evaluation_is_not_snapped`; for the deadline (`SmMessages.h`, the intersectors, the
+   drop curve, the feature executive),
+   `tests/test_closeout_W.py::test_the_kernels_deadline_stops_its_intersections_and_is_cleared` and
+   `test_the_enclosure_round_that_loops_returns_at_the_deadline_without_another_process`, and
+   AddressSanitizer must report nothing for those with the deadline giving up at once.
 4. Remove the row from the table above.
 
 When the last copy is gone, this directory, `smlibpy_patch_sources` and `smlibpy_patch_headers`

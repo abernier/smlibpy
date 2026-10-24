@@ -8383,19 +8383,19 @@ class Shell(_Body):
     def from_nurbs(cls, nurbs: Any) -> Shell:
         """The sheet of a NURBS surface given by its data: the inverse of :meth:`Face.nurbs`, as
         :meth:`Edge.from_nurbs` is for curves (:func:`~smlibpy.nurbs_surface` with the data in
-        :class:`~smlibpy.NurbsSurface`'s order).
+        :class:`~smlibpy.NurbsSurface`'s order)::
+
+            n = face.nurbs()
+            rows = [list(row) for row in n.points]
+            rows[1][1] = Vector(rows[1][1]) + (0, 0, 2)  # pull one control point up
+            bumped = Shell.from_nurbs(n._replace(points=rows))
 
         Args:
             nurbs: A :class:`~smlibpy.NurbsSurface` (what ``Face.nurbs()`` returns), or a tuple
                 ``(degrees, knots, points, weights)``: the degrees ``(u, v)``, the knot vectors
                 ``(u_knots, v_knots)``, the control points in rows (``points[i][j]`` the point
                 ``i`` along u and ``j`` along v) and a weight per point in the same rows, or
-                ``None`` for a non-rational surface. ::
-
-            n = face.nurbs()
-            rows = [list(row) for row in n.points]
-            rows[1][1] = Vector(rows[1][1]) + (0, 0, 2)  # pull one control point up
-            bumped = Shell.from_nurbs(n._replace(points=rows))
+                ``None`` for a non-rational surface.
         """
         from .surfaces import nurbs_surface
 

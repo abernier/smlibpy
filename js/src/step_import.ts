@@ -1520,7 +1520,7 @@ export class StepPoint {
 
 /** Everything `readStep` reads from a STEP file: the bodies (what `importStep` returns, always as
  * a list), and the coordinate systems, curves and points that belong to no body. `skipped` says
- * which bodies could not be read, and why (`"body 'b' (#99): curve type OFFSET_CURVE_3D (#203),
+ * which bodies could not be read, and why (`"body 'b' (#99): curve type CLOTHOID (#203),
  * which is not supported"`). */
 export class StepModel {
   readonly bodies: ShapeList<Part | Shell>
