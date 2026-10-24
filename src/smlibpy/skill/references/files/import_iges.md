@@ -55,8 +55,9 @@ Lengths are converted to mm from the unit the file declares (inch, mm, m, ...).
   come back as `Part`s.
 - A file of faces of several solids gives one `Part` per closed set of faces; a face that fits
   none stays a `Shell` of its own.
-- Not read: binary and compressed IGES, offset curves (130), ruled surfaces between circles or
-  conics, wireframe-only files (curves and points), annotation.
+- Offset curves (130) at one distance are read (lines and circles stay lines and circles). Not
+  read: binary and compressed IGES, offset curves whose distance varies, ruled surfaces between
+  circles or conics, wireframe-only files (curves and points), annotation.
 
 ## Errors
 - `ModelingError: the IGES file holds no solids or surfaces`: wireframe only, or empty.

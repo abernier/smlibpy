@@ -1409,15 +1409,17 @@ function _kernelNurbs(make: () => number, what: string): Any {
   })
 }
 
-/** An OFFSET_CURVE_3D: each point moved `d` along tangent x `ref` (ISO 10303-42). The offset of a line
- * is a line, of a circle about `ref` a circle; others are the kernel's offset curve (SmOffsetCurve)
- * over the whole basis, as a NURBS within 1e-9 of their size. */
-function _offsetCurve(basis: Any, d: number, ref: number[], eid: number): Any {
+/** An OFFSET_CURVE_3D: each point moved `d` along tangent x `ref` (ISO 10303-42; IGES's offset curve,
+ * 130, the same). The offset of a line is a line, of a circle about `ref` a circle; others are the
+ * kernel's offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS within
+ * 1e-9 of their size. `eid`: the entity, a STEP id or how a message names it (`'DE 7'`). */
+export function _offsetCurve(basis: Any, d: number, ref: number[], eid: number | string, what = 'read STEP offset curve'): Any {
+  eid = typeof eid === 'number' ? `#${eid}` : eid
   const kind = basis.kind
   ref = _unit3(ref)
   if (kind === 'line') {
     const n = _cross(_unit3(basis.direction), ref)
-    if (!(_norm(n) > 1e-12)) throw new RangeError(`#${eid}: the offset curve's reference direction runs along its line`)
+    if (!(_norm(n) > 1e-12)) throw new RangeError(`${eid}: the offset curve's reference direction runs along its line`)
     const u = _unit3(n)
     return { ...basis, origin: [0, 1, 2].map((i) => basis.origin[i] + d * u[i]) }
   }
@@ -1427,7 +1429,7 @@ function _offsetCurve(basis: Any, d: number, ref: number[], eid: number): Any {
     if (r > 0) return { ...basis, radius: r }
   }
   if (kind === 'circle' || kind === 'ellipse') basis = _conicNurbs(basis)
-  else if (kind !== 'bspline') throw new NotImplementedError(`an offset of a ${kind} (#${eid})`)
+  else if (kind !== 'bspline') throw new NotImplementedError(`an offset of a ${kind} (${eid})`)
   const poles = basis.poles as number[][]
   const size = _ptp(poles) + Math.abs(d)
   return _kernelNurbs(() => {
@@ -1437,7 +1439,7 @@ function _offsetCurve(basis: Any, d: number, ref: number[], eid: number): Any {
     } finally {
       ext.delete_curve(curve)
     }
-  }, 'read STEP offset curve')
+  }, what)
 }
 
 /** The curve in space of the curve `c` in the parameters of surface `srf` (ISO 10303-42's parameters:

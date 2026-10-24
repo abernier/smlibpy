@@ -745,16 +745,19 @@ def _kernel_nurbs(make: Any, what: str, delete: bool = False) -> dict[str, Any]:
             [float(w) for w in d["weights"]]}
 
 
-def _offset_curve(basis: dict[str, Any], d: float, ref: np.ndarray, eid: int) -> dict[str, Any]:
-    """An OFFSET_CURVE_3D: each point moved ``d`` along tangent x ``ref`` (ISO 10303-42). The offset
-    of a line is a line, of a circle about ``ref`` a circle; others are the kernel's offset curve
-    (SmOffsetCurve) over the whole basis, as a NURBS within 1e-9 of their size."""
+def _offset_curve(basis: dict[str, Any], d: float, ref: np.ndarray, eid: int | str,
+                  what: str = "read STEP offset curve") -> dict[str, Any]:
+    """An OFFSET_CURVE_3D: each point moved ``d`` along tangent x ``ref`` (ISO 10303-42; IGES's offset
+    curve, 130, the same). The offset of a line is a line, of a circle about ``ref`` a circle; others are
+    the kernel's offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS
+    within 1e-9 of their size. ``eid``: the entity, a STEP id or how a message names it (``"DE 7"``)."""
+    eid = f"#{eid}" if isinstance(eid, int) else eid
     kind = basis["kind"]
     ref = _unit3(ref)
     if kind == "line":
         n = np.cross(_unit3(basis["direction"]), ref)
         if not np.linalg.norm(n) > 1e-12:
-            raise ValueError(f"#{eid}: the offset curve's reference direction runs along its line")
+            raise ValueError(f"{eid}: the offset curve's reference direction runs along its line")
         return dict(basis, origin=np.asarray(basis["origin"], dtype=float) + d * _unit3(n))
     if kind == "circle" and abs(abs(float(np.dot(_unit3(basis["z"]), ref))) - 1.0) <= 1e-12:
         # (tangent x axis points out of the circle)
@@ -764,14 +767,14 @@ def _offset_curve(basis: dict[str, Any], d: float, ref: np.ndarray, eid: int) ->
     if kind in ("circle", "ellipse"):
         basis = _conic_nurbs(basis)
     elif kind != "bspline":
-        raise NotImplementedError(f"an offset of a {kind} (#{eid})")
+        raise NotImplementedError(f"an offset of a {kind} ({eid})")
     from ._kernel import ext
     from .shapes import _canonical_curve
 
     poles = np.asarray(basis["poles"], dtype=float)
     size = float(np.linalg.norm(np.ptp(poles, axis=0))) + abs(d)
     return _kernel_nurbs(lambda: ext.offset_curve_3d(_canonical_curve(poles, basis["knots"], basis["degree"], basis["weights"]),
-                                                  d, ref.tolist(), 1e-9 * max(size, 1e-9)), "read STEP offset curve")
+                                                  d, ref.tolist(), 1e-9 * max(size, 1e-9)), what)
 
 
 def _pcurve_in_space(srf: dict[str, Any], c: dict[str, Any], s: float, ang: float, eid: int) -> dict[str, Any]:

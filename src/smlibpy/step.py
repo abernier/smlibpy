@@ -575,7 +575,8 @@ def _wireframe(w: _Writer, ctx: int, label: str, extras: Sequence[Any],
     WIREFRAME_SHAPE_REPRESENTATION of one GEOMETRIC_CURVE_SET (curves, a wire as a composite
     curve, named points) and a CONSTRUCTIVE_GEOMETRY_REPRESENTATION of the coordinate systems
     (CAx-IF's supplemental geometry), as ``(representation, is_constructive)``. The second list
-    holds what is colored, as ``(item, rgb, style)``. ``scale``: file units per mm."""
+    holds what is colored (curves, points and coordinate systems, the latter with a curve style), as
+    ``(item, rgb, style)``. ``scale``: file units per mm."""
     from .shapes import Wire
     from .step_import import StepCurve, StepFrame, StepPoint
 
@@ -605,7 +606,9 @@ def _wireframe(w: _Writer, ctx: int, label: str, extras: Sequence[Any],
         elif isinstance(item, StepFrame):
             pl = item.plane
             o, z, x = w.point(pl.origin * scale), w.direction(pl.z_dir), w.direction(pl.x_dir)
-            frames.append(w.add(f"AXIS2_PLACEMENT_3D({_s(item.name)},#{o},#{z},#{x})"))
+            ent = w.add(f"AXIS2_PLACEMENT_3D({_s(item.name)},#{o},#{z},#{x})")
+            frames.append(ent)
+            styled.append((ent, item.color, "curve"))  # (as NX colors its coordinate systems)
     reps = []
     if elements:
         gcs = w.add(f"GEOMETRIC_CURVE_SET('',({','.join(f'#{x}' for x in elements)}))")

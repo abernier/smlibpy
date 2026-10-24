@@ -9,7 +9,7 @@ coordinate systems beside them. The format to deliver a CAD model in.
 - `shapes`: a `Part`, `Shell`, `Sketch`, `Face`, or a list of them (nested lists are flattened).
   Also wireframe and reference geometry: an `Edge` or `Wire` (a curve), a `Vertex` or `Vector` (a
   point), a `Plane` (a coordinate system), each unnamed; `StepCurve(name, edge_or_wire, color=)`,
-  `StepPoint(name, vector, color=)` and `StepFrame(name, plane)` give them names (and colors); a
+  `StepPoint(name, vector, color=)` and `StepFrame(name, plane, color=)` give them names (and colors); a
   `StepModel` from `read_step` is written whole.
 - `path`: `str` or `pathlib.Path`. The extension is not checked.
 - `unit`: `"mm"` (default), `"cm"`, `"m"`, `"um"`, `"inch"` (or `"in"`). The unit of the file:

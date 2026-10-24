@@ -2,7 +2,7 @@
 
 The "Not done" entries of area M of 0.5.0 (kernel plan M4, M5, M6, M8, M9, M10; files I6, I10, I11,
 I12, I14, X2, X5, X9, X10, X12, X13, X14), triaged and closed out. Tests: `tests/test_closeout_M.py`
-and `js/test/closeout_M.test.ts`.
+and `js/test/closeout_M.test.ts` (20 each).
 
 ## Triage
 
@@ -11,7 +11,7 @@ and `js/test/closeout_M.test.ts`.
 | M5: `raycast_many` misses rays that graze a curved face within the mesh's tolerance (a defect) | FINISH |
 | M6: decimation leaves a few folded slivers | FINISH |
 | M6: decimation has fixed angles | FINISH (`feature_angle=`) |
-| M4: `drawing_views` draws one body | LATER |
+| M4: `drawing_views` draws one body | FINISH (a list of bodies, a small completion of the planned feature) |
 | M4: no dimensions, no title block | LATER |
 | M8: `to_part` merges only planar regions | LATER |
 | M9: `fill_holes` lays a flat patch | LATER |
@@ -35,7 +35,7 @@ and `js/test/closeout_M.test.ts`.
 | X9: `.smp` placements, points and meshes; `.smb` name and color | LATER |
 | X14: 4 of 557 corpus solids read back refused (a defect) | FINISH |
 | X14: 2 of 585 corpus bodies refused by the writer (a defect) | FINISH |
-| X14: the spring example read back refused (a defect, found here) | FINISH |
+| X14: the spring example read back refused (a defect, in lane IX's notes) | FINISH |
 | X14: binary `.brep` writing, names and colors, curves and points outside faces | LATER |
 
 ## Finished
@@ -50,9 +50,10 @@ and `js/test/closeout_M.test.ts`.
   a sphere's outline (from 3 tolerances inside to 0.3 outside): 297 of 2000 answered otherwise than
   `raycast` before, 0 now; rays along a boss's outline with a ring wall behind: 50 of 400 before, 0
   now; rays across a cylinder's outline and past a boss before a wall: 0. Not slower: a plate with
-  144 holes, 20 000 rays from above: 0.10 ms a ray (0.12 before), 6000 rays from points on a part's
-  surface 0.18 s (0.29 s before). The shared distance routines (point, segment and triangle,
-  Ericson) are in `src/cpp/triangle_geometry.h`, which the mesh tools use too.
+  144 holes, 20 000 rays from above: 0.10 ms a ray (0.12 before); 3000 rays from points on a part's
+  surface, outward and inward: 0.18 s each (0.29 s before). The shared distance routines (points,
+  segments and triangles, Ericson) are in `src/cpp/triangle_geometry.h`, which the mesh tools use
+  too.
 - **No folded slivers after decimation (M6).** `Mesh.decimate` left triangles folded over their
   neighbours where the kernel's collapses pushed a point through them: spheres of 15 000 to 56 000
   triangles taken to a fifth, a tenth and a twentieth kept 3, 9, 3 and 13 such slivers in 4 of 9
@@ -101,15 +102,31 @@ and `js/test/closeout_M.test.ts`.
   the offset faces, or one of another volume than the same faces built on the surfaces they are,
   the latter is taken. A sphere of radius 8 offset by 2 and one of 12 offset by -2: the sphere of
   radius 10, exact, in both builds. Offsets that read before read as before (offset faces kept).
+- **Drawings of several bodies (M4).** `drawing_views` (smlibwasm `drawingViews`) takes a list of parts
+  and shells as well (an assembly): they are drawn together, side by side in one body for the
+  kernel's hidden curve removal, so that each hides the lines of the others behind it (bodies that
+  overlap are not cut where they meet). A cylinder in front of a box hides 10 of each of the box's top
+  and bottom edges in the front view (hidden 20, visible 160); the views are laid out around the box
+  of all of them. An empty list raises `ValueError` ("nothing to draw"), anything but parts and
+  shells `TypeError`.
 - **Colors of coordinate systems (I12).** `export_step` writes a `StepFrame`'s color (a curve style,
   as NX colors its coordinate systems; `read_step` read such colors already): a frame written with
   a color reads back with it. OpenCASCADE reads such files as before.
-- **IGES offset curves (130).**
+- **IGES offset curves (I14, entity 130).** A face bounded by an offset curve was left out ("curve
+  entity 130 ... which is not supported"). An offset curve at one distance is the base curve moved
+  along its tangent x the normal of its plane (as STEP's offset curves; OpenCASCADE reads a square
+  whose side is such an offset of a line to the same area, 50), turned with a mirroring
+  transformation: of a line a line, of a circle about the normal a circle, others the kernel's
+  offset curve (as for STEP). A disk bounded by an offset of a circle of radius 3 by 2: 25 pi exact;
+  of a rational B-spline circle: 25 pi within 1e-10. An offset whose distance varies (flags 2 and 3)
+  is named in the warning of what is left out.
 - **`.brep` files: what read back refused, what the writer refused (X14).** In the 448-file corpus,
   4 of the 557 solids written read back refused, and 2 of the 585 bodies were refused by the writer;
-  now all 585 bodies are written and 556 of the 559 solids read back (the 3 others are bodies whose
-  STEP import already has such faults: gaps of 0.91 and 0.1, an edge of 9e-9 shorter than its
-  tolerance; the reader refuses them as it refuses any broken body, `check=False` reads them).
+  now all 585 bodies are written (4 ms median, 41 ms p90, 5.5 s the slowest, a part of 2079 faces)
+  and 557 of the 559 solids read back (99 % within 6e-6 of their volume, all within 1e-4); the
+  other two had their faults as they were read from STEP (an edge of 9e-9 shorter than its
+  tolerance; a vertex moved 0.05 off its edges), and the reader refuses them as it refuses any
+  broken body (`check=False` reads them).
   - Reading: the bridge gives every edge, vertex and face of a body one tolerance, the largest of the
     file, which made edges shorter than it (fillet edges of 0.005 against 0.0112) read back as
     broken ("an edge of length -0.0153 ... its curve does not run from its start to its end"). Each
@@ -136,13 +153,18 @@ and `js/test/closeout_M.test.ts`.
     of its seam it was written on: both sides are tried.
   - The spring example (`examples/spring.py`) read back refused (a gap of 0.8): the reader boxed a
     plane's boundary by 24 points along each edge, which missed 0.8 of the long cut end (51 long,
-    2.4 wide), and the plane's range then did not hold the face. It takes 256 points and a
-    B-spline's control points now: the spring reads back within 2e-7 of its volume, the bottle's gap
-    of 0.0076 is gone.
+    2.4 wide), and the plane's range then did not hold the face (its curves were made off the edge).
+    It takes 256 points, the control points of the B-spline spans the edge takes and a thousandth
+    of the box more on each side now: the spring reads back within 2e-7 of its volume, the bottle example's gap of 0.0076 is gone,
+    and so is a gap of 0.57 that one corpus solid read back with.
   - OpenCASCADE (OCP 8.0) takes 582 of the 585 written bodies for valid: the sheet that crosses
     itself in its STEP file (as before), and two bodies OpenCASCADE takes for invalid in their STEP
     files too (part 12's solid with 16 cavities; a diagnostic sheet with gaps of 4 mm, which passed
-    before only because every tolerance was written as 17 mm).
+    before only because every tolerance was written as 17 mm). 541 of the 558 bodies it measures
+    have its volume within 1e-5 of smlibpy's, the others within 3.4e-4, as before (where smlibpy
+    and OpenCASCADE measure the STEP files themselves apart).
+  - Checked by hand (OpenCASCADE is not a test dependency); the tests cover the tolerances read and
+    written, the spring and a cut sphere.
 
 ## Blocked
 
@@ -150,16 +172,17 @@ None.
 
 ## Later
 
-- **M4: drawings of several bodies, dimensions and a title block.** The plan's `drawing_views(part,
-  views, projection)` draws one part; hidden lines between several bodies, dimensions and title
-  blocks are drawing features beyond it.
+- **M4: dimensions and a title block.** The plan's `drawing_views(part, views, projection)` makes
+  the views with their visible and hidden lines; dimensions and title blocks are drawing features
+  beyond it.
 - **M8: non-planar regions in `to_part`.** The plan asked for coplanar merging; recognizing
   cylinders or free-form regions in a mesh is surface fitting.
 - **M9: a curved patch in `fill_holes`.** The plan asked for `fill_holes` and `repaired`; the kernel's
   `FillLaminaHoles` lays a flat patch, and a faired patch is a new algorithm.
 - **M10: `max_edge` with halving, `max_aspect_ratio`.** The plan asked for `max_edge=` with a warning
   where it forces the grid on a twisted face, which is there; the halving is the kernel's and takes
-  no longest edge, and `max_aspect_ratio` does not change the kernel's triangles.
+  no longest edge, and the kernel's `max_aspect_ratio` does not change its triangles (measured in the
+  review), so exposing it would promise what it does not do.
 - **I10: moved copies as instances.** The plan asked for shared bodies instanced; a moved copy is a
   new body, and knowing that it is a copy needs provenance kept through every move.
 - **I11: offsets of C0 bases for OpenCASCADE.** The file is exact and valid STEP (`import_step` and
@@ -179,8 +202,9 @@ None.
 - **X13: USD curves.** The plan asked for warnings and a clear TypeError.
 - **X9: `.smp` placements, points and meshes; `.smb` name and color.** The plan asked for names and
   colors in `.smp` or `.smb`; `.smp` has them.
-- **X14: binary writing, names and colors, curves and points outside faces.** The format has no
-  names or colors (OpenCASCADE's XCAF documents do); every OpenCASCADE tool reads ASCII.
+- **X14: binary writing, names and colors, curves and points outside faces.** The plan asked for the
+  bridge's bodies in and out; the format has no names or colors (OpenCASCADE's XCAF documents do),
+  every OpenCASCADE tool reads ASCII, and wires and points outside faces are counted in a warning.
 
 ## Behaviour changes
 
@@ -212,6 +236,7 @@ None.
   large tolerance covered (as a warning; `check=True` refuses only gaps over 1e-3 of the size).
 - `Part.raycast_many` casts a ray exactly (as `raycast`) where it passes within twice the mesh's
   tolerance of the body's mesh: such rays cost what `raycast` costs; the hits are `raycast`'s.
+- `drawing_views` takes a list of bodies; it raised `AttributeError` for one.
 - `Mesh.decimate` collapses triangles that stay folded: a result can hold a few triangles fewer
   than in 0.5.0.
 - `export_step` writes the color of a `StepFrame` (a `STYLED_ITEM` with a curve style on its

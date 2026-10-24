@@ -1567,11 +1567,50 @@ pxr::GfRange2d ComputePlaneLoopDomainFrom3dBoundary(
         if (sGeom.pCurve3d)
         {
             const pxr::GfMatrix4d sCurveXf = ResolveLocation(rSource.Model(), sGeom.iCurveLocation) * rCoedge.mEdgeLoc;
-            constexpr int kSamples = 24;
+            // smlibpy: 256 points, and the control points of a B-spline's spans the edge takes (its piece lies
+            // within them): the box of 24 points missed 0.8 of the cut end of a spring (a closed edge 51 long
+            // and 2.4 wide), and the plane's domain then did not hold the face (its curves were made 0.8 off
+            // the edge)
+            constexpr int kSamples = 256;
             for (int ii = 0; ii <= kSamples; ++ii)
             {
                 const double t = sGeom.dFirst + (sGeom.dLast - sGeom.dFirst) * (static_cast<double>(ii) / static_cast<double>(kSamples));
                 fProject(EvalCurve3dPoint(*sGeom.pCurve3d, sCurveXf, t));
+            }
+            const SCurve3d* pPoles = sGeom.pCurve3d;
+            while (pPoles && pPoles->eType == ECurveType::Trimmed)
+                pPoles = pPoles->pBasis.get();
+            if (pPoles && !pPoles->bPeriodic && (pPoles->eType == ECurveType::BSpline || pPoles->eType == ECurveType::Bezier))
+            {
+                // (the flat knots; a Bezier's are its degree + 1 zeros and ones)
+                const int iDegree = pPoles->eType == ECurveType::Bezier ? static_cast<int>(pPoles->sPoles.size()) - 1 : pPoles->iDegree;
+                std::vector<double> vKnots;
+                if (pPoles->eType == ECurveType::Bezier)
+                {
+                    vKnots.assign(static_cast<size_t>(iDegree + 1), 0.0);
+                    vKnots.insert(vKnots.end(), static_cast<size_t>(iDegree + 1), 1.0);
+                }
+                else
+                    for (size_t k = 0; k < pPoles->dKnots.size() && k < pPoles->iMults.size(); ++k)
+                        vKnots.insert(vKnots.end(), static_cast<size_t>(std::max(pPoles->iMults[k], 0)), pPoles->dKnots[k]);
+                const size_t nPoles = pPoles->sPoles.size();
+                if (iDegree >= 1 && vKnots.size() == nPoles + static_cast<size_t>(iDegree) + 1)
+                {
+                    // the poles of the spans from the one dFirst lies in to the one dLast lies in
+                    const double t0 = std::min(sGeom.dFirst, sGeom.dLast), t1 = std::max(sGeom.dFirst, sGeom.dLast);
+                    auto span = [&](double t) {
+                        size_t k = static_cast<size_t>(iDegree);
+                        while (k + 1 < nPoles && vKnots[k + 1] <= t)
+                            ++k;
+                        return k;
+                    };
+                    const size_t first = span(t0) - static_cast<size_t>(iDegree), last = span(t1);
+                    for (size_t k = first; k <= last && k < nPoles; ++k)
+                    {
+                        const SPnt3& rPole = pPoles->sPoles[k];
+                        fProject(sCurveXf.Transform(pxr::GfVec3d(rPole.dX, rPole.dY, rPole.dZ)));
+                    }
+                }
             }
         }
 
@@ -1588,6 +1627,15 @@ pxr::GfRange2d ComputePlaneLoopDomainFrom3dBoundary(
         }
     }
 
+    // smlibpy: and a thousandth of its size more on every side, for what lies between the points (a circle
+    // of radius 3 sampled from 30 degrees on fell short by 5.6e-5): a plane's range may hold more than its
+    // face
+    if (IsFiniteNonEmptyRange(sDomain))
+    {
+        const pxr::GfVec2d sSize = sDomain.GetSize();
+        const double dPad = 1.0e-3 * std::max(sSize[0], sSize[1]);
+        sDomain = pxr::GfRange2d(sDomain.GetMin() - pxr::GfVec2d(dPad, dPad), sDomain.GetMax() + pxr::GfVec2d(dPad, dPad));
+    }
     return sDomain;
 }
 

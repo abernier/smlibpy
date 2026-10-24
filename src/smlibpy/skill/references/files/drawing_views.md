@@ -8,7 +8,9 @@ Write them with `export_dxf` (layers VISIBLE and HIDDEN, hidden lines dashed) or
 `drawing_views(part, views=("front", "top", "left"), *, projection="first-angle", hidden=True,
 tangent_edges=False, gap=None) -> list[DrawingView]`
 
-- `part`: a `Part` (or a `Shell`).
+- `part`: a `Part` (or a `Shell`), or a list of them (an assembly): drawn together, each body
+  hiding the lines of the others behind it. Bodies that overlap are not cut where they meet (no
+  line where one runs into the other).
 - `views`: by where the view looks from:
 
 | View | Looks from | Drawing x | Drawing y |
@@ -46,6 +48,8 @@ its x.
 - The lines are `bspline` edges (projections); the DXF and SVG writers find the straight and
   circular ones and write lines, arcs and circles.
 - No dimensions, no title block, no section views: draw sections with `part.section(plane)`.
+- Several bodies: `drawing_views([housing, cover, shaft])`; the views are laid out around the box of
+  all of them.
 - Each view is computed exactly (the kernel's hidden curve removal): 2 to 400 ms a view.
 
 ## Example

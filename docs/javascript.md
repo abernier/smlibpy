@@ -1760,6 +1760,7 @@ export class Mesh {
     decimate(fraction?: number | null, options?: {
         triangles?: number | null;
         tolerance?: number | null;
+        featureAngle?: number;
     }): Mesh;
     fillHoles(): Mesh;
     repaired(): [Mesh, RepairReport];
@@ -1920,7 +1921,7 @@ export interface DrawingViewsOptions {
     tangentEdges?: boolean;
     gap?: number | null;
 }
-export function drawingViews(part: Part | Shell, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
+export function drawingViews(part: Part | Shell | Iterable<Part | Shell>, views?: string | readonly string[], options?: DrawingViewsOptions): DrawingView[];
 export type SvgItemsLike = DrawingView | Edge | Wire | Face | Shell | readonly SvgItemsLike[];
 export interface SvgOptions {
     margin?: number | null;

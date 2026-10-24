@@ -6,7 +6,7 @@
 // the front view, the view from the left to its right) or third-angle (ASME, America: the view
 // from above goes above it, the view from the left to its left).
 
-import { _opts } from './kernel.ts'
+import { _opts, ext, kernelCall } from './kernel.ts'
 import { BoundBox, Location, Plane, Vector } from './geometry.ts'
 import { Edge, Face, Part, Shell, ShapeList, Wire, _Body, _list, _typeName } from './shapes.ts'
 import { _edgePoints, _entity, _samplesFor } from './dxf.ts'
@@ -74,6 +74,8 @@ export interface DrawingViewsOptions {
 /**
  * The views of a part for a 2D drawing, laid out in the world XY plane.
  *
+ * - `part`: a part (or a shell), or a list of them (an assembly): drawn together, each body hiding
+ *   the lines of the others behind it (bodies that overlap are not cut where they meet).
  * - `views`: the views, by where they look from: `'front'` (from -Y; the drawing's x is the model's
  *   X, its y the model's Z), `'back'` (from +Y), `'top'` (from +Z: X and Y), `'bottom'` (from -Z),
  *   `'left'` (from -X: -Y and Z) and `'right'` (from +X: Y and Z).
@@ -89,8 +91,23 @@ export interface DrawingViewsOptions {
  * view's x (the model's X). Write them with `exportDxf`/`toDxf` (layers VISIBLE and HIDDEN, the
  * hidden lines dashed) or `exportSvg`/`toSvg`.
  */
-export function drawingViews(part: Part | Shell, views: string | readonly string[] = ['front', 'top', 'left'], options: DrawingViewsOptions = {}): DrawingView[] {
+export function drawingViews(part: Part | Shell | Iterable<Part | Shell>, views: string | readonly string[] = ['front', 'top', 'left'], options: DrawingViewsOptions = {}): DrawingView[] {
   _opts('drawingViews', options)
+  if (part instanceof _Body) return _drawingViews(part, views, options)
+  // several bodies side by side in one (the kernel's hidden lines see them all)
+  const bodies = [...(part as Iterable<unknown>)]
+  for (const b of bodies) if (!(b instanceof _Body)) throw new TypeError(`drawingViews draws parts and shells, not a ${_typeName(b)}`)
+  if (!bodies.length) throw new RangeError('drawingViews: nothing to draw')
+  if (bodies.length === 1) return _drawingViews(bodies[0] as _Body, views, options)
+  const all = kernelCall('drawingViews', () => Shell._wrap(ext.combine(bodies.map((b) => (b as _Body)._brep))))
+  try {
+    return _drawingViews(all, views, options)
+  } finally {
+    all.dispose()
+  }
+}
+
+function _drawingViews(part: _Body, views: string | readonly string[], options: DrawingViewsOptions): DrawingView[] {
   const { projection = 'first-angle', hidden = true, tangentEdges = false } = options
   let gap = options.gap ?? null
   if (projection !== 'first-angle' && projection !== 'third-angle') {

@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 
 from ._kernel import ext, k, kernel_call
-from .step_reader import _BODY_ERRORS, BodyData
+from .step_reader import _BODY_ERRORS, BodyData, _offset_curve
 
 __all__ = ["parse", "IgesFile", "Entity", "IgesModel", "interpret"]
 
@@ -224,6 +224,28 @@ _KINDS = {186: "solid", 514: "shell", 144: "trimmed surface", 143: "bounded surf
           114: "surface", 408: "subfigure instance"}
 
 
+def _tangent(curve: dict[str, Any], p: np.ndarray, t: float | None) -> np.ndarray:
+    """The direction a curve of ``segments`` runs in at its point ``p`` (at parameter ``t`` of a
+    B-spline)."""
+    kind = curve["kind"]
+    if kind == "line":
+        return np.asarray(curve["direction"], dtype=float)
+    if kind in ("circle", "ellipse"):
+        o, z, x = (np.asarray(curve[k], dtype=float) for k in ("origin", "z", "x"))
+        y = np.cross(z, x)
+        r1, r2 = (curve["radius"],) * 2 if kind == "circle" else (curve["r1"], curve["r2"])
+        a = math.atan2(float((p - o) @ y) / r2, float((p - o) @ x) / r1)
+        return -r1 * math.sin(a) * x + r2 * math.cos(a) * y
+    if kind == "bspline":
+        ks, deg = curve["knots"], curve["degree"]
+        lo, hi = float(ks[deg]), float(ks[len(ks) - deg - 1])
+        t = lo if t is None else float(t)
+        h = 1e-7 * (hi - lo)
+        a, b = max(lo, t - h), min(hi, t + h)
+        return bspline_point(curve, b) - bspline_point(curve, a)
+    raise NotImplementedError(f"an offset of a {kind}")
+
+
 def _unit(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v))
     if not n > 0:
@@ -404,7 +426,35 @@ class _Interp:
             spec = self.polyline(e, M) if t == 106 else self.parametric_spline(e, M)
             ks = spec["knots"]
             return [{"curve": spec, "p0": spec["poles"][0], "p1": spec["poles"][-1], "t0": ks[0], "t1": ks[-1]}]
+        if t == 130:
+            return [self.offset_curve(e, M, depth)]
         raise NotImplementedError(f"curve entity {t} (DE {de})")
+
+    def offset_curve(self, e: Entity, M: np.ndarray, depth: int) -> dict[str, Any]:
+        """An offset curve (130) at one distance: its base curve moved by it along the base's tangent x
+        the normal of the plane it lies in (as STEP's OFFSET_CURVE_3D and OpenCASCADE's offset curves;
+        a mirroring transformation turns the normal round). Lines and circles about the normal stay
+        lines and circles; other curves become the kernel's offset curve, a NURBS."""
+        base_de, flag = self.ints(e, 0, 2)
+        if flag != 1:
+            raise NotImplementedError(f"an offset curve whose distance varies (DE {e.de})")
+        d = self.nums(e, 4, 1)[0] * self.scale(M)
+        normal = self.D(M, self.nums(e, 8, 3)) * self.handed(M)
+        pieces = self.segments(base_de, M, depth + 1)
+        if len(pieces) != 1:
+            raise NotImplementedError(f"an offset of a composite curve (DE {e.de})")
+        b = pieces[0]
+        base = b["curve"]
+        spec = _offset_curve(base, d, normal, f"DE {e.de}", "import IGES offset curve")
+        closed = float(np.linalg.norm(b["p1"] - b["p0"])) <= 1e-12 * max(1.0, float(np.linalg.norm(b["p0"])))
+        if spec["kind"] == "bspline" and base["kind"] != "bspline" and not closed:
+            # (an arc's angle is not the parameter of the NURBS its offset becomes)
+            raise NotImplementedError(f"an offset of a {base['kind']} arc out of its plane (DE {e.de})")
+        ends = [p + d * _unit(np.cross(_tangent(base, p, b.get(key)), normal)) for p, key in ((b["p0"], "t0"), (b["p1"], "t1"))]
+        out = {"curve": spec, "p0": ends[0], "p1": ends[1]}
+        if spec["kind"] == "bspline" and "t0" in b:  # (the kernel's offset keeps its basis's parameters)
+            out["t0"], out["t1"] = b["t0"], b["t1"]
+        return out
 
     def curve(self, de: int, M: np.ndarray) -> dict[str, Any]:
         """One whole curve (a generatrix, a directrix) as a step_reader curve spec, with its ends

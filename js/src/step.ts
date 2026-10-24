@@ -739,7 +739,9 @@ function _wireframe(
     } else {
       const pl = item.plane
       const [o, z, x] = [w.point(pl.origin.mul(scale).toArray()), w.direction(pl.zDir.toArray()), w.direction(pl.xDir.toArray())]
-      frames.push(w.add(`AXIS2_PLACEMENT_3D(${_s(item.name)},#${o},#${z},#${x})`))
+      const ent = w.add(`AXIS2_PLACEMENT_3D(${_s(item.name)},#${o},#${z},#${x})`)
+      frames.push(ent)
+      if (item.color !== null) styled.push([ent, item.color as ColorLike, 'curve']) // (as NX colors its coordinate systems)
     }
   }
   const reps: [number, boolean][] = []

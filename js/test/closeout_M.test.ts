@@ -1,8 +1,8 @@
 // tests/test_closeout_M.py: close-out of the kernel plan's meshes, drawings and files (area M): rays
 // that graze a curved face within the mesh's tolerance (M5), folds left by decimation and its feature
-// angle (M6), empty bodies and empty lists in the writers (X10), STEP offset curves and edges given as
-// PCURVEs (I6), mirrored and scaled assembly placements (I10), offsets of whole spheres (I11), and .brep
-// tolerances (X14).
+// angle (M6), drawings of several bodies (M4), empty bodies and empty lists in the writers (X10), STEP offset curves and edges given as
+// PCURVEs (I6), mirrored and scaled assembly placements (I10), offsets of whole spheres (I11), colors of
+// coordinate systems (I12), IGES offset curves (I14), and .brep tolerances and planes (X14).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync } from 'node:fs'
@@ -11,18 +11,27 @@ import { join } from 'node:path'
 import {
   Align,
   Box,
+  Circle,
   Cylinder,
+  Helix,
+  ModelingError,
   Plane,
+  ShapeList,
   Sphere,
+  StepFrame,
+  Vector,
   Z,
+  drawingViews,
   exportGlb,
   exportGltf,
   exportObj,
   exportStep,
   fromBrep,
   fromStep,
+  fromIges,
   fromStepModel,
   setWarningHandler,
+  sweep,
   toBrep,
   toGlb,
   toGltf,
@@ -30,6 +39,7 @@ import {
   toStep,
   type Hit,
   type Part,
+  type Shell,
 } from '../src/index.ts'
 import type { Mesh } from '../src/mesh.ts'
 import { approx } from './_approx.ts'
@@ -193,6 +203,30 @@ test('decimate featureAngle', () => {
   assert.ok(capTilt(smooth) > 20)
   for (const bad of [-1, 181, Number.NaN])
     assert.throws(() => mesh.decimate(0.5, { featureAngle: bad }), (e: unknown) => e instanceof RangeError && /featureAngle is 0 to 180 degrees/.test(e.message))
+})
+
+// =============================================================================
+// M4: drawings of several bodies
+// =============================================================================
+test('drawingViews of several bodies hide each other', () => {
+  // drawingViews took one part; a list of bodies (an assembly) is drawn together: a cylinder in front
+  // of a box hides 10 of each of the box's top and bottom edges in the front view
+  const box = Box(20, 20, 20)
+  const cylinder = Cylinder(5, 40).translate(0, -30, 0)
+  const [front, top] = drawingViews([box, cylinder])
+  const length = (edges: Iterable<{ length: number }>) => [...edges].reduce((s, e) => s + e.length, 0)
+  approx(length(front.hidden), 20, 0, 0.01)
+  approx(length(front.visible), 160, 0, 0.01)
+  const [alone] = drawingViews(box)
+  approx(length(alone.visible), 80, 1e-9)
+  assert.equal(alone.hidden.length, 0)
+  // the side views see both, side by side
+  approx(top.bbox().size.x, 20, 0, 1e-6)
+  approx(top.bbox().size.y, 45, 0, 1e-6)
+  assert.equal(drawingViews([box]).length, 3)
+  assert.equal(drawingViews(new ShapeList(box, cylinder), 'front').length, 1)
+  assert.throws(() => drawingViews([]), (e: unknown) => e instanceof RangeError && e.message === 'drawingViews: nothing to draw')
+  assert.throws(() => drawingViews([box, new Vector(1, 2, 3)] as unknown as Part[]), (e: unknown) => e instanceof TypeError && /drawingViews draws parts and shells, not a Vector/.test(e.message))
 })
 
 // =============================================================================
@@ -521,4 +555,124 @@ test('.brep writer gives each edge its own tolerance', () => {
     assert.equal(values.length, 1)
     approx(values[0], 2e-5, 1e-9)
   }
+})
+
+test('.brep planes bounded by long curves read back', () => {
+  // The reader boxed a plane's boundary by 24 points along each edge, which missed 0.8 of the cut end of
+  // the spring example (a closed edge 51 long and 2.4 wide): the plane's range did not hold the face,
+  // whose curves were made 0.8 off its edge, and the spring read back refused (a gap of 0.8).
+  const coil = sweep(Circle(1.2), Helix(6, 48, 10)) as Part
+  const spring = coil.split(Plane.XY.offset(1.2)).split(Plane.XY.offset(48 - 1.2), 'below')
+  const [back, said] = warnings(() => fromBrep(toBrep(spring)) as Part)
+  assert.deepEqual(said, [])
+  assert.ok(back.isValid())
+  approx(back.volume, spring.volume, 1e-6)
+  const planes = (p: Part) => p.faces().filter((f) => f.geomType === 'plane').map((f) => f.area).sort((a, b) => a - b)
+  planes(back).forEach((a, i) => approx(a, planes(spring)[i], 1e-6))
+  // (the box of 256 points of a circle that starts at 30 degrees falls short by 5.6e-5: a margin)
+  const cut = Sphere(5).cut(Box(20, 20, 10).translate(0, 0, 9))
+  const [again, noted] = warnings(() => fromBrep(toBrep(cut)) as Part)
+  assert.deepEqual(noted, [])
+  approx(again.volume, cut.volume, 1e-12)
+})
+
+// =============================================================================
+// I12: colors of coordinate systems
+// =============================================================================
+test('STEP coordinate systems keep their colors', () => {
+  // readStep read the color of a coordinate system (NX writes them so); exportStep left it out
+  const frame = new StepFrame('MCS', Plane.XY.offset(5), '', [1, 0.5, 0])
+  const model = fromStepModel(toStep([frame, new StepFrame('PCS', Plane.XZ), Box(2, 2, 2)]))
+  assert.deepEqual(model.frames.map((f) => [f.name, f.color]), [['MCS', [1, 0.5, 0]], ['PCS', null]])
+  approx(model.frames[0].plane.origin.z, 5, 1e-12)
+  assert.ok(toStep([frame]).includes('CURVE_STYLE') && !toStep([new StepFrame('PCS', Plane.XZ)]).includes('CURVE_STYLE'))
+})
+
+// =============================================================================
+// I14: IGES offset curves (130)
+// =============================================================================
+const DEP = '00010000' // (the status of an entity that is part of another)
+type IgesEntity = { type: number; params: (number | string | [string, number])[]; form?: number; status?: string }
+
+/** An IGES file of entities (tests/test_lane_IX.py's); ['@', i] in params points at entity i. */
+function igesText(entities: IgesEntity[]): string {
+  const value = (v: number | string | [string, number]): string => {
+    if (Array.isArray(v)) return String(2 * v[1] + 1)
+    if (typeof v === 'string') return `${v.length}H${v}`
+    return String(v)
+  }
+  const lines = (text: string, letter: string, width = 72): string[] => {
+    const out: string[] = []
+    for (let i = 0; i < Math.max(text.length, 1); i += width) out.push(text.slice(i, i + width).padEnd(width) + letter)
+    return out
+  }
+  const g = `${['1H,', '1H;', '4Htest', '8Htest.igs', '4Htest', '4Htest', '32', '38', '6', '308', '15', '4Htest', '1.', '2', '2HMM', '1', '0.01', '15H20260101.000000', '1e-7', '100.', '4Htest', '4Htest', '11', '0', '15H20260101.000000'].join(',')};`
+  const D: string[] = []
+  const P: string[] = []
+  entities.forEach((e, i) => {
+    const text = `${[String(e.type), ...e.params.map(value)].join(',')};`
+    const chunks: string[] = []
+    for (let k = 0; k < text.length; k += 64) chunks.push(text.slice(k, k + 64))
+    const start = P.length + 1
+    for (const c of chunks) P.push(`${c.padEnd(64)} ${String(2 * i + 1).padStart(7)}P`)
+    D.push([e.type, start, 0, 0, 0, 0, '0', 0].map((x) => String(x).padStart(8)).join('') + (e.status ?? '00000000').padStart(8) + 'D')
+    D.push([e.type, 0, '0', chunks.length, e.form ?? 0, '', ''].map((x) => String(x).padStart(8)).join('') + ''.padStart(8) + '0'.padStart(8) + 'D')
+  })
+  const sections = [lines('smlibpy test', 'S'), lines(g, 'G'), D, P]
+  const numbered = sections.flatMap((sec) => sec.map((line, k) => line + String(k + 1).padStart(7)))
+  const counts = `S${String(sections[0].length).padStart(7)}G${String(sections[1].length).padStart(7)}D${String(D.length).padStart(7)}P${String(P.length).padStart(7)}`
+  return `${[...numbered, `${counts.padEnd(72)}T${'1'.padStart(7)}`].join('\n')}\n`
+}
+
+function igesLine(a: number[], b: number[]): IgesEntity {
+  return { type: 110, params: [...a, ...b], status: DEP }
+}
+
+/** A bounded plane (108) z = 0 whose boundary is a composite (102) of the curves. */
+function boundedPlane(curves: IgesEntity[]): IgesEntity[] {
+  return [
+    { type: 108, form: 1, params: [0, 0, 1, 0, ['@', 1], 0, 0, 0, 0] },
+    { type: 102, params: [curves.length, ...curves.map((_, i) => ['@', 2 + i] as [string, number])], status: DEP },
+    ...curves,
+  ]
+}
+
+/** An offset curve (130) of the entity at `base` by `distance` about +Z (in the plane z = 0). */
+function offsetCurve(base: number, distance: number, end: number, flag = 1): IgesEntity {
+  return { type: 130, params: [['@', base], flag, 0, 0, distance, 0, 0, 0, 0, 0, 1, 0, end], status: DEP }
+}
+
+test('IGES offset curves bound faces', () => {
+  // 0.5.0 left a face bounded by an offset curve out ("curve entity 130 ... which is not supported"). The
+  // base moves along its tangent x the normal, as OpenCASCADE reads such files (the square's side from
+  // y = 3 to y = 5: area 50 in OpenCASCADE too).
+  const circle: IgesEntity = { type: 100, params: [0, 0, 0, 3, 0, 3, 0], status: DEP }
+  let disk = fromIges(igesText([...boundedPlane([offsetCurve(3, 2, 2 * Math.PI)]), circle])) as Shell
+  approx(disk.area, 25 * Math.PI, 1e-12)
+  assert.deepEqual(disk.edges().map((e) => e.geomType), ['circle'])
+  const square = boundedPlane([igesLine([0, 0, 0], [10, 0, 0]), igesLine([10, 0, 0], [10, 5, 0]), offsetCurve(6, 2, 1), igesLine([0, 5, 0], [0, 0, 0])])
+  approx((fromIges(igesText([...square, igesLine([10, 3, 0], [0, 3, 0])])) as Shell).area, 50, 1e-12)
+  // a rational B-spline circle of radius 3 (126) as the base: the kernel's offset curve
+  const s = Math.sqrt(0.5)
+  const corners = [[3, 0], [3, 3], [0, 3], [-3, 3], [-3, 0], [-3, -3], [0, -3], [3, -3], [3, 0]]
+  const spline: IgesEntity = {
+    type: 126,
+    status: DEP,
+    params: [8, 2, 1, 1, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 1, s, 1, s, 1, s, 1, s, 1, ...corners.flatMap(([x, y]) => [x, y, 0]), 0, 4, 0, 0, 1],
+  }
+  disk = fromIges(igesText([...boundedPlane([offsetCurve(3, 2, 4)]), spline])) as Shell
+  approx(disk.area, 25 * Math.PI, 1e-9)
+  assert.deepEqual(disk.edges().map((e) => e.geomType), ['bspline'])
+  // an offset whose distance varies is named in the message of what was left out
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    assert.throws(
+      () => fromIges(igesText([...boundedPlane([offsetCurve(3, 2, 2 * Math.PI, 2)]), circle])),
+      (e: unknown) => e instanceof ModelingError && /nothing in the file could be read/.test(e.message),
+    )
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+  assert.ok(said.some((m) => /left out bounded plane DE 1: an offset curve whose distance varies \(DE 5\)/.test(m)), said.join('\n'))
 })

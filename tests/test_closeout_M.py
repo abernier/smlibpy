@@ -1,7 +1,9 @@
 """Close-out of the kernel plan's meshes, drawings and files (area M): rays that graze a curved face
-within the mesh's tolerance (M5), folds left by decimation and its feature angle (M6), empty bodies
+within the mesh's tolerance (M5), folds left by decimation and its feature angle (M6), drawings of
+several bodies (M4), empty bodies
 and empty lists in the writers (X10), STEP offset curves and edges given as PCURVEs (I6), mirrored
-and scaled assembly placements (I10), offsets of whole spheres (I11), and .brep tolerances (X14)."""
+and scaled assembly placements (I10), offsets of whole spheres (I11), colors of coordinate systems
+(I12), IGES offset curves (I14), and .brep tolerances and planes (X14)."""
 
 import collections
 import math
@@ -11,9 +13,10 @@ import warnings
 import numpy as np
 import pytest
 
-from smlibpy import (Z, Align, Box, Cylinder, Plane, Sphere, Vector, export_glb, export_gltf, export_obj, export_step,
-                     from_brep, from_step, from_step_model, to_brep, to_glb, to_gltf, to_obj, to_step)
-from test_lane_IX import _occt_text_check
+from smlibpy import (Z, Align, Box, Circle, Cylinder, Helix, ModelingError, Plane, ShapeList, Sphere, StepFrame, Vector,
+                     drawing_views, export_glb, export_gltf, export_obj, export_step, from_brep, from_step, from_step_model,
+                     sweep, to_brep, to_glb, to_gltf, to_obj, to_step)
+from test_lane_IX import DEP, _bounded_plane, _line, _occt_text_check, _read_iges
 
 
 def same_hit(a, b, tol=1e-7) -> bool:
@@ -128,6 +131,27 @@ def test_decimate_feature_angle():
     for bad in (-1, 181, float("nan")):
         with pytest.raises(ValueError, match="feature_angle is 0 to 180 degrees"):
             mesh.decimate(0.5, feature_angle=bad)
+
+
+# =============================================================================
+# M4: drawings of several bodies
+# =============================================================================
+def test_drawing_views_of_several_bodies_hide_each_other():
+    # drawing_views took one part; a list of bodies (an assembly) is drawn together: a cylinder in front
+    # of a box hides 10 of each of the box's top and bottom edges in the front view
+    box, cylinder = Box(20, 20, 20), Cylinder(5, 40).translate((0, -30, 0))
+    front, top, left = drawing_views([box, cylinder])
+    assert sum(e.length for e in front.hidden) == pytest.approx(20, abs=0.01)
+    assert sum(e.length for e in front.visible) == pytest.approx(160, abs=0.01)
+    alone = drawing_views(box)
+    assert sum(e.length for e in alone[0].visible) == pytest.approx(80) and not alone[0].hidden
+    # the side views see both, side by side (the gap is a fifth of the whole's largest extent)
+    assert top.bbox().size.x == pytest.approx(20, abs=1e-6) and top.bbox().size.y == pytest.approx(45, abs=1e-6)
+    assert len(drawing_views([box])) == 3 and len(drawing_views(ShapeList([box, cylinder]), "front")) == 1
+    with pytest.raises(ValueError, match="drawing_views: nothing to draw"):
+        drawing_views([])
+    with pytest.raises(TypeError, match="drawing_views draws parts and shells, not a Vector"):
+        drawing_views([box, Vector(1, 2, 3)])
 
 
 # =============================================================================
@@ -388,3 +412,65 @@ def test_brep_writer_gives_each_edge_its_own_tolerance():
         assert back.is_valid() and back.volume == pytest.approx(part.volume, rel=1e-9)
     # a part of smlibpy's own: every tolerance the one of its size
     assert all(v == [pytest.approx(2e-5)] for v in _tolerances(to_brep(Box(10, 10, 10))).values())
+
+
+def test_brep_planes_bounded_by_long_curves_read_back():
+    # The reader boxed a plane's boundary by 24 points along each edge, which missed 0.8 of the cut end
+    # of the spring example (a closed edge 51 long and 2.4 wide): the plane's range did not hold the
+    # face, whose curves were made 0.8 off its edge, and the spring read back refused (a gap of 0.8).
+    coil = sweep(Circle(1.2), Helix(pitch=6, height=48, radius=10))
+    spring = coil.split(Plane.XY.offset(1.2)).split(Plane.XY.offset(48 - 1.2), keep="below")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        back = from_brep(to_brep(spring))
+    assert back.is_valid() and back.volume == pytest.approx(spring.volume, rel=1e-6)
+    assert sorted(f.area for f in back.faces() if f.geom_type == "plane") == \
+        pytest.approx(sorted(f.area for f in spring.faces() if f.geom_type == "plane"), rel=1e-6)
+    # (the box of 256 points of a circle that starts at 30 degrees falls short by 5.6e-5: a margin)
+    cut = Sphere(5) - Box(20, 20, 10).translate((0, 0, 9))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert from_brep(to_brep(cut)).volume == pytest.approx(cut.volume, rel=1e-12)
+
+
+# =============================================================================
+# I12: colors of coordinate systems
+# =============================================================================
+def test_step_coordinate_systems_keep_their_colors():
+    # read_step read the color of a coordinate system (NX writes them so); export_step left it out
+    frame = StepFrame("MCS", Plane.XY.offset(5), color=(1.0, 0.5, 0.0))
+    model = from_step_model(to_step([frame, StepFrame("PCS", Plane.XZ), Box(2, 2, 2)]))
+    assert [(f.name, f.color) for f in model.frames] == [("MCS", (1.0, 0.5, 0.0)), ("PCS", None)]
+    assert model.frames[0].plane.origin.to_tuple() == pytest.approx((0, 0, 5))
+    assert "CURVE_STYLE" in to_step([frame]) and "CURVE_STYLE" not in to_step([StepFrame("PCS", Plane.XZ)])
+
+
+# =============================================================================
+# I14: IGES offset curves (130)
+# =============================================================================
+def _offset(base: int, distance: float, end: float, flag: int = 1) -> dict:
+    """An offset curve (130) of the entity at `base` by `distance` about +Z (in the plane z = 0)."""
+    return {"type": 130, "params": [("@", base), flag, 0, 0, distance, 0., 0., 0., 0., 0., 1., 0., end], "status": DEP}
+
+
+def test_iges_offset_curves_bound_faces(tmp_path):
+    # 0.5.0 left a face bounded by an offset curve out ("curve entity 130 ... which is not supported").
+    # The base moves along its tangent x the normal, as OpenCASCADE reads such files (the square's side
+    # from y = 3 to y = 5: area 50 in OpenCASCADE too).
+    circle = {"type": 100, "params": [0., 0., 0., 3., 0., 3., 0.], "status": DEP}
+    disk = _read_iges(tmp_path, _bounded_plane([_offset(3, 2.0, 2 * math.pi)]) + [circle])
+    assert disk.area == pytest.approx(25 * math.pi, rel=1e-12) and [e.geom_type for e in disk.edges()] == ["circle"]
+    side = _offset(6, 2.0, 1.0)
+    square = _bounded_plane([_line((0, 0, 0), (10, 0, 0)), _line((10, 0, 0), (10, 5, 0)), side, _line((0, 5, 0), (0, 0, 0))])
+    assert _read_iges(tmp_path, square + [_line((10, 3, 0), (0, 3, 0))]).area == pytest.approx(50, rel=1e-12)
+    # a rational B-spline circle of radius 3 (126) as the base: the kernel's offset curve
+    s = math.sqrt(0.5)
+    corners = [(3, 0), (3, 3), (0, 3), (-3, 3), (-3, 0), (-3, -3), (0, -3), (3, -3), (3, 0)]
+    spline = {"type": 126, "status": DEP, "params": [8, 2, 1, 1, 0, 0] + [0., 0., 0., 1., 1., 2., 2., 3., 3., 4., 4., 4.] +
+              [1., s, 1., s, 1., s, 1., s, 1.] + [float(c) for x, y in corners for c in (x, y, 0)] + [0., 4., 0., 0., 1.]}
+    disk = _read_iges(tmp_path, _bounded_plane([_offset(3, 2.0, 4.0)]) + [spline])
+    assert disk.area == pytest.approx(25 * math.pi, rel=1e-9) and [e.geom_type for e in disk.edges()] == ["bspline"]
+    # an offset whose distance varies is named in the message of what was left out
+    with pytest.warns(RuntimeWarning, match=r"left out bounded plane DE 1: an offset curve whose distance varies \(DE 5\)"), \
+            pytest.raises(ModelingError, match="nothing in the file could be read"):
+        _read_iges(tmp_path, _bounded_plane([_offset(3, 2.0, 2 * math.pi, flag=2)]) + [circle])
