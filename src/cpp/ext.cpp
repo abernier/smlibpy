@@ -1030,10 +1030,11 @@ Value edge_angles(const SmBrep* brep, const std::vector<SmEdge*>& edges)
     return out;
 }
 
-// Breps that are never freed: SmBrep::RemoveFaces can fail half way and leave a body whose
-// destructor reads through a null pointer (the faces of an imported body that share no edges, with
-// vertex points up to 1e-3 off: AddressSanitizer, SmBrep::~SmBrep). A body that CopyFaces or
-// RemoveFaces failed on is put here instead of deleted; it lives as long as the process.
+// Breps that are never freed: a body that MergeBrep failed on half way (see combine). A body that
+// CopyFaces or RemoveFaces failed on is deleted: RemoveFaces could leave a Face without Faceuses,
+// which ~SmBrep read through (the faces of an imported body that share no edges, with vertex points
+// up to 1e-3 off: AddressSanitizer, SmBrep::~SmBrep), and such bodies were kept for the life of the
+// process. The patched SmBrep.cpp takes such a Face out (third_party/patches/README.md).
 static void keep_forever(SmBrep* brep)
 {
     static std::vector<SmBrep*> kept;
@@ -1049,7 +1050,7 @@ SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
     SmStatus st = const_cast<SmBrep*>(brep)->CopyFaces(list, out, nullptr, FALSE);
     if (st == SM_SUCCESS)
         return out;
-    keep_forever(out);
+    delete out;
     // CopyFaces builds each face again from its trimming curves, which fails for some
     // imported faces (bounded by B-spline edges that meet within the file's tolerance):
     // copy the whole body and delete the other faces, which keeps the edges as they are.
@@ -1070,7 +1071,7 @@ SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces)
     }
     if (removed != SM_SUCCESS)
     {
-        keep_forever(copy);
+        delete copy;
         check(st, "SmBrep::CopyFaces");
     }
     return copy;

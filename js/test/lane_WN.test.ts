@@ -854,20 +854,24 @@ test('the fuzz run\'s WebAssembly runner runs cases and says what each operation
   assert.ok(off.O.ok && off.O2.ok && Math.abs((off.O.v as number) - 11 ** 3) < 1e-6 && Math.abs((off.O2.v as number) - 1000) < 1e-6)
 })
 
-test('cells() of a merge that crashes the kernel\'s stitcher throw (N1)', () => {
-  // Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() reads a null
+test('cells() of a merge that crashed the kernel\'s stitcher come back (N1)', () => {
+  // Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() read a null
   // polar box (SmBezierAux2d::BuildPolarBox) on this merge; smlibwasm trapped. It runs in the probe
-  // worker now, and the kernel the call runs on is left alone.
+  // worker, and the kernel the call runs on is left alone.
   // Part.merge turns the cylinder about its axis now (lane BT: B6, its seam ran along the cone): the
-  // right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge, as before,
-  // still crashes the stitcher.
+  // right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge crashed the
+  // stitcher until the patched SmSurfaceCache.cpp (close-out K2) gave the polar box the surface of its
+  // tree: its cells come back, and add up to that (wrong) merge.
   const a = Cone(3, 0, 4).rotate(X, 90)
   const b = Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)
   assert.ok(Math.abs(a.merge(b).volume - 150.26185413540605) < 1e-6)
   const m = Part._wrap(k.non_manifold_boolean(a._copyBrep(), b._copyBrep(), { operation: k.BooleanOp.MERGE }))
   // (smlibpy's raw merge holds 149.19267, this one 145.98511: a divergence the fuzz run lists too)
   assert.ok(m.volume > 113.0973 && m.volume < 150.7964)
-  assert.throws(() => m.cells(), (e: unknown) => e instanceof KernelError && /cells failed/.test(e.message) && /the kernel crashed/.test(e.detail))
+  const cells = m.cells()
+  assert.equal(cells.length, 3)
+  assert.ok(cells.every((c) => c.isValid()))
+  assert.ok(Math.abs(cells.reduce((t, c) => t + c.volume, 0) - m.volume) < 1e-6 * m.volume)
   assert.ok(Math.abs(Box(30, 20, 10).cut(Cylinder(4, 20)).volume - 5497.3452) < 1e-3) // (this kernel goes on)
 })
 

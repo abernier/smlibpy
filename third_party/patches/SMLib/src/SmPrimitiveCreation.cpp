@@ -1,10 +1,18 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmPrimitiveCreation.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-22. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-22, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmPrimitiveCreation::Boolean2D fails with SM_ERR_BAD_INTERSECTIONS when a coincident edge of
 //   either operand has an edgeuse that lies on no face (an edge the intersection left as a wire
 //   edge of a shell); it read the mark of that missing face through a null pointer, which killed
 //   the process (natively) or read low memory (WebAssembly).
+//   SmPrimitiveCreation::CreateSweepAlongPlanarPath (sweeps along mitered planar paths) deletes the
+//   curves it makes for its work on every path: the extended path segments (ExtendPathCurves wrote
+//   each extension over the pointer to the curve it extended), the copies of the profile, the
+//   cutting lines and the curves of the segments' intersections; SweepProfilesAlongPath deletes its
+//   copy of the path, and the Breps left after a failed Boolean of the segments are deleted. All
+//   were lost, about 10 kB a sweep. A cutting line the kernel cannot extend fails the sweep (it went
+//   on with a null curve).
+//   SmPrimitiveCreation::CreateCone deletes the iso curve of an end that gets no cap (an apex).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -693,6 +701,11 @@ SmStatus SmPrimitiveCreation::CreateCone
                                       pTopEdge ));
  
   double dBrepTol = pBrep->GetTolerance();
+
+  // smlibpy patch: the iso curve of an end that gets no cap (an apex) is used by nothing: it was
+  // lost with every cone that comes to a point (72 bytes and its knots; LeakSanitizer).
+  if( dBaseRadius <= dBrepTol ) { delete pBaseEdge; pBaseEdge = NULL; }
+  if( dTopRadius  <= dBrepTol ) { delete pTopEdge;  pTopEdge  = NULL; }
 
   // make base face
   SmFace* pBaseFace = NULL;
@@ -5477,6 +5490,38 @@ SmStatus SmPrimitiveCreation::CreateCurveSweep
 } // end SmPrimitiveCreation::CreateCurveSweep
 
 /*******************************************************************//**
+PURPOSE: smlibpy patch: extend a path segment at its start (1) or end (2), keeping the new curve
+  in rsNewCurves and deleting the one it replaces when that was made here too.
+
+NOTES: ExtendPathCurves wrote each extension over its pointer to the curve it extended: the first
+  extension of a segment extended at both ends was lost, and so were the extended segments, which
+  nothing deleted (about 10 kB a mitered sweep with the other copies below). Where the kernel makes
+  no extension, the segment stays as it was (it went on with a null curve).
+***********************************************************************/
+static void sm_ExtendPathCurve
+(
+  const SmContext& crContext,
+  double dDistance,
+  int iStartOrEnd,
+  SmBSplineCurve*& rpPath,
+  SmTArray<SmCurve*>& rsNewCurves
+)
+{
+  SmBSplineCurve* pExtended = NULL;
+  rpPath->CreateExtendedCurve( crContext, dDistance, iStartOrEnd, SM_CT_G1, pExtended );
+  if ( pExtended == NULL )
+    { return; }
+  ULONG lIdx;
+  if ( rsNewCurves.FindElement( (SmCurve*)rpPath, lIdx ) )
+    {
+      rsNewCurves.RemoveAt( lIdx );
+      delete rpPath;
+    }
+  rpPath = pExtended;
+  rsNewCurves.Add( (SmCurve*)pExtended );
+}
+
+/*******************************************************************//**
 PURPOSE: Copy each segment of the path and extend it by given distance
 
 NOTES: Helper function for CreateSweepAlongPlanarPath
@@ -5488,7 +5533,8 @@ static void ExtendPathCurves
   SmBoolean bIsPathClosed, 
   SmBoolean bIsPathPeriodic, 
   double dDistance,
-  SmTArray<SmCurve*>& rsExtendedPathCurves 
+  SmTArray<SmCurve*>& rsExtendedPathCurves,
+  SmTArray<SmCurve*>& rsNewCurves  // smlibpy patch: out: the curves made here, for the caller to delete
 )
 {
   SmBSplineCurve* pPath = NULL;
@@ -5517,11 +5563,11 @@ static void ExtendPathCurves
 
       // do not extend if adjacent path curves are parallel
       if(sPVBefore[1].IsParallelTo( sPVAfter[1], 2.0 ) == 0)
-        pPath->CreateExtendedCurve( crContext, dDistance, 1, SM_CT_G1, pPath );
+        sm_ExtendPathCurve( crContext, dDistance, 1, pPath, rsNewCurves );  // smlibpy patch
     }
     else if ( bIsPathClosed && !bIsPathPeriodic )
     {
-      pPath->CreateExtendedCurve( crContext, dDistance, 1, SM_CT_G1, pPath );
+      sm_ExtendPathCurve( crContext, dDistance, 1, pPath, rsNewCurves );  // smlibpy patch
     }
 
     if( pPathAfter )
@@ -5531,11 +5577,11 @@ static void ExtendPathCurves
 
       // do not extend if adjacent path curves are parallel
       if ( sPVBefore[1].IsParallelTo( sPVAfter[1], 2.0 ) == 0 )
-        { pPath->CreateExtendedCurve( crContext, dDistance, 2, SM_CT_G1, pPath ); }
+        { sm_ExtendPathCurve( crContext, dDistance, 2, pPath, rsNewCurves ); }  // smlibpy patch
     }
     else if( bIsPathClosed && !bIsPathPeriodic )
     {
-      pPath->CreateExtendedCurve( crContext, dDistance, 2, SM_CT_G1, pPath );
+      sm_ExtendPathCurve( crContext, dDistance, 2, pPath, rsNewCurves );  // smlibpy patch
     }
 
     rsExtendedPathCurves.Add( (SmCurve*)pPath );
@@ -5680,6 +5726,10 @@ static void SweepProfilesAlongPath
   pPC.CreateCurveSweep( rProfileCurves, bsPath, pScaleReference, pScaleCurve, dTol,
                         &sOptions, startFaces, sideFaces, endFaces, FALSE );
 
+  // smlibpy patch: CreateCurveSweep works on copies of its own (SmApiCreateCurveSweep copies the
+  // curves it gives it); this copy of the path was lost with every segment.
+  delete crvCopy; crvCopy = NULL; bsPath = NULL;
+
   if ( bCapStart == FALSE )
   {
     pBrep->m_bEditingEnabled = TRUE;
@@ -5778,6 +5828,13 @@ SmBoolean bDebugMe=FALSE;
   }
 #endif // SM_DEBUG_CODE
 
+  // smlibpy patch: the curves this function makes for its work (the extended path segments,
+  // the copies of the profile, the cutting lines and the curves of the Brep intersections),
+  // deleted when it returns, on every path. None of them went into a Brep: CreateCurveSweep
+  // and ProjectAndTrim work on copies of their own. They were all lost, about 10 kB a sweep.
+  SmTArray <SmCurve*> sTempCurves;
+  SmObjsDelete<SmCurve*> sCleanTempCurves( &sTempCurves );
+
   // Extend all the path curves at start and end to make sure sweeps go past corner
   // We cannot go too far for fear of causing second intersection
   SmTArray <SmCurve*> sExtendedPathCurves;
@@ -5786,7 +5843,8 @@ SmBoolean bDebugMe=FALSE;
                     bIsPathClosed,
                     bIsPathPeriodic,
                     dDistToExtend,
-                    sExtendedPathCurves );
+                    sExtendedPathCurves,
+                    sTempCurves );  // smlibpy patch
 
 #ifdef SM_DEBUG_CODE
   if ( bDebugMe ) {
@@ -5838,6 +5896,7 @@ SmBoolean bDebugMe=FALSE;
     // position profile curves at the start of the path segment
     sNewProfileCurves.RemoveAll();
     PositionProfileCurves( crContext, rProfileCurves, dTol, pExtendedPath, sNewProfileCurves );
+    sTempCurves.Append( sNewProfileCurves );  // smlibpy patch: the copies, deleted at the end
 
     // sweep the profiles along this path segment creating new brep
     pBrepAfter = new (crContext)SmBrep();
@@ -5913,9 +5972,12 @@ SmBoolean bDebugMe=FALSE;
 
         // Creating a line from the corner where the paths meet to the approx end point
         SmBSplineCurve::CreateLineSegment( crContext, 3, sPVAfter[0], sCuttingPt, pCutLine );
+        sTempCurves.Add( pCutLine );  // smlibpy patch
 
         // Now extend the line backwards
+        pTempCuttingCrv = NULL;  // smlibpy patch
         pCutLine->CreateExtendedCurve( crContext, dDistToExtend, 1, SM_CT_G1, pTempCuttingCrv );
+        if ( pTempCuttingCrv ) { sTempCurves.Add( pTempCuttingCrv ); }  // smlibpy patch
 
 #ifdef SM_DEBUG_CODE
         if(bDebugMe)
@@ -5939,6 +6001,7 @@ SmBoolean bDebugMe=FALSE;
         {
           SmTArray <SmCurve*> sIntersectionCrvs;
           pBrepBefore->BrepIntersect( crContext, pBrepAfter, dTol, 2.0, sIntersectionCrvs, NULL );
+          sTempCurves.Append( sIntersectionCrvs );  // smlibpy patch: the caller's to delete
 
 #ifdef SM_DEBUG_CODE
           if(bDebugMe)
@@ -6024,8 +6087,11 @@ SmBoolean bDebugMe=FALSE;
                   {
                     SmBSplineCurve* pCrv = NULL;
                     SmBSplineCurve::CreateLineSegment( crContext, 3, sBestPt, sBestPt2, pCrv );
+                    sTempCurves.Add( pCrv );  // smlibpy patch: and each curve made from it
                     pCrv->CreateExtendedCurve( crContext, dDistToExtend, 0, SM_CT_G1, pCrv );
-                    pCrv->CreateExtendedCurve( crContext, dDistToExtend, 1, SM_CT_G1, pCuttingCrv );
+                    if ( pCrv ) { sTempCurves.AddUnique( pCrv ); }
+                    if ( pCrv ) { pCrv->CreateExtendedCurve( crContext, dDistToExtend, 1, SM_CT_G1, pCuttingCrv ); }
+                    if ( pCuttingCrv ) { sTempCurves.AddUnique( pCuttingCrv ); }
                   }
               }
 
@@ -6111,7 +6177,11 @@ SmBoolean bDebugMe=FALSE;
         // How can I determine the correct distance???
         sCuttingPt = sPVAfter[0] + (sAverageDir * 50);
         SmBSplineCurve::CreateLineSegment( crContext, 3, sPVAfter[0], sCuttingPt, pCutLine );
+        sTempCurves.Add( pCutLine );  // smlibpy patch
+        pCuttingCrv = NULL;           // smlibpy patch
         pCutLine->CreateExtendedCurve( crContext, 50, 1, SM_CT_G1, pCuttingCrv );
+        if ( pCuttingCrv == NULL ) { SER_DELETE_ALL_PARTS( SM_ERR, sNewBreps ); }  // smlibpy patch: it went on with a null curve
+        sTempCurves.Add( pCuttingCrv );                 // smlibpy patch
 
         // determine reference points on either side of the cutting line
         if(pBrepBefore == pBrepAfter)
@@ -6203,9 +6273,11 @@ SmBoolean bDebugMe=FALSE;
     sBoolTree.Add( 0 - 1 ); // Convert to different form of Boolean numbering
   }
 
-  SER( SmMerge::BooleanTrees( sOrderedBreps, sBoolTree ) );
+  // smlibpy patch: on failure, the Breps left in sOrderedBreps (BooleanTrees deletes the ones it
+  // took, see the patched SmMerge.cpp) were lost.
+  SER_DELETE_ALL_PARTS( SmMerge::BooleanTrees( sOrderedBreps, sBoolTree ), sOrderedBreps );
   if ( sOrderedBreps.GetSize() != 1 )
-    { SER( SM_ERR ); } // Something went wrong
+    { SER_DELETE_ALL_PARTS( SM_ERR, sOrderedBreps ); } // Something went wrong
 
   pSweepBrep = sOrderedBreps[0];
 

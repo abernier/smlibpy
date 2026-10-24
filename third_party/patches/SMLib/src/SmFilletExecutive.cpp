@@ -1,6 +1,6 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmFilletExecutive.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-21. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-21, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmFilletExecutive::CreateFilletCorners fails (SM_ERR_INVALID_INPUT) when SmFilletCorner::Create
 //   makes no corner for a vertex ("Corner Case Not Implemented"). It went on, and the vertex kept
 //   its list of edgeuses in m_vVertexCornerMap where its corner belonged: CollectTangentEdgeSequence
@@ -10,6 +10,15 @@
 //   that failure names the first vertex without a corner.
 //   SmFilletExecutive::DoFilleting shrinks only fillet surfaces whose faces are still in the
 //   fillet Brep: stitching deletes sliver faces with their surfaces, and the shrink read them.
+//   SmFilletExecutive::CreateSmoothEdgeSequence makes each Edge of a smooth sequence the owner of
+//   the joined curve (or its copy) it gives it. No one owned them, and ~SmEdge deletes only the
+//   curve it owns: the curves and the caches the corners built on them were lost with every
+//   fillet along tangent edges (about 180 kB for the top run of a rounded plate).
+//   SmFilletExecutive::CreateFilletBrep deletes the fillet surfaces of the solvers when it fails
+//   before it has made any fillet face: they belonged to no one (about 10 kB per refused fillet).
+//   SmFilletExecutive::DoFilleting deletes the fillet Brep when it fails, as its success path does:
+//   it was lost with every fillet that failed after it was made (348 kB for an all-edge fillet of two
+//   cones that fails in SmFilletGeom::InsertIntersectionTopology).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -1932,6 +1941,38 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   // check state - must have a target Brep
   NER(m_pTargetBrep);
 
+  // smlibpy patch: when this fails before any fillet face is made, the fillet surfaces of the
+  // solvers' FilletGeoms belong to no one (a face takes its surface when it is made, and
+  // ~SmFilletGeom leaves m_pFilletSurface alone): delete those without an owner. They were lost
+  // with every fillet refused at its corners, about 10 kB with their caches (a refused
+  // propagate=False fillet of a rounded plate's top edge). Once faces are made, the stitch can
+  // delete a face with its surface, so the surfaces are left alone from then on.
+  struct sm_FilletSurfacesOnFailure
+    {
+      SmFilletExecutive * m_pExec ;
+      SmBoolean           m_bKeep ;
+      ~sm_FilletSurfacesOnFailure()
+        {
+          if ( m_bKeep ) { return ; }
+          SmTArray<SmSurface*> sDone ;
+          ULONG lIdx ;
+          for ( ULONG ii = 0 ; ii < m_pExec->m_vFilletSolvers.GetSize() ; ii++ )
+            {
+              SmFilletSolver * pFS = m_pExec->m_vFilletSolvers[ii] ;
+              if ( pFS == NULL ) { continue ; }
+              for ( ULONG jj = 0 ; jj < pFS->m_vFilletGeoms.GetSize() ; jj++ )
+                {
+                  SmFilletGeom * pFG = pFS->m_vFilletGeoms[jj] ;
+                  if ( pFG == NULL || pFG->m_pFilletSurface == NULL ) { continue ; }
+                  SmSurface * pSrf = pFG->m_pFilletSurface ;
+                  pFG->m_pFilletSurface = NULL ;
+                  if ( pSrf->GetOwner() == NULL && !sDone.FindElement( pSrf, lIdx ) )
+                    { sDone.Add( pSrf ) ; delete pSrf ; }
+                }
+            }
+        }
+    } sFilletSurfacesOnFailure = { this, FALSE } ;
+
 #ifdef VALIDATE_TOPOLOGY
   m_pTargetBrep->ValidatePointers();
 #endif // VALIDATE_TOPOLOGY
@@ -2549,6 +2590,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         }
  
       // for every FilletSolver->FilletGeom (FilletGeom contains geom for a single FilletSurface: FilletSurf, rails, centerline, and more)
+      sFilletSurfacesOnFailure.m_bKeep = TRUE ;  // smlibpy patch: faces take their surfaces from here on
       for ( i=0; i<pFilSolver->m_vFilletGeoms.GetSize(); i++ )
         {
           SmFilletGeom * pFilletGeom = pFilSolver->m_vFilletGeoms[i];
@@ -2960,6 +3002,27 @@ SmStatus SmFilletExecutive::DoFilleting
   // remember that we're using the SmTopologyIntersector and the SmCurveClassification code for fillets
   m_vTI.m_bDoingFillets = TRUE ;
 
+  // smlibpy patch: when DoFilleting fails, delete the fillet Brep as its success path does (and take
+  // it out of the topology intersector first). Nothing deleted it on failure, nor does the
+  // destructor: it was lost with every fillet that failed after CreateFilletBrep, with its faces,
+  // surfaces and caches (348 kB for the all-edge fillet of Cone(3, 0, 10).rotate(Y, 90) -
+  // Cone(1.5, 0, 8).rotate(X, 90).translate(0, 1, 0) at r 0.6, which fails in
+  // SmFilletGeom::InsertIntersectionTopology). (DoSurfaceFilleting hands it out: not there.)
+  struct sm_FilletBrepOnFailure
+    {
+      SmFilletExecutive * m_pExec ;
+      SmBoolean           m_bDone ;
+      ~sm_FilletBrepOnFailure()
+        {
+          SmBrep * pFB = m_pExec->m_pFilletBrep ;
+          if ( m_bDone || pFB == NULL ) { return ; }
+          if ( m_pExec->m_vTI.GetOtherBrep()   == pFB ) { m_pExec->m_vTI.SetOtherBrep( NULL ) ; }
+          if ( m_pExec->m_vTI.GetPrimaryBrep() == pFB ) { m_pExec->m_vTI.SetPrimaryBrep( NULL ) ; }
+          delete pFB ;
+          m_pExec->m_pFilletBrep = NULL ;
+        }
+    } sFilletBrepOnFailure = { this, FALSE } ;
+
   // Create m_pFilletBrep - A shell Brep containing the new Fillet Faces, 
   //  Edges, and Vertices created by filleting m_pTargetBrep Edges and Corners
   if(SM_SUCCESS != CreateFilletBrep( pOptFilletErrorInfo ))
@@ -3109,6 +3172,7 @@ SmBoolean bDebugMe = FALSE ;
   if ( m_bDoPiecewiseMerge )
     {
       SER( DoPiecewiseMerge() ); // note: increments unlocked mark value
+      sFilletBrepOnFailure.m_bDone = TRUE ;  // smlibpy patch: (it deleted the fillet Brep)
 
       if ( pOptFilletErrorInfo != NULL )
         {
@@ -3762,6 +3826,7 @@ SmBoolean bDebugMe = FALSE ;
     }
 
   // all done
+  sFilletBrepOnFailure.m_bDone = TRUE ;  // smlibpy patch
   return SM_SUCCESS;
 
 } // end SmFilletExecutive::DoFilleting
@@ -4886,6 +4951,12 @@ SmStatus SmFilletExecutive::CreateSmoothEdgeSequence( SmTArray< SmFilletSolver* 
       }
 
       pE->SetCurve( pNewCurve, TRUE );  // TRUE: Delete existing curve.
+
+      // smlibpy patch: the Edge owns its new curve, as it owned the old one. SetCurve does not
+      // set the owner, and ~SmEdge deletes only a curve it owns: the joined curve and its copies,
+      // with the caches the corners built on them (CalcCornerVertGeom), were lost with every
+      // fillet along a smooth sequence of edges, about 180 kB for the top run of a rounded plate.
+      pNewCurve->SetOwner( pE );
   }
 
   return SM_SUCCESS;

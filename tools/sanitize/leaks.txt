@@ -2,49 +2,24 @@
 # (its allocation stack) contains, one per line after its reason; texts joined by " & " must all
 # be in it. Remove a line when the leak is fixed.
 
-# SmPrimitiveCreation::CreateSweepAlongPlanarPath (sweeps along mitered planar paths) copies the
-# profile curves for each path segment (PositionProfileCurves) and the path curve
-# (SweepProfilesAlongPath) and never deletes the copies: about 10 kB a sweep. CreateCurveSweep
-# works on copies of its own (SmApiCreateCurveSweep says so), so the copies can be deleted after it.
-PositionProfileCurves
-SweepProfilesAlongPath
-
-# SmProtoTopologyManager::CreateProtoEdge copies the curve of a ProtoEdge that some Booleans do not
-# take into the result (150 bytes, now and then).
+# SmProtoTopologyManager::CreateProtoEdge copies the curve of a ProtoEdge whose EdgeDefinition some
+# Booleans drop without imprinting it: 152 bytes each, about 24 in the extended shells of
+# tests/test_lane_FO.py. (Close-out K2 patched the EdgeDefinitions CombineProtoEdge leaves behind;
+# freeing the curves no Brep took after the imprint read curves of Edges deleted since, crescendo
+# part 52 natively: third_party/patches/README.md, "Small leaks on failure paths".)
 SmProtoTopologyManager::CreateProtoEdge
 
-# SmPrimitiveCreation::CreateSweepAlongPlanarPath also loses the extended and line curves it makes
-# for each segment (CreateExtendedCurve, CreateLineSegment): the same mitered sweeps.
-SmPrimitiveCreation::CreateSweepAlongPlanarPath
-
-# SmBSplineSurface::CreateNSidedPatch (fill() of three or five and more sides) loses NLib's work
-# arrays in N_FillNSidedHole: 0.1 to 1 MB a fill (third_party/patches/README.md, "Defects that remain").
-N_FillNSidedHole
-
-# The fillet executive loses curve caches and copies made for its corners: about 180 kB per fillet
-# of a rounded plate's top run (SmFilletCorner::CalcCornerVertGeom, SmFilletVertex::CalcRailIntEdgeuse)
-# and copies of CreateSmoothEdgeSequence.
-SmFilletCorner::CalcCornerVertGeom
-SmFilletExecutive::CreateSmoothEdgeSequence
-
 # Leaks on failure paths that the sanitizer run found once the tests of the 0.5.0 lanes ran in it
-# (also in 0.4; third_party/patches/README.md, "Small leaks on failure paths"). The extended offset
-# mode's trim-edge extension loses its curve copies when a step fails, and the shell's Boolean then
-# loses a line that SmMerge::MergeEdge copied: about 1.9 kB in a process of 24 extended shells of
-# filleted boxes (tests/test_lane_FO.py).
-SmOffsetGeometryCreation::ExtendTrimEdges
-SmMerge::MergeEdge & SmOffsetExecutive::ShellBrep
+# (also in 0.4; third_party/patches/README.md, "Small leaks on failure paths").
 # An imprint of the extended mode's PiecewiseMerge that SmBrep::MakeEdgeInFaceWithVU cannot finish
 # loses a Vertexuse it made for the new edge (240 bytes, 0 to 2 in a process of 24 extended shells of
 # filleted boxes, tests/test_lane_FO.py, depending on the memory layout; also on 5c7666f's build: 4
 # in 6 such processes, where LeakSanitizer's first 200 reports had cut it off before).
 SmBrep::MakeEdgeInFaceWithVU & SmEdgeDefinition::Imprint & SmOffsetExecutive::PiecewiseMerge
-# SmBrep::CopyFaces loses the copied surface of a face it cannot build again (smlibpy's combine then
-# merges the body as it is): 384 bytes in a union of exclusive-or sketches (tests/test_lane_C.py).
-SmBrep::CopyFaces & smlibpy::combine
 # The fillet executive's circular cross-section solver loses a skinned surface it made (144 bytes,
 # now and then), and a loft (sm_CreateSkinPrimitiveInternal) the composite curve it joined from a
-# composite profile (1 kB).
+# composite profile (1 kB). (Those of the mitered sweep, the N-sided fill, the fillet corners,
+# ExtendTrimEdges, MergeEdge and CopyFaces were listed here: patched, close-out K2.)
 SmCircularCrossSectionFSG::CreateSurfaceFromCurves & SmBSplineSurface::CreateSkinnedSurface
 sm_CreateSkinPrimitiveInternal & SmCompositeCurve::MakeCompositeNurb
 

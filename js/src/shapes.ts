@@ -5552,8 +5552,8 @@ export class Part extends _Body {
    * last of them that has one; the merged part's own name and color where none of them has one. The
    * kernel keeps no record of the parts: smlibwasm classifies a point inside each cell against them.
    *
-   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): it crashed on some merges,
-   * which throw a KernelError now.
+   * The kernel's stitcher runs in the probe worker (see GUARD_SECONDS): it crashed on some merges
+   * (a null polar box, patched in 0.5.0); a crash there throws a KernelError.
    */
   cells(): ShapeList<Part> {
     return scope(() => {
