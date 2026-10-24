@@ -918,12 +918,20 @@ def offset_curves(segs: list[Seg], fr: Frame, e: float, corners: str, closed: bo
                     extra.append(Line2(mpt, q))
                 joins[i] = edges_of(extra, fr)
         else:  # the corner closes: cut both where they cross, nearest the corner
-            if n == 1:
-                raise ModelingError(f"{what}: the closed edge has a corner at {fr.fp(v)}; split it there first")
             a0, a1 = m1._range()
             b0, b1 = m2._range()
-            with kernel_call(what):
-                sols = ext.intersect_curves(m1._curve(), a0, a1, m2._curve(), b0, b1, approx)
+            other = m2._curve()
+            if n == 1:
+                # (a closed edge with a corner where it starts and ends: its end half crosses its start
+                # half near the corner; the kernel finds no crossing of a curve with itself)
+                a0, b1 = m1._param(0.5), m2._param(0.5)
+                other = ext.copy_curve(other)
+            try:
+                with kernel_call(what):
+                    sols = ext.intersect_curves(m1._curve(), a0, a1, other, b0, b1, approx)
+            finally:
+                if n == 1:
+                    ext.delete_curve(other)
             wv = fr.world(v)
             best: tuple[float, float, float] | None = None
             for sol in sols:

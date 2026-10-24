@@ -29,6 +29,14 @@ kernel's own `k.offset_curve` is only 7e-4 accurate). Pieces meet end to end exa
 - `CenterArc((0, 0), 5, 0, 360).offset(1).radius` = 6.
 - `Spline((0, 0), (20, 8), (40, 0)).offset(3)`: starts at (-1.874, 2.343), 47.978 long.
 - A closed wire of two splines offset ±1 bounds exactly the region `Sketch.offset(±1)` gives.
+- A closed edge with a corner where it starts and ends (`Spline(*pts, pts[0])`) comes back from
+  `edge.offset` as one closed edge: rounded at the corner where the offset pulls it apart, cut
+  where its sides cross where it pushes them together (for the four points (0, 0), (20, 0),
+  (25, 15), (5, 20): 88.155 long at +1, 75.427 at -1). Before the 0.5.0 close-out +1 returned the
+  rounding arc alone and -1 raised. `Wire([edge]).offset(d, corners=...)` gives sharp and
+  chamfered corners there.
+- Offsets are planar: a curve that does not lie in a plane raises (`ValueError`), and an offset
+  that would fold over itself is refused, not trimmed (see Errors).
 
 ## Errors
 - `ModelingError: offset: the bspline bends more tightly than the distance 5 near (19.63, -2.8625)

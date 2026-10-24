@@ -570,8 +570,11 @@ function _throughTangents(pts: Vector[], tangents: (VectorLike | null)[], closed
  * `points`: the points in order along the curve (2D points lie at z = 0). Options: `tolerance`, the
  * largest distance from any point to the curve (default: 1/1000 of the size of the points);
  * `degree`, the highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
- * needs); `tangents`, optional `[start, end]` directions, either may be null (not for closed
- * curves); `closed`, a closed curve through the first point again and tangent there.
+ * needs); `tangents`, optional `[start, end]` directions, either may be null, or a direction at every
+ * point (as many as there are points, none null; a cubic curve then: the curve leaves each point near
+ * that direction, as the curve through the points along them, `Spline(...points, { tangents })`, does,
+ * simplified within the tolerance), not for closed curves; `closed`, a closed curve through the first
+ * point again and tangent there.
  *
  * Few points (fewer than about six) give the curve through them (`Spline`). Where no fit keeps
  * within the tolerance, a ModelingError gives the distance it reached.
@@ -580,7 +583,12 @@ function _throughTangents(pts: Vector[], tangents: (VectorLike | null)[], closed
  */
 export function fitCurve(
   points: Iterable<VectorLike>,
-  options: { tolerance?: number | null; degree?: number; tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean } = {},
+  options: {
+    tolerance?: number | null
+    degree?: number
+    tangents?: readonly [VectorLike | null, VectorLike | null] | readonly VectorLike[] | null
+    closed?: boolean
+  } = {},
 ): Edge {
   _opts('fitCurve', options)
   const { tolerance = null, degree = 3, tangents = null, closed = false } = options
@@ -600,17 +608,29 @@ export function fitCurve(
   }
   const size = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
   if (size === 0) throw new RangeError('fitCurve: the points all coincide')
+  const count = pts.length
+  const every = tangents != null && tangents.length === count && count > 2 // (a direction at every point)
   const keep = [pts[0]]
-  for (const p of pts.slice(1)) if (p.distanceTo(keep[keep.length - 1]) > 1e-12 * size) keep.push(p)
-  if (closed && keep.length > 2 && keep[keep.length - 1].distanceTo(keep[0]) <= 1e-12 * size) keep.pop()
+  const kept = [0]
+  pts.slice(1).forEach((p, i) => {
+    if (p.distanceTo(keep[keep.length - 1]) > 1e-12 * size) {
+      keep.push(p)
+      kept.push(i + 1)
+    }
+  })
+  if (closed && keep.length > 2 && keep[keep.length - 1].distanceTo(keep[0]) <= 1e-12 * size) {
+    keep.pop()
+    kept.pop()
+  }
   pts = keep
   const tol = tolerance == null ? 1e-3 * size : tolerance
   if (!(typeof tol === 'number' && Number.isFinite(tol) && tol > 0)) throw new RangeError(`fitCurve: the tolerance must be positive, got ${String(tolerance)}`)
   if (!(Number.isInteger(degree) && degree >= 2 && degree <= 9)) throw new RangeError(`fitCurve: the degree is 2 to 9, got ${String(degree)}`)
-  if (tangents != null && tangents.length !== 2) {
-    throw new RangeError('fitCurve: tangents are [start, end]; for a direction at every point use Spline(..., { tangents: [...] })')
+  if (tangents != null && tangents.length !== 2 && !every) {
+    throw new RangeError(`fitCurve: tangents are [start, end], or a direction at each of the ${count} points, got ${tangents.length}`)
   }
-  if (closed && tangents != null) throw new RangeError('fitCurve: a closed curve takes no end tangents')
+  if (closed && tangents != null) throw new RangeError('fitCurve: a closed curve takes no end tangents, nor a direction at every point')
+  if (every) return _fitTangents(pts, kept.map((i) => (tangents as readonly (VectorLike | null)[])[i]), tol)
   const t0 = tangents != null && tangents[0] != null ? _vec(tangents[0]).toArray() : []
   const t1 = tangents != null && tangents[1] != null ? _vec(tangents[1]).toArray() : []
   let r: Any
@@ -626,6 +646,29 @@ export function fitCurve(
   if (dev > tol) {
     throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; ` +
       'use a larger tolerance or a higher degree')
+  }
+  return edge
+}
+
+/** `fitCurve` with a direction at every point (`ext.approximate_tangents`). */
+function _fitTangents(pts: Vector[], tangents: readonly (VectorLike | null)[], tol: number): Edge {
+  const dirs = tangents.map((t, i) => {
+    if (t == null) throw new RangeError(`fitCurve: with a direction at every point, tangent ${i + 1} is null`)
+    const v = _vec(t)
+    if (!(v.length > 0)) throw new RangeError(`fitCurve: tangent ${i + 1} has no direction`)
+    return v.normalized()
+  })
+  const r: Any = kernelCall('fitCurve', () =>
+    ext.approximate_tangents(
+      pts.flatMap((p) => p.toArray()),
+      dirs.flatMap((d) => d.toArray()),
+      tol,
+    ),
+  )
+  const edge = Edge._fromCurve(r[0])
+  const dev = Number(r[1])
+  if (dev > tol) {
+    throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; use a larger tolerance`)
   }
   return edge
 }

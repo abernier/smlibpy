@@ -1000,10 +1000,22 @@ export function offsetCurves(segs: Seg[], fr: Frame, e: number, corners: string,
       }
     } else {
       // the corner closes: cut both where they cross, nearest the corner
-      if (n === 1) throw new ModelingError(`${what}: the closed edge has a corner at ${fr.fp(v)}; split it there first`)
-      const [a0, a1] = m1._range()
-      const [b0, b1] = m2._range()
-      const sols = kernelCall(what, () => ext.intersect_curves(m1._curve(), a0, a1, m2._curve(), b0, b1, approx))
+      let [a0, a1] = m1._range()
+      let [b0, b1] = m2._range()
+      let other = m2._curve()
+      if (n === 1) {
+        // (a closed edge with a corner where it starts and ends: its end half crosses its start half
+        // near the corner; the kernel finds no crossing of a curve with itself)
+        a0 = m1._param(0.5)
+        b1 = m2._param(0.5)
+        other = ext.copy_curve(other)
+      }
+      let sols: Any
+      try {
+        sols = kernelCall(what, () => ext.intersect_curves(m1._curve(), a0, a1, other, b0, b1, approx))
+      } finally {
+        if (n === 1) ext.delete_curve(other)
+      }
       const wv = fr.world(v)
       let best: [number, number, number] | null = null
       const prev = (i - 1 + n) % n

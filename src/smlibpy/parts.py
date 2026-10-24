@@ -8,14 +8,15 @@ into the face.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from ._kernel import k, kernel_call
 from .align import Align, AlignLike, alignment_offset
 from .geometry import Z
 from .shapes import _WHOLE_TURN, Part
 
-__all__ = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "AnnularSector", "Hole", "CounterBoreHole",
-           "CounterSinkHole"]
+__all__ = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "AnnularSector", "Pyramid", "Hole",
+           "CounterBoreHole", "CounterSinkHole"]
 
 
 def _aligned(p: Part, align: AlignLike, partial: bool = False) -> Part:
@@ -133,24 +134,67 @@ def _zone(radius: float, lo: float, hi: float, arc: float | None) -> Part:
     return make_face(Wire(edges)).on(Plane.XZ).revolve(Z, 360.0 if arc is None else arc)
 
 
-def Torus(major_radius: float, minor_radius: float, *, major_angle: float = 360.0,
-          align: AlignLike = Align.CENTER) -> Part:
-    """A torus around Z. ``major_angle`` (degrees, at most 360) makes a sector of it, from the +X axis
-    counter-clockwise about +Z, with round ends; it is centered by its bounding box (``align=None``
-    keeps the torus's center at the origin)."""
+def Torus(major_radius: float, minor_radius: float, *, minor_start_angle: float = 0.0,
+          minor_end_angle: float = 360.0, major_angle: float = 360.0, align: AlignLike = Align.CENTER) -> Part:
+    """A torus around Z.
+
+    ``major_angle`` (degrees, at most 360) makes a sector of it, from the +X axis counter-clockwise
+    about +Z, with round ends. ``minor_start_angle`` and ``minor_end_angle`` (degrees) keep the part of
+    the tube's circle between them, as build123d does: measured in the tube's section from the side
+    away from the axis (0) towards +Z (90), the section a slice of the circle from its center (cones,
+    planes or cylinders where the slice's straight sides go round). A part of a torus is centered by its
+    bounding box (``align=None`` keeps the torus's center at the origin)::
+
+        top_half = Torus(20, 5, minor_start_angle=0, minor_end_angle=180)
+        bead = Torus(20, 5, minor_start_angle=-90, minor_end_angle=90)   # the outer half
+    """
     if minor_radius <= 0 or major_radius <= minor_radius:
         raise ValueError("need 0 < minor_radius < major_radius")
     a = _arc(major_angle, "Torus", "major_angle")
-    if a is not None:
+    lo, hi = float(minor_start_angle), float(minor_end_angle)
+    if not (math.isfinite(lo) and math.isfinite(hi) and 0 < hi - lo <= 360 + 1e-9):
+        raise ValueError(f"Torus: minor_end_angle must lie more than 0 and at most 360 degrees past minor_start_angle, "
+                         f"got {minor_start_angle!r} and {minor_end_angle!r}")
+    whole = hi - lo > 360 - _WHOLE_TURN
+    if a is not None or not whole:
         from .geometry import Plane
         from .sketches import Circle
 
         # (the kernel's partial torus is a surface of revolution; the revolve gives a torus)
-        part = Circle(float(minor_radius)).translate(float(major_radius), 0).on(Plane.XZ).revolve(Z, a)
+        section = Circle(float(minor_radius)) if whole else _slice(float(minor_radius), lo, hi)
+        part = section.translate(float(major_radius), 0).on(Plane.XZ).revolve(Z, 360.0 if a is None else a)
         return _aligned(part, align, True)
     with kernel_call("Torus"):
         b = k.create_torus((0.0, 0.0, 0.0), float(major_radius), float(minor_radius))
     return _aligned(Part._wrap(b), align)
+
+
+def _slice(radius: float, lo: float, hi: float) -> Any:
+    """The slice of a circle about the origin from angle ``lo`` to ``hi`` (degrees, counter-clockwise
+    from +X), its straight sides to the center, as a sketch."""
+    from .curves import Line, ThreePointArc
+    from .shapes import Wire
+    from .sketches import make_face
+
+    def at(deg: float) -> tuple[float, float]:
+        t = math.radians(deg)
+        return radius * math.cos(t), radius * math.sin(t)
+
+    p, m, q = at(lo), at((lo + hi) / 2), at(hi)
+    return make_face(Wire([ThreePointArc(p, m, q), Line(q, (0.0, 0.0)), Line((0.0, 0.0), p)]))
+
+
+def Pyramid(length: float, width: float, height: float, *, align: AlignLike = Align.CENTER) -> Part:
+    """A pyramid: a ``length`` (X) by ``width`` (Y) rectangle at the bottom, its apex ``height`` (Z)
+    above the rectangle's center; five planes. Centered by its bounding box."""
+    if not (length > 0 and width > 0 and height > 0):
+        raise ValueError("pyramid length, width and height must be positive")
+    with kernel_call("Pyramid"):
+        b = k.create_pyramid((0.0, 0.0, -height / 2), float(length), float(height))
+    part = Part._wrap(b)
+    if width != length:
+        part = part.scale((1.0, float(width) / float(length), 1.0))
+    return _aligned(part, align)
 
 
 def Wedge(length: float, width: float, height: float, top_length: float = 0.0, *, align: AlignLike = Align.CENTER) -> Part:

@@ -37,7 +37,7 @@ from .locations import GridLocations, HexLocations, Locations, PolarLocations
 from .mesh import Mesh, RepairReport, tessellate
 from .operations import (chamfer, extrude, fillet, loft, merge, mirror, offset, revolve, section, shell, split, sweep,
                          swing, thicken)
-from .parts import AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge
+from .parts import AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Pyramid, Sphere, Torus, Wedge
 from .profiles import Profile
 from .shapes import (Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch,
                      Vertex, Wire)
@@ -82,7 +82,8 @@ __all__ = [
     "Slot", "ArcSlot", "Stroke", "Hull", "make_face",
     "Text",
     # parts
-    "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "AnnularSector", "Hole", "CounterBoreHole", "CounterSinkHole",
+    "Box", "Cylinder", "Cone", "Sphere", "Torus", "Wedge", "AnnularSector", "Pyramid", "Hole", "CounterBoreHole",
+    "CounterSinkHole",
     # patterns
     "Locations", "GridLocations", "PolarLocations", "HexLocations",
     # operations

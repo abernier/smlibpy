@@ -3,7 +3,7 @@
 A solid through a series of cross sections (closed sections), or a surface through open curves.
 
 ## Signature
-`loft(sections, *, ruled=False, smooth=True, start_tangent=None, end_tangent=None, closed=False)`
+`loft(sections, *, ruled=False, smooth=True, start_tangent=None, end_tangent=None, closed=False, rails=None)`
 
 - `sections`: two or more, in order. Closed: sketches, planar faces, closed wires (`Polyline(..., close=True)`).
   Open: edges or open wires (result is a `Shell`). Do not mix closed and open. Closed sections
@@ -19,8 +19,21 @@ A solid through a series of cross sections (closed sections), or a surface throu
   direction counts; each one is one more condition (two sections and both tangents: cubic). Not
   with `ruled=True`. The kernel drops tangents it cannot meet; the loft checks them and raises
   `ModelingError` ("cannot leave the first section along start_tangent").
+  Or a **face** that ends at the first (last) section, the section lying on it (usually along its
+  edge: a can's top rim on its wall, `can.faces().cylinders()`): the loft leaves the section
+  continuing the face, tangent to it all along the section, and runs into it at the end (within
+  1e-6 radians where the face is a plane, cylinder, cone or sphere about the section, 1e-3 on
+  freeform faces). A section off the face raises `ValueError` ("must lie on it").
 - `closed=True`: run on from the last section through the first again, smoothly (C1): a ring
   without end faces (three sections or more; no tangents).
+- `rails`: a curve (an edge or a wire) or a list of them for **open** sections (a surface): each
+  runs from the first section to the last and crosses every section once, and the loft passes
+  through them exactly, as through the sections (a Gordon surface; within 1e-7). Rails may run on
+  past the first and last section (they are cut there) and in either direction. Where no rail
+  runs along the sections' starts or ends, the border there runs smoothly through them. Sections
+  and rails must be smooth curves (each is joined into one; a corner raises `ModelingError`: "must
+  be smooth curves"). Not with `ruled`, the tangents or `closed`; closed sections along rails are
+  not supported (`ValueError`).
 
 ## Returns
 A `Part` for closed sections, a `Shell` for open curves. Sections are placed where they are:
@@ -64,6 +77,10 @@ not suit each other give a twisted, pinched loft** that `is_valid()` still accep
 - `ValueError: loft sections must be all closed (solid) or all open (surface)`
 - `ValueError: a loft section must be a single region`
 - `ValueError: loft: every section needs the same number of holes (a hole runs through the whole loft)`
+- `ValueError: loft: start_tangent is a face the loft continues, so the section must lie on it (where the face ends); it lies 1 off the face`
+- `ValueError: loft: rails= takes open sections (edges or wires: a surface through them and the rails); closed sections along rails are not supported`
+- `ValueError: loft: rail 1 and section 2: the curves do not cross (within ...)`
+- `ModelingError: loft: the sections and rails must be smooth curves; a smooth curve stays ... off one of them (a corner: ...)`
 - `ModelingError` when the kernel returns an inside-out or volume-less body.
 
 ## Example
@@ -72,7 +89,7 @@ vase = loft([Circle(15), Circle(25).translate(0, 0, 30), Circle(10).translate(0,
 print(vase.is_valid(), vase.bbox().max.x)               # True 25.047: overshoots the 25 section
 
 cone = loft([Circle(10), Circle(5).translate(0, 0, 20)])  # two sections: straight sides
-print(round(cone.volume, 3))                            # 3665.191 = exact frustum
+print(round(cone.volume, 3))                            # 3665.191: the exact frustum, 3665.19143
 
 # square to circle: turn the circle so its seam suits the square (45 for a centered Rectangle)
 duct = loft([Rectangle(30, 30), Circle(12).rotate(Z, 45).translate(0, 0, 25)])
@@ -97,6 +114,20 @@ neck = loft([Circle(10), Circle(4).translate(0, 0, 30)], start_tangent=Z, end_ta
 bottle = Circle(10).extrude(-40) + neck + Circle(4).translate(0, 0, 30).extrude(10)
 print(bottle.is_valid(), len(bottle.faces()))           # True 5
 
+# a neck that continues the can's wall (tangent to the face along the rim)
+can = Cylinder(10, 20)
+rim = max((e for e in can.edges() if e.geom_type == "circle"), key=lambda e: e.center().z)
+cap = loft([rim, Circle(4).translate(0, 0, 30)], start_tangent=can.faces().cylinders())
+print(cap.is_valid(), round(cap.volume, 3))             # True 4264.352
+
+# a panel through three arcs and the two rails they span between
+r1 = Spline((0, 0, 0), (-2, 10, 1), (0, 20, 0))
+r2 = Spline((20, 0, 0), (24, 10, 2), (20, 20, 0))
+arcs = [ThreePointArc(r1.point_at(t), (r1.point_at(t) + r2.point_at(t)) * 0.5 + Vector(0, 0, 3 + 2 * t), r2.point_at(t))
+        for t in (0, 0.5, 1)]
+panel = loft(arcs, rails=[r1, r2])
+print(type(panel).__name__, round(max(panel.faces()[0].distance_to(r1.point_at(i / 10)) for i in range(11)), 6))  # Shell 0.0
+
 # a closed loft: 16 circles about a circle make (nearly) a torus
 ring = loft([Rot(z=22.5 * i) * Pos(10, 0, 0) * Rot(x=90) * Circle(2) for i in range(16)], closed=True)
 print(round(ring.volume, 1))                            # 789.5 (torus 789.6)
@@ -106,4 +137,5 @@ Shelling a loft: opening the bottom (planar polygon) face works; opening the cir
 of the duct above fails (`shell failed`). Subtract an inner loft instead.
 
 ## Related
-`sweep` (constant profile along a path), `extrude(taper=...)`, `ruled`, `surface`, `shell`.
+`sweep` (constant profile along a path; `sweep(..., rails=)` along two rails), `extrude(taper=...)`, `ruled`,
+`surface`, `network`, `shell`.

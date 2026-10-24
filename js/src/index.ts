@@ -80,7 +80,7 @@ export {
 export { Text } from './text.ts'
 export { DEFAULT_FONT, Font, FontError, loadFont } from './font.ts'
 // parts
-export { AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Sphere, Torus, Wedge } from './parts.ts'
+export { AnnularSector, Box, Cone, CounterBoreHole, CounterSinkHole, Cylinder, Hole, Pyramid, Sphere, Torus, Wedge } from './parts.ts'
 // patterns
 export { GridLocations, HexLocations, Locations, PolarLocations } from './locations.ts'
 // operations

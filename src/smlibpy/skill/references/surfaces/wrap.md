@@ -15,8 +15,10 @@ cylinders and over curved faces, keeping their lengths.
   (around a cylinder). Y goes across, so that the drawing reads from outside.
 
 ## Returns
-Free edges on the face (B-splines within 1e-7 of the face's size), cut where they cross the
-face's seam and where they leave the face (also in its holes).
+Free edges on the face (B-splines within 1e-7 of the face's size), cut where they leave the face
+(also in its holes). A curve across a closed face's seam comes back as one edge (a line across the
+seam of a cylinder: one edge of its length; a circle: one closed edge; before the 0.5.0 close-out
+cut in two or three at the seam).
 
 Lengths stay along the two parameter lines through `at`: x is measured along one, y along the
 other. On planes and cylinders the whole drawing keeps its size; on cones and doubly curved

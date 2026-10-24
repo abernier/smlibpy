@@ -50,8 +50,15 @@ A `Part` (an open curve gives a `Shell`). The solid starts at the sketch plane:
 ## Gotchas
 - `taper` keeps the holes of the profile and tapers them the other way:
   `(Circle(10) - Circle(5)).extrude(10, taper=5)` is a ring whose hole widens upwards (1943.914).
-- `taper` ignores `direction` (it always follows the normal). `taper` on an open curve is
-  ignored.
+- `taper` follows the normal: with a `direction` it takes only the normal, either way
+  (`direction=(0, 0, -1)` tapers downwards), and a direction across it raises `ValueError` ("a taper
+  drafts the walls about the sketch normal"). `taper` on an open curve raises `ValueError`. Both were
+  ignored before the 0.5.0 close-out.
+- An extrusion along a `direction` across the normal has plane walls where the profile has straight
+  edges (they were flat B-splines; `Rectangle(6, 4).extrude(5, direction=(1, 0, 1))` is six planes),
+  and where the kernel makes it invalid close to a tilted plane it is made again turned about the
+  normal or swept along a line (of 1200 random extrusions near tilted planes 16 raised at each
+  angle from 0.6 degrees down; none now).
 - A taper that closes the profile before `amount` raises: 20x20 with `taper=56` and amount 10
   gives `ModelingError: extrude: the taper of 56 degrees closes the profile after 6.74509 of 10;
   use a smaller taper or a shorter extrusion`. Keep `|taper|` below

@@ -15,6 +15,7 @@ Cone(10, 0, 15)                  # a pointed cone
 Sphere(8)
 Torus(20, 4)                     # major and minor radius
 Wedge(20, 10, 8)                 # a ramp
+Pyramid(20, 12, 15)              # a 20 x 12 base, the apex 15 above its center
 ```
 
 All are centered on the origin; `align` changes that per axis:
@@ -36,6 +37,15 @@ Torus(20, 4, major_angle=90, align=None)         # an elbow
 AnnularSector(40, 50, 8, 30)                     # inner and outer radius, height, angle
 ```
 
+A torus also keeps part of its tube: `minor_start_angle` and `minor_end_angle` (degrees, as
+build123d takes them) slice the tube's circle from its center, measured from the side away from
+the axis (0) towards +Z (90); the cut sides are planes, cylinders or cones:
+
+```python
+Torus(20, 5, minor_start_angle=0, minor_end_angle=180)     # the upper half, flat underneath
+Torus(20, 5, minor_start_angle=-90, minor_end_angle=90)    # the outer half: a bead on a cylinder
+```
+
 ## Extrude
 
 ```python
@@ -54,9 +64,12 @@ rounds them. A taper that closes the profile before the end raises `ModelingErro
 
 With a `direction` the amount is measured along it. A direction in the sketch plane raises
 `ValueError`, and one less than 0.06 degrees off the plane warns, since the solid is then thinner
-than a thousandth of the amount. An extrusion along a direction is checked: where the kernel
-makes it invalid (some curved profiles in tilted planes, mostly within a degree of the plane) it
-is made again turned about the normal, or raises `ModelingError`.
+than a thousandth of the amount. The walls of straight edges are planes. An extrusion along a
+direction is checked: where the kernel makes it invalid (some curved profiles in tilted planes,
+mostly within a degree of the plane) it is made again turned about the normal, or swept along a
+line. A taper drafts the walls about the normal, so with a taper only a `direction` along the
+normal (either way) is taken; one across it raises `ValueError`, and so does a taper on an open
+curve.
 
 A negative amount extrudes against the normal, which is how pockets are cut into faces:
 
@@ -123,6 +136,21 @@ bottle = Circle(10).extrude(-40) + neck + Circle(4).translate(0, 0, 30).extrude(
 ring = loft([Rot(z=45 * i) * Pos(10, 0, 0) * Rot(x=90) * Circle(2 + i % 2) for i in range(8)], closed=True)
 ```
 
+A tangent can also be a face that ends at the section: the loft continues it, tangent to it all
+along the section. `rails` are curves a loft of open sections runs along, through every section:
+the surface passes through them exactly, as through the sections:
+
+```python
+can = Cylinder(10, 20)
+rim = max((e for e in can.edges() if e.geom_type == "circle"), key=lambda e: e.center().z)
+spout = loft([rim, Circle(4).translate(0, 0, 30)], start_tangent=can.faces().cylinders())
+
+r1, r2 = Spline((0, 0, 0), (-2, 10, 1), (0, 20, 0)), Spline((20, 0, 0), (24, 10, 2), (20, 20, 0))
+arcs = [ThreePointArc(r1.point_at(t), (r1.point_at(t) + r2.point_at(t)) * 0.5 + Vector(0, 0, 4), r2.point_at(t))
+        for t in (0, 0.5, 1)]
+panel = loft(arcs, rails=[r1, r2])        # a Shell through the arcs and both rails
+```
+
 ## Sweep
 
 A sweep moves a profile along a path. smlibpy puts the center of the profile's box on the
@@ -148,7 +176,21 @@ elbow = sweep(Circle(4), Wire([Line((0, 0, 0), (0, 0, 20)),
 ```
 
 `translational=True` keeps the profile's orientation fixed along the path instead of turning
-it.
+it. `anchor` puts another point of the profile on the path: `"origin"` (the origin of the
+sketch's plane, (0, 0) of a `Polygon` drawn on XY) or a point of the profile's plane:
+
+```python
+ell = Polygon((0, 0), (6, 0), (6, -1), (-1, -1), (-1, 5), (0, 5))   # an L drawn by its inner corner
+trim = sweep(ell, path, anchor="origin")                             # the corner follows the path
+```
+
+An open profile that runs from the path to a second rail sweeps along both with `rails`: it is
+moved, turned and scaled so that its ends stay on them, and the surface passes through both:
+
+```python
+left, right = Spline((0, 0, 0), (2, 15, 1), (0, 30, 0)), Spline((20, 0, 0), (26, 15, 3), (22, 30, 0))
+hood = sweep(ThreePointArc((0, 0, 0), (10, 0, 4), (20, 0, 0)), left, rails=right)
+```
 
 A path that is a single line is swept as an extrusion, a single arc (or circle) as a revolve:
 planes, cylinders, cones and tori, the same faces a path of several edges gives. A profile that
@@ -178,9 +220,15 @@ bar = sweep(Rectangle(10, 2), Line((0, 0, 0), (0, 0, 100)), twist=180)        # 
 ribbon = sweep(Line((-5, 0, 0), (5, 0, 0)), Line((0, 0, 0), (0, 0, 100)), twist=lambda s: 360 * s * s)
 ```
 
+Round a closed path with corners that is not planar, the profile carried by the smallest turns
+comes back turned about the path; that turn is spread along it, so that the profile meets itself
+where the loop closes. Where `up="frenet"` would make the profile spin about a path that nearly
+straightens, the sweep raises `ValueError`: pick `up` a direction there.
+
 A `Helix` takes any number of turns: the kernel fits up to 120 in one go, longer ones in pieces
 of whole turns joined into one edge (`Helix(2, 400, 20)`, 200 turns, is 25135.87 long against
-25135.92 for the exact helix). Sweeps along a helix of radius 20 work up to about 60 turns.
+25135.92 for the exact helix). Sweeps along long helices go too (400 turns tested); with the
+kernel's own frame (`orient=False`) a long helix is swept in pieces.
 
 ## Booleans and patterns
 

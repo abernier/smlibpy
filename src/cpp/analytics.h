@@ -17,4 +17,12 @@ namespace smlibpy {
 // `tolerance` off the old one at points sampled over it. Owned by the caller.
 SmBrep* recognize_analytics(const SmBrep* brep, double tolerance);
 
+// A copy of a Brep whose B-spline faces that are flat (all control points within `tolerance` of one
+// plane, positive weights) are SmPlanes, their trim curves built again (analytic::swap_in), and whose
+// straight B-spline edges are lines: the walls of an extrusion along a direction across the sketch's
+// normal, which the kernel makes as B-splines parameterized unlike a plane (its plane test then
+// rejects them). None (nullptr) where there is no such face or a trim curve cannot be built. Owned by
+// the caller.
+SmBrep* planar_faces(const SmBrep* brep, double tolerance);
+
 }  // namespace smlibpy

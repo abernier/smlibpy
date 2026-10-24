@@ -293,7 +293,8 @@ what the curve sees along the direction, cut where another part of the body hide
 that misses the body gives an empty list. On a single face, `Face.project` projects along the
 face's normals (each point to its nearest point of the surface), `Face.iso` gives the curves of
 constant surface parameter, and `Face.wrap` lays a flat drawing onto the face keeping its lengths
-along the face's parameter lines, as a label on a can:
+along the face's parameter lines, as a label on a can. A curve across a closed face's seam comes
+back as one edge from all three:
 
 ```python
 Sphere(10).project(CenterArc((0, 0, 30), 5, 0, 360), nearest=True)   # the top piece only

@@ -133,7 +133,11 @@ test('fused sweeps have no faces without area', () => {
   }
   for (const pts of Object.values(KINKED)) {
     for (const profile of [Circle(1.5), Rectangle(3, 1.2), Ellipse(1.5, 1)]) {
-      assert.ok(sound(quiet(() => sweep(profile, Spline(...pts, pts[0])) as Part)))
+      // (where the halves turned to meet where the loop closes do not fuse, the kernel's frame sweeps
+      // them, with a warning: the ellipse along loop 18)
+      const [body, said] = warned(() => sweep(profile, Spline(...pts, pts[0])) as Part)
+      assert.deepEqual(said.filter((w) => !w.includes('meet itself where the loop closes')), [])
+      assert.ok(sound(body))
     }
   }
 })
@@ -237,13 +241,15 @@ test('planar paths place asymmetric profiles by their own box', () => {
   body = sweep(tri, Polyline([0, 0, 0], [0, 0, 40], [40, 0, 40])) as Part
   approx(body.volume, 738.0)
   assert.deepEqual(body.bbox().max.toArray().map((x) => Math.round(x * 1e9) / 1e9 + 0), [40, 1.5, 43])
-  // a spline among the edges, the profile turned off the axes: by its box along the path's plane
+  // a spline among the edges, the profile turned off the axes: on its own box too (the kernel is given
+  // the anchor; before, the path's spline could not be offset and the profile sat by its box along the
+  // path's plane, with a warning)
   const [c, s] = [Math.cos(PI / 6), Math.sin(PI / 6)]
   const wavy = new Wire([Line([0, 0, 0], [20 * c, 20 * s, 0]),
     Spline([20 * c, 20 * s, 0], [30, 25, 0], [50, 30, 0], { tangents: [[c, s, 0], [1, 0, 0]] })])
   const [wavyBody, said] = warned(() => sweep(Polygon(...ODD), wavy) as Part)
-  assert.ok(wavyBody.isValid())
-  assert.ok(said.length === 1 && said[0].includes('cannot be offset'), said.join('; '))
+  assert.deepEqual(said, [])
+  assert.ok(wavyBody.isValid() && boxCenterOffPath(wavyBody, wavy, ODD) < 1e-6)
 })
 
 
