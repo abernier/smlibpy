@@ -35,7 +35,7 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   'Part.bends': [0, ['kFactor']],
   'Part.chamfer': [2, ['length2', 'angle', 'reference', 'propagate', 'corners']],
   'Part.draftAnalysis': [1, ['minAngle']],
-  'Part.fillet': [2, ['continuity', 'fullness', 'propagate', 'corners']],
+  'Part.fillet': [2, ['continuity', 'fullness', 'propagate', 'corners', 'setback']],
   'Part.filletPreview': [2, ['propagate']],
   'Part.flange': [2, ['angle', 'radius', 'kFactor']],
   'Part.flatPattern': [0, ['kFactor', 'fixed']],

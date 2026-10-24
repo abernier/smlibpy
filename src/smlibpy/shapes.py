@@ -5224,16 +5224,19 @@ class Part(_Body):
         return radius * math.tan(theta / 2) if theta > 1e-6 else radius
 
     def _check_volume_change(self, result: Part, edges: list[Edge], what: str, sizes: list[float],
-                             shape: str) -> None:
+                             shape: str, corner_volume: float = 0.0) -> None:
         """Check a fillet or chamfer result: a valid solid whose volume changed in the right
         direction and by no more than the rounds can take away or add.
 
         ``sizes`` are the radii (``shape`` "circular" or "blend") or the setbacks
         (``shape`` "chamfer"). Near the size limit the kernel can return a valid-looking
-        body with whole regions missing.
+        body with whole regions missing. ``corner_volume``: what set-back corners can take away or
+        add on top.
         """
         size = sizes[0] if len(set(sizes)) == 1 else max(sizes)
         bound = _round_volume_bound(edges, sizes, shape)
+        if bound is not None:
+            bound += corner_volume
         accuracy = 1e-6 if bound is not None else 1e-4  # the bound needs the change accurately
         before = after = None
         problem = result._shape_problem()
@@ -5281,6 +5284,7 @@ class Part(_Body):
         fullness: float = 1.0,
         propagate: bool = True,
         corners: str = "patch",
+        setback: float | None = None,
     ) -> Part:
         """Round edges.
 
@@ -5315,6 +5319,18 @@ class Part(_Body):
                 until they meet each other, along mitre lines without a patch (the look of a
                 machined part). Mitred are the corners where three rounded convex edges meet and
                 no other edge; a selection without such a corner raises ``ValueError``.
+            setback: Set the corners back: the rounds stop ``setback`` from the corner along each of
+                its edges, and one larger patch joins them there (a softer corner than the ball
+                corner, as on molded and consumer parts). Set back are the corners where three or
+                more rounded edges meet and no other edge (every edge at the vertex rounded), all
+                convex (the outside corners of a box) or all concave (the floor corners of a
+                pocket); the others get their usual patch, and a selection without such a corner
+                raises ``ValueError``. ``setback`` must exceed how far the rounds reach along the
+                corner's edges (the radius, at a right-angled corner) and stay below the length of
+                each rounded edge at such a corner (half of it where both ends are set back).
+                Constant radii only (also one per edge, and blends), not with ``corners="mitre"``.
+                Corners between slanted faces (the top corners of a frustum) the kernel cannot
+                always set back: :class:`KernelError`.
 
         Where three rounds meet, the corner patch is tangent continuous (G1) only, also with
         ``continuity="G2"`` or ``"G3"``: zebra stripes kink there (the kernel's corner patches
@@ -5397,8 +5413,23 @@ class Part(_Body):
         self._check_round_sizes(sel, [self._setback(e, r) for e, r in zip(sel, radii)], "fillet", "radius")
         if mitre:
             _require_mitred_corners("fillet", sel)
+        set_back = 0.0
+        corner_volume = 0.0
+        if setback is not None:
+            set_back = float(setback)
+            if not (math.isfinite(set_back) and set_back > 0):
+                raise ValueError(f"fillet: the setback must be positive, not {setback!r}")
+            if mitre:
+                raise ValueError('fillet: a corner is mitred (corners="mitre") or set back (setback=), not both')
+            if varies:
+                raise ValueError("fillet: set-back corners join rounds of a constant radius; give a constant radius "
+                                 "(one, or one per edge) with setback")
+            corner_volume = _check_set_back_corners(sel, radii, set_back)
         cont = _continuity(continuity)
         hint = "the radius may be too large for the selected edges"
+        if set_back:
+            hint += (f", or the kernel cannot set back these corners by {set_back:.4g} (corners between slanted faces "
+                     f"it often cannot; try another setback, or none)")
         section = 1 if cont is None else 2  # circular, or a blend curve
 
         def attempt(factor: float) -> Part:
@@ -5417,22 +5448,29 @@ class Part(_Body):
                 elif per_edge is not None:
                     out = _round_edges("fillet", hint, h.brep, kedges, sel, per_edge, [section] * len(kedges),
                                        continuity=cont or 1, thumbweight=fullness, tolerance_factor=factor,
-                                       mitre=mitre, isolate=isolate)
+                                       mitre=mitre, isolate=isolate, setback=set_back)
                 else:
                     out = _round_edges("fillet", hint, h.brep, kedges, sel, [float(radius)], [section],
                                        continuity=cont or 1, thumbweight=fullness, tolerance_factor=factor,
-                                       mitre=mitre, isolate=isolate)
+                                       mitre=mitre, isolate=isolate, setback=set_back)
             # (a step that ran in this process rounded the copy h holds: h gives it up; one from another
             # process is a Brep of its own, and h frees its copy)
             result = self._like(_take(h) if out is h.brep else out)
-            self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend")
-            if varies:
-                # (a varying radius: the faces must meet too; the kernel's broken variable rounds look closed)
+            try:
+                self._check_volume_change(result, sel, "fillet", radii, "circular" if cont is None else "blend",
+                                          corner_volume)
+            except KernelError as e:
+                if not set_back:
+                    raise
+                raise _traced(KernelError(e.operation, e.detail, e.status, hint), e) from e
+            if varies or set_back:
+                # (a varying radius or set-back corners: the faces must meet too; the kernel's broken variable
+                # rounds look closed)
                 problem = result._solid_problem(gaps=True)
                 if problem is not None:
                     raise KernelError("fillet", f"kernel result is {problem}", None,
                                       f"the radius may be too large for the selected edges (it is up to "
-                                      f"{max(given):.4g})")
+                                      f"{max(given):.4g})" if not set_back else hint)
             return result
 
         return _with_finer_rounds(attempt)
@@ -7516,14 +7554,15 @@ def _boolean_step(name: str, brep: Any, tools: list[Any], op: Any, non_manifold:
 def _round_step(operation: str, hint: str, brep: Any, kedges: list[Any], radii: list[float], sections: list[int],
                 radii2: list[float], faces: list[Any], law: list[float], continuity: int, thumbweight: float,
                 tolerance_factor: float, mitre: bool, chains: list[list[int]] = (),  # type: ignore[assignment]
-                law_at: list[float] = (), law_radii: list[float] = ()  # type: ignore[assignment]
-                ) -> tuple[Any, dict[str, Any]]:
+                law_at: list[float] = (), law_radii: list[float] = (),  # type: ignore[assignment]
+                setback: float = 0.0) -> tuple[Any, dict[str, Any]]:
     """The kernel's fillet executive rounding ``kedges`` of ``brep`` (changed in place): the Brep and
     the executive's record of how it failed (``ext.round_edges``). A step of its own, so that it can
     run in another process (``smlibpy._guard.isolated``)."""
     with kernel_call(operation, hint):
         record = ext.round_edges(brep, kedges, radii, sections, radii2, faces, law, continuity, thumbweight,
-                                 tolerance_factor, mitre, [list(c) for c in chains], list(law_at), list(law_radii))
+                                 tolerance_factor, mitre, [list(c) for c in chains], list(law_at), list(law_radii),
+                                 setback)
     if record["status"] is not None:  # (where the kernel gave up, KernelError.trace: from this process)
         record = dict(record, trace=tuple(ext.kernel_trace()[0]))
     return brep, record
@@ -7660,7 +7699,7 @@ def _round_edges(operation: str, hint: str, brep: Any, kedges: Sequence[Any], ed
                  faces: Sequence[Any] = (), law: Sequence[float] = (), continuity: int = 1,
                  thumbweight: float = 1.0, tolerance_factor: float = 4.0, mitre: bool = False,
                  isolate: bool = False, chains: Sequence[Sequence[int]] = (), law_at: Sequence[float] = (),
-                 law_radii: Sequence[float] = ()) -> Any:
+                 law_radii: Sequence[float] = (), setback: float = 0.0) -> Any:
     """Round ``kedges`` of ``brep`` (a copy; ``edges`` are this part's edges they are) with
     ``ext.round_edges`` (the kernel's fillet executive, as ``k.fillet_edges`` and its siblings drive it),
     in place; with ``isolate`` (a part read from a file: the kernel's fillet code crashed on some), in
@@ -7671,7 +7710,7 @@ def _round_edges(operation: str, hint: str, brep: Any, kedges: Sequence[Any], ed
     args = (list(kedges), [float(r) for r in radii], [int(x) for x in sections], [float(r) for r in radii2],
             list(faces), [float(r) for r in law], int(continuity), float(thumbweight), float(tolerance_factor),
             bool(mitre), [[int(i) for i in c] for c in chains], [float(x) for x in law_at],
-            [float(r) for r in law_radii])
+            [float(r) for r in law_radii], float(setback))
     if isolate:
         from ._guard import isolated
 
@@ -7731,9 +7770,10 @@ def _mitred_corners(edges: Sequence[Edge]) -> list[Vector]:
     out = []
     for e in edges:
         for v in e.vertices():
-            if v._identity() in seen:
+            key = v.point.to_tuple()  # (not v._identity(): a dropped vertex wrapper's id is reused)
+            if key in seen:
                 continue
-            seen.add(v._identity())
+            seen.add(key)
             at = v.edges()
             if (len(at) == 3 and all(x._identity() in rounded for x in at)
                     and all(x.convexity == "convex" for x in at)):
@@ -7747,6 +7787,73 @@ def _require_mitred_corners(operation: str, edges: Sequence[Edge]) -> None:
         raise ValueError(
             f'{operation}: corners="mitre" mitres the corners where three rounded convex edges meet and no '
             f"other edge, and the selection has none (round all three edges of a corner)")
+
+
+def _set_back_corners(edges: Sequence[Edge]) -> list[tuple[Vertex, list[Edge]]]:
+    """The corners ``setback=`` sets back, with their edges: where three or more of ``edges`` meet and
+    no other edge, all convex or all concave. (The kernel sets back the corners where no face turns
+    inward at the vertex, SmFilletConvexNxNCorner's; at a vertex of three edges those are the ones
+    whose edges are all convex or all concave. Where a face turns inward, SmFilletConcaveNxNCorner
+    hands the setback to the same code, which builds broken bodies there: not offered.)"""
+    rounded = {e._identity() for e in edges}
+    kinds = dict(zip((e._identity() for e in edges), _convexities(list(edges))))
+    seen: set[Any] = set()
+    out = []
+    for e in edges:
+        for v in e.vertices():
+            key = v.point.to_tuple()  # (not v._identity(): a dropped vertex wrapper's id is reused)
+            if key in seen:
+                continue
+            seen.add(key)
+            at = list(v.edges())
+            if len(at) < 3 or not all(x._identity() in rounded for x in at):
+                continue
+            if len({kinds[x._identity()] for x in at}) == 1 and kinds[at[0]._identity()] in ("convex", "concave"):
+                out.append((v, at))
+    return out
+
+
+def _check_set_back_corners(edges: Sequence[Edge], radii: Sequence[float], setback: float) -> float:
+    """Check ``setback=`` of a fillet of ``edges`` with ``radii``: a corner to set back, a setback
+    beyond where the rounds of each such corner cross its edges (a round of radius r reaches
+    r tan(theta/2) across a face, theta the turn between the faces; across a face corner of angle phi
+    that crosses the next edge 1/sin(phi) as far along it) and below the length of each rounded edge
+    there (half of it where both ends are set back). Returns what the set-back corners can take away
+    or add (for the volume check)."""
+    corners = _set_back_corners(edges)
+    if not corners:
+        raise ValueError(
+            "fillet: setback= sets back the corners where three or more rounded edges meet and no other edge, all "
+            "convex or all concave, and the selection has none (round every edge of a corner)")
+    radius_of = {e._identity(): r for e, r in zip(edges, radii)}
+    ends: dict[Any, int] = {}
+    total = 0.0
+    for v, at in corners:
+        p = v.point
+        need = 0.0
+        for e in at:
+            for f in e.faces():
+                for g in at:
+                    if g._identity() == e._identity() or f._identity() not in {x._identity() for x in g.faces()}:
+                        continue
+                    width = Part._setback(g, radius_of[g._identity()])
+                    phi = math.radians(max(min(a.angle_to(b) for a in _leaving(e, p) for b in _leaving(g, p)), 1e-6))
+                    need = max(need, width / max(math.sin(phi), 1e-6))
+        if setback <= need * (1 + 1e-9):
+            raise ValueError(
+                f"fillet: the setback must exceed how far the rounds reach along the edges of the corner at "
+                f"{_fmt_point(p)} ({need:.4g}); give a larger setback")
+        for e in at:
+            ends[e._identity()] = ends.get(e._identity(), 0) + 1
+        total += setback ** 3 * (len(at) - 2)
+    for e in edges:
+        k = ends.get(e._identity(), 0)
+        if k and setback * k >= e.length * (1 - 1e-9):
+            raise ValueError(
+                f"fillet: the setback {setback:.4g} is too large for the edge from {_fmt_point(e.start)} to "
+                f"{_fmt_point(e.end)} ({e.length:.4g} long{', set back at both ends' if k == 2 else ''}): its "
+                f"corners would meet; give a setback below {e.length / k:.4g}")
+    return total
 
 
 def _extended_face(face: Face, distance: float, sides: Any, continuity: str, what: str) -> Any:

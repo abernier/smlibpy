@@ -39,7 +39,8 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmFilletExecutive.cpp` | `SmFilletExecutive::DoFilleting` shrinks only the fillet surfaces whose faces are still in the fillet Brep | The stitching of the fillet faces (`SmBrep::StitchFaces` in `CreateFilletBrep`) deletes degenerate lamina faces with their surfaces, and the FilletGeom of such a face still pointed to its surface: AddressSanitizer found it read freed memory in all-edge fillets of 2 imported parts, which killed the process. |
 | `SMLib/src/SmFilletGeom.cpp` | `SmFilletGeom::MakeFaceBrep` leaves a missing (null) boundary curve to its copy loop, which fails the fillet face (`SM_ERR_NULL_POINTER`), instead of asking it whether it is degenerate | A read of address 0: chamfering all edges of `Box(30, 20, 15) + Cylinder(5.0231, 20).rotate(X, 90).translate(8.998, 6.843, 3.2765)` by 0.25 killed the process (AddressSanitizer: SEGV in `MakeFaceBrep`); the WebAssembly build read its memory at 0 and built a broken body. |
 | `SMLib/src/SmFilletSolver.cpp` | `SmFilletSolver::CreateCliffRollOverSideFG` fails (`SM_ERR_NULL_POINTER`) without a side face | `ProcessRollOver` sets a rail's side edge on its last segment without looking for the face beyond it, and passed the missing face on: the all-edge fillet (r 0.5) of `Box(30, 20, 15) + Cone(3.7793, 0.8306, 12).translate(9.4467, -7.915, 6.1887)` killed the process (AddressSanitizer: SEGV reading address 0x98 in `SmFace::GetSurface`). |
-| `SMLib/src/SmCurveClass.cpp` | `sm_SetDoFilletingGeometry` hands an edge's old curve to the curve classification that is classifying it, which frees it when done, instead of the edge deleting it when it takes the curve of the edge it coincides with | Where the curve classified is the edge's own (the corners of set-back fillets: `SmFilletCorner::InsertIntersectionTopology` merges a fillet edge's own curve into the faces it lies on), the classification went on with the freed curve (AddressSanitizer: a read of freed memory in `SmCurveClassification::MergeInterval`), and every set-back corner killed the process, the kernel's own test case too (`smFilletTest.cpp`, case 303). smlibpy offers no setbacks: their merge then fails (see below). |
+| `SMLib/src/SmCurveClass.cpp` | `sm_SetDoFilletingGeometry` hands an edge's old curve to the curve classification that is classifying it, which frees it when done, instead of the edge deleting it when it takes the curve of the edge it coincides with | Where the curve classified is the edge's own (the corners of set-back fillets: `SmFilletCorner::InsertIntersectionTopology` merges a fillet edge's own curve into the faces it lies on), the classification went on with the freed curve (AddressSanitizer: a read of freed memory in `SmCurveClassification::MergeInterval`), and every set-back corner killed the process, the kernel's own test case too (`smFilletTest.cpp`, case 303). `fillet(setback=)` (see below). |
+| `SMLib/src/SmBSplineSurfaceNLib.cpp` | `SmBSplineSurface::CreateCornerBlend` keeps the copies of the boundaries' UV curves in its cleanup list before an N-sided patch (`sCleanUV.Clear()` taken out) | It released them as if the tangent fields made from them owned them; they do not (`SmCrvOnSurf`'s owner flag 0), and `CreateNSidedPatch` does not take them: every corner patch of five or more sides lost them (LeakSanitizer: the copies of `sm_CreateNonRationalCurve` and the curves `DropCurve` made for it, 20.7 kB in 288 objects over the set-back tests of `tests/test_closeout_F.py`, 0 after). Set-back corners have six. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::DoExtendedOffset` fails when two of the faces whose surfaces it extends use one surface, or a face uses a surface that belongs to another face | `ReplaceSurface()` gives the surface's owner face the new surface, not the face it is called for, and the extension deleted for the one face was handed out again, from the executive's table of extensions, for the other (AddressSanitizer: a read of freed memory in `GetCreateExtendedSurface`). `(Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)).shell(2.4, <the face at x = 3>)` crashed in every run, and the WebAssembly build trapped. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::ShellBrep` deletes the offset body when `ReplaceImplicitOffsets` fails | It was kept (a leak), unlike after a failed stitch. Code reading; not seen in the runs measured. |
 | `SMLib/src/SmOffsetExecutive.cpp` | `SmOffsetExecutive::RemoveExcessFaces` forgets the faces it removes, and their edgeuses, in the executive's relations (`m_vEUToEU`, `m_vFUToF`, `m_vEToF`, `m_vVToF`, `m_vBlendToFaces`) | `RemoveFaces` deletes them, and the rest of `DoExtendedOffset` still found them there: the side walls of lamina edges (`BuildSideWallOfEdgeuse` → `SmBrep::CreateEdgeEdgeBlend`) and then `PiecewiseMerge` read the freed edgeuses and faces. An offset whose faces collapse, such as `extrude(CenterArc((0, 0), 10, 0, 180), 20).thicken(-12)`, read freed memory natively and trapped in the WebAssembly build (smlibwasm). `ai/todo/features.md` (42). |
@@ -248,12 +249,28 @@ Defects that remain in the kernel, and what smlibpy does about them:
   `SmCurveClass.cpp` above stops that read (all edges of a 20 mm cube, r 1 with setback 1.25 and
   r 2 with setback 3, and of a 10 mm cube, r 1 with setback 1.5, with the kernel test's solver
   settings and SM_API's, built from `SmApiCreateBox` in a program of its own: AddressSanitizer
-  found a read of freed memory in each before, nothing after), but
-  the merge then fails: `SmTopologyIntersector::Relate` finds a vertex or edge already mated to
-  another (`SM_ERR` from `MergeCurveOnSurfaces`, the fillet half merged: 7 faces, 25 open edges).
-  Merging a copy of the curve instead (tried before) gave open bodies (84 open edges, 4 of the 6
-  planes gone). Not solved: smlibpy offers no setbacks (`corners="mitre"` uses the executive's
-  bevel corners, which are sound).
+  found a read of freed memory in each before, nothing after). The merge then failed:
+  `SmTopologyIntersector::Relate` found a vertex or edge already mated to another (`SM_ERR` from
+  `MergeCurveOnSurfaces`, the fillet half merged: 7 faces, 25 open edges); merging a copy of the
+  curve instead (tried before) gave open bodies (84 open edges, 4 of the 6 planes gone). The
+  kernel's test box (`TestFiles/pt_TestFiles/Solids/box.smb`) merges with the same settings (168
+  edges, 66 faces, closed), and the difference is the order of each edge's edgeuses: in the test
+  box each edge lists the edgeuse that runs along it (`SM_OT_SAME`) first, while `SmApiCreateBox`
+  lists the opposite one first at 5 of its 12 edges. Ruled out on the way: plane or B-spline
+  surfaces, line or B-spline UV curves, the lines' parameter range, rounding, tolerances, the
+  naturally-trimmed flag, the direction of the edges (reversed to the test box's: still open;
+  reversing one edge of the test box: open), where the box lies, and the order the edges are
+  loaded in. `SmEdge::ResetPrimaryEdgeuse` to the `SM_OT_SAME` edgeuse alone made every
+  `SmApiCreateBox` case above closed and valid; `ext.round_edges(setback=)` does so for every edge
+  first (nothing but the order of the lists changes), and `fillet(setback=)` offers set-back corners
+  where all edges at the vertex are convex or all concave. Where a face turns inward at the vertex
+  (the rim of a pocket, `SmFilletConcaveNxNCorner`, which hands setbacks to the convex corner's code)
+  the bodies came out broken (an invalid body of 59 times the volume): those corners keep their
+  patch. Radius laws with set-back corners crashed (`SIGSEGV`): refused. Corners between slanted
+  faces (a frustum's) come out with gaps of up to 5.9: refused by the result check (`KernelError`).
+  The same reordering changed nothing for the near-limit cubes of F7 (r 4.98 to 4.995: the same
+  bodies). 240 random parts (boxes with pockets and bosses, prisms of 3 to 8 sides, a box with a
+  cylinder) rounded with random radii and setbacks: no crash; the results are valid or refused.
 - Silent inaccuracies the fuzz baseline (`tools/fuzz/baseline.json`) records, also in 0.4: a cone
   whose base touches a cylinder's cap, `Cone(3, 0, 16).translate(4.4987, -2, 10) - Cylinder(6, 4)`
   (fuzz case csg-8-98 E), is valid and 2.9e-6 off (150.79601567, exact 150.79644737); the

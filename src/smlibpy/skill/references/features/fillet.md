@@ -3,7 +3,7 @@
 Rounds edges of a part.
 
 ## Signature
-`part.fillet(edges, radius, *, continuity=None, fullness=1.0, propagate=True, corners="patch")`
+`part.fillet(edges, radius, *, continuity=None, fullness=1.0, propagate=True, corners="patch", setback=None)`
 `fillet(edges, radius, **same keywords)` (finds the part the edges belong to)
 
 - `edges`: a selection (`ShapeList`), one `Edge`, or faces (all their edges). Edges from an
@@ -46,7 +46,17 @@ Rounds edges of a part.
   along mitre lines, no patch (machined look): all edges of a 40x30x20 box r 3, 23354.2820 and
   18 faces against 23340.8494 and 26. Mitred are the corners of three rounded convex edges and no
   other edge (others keep their patch); a selection without one raises `ValueError`. Works with
-  `continuity` and radius lists. (No setbacks: the kernel's set-back corners fail.)
+  `continuity` and radius lists.
+- `setback`: set the corners back: the rounds stop `setback` from the corner along each of its
+  edges and one larger patch joins them (a softer corner than the ball, as on molded parts): all
+  edges of a 20 mm cube r 2, `setback=3`: 7781.6093 against 7804.6961, its 12 rounds 14 long, 6
+  patch faces a corner. Set back are the corners where three or more rounded edges meet and no
+  other edge, all convex (a box's outside corners) or all concave (a pocket's floor corners);
+  others keep their usual patch, and a selection without one raises `ValueError`. The setback
+  must exceed how far the rounds reach along the corner's edges (the radius at a right-angled
+  corner: `setback=2` with r 2 raises) and stay below each such edge's length (half of it with
+  both ends set back). Constant radii (also lists and blends) only, not with `corners="mitre"`.
+  Corners between slanted faces (a frustum's) the kernel often cannot set back: `KernelError`.
 
 ## Returns
 A new `Part`. One face per rounded edge plus corner patches. Removed volume per straight
@@ -122,6 +132,10 @@ with the edge.
 - `ValueError: 2 radii for 4 edges`; `ValueError: continuity must be G1, G2 or G3`.
 - `ValueError: fillet: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`;
   `ValueError: fillet: corners must be "patch" or "mitre", not 'round'`.
+- `ValueError: fillet: the setback must exceed how far the rounds reach along the edges of the corner at (10, -10, 10) (2); give a larger setback`;
+  `ValueError: fillet: the setback 10 is too large for the edge from (10, -10, 10) to (10, 10, 10) (20 long, set back at both ends): its corners would meet; give a setback below 10`;
+  `ValueError: fillet: setback= sets back the corners where three or more rounded edges meet and no other edge, all convex or all concave, and the selection has none (round every edge of a corner)`;
+  `ValueError: fillet: a corner is mitred (corners="mitre") or set back (setback=), not both`.
 - `ValueError: fillet: a varying radius ((start, end) or {position: radius}) makes circular rounds only; continuity needs a constant radius`
 - `ValueError: fillet: a (start, end) radius cannot run around a closed edge (through (10, 0, 10)): it would jump back to the start radius there; give a constant radius, or {position: radius} with one radius at 0 and 1`
   (also `... a closed run of edges ...`);
@@ -147,6 +161,7 @@ stepped = box.fillet(box.edges().parallel_to(Z), [2, 4, 6, 8])  # one radius per
 soft = box.fillet(box.edges().parallel_to(Z), 5, continuity="G2")  # curvature-continuous, same setback 5
 mitred = box.fillet(box.edges(), 3, corners="mitre")    # rounds meet along mitre lines, no corner balls
 print(round(mitred.volume, 4), len(mitred.faces()))     # 23354.282 18
+softer = box.fillet(box.edges(), 3, setback=5)          # rounds stop 5 from each corner, one patch joins them
 
 # different radii that meet at corners: one call with a list, or the larger radius first
 blk = Box(30, 30, 30)

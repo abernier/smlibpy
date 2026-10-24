@@ -226,8 +226,12 @@ matter here:
   blends (`SmApiBrep.h`: "three-edge corner boundaries guarantee only G1").
 - The fillet executive's set-back corners (`SmFilletCorner::SetSetBackDist`: the rounds end short
   of the vertex and a larger patch joins them) read freed memory in every case tried (the kernel's
-  own test case too: patched, `SmCurveClass.cpp`), and then fail where the corner's edges are merged
-  into the faces (`SmTopologyIntersector::Relate`, conflicting mates); smlibpy offers no setbacks.
+  own test case too: patched, `SmCurveClass.cpp`), and merge into the faces only where each edge
+  lists the edgeuse that runs along it first (as the kernel's own test box does; `SmApiCreateBox`'s
+  boxes do not, and the merge failed on conflicting mates): `fillet(setback=)` reorders the edges'
+  edgeuses first. Corners where a face turns inward (a pocket's rim) come out broken: only corners
+  of all convex or all concave edges are set back. Corners between slanted faces (a frustum's) come
+  out with gaps: refused (`KernelError`).
 - A radius that varies around a closed run of several edges (the top outline of a rounded plate)
   gives broken rounds (an extra face, open), whatever edge the run starts at and also with the
   same radius and slope where it closes; smlibpy refuses it. Along open runs and around a single

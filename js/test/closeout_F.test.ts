@@ -2,10 +2,10 @@
 // (radius laws along runs of edges, the fillet executive's failed step, unequal bevels of sharp wedges,
 // exact circles where conical bevels meet cylinders, the fillet preview, face edits and drafts of parts
 // with cavities, extended rounds that keep their cylinders and cones, sheets of separate faces offset as
-// one, tangent-rim shell openings next to other openings).
+// one, tangent-rim shell openings next to other openings, set-back corners).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Box, Cone, Cylinder, Edge, KernelError, ModelingError, Part, Plane, Polygon, Rectangle, Shell, X, Z, stitch } from '../src/index.ts'
+import { Box, Cone, Cylinder, Edge, KernelError, ModelingError, Part, Plane, Polygon, Rectangle, Shell, X, Z, loft, stitch } from '../src/index.ts'
 import { ext } from '../src/kernel.ts'
 import { _take } from '../src/shapes.ts'
 import { approx } from './_approx.ts'
@@ -385,4 +385,45 @@ test('a tangent-rim opening next to another opening', () => {
   assert.equal(both.faces().length, 36)
   approx(both.volume, openTop.volume - 30 * 15 * 2, 1e-9)
   assert.ok(Number(both._props(1e-6).gaps) < 1e-9)
+})
+
+// -- set-back corners (F10)
+test('set-back corners', () => {
+  const b = Box(20, 20, 20)
+  const ball = b.fillet(b.edges(), 2)
+  const soft = b.fillet(b.edges(), 2, { setback: 3 }) // (0.5.0: no setback; the kernel's merge left it open)
+  assert.ok(soft.isValid() && Number(soft._props(1e-6).gaps) < 1e-5)
+  approx(soft.volume, 7781.609270356783, 1e-6)
+  assert.ok(soft.volume < ball.volume)
+  // the rounds stop 3 from each corner: 12 cylinders of radius 2, 20 - 2 x 3 long; 6 patch faces a corner
+  const rounds = soft.faces().filter((f) => f.geomType === 'cylinder')
+  assert.equal(rounds.length, 12)
+  for (const f of rounds) approx(f.area, 14 * Math.PI, 1e-9)
+  assert.equal(soft.faces().filter((f) => f.geomType === 'bspline').length, 48)
+  // the floor corners of a pocket (three concave edges) are set back too, its rim corners are not
+  const pocket = Box(40, 40, 20).cut(Box(20, 20, 10).translate(0, 0, 5))
+  const [h, kedges] = pocket._withEdges(pocket.edges())
+  const record = ext.round_edges(h.brep, kedges, [2.0], [1], { setback: 5.0 })
+  assert.equal(record.status, null)
+  assert.equal(record.set_back, 12) // (8 outside, 4 on the floor)
+  h.dispose()
+  const p = pocket.fillet(pocket.edges(), 2, { setback: 5 })
+  assert.ok(p.isValid())
+  approx(p.volume, 27649.245759895017, 1e-6)
+})
+
+test('set-back corners the kernel cannot build throw', () => {
+  const b = Box(20, 20, 20)
+  throws(() => b.fillet(b.edges(), 2, { setback: 2 }), RangeError, /must exceed how far the rounds reach/) // (the rounds cross the corner's edges 2 from it)
+  throws(() => b.fillet(b.edges(), 2, { setback: 10 }), RangeError, /too large for the edge/) // (the corners at both ends of each edge would meet)
+  throws(() => b.fillet(b.edges(), 2, { setback: 3, corners: 'mitre' }), RangeError, /mitred .* or set back/)
+  throws(() => b.fillet(b.edges(), { start: 1, end: 2 }, { setback: 3 }), RangeError, /constant radius/)
+  throws(() => b.fillet(b.edges().filter((e) => e.center().z > 9), 2, { setback: 3 }), RangeError, /has none/)
+  throws(() => b.fillet(b.edges(), 2, { setback: 0 }), RangeError, /positive/)
+  // corners between slanted faces: the kernel's set-back corners come out broken, refused
+  const frustum = loft([Rectangle(20, 20), Rectangle(10, 10).translate(0, 0, 10)], { ruled: true }) as Part
+  throws(() => frustum.fillet(frustum.edges(), 1, { setback: 3 }), KernelError, /set back these corners/)
+  const [h, kedges] = b._withEdges(b.edges())
+  assert.throws(() => ext.round_edges(h.brep, kedges, [1.0], [1], { law: [1.0, 2.0], setback: 3.0 }), /laws/)
+  h.dispose()
 })

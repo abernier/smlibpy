@@ -1,7 +1,7 @@
 # Close-out F: fillets, chamfers, shell and offset
 
 The "Not done" entries of area F of 0.5.0 (kernel plan F7 to F12, O3, O7, O9 to O11), triaged and
-closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (13 each).
+closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (15 each).
 
 ## Triage
 
@@ -10,7 +10,7 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
 | F7: SM_API's global merge (K5) not landed; all edges of a 10 mm cube with r 4.99 and the stepped block's rollover fail | BLOCKED |
 | F8: the fillet executive's status is private | FINISH |
 | F9: unequal bevels on sharp wedges beyond what the solver takes | FINISH (straight edges between planes, as the plan's Do proposed); the rest BLOCKED |
-| F10: setbacks (set-back corners read freed memory; a patched SmFilletCorner gave open bodies) | BLOCKED (the read of freed memory patched; the merge then fails) |
+| F10: setbacks (set-back corners read freed memory; a patched SmFilletCorner gave open bodies) | FINISH (`fillet(setback=)`; the read of freed memory and a leak of N-sided corner patches patched); corners where a face turns inward, and between slanted faces, BLOCKED |
 | F11: `fillet_preview` (optional in the plan) | FINISH |
 | F12: exact bevels of edges that are not full circles | LATER |
 | F12: the edge where a conical chamfer meets a cylinder is fitted | FINISH |
@@ -26,6 +26,27 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
 
 ## Finished
 
+- **Set-back corners (F10): `Part.fillet(edges, radius, *, setback=None)`**, smlibwasm `fillet(edges,
+  radius, { setback })`. The rounds stop `setback` from the corner along each of its edges and one
+  larger patch joins them (a softer corner than the ball, as on molded and consumer parts): all edges
+  of a 20 mm cube r 2 with `setback=3`: 7781.609270, valid, its 12 rounds 14 long, 6 patch faces a
+  corner (ball corners: 7804.696111). Set back are the corners where three or more rounded edges
+  meet and no other edge, all convex (a box's outside corners) or all concave (a pocket's floor
+  corners); the other corners keep their patch. Checked before the kernel: a corner to set back, a
+  setback beyond where the rounds cross the corner's edges (the radius at a right-angled corner; r
+  tan(theta/2) / sin(phi) in general) and below each such edge's length (half of it with both ends
+  set back), constant radii (also lists and blends), not with `corners="mitre"` (`ValueError`); after
+  it, the gaps between faces and the volume (with a set-back corner's share). The kernel's set-back
+  corners failed on `SmApiCreateBox`'s boxes and every body tried, also with 0.5.0's patch for their
+  read of freed memory, while its own test box worked: the merge needs each edge's first edgeuse to
+  be the one that runs along it, and `ext.round_edges(setback=)` reorders the edgeuses first
+  (`SmEdge::ResetPrimaryEdgeuse`; nothing else changes); `ext.round_edges` returns `set_back`, the
+  number of corners set back. 240 random parts (boxes with pockets and bosses, prisms of 3 to 8 sides,
+  a box with a cylinder) rounded with random radii and setbacks: no crash, 126 valid results, the
+  rest refused (`ValueError` before the kernel, `KernelError`/`ModelingError` after). The N-sided
+  corner patches lost the copies of their boundaries' UV curves
+  (`SmBSplineSurface::CreateCornerBlend`, patched: `SmBSplineSurfaceNLib.cpp`; LeakSanitizer 20.7 kB
+  in the set-back tests before, 0 after); that also concerns corners of five or more rounded edges.
 - **Radius laws along runs of edges (F5, F8).** A `(start, end)` radius runs linearly along each
   run of selected edges that meet tangentially, a single edge or a chain such as the top run of a
   plate rounded at two corners (which `propagate` adds), in proportion to the length along it: the
@@ -93,10 +114,21 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
   a 16-face one (r 4.992), while r 4.985 and 4.995 are exact; mitred corners fail ("could not compute
   the vertices of the corner"); rounding the vertical edges first and the top and bottom runs after
   would need a torus of major radius 0 (refused before the kernel). SM_API's global merge (K5) was
-  measured in 0.5.0 and changed nothing near the limit. The rollover (r 1.5 on a 1 mm step) fails in
-  the corner computation ("Corner Edge Computation Failure", `Nx1`). smlibpy refuses both with
-  `ModelingError`/`KernelError`; nothing wrong comes back.
-- **F10: set-back corners.** AddressSanitizer confirms the read of freed memory: `sm_SetDoFilletingGeometry`
+  measured in 0.5.0 and changed nothing near the limit; nor did the edgeuse order that fixed the
+  set-back corners (r 4.98, 4.99, 4.992 and 4.995: the same bodies, with both solver settings). The
+  rollover (r 1.5 on a 1 mm step) fails in the corner computation ("Corner Edge Computation
+  Failure", `Nx1`). smlibpy refuses both with `ModelingError`/`KernelError`; nothing wrong comes back.
+- **F10: set-back corners where a face turns inward at the vertex, and between slanted faces.**
+  `SmFilletConcaveNxNCorner` (a face with a corner over 180 degrees at the vertex: a pocket's rim, an
+  L-block's inner corner) hands set-back corners to the convex corner's code, which builds broken
+  bodies there (a box with a cube pocket, all edges r 1 setback 1.5: `is_valid()` false, a volume of
+  754292 for 3458); smlibpy sets back only the corners of all convex or all concave edges, which the
+  kernel classifies as convex. Corners between slanted faces (a ruled frustum 20 to 10 over 10, r 1,
+  setbacks 2 to 5; a wedge with a ridge, setback 5) come out with gaps up to 5.9 or fail in the corner
+  computation: the result check refuses them (`KernelError` with the setback hint). Radius laws with
+  set-back corners crashed (SIGSEGV in the executive): refused (`ValueError`, and
+  `std::invalid_argument` in `ext.round_edges`). How the first set-back failure was found and fixed,
+  for the record: AddressSanitizer confirms the read of freed memory: `sm_SetDoFilletingGeometry`
   deletes the curve `SmCurveClassification::MergeInterval` is classifying (the corner merges a fillet
   edge's own curve into its faces). Patched (`third_party/patches/SMLib/src/SmCurveClass.cpp`: the
   classification takes the old curve over and frees it when done): AddressSanitizer reports nothing
@@ -106,14 +138,19 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
   each before). The merge then fails in `SmTopologyIntersector::Relate` (a vertex or edge already
   mated to another; `SM_ERR` from `MergeCurveOnSurfaces` in `InsertIntersectionTopology`, the fillet
   half merged: 7 faces, 25 open edges). 0.5.0's attempt, merging a copy of the curve, gave open
-  bodies (84 open edges). smlibpy offers no setbacks.
+  bodies (84 open edges). The kernel's own test box (`box.smb`) merged with the same settings (168
+  edges, 66 faces, closed); the difference was the order of each edge's edgeuses (above). Ruled out
+  on the way: plane or B-spline surfaces, line or B-spline UV curves, the lines' parameter range,
+  rounding, tolerances, the naturally-trimmed flag, the edges' directions, placement and the order
+  the edges are loaded in.
 - **Radius laws around closed runs of several edges.** Around the top outline of a rounded plate
   (8 edges) any varying law gives a body with an extra face that is open (19 faces, `is_valid()`
   false, the executive reporting success), also `{0: 2, 0.5: 2.01}`, also with the law repeating a
   turn before and after so that both ends read the same radii and slopes, and whatever edge the
   sequence starts at (begun at a line, the closing corner fails outright, "Corner Edge Computation
-  Failure"; begun at an arc, with the law's parts moved along, it builds the broken body). Constant
-  laws are right. smlibpy refuses varying laws there (`ValueError`); around a single closed edge and
+  Failure"; begun at an arc, with the law's parts moved along, it builds the broken body), also with
+  the edgeuses reordered as for set-back corners (all 8 starting edges: the same). Constant laws are
+  right. smlibpy refuses varying laws there (`ValueError`); around a single closed edge and
   along open runs they are right.
 - **F9 beyond straight edges between planes.** The kernel's solver offsets each face by its own
   distance and the backwards one only so far; a bevel of a curved edge, or of a straight edge whose
@@ -136,6 +173,9 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
   parting lines (in 0.5.0); stepped ones need a draft call with a neutral plane per face group.
 
 ## Behaviour changes
+
+- `Part.fillet` takes `setback=` (keyword, default `None`: no change), smlibwasm `fillet`'s options
+  `setback`; `ext.round_edges` takes `setback` (trailing, default 0) and returns `"set_back"`.
 
 - `fillet(edges, (start, end))` where the selected edges run into each other tangentially, or where
   `propagate` adds edges, runs the radius along the whole run (it raised `ValueError`). For the law

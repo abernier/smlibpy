@@ -25,11 +25,19 @@
 //     (SmApiSetBevelCorners: circular rounds of one radius), only on the corners whose code takes it:
 //     the convex corners of three rounded edges and no other edge (SmFilletConvexNxNCorner bevels
 //     three and fails on more; the other corners skip their patch and would leave a hole).
-//     (Set-back corners, SmFilletCorner::SetSetBackDist, are not offered: every set-back corner read
-//     freed memory in SmCurveClassification::MergeInterval (patched: third_party/patches,
-//     SmCurveClass.cpp), and then fails where the corner's edges are merged into the faces
-//     (SmTopologyIntersector::Relate: conflicting mates), the kernel's own test case too:
-//     third_party/patches/README.md.)
+//   * set-back corners (SmFilletCorner::SetSetBackDist) where three or more rounded convex edges meet
+//     and no other edge (SmFilletConvexNxNCorner): the rounds stop short of the vertex and one larger
+//     patch joins them. (SmFilletConcaveNxNCorner hands set-back corners to the convex code, which
+//     builds broken bodies there: a cube pocket's floor corners gave an invalid body of 59 times the
+//     volume; and radius laws with set-back corners crashed: neither is offered.) Every set-back
+//     corner read freed memory in SmCurveClassification::MergeInterval (patched: third_party/patches,
+//     SmCurveClass.cpp). The corner's edges then merge into the faces (InsertIntersectionTopology,
+//     SmTopologyIntersector::Relate) only where each edge's first edgeuse runs along it (SM_OT_SAME),
+//     as in the kernel's own test box (TestFiles/.../Solids/box.smb); SmApiCreateBox's boxes, and most
+//     bodies, list the opposite edgeuse first at some edges, and the merge failed there on conflicting
+//     mates (an open body of the fillet half merged). Before set-back corners every edge's SAME
+//     edgeuse is made its first (SmEdge::ResetPrimaryEdgeuse: the order of the edge's list of
+//     edgeuses, nothing else changes).
 //
 // (SM_API asks for the executive's global merge before SetFilletParameters, which turns it off
 // again. Turning it on for real changed no near-limit result measured and broke chamfers and G2
@@ -371,6 +379,39 @@ void mitre_corners(SmFilletExecutive& exec, smlibpy::Rounded& r)
     }
 }
 
+// Sets back the executive's corners that take it (see the head of this file), counting them.
+void set_back_corners(SmFilletExecutive& exec, double distance, smlibpy::Rounded& r)
+{
+    SmTArray<SmFilletCorner*>& corners = exec.GetFilletCorners();
+    for (ULONG i = 0; i < corners.GetSize(); ++i)
+    {
+        SmFilletCorner* c = corners[i];
+        if (c->GetCornerType() != SM_FCR_N_x_N_CONVEX || c->GetFilletedVertex() == nullptr)
+            continue;
+        c->SetSetBackDist(distance);
+        ++r.set_back;
+    }
+}
+
+// Makes the edgeuse of each edge of `brep` that runs along it (SM_OT_SAME) the first of its edgeuses:
+// set-back corners merge only so (see the head of this file).
+void same_first(SmBrep* brep)
+{
+    SmTArray<SmEdge*> edges;
+    brep->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        SmEdge* e = edges[i];
+        SmEdgeuse* first = e->GetPrimaryEdgeuse();
+        if (first != nullptr && first->GetOrientation() != SM_OT_SAME)
+        {
+            SmEdgeuse* same = first->GetMate();
+            if (same != nullptr && same != first && same->GetOrientation() == SM_OT_SAME)
+                e->ResetPrimaryEdgeuse(same);
+        }
+    }
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -417,6 +458,12 @@ Rounded round_edges(SmBrep* brep, const RoundSpec& spec)
     }
     if (!(spec.tolerance_factor > 0))
         throw std::invalid_argument("round_edges: the tolerance factor must be positive");
+    if (!(spec.setback >= 0) || !std::isfinite(spec.setback))
+        throw std::invalid_argument("round_edges: the setback must be 0 (none) or positive");
+    if (spec.setback > 0 && spec.mitre)
+        throw std::invalid_argument("round_edges: a corner is mitred or set back, not both");
+    if (spec.setback > 0 && spec.law)
+        throw std::invalid_argument("round_edges: set-back corners join rounds of a constant radius, not laws");
 
     Rounded r;
     const Places places(brep);
@@ -430,11 +477,15 @@ Rounded round_edges(SmBrep* brep, const RoundSpec& spec)
 
     // (SetFilletParameters, then DoFillet: CreateFilletCorners and DoFilleting)
     long bad_edge = -1;
+    if (spec.setback > 0)
+        same_first(brep);
     SmStatus status = load_solvers(exec, brep, spec, law, chain_laws, bad_edge);
     if (status == SM_SUCCESS)
         status = exec.CreateFilletCorners();
     if (status == SM_SUCCESS && spec.mitre)
         mitre_corners(exec, r);
+    if (status == SM_SUCCESS && spec.setback > 0)
+        set_back_corners(exec, spec.setback, r);
     if (status == SM_SUCCESS)
         status = exec.DoFilleting();
 
@@ -478,7 +529,7 @@ void bind_fillet(py::module_ m)
                             const std::vector<SmFace*>& faces, const std::vector<double>& law, int continuity,
                             double thumbweight, double tolerance_factor, bool mitre,
                             const std::vector<std::vector<long>>& chains, const std::vector<double>& law_at,
-                            const std::vector<double>& law_radii) {
+                            const std::vector<double>& law_radii, double setback) {
         smlibpy::RoundSpec spec;
         spec.edges = edges, spec.radii = radii, spec.sections = sections, spec.radii2 = radii2, spec.faces = faces;
         if (!law.empty())
@@ -488,7 +539,7 @@ void bind_fillet(py::module_ m)
             spec.law = true, spec.start_radius = law[0], spec.end_radius = law[1];
         }
         spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
-        spec.mitre = mitre;
+        spec.mitre = mitre, spec.setback = setback;
         spec.chains = chains, spec.law_at = law_at, spec.law_radii = law_radii;
         if (!law_at.empty() && law.empty())
             spec.law = true, spec.start_radius = law_radii.empty() ? 0.0 : law_radii.front();
@@ -507,13 +558,14 @@ void bind_fillet(py::module_ m)
         d["stage"] = r.stage;
         d["comment"] = r.comment;
         d["mitred"] = r.mitred;
+        d["set_back"] = r.set_back;
         return d;
     }, py::arg("brep"), py::arg("edges"), py::arg("radii"), py::arg("sections"),
           py::arg("radii2") = std::vector<double>{}, py::arg("faces") = std::vector<SmFace*>{},
           py::arg("law") = std::vector<double>{}, py::arg("continuity") = 1, py::arg("thumbweight") = 1.0,
           py::arg("tolerance_factor") = 4.0, py::arg("mitre") = false,
           py::arg("chains") = std::vector<std::vector<long>>{}, py::arg("law_at") = std::vector<double>{},
-          py::arg("law_radii") = std::vector<double>{},
+          py::arg("law_radii") = std::vector<double>{}, py::arg("setback") = 0.0,
           "Mutates: brep. Round or bevel `edges` of `brep` in place with the kernel's fillet executive, as "
           "fillet_edges (one radius and one section), fillet_edges_per_edge (one of each per edge) and "
           "variable_radius_fillet (`law`: (start radius, end radius)) do. `sections`: 0 linear, 1 circular, 2 a "
@@ -526,14 +578,17 @@ void bind_fillet(py::module_ m)
           "the indices of the edges of each chain of edges that meet tangentially, in order along it (each edge in "
           "one chain): the law runs along each chain in proportion to arc length, from `law`'s start radius to "
           "its end radius, or through the radii `law_radii` at the positions `law_at` (from 0, the chain's start, "
-          "to 1, its end), joined smoothly without overshooting them. "
+          "to 1, its end), joined smoothly without overshooting them. `setback`: set back the corners where three "
+          "or more rounded convex edges meet and no other edge: the rounds stop `setback` from the vertex along its "
+          "edges and one patch joins them (0: none; not with `mitre` or a law). "
           "Returns {'status': None, or the kernel status of a failure, 'error': the kind of "
           "problem the executive recorded ('input', 'corner', 'edge', 'intersection', 'trim', 'merge', 'setup' or "
           "''), 'edge': the index of the edge it names or -1, 'vertex': the point of the vertex it names or None, "
           "'location': where it happened or None, 'corner': the kind of corner ('1x1', '2x2', 'Nx1', ... or ''), "
           "'stage': the step that failed ('surface_intersection', 'end_point', 'squeeze', 'rail_interpolation', "
           "'rail_edge', 'solver', 'deleted', 'tracing', 'self_intersection', 'skinning', 'failure' or ''), "
-          "'comment': the executive's comment, 'mitred': how many corners were mitred}. A failure can leave the "
+          "'comment': the executive's comment, 'mitred': how many corners were mitred, 'set_back': how many "
+          "corners were set back}. A failure can leave the "
           "Brep half changed.");
 }
 #endif  // SMLIBPY_PYTHON

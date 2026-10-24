@@ -119,6 +119,25 @@ mitre for more edges, or for a concave one); a selection without such a corner r
 triangle (`box.chamfer(box.edges(), 2, corners="mitre")`: 23328.0, 23322.6667 with the triangles).
 `"miter"`, the American spelling, is taken as well.
 
+`setback=` sets the corners back: the rounds stop that far from the corner along each of its edges,
+and one larger patch joins them there, a softer corner than the ball, as on molded and consumer
+parts:
+
+```python
+cube = Box(20, 20, 20)
+balls = cube.fillet(cube.edges(), 2)               # 7804.6961, 26 faces
+soft = cube.fillet(cube.edges(), 2, setback=3)     # 7781.6093, 66 faces: rounds 14 long, 6 patch faces a corner
+```
+
+Set back are the corners where three or more rounded edges meet and no other edge (every edge at
+the vertex rounded), all convex (the outside corners of a box) or all concave (the floor corners of
+a pocket); the other corners keep their usual patch, and a selection without such a corner raises
+`ValueError`. The setback must exceed how far the rounds reach along the corner's edges (the radius
+at a right-angled corner) and stay below the length of each rounded edge at such a corner (half of
+it where both ends are set back). It takes constant radii (also one per edge, and blends), not radius
+laws or `corners="mitre"`. Corners between slanted faces (the top corners of a frustum) the kernel
+often cannot set back; that raises `KernelError`.
+
 The keyword `corners` names a different choice in each operation that has it:
 
 | Operation | `corners=` | What it chooses |

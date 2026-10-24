@@ -926,6 +926,7 @@ export interface FilletOptions {
     fullness?: number;
     propagate?: boolean;
     corners?: string;
+    setback?: number | null;
 }
 export interface ChamferOptions {
     length2?: number | null;

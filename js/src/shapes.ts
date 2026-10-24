@@ -4980,6 +4980,17 @@ export interface FilletOptions {
    * three rounded convex edges meet and no other edge; a selection without such a corner throws a
    * RangeError. */
   corners?: string
+  /** Set the corners back: the rounds stop `setback` from the corner along each of its edges, and one
+   * larger patch joins them there (a softer corner than the ball corner, as on molded and consumer
+   * parts). Set back are the corners where three or more rounded edges meet and no other edge (every
+   * edge at the vertex rounded), all convex (the outside corners of a box) or all concave (the floor
+   * corners of a pocket); the others get their usual patch, and a selection without such a corner
+   * throws a RangeError. `setback` must exceed how far the rounds reach along the corner's edges (the
+   * radius, at a right-angled corner) and stay below the length of each rounded edge at such a corner
+   * (half of it where both ends are set back). Constant radii only (also one per edge, and blends),
+   * not with `corners: "mitre"`. Corners between slanted faces (the top corners of a frustum) the
+   * kernel cannot always set back: KernelError. */
+  setback?: number | null
 }
 
 /** Which edges a chamfer bevels. */
@@ -5888,9 +5899,10 @@ export class Part extends _Body {
    * `sizes` are the radii (`shape` "circular" or "blend") or the setbacks (`shape` "chamfer").
    * Near the size limit the kernel can return a valid-looking body with whole regions missing.
    */
-  _checkVolumeChange(result: Part, edges: readonly Edge[], what: string, sizes: readonly number[], shape: string): void {
+  _checkVolumeChange(result: Part, edges: readonly Edge[], what: string, sizes: readonly number[], shape: string, cornerVolume = 0): void {
     const size = new Set(sizes).size === 1 ? sizes[0] : Math.max(...sizes)
-    const bound = _roundVolumeBound(edges, sizes, shape)
+    let bound = _roundVolumeBound(edges, sizes, shape)
+    if (bound !== null) bound += cornerVolume
     const accuracy = bound !== null ? 1e-6 : 1e-4 // the bound needs the change accurately
     let before: number | null = null
     let after: number | null = null
@@ -5963,7 +5975,7 @@ export class Part extends _Body {
    */
   fillet(edges: EdgesLike, radius: FilletRadius, options: FilletOptions = {}): Part {
     _opts('Part.fillet', options)
-    const { continuity = null, fullness = 1.0, propagate = true, corners = 'patch' } = options
+    const { continuity = null, fullness = 1.0, propagate = true, corners = 'patch', setback = null } = options
     this._requireValid('fillet')
     const mitre = _cornerStyle('fillet', corners)
     const lawMap = radius instanceof Map ? (radius as ReadonlyMap<number, number>) : null
@@ -6022,8 +6034,20 @@ export class Part extends _Body {
     else radii = new Array(sel.length).fill(Number(radius))
     this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
     if (mitre) _requireMitredCorners('fillet', sel)
+    let setBack = 0
+    let cornerVolume = 0
+    if (setback != null) {
+      setBack = Number(setback)
+      if (!(Number.isFinite(setBack) && setBack > 0)) throw new RangeError(`fillet: the setback must be positive, not ${setback}`)
+      if (mitre) throw new RangeError('fillet: a corner is mitred (corners="mitre") or set back (setback), not both')
+      if (varies) throw new RangeError('fillet: set-back corners join rounds of a constant radius; give a constant radius (one, or one per edge) with setback')
+      cornerVolume = _checkSetBackCorners(sel, radii, setBack)
+    }
     const cont = _continuity(continuity)
-    const hint = 'the radius may be too large for the selected edges'
+    let hint = 'the radius may be too large for the selected edges'
+    if (setBack) {
+      hint += `, or the kernel cannot set back these corners by ${_formatG(setBack, 4)} (corners between slanted faces it often cannot; try another setback, or none)`
+    }
     const section = cont === null ? 1 : 2 // circular, or a blend curve
     const isolate = this._h.imported // (read from a file: in the probe worker, see _roundEdges)
     const attempt = (factor: number): Part => {
@@ -6059,9 +6083,17 @@ export class Part extends _Body {
                 toleranceFactor: factor,
                 mitre,
                 isolate,
+                setback: setBack,
               })
             } else {
-              out = _roundEdges('fillet', hint, h.brep, kedges, sel, [constant], [section], { continuity: cont || 1, thumbweight: fullness, toleranceFactor: factor, mitre, isolate })
+              out = _roundEdges('fillet', hint, h.brep, kedges, sel, [constant], [section], {
+                continuity: cont || 1,
+                thumbweight: fullness,
+                toleranceFactor: factor,
+                mitre,
+                isolate,
+                setback: setBack,
+              })
             }
           },
           hint,
@@ -6075,12 +6107,25 @@ export class Part extends _Body {
       // (a step that ran in this kernel rounded the copy h holds: h gives it up; one from the probe
       // worker is a Brep of its own, and h frees its copy)
       const result = this._like(out === h.brep ? _take(h) : (h.dispose(), out))
-      this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend')
-      if (varies) {
-        // (a varying radius: the faces must meet too; the kernel's broken variable rounds look closed)
+      try {
+        this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend', cornerVolume)
+      } catch (e) {
+        if (!setBack || !(e instanceof KernelError)) throw e
+        const error = _traced(new KernelError(e.operation, e.detail, e.status, hint), e.trace)
+        ;(error as Any).cause = e
+        throw error
+      }
+      if (varies || setBack) {
+        // (a varying radius or set-back corners: the faces must meet too; the kernel's broken variable
+        // rounds look closed)
         const problem = result._solidProblem(null, true)
         if (problem !== null) {
-          throw new KernelError('fillet', `kernel result is ${problem}`, null, `the radius may be too large for the selected edges (it is up to ${_formatG(Math.max(...given), 4)})`)
+          throw new KernelError(
+            'fillet',
+            `kernel result is ${problem}`,
+            null,
+            setBack ? hint : `the radius may be too large for the selected edges (it is up to ${_formatG(Math.max(...given), 4)})`,
+          )
         }
       }
       return result
@@ -8530,9 +8575,23 @@ function _roundEdges(
     chains?: readonly (readonly number[])[]
     lawAt?: readonly number[]
     lawRadii?: readonly number[]
+    setback?: number
   } = {},
 ): number {
-  const { radii2 = [], faces = [], law = [], continuity = 1, thumbweight = 1.0, toleranceFactor = 4.0, mitre = false, isolate = false, chains = [], lawAt = [], lawRadii = [] } = options
+  const {
+    radii2 = [],
+    faces = [],
+    law = [],
+    continuity = 1,
+    thumbweight = 1.0,
+    toleranceFactor = 4.0,
+    mitre = false,
+    isolate = false,
+    chains = [],
+    lawAt = [],
+    lawRadii = [],
+    setback = 0,
+  } = options
   const args = [
     radii.map(Number),
     sections.map(Number),
@@ -8546,6 +8605,7 @@ function _roundEdges(
     chains.map((c) => c.map(Number)),
     lawAt.map(Number),
     lawRadii.map(Number),
+    Number(setback),
   ] as const
   const here = (): { brep: number; record: Any } => {
     const record = kernelCall(operation, () => ext.round_edges(brep, [...kedges], ...args), hint)
@@ -8634,6 +8694,77 @@ function _requireMitredCorners(operation: string, edges: readonly Edge[]): void 
       `${operation}: corners="mitre" mitres the corners where three rounded convex edges meet and no other edge, and the selection has none (round all three edges of a corner)`,
     )
   }
+}
+
+/** The corners `setback` sets back, with their edges: where three or more of `edges` meet and no other
+ * edge, all convex or all concave. (The kernel sets back the corners where no face turns inward at the
+ * vertex, SmFilletConvexNxNCorner's; at a vertex of three edges those are the ones whose edges are all
+ * convex or all concave. Where a face turns inward, SmFilletConcaveNxNCorner hands the setback to the
+ * same code, which builds broken bodies there: not offered.) */
+export function _setBackCorners(edges: readonly Edge[]): [Vertex, Edge[]][] {
+  const rounded = new Set(edges.map((e) => e._identity()))
+  const convexities = _convexities(edges)
+  const kinds = new Map(edges.map((e, i) => [e._identity(), convexities[i]] as const))
+  const seen = new Set<string>()
+  const out: [Vertex, Edge[]][] = []
+  for (const e of edges) {
+    for (const v of e.vertices()) {
+      if (seen.has(v._identity())) continue
+      seen.add(v._identity())
+      const at = [...v.edges()]
+      if (at.length < 3 || !at.every((x) => rounded.has(x._identity()))) continue
+      const kind = kinds.get(at[0]._identity())
+      if ((kind === 'convex' || kind === 'concave') && at.every((x) => kinds.get(x._identity()) === kind)) out.push([v, at])
+    }
+  }
+  return out
+}
+
+/** Check `setback` of a fillet of `edges` with `radii`: a corner to set back, a setback beyond where the
+ * rounds of each such corner cross its edges (a round of radius r reaches r tan(theta/2) across a face,
+ * theta the turn between the faces; across a face corner of angle phi that crosses the next edge
+ * 1/sin(phi) as far along it) and below the length of each rounded edge there (half of it where both
+ * ends are set back). Returns what the set-back corners can take away or add (for the volume check). */
+function _checkSetBackCorners(edges: readonly Edge[], radii: readonly number[], setback: number): number {
+  const corners = _setBackCorners(edges)
+  if (!corners.length) {
+    throw new RangeError(
+      'fillet: setback sets back the corners where three or more rounded edges meet and no other edge, all convex or all concave, and the selection has none (round every edge of a corner)',
+    )
+  }
+  const radiusOf = new Map(edges.map((e, i) => [e._identity(), radii[i]] as const))
+  const ends = new Map<string, number>()
+  let total = 0
+  for (const [v, at] of corners) {
+    const p = v.point
+    let need = 0
+    for (const e of at) {
+      for (const f of e.faces()) {
+        for (const g of at) {
+          if (g._identity() === e._identity() || !g.faces().some((x) => x._identity() === f._identity())) continue
+          const width = Part._setback(g, radiusOf.get(g._identity())!)
+          let angle = Infinity
+          for (const a of _leaving(e, p)) for (const b of _leaving(g, p)) angle = Math.min(angle, a.angleTo(b))
+          const phi = _radians(Math.max(angle, 1e-6))
+          need = Math.max(need, width / Math.max(Math.sin(phi), 1e-6))
+        }
+      }
+    }
+    if (setback <= need * (1 + 1e-9)) {
+      throw new RangeError(`fillet: the setback must exceed how far the rounds reach along the edges of the corner at ${_fmtPoint(p)} (${_formatG(need, 4)}); give a larger setback`)
+    }
+    for (const e of at) ends.set(e._identity(), (ends.get(e._identity()) ?? 0) + 1)
+    total += setback ** 3 * (at.length - 2)
+  }
+  for (const e of edges) {
+    const k = ends.get(e._identity()) ?? 0
+    if (k && setback * k >= e.length * (1 - 1e-9)) {
+      throw new RangeError(
+        `fillet: the setback ${_formatG(setback, 4)} is too large for the edge from ${_fmtPoint(e.start)} to ${_fmtPoint(e.end)} (${_formatG(e.length, 4)} long${k === 2 ? ', set back at both ends' : ''}): its corners would meet; give a setback below ${_formatG(e.length / k, 4)}`,
+      )
+    }
+  }
+  return total
 }
 
 /** The brep of `Face.extend`. */

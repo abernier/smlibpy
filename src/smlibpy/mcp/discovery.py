@@ -159,6 +159,7 @@ SYNONYMS.update({
 # Fillet laws and previews.
 SYNONYMS.update({
     "preview": ["fillet_preview"], "variable": ["fillet"], "law": ["fillet"], "varying": ["fillet"],
+    "setback": ["fillet", "chamfer"], "softer": ["fillet"],
 })
 
 _CONSTANTS = {

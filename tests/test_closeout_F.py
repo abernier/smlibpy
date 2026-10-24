@@ -2,14 +2,15 @@
 radius laws along runs of edges, the fillet executive's failed step, unequal bevels of sharp wedges,
 exact circles where conical bevels meet cylinders, the fillet preview, face edits and drafts of parts
 with cavities, extended rounds that keep their cylinders and cones, sheets of separate faces offset as
-one, and tangent-rim shell openings next to other openings (js/test/closeout_F.test.ts is its twin)."""
+one, tangent-rim shell openings next to other openings, and set-back corners (js/test/closeout_F.test.ts
+is its twin)."""
 
 import math
 
 import pytest
 from pytest import approx
 
-from smlibpy import Box, Cone, Cylinder, ModelingError, Plane, Polygon, Rectangle, Shell, X, Z
+from smlibpy import Box, Cone, Cylinder, Location, ModelingError, Plane, Polygon, Rectangle, Shell, X, Z, loft
 from smlibpy._kernel import KernelError, ext
 
 K = math.sqrt(2) - 1  # a round of radius r on a right-angled edge lies r (sqrt 2 - 1) from the edge
@@ -273,3 +274,46 @@ def test_a_tangent_rim_opening_next_to_another_opening():
     # the side's wall goes: its cavity face, 30 x 15 (it reaches the open top), 2 thick
     assert both.volume == approx(open_top.volume - 30 * 15 * 2, rel=1e-9)
     assert both._props(1e-6)["gaps"] < 1e-9
+
+
+# -- set-back corners (F10) --------------------------------------------------------------------------
+def test_set_back_corners():
+    b = Box(20, 20, 20)
+    ball = b.fillet(b.edges(), 2)
+    soft = b.fillet(b.edges(), 2, setback=3)  # (0.5.0: no setback; the kernel's merge left it open)
+    assert soft.is_valid() and soft._props(1e-6)["gaps"] < 1e-5
+    assert soft.volume == approx(7781.609270356783, rel=1e-6) and soft.volume < ball.volume
+    # the rounds stop 3 from each corner: 12 cylinders of radius 2, 20 - 2 x 3 long; 6 patch faces a corner
+    rounds = soft.faces().filter(lambda f: f.geom_type == "cylinder")
+    assert len(rounds) == 12 and all(f.area == approx(14 * math.pi, rel=1e-9) for f in rounds)
+    assert len(soft.faces().filter(lambda f: f.geom_type == "bspline")) == 48
+    # the floor corners of a pocket (three concave edges) are set back too, its rim corners are not
+    pocket = Box(40, 40, 20) - Box(20, 20, 10).translate((0, 0, 5))
+    h, kedges = pocket._with_edges(pocket.edges())
+    record = ext.round_edges(h.brep, kedges, [2.0], [1], setback=5.0)
+    assert record["status"] is None and record["set_back"] == 12  # (8 outside, 4 on the floor)
+    p = pocket.fillet(pocket.edges(), 2, setback=5)
+    assert p.is_valid() and p.volume == approx(27649.245759895017, rel=1e-6)
+
+
+def test_set_back_corners_the_kernel_cannot_build_raise():
+    b = Box(20, 20, 20)
+    with pytest.raises(ValueError, match="must exceed how far the rounds reach"):
+        b.fillet(b.edges(), 2, setback=2)  # (the rounds cross the corner's edges 2 from it)
+    with pytest.raises(ValueError, match="too large for the edge"):
+        b.fillet(b.edges(), 2, setback=10)  # (the corners at both ends of each edge would meet)
+    with pytest.raises(ValueError, match="mitred .* or set back"):
+        b.fillet(b.edges(), 2, setback=3, corners="mitre")
+    with pytest.raises(ValueError, match="constant radius"):
+        b.fillet(b.edges(), (1, 2), setback=3)
+    with pytest.raises(ValueError, match="has none"):
+        b.fillet(b.edges().filter(lambda e: e.center().z > 9), 2, setback=3)
+    with pytest.raises(ValueError, match="positive"):
+        b.fillet(b.edges(), 2, setback=0)
+    # corners between slanted faces: the kernel's set-back corners come out broken, refused
+    frustum = loft([Rectangle(20, 20), Rectangle(10, 10).moved(Location((0, 0, 10)))], ruled=True)
+    with pytest.raises(KernelError, match="set back these corners"):
+        frustum.fillet(frustum.edges(), 1, setback=3)
+    with pytest.raises(ValueError, match="laws"):
+        h, kedges = b._with_edges(b.edges())
+        ext.round_edges(h.brep, kedges, [1.0], [1], law=[1.0, 2.0], setback=3.0)
