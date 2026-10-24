@@ -133,14 +133,20 @@ def test_a_crash_or_a_hang_costs_only_the_other_process(mode, monkeypatch):
 
 def test_ctrl_c_stops_an_isolated_step(mode):
     # A kernel call in this process cannot be interrupted; one in the other process can: Ctrl-C
-    # (KeyboardInterrupt in the main thread) ends the step, and the next one runs.
-    timer = threading.Timer(0.5, _thread.interrupt_main)
-    start = time.monotonic()
-    timer.start()
-    with pytest.raises(KeyboardInterrupt):
-        isolated("probe", _sleep, 30)
-    assert time.monotonic() - start < 5
-    assert isolated("probe", _sleep, 0) == 0
+    # (KeyboardInterrupt in the main thread) ends the step, and the next one runs. Python's own
+    # handler is installed for the test: a process started with SIGINT ignored (a background job,
+    # some CI runners) has none, and interrupt_main() then does nothing.
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        timer = threading.Timer(0.5, _thread.interrupt_main)
+        start = time.monotonic()
+        timer.start()
+        with pytest.raises(KeyboardInterrupt):
+            isolated("probe", _sleep, 30)
+        assert time.monotonic() - start < 5
+        assert isolated("probe", _sleep, 0) == 0
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 def test_the_guard_settings_are_checked(monkeypatch):
