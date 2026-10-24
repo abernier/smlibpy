@@ -89,7 +89,7 @@ vase = loft([Circle(15), Circle(25).translate(0, 0, 30), Circle(10).translate(0,
 print(vase.is_valid(), vase.bbox().max.x)               # True 25.047: overshoots the 25 section
 
 cone = loft([Circle(10), Circle(5).translate(0, 0, 20)])  # two sections: straight sides
-print(round(cone.volume, 3))                            # 3665.192 = exact frustum
+print(round(cone.volume, 3))                            # 3665.191: the exact frustum, 3665.19143
 
 # square to circle: turn the circle so its seam suits the square (45 for a centered Rectangle)
 duct = loft([Rectangle(30, 30), Circle(12).rotate(Z, 45).translate(0, 0, 25)])

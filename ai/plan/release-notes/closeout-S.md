@@ -4,7 +4,15 @@ The "Not done" entries of area S of 0.5.0 (kernel plan S1 to S3, S7, S8, S10, S1
 C8, C12, C15, C16), triaged and closed out. Tests: `tests/test_closeout_S.py` (21) and
 `js/test/closeout_S.test.ts` (18); `tests/test_modeling.py` and `js/test/modeling.test.ts` (the
 kinked loops' rectangles, see Behaviour changes) and `tests/test_lane_S.py`, `js/test/lane_S.test.ts`
-(the mitered spline path, the closing warning) adjusted.
+(the mitered spline path, the closing warning) adjusted. The new C++ (`ext.gordon`, the face strips
+of `ext.skin`, `ext.approximate_tangents`, `ext.planar_faces`, `ext.planar_path_sweep` and the
+sweep reference of the kernel patch) runs clean under AddressSanitizer: `tests/test_closeout_S.py`
+(21) and `tests/test_lane_S.py` (26) with an AddressSanitizer build of this lane, 0 reports. The
+review's 1200 random extrusions near tilted planes at six angles: 7200 of 7200 valid with the exact
+volume. The verifier's sweep sample of S1 (circles, rectangles and triangles along 60 random loops
+closed with a kink; rectangles and circles along 60 closed and 30 open 3D fillet polylines;
+rectangles along 30 smooth loops; 390 sweeps): all valid in both builds, no face without area, and
+the same volume natively and in smlibwasm (within 1e-6) for all 390.
 
 ## Triage
 
