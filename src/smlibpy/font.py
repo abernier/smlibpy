@@ -33,7 +33,7 @@ from typing import Any, Callable, NamedTuple, Sequence
 
 from . import _brotli
 
-__all__ = ["Font", "DEFAULT_FONT", "load_font"]
+__all__ = ["Font", "DEFAULT_FONT", "load_font", "FontError"]
 
 #: The font ``Text`` uses unless told otherwise (Lato Regular, SIL Open Font License 1.1).
 DEFAULT_FONT = Path(__file__).resolve().parent / "fonts" / "Lato-Regular.ttf"
@@ -58,7 +58,8 @@ _NO_PAIR = PairAdjustment()
 
 
 class FontError(ValueError):
-    """The file is not a font this reader can use."""
+    """The file is not a font this reader can use (from ``load_font``, ``Font`` and ``Text``'s
+    ``font=``); a ``ValueError``."""
 
 
 def load_font(path: str | os.PathLike[str] | bytes | None = None) -> Font:

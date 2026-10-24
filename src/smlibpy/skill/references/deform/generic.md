@@ -13,6 +13,7 @@ path for a sweep) and points (result: `Vector`s; see `deform/curves`).
 | Face or edge | Result |
 |---|---|
 | exact image a plane, cylinder or cone (a line, circle) | that analytic geometry, exact (`geom_type` `plane`, `cylinder`, `cone`; `line`, `circle`) |
+| `twist`: a cylinder, cone, sphere or torus about the twist axis, bounded by circles about it | itself, exact (it maps onto itself; seam, circles and type kept) |
 | moved like a rigid body or scaled evenly (also: left in place) | the original geometry, moved: type kept |
 | other faces, `Lattice`, `taper` | exact NURBS: the exact image (degree up to `MAX_DEGREE` = 12) |
 | other faces, `twist`, `bend`, `unroll` | NURBS within `tolerance` (1e-6 mm) of the exact image, quintic B-splines |
@@ -22,8 +23,10 @@ across it), a slanted plane bent becomes a cone; a tapered cylinder is a cone, a
 has planes; the ends of a twisted bar are planes; an unrolled ring is planes and lines; faces
 a lattice leaves in place keep their type. So `faces().cylinders()`, `Face.radius`,
 `Face.axis`, `edges().circles()`, `bends()`/`unfold` and STEP (planes, cylinders, cones) work
-on deformed parts. Twist, bend and unroll use sines and cosines: a twisted side face, a hole
-across a bend and a bent tube (a seam) are fitted; the straight rulings of a twisted side
+on deformed parts. A twist maps a surface of revolution about its own axis onto itself: a
+twisted cylinder, cone, sphere or torus about the axis, the bore of a twisted bar along the
+axis, are what they were. Twist, bend and unroll use sines and cosines: a twisted side face, a
+hole across a bend and a bent tube (a seam) are fitted; the straight rulings of a twisted side
 stay straight (degree 1 across). A face whose exact lattice image needs more than degree 12
 (a sphere in a 4 x 4 x 4 lattice needs 18) or more than 40000 control points (the offset face
 of a thickened free-form surface, 11025 poles, would get 514794) is fitted within the
@@ -59,8 +62,10 @@ stays; beyond `end` it is turned (twist, bend) or scaled (taper) as a whole. Fac
   the kernel could not build a valid result`); `shell()` works.
 - Self-intersection is not detected: a bend of more than 180° with long legs makes the legs
   cross and still passes `is_valid()`. Keep `start`/`end` and the legs apart.
-- A face with a seam (a full turn: a bent tube, a twisted cylinder) is fitted, not analytic:
-  its new seam would not lie where the old one was.
+- A face with a seam (a full turn: a bent tube, a cylinder twisted about another axis) is
+  fitted, not analytic: its new seam would not lie where the old one was. About the twist's
+  own axis the face maps onto itself and stays as it was, unless edges that the twist moves
+  touch it (a box fused onto a cylinder's side).
 - Booleans, fillets, chamfers and shells work on deformed parts. Order matters: features
   made before the deformation deform with the part, features added after it do not (a hole
   drilled after a twist keeps its cylinder wall; drilled before, it twists along).

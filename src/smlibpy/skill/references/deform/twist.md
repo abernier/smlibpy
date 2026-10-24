@@ -29,7 +29,10 @@ The faces are quintic B-splines within the tolerance, except what the twist only
 faces across the axis stay exact planes (`geom_type == "plane"`, circles on them circles),
 and the straight rulings of side faces stay straight (degree 1 across: a twisted box side is
 degree 1 x 5, 26 poles). Faces outside the range keep their type (`plane`, `cylinder`). A
-cylinder about the twist axis is fitted (its seam becomes a helix).
+cylinder, cone, sphere or torus about the twist axis maps onto itself and stays as it was,
+exact (`twist(Cylinder(5, 40), 90)`: a cylinder and two planes, volume 3141.5927; the bore of
+`Box(20, 20, 40) - Cylinder(4, 40)` twisted: a cylinder); off the axis, or where a face also
+has edges the twist moves (a box fused onto a cylinder's side), it is fitted.
 
 ## Gotchas
 - A range inside the part splits the faces crossing `start` and `end`: a baluster

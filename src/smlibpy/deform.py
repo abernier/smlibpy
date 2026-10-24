@@ -28,7 +28,8 @@ Where the exact image of a face or edge is a plane, cylinder, cone, line or circ
 has that geometry: a plate bent about an axis gets exact cylinders (so ``bends()``, ``unfold``
 and selections such as ``faces().cylinders()`` see them), a tapered cylinder an exact cone, the
 turned ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves
-in place keep what they were. The other faces are NURBS. Lattices and tapers are polynomial
+in place keep what they were; a cylinder, cone, sphere or torus about a twist's axis maps onto
+itself and stays as it was (seam and all). The other faces are NURBS. Lattices and tapers are polynomial
 maps of space, so their results are exact: every face is the exact image of the original (up
 to degree ``MAX_DEGREE``). Twists, bends and unrolls turn space with sines and cosines; a NURBS
 reproduces that where the image is analytic or still polynomial (the straight rulings of a
@@ -422,7 +423,8 @@ def twist(shape: Any, angle: float, *, axis: Axis = Z, start: float | None = Non
     """Twist a part about an axis by ``angle`` degrees over its length (or from ``start`` to ``end``).
 
     Every cross-section turns by an angle that grows evenly from 0 at ``start`` to ``angle``
-    at ``end``.
+    at ``end``. A cylinder, cone, sphere or torus about the axis maps onto itself and stays as
+    it was (a twisted tube's walls are its cylinders).
 
     Args:
         shape: a Part (or a Shell), an Edge, a Wire, or points (a point or a list of them).
@@ -830,6 +832,11 @@ class Lattice:
     included). Move them, then ``apply`` the lattice to a part: space inside the box moves
     smoothly with the points (a Bezier volume; space outside the box follows the same
     polynomial). A lattice whose points were not moved changes nothing.
+
+    A lattice is a global map, for the overall shape: every point pulls the whole box (most near
+    itself), so one moved point changes every face it does not leave in place. For a bump or dent
+    on one face, push or warp that face instead (:meth:`Part.push`, :meth:`Part.warp`): they
+    change it near a point or within a region and leave the other faces as they are.
 
     ``points`` is a writable ``(nx, ny, nz, 3)`` numpy array of world positions, indexed
     ``[i, j, k]`` along X, Y and Z: ``lat.points[1, 1, -1] += (0, 0, 5)`` lifts one point.

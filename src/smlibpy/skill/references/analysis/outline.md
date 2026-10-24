@@ -18,9 +18,11 @@ from +X. Works on `Part`, `Shell` and `Sketch`.
 
 ## Returns
 
-`bspline` edges lying in the plane, in world coordinates (not in the plane's 2D coordinates).
+Edges lying in the plane, in world coordinates (not in the plane's 2D coordinates):
 `Box(20, 10, 5).translate(100, 0, 0).outline(Plane.XZ.offset(7))` lies at y = -7 and spans
-x = 90..110.
+x = 90..110. Straight and circular pieces are lines, arcs and circles (the arcs of one circle
+joined), so `circles()`, `radius` and `arc_center` find a view's holes; other curves (a torus'
+contour, a tilted circle's ellipse) are `bspline`.
 
 What is in it:
 
@@ -33,16 +35,18 @@ What is in it:
   and 2 hidden ones, the bore's sides at x = +-6.
 - Edges and contours of curved faces: a cylinder seen from the side is a 10 x 20 rectangle
   (its side lines come from the contour, not from edges).
-- Lines may come in pieces (where an edge passes behind the body, or where the kernel splits it).
+- Lines may come in pieces (where an edge passes behind the body, or where the kernel splits it),
+  but each line once: a line that lies on a longer one of the view is left out, and so are the
+  points the kernel's projection gives where an edge or seam is seen end-on (a torus from the
+  side: 8 edges, 4 lines and 4 quarters of the tube's circles, 111.416 long).
 - A tilted view works: a box on a plane with normal (1, 1, 1) gives the 6 hexagon edges and
   the 3 inner edges of an isometric drawing (and 3 hidden edges with `hidden=True`).
 
 ## Accuracy
 
 Exact: lines have their true projected lengths (20.0, 16.3299 = 20·sqrt(2/3)), a projected
-circle has radius error 2e-15. All edges are `bspline`, so `radius` and `arc_center` do not
-work; measure lengths, `point_at` and `bbox()`. `export_dxf` and `export_svg` write straight and
-circular ones as lines, arcs and circles.
+circle has radius error 2e-15. `export_dxf` and `export_svg` write lines, arcs and circles as
+such.
 
 ## Gotchas
 

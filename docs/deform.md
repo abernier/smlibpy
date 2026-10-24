@@ -28,7 +28,10 @@ Wherever the mathematics allows it, the results are exact:
   sheet metal's `bends()` and `unfold` see the bend), a tapered cylinder is an exact cone, the
   turned ends of a twisted bar are planes, a rolled sheet unrolls into planes, and faces a
   map leaves in place (the bottom of a block whose top a lattice lifts) keep what they were.
-  STEP files write them as planes, cylinders and cones.
+  A twist turns every cross-section about its axis, so a cylinder, cone, sphere or torus about
+  that axis maps onto itself: `twist(Cylinder(5, 40), 90)` is the same exact cylinder, and the
+  bore of a twisted bar with a hole along the axis stays a cylinder. STEP files write them as
+  planes, cylinders and cones.
 - **Lattices and tapers** are polynomial maps of space. Every other face of the result is a
   NURBS that is the exact image of the original face; a pillow made with a lattice is exactly
   the shape the control points describe.
@@ -211,7 +214,10 @@ twisted vases, columns and blades, bent handles and brackets with holes, tapered
 legs, soft free-form tops. Model directly when the shape is easier to draw (a tube with
 several bends along a known path is a sweep), when a feature must keep its exact shape
 (add it after the deformation, so a bore drilled into a tapered grip stays round), or when
-the part will be offset outward, which the kernel cannot do for most deformed parts.
+the part will be offset outward, which the kernel cannot do for most deformed parts. A change
+on one face (a bump or dent) is no deformation either: `Part.push` and `Part.warp` shape that
+face alone (see [Shaping faces](surfaces.md#shaping-faces-push-warp-flatten)), where a `Lattice`
+moves the whole part.
 
 Meshes of twisted parts (STL, glTF, pictures) keep to the tolerance you ask for, but they
 need many more triangles than the straight part: a face that stays straight across while it

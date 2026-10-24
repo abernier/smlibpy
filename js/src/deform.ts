@@ -26,7 +26,8 @@
 // that geometry: a plate bent about an axis gets exact cylinders (so `bends()`, `unfold` and
 // selections such as `faces().cylinders()` see them), a tapered cylinder an exact cone, the turned
 // ends of a twisted bar planes, a rolled sheet unrolls into planes, and faces a map leaves in place
-// keep what they were. The other faces are NURBS. Lattices and tapers are polynomial maps of
+// keep what they were; a cylinder, cone, sphere or torus about a twist's axis maps onto itself and
+// stays as it was (seam and all). The other faces are NURBS. Lattices and tapers are polynomial maps of
 // space, so their results are exact: every face is the exact image of the original (up to degree
 // `MAX_DEGREE`). Twists, bends and unrolls turn space with sines and cosines; a NURBS reproduces
 // that where the image is analytic or still polynomial (the straight rulings of a twisted face)
@@ -36,7 +37,7 @@
 // The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmUnbendVolume,
 // SmTransform) and a Bezier volume for lattices and tapers.
 
-import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -532,7 +533,9 @@ export interface TwistOptions extends RangeOptions {
 /**
  * Twist a part about an axis by `angle` degrees over its length (or from `start` to `end`).
  *
- * Every cross-section turns by an angle that grows evenly from 0 at `start` to `angle` at `end`.
+ * Every cross-section turns by an angle that grows evenly from 0 at `start` to `angle` at `end`. A
+ * cylinder, cone, sphere or torus about the axis maps onto itself and stays as it was (a twisted
+ * tube's walls are its cylinders).
  *
  * @param shape A Part (or a Shell), an Edge, a Wire, or points (a point or an array of them).
  * @param angle The turn in degrees between `start` and `end`, counterclockwise seen from the tip
@@ -560,8 +563,8 @@ export function twist(shape: unknown, angle: number, options: TwistOptions = {})
   const { axis = Z, start = null, end = null, tolerance = null } = options
   const input = _checkShape(shape, 'twist')
   const a = _angle(angle, 'twist')
-  const plan = _planTwist(input, a, axis, start, end, _tolerance(tolerance))
-  return _run(plan, 'twist', input)
+  // (in a scope: the faces split at the range's ends and the checks' copies are freed at once)
+  return scope(() => _run(_planTwist(input, a, axis, start, end, _tolerance(tolerance)), 'twist', input))
 }
 
 // ============================================================================= taper
@@ -640,8 +643,7 @@ export function taper(shape: unknown, scale: number, options: TaperOptions = {})
   const f = scale
   if (!(Number.isFinite(f) && f > 0)) throw new RangeError('taper: scale must be a positive number (1 keeps the size)')
   if (f === 1) throw new RangeError('taper: scale is 1; nothing to do')
-  const plan = _planTaper(input, f, axis, start, end, _tolerance(tolerance))
-  return _run(plan, 'taper', input)
+  return scope(() => _run(_planTaper(input, f, axis, start, end, _tolerance(tolerance)), 'taper', input))
 }
 
 // ============================================================================= bend
@@ -786,10 +788,12 @@ export function bend(shape: unknown, angle: number, options: BendOptions = {}): 
     if (!(Number.isFinite(radius) && radius > 0)) throw new RangeError('bend: radius must be a positive number')
   }
   if (!(plane instanceof Plane)) throw new TypeError('bend: plane must be a Plane (xDir along the part, yDir toward the inside of the bend)')
-  const plan = _planBend(input, a, radius, plane, start, end, _tolerance(tolerance))
-  const result = _run(plan, 'bend', input)
-  if (result instanceof Part && plan.fold !== null) result._folds = [...result._folds, plan.fold]
-  return result
+  return scope(() => {
+    const plan = _planBend(input, a, radius, plane, start, end, _tolerance(tolerance))
+    const result = _run(plan, 'bend', input)
+    if (result instanceof Part && plan.fold !== null) result._folds = [...result._folds, plan.fold]
+    return result
+  })
 }
 
 // ============================================================================= unroll
@@ -942,8 +946,7 @@ export function unroll(shape: unknown, options: UnrollOptions): Any {
     throw new RangeError('unroll: radius must be a positive number (the radius of the layer that keeps its length)')
   }
   if (!(axis instanceof Axis)) throw new TypeError('unroll: axis must be an Axis')
-  const plan = _planUnroll(input, radius, axis, start, _tolerance(tolerance))
-  return _run(plan, 'unroll', input)
+  return scope(() => _run(_planUnroll(input, radius, axis, start, _tolerance(tolerance)), 'unroll', input))
 }
 
 // ============================================================================= lattice
@@ -999,6 +1002,11 @@ function _copyPoints(points: readonly (readonly (readonly (readonly number[])[])
  * Move them, then `apply` the lattice to a part: space inside the box moves smoothly with the
  * points (a Bezier volume; space outside the box follows the same polynomial). A lattice whose
  * points were not moved changes nothing.
+ *
+ * A lattice is a global map, for the overall shape: every point pulls the whole box (most near
+ * itself), so one moved point changes every face it does not leave in place. For a bump or dent on
+ * one face, push or warp that face instead (`Part.push`, `Part.warp`): they change it near a point
+ * or within a region and leave the other faces as they are.
  *
  * `points` holds the world positions, `points[i][j][k]` = `[x, y, z]`, indexed along X, Y and Z;
  * the arrays are writable: `lat.points[1][1][2][2] += 5` lifts one point. `move`, `scale` and
@@ -1225,9 +1233,11 @@ export class Lattice {
   apply(shape: unknown, options: { tolerance?: number | null } = {}): Any {
     _opts('Lattice.apply', options)
     const input = _checkShape(shape, 'lattice')
-    const plan = this._plan(input, _tolerance(options.tolerance))
-    if (_isBody(input)) _checkFolding(input, plan.spec.pieces[0])
-    return _run(plan, 'lattice', input)
+    return scope(() => {
+      const plan = this._plan(input, _tolerance(options.tolerance))
+      if (_isBody(input)) _checkFolding(input, plan.spec.pieces[0])
+      return _run(plan, 'lattice', input)
+    })
   }
 
   toString(): string {

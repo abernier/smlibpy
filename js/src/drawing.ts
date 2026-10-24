@@ -6,7 +6,7 @@
 // the front view, the view from the left to its right) or third-angle (ASME, America: the view
 // from above goes above it, the view from the left to its left).
 
-import { _opts } from './kernel.ts'
+import { _opts, scope } from './kernel.ts'
 import { BoundBox, Location, Plane, Vector } from './geometry.ts'
 import { Edge, Face, Part, Shell, ShapeList, Wire, _Body, _list, _typeName } from './shapes.ts'
 import { _edgePoints, _entity, _samplesFor } from './dxf.ts'
@@ -104,47 +104,51 @@ export function drawingViews(part: Part | Shell, views: string | readonly string
   if (gap === null) gap = 0.2 * Math.max(size.x, size.y, size.z, 1e-9)
   if (!(gap >= 0)) throw new RangeError('drawingViews: gap must not be negative')
   const flip = projection === 'third-angle' ? -1 : 1
-  // the views in the drawing's plane, at the model's coordinates
-  const raw = new Map<string, [ShapeList<Edge>, ShapeList<Edge>]>()
-  for (const n of names) {
-    const [d, x] = _VIEWS[n]
-    const plane = new Plane([0, 0, 0], x, d)
-    let seen: ShapeList<Edge>
-    let behind: ShapeList<Edge>
-    if (hidden) [seen, behind] = part.outline(plane, { hidden: true, tangentEdges })
-    else [seen, behind] = [part.outline(plane, { tangentEdges }), new ShapeList<Edge>()]
-    const toXy = plane.location.inverse()
-    raw.set(n, [seen.moved(toXy), behind.moved(toXy)])
-  }
-  const boxes = new Map<string, BoundBox | null>()
-  for (const n of names) {
-    const [a, b] = raw.get(n)!
-    boxes.set(n, a.length + b.length ? _list([...a, ...b]).bbox() : null)
-  }
-  // the front view stays where it is; the others move beside it, along the row or the column
-  const front = boxes.get('front') ?? _boxOf(part, 'front')
-  let rowExtent = [front.min.x, front.max.x]
-  const out: DrawingView[] = []
-  const nearFirst = [...names].sort((p, q) => Math.abs(_PLACES[p][0]) - Math.abs(_PLACES[q][0]) || Math.abs(_PLACES[p][1]) - Math.abs(_PLACES[q][1]))
-  for (const n of nearFirst) {
-    let [col, row] = _PLACES[n]
-    if (n !== 'back') {
-      col *= flip
-      row *= flip
+  // (in a scope: the outlines at the model's coordinates are freed once the views are moved apart,
+  // kernel plan W9)
+  return scope(() => {
+    // the views in the drawing's plane, at the model's coordinates
+    const raw = new Map<string, [ShapeList<Edge>, ShapeList<Edge>]>()
+    for (const n of names) {
+      const [d, x] = _VIEWS[n]
+      const plane = new Plane([0, 0, 0], x, d)
+      let seen: ShapeList<Edge>
+      let behind: ShapeList<Edge>
+      if (hidden) [seen, behind] = part.outline(plane, { hidden: true, tangentEdges })
+      else [seen, behind] = [part.outline(plane, { tangentEdges }), new ShapeList<Edge>()]
+      const toXy = plane.location.inverse()
+      raw.set(n, [seen.moved(toXy), behind.moved(toXy)])
     }
-    const b = boxes.get(n) ?? _boxOf(part, n)
-    let dx = 0
-    let dy = 0
-    if (col > 0) dx = rowExtent[1] + gap - b.min.x
-    else if (col < 0) dx = rowExtent[0] - gap - b.max.x
-    if (row > 0) dy = front.max.y + gap - b.min.y
-    else if (row < 0) dy = front.min.y - gap - b.max.y
-    if (col !== 0) rowExtent = [Math.min(rowExtent[0], b.min.x + dx), Math.max(rowExtent[1], b.max.x + dx)]
-    const place = new Location([dx, dy, 0])
-    const [seen, behind] = raw.get(n)!
-    out.push(new DrawingView(n, new Vector(_VIEWS[n][0]), seen.moved(place), behind.moved(place)))
-  }
-  return names.map((n) => out.find((v) => v.name === n)!)
+    const boxes = new Map<string, BoundBox | null>()
+    for (const n of names) {
+      const [a, b] = raw.get(n)!
+      boxes.set(n, a.length + b.length ? _list([...a, ...b]).bbox() : null)
+    }
+    // the front view stays where it is; the others move beside it, along the row or the column
+    const front = boxes.get('front') ?? _boxOf(part, 'front')
+    let rowExtent = [front.min.x, front.max.x]
+    const out: DrawingView[] = []
+    const nearFirst = [...names].sort((p, q) => Math.abs(_PLACES[p][0]) - Math.abs(_PLACES[q][0]) || Math.abs(_PLACES[p][1]) - Math.abs(_PLACES[q][1]))
+    for (const n of nearFirst) {
+      let [col, row] = _PLACES[n]
+      if (n !== 'back') {
+        col *= flip
+        row *= flip
+      }
+      const b = boxes.get(n) ?? _boxOf(part, n)
+      let dx = 0
+      let dy = 0
+      if (col > 0) dx = rowExtent[1] + gap - b.min.x
+      else if (col < 0) dx = rowExtent[0] - gap - b.max.x
+      if (row > 0) dy = front.max.y + gap - b.min.y
+      else if (row < 0) dy = front.min.y - gap - b.max.y
+      if (col !== 0) rowExtent = [Math.min(rowExtent[0], b.min.x + dx), Math.max(rowExtent[1], b.max.x + dx)]
+      const place = new Location([dx, dy, 0])
+      const [seen, behind] = raw.get(n)!
+      out.push(new DrawingView(n, new Vector(_VIEWS[n][0]), seen.moved(place), behind.moved(place)))
+    }
+    return names.map((n) => out.find((v) => v.name === n)!)
+  })
 }
 
 /** The box of a view of the part's bounding box (for a view without lines). */

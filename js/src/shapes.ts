@@ -3426,7 +3426,7 @@ export class Face extends Shape {
 
   /** Extrude a planar face along its normal (see `Sketch.extrude`). */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
-    return this.toSketch().extrude(amount, options)
+    return scope(() => this.toSketch().extrude(amount, options))
   }
 
   _transformed(m: Matrix): Face {
@@ -3765,35 +3765,39 @@ export class _Body extends Shape {
    * meet, apart or one inside the other, give an empty list.
    */
   intersectionCurves(other: Part | Shell | Face | Plane): ShapeList<Edge> {
-    if (other instanceof Plane) {
-      // (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane, fits
-      // its curves to B-spline faces within 2e-3 only)
-      const box = this._looseBox()
-      const middle = box.center.sub(other.zDir.mul(box.center.sub(other.origin).dot(other.zDir)))
-      if (box.center.sub(middle).length > box.diagonal / 2 + 1e-6 * Math.max(1, box.diagonal)) return _list([])
-      const span = 2 * box.diagonal + 1
-      other = Rectangle(span, span).on(new Plane(middle, other.xDir, other.zDir))
-    }
-    if (other instanceof Face) other = other.toShell()
-    if (!(other instanceof _Body)) {
-      throw new TypeError(`intersectionCurves takes a body (Part, Shell, Sketch), a face or a plane, not a ${_typeName(other)}`)
-    }
-    const body = other
-    const a = this._looseBox()
-    const b = body._looseBox()
-    const tol = 1e-6 * Math.max(1, a.union(b).diagonal)
-    if (_disjoint(a, b, tol)) return _list([])
-    let curves: number[]
-    try {
-      ;[curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, body._brep))
-    } catch (e) {
-      // (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
-      if (e instanceof KernelError && _bodyDistance(this, body) > tol) return _list([])
-      throw e
-    }
-    // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
-    // borders twice (also reversed).
-    return _distinctCurves(curves, tol)
+    // (in a scope: the sheet of a plane, a face's copy and repeated curves are freed at once, kernel
+    // plan W9)
+    return scope(() => {
+      if (other instanceof Plane) {
+        // (a planar sheet across the body: the kernel's plane section, intersect_brep_with_plane, fits
+        // its curves to B-spline faces within 2e-3 only)
+        const box = this._looseBox()
+        const middle = box.center.sub(other.zDir.mul(box.center.sub(other.origin).dot(other.zDir)))
+        if (box.center.sub(middle).length > box.diagonal / 2 + 1e-6 * Math.max(1, box.diagonal)) return _list([])
+        const span = 2 * box.diagonal + 1
+        other = Rectangle(span, span).on(new Plane(middle, other.xDir, other.zDir))
+      }
+      if (other instanceof Face) other = other.toShell()
+      if (!(other instanceof _Body)) {
+        throw new TypeError(`intersectionCurves takes a body (Part, Shell, Sketch), a face or a plane, not a ${_typeName(other)}`)
+      }
+      const body = other
+      const a = this._looseBox()
+      const b = body._looseBox()
+      const tol = 1e-6 * Math.max(1, a.union(b).diagonal)
+      if (_disjoint(a, b, tol)) return _list([])
+      let curves: number[]
+      try {
+        ;[curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, body._brep))
+      } catch (e) {
+        // (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
+        if (e instanceof KernelError && _bodyDistance(this, body) > tol) return _list([])
+        throw e
+      }
+      // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
+      // borders twice (also reversed).
+      return _distinctCurves(curves, tol)
+    })
   }
 
   /**
@@ -3863,18 +3867,22 @@ export class _Body extends Shape {
     _opts('_Body.outline', options)
     const { hidden = false, tangentEdges = false } = options
     const tol = 1e-7 * Math.max(this.bbox().diagonal, 1)
-    if (hidden || tangentEdges) {
-      const [seen, behind]: [number[], number[]] = kernelCall('outline', () =>
-        ext.hidden_lines(this._brep, plane.origin.toArray(), plane.zDir.toArray(), false, Boolean(tangentEdges)),
-      )
-      const visible = _drawn(seen.map((c) => Edge._fromCurve(c)), tol)
-      const back = _drawn(behind.map((c) => Edge._fromCurve(c)), tol)
-      return hidden ? [visible, back] : visible
-    }
-    const curves = kernelCall('outline', () => k.project_brep_onto_plane(this._brep, plane.origin.toArray(), plane.zDir.toArray()))
-    // The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
-    // circles seen edge-on come with a copy each); a drawing view needs each line once.
-    return _drawn(_distinctCurves(curves, tol), tol)
+    // (in a scope: the projected pieces rebuilt as lines and arcs, repeated or left out are freed at
+    // once, kernel plan W9)
+    return scope((): ShapeList<Edge> | [ShapeList<Edge>, ShapeList<Edge>] => {
+      if (hidden || tangentEdges) {
+        const [seen, behind]: [number[], number[]] = kernelCall('outline', () =>
+          ext.hidden_lines(this._brep, plane.origin.toArray(), plane.zDir.toArray(), false, Boolean(tangentEdges)),
+        )
+        const visible = _drawn(seen.map((c) => Edge._fromCurve(c)), tol)
+        const back = _drawn(behind.map((c) => Edge._fromCurve(c)), tol)
+        return hidden ? [visible, back] : visible
+      }
+      const curves = kernelCall('outline', () => k.project_brep_onto_plane(this._brep, plane.origin.toArray(), plane.zDir.toArray()))
+      // The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
+      // circles seen edge-on come with a copy each); a drawing view needs each line once.
+      return _drawn(_distinctCurves(curves, tol, 10 * tol), tol)
+    })
   }
 
   _transformed(m: Matrix): Shape {
@@ -3980,36 +3988,88 @@ export class _Body extends Shape {
   }
 }
 
-/** Edges of new kernel curves, each curve once: one whose ends and midpoint lie within `tol` of
- * those of a curve kept already (either way round) is left out. */
 /** Projected edges as a drawing has them: the B-splines that are lines or circular arcs exactly (the
  * kernel's projections fit every curve) as lines and arcs, and the arcs of one circle that meet end
- * to end joined, so that `circles()` and `radius` find a view's holes. */
+ * to end joined, so that `circles()` and `radius` find a view's holes.
+ *
+ * Pieces within a box `10 * tol` across are left out (`_speck`): the kernel's projection gives such
+ * slivers where an edge or a seam is seen end-on (a torus from the side), points rather than lines of
+ * the view. So are lines that lie on a longer line of the view (a hole's rim seen edge-on, on the
+ * part's outline): each line comes once. A piece that cannot be rebuilt (a straight one that runs
+ * back on itself) stays as the kernel gave it. */
 function _drawn(edges: Iterable<Edge>, tol: number): ShapeList<Edge> {
   const out: Edge[] = []
   for (let e of edges) {
+    if (_speck(e, 10 * tol)) continue
     if (e.geomType === 'bspline') {
-      if (e._isStraight()) e = Line(e.start, e.end)
-      else {
-        const circle = _circleOf(e)
-        if (circle !== null) {
-          const center = new Vector(circle[0])
-          if (e.isClosed) {
-            const plane = new Plane(center, e.start.sub(center).normalized(), new Vector(circle[2]))
-            e = CenterArc([0, 0], circle[1], 0, 360, plane)
-          } else e = ThreePointArc(e.start, e.pointAt(0.5), e.end)
+      try {
+        if (e._isStraight()) {
+          if (Math.abs(e.start.distanceTo(e.end) - e.length) <= tol) e = Line(e.start, e.end)
+        } else {
+          const circle = _circleOf(e)
+          if (circle !== null) {
+            const center = new Vector(circle[0])
+            if (e.isClosed) {
+              const plane = new Plane(center, e.start.sub(center).normalized(), new Vector(circle[2]))
+              e = CenterArc([0, 0], circle[1], 0, 360, plane)
+            } else e = ThreePointArc(e.start, e.pointAt(0.5), e.end)
+          }
         }
+      } catch (err) {
+        if (!(err instanceof RangeError)) throw err // (ends or points that coincide: the piece as projected)
       }
     }
     out.push(e)
   }
-  return _list(_joinedArcs(out, tol))
+  return _list(_joinedArcs(_uncoveredLines(out, 10 * tol), tol))
 }
 
-function _distinctCurves(curves: Iterable<number>, tol: number): ShapeList<Edge> {
+/** The edges without the lines that lie within `tol` of a longer (or equal) line among them, in
+ * their order. */
+function _uncoveredLines(edges: Edge[], tol: number): Edge[] {
+  const on = (x: Vector, p: Vector, q: Vector): boolean => {
+    const d = q.sub(p)
+    const t = Math.min(Math.max(x.sub(p).dot(d) / d.dot(d), 0), 1)
+    return p.add(d.mul(t)).distanceTo(x) <= tol
+  }
+  const lines = edges.filter((e) => e.geomType === 'line').sort((a, b) => b.length - a.length)
+  const kept: [Vector, Vector][] = []
+  const covered = new Set<Edge>()
+  for (const e of lines) {
+    const a = e.start
+    const b = e.end
+    if (kept.some(([p, q]) => on(a, p, q) && on(b, p, q))) covered.add(e)
+    else kept.push([a, b])
+  }
+  return edges.filter((e) => !covered.has(e))
+}
+
+/** Whether an edge lies within a box `size` across: a point of a drawing view, not a line. For a
+ * B-spline from the box of its control points (the curve lies in their hull): measuring the length or
+ * the middle of the kernel's degenerate slivers takes a second each. */
+function _speck(e: Edge, size: number): boolean {
+  if (e.geomType === 'bspline') {
+    const poles: number[][] = ext.curve_data(e._curve()).poles
+    const lo = [Infinity, Infinity, Infinity]
+    const hi = [-Infinity, -Infinity, -Infinity]
+    for (const p of poles)
+      for (let i = 0; i < 3; i++) {
+        lo[i] = Math.min(lo[i], p[i])
+        hi[i] = Math.max(hi[i], p[i])
+      }
+    if (Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) <= size) return true
+  }
+  return e.bbox().diagonal <= size
+}
+
+/** Edges of new kernel curves, each curve once: one whose ends and midpoint lie within `tol` of
+ * those of a curve kept already (either way round) is left out, and with `speck` so is one within a
+ * box `speck` across (see `_speck`). */
+function _distinctCurves(curves: Iterable<number>, tol: number, speck = 0): ShapeList<Edge> {
   const kept: [Edge, Vector, Vector, Vector][] = []
   for (const c of curves) {
     const e = Edge._fromCurve(c)
+    if (speck > 0 && _speck(e, speck)) continue
     const a = e.start
     const b = e.end
     const m = e.pointAt(0.5)
@@ -7190,11 +7250,14 @@ export class Part extends _Body {
       if (!(e instanceof KernelError)) throw e
       // A plane tangent to a face meets the part along a line, which bounds no face.
       if (this._onOneSide(pl)) throw new RangeError(touches)
-      const error = new KernelError(
-        e.operation,
-        e.detail,
-        e.status,
-        'the kernel could not make faces of the curves where the plane meets the part; a plane through an edge, or tangent to a face, inside the part can do this: move the plane a little',
+      const error = _traced(
+        new KernelError(
+          e.operation,
+          e.detail,
+          e.status,
+          'the kernel could not make faces of the curves where the plane meets the part; a plane through an edge, or tangent to a face, inside the part can do this: move the plane a little',
+        ),
+        e.trace,
       )
       ;(error as Any).cause = e
       throw error
@@ -8098,11 +8161,16 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
     if (crash !== null) {
       const failure = e as KernelError
       const size = operation === 'chamfer' ? 'length' : 'radius'
-      const error = new KernelError(
-        failure.operation,
-        failure.detail,
-        failure.status,
-        `${crash}, which says nothing about the ${size} (it fits the faces around the edges): round the edges in smaller groups to find the one it fails at`,
+      const where: string | undefined = (failure as Any)._where
+      const at = where ? ` (it could not build ${where})` : ''
+      const error = _traced(
+        new KernelError(
+          failure.operation,
+          failure.detail,
+          failure.status,
+          `${crash}${at}, which says nothing about the ${size} (it fits the faces around the edges): round the edges in smaller groups to find the one it fails at`,
+        ),
+        failure.trace,
       )
       ;(error as Any).cause = e
       throw error
@@ -8477,8 +8545,8 @@ export class Shell extends _Body {
     const hint =
       'the kernel cannot offset this sheet (closed grid surfaces and surfaces with a pole fail; build closed shapes with revolve, loft or extrude, or thicken less than the smallest concave radius)'
     if (options.both) {
-      // one side, then the other, fused: the two halves share the sheet
-      return this.thicken(d / 2).fuse(this.thicken(-d / 2))
+      // one side, then the other, fused: the two halves share the sheet (freed at once)
+      return scope(() => this.thicken(d / 2).fuse(this.thicken(-d / 2)))
     }
     const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
     // (the kernel's extended offset mode, which depends on memory layout and can crash: it runs in the
@@ -9327,24 +9395,28 @@ export class Sketch extends Shell {
     this._requireRegion('extrude')
     const d = direction != null ? _direction(direction, 'extrude') : this._plane.zDir
     if (direction != null) this._checkDirection(d, Math.abs(Number(amount)) * (both ? 2 : 1), !taper)
-    if (taper) {
-      const out = this._extrudeTaper(amount, taper, both, corners === 'round')
-      out.name = this.name
-      out.color = this.color
-      return out
-    }
-    let src: Sketch = this
-    let dist = Number(amount)
-    if (both) {
-      src = this.translate(d.mul(-Math.abs(dist)))
-      dist = 2 * Math.abs(dist)
-    }
-    const sign = dist > 0 ? 1 : -1
-    let part = src._sweptAlong(d.mul(sign), Math.abs(dist))
-    if (direction != null && Math.abs(d.dot(this._plane.zDir)) < 1 - 1e-12) part = src._oblique(part, d.mul(sign), Math.abs(dist))
-    part.name = this.name
-    part.color = this.color
-    return part
+    // (in a scope: the tapered walls, holes and drafted tries, the moved sketch of `both` and the
+    // turned tries of an oblique extrusion are freed at once, kernel plan W9)
+    return scope(() => {
+      if (taper) {
+        const out = this._extrudeTaper(amount, taper, both, corners === 'round')
+        out.name = this.name
+        out.color = this.color
+        return out
+      }
+      let src: Sketch = this
+      let dist = Number(amount)
+      if (both) {
+        src = this.translate(d.mul(-Math.abs(dist)))
+        dist = 2 * Math.abs(dist)
+      }
+      const sign = dist > 0 ? 1 : -1
+      let part = src._sweptAlong(d.mul(sign), Math.abs(dist))
+      if (direction != null && Math.abs(d.dot(this._plane.zDir)) < 1 - 1e-12) part = src._oblique(part, d.mul(sign), Math.abs(dist))
+      part.name = this.name
+      part.color = this.color
+      return part
+    })
   }
 
   _sweptAlong(d: Vector, dist: number): Part {
@@ -9479,32 +9551,36 @@ export class Sketch extends Shell {
     ;[ax, angle] = _revolveAxisAngle(ax, angle)
     const n = this._plane.zDir
     if (!ax.direction.isPerpendicular(n)) throw new RangeError('revolve: the axis must lie in the sketch plane (it is not parallel to it)')
-    this._checkAxisBeside(ax, axis === null)
-    const o = ax.origin.toArray()
-    const d = ax.direction.toArray()
-    const hint =
-      'the axis must not cross the region' +
-      (axis === null ? ` (the default axis is the sketch's Y axis through ${_fmtPoint(ax.origin)}; pass an axis)` : '')
-    const result = kernelCall(
-      'revolve',
-      () => {
-        let out: Part | null = null
-        for (const f of this.faces()) {
-          const loops = f.wires()
-          const revolved = (w: Wire) => _freed(w._copyCurves(), (curves) => k.rotational_sweep(curves, o, d, Number(angle), { cap_ends: true }))
-          let piece = _analyticRevolve<Part>(revolved(loops[0]), Part)
-          for (const w of loops.slice(1)) piece = piece.cut(_analyticRevolve<Part>(revolved(w), Part))
-          out = out === null ? piece : out.fuse(piece)
-        }
-        return out
-      },
-      hint,
-    )
-    if (result === null) throw new RangeError('empty sketch')
-    _requireSolid(result, 'revolve', hint)
-    result.name = this.name
-    result.color = this.color
-    return result
+    // (in a scope: the faces, loops, revolved loops and the analytic copies are freed at once, not
+    // when the garbage collector gets to them, kernel plan W9)
+    return scope(() => {
+      this._checkAxisBeside(ax, axis === null)
+      const o = ax.origin.toArray()
+      const d = ax.direction.toArray()
+      const hint =
+        'the axis must not cross the region' +
+        (axis === null ? ` (the default axis is the sketch's Y axis through ${_fmtPoint(ax.origin)}; pass an axis)` : '')
+      const result = kernelCall(
+        'revolve',
+        () => {
+          let out: Part | null = null
+          for (const f of this.faces()) {
+            const loops = f.wires()
+            const revolved = (w: Wire) => _freed(w._copyCurves(), (curves) => k.rotational_sweep(curves, o, d, Number(angle), { cap_ends: true }))
+            let piece = _analyticRevolve<Part>(revolved(loops[0]), Part)
+            for (const w of loops.slice(1)) piece = piece.cut(_analyticRevolve<Part>(revolved(w), Part))
+            out = out === null ? piece : out.fuse(piece)
+          }
+          return out
+        },
+        hint,
+      )
+      if (result === null) throw new RangeError('empty sketch')
+      _requireSolid(result, 'revolve', hint)
+      result.name = this.name
+      result.color = this.color
+      return result
+    })
   }
 
   _requireRegion(what: string): void {

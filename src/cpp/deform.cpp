@@ -43,17 +43,23 @@
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
 #include <SmCrvInVolume.h>
+#include <SmEdge.h>
 #include <SmEdgeuse.h>
 #include <SmFaceuse.h>
+#include <SmPlane.h>
+#include <SmSphere.h>
 #include <SmSrfInVolume.h>
+#include <SmSurfOfRevolution.h>
 #include <SmTransform.h>
 #include <SmTwistVolume.h>
 #include <SmUnbendVolume.h>
+#include <SmVertex.h>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -352,6 +358,7 @@ struct Piece
     Lattice lattice;                        // LATTICE
     int degree = -1;                        // total degree of a polynomial map, -1 otherwise
     std::vector<smlibpy::analytic::Line3> axes;  // twist, bend, unbend: the axis (for analytic images)
+    bool twist = false;                     // an SmTwistVolume
 
     SmPoint3d map(const SmPoint3d& p) const
     {
@@ -378,6 +385,7 @@ struct Deformation
     int approx_degree = 5;  // degree of approximated directions (quintic: few knots)
     size_t max_exact_points = 40000;  // larger exact faces (dense originals, high degrees) are approximated
     double exact_tol = 1e-9;  // set from the model size
+    std::optional<smlibpy::analytic::Line3> turn_axis;  // a twist's axis: what turns about it stays (see unmoved)
 
     int piece_at(const SmPoint3d& p) const
     {
@@ -437,6 +445,7 @@ std::unique_ptr<Piece> make_piece(const smlibpy::DeformPiece& d)
         piece->volume.reset(new (ctx()) SmTwistVolume(ctx(), vec3(d.origin), vec3(d.axis), vec3(d.mid), d.period));
         piece->kind = Piece::VOLUME;
         piece->axes.push_back({vec3(d.origin), unit3(d.axis)});
+        piece->twist = true;
     }
     else if (kind == "bend")
     {
@@ -522,6 +531,12 @@ std::unique_ptr<Deformation> make_deformation(const smlibpy::DeformSpec& spec, d
         def->pieces.push_back(make_piece(item));
     if (def->pieces.empty())
         throw std::invalid_argument("a deformation needs at least one piece");
+    for (const auto& piece : def->pieces)
+        if (piece->twist)
+        {
+            def->turn_axis = piece->axes.front();
+            break;
+        }
     for (int f : spec.faces)
         if (f < 0 || f >= static_cast<int>(def->pieces.size()))
             throw std::invalid_argument("faces: a piece index out of range");
@@ -1487,6 +1502,241 @@ double model_size(const SmBrep* brep)
 // Whether a surface is analytic (a plane, cylinder, cone, sphere, torus, ...) rather than a NURBS.
 bool is_analytic(const SmSurface* s) { return s && s->GetType() != SmBSplineSurface_TYPE; }
 
+// ---------------------------------------------------------------------------
+// What a twist leaves where it was (kernel plan D2)
+// ---------------------------------------------------------------------------
+//
+// A twist turns every cross-section about its axis, so a surface of revolution about that axis
+// (a cylinder, cone, sphere or torus, also a sphere centred on it) and a plane across it map onto
+// themselves, and so does a full circle about the axis. A face on such a surface bounded only by
+// full circles about the axis (and its seams) is its own image: a cylinder twisted about its own
+// axis is the same cylinder. Mapped point by point, its seam would become a helix that no
+// cylinder's parameters follow (the face came out a fitted B-spline); kept where it is, with its
+// seam and the vertices on it, the face stays the cylinder it was, exactly. The pieces before and
+// beyond the twist (left in place, turned as a whole) turn about the same axis and keep such faces
+// too, so that they meet the twisted range along the same circles.
+
+// The axis frame of a point: its distance from the axis and its position along it.
+struct AxisFrame
+{
+    smlibpy::analytic::Line3 axis;
+    double along(const SmPoint3d& p) const { return (p - axis.origin).Dot(axis.direction); }
+    double radius(const SmPoint3d& p) const
+    {
+        const SmVector3d v = p - axis.origin;
+        return (v - v.Dot(axis.direction) * axis.direction).Length();
+    }
+    bool on_axis(const SmPoint3d& p, double tol) const { return radius(p) <= tol; }
+    bool parallel(const SmVector3d& z) const
+    {
+        const double n = z.Length();
+        return n > 0.0 && (z / n * axis.direction).Length() <= 1e-12;
+    }
+    // whether a map moves p about the axis only (keeps its radius and its position along it)
+    bool turns(const Piece& piece, const SmPoint3d& p, double tol) const
+    {
+        const SmPoint3d q = piece.map(p);
+        return std::abs(radius(q) - radius(p)) <= tol && std::abs(along(q) - along(p)) <= tol;
+    }
+};
+
+// Whether a face's surface maps onto itself under turns about the axis, and its piece's map
+// turns its points about the axis (sampled).
+bool turns_onto_itself(SmFace* face, const Piece& piece, const AxisFrame& a, double tol)
+{
+    const SmSurface* s = face->GetSurface();
+    if (!s)
+        return false;
+    bool invariant = false;
+    if (s->IsKindOf(SmPlane_TYPE))
+    {
+        SmAxis2Placement place;
+        invariant = static_cast<const SmPlane*>(s)->GetCanonical(place) == SM_SUCCESS &&
+                    a.parallel(place.GetXAxisRef() * place.GetYAxisRef());
+    }
+    else if (s->IsKindOf(SmSphere_TYPE))
+        invariant = a.on_axis(static_cast<const SmSurfOfRevolution*>(s)->GetOrigin(), tol);
+    else if (s->IsKindOf(SmSurfOfRevolution_TYPE))
+    {
+        const SmAxis2Placement& place = static_cast<const SmSurfOfRevolution*>(s)->GetPosition();
+        invariant = a.on_axis(place.GetOriginRef(), tol) && a.parallel(place.GetXAxisRef() * place.GetYAxisRef());
+    }
+    if (!invariant)
+        return false;
+    const SmExtent2d box = face_box(face);
+    for (int i = 0; i < 5; ++i)
+        for (int j = 0; j < 5; ++j)
+        {
+            SmPoint3d p;
+            if (s->EvaluatePoint(SmPoint2d(box.GetUMin() + i * (box.GetUMax() - box.GetUMin()) / 4,
+                                           box.GetVMin() + j * (box.GetVMax() - box.GetVMin()) / 4),
+                                 p) != SM_SUCCESS ||
+                !a.turns(piece, p, tol))
+                return false;
+        }
+    return true;
+}
+
+// Whether an edge is a full circle about the axis: closed, at one distance from the axis and one
+// position along it, which its piece's map turns about the axis.
+bool full_circle(SmEdge* edge, const Piece& piece, const AxisFrame& a, double tol)
+{
+    const SmCurve* c = edge->GetCurve();
+    if (!c || edge->GetStartVertex() != edge->GetEndVertex())
+        return false;
+    const SmExtent1d ivl = edge->GetInterval();
+    double r0 = 0.0, h0 = 0.0;
+    for (int k = 0; k <= 16; ++k)
+    {
+        SmPoint3d p;
+        if (c->EvaluatePoint(ivl.Evaluate(k / 16.0), p) != SM_SUCCESS || !a.turns(piece, p, tol))
+            return false;
+        if (k == 0)
+            r0 = a.radius(p), h0 = a.along(p);
+        else if (std::abs(a.radius(p) - r0) > tol || std::abs(a.along(p) - h0) > tol)
+            return false;
+    }
+    return r0 > tol;
+}
+
+// How often the faces use an edge, each face on its upward side: 1 for a free edge of a sheet, 2
+// between two faces and for a seam (twice in one face).
+ULONG face_uses(SmEdge* edge, const SmTArray<SmFace*>& faces)
+{
+    ULONG n = 0;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        bool repeated = false;
+        for (ULONG j = 0; j < i && !repeated; ++j)
+            repeated = faces[j] == faces[i];
+        SmFaceuse* fu = repeated ? nullptr : faces[i]->GetUpwardFaceuse();
+        if (!fu)
+            continue;
+        SmTArray<SmEdgeuse*> eus;
+        fu->GetEdgeuses(eus);
+        for (ULONG k = 0; k < eus.GetSize(); ++k)
+            n += eus[k]->GetEdge() == edge ? 1 : 0;
+    }
+    return n;
+}
+
+// (thrown inside build: the attempt with new geometry cannot be made, try without)
+struct Retry
+{
+};
+
+// The faces, edges and vertices a twist leaves where they are (see above): the faces on surfaces
+// that turn onto themselves whose edges lie between such faces (their seams too) or are full
+// circles about the axis, and whose vertices lie on such edges only (or on the axis). A free edge
+// of a sheet bounds the faces: it stays only as a full circle. With `fresh`, a full circle may also
+// bound faces that are mapped, as long as they are planes across the axis (the twist turns them as
+// a whole): the circle stays and their trim curves along it are built again (`redrop`).
+struct Unmoved
+{
+    std::unordered_set<const SmFace*> faces;
+    std::unordered_set<const SmEdge*> edges, redrop;
+    std::unordered_set<const SmVertex*> vertices;
+};
+
+Unmoved unmoved(const Topology& topo, const Deformation& def, bool fresh)
+{
+    Unmoved out;
+    if (!def.turn_axis || !def.analytic)
+        return out;
+    const AxisFrame a{*def.turn_axis};
+    const double tol = 10.0 * def.exact_tol;
+    std::unordered_set<const SmFace*> planes;  // planes across the axis, mapped as a whole
+    for (ULONG i = 0; i < topo.faces.GetSize(); ++i)
+    {
+        if (turns_onto_itself(topo.faces[i], *def.pieces[topo.face_piece[i]], a, tol))
+        {
+            out.faces.insert(topo.faces[i]);
+            if (topo.faces[i]->GetSurface()->IsKindOf(SmPlane_TYPE))
+                planes.insert(topo.faces[i]);
+        }
+    }
+    if (out.faces.empty())
+        return out;
+    std::unordered_map<const SmEdge*, ULONG> edge_index;
+    for (ULONG i = 0; i < topo.edges.GetSize(); ++i)
+        edge_index[topo.edges[i]] = i;
+    std::unordered_map<const SmEdge*, bool> circle;  // full circles about the axis, once tested
+    auto is_circle = [&](SmEdge* e) {
+        auto it = circle.find(e);
+        if (it == circle.end())
+            it = circle.emplace(e, full_circle(e, *def.pieces[topo.edge_piece[edge_index.at(e)]], a, tol)).first;
+        return it->second;
+    };
+    for (bool changed = true; changed;)
+    {
+        changed = false;
+        out.edges.clear(), out.redrop.clear(), out.vertices.clear();
+        // the edges of the faces that may stay
+        for (const SmFace* face : out.faces)
+        {
+            SmTArray<SmEdge*> es;
+            face->GetEdges(es);
+            for (ULONG k = 0; k < es.GetSize(); ++k)
+            {
+                SmEdge* e = es[k];
+                if (out.edges.count(e))
+                    continue;
+                SmTArray<SmFace*> fs;
+                e->GetFaces(fs);
+                bool mapped = false, mapped_planes = true;  // (faces of it that do not stay: planes?)
+                for (ULONG m = 0; m < fs.GetSize(); ++m)
+                    if (!out.faces.count(fs[m]))
+                        mapped = true, mapped_planes = mapped_planes && planes.count(fs[m]) > 0;
+                const bool degenerate = !e->GetCurve() && a.on_axis(e->GetStartVertex()->GetPoint(), tol) &&
+                                        a.on_axis(e->GetEndVertex()->GetPoint(), tol);
+                if (!mapped && face_uses(e, fs) >= 2 && (e->GetCurve() || degenerate))
+                    out.edges.insert(e);  // between faces that stay (or a seam)
+                else if ((!mapped || (fresh && mapped_planes)) && is_circle(e))
+                {
+                    out.edges.insert(e);
+                    if (mapped)
+                        out.redrop.insert(e);
+                }
+            }
+        }
+        // vertices on such edges only, or on the axis
+        auto keeps = [&](const SmVertex* v) {
+            if (a.on_axis(v->GetPoint(), tol))
+                return true;
+            SmTArray<SmEdge*> es;
+            v->GetEdges(es);
+            for (ULONG k = 0; k < es.GetSize(); ++k)
+                if (!out.edges.count(es[k]))
+                    return false;
+            return true;
+        };
+        for (const SmEdge* e : std::vector<const SmEdge*>(out.edges.begin(), out.edges.end()))
+        {
+            const bool ok = keeps(e->GetStartVertex()) && keeps(e->GetEndVertex());
+            if (ok)
+                out.vertices.insert(e->GetStartVertex()), out.vertices.insert(e->GetEndVertex());
+            else
+                out.edges.erase(e), out.redrop.erase(e);
+        }
+        // faces whose edges all stay
+        for (auto it = out.faces.begin(); it != out.faces.end();)
+        {
+            SmTArray<SmEdge*> es;
+            (*it)->GetEdges(es);
+            bool ok = true;
+            for (ULONG k = 0; k < es.GetSize() && ok; ++k)
+                ok = out.edges.count(es[k]) > 0;
+            if (ok)
+                ++it;
+            else
+                it = out.faces.erase(it), changed = true;
+        }
+    }
+    // (an edge dropped for its vertex drops its faces too, and the pass is repeated: in the last
+    // pass every listed edge and vertex stays)
+    return out;
+}
+
 // One attempt at the deformed Brep. With `fresh`, faces and edges whose image is new analytic
 // geometry get it (their trim curves are built again); null if that fails, and the caller tries
 // again without.
@@ -1499,6 +1749,7 @@ SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
         classify(*out, def, topo);
         SavedTrims trims;
         trims.save(topo.edges);
+        const Unmoved kept = unmoved(topo, def, fresh);
 
         // all new geometry from the unchanged copy first: analytic images where they are
         const ULONG nf = topo.faces.GetSize(), ne = topo.edges.GetSize();
@@ -1514,6 +1765,14 @@ SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
             for (ULONG i = 0; i < nf; ++i)
             {
                 const Piece& piece = *def.pieces[topo.face_piece[i]];
+                if (kept.faces.count(topo.faces[i]))
+                {
+                    // its own image (a surface of revolution about a twist's axis): as it was
+                    if (is_analytic(topo.faces[i]->GetSurface()))
+                        analytic_faces.insert(topo.faces[i]), ++st.faces_analytic;
+                    ++st.faces_kept;
+                    continue;
+                }
                 if (deforming(piece))
                 {
                     const smlibpy::analytic::SurfaceImage image = smlibpy::analytic::surface_image(
@@ -1538,6 +1797,25 @@ SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
             for (ULONG i = 0; i < ne; ++i)
             {
                 const Piece& piece = *def.pieces[topo.edge_piece[i]];
+                if (kept.edges.count(topo.edges[i]))
+                {
+                    // a full circle about a twist's axis on faces that are mapped (planes across the
+                    // axis, turned as a whole): the circle stays, their trim curves along it are
+                    // built again from it
+                    if (kept.redrop.count(topo.edges[i]))
+                    {
+                        SmTArray<SmFace*> faces;
+                        topo.edges[i]->GetFaces(faces);
+                        for (ULONG k = 0; k < faces.GetSize(); ++k)
+                            if (!analytic_faces.count(faces[k]))
+                                throw Retry();  // (a fitted plane: try again without new geometry)
+                        SmCurve* copy = nullptr;
+                        check(topo.edges[i]->GetCurve()->Copy(ctx(), copy), "SmCurve::Copy");
+                        new_curves[i] = copy;
+                    }
+                    ++st.edges_kept;
+                    continue;
+                }
                 if (deforming(piece) && topo.edges[i]->GetCurve())
                 {
                     const smlibpy::analytic::CurveImage image = smlibpy::analytic::curve_image(
@@ -1564,7 +1842,9 @@ SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
                 curves[i] = map_curve(topo.edges[i], piece, def, st);
             }
             for (ULONG i = 0; i < topo.vertices.GetSize(); ++i)
-                points[i] = def.pieces[topo.vertex_piece[i]]->map(topo.vertices[i]->GetPoint());
+                points[i] = kept.vertices.count(topo.vertices[i])
+                                ? topo.vertices[i]->GetPoint()
+                                : def.pieces[topo.vertex_piece[i]]->map(topo.vertices[i]->GetPoint());
         }
         catch (...)
         {
@@ -1629,6 +1909,11 @@ SmBrep* build(const SmBrep* brep, const Deformation& def, bool fresh, Stats& st)
             delete out;
             return nullptr;
         }
+    }
+    catch (const Retry&)
+    {
+        delete out;
+        return nullptr;
     }
     catch (...)
     {

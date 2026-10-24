@@ -270,17 +270,28 @@ tried another way). Steps in another process bring theirs back.
 
 ```python
 try:
-    Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+    Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
 except KernelError as e:
-    print(e.status)       # SM_ERR_BAD_INTERSECTIONS
-    print(e.trace[-3:])   # (... (IntersectTopology)', '... SmMerge.cpp:2698 (ManifoldBoolean)', '... (SmApiBoolean)')
+    print(e.status)       # SM_ERR
+    print(e.trace[-3:])   # ('SM_ERR at SmMerge.cpp:7146 (MakeFaceuse)', 'SM_ERR at SmMerge.cpp:4437 (ManifoldBoolean)', 'SM_ERR at SmApiBrep.cpp:233 (SmApiBoolean)')
+```
+
+smlibwasm's `KernelError` has the same `status` and `trace`:
+
+```js
+try {
+  Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 45)).cut(Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0))
+} catch (e) {
+  if (e instanceof KernelError) console.log(e.status, e.trace.slice(-3))   // the same as above
+}
 ```
 
 The trace is for bug reports and for maintainers: it changes with the kernel, and the builds can
-give up in different places (smlibwasm gives up on the holes above in `SmMerge::MakeFaceuse`,
-with `SM_ERR`). The raw layer reads it with `ext.kernel_trace()` (the entries and how many there
-were since `ext.clear_kernel_trace()`). Reporting a failure costs a function call on the kernel's
-error paths only; the test suites take as long as before.
+give up in different places (both give up on the holes above in `SmMerge::MakeFaceuse`; on
+others one build fails where the other does not). The raw layer reads it with
+`ext.kernel_trace()` (the entries and how many there were since `ext.clear_kernel_trace()`).
+Reporting a failure costs a function call on the kernel's error paths only; the test suites take
+as long as before.
 
 ## Steps in another process
 

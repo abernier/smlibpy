@@ -43,8 +43,9 @@ middle where the part's middle is); the views of its row share its height, those
 its x.
 
 ## Gotchas
-- The lines are `bspline` edges (projections); the DXF and SVG writers find the straight and
-  circular ones and write lines, arcs and circles.
+- The straight and circular lines are lines, arcs and circles (`circles()` finds the holes of a
+  view), other projected curves `bspline` edges; DXF files get lines, arcs, circles and splines,
+  SVG files exact lines and arcs and polylines for the other curves.
 - No dimensions, no title block, no section views: draw sections with `part.section(plane)`.
 - Each view is computed exactly (the kernel's hidden curve removal): 2 to 400 ms a view.
 

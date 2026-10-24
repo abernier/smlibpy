@@ -1680,27 +1680,30 @@ function _isPlanarPath(edges: readonly Edge[]): boolean {
 export function swing(profile: Sketch | Face, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part
 export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell
 export function swing(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, outline: Sketch | Face | Wire | Edge | ShapeList<Any>): Part | Shell {
-  const [loop, reach] = _swingOutline(outline)
-  const w = _openCurve(profile)
-  if (w !== null) {
-    const b = _swung(w, loop, reach, 'swing', 'the profile and outline curves must be B-splines (lines, arcs, splines)')
-    kernelCall('swing', () => k.stitch_into_solid(b._brep))
-    return b
-  }
-  const sk = _asSketch(profile)
-  const hint = 'the outline must go around the Z axis once and the profile lie beside it (x >= 0) in the XZ plane'
-  let result: Part | null = null
-  for (const f of sk.faces()) {
-    const loops = f.wires()
-    let piece = _swungSolid(loops[0], loop, reach, hint)
-    for (const h of loops.slice(1)) piece = piece.cut(_swungSolid(h, loop, reach, hint))
-    result = result === null ? piece : result.fuse(piece)
-  }
-  if (result === null) throw new RangeError('swing: the sketch is empty')
-  _requireSolid(result, 'swing', hint)
-  result.name = sk.name
-  result.color = sk.color
-  return result
+  // (in a scope: the outline's loop, the swung loops and the holes are freed at once, kernel plan W9)
+  return scope(() => {
+    const [loop, reach] = _swingOutline(outline)
+    const w = _openCurve(profile)
+    if (w !== null) {
+      const b = _swung(w, loop, reach, 'swing', 'the profile and outline curves must be B-splines (lines, arcs, splines)')
+      kernelCall('swing', () => k.stitch_into_solid(b._brep))
+      return b
+    }
+    const sk = _asSketch(profile)
+    const hint = 'the outline must go around the Z axis once and the profile lie beside it (x >= 0) in the XZ plane'
+    let result: Part | null = null
+    for (const f of sk.faces()) {
+      const loops = f.wires()
+      let piece = _swungSolid(loops[0], loop, reach, hint)
+      for (const h of loops.slice(1)) piece = piece.cut(_swungSolid(h, loop, reach, hint))
+      result = result === null ? piece : result.fuse(piece)
+    }
+    if (result === null) throw new RangeError('swing: the sketch is empty')
+    _requireSolid(result, 'swing', hint)
+    result.name = sk.name
+    result.color = sk.color
+    return result
+  })
 }
 
 function _swingSamples(e: Edge): number[] {
@@ -1919,6 +1922,6 @@ export function thicken(surface: Shell | Face, thickness: number, options: { bot
   if (surface instanceof Part || !(surface instanceof Shell || surface instanceof Face)) {
     throw new TypeError(`thicken takes a face or a sheet (Shell, Sketch), not a ${_typeName(surface)}; use shell() or offset() for parts`)
   }
-  const sh = surface instanceof Face ? surface.toShell() : surface
-  return sh.thicken(thickness, { both: options.both ?? false })
+  // (in a scope: a face's sheet is freed at once)
+  return scope(() => (surface instanceof Face ? surface.toShell() : surface).thicken(thickness, { both: options.both ?? false }))
 }

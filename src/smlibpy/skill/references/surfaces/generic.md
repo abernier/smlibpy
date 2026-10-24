@@ -113,7 +113,7 @@ panel = skin.thicken(-2)                                  # normal is up; -2 goe
 assert panel.is_valid() and panel.volume > 0
 fender = panel - Cylinder(42, 200).rotate(X, 90)          # wheel arch, axis along Y
 fender = fender.fillet(fender.faces().cylinders().edges(), 0.5)
-print(fender.is_valid(), round(fender.volume, 2), len(fender.solids()))   # True 9908.49 1
+print(fender.is_valid(), round(fender.volume, 2), len(fender.solids()))   # True 9908.48 1
 ```
 Once thickened, the panel is an ordinary Part: Booleans, fillets and STEP export work (the STEP
 file reads back with the same volume). The arch edges meet the panel at a shallow angle, so

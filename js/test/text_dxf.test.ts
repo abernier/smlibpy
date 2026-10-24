@@ -114,7 +114,10 @@ test('fonts as bytes: the same font as from its file, read once (smlibwasm)', ()
   assert.deepEqual(f.outline(f.glyphIndex('R') as number), fromFile.outline(fromFile.glyphIndex('R') as number))
   approx(Text('HO', 700, { font: bytes, align: null }).bbox().max.x, 700 - 50 + 650)
   assert.throws(() => new Font(new Uint8Array(20)), (e) => e instanceof FontError && /font data: not a TrueType or OpenType font/.test(e.message))
-  assert.throws(() => Text('A', 5, { font: new Uint8Array(8) }), /^RangeError: Text: font data: not a font file$/)
+  assert.throws(
+    () => Text('A', 5, { font: new Uint8Array(8) }),
+    (e) => e instanceof FontError && e instanceof RangeError && e.message === 'Text: font data: not a font file',
+  )
 })
 
 // =============================================================================
