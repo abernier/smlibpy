@@ -329,10 +329,13 @@ def _weld(corner_positions: np.ndarray) -> Mesh:
 
 
 def _obj(shapes: Any, tolerance: float | None, angle: float, what: str, max_edge: float | None = None) -> str:
+    meshes = _meshes(shapes, tolerance, angle, what, max_edge)
+    if not meshes:
+        raise ValueError(f"{what}: nothing to write")
     lines = ["# smlibpy"]
     offset = 1
     normal_offset = 1
-    for i, (item, m) in enumerate(_meshes(shapes, tolerance, angle, what, max_edge)):
+    for i, (item, m) in enumerate(meshes):
         lines.append(f"o {getattr(item, 'name', None) or f'part_{i + 1}'}")
         # (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
         lines.extend(f"v {x:.12g} {y:.12g} {z:.12g}" for x, y, z in m.vertices)
@@ -617,20 +620,33 @@ def gltf_document(shapes: Any, **kwargs: Any) -> tuple[dict[str, Any], bytes]:
     return doc, buf
 
 
-def to_glb(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
-           edge_color: Any = "#1f2328", max_edge: float | None = None) -> bytes:
-    """The bytes of a binary glTF (GLB) file of the shapes, with colors, names and (optionally)
-    the B-rep edges as lines, as :func:`export_glb` writes it (Z-up in millimeters under a root
-    node that turns it upright and scales it to meters)."""
-    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
-                             max_edge=max_edge)
+def _gltf_file(shapes: Any, what: str, **kwargs: Any) -> tuple[dict[str, Any], bytes]:
+    """The glTF JSON and buffer of a file of the shapes (Z-up in millimeters under a root node that
+    turns it upright and scales it to meters); nothing to write raises."""
+    doc, buf = gltf_document(shapes, **kwargs)
+    if not doc["nodes"]:
+        raise ValueError(f"{what}: nothing to write")
     _z_up(doc, meters=True)
+    return doc, buf
+
+
+def _glb(shapes: Any, what: str, **kwargs: Any) -> bytes:
+    doc, buf = _gltf_file(shapes, what, **kwargs)
     js = json.dumps(doc, separators=(",", ":")).encode()
     js += b" " * (-len(js) % 4)
     bin_ = buf + b"\0" * (-len(buf) % 4)
     total = 12 + 8 + len(js) + 8 + len(bin_)
     return (struct.pack("<4sII", b"glTF", 2, total) + struct.pack("<I4s", len(js), b"JSON") + js
             + struct.pack("<I4s", len(bin_), b"BIN\0") + bin_)
+
+
+def to_glb(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0, edges: bool = True,
+           edge_color: Any = "#1f2328", max_edge: float | None = None) -> bytes:
+    """The bytes of a binary glTF (GLB) file of the shapes, with colors, names and (optionally)
+    the B-rep edges as lines, as :func:`export_glb` writes it (Z-up in millimeters under a root
+    node that turns it upright and scales it to meters)."""
+    return _glb(shapes, "to_glb", tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                max_edge=max_edge)
 
 
 def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | None = None, angle: float = 15.0,
@@ -642,7 +658,8 @@ def export_glb(shapes: Any, path: str | os.PathLike[str], *, tolerance: float | 
     show it at its real size. Triangles are indexed: each distinct corner (a point with its
     normal) is written once. ``max_edge`` is the longest edge a triangle may have.
     """
-    data = to_glb(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color, max_edge=max_edge)
+    data = _glb(shapes, "export_glb", tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                max_edge=max_edge)
     with open(os.fspath(path), "wb") as fh:
         fh.write(data)
 
@@ -651,9 +668,12 @@ def to_gltf(shapes: Any, *, tolerance: float | None = None, angle: float = 15.0,
             edge_color: Any = "#1f2328", max_edge: float | None = None) -> str:
     """The JSON text of a glTF file of the shapes with the buffer embedded as a data URI (in
     meters, like :func:`to_glb`); the keywords of :func:`to_glb`."""
-    doc, buf = gltf_document(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
-                             max_edge=max_edge)
-    _z_up(doc, meters=True)
+    return _gltf(shapes, "to_gltf", tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                 max_edge=max_edge)
+
+
+def _gltf(shapes: Any, what: str, **kwargs: Any) -> str:
+    doc, buf = _gltf_file(shapes, what, **kwargs)
     doc["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(buf).decode()
     return json.dumps(doc)
 
@@ -662,7 +682,8 @@ def export_gltf(shapes: Any, path: str | os.PathLike[str], *, tolerance: float |
                 edges: bool = True, edge_color: Any = "#1f2328", max_edge: float | None = None) -> None:
     """glTF export with the buffer embedded as a data URI (in meters, like :func:`export_glb`); the
     keywords of :func:`export_glb`."""
-    text = to_gltf(shapes, tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color, max_edge=max_edge)
+    text = _gltf(shapes, "export_gltf", tolerance=tolerance, angle=angle, edges=edges, edge_color=edge_color,
+                 max_edge=max_edge)
     with open(os.fspath(path), "w") as fh:
         fh.write(text)
 

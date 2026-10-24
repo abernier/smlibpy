@@ -76,7 +76,8 @@ the same length uncertainty in any unit: 1e-7 mm.
 Curves, points and coordinate systems go into the file beside the bodies: an edge or wire is
 written as a curve of wireframe geometry (a `GEOMETRIC_CURVE_SET`), a vertex or `Vector` as a
 point, a `Plane` as a coordinate system of supplemental geometry, as tool catalogs and NX
-write them. `StepCurve`, `StepPoint` and `StepFrame` give them names and colors, and the
+write them. `StepCurve`, `StepPoint` and `StepFrame` give them names and colors (a coordinate
+system's color as a curve style, as NX writes it), and the
 `StepModel` that `read_step` gives is written whole, so a file read, changed and written
 keeps them. `read_step` reads them back (below).
 
@@ -171,12 +172,15 @@ print(to_brep(bracket).splitlines()[2])              # CASCADE Topology V3, (c) 
 The file holds one shape: the solid (or shell) of a single body, or a compound of the bodies;
 a part of several solids gives one solid each, and a hollow one keeps its cavities. The format
 has no names, colors or units: OpenCASCADE tools model in millimeters, as smlibpy does (write
-STEP to keep names and colors). The writer was checked with OpenCASCADE 8.0
-(`BRepCheck_Analyzer`, `BRepGProp`) on the 585 bodies of more than 400 STEP files from other CAD
-systems: 583 are written, all valid for OpenCASCADE but one (a sheet that runs through itself
-in its STEP file already), 566 with OpenCASCADE's volume within 1e-5 of smlibpy's and the rest
-within 3.4e-4 (as far as smlibpy and OpenCASCADE measure the STEP file itself apart). The test
-suite checks the files it writes for the faults OpenCASCADE's check finds. A body whose edge lies
+STEP to keep names and colors). Each edge, vertex and face is written with the tolerance it
+needs (what its curve keeps from its curves on faces and its vertices, at least that of the
+body's size). The writer was checked with OpenCASCADE 8.0 (`BRepCheck_Analyzer`, `BRepGProp`) on
+the 585 bodies of more than 400 STEP files from other CAD systems: all are written, valid for
+OpenCASCADE but three that OpenCASCADE takes for invalid in their STEP files too (a sheet that
+runs through itself, a solid with 16 cavities, a sheet with gaps of 4 mm), 541 of the 558 it
+measures with its volume within 1e-5 of smlibpy's and the rest within 3.4e-4 (as far as smlibpy
+and OpenCASCADE measure the STEP file itself apart). The test suite checks the files it writes
+for the faults OpenCASCADE's check finds. A body whose edge lies
 farther from its face than 1e-3 of the body's size, or whose face boundary does not close, raises
 `KernelError` that names the face; meshes, curves and points raise `TypeError`.
 
@@ -275,7 +279,7 @@ if it is a valid solid, with a warning that names the body and the largest gap c
 body nothing repairs comes with a warning that says what is wrong with it. Surface models
 whose faces share no edges are sewn the same way.
 
-A body that cannot be read (an entity smlibpy does not read yet, such as `OFFSET_CURVE_3D`,
+A body that cannot be read (an entity smlibpy does not read yet, such as a `CLOTHOID`,
 or one the kernel cannot build) is left out with a warning that names the body, its entity
 and the reason, and the rest of the file is read; `strict=True` raises instead, and a file
 none of whose bodies can be read raises. `read_step` lists them in `StepModel.skipped`. In
@@ -299,8 +303,14 @@ the file has them rather than a Boolean difference.
 
 The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
-among them. Not read yet: wireframe topology (`EDGE_BASED_WIREFRAME_MODEL`), references to
-other files, PMI, and assembly placements that mirror a part.
+among them. Offset curves (`OFFSET_CURVE_3D`: lines and circles stay lines and circles, others
+become NURBS within 1e-9 of their size) and edges given only as a curve in a surface's
+parameters (`PCURVE`) are read, and so are assembly placements that mirror or scale a part
+(`CARTESIAN_TRANSFORMATION_OPERATOR_3D`): the part is built where it is defined and mirrored or
+scaled whole, as `mirror` and `scale` do. An offset of a plane, sphere, cylinder, cone or torus
+that the kernel cannot close into a solid as an offset (a whole sphere written as an
+`OFFSET_SURFACE` of another) is built on the surface it is. Not read yet: wireframe topology
+(`EDGE_BASED_WIREFRAME_MODEL`), references to other files, and PMI.
 
 #### Coordinate systems, curves and points
 
@@ -356,9 +366,11 @@ over, a hole that runs the way its outer loop does is turned round, and a face o
 sliver some writers leave where faces meet) is left out. Something that cannot be read (an
 entity smlibpy does not read, one the kernel cannot build) is left out with a warning that names
 it; `strict=True` raises instead. The importer is checked against OpenCASCADE on the files it
-writes in both forms, in millimeters and inches, and on the IGES models FreeCAD ships. Not read:
-binary and compressed IGES, offset curves (130), ruled surfaces between circles or conics,
-wireframe and annotation entities; IGES is not written (write STEP).
+writes in both forms, in millimeters and inches, and on the IGES models FreeCAD ships. Offset
+curves (130) at one distance are read (the base moved along its tangent x the plane's normal, as
+OpenCASCADE reads them: lines and circles stay lines and circles). Not read: binary and compressed
+IGES, offset curves whose distance varies, ruled surfaces between circles or conics, wireframe and
+annotation entities; IGES is not written (write STEP).
 
 ### OpenCASCADE
 
@@ -383,16 +395,18 @@ edges and vertices leave gaps of more than 1e-3 of its size raises `ValueError`,
 give a warning; `check=False` skips the check, `heal=True` runs the kernel's import healer.
 Wires, edges and vertices outside faces are not read (a warning says how many), and a file
 whose shape holds no faces raises `ValueError`, as does one that is no `.brep` file or is
-broken (the error names the shape). The importer is the bridge's: it reads usd-brep's test
-files, and of the solids written above it reads 553 of 557 back (99 % with the volume they were
-written with within 4e-6, all within 1e-4); the check refuses 4, whose edges the bridge rebuilds
-running backwards, and a body whose curves on faces lie far from its edges (a swept spring) can
-come back with gaps it refuses.
+broken (the error names the shape). Where the file gives a body one tolerance (the largest of
+its edges, as many writers do), each edge, vertex and face gets the tolerance its geometry needs.
+The importer is the bridge's: it reads usd-brep's test files, and of the 559 solids written above
+it reads 557 back (99 % with the volume they were written with within 7e-6, all within 1e-4); the
+check refuses the other two for faults the bodies had as they were read from STEP (an edge of 9e-9
+shorter than its tolerance, a vertex moved 0.05 off its edges).
 
 ## Drawings
 
-`drawing_views` makes the views of a part for a 2D drawing: front, top, side and the others,
-each with its visible lines and its hidden lines, laid out next to each other in the XY plane in
+`drawing_views` makes the views of a part (or of several, an assembly, each body hiding what lies
+behind it) for a 2D drawing: front, top, side and the others, each with its visible lines and its
+hidden lines, laid out next to each other in the XY plane in
 first-angle (ISO) or third-angle (ASME) projection. `export_dxf` writes them on the layers
 VISIBLE and HIDDEN, the hidden lines dashed; `export_svg` writes an SVG that prints at true size:
 

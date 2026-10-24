@@ -35,6 +35,7 @@
 
 #include <SmApiGeneral.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -230,6 +231,7 @@ OcctRead occt_read(const std::string& data, const OcctReadOptions& options)
                 throw std::runtime_error(std::string("brep: the shape could not be built (") + sm_status_name(st) + ")" +
                                          diagnostics());
             }
+            usd_tighten_tolerances(brep);
             if (options.check)
             {
                 bool refuse = false;
@@ -283,10 +285,16 @@ std::string occt_text(const std::vector<SmBrep*>& breps)
     std::vector<SmBrep*> copies;
     UsdBrepData::UsdBrepArrayData a;
     SmStatus st = SM_SUCCESS;
+    double least = 0.0;  // (the tolerance of the bodies' sizes, as the kernel's model has it: SmXSectTol3d)
     try
     {
         for (SmBrep* b : breps)
+        {
+            SmExtent3d box;
+            if (b->CalculateBoundingBox(box, FALSE, FALSE, FALSE) == SM_SUCCESS && box.GetSize().Length() > 0)
+                least = std::max(least, 2.0 * static_cast<double>(SmTol::SizeEstimateToZoneTol3d(box.GetSize().Length())));
             copies.push_back(new (ctx()) SmBrep(*b, nullptr, nullptr, TRUE, FALSE));
+        }
         pxr::usd_diagnostics().clear();
         SmPyErrorTrail::clear();
         st = SMU_BrepConvert::BrepAppend_SMLibToUsdBrep(copies, a, nullptr, true, true);
@@ -306,6 +314,8 @@ std::string occt_text(const std::vector<SmBrep*>& breps)
     std::string error;
     if (!occt::BuildOcctModel(a, shape, error))
         throw std::runtime_error("brep: the bodies cannot be written: " + printable(error));
+    // (each edge, vertex and face its own tolerance: the arrays hold one for a whole body)
+    occt_tolerances(shape, least > 0 ? least : 2e-5);
     // (what OpenCASCADE would take for invalid is not written)
     const std::string wrong = occt_check(shape);
     if (!wrong.empty())

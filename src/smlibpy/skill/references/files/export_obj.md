@@ -27,8 +27,11 @@ Unnamed shapes are called `part_<i>` (meshes too), counted from 1 over the list.
   normals, and readers smoothed them across sharp edges).
 - No colors or materials (`.mtl`), no units. Use `export_glb` when colors matter.
 - Vertices are shared within an object, not between objects.
-- An empty list writes a file with only `# smlibpy`, without an error.
-- Edges and wires cannot be written (`TypeError: 'Edge' object is not iterable`).
+- An empty list raises `ValueError: export_obj: nothing to write` (before 0.5.0 it wrote a file
+  with only `# smlibpy`), and so does a body without faces (`ValueError: tessellate: the Part is
+  empty: ...`).
+- Edges and wires cannot be written (`TypeError: export_obj writes parts, sheets, faces and
+  meshes, not an Edge: ...`).
 - smlibpy cannot read OBJ back (`load("x.obj")` raises `ValueError: unknown file type
   '.obj'; ...`).
 

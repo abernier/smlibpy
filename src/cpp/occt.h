@@ -58,4 +58,12 @@ void occt_trim_curves(UsdBrepData::UsdBrepArrayData& arrays);
 // clockwise.
 std::string occt_check(const occt::SOcctModel& model);
 
+// (occt_check.cpp) Each edge, vertex and face of a shape about to be written its own tolerance, where the
+// writer gave a body's one to all (its largest: a part with one edge of 0.0112 had every edge at 0.0224,
+// a sphere of radius 0.2 among them, which OpenCASCADE took for invalid, and edges shorter than that read
+// back as broken): an edge twice the distance its curve keeps from its curves on its faces (or the plane
+// it is projected onto) and from its vertices, a vertex twice the distance from the ends of its edges'
+// curves and at least its edges' tolerance, a face `least`; none less than `least`.
+void occt_tolerances(occt::SOcctModel& model, double least);
+
 }  // namespace smlibpy

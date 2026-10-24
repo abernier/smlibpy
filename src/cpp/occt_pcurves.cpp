@@ -530,9 +530,111 @@ struct Face
 
 std::string where(uint32_t brep, uint32_t f) { return "body " + std::to_string(brep) + ", face " + std::to_string(f); }
 
+// smlibpy: a sphere face's frame as the arrays hold it (to turn it and back)
+struct SphereFrame
+{
+    size_t index = 0;
+    GfVec3d axis{0.0}, ref{0.0};
+};
+
+// The index of face f's sphere in the arrays' sphere tables (the view's spans lie in them).
+size_t sphere_index(const UsdBrepView& brep, const UsdBrepArrayData& a, uint32_t f)
+{
+    return static_cast<size_t>(brep.SphereSurfaceAxes().data() - a.m_sFace_SurfaceSphere_AxisArray.data()) + brep.FaceTypeSubIndex(f);
+}
+
+// Points of the edges of face f, 17 along each, in the direction each is used; whether one is a seam (an edge
+// the face uses twice).
+std::vector<GfVec3d> face_edge_points(const UsdBrepView& brep, uint32_t f, bool& seam, bool interior = false)
+{
+    std::vector<GfVec3d> out;
+    std::vector<uint32_t> seen;
+    seam = false;
+    const auto ranges = brep.EdgeRanges();
+    for (uint32_t l = 0; l < brep.FaceLoopCount(f); ++l)
+    {
+        uint32_t start = 0, count = 0;
+        if (!UsdBrep::GetFaceLoopEdgeuseStart(brep, f, l, start, count))
+            continue;
+        for (uint32_t k = 0; k < count; ++k)
+        {
+            const uint32_t e = brep.EdgeuseLocalEdgeIndex(start + k);
+            if (e >= brep.EdgeCount() || 2 * e + 1 >= ranges.size())
+                continue;
+            seam = seam || std::find(seen.begin(), seen.end(), e) != seen.end();
+            seen.push_back(e);
+            const double t0 = ranges[2 * e], t1 = ranges[2 * e + 1];
+            if (!(std::fabs(t1 - t0) > 1e-12))
+                continue;
+            for (int i = interior ? 1 : 0; i <= (interior ? 15 : 16); ++i)
+                out.push_back(UsdBrep::EvaluateCurve3d(brep, e, t0 + (t1 - t0) * i / 16.0));
+        }
+    }
+    return out;
+}
+
+// Whether an edge of sphere face f passes within 3 degrees of one of its frame's poles between its ends.
+bool across_pole(const UsdBrepView& brep, uint32_t f)
+{
+    const uint32_t s = brep.FaceTypeSubIndex(f);
+    const GfVec3d c = brep.SphereSurfaceCenters()[s], z = brep.SphereSurfaceAxes()[s].GetNormalized();
+    const double r = brep.SphereSurfaceRadii()[s];
+    bool seam = false;
+    for (const GfVec3d& p : face_edge_points(brep, f, seam, true))
+        if (r > 0.0 && std::fabs((p - c) * z) / r > std::cos(3.0 * PI2 / 360.0))
+            return true;
+    return false;
+}
+
+// Turns face f's sphere frame (kept: its old one) so that its poles and its seam lie off the cap its edges lie
+// in: the axis at right angles to the cap's middle, the reference direction (the seam) opposite it. False (and
+// nothing turned) for a face with a seam, or whose edges do not lie within a cap (all 0.2 of the radius
+// toward its middle).
+bool turn_sphere(const UsdBrepView& brep, UsdBrepArrayData& a, uint32_t f, SphereFrame& kept)
+{
+    const uint32_t s = brep.FaceTypeSubIndex(f);
+    const GfVec3d c = brep.SphereSurfaceCenters()[s];
+    const double r = brep.SphereSurfaceRadii()[s];
+    bool seam = false;
+    const std::vector<GfVec3d> points = face_edge_points(brep, f, seam);
+    if (seam || points.empty() || !(r > 0.0))
+        return false;
+    GfVec3d middle(0.0);
+    for (const GfVec3d& p : points)
+        middle += (p - c) / r;
+    if (!(middle.GetLength() > 1e-9))
+        return false;
+    middle = middle.GetNormalized();
+    for (const GfVec3d& p : points)
+        if (!((p - c) * middle / r >= 0.2))
+            return false;
+    // (the axis along the coordinate direction least along the middle, made square to it)
+    GfVec3d other(1.0, 0.0, 0.0);
+    if (std::fabs(middle[1]) < std::fabs(middle[0]) && std::fabs(middle[1]) <= std::fabs(middle[2]))
+        other = GfVec3d(0.0, 1.0, 0.0);
+    else if (std::fabs(middle[2]) < std::fabs(middle[0]))
+        other = GfVec3d(0.0, 0.0, 1.0);
+    const GfVec3d axis = (other - middle * (other * middle)).GetNormalized();
+    kept.index = sphere_index(brep, a, f);
+    if (kept.index >= a.m_sFace_SurfaceSphere_AxisArray.size() || kept.index >= a.m_sFace_SurfaceSphere_RefDirectionArray.size())
+        return false;
+    kept.axis = a.m_sFace_SurfaceSphere_AxisArray[kept.index];
+    kept.ref = a.m_sFace_SurfaceSphere_RefDirectionArray[kept.index];
+    a.m_sFace_SurfaceSphere_AxisArray[kept.index] = axis;
+    a.m_sFace_SurfaceSphere_RefDirectionArray[kept.index] = -middle;
+    return true;
+}
+
+void restore_sphere(UsdBrepArrayData& a, const SphereFrame& kept)
+{
+    a.m_sFace_SurfaceSphere_AxisArray[kept.index] = kept.axis;
+    a.m_sFace_SurfaceSphere_RefDirectionArray[kept.index] = kept.ref;
+}
+
+
 // The trim curves of every edgeuse of the curved faces of one body (in local edgeuse order; unset: keep);
 // `need`: the tolerance the body's edges need, as far as they lie from their faces.
-std::vector<Trim> trims(const UsdBrepView& brep, double& need)
+std::vector<Trim> trims(const UsdBrepView& brep, double& need, UsdBrepArrayData* arrays)
 {
     const uint32_t faces = brep.FaceCount(), edgeuses = brep.EdgeuseCount();
     std::vector<Trim> out(edgeuses);
@@ -555,10 +657,9 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
         knot_start[eu + 1] = knot_start[eu] + (vc ? vc + o : 0);
     }
 
-    for (uint32_t f = 0; f < faces; ++f)
-    {
-        if (body.kind(f) == 0)
-            continue;
+    // the curves of one face; the area its loops enclose in the parameters (positive: the face lies to their left)
+    auto trim_face = [&](uint32_t f) -> double {
+        double total = 0.0;
         Face face{body, f, UsdBrep::GetSurfaceDomain(brep, f), scale};
         face.setup();
         const double* period = face.period;
@@ -674,11 +775,21 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
             };
             double best_area = 0.0;
             std::vector<GfVec2d> best;
+            // smlibpy: first loops within one period; only where none closes, ones that overshoot it by as much
+            // as their ends lie apart (an edge of 0.001 that ends 0.00036 past the seam it meets, a STEP file's)
+            for (int relax = 0; relax < 2 && best.empty(); ++relax)
+            {
             // per branch point (an edgeuse after a pole, one that lands on the other use of its seam): the
             // offset tried, and how many it has
             std::vector<int> choice, options;
             for (int tries = 0; tries < 243; ++tries)
             {
+                size_t branch = 0;
+                auto pick = [&](int count) {
+                    if (branch >= choice.size())
+                        choice.push_back(0), options.push_back(count);
+                    return choice[branch++];
+                };
                 for (int c = 0; c < 2; ++c)
                 {
                     loop[first].shift[c] = 0.0;
@@ -687,14 +798,18 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
                         const GfVec2d mid = loop[first].uv[loop[first].uv.size() / 2];
                         if (body.kind(f) != 2)
                             loop[first].shift[c] = -std::floor((mid[c] - face.d.uvMin[c]) / period[c]) * period[c];
+                        else if (std::fabs(loop[first].uv.front()[c] - loop[first].uv.back()[c]) <= uvtol)
+                        {
+                            // smlibpy: a seam of a B-spline face that closes up, which a loop runs along first, lies
+                            // on either side of its range (a whole sphere of B-splines came out inside out with
+                            // the side it was written on): both sides are tried
+                            const double other = face.shift(loop[first], c, loop[first].uv.front()[c] - face.d.uvMin[c] <
+                                                                                    0.5 * period[c] ? period[c] : -period[c]);
+                            if (std::isfinite(other) && other != 0.0 && pick(2) == 1)
+                                loop[first].shift[c] = other;
+                        }
                     }
                 }
-                size_t branch = 0;
-                auto pick = [&](int count) {
-                    if (branch >= choice.size())
-                        choice.push_back(0), options.push_back(count);
-                    return choice[branch++];
-                };
                 bool outside = false;
                 for (size_t j = 1; j < n; ++j)
                 {
@@ -743,15 +858,19 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
                 bool ok = !outside;
                 for (size_t k = 0; k < n && ok; ++k)
                     ok = closes(k);
-                // (a face lies within one period of its surface: a loop that spans more winds around it)
+                // (a face lies within one period of its surface: a loop that spans more winds around it; ends
+                // apart within the tolerance may overshoot, by as much as they are apart in the second round)
                 for (int c = 0; c < 2 && ok; ++c)
                     if (period[c] > 0.0)
                     {
-                        double lo = std::numeric_limits<double>::max(), hi = -lo;
-                        for (const Use& u : loop)
-                            for (const GfVec2d& x : u.uv)
-                                lo = std::min(lo, x[c] + u.shift[c]), hi = std::max(hi, x[c] + u.shift[c]);
-                        ok = hi - lo <= period[c] * (1.0 + 1e-6);  // (ends apart within the tolerance may overshoot)
+                        double lo = std::numeric_limits<double>::max(), hi = -lo, apart = 0.0;
+                        for (size_t k = 0; k < n; ++k)
+                        {
+                            for (const GfVec2d& x : loop[k].uv)
+                                lo = std::min(lo, x[c] + loop[k].shift[c]), hi = std::max(hi, x[c] + loop[k].shift[c]);
+                            apart = std::max(apart, std::fabs(loop[(k + 1) % n].start()[c] - loop[k].end()[c]));
+                        }
+                        ok = hi - lo <= period[c] * (1.0 + 1e-6) + (relax ? std::min(apart, 0.25 * period[c]) : 0.0);
                     }
                 const double a = ok ? area() : 0.0;
                 if (ok && (best.empty() || (a > 0.0 && best_area <= 0.0)))
@@ -771,11 +890,13 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
                     break;
                 ++choice[k];
             }
+            }
             if (best.empty())
             {
                 throw std::runtime_error("brep: " + where(brep.BrepIndex(), f) + ": its boundary does not close in the "
                                          "parameters of its surface (a loop that winds around it without a seam?)");
             }
+            total += best_area;
             for (size_t k = 0; k < n; ++k)
                 loop[k].shift = best[k];
             // the loop's box centred in the face's range (whole periods)
@@ -831,6 +952,53 @@ std::vector<Trim> trims(const UsdBrepView& brep, double& need)
                 }
             }
         }
+            return total;
+    };
+    const pxr::TfToken& sphere = pxr::UsdBrepSurfaceTokens->brepSurfaceSphereAPI;
+    for (uint32_t f = 0; f < faces; ++f)
+    {
+        if (body.kind(f) == 0)
+            continue;
+        // smlibpy: a sphere face that holds or touches one of its frame's poles inside an edge (a loop
+        // around a pole without a seam, an edge across one) has no curves in the parameters that close or
+        // follow it; its frame is turned so that the face lies around the middle of the seam's opposite
+        // side, away from both poles (the same surface), where its edges lie within a cap of the sphere
+        // and the turned face's loops enclose a positive area; else it keeps its frame.
+        const bool round = arrays && brep.FaceSurfaceTypes()[f] == sphere;
+        SphereFrame kept;
+        bool turned = round && across_pole(brep, f) && turn_sphere(brep, *arrays, f, kept);
+        const double need_before = need;
+        try
+        {
+            const double area = trim_face(f);
+            if (turned && !(area > 0.0))
+                throw std::runtime_error("");
+        }
+        catch (const std::runtime_error&)
+        {
+            need = need_before;
+            if (turned)
+            {
+                restore_sphere(*arrays, kept);
+                trim_face(f);  // (in its own frame, as before)
+            }
+            else if (round && turn_sphere(brep, *arrays, f, kept))
+            {
+                try
+                {
+                    if (!(trim_face(f) > 0.0))
+                        throw std::runtime_error("");
+                }
+                catch (const std::runtime_error&)
+                {
+                    need = need_before;
+                    restore_sphere(*arrays, kept);
+                    trim_face(f);  // (throws what it threw)
+                }
+            }
+            else
+                throw;
+        }
     }
     return out;
 }
@@ -849,7 +1017,7 @@ void occt_trim_curves(UsdBrepArrayData& a)
     for (const UsdBrepView& brep : UsdBrep::UsdBrepRange(a))
     {
         double need = 0.0;
-        const std::vector<Trim> mine = trims(brep, need);
+        const std::vector<Trim> mine = trims(brep, need, &a);
         if (brep.BrepIndex() < tolerances.size() && need > tolerances[brep.BrepIndex()])
             tolerances[brep.BrepIndex()] = need;
         const auto vc = brep.EdgeuseUVNurbsVertexCounts();

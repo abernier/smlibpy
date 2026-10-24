@@ -394,10 +394,62 @@ class _Interp:
         return o, z, x
 
     def placement_matrix(self, ref: Any) -> np.ndarray:
+        """The matrix of an AXIS2_PLACEMENT_3D, or of a CARTESIAN_TRANSFORMATION_OPERATOR_3D
+        (which can mirror and scale)."""
+        if _OPERATOR in self._parts(ref):
+            return self.operator_matrix(ref)
         o, z, x = self.axis2(ref)
         y = np.cross(z, x)
         m = np.eye(4)
         m[:3, 0], m[:3, 1], m[:3, 2], m[:3, 3] = x, y, z, o
+        return m
+
+    def _parts(self, ref: Any) -> dict[str, list[Any]]:
+        """An entity's parts by type: one for a plain entity, several for a complex one."""
+        t, a = self.sf.get(ref)
+        return self.sf.complex[int(ref)] if t.startswith("COMPLEX:") else {t: a}
+
+    def operator_matrix(self, ref: Any) -> np.ndarray:
+        """The matrix of a CARTESIAN_TRANSFORMATION_OPERATOR_3D (ISO 10303-42): the axes of
+        base_axis (axis3, then axis1 and axis2 made square to it, in that order: a left-handed set
+        mirrors), times the scale (and scl2, scl3 of a non-uniform one), at local_origin."""
+        parts = self._parts(ref)
+        a = parts[_OPERATOR]
+        # (from the end: name and description come first, as many as the writer gives)
+        axis1, axis2, origin, scale, axis3 = a[-5], a[-4], a[-3], a[-2], a[-1]
+
+        def given(r: Any) -> np.ndarray | None:
+            return None if r is None or r == "*" else self.direction(r)
+
+        d3 = given(axis3)
+        z = d3 if d3 is not None else np.array([0.0, 0.0, 1.0])
+        v = given(axis1)
+        if v is None:
+            v = np.array([1.0, 0.0, 0.0]) if not np.allclose(z, [1.0, 0.0, 0.0]) else np.array([0.0, 1.0, 0.0])
+        x = v - z * v.dot(z)
+        if not np.linalg.norm(x) > 1e-12:
+            raise ValueError(f"#{int(ref)}: axis1 of the transformation lies along its axis3")
+        x /= np.linalg.norm(x)
+        w = given(axis2)
+        if w is None:
+            w = np.array([0.0, 1.0, 0.0])
+        y = w - z * w.dot(z)
+        y = y - x * y.dot(x)
+        if not np.linalg.norm(y) > 1e-12:
+            raise ValueError(f"#{int(ref)}: axis2 of the transformation lies in the plane of axis1 and axis3")
+        y /= np.linalg.norm(y)
+        s = 1.0 if scale is None or scale == "*" else float(scale)
+        scales = [s, s, s]
+        nonuniform = parts.get("CARTESIAN_TRANSFORMATION_OPERATOR_3D_NON_UNIFORM") or \
+            parts.get("CARTESIAN_TRANSFORMATION_OPERATOR_NON_UNIFORM")
+        if nonuniform is not None and len(nonuniform) >= 2:
+            scales[1] = s if nonuniform[-2] in (None, "*") else float(nonuniform[-2])
+            scales[2] = s if nonuniform[-1] in (None, "*") else float(nonuniform[-1])
+        if not all(np.isfinite(c) and c > 0 for c in scales):
+            raise ValueError(f"#{int(ref)}: the scale of the transformation must be positive")
+        m = np.eye(4)
+        m[:3, 0], m[:3, 1], m[:3, 2] = x * scales[0], y * scales[1], z * scales[2]
+        m[:3, 3] = self.point(origin)
         return m
 
     # -- curves ------------------------------------------------------------------
@@ -451,7 +503,38 @@ class _Interp:
             return {"kind": "bspline", "degree": 1, "poles": np.array(pts), "knots": knots, "weights": None}
         if t == "TRIMMED_CURVE":
             return self.curve(a[1])
+        if t == "OFFSET_CURVE_3D":  # (name, basis_curve, distance, self_intersect, ref_direction)
+            return _offset_curve(self.curve(a[1]), float(a[2]) * self.scale, self.direction(a[4]), int(ref))
+        if t == "PCURVE":  # (name, basis_surface, reference_to_curve): an edge given in a surface's parameters
+            return self.pcurve(a[1], a[2], int(ref))
         raise NotImplementedError(f"curve type {t} (#{int(ref)})")
+
+    def curve2d(self, ref: Any) -> dict[str, Any]:
+        """A curve in a surface's parameters (a PCURVE's): as :meth:`curve` gives it, in the file's
+        numbers (no units: points and lengths as they stand), in the plane z = 0."""
+        t, a = self.sf.get(ref)
+        scale, self.scale = self.scale, 1.0
+        try:
+            if t in ("CIRCLE", "ELLIPSE"):
+                pt, pa = self.sf.get(a[1])  # AXIS2_PLACEMENT_2D(name, location, ref_direction)
+                o = self.point(pa[1])
+                x = self.direction(pa[2]) if len(pa) > 2 and pa[2] is not None else np.array([1.0, 0.0, 0.0])
+                z = np.array([0.0, 0.0, 1.0])
+                if t == "CIRCLE":
+                    return {"kind": "circle", "origin": o, "z": z, "x": x, "radius": float(a[2])}
+                return {"kind": "ellipse", "origin": o, "z": z, "x": x, "r1": float(a[2]), "r2": float(a[3])}
+            return self.curve(ref)
+        finally:
+            self.scale = scale
+
+    def pcurve(self, surface: Any, rep: Any, eid: int) -> dict[str, Any]:
+        """The curve in space of a PCURVE: its curve in the parameters of its surface, on it."""
+        srf = self.surface(surface)
+        _, ra = self.sf.get(rep)  # DEFINITIONAL_REPRESENTATION(name, items, context)
+        items = [x for x in ra[1] if isinstance(x, Ref)] if len(ra) > 1 and isinstance(ra[1], list) else []
+        if not items:
+            raise ValueError(f"#{eid}: the PCURVE holds no curve")
+        return _pcurve_in_space(srf, self.curve2d(items[0]), self.scale, self.angle_scale, eid)
 
     def wire_curve(self, ref: Any) -> dict[str, Any] | None:
         """A curve that stands on its own (wireframe geometry), with its trims and segments:
@@ -626,6 +709,199 @@ def _expand(knots: list[float], mults: list[int]) -> list[float]:
         out.extend([float(kv)] * int(m))
     return out
 
+
+def _unit3(v: Any) -> np.ndarray:
+    v = np.asarray(v, dtype=float)
+    return v / np.linalg.norm(v)
+
+
+def _conic_nurbs(c: dict[str, Any]) -> dict[str, Any]:
+    """A whole circle or ellipse as a rational quadratic B-spline (9 poles), starting at its x and
+    running about its z."""
+    o, z, x = (np.asarray(c[k], dtype=float) for k in ("origin", "z", "x"))
+    y = np.cross(z, x)
+    r1, r2 = (c["radius"], c["radius"]) if c["kind"] == "circle" else (c["r1"], c["r2"])
+    corners = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0)]
+    poles = np.array([o + r1 * a * x + r2 * b * y for a, b in corners])
+    w = math.sqrt(0.5)
+    return {"kind": "bspline", "degree": 2, "poles": poles, "knots": [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4],
+            "weights": [1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0]}
+
+
+def _kernel_nurbs(make: Any, what: str, delete: bool = False) -> dict[str, Any]:
+    """A B-spline curve dict of a curve the kernel makes (``make()``: a new curve; ``delete``: one
+    Python does not own, deleted after)."""
+    from ._kernel import ext, kernel_call
+
+    with kernel_call(what):
+        curve = make()
+        try:
+            d = ext.curve_data(curve, True)
+        finally:
+            if delete:
+                ext.delete_curve(curve)
+    return {"kind": "bspline", "degree": int(d["degree"]), "poles": np.asarray(d["poles"], dtype=float),
+            "knots": [float(k) for k in d["knots"]], "weights": None if d["weights"] is None else
+            [float(w) for w in d["weights"]]}
+
+
+def _offset_curve(basis: dict[str, Any], d: float, ref: np.ndarray, eid: int | str,
+                  what: str = "read STEP offset curve") -> dict[str, Any]:
+    """An OFFSET_CURVE_3D: each point moved ``d`` along tangent x ``ref`` (ISO 10303-42; IGES's offset
+    curve, 130, the same). The offset of a line is a line, of a circle about ``ref`` a circle; others are
+    the kernel's offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS
+    within 1e-9 of their size. ``eid``: the entity, a STEP id or how a message names it (``"DE 7"``)."""
+    eid = f"#{eid}" if isinstance(eid, int) else eid
+    kind = basis["kind"]
+    ref = _unit3(ref)
+    if kind == "line":
+        n = np.cross(_unit3(basis["direction"]), ref)
+        if not np.linalg.norm(n) > 1e-12:
+            raise ValueError(f"{eid}: the offset curve's reference direction runs along its line")
+        return dict(basis, origin=np.asarray(basis["origin"], dtype=float) + d * _unit3(n))
+    if kind == "circle" and abs(abs(float(np.dot(_unit3(basis["z"]), ref))) - 1.0) <= 1e-12:
+        # (tangent x axis points out of the circle)
+        r = basis["radius"] + (d if float(np.dot(_unit3(basis["z"]), ref)) > 0 else -d)
+        if r > 0:
+            return dict(basis, radius=r)
+    if kind in ("circle", "ellipse"):
+        basis = _conic_nurbs(basis)
+    elif kind != "bspline":
+        raise NotImplementedError(f"an offset of a {kind} ({eid})")
+    from ._kernel import ext
+    from .shapes import _canonical_curve
+
+    poles = np.asarray(basis["poles"], dtype=float)
+    size = float(np.linalg.norm(np.ptp(poles, axis=0))) + abs(d)
+    return _kernel_nurbs(lambda: ext.offset_curve_3d(_canonical_curve(poles, basis["knots"], basis["degree"], basis["weights"]),
+                                                  d, ref.tolist(), 1e-9 * max(size, 1e-9)), what)
+
+
+def _pcurve_in_space(srf: dict[str, Any], c: dict[str, Any], s: float, ang: float, eid: int) -> dict[str, Any]:
+    """The curve in space of the curve ``c`` in the parameters of surface ``srf`` (ISO 10303-42's
+    parameters: lengths in the file's unit, ``s`` mm each; angles in its angle unit, ``ang`` radians
+    each). On a plane, and along a parameter line of a cylinder, cone, sphere or torus, the curve of
+    its kind; on a B-spline surface the kernel's curve on it, on the others a NURBS through 257 of its
+    points, within 1e-9 of their size."""
+    kind, ck = srf["kind"], c["kind"]
+    if kind == "plane":
+        o, z, x = (np.asarray(srf[k], dtype=float) for k in ("origin", "z", "x"))
+        y = np.cross(z, x)
+
+        def at(p: Any) -> np.ndarray:
+            return o + s * (float(p[0]) * x + float(p[1]) * y)
+
+        def along(v: Any) -> np.ndarray:
+            return s * (float(v[0]) * x + float(v[1]) * y)
+
+        if ck == "line":
+            return {"kind": "line", "origin": at(c["origin"]), "direction": along(c["direction"])}
+        if ck in ("circle", "ellipse"):
+            out = dict(c, origin=at(c["origin"]), z=z, x=_unit3(along(c["x"])))
+            if ck == "circle":
+                out["radius"] = c["radius"] * s
+            else:
+                out["r1"], out["r2"] = c["r1"] * s, c["r2"] * s
+            return out
+        if ck == "bspline":
+            return dict(c, poles=np.array([at(p) for p in c["poles"]]))
+        raise NotImplementedError(f"a {ck} in the parameters of a plane (#{eid})")
+    if kind == "bspline":
+        if ck != "bspline":
+            raise NotImplementedError(f"a {ck} in the parameters of a B-spline surface (#{eid})")
+        from ._kernel import ext, kernel_call
+
+        poles = np.asarray(srf["poles"])
+        tol = 1e-9 * max(float(np.linalg.norm(np.ptp(poles, axis=0))), 1e-9)
+        uv = {"degree": c["degree"], "poles": np.asarray(c["poles"], dtype=float), "knots": list(c["knots"]),
+              "weights": c["weights"]}
+        with kernel_call("read STEP curve on a surface"):
+            d = ext.curve_on_surface(srf, uv, tol)
+        return {"kind": "bspline", "degree": int(d["degree"]), "poles": np.asarray(d["poles"], dtype=float),
+                "knots": [float(k) for k in d["knots"]], "weights": None if d["weights"] is None else
+                [float(w) for w in d["weights"]]}
+    if kind not in ("cylinder", "cone", "sphere", "torus"):
+        raise NotImplementedError(f"a curve in the parameters of a {kind} surface (#{eid})")
+    o, z, x = (np.asarray(srf[k], dtype=float) for k in ("origin", "z", "x"))
+    y = np.cross(z, x)
+    angular = (True, kind in ("sphere", "torus"))  # (u is an angle; v an angle on spheres and tori)
+
+    def uv_of(p: Any) -> tuple[float, float]:
+        return (float(p[0]) * (ang if angular[0] else s), float(p[1]) * (ang if angular[1] else s))
+
+    def point(u: float, v: float) -> np.ndarray:
+        e = math.cos(u) * x + math.sin(u) * y
+        if kind == "cylinder":
+            return o + srf["radius"] * e + v * z
+        if kind == "cone":
+            return o + (srf["radius"] + v * math.tan(srf["semi_angle"])) * e + v * z
+        if kind == "sphere":
+            return o + srf["radius"] * (math.cos(v) * e + math.sin(v) * z)
+        return o + (srf["major"] + srf["minor"] * math.cos(v)) * e + srf["minor"] * math.sin(v) * z
+
+    if ck == "line":
+        u0, v0 = uv_of(c["origin"])
+        du, dv = float(c["direction"][0]), float(c["direction"][1])
+        if abs(du) <= 1e-12 * abs(dv):  # u fixed: along v
+            e = math.cos(u0) * x + math.sin(u0) * y
+            if kind in ("cylinder", "cone"):
+                p0, p1 = point(u0, v0), point(u0, v0 + 1.0)
+                return {"kind": "line", "origin": p0, "direction": (p1 - p0) * (1.0 if dv > 0 else -1.0)}
+            centre = o if kind == "sphere" else o + srf["major"] * e
+            r = srf["radius"] if kind == "sphere" else srf["minor"]
+            # (v runs from e up toward z: the circle of x = e, y = z runs that way about e x z)
+            normal = np.cross(e, z) * (1.0 if dv > 0 else -1.0)
+            return {"kind": "circle", "origin": centre, "z": normal, "x": e, "radius": r}
+        if abs(dv) <= 1e-12 * abs(du):  # v fixed: around the axis
+            p = point(0.0, v0)
+            h = float((p - o).dot(z))
+            r = float(np.linalg.norm(p - o - h * z))
+            if not r > 0:
+                raise NotImplementedError(f"a curve along a pole of a {kind} (#{eid})")
+            return {"kind": "circle", "origin": o + h * z, "z": z * (1.0 if du > 0 else -1.0), "x": x, "radius": r}
+        raise NotImplementedError(f"a line across the parameters of a {kind} (#{eid})")
+    if ck not in ("bspline", "circle", "ellipse"):
+        raise NotImplementedError(f"a {ck} in the parameters of a {kind} (#{eid})")
+    from .iges_reader import bspline_point
+    from ._kernel import ext
+
+    spec = c if ck == "bspline" else _conic_nurbs(c)
+    ks = spec["knots"]
+    t0, t1 = float(ks[spec["degree"]]), float(ks[len(ks) - spec["degree"] - 1])
+    pts = [point(*uv_of(bspline_point(spec, t0 + (t1 - t0) * i / 256))) for i in range(257)]
+    size = float(np.linalg.norm(np.ptp(np.array(pts), axis=0)))
+    tol = 1e-9 * max(size, 1e-9)
+
+    def fit() -> Any:
+        curve, dev, _ = ext.approximate_points([float(q) for p in pts for q in p], 3, tol, [], [], False)
+        return curve
+
+    return _kernel_nurbs(fit, "read STEP curve on a surface", delete=True)
+
+
+def analytic_offset(srf: dict[str, Any]) -> dict[str, Any] | None:
+    """The surface an OFFSET_SURFACE of a plane, sphere, cylinder, cone or torus is, as the reader gives
+    surfaces (ISO 10303-42's normals of those point out of them: a sphere of radius r offset by d is the
+    sphere of radius r + d, a cone keeps its angle and gains d / cos(angle) at its placement); None for
+    any other surface, or an offset that passes through the axis or the centre."""
+    if srf["kind"] != "offset":
+        return None
+    basis, d = srf["basis"], srf["distance"]
+    kind = basis["kind"]
+    if kind == "plane":
+        return dict(basis, origin=np.asarray(basis["origin"], dtype=float) + d * np.asarray(basis["z"], dtype=float))
+    if kind in ("sphere", "cylinder") and basis["radius"] + d > 0:
+        return dict(basis, radius=basis["radius"] + d)
+    if kind == "cone" and abs(math.cos(basis["semi_angle"])) > 1e-12 and \
+            basis["radius"] + d / math.cos(basis["semi_angle"]) >= 0:
+        return dict(basis, radius=basis["radius"] + d / math.cos(basis["semi_angle"]))
+    if kind == "torus" and 0 < basis["minor"] + d < basis["major"]:
+        return dict(basis, minor=basis["minor"] + d)
+    return None
+
+
+# A placement that can mirror and scale (MAPPED_ITEM's target, a functionally defined transformation)
+_OPERATOR = "CARTESIAN_TRANSFORMATION_OPERATOR_3D"
 
 _KNOT_FORMS = {
     "BEZIER_CURVE": "bezier", "UNIFORM_CURVE": "uniform", "QUASI_UNIFORM_CURVE": "quasi",
@@ -822,16 +1098,26 @@ def _hidden_items(sf: StepFile) -> set[int]:
 
 
 def _moved(data: dict[str, Any], m: np.ndarray) -> dict[str, Any]:
-    """An item's data placed by the 4x4 matrix ``m``."""
+    """An item's data placed by the 4x4 matrix ``m`` (a mirror keeps a frame's x and y and turns its
+    z, so it stays right-handed; a scale scales lengths)."""
     R, t = m[:3, :3], m[:3, 3]
     out = dict(data)
     if data["kind"] == "frame":
-        out.update(origin=R @ data["origin"] + t, z=R @ data["z"], x=R @ data["x"])
+        out.update(origin=R @ data["origin"] + t, z=_unit(_turned(R) @ data["z"]), x=_unit(R @ data["x"]))
     elif data["kind"] == "point":
         out.update(point=R @ data["point"] + t)
     else:
         out.update(curve=_moved_curve(data["curve"], R, t))
     return out
+
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / np.linalg.norm(v)
+
+
+def _turned(R: np.ndarray) -> np.ndarray:
+    """What a placement does to the normal of a frame (x by y): R, turned over where R mirrors."""
+    return -R if np.linalg.det(R) < 0 else R
 
 
 def _moved_curve(c: dict[str, Any], R: np.ndarray, t: np.ndarray) -> dict[str, Any]:
@@ -846,8 +1132,13 @@ def _moved_curve(c: dict[str, Any], R: np.ndarray, t: np.ndarray) -> dict[str, A
         out["poles"] = np.asarray(c["poles"]) @ R.T + t
     elif kind == "line":
         out.update(origin=R @ c["origin"] + t, direction=R @ c["direction"])
-    else:  # circle, ellipse, hyperbola, parabola
-        out.update(origin=R @ c["origin"] + t, z=R @ c["z"], x=R @ c["x"])
+    else:  # circle, ellipse, hyperbola, parabola (the frame right-handed, its parameter running as it did)
+        s = float(np.linalg.norm(R @ c["x"]))
+        out.update(origin=R @ c["origin"] + t, z=_unit(_turned(R) @ c["z"]), x=_unit(R @ c["x"]))
+        if abs(s - 1.0) > 1e-12:
+            for key in ("radius", "r1", "r2", "a", "b", "focal"):
+                if key in c:
+                    out[key] = c[key] * s
     return out
 
 
@@ -1020,6 +1311,15 @@ def _item_transform(it: _Interp, ref: Any, child: int, parent: int, items: dict[
     """Placement of the child representation in the parent's coordinates."""
     sf = it.sf
     t, a = sf.get(ref)
+    if _OPERATOR in it._parts(ref):
+        # a functionally defined transformation: the operator maps the child into the parent
+        try:
+            it.use_units(parent)
+            return it.operator_matrix(ref)
+        except Exception:
+            return None
+        finally:
+            it.use_units(None)
     if t != "ITEM_DEFINED_TRANSFORMATION":
         return None
     try:

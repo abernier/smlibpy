@@ -31,7 +31,7 @@ export const OPTIONS: Record<string, readonly [number, readonly string[]]> = {
   HexLocations: [3, ['centered']],
   Lattice: [2, ['margin']],
   'Lattice.apply': [1, ['tolerance']],
-  'Mesh.decimate': [1, ['triangles', 'tolerance']],
+  'Mesh.decimate': [1, ['triangles', 'tolerance', 'featureAngle']],
   'Part.bends': [0, ['kFactor']],
   'Part.chamfer': [2, ['length2', 'angle', 'reference', 'propagate', 'corners']],
   'Part.draftAnalysis': [1, ['minAngle']],

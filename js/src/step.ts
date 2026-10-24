@@ -739,7 +739,9 @@ function _wireframe(
     } else {
       const pl = item.plane
       const [o, z, x] = [w.point(pl.origin.mul(scale).toArray()), w.direction(pl.zDir.toArray()), w.direction(pl.xDir.toArray())]
-      frames.push(w.add(`AXIS2_PLACEMENT_3D(${_s(item.name)},#${o},#${z},#${x})`))
+      const ent = w.add(`AXIS2_PLACEMENT_3D(${_s(item.name)},#${o},#${z},#${x})`)
+      frames.push(ent)
+      if (item.color !== null) styled.push([ent, item.color as ColorLike, 'curve']) // (as NX colors its coordinate systems)
     }
   }
   const reps: [number, boolean][] = []
@@ -769,6 +771,15 @@ export function _stepText(items: readonly unknown[], path: string, options: Step
   for (const item of items) if (!(item instanceof _Body || _isExtra(item))) throw new TypeError(`cannot write a ${_typeName(item)} to STEP`)
   let list = items.filter((x): x is _Body => x instanceof _Body)
   const extras = items.filter(_isExtra)
+  for (const b of list) {
+    // (a body without faces would be left out)
+    if (k.brep_face_count(b._brep) === 0) {
+      const what = path ? 'exportStep' : 'toStep'
+      const label = b.name ? ` '${b.name}'` : ''
+      const hint = k.brep_edge_count(b._brep) ? '; its edges() are curves, which it writes as such' : ' (a Boolean that left nothing?)'
+      throw new RangeError(`${what}: the ${_typeName(b)}${label} is empty: it has no faces to write${hint}`)
+    }
+  }
   if (perUnit !== 1.0) {
     const f = 1.0 / perUnit
     const scaled = new Map<unknown, _Body>() // (a body listed twice stays one body)
@@ -878,7 +889,7 @@ export function _stepText(items: readonly unknown[], path: string, options: Step
     if (solidItems.length) reps.push([representation('ADVANCED_BREP_SHAPE_REPRESENTATION', product, origin, solidItems), false])
     if (sheetItems.length) reps.push([representation('MANIFOLD_SURFACE_SHAPE_REPRESENTATION', product, origin, sheetItems), false])
     reps.push(...wireframe(product, extras))
-    if (!reps.length) throw new RangeError('nothing to write')
+    if (!reps.length) throw new RangeError(`${path ? 'exportStep' : 'toStep'}: nothing to write`)
     // (coordinate systems alone: supplemental geometry of a shape that has no items)
     if (reps[0][1]) reps.unshift([w.add(`SHAPE_REPRESENTATION(${_s(product)},(#${origin}),#${ctx})`), false])
     w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${reps[0][0]})`)
@@ -906,7 +917,7 @@ export function _stepText(items: readonly unknown[], path: string, options: Step
       }
       places.push([key, w.axis2([0, 0, 0], [0, 0, 1], [1, 0, 0])])
     })
-    if (!parts.size && !extras.length) throw new RangeError('nothing to write')
+    if (!parts.size && !extras.length) throw new RangeError(`${path ? 'exportStep' : 'toStep'}: nothing to write`)
     const root = w.add(`SHAPE_REPRESENTATION(${_s(product)},(${ids([origin, ...places.map(([, a]) => a)])}),#${ctx})`)
     w.add(`SHAPE_DEFINITION_REPRESENTATION(#${pshape},#${root})`)
     places.forEach(([key, place], n) => {

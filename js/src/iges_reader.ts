@@ -17,7 +17,7 @@
 
 import { _identity, _matmul, type Matrix } from './geometry.ts'
 import { det3, solve } from './_linalg.ts'
-import { BodyData, NotImplementedError, _bodyError, _repr } from './step_reader.ts'
+import { BodyData, NotImplementedError, _bodyError, _offsetCurve, _repr } from './step_reader.ts'
 import { ext, k, kernelCall } from './kernel.ts'
 import { _canonicalCurve } from './shapes.ts'
 
@@ -291,6 +291,28 @@ function _unit(v: V): V {
   return [v[0] / n, v[1] / n, v[2] / n]
 }
 
+/** The direction a curve of `segments` runs in at its point `p` (at parameter `t` of a B-spline). */
+function _tangent(curve: Any, p: V, t: number | undefined): V {
+  const kind = curve.kind
+  if (kind === 'line') return curve.direction as V
+  if (kind === 'circle' || kind === 'ellipse') {
+    const [o, z, x] = [curve.origin as V, curve.z as V, curve.x as V]
+    const y = _cross(z, x)
+    const [r1, r2] = kind === 'circle' ? [curve.radius, curve.radius] : [curve.r1, curve.r2]
+    const a = Math.atan2(_dot(_sub(p, o), y) / r2, _dot(_sub(p, o), x) / r1)
+    return _add(_mul(x, -r1 * Math.sin(a)), _mul(y, r2 * Math.cos(a)))
+  }
+  if (kind === 'bspline') {
+    const ks: number[] = curve.knots
+    const deg: number = curve.degree
+    const [lo, hi] = [ks[deg], ks[ks.length - deg - 1]]
+    const s = t ?? lo
+    const h = 1e-7 * (hi - lo)
+    return _sub(bsplinePoint(curve, Math.min(hi, s + h)), bsplinePoint(curve, Math.max(lo, s - h)))
+  }
+  throw new NotImplementedError(`an offset of a ${kind}`)
+}
+
 function _perpendicular(z: V): V {
   return _unit(_cross(z, Math.abs(z[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]))
 }
@@ -526,7 +548,36 @@ class _Interp {
       const ks: number[] = spec.knots
       return [{ curve: spec, p0: spec.poles[0], p1: spec.poles[spec.poles.length - 1], t0: ks[0], t1: ks[ks.length - 1] }]
     }
+    if (t === 130) return [this.offsetCurve(e, M, depth)]
     throw new NotImplementedError(`curve entity ${t} (DE ${de})`)
+  }
+
+  /** An offset curve (130) at one distance: its base curve moved by it along the base's tangent x the
+   * normal of the plane it lies in (as STEP's OFFSET_CURVE_3D and OpenCASCADE's offset curves; a
+   * mirroring transformation turns the normal round). Lines and circles about the normal stay lines and
+   * circles; other curves become the kernel's offset curve, a NURBS. */
+  offsetCurve(e: Entity, M: Matrix, depth: number): Any {
+    const [baseDe, flag] = this.ints(e, 0, 2)
+    if (flag !== 1) throw new NotImplementedError(`an offset curve whose distance varies (DE ${e.de})`)
+    const d = this.nums(e, 4, 1)[0] * _Interp.scale(M)
+    const normal = _mul(_Interp.D(M, this.nums(e, 8, 3)), _Interp.handed(M))
+    const pieces = this.segments(baseDe, M, depth + 1)
+    if (pieces.length !== 1) throw new NotImplementedError(`an offset of a composite curve (DE ${e.de})`)
+    const b = pieces[0]
+    const base = b.curve
+    const spec = _offsetCurve(base, d, normal, `DE ${e.de}`, 'import IGES offset curve')
+    const closed = _norm(_sub(b.p1, b.p0)) <= 1e-12 * Math.max(1, _norm(b.p0))
+    // (an arc's angle is not the parameter of the NURBS its offset becomes)
+    if (spec.kind === 'bspline' && base.kind !== 'bspline' && !closed)
+      throw new NotImplementedError(`an offset of a ${base.kind} arc out of its plane (DE ${e.de})`)
+    const end = (p: V, t: number | undefined): V => _add(p, _mul(_unit(_cross(_tangent(base, p, t), normal)), d))
+    const out: Any = { curve: spec, p0: end(b.p0, b.t0), p1: end(b.p1, b.t1) }
+    if (spec.kind === 'bspline' && b.t0 !== undefined) {
+      // (the kernel's offset keeps its basis's parameters)
+      out.t0 = b.t0
+      out.t1 = b.t1
+    }
+    return out
   }
 
   /** One whole curve (a generatrix, a directrix) as a step_reader curve spec, with its ends `p0`

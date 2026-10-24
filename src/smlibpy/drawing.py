@@ -59,7 +59,8 @@ def drawing_views(part: Any, views: Sequence[str] = ("front", "top", "left"), *,
     """The views of a part for a 2D drawing, laid out in the world XY plane.
 
     Args:
-        part: A part (or a shell).
+        part: A part (or a shell), or a list of them (an assembly): drawn together, each body hiding
+            the lines of the others behind it (bodies that overlap are not cut where they meet).
         views: The views, by where they look from: ``"front"`` (from -Y; the drawing's x is the
             model's X, its y the model's Z), ``"back"`` (from +Y), ``"top"`` (from +Z: X and Y),
             ``"bottom"`` (from -Z), ``"left"`` (from -X: -Y and Z) and ``"right"`` (from +X: Y
@@ -79,6 +80,7 @@ def drawing_views(part: Any, views: Sequence[str] = ("front", "top", "left"), *,
     """
     from .shapes import ShapeList
 
+    part = _drawn(part)
     if projection not in ("first-angle", "third-angle"):
         raise ValueError(f"drawing_views: projection must be 'first-angle' or 'third-angle', not {projection!r}")
     names = [views] if isinstance(views, str) else list(views)
@@ -133,6 +135,28 @@ def drawing_views(part: Any, views: Sequence[str] = ("front", "top", "left"), *,
         out.append(DrawingView(n, Vector(*_VIEWS[n][0]), seen.moved(place), behind.moved(place)))
     order = {n: i for i, n in enumerate(names)}
     return sorted(out, key=lambda v: order[v.name])
+
+
+def _drawn(part: Any) -> Any:
+    """The body :func:`drawing_views` draws: a part or shell, or the bodies of a list side by side in
+    one (the kernel's hidden lines see them all)."""
+    from ._kernel import ext, kernel_call
+    from .shapes import ShapeList, Shell, _Body
+
+    if isinstance(part, _Body):
+        return part
+    if not isinstance(part, (list, tuple, ShapeList)):
+        raise TypeError(f"drawing_views draws parts and shells, not a {type(part).__name__}")
+    bodies = list(part)
+    for b in bodies:
+        if not isinstance(b, _Body):
+            raise TypeError(f"drawing_views draws parts and shells, not a {type(b).__name__}")
+    if not bodies:
+        raise ValueError("drawing_views: nothing to draw")
+    if len(bodies) == 1:
+        return bodies[0]
+    with kernel_call("drawing_views"):
+        return Shell._wrap(ext.combine([b._brep for b in bodies]))
 
 
 def _box_of(part: Any, name: str) -> BoundBox:

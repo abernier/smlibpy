@@ -9,7 +9,7 @@
 
 import { BrepHandle, KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { type Location, type Matrix, Plane, Vector, _matmul } from './geometry.ts'
-import { det3, solve } from './_linalg.ts'
+import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line } from './curves.ts'
 import { Edge, Part, Shell, Wire, _canonicalCurve, _list, _putFaceAttrs, _take, type ShapeList } from './shapes.ts'
 import {
@@ -18,6 +18,7 @@ import {
   _bodyLabel,
   _failure,
   _repr,
+  analyticOffset,
   interpret,
   interpretExtras,
   parse,
@@ -792,11 +793,10 @@ export function _label(body: BodyData): string {
 
 export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   const bld = new _Builder(body, m)
-  const mirrored = det3([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]) < 0
-  if (mirrored) throw new ModelingError('mirrored assembly placements are not supported yet')
+  // (_bodies builds such a body unplaced and moves it whole)
+  if (!_rigid(m)) throw new ModelingError('a placement that mirrors or scales cannot be built into a body')
   const edges = bld.specs
-  const faces: Any[] = []
-  _agreeingLoops(body).forEach((face, fi) => {
+  const faceSpec = (fi: number, face: FaceData, srf: Any): Any => {
     let f = face
     let loops: Any[] = []
     for (const loop of _outerFirst(bld, f.loops)) {
@@ -805,7 +805,6 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
         loops.push({ edges: loop.edges.map(([ei, fwd]) => [Math.trunc(ei), Boolean(fwd)]) })
       } else if ('vertex' in loop) loops.push({ vertex: bld.P(body.vertices[loop.vertex as number]) })
     }
-    const srf = body.surfaces[f.surface]
     const seamed = _addSeams(bld, f, srf, -1_000_000 - fi)
     if (seamed !== null) {
       const [newLoops, frame] = seamed
@@ -833,18 +832,17 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
     // a face on a closed B-spline surface without a seam edge of its own may lie across the
     // surface's seam; build_brep moves the seam off it
     const freeSeam = srf.kind === 'bspline' && !loops.some((l) => l.edges?.length && _isSeamLoop(l))
-    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam, color: f.color ?? null, name: f.name || null })
-  })
+    return { surface: bld._surfaceFrom(srf, f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam, color: f.color ?? null, name: f.name || null }
+  }
+  const agreed = _agreeingLoops(body)
+  const faces: Any[] = agreed.map((f, fi) => faceSpec(fi, f, body.surfaces[f.surface]))
   const solid = body.kind === 'solid'
   const parts: (Part | Shell)[] = []
   const built: [Any[], boolean][] = [] // the faces and orientation each shell was built with in the end
   const broken: string[] = [] // what is wrong with the closed shells heal and stitching could not repair
   const hint = 'the file may hold faces the kernel cannot rebuild'
-  body.shells.forEach((sh, si) => {
-    const closed = solid && Boolean(sh.closed ?? true)
-    const shellFaces = sh.faces.map((i) => faces[i])
-    // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
-    let reversed = Boolean(sh.reversed) && !(solid && si > 0)
+  const buildShell = (shellFaces: Any[], closed: boolean, given: boolean): [Part | Shell, number | null, boolean] => {
+    let reversed = given
     const brep = kernelCall(
       _op(),
       () => {
@@ -881,6 +879,43 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
         part = turned
         volume = v
       }
+    }
+    return [part, volume, reversed]
+  }
+  body.shells.forEach((sh, si) => {
+    const closed = solid && Boolean(sh.closed ?? true)
+    let shellFaces = sh.faces.map((i) => faces[i])
+    // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
+    const given = Boolean(sh.reversed) && !(solid && si > 0)
+    let [part, volume, reversed] = buildShell(shellFaces, closed, given)
+    // An offset of a plane, sphere, cylinder, cone or torus is a surface of that kind: where the kernel
+    // cannot close a solid with such faces as offsets (an offset of a whole sphere, whose face has the
+    // sphere's seam and poles: no solid, or one of another volume, 0 natively and a quarter in smlibwasm),
+    // they are built on the surface they are.
+    const plain = closed ? sh.faces.map((i) => analyticOffset(body.surfaces[agreed[i].surface])) : []
+    if (plain.some((s) => s !== null)) {
+      const retry = sh.faces.map((i, k) => (plain[k] !== null ? faceSpec(i, agreed[i], plain[k]) : { ...faces[i] }))
+      let again: [Part | Shell, number | null, boolean] | null = null
+      try {
+        again = buildShell(retry, closed, given)
+      } catch (e) {
+        if (!(e instanceof KernelError || e instanceof ModelingError)) throw e
+      }
+      let taken = false
+      if (again !== null && _sound(again[0] as Part, again[1])) {
+        const v = again[1] ?? _kernelVolume(again[0] as Part)
+        const mine = volume ?? _kernelVolume(part as Part)
+        // (the kernel's volumes to 1e-4: the same solid both ways agrees to far better than 1e-3)
+        if (!_sound(part as Part, mine) || mine === null || v === null || Math.abs(mine - v) > 1e-3 * Math.abs(v)) {
+          part.dispose()
+          part = again[0]
+          volume = v
+          reversed = again[2]
+          shellFaces = retry
+          taken = true
+        }
+      }
+      if (!taken) again?.[0].dispose()
     }
     built.push([shellFaces, reversed])
     if (heal && closed && !_sound(part as Part, volume)) {
@@ -1138,7 +1173,9 @@ function _sound(part: Part, volume: number | null = null): boolean {
   try {
     if (part._shapeProblem() !== null) return false
     const v = volume ?? _kernelVolume(part)
-    return v !== null && v > 0 && part._solidProblem(v) === null
+    // (an integration over broken faces can come out a hair above 0: 1e-10 for an offset of a whole sphere
+    // of radius 10 in smlibwasm)
+    return v !== null && v > 1e-12 * part._looseBox().diagonal ** 3 && part._solidProblem(v) === null
   } catch (e) {
     if (e instanceof KernelError) return false
     throw e
@@ -1286,6 +1323,22 @@ function _sewn(sheet: Shell, body: BodyData): Shell {
   return sheet
 }
 
+/** Whether a placement only turns and moves (no mirror, no scale). */
+function _rigid(m: Matrix): boolean {
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++) {
+      let d = 0
+      for (let k = 0; k < 3; k++) d += m[k * 4 + i] * m[k * 4 + j]
+      if (Math.abs(d - (i === j ? 1 : 0)) > 1e-9) return false
+    }
+  const det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8])
+  return det > 0
+}
+
+function _identity4(): Matrix {
+  return Float64Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+}
+
 /** numpy's linalg.inv of a 4 x 4 matrix. */
 function _inv4(m: Matrix): Matrix {
   const rows = [0, 1, 2, 3].map((r) => [0, 1, 2, 3].map((c) => m[r * 4 + c]))
@@ -1317,12 +1370,17 @@ function _bodies(sf: StepFile, heal: boolean, strict: boolean): [(Part | Shell)[
       continue
     }
     try {
-      const first = built.get(body)
+      let first = built.get(body)
       if (first === undefined) {
-        const part = _buildBody(body, m, heal)
-        built.set(body, [part, m])
-        out.push(part)
-        continue
+        // (a placement that mirrors or scales: the body is built where it is defined and moved there
+        // whole, as Shape.mirror and Shape.scale move a body)
+        const at = _rigid(m) ? m : _identity4()
+        first = [_buildBody(body, at, heal), at]
+        built.set(body, first)
+        if (at === m) {
+          out.push(first[0])
+          continue
+        }
       }
       out.push(first[0]._transformed(_matmul(m, _inv4(first[1]))) as Part | Shell)
     } catch (e) {

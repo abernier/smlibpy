@@ -705,10 +705,12 @@ export function toObj(shapes: ShapesLike, options: MeshOptions = {}): string {
 
 function _obj(shapes: unknown, options: MeshOptions, what: string): string {
   const { tolerance = null, angle = 15.0, maxEdge = null } = options
+  const meshes = _meshes(shapes, tolerance, angle, what, maxEdge)
+  if (!meshes.length) throw new RangeError(`${what}: nothing to write`)
   const lines = ['# smlibwasm']
   let offset = 1
   let normalOffset = 1
-  _meshes(shapes, tolerance, angle, what, maxEdge).forEach(([item, m], i) => {
+  meshes.forEach(([item, m], i) => {
     lines.push(`o ${(item as Any).name || `part_${i + 1}`}`)
     const v = m.vertices
     // (12 digits: a hundred-thousandth of a millimeter 1 km from the origin)
@@ -1094,8 +1096,20 @@ export function gltfDocument(shapes: unknown, options: GltfOptions = {}): [Any, 
  */
 export function toGlb(shapes: ShapesLike, options: GltfOptions = {}): Uint8Array {
   _opts('toGlb', options)
+  return _glb(shapes, options, 'toGlb')
+}
+
+/** The glTF JSON and buffer of a file of the shapes (Z-up in millimeters under a root node that
+ * turns it upright and scales it to meters); nothing to write throws. */
+function _gltfFile(shapes: unknown, options: GltfOptions, what: string): [Any, Uint8Array] {
   const [doc, buf] = gltfDocument(shapes, options)
+  if (!doc.nodes.length) throw new RangeError(`${what}: nothing to write`)
   _zUp(doc, true)
+  return [doc, buf]
+}
+
+function _glb(shapes: unknown, options: GltfOptions, what: string): Uint8Array {
+  const [doc, buf] = _gltfFile(shapes, options, what)
   const text = new TextEncoder().encode(JSON.stringify(doc))
   const js = new Uint8Array(text.length + ((4 - (text.length % 4)) % 4)).fill(0x20)
   js.set(text)
@@ -1128,14 +1142,17 @@ export function toGlb(shapes: ShapesLike, options: GltfOptions = {}): Uint8Array
 export function exportGlb(shapes: ShapesLike, path: string, options: GltfOptions = {}): void {
   _opts('exportGlb', options)
   const fs = _fs()
-  fs.writeFileSync(String(path), toGlb(shapes, options))
+  fs.writeFileSync(String(path), _glb(shapes, options, 'exportGlb'))
 }
 
 /** glTF JSON of the shapes with the buffer embedded as a data URI (in meters, like `toGlb`). */
 export function toGltf(shapes: ShapesLike, options: GltfOptions = {}): string {
   _opts('toGltf', options)
-  const [doc, buf] = gltfDocument(shapes, options)
-  _zUp(doc, true)
+  return _gltf(shapes, options, 'toGltf')
+}
+
+function _gltf(shapes: unknown, options: GltfOptions, what: string): string {
+  const [doc, buf] = _gltfFile(shapes, options, what)
   doc.buffers[0].uri = `data:application/octet-stream;base64,${_base64(buf)}`
   return JSON.stringify(doc)
 }
@@ -1144,7 +1161,7 @@ export function toGltf(shapes: ShapesLike, options: GltfOptions = {}): string {
 export function exportGltf(shapes: ShapesLike, path: string, options: GltfOptions = {}): void {
   _opts('exportGltf', options)
   const fs = _fs()
-  fs.writeFileSync(String(path), toGltf(shapes, options))
+  fs.writeFileSync(String(path), _gltf(shapes, options, 'exportGltf'))
 }
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'

@@ -24,8 +24,8 @@ from ._kernel import BrepHandle, KernelError, ModelingError, ext, k, kernel_call
 from .curves import CenterArc, EllipticalArc, Line
 from .geometry import Location, Plane, Vector
 from .shapes import Edge
-from .step_reader import (_BODY_ERRORS, BodyData, StepFile, _body_label, _failure, interpret, interpret_extras,
-                          parse)
+from .step_reader import (_BODY_ERRORS, BodyData, StepFile, _body_label, _failure, analytic_offset, interpret,
+                          interpret_extras, parse)
 
 __all__ = ["import_step", "read_step", "from_step", "from_step_model", "StepModel", "StepFrame", "StepCurve",
            "StepPoint"]
@@ -583,12 +583,11 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     from .shapes import Part, Shell
 
     bld = _Builder(body, m)
-    mirrored = float(np.linalg.det(m[:3, :3])) < 0
-    if mirrored:
-        raise ModelingError("mirrored assembly placements are not supported yet")
+    if not _rigid(m):  # (_bodies builds such a body unplaced and moves it whole)
+        raise ModelingError("a placement that mirrors or scales cannot be built into a body")
     edges = bld.specs
-    faces = []
-    for fi, f in enumerate(_agreeing_loops(body)):
+
+    def face_spec(fi: int, f: dict[str, Any], srf: dict[str, Any]) -> dict[str, Any]:
         loops = []
         for loop in _outer_first(bld, f["loops"]):
             if loop.get("edges"):
@@ -598,7 +597,6 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
                 loops.append({"edges": [(int(ei), bool(fwd)) for ei, fwd in loop["edges"]]})
             elif "vertex" in loop:
                 loops.append({"vertex": bld.P(body.vertices[loop["vertex"]])})
-        srf = body.surfaces[f["surface"]]
         seamed = _add_seams(bld, f, srf, -1_000_000 - fi)
         if seamed is not None:
             new_loops, frame = seamed
@@ -616,17 +614,17 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
         # a face on a closed B-spline surface without a seam edge of its own may lie across the
         # surface's seam; build_brep moves the seam off it
         free_seam = srf["kind"] == "bspline" and not any(_is_seam_loop(l) for l in loops if l.get("edges"))
-        faces.append({"surface": bld.surface_spec(f), "same_sense": bool(f["same_sense"]), "loops": loops,
-                      "free_seam": free_seam, "color": f.get("color"), "name": f.get("name") or None})
+        return {"surface": bld._surface_from(srf, f), "same_sense": bool(f["same_sense"]),
+                "loops": loops, "free_seam": free_seam, "color": f.get("color"), "name": f.get("name") or None}
+
+    agreed = list(_agreeing_loops(body))
+    faces = [face_spec(fi, f, body.surfaces[f["surface"]]) for fi, f in enumerate(agreed)]
     solid = body.kind == "solid"
     parts = []
     built = []  # the faces and orientation each shell was built with in the end
     broken = []  # what is wrong with the closed shells heal and stitching could not repair
-    for si, sh in enumerate(body.shells):
-        closed = solid and bool(sh.get("closed", True))
-        shell_faces = [faces[i] for i in sh["faces"]]
-        # Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
-        reversed_ = bool(sh["reversed"]) and not (solid and si > 0)
+
+    def build_shell(shell_faces: list[dict[str, Any]], closed: bool, reversed_: bool) -> tuple[Any, Any, bool]:
         with kernel_call(_op(), "the file may hold faces the kernel cannot rebuild"):
             brep = _attributed(ext.build_brep(shell_faces, edges, closed, reversed_, False), shell_faces)
             # A few writers flip a face's same_sense flag against its loops (which agree with
@@ -653,6 +651,31 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
                 with kernel_call(_op()):
                     part, volume = _with_seams(Part._wrap(_attributed(ext.build_brep(shell_faces, edges, closed,
                                                                                      reversed_, False), shell_faces)))
+        return part, volume, reversed_
+
+    for si, sh in enumerate(body.shells):
+        closed = solid and bool(sh.get("closed", True))
+        shell_faces = [faces[i] for i in sh["faces"]]
+        # Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
+        given = bool(sh["reversed"]) and not (solid and si > 0)
+        part, volume, reversed_ = build_shell(shell_faces, closed, given)
+        # An offset of a plane, sphere, cylinder, cone or torus is a surface of that kind: where the
+        # kernel cannot close a solid with such faces as offsets (an offset of a whole sphere, whose
+        # face has the sphere's seam and poles: no solid, or one of another volume, 0 natively and a
+        # quarter in smlibwasm), they are built on the surface they are.
+        plain = {i: analytic_offset(body.surfaces[agreed[i]["surface"]]) for i in sh["faces"]} if closed else {}
+        if any(s is not None for s in plain.values()):
+            retry = [face_spec(i, agreed[i], s) if s is not None else dict(faces[i]) for i, s in plain.items()]
+            try:
+                again, v, r = build_shell(retry, closed, given)
+            except (KernelError, ModelingError):
+                again = None
+            if again is not None and _sound(again, v):
+                v = _kernel_volume(again) if v is None else v
+                mine = _kernel_volume(part) if volume is None else volume
+                # (the kernel's volumes to 1e-4: the same solid both ways agrees to far better than 1e-3)
+                if not _sound(part, mine) or mine is None or v is None or abs(mine - v) > 1e-3 * abs(v):
+                    part, volume, reversed_, shell_faces = again, v, r, retry
         built.append((shell_faces, reversed_))
         if heal and closed and not _sound(part, volume):
             # Only repair what came out broken: the kernel's healer can damage good bodies.
@@ -885,7 +908,10 @@ def _sound(part: Any, volume: float | None = None) -> bool:
             return False
         if volume is None:
             volume = _kernel_volume(part)
-        return volume is not None and volume > 0 and part._solid_problem(volume=volume) is None
+        # (an integration over broken faces can come out a hair above 0: 1e-10 for an offset of a whole
+        # sphere of radius 10 in smlibwasm)
+        return volume is not None and volume > 1e-12 * part._loose_box().diagonal ** 3 and \
+            part._solid_problem(volume=volume) is None
     except KernelError:
         return False
 
@@ -1091,6 +1117,12 @@ class StepModel:
 
 
 
+def _rigid(m: np.ndarray) -> bool:
+    """Whether a placement only turns and moves (no mirror, no scale)."""
+    r = m[:3, :3]
+    return bool(np.allclose(r.T @ r, np.eye(3), atol=1e-9) and np.linalg.det(r) > 0)
+
+
 def _bodies(sf: StepFile, heal: bool, strict: bool) -> tuple[list[Any], list[str]]:
     """The bodies of a parsed file in file order, and what was left out (one message per body
     that could not be read, with the number of its instances). ``strict`` raises
@@ -1113,9 +1145,13 @@ def _bodies(sf: StepFile, heal: bool, strict: bool) -> tuple[list[Any], list[str
             continue
         try:
             if key not in built:
-                built[key] = (_build_body(body, m, heal), m)
-                out.append(built[key][0])
-                continue
+                # (a placement that mirrors or scales: the body is built where it is defined and
+                # moved there whole, as Shape.mirror and Shape.scale move a body)
+                at = m if _rigid(m) else np.eye(4)
+                built[key] = (_build_body(body, at, heal), at)
+                if at is m:
+                    out.append(built[key][0])
+                    continue
             first, at = built[key]
             out.append(first._transformed(m @ np.linalg.inv(at)))
         except _BODY_ERRORS as e:

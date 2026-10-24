@@ -39,7 +39,7 @@ in an assembly is built once; its other instances are copies moved to their plac
 
 ## Warnings
 `RuntimeWarning`s, each naming the body, its entity in the file and its product:
-- `import STEP: left out body 'b' (#99, product 'P'): curve type OFFSET_CURVE_3D (#203), which
+- `import STEP: left out body 'b' (#99, product 'P'): curve type CLOTHOID (#203), which
   is not supported`: that body is not in the result; the other bodies are.
 - `import STEP: the faces of body 'b' (#99) did not share their edges; stitched them, closing
   gaps of up to 0.0023 mm`: the body was repaired by stitching (and is valid).
@@ -65,8 +65,9 @@ in an assembly is built once; its other instances are copies moved to their plac
   pattern above.
 - Coordinate systems, curves (contours such as a tool's cutting edge line) and points are not
   bodies: `read_step` reads them with the bodies.
-- Not read: references to external files, PMI, `OFFSET_CURVE_3D` edges, and assembly
-  placements that mirror a part.
+- Read: offset curves (`OFFSET_CURVE_3D`), edges given only in a surface's parameters
+  (`PCURVE`), and assembly placements that mirror or scale a part (the part is mirrored or
+  scaled whole). Not read: references to external files, PMI.
 
 ## Errors
 - `ModelingError: the STEP file holds no B-rep solids or surfaces`: a wireframe-only or empty
