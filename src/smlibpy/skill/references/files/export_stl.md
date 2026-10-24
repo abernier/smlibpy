@@ -41,8 +41,11 @@ triangles. On a cylinder of r = 10, tolerance 0.001 gives 411 segments. For 3D p
   tolerance. Mesh Booleans (`Mesh.md`) are for meshes without a part behind them.
 
 ## Errors
-- `ValueError: need at least one array to concatenate`: the list was empty.
-- `TypeError: cannot tessellate a Edge`: edges and wires have no triangles.
+- `ValueError: export_stl: nothing to write`: the list was empty.
+- `ValueError: tessellate: the Part is empty: it has no faces to mesh (a Boolean that left
+  nothing?)`: a body of the list has no faces.
+- `TypeError: export_stl writes parts, sheets, faces and meshes, not an Edge: ...`: edges and
+  wires have no triangles.
 - `ValueError: tessellate: tolerance and angle must be positive`: `tolerance <= 0` or
   `angle <= 0`.
 

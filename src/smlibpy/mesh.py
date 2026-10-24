@@ -350,7 +350,7 @@ class Mesh:
 
     # -- decimation and repair --------------------------------------------------
     def decimate(self, fraction: float | None = None, *, triangles: int | None = None,
-                 tolerance: float | None = None) -> Mesh:
+                 tolerance: float | None = None, feature_angle: float = 30.0) -> Mesh:
         """A mesh with fewer triangles, as near to this one as the kernel's quadric decimation
         (SmPolyDecimate) keeps it: it collapses the edges whose removal changes the shape least
         first, keeps a closed mesh closed and keeps the border of an open one.
@@ -364,8 +364,11 @@ class Mesh:
           meshes and the middles of their triangles), so this takes a few decimations (seconds
           for 100 000 triangles).
 
-        The result has normals of its own: at each corner the average of the triangles around
-        it, except across edges sharper than 30 degrees. ``ModelingError`` if a closed mesh
+        ``feature_angle`` (degrees, 0 to 180): edges where the triangles turn by more than it are
+        features, which the decimation keeps longest, and stay sharp in the result's normals (at each
+        corner the average of the triangles around it, except across such edges). Triangles the
+        decimation leaves folded over (slivers facing against their neighbours) are taken out.
+        ``ModelingError`` if a closed mesh
         comes back open, or an open mesh with another border (a mesh whose points all lie on its
         border, such as a tube of long triangles, cannot keep it), and where the kernel collapses
         the mesh far below the count asked (it does with the long thin triangles of a coarse
@@ -375,18 +378,21 @@ class Mesh:
         given = [x is not None for x in (fraction, triangles, tolerance)]
         if sum(given) != 1:
             raise TypeError("decimate takes one of fraction, triangles or tolerance")
+        if not (isinstance(feature_angle, (int, float)) and 0.0 <= feature_angle <= 180.0):
+            raise ValueError(f"decimate: feature_angle is 0 to 180 degrees, got {feature_angle!r}")
+        angle = float(feature_angle)
         n = len(self.triangles)
         if fraction is not None:
             if not 0 < fraction < 1:
                 raise ValueError("decimate: fraction is the share of the triangles to remove, between 0 and 1")
-            return self._decimated(float(fraction))
+            return self._decimated(float(fraction), angle=angle)
         if triangles is not None:
             if not triangles >= 4:
                 raise ValueError("decimate: a mesh needs 4 triangles or more")
             if triangles >= n:
                 return Mesh(self.vertices.copy(), self.triangles.copy(),
                             None if self.normals is None else self.normals.copy())
-            return self._decimated(1.0 - triangles / n)
+            return self._decimated(1.0 - triangles / n, angle=angle)
         if not tolerance > 0:  # type: ignore[operator]
             raise ValueError("decimate: the tolerance must be positive")
         best = Mesh(self.vertices.copy(), self.triangles.copy(), None if self.normals is None else self.normals.copy())
@@ -395,7 +401,7 @@ class Mesh:
             if step < 1 / 32 or len(best.triangles) <= 8:
                 break
             try:
-                trial = best._decimated(step, original=self)
+                trial = best._decimated(step, original=self, angle=angle)
             except ModelingError:
                 step /= 2
                 continue
@@ -405,15 +411,16 @@ class Mesh:
             best = trial
         return best
 
-    def _decimated(self, fraction: float, original: Mesh | None = None) -> Mesh:
-        """One run of the kernel's decimation, ``fraction`` of the points removed; checked
-        against ``original`` (default: this mesh): closed where it was."""
+    def _decimated(self, fraction: float, original: Mesh | None = None, angle: float = 30.0) -> Mesh:
+        """One run of the kernel's decimation, ``fraction`` of the points removed, edges sharper than
+        ``angle`` degrees features; checked against ``original`` (default: this mesh): closed where it
+        was."""
         if not len(self.triangles):
             raise ValueError("decimate: the mesh has no triangles")
         with kernel_call("decimate", "is the mesh made of triangles with an area?"):
-            r = ext.decimate_triangles(self.vertices, self.triangles, fraction, 30.0, True)
+            r = ext.decimate_triangles(self.vertices, self.triangles, fraction, angle, True)
         v, t = np.asarray(r["vertices"], dtype=np.float64), np.asarray(r["triangles"], dtype=np.int64)
-        result = Mesh(v, t, ext.crease_normals(v, t, 30.0).reshape(-1, 3, 3) if len(t) else None)
+        result = Mesh(v, t, ext.crease_normals(v, t, angle).reshape(-1, 3, 3) if len(t) else None)
         asked = len(self) * (1.0 - fraction)
         if len(result) < 0.5 * asked:
             raise ModelingError(f"decimate: the kernel's decimation collapsed the mesh to {len(result)} triangles, "

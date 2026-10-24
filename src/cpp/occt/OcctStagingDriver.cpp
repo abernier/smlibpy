@@ -2386,6 +2386,21 @@ bool OcctStagingDriver::DriveFace(const OcctFileSource::Shell& rShell, const Occ
     {
         fAlignBoundaryRangeToSource(sBoundaryV, 1);
     }
+    // smlibpy: a boundary that passes one turn by no more than the file's tolerance at the surface's radius
+    // goes once around (an edge 0.0009 long that ends 0.00036 past the seam of a cone of radius 2.3, a STEP
+    // file's, made a span of 0.00018 more than a turn: "multi-turn"); at most 0.01 of a radian
+    if (bAnalyticPeriodicU && IsFiniteNonEmptyRange(sBoundaryU))
+    {
+        const StagedSurfaceData& rAnalytic = sSurfaceData.sSurfaceData;
+        const double dRadius = eAnalyticSurfaceType == StagedSurfaceType::Torus ? rAnalytic.dMajorRadius - rAnalytic.dMinorRadius
+                                                                                 : rAnalytic.dRadius;
+        const double dSpan = sBoundaryU.GetMax() - sBoundaryU.GetMin();
+        if (dRadius > 0.0 && dSpan > dTwoPi + dPeriodTol && dSpan <= dTwoPi + std::min(0.01, m_rSource.Tolerance() / dRadius))
+        {
+            const double dMid = 0.5 * (sBoundaryU.GetMin() + sBoundaryU.GetMax());
+            sBoundaryU = pxr::GfRange1d(dMid - M_PI, dMid + M_PI);
+        }
+    }
 
     const bool bHaveBoundaryU = IsFiniteNonEmptyRange(sBoundaryU);
     const bool bHaveBoundaryV = IsFiniteNonEmptyRange(sBoundaryV);

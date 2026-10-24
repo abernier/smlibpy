@@ -27,7 +27,9 @@
 #include "UsdBrepTokens.h"
 
 #include <SmApiGeneral.h>
+#include <SmApiQueries.h>
 #include <SmAssertArray.h>
+#include <SmCrvOnSurf.h>
 #include <SmEdgeuse.h>
 #include <SmLoop.h>
 
@@ -2602,10 +2604,15 @@ std::string kernel_check(SmBrep* brep, bool& refuse)
             kinds.push_back(name);
         if (name == "Bad Edge Length" && r->m_dValue != SM_UNDEF_DOUBLE && !(r->m_dValue >= 0))
         {
+            // (the report's value is the edge's length less its tolerance)
+            refuse = true;
+            const double tol = r->GetTol3d().val, length = r->m_dValue + tol;
+            if (tol > 0 && std::isfinite(tol) && length > 0)
+                return "the kernel finds an edge of length " + g(length) + where(r) + ", shorter than its tolerance (" +
+                       g(tol) + "): its curve and its faces' curves are further apart than it is long";
             // (an edge whose curve runs back against it: usd-brep's validator file with a control point
             // moved out of the edge, read back with a box 100 too large and the wrong volume)
-            refuse = true;
-            return "the kernel finds an edge of length " + g(r->m_dValue) + where(r) + ": its curve does not run from its "
+            return "the kernel finds an edge of length " + g(length) + where(r) + ": its curve does not run from its "
                    "start to its end";
         }
         // (gaps in space; those in the parameter planes are not lengths)
@@ -2846,6 +2853,7 @@ UsdStage usd_stage(const std::vector<UsdLayer>& layers, const UsdReadOptions& op
                     out.skipped.push_back(body + " " + why);
                     continue;
                 }
+                usd_tighten_tolerances(brep);
                 // the kernel's check, before anything measures the body (smlibpy's own files are not
                 // checked: what it writes, its kernel has built)
                 std::string found;
@@ -2921,6 +2929,135 @@ std::string usd_check_arrays(UsdBrepArrayData& a)
 }
 
 std::string usd_kernel_check(SmBrep* brep, bool& refuse) { return kernel_check(brep, refuse); }
+
+// The tolerances a body built from BrepArray arrays needs (each edge, vertex and face its own), where
+// the arrays' is larger. The arrays hold one tolerance for a body (usd-brep's writer and the .brep
+// bridge put the largest of the body's or the file's there), and the conversion gives it to every
+// edge, vertex and face, and to the body: a body whose largest edge tolerance is longer than its
+// shortest edge (a part with an edge of 0.0112 and a fillet edge of 0.0052) read back with an edge
+// shorter than its tolerance, which the kernel takes for broken (and measures 7e-5 off). The body's
+// tolerance becomes the one of its size (as SmBrep::Transform gives it); an edge needs what its curve
+// is off its faces' surfaces and curves and off its vertices, a vertex what its edges need and its
+// gaps to their ends and its faces (SmTol's model, as the kernel's healer sets it: gain x gap -
+// default), twice what 21 and 51 samples find, never more than the arrays' tolerance.
+void usd_tighten_tolerances(SmBrep* brep)
+{
+    SmExtent3d box;
+    if (brep->CalculateBoundingBox(box, FALSE, FALSE, FALSE) != SM_SUCCESS)
+        return;
+    const double size = box.GetSize().Length();
+    if (!(size > 0) || !std::isfinite(size))
+        return;
+    const double read = SmTol::GetZoneTol3d(brep);
+    const double base = SmTol::SizeEstimateToZoneTol3d(size);
+    if (!(read > base))
+        return;  // (one tolerance and the size's: nothing to tighten)
+    SmTol::SetModelSizeEstimate(*brep, size);
+    const double gain = SmTol::GetGapGain();
+    // (SmTol::CalcEdgeZoneTol3d and CalcVertexZoneTol3d with `base` for the body's default)
+    auto model = [&](double between, double off) { return std::max({base, gain * between / 2.0, gain * off - base}); };
+    SmTArray<SmFace*> faces;
+    brep->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+        if (faces[i]->GetTolerance() > base)
+            faces[i]->SetTolerance(base, FALSE, FALSE);
+    SmTArray<SmEdge*> edges;
+    brep->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); ++i)
+    {
+        SmEdge* edge = edges[i];
+        SmCurve* curve = edge->GetCurve();
+        SmEdgeuse* primary = edge->GetPrimaryEdgeuse();
+        if (!curve || !primary)
+            continue;
+        SmEdgeuse* same = primary->GetOrientation() == SM_OT_SAME ? primary : primary->GetMate();
+        SmVertex* start = same && same->GetVertexuse() ? same->GetVertexuse()->GetVertex() : nullptr;
+        SmVertex* end = start ? edge->GetOtherVertex(start) : nullptr;
+        const SmExtent1d interval = edge->GetInterval();
+        SmPoint3d p0, p1;
+        if (!start || !end || curve->EvaluatePoint(interval.GetMin(), p0) != SM_SUCCESS ||
+            curve->EvaluatePoint(interval.GetMax(), p1) != SM_SUCCESS)
+            continue;
+        const double ends = std::max(p0.DistanceBetween(start->GetPoint()), p1.DistanceBetween(end->GetPoint()));
+        double off = 0.0;  // the curve from its faces' surfaces and their curves
+        bool measured = true;
+        SmTArray<SmEdgeuse*> uses;
+        edge->GetEdgeuses(uses);
+        for (ULONG k = 0; k < uses.GetSize() && measured; ++k)
+        {
+            SmFace* face = uses[k]->GetFace();
+            const SmSurface* surface = face ? face->GetSurface() : nullptr;
+            if (!surface)
+                continue;
+            for (int s = 0; s <= 20 && measured; ++s)
+            {
+                SmPoint3d p, q;
+                SmTArray<SmPoint2d> uvs;
+                double d = 0.0;
+                measured = curve->EvaluatePoint(interval.GetMin() + interval.GetLength() * s / 20.0, p) == SM_SUCCESS &&
+                           SmApiSurfaceClosestPoint(surface, p, q, uvs, d) == SM_SUCCESS && std::isfinite(d);
+                off = std::max(off, p.DistanceBetween(q));
+            }
+            SmBSplineCurve* uv = uses[k]->GetUVTrimCurve();
+            if (!uv || !measured)
+                continue;
+            SmCrvOnSurf on(*uv, *face->GetSurface(), nullptr, 0, &ctx());
+            const SmExtent1d range = uv->GetNaturalInterval();
+            double d = -1.0;
+            measured = curve->CurveMaxDistanceBetween(interval, on, range.GetMin(), range.GetMax(), 51, nullptr, d) ==
+                           SM_SUCCESS && std::isfinite(d) && d >= 0;
+            off = std::max(off, d);
+        }
+        if (!measured)
+            continue;  // (left as the file has it)
+        const double needed = 2.0 * model(2.0 * ends, off);
+        if (needed < edge->GetTolerance())
+            edge->SetTolerance(needed, FALSE, FALSE);
+    }
+    SmTArray<SmVertex*> vertices;
+    brep->GetVertices(vertices);
+    for (ULONG i = 0; i < vertices.GetSize(); ++i)
+    {
+        SmVertex* vertex = vertices[i];
+        SmTArray<SmEdge*> around;
+        vertex->GetEdges(around);
+        double largest = base;
+        double gap = 0.0, off = 0.0;  // (to the ends of its edges, to their faces' surfaces)
+        bool measured = true;
+        for (ULONG k = 0; k < around.GetSize() && measured; ++k)
+        {
+            SmEdge* edge = around[k];
+            largest = std::max(largest, static_cast<double>(edge->GetTolerance()));
+            SmCurve* curve = edge->GetCurve();
+            if (!curve)
+                continue;
+            const SmExtent1d interval = edge->GetInterval();
+            SmPoint3d p0, p1;
+            if (curve->EvaluatePoint(interval.GetMin(), p0) == SM_SUCCESS &&
+                curve->EvaluatePoint(interval.GetMax(), p1) == SM_SUCCESS)
+                gap = std::max(gap, std::min(p0.DistanceBetween(vertex->GetPoint()), p1.DistanceBetween(vertex->GetPoint())));
+            SmTArray<SmEdgeuse*> uses;
+            edge->GetEdgeuses(uses);
+            for (ULONG j = 0; j < uses.GetSize() && measured; ++j)
+            {
+                SmFace* face = uses[j]->GetFace();
+                const SmSurface* surface = face ? face->GetSurface() : nullptr;
+                if (!surface)
+                    continue;
+                SmPoint3d q;
+                SmTArray<SmPoint2d> uvs;
+                double d = 0.0;
+                measured = SmApiSurfaceClosestPoint(surface, vertex->GetPoint(), q, uvs, d) == SM_SUCCESS && std::isfinite(d);
+                off = std::max(off, q.DistanceBetween(vertex->GetPoint()));
+            }
+        }
+        if (!measured)
+            continue;  // (left as the file has it)
+        const double needed = std::max(largest, 2.0 * model(2.0 * gap, off));
+        if (needed < vertex->GetTolerance())
+            vertex->SetTolerance(needed, FALSE);
+    }
+}
 
 }  // namespace smlibpy
 

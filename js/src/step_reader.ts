@@ -7,7 +7,9 @@
 
 import { _identity, _matmul, type Matrix } from './geometry.ts'
 import { solve } from './_linalg.ts'
-import { _isRuntimeError } from './kernel.ts'
+import { _isRuntimeError, ext, kernelCall } from './kernel.ts'
+import { _canonicalCurve } from './shapes.ts'
+import { bsplinePoint } from './iges_reader.ts'
 
 // biome-ignore lint: curve and surface descriptions are plain objects of many shapes
 type Any = any
@@ -695,7 +697,10 @@ class _Interp {
     return [o, z, x]
   }
 
+  /** The matrix of an AXIS2_PLACEMENT_3D, or of a CARTESIAN_TRANSFORMATION_OPERATOR_3D (which can
+   * mirror and scale). */
   placementMatrix(ref: unknown): Matrix {
+    if (this._parts(ref).has(_OPERATOR)) return this.operatorMatrix(ref)
     const [o, z, x] = this.axis2(ref)
     const y = _cross(z, x)
     const m = _identity()
@@ -703,6 +708,55 @@ class _Interp {
       m[i * 4] = x[i]
       m[i * 4 + 1] = y[i]
       m[i * 4 + 2] = z[i]
+      m[i * 4 + 3] = o[i]
+    }
+    return m
+  }
+
+  /** An entity's parts by type: one for a plain entity, several for a complex one. */
+  _parts(ref: unknown): Map<string, StepValue[]> {
+    const [t, a] = this.sf.get(ref)
+    return t.startsWith('COMPLEX:') ? (this.sf.complex.get(_int(ref)) ?? new Map()) : new Map([[t, a]])
+  }
+
+  /** The matrix of a CARTESIAN_TRANSFORMATION_OPERATOR_3D (ISO 10303-42): the axes of base_axis
+   * (axis3, then axis1 and axis2 made square to it, in that order: a left-handed set mirrors), times
+   * the scale (and scl2, scl3 of a non-uniform one), at local_origin. */
+  operatorMatrix(ref: unknown): Matrix {
+    const parts = this._parts(ref)
+    const a = parts.get(_OPERATOR) as StepValue[]
+    // (from the end: name and description come first, as many as the writer gives)
+    const n = a.length
+    if (n < 5) throw new RangeError(`#${_int(ref)}: a transformation needs axis1, axis2, local_origin, scale and axis3`)
+    const [axis1, axis2, origin, scale, axis3] = [a[n - 5], a[n - 4], a[n - 3], a[n - 2], a[n - 1]]
+    const given = (r: StepValue): number[] | null => (r === null || r === '*' ? null : this.direction(r))
+    const z = given(axis3) ?? [0.0, 0.0, 1.0]
+    let v = given(axis1)
+    if (v === null) v = z[0] === 1 && z[1] === 0 && z[2] === 0 ? [0.0, 1.0, 0.0] : [1.0, 0.0, 0.0]
+    let x = v.map((c, i) => c - z[i] * _dot(v as number[], z))
+    if (!(_norm(x) > 1e-12)) throw new RangeError(`#${_int(ref)}: axis1 of the transformation lies along its axis3`)
+    x = x.map((c) => c / _norm(x))
+    const w = given(axis2) ?? [0.0, 1.0, 0.0]
+    let y = w.map((c, i) => c - z[i] * _dot(w, z))
+    const yx = _dot(y, x)
+    y = y.map((c, i) => c - x[i] * yx)
+    if (!(_norm(y) > 1e-12)) throw new RangeError(`#${_int(ref)}: axis2 of the transformation lies in the plane of axis1 and axis3`)
+    y = y.map((c) => c / _norm(y))
+    const s = scale === null || scale === '*' ? 1.0 : _float(scale)
+    const scales = [s, s, s]
+    const nonuniform = parts.get('CARTESIAN_TRANSFORMATION_OPERATOR_3D_NON_UNIFORM') ?? parts.get('CARTESIAN_TRANSFORMATION_OPERATOR_NON_UNIFORM')
+    if (nonuniform !== undefined && nonuniform.length >= 2) {
+      const k = nonuniform.length
+      scales[1] = nonuniform[k - 2] === null || nonuniform[k - 2] === '*' ? s : _float(nonuniform[k - 2])
+      scales[2] = nonuniform[k - 1] === null || nonuniform[k - 1] === '*' ? s : _float(nonuniform[k - 1])
+    }
+    if (!scales.every((c) => Number.isFinite(c) && c > 0)) throw new RangeError(`#${_int(ref)}: the scale of the transformation must be positive`)
+    const o = this.point(origin)
+    const m = _identity()
+    for (let i = 0; i < 3; i++) {
+      m[i * 4] = x[i] * scales[0]
+      m[i * 4 + 1] = y[i] * scales[1]
+      m[i * 4 + 2] = z[i] * scales[2]
       m[i * 4 + 3] = o[i]
     }
     return m
@@ -767,7 +821,41 @@ class _Interp {
       return { kind: 'bspline', degree: 1, poles: pts, knots, weights: null }
     }
     if (t === 'TRIMMED_CURVE') return this.curve(_at(a, 1))
+    // (name, basis_curve, distance, self_intersect, ref_direction)
+    if (t === 'OFFSET_CURVE_3D') return _offsetCurve(this.curve(_at(a, 1)), _float(_at(a, 2)) * this.scale, this.direction(_at(a, 4)), _int(ref))
+    // (name, basis_surface, reference_to_curve): an edge given in a surface's parameters
+    if (t === 'PCURVE') return this.pcurve(_at(a, 1), _at(a, 2), _int(ref))
     throw new NotImplementedError(`curve type ${t} (#${_int(ref)})`)
+  }
+
+  /** A curve in a surface's parameters (a PCURVE's): as `curve` gives it, in the file's numbers (no
+   * units: points and lengths as they stand), in the plane z = 0. */
+  curve2d(ref: unknown): Any {
+    const [t, a] = this.sf.get(ref)
+    const scale = this.scale
+    this.scale = 1.0
+    try {
+      if (t === 'CIRCLE' || t === 'ELLIPSE') {
+        const [, pa] = this.sf.get(_at(a, 1)) // AXIS2_PLACEMENT_2D(name, location, ref_direction)
+        const o = this.point(_at(pa, 1))
+        const x = pa.length > 2 && pa[2] !== null ? this.direction(pa[2]) : [1.0, 0.0, 0.0]
+        const z = [0.0, 0.0, 1.0]
+        if (t === 'CIRCLE') return { kind: 'circle', origin: o, z, x, radius: _float(_at(a, 2)) }
+        return { kind: 'ellipse', origin: o, z, x, r1: _float(_at(a, 2)), r2: _float(_at(a, 3)) }
+      }
+      return this.curve(ref)
+    } finally {
+      this.scale = scale
+    }
+  }
+
+  /** The curve in space of a PCURVE: its curve in the parameters of its surface, on it. */
+  pcurve(surface: unknown, rep: unknown, eid: number): Any {
+    const srf = this.surface(surface)
+    const [, ra] = this.sf.get(rep) // DEFINITIONAL_REPRESENTATION(name, items, context)
+    const items = ra.length > 1 && Array.isArray(ra[1]) ? (ra[1] as StepValue[]).filter((x) => x instanceof Ref) : []
+    if (!items.length) throw new RangeError(`#${eid}: the PCURVE holds no curve`)
+    return _pcurveInSpace(srf, this.curve2d(items[0]), this.scale, this.angleScale, eid)
   }
 
   /** A curve that stands on its own (wireframe geometry), with its trims and segments:
@@ -1234,10 +1322,11 @@ function _turn(m: Matrix, d: readonly number[]): number[] {
   return [0, 1, 2].map((r) => m[r * 4] * d[0] + m[r * 4 + 1] * d[1] + m[r * 4 + 2] * d[2])
 }
 
-/** An item's data placed by the 4 x 4 matrix `m`. */
+/** An item's data placed by the 4 x 4 matrix `m` (a mirror keeps a frame's x and y and turns its z,
+ * so it stays right-handed; a scale scales lengths). */
 function _moved(data: Any, m: Matrix): Any {
   const out = { ...data }
-  if (data.kind === 'frame') Object.assign(out, { origin: _place(m, data.origin), z: _turn(m, data.z), x: _turn(m, data.x) })
+  if (data.kind === 'frame') Object.assign(out, { origin: _place(m, data.origin), z: _unit(_normalTurn(m, data.z)), x: _unit(_turn(m, data.x)) })
   else if (data.kind === 'point') out.point = _place(m, data.point)
   else out.curve = _movedCurve(data.curve, m)
   return out
@@ -1256,11 +1345,208 @@ function _movedCurve(c: Any, m: Matrix): Any {
   } else if (kind === 'line') {
     Object.assign(out, { origin: _place(m, c.origin), direction: _turn(m, c.direction) })
   } else {
-    // circle, ellipse, hyperbola, parabola
-    Object.assign(out, { origin: _place(m, c.origin), z: _turn(m, c.z), x: _turn(m, c.x) })
+    // circle, ellipse, hyperbola, parabola (the frame right-handed, its parameter running as it did)
+    const s = _norm(_turn(m, c.x))
+    Object.assign(out, { origin: _place(m, c.origin), z: _unit(_normalTurn(m, c.z)), x: _unit(_turn(m, c.x)) })
+    if (Math.abs(s - 1.0) > 1e-12) for (const key of ['radius', 'r1', 'r2', 'a', 'b', 'focal']) if (key in c) out[key] = c[key] * s
   }
   return out
 }
+
+function _unit(v: readonly number[]): number[] {
+  const n = _norm(v)
+  return v.map((x) => x / n)
+}
+
+/** What a placement does to the normal of a frame (x by y): R, turned over where R mirrors. */
+function _normalTurn(m: Matrix, d: readonly number[]): number[] {
+  const det =
+    m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8])
+  const r = _turn(m, d)
+  return det < 0 ? r.map((x) => -x) : r
+}
+
+function _unit3(v: readonly number[]): number[] {
+  const n = _norm(v)
+  return v.map((x) => x / n)
+}
+
+function _ptp(points: readonly (readonly number[])[]): number {
+  const lo = [Infinity, Infinity, Infinity]
+  const hi = [-Infinity, -Infinity, -Infinity]
+  for (const p of points) for (let i = 0; i < 3; i++) (lo[i] = Math.min(lo[i], p[i])), (hi[i] = Math.max(hi[i], p[i]))
+  return Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+}
+
+/** A whole circle or ellipse as a rational quadratic B-spline (9 poles), starting at its x and running
+ * about its z. */
+function _conicNurbs(c: Any): Any {
+  const [o, z, x] = [c.origin as number[], c.z as number[], c.x as number[]]
+  const y = _cross(z, x)
+  const [r1, r2] = c.kind === 'circle' ? [c.radius, c.radius] : [c.r1, c.r2]
+  const corners = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0]]
+  const poles = corners.map(([a, b]) => [0, 1, 2].map((i) => o[i] + r1 * a * x[i] + r2 * b * y[i]))
+  const w = Math.sqrt(0.5)
+  return { kind: 'bspline', degree: 2, poles, knots: [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4], weights: [1, w, 1, w, 1, w, 1, w, 1] }
+}
+
+/** A B-spline curve dict of a curve the kernel makes (`make()`: a new curve, deleted after). */
+function _kernelNurbs(make: () => number, what: string): Any {
+  return kernelCall(what, () => {
+    const curve = make()
+    try {
+      const d = ext.curve_data(curve, true)
+      return {
+        kind: 'bspline',
+        degree: Math.trunc(d.degree),
+        poles: Array.from(d.poles as Iterable<number[]>, (p) => [p[0], p[1], p[2]]),
+        knots: Array.from(d.knots as Iterable<number>, Number),
+        weights: d.weights === null ? null : Array.from(d.weights as Iterable<number>, Number),
+      }
+    } finally {
+      ext.delete_curve(curve)
+    }
+  })
+}
+
+/** An OFFSET_CURVE_3D: each point moved `d` along tangent x `ref` (ISO 10303-42). The offset of a line
+ * is a line, of a circle about `ref` a circle; others are the kernel's offset curve (SmOffsetCurve)
+ * over the whole basis, as a NURBS within 1e-9 of their size. */
+function _offsetCurve(basis: Any, d: number, ref: number[], eid: number): Any {
+  const kind = basis.kind
+  ref = _unit3(ref)
+  if (kind === 'line') {
+    const n = _cross(_unit3(basis.direction), ref)
+    if (!(_norm(n) > 1e-12)) throw new RangeError(`#${eid}: the offset curve's reference direction runs along its line`)
+    const u = _unit3(n)
+    return { ...basis, origin: [0, 1, 2].map((i) => basis.origin[i] + d * u[i]) }
+  }
+  if (kind === 'circle' && Math.abs(Math.abs(_dot(_unit3(basis.z), ref)) - 1.0) <= 1e-12) {
+    // (tangent x axis points out of the circle)
+    const r = basis.radius + (_dot(_unit3(basis.z), ref) > 0 ? d : -d)
+    if (r > 0) return { ...basis, radius: r }
+  }
+  if (kind === 'circle' || kind === 'ellipse') basis = _conicNurbs(basis)
+  else if (kind !== 'bspline') throw new NotImplementedError(`an offset of a ${kind} (#${eid})`)
+  const poles = basis.poles as number[][]
+  const size = _ptp(poles) + Math.abs(d)
+  return _kernelNurbs(() => {
+    const curve = _canonicalCurve(poles, basis.knots, basis.degree, basis.weights)
+    try {
+      return ext.offset_curve_3d(curve, d, ref, 1e-9 * Math.max(size, 1e-9))
+    } finally {
+      ext.delete_curve(curve)
+    }
+  }, 'read STEP offset curve')
+}
+
+/** The curve in space of the curve `c` in the parameters of surface `srf` (ISO 10303-42's parameters:
+ * lengths in the file's unit, `s` mm each; angles in its angle unit, `ang` radians each). On a plane,
+ * and along a parameter line of a cylinder, cone, sphere or torus, the curve of its kind; on a B-spline
+ * surface the kernel's curve on it, on the others a NURBS through 257 of its points, within 1e-9 of
+ * their size. */
+function _pcurveInSpace(srf: Any, c: Any, s: number, ang: number, eid: number): Any {
+  const kind = srf.kind
+  const ck = c.kind
+  const lin = (a: readonly number[], f: number, b: readonly number[], g: number, base: readonly number[] = [0, 0, 0]) =>
+    [0, 1, 2].map((i) => base[i] + f * a[i] + g * b[i])
+  if (kind === 'plane') {
+    const [o, z, x] = [srf.origin as number[], srf.z as number[], srf.x as number[]]
+    const y = _cross(z, x)
+    const at = (p: readonly number[]) => lin(x, s * p[0], y, s * p[1], o)
+    const along = (v: readonly number[]) => lin(x, s * v[0], y, s * v[1])
+    if (ck === 'line') return { kind: 'line', origin: at(c.origin), direction: along(c.direction) }
+    if (ck === 'circle' || ck === 'ellipse') {
+      const out = { ...c, origin: at(c.origin), z, x: _unit3(along(c.x)) }
+      if (ck === 'circle') out.radius = c.radius * s
+      else [out.r1, out.r2] = [c.r1 * s, c.r2 * s]
+      return out
+    }
+    if (ck === 'bspline') return { ...c, poles: (c.poles as number[][]).map(at) }
+    throw new NotImplementedError(`a ${ck} in the parameters of a plane (#${eid})`)
+  }
+  if (kind === 'bspline') {
+    if (ck !== 'bspline') throw new NotImplementedError(`a ${ck} in the parameters of a B-spline surface (#${eid})`)
+    const tol = 1e-9 * Math.max(_ptp(srf.poles as number[][]), 1e-9)
+    const uv = { degree: c.degree, poles: c.poles, knots: Array.from(c.knots as Iterable<number>), weights: c.weights }
+    const d = kernelCall('read STEP curve on a surface', () => ext.curve_on_surface(srf, uv, tol))
+    return {
+      kind: 'bspline',
+      degree: Math.trunc(d.degree),
+      poles: Array.from(d.poles as Iterable<number[]>, (p) => [p[0], p[1], p[2]]),
+      knots: Array.from(d.knots as Iterable<number>, Number),
+      weights: d.weights === null ? null : Array.from(d.weights as Iterable<number>, Number),
+    }
+  }
+  if (!['cylinder', 'cone', 'sphere', 'torus'].includes(kind)) throw new NotImplementedError(`a curve in the parameters of a ${kind} surface (#${eid})`)
+  const [o, z, x] = [srf.origin as number[], srf.z as number[], srf.x as number[]]
+  const y = _cross(z, x)
+  // (u is an angle; v an angle on spheres and tori)
+  const vAngular = kind === 'sphere' || kind === 'torus'
+  const uvOf = (p: readonly number[]): [number, number] => [p[0] * ang, p[1] * (vAngular ? ang : s)]
+  const point = (u: number, v: number): number[] => {
+    const e = lin(x, Math.cos(u), y, Math.sin(u))
+    if (kind === 'cylinder') return lin(e, srf.radius, z, v, o)
+    if (kind === 'cone') return lin(e, srf.radius + v * Math.tan(srf.semi_angle), z, v, o)
+    if (kind === 'sphere') return lin(e, srf.radius * Math.cos(v), z, srf.radius * Math.sin(v), o)
+    return lin(e, srf.major + srf.minor * Math.cos(v), z, srf.minor * Math.sin(v), o)
+  }
+  if (ck === 'line') {
+    const [u0, v0] = uvOf(c.origin)
+    const [du, dv] = [c.direction[0] as number, c.direction[1] as number]
+    if (Math.abs(du) <= 1e-12 * Math.abs(dv)) {
+      // u fixed: along v
+      const e = lin(x, Math.cos(u0), y, Math.sin(u0))
+      if (kind === 'cylinder' || kind === 'cone') {
+        const p0 = point(u0, v0)
+        const p1 = point(u0, v0 + 1.0)
+        return { kind: 'line', origin: p0, direction: lin(p1, dv > 0 ? 1 : -1, p0, dv > 0 ? -1 : 1) }
+      }
+      const centre = kind === 'sphere' ? o : lin(e, srf.major, z, 0, o)
+      const r = kind === 'sphere' ? srf.radius : srf.minor
+      // (v runs from e up toward z: the circle of x = e, y = z runs that way about e x z)
+      const normal = _cross(e, z).map((q) => q * (dv > 0 ? 1 : -1))
+      return { kind: 'circle', origin: centre, z: normal, x: e, radius: r }
+    }
+    if (Math.abs(dv) <= 1e-12 * Math.abs(du)) {
+      // v fixed: around the axis
+      const p = point(0.0, v0)
+      const h = _dot(lin(p, 1, o, -1), z)
+      const r = _norm(lin(lin(p, 1, o, -1), 1, z, -h))
+      if (!(r > 0)) throw new NotImplementedError(`a curve along a pole of a ${kind} (#${eid})`)
+      return { kind: 'circle', origin: lin(z, h, z, 0, o), z: z.map((q) => q * (du > 0 ? 1 : -1)), x, radius: r }
+    }
+    throw new NotImplementedError(`a line across the parameters of a ${kind} (#${eid})`)
+  }
+  if (!['bspline', 'circle', 'ellipse'].includes(ck)) throw new NotImplementedError(`a ${ck} in the parameters of a ${kind} (#${eid})`)
+  const spec = ck === 'bspline' ? c : _conicNurbs(c)
+  const ks = spec.knots as number[]
+  const [t0, t1] = [ks[spec.degree], ks[ks.length - spec.degree - 1]]
+  const pts: number[][] = []
+  for (let i = 0; i <= 256; i++) pts.push(point(...uvOf(bsplinePoint(spec, t0 + ((t1 - t0) * i) / 256))))
+  const tol = 1e-9 * Math.max(_ptp(pts), 1e-9)
+  return _kernelNurbs(() => ext.approximate_points(pts.flat(), 3, tol, [], [], false)[0], 'read STEP curve on a surface')
+}
+
+/** The surface an OFFSET_SURFACE of a plane, sphere, cylinder, cone or torus is, as the reader gives
+ * surfaces (ISO 10303-42's normals of those point out of them: a sphere of radius r offset by d is the
+ * sphere of radius r + d, a cone keeps its angle and gains d / cos(angle) at its placement); null for any
+ * other surface, or an offset that passes through the axis or the centre. */
+export function analyticOffset(srf: Any): Any | null {
+  if (srf.kind !== 'offset') return null
+  const basis = srf.basis
+  const d = srf.distance as number
+  const kind = basis.kind
+  if (kind === 'plane') return { ...basis, origin: [0, 1, 2].map((i) => basis.origin[i] + d * basis.z[i]) }
+  if ((kind === 'sphere' || kind === 'cylinder') && basis.radius + d > 0) return { ...basis, radius: basis.radius + d }
+  if (kind === 'cone' && Math.abs(Math.cos(basis.semi_angle)) > 1e-12 && basis.radius + d / Math.cos(basis.semi_angle) >= 0)
+    return { ...basis, radius: basis.radius + d / Math.cos(basis.semi_angle) }
+  if (kind === 'torus' && basis.minor + d > 0 && basis.minor + d < basis.major) return { ...basis, minor: basis.minor + d }
+  return null
+}
+
+// A placement that can mirror and scale (MAPPED_ITEM's target, a functionally defined transformation)
+const _OPERATOR = 'CARTESIAN_TRANSFORMATION_OPERATOR_3D'
 
 // Representations related without a placement: a part's B-rep, wireframe and supplemental geometry
 // (coordinate systems, AP242) next to its main shape representation.
@@ -1483,6 +1769,17 @@ function _representationTransforms(it: _Interp): [Map<number, Matrix[]>, Set<num
 function _itemTransform(it: _Interp, ref: StepValue, child: number, parent: number, items: Map<number, Set<number>>): Matrix | null {
   const sf = it.sf
   const [t, a] = sf.get(ref)
+  if (it._parts(ref).has(_OPERATOR)) {
+    // a functionally defined transformation: the operator maps the child into the parent
+    try {
+      it.useUnits(parent)
+      return it.operatorMatrix(ref)
+    } catch {
+      return null
+    } finally {
+      it.useUnits(null)
+    }
+  }
   if (t !== 'ITEM_DEFINED_TRANSFORMATION') return null
   try {
     const i1 = _int(_at(a, 2))

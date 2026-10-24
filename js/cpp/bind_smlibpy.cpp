@@ -193,6 +193,10 @@ val reverse_curve(uintptr_t c)
     });
 }
 uintptr_t approximate_curve(uintptr_t c, double tolerance) { return guard([&] { return ptr(smlibpy::approximate_curve(smjs::curve(c), tolerance)); }); }
+uintptr_t offset_curve_3d(uintptr_t c, double distance, val normal, double tolerance)
+{
+    return guard([&] { return ptr(smlibpy::offset_curve_3d(smjs::curve(c), distance, smjs::numbers(normal), tolerance)); });
+}
 
 val face_properties(uintptr_t f, double accuracy) { return guard([&] { return to_js(smlibpy::face_properties(face(f), accuracy)); }); }
 val brep_properties(uintptr_t b, double accuracy, double density) { return guard([&] { return to_js(smlibpy::brep_properties(brep(b), accuracy, density)); }); }
@@ -1172,6 +1176,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__edge_curve", &edge_curve);
     function("ext__reverse_curve", &reverse_curve);
     function("ext__approximate_curve", &approximate_curve);
+    function("ext__offset_curve_3d", &offset_curve_3d);
     function("ext__face_properties", &face_properties);
     function("ext__brep_properties", &brep_properties);
     function("ext__curve_eval", &curve_eval);

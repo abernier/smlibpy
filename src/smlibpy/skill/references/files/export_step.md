@@ -85,7 +85,10 @@ once. An unnamed body's product is called `<name>_<i>`.
 ## Errors
 - `ValueError: unknown unit 'MM'; use mm, cm, m, um or inch`: the unit names are case
   sensitive. No file is written.
-- `ValueError: nothing to write`: the list is empty.
+- `ValueError: export_step: nothing to write`: the list is empty.
+- `ValueError: export_step: the Part is empty: it has no faces to write (a Boolean that left
+  nothing?)`: a body of the list has no faces (before 0.5.0 it was left out silently). Leave it
+  out, or check `len(part.faces())` first. A Shell of curves alone: pass its `edges()`.
 - `TypeError: cannot write a Mesh to STEP`: use `export_stl`/`export_glb` for meshes.
 - `TypeError: cannot write a Location to STEP` (or another type): only bodies, faces, curves,
   points, planes and the `Step*` items can be written.

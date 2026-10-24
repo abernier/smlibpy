@@ -118,6 +118,7 @@ const OWN: Record<string, Signature> = {
   'ext.edge_curve': ['edge'],
   'ext.reverse_curve': ['curve'],
   'ext.approximate_curve': ['curve', ['tolerance', 1e-7]],
+  'ext.offset_curve_3d': ['curve', 'distance', 'normal', ['tolerance', 1e-7]],
   'ext.face_properties': ['face', ['accuracy', 1e-8]],
   'ext.brep_properties': ['brep', ['accuracy', 1e-8], ['density', 1.0]],
   'ext.curve_eval': ['curve', 't', ['derivatives', 1]],

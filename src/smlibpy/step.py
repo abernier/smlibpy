@@ -651,6 +651,13 @@ def _step_text(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
             raise TypeError(f"cannot write a {type(item).__name__} to STEP")
     extras = [x for x in bodies if not isinstance(x, _Body)]
     bodies = [x for x in bodies if isinstance(x, _Body)]
+    for b in bodies:  # (a body without faces would be left out)
+        if b._brep.face_count() == 0:
+            what = "export_step" if path else "to_step"
+            label = f" {b.name!r}" if b.name else ""
+            hint = ("; its edges() are curves, which it writes as such" if b._brep.edge_count() else
+                    " (a Boolean that left nothing?)")
+            raise ValueError(f"{what}: the {type(b).__name__}{label} is empty: it has no faces to write{hint}")
     if _MM_PER_UNIT[unit] != 1.0:
         f = 1.0 / _MM_PER_UNIT[unit]
         scaled: dict[int, Any] = {}  # (a body listed twice stays one body)
@@ -755,7 +762,7 @@ def _step_text(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
             reps.append((representation("MANIFOLD_SURFACE_SHAPE_REPRESENTATION", product, origin, sheet_items), False))
         reps += wireframe(product, extras)
         if not reps:
-            raise ValueError("nothing to write")
+            raise ValueError(f"{'export_step' if path else 'to_step'}: nothing to write")
         if reps[0][1]:  # (coordinate systems alone: supplemental geometry of a shape that has no items)
             reps.insert(0, (w.add(f"SHAPE_REPRESENTATION({_s(product)},(#{origin}),#{ctx})"), False))
         w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{reps[0][0]})")
@@ -785,7 +792,7 @@ def _step_text(bodies: Sequence[Any], path: str, *, unit: str = "mm", name: str 
                 parts[key] = (part_def, rep, at, label)
             places.append((key, w.axis2((0, 0, 0), (0, 0, 1), (1, 0, 0))))
         if not parts and not extras:
-            raise ValueError("nothing to write")
+            raise ValueError(f"{'export_step' if path else 'to_step'}: nothing to write")
         axes = ",".join(f"#{x}" for x in [origin] + [a for _, a in places])
         root = w.add(f"SHAPE_REPRESENTATION({_s(product)},({axes}),#{ctx})")
         w.add(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{root})")

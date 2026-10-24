@@ -5,7 +5,7 @@ removal changes the shape least first. For large scans and STL files, web viewer
 mesh Booleans or `to_part` (both get slow with many triangles).
 
 ## Signature
-`mesh.decimate(fraction=None, *, triangles=None, tolerance=None) -> Mesh`
+`mesh.decimate(fraction=None, *, triangles=None, tolerance=None, feature_angle=30.0) -> Mesh`
 
 Give exactly one (`TypeError` otherwise):
 
@@ -15,10 +15,14 @@ Give exactly one (`TypeError` otherwise):
   step while the distance stays within it, measured by smlibpy at the points of both meshes and
   the middles of their triangles. This takes a few decimations: about 6 s for 137 000 triangles.
 
+`feature_angle` (degrees, 0 to 180): edges where the triangles turn by more than it are
+features, which the decimation keeps longest and which stay sharp in the result's normals.
+
 ## Returns
 A new `Mesh`, closed where the mesh was closed, with the border of an open mesh kept. Its
 `normals` are its own: at each corner the average of the triangles around it, except across
-edges sharper than 30 degrees.
+edges sharper than `feature_angle` (a cylinder's rims stay sharp at 30, and are rounded over at
+120).
 
 | `Sphere(10).mesh(0.001)` (136 872 triangles) | triangles | off the sphere | time |
 |---|---|---|---|
@@ -38,9 +42,10 @@ edges sharper than 30 degrees.
 - `ModelingError` where a closed mesh would come back open or an open mesh with another border
   (a tube of long triangles has all its points on its rims, and cannot keep them).
 - The kernel can leave folds: smlibpy removes triangles on the same points back to back,
-  unpinches edges of four triangles, turns folded slivers back and decimates again in steps
-  where that is not enough. A few slivers can stay folded on some meshes (a sphere of 56 000
-  triangles taken to a tenth: 6 of 5590, each a thousandth of the mean area).
+  unpinches edges of four triangles, turns folded slivers back, collapses what stays folded
+  (the point of a sliver pushed through its neighbours, its shortest edge) and decimates again
+  in steps where that is not enough. No triangle stays facing against its neighbours (spheres
+  of 15 000 to 56 000 triangles taken to a fifth, a tenth and a twentieth).
 - For an exact part, mesh it coarser instead: `part.mesh(tolerance=...)` follows the exact
   surface.
 

@@ -54,10 +54,10 @@ The result has one entry per ray: the `Hit` that `raycast` gives first, or `None
 - A body: the rays go through a mesh of it (made once per body at 1e-4 of its size), and each
   hit is moved onto the exact face the mesh says the ray meets first (0.02 to 0.05 ms a ray;
   a plate with 144 holes: 0.05 ms, `raycast` 1 ms). Where that face is missed there, the ray is
-  cast exactly. The points are exact (1e-12), like `raycast`'s.
+  cast exactly, and so is a ray that passes within twice the mesh's tolerance of a triangle it
+  does not meet: a ray that grazes a curved face along its outline gets the hit `raycast` gives.
+  The points are exact (1e-12), like `raycast`'s.
 - Give all the rays in one call: each call builds the tracer again.
-- A ray that grazes a curved face (within 1e-4 of the body's size of its outline) can come out a
-  miss, where `raycast` finds where it touches.
 
 ## Errors
 - `TypeError: raycast takes an origin and a direction, or an axis`: a point without a direction.

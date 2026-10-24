@@ -19,9 +19,17 @@
 // other triangle of the face shares) is within the mesh's tolerance of the face's edges. Nearer
 // the border the face is asked (SmApiFaceClassifyUV), which costs a millisecond on a plate with a
 // hundred holes.
+//
+// The mesh lies within its tolerance of the faces, inside convex faces: a ray that passes the mesh
+// at less than that can touch a face the mesh does not (it grazes a curved face along its outline,
+// or a bump before the face behind it). Each ray is followed through a tree of boxes around the
+// triangles for that: where it passes within twice the mesh's tolerance of a triangle before the
+// one it meets (or anywhere, for a miss), the body is asked (found 2), except near its start, where
+// rays from points on the surface leave it.
 
 #include "kernel.h"
 #include "rays.h"
+#include "triangle_geometry.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
@@ -29,6 +37,7 @@
 #include <SmRayTracer.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -201,6 +210,161 @@ double to_segment(const SmPoint3d& p, const SmPoint3d& a, const SmPoint3d& b)
     return p.DistanceBetween(a + ab * s);
 }
 
+// A tree of boxes around the triangles of a mesh (those with an area): whether a segment passes
+// near one of them. Each box splits its triangles at the middle of its longest side.
+class NearTree
+{
+  public:
+    NearTree(const std::vector<double>& vertices, const std::vector<int64_t>& triangles)
+    {
+        const size_t m = triangles.size() / 3;
+        corners_.reserve(m);
+        for (size_t t = 0; t < m; ++t)
+        {
+            const SmPoint3d a = point(vertices, static_cast<size_t>(triangles[3 * t])),
+                            b = point(vertices, static_cast<size_t>(triangles[3 * t + 1])),
+                            c = point(vertices, static_cast<size_t>(triangles[3 * t + 2]));
+            if (((b - a) * (c - a)).Length() > 0)
+                corners_.push_back({a, b, c});
+        }
+        if (corners_.empty())
+            return;
+        std::vector<int32_t> order(corners_.size());
+        for (size_t i = 0; i < order.size(); ++i)
+            order[i] = static_cast<int32_t>(i);
+        nodes_.reserve(2 * corners_.size() / kLeaf + 2);
+        build(order, 0, static_cast<int32_t>(order.size()));
+        std::vector<std::array<SmPoint3d, 3>> sorted(corners_.size());
+        for (size_t i = 0; i < order.size(); ++i)
+            sorted[i] = corners_[order[i]];
+        corners_.swap(sorted);
+    }
+
+    // Where the line o + t d (d a unit vector) is within `r` of the box around all the triangles:
+    // false where it is not.
+    bool span(const SmPoint3d& o, const SmVector3d& d, double r, double& t0, double& t1) const
+    {
+        t0 = -std::numeric_limits<double>::infinity();
+        t1 = std::numeric_limits<double>::infinity();
+        return !nodes_.empty() && clip(nodes_[0], o, d, r, t0, t1);
+    }
+
+    // Whether a triangle lies within `r` of the segment o + t d, t in [t0, t1], leaving out those
+    // within `skip` of o.
+    bool near(const SmPoint3d& o, const SmVector3d& d, double t0, double t1, double r, double skip) const
+    {
+        if (nodes_.empty() || !(t1 > t0))
+            return false;
+        const SmPoint3d p0 = o + d * t0, p1 = o + d * t1;
+        std::vector<int32_t> stack = {0};
+        while (!stack.empty())
+        {
+            const Node& node = nodes_[stack.back()];
+            stack.pop_back();
+            double a = t0, b = t1;
+            if (!clip(node, o, d, r, a, b))
+                continue;
+            if (node.left >= 0)
+            {
+                stack.push_back(node.left);
+                stack.push_back(node.right);
+                continue;
+            }
+            for (int32_t i = node.first; i < node.first + node.count; ++i)
+            {
+                const auto& c = corners_[i];
+                if (segment_triangle_distance(p0, p1, c[0], c[1], c[2]) >= r)
+                    continue;
+                if (skip > 0 && o.DistanceBetween(nearest_on_triangle(o, c[0], c[1], c[2])) < skip)
+                    continue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+  private:
+    static constexpr int32_t kLeaf = 4;
+
+    struct Node
+    {
+        double lo[3], hi[3];
+        int32_t left = -1, right = -1;  // children (-1: a leaf)
+        int32_t first = 0, count = 0;   // a leaf's triangles
+    };
+
+    // The part [t0, t1] of the line o + t d within r of the node's box (slabs); false for none.
+    static bool clip(const Node& node, const SmPoint3d& o, const SmVector3d& d, double r, double& t0, double& t1)
+    {
+        const double x[3] = {o.x, o.y, o.z}, v[3] = {d.x, d.y, d.z};
+        for (int k = 0; k < 3; ++k)
+        {
+            const double lo = node.lo[k] - r, hi = node.hi[k] + r;
+            if (std::fabs(v[k]) < 1e-300)
+            {
+                if (x[k] < lo || x[k] > hi)
+                    return false;
+                continue;
+            }
+            double a = (lo - x[k]) / v[k], b = (hi - x[k]) / v[k];
+            if (a > b)
+                std::swap(a, b);
+            t0 = std::max(t0, a);
+            t1 = std::min(t1, b);
+            if (t0 > t1)
+                return false;
+        }
+        return true;
+    }
+
+    int32_t build(std::vector<int32_t>& order, int32_t first, int32_t end)
+    {
+        const int32_t at = static_cast<int32_t>(nodes_.size());
+        nodes_.emplace_back();
+        Node node;
+        for (int k = 0; k < 3; ++k)
+        {
+            node.lo[k] = std::numeric_limits<double>::infinity();
+            node.hi[k] = -std::numeric_limits<double>::infinity();
+        }
+        for (int32_t i = first; i < end; ++i)
+            for (const SmPoint3d& c : corners_[order[i]])
+            {
+                const double x[3] = {c.x, c.y, c.z};
+                for (int k = 0; k < 3; ++k)
+                {
+                    node.lo[k] = std::min(node.lo[k], x[k]);
+                    node.hi[k] = std::max(node.hi[k], x[k]);
+                }
+            }
+        if (end - first <= kLeaf)
+        {
+            node.first = first;
+            node.count = end - first;
+            nodes_[at] = node;
+            return at;
+        }
+        int axis = 0;
+        for (int k = 1; k < 3; ++k)
+            if (node.hi[k] - node.lo[k] > node.hi[axis] - node.lo[axis])
+                axis = k;
+        auto middle = [&](int32_t i) {
+            const auto& c = corners_[i];
+            return axis == 0 ? c[0].x + c[1].x + c[2].x : axis == 1 ? c[0].y + c[1].y + c[2].y : c[0].z + c[1].z + c[2].z;
+        };
+        const int32_t mid = first + (end - first) / 2;
+        std::nth_element(order.begin() + first, order.begin() + mid, order.begin() + end,
+                         [&](int32_t i, int32_t j) { return middle(i) < middle(j); });
+        node.left = build(order, first, mid);
+        node.right = build(order, mid, end);
+        nodes_[at] = node;
+        return at;
+    }
+
+    std::vector<std::array<SmPoint3d, 3>> corners_;
+    std::vector<Node> nodes_;
+};
+
 // The border of each face's triangles: the edges (of the triangles of a face) that no other
 // triangle of the face shares, as pairs of vertex indices, by face.
 std::vector<std::vector<std::pair<int64_t, int64_t>>> borders(const std::vector<int64_t>& triangles,
@@ -295,9 +459,13 @@ BodyHits body_first_hits(SmBrep* brep, const std::vector<double>& vertices, cons
         if (f < -1 || f >= static_cast<int64_t>(faces.GetSize()))
             throw std::invalid_argument("body_first_hits: a triangle names a face that is not there");
     Tracer tracer(vertices, triangles);
+    const NearTree near(vertices, triangles);
     const auto border = borders(triangles, owners, faces.GetSize());
     // (the rays start a little earlier: the mesh lies up to its tolerance inside convex faces)
     const double back = 2.0 * mesh_tolerance;
+    // how near the mesh a ray may pass without touching a face; the triangles this near its start
+    // are those it starts on
+    const double graze = 2.0 * mesh_tolerance + tolerance, start = 2.0 * graze;
     for (size_t i = 0; i < nrays; ++i)
     {
         const SmPoint3d o = point(origins, i);
@@ -305,9 +473,20 @@ BodyHits body_first_hits(SmBrep* brep, const std::vector<double>& vertices, cons
         double t0 = 0;
         const int32_t hit = tracer.fire(o - d * back, d, t0);
         if (hit < 0 || owners[hit] < 0)
+        {
+            // a miss of the mesh: a face the ray grazes within the mesh's tolerance is the body's to say
+            double a = 0, b = 0;
+            if (near.span(o, d, graze, a, b) && near.near(o, d, std::max(a, 0.0), b, graze, start))
+                out.found[i] = 2;
             continue;
+        }
         t0 -= back;
         out.found[i] = 2;  // (unless the face is met below)
+        // before the triangle it meets, the ray passes near another (or near that face where it runs
+        // along it): what it touches first is the body's to say
+        const double incidence = std::max(std::fabs(d.Dot(tracer.normal(hit))), 0.1);
+        if (near.near(o, d, 0.0, t0 - 1.5 * graze / incidence - graze, graze, start))
+            continue;
         out.faces[i] = static_cast<int32_t>(owners[hit]);
         const SmFace* face = faces[static_cast<ULONG>(owners[hit])];
         const SmSurface* surface = face->GetSurface();

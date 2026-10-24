@@ -183,7 +183,7 @@ std::string occt_check(const SOcctModel& m)
             continue;  // (a kind of surface the check does not evaluate)
         const bool plane = srf.eType == ESurfaceType::Plane;
         const GfVec3d po = vec(srf.sLocation), px = vec(srf.sXAxis), py = vec(srf.sYAxis);
-        double area = 0.0;
+        double area = 0.0, perimeter = 0.0, face_tol = 0.0;  // (perimeter: in the parameters)
         bool measured = true;
         std::vector<GfVec2d> face_box;  // (the points of its wires' curves)
         for (const occt::SSubShapeRef& wref : face.sSubShapes)
@@ -231,7 +231,9 @@ std::string occt_check(const SOcctModel& m)
                         c2 = &r;
                 }
                 std::vector<GfVec2d> pts;
-                const int samples = 16;
+                // (128 points along each: the area of a crescent between arcs 0.016 wide and 35 long, a STEP
+                // file's, came out negative from 16; the distance to the edge is checked at every 8th)
+                const int samples = 128;
                 if (c2)
                 {
                     const int ic = (c2->iKind == 3 && !forward) ? c2->iPCurve2 : c2->iPCurve;
@@ -263,6 +265,8 @@ std::string occt_check(const SOcctModel& m)
                         if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]))
                             return which + ": an edge's curve on it is not finite";
                         pts.push_back(uv);
+                        if (i % 8 != 0)
+                            continue;
                         GfVec3d on;
                         surface_point(srf, uv[0], uv[1], on);
                         if (c3 && !edge->sEdge.bDegenerated && static_cast<size_t>(c3->iCurve3d) >= 1 &&
@@ -330,10 +334,31 @@ std::string occt_check(const SOcctModel& m)
                 const GfVec2d& p = poly[i];
                 const GfVec2d& q = poly[(i + 1) % poly.size()];
                 area += 0.5 * (p[0] * q[1] - q[0] * p[1]);
+                perimeter += (q - p).GetLength();
             }
+            face_tol = std::max(face_tol, wire_tol);
         }
         if (measured && !(area > 0.0))
-            return which + ": its wires run clockwise in its parameters (an area of " + std::to_string(area) + ")";
+        {
+            // A face narrower than its edges' tolerance (a sliver of 0.002 between two edges 0.16 long,
+            // a STEP file's) has no side its curves can tell to within the tolerance: their area, of either
+            // sign, is less than its perimeter by the tolerance (in the parameters, through the surface's
+            // speed at the middle of its wires), and OpenCASCADE takes it as it is.
+            double speed = 1.0;
+            if (!face_box.empty() || plane)
+            {
+                GfVec2d mid(0.0, 0.0);
+                for (const GfVec2d& p : face_box)
+                    mid += p / static_cast<double>(face_box.size());
+                GfVec3d p0, pu, pv;
+                const double h = 1e-6;
+                if (!plane && surface_point(srf, mid[0], mid[1], p0) && surface_point(srf, mid[0] + h, mid[1], pu) &&
+                    surface_point(srf, mid[0], mid[1] + h, pv))
+                    speed = std::max({(pu - p0).GetLength() / h, (pv - p0).GetLength() / h, 1e-300});
+            }
+            if (!(std::fabs(area) <= perimeter * face_tol / speed))
+                return which + ": its wires run clockwise in its parameters (an area of " + std::to_string(area) + ")";
+        }
         // a face lies within one period of a closed surface, a sphere's between its poles, a B-spline's in its
         // knots (OpenCASCADE integrates over the parameters its wires enclose)
         if (measured && !face_box.empty())
@@ -343,19 +368,38 @@ std::string occt_check(const SOcctModel& m)
             for (const GfVec2d& p : face_box)
                 for (int k = 0; k < 2; ++k)
                     lo[k] = std::min(lo[k], p[k]), hi[k] = std::max(hi[k], p[k]);
-            // (ends of edges apart within the tolerance may overshoot a period a little)
+            // (ends of edges apart within the tolerance may overshoot a period a little, and curves fitted within
+            // the edges' tolerance pass the range by as much: 0.0011 of v on a B-spline face 0.2 wide, 0.00018 of a
+            // turn on a cone where an edge 0.0009 long ends 0.00036 past the seam, a STEP file's; OpenCASCADE
+            // extends a B-spline surface past its knots)
             const double eps = 1e-6 * std::max({1.0, std::fabs(lo[0]), std::fabs(hi[0]), std::fabs(lo[1]), std::fabs(hi[1])});
+            double ue = eps, ve = eps;
+            {
+                const GfVec2d mid((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2);
+                const double h = 1e-6 * std::max(1.0, std::max(hi[0] - lo[0], hi[1] - lo[1]));
+                GfVec3d p0, pu, pv;
+                if (face_tol > 0 && surface_point(srf, mid[0], mid[1], p0) && surface_point(srf, mid[0] + h, mid[1], pu) &&
+                    surface_point(srf, mid[0], mid[1] + h, pv))
+                {
+                    const double su = (pu - p0).GetLength() / h, sv = (pv - p0).GetLength() / h;
+                    if (su > 0 && std::isfinite(su))
+                        ue += std::min(face_tol / su, 0.01 * std::max(1.0, hi[0] - lo[0]));
+                    if (sv > 0 && std::isfinite(sv))
+                        ve += std::min(face_tol / sv, 0.01 * std::max(1.0, hi[1] - lo[1]));
+                }
+            }
             bool fits = true;
             switch (srf.eType)
             {
             case ESurfaceType::Cylinder:
-            case ESurfaceType::Cone: fits = hi[0] - lo[0] <= 2 * pi + eps; break;
-            case ESurfaceType::Sphere: fits = hi[0] - lo[0] <= 2 * pi + eps && lo[1] >= -pi / 2 - eps && hi[1] <= pi / 2 + eps; break;
-            case ESurfaceType::Torus: fits = hi[0] - lo[0] <= 2 * pi + eps && hi[1] - lo[1] <= 2 * pi + eps; break;
+            case ESurfaceType::Cone: fits = hi[0] - lo[0] <= 2 * pi + ue; break;
+            case ESurfaceType::Sphere: fits = hi[0] - lo[0] <= 2 * pi + ue && lo[1] >= -pi / 2 - ve && hi[1] <= pi / 2 + ve; break;
+            case ESurfaceType::Torus: fits = hi[0] - lo[0] <= 2 * pi + ue && hi[1] - lo[1] <= 2 * pi + ve; break;
             case ESurfaceType::BSpline:
                 if (!srf.dUKnots.empty() && !srf.dVKnots.empty())
                 {
-                    const double ue = 1e-9 * (srf.dUKnots.back() - srf.dUKnots.front()) + eps, ve = 1e-9 * (srf.dVKnots.back() - srf.dVKnots.front()) + eps;
+                    ue += 1e-9 * (srf.dUKnots.back() - srf.dUKnots.front());
+                    ve += 1e-9 * (srf.dVKnots.back() - srf.dVKnots.front());
                     fits = lo[0] >= srf.dUKnots.front() - ue && hi[0] <= srf.dUKnots.back() + ue && lo[1] >= srf.dVKnots.front() - ve &&
                            hi[1] <= srf.dVKnots.back() + ve;
                 }
@@ -368,6 +412,169 @@ std::string occt_check(const SOcctModel& m)
         }
     }
     return "";
+}
+
+void occt_tolerances(SOcctModel& m, double least)
+{
+    const size_t shapes = m.sShapes.size();
+    auto shape = [&](int storage) -> SShapeRecord* {
+        return storage >= 1 && static_cast<size_t>(storage) <= shapes ? &m.sShapes[static_cast<size_t>(storage - 1)] : nullptr;
+    };
+    auto curve3d = [&](const SShapeRecord& edge) -> const SCurveRepr* {
+        for (const SCurveRepr& r : edge.sEdge.sReprs)
+            if (r.iKind == 1 && r.iCurve3d >= 1 && static_cast<size_t>(r.iCurve3d) <= m.sCurves.size())
+                return &r;
+        return nullptr;
+    };
+    auto point3d = [&](const SCurveRepr& c, double t) {
+        return occt::EvalCurve3dPoint(m.sCurves[static_cast<size_t>(c.iCurve3d - 1)], pxr::GfMatrix4d(1.0), t);
+    };
+    // how far each edge's curve lies from its faces' surfaces along their curves on them (or from a plane it
+    // is projected onto), and each vertex from the ends of its edges' curves and of their curves on faces
+    std::vector<double> edge_off(shapes, 0.0), vertex_off(shapes, 0.0);
+    std::vector<char> unmeasured(shapes, 0);  // (edges a face or a curve on it is not evaluated for: kept as written)
+    // (the curves on faces pass through points of their edges at even steps of the parameter: the samples lie
+    // between those, at the ends, and 97 more off any even step)
+    const int samples = 98;
+    auto step = [](int i) { return i == 0 ? 0.0 : i == samples ? 1.0 : (i - 0.5 + 0.2360679774997897 * ((i * 7) % 5 - 2) / 2.0) / (samples - 1); };
+    auto vertex_at = [&](const SShapeRecord& edge, bool last) -> SShapeRecord* {
+        // (an edge's vertex oriented forward is at the start of its curve, the reversed one at the end)
+        for (const occt::SSubShapeRef& v : edge.sSubShapes)
+            if ((v.eOrientation == EOrientation::Reversed) == last)
+                return shape(v.iStorageIndex);
+        return nullptr;
+    };
+    auto near_vertex = [&](const SShapeRecord& edge, bool last, const GfVec3d& x) {
+        SShapeRecord* v = vertex_at(edge, last);
+        if (v && v->eType == EShapeType::Vertex)
+        {
+            const size_t i = static_cast<size_t>(v - m.sShapes.data());
+            vertex_off[i] = std::max(vertex_off[i], (x - vec(v->sVertex.sPoint)).GetLength());
+        }
+    };
+    for (size_t ei = 0; ei < shapes; ++ei)
+    {
+        const SShapeRecord& edge = m.sShapes[ei];
+        if (edge.eType != EShapeType::Edge)
+            continue;
+        if (!curve3d(edge) && !edge.sEdge.bDegenerated)
+            unmeasured[ei] = 1;
+        if (const SCurveRepr* c3 = curve3d(edge))
+        {
+            const GfVec3d a = point3d(*c3, c3->dFirst), b = point3d(*c3, c3->dLast);
+            near_vertex(edge, false, a);
+            near_vertex(edge, true, b);
+            for (const occt::SSubShapeRef& v : edge.sSubShapes)
+                if (const SShapeRecord* vr = shape(v.iStorageIndex); vr && vr->eType == EShapeType::Vertex)
+                {
+                    const GfVec3d end = v.eOrientation == EOrientation::Reversed ? b : a;
+                    edge_off[ei] = std::max(edge_off[ei], (end - vec(vr->sVertex.sPoint)).GetLength());
+                }
+        }
+    }
+    for (size_t fi = 0; fi < shapes; ++fi)
+    {
+        const SShapeRecord& face = m.sShapes[fi];
+        if (face.eType != EShapeType::Face)
+            continue;
+        const int isurface = face.sFace.iSurface;
+        if (isurface < 1 || static_cast<size_t>(isurface) > m.sSurfaces.size())
+            continue;
+        const SSurface& srf = m.sSurfaces[static_cast<size_t>(isurface - 1)];
+        GfVec3d probe;
+        const bool evaluated = surface_point(srf, 0.0, 0.0, probe);  // (else its edges keep what they have)
+        const bool plane = srf.eType == ESurfaceType::Plane;
+        const GfVec3d po = vec(srf.sLocation), pz = vec(srf.sAxis);
+        for (const occt::SSubShapeRef& wref : face.sSubShapes)
+        {
+            const SShapeRecord* wire = shape(wref.iStorageIndex);
+            if (!wire || wire->eType != EShapeType::Wire)
+                continue;
+            for (const occt::SSubShapeRef& eref : wire->sSubShapes)
+            {
+                SShapeRecord* edge = shape(eref.iStorageIndex);
+                if (!edge || edge->eType != EShapeType::Edge)
+                    continue;
+                const size_t ei = static_cast<size_t>(edge - m.sShapes.data());
+                if (!evaluated)
+                {
+                    unmeasured[ei] = 1;
+                    continue;
+                }
+                const SCurveRepr* c3 = curve3d(*edge);
+                bool on = false;
+                for (const SCurveRepr& r : edge->sEdge.sReprs)
+                {
+                    if ((r.iKind != 2 && r.iKind != 3) || r.iSurface != isurface)
+                        continue;
+                    on = true;
+                    for (int ic : {r.iPCurve, r.iKind == 3 ? r.iPCurve2 : -1})
+                    {
+                        if (ic == -1)
+                            continue;
+                        if (ic < 1 || static_cast<size_t>(ic) > m.sCurve2ds.size())
+                        {
+                            unmeasured[ei] = 1;
+                            continue;
+                        }
+                        const SCurve2d& pc = m.sCurve2ds[static_cast<size_t>(ic - 1)];
+                        for (int i = 0; i <= samples; ++i)
+                        {
+                            const double t = r.dFirst + (r.dLast - r.dFirst) * step(i);
+                            GfVec2d uv;
+                            GfVec3d x;
+                            if (!curve2d_point(pc, t, uv) || !surface_point(srf, uv[0], uv[1], x) || !std::isfinite(x[0]))
+                            {
+                                unmeasured[ei] = 1;
+                                break;
+                            }
+                            if (c3 && !edge->sEdge.bDegenerated)
+                                edge_off[ei] = std::max(edge_off[ei], (x - point3d(*c3, t)).GetLength());
+                            if (i == 0 || i == samples)
+                                near_vertex(*edge, i == samples, x);
+                        }
+                    }
+                }
+                if (!on && plane && c3)  // (OpenCASCADE projects the curve onto the plane)
+                    for (int i = 0; i <= samples; ++i)
+                        edge_off[ei] = std::max(edge_off[ei], std::fabs((point3d(*c3, c3->dFirst + (c3->dLast - c3->dFirst) * step(i)) - po) * pz));
+                else if (!on)
+                    unmeasured[ei] = 1;
+            }
+        }
+    }
+    // each its own: twice what was found, at least `least` (an edge not measured on each of its faces, and
+    // its vertices, as written); a vertex at least what its edges have, a face `least`
+    std::vector<char> kept(shapes, 0);
+    for (size_t i = 0; i < shapes; ++i)
+    {
+        SShapeRecord& edge = m.sShapes[i];
+        if (edge.eType != EShapeType::Edge)
+            continue;
+        if (!unmeasured[i])
+            edge.sEdge.dTolerance = std::max(least, 2.0 * edge_off[i]);
+        else
+            for (const occt::SSubShapeRef& v : edge.sSubShapes)
+                if (const SShapeRecord* vr = shape(v.iStorageIndex); vr && vr->eType == EShapeType::Vertex)
+                    kept[static_cast<size_t>(vr - m.sShapes.data())] = 1;
+    }
+    for (size_t i = 0; i < shapes; ++i)
+    {
+        SShapeRecord& r = m.sShapes[i];
+        if (r.eType == EShapeType::Vertex && !kept[i])
+            r.sVertex.dTolerance = std::max(least, 2.0 * vertex_off[i]);
+        else if (r.eType == EShapeType::Face)
+            r.sFace.dTolerance = std::min(r.sFace.dTolerance, least);
+    }
+    for (size_t ei = 0; ei < shapes; ++ei)
+    {
+        const SShapeRecord& edge = m.sShapes[ei];
+        if (edge.eType != EShapeType::Edge)
+            continue;
+        for (const occt::SSubShapeRef& v : edge.sSubShapes)
+            if (SShapeRecord* vr = shape(v.iStorageIndex); vr && vr->eType == EShapeType::Vertex)
+                vr->sVertex.dTolerance = std::max(vr->sVertex.dTolerance, edge.sEdge.dTolerance);
+    }
 }
 
 }  // namespace smlibpy

@@ -22,6 +22,7 @@
 #include <SmSurfOfRevolution.h>
 #include <SmSurfOfExtrusion.h>
 #include <SmOffsetSurface.h>
+#include <SmOffsetCurve.h>
 #include <SmLine.h>
 #include <SmCircle.h>
 #include <SmEllipse.h>
@@ -1116,6 +1117,31 @@ SmBSplineCurve* approximate_curve(const SmCurve* curve, double tolerance)
     return out;
 }
 
+SmBSplineCurve* offset_curve_3d(const SmCurve* curve, double distance, const std::vector<double>& normal, double tolerance)
+{
+    if (!curve)
+        throw std::invalid_argument("offset_curve_3d: curve is None");
+    if (normal.size() != 3 || !std::isfinite(distance) || !(tolerance > 0))
+        throw std::invalid_argument("offset_curve_3d: give a distance, a direction (x, y, z) and a positive tolerance");
+    SmVector3d n(normal[0], normal[1], normal[2]);
+    if (!(n.Length() > 0) || !std::isfinite(n.Length()))
+        throw std::invalid_argument("offset_curve_3d: the reference direction must not be zero");
+    n = n * (1.0 / n.Length());
+    // (the offset runs along tangent x direction: a tangent along the direction leaves it undefined)
+    const SmExtent1d ivl = curve->GetNaturalInterval();
+    for (int i = 0; i <= 64; ++i)
+    {
+        SmVector3d pd[2];
+        check(curve->Evaluate(ivl.GetMin() + ivl.GetLength() * i / 64.0, 1, i < 64, pd), "SmCurve::Evaluate");
+        if (!((pd[1] * n).Length() > 1e-9 * pd[1].Length()))
+            throw std::invalid_argument("offset_curve_3d: the curve runs along the reference direction, where its offset is undefined");
+    }
+    SmCurve* copy = nullptr;
+    check(curve->Copy(ctx(), copy), "SmCurve::Copy");
+    std::unique_ptr<SmOffsetCurve> off(new (ctx()) SmOffsetCurve(3, *copy, ivl, n, distance, TRUE));
+    return approximate_curve(off.get(), tolerance);
+}
+
 SmBSplineCurve* join_curves(const std::vector<SmCurve*>& curves)
 {
     if (curves.empty())
@@ -1346,6 +1372,10 @@ void bind_smlibpy_ext(py::module_ m)
           "(SmBSplineCurve::CreateByJoining); one that is not a B-spline (an ellipse) is approximated to 1e-7.");
     m.def("approximate_curve", &smlibpy::approximate_curve, py::arg("curve"), py::arg("tolerance") = 1e-7,
           py::return_value_policy::take_ownership, "NURBS approximation of any curve that keeps its parameterisation.");
+    m.def("offset_curve_3d", &smlibpy::offset_curve_3d, py::arg("curve"), py::arg("distance"), py::arg("normal"),
+          py::arg("tolerance") = 1e-7, py::return_value_policy::take_ownership,
+          "The curve at a distance from a curve along its tangent x normal (STEP's OFFSET_CURVE_3D, the kernel's "
+          "SmOffsetCurve) over the curve's whole range, as a NURBS within tolerance.");
 
     m.def("face_properties", [](const SmFace* face, double accuracy) {
         return smlibpy::to_python(smlibpy::face_properties(face, accuracy));

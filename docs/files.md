@@ -275,7 +275,7 @@ if it is a valid solid, with a warning that names the body and the largest gap c
 body nothing repairs comes with a warning that says what is wrong with it. Surface models
 whose faces share no edges are sewn the same way.
 
-A body that cannot be read (an entity smlibpy does not read yet, such as `OFFSET_CURVE_3D`,
+A body that cannot be read (an entity smlibpy does not read yet, such as a `CLOTHOID`,
 or one the kernel cannot build) is left out with a warning that names the body, its entity
 and the reason, and the rest of the file is read; `strict=True` raises instead, and a file
 none of whose bodies can be read raises. `read_step` lists them in `StepModel.skipped`. In
@@ -299,8 +299,14 @@ the file has them rather than a Boolean difference.
 
 The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
-among them. Not read yet: wireframe topology (`EDGE_BASED_WIREFRAME_MODEL`), references to
-other files, PMI, and assembly placements that mirror a part.
+among them. Offset curves (`OFFSET_CURVE_3D`: lines and circles stay lines and circles, others
+become NURBS within 1e-9 of their size) and edges given only as a curve in a surface's
+parameters (`PCURVE`) are read, and so are assembly placements that mirror or scale a part
+(`CARTESIAN_TRANSFORMATION_OPERATOR_3D`): the part is built where it is defined and mirrored or
+scaled whole, as `mirror` and `scale` do. An offset of a plane, sphere, cylinder, cone or torus
+that the kernel cannot close into a solid as an offset (a whole sphere written as an
+`OFFSET_SURFACE` of another) is built on the surface it is. Not read yet: wireframe topology
+(`EDGE_BASED_WIREFRAME_MODEL`), references to other files, and PMI.
 
 #### Coordinate systems, curves and points
 

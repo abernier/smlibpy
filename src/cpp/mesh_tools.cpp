@@ -37,6 +37,7 @@
 #include "mesh_tools.h"
 #include "fit.h"
 #include "poly_arrays.h"
+#include "triangle_geometry.h"
 
 #include <SmApiGeneral.h>
 #include <SmPoly.h>
@@ -147,33 +148,7 @@ uint64_t edge_key(int64_t a, int64_t b)
 
 // ----------------------------------------------------------------------------------- nearest points
 
-// The point of the triangle abc nearest to p (Ericson, Real-Time Collision Detection 5.1.5).
-SmPoint3d nearest_on_triangle(const SmPoint3d& p, const SmPoint3d& a, const SmPoint3d& b, const SmPoint3d& c)
-{
-    const SmVector3d ab = b - a, ac = c - a, ap = p - a;
-    const double d1 = ab.Dot(ap), d2 = ac.Dot(ap);
-    if (d1 <= 0 && d2 <= 0)
-        return a;
-    const SmVector3d bp = p - b;
-    const double d3 = ab.Dot(bp), d4 = ac.Dot(bp);
-    if (d3 >= 0 && d4 <= d3)
-        return b;
-    const double vc = d1 * d4 - d3 * d2;
-    if (vc <= 0 && d1 >= 0 && d3 <= 0)
-        return a + ab * (d1 / (d1 - d3));
-    const SmVector3d cp = p - c;
-    const double d5 = ab.Dot(cp), d6 = ac.Dot(cp);
-    if (d6 >= 0 && d5 <= d6)
-        return c;
-    const double vb = d5 * d2 - d1 * d6;
-    if (vb <= 0 && d2 >= 0 && d6 <= 0)
-        return a + ac * (d2 / (d2 - d6));
-    const double va = d3 * d6 - d5 * d4;
-    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    const double denominator = 1.0 / (va + vb + vc);
-    return a + ab * (vb * denominator) + ac * (vc * denominator);
-}
+using smlibpy::nearest_on_triangle;
 
 // A tree of boxes around the triangles of a mesh (those with an area), for nearest points.
 class TriangleTree
@@ -757,6 +732,208 @@ int64_t folds(const std::vector<double>& vertices, const std::vector<int64_t>& t
     return n;
 }
 
+// Collapses the folds that flips and merges leave in a decimated mesh (a sphere of 56 000 triangles
+// taken to a tenth kept 10 slivers folded over, each about a thousandth of the mean area). A corner of
+// a folded triangle that only three or four triangles share (a point pushed through its neighbours, the
+// tip of a sliver) goes, its triangles made one or two along their outer edges (of two, the diagonal
+// that faces as the outer edges go round). Else an edge of a folded triangle, the shortest first,
+// is collapsed, one end moved onto the other, where the mesh stays a manifold there (the two ends share
+// no neighbour but the corners across the edge, which two triangles have) and no triangle around the
+// end that moves turns over or loses its area; the two triangles on the edge go (-1, -1, -1). Repeated
+// while that removes folds, 64 times at most.
+void collapse_folds(const std::vector<double>& vertices, std::vector<int64_t>& tris)
+{
+    auto normal = [&](const int64_t* c) {
+        return (point(vertices, c[1]) - point(vertices, c[0])) * (point(vertices, c[2]) - point(vertices, c[0]));
+    };
+    const size_t m = tris.size() / 3;
+    for (int pass = 0; pass < 64; ++pass)
+    {
+        std::unordered_map<uint64_t, std::vector<int32_t>> by_edge;
+        std::unordered_map<int64_t, std::vector<int32_t>> by_point;
+        for (size_t t = 0; t < m; ++t)
+            if (tris[3 * t] >= 0)
+                for (int k = 0; k < 3; ++k)
+                {
+                    by_edge[edge_key(tris[3 * t + k], tris[3 * t + (k + 1) % 3])].push_back(static_cast<int32_t>(t));
+                    by_point[tris[3 * t + k]].push_back(static_cast<int32_t>(t));
+                }
+        std::vector<size_t> folded;
+        for (size_t t = 0; t < m; ++t)
+        {
+            if (tris[3 * t] < 0)
+                continue;
+            SmVector3d around(0, 0, 0);
+            for (int k = 0; k < 3; ++k)
+                for (int32_t u : by_edge[edge_key(tris[3 * t + k], tris[3 * t + (k + 1) % 3])])
+                    if (static_cast<size_t>(u) != t)
+                        around += normal(&tris[3 * u]);
+            if (normal(&tris[3 * t]).Dot(around) < 0)
+                folded.push_back(t);
+        }
+        if (folded.empty())
+            return;
+        std::unordered_set<int64_t> touched;  // (points whose triangles a collapse of this pass changed)
+        bool changed = false;
+        for (size_t t : folded)
+        {
+            if (tris[3 * t] < 0)
+                continue;
+            const int64_t* c = &tris[3 * t];
+            if (touched.count(c[0]) || touched.count(c[1]) || touched.count(c[2]))
+                continue;
+            // a corner of three or four triangles: they become one or two along their outer edges
+            for (int k = 0; k < 3 && !(tris[3 * t] < 0); ++k)
+            {
+                const int64_t v = c[k];
+                std::vector<int32_t> around;
+                for (int32_t u : by_point[v])
+                    if (tris[3 * u] >= 0)
+                        around.push_back(u);
+                if (around.size() != 3 && around.size() != 4)
+                    continue;
+                std::unordered_map<int64_t, int64_t> next;  // (the outer edges: from -> to)
+                for (int32_t u : around)
+                {
+                    const int64_t* d = &tris[3 * u];
+                    const int j = d[0] == v ? 0 : d[1] == v ? 1 : 2;
+                    next[d[(j + 1) % 3]] = d[(j + 2) % 3];
+                }
+                if (next.size() != around.size())
+                    continue;
+                std::vector<int64_t> ring = {next.begin()->first};  // (one cycle, as they run)
+                while (ring.size() <= around.size() && next.count(ring.back()) && next[ring.back()] != ring.front())
+                    ring.push_back(next[ring.back()]);
+                if (ring.size() != around.size() || !next.count(ring.back()) || next[ring.back()] != ring.front())
+                    continue;  // (not one cycle: a corner on the border)
+                SmVector3d facing(0, 0, 0);  // (the ring's own normal, Newell's)
+                for (size_t i = 0; i < ring.size(); ++i)
+                    facing += point(vertices, ring[i]) * point(vertices, ring[(i + 1) % ring.size()]);
+                // the candidates: the ring as one triangle, or split along one diagonal or the other
+                std::vector<std::vector<std::array<int64_t, 3>>> options;
+                if (ring.size() == 3)
+                    options.push_back({{ring[0], ring[1], ring[2]}});
+                else
+                    for (int s = 0; s < 2; ++s)
+                        options.push_back({{ring[s], ring[s + 1], ring[s + 2]}, {ring[s], ring[s + 2], ring[(s + 3) % 4]}});
+                double best = 0.0;
+                int chosen = -1;
+                for (size_t o = 0; o < options.size(); ++o)
+                {
+                    double worst = 1.0;
+                    for (const auto& tri : options[o])
+                    {
+                        const SmVector3d n = normal(tri.data());
+                        worst = std::min(worst, n.Length() > 0 && facing.Length() > 0 ? n.Dot(facing) / (n.Length() * facing.Length()) : -1.0);
+                    }
+                    if (ring.size() == 4)  // (a diagonal that is an edge already would be shared by four triangles)
+                    {
+                        const int s = static_cast<int>(o);
+                        if (by_edge.count(edge_key(ring[s], ring[s + 2])))
+                            worst = -1.0;
+                    }
+                    else
+                    {
+                        std::array<int64_t, 3> s3 = options[o][0];  // (the three a triangle of their own already)
+                        std::sort(s3.begin(), s3.end());
+                        for (int32_t u : by_point[ring[0]])
+                            if (tris[3 * u] >= 0 && std::find(around.begin(), around.end(), u) == around.end())
+                            {
+                                std::array<int64_t, 3> d = {tris[3 * u], tris[3 * u + 1], tris[3 * u + 2]};
+                                std::sort(d.begin(), d.end());
+                                if (d == s3)
+                                    worst = -1.0;
+                            }
+                    }
+                    if (worst > best)
+                        best = worst, chosen = static_cast<int>(o);
+                }
+                if (chosen < 0)
+                    continue;
+                const auto& made = options[static_cast<size_t>(chosen)];
+                for (size_t i = 0; i < around.size(); ++i)
+                {
+                    int64_t* d = &tris[3 * around[i]];
+                    if (i < made.size())
+                        std::copy(made[i].begin(), made[i].end(), d);
+                    else
+                        d[0] = d[1] = d[2] = -1;
+                }
+                touched.insert(v);
+                touched.insert(ring.begin(), ring.end());
+                changed = true;
+                break;
+            }
+            if (tris[3 * t] < 0 || touched.count(c[0]) || touched.count(c[1]) || touched.count(c[2]))
+                continue;
+            std::array<int, 3> order = {0, 1, 2};  // (edges by length, shortest first)
+            auto length = [&](int k) { return point(vertices, c[k]).DistanceBetween(point(vertices, c[(k + 1) % 3])); };
+            std::sort(order.begin(), order.end(), [&](int i, int j) { return length(i) < length(j); });
+            bool done = false;
+            for (int k : order)
+            {
+                const int64_t p = c[k], q = c[(k + 1) % 3];
+                const std::vector<int32_t>& on_edge = by_edge[edge_key(p, q)];
+                if (on_edge.size() != 2)
+                    continue;  // (a border edge, or one of more than two triangles)
+                std::unordered_set<int64_t> across;
+                for (int32_t u : on_edge)
+                    for (int j = 0; j < 3; ++j)
+                        if (tris[3 * u + j] != p && tris[3 * u + j] != q)
+                            across.insert(tris[3 * u + j]);
+                auto neighbours = [&](int64_t v) {
+                    std::unordered_set<int64_t> out;
+                    for (int32_t u : by_point[v])
+                        if (tris[3 * u] >= 0)
+                            for (int j = 0; j < 3; ++j)
+                                out.insert(tris[3 * u + j]);
+                    return out;
+                };
+                const std::unordered_set<int64_t> np = neighbours(p), nq = neighbours(q);
+                bool manifold = true;
+                for (int64_t v : np)
+                    if (v != p && v != q && nq.count(v) && !across.count(v))
+                        manifold = false;
+                if (!manifold)
+                    continue;
+                for (const auto& [keep, gone] : {std::pair<int64_t, int64_t>{p, q}, std::pair<int64_t, int64_t>{q, p}})
+                {
+                    bool sound = true;
+                    for (int32_t u : by_point[gone])
+                    {
+                        if (tris[3 * u] < 0 || std::find(on_edge.begin(), on_edge.end(), u) != on_edge.end())
+                            continue;
+                        std::array<int64_t, 3> moved = {tris[3 * u], tris[3 * u + 1], tris[3 * u + 2]};
+                        for (int64_t& v : moved)
+                            if (v == gone)
+                                v = keep;
+                        const SmVector3d before = normal(&tris[3 * u]), after = normal(moved.data());
+                        if (!(after.Dot(before) > 0) || !(after.Length() > 1e-6 * before.Length()))
+                            sound = false;
+                    }
+                    if (!sound)
+                        continue;
+                    for (int32_t u : on_edge)
+                        tris[3 * u] = tris[3 * u + 1] = tris[3 * u + 2] = -1;
+                    for (int32_t u : by_point[gone])
+                        if (tris[3 * u] >= 0)
+                            for (int j = 0; j < 3; ++j)
+                                if (tris[3 * u + j] == gone)
+                                    tris[3 * u + j] = keep;
+                    touched.insert(np.begin(), np.end());
+                    touched.insert(nq.begin(), nq.end());
+                    done = changed = true;
+                    break;
+                }
+                if (done)
+                    break;
+            }
+        }
+        if (!changed)
+            return;
+    }
+}
+
 // Unpinches a decimated mesh: the decimation can fold two slivers onto an edge of the surface (the
 // edge then has four triangles, two each way; a sphere of 56 000 triangles taken to a quarter had
 // one, which stayed there taken further). Of the two pairs of a triangle each way, the one of less
@@ -1234,6 +1411,8 @@ static TriangleArrays decimate_once(const std::vector<double>& vertices, const s
     unpinch(arrays.points, kept);
     unfold(arrays.points, kept);
     kept = without_folds(kept);  // (a merge in unfold can leave a fold too)
+    collapse_folds(arrays.points, kept);
+    kept = without_folds(kept);
     // the points the triangles use, in their order
     std::vector<int64_t> index(arrays.points.size() / 3, -1);
     for (int64_t v : kept)

@@ -3246,11 +3246,11 @@ class _Body(Shape):
         (a vector or an axis) for all of them, or one each. The rays are traced through a mesh of
         the body (made once per body, at 1e-4 of its size) by the kernel's ray tracer, and each
         hit is moved onto the exact face the mesh says the ray meets first; where that face is
-        missed there, the ray is cast exactly (:meth:`raycast`). A ray that passes the body's
-        outline within the mesh's tolerance (1e-4 of its size) can come out a miss where
-        :meth:`raycast` finds where it grazes the surface. Give all the rays in one call: the
-        tracer is built once per call (0.2 s for a mesh of 20 000 triangles), then a ray takes
-        0.02 to 0.05 ms (a plate with 144 holes: 0.05 ms, where :meth:`raycast` takes 1 ms)."""
+        missed there, the ray is cast exactly (:meth:`raycast`), and so is a ray that passes
+        within twice the mesh's tolerance (1e-4 of its size) of a triangle it does not meet (it can
+        graze a curved face the mesh lies inside of). Give all the rays in one call: the tracer is
+        built once per call (0.2 s for a mesh of 20 000 triangles), then a ray takes 0.02 to
+        0.05 ms (a plate with 144 holes: 0.05 ms, where :meth:`raycast` takes 1 ms)."""
         from .mesh import _rays
 
         o, d = _rays(origins, directions, "raycast_many")

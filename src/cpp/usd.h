@@ -97,4 +97,9 @@ std::vector<UsdItem> usd_read(const std::string& text, bool heal);
 std::string usd_check_arrays(UsdBrepData::UsdBrepArrayData& a);
 std::string usd_kernel_check(SmBrep* brep, bool& refuse);
 
+// The tolerances of each edge, vertex and face of a body built from the arrays, made what its geometry
+// needs where the arrays' one tolerance for the body is larger (usd_stage and occt_read call it before
+// the check).
+void usd_tighten_tolerances(SmBrep* brep);
+
 }  // namespace smlibpy

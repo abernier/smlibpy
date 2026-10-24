@@ -446,7 +446,8 @@ on the side where the cut encloses more.
 `decimate` thins a mesh out with the kernel's quadric decimation, which keeps a closed mesh
 closed: give the share of the triangles to remove, about how many to leave, or how far the result
 may be from the mesh (`tolerance=`, measured by smlibpy at the points of both meshes; the kernel's
-own "maximum error" is not a distance). `fill_holes` closes the holes of an open mesh;
+own "maximum error" is not a distance). Edges sharper than `feature_angle` (30 degrees) are kept
+longest and stay sharp in the normals; no triangle is left folded over its neighbours. `fill_holes` closes the holes of an open mesh;
 `repaired` also merges points that lie on each other, leaves out triangles without an area or
 repeated, turns triangles that face the wrong way, and says what it did. `to_part` (or
 `Part.from_mesh`) makes a faceted part of a closed mesh, for exact Booleans and STEP files:

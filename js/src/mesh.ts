@@ -511,28 +511,33 @@ export class Mesh {
    *   step while the distance stays within it (measured at the points of both meshes and the
    *   middles of their triangles), so this takes a few decimations (seconds for 100 000 triangles).
    *
-   * The result has normals of its own: at each corner the average of the triangles around it,
-   * except across edges sharper than 30 degrees. ModelingError if a closed mesh comes back open, or
+   * `featureAngle` (degrees, 0 to 180, default 30): edges where the triangles turn by more than it
+   * are features, which the decimation keeps longest, and stay sharp in the result's normals (at each
+   * corner the average of the triangles around it, except across such edges). Triangles the
+   * decimation leaves folded over (slivers facing against their neighbours) are taken out.
+   * ModelingError if a closed mesh comes back open, or
    * an open mesh with another border (a mesh whose points all lie on its border, such as a tube of
    * long triangles, cannot keep it), and where the kernel collapses the mesh far below the count
    * asked (it does with the long thin triangles of a coarse mesh of a cone: mesh such a part with a
    * larger tolerance instead). The kernel orders equal choices by memory, so the count can differ by
    * a few triangles from run to run.
    */
-  decimate(fraction: number | null = null, options: { triangles?: number | null; tolerance?: number | null } = {}): Mesh {
+  decimate(fraction: number | null = null, options: { triangles?: number | null; tolerance?: number | null; featureAngle?: number } = {}): Mesh {
     _opts('Mesh.decimate', options, arguments.length)
     const triangles = options.triangles ?? null
     const tolerance = options.tolerance ?? null
+    const angle = options.featureAngle ?? 30.0
     if ([fraction, triangles, tolerance].filter((x) => x != null).length !== 1) throw new TypeError('decimate takes one of fraction, triangles or tolerance')
+    if (!(typeof angle === 'number' && angle >= 0 && angle <= 180)) throw new RangeError(`decimate: featureAngle is 0 to 180 degrees, got ${angle}`)
     const n = this.length
     if (fraction != null) {
       if (!(fraction > 0 && fraction < 1)) throw new RangeError('decimate: fraction is the share of the triangles to remove, between 0 and 1')
-      return this._decimated(Number(fraction))
+      return this._decimated(Number(fraction), null, angle)
     }
     if (triangles != null) {
       if (!(triangles >= 4)) throw new RangeError('decimate: a mesh needs 4 triangles or more')
       if (triangles >= n) return new Mesh(this.vertices, this.triangles, this.normals)
-      return this._decimated(1 - triangles / n)
+      return this._decimated(1 - triangles / n, null, angle)
     }
     if (!((tolerance as number) > 0)) throw new RangeError('decimate: the tolerance must be positive')
     let best = new Mesh(this.vertices, this.triangles, this.normals)
@@ -541,7 +546,7 @@ export class Mesh {
       if (step < 1 / 32 || best.length <= 8) break
       let trial: Mesh
       try {
-        trial = best._decimated(step, this)
+        trial = best._decimated(step, this, angle)
       } catch (e) {
         if (!(e instanceof ModelingError)) throw e
         step /= 2
@@ -556,14 +561,14 @@ export class Mesh {
     return best
   }
 
-  /** One run of the kernel's decimation, `fraction` of the points removed; checked against
-   * `original` (default: this mesh): closed where it was. */
-  _decimated(fraction: number, original: Mesh | null = null): Mesh {
+  /** One run of the kernel's decimation, `fraction` of the points removed, edges sharper than `angle`
+   * degrees features; checked against `original` (default: this mesh): closed where it was. */
+  _decimated(fraction: number, original: Mesh | null = null, angle = 30.0): Mesh {
     if (!this.triangles.length) throw new RangeError('decimate: the mesh has no triangles')
-    const r = kernelCall('decimate', () => ext.decimate_triangles(this.vertices, this.triangles, fraction, 30.0, true), 'is the mesh made of triangles with an area?')
+    const r = kernelCall('decimate', () => ext.decimate_triangles(this.vertices, this.triangles, fraction, angle, true), 'is the mesh made of triangles with an area?')
     const v = r.vertices as Float64Array
     const t = r.triangles as Int32Array
-    const result = new Mesh(v, t, t.length ? (ext.crease_normals(v, t, 30.0) as Float32Array) : null)
+    const result = new Mesh(v, t, t.length ? (ext.crease_normals(v, t, angle) as Float32Array) : null)
     const asked = this.length * (1 - fraction)
     if (result.length < 0.5 * asked) {
       throw new ModelingError(

@@ -288,14 +288,14 @@ def _two_bodies(tmp_path, broken: bool = True):
     if broken:
         # body b's last circle becomes a curve the reader does not know
         last = re.findall(r"#(\d+)=CIRCLE\(", text)[-1]
-        text = text.replace(f"#{last}=CIRCLE(", f"#{last}=OFFSET_CURVE_3D(")
+        text = text.replace(f"#{last}=CIRCLE(", f"#{last}=CLOTHOID(")
         path.write_text(text)
     return path, last if broken else None
 
 
 def test_body_that_cannot_be_read_is_left_out(tmp_path):
     path, entity = _two_bodies(tmp_path)
-    with pytest.warns(RuntimeWarning, match=rf"left out body 'b' \(#\d+, product 'two'\): curve type OFFSET_CURVE_3D \(#{entity}\), "
+    with pytest.warns(RuntimeWarning, match=rf"left out body 'b' \(#\d+, product 'two'\): curve type CLOTHOID \(#{entity}\), "
                                             "which is not supported"):
         part = import_step(path)
     assert isinstance(part, Part) and part.name == "a"
@@ -304,9 +304,9 @@ def test_body_that_cannot_be_read_is_left_out(tmp_path):
 
 def test_strict_import_raises_for_a_body_that_cannot_be_read(tmp_path):
     path, entity = _two_bodies(tmp_path)
-    with pytest.raises(ModelingError, match=rf"body 'b' \(#\d+, product 'two'\): curve type OFFSET_CURVE_3D \(#{entity}\)"):
+    with pytest.raises(ModelingError, match=rf"body 'b' \(#\d+, product 'two'\): curve type CLOTHOID \(#{entity}\)"):
         import_step(path, strict=True)
-    with pytest.raises(ModelingError, match="OFFSET_CURVE_3D"):
+    with pytest.raises(ModelingError, match="CLOTHOID"):
         read_step(path, strict=True)
 
 
@@ -316,7 +316,7 @@ def test_read_step_lists_the_bodies_left_out(tmp_path):
         model = read_step(path)
     assert [b.name for b in model.bodies] == ["a"]
     [skipped] = model.skipped
-    assert re.fullmatch(rf"body 'b' \(#\d+, product 'two'\): curve type OFFSET_CURVE_3D \(#{entity}\), which is not supported", skipped)
+    assert re.fullmatch(rf"body 'b' \(#\d+, product 'two'\): curve type CLOTHOID \(#{entity}\), which is not supported", skipped)
     assert repr(model) == "StepModel(1 bodies, 0 frames, 0 curves, 0 points, 1 skipped)"
 
 
@@ -337,7 +337,7 @@ def test_body_the_kernel_cannot_build_is_left_out(tmp_path, monkeypatch):
 def test_file_none_of_whose_bodies_can_be_read_raises(tmp_path):
     path = tmp_path / "one.step"
     export_step(Cylinder(2, 5).named("c"), path)
-    text = path.read_text().replace("CIRCLE(", "OFFSET_CURVE_3D(")
+    text = path.read_text().replace("CIRCLE(", "CLOTHOID(")
     path.write_text(text)
     with pytest.warns(RuntimeWarning), pytest.raises(ModelingError, match="no body of the file could be read: body 'c'"):
         import_step(path)

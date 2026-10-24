@@ -22,7 +22,7 @@ left out:
   curve) with its exact type: B-spline, line segment, arc, ellipse.
 - `points`: `StepPoint(name, point, product, color)`, `point` a `Vector`.
 - `skipped`: one message (`str`) per body that could not be read, as the warning says it:
-  `"body 'b' (#99): curve type OFFSET_CURVE_3D (#203), which is not supported"`. Empty when every
+  `"body 'b' (#99): curve type CLOTHOID (#203), which is not supported"`. Empty when every
   body was read; `repr` then says nothing of it.
 
 `product` is the name of the part or assembly the item belongs to (`""` without product

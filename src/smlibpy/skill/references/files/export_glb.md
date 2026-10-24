@@ -41,7 +41,9 @@ part 1 km from the origin keeps its shape (float32 positions there are off by 0.
   above 65 535 corners. A sphere of r = 10 takes 66 kB at the default tolerance, 271 kB at 0.01
   and 3.3 MB at 0.001 (before 0.5.0: 259 kB, 1 MB, 9.6 MB, unindexed). Readers that take the
   `POSITION` accessor as triangle corners must go through `indices`.
-- An empty list writes a valid, empty scene without an error.
+- An empty list raises `ValueError: export_glb: nothing to write` (`export_gltf: ...`
+  likewise; before 0.5.0 it wrote an empty scene), and so does a body without faces
+  (`ValueError: tessellate: the Part is empty: ...`).
 - smlibpy cannot read glTF back (`load("x.glb")` raises `ValueError: unknown file type
   '.glb'; ...`).
 

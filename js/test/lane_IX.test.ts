@@ -360,7 +360,7 @@ function _twoBodies(broken = true): [string, string] {
   const circles = [...text.matchAll(/#(\d+)=CIRCLE\(/g)].map((m) => m[1])
   const last = circles[circles.length - 1]
   // body b's last circle becomes a curve the reader does not know
-  if (broken) text = text.replace(`#${last}=CIRCLE(`, `#${last}=OFFSET_CURVE_3D(`)
+  if (broken) text = text.replace(`#${last}=CIRCLE(`, `#${last}=CLOTHOID(`)
   return [text, last]
 }
 
@@ -372,13 +372,13 @@ test('body that cannot be read is left out', () => {
   assert.equal(said.length, 1)
   assert.match(
     said[0],
-    new RegExp(`left out body 'b' \\(#\\d+, product 'two'\\): curve type OFFSET_CURVE_3D \\(#${entity}\\), which is not supported`),
+    new RegExp(`left out body 'b' \\(#\\d+, product 'two'\\): curve type CLOTHOID \\(#${entity}\\), which is not supported`),
   )
 })
 
 test('strict import throws for a body that cannot be read', () => {
   const [text, entity] = _twoBodies()
-  const pattern = new RegExp(`body 'b' \\(#\\d+, product 'two'\\): curve type OFFSET_CURVE_3D \\(#${entity}\\)`)
+  const pattern = new RegExp(`body 'b' \\(#\\d+, product 'two'\\): curve type CLOTHOID \\(#${entity}\\)`)
   assert.throws(() => fromStep(text, { strict: true }), (e: unknown) => e instanceof ModelingError && pattern.test(e.message))
   assert.throws(() => fromStepModel(text, { strict: true }), (e: unknown) => e instanceof ModelingError && pattern.test(e.message))
 })
@@ -391,7 +391,7 @@ test('readStep lists the bodies left out', () => {
     ['a'],
   )
   assert.equal(model.skipped.length, 1)
-  assert.match(model.skipped[0], new RegExp(`^body 'b' \\(#\\d+, product 'two'\\): curve type OFFSET_CURVE_3D \\(#${entity}\\), which is not supported$`))
+  assert.match(model.skipped[0], new RegExp(`^body 'b' \\(#\\d+, product 'two'\\): curve type CLOTHOID \\(#${entity}\\), which is not supported$`))
   assert.equal(model.toString(), 'StepModel(1 bodies, 0 frames, 0 curves, 0 points, 1 skipped)')
 })
 
@@ -409,7 +409,7 @@ test('body the kernel cannot build is left out', (t) => {
 })
 
 test('file none of whose bodies can be read throws', () => {
-  const text = toStep(Cylinder(2, 5).named('c')).replaceAll('CIRCLE(', 'OFFSET_CURVE_3D(')
+  const text = toStep(Cylinder(2, 5).named('c')).replaceAll('CIRCLE(', 'CLOTHOID(')
   warnings(() =>
     assert.throws(
       () => fromStep(text),
