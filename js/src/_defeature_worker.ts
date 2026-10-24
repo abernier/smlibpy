@@ -128,6 +128,14 @@ function make(kernelModule: Any, job: Any): Uint8Array {
     } else if (job.op === 'surface_fillet') {
       const [a, b] = breps.map((brep) => k.face_surface(pick(brep, 'faces', [0])[0]))
       value = body(k.surface_surface_fillet(a, b, job.options))
+    } else if (job.op === 'fillet_preview') {
+      // the kernel's preview of rounds: a sheet per round surface
+      const surfaces = k.fillet_preview(breps[0], pick(breps[0], 'edges', job.edges), { radius: job.distance }) as number[]
+      try {
+        value = surfaces.map((srf) => body(ext.face_from_surface(srf)))
+      } finally {
+        for (const srf of surfaces) ext.delete_surface(srf)
+      }
     } else if (job.op === 'region_shells') {
       value = (ext.region_shells(breps[0]) as number[][]).map((shells) => shells.map((b) => body(b)))
     } else if (job.op === 'boolean') {
@@ -154,10 +162,10 @@ function make(kernelModule: Any, job: Any): Uint8Array {
     } else if (job.op === 'round_edges') {
       // a fillet or chamfer of a copy's edges by the fillet executive: the kernel changes that body,
       // and its record says how it failed
-      const [radii, sections, radii2, faces, law, continuity, thumbweight, toleranceFactor, mitre] = job.args as Any[]
+      const [radii, sections, radii2, faces, law, continuity, thumbweight, toleranceFactor, mitre, chains, lawAt, lawRadii, setback] = job.args as Any[]
       ext.clear_kernel_trace()
       const record = ext.round_edges(breps[0], pick(breps[0], 'edges', job.edges), radii, sections, radii2, pick(breps[0], 'faces', faces), law,
-        continuity, thumbweight, toleranceFactor, mitre)
+        continuity, thumbweight, toleranceFactor, mitre, chains ?? [], lawAt ?? [], lawRadii ?? [], setback ?? 0)
       // (where the kernel gave up, KernelError.trace)
       value = { brep: body(breps[0]), record: record.status == null ? record : { ...record, trace: ext.kernel_trace()[0] } }
     } else {

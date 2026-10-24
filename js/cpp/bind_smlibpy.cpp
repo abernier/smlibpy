@@ -18,6 +18,7 @@
 #include "draft.h"
 #include "extend.h"
 #include "ext_shared.h"
+#include "analytic.h"
 #include "analytics.h"
 #include "face_attrs.h"
 #include "face_draft.h"
@@ -144,6 +145,7 @@ val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibp
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
 uintptr_t remove_slivers(uintptr_t b, val faces, double tolerance) { return guard([&] { return ptr(smlibpy::remove_slivers(brep(b), pointers<SmFace>(faces), tolerance)); }); }
 val analytic_revolutions(uintptr_t b) { return guard([&] { return owned_or_null(smlibpy::analytic_revolutions(brep(b))); }); }
+val exact_circles(uintptr_t b) { return guard([&] { return owned_or_null(smlibpy::exact_circles(brep(b))); }); }
 // Profile and path are copied, not consumed; x_axes flat (x, y, z for each of params); scales null or
 // one for each of params.
 uintptr_t oriented_sweep(val profile, uintptr_t path, val params, val x_axes, bool cap_ends, val scales)
@@ -817,6 +819,7 @@ val edit_faces(uintptr_t b, val faces, val matrices, val distances, bool grow, d
         d.set("tolerance", r.tolerance);
         if (r.has_restored)
             d.set("restored", static_cast<double>(r.restored));
+        d.set("surfaces", static_cast<double>(r.surfaces));
         return d;
     });
 }
@@ -824,7 +827,8 @@ val edit_faces(uintptr_t b, val faces, val matrices, val distances, bool grow, d
 // ---------------------------------------------------------------- ext: fillets and chamfers
 // As Python's ext.round_edges: the Brep changes in place; the result says how the executive failed.
 val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val faces, val law, int continuity,
-                double thumbweight, double tolerance_factor, bool mitre)
+                double thumbweight, double tolerance_factor, bool mitre, val chains, val law_at, val law_radii,
+                double setback)
 {
     return guard([&] {
         smlibpy::RoundSpec spec;
@@ -842,7 +846,18 @@ val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val
             spec.law = true, spec.start_radius = l[0], spec.end_radius = l[1];
         }
         spec.continuity = continuity, spec.thumbweight = thumbweight, spec.tolerance_factor = tolerance_factor;
-        spec.mitre = mitre;
+        spec.mitre = mitre, spec.setback = setback;
+        const unsigned count = chains.isUndefined() || chains.isNull() ? 0 : chains["length"].as<unsigned>();
+        for (unsigned i = 0; i < count; ++i)
+        {
+            std::vector<long> chain;
+            for (double x : numbers(chains[i]))
+                chain.push_back(static_cast<long>(x));
+            spec.chains.push_back(chain);
+        }
+        spec.law_at = numbers(law_at), spec.law_radii = numbers(law_radii);
+        if (!spec.law_at.empty() && !spec.law)
+            spec.law = true, spec.start_radius = spec.law_radii.empty() ? 0.0 : spec.law_radii.front();
         SmPyErrorTrail::clear();
         const smlibpy::Rounded r = smlibpy::round_edges(brep(b), spec);
         auto point = [](bool has, const double* p) { return has ? vec3(SmVector3d(p[0], p[1], p[2])) : val::null(); };
@@ -853,8 +868,10 @@ val round_edges(uintptr_t b, val edges, val radii, val sections, val radii2, val
         d.set("vertex", point(r.has_vertex, r.vertex));
         d.set("location", point(r.has_location, r.location));
         d.set("corner", r.corner);
+        d.set("stage", r.stage);
         d.set("comment", r.comment);
         d.set("mitred", static_cast<double>(r.mitred));
+        d.set("set_back", static_cast<double>(r.set_back));
         return d;
     });
 }
@@ -1173,6 +1190,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__copy_faces", &copy_faces);
     function("ext__remove_slivers", &remove_slivers);
     function("ext__analytic_revolutions", &analytic_revolutions);
+    function("ext__exact_circles", &exact_circles);
     function("ext__oriented_sweep", &oriented_sweep);
     function("ext__skin", &skin);
     function("ext__swung", &swung);

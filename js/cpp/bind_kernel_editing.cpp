@@ -230,6 +230,20 @@ uintptr_t fillet_edges_per_edge(uintptr_t b, val edges, val radii, val xsect_typ
     return b;
 }
 
+// New surfaces (the caller's): the untrimmed surfaces of circular rounds of the edges, one per edge;
+// brep unchanged. Python's radius is keyword-only, without a default.
+val fillet_preview(uintptr_t b, val edges, double radius)
+{
+    SmTArray<SmEdge*> arr;
+    fill(edges, arr);
+    SmTArray<SmSurface*> preview;
+    SMJS_CHECK(SmApiFilletPreview(brep(b), arr, radius, preview));
+    val out = val::array();
+    for (ULONG i = 0; i < preview.GetSize(); ++i)
+        out.call<void>("push", val(static_cast<double>(ptr(preview[i]))));
+    return out;
+}
+
 // The kernel's own fillet removal (defeaturing): removes the fillet faces it recognises; changes
 // brep in place and returns it.
 uintptr_t remove_fillet(uintptr_t b)
@@ -257,6 +271,7 @@ EMSCRIPTEN_BINDINGS(smlib_kernel_fillets)
     function("fillet_edges", &fillet_edges);
     function("variable_radius_fillet", &variable_radius_fillet);
     function("fillet_edges_per_edge", &fillet_edges_per_edge);
+    function("fillet_preview", &fillet_preview);
 }
 
 // ---------------------------------------------------------------- offset (SmPyOffset.cpp)

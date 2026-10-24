@@ -19,6 +19,7 @@ import { ModelingError, ext, k, kernelCall } from './kernel.ts'
 import { CenterArc } from './curves.ts'
 import { type Axis, Plane, Vector, type VectorLike, _degrees as _toDegrees, _direction, _formatG, _radians } from './geometry.ts'
 import { Edge, Face, Part, ShapeList, Shell, Wire, _Body, _asPlane, _flattenFaces, _list } from './shapes.ts'
+import { _withCavities } from './face_edit.ts'
 
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
@@ -489,6 +490,13 @@ export function draftFaces(part: Part, faces: unknown, angle: number, neutralPla
   for (const kf of part._ownFaces(faces)) {
     if (sel.every((f) => kf !== f._f)) sel.push(new Face(part, kf))
   }
+  // (a part with cavities: the solid inside its outside and those inside its cavities' walls, each drafted on
+  // its own, the cavities' faces the other way round, since they face the other way; see face_edit)
+  return _withCavities(part, 'draft', 'drafted', sel, (body, faces, inside) => _drafted(body, faces, inside ? -a : a, plane))
+}
+
+/** The kernel's draft of the faces `sel` of a part without cavities, checked (see `draftFaces`). */
+function _drafted(part: Part, sel: readonly Face[], a: number, plane: Plane): Part {
   const d = plane.zDir.normalized()
   const res = kernelCall('draft', () =>
     _FD.draft_faces(part._brep, sel.map((f) => f._f), plane.origin.toArray(), d.toArray(), _radians(a), TANGENCY),

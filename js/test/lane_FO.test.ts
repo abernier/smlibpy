@@ -99,9 +99,10 @@ test('added edges take the radius of the selected edge they continue', () => {
 })
 
 test('a radius law does not run along a tangent run', () => {
+  // (since the close-out of 0.5.0 a law runs along the run, but not around a closed one)
   const p = plate()
   const long = longest(at(p, 10))
-  assert.throws(() => p.fillet(long, { start: 1, end: 2 }), { name: 'RangeError', message: /runs on tangentially into another edge at .*propagate=False/ })
+  assert.throws(() => p.fillet(long, { start: 1, end: 2 }), { name: 'RangeError', message: /cannot run around a closed run of edges/ })
   const [b, line] = cornerBox()
   assert.ok(b.fillet(line, { start: 0.5, end: 1 }, { propagate: false }).isValid())
   approx(b.fillet(line, { start: 1, end: 1 }).volume, b.fillet(line, 1).volume, 1e-12)
@@ -276,8 +277,16 @@ test('chamfers with two lengths or an angle', () => {
   const tri = Polygon([0, 0], [20, 0], [10, 10 * Math.sqrt(3)]).extrude(10) as Part
   const corner = tri.edges().filter((e) => e.center().x < 1e-6 && e.center().y < 1e-6 && Math.abs(e.center().z - 5) < 1e-6)
   const base = tri.faces().filter((f) => Math.abs(f.center().y) < 1e-6)
-  for (const s1 of [1.5, 3]) approx(tri.volume - tri.chamfer(corner, s1, { length2: 1, reference: base }).volume, 0.5 * s1 * Math.sin(Math.PI / 3) * 10)
-  assert.throws(() => tri.chamfer(corner, 4, { length2: 1, reference: base }), {
+  // (3: setbacks less alike than cos 60, the kernel offsets the base backwards; 4: farther than its solver
+  // takes, a prism cut since the close-out of 0.5.0)
+  for (const s1 of [1.5, 3, 4]) approx(tri.volume - tri.chamfer(corner, s1, { length2: 1, reference: base }).volume, 0.5 * s1 * Math.sin(Math.PI / 3) * 10)
+  // an edge whose end lies on a slanted face: no prism cut
+  const slanted = tri.cut(Box(60, 60, 20).rotate(X, 20).translate(0, 0, 18))
+  const slantedCorner = slanted
+    .edges()
+    .filter((e) => e.geomType === 'line' && e.center().x < 1 && e.center().y < 1 && Math.abs(e.end.sub(e.start).normalized().z) > 0.99)
+  const slantedBase = slanted.faces().filter((f) => Math.abs(f.center().y) < 1e-6)
+  assert.throws(() => slanted.chamfer(slantedCorner, 4, { length2: 1, reference: slantedBase }), {
     name: 'ModelingError',
     message: /meet at 60 degrees, and the kernel could not bevel them with setbacks this different \(4 and 1\); bring them closer \(each at least 0.5 times the other always works\)/,
   })
@@ -530,10 +539,14 @@ test('face edits refuse what the kernel cannot build', () => {
   throws(() => block.offsetFaces(block.faces().cylinders(), 3), ModelingError, /the cylinder face at \(0, 0, 0\) would shrink to nothing/)
   throws(() => box.offsetFaces(box.faces().top(), -12), ModelingError, /do not close the part again/)
   throws(() => box.offsetFaces(box.faces().top(), -10), ModelingError, /offsetFaces: the kernel returned a part whose edges leave its faces/)
+  // a cavity: the kernel drops it (for any edit); since the close-out of 0.5.0 the outside and the cavity
+  // are edited apart (closeout_F.test.ts), but a body inside a cavity is refused
   const hollow = Box(20, 20, 20).cut(Box(10, 10, 10))
-  throws(() => hollow.offsetFaces(hollow.faces().top(), 1), ModelingError, /the part has a cavity/)
+  approx(hollow.offsetFaces(hollow.faces().top(), 1).volume, 7400.0, 1e-9)
+  const nested = Box(20, 20, 20).cut(Box(12, 12, 12)).fuse(Box(4, 4, 4))
+  throws(() => nested.offsetFaces(nested.faces().top(), 1), ModelingError, /the part has a body inside a cavity/)
   const voided = Box(20, 20, 20).cut(Sphere(5))
-  throws(() => voided.moveFaces(voided.faces().filter((f) => f.geomType === 'sphere'), [1, 0, 0]), ModelingError, /the part has a cavity/)
+  throws(() => voided.moveFaces(voided.faces().filter((f) => f.geomType === 'sphere'), [1, 0, 0]), ModelingError, /the sphere face at \(0, 0, 0\) meets no other face/)
   throws(() => box.moveFaces([], [0, 0, 1]), RangeError, /no faces selected/)
   throws(() => box.moveFaces(box.faces().top(), 'up' as Any), TypeError, /by must be a Location or a vector/)
   throws(() => box.moveFaces(box.faces().top(), new Location([[2, 0, 0, 0], [0, 2, 0, 0], [0, 0, 2, 0], [0, 0, 0, 1]])), RangeError, /rotation and a translation/)

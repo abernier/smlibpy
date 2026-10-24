@@ -93,9 +93,10 @@ def test_added_edges_take_the_radius_of_the_selected_edge_they_continue():
 
 
 def test_a_radius_law_does_not_run_along_a_tangent_run():
+    # (since the close-out of 0.5.0 a law runs along the run, but not around a closed one)
     p = _plate()
     long = max(_at(p, 10), key=lambda e: e.length)
-    with pytest.raises(ValueError, match=r"runs on tangentially into another edge at .*propagate=False"):
+    with pytest.raises(ValueError, match=r"cannot run around a closed run of edges"):
         p.fillet(long, (1, 2))
     b, line = _corner_box()
     assert b.fillet(line, (0.5, 1), propagate=False).is_valid()
@@ -330,7 +331,7 @@ def test_fillet_errors_name_the_corner_the_kernel_could_not_build():
 
 
 def test_chamfers_with_two_lengths_or_an_angle():
-    from smlibpy import Cylinder, Polygon
+    from smlibpy import Cylinder, Polygon, X
     from smlibpy._kernel import ModelingError
 
     box = Box(40, 30, 20)
@@ -360,13 +361,19 @@ def test_chamfers_with_two_lengths_or_an_angle():
     tri = Polygon((0, 0), (20, 0), (10, 10 * math.sqrt(3))).extrude(10)
     corner = tri.edges().filter(lambda e: e.center().x < 1e-6 and e.center().y < 1e-6 and abs(e.center().z - 5) < 1e-6)
     base = tri.faces().filter(lambda f: abs(f.center().y) < 1e-6)
-    for s1 in (1.5, 3):  # (3: setbacks less alike than cos 60, the kernel offsets the base backwards)
+    for s1 in (1.5, 3, 4):  # (3: setbacks less alike than cos 60, the kernel offsets the base backwards;
+        # 4: farther than its solver takes, a prism cut since the close-out of 0.5.0)
         assert tri.volume - tri.chamfer(corner, s1, length2=1, reference=base).volume == approx(
             0.5 * s1 * 1 * math.sin(math.pi / 3) * 10)
+    # an edge whose end lies on a slanted face: no prism cut
+    slanted = tri - Box(60, 60, 20).rotate(X, 20).translate(0, 0, 18)
+    corner = slanted.edges().filter(lambda e: e.geom_type == "line" and e.center().x < 1 and e.center().y < 1
+                                    and abs((e.end - e.start).normalized().z) > 0.99)
+    base = slanted.faces().filter(lambda f: abs(f.center().y) < 1e-6)
     with pytest.raises(ModelingError, match=r"meet at 60 degrees, and the kernel could not bevel them with setbacks "
                                              r"this different \(4 and 1\); bring them closer \(each at least 0.5 times "
                                              r"the other always works\)"):
-        tri.chamfer(corner, 4, length2=1, reference=base)
+        slanted.chamfer(corner, 4, length2=1, reference=base)
     with pytest.raises(ValueError, match="length2 and angle need reference="):
         box.chamfer(one, 2, length2=1)
     with pytest.raises(ValueError, match="does not lie on a reference face"):
@@ -662,12 +669,15 @@ def test_face_edits_refuse_what_the_kernel_cannot_build():
         box.offset_faces(box.faces().top(), -12)
     with pytest.raises(ModelingError, match="offset_faces: the kernel returned a part whose edges leave its faces"):
         box.offset_faces(box.faces().top(), -10)  # (the top onto the bottom)
-    # a cavity: the kernel drops it (for any edit)
+    # a cavity: the kernel drops it (for any edit); since the close-out of 0.5.0 the outside and the
+    # cavity are edited apart (tests/test_closeout_F.py), but a body inside a cavity is refused
     hollow = Box(20, 20, 20) - Box(10, 10, 10)
-    with pytest.raises(ModelingError, match="the part has a cavity"):
-        hollow.offset_faces(hollow.faces().top(), 1)
+    assert hollow.offset_faces(hollow.faces().top(), 1).volume == approx(7400.0)
+    nested = (Box(20, 20, 20) - Box(12, 12, 12)) + Box(4, 4, 4)
+    with pytest.raises(ModelingError, match="the part has a body inside a cavity"):
+        nested.offset_faces(nested.faces().top(), 1)
     void = Box(20, 20, 20) - Sphere(5)
-    with pytest.raises(ModelingError, match="the part has a cavity"):
+    with pytest.raises(ModelingError, match="the sphere face at \\(0, 0, 0\\) meets no other face"):
         void.move_faces([f for f in void.faces() if f.geom_type == "sphere"], (1, 0, 0))
     with pytest.raises(ValueError, match="no faces selected"):
         box.move_faces([], (0, 0, 1))

@@ -409,11 +409,12 @@ test('a variable radius runs along each edge on its own', () => {
   throwsMatching(() => cylinder.fillet(rim, { start: 1, end: 3 }), RangeError, /closed edge/)
   approx(cylinder.fillet(rim, { start: 2, end: 2 }).volume, cylinder.fillet(rim, 2).volume, 1e-9)
   // Edges that run into each other tangentially: the kernel gave the rounds one radius where they
-  // meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs.
+  // meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs. Since
+  // 0.5.0 the radius runs along the whole run (closeout_F.test.ts).
   let plate = Box(40, 30, 10)
   plate = plate.fillet(plate.edges().parallelTo(Z).filter((e) => e.center().x > 0), 5)
   const chain = plate.edges().filter((e) => e.center().z > 4.9 && e.center().x > -19.9)
-  throwsMatching(() => plate.fillet(chain, { start: 1, end: 3 }), RangeError, /run into each other tangentially at \(15, 15, 5\)/)
+  assert.ok(plate.fillet(chain, { start: 1, end: 3 }).isValid())
   assert.ok(plate.fillet(chain, 2).isValid())
 })
 

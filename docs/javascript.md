@@ -920,12 +920,13 @@ export class SectionProperties {
 export type FilletRadius = number | readonly number[] | {
     start: number;
     end: number;
-};
+} | ReadonlyMap<number, number>;
 export interface FilletOptions {
     continuity?: number | string | null;
     fullness?: number;
     propagate?: boolean;
     corners?: string;
+    setback?: number | null;
 }
 export interface ChamferOptions {
     length2?: number | null;
@@ -969,6 +970,9 @@ export class Part extends Shape {
     intersect(sheet: Shell | Face): Shell;
     intersect(...others: (Part | Iterable<Part>)[]): Part;
     fillet(edges: EdgesLike, radius: FilletRadius, options?: FilletOptions): Part;
+    filletPreview(edges: EdgesLike, radius: number, options?: {
+        propagate?: boolean;
+    }): ShapeList<Shell>;
     chamfer(edges: EdgesLike, length: number, options?: ChamferOptions): Part;
     shell(thickness: number, openings?: FacesLike | null, options?: {
         outward?: boolean;

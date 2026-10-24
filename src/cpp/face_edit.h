@@ -30,6 +30,8 @@ struct FaceEdit
     double gaps[2] = {};
     bool has_restored = false;     // the number of B-spline edges that became lines and circles
     long restored = 0;
+    long surfaces = 0;             // the number of faces around the edited ones that got their cone or
+                                   // cylinder back (LocalOperation extends them on surfaces of its own)
 };
 
 // Gives each of `faces` a new surface: its own moved by a rigid motion (`matrices`: 16 numbers per

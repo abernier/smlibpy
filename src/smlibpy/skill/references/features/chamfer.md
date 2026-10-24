@@ -58,13 +58,17 @@ chamfered: the kernel extends the bevel past the end). An invalid input part rai
   (40x30x20 box, all edges, 2: vol 23322.667 = exact polyhedron). Unequal bevels too: the top
   edges of a 40x30x20 box with 2 on the top and 1 down the sides: 23865.333 (OpenCASCADE the
   same).
-- Unequal setbacks on faces that meet at an acute angle: each must be at least `cos(wedge)` times
-  the other (60°: half), or `ModelingError` (the kernel's solver offsets the faces and cannot
-  reach such a bevel).
+- Unequal setbacks on faces that meet at an acute angle, less alike than `cos(wedge)` (60°: one
+  less than half the other): the kernel's solver offsets one face backwards and takes that only so
+  far. A straight edge between planes whose ends lie on planes at right angles to it (a wedge or
+  prism cut straight across) is then bevelled by cutting the bevel's prism along it (exact: a 60°
+  edge with 4 and 1 takes 0.5 * 4 * 1 * sin 60° * length). Elsewhere (an end on a slanted face,
+  another bevelled edge ending there) such setbacks raise `ModelingError`.
 - Bevels the kernel makes (straight edges between curved faces, circles on spheres or tori, a
   circle whose bevel would take other material) are fitted B-splines, off by about 1e-6 mm: up to
   1e-5 of the volume of a small part. Circles between coaxial faces are exact (above; a cylinder
-  rim, 2 and 1: 6224.5422, as OpenCASCADE).
+  rim, 2 and 1: 6224.5422, as OpenCASCADE): their bevels are cones, and their edges circles, also
+  where a bevel meets the cylinder.
 
 ## Errors
 - `ModelingError: chamfer: the length is too large; the rounds on edges 10 apart would overlap (largest possible setback here: 5)`
@@ -76,7 +80,8 @@ chamfered: the kernel extends the bevel past the end). An invalid input part rai
 - `ValueError: chamfer: length2 and angle need reference=, the face (or faces) of each edge on which length is measured`
 - `ValueError: chamfer: the edge from (10, -10, 10) to (10, 10, 10) does not lie on a reference face; give the face of each edge on which length is measured`
 - `ValueError: chamfer: a bevel at 130 degrees to the reference face does not meet the other face of the edge from ... to ..., which meets it at 90 degrees; use an angle below 90`
-- `ModelingError: chamfer: the faces of the edge from (0, 0, 0) to (0, 0, 10) meet at 60 degrees, and the kernel cannot bevel them with setbacks this different (4 and 1): each must be at least 0.5 times the other`
+- `ModelingError: chamfer: the faces of the edge from (0, 0, 0) to (0, 0, 7.35822) meet at 60 degrees, and the kernel could not bevel them with setbacks this different (4 and 1); bring them closer (each at least 0.5 times the other always works)`
+  (an edge the prism cut cannot take: see Gotchas)
 - `KernelError: chamfer failed (SM_ERR): the kernel could not build the corner at (...) (...); the length may be too large for the selected edges`: the corner or edge the kernel could not bevel (see `fillet`).
 - `ModelingError: chamfer: the part is not a valid solid (...); check is_valid() after each step and fix the step that broke it`
 

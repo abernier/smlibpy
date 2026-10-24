@@ -31,15 +31,17 @@ rim is rounded into the top face takes the top face along), cut and fill instead
 - The faces around the offset ones must still reach them: the kernel extends and trims them but
   does not add or remove faces. A face pushed past another one, or so far that a face around it
   vanishes, raises `ModelingError` (use a Boolean).
-- A part with a cavity (a closed void) is refused: the kernel's face edit drops cavities.
+- A part with cavities is edited as its outside and its cavities apart, and the cavities are cut
+  out again (see `move_faces`): a face of a cavity's wall offset by a positive distance moves into
+  the cavity (out of the material), so the cavity shrinks.
 - The volume must change the way the distance says (up for positive), else `ModelingError`.
-- Faces around the offset ones that the kernel extends can change their kind (see `move_faces`):
-  the vertical rounds of a box whose top is offset upwards become surfaces of extrusion.
+- Faces around the offset ones that the kernel extends keep their cylinder or cone (see
+  `move_faces`): the vertical rounds of a box whose top is offset upwards stay cylinders.
 
 ## Errors
 - `ModelingError: offset_faces: the cylinder face at (0, 0, 0) would shrink to nothing (its radius reaches 0); use a smaller distance`
 - `ModelingError: offset_faces: the offset faces do not close the part again: a face around them vanishes, or offset faces run into each other; use a smaller change`
-- `ModelingError: offset_faces: the part has a cavity (a closed void inside it), and the kernel's face edit drops cavities; edit the part without it and cut the cavity out afterwards`
+- `ModelingError: offset_faces: the offset faces reach a cavity of the part (or a cavity reaches the outside or another cavity); use a smaller change, or a Boolean`
 - `TypeError: offset_faces: the distance must be a number`; `ValueError: offset_faces: no faces selected`
 
 ## Example

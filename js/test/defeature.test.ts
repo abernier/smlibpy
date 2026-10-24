@@ -271,8 +271,8 @@ test('a kernel step that does not finish is stopped after GUARD_SECONDS and drop
   const code = `
     import { setGuardSeconds } from '${src}defeature.ts'
     import { model } from '${examples}enclosure.ts'
-    setGuardSeconds(1)
     const box = model()[0]
+    setGuardSeconds(1) // (after the model: its shell takes most of a second where the suite runs in parallel)
     const round = box.faces().fillets().filter((f) => f.center().z < 2 && f.geomType === 'cylinder').slice(0, 1)
     try {
       box.removeFillets(round)
