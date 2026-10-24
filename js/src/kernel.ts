@@ -563,9 +563,15 @@ export function _crashError(operation: string, hint: string | null = null): Kern
 
 /** Runs `fn`; a failure of the kernel becomes a KernelError with context. Memory that is used up
  * is SM_ERR_OUT_OF_MEMORY, with a hint that says so in place of `hint`; a crash of the kernel (a
- * trap) says so before `hint`. */
+ * trap) says so before `hint`. The module keeps a reserve of its memory for the step that finds it
+ * used up (js/cpp/bind_runtime.cpp), so that the kernel does not run out in the middle of its work:
+ * where the reserve cannot be taken again before a step, the step fails with SM_ERR_OUT_OF_MEMORY
+ * before the kernel runs (kernel plan W8). */
 export function kernelCall<T>(operation: string, fn: () => T, hint: string | null = null): T {
   ext.clear_kernel_trace()
+  if (!k.runtime.reserve()) {
+    throw new KernelError(operation, `${OUT_OF_MEMORY}: the memory is used up`, OUT_OF_MEMORY, _outOfMemoryHint())
+  }
   try {
     return fn()
   } catch (e) {
@@ -597,7 +603,8 @@ export function _traceOf(e: unknown): readonly string[] {
 // -------------------------------------------------------------------------------- memory
 /** What the kernel's memory holds, in bytes (see `memoryUsage`). */
 export interface MemoryUsage {
-  /** What the kernel's objects take: the bytes its allocator has handed out and not got back. */
+  /** What the kernel's objects take: the bytes its allocator has handed out and not got back (less
+   * the 8 MB the module holds in reserve for the step that finds the memory used up). */
   readonly used: number
   /** The module's memory: it grows when the kernel needs more, up to `limit`, and never shrinks. */
   readonly heap: number

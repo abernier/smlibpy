@@ -4443,11 +4443,11 @@ export function _seamProblem(result: Part, part: Part, tools: readonly Part[], o
         try {
           inside = k.face_classify_uv(f, u, v) === 'inside'
         } catch (e) {
-          if (!_isRuntimeError(e)) throw e // (a face whose trim the kernel cannot resolve)
+          if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e) // (a face whose trim the kernel cannot resolve)
           try {
             wrong.push(k.face_point_at_uv(f, u, v))
           } catch (e2) {
-            if (!_isRuntimeError(e2)) throw e2
+            if (!_isRuntimeError(e2) || _isCrash(e2)) throw _crashOf(e2)
             wrong.push([0, 1, 2].map((i) => 0.5 * (lo[i] + hi[i])))
           }
           continue
@@ -5875,7 +5875,7 @@ export class Part extends _Body {
       if (this._booleanProblem(retry, tools, op) !== null || _volumeProblem(retry, this, tools, op)) return null
       return retry
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       return null
     }
   }
@@ -5893,7 +5893,7 @@ export class Part extends _Body {
       if (k.brep_face_count(retry._brep) && retry._solidProblem() !== null) return null
       return retry
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       return null
     }
   }
@@ -6763,7 +6763,7 @@ export class Part extends _Body {
     try {
       tool = Polygon(local(p1), local(p2), local(corner)).on(plane).extrude(e.length + 2 * margin) as Part
     } catch (err) {
-      if (!(err instanceof ModelingError)) throw err
+      if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
       return null
     }
     const area = 0.5 * a.sub(c).cross(b.sub(c)).length
@@ -7531,7 +7531,7 @@ export class Part extends _Body {
         const gaps = Number(p.gaps)
         return gaps * v <= 1e-5 * whole ? [piece, v, gaps * v] : null
       } catch (e) {
-        if (!(e instanceof KernelError || e instanceof ModelingError)) throw e
+        if (!(e instanceof KernelError || e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
         return null
       }
     }
@@ -7707,7 +7707,7 @@ export class Part extends _Body {
         try {
           wide = face.extend(reach)
         } catch (e) {
-          if (!(e instanceof RangeError || e instanceof ModelingError || e instanceof KernelError)) throw e
+          if (!(e instanceof RangeError || e instanceof ModelingError || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
           wide = null // (no side that can grow)
         }
       }
@@ -10424,8 +10424,8 @@ export class Sketch extends Shell {
         try {
           pieces.push(Part._wrap(kernelCall('extrude', () => ext.curve_sweep(curves, path, true, true, false, true, null, null, o.toArray()))))
         } catch (e) {
-          if (e instanceof KernelError) return null
-          throw e
+          if (e instanceof KernelError && !_isCrash(e)) return null
+          throw _crashOf(e)
         } finally {
           ext.delete_curve(path)
           for (const c of curves) ext.delete_curve(c)

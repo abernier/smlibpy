@@ -243,7 +243,10 @@ it can grow (`limit`), in bytes, and how many kernel objects JavaScript holds th
 yet (`handles`). A call that finds it used up fails with a `KernelError` of status
 `SM_ERR_OUT_OF_MEMORY` that says how much is in use and how far the memory has grown (a browser
 that refuses to grow it further stops it below its limit): dispose of parts no longer needed, use
-`scope`, or let the event loop run. Once they are disposed the kernel works again.
+`scope`, or let the event loop run. Once they are disposed the kernel works again. (The module
+holds 8 MB in reserve, which `used` leaves out, for the step that finds the memory used up: that
+step finishes, so the kernel does not run out in the middle of its work, and the next steps fail
+before the kernel runs until enough is freed to take the reserve again.)
 
 ```js
 const { used, limit, handles } = memoryUsage()

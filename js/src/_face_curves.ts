@@ -17,7 +17,7 @@
 // whose speed varies (SmSurface::LiftCurve of a line of a cylinder's parameter plane is no helix:
 // 0.16 off).
 
-import { ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _crashOf, _isCrash, ext, k, kernelCall } from './kernel.ts'
 import { Vector, type VectorLike, _formatG, _vec } from './geometry.ts'
 import { Edge, type Face, ShapeList, Vertex, Wire, type _Body, _canonicalCurve } from './shapes.ts'
 import { Line, _interpolate } from './curves.ts'
@@ -183,7 +183,7 @@ export function acrossSeams(pieces: readonly Edge[], tol: number): Edge[] {
           try {
             xy = Wire._raw([x, y]).toEdge()
           } catch (e) {
-            if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+            if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
             continue
           }
           out = [...out.filter((_, m) => m !== i && m !== j), xy]

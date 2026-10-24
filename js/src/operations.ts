@@ -1608,7 +1608,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
             try {
               return _carriedSweep(sk, local, _halves(whole, at), axes, own, halved, tangentClosure, translational, hint, law, grow)
             } catch (e) {
-              if (!(e instanceof ModelingError)) throw e
+              if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
             }
           }
         }
@@ -1848,7 +1848,7 @@ function _splitSweep(
     r = edge._minRadius()[0]
     for (const q of local.edges()) for (let i = 0; i <= 16; i++) reach = Math.max(reach, q.pointAt(i / 16).length)
   } catch (ex) {
-    if (!(ex instanceof ModelingError || ex instanceof RangeError)) throw ex
+    if (!(ex instanceof ModelingError || ex instanceof RangeError) || _isCrash(ex)) throw _crashOf(ex)
     return null
   }
   if (!(Number.isFinite(r) && r > reach)) return null
@@ -1856,7 +1856,7 @@ function _splitSweep(
     try {
       return _carriedSweep(sk, local, _split(edge, n), axes, own, true, false, translational, hint, null, scale)
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
     }
   }
   return null

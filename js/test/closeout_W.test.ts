@@ -233,8 +233,11 @@ test('after a crash, the rest of the task falls back on nothing; the next task d
 test('memory that runs out for real: the kernel fails with SM_ERR_OUT_OF_MEMORY, and works again once parts are disposed (W8)', () => {
   // The module's memory may grow to 4 GB, which a test cannot fill: here its file says 160 MB (the
   // limit in its memory section; a browser that refuses to grow it further does the same). The
-  // kernel then runs out for real: an allocation fails, and the kernel crashes on the memory it did
-  // not get, or throws std::bad_alloc.
+  // kernel then runs out for real: an allocation fails. The module's reserve (js/cpp/bind_runtime.cpp)
+  // lets the step that finds the memory used up finish, and the next one fails before the kernel
+  // runs; without it the kernel threw std::bad_alloc in the middle of a sphere's surface cache, and
+  // the destructors that ran while it unwound crashed and broke the allocator (in some memory
+  // layouts the next Box crashed too).
   const out = run(`
     import { readFileSync } from 'node:fs'
     const bytes = new Uint8Array(readFileSync(new URL(${JSON.stringify(WASM.href)})))
@@ -258,7 +261,7 @@ test('memory that runs out for real: the kernel fails with SM_ERR_OUT_OF_MEMORY,
     for (let i = 0; i < 100000 && error === null; i++) {
       try { parts.push(Sphere(5)) } catch (e) { error = e }
     }
-    const out = { made: parts.length, error: [error instanceof KernelError, error.status, error.message], heap: memoryUsage().heap }
+    const out = { made: parts.length, error: [error instanceof KernelError, error.status, error.message], heap: memoryUsage().heap, crashes: memoryUsage().crashes }
     for (const part of parts) part.dispose()
     await new Promise((r) => setTimeout(r, 0))
     out.after = Box(30, 20, 10).cut(Cylinder(4, 20)).volume
@@ -269,6 +272,7 @@ test('memory that runs out for real: the kernel fails with SM_ERR_OUT_OF_MEMORY,
   assert.equal(out.error[1], 'SM_ERR_OUT_OF_MEMORY')
   assert.match(out.error[2], /^Sphere failed \(SM_ERR_OUT_OF_MEMORY\): .*\(\d+ MB in use, the module's memory at 1[56]\d MB of at most 4096 MB\): dispose\(\) parts/)
   assert.ok(out.heap > 150 * MB && out.heap <= 160 * MB, `the memory grew to ${out.heap} bytes`)
+  assert.equal(out.crashes, 0) // (the kernel did not run out in the middle of a step)
   assert.ok(Math.abs(out.after - 5497.3452) < 1e-4) // (the module works again)
   assert.ok(out.used < 16 * MB)
 })

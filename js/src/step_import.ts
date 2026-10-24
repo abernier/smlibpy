@@ -899,7 +899,7 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
       try {
         again = buildShell(retry, closed, given)
       } catch (e) {
-        if (!(e instanceof KernelError || e instanceof ModelingError)) throw e
+        if (!(e instanceof KernelError || e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       }
       let taken = false
       if (again !== null && _sound(again[0] as Part, again[1])) {
