@@ -1,5 +1,5 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmProtoTopology.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-22. Compiled in place
+// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-23. Compiled in place
 // of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmProtoTopologyManager::~SmProtoTopologyManager cuts the links between ProtoVertices and
 //   ProtoEdges before it deletes them. It deleted the ProtoEdges first, and a ProtoVertex that
@@ -35,6 +35,11 @@
 //   to a new Edge, and the next Boolean read the freed curve of that Edge (AddressSanitizer: a
 //   read of freed memory in SmEdge::CalculateBoundingBox): shells and offsets in the extended
 //   mode crashed the process now and then, such as the filleted boxes of issue #2.
+//   SmProtoEdge::CombineProtoEdge deletes the curves of the EdgeDefinitions it leaves with the
+//   ProtoEdge its caller deletes (it moves every other one), and
+//   SmProtoTopologyManager::RemoveCoincidentNoEdgeProtoVertex deletes the ProtoVertex it takes out
+//   of the manager. Both were lost (curves of SmProtoTopologyManager::CreateProtoEdge in failed
+//   extended shells; about 1.5 kB in every mitered sweep along a planar path).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -3406,6 +3411,16 @@ void SmProtoEdge::CombineProtoEdge( SmProtoEdge *pOtherPE )
       this->AddEdgeDefinition( pED) ;
       pOtherPE->RemoveEdgeDefinition( pED) ;
   }
+
+  // smlibpy patch: the loop above moves every other EdgeDefinition only (RemoveEdgeDefinition takes
+  // each one out of the list it walks). Those it skips stay with pOtherPE, which the only caller
+  // (SplitIntersectingProtoEdges) deletes right after this call, and so the Boolean goes on
+  // without them, as before. Their curves are copies of their own that no Brep has taken (this is
+  // before the imprint), and the destructor of an EdgeDefinition leaves them alone: they were lost
+  // (the curves SmProtoTopologyManager::CreateProtoEdge copies; about 1 kB per failed extended
+  // shell of a filleted box). Delete them.
+  for(ii=0;ii<pOtherPE->m_sEdgeDefs.GetSize();ii++)
+    { if(pOtherPE->m_sEdgeDefs[ii] != NULL) { pOtherPE->m_sEdgeDefs[ii]->Destruct() ; } }
 
 } // end SmProtoEdge::CombineProtoEdge
 
@@ -7084,6 +7099,10 @@ SmBoolean bDebugMe3=FALSE;
     {
       // the ProtoVertex is a redundant critical point coincident with an existing ProtoEdge - remove it
       RemoveProtoVertex(pPV) ; // does not delete pPV
+      // smlibpy patch: and delete it (with its VertexDefinitions). It has no ProtoEdges, and once
+      // out of this manager's list nothing deleted it: about 1.5 kB lost in Booleans with such
+      // points, as in every mitered sweep along a planar path.
+      delete pPV ; pPV = NULL ;
 
       // all done
       return TRUE ;

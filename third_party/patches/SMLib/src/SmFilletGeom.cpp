@@ -1,10 +1,13 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmFilletGeom.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-22. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-22, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmFilletGeom::MakeFaceBrep skips a missing (null) boundary curve when it drops degenerate ones,
 //   so that its copy loop fails on it (SM_ERR_NULL_POINTER) as it was written to. It called
 //   IsDegenerate() on the null curve: chamfering all edges of a box with a horizontal cylinder
 //   fused into it killed the process.
+//   sm_SrfSrfIntersection deletes the intersection curves it collected when it fails: it returned
+//   without them when none passed through the given points (about 24 kB with their caches per
+//   refused fillet along tangent edges, from SmFilletEdge::CalcFilletIntSideFace).
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -674,6 +677,28 @@ static ULONG lDebugCount = 0 ;
   SmTArray<SmCurve*> sSurface1UVCurves;
   SmTArray<SmCurve*> sSurface2UVCurves;
 
+  // smlibpy patch: the intersection curves collected here are deleted when the function fails (it
+  // returned without them when no curve passed through the given points, and on the errors of
+  // the checks below): about 24 kB with their caches per refused fillet along tangent edges
+  // (SmFilletEdge::CalcFilletIntSideFace of a corner). Kept once the best curve is chosen.
+  struct sm_CurvesOnFailure
+    {
+      SmTArray<SmCurve*> * m_apCurves[3] ;
+      SmBoolean            m_bKeep ;
+      ~sm_CurvesOnFailure()
+        {
+          if ( m_bKeep ) { return ; }
+          SmTArray<SmCurve*> sDone ;
+          ULONG lIdx ;
+          for ( int ii = 0 ; ii < 3 ; ii++ )
+            for ( ULONG jj = 0 ; jj < m_apCurves[ii]->GetSize() ; jj++ )
+              {
+                SmCurve * pC = (*m_apCurves[ii])[jj] ;
+                if ( pC != NULL && !sDone.FindElement( pC, lIdx ) ) { sDone.Add( pC ) ; delete pC ; }
+              }
+        }
+    } sCurvesOnFailure = { { &s3DCurves, &sSurface1UVCurves, &sSurface2UVCurves }, FALSE } ;
+
   SmExtent2d sDomain1 = pSurf1->GetNaturalUVDomain();
   SmExtent2d sDomain2 = pSurf2->GetNaturalUVDomain();
 
@@ -982,6 +1007,8 @@ static ULONG lDebugCount = 0 ;
       if (pNewUVCurve1) { delete  pNewUVCurve1;  pNewUVCurve1 = NULL ; }
       if (pNewUVCurve2) { delete  pNewUVCurve2;  pNewUVCurve2 = NULL ; }
     }
+
+  sCurvesOnFailure.m_bKeep = TRUE ;  // smlibpy patch: the best one is the caller's now, the others are deleted
 
   // set output - get curve's interval
   rp3DCurve  = SM_CAST_PTR( SmBSplineCurve, s3DCurves[ lBestIndex ] );

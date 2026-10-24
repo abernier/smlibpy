@@ -1,6 +1,6 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmMerge.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-21. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-21, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmMerge::BooleanPostProcess takes only the Vertices that are still in the Brep (a set made
 //   after the Edges are merged and renewed after every Vertex it deletes). It took them from
 //   lists collected during the Boolean, and a Vertex deleted with an Edge was read in
@@ -12,6 +12,9 @@
 //   it can fail, and reports the deleted topology only when it succeeds, so the next Vertex was
 //   one it had deleted (AddressSanitizer: a read of freed memory in SmTopology::Mark). Fusing
 //   the two halves of a tube along some loops closed with a kink crashed the process.
+//   SmMerge::BooleanTrees deletes the operands of a Boolean that failed, and the results still on
+//   its stack (they had been taken out of the caller's list and were lost).
+//   SmMerge::MergeEdge deletes the copy of a curve it made when no Edge gets it.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -2029,6 +2032,15 @@ SmBoolean bDebugMeB = FALSE ;
           // Quit when things fail (before putting result on stack: [090913]).
           if (bBadBoolean)
             {
+              // smlibpy patch: a failed Boolean keeps both operands. They, and the results still on
+              // the stack, were taken out of rBreps and belonged to no one: every Brep of a failed
+              // tree but those not reached yet was lost (the mitered planar sweep's segments, for
+              // one). The caller keeps what is left in rBreps.
+              delete pBrep1; pBrep1 = NULL;
+              delete pBrep2; pBrep2 = NULL;
+              for (ULONG jj=0; jj<sStack.GetSize(); jj++)
+                { if (sStack[jj]) { delete sStack[jj]; sStack[jj] = NULL; } }
+              sStack.ReSet();
               return ( SM_ERR);
               //break;
             }
@@ -6768,6 +6780,26 @@ static ULONG lDebugCount = 0 ;
         SmObject *pBrepCurve = m_vTI.GetBrepMate(pCurve);
         SmCurve  *pNewCurve  = SM_CAST_PTR(SmCurve,pBrepCurve);
 
+        // smlibpy patch: the copy of the curve made below is deleted (and taken out of the
+        // relations) when no Edge gets it: it was lost with every such failure (a line of the
+        // Boolean of a failed extended shell).
+        struct sm_CurveCopyOnFailure
+          {
+            SmTopologyIntersector & m_rTI ;
+            SmCurve *               m_pCopy ;
+            SmCurve *               m_pOrig ;
+            ~sm_CurveCopyOnFailure()
+              {
+                if ( m_pCopy == NULL || m_pCopy->GetOwner() != NULL ) { return ; }
+                if ( m_rTI.m_pBToO && m_rTI.m_pBToO->At( m_pCopy ) == m_pOrig )
+                  {
+                    m_rTI.m_pBToO->Remove( m_pCopy ) ;
+                    if ( m_rTI.m_pOToB ) { m_rTI.m_pOToB->Remove( m_pOrig ) ; }
+                  }
+                delete m_pCopy ;
+              }
+          } sCopyOnFailure = { m_vTI, NULL, pCurve } ;
+
        // if BrepCurve is NULL
 // Remove Composites
 //       // if BrepCurve is NULL or if composites are disallowed
@@ -6776,6 +6808,7 @@ static ULONG lDebugCount = 0 ;
           {
             // copy the curve and add pair to entity maps
             SER(pCurve->Copy(*pContext,pNewCurve));
+            sCopyOnFailure.m_pCopy = pNewCurve ;  // smlibpy patch
             if (pBrepCurve == NULL)
               {
                 SER(m_vTI.Relate(pNewCurve,pCurve));
@@ -6809,6 +6842,7 @@ static ULONG lDebugCount = 0 ;
         // make the new Brep wire edge
         SER(m_vTI.m_pBrep->MakeWireEdge(pRegionInBrep,pBV,pBV2,pNewCurve,
             pOtherEdge->GetInterval(),SM_OT_SAME,pBrepEdge));
+        sCopyOnFailure.m_pCopy = NULL ;  // smlibpy patch: the Edge has it
 
         // mate new edge with input otherBrep edge
         SER(m_vTI.Relate(pBrepEdge,pOtherEdge));

@@ -1,6 +1,6 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmTopologyIntersector.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-21. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-21, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmTopologyIntersector::IntersectTopology fails when SplitIntersectingProtoEdges reports
 //   SM_ERR_BAD_INTERSECTIONS (see the patched SmProtoTopology.cpp): a pair of ProtoEdges whose
 //   curves overlap in ways the split cannot take, as along a seam tangent to the other body.
@@ -18,6 +18,12 @@
 //   ResolveIntersections fails. It returned without, and the manager, its ProtoEdges,
 //   EdgeDefinitions and curves were never freed: about 450 kB per failed Boolean of the crossing
 //   holes above (the macOS leaks tool).
+//   SmTopologyIntersector::FixGaps takes the Edge that one Brep lost when it combined two Vertices
+//   out of the relations also when the other Brep lost none (it did only when both lost one): the
+//   marking of the common Edges in SmMerge::ManifoldBoolean read the deleted Edge.
+//   SmTopologyIntersector::ImprintIntersections and IntersectInsertRelate fail the Boolean
+//   (SM_ERR_BAD_INTERSECTIONS) when a failed imprint left an Edge without a Vertex at one end:
+//   the Boolean went on and read the missing Vertex.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -762,22 +768,25 @@ SmBoolean bDebugMe = FALSE;
 
                     SER(m_pOther->CombineCoincidentVertices(pOtherV2,pOtherV1,pDeletedOtherEdge));
                     RemoveRelationship(pV1,pOtherV1);
-                    if (pDeletedBrepEdge && pDeletedOtherEdge)
+                    if (pDeletedBrepEdge && pDeletedOtherEdge
+                        && IsMatedPair( pDeletedBrepEdge, pDeletedOtherEdge ) )
+                      { RemoveRelationship(pDeletedBrepEdge,pDeletedOtherEdge); }
+                    else
                       {
                         // If these are not alreday a mated pair, then calling
                         // RemoveRelationship() can leave the maps with different
                         // sizes, and containing stale pointers.  [B460]
-                        if ( IsMatedPair( pDeletedBrepEdge, pDeletedOtherEdge ) )
-                          { RemoveRelationship(pDeletedBrepEdge,pDeletedOtherEdge); }
-                        else
-                          {
-                            SmEdge *pMate = (SmEdge*)GetOtherMate( pDeletedBrepEdge );
-                            if ( pMate != NULL )
-                              { RemoveRelationship( pDeletedBrepEdge, pMate ); }
-                            pMate  = (SmEdge*)GetBrepMate( pDeletedOtherEdge );
-                            if ( pMate != NULL )
-                              { RemoveRelationship( pMate, pDeletedOtherEdge ); }
-                          }
+                        // smlibpy patch: also when only one of the Breps lost an Edge. Its
+                        // mate stayed in the maps, and the marking of the common Edges in
+                        // ManifoldBoolean read the deleted Edge (AddressSanitizer: a read of
+                        // freed memory in SmTopology::Mark; the shell of an L-shaped body in the
+                        // extended mode).
+                        SmEdge *pMate = pDeletedBrepEdge ? (SmEdge*)GetOtherMate( pDeletedBrepEdge ) : NULL;
+                        if ( pMate != NULL )
+                          { RemoveRelationship( pDeletedBrepEdge, pMate ); }
+                        pMate  = pDeletedOtherEdge ? (SmEdge*)GetBrepMate( pDeletedOtherEdge ) : NULL;
+                        if ( pMate != NULL )
+                          { RemoveRelationship( pMate, pDeletedOtherEdge ); }
                       }
                     rbModifiedTopology = TRUE;
                     break; // V1 has gone away break out of loop and get another V1 and test it.
@@ -1291,6 +1300,13 @@ if ( iDebugLevel > 0 ) // After ResolveIntersections(): DumpAndDraw Brep(blue), 
 
   // Imprint Intersections, now we'll modify the Breps.
   eStat = this->ImprintIntersections();
+
+  // smlibpy patch: fail on a half-made Edge (see ImprintIntersections), after freeing the manager.
+  if (eStat == SM_ERR_BAD_INTERSECTIONS)
+    {
+      if(m_pProtoTopoMgr) { delete m_pProtoTopoMgr ; m_pProtoTopoMgr = NULL; }
+      SER( eStat );
+    }
 
   // If that didn't work, inform the public
   SE_MSG( eStat, _T("\nSmProtoExecutive: Error returned from ImprintIntersections().\n") );
@@ -2392,6 +2408,28 @@ PURPOSE: Imprint our intersections into our two Breps.
 
 USAGE NOTES---- 
 ***********************************************************************/
+/*******************************************************************//**
+PURPOSE: smlibpy patch: does a Brep have an Edge without a Vertex at one of its ends?
+
+NOTES: Helper of ImprintIntersections (see there).
+***********************************************************************/
+static SmBoolean sm_HasHalfMadeEdge( const SmBrep * cpBrep )
+{
+  if ( cpBrep == NULL ) { return FALSE; }
+  SmTArray<SmEdge*> sEdges;
+  cpBrep->GetEdges( sEdges );
+  for ( ULONG ii = 0; ii < sEdges.GetSize(); ii++ )
+    {
+      SmEdgeuse *pEU = sEdges[ii]->GetPrimaryEdgeuse();
+      if ( pEU == NULL || pEU->GetMate() == NULL ) { return TRUE; }
+      SmVertexuse *pVU1 = pEU->GetVertexuse();
+      SmVertexuse *pVU2 = pEU->GetMate()->GetVertexuse();
+      if ( pVU1 == NULL || pVU2 == NULL || pVU1->GetVertex() == NULL || pVU2->GetVertex() == NULL )
+        { return TRUE; }
+    }
+  return FALSE;
+}
+
 SmStatus SmTopologyIntersector::ImprintIntersections()
 {
 #ifdef SM_DEBUG_CODE
@@ -2472,6 +2510,16 @@ SmBoolean bDebugMe=FALSE;
             }
         }
     }
+
+  // smlibpy patch: an imprint that failed after SmBrep::MakeEdgeInFace had connected only one end
+  // of a new Edge left it half made, without a Vertex at the other end. The Boolean went on (it
+  // keeps pushing on after a failed imprint) and read the missing Vertex: SmEdgeuse::CreateUVTrimCurve
+  // and SmTopologyTraverser::CollectFaces (extended offsets of an imported part crashed in more
+  // than half of the runs). Such a Brep cannot be finished: tell the caller, which fails the
+  // Boolean. Failed imprints that left no half-made Edge go on as before.
+  if(   eRetStat != SM_SUCCESS
+     && ( sm_HasHalfMadeEdge( m_pBrep ) || sm_HasHalfMadeEdge( m_pOther ) ) )
+    { return SM_ERR_BAD_INTERSECTIONS; }
 
   // At this point, there might be coincident Vertices and Edges in the Breps.
   // The rest of ManifoldBoolean() expects coincident Vertices to be glued

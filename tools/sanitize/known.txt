@@ -4,6 +4,7 @@
 # A heap-buffer-overflow (a read past a curve classification's points, freed by the destructor of
 # an earlier one) in SmCurveClassification::FindInterval from sm_FixProblemsBySqueezing, when the
 # extended offset mode's PiecewiseMerge intersects faces (SmFace::FaceIntersect): the steps of
-# tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail. Found by this job; not
-# located further (smlibpy runs these steps in another process).
+# tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail. Found by this job once;
+# not seen again since (close-out K2: 48 perturbed processes of 8 rounds of those steps and the
+# sanitizer runs of that test), so not located (smlibpy runs these steps in another process).
 sm_FixProblemsBySqueezing

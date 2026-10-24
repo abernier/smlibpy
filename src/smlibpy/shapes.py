@@ -4719,7 +4719,8 @@ class Part(_Body):
         classifies a point inside each cell against them.
 
         The kernel's stitcher runs in another process (see ``smlibpy.defeature.GUARD_SECONDS``): it
-        crashed on some merges, which raise :class:`KernelError` now."""
+        crashed on some merges (a null polar box, patched in 0.5.0); a crash there raises
+        :class:`KernelError`."""
         d = ext.brep_dump(self._brep, False)
         if sum(1 for r in d["regions"] if not r["infinite"] and not r["void"]) <= 1:
             return ShapeList([self])

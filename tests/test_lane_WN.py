@@ -488,13 +488,14 @@ def test_upstream_smb_files_hold_what_they_held():
             got[k] == approx(want[k], rel=1e-6) if isinstance(want[k], float) else got[k] == want[k] for k in want), name
 
 
-def test_cells_that_crash_the_stitcher_raise(mode):
-    # Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() reads a null
+def test_cells_of_a_merge_that_crashed_the_stitcher_come_back(mode):
+    # Found by the fuzz run (seed 20261022, case csg-153): the stitcher behind cells() read a null
     # polar box (SmBezierAux2d::BuildPolarBox, from SmBrep::FindInfiniteRegion's ray) on this merge
-    # of a cone and a cylinder, and ended the process (exit 139). It runs in another process now.
+    # of a cone and a cylinder, and ended the process (exit 139); it runs in another process.
     # Part.merge turns the cylinder about its axis now (lane BT: B6, its seam ran along the cone): the
-    # right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge, as before,
-    # still crashes the stitcher.
+    # right merge (OpenCASCADE: 150.26185), whose cells come apart. The kernel's own merge crashed the
+    # stitcher until the patched SmSurfaceCache.cpp (close-out K2) gave the polar box the surface of
+    # its tree: its cells come back, and add up to that (wrong) merge.
     a, b = Cone(3, 0, 4).rotate(X, 90), Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)
     assert a.merge(b).volume == approx(150.26185413540605, rel=1e-9)
     m = Part._wrap(k.non_manifold_boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.MERGE))
@@ -502,9 +503,9 @@ def test_cells_that_crash_the_stitcher_raise(mode):
     # 145.98511 where it does not, as in the wasm and on x86_64 (W16): the cylinder's volume is
     # 113.0973, the right merge 150.26185)
     assert 113.0973 < m.volume < 150.7964
-    with pytest.raises(KernelError, match="cells failed: the kernel crashed") as e:  # (it said "cells failed")
-        m.cells()
-    assert "the kernel crashed" in e.value.detail
+    cells = m.cells()
+    assert len(cells) == 3 and all(c.is_valid() for c in cells)
+    assert sum(c.volume for c in cells) == approx(m.volume, rel=1e-6)
 
 
 def test_steps_stopped_after_the_time_limit_say_so(monkeypatch, tmp_path):
