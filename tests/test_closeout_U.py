@@ -3,7 +3,7 @@ measuring. Plane sections within a tolerance, the nearest point of a folded B-sp
 a seam (the kernel's seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend
 zone unfolded into a valid part, and the faces of bend zones as the exact bend (D5); K-factor records in .smp files (D1); blends between two closed
 edges (U2); trimming with curves that run past a sheet's border or across a hole (U3); the knots a warp
-or a flattening does not need removed (U8)."""
+or a flattening does not need removed (U8); the point map of each deformation (D6)."""
 
 import math
 
@@ -299,3 +299,32 @@ def test_warp_and_flatten_drop_the_knots_they_do_not_need():
     region = [Vector(*g._f.closest_point((x, y, 0))[0]) for x, y in ((20, 20), (40, 20), (40, 40), (20, 40))]
     h = sheet.flatten(g, region, Plane.XY).faces()[0]
     assert max(h.distance_to(e.point_at(t)) for e in g.edges() for t in (0.1, 0.5, 0.9)) < 1e-9
+
+
+# ------------------------------------------------------------------------------------------- D6
+
+
+def test_each_deformation_maps_points_as_it_maps_bodies():
+    # the plan's map_point for each deformation: the deformation functions take a point (and a list
+    # of points) with the same arguments, and Lattice.map; their images lie on the deformed body
+    from smlibpy import CenterArc, extrude
+    from smlibpy.deform import Lattice, bend, taper, twist, unroll
+
+    bar = Box(10, 10, 100, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    plate = Box(100, 10, 4, align=(Align.MIN, Align.CENTER, Align.CENTER))
+    half = math.pi * 40 / 4  # (90 degrees at r 40: start and end 2 x 31.4 apart)
+    cases = [(bar, lambda s: twist(s, 90, axis=Axis.Z, start=0, end=100)),
+             (bar, lambda s: taper(s, 0.5, axis=Axis.Z, start=0, end=100)),
+             (plate, lambda s: bend(s, 90, plane=Plane.XZ, start=50 - half, end=50 + half))]
+    seg = extrude(CenterArc((0, 0), 10, 0, 120), 20)
+    cases.append((seg, lambda s: unroll(s, radius=10, axis=Axis.Z, start=(10, 0, 0))))
+    for source, f in cases:
+        body = f(source)
+        pts = [v.center() for v in source.vertices()]
+        images = f(pts)
+        assert len(images) == len(pts)
+        assert max(body.distance_to(q) for q in images) < 1e-9
+        assert (f(pts[3]) - images[3]).length < 1e-12
+    lattice = Lattice(bar, (2, 2, 2)).move((1, 1, 1), (5, 0, 0))
+    moved = lattice.apply(bar)
+    assert max(moved.distance_to(lattice.map(v.center())) for v in bar.vertices()) < 1e-9

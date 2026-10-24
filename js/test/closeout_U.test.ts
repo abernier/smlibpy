@@ -3,7 +3,8 @@
 // seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend zone unfolded into
 // a valid part, and the faces of bend zones as the exact bend (D5); K-factor records in .smp files
 // (D1); blends between two closed edges (U2); trimming with curves that run past a sheet's border or
-// across a hole (U3); the knots a warp or a flattening does not need removed (U8).
+// across a hole (U3); the knots a warp or a flattening does not need removed (U8); the point map of
+// each deformation (D6).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -23,17 +24,26 @@ import {
   Spline,
   Torus,
   Vector,
+  CenterArc,
+  Lattice,
+  bend,
   blend,
+  extrude,
   flatPattern,
   fold,
   loft,
   surface,
+  taper,
+  twist,
+  unroll,
 } from '../src/index.ts'
 import { bends } from '../src/sheetmetal.ts'
 import { fromSmp, toSmp } from '../src/exporters.ts'
 import { ext, k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any
 const near = (a: number, b: number, tol: number, what = '') => assert.ok(Math.abs(a - b) <= tol, `${what} ${a} vs ${b}`)
 const lin = (a: number, b: number, n: number) => Array.from({ length: n }, (_, i) => a + ((b - a) * i) / (n - 1))
 const deg = (a: Vector, b: Vector) => (Math.acos(Math.min(1, Math.abs(a.dot(b)))) * 180) / Math.PI
@@ -365,5 +375,37 @@ test('warp and flatten drop the knots they do not need', () => {
   const h = sheet.flatten(g, region, Plane.XY).faces()[0]
   let worst = 0
   for (const e of g.edges()) for (const t of [0.1, 0.5, 0.9]) worst = Math.max(worst, h.distanceTo(e.pointAt(t)))
+  assert.ok(worst < 1e-9, `${worst}`)
+})
+
+// ------------------------------------------------------------------------------------------- D6
+
+test('each deformation maps points as it maps bodies', () => {
+  // the plan's mapPoint for each deformation: the deformation functions take a point (and a list of
+  // points) with the same arguments, and Lattice.map; their images lie on the deformed body
+  const bar = Box(10, 10, 100, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const flat = Box(100, 10, 4, { align: [Align.MIN, Align.CENTER, Align.CENTER] })
+  const half = (Math.PI * 40) / 4 // (90 degrees at r 40: start and end 2 x 31.4 apart)
+  const seg = extrude(CenterArc([0, 0], 10, 0, 120), 20) as Shell
+  const cases: [Part | Shell, (s: Any) => Any][] = [
+    [bar, (s) => twist(s, 90, { axis: Axis.Z, start: 0, end: 100 })],
+    [bar, (s) => taper(s, 0.5, { axis: Axis.Z, start: 0, end: 100 })],
+    [flat, (s) => bend(s, 90, { plane: Plane.XZ, start: 50 - half, end: 50 + half })],
+    [seg, (s) => unroll(s, { radius: 10, axis: Axis.Z, start: [10, 0, 0] })],
+  ]
+  for (const [source, f] of cases) {
+    const body = f(source) as Part | Shell
+    const pts = source.vertices().map((v) => v.center())
+    const images = f(pts) as Vector[]
+    assert.equal(images.length, pts.length)
+    let worst = 0
+    for (const q of images) worst = Math.max(worst, body.distanceTo(q))
+    assert.ok(worst < 1e-9, `${worst}`)
+    assert.ok((f(pts[3]) as Vector).sub(images[3]).length < 1e-12)
+  }
+  const lattice = new Lattice(bar, [2, 2, 2]).move([1, 1, 1], [5, 0, 0])
+  const moved = lattice.apply(bar) as Part
+  let worst = 0
+  for (const v of bar.vertices()) worst = Math.max(worst, moved.distanceTo(lattice.map(v.center())))
   assert.ok(worst < 1e-9, `${worst}`)
 })
