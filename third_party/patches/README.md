@@ -75,6 +75,7 @@ once for all wheels (`SMLIBPY_KERNEL_ONLY`, then `SMLIBPY_KERNEL_DIR`).
 | `SMLib/src/SmEdgeuse.cpp` | `SmEdgeuse::CreateUVTrimCurve` fails (`SM_ERR`) for an Edge without a Vertex at one of its ends | It read through the null pointer (address 0x98, `SmVertex::GetPoint`) on the half-made Edge of a failed `MakeEdgeInFaceWithVU`, from the sectoring of the closed Edge's Vertex in that same function (see `ImprintIntersections` above). |
 | `SMLib/src/SmOffsetGeometryCreation.cpp` | `SmOffsetGeometryCreation::ExtendTrimEdges` keeps its clean-up objects for the three extended trim curves until all three are trimmed | It stopped them before the trims, and a trim that failed lost the three curves: about 4.7 kB per failed extended shell of a filleted box (macOS `leaks`). |
 | `SMLib/src/SmSurfaceCache.cpp` | `SmBezierAux2d::BuildPolarBox` takes the surface of the tree (its owner) for a node whose aux data has none, and fails where there is none either | The aux data of nodes subdivided after the tree was built have no surface, and the function called through the null pointer (SEGV at address 0): the extended offsets of crescendo parts 81 and 19 (half of the runs of part 81), and the stitcher behind `cells()` on the kernel's own merge of `Cone(3, 0, 4).rotate(X, 90)` and `Cylinder(1.5, 16).rotate(Y, 90).translate(-5, 0, 3)` (fuzz case csg-153), whose cells now come back. The tree's owner is the surface the node's box is computed on anyway. |
+| `SMLib/src/SmEllipse.cpp` | `SmPolarConversion::ConvertToPolarParameter` asks `STEPInversion` for the angle of a point inside the interval with a zone tolerance of rounding size (`100 * SM_EFF_ZERO` of the point's size) | With the default zone tolerance (the context's, 1e-5), `STEPInversion` took every point within a hundredth of it of a closed ellipse's end for its start, and the conversion then returned the end angle: a cylinder, cone, sphere, torus or surface of revolution (whose parameters go through this conversion) evaluated to its seam for parameters up to about 1e-7 short of the end of its domain (`Cylinder(10, 40)` at u = 2 pi 10 - 1e-7 gave y = -2.4e-15 for -9.0e-8). The kernel's ray and curve intersections, which converge there, missed the hits beside a seam: `Cylinder(10, 40).raycast((88.98, -1e-8, 4), (-1, 0, 0))` gave only the far side, also in 0.4.0, and so did cones, spheres and tori for rays within 1e-7 of their seams. |
 
 What the fixes change, measured on macOS arm64 with the normal build and an AddressSanitizer
 build:
@@ -233,6 +234,14 @@ build:
   with 100 holes and 49 bosses) gives the same bodies in the same time (5.4 to 6.6 s against 5.7 to
   6.8 s). The stitcher: `cells()` of the kernel's merge of csg-153 gives its three cells
   (`tests/test_lane_WN.py::test_cells_of_a_merge_that_crashed_the_stitcher_come_back`).
+- The polar conversion (`SmEllipse.cpp`): a cylinder evaluates at u = 2 pi 10 - 1e-7 to y = -9.0e-8
+  (before: the seam, -2.4e-15). Rays at y = +-1e-12 to +-1e-3 beside the seams of a cylinder, a cone,
+  a sphere and a torus hit all their faces (82 rays each; before, the cylinder missed the near side
+  for every ray within about 1e-7 of its seam), through the kernel's own curve-face intersection and
+  through `raycast`. The kernel's Boolean of a tool beside an earlier hole in a sphere (`Sphere(20) -
+  Cylinder(6, 60)`, then `- Cylinder(3, 60).translate(8, 0, 0)`), which gave an empty body (and its
+  intersection the whole part), fails now; smlibpy's retry with a NURBS copy of the tool gives the
+  same right results as before (28160.608 and 929.188). No other result of either suite changed.
 - Both test suites pass.
 
 Defects that remain in the kernel, and what smlibpy does about them:

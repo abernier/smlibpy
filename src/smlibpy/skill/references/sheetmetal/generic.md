@@ -58,11 +58,11 @@ unfolds them exactly with the kernel's space bend: `fold`, `flange`, `unfold`, `
   rounded corners) stay; a corner without a radius does not unfold (`ModelingError`). Rolled parts
   (a ring segment, no flat), bends at a free end (a curl) and bends over 180 degrees unroll at the
   neutral radius too (see `sheetmetal/unfold`).
-- A hole across a bend zone bends into NURBS (faces within 1e-4, edges within 1e-7) and unfolds
-  again: the unfolded plate's `volume` is 7842.9195 for the blank's 7842.9204 (a 100 x 40 x 2
-  plate, hole r 5), and the flat pattern's outline has the hole as one circle. For exact faces,
-  cut such holes in the flat instead. A hole wholly inside a bend zone unfolds into the right
-  flat pattern, but the unfolded part is not `is_valid()` (its hole wall misses its faces).
+- A hole across a bend zone bends into NURBS (faces within 1e-6 on the wall's own knots, exact
+  for round holes and straight walls; edges within 1e-7) and unfolds again: the unfolded plate's
+  `volume` is the blank's, 7842.9204 (a 100 x 40 x 2 plate, hole r 5), its walls back to 1e-12,
+  and the flat pattern's outline has the hole as one circle. A hole wholly inside a bend zone
+  unfolds into a valid part too.
 
 ## Errors
 - `ModelingError: bend: the bend line does not lie on a face of the sheet; draw it on the top or bottom face ...`

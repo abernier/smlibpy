@@ -546,15 +546,23 @@ test('empty Boolean results where they are right', () => {
 })
 
 test('an empty cut needs tools that can cover the part', () => {
-  // A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of the
-  // same pair, which confirmed the empty cut, is the whole part. Both were accepted. (The retry with
-  // a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.)
+  // A tool beside an earlier hole in a sphere: the kernel's cut was empty, and its intersection of the
+  // same pair, which confirmed the empty cut, the whole part. Both were accepted. (The retry with a
+  // NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.) Since the
+  // kernel's seams are evaluated right (third_party/patches SmEllipse.cpp), its own cut and
+  // intersection of the pair fail instead; the guards are checked on the answers it gave.
   const retry = Part.prototype._nurbsRetry
   Part.prototype._nurbsRetry = () => null
   try {
     const holed = Sphere(20).cut(Cylinder(6, 60))
-    throwsMatching(() => holed.cut(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /empty/) // was Part(0 faces), no error
-    throwsMatching(() => holed.intersect(Cylinder(3, 60).translate(8, 0, 0)), ModelingError, /partly outside an operand/) // was the whole part, 29089.8 (right: 929.188)
+    const tool = Cylinder(3, 60).translate(8, 0, 0)
+    assert.throws(() => holed.cut(tool), ModelingError)
+    assert.throws(() => holed.intersect(tool), ModelingError)
+    const empty = Box(10, 10, 10).cut(Box(20, 20, 20))
+    assert.equal(holed._booleanProblem(empty, [tool], k.BooleanOp.DIFFERENCE), 'empty') // was Part(0 faces), no error
+    assert.equal(holed._booleanProblem(empty, [Box(100, 100, 100)], k.BooleanOp.DIFFERENCE), null)
+    const whole = Part._wrap(holed._copyBrep()) // was the whole part, 29089.8 (right: 929.188)
+    assert.match(holed._booleanProblem(whole, [tool], k.BooleanOp.INTERSECTION) ?? '', /partly outside an operand/)
     approx(Sphere(20).cut([Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume, 28160.608174, 1e-8)
   } finally {
     Part.prototype._nurbsRetry = retry

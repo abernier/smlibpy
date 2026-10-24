@@ -167,7 +167,7 @@ test('blend errors', () => {
   raises(() => blend(ea, eb, { tension: [1, 1, 1] as never }), RangeError, /one number or a pair/)
   raises(() => blend(ea, eb, { flip: true } as never), TypeError, /unexpected option/)
   const tube = Cylinder(10, 20).faces().cylinders()[0].toShell()
-  raises(() => blend(tube.edges().filter((e) => e.center().z > 5).one(), eb), RangeError, /^blend: closed edges/)
+  raises(() => blend(tube.edges().filter((e) => e.center().z > 5).one(), eb), RangeError, /^blend: one edge is closed/) // (two closed edges are bridged)
 })
 
 // -------------------------------------------------------------------------- U3: trim and imprint

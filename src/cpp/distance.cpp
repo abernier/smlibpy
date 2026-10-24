@@ -5,6 +5,7 @@
 //   nearest_points(a, b, near_a)   from a point near body a: the nearest points on a and b
 //   nearest_curve_points(body, curve, t0, t1, near_t)
 //                                  the same for a body and a curve over [t0, t1]
+//   nearest_point(body, point)     the point of a body nearest to a point
 //
 // Closest points taken in turn on either body (alternating projections) settle at a pair of
 // nearest points, but slowly where the two surfaces are nearly parallel: each round gains a
@@ -36,6 +37,8 @@ namespace
 struct Spot
 {
     const SmFace* face = nullptr;
+    const SmSurface* surface = nullptr;  // a surface over a box of its parameters (no face)
+    double box[4] = {0.0, 0.0, 0.0, 0.0};  // u0, u1, v0, v1
     const SmEdge* edge = nullptr;
     const SmVertex* vertex = nullptr;
     const SmCurve* curve = nullptr;  // the edge's curve, or the curve itself
@@ -122,8 +125,8 @@ const SmFace* face_of(const Spot& s)
 // Position, first derivatives d[i] and second derivatives dd[i + j] of a spot at parameters t.
 bool evaluate(const Spot& s, const double* t, SmPoint3d& p, SmVector3d d[2], SmVector3d dd[3])
 {
-    if (s.face)
-        return s.face->GetSurface()->Evaluate2ndDerivatives(SmPoint2d(t[0], t[1]), TRUE, TRUE, p, d[0], d[1], dd[1],
+    if (s.face || s.surface)
+        return (s.face ? s.face->GetSurface() : s.surface)->Evaluate2ndDerivatives(SmPoint2d(t[0], t[1]), TRUE, TRUE, p, d[0], d[1], dd[1],
                                                            dd[0], dd[2]) == SM_SUCCESS;
     if (s.curve)
     {
@@ -140,6 +143,8 @@ bool evaluate(const Spot& s, const double* t, SmPoint3d& p, SmVector3d d[2], SmV
 // Whether parameters t lie on the spot's face (inside or on its boundary) or edge.
 bool inside(const Spot& s, const double* t)
 {
+    if (s.surface)
+        return t[0] >= s.box[0] && t[0] <= s.box[1] && t[1] >= s.box[2] && t[1] <= s.box[3];
     if (s.face)
     {
         int where = SM_PC_UNKNOWN;
@@ -315,6 +320,31 @@ smlibpy::NearestPoints nearest(const Target& a, const Target& b, const SmPoint3d
     return out;
 }
 
+// The distance from q to a box (0 inside it).
+double box_distance(const SmExtent3d& box, const SmPoint3d& q)
+{
+    const SmPoint3d lo = box.GetMin(), hi = box.GetMax();
+    const double dx = std::max({lo.x - q.x, 0.0, q.x - hi.x});
+    const double dy = std::max({lo.y - q.y, 0.0, q.y - hi.y});
+    const double dz = std::max({lo.z - q.z, 0.0, q.z - hi.z});
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// The full knot vector of a B-spline surface in one direction.
+bool full_knots(const SmBSplineSurface* s, SmSurfParamType dir, std::vector<double>& out)
+{
+    SmTArray<double> knots;
+    SmTArray<ULONG> mults;
+    if (s->GetKnots(dir, knots, &mults) != SM_SUCCESS)
+        return false;
+    out.clear();
+    for (ULONG i = 0; i < knots.GetSize(); ++i)
+        for (ULONG m = 0; m < (i < mults.GetSize() ? mults[i] : 1); ++m)
+            out.push_back(knots[i]);
+    const size_t p = s->GetDegree(dir), n = s->GetNumberControlPoints(dir);
+    return p >= 1 && out.size() == n + p + 1;
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -355,6 +385,302 @@ NearestPoints nearest_curve_points(const SmBrep* body, const SmCurve* curve, dou
     return out;
 }
 
+std::vector<SurfacePatch> surface_patches(const SmSurface* surface, const std::vector<double>& domain, const std::vector<double>& point)
+{
+    const SmPoint3d q(point[0], point[1], point[2]);
+    const SmExtent2d dom(SmPoint2d(domain[0], domain[2]), SmPoint2d(domain[1], domain[3]));
+    auto whole = [&] { return SurfacePatch{0.0, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(), dom.GetVMax()}; };
+    std::vector<SurfacePatch> out;
+    const SmBSplineSurface* b = SM_CAST_PTR(SmBSplineSurface, surface);
+    std::vector<double> ku, kv;
+    if (!b || !full_knots(b, SM_SP_U, ku) || !full_knots(b, SM_SP_V, kv))
+    {
+        out.push_back(whole());
+        return out;
+    }
+    const int p = static_cast<int>(b->GetDegree(SM_SP_U)), r = static_cast<int>(b->GetDegree(SM_SP_V));
+    const int nu = static_cast<int>(b->GetNumberControlPoints(SM_SP_U));
+    const int nv = static_cast<int>(b->GetNumberControlPoints(SM_SP_V));
+    std::vector<SmPoint3d> poles(static_cast<size_t>(nu) * nv);
+    for (int i = 0; i < nu; ++i)
+        for (int j = 0; j < nv; ++j)
+        {
+            double w = 1.0;
+            if (b->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, j, poles[static_cast<size_t>(i) * nv + j], w) != SM_SUCCESS)
+            {
+                out.assign(1, whole());
+                return out;
+            }
+        }
+    for (int i = p; i < nu; ++i)
+    {
+        const double u0 = std::max(ku[i], dom.GetUMin()), u1 = std::min(ku[i + 1], dom.GetUMax());
+        if (!(u1 > u0))
+            continue;
+        for (int j = r; j < nv; ++j)
+        {
+            const double v0 = std::max(kv[j], dom.GetVMin()), v1 = std::min(kv[j + 1], dom.GetVMax());
+            if (!(v1 > v0))
+                continue;
+            SmExtent3d box;
+            for (int a = i - p; a <= i; ++a)
+                for (int c = j - r; c <= j; ++c)
+                    box.AddPoint3d(poles[static_cast<size_t>(a) * nv + c]);
+            out.push_back(SurfacePatch{box_distance(box, q), u0, u1, v0, v1});
+        }
+    }
+    if (out.empty())
+        out.push_back(whole());
+    std::sort(out.begin(), out.end(), [](const SurfacePatch& a, const SurfacePatch& c) { return a.bound < c.bound; });
+    return out;
+}
+
+double nearest_on_surface(const SmSurface* surface, const std::vector<double>& dom, const std::vector<double>& point,
+                          double& u, double& v)
+{
+    const SmPoint3d q(point[0], point[1], point[2]);
+    const double lo[2] = {dom[0], dom[2]}, hi[2] = {dom[1], dom[3]};
+    double x[2] = {std::min(std::max(u, lo[0]), hi[0]), std::min(std::max(v, lo[1]), hi[1])};
+    // half the squared distance, its gradient and Hessian at x
+    auto local = [&](const double* t, double& f, double g[2], double h[2][2]) {
+        SmPoint3d p;
+        SmVector3d d[2], dd[3];
+        if (surface->Evaluate2ndDerivatives(SmPoint2d(t[0], t[1]), TRUE, TRUE, p, d[0], d[1], dd[1], dd[0], dd[2]) !=
+            SM_SUCCESS)
+            return false;
+        const SmVector3d r = p - q;
+        f = 0.5 * r.Dot(r);
+        g[0] = r.Dot(d[0]), g[1] = r.Dot(d[1]);
+        h[0][0] = d[0].Dot(d[0]) + r.Dot(dd[0]);
+        h[0][1] = h[1][0] = d[0].Dot(d[1]) + r.Dot(dd[1]);
+        h[1][1] = d[1].Dot(d[1]) + r.Dot(dd[2]);
+        return true;
+    };
+    double f, g[2], h[2][2];
+    if (!local(x, f, g, h))
+        return 1e300;
+    // projected Newton: steps clipped to the box; along a side where the box holds it, the other
+    // parameter alone; halved while they do not gain
+    for (int it = 0; it < 60; ++it)
+    {
+        bool fixed[2];
+        for (int k = 0; k < 2; ++k)
+            fixed[k] = (x[k] <= lo[k] && g[k] > 0.0) || (x[k] >= hi[k] && g[k] < 0.0);
+        double step[2] = {0.0, 0.0};
+        auto newton1 = [&](int k) {
+            const double c = h[k][k] > 0.0 ? h[k][k] : std::abs(h[k][k]) + 1e-300;
+            step[k] = -g[k] / c;
+        };
+        if (fixed[0] && fixed[1])
+            break;
+        if (fixed[0])
+            newton1(1);
+        else if (fixed[1])
+            newton1(0);
+        else
+        {
+            const double det = h[0][0] * h[1][1] - h[0][1] * h[0][1];
+            if (h[0][0] > 0.0 && det > 0.0)
+            {
+                step[0] = -(h[1][1] * g[0] - h[0][1] * g[1]) / det;
+                step[1] = -(h[0][0] * g[1] - h[0][1] * g[0]) / det;
+            }
+            else
+            {
+                // not convex here: down the gradient, scaled by the first derivatives
+                const double a = std::max(h[0][0], 1e-300), b = std::max(h[1][1], 1e-300);
+                step[0] = -g[0] / std::abs(a), step[1] = -g[1] / std::abs(b);
+            }
+        }
+        bool moved = false;
+        for (int half = 0; half < 30 && !moved; ++half, step[0] *= 0.5, step[1] *= 0.5)
+        {
+            double y[2];
+            for (int k = 0; k < 2; ++k)
+                y[k] = std::min(std::max(x[k] + step[k], lo[k]), hi[k]);
+            double fy, gy[2], hy[2][2];
+            if (!local(y, fy, gy, hy) || !(fy < f))
+                continue;
+            const double moved_by = std::abs(y[0] - x[0]) + std::abs(y[1] - x[1]);
+            x[0] = y[0], x[1] = y[1], f = fy;
+            g[0] = gy[0], g[1] = gy[1];
+            h[0][0] = hy[0][0], h[0][1] = hy[0][1], h[1][0] = hy[1][0], h[1][1] = hy[1][1];
+            moved = moved_by > 1e-15 * (1.0 + std::abs(x[0]) + std::abs(x[1]));
+            if (!moved)
+                break;
+        }
+        if (!moved)
+            break;
+    }
+    u = x[0], v = x[1];
+    return std::sqrt(2.0 * f);
+}
+
+NearestPoint nearest_point(const SmBrep* brep, const std::vector<double>& point, const SmFace* only)
+{
+    if (!brep && !only)
+        throw std::invalid_argument("brep is None");
+    if (point.size() != 3)
+        throw std::invalid_argument("expected a point with three coordinates");
+    const SmPoint3d q(point[0], point[1], point[2]);
+    Spot best;
+    if (only)
+    {
+        // the kernel's nearest point of the face (trim-aware), as a vertex-like start
+        SmPoint3d p;
+        double d = 0.0;
+        if (SmApiFaceClosestPoint(const_cast<SmFace*>(only), q, p, d) != SM_SUCCESS)
+            throw std::runtime_error("nearest_point: the kernel found no closest point on the face");
+        best.p = p;
+    }
+    else if (!locate(brep, q, best))
+        throw std::runtime_error("nearest_point: the kernel found no closest point");
+    double distance = best.p.DistanceBetween(q);
+    const SmFace* face = only ? only : face_of(best);
+    // The kernel's point solve stops at a local minimum of the distance where a B-spline face folds
+    // back towards the point (a sheet fitted around a tube: 5.83 where the nearest point is 5.71).
+    // On every face, and every knot span of its surface, that could hold a nearer point (by the box
+    // of its control points), Newton's method from the nearest points of a grid over it; then on the
+    // edges of those faces (a nearest point on a face's boundary).
+    Spot target;
+    target.p = q;  // (a fixed point: no parameters)
+    SmTArray<SmFace*> faces;
+    if (only)
+        faces.Add(const_cast<SmFace*>(only));
+    else
+        const_cast<SmBrep*>(brep)->GetFaces(faces);
+    std::vector<const SmFace*> near;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        const SmFace* f = faces[i];
+        const SmSurface* surface = f->GetSurface();
+        if (!surface)
+            continue;
+        SmExtent3d box;
+        if (f->CalculateBoundingBox(box, FALSE) == SM_SUCCESS && box_distance(box, q) >= distance)
+            continue;
+        near.push_back(f);
+        // analytic surfaces: the kernel's solve is in closed form
+        const int type = surface->GetType();
+        if (type == SmPlane_TYPE || type == SmCone_TYPE || type == SmSphere_TYPE || type == SmTorus_TYPE)
+            continue;
+        // each patch that could hold a nearer point: Newton's method from the nearest points of a
+        // grid over it (the bound only grows down the list)
+        const SmExtent2d fd = f->GetUVDomain();
+        const std::vector<SurfacePatch> list =
+            surface_patches(surface, {fd.GetUMin(), fd.GetUMax(), fd.GetVMin(), fd.GetVMax()}, point);
+        const int n = list.size() == 1 ? 17 : 5;
+        for (const SurfacePatch& patch : list)
+        {
+            if (patch.bound >= distance)
+                break;
+            std::vector<std::pair<double, SmPoint2d>> samples;
+            std::vector<SmPoint3d> grid(static_cast<size_t>(n) * n);
+            std::vector<bool> ok(grid.size(), false);
+            for (int a = 0; a < n; ++a)
+                for (int c = 0; c < n; ++c)
+                {
+                    const SmPoint2d uv(patch.u0 + (patch.u1 - patch.u0) * a / (n - 1),
+                                       patch.v0 + (patch.v1 - patch.v0) * c / (n - 1));
+                    SmPoint3d& p = grid[static_cast<size_t>(a) * n + c];
+                    if (surface->EvaluatePoint(uv, p) == SM_SUCCESS)
+                        samples.emplace_back(p.DistanceBetween(q), uv), ok[static_cast<size_t>(a) * n + c] = true;
+                }
+            // the widest step of the grid: a nearer point of the patch lies within that of a sample, so
+            // only a sample nearer than the best distance plus that can lead to one
+            double step = 0.0;
+            for (int a = 0; a < n; ++a)
+                for (int c = 0; c < n; ++c)
+                {
+                    const size_t i = static_cast<size_t>(a) * n + c;
+                    if (a + 1 < n && ok[i] && ok[i + n])
+                        step = std::max(step, grid[i].DistanceBetween(grid[i + n]));
+                    if (c + 1 < n && ok[i] && ok[i + 1])
+                        step = std::max(step, grid[i].DistanceBetween(grid[i + 1]));
+                }
+            std::sort(samples.begin(), samples.end(), [](const auto& a, const auto& c) { return a.first < c.first; });
+            int started = 0, tried = 0;
+            for (const auto& start : samples)
+            {
+                if (started == 2 || ++tried > 8 || start.first >= distance + step)
+                    break;
+                // first down to a nearest point of the surface from there, over the patch and its
+                // neighbours (cheap: no trims): where that is not nearer than the best, Newton's method
+                // on the face goes no nearer either
+                double u = start.second.x, v = start.second.y;
+                const double du = patch.u1 - patch.u0, dv = patch.v1 - patch.v0;
+                const double reach = nearest_on_surface(
+                    surface,
+                    {std::max(fd.GetUMin(), patch.u0 - du), std::min(fd.GetUMax(), patch.u1 + du),
+                     std::max(fd.GetVMin(), patch.v0 - dv), std::min(fd.GetVMax(), patch.v1 + dv)},
+                    point, u, v);
+                ++started;
+                if (!(reach < distance - 1e-9 * (1.0 + distance)))
+                    continue;  // (the same point, or one nearer only by rounding)
+                Spot s;
+                s.face = f, s.n = 2;
+                s.t[0] = start.second.x, s.t[1] = start.second.y;
+                if (!inside(s, s.t))
+                    continue;  // (outside a trimmed face)
+                if (surface->EvaluatePoint(start.second, s.p) != SM_SUCCESS)
+                    continue;
+                double d = start.first;
+                newton(s, target, d);
+                if (d < distance)
+                    distance = d, best = s, face = f;
+            }
+        }
+    }
+    for (const SmFace* f : near)
+    {
+        const int type = f->GetSurface()->GetType();
+        if (type == SmPlane_TYPE || type == SmCone_TYPE || type == SmSphere_TYPE || type == SmTorus_TYPE)
+            continue;  // (on analytic faces, also their edges' nearest points are the kernel's to find)
+        SmTArray<SmEdge*> edges;
+        const_cast<SmFace*>(f)->GetEdges(edges);
+        for (ULONG i = 0; i < edges.GetSize(); ++i)
+        {
+            const SmEdge* e = edges[i];
+            const SmCurve* curve = e->GetCurve();
+            if (!curve)
+                continue;
+            SmExtent3d ebox;
+            if (e->CalculateBoundingBox(&ebox) == SM_SUCCESS && box_distance(ebox, q) >= distance)
+                continue;
+            const SmExtent1d ivl = e->GetInterval();
+            Spot s;
+            s.edge = e, s.curve = curve, s.n = 1;
+            s.lo = ivl.GetMin(), s.hi = ivl.GetMax();
+            double t0 = s.lo, d0 = 1e300, step = 0.0;
+            SmPoint3d last;
+            for (int k = 0; k <= 32; ++k)
+            {
+                const double t = ivl.Evaluate(k / 32.0);
+                SmPoint3d p;
+                if (curve->EvaluatePoint(t, p) != SM_SUCCESS)
+                    continue;
+                if (k > 0)
+                    step = std::max(step, p.DistanceBetween(last));
+                last = p;
+                if (p.DistanceBetween(q) < d0)
+                    d0 = p.DistanceBetween(q), t0 = t, s.p = p;
+            }
+            if (!(d0 < distance + step))
+                continue;  // (no sample near enough to lead to a nearer point)
+            s.t[0] = t0;
+            double d = d0;
+            newton(s, target, d);
+            if (d < distance)
+                distance = d, best = s, face = f;
+        }
+    }
+    NearestPoint out;
+    out.p[0] = best.p.x, out.p[1] = best.p.y, out.p[2] = best.p.z;
+    out.distance = distance;
+    out.face = only ? only : (face ? face : face_of(best));
+    return out;
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -377,6 +703,18 @@ void bind_distance(py::module_ m)
           "method on the parameters of the faces and edges they lie on. {a, b, distance, converged, gain "
           "(what the last step gained when it did not converge), steps, face_a, face_b (the faces the points "
           "lie on; at an edge or a corner, one of the faces there)}.");
+    m.def("nearest_point", [](const SmBrep* brep, const std::vector<double>& point, const SmFace* face) {
+        const smlibpy::NearestPoint r = smlibpy::nearest_point(brep, point, face);
+        py::dict out;
+        out["point"] = py::make_tuple(r.p[0], r.p[1], r.p[2]);
+        out["distance"] = r.distance;
+        out["face"] = py::cast(const_cast<SmFace*>(r.face), py::return_value_policy::reference);
+        return out;
+    }, py::arg("brep"), py::arg("point"), py::arg("face") = nullptr,
+          "The point of a body (or of one of its faces, `face`) nearest to a point: the kernel's closest point, and "
+          "Newton's method from the nearest samples of every knot span of every face that could hold a nearer one "
+          "(the kernel's solve stops where a B-spline face folds back towards the point), and on their edges. "
+          "{point, distance, face (the face it lies on; at an edge or a corner, one of the faces there)}.");
     m.def("nearest_curve_points", [](const SmBrep* body, const SmCurve* curve, double t0, double t1, double near_t) {
         const smlibpy::NearestPoints r = smlibpy::nearest_curve_points(body, curve, t0, t1, near_t);
         py::dict out;

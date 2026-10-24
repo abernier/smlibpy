@@ -23,7 +23,9 @@ lies near the region's middle (at it for a region symmetric along both direction
 surface, with `"G2"`). The face changes only inside the rectangle around the region along the
 surface's two directions (for a rectangle drawn along them: inside the region), and is exactly what
 it was elsewhere. The profile is NLib's region warp (a rational bell over the region), on a grid of
-16 x 16 knot spans across the region.
+16 x 16 knot spans across the region. The face's B-spline then loses the knots it does not need
+within 1e-6 of the size, its edges kept where they are (the box top below with `"G1"`: 22 x 22
+control points instead of 23 x 23; `"crease"`: 23 x 23 instead of 25 x 25).
 
 ## Measured
 - `Box(60, 40, 20)`, top, `warp(top, Rectangle(20, 16).on(top), 4)`: z 14 exactly at the middle,

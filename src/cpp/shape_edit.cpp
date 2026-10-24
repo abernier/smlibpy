@@ -821,6 +821,47 @@ Region region_of(const SmBrep* brep, const SmFace* face, const std::vector<doubl
     return e;
 }
 
+// The edited surface with the knots it does not need removed within `tol` of the face's surface plus the
+// change (the plan's 1e-6 of the size; SmBSplineSurface::RemoveKnots): the change is added on knots of
+// its own, so the face's B-spline grew (a box's top raised over a region: 20 x 20 control points). The
+// smaller surface is kept only where it is measured within `tol` of the exact one, on a grid of 65 x 65
+// and at the knots of both, and where it keeps the face's edges on it (within the body's tolerance, as
+// `finish` measures them: a bumpy sheet flattened moved its edge by 2.2e-5).
+template <class F>
+SplinePtr fewer_knots(const Region& e, SplinePtr result, F change, double tol)
+{
+    const SmBSplineSurface& s = *e.s;
+    SplinePtr fewer(new (ctx()) SmBSplineSurface(*result));
+    const ULONG before = result->GetNumberControlPoints(SM_SP_U) * result->GetNumberControlPoints(SM_SP_V);
+    if (fewer->RemoveKnots(0.5 * tol, TRUE, TRUE) != SM_SUCCESS ||
+        fewer->GetNumberControlPoints(SM_SP_U) * fewer->GetNumberControlPoints(SM_SP_V) >= before)
+        return result;
+    std::vector<double> us, vs;
+    for (int i = 0; i <= 64; ++i)
+        us.push_back(i / 64.0), vs.push_back(i / 64.0);
+    const SmExtent2d dom = s.GetNaturalUVDomain();
+    for (int d = 0; d < 2; ++d)
+    {
+        std::vector<double> knots;
+        std::vector<unsigned long> mult;
+        knots_of(*result, d ? SM_SP_V : SM_SP_U, knots, mult);
+        const double lo = d ? dom.GetMin().y : dom.GetMin().x, hi = d ? dom.GetMax().y : dom.GetMax().x;
+        for (double k : knots)
+            (d ? vs : us).push_back(std::min(1.0, std::max(0.0, (k - lo) / (hi - lo))));
+    }
+    for (double fu : us)
+        for (double fv : vs)
+        {
+            const SmPoint2d uv = dom.Evaluate(fu, fv);
+            if (at(*fewer, uv).DistanceBetween(at(s, uv) + change(uv)) > tol)
+                return result;
+        }
+    const double diagonal = at(s, e.box.GetMin()).DistanceBetween(at(s, e.box.GetMax()));
+    if (farthest_edge(edge_points(e.body.face, s, std::max(1e-6 * e.body.size, diagonal / 64.0)), *fewer).gap > e.body.tol)
+        return result;
+    return fewer;
+}
+
 // The edit, unless it would move an edge of the face.
 SmBrep* finish(Region& e, SplinePtr result, const char* what)
 {
@@ -940,7 +981,9 @@ SmBrep* warp_face(const SmBrep* brep, const SmFace* face, const std::vector<doub
             }
     }
     SplinePtr result = added(*e.s, warped, what);
-    verify(*e.s, *result, [&](const SmPoint2d& t) { return by * (at(*profile, t).z / top); }, e.body.size + h, what);
+    const auto change = [&](const SmPoint2d& t) { return by * (at(*profile, t).z / top); };
+    verify(*e.s, *result, change, e.body.size + h, what);
+    result = fewer_knots(e, std::move(result), change, 1e-6 * (e.body.size + h));
     const SmVector3d w = by * (1.0 / h);
     const double rose = peak([&](const SmPoint2d& uv) { return (at(*result, uv) - at(*e.s, uv)).Dot(w); }, e.box);
     if (std::abs(rose - h) > 1e-6 * h + e.body.tol)
@@ -1032,13 +1075,13 @@ SmBrep* flatten_face(const SmBrep* brep, const SmFace* face, const std::vector<d
     SplinePtr result = added_homogeneous(*e.s, dh, what);
     SplinePtr profile = from_nl(lifted);
     const double on = SmVector3d(o.x, o.y, o.z).Dot(nrm);
-    verify(*e.s, *result,
-           [&](const SmPoint2d& t) {
-               const SmPoint3d q = at(*e.s, t);
-               const double mask = std::min(1.0, std::max(0.0, at(*profile, t).z));
-               return nrm * (-(SmVector3d(q.x, q.y, q.z).Dot(nrm) - on) * mask);
-           },
-           e.body.size, what);
+    const auto change = [&](const SmPoint2d& t) {
+        const SmPoint3d q = at(*e.s, t);
+        const double mask = std::min(1.0, std::max(0.0, at(*profile, t).z));
+        return nrm * (-(SmVector3d(q.x, q.y, q.z).Dot(nrm) - on) * mask);
+    };
+    verify(*e.s, *result, change, e.body.size, what);
+    result = fewer_knots(e, std::move(result), change, 1e-6 * e.body.size);
     const double moved = std::max(peak([&](const SmPoint2d& uv) { return (at(*result, uv) - at(*e.s, uv)).Dot(nrm); }, e.box),
                                   peak([&](const SmPoint2d& uv) { return -(at(*result, uv) - at(*e.s, uv)).Dot(nrm); }, e.box));
     if (!(moved > e.body.tol))

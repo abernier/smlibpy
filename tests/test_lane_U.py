@@ -150,7 +150,7 @@ def test_blend_errors():
     with pytest.raises(ValueError, match="one number or a pair"):
         blend(ea, eb, tension=(1, 1, 1))
     tube = Cylinder(10, 20).faces().cylinders()[0].to_shell()
-    with pytest.raises(ValueError, match="^blend: closed edges"):
+    with pytest.raises(ValueError, match="^blend: one edge is closed"):  # (two closed edges are bridged)
         blend(tube.edges().filter(lambda e: e.center().z > 5).one(), eb)
 
 

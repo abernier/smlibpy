@@ -183,6 +183,8 @@ const OWN: Record<string, Signature> = {
   'ext.merge_faces': ['face_a', 'face_b'],
   'ext.nurbs_surface': ['u_degree', 'v_degree', 'nu', 'nv', 'poles', 'u_knots', 'v_knots', 'weights'],
   'ext.surface_distances': ['surface', 'points'],
+  'ext.nearest_point': ['brep', 'point', ['face', null]],
+  'ext.plane_section': ['brep', 'point', 'normal', 'tolerance'],
   'ext.usd_text': ['items', ['up_axis', 'Z'], ['meters_per_unit', 0.001], ['materials', false]],
   'ext.usd_read': ['text', ['heal', false]],
   'ext.usd_assets': ['text'],

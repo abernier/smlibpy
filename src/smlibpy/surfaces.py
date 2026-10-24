@@ -448,11 +448,16 @@ def blend(edge_a: Edge, edge_b: Edge, *, continuity: str | int = "G2", tension: 
         join: True sews the blend to both sheets (:func:`stitch`) and returns the one sheet.
 
     The blend joins the nearest ends of the two edges (its side edges never cross), and its
-    normal follows ``edge_a``'s sheet. Closed edges (a full circle) cannot be bridged: split the
-    sheet so that the edge has two ends.
+    normal follows ``edge_a``'s sheet. Two closed edges (the rims of two tubes, full circles or
+    closed loops) are bridged all round: each point of ``edge_a`` is joined to the point of
+    ``edge_b`` at the same fraction of its length, counted from its point nearest ``edge_a``'s
+    start and running the same way round. Such a blend is two faces sewn along two seams (the
+    kernel offsets no face that closes around), as smooth across them as elsewhere. A closed edge
+    and an open one cannot be bridged.
 
     Returns:
-        The blend, a sheet of one face (with ``join``, the two sheets and the blend sewn into one).
+        The blend, a sheet of one face, of two between closed edges (with ``join``, the two sheets
+        and the blend sewn into one).
     """
     fa, fb = _free_face(edge_a, "edge_a"), _free_face(edge_b, "edge_b")
     try:
@@ -482,7 +487,11 @@ def blend(edge_a: Edge, edge_b: Edge, *, continuity: str | int = "G2", tension: 
     a_body, b_body = edge_a._owner, edge_b._owner
     sheets = [a_body] if a_body is b_body else [a_body, b_body]
     joined = stitch(*sheets, sheet)
-    if _free_edges(joined) != sum(_free_edges(x) for x in sheets):
+    # sewn along both edges: no free edge of the result left on either (a closed blend comes in two
+    # halves, so the count of free edges says nothing)
+    tol = 1e-6 * max(1.0, joined._loose_box().diagonal)
+    loose = [e for e in joined.edges() if len(e.faces()) == 1]
+    if any(min(edge_a.distance_to(e.center()), edge_b.distance_to(e.center())) <= tol for e in loose):
         raise ModelingError("blend: the blend could not be sewn to the sheets; join them with stitch(..., tolerance=...)")
     return joined
 
@@ -532,9 +541,10 @@ def fill(boundary: Edge | Wire | Sequence[Edge | Wire], *, tangent: bool = True)
 
     Four sides make a Coons patch, of one face (through curves only, it is bilinear: straight
     across between opposite sides, in the middle the sum of both). Five sides and more make an
-    N-sided fill of one face per side, sewn, meeting in the middle. Three sides make an N-sided
-    fill of three faces through curves only; tangent to sheets, a Coons patch whose fourth side
-    shrinks to a point at one corner (a pole there: thickening such a patch fails).
+    N-sided fill of one face per side, sewn, meeting in the middle (tangent to the sheets only to
+    about 1.4 degrees: the kernel's N-sided fill). Three sides make an N-sided fill of three faces
+    through curves only; tangent to sheets, a Coons patch whose fourth side shrinks to a point at
+    one corner (a pole there: thickening such a patch fails).
 
     Returns:
         The patch, a sheet. Its normal follows the sheets it is tangent to; through curves only,

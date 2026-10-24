@@ -1246,22 +1246,24 @@ export function fromSmb(data: string | BytesLike): Part | Shell {
 
 /** The bytes of a part file of the bodies and curves of `shapes`. */
 function _smp(shapes: unknown, ascii: boolean, what: string): Uint8Array {
-  const items: [number | null, number | null, string | null, number[] | null, number][] = []
+  const items: [number | null, number | null, string | null, number[] | null, number, number[] | null][] = []
   const curves: number[] = [] // (copies, freed once written)
   let wires = 0
   const add = (s: unknown): void => {
     if (s instanceof Face) s = s.toShell()
     if (s instanceof _Body) {
       const c = (s as Any).color
-      items.push([s._brep, null, (s as Any).name || null, c ? Array.from(toRgb(c), Number) : null, -1])
+      // a part's sheet metal bends with their K-factors (fold, flange), so that it unfolds as folded
+      const folds = s instanceof Part ? s._folds.flatMap(([o, d, r, kf]) => [...o, ...d, r, kf].map(Number)) : []
+      items.push([s._brep, null, (s as Any).name || null, c ? Array.from(toRgb(c), Number) : null, -1, folds.length ? folds : null])
     } else if (s instanceof Edge) {
       const c = s._copyCurve()
       curves.push(c)
-      items.push([null, c, null, null, -1])
+      items.push([null, c, null, null, -1, null])
     } else if (s instanceof Wire) {
       for (const c of s._copyCurves()) {
         curves.push(c)
-        items.push([null, c, null, null, wires])
+        items.push([null, c, null, null, wires, null])
       }
       wires += 1
     } else if (s instanceof Mesh) {
@@ -1290,8 +1292,10 @@ function _smp(shapes: unknown, ascii: boolean, what: string): Uint8Array {
  * A part file is the kernel's own container: any number of exact bodies (parts with their cells,
  * sheets, sketches and faces as sheets), each with its name and color, and curves (an edge as one, a
  * wire as its edges). `fromSmp` and `load` give them back in the same order, with their names and
- * colors, a wire as a `Wire`. ASCII unless `ascii` is false; the binary form is bit-exact, the ASCII
- * form keeps the geometry to 16 decimals.
+ * colors, a wire as a `Wire`. A sheet metal part keeps the K-factor each bend was folded with
+ * (`fold`, `flange`), so that it unfolds as it was folded; `.smb` and STEP files do not hold them
+ * (pass `kFactor` to `unfold` for a part read from those). ASCII unless `ascii` is false; the
+ * binary form is bit-exact, the ASCII form keeps the geometry to 16 decimals.
  */
 export function toSmp(shapes: ShapesLike, options: { ascii?: boolean } = {}): Uint8Array {
   _opts('toSmp', options)
@@ -1306,11 +1310,20 @@ export function toSmp(shapes: ShapesLike, options: { ascii?: boolean } = {}): Ui
  */
 export function fromSmp(data: string | BytesLike): Shape | ShapeList<Shape> {
   const bytes = _bytes(data, 'fromSmp')
-  const found: [number | null, number | null, string, Float64Array | null, number][] = kernelCall('fromSmp', () => ext.part_items(bytes))
+  const found: [number | null, number | null, string, Float64Array | null, number, Float64Array | null][] = kernelCall('fromSmp', () => ext.part_items(bytes))
   const out: (Shape | Edge[])[] = []
   const wires = new Map<number, Edge[]>()
-  for (const [brep, curve, name, color, wire] of found) {
-    if (brep !== null) out.push(_body(brep, name || null, color ? (Array.from(color) as [number, number, number]) : null, 'fromSmp'))
+  for (const [brep, curve, name, color, wire, folds] of found) {
+    if (brep !== null) {
+      const body = _body(brep, name || null, color ? (Array.from(color) as [number, number, number]) : null, 'fromSmp')
+      if (folds && folds.length && body instanceof Part) {
+        const f = Array.from(folds)
+        const records: (readonly [number[], number[], number, number])[] = []
+        for (let i = 0; i + 7 < f.length; i += 8) records.push([f.slice(i, i + 3), f.slice(i + 3, i + 6), f[i + 6], f[i + 7]] as const)
+        body._folds = records
+      }
+      out.push(body)
+    }
     else if (wire >= 0 && wires.has(wire)) (wires.get(wire) as Edge[]).push(Edge._fromCurve(curve as number))
     else if (wire >= 0) {
       const edges = [Edge._fromCurve(curve as number)]

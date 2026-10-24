@@ -2745,13 +2745,13 @@ class Face(Shape):
         """Distance to a point, or to a body (see :meth:`Part.distance_to`)."""
         if isinstance(point, _Body):
             return point.distance_to(self)
-        _, d = self._f.closest_point(_vec(point).to_tuple())
-        return float(d)
+        with kernel_call("distance"):
+            return float(ext.nearest_point(None, list(_vec(point).to_tuple()), self._f)["distance"])
 
     def closest_point(self, point: VectorLike) -> Vector:
         """The point of the face nearest to ``point`` (within its boundary)."""
-        q, _ = self._f.closest_point(_vec(point).to_tuple())
-        return Vector(tuple(q))
+        with kernel_call("closest point"):
+            return Vector(*ext.nearest_point(None, list(_vec(point).to_tuple()), self._f)["point"])
 
     def _domain(self) -> tuple[float, float, float, float]:
         (u0, v0), (u1, v1) = self._f.uv_domain()
@@ -3229,8 +3229,10 @@ class _Body(Shape):
             return self.closest_points(other).distance
         if isinstance(other, Shape) and not isinstance(other, Vertex):
             raise TypeError(f"distance_to takes a point, a body, a face, an edge or a wire, not a {type(other).__name__}")
-        _, d = k.brep_closest_point(self._brep, _vec(other).to_tuple())  # type: ignore[arg-type]
-        return float(d)
+        # (the kernel's closest point, k.brep_closest_point, can stop where a B-spline face folds back
+        # towards the point: ext.nearest_point searches every knot span that could hold a nearer one)
+        with kernel_call("distance"):
+            return float(ext.nearest_point(self._brep, list(_vec(other).to_tuple()))["distance"])  # type: ignore[arg-type]
 
     def closest_points(self, other: _Body | Face | Edge | Wire) -> ClosestPoints:
         """The nearest points of this body and another body, a face, an edge or a wire
@@ -3248,8 +3250,8 @@ class _Body(Shape):
         raise TypeError(f"closest_points takes a body, a face, an edge or a wire, not a {type(other).__name__}")
 
     def closest_point(self, point: VectorLike) -> Vector:
-        p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
-        return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
+        with kernel_call("closest point"):
+            return Vector(*ext.nearest_point(self._brep, list(_vec(point).to_tuple()))["point"])
 
     def raycast_many(self, origins: Any, directions: Any) -> list[Hit | None]:
         """The first hit of each of many rays, one per ray (``Hit`` or ``None``), not
@@ -6949,14 +6951,20 @@ class Part(_Body):
                     return Sketch._wrap(ext.combine([sh._brep for sh in sheets]), pl)
         touches = ("the plane only touches the part (along a line or a curve, or at a point), so the section has "
                    "no area; move the plane into the part")
+        curves: list[Any] = []
         try:
+            # (the kernel's plane section, intersect_brep_with_plane, fits its curves within a
+            # thousandth of each face's size: up to 1.5e-2 off a part thickened from a B-spline sheet)
             with kernel_call("section"):
-                curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
+                curves = ext.plane_section(self._brep, list(pl.origin.to_tuple()), list(pl.z_dir.to_tuple()),
+                                           1e-7 * max(self._extent(), 1.0))
             if not curves:
                 raise ValueError("the plane does not cut the part")
             with kernel_call("section"):
                 b = k.create_planar_faces(list(curves))
         except KernelError as e:
+            for c in curves:  # (the kernel took them only where it made the faces)
+                ext.delete_curve(c)
             # A plane tangent to a face meets the part along a line, which bounds no face.
             if self._on_one_side(pl):
                 raise ValueError(touches) from e
@@ -7208,7 +7216,8 @@ class Part(_Body):
         The face changes only near the region, within the rectangle around it along the surface's two
         directions (the region itself for a rectangle drawn along them); the highest point lies near the
         region's middle (at it, for a region symmetric along both directions, with ``"G2"``). Where that
-        rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+        rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``. The face's
+        B-spline loses the knots it does not need within 1e-6 of the size (its edges stay where they are).
 
         Returns:
             A new part (this one does not change).
@@ -7231,7 +7240,9 @@ class Part(_Body):
         Inside the region the face lies in the plane, but for a border where it blends into the rest
         (3/16 of the region's width with ``"G2"``, 2/16 with ``"G1"``, 1/16 with ``"crease"``); outside
         the rectangle around the region (along the surface's two directions) it does not change. Where
-        that rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``.
+        that rectangle reaches an edge of the face (a hole), the edge would move: ``ValueError``. The
+        face's B-spline loses the knots it does not need within 1e-6 of the size (its edges stay where
+        they are; a box's top flattened: 21 x 21 control points, not 39 x 39).
 
         Returns:
             A new part (this one does not change).
@@ -8562,7 +8573,10 @@ class Shell(_Body):
 
         Where the curve's ends are not the edge's, the edge's vertices move to them, the edges next
         to it bend near those ends, and the faces on the other side of those edges follow them the
-        same way. Every face that changes must be bounded by the four sides of its surface (as
+        same way, but meet the matched face with a crease near the matched edge (no tangent is kept
+        across those side edges: 10 to 20 degrees in a sheet of two faces; merge faces first with
+        :meth:`merge_faces` to keep a sheet smooth). Every face that changes must be bounded by the
+        four sides of its surface (as
         :func:`~smlibpy.surface`, ``loft``, :func:`~smlibpy.ruled`, :func:`~smlibpy.fill` and
         :func:`~smlibpy.network` make them; no holes, no trimmed borders) and the edge a whole side
         of it, else ``ValueError``. The faces become B-splines (planes too).

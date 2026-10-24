@@ -39,17 +39,22 @@
 #include <SmBendVolume.h>
 #include <SmCrvInVolume.h>
 #include <SmCylinder.h>
+#include <SmEdgeuse.h>
+#include <SmLoopuse.h>
 #include <SmMerge.h>
 #include <SmPlane.h>
+#include <SmSrfInVolume.h>
 #include <SmSpaceBend.h>
 #include <SmSpaceUnbend.h>
 #include <SmTopologyTraverser.h>
 #include <SmUnbendVolume.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -287,15 +292,77 @@ void move_cylinder_onto_face(SmBSplineSurface* cylinder, SmFace* face)
     cylinder->Transform(shift);
 }
 
+// Whether the iso-curves at the two ends of a surface's domain in direction `d` (0: u, 1: v) are one
+// curve: the surface closes around in that direction (the wall of a hole, whose face may have no seam).
+bool closes_around(const SmSurface* surface, int d)
+{
+    const SmExtent2d dom = surface->GetNaturalUVDomain();
+    SmExtent3d box;
+    std::vector<std::pair<SmPoint3d, SmPoint3d>> ends;
+    for (int k = 0; k <= 8; ++k)
+    {
+        const double t = k / 8.0;
+        const SmPoint2d a = d == 0 ? dom.Evaluate(0.0, t) : dom.Evaluate(t, 0.0);
+        const SmPoint2d b = d == 0 ? dom.Evaluate(1.0, t) : dom.Evaluate(t, 1.0);
+        SmPoint3d pa, pb;
+        if (surface->EvaluatePoint(a, pa) != SM_SUCCESS || surface->EvaluatePoint(b, pb) != SM_SUCCESS)
+            return false;
+        box.AddPoint3d(pa);
+        box.AddPoint3d(pb);
+        ends.emplace_back(pa, pb);
+    }
+    const double tol = 1e-9 * (1.0 + box.GetMaxDimension());
+    for (const auto& e : ends)
+        if (e.first.DistanceBetween(e.second) > tol)
+            return false;
+    return true;
+}
+
+// The kernel's surface fit (SmSurface::ApproximateSurface) of a mapped B-spline face grows the
+// domain by a sixteenth on every side, and its parameters drift from the original's. A face that
+// closes around its surface (the wall of a hole wholly inside a bend: two circles and a seam) then
+// lies on a surface that overlaps itself, its trim curves were dropped onto the wrong end of the
+// domain, and the face's area came out as 2.6 instead of 113 (the unfolded part not `is_valid()`).
+// Such a face is fitted here keeping the parameters of the original over its domain (deform.cpp's
+// fit), so that the fit closes around where the original did and the face's trim curves stay.
+bool overshoots(const SmSurface* fit, const SmExtent2d& domain, const bool closed[2])
+{
+    const SmExtent2d now = fit->GetNaturalUVDomain();
+    const double slack = 1e-9 * (1.0 + domain.GetMaxDimension());
+    return (closed[0] && (now.GetUMin() < domain.GetUMin() - slack || now.GetUMax() > domain.GetUMax() + slack)) ||
+           (closed[1] && (now.GetVMin() < domain.GetVMin() - slack || now.GetVMax() > domain.GetVMax() + slack));
+}
+
+// Build a face's trim curves now, once the edges have their final curves (SmBrep::ReplaceCurve drops
+// them): for a face that closes around its surface, built later on a copy of the body, the curves
+// of its seam and rims could be dropped onto the wrong end of the domain.
+void build_trim_curves(SmFace* face)
+{
+    SmTArray<SmLoopuse*> loops;
+    face->GetUpwardLoopuses(loops);
+    for (ULONG i = 0; i < loops.GetSize(); ++i)
+    {
+        SmTArray<SmEdgeuse*> uses;
+        loops[i]->GetEdgeuses(uses);
+        for (ULONG j = 0; j < uses.GetSize(); ++j)
+        {
+            SmBSplineCurve* uv = nullptr;
+            uses[j]->GetOrCreateUVTrimCurve(uv);
+        }
+    }
+}
+
 // The edges of the bend region are fitted within kCurveTolerance of the exact bend (deform.cpp's
-// parameter-keeping fit, else the kernel's curve approximation), its faces within the kernel's
-// tolerance (GetApproxTol, which it clamps to 1e-4). The curve fits cost nothing: a hole across a
-// bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the flat
-// pattern's outline gets it back as one circle. The kernel's surface fits at 1e-6 cost up to
-// twenty times as long (7 s instead of 0.3 s to unfold an R20 bend with two holes in it), so the
-// faces stay at the kernel's tolerance. Where a curve fit at 1e-7 fails, the kernel's tolerance
-// is the fallback.
+// parameter-keeping fit, else the kernel's curve approximation), its faces within kSurfaceTolerance
+// (deform.cpp's parameter-keeping surface fit, on the original's knots, exact where it can be),
+// else within the kernel's tolerance (GetApproxTol, which it clamps to 1e-4). The fits cost nothing:
+// a hole across a bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the
+// flat pattern's outline gets it back as one circle, and the slanted walls of a square hole in the
+// bend zone come back to 3e-14 instead of 1.6e-6 (the kernel's surface fits at 1e-6 cost up to
+// twenty times as long: 7 s instead of 0.3 s to unfold an R20 bend with two holes in it). Where a
+// fit fails, the kernel's tolerance is the fallback.
 constexpr double kCurveTolerance = 1e-7;
+constexpr double kSurfaceTolerance = 1e-6;
 
 // Step 4: map the region, move the rest, then replace the mapped (volume) geometry by exact
 // analytic geometry where the kernel can make it, else by NURBS within `tolerance` (faces) and
@@ -334,8 +401,16 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
         delete approx;
         return false;
     };
+    std::vector<SmExtent2d> domains;
+    std::vector<std::array<bool, 2>> closed;
+    std::vector<bool> refit(p.in_faces.GetSize(), false);  // fitted keeping the parameters
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
+    {
         p.in_faces[i]->ShrinkGeometry();
+        const SmSurface* surface = p.in_faces[i]->GetSurface();
+        domains.push_back(surface ? surface->GetNaturalUVDomain() : SmExtent2d());
+        closed.push_back({surface && closes_around(surface, 0), surface && closes_around(surface, 1)});
+    }
     SmStatus st = map_region(p.in_faces, p.in_edges, p.in_vertices);
     if (st == SM_SUCCESS)
         st = move(t.before, p.before_faces, p.before_edges, p.before_vertices);
@@ -363,8 +438,33 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             if (brep.ReplaceSurface(face, exact, FALSE, nullptr, FALSE) != SM_SUCCESS)
                 result = SM_ERR;
         }
-        else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
-            result = SM_ERR;
+        else
+        {
+            // the exact image fitted keeping the original's parameters over the domain the face had
+            // (deform.cpp's fit, within kSurfaceTolerance: its trims stay as they were), else the
+            // kernel's fit within its tolerance (see overshoots for faces that close around)
+            const SmSurface* base =
+                surface->IsKindOf(SmSrfInVolume_TYPE) ? static_cast<SmSrfInVolume*>(surface)->GetSurface() : nullptr;
+            const SmExtent2d& dom = domains[i];
+            SmBSplineSurface* fit = smlibpy::fit_surface_keeping_parameters(
+                surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(), dom.GetVMax(), std::min(kSurfaceTolerance, tolerance));
+            if (!fit && (closed[i][0] || closed[i][1]))
+                fit = smlibpy::fit_surface_keeping_parameters(surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(),
+                                                              dom.GetVMax(), tolerance);
+            if (fit)
+            {
+                if (brep.ReplaceSurface(face, fit, FALSE, nullptr, FALSE) != SM_SUCCESS)
+                {
+                    if (fit->GetOwner() == nullptr)
+                        delete fit;
+                    result = SM_ERR;
+                }
+                refit[i] = true;
+            }
+            else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS ||
+                     ((closed[i][0] || closed[i][1]) && overshoots(face->GetSurface(), dom, closed[i].data())))
+                result = SM_ERR;
+        }
     }
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
@@ -410,6 +510,9 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             !static_cast<SmBSplineSurface*>(surface)->GetOrCreateGwNurbPointer())
             return SM_ERR_NOT_WITHIN_TOLERANCE;
     }
+    for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
+        if (refit[i] || closed[i][0] || closed[i][1])
+            build_trim_curves(p.in_faces[i]);
     return SM_SUCCESS;
 }
 

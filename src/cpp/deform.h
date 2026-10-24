@@ -12,7 +12,9 @@
 
 class SmBrep;
 class SmBSplineCurve;
+class SmBSplineSurface;
 class SmCurve;
+class SmSurface;
 
 namespace smlibpy {
 
@@ -92,6 +94,11 @@ DeformedCurve deform_curve(const SmCurve* curve, const DeformSpec& spec);
 // null when the fit misses the tolerance.
 SmBSplineCurve* fit_curve_keeping_parameters(const SmCurve* curve, const SmCurve* base, double t0, double t1,
                                              double tolerance);
+// A surface (such as the kernel's SmSrfInVolume) fitted over [u0, u1] x [v0, v1] within `tolerance`,
+// keeping its parameters, on the knots of `base` (the original it maps; the surface itself if null).
+// The caller's; null when the fit misses the tolerance.
+SmBSplineSurface* fit_surface_keeping_parameters(const SmSurface* surface, const SmSurface* base, double u0, double u1,
+                                                 double v0, double v1, double tolerance);
 // The kernel's exact procedural composition of a copy with the deformation, for checks.
 SmBrep* composite_brep(const SmBrep* brep, const DeformSpec& spec);
 // The largest distance between a deformed Brep and the exact deformation of its source.

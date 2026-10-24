@@ -28,6 +28,7 @@
 #include "fit.h"
 #include "history.h"
 #include "measure.h"
+#include "measuring.h"
 #include "oriented_sweep.h"
 #include "revolutions.h"
 #include "seams.h"
@@ -361,6 +362,25 @@ val nearest_points(uintptr_t a, uintptr_t b, val near_a)
         d.set("face_b", r.face_b ? val(ptr(r.face_b)) : val::null());
         return d;
     });
+}
+
+// {point, distance, face}: the point of a body (or of one of its faces) nearest to a point.
+val nearest_point(val b, val point, val f)
+{
+    return guard([&] {
+        const smlibpy::NearestPoint r = smlibpy::nearest_point(maybe<SmBrep>(b), numbers(point), maybe<SmFace>(f));
+        val d = val::object();
+        d.set("point", vec3(SmVector3d(r.p[0], r.p[1], r.p[2])));
+        d.set("distance", r.distance);
+        d.set("face", r.face ? val(ptr(r.face)) : val::null());
+        return d;
+    });
+}
+
+// The curves (the caller's) where a plane cuts a body, fitted within the tolerance.
+val plane_section(uintptr_t b, val point, val normal, double tolerance)
+{
+    return guard([&] { return pointer_array(smlibpy::plane_section(brep(b), numbers(point), numbers(normal), tolerance)); });
 }
 
 val face_measure(uintptr_t f, double tolerance)
@@ -1126,7 +1146,8 @@ val usd_stage(val layers, bool heal, bool check, bool placement, double units, b
 }
 
 // The contents of a part file (.smp, a Uint8Array) of items [brep or null, curve or null, name or null,
-// [r, g, b] or null, wire]: bodies and curves, each with its name and color.
+// [r, g, b] or null, wire, folds or null]: bodies and curves, each with its name and color (and a body's
+// sheet metal bends, 8 numbers each).
 val part_bytes(val list, bool ascii)
 {
     return guard([&] {
@@ -1143,6 +1164,8 @@ val part_bytes(val list, bool ascii)
             if (!none(it[3]))
                 item.color = numbers(it[3]);
             item.wire = static_cast<long>(it[4].as<double>());
+            if (it["length"].as<unsigned>() > 5 && !none(it[5]))
+                item.folds = numbers(it[5]);
             in.push_back(std::move(item));
         }
         const std::string out = smlibpy::part_bytes(in, ascii);
@@ -1151,8 +1174,8 @@ val part_bytes(val list, bool ascii)
     });
 }
 
-// [[brep or null, curve or null, name, [r, g, b] or null, wire]] of a part file's contents (a Uint8Array):
-// its bodies and curves, the caller's.
+// [[brep or null, curve or null, name, [r, g, b] or null, wire, folds or null]] of a part file's contents
+// (a Uint8Array): its bodies and curves, the caller's.
 val part_items(std::string data)
 {
     return guard([&] {
@@ -1161,7 +1184,8 @@ val part_items(std::string data)
             out.call<void>("push", items(item.brep ? val(ptr(item.brep)) : val::null(),
                                          item.curve ? val(ptr(item.curve)) : val::null(), item.name,
                                          item.color.empty() ? val::null() : float64(item.color),
-                                         static_cast<double>(item.wire)));
+                                         static_cast<double>(item.wire),
+                                         item.folds.empty() ? val::null() : float64(item.folds)));
         return out;
     });
 }
@@ -1277,6 +1301,8 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__occt_text", &occt_text);
     function("ext__face_measure", &face_measure);
     function("ext__nearest_points", &nearest_points);
+    function("ext__nearest_point", &nearest_point);
+    function("ext__plane_section", &plane_section);
     function("ext__curve_length", &curve_length);
     function("ext__curve_parameter_at_length", &curve_parameter_at_length);
     function("ext__tessellate", &tessellate);

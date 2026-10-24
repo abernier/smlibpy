@@ -2121,6 +2121,50 @@ SmBSplineCurve* fit_keeping_impl(const SmCurve* curve, const SmCurve* base, doub
     }
 }
 
+// A surface (a procedural one, such as the kernel's SmSrfInVolume) fitted over [u0, u1] x [v0, v1]
+// keeping its parameters, on the knots of `base` (the original it maps): as the faces of a deformed
+// Brep. Where the surface closes around in a direction, the fit closes as exactly: its end rows are
+// interpolated at the same points. Null when it cannot be fitted within the tolerance.
+SmBSplineSurface* fit_surface_keeping_impl(const SmSurface* surface, const SmSurface* base, double u0, double u1,
+                                           double v0, double v1, double tolerance)
+{
+    if (!surface || !(u1 > u0) || !(v1 > v0) || !(tolerance > 0.0))
+        return nullptr;
+    try
+    {
+        const SurfaceInfo info = surface_info(base ? base : surface);
+        const SmSurface* wsurf = info.weight.get();
+        const SurfFn fn = [surface, wsurf](double u, double v) {
+            SmPoint3d p;
+            check(surface->EvaluatePoint(SmPoint2d(u, v), p), "SmSurface::EvaluatePoint");
+            double w = 1.0;
+            if (wsurf)
+            {
+                SmPoint3d wp;
+                check(wsurf->EvaluatePoint(SmPoint2d(u, v), wp), "SmSurface::EvaluatePoint");
+                w = wp.x;
+            }
+            return hom(p, w);
+        };
+        double size = 0.0;
+        const SmPoint3d first = euclid(fn(u0, v0));
+        for (int a = 0; a <= 8; ++a)
+            for (int b = 0; b <= 8; ++b)
+                size = std::max(size, first.DistanceBetween(euclid(fn(u0 + (u1 - u0) * a / 8, v0 + (v1 - v0) * b / 8))));
+        const double exact_tol = std::min(1e-11 * std::max(1.0, size), 0.01 * tolerance);
+        SurfFit fit;
+        fit_approx_surface(fn, fit, breaks_in(info.uk, info.um, info.p, u0, u1), breaks_in(info.vk, info.vm, info.q, v0, v1),
+                           info.nurbs ? info.p : 3, info.nurbs ? info.q : 3, 0.5 * tolerance, exact_tol, 5);
+        if (!(fit.err <= 0.5 * tolerance))
+            return nullptr;
+        return build_surface(fit, fit.err <= exact_tol ? exact_tol : 0.25 * tolerance);
+    }
+    catch (const std::exception&)
+    {
+        return nullptr;
+    }
+}
+
 // The kernel's own composition (SmSrfInVolume / SmCrvInVolume, procedural and exact), for checks.
 SmBrep* composite(const SmBrep* brep, const smlibpy::DeformSpec& spec)
 {
@@ -2283,6 +2327,12 @@ SmBSplineCurve* fit_curve_keeping_parameters(const SmCurve* curve, const SmCurve
                                              double tolerance)
 {
     return fit_keeping_impl(curve, base, t0, t1, tolerance);
+}
+
+SmBSplineSurface* fit_surface_keeping_parameters(const SmSurface* surface, const SmSurface* base, double u0, double u1,
+                                                 double v0, double v1, double tolerance)
+{
+    return fit_surface_keeping_impl(surface, base, u0, u1, v0, v1, tolerance);
 }
 
 Deviation deviation(const SmBrep* source, const SmBrep* result, const DeformSpec& spec, int samples)

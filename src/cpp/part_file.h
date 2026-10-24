@@ -22,12 +22,14 @@ struct PartItem
     std::string name;            // "" for none
     std::vector<double> color;   // r, g, b from 0 to 1, or nothing
     long wire = -1;              // a curve's wire: the number of the wire it is an edge of, -1 for none
+    std::vector<double> folds;   // a body's sheet metal bends (fold, flange): 8 numbers each, the bend
+                                 // axis' origin and direction, the inside radius and the K-factor
 };
 
 // The contents of a part file (SmBrepData::WritePartToDB, ASCII or binary) of the items, in their
 // order: copies of the bodies and curves, each with its color in the kernel's color attribute
-// (SM_AI_COLOR, which SMLib's own tools read) and its name, place and wire in an attribute of
-// smlibpy's.
+// (SM_AI_COLOR, which SMLib's own tools read), its name, place and wire in an attribute of
+// smlibpy's, and a body's bends with their K-factors in another.
 std::string part_bytes(const std::vector<PartItem>& items, bool ascii);
 
 // The items of a part file's contents (ASCII or binary, told apart by the first bytes): its bodies,

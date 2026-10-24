@@ -414,15 +414,23 @@ def test_empty_boolean_results_where_they_are_right():
 
 
 def test_an_empty_cut_needs_tools_that_can_cover_the_part(monkeypatch):
-    # A tool beside an earlier hole in a sphere: the kernel's cut is empty, and its intersection of
-    # the same pair, which confirmed the empty cut, is the whole part. Both were accepted. (The
-    # retry with a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.)
+    # A tool beside an earlier hole in a sphere: the kernel's cut was empty, and its intersection of
+    # the same pair, which confirmed the empty cut, the whole part. Both were accepted. (The retry
+    # with a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.) Since
+    # the kernel's seams are evaluated right (third_party/patches SmEllipse.cpp), its own cut and
+    # intersection of the pair fail instead; the guards are checked on the answers it gave.
     monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
     holed = Sphere(20) - Cylinder(6, 60)
-    with pytest.raises(ModelingError, match="empty"):
-        holed - Cylinder(3, 60).translate(8, 0, 0)  # was Part(0 faces), no error
-    with pytest.raises(ModelingError, match="partly outside an operand"):
-        holed & Cylinder(3, 60).translate(8, 0, 0)  # was the whole part, 29089.8 (right: 929.188)
+    tool = Cylinder(3, 60).translate(8, 0, 0)
+    with pytest.raises(ModelingError):
+        holed - tool
+    with pytest.raises(ModelingError):
+        holed & tool
+    empty = Box(10, 10, 10) - Box(20, 20, 20)
+    assert holed._boolean_problem(empty, [tool], k.BooleanOp.DIFFERENCE) == "empty"  # was Part(0 faces), no error
+    assert holed._boolean_problem(empty, [Box(100, 100, 100)], k.BooleanOp.DIFFERENCE) is None
+    whole = Part._wrap(holed._copy_brep())  # was the whole part, 29089.8 (right: 929.188)
+    assert "partly outside an operand" in holed._boolean_problem(whole, [tool], k.BooleanOp.INTERSECTION)
     assert (Sphere(20) - [Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume == approx(28160.608174, rel=1e-8)
 
 

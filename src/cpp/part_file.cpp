@@ -12,7 +12,8 @@
 // SmVector3dAttribute, which SMLib's tools read) and an attribute of smlibpy's that holds its name
 // (its characters), its place among the items and the wire a curve is an edge of (two numbers). Both
 // go on copies of the bodies and curves, and come off what is read, so that no body carries them
-// into the operations that follow. Boolean trees are neither written nor read (the binary writer
+// into the operations that follow. A body folded as sheet metal also carries its bends (the axis,
+// inside radius and K-factor of each) in a third attribute, so that it unfolds as it was folded. Boolean trees are neither written nor read (the binary writer
 // writes each of their values twice), and the format holds no assembly placements (the kernel's
 // assembly reader and writer are empty).
 
@@ -42,6 +43,8 @@ const SmContext& ctx() { return *SmApiGetOrCreateContext(); }
 // range SMLib leaves to applications. (No negative numbers: the binary format writes a long as 8
 // bytes, the wasm32 build's longs have 4, and a 64-bit build's -1 reads there as a number too large.)
 constexpr ULONG kItemAttribute = SM_AI_USER_3 + 1415;
+// smlibpy's attribute of a sheet metal body's bends: 8 numbers each (doubles only).
+constexpr ULONG kFoldAttribute = SM_AI_USER_3 + 1416;
 
 SmAttribute* attribute(ULONG id, const std::vector<long>& longs, const std::vector<double>& doubles,
                        const std::string& chars)
@@ -61,12 +64,18 @@ SmAttribute* attribute(ULONG id, const std::vector<long>& longs, const std::vect
 // the item's attributes on a copy of its body or curve, in place of any it has under those ids
 void tag(SmAObject* o, const smlibpy::PartItem& item, long place)
 {
-    for (ULONG id : {static_cast<ULONG>(SM_AI_COLOR), kItemAttribute})
+    for (ULONG id : {static_cast<ULONG>(SM_AI_COLOR), kItemAttribute, kFoldAttribute})
         if (SmAttribute* a = o->FindAttribute(id))
             o->RemoveAttribute(a);
     if (item.color.size() == 3)
         o->AddAttribute(attribute(SM_AI_COLOR, {}, item.color, ""));
     o->AddAttribute(attribute(kItemAttribute, {place, item.wire < 0 ? 0 : item.wire + 1}, {}, item.name));
+    if (!item.folds.empty())
+    {
+        if (item.folds.size() % 8 != 0)
+            throw std::invalid_argument("part file: a body's bends take 8 numbers each");
+        o->AddAttribute(attribute(kFoldAttribute, {}, item.folds, ""));
+    }
 }
 
 // what an object read from a part file carries (the attributes are taken off it)
@@ -76,6 +85,7 @@ struct Tags
     std::string name;
     long place = -1;  // -1: not written by smlibpy
     long wire = -1;
+    std::vector<double> folds;
 };
 
 Tags untag(SmAObject* o)
@@ -99,6 +109,16 @@ Tags untag(SmAObject* o)
         }
         if (a->GetNumCharacterElements() > 0 && a->GetCharacterElementsAddress())
             t.name.assign(a->GetCharacterElementsAddress(), a->GetNumCharacterElements());
+        o->RemoveAttribute(a);
+    }
+    if (SmAttribute* a = o->FindAttribute(kFoldAttribute))
+    {
+        const ULONG n = a->GetNumDoubleElements();
+        if (n > 0 && n % 8 == 0 && a->GetDoubleElementsAddress())
+        {
+            const double* d = a->GetDoubleElementsAddress();
+            t.folds.assign(d, d + n);
+        }
         o->RemoveAttribute(a);
     }
     return t;
@@ -205,7 +225,7 @@ std::vector<PartItem> part_items(const std::string& data)
     };
     std::vector<Found> found;
     auto take = [&](PartItem item, const Tags& t) {
-        item.name = t.name, item.color = t.color, item.wire = t.wire;
+        item.name = t.name, item.color = t.color, item.wire = t.wire, item.folds = t.folds;
         found.push_back(Found{std::move(item), t.place, found.size()});
     };
     try
@@ -287,12 +307,15 @@ void bind_part_files(py::module_ m)
             if (!t[3].is_none())
                 item.color = t[3].cast<std::vector<double>>();
             item.wire = t[4].cast<long>();
+            if (t.size() > 5 && !t[5].is_none())
+                item.folds = t[5].cast<std::vector<double>>();
             in.push_back(std::move(item));
         }
         return py::bytes(smlibpy::part_bytes(in, ascii));
     }, py::arg("items"), py::arg("ascii") = true,
        "The contents of an SMLib part file (.smp): items are (brep or None, curve or None, name or None, (r, g, b) "
-       "or None, wire), each a body or a curve (wire: the number of the wire a curve is an edge of, -1 for none); "
+       "or None, wire[, folds]), each a body or a curve (wire: the number of the wire a curve is an edge of, -1 for "
+       "none; folds: a body's sheet metal bends, 8 numbers each: axis origin, direction, inside radius, K-factor); "
        "ASCII or binary.");
     m.def("part_items", [](const py::bytes& data) {
         std::vector<smlibpy::PartItem> items = smlibpy::part_items(std::string(data));
@@ -305,11 +328,13 @@ void bind_part_files(py::module_ m)
             out.append(py::make_tuple(
                 item.brep ? py::cast(item.brep, py::return_value_policy::take_ownership) : py::object(py::none()),
                 item.curve ? py::cast(item.curve, py::return_value_policy::take_ownership) : py::object(py::none()), name,
-                item.color.empty() ? py::object(py::none()) : py::cast(item.color), item.wire));
+                item.color.empty() ? py::object(py::none()) : py::cast(item.color), item.wire,
+                item.folds.empty() ? py::object(py::none()) : py::cast(item.folds)));
         }
         return out;
     }, py::arg("data"),
        "The items of an SMLib part file's contents (ASCII or binary): [(brep or None, curve or None, name, (r, g, b) or "
-       "None, wire)], bodies (loose surfaces as sheets of one face) and curves, in the order smlibpy wrote them.");
+       "None, wire, folds or None)], bodies (loose surfaces as sheets of one face) and curves, in the order smlibpy "
+       "wrote them.");
 }
 #endif  // SMLIBPY_PYTHON
