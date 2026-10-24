@@ -20,7 +20,9 @@ A new `Part` (checked) or `Shell`. Inside the region the face lies exactly in th
 border where it blends into the rest: 3/16 of the region's width with `"G2"`, 2/16 with `"G1"`, 1/16
 with `"crease"`. Outside the rectangle around the region (along the surface's two directions) the face
 is exactly what it was. The face is its own surface minus its height over the plane times a profile
-that is 1 inside the region (NLib's flattening of a plane onto a plane), exactly.
+that is 1 inside the region (NLib's flattening of a plane onto a plane), exactly, less the knots it
+does not need within 1e-6 of the size (its edges kept where they are): a box's top flattened has
+21 x 21 control points, not 39 x 39.
 
 ## Measured
 - `Box(60, 40, 20)`, top, `flatten(top, Rectangle(20, 16).on(top), Plane.XY.offset(8))`: z 8 exactly

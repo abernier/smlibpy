@@ -2,15 +2,16 @@
 measuring. Plane sections within a tolerance, the nearest point of a folded B-spline face, rays beside
 a seam (the kernel's seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend
 zone unfolded into a valid part (D5); K-factor records in .smp files (D1); blends between two closed
-edges (U2); trimming with curves that run past a sheet's border or across a hole (U3)."""
+edges (U2); trimming with curves that run past a sheet's border or across a hole (U3); the knots a warp
+or a flattening does not need removed (U8)."""
 
 import math
 
 import numpy as np
 import pytest
 
-from smlibpy import (Align, Axis, Box, Cone, Cylinder, Edge, Ellipse, Location, Plane, Shell, Sphere, Spline, Torus,
-                     blend, flat_pattern, fold, from_smp, loft, surface, to_smp)
+from smlibpy import (Align, Axis, Box, Cone, Cylinder, Edge, Ellipse, Location, Plane, Rectangle, Shell, Sphere, Spline,
+                     Torus, Vector, blend, flat_pattern, fold, from_smp, loft, surface, to_smp)
 from smlibpy._kernel import ext, k
 
 # ------------------------------------------------------------------------------------ measuring
@@ -245,3 +246,35 @@ def test_trim_with_a_curve_past_a_bspline_sheets_border():
     halves = plate.trim(line, keep="split")
     assert len(halves.faces()) == 2
     assert sum(x.area for x in halves.faces()) == pytest.approx(plate.area, rel=1e-9)
+
+
+# ------------------------------------------------------------------------------------------- U8
+
+
+def _poles(face):
+    return len(ext.surface_data(face._f.surface(), True)["poles"])
+
+
+def test_warp_and_flatten_drop_the_knots_they_do_not_need():
+    # the change was added on knots of its own, so the face's B-spline grew; the plan's knot removal
+    # within 1e-6 of the size (not NLib's 1 %) was not done
+    box = Box(60, 40, 20)
+    top = box.faces().sort_by(Axis.Z)[-1]
+    flat = box.flatten(top, Rectangle(20, 16).on(top), Plane.XY.offset(8))
+    f = flat.faces().sort_by(Axis.Z)[-1]
+    assert _poles(f) == 21 * 21  # (39 x 39 before)
+    assert flat.is_valid() and flat.volume == pytest.approx(47577.5, abs=1e-6)
+    for x, y in ((0, 0), (-6, 0), (6, 4)):
+        assert f.raycast((x, y, 50), (0, 0, -1))[0].point.z == pytest.approx(8, abs=1e-9)
+    assert f.raycast((25, 15, 50), (0, 0, -1))[0].point.z == pytest.approx(10, abs=1e-12)
+    for cont, n in (("G1", 22 * 22), ("crease", 23 * 23), ("G2", 21 * 21)):  # (23 x 23, 25 x 25, 21 x 21 before)
+        w = box.warp(top, Rectangle(20, 16).on(top), 4, continuity=cont)
+        g = w.faces().sort_by(Axis.Z)[-1]
+        assert _poles(g) == n and w.is_valid()
+        assert w.bbox().max.z == pytest.approx(14, abs=1e-6)
+    # a bumpy sheet flattened keeps its edges where they are (a removal that moved one is not taken)
+    sheet = surface([[(x, y, 3 * math.sin(x / 9) * math.cos(y / 11)) for y in range(0, 61, 5)] for x in range(0, 61, 5)])
+    g = sheet.faces()[0]
+    region = [Vector(*g._f.closest_point((x, y, 0))[0]) for x, y in ((20, 20), (40, 20), (40, 40), (20, 40))]
+    h = sheet.flatten(g, region, Plane.XY).faces()[0]
+    assert max(h.distance_to(e.point_at(t)) for e in g.edges() for t in (0.1, 0.5, 0.9)) < 1e-9

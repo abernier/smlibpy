@@ -575,27 +575,53 @@ NearestPoint nearest_point(const SmBrep* brep, const std::vector<double>& point,
             if (patch.bound >= distance)
                 break;
             std::vector<std::pair<double, SmPoint2d>> samples;
+            std::vector<SmPoint3d> grid(static_cast<size_t>(n) * n);
+            std::vector<bool> ok(grid.size(), false);
             for (int a = 0; a < n; ++a)
                 for (int c = 0; c < n; ++c)
                 {
                     const SmPoint2d uv(patch.u0 + (patch.u1 - patch.u0) * a / (n - 1),
                                        patch.v0 + (patch.v1 - patch.v0) * c / (n - 1));
-                    SmPoint3d p;
+                    SmPoint3d& p = grid[static_cast<size_t>(a) * n + c];
                     if (surface->EvaluatePoint(uv, p) == SM_SUCCESS)
-                        samples.emplace_back(p.DistanceBetween(q), uv);
+                        samples.emplace_back(p.DistanceBetween(q), uv), ok[static_cast<size_t>(a) * n + c] = true;
+                }
+            // the widest step of the grid: a nearer point of the patch lies within that of a sample, so
+            // only a sample nearer than the best distance plus that can lead to one
+            double step = 0.0;
+            for (int a = 0; a < n; ++a)
+                for (int c = 0; c < n; ++c)
+                {
+                    const size_t i = static_cast<size_t>(a) * n + c;
+                    if (a + 1 < n && ok[i] && ok[i + n])
+                        step = std::max(step, grid[i].DistanceBetween(grid[i + n]));
+                    if (c + 1 < n && ok[i] && ok[i + 1])
+                        step = std::max(step, grid[i].DistanceBetween(grid[i + 1]));
                 }
             std::sort(samples.begin(), samples.end(), [](const auto& a, const auto& c) { return a.first < c.first; });
             int started = 0, tried = 0;
             for (const auto& start : samples)
             {
-                if (started == 2 || ++tried > 8 || start.first >= 2.0 * distance + patch.bound)
+                if (started == 2 || ++tried > 8 || start.first >= distance + step)
                     break;
+                // first down to a nearest point of the surface from there, over the patch and its
+                // neighbours (cheap: no trims): where that is not nearer than the best, Newton's method
+                // on the face goes no nearer either
+                double u = start.second.x, v = start.second.y;
+                const double du = patch.u1 - patch.u0, dv = patch.v1 - patch.v0;
+                const double reach = nearest_on_surface(
+                    surface,
+                    {std::max(fd.GetUMin(), patch.u0 - du), std::min(fd.GetUMax(), patch.u1 + du),
+                     std::max(fd.GetVMin(), patch.v0 - dv), std::min(fd.GetVMax(), patch.v1 + dv)},
+                    point, u, v);
+                ++started;
+                if (!(reach < distance - 1e-9 * (1.0 + distance)))
+                    continue;  // (the same point, or one nearer only by rounding)
                 Spot s;
                 s.face = f, s.n = 2;
                 s.t[0] = start.second.x, s.t[1] = start.second.y;
                 if (!inside(s, s.t))
                     continue;  // (outside a trimmed face)
-                ++started;
                 if (surface->EvaluatePoint(start.second, s.p) != SM_SUCCESS)
                     continue;
                 double d = start.first;
@@ -618,20 +644,29 @@ NearestPoint nearest_point(const SmBrep* brep, const std::vector<double>& point,
             const SmCurve* curve = e->GetCurve();
             if (!curve)
                 continue;
+            SmExtent3d ebox;
+            if (e->CalculateBoundingBox(&ebox) == SM_SUCCESS && box_distance(ebox, q) >= distance)
+                continue;
             const SmExtent1d ivl = e->GetInterval();
             Spot s;
             s.edge = e, s.curve = curve, s.n = 1;
             s.lo = ivl.GetMin(), s.hi = ivl.GetMax();
-            double t0 = s.lo, d0 = 1e300;
+            double t0 = s.lo, d0 = 1e300, step = 0.0;
+            SmPoint3d last;
             for (int k = 0; k <= 32; ++k)
             {
                 const double t = ivl.Evaluate(k / 32.0);
                 SmPoint3d p;
-                if (curve->EvaluatePoint(t, p) == SM_SUCCESS && p.DistanceBetween(q) < d0)
+                if (curve->EvaluatePoint(t, p) != SM_SUCCESS)
+                    continue;
+                if (k > 0)
+                    step = std::max(step, p.DistanceBetween(last));
+                last = p;
+                if (p.DistanceBetween(q) < d0)
                     d0 = p.DistanceBetween(q), t0 = t, s.p = p;
             }
-            if (!(d0 < 1e300))
-                continue;
+            if (!(d0 < distance + step))
+                continue;  // (no sample near enough to lead to a nearer point)
             s.t[0] = t0;
             double d = d0;
             newton(s, target, d);

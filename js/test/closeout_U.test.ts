@@ -2,7 +2,8 @@
 // within a tolerance, the nearest point of a folded B-spline face, rays beside a seam (the kernel's
 // seam evaluation, third_party/patches SmEllipse.cpp); a hole wholly inside a bend zone unfolded into
 // a valid part (D5); K-factor records in .smp files (D1); blends between two closed edges (U2);
-// trimming with curves that run past a sheet's border or across a hole (U3).
+// trimming with curves that run past a sheet's border or across a hole (U3); the knots a warp or a
+// flattening does not need removed (U8).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -16,6 +17,7 @@ import {
   Location,
   Part,
   Plane,
+  Rectangle,
   Shell,
   Sphere,
   Spline,
@@ -303,4 +305,38 @@ test("trim with a curve past a B-spline sheet's border", () => {
   const halves = holed.trim(Spline([-25, 0, 0.5], [0, 0, 0.5], [25, 0, 0.5]), 'split')
   assert.equal(halves.faces().length, 2)
   approx(halves.faces().reduce((t, x) => t + x.area, 0), holed.area, 1e-9)
+})
+
+// ------------------------------------------------------------------------------------------- U8
+
+const poles = (f: { _f: number }) => (ext.surface_data(k.face_surface(f._f), true).poles as unknown[]).length
+
+test('warp and flatten drop the knots they do not need', () => {
+  // the change was added on knots of its own, so the face's B-spline grew; the plan's knot removal
+  // within 1e-6 of the size (not NLib's 1 %) was not done
+  const box = Box(60, 40, 20)
+  const top = box.faces().sortBy(Axis.Z).last
+  const flat = box.flatten(top, Rectangle(20, 16).on(top), Plane.XY.offset(8))
+  const f = flat.faces().sortBy(Axis.Z).last
+  assert.equal(poles(f), 21 * 21) // (39 x 39 before)
+  assert.ok(flat.isValid())
+  near(flat.volume, 47577.5, 1e-6)
+  for (const [x, y] of [[0, 0], [-6, 0], [6, 4]]) near(f.raycast([x, y, 50], [0, 0, -1])[0].point.z, 8, 1e-9)
+  near(f.raycast([25, 15, 50], [0, 0, -1])[0].point.z, 10, 1e-12)
+  for (const [cont, n] of [['G1', 22 * 22], ['crease', 23 * 23], ['G2', 21 * 21]] as [string, number][]) {
+    const w = box.warp(top, Rectangle(20, 16).on(top), 4, { continuity: cont })
+    assert.equal(poles(w.faces().sortBy(Axis.Z).last), n, cont)
+    assert.ok(w.isValid())
+    near(w.bbox().max.z, 14, 1e-6)
+  }
+  // a bumpy sheet flattened keeps its edges where they are (a removal that moved one is not taken)
+  const rows = lin(0, 60, 13).map((x) => lin(0, 60, 13).map((y) => [x, y, 3 * Math.sin(x / 9) * Math.cos(y / 11)] as [number, number, number]))
+  const sheet = surface(rows)
+  const g = sheet.faces()[0]
+  const region = ([[20, 20], [40, 20], [40, 40], [20, 40]] as [number, number][]).map(
+    ([x, y]) => new Vector((k.face_closest_point(g._f, [x, y, 0]) as [[number, number, number], number])[0]))
+  const h = sheet.flatten(g, region, Plane.XY).faces()[0]
+  let worst = 0
+  for (const e of g.edges()) for (const t of [0.1, 0.5, 0.9]) worst = Math.max(worst, h.distanceTo(e.pointAt(t)))
+  assert.ok(worst < 1e-9, `${worst}`)
 })

@@ -7422,7 +7422,8 @@ export class Part extends _Body {
    * The face changes only near the region, within the rectangle around it along the surface's two
    * directions (the region itself for a rectangle drawn along them); the highest point lies near the
    * region's middle (at it, for a region symmetric along both directions, with `'G2'`). Where that
-   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError. The face's
+   * B-spline loses the knots it does not need within 1e-6 of the size (its edges stay where they are).
    *
    * @param face A face of the part.
    * @param region The outline on the face: a closed Wire (on a curved face, `project` one onto it), a
@@ -7445,7 +7446,9 @@ export class Part extends _Body {
    * Inside the region the face lies in the plane, but for a border where it blends into the rest
    * (3/16 of the region's width with `'G2'`, 2/16 with `'G1'`, 1/16 with `'crease'`); outside the
    * rectangle around the region (along the surface's two directions) it does not change. Where that
-   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError.
+   * rectangle reaches an edge of the face (a hole), the edge would move: a RangeError. The face's
+   * B-spline loses the knots it does not need within 1e-6 of the size (its edges stay where they are;
+   * a box's top flattened: 21 x 21 control points, not 39 x 39).
    *
    * @param face A face of the part.
    * @param region The outline on the face, as for `warp`.
