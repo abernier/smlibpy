@@ -6,6 +6,9 @@ every face the direction meets: the near side, the far side and faces seen edge-
 are what a light along the direction from the curve paints: a point of a piece counts where the
 ray from its point of the curve meets the body there first. Pieces are cut where that changes.
 
+Pieces that a closed face's seam cut apart come back joined (one edge each), and a curve's normal
+projection is made in pieces that do not cross a seam (the kernel gave nothing for one that does).
+
 A wrapped drawing keeps its lengths along the two parameter lines of the face through the point it
 is placed at: x is the length along one, y along the other. On planes, cylinders and other faces
 whose parameter lines keep their lengths everywhere (as a label on a can) the drawing keeps all its
@@ -31,14 +34,61 @@ from .shapes import Edge, Face, ShapeList, Vertex, _Body
 _SAMPLES = 17
 
 
+def _outline_cuts(body: _Body, d: Vector, size: float) -> list[Any]:
+    """The body's edges and the contours of its curved faces seen along ``d``, projected onto the plane
+    across ``d`` through the origin (kernel curves, the caller deletes them): what is reached first along
+    ``d`` changes only where a point's projection crosses one of them."""
+    with kernel_call("project"):
+        seen, behind = ext.hidden_lines(body._brep, (0.0, 0.0, 0.0), (-d).to_tuple(), False, False)
+    return list(seen) + list(behind)
+
+
+def _crossings(e: Edge, lines: list[Any], d: Vector, tol: float) -> list[float]:
+    """The fractions of the edge's length where its projection along ``d`` (onto the plane across ``d``
+    through the origin) crosses one of the projected ``lines``."""
+    from .shapes import _canonical_curve
+
+    n = np.array(d.normalized().to_tuple())
+    c = e._copy_curve()
+    try:
+        data = ext.curve_data(c, True)
+        t0, t1 = (float(t) for t in c.parameter_range())
+    finally:
+        ext.delete_curve(c)
+    poles = np.array(data["poles"], dtype=float)
+    poles = poles - np.outer(poles @ n, n)
+    with kernel_call("project"):
+        flat = _canonical_curve(poles, list(data["knots"]), int(data["degree"]), data["weights"])
+    lo, hi = poles.min(axis=0) - tol, poles.max(axis=0) + tol
+    out: list[float] = []
+    try:
+        for line in lines:
+            a, b = ext.curve_box(line, *(float(t) for t in line.parameter_range()))
+            if any(b[i] < lo[i] or a[i] > hi[i] for i in range(3)):
+                continue
+            u0, u1 = (float(t) for t in line.parameter_range())
+            with kernel_call("project"):
+                sols = ext.intersect_curves(flat, t0, t1, line, u0, u1, tol)
+            for sol in sols:
+                for u, _ in [sol["t"]] + ([sol["end"]] if sol["end"] is not None else []):
+                    out.append(e._fraction(float(u)))
+    finally:
+        ext.delete_curve(flat)
+    return sorted(f for f in out if 0.0 < f < 1.0)
+
+
 def visible_pieces(body: _Body, source: Edge, pieces: Sequence[tuple[Edge, Face]], d: Vector,
                    size: float) -> list[Edge]:
     """The parts of projected pieces (each with its face) that the projection of ``source`` along
-    ``d`` reaches first."""
+    ``d`` reaches first. Each piece is sampled at 17 points and between every two places where its
+    projection crosses an edge or a contour of the body seen along ``d`` (only there can what is reached
+    first change: 17 points alone missed an obstacle narrower than a seventeenth of the piece); where
+    neighbouring samples differ, the change is found by halving."""
     from .curves import Line
 
     tol = 1e-6 * size
     reach = 4.0 * size
+    lines = _outline_cuts(body, d, size) if pieces else []
 
     def seen(q: Vector, face: Face) -> bool:
         if abs(face.normal_at(q).dot(d)) < 1e-9:  # a face seen edge-on there gets nothing
@@ -53,30 +103,111 @@ def visible_pieces(body: _Body, source: Edge, pieces: Sequence[tuple[Edge, Face]
         return not any(h.distance < s - 10 * tol for h in body.raycast(c, d))
 
     out: list[Edge] = []
-    for e, face in pieces:
-        fs = [(i + 0.5) / _SAMPLES for i in range(_SAMPLES)]
-        vis = [seen(e.point_at(f), face) for f in fs]
-        if all(vis):
-            out.append(e)
+    try:
+        for e, face in pieces:
+            fs = [(i + 0.5) / _SAMPLES for i in range(_SAMPLES)]
+            marks = [0.0] + _crossings(e, lines, d, tol) + [1.0]
+            fs = sorted(set(fs + [0.5 * (a + b) for a, b in zip(marks, marks[1:]) if b - a > 1e-9]))
+            out.extend(_visible_parts(e, face, fs, seen))
+    finally:
+        for c in lines:
+            ext.delete_curve(c)
+    return out
+
+
+def _visible_parts(e: Edge, face: Face, fs: list[float], seen: Any) -> list[Edge]:
+    """The parts of a piece reached first, from what ``seen`` says at the fractions ``fs`` (increasing)
+    and where it changes between them (found by halving)."""
+    vis = [seen(e.point_at(f), face) for f in fs]
+    if all(vis):
+        return [e]
+    if not any(vis):
+        return []
+    cuts, states = [0.0], [vis[0]]
+    for i in range(len(fs) - 1):
+        if vis[i] != vis[i + 1]:
+            a, b = fs[i], fs[i + 1]
+            for _ in range(40):
+                m = (a + b) / 2
+                if seen(e.point_at(m), face) == vis[i]:
+                    a = m
+                else:
+                    b = m
+            cuts.append((a + b) / 2)
+            states.append(vis[i + 1])
+    cuts.append(1.0)
+    return [e if (f0, f1) == (0.0, 1.0) else e.trim(f0, f1)
+            for f0, f1, state in zip(cuts, cuts[1:], states) if state and f1 - f0 > 1e-9]
+
+
+# -----------------------------------------------------------------------------
+# seams of closed faces
+# -----------------------------------------------------------------------------
+def seam_crossings(face: Face, edge: Edge) -> list[float]:
+    """The fractions of the edge's length where its nearest points on the face's surface cross a seam
+    of the face (a closed face: around a cylinder), increasing. The kernel's normal projection of a
+    curve across a seam gave nothing at all."""
+    f = face._f
+    srf = f.surface()
+    (u0, v0), (u1, v1) = f.uv_domain()
+    size = max(1.0, face.bbox().diagonal)
+    closed = [_closed(srf, True, u0, u1, v0, v1, 1e-9 * size), _closed(srf, False, v0, v1, u0, u1, 1e-9 * size)]
+    if not any(closed):
+        return []
+    periods = [u1 - u0, v1 - v0]
+
+    def uv(t: float) -> tuple[float, float]:
+        return face._uv(edge.point_at(t))
+
+    def jumps(a: tuple[float, float], b: tuple[float, float]) -> bool:
+        return any(c and abs(b[i] - a[i]) > 0.5 * periods[i] for i, c in enumerate(closed))
+
+    n = 64
+    ts = [i / n for i in range(n + 1)]
+    uvs = [uv(t) for t in ts]
+    out: list[float] = []
+    for i in range(n):
+        if not jumps(uvs[i], uvs[i + 1]):
             continue
-        if not any(vis):
-            continue
-        cuts, states = [0.0], [vis[0]]
-        for i in range(_SAMPLES - 1):
-            if vis[i] != vis[i + 1]:
-                a, b = fs[i], fs[i + 1]
-                for _ in range(40):
-                    m = (a + b) / 2
-                    if seen(e.point_at(m), face) == vis[i]:
-                        a = m
-                    else:
-                        b = m
-                cuts.append((a + b) / 2)
-                states.append(vis[i + 1])
-        cuts.append(1.0)
-        for f0, f1, state in zip(cuts, cuts[1:], states):
-            if state and f1 - f0 > 1e-9:
-                out.append(e if (f0, f1) == (0.0, 1.0) else e.trim(f0, f1))
+        a, b, ua = ts[i], ts[i + 1], uvs[i]
+        for _ in range(48):
+            m = 0.5 * (a + b)
+            um = uv(m)
+            if jumps(ua, um):
+                b = m
+            else:
+                a, ua = m, um
+        out.append(0.5 * (a + b))
+    return [t for t in out if 1e-9 < t < 1 - 1e-9]
+
+
+def across_seams(pieces: list[Edge], tol: float) -> list[Edge]:
+    """Pieces of one curve on a face, those that a closed face's seam cut apart (one ends where the other
+    starts or ends, running on in the same direction) joined into one edge each (the kernel's pieces of
+    a projection need not run the way the curve does)."""
+    from .shapes import Wire
+
+    out = list(pieces)
+    joined = True
+    while joined and len(out) > 1:
+        joined = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                for x, y in ((a, b), (b, a), (a, b.reversed()), (a.reversed(), b)):
+                    if not x.end.distance_to(y.start) <= tol or (x.tangent_at(1.0) - y.tangent_at(0.0)).length > 1e-4:
+                        continue
+                    try:
+                        xy = Wire._raw([x, y]).to_edge()
+                    except (ModelingError, ValueError):
+                        continue
+                    out = [e for k_, e in enumerate(out) if k_ not in (i, j)] + [xy]
+                    joined = True
+                    break
+                if joined:
+                    break
+            if joined:
+                break
     return out
 
 
@@ -216,10 +347,12 @@ def wrap(face: Face, shape: Any, at: VectorLike | Vertex | None, direction: Vect
 
     out = ShapeList()
     for e in edges:
+        got: list[Edge] = []
         for w in _wrapped_edge(e, mapped, tol):
             with kernel_call("Face.wrap"):
                 pieces = ext.trim_to_face(f, [w._curve()], 100 * tol)
-            out.extend(Edge._from_curve(c) for c in pieces)
+            got.extend(Edge._from_curve(c) for c in pieces)
+        out.extend(across_seams(got, 100 * tol) if closed_u or closed_v else got)
     return out
 
 

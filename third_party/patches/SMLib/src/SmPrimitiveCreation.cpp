@@ -5,6 +5,11 @@
 //   either operand has an edgeuse that lies on no face (an edge the intersection left as a wire
 //   edge of a shell); it read the mark of that missing face through a null pointer, which killed
 //   the process (natively) or read low memory (WebAssembly).
+//   smlibpy_SetSweepProfileReference (new) gives CreateCurveSweep (with bMoveProfileCenterToPath) and
+//   CreateSweepAlongPlanarPath the point of the profile to put on the start of the path, in place of
+//   the middle of the box of the profile curves' control points: that box is larger than the curves
+//   where an arc does not span whole quadrants (or a spline's control polygon reaches past it), so a
+//   profile was swept beside its middle, and smlibpy puts a profile's own anchor on the path.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -39,6 +44,21 @@
 #ifdef SM_DEBUG_CODE
 #include <SmCrvOnSurf.h>
 #endif // SM_DEBUG_CODE
+
+// smlibpy patch: the point of the profile that the curve sweeps put on the start of the path, where
+// one is set (smlibpy's src/cpp/ext.cpp declares the setter; the kernel runs on one thread at a time)
+static SmBoolean sm_bProfileReference = FALSE;
+static SmPoint3d sm_sProfileReference;
+
+// smlibpy patch: sets (pdPoint: x, y, z) or clears (NULL) the point of the profile curves that
+// CreateCurveSweep with bMoveProfileCenterToPath, and CreateSweepAlongPlanarPath, put on the start of
+// the path, in place of the middle of the box of the curves' control points
+void smlibpy_SetSweepProfileReference( const double* pdPoint )
+{
+  sm_bProfileReference = pdPoint ? TRUE : FALSE;
+  if ( pdPoint )
+    { sm_sProfileReference.Set( pdPoint[0], pdPoint[1], pdPoint[2] ); }
+}
 
 // Temp define to allow switching back to old algorithms
 #define USE_NEW_ANALYTICS
@@ -5045,7 +5065,12 @@ SmStatus SmPrimitiveCreation::CreateCurveSweep
 
   // Move Profiles to orgin
   SmVector3d sProfileRefPt( 0, 0, 0 );
-  if(pOptions->bMoveProfileCenterToPath)
+  if(pOptions->bMoveProfileCenterToPath && sm_bProfileReference)
+  {
+    // smlibpy patch: the point given for the profile
+    sProfileRefPt = sm_sProfileReference;
+  }
+  else if(pOptions->bMoveProfileCenterToPath)
   {
     // If moving profile to center of path then we need to 
     // compute the centroid of all of the edges.
@@ -5573,6 +5598,9 @@ static void PositionProfileCurves
 
   // Get midpoint of profile curves
   SmVector3d mid = sBBoxTotal.GetMid();
+  // smlibpy patch: or the point given for the profile
+  if ( sm_bProfileReference )
+    { mid = sm_sProfileReference; }
 
   SmVector3d sXAxis( 1, 0, 0 ), sYAxis( 0, 1, 0 ), sZAxis( 0, 0, 1 );
 
@@ -5676,9 +5704,18 @@ static void SweepProfilesAlongPath
   sOptions.bMoveProfileCenterToPath = bMoveProfileCenterToPath;
   sOptions.bOrientProfilePerpendicularToPath = FALSE;
 
+  // smlibpy patch: PositionProfileCurves put the point given for the profile on the start of this
+  // path; the sweep keeps it there (and the point is given back after it)
+  SmBoolean bReference = sm_bProfileReference;
+  SmPoint3d sReference = sm_sProfileReference;
+  if ( bReference )
+    { bsPath->EvaluatePoint( bsPath->GetNaturalInterval().GetMin(), sm_sProfileReference ); }
+
   SmPrimitiveCreation pPC( pBrep->GetInfiniteRegion() );
   pPC.CreateCurveSweep( rProfileCurves, bsPath, pScaleReference, pScaleCurve, dTol,
                         &sOptions, startFaces, sideFaces, endFaces, FALSE );
+
+  sm_sProfileReference = sReference;  // smlibpy patch
 
   if ( bCapStart == FALSE )
   {

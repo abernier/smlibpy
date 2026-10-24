@@ -6,6 +6,9 @@
 // ones are what a light along the direction from the curve paints: a point of a piece counts where
 // the ray from its point of the curve meets the body there first. Pieces are cut where that changes.
 //
+// Pieces that a closed face's seam cut apart come back joined (one edge each), and a curve's normal
+// projection is made in pieces that do not cross a seam (the kernel gave nothing for one that does).
+//
 // A wrapped drawing keeps its lengths along the two parameter lines of the face through the point
 // it is placed at: x is the length along one, y along the other. On planes, cylinders and other
 // faces whose parameter lines keep their lengths everywhere (as a label on a can) the drawing keeps
@@ -16,7 +19,7 @@
 
 import { ModelingError, ext, k, kernelCall } from './kernel.ts'
 import { Vector, type VectorLike, _formatG, _vec } from './geometry.ts'
-import { Edge, type Face, ShapeList, Vertex, type _Body } from './shapes.ts'
+import { Edge, type Face, ShapeList, Vertex, Wire, type _Body, _canonicalCurve } from './shapes.ts'
 import { Line, _interpolate } from './curves.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
@@ -25,8 +28,55 @@ type Any = any
 // ------------------------------------------------------------------------------- what the projection reaches first
 const _SAMPLES = 17
 
+/** The body's edges and the contours of its curved faces seen along `d`, projected onto the plane
+ * across `d` through the origin (kernel curves, the caller deletes them): what is reached first along
+ * `d` changes only where a point's projection crosses one of them. */
+function _outlineCuts(body: _Body, d: Vector): number[] {
+  const [seen, behind] = kernelCall('project', () => ext.hidden_lines(body._brep, [0, 0, 0], d.neg().toArray(), false, false)) as [number[], number[]]
+  return [...seen, ...behind]
+}
+
+/** The fractions of the edge's length where its projection along `d` (onto the plane across `d`
+ * through the origin) crosses one of the projected `lines`. */
+function _crossings(e: Edge, lines: readonly number[], d: Vector, tol: number): number[] {
+  const n = d.normalized().toArray()
+  const c = e._copyCurve()
+  let data: Any
+  let t0: number
+  let t1: number
+  try {
+    data = ext.curve_data(c, true)
+    ;[t0, t1] = k.curve_parameter_range(c)
+  } finally {
+    ext.delete_curve(c)
+  }
+  const poles = (data.poles as number[][]).map((p) => {
+    const a = p[0] * n[0] + p[1] * n[1] + p[2] * n[2]
+    return [p[0] - a * n[0], p[1] - a * n[1], p[2] - a * n[2]]
+  })
+  const flat: number = kernelCall('project', () => _canonicalCurve(poles, data.knots, Number(data.degree), data.weights ?? null))
+  const lo = [0, 1, 2].map((i) => Math.min(...poles.map((p) => p[i])) - tol)
+  const hi = [0, 1, 2].map((i) => Math.max(...poles.map((p) => p[i])) + tol)
+  const out: number[] = []
+  try {
+    for (const line of lines) {
+      const [u0, u1] = k.curve_parameter_range(line)
+      const [a, b] = ext.curve_box(line, u0, u1) as number[][]
+      if ([0, 1, 2].some((i) => b[i] < lo[i] || a[i] > hi[i])) continue
+      const sols: Any[] = kernelCall('project', () => ext.intersect_curves(flat, t0, t1, line, u0, u1, tol))
+      for (const sol of sols) for (const pair of sol.end != null ? [sol.t, sol.end] : [sol.t]) out.push(e._fraction(Number(pair[0])))
+    }
+  } finally {
+    ext.delete_curve(flat)
+  }
+  return out.filter((f) => f > 0 && f < 1).sort((x, y) => x - y)
+}
+
 /** The parts of projected pieces (each with its face) that the projection of `source` along `d`
- * reaches first. */
+ * reaches first. Each piece is sampled at 17 points and between every two places where its projection
+ * crosses an edge or a contour of the body seen along `d` (only there can what is reached first
+ * change: 17 points alone missed an obstacle narrower than a seventeenth of the piece); where
+ * neighbouring samples differ, the change is found by halving. */
 export function visiblePieces(body: _Body, source: Edge, pieces: readonly [Edge, Face][], d: Vector, size: number): Edge[] {
   const tol = 1e-6 * size
   const reach = 4 * size
@@ -39,34 +89,108 @@ export function visiblePieces(body: _Body, source: Edge, pieces: readonly [Edge,
     const c = q.sub(d.mul(s))
     return !body.raycast(c, d).some((h) => h.distance < s - 10 * tol)
   }
+  const lines = pieces.length ? _outlineCuts(body, d) : []
   const out: Edge[] = []
-  for (const [e, face] of pieces) {
-    const fs = Array.from({ length: _SAMPLES }, (_, i) => (i + 0.5) / _SAMPLES)
-    const vis = fs.map((f) => seen(e.pointAt(f), face))
-    if (vis.every((x) => x)) {
-      out.push(e)
-      continue
+  try {
+    for (const [e, face] of pieces) {
+      const marks = [0, ..._crossings(e, lines, d, tol), 1]
+      const mids = marks.slice(1).flatMap((b, i) => (b - marks[i] > 1e-9 ? [0.5 * (marks[i] + b)] : []))
+      const fs = [...new Set([...Array.from({ length: _SAMPLES }, (_, i) => (i + 0.5) / _SAMPLES), ...mids])].sort((x, y) => x - y)
+      out.push(..._visibleParts(e, face, fs, seen))
     }
-    if (!vis.some((x) => x)) continue
-    const cuts = [0]
-    const states = [vis[0]]
-    for (let i = 0; i + 1 < _SAMPLES; i++) {
-      if (vis[i] !== vis[i + 1]) {
-        let a = fs[i]
-        let b = fs[i + 1]
-        for (let it = 0; it < 40; it++) {
-          const m = (a + b) / 2
-          if (seen(e.pointAt(m), face) === vis[i]) a = m
-          else b = m
-        }
-        cuts.push((a + b) / 2)
-        states.push(vis[i + 1])
+  } finally {
+    for (const c of lines) ext.delete_curve(c)
+  }
+  return out
+}
+
+/** The parts of a piece reached first, from what `seen` says at the fractions `fs` (increasing) and
+ * where it changes between them (found by halving). */
+function _visibleParts(e: Edge, face: Face, fs: number[], seen: (q: Vector, face: Face) => boolean): Edge[] {
+  const vis = fs.map((f) => seen(e.pointAt(f), face))
+  if (vis.every((x) => x)) return [e]
+  if (!vis.some((x) => x)) return []
+  const cuts = [0]
+  const states = [vis[0]]
+  for (let i = 0; i + 1 < fs.length; i++) {
+    if (vis[i] !== vis[i + 1]) {
+      let a = fs[i]
+      let b = fs[i + 1]
+      for (let it = 0; it < 40; it++) {
+        const m = (a + b) / 2
+        if (seen(e.pointAt(m), face) === vis[i]) a = m
+        else b = m
       }
+      cuts.push((a + b) / 2)
+      states.push(vis[i + 1])
     }
-    cuts.push(1)
-    for (let i = 0; i < states.length; i++) {
-      const [f0, f1] = [cuts[i], cuts[i + 1]]
-      if (states[i] && f1 - f0 > 1e-9) out.push(f0 === 0 && f1 === 1 ? e : e.trim(f0, f1))
+  }
+  cuts.push(1)
+  const out: Edge[] = []
+  for (let i = 0; i < states.length; i++) {
+    const [f0, f1] = [cuts[i], cuts[i + 1]]
+    if (states[i] && f1 - f0 > 1e-9) out.push(f0 === 0 && f1 === 1 ? e : e.trim(f0, f1))
+  }
+  return out
+}
+
+// ------------------------------------------------------------------------------- seams of closed faces
+/** The fractions of the edge's length where its nearest points on the face's surface cross a seam of
+ * the face (a closed face: around a cylinder), increasing. The kernel's normal projection of a curve
+ * across a seam gave nothing at all. */
+export function seamCrossings(face: Face, edge: Edge): number[] {
+  const f = face._f
+  const srf: number = k.face_surface(f)
+  const [[u0, v0], [u1, v1]] = k.face_uv_domain(f)
+  const size = Math.max(1, face.bbox().diagonal)
+  const closed = [_closed(srf, true, u0, u1, v0, v1, 1e-9 * size), _closed(srf, false, v0, v1, u0, u1, 1e-9 * size)]
+  if (!closed.some((c) => c)) return []
+  const periods = [u1 - u0, v1 - v0]
+  const uv = (t: number): [number, number] => face._uv(edge.pointAt(t))
+  const jumps = (a: [number, number], b: [number, number]) => closed.some((c, i) => c && Math.abs(b[i] - a[i]) > 0.5 * periods[i])
+  const n = 64
+  const ts = Array.from({ length: n + 1 }, (_, i) => i / n)
+  const uvs = ts.map(uv)
+  const out: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (!jumps(uvs[i], uvs[i + 1])) continue
+    let [a, b, ua] = [ts[i], ts[i + 1], uvs[i]]
+    for (let it = 0; it < 48; it++) {
+      const m = 0.5 * (a + b)
+      const um = uv(m)
+      if (jumps(ua, um)) b = m
+      else [a, ua] = [m, um]
+    }
+    out.push(0.5 * (a + b))
+  }
+  return out.filter((t) => t > 1e-9 && t < 1 - 1e-9)
+}
+
+/** Pieces of one curve on a face, those that a closed face's seam cut apart (one ends where the other
+ * starts or ends, running on in the same direction) joined into one edge each (the kernel's pieces of a
+ * projection need not run the way the curve does). */
+export function acrossSeams(pieces: readonly Edge[], tol: number): Edge[] {
+  let out = [...pieces]
+  let joined = true
+  while (joined && out.length > 1) {
+    joined = false
+    search: for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const [a, b] = [out[i], out[j]]
+        for (const [x, y] of [[a, b], [b, a], [a, b.reversed()], [a.reversed(), b]] as [Edge, Edge][]) {
+          if (!(x.end.distanceTo(y.start) <= tol) || x.tangentAt(1).sub(y.tangentAt(0)).length > 1e-4) continue
+          let xy: Edge
+          try {
+            xy = Wire._raw([x, y]).toEdge()
+          } catch (e) {
+            if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+            continue
+          }
+          out = [...out.filter((_, m) => m !== i && m !== j), xy]
+          joined = true
+          break search
+        }
+      }
     }
   }
   return out
@@ -249,11 +373,15 @@ export function wrap(face: Face, shape: unknown, at: VectorLike | Vertex | null,
     return [uv.map((_, i) => [P[3 * i], P[3 * i + 1], P[3 * i + 2]]), ok]
   }
   const out = new ShapeList<Edge>()
+  const closedU = _closed(srf, true, u0, u1, v0, v1, 1e-9 * size)
+  const closedV = _closed(srf, false, v0, v1, u0, u1, 1e-9 * size)
   for (const e of edges as Edge[]) {
+    const got: Edge[] = []
     for (const w of _wrappedEdge(e, mapped, tol)) {
       const pieces: number[] = kernelCall('Face.wrap', () => ext.trim_to_face(f, [w._curve()], 100 * tol))
-      for (const c of pieces) out.push(Edge._fromCurve(c))
+      for (const c of pieces) got.push(Edge._fromCurve(c))
     }
+    out.push(...(closedU || closedV ? acrossSeams(got, 100 * tol) : got))
   }
   return out
 }

@@ -7,7 +7,7 @@ Points may be given as 2-tuples (z = 0), 3-tuples or :class:`~smlibpy.Vector`.
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 
@@ -568,12 +568,33 @@ def _through_tangents(pts: list[Vector], tangents: list[VectorLike | None], clos
     return Edge._from_curve(curve)
 
 
+def _fit_tangents(pts: list[Vector], tangents: Sequence[Any], tol: float) -> Edge:
+    """:func:`fit_curve` with a direction at every point (``ext.approximate_tangents``)."""
+    from ._kernel import ModelingError
+
+    dirs = []
+    for i, t in enumerate(tangents):
+        if t is None:
+            raise ValueError(f"fit_curve: with a direction at every point, tangent {i + 1} is None")
+        v = _vec(t)
+        if not v.length > 0:
+            raise ValueError(f"fit_curve: tangent {i + 1} has no direction")
+        dirs.append(v.normalized())
+    with kernel_call("fit_curve"):
+        curve, dev, _ = ext.approximate_tangents([c for p in pts for c in p], [c for d in dirs for c in d], float(tol))
+    edge = Edge._from_curve(curve)
+    if dev > tol:
+        raise ModelingError(f"fit_curve: the closest fit found passes {dev:.3g} from a point, more than the tolerance "
+                            f"{tol:g}; use a larger tolerance")
+    return edge
+
+
 def fit_curve(
     points: Sequence[VectorLike] | np.ndarray,
     *,
     tolerance: float | None = None,
     degree: int = 3,
-    tangents: tuple[VectorLike | None, VectorLike | None] | None = None,
+    tangents: tuple[VectorLike | None, VectorLike | None] | Sequence[VectorLike] | None = None,
     closed: bool = False,
 ) -> Edge:
     """A smooth curve near many points, with as few control points as keep it within
@@ -588,7 +609,11 @@ def fit_curve(
             of the points.
         degree: The highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
             needs).
-        tangents: Optional ``(start, end)`` directions; either may be None. Not for closed curves.
+        tangents: Optional ``(start, end)`` directions; either may be None. Or a direction at every
+            point (as many as there are points, none None; a cubic curve then): the curve leaves
+            each point near that direction, as the curve through the points along them
+            (``Spline(*points, tangents=[...])``) does, simplified within the tolerance. Not for
+            closed curves.
         closed: A closed curve, through the first point again and tangent there.
 
     Few points (fewer than about six) give the curve through them (:func:`Spline`). Where no fit
@@ -614,23 +639,29 @@ def fit_curve(
     size = float(np.linalg.norm(arr.max(axis=0) - arr.min(axis=0)))
     if size == 0:
         raise ValueError("fit_curve: the points all coincide")
-    keep = [pts[0]]
-    for p in pts[1:]:
+    count = len(pts)
+    every = tangents is not None and len(tangents) == count > 2  # (a direction at every point)
+    keep, kept = [pts[0]], [0]
+    for i, p in enumerate(pts[1:], 1):
         if p.distance_to(keep[-1]) > 1e-12 * size:
             keep.append(p)
+            kept.append(i)
     if closed and len(keep) > 2 and keep[-1].distance_to(keep[0]) <= 1e-12 * size:
         keep.pop()
+        kept.pop()
     pts = keep
     tol = 1e-3 * size if tolerance is None else tolerance
     if not (isinstance(tol, (int, float)) and math.isfinite(tol) and tol > 0):
         raise ValueError(f"fit_curve: the tolerance must be positive, got {tolerance!r}")
     if not (isinstance(degree, (int, np.integer)) and 2 <= degree <= 9):
         raise ValueError(f"fit_curve: the degree is 2 to 9, got {degree!r}")
-    if tangents is not None and len(tangents) != 2:
-        raise ValueError("fit_curve: tangents are (start, end); for a direction at every point use Spline(..., "
-                         "tangents=[...])")
+    if tangents is not None and len(tangents) != 2 and not every:
+        raise ValueError(f"fit_curve: tangents are (start, end), or a direction at each of the {count} points, got "
+                         f"{len(tangents)}")
     if closed and tangents is not None:
-        raise ValueError("fit_curve: a closed curve takes no end tangents")
+        raise ValueError("fit_curve: a closed curve takes no end tangents, nor a direction at every point")
+    if every:
+        return _fit_tangents(pts, [tangents[i] for i in kept], tol)
     t0 = list(_vec(tangents[0])) if tangents is not None and tangents[0] is not None else []
     t1 = list(_vec(tangents[1])) if tangents is not None and tangents[1] is not None else []
     try:

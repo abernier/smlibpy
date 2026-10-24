@@ -124,20 +124,62 @@ function _zone(radius: number, lo: number, hi: number, arc: number | null): Part
   return makeFace(new Wire(edges)).on(Plane.XZ).revolve(Z, arc ?? 360)
 }
 
-/** A torus around Z. `majorAngle` (degrees, at most 360) makes a sector of it, from the +X axis
- * counter-clockwise about +Z, with round ends; it is centered by its bounding box (`align: null`
- * keeps the torus's center at the origin). */
-export function Torus(majorRadius: number, minorRadius: number, options: { majorAngle?: number; align?: AlignLike } = {}): Part {
+/**
+ * A torus around Z.
+ *
+ * `majorAngle` (degrees, at most 360) makes a sector of it, from the +X axis counter-clockwise about
+ * +Z, with round ends. `minorStartAngle` and `minorEndAngle` (degrees) keep the part of the tube's
+ * circle between them, as build123d does: measured in the tube's section from the side away from the
+ * axis (0) towards +Z (90), the section a slice of the circle from its center (cones, planes or
+ * cylinders where the slice's straight sides go round). A part of a torus is centered by its bounding
+ * box (`align: null` keeps the torus's center at the origin).
+ *
+ *     const topHalf = Torus(20, 5, { minorStartAngle: 0, minorEndAngle: 180 })
+ *     const bead = Torus(20, 5, { minorStartAngle: -90, minorEndAngle: 90 }) // the outer half
+ */
+export function Torus(
+  majorRadius: number,
+  minorRadius: number,
+  options: { minorStartAngle?: number; minorEndAngle?: number; majorAngle?: number; align?: AlignLike } = {},
+): Part {
   _opts('Torus', options, arguments.length)
   if (minorRadius <= 0 || majorRadius <= minorRadius) throw new RangeError('need 0 < minorRadius < majorRadius')
   const a = _arc(options.majorAngle ?? 360, 'Torus', 'majorAngle')
-  if (a !== null) {
+  const lo = Number(options.minorStartAngle ?? 0)
+  const hi = Number(options.minorEndAngle ?? 360)
+  if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi - lo > 0 && hi - lo <= 360 + 1e-9)) {
+    throw new RangeError(
+      `Torus: minorEndAngle must lie more than 0 and at most 360 degrees past minorStartAngle, got ${options.minorStartAngle} and ${options.minorEndAngle}`,
+    )
+  }
+  const whole = hi - lo > 360 - WHOLE_TURN
+  if (a !== null || !whole) {
     // (the kernel's partial torus is a surface of revolution; the revolve gives a torus)
-    const part = Circle(Number(minorRadius)).translate(Number(majorRadius), 0).on(Plane.XZ).revolve(Z, a)
+    const section = whole ? Circle(Number(minorRadius)) : _slice(Number(minorRadius), lo, hi)
+    const part = section.translate(Number(majorRadius), 0).on(Plane.XZ).revolve(Z, a ?? 360)
     return _aligned(part, _align(options), true)
   }
   const b = kernelCall('Torus', () => k.create_torus([0, 0, 0], Number(majorRadius), Number(minorRadius)))
   return _aligned(Part._wrap(b), _align(options))
+}
+
+/** The slice of a circle about the origin from angle `lo` to `hi` (degrees, counter-clockwise from +X),
+ * its straight sides to the center, as a sketch. */
+function _slice(radius: number, lo: number, hi: number) {
+  const at = (deg: number): [number, number] => [radius * Math.cos(_radians(deg)), radius * Math.sin(_radians(deg))]
+  const [p, m, q] = [at(lo), at((lo + hi) / 2), at(hi)]
+  return makeFace(new Wire([ThreePointArc(p, m, q), Line(q, [0, 0]), Line([0, 0], p)]))
+}
+
+/** A pyramid: a `length` (X) by `width` (Y) rectangle at the bottom, its apex `height` (Z) above the
+ * rectangle's center; five planes. Centered by its bounding box. */
+export function Pyramid(length: number, width: number, height: number, options: { align?: AlignLike } = {}): Part {
+  _opts('Pyramid', options, arguments.length)
+  if (!(length > 0 && width > 0 && height > 0)) throw new RangeError('pyramid length, width and height must be positive')
+  const b = kernelCall('Pyramid', () => k.create_pyramid([0, 0, -height / 2], Number(length), Number(height)))
+  let part = Part._wrap(b)
+  if (width !== length) part = part.scale([1, Number(width) / Number(length), 1])
+  return _aligned(part, options.align ?? Align.CENTER)
 }
 
 /** A ramp: a `length` (X) by `width` (Y) base whose high side, `height` tall, is the face at

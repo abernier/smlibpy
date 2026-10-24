@@ -44,7 +44,7 @@ import { Mesh, _levels, _rayTriangles, _rays, _tessellate, _triangleFaces, faceM
 import { type ShowOptions, show } from './viewer.ts'
 import { exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
-import { visiblePieces, wrap as _wrap } from './_face_curves.ts'
+import { acrossSeams, seamCrossings, visiblePieces, wrap as _wrap } from './_face_curves.ts'
 import {
   GUARD_BOOLEANS,
   type _Job,
@@ -1895,7 +1895,10 @@ export class Edge extends Shape {
    * Lines stay lines and arcs stay arcs, exactly. Splines and ellipses are offset by the kernel
    * within 1e-6 of their size. Where the edge bends toward that side more tightly than the distance
    * (a radius of curvature below it, see `minRadius`), the offset would fold over itself and a
-   * ModelingError says where.
+   * ModelingError says where. A closed edge with a corner where it starts and ends
+   * (`Spline(...pts, pts[0])`) comes back as one closed edge: rounded at the corner where the offset
+   * pulls it apart, cut where its sides cross where it pushes them together (`Wire.offset` gives
+   * sharp and chamfered corners).
    *
    * `plane`: the plane the edge lies in, whose normal tells left from right. Default: the XY plane
    * for an edge at one height, else the plane the edge lies in, its normal toward +Z (+Y, then +X,
@@ -1906,7 +1909,10 @@ export class Edge extends Shape {
   offset(distance: number, options: { plane?: Plane | null } = {}): Edge {
     _opts('Edge.offset', options)
     if (_offsetDistance(distance, 'offset') === 0) return this
-    return offsetWire([this], distance, 'round', options.plane ?? null, 'offset')[0]
+    const out = offsetWire([this], distance, 'round', options.plane ?? null, 'offset')
+    // (a closed edge with a corner where it starts and ends: the arc that rounds it, and the edge,
+    // joined tangentially into one; the arc alone came back before 0.5.0)
+    return out.length === 1 ? out[0] : Wire._raw(out).toEdge()
   }
 
   /**
@@ -3249,16 +3255,25 @@ export class Face extends Shape {
     const size = Math.max(1, this.bbox().union(curve.bbox()).diagonal)
     const out = new ShapeList<Edge>()
     for (const e of curve.edges()) {
-      const c = e._copyCurve()
-      let res: [number, number][]
-      try {
-        // (the kernel's tolerance bounds the drop; along the surface the curve comes within about
-        // five times it)
-        res = kernelCall('Face.project', () => ext.normal_project([this._f], c, 1e-8 * size))
-      } finally {
-        ext.delete_curve(c)
+      // (in pieces that do not cross a seam of the face: the kernel gave nothing for a curve that
+      // crosses one; the pieces it cuts apart there joined again)
+      const cuts = seamCrossings(this, e)
+      const marks = [0, ...cuts, 1]
+      const parts = cuts.length ? marks.slice(1).map((b, i) => e.trim(marks[i], b)) : [e]
+      const got: Edge[] = []
+      for (const part of parts) {
+        const c = part._copyCurve()
+        let res: [number, number][]
+        try {
+          // (the kernel's tolerance bounds the drop; along the surface the curve comes within about
+          // five times it)
+          res = kernelCall('Face.project', () => ext.normal_project([this._f], c, 1e-8 * size))
+        } finally {
+          ext.delete_curve(c)
+        }
+        for (const [cv] of res) got.push(Edge._fromCurve(cv))
       }
-      for (const [cv] of res) out.push(Edge._fromCurve(cv))
+      out.push(...(got.length > 1 ? acrossSeams(got, 1e-6 * size) : got))
     }
     return out
   }
@@ -3839,7 +3854,13 @@ export class _Body extends Shape {
       } finally {
         ext.delete_curve(c)
       }
-      const pieces = res.map(([cv, i]): [Edge, Face] => [Edge._fromCurve(cv), faces[i]])
+      let pieces = res.map(([cv, i]): [Edge, Face] => [Edge._fromCurve(cv), faces[i]])
+      if (pieces.length > 1) {
+        // (the pieces a closed face's seam cut apart, joined again: those of one face)
+        const grouped = new Map<Face, Edge[]>()
+        for (const [p, f] of pieces) grouped.set(f, [...(grouped.get(f) ?? []), p])
+        pieces = [...grouped].flatMap(([f, ps]) => acrossSeams(ps, 1e-6 * size).map((p): [Edge, Face] => [p, f]))
+      }
       if (nearest) out.push(...visiblePieces(this, e, pieces, d, size))
       else out.push(...pieces.map(([p]) => p))
     }
@@ -7618,6 +7639,20 @@ function _sheetOffsetProblem(sheet: Shell, result: Shell, d: number): string | n
   return null
 }
 
+/** The part with its flat B-spline faces as planes (`ext.planar_faces`), where that keeps it valid and
+ * of its volume: the walls of the straight edges of an extrusion along a direction across the sketch's
+ * normal, which the kernel makes as B-spline surfaces (selections by type missed them, STEP files
+ * carried B-splines). */
+function _flatWalls(part: Part): Part {
+  if (!part.faces().some((f) => f.geomType === 'bspline')) return part
+  const size = part._extent()
+  const b = kernelCall('extrude', () => ext.planar_faces(part._brep, 1e-9 * Math.max(1, size)))
+  if (b == null) return part
+  const flat = Part._wrap(b, { name: part.name, color: part.color })
+  if (!flat.isValid() || Math.abs(flat.volume - part.volume) > 1e-9 * Math.max(Math.abs(part.volume), 1e-300)) return part
+  return flat
+}
+
 export function _requireSolid(part: Part, what: string, hint: string): Part {
   const problem = part._solidProblem()
   if (problem !== null) throw new ModelingError(`${what}: the kernel returned a body that is ${problem}; ${hint}`)
@@ -8740,7 +8775,8 @@ export interface ExtrudeOptions {
   taper?: number
   /** Extrude along this direction (an axis or a vector) instead of the normal; the amount is measured
    * along it. A direction in the sketch plane throws a `RangeError`; one less than 0.06 degrees (a sine
-   * of 1e-3) off the plane warns, as the solid is then less than amount / 1000 thick. */
+   * of 1e-3) off the plane warns, as the solid is then less than amount / 1000 thick. With `taper`
+   * only the normal (either way) is taken: a direction across it throws a `RangeError`. */
   direction?: Axis | VectorLike | null
   /** With a taper, the corners the taper pulls apart: 'sharp' (the walls extended until they meet)
    * or 'round' (rounded off, as an offset rounds them). */
@@ -9317,6 +9353,9 @@ export class Sketch extends Shell {
    * outward taper, concave ones of an inward one): 'sharp' (the walls extended until they meet) or
    * 'round' (rounded off, as an offset rounds them).
    *
+   * With a taper only the normal (either way) is taken as `direction`: a taper drafts the walls about
+   * the normal, so a direction across it throws a RangeError.
+   *
    * @param amount Distance along the sketch normal (negative goes the other way).
    */
   extrude(amount: number, options: ExtrudeOptions = {}): Part {
@@ -9328,6 +9367,16 @@ export class Sketch extends Shell {
     const d = direction != null ? _direction(direction, 'extrude') : this._plane.zDir
     if (direction != null) this._checkDirection(d, Math.abs(Number(amount)) * (both ? 2 : 1), !taper)
     if (taper) {
+      if (direction != null) {
+        // (a taper drafts the walls about the normal; the direction was ignored before 0.5.0)
+        const along = d.dot(this._plane.zDir)
+        if (Math.abs(along) < 1 - 1e-12) {
+          throw new RangeError(
+            'extrude: a taper drafts the walls about the sketch normal, so direction= must run along the normal (either way) with taper=; extrude with the taper along the normal, or without a taper along the direction',
+          )
+        }
+        if (along < 0) amount = -amount
+      }
       const out = this._extrudeTaper(amount, taper, both, corners === 'round')
       out.name = this.name
       out.color = this.color
@@ -9359,18 +9408,60 @@ export class Sketch extends Shell {
    * (circles, rectangles, hexagons, ellipses and slots in random planes, both directions, one side and
    * both) 1 at 6 degrees off the plane, 25 at 0.6 and 0.06 degrees, 192 at 0.006 (the same before
    * 0.5.0). Turned about the normal through the sketch's origin, extruded and turned back, all but 16
-   * at each of those angles come out valid with the exact volume; where none of three turns does,
-   * `ModelingError`. */
+   * at each of those angles come out valid with the exact volume; those are swept along a line, each
+   * curve's wall a translational surface (`ModelingError` where that fails too). The walls of straight
+   * edges, which the kernel makes as flat B-spline surfaces, are planes. */
   _oblique(part: Part, d: Vector, dist: number): Part {
-    if (part.isValid()) return part
-    const axis = new Axis(this._plane.origin, this._plane.zDir)
-    for (const angle of [113, 180, 37]) {
-      const again = this.rotate(axis, angle)._sweptAlong(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
-      if (again.isValid()) return again
+    if (!part.isValid()) {
+      const axis = new Axis(this._plane.origin, this._plane.zDir)
+      let fixed: Part | null = null
+      for (const angle of [113, 180, 37]) {
+        const again = this.rotate(axis, angle)._sweptAlong(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
+        if (again.isValid()) {
+          fixed = again
+          break
+        }
+      }
+      if (fixed === null) fixed = this._translated(d, dist)
+      if (fixed === null) {
+        throw new ModelingError(
+          'extrude: the kernel made this extrusion along the direction invalid (inside out or open); extrude along the sketch normal, or along a direction further from the sketch plane',
+        )
+      }
+      part = fixed
     }
-    throw new ModelingError(
-      'extrude: the kernel made this extrusion along the direction invalid (inside out or open); extrude along the sketch normal, or along a direction further from the sketch plane',
-    )
+    return _flatWalls(part)
+  }
+
+  /** The extrusion along the unit direction `d` by `dist` as the kernel's translational curve sweep
+   * along a line (each curve's wall a translational surface, the ends capped), checked; null where it
+   * is not valid or not of its volume. */
+  _translated(d: Vector, dist: number): Part | null {
+    const o = this._plane.origin
+    const expected = Math.abs(this.area) * dist * Math.abs(d.dot(this._plane.zDir))
+    let out: Part | null = null
+    for (const f of this.faces()) {
+      const pieces: Part[] = []
+      for (const w of f.wires()) {
+        const curves = w._copyCurves()
+        const path = Line(o, o.add(d.mul(dist)))._copyCurve()
+        try {
+          pieces.push(Part._wrap(kernelCall('extrude', () => ext.curve_sweep(curves, path, true, true, false, true, null, null, o.toArray()))))
+        } catch (e) {
+          if (e instanceof KernelError) return null
+          throw e
+        } finally {
+          ext.delete_curve(path)
+          for (const c of curves) ext.delete_curve(c)
+        }
+      }
+      if (!pieces.every((p) => p.isValid())) return null // (thin bodies fail _solidProblem's coarse sign test)
+      let piece = pieces[0]
+      for (const hole of pieces.slice(1)) piece = piece.cut(hole)
+      out = out === null ? piece : out.fuse(piece)
+    }
+    if (out === null || !out.isValid() || Math.abs(out.volume - expected) > 1e-6 * expected) return null
+    return out
   }
 
   /** Throw where an extrusion direction lies in the sketch plane, warn where it nearly does (where it
@@ -9540,8 +9631,8 @@ export class Sketch extends Shell {
     }
   }
 
-  /** Sweep the region along a path (see `sweep`: the center of the region's box goes to the start of
-   * the path; `up` and `twist` set its attitude along it, `scale` its size). */
+  /** Sweep the region along a path (see `sweep`: the center of the region's box, or the point `anchor`
+   * names, goes to the start of the path; `up` and `twist` set its attitude along it, `scale` its size). */
   sweep(
     path: Edge | Wire,
     options: {
@@ -9549,10 +9640,17 @@ export class Sketch extends Shell {
       up?: Axis | VectorLike | string | null
       twist?: number | ((s: number) => number)
       scale?: readonly [number, number] | readonly (readonly [number, number])[] | ((s: number) => number) | null
+      anchor?: 'center' | 'origin' | VectorLike | Vertex
     } = {},
   ): Part {
     _opts('Sketch.sweep', options)
-    return _sweep(this, path, { sharpCorners: options.sharpCorners ?? null, up: options.up ?? null, twist: options.twist ?? 0, scale: options.scale ?? null }) as Part
+    return _sweep(this, path, {
+      sharpCorners: options.sharpCorners ?? null,
+      up: options.up ?? null,
+      twist: options.twist ?? 0,
+      scale: options.scale ?? null,
+      anchor: options.anchor ?? 'center',
+    }) as Part
   }
 
   /** Swing the region around an outline: a revolve about Z whose circle is the outline (see `swing`:

@@ -5,6 +5,7 @@
 //   offset_curve(curve, normal, distance, tolerance)        the curve moved sideways in a plane
 //   approximate_points(points, degree, tolerance, ...)      a B-spline within a tolerance of points
 //   interpolate_tangents(points, tangents, degree)          a B-spline through points and tangents
+//   approximate_tangents(points, tangents, tolerance)      a B-spline near points, along tangents there
 //   curve_geometry(curve, t)                                curvature and torsion vectors
 //   curve_properties(curve, t0, t1, kind, value, tol)       inflections, radius extrema
 //   curve_box(curve, t0, t1)                                the exact axis-aligned box
@@ -533,6 +534,41 @@ CurveResult interpolate_tangents(const std::vector<double>& points, const std::v
     return out;
 }
 
+CurveResult approximate_tangents(const std::vector<double>& points, const std::vector<double>& tangents,
+                                 double tolerance)
+{
+    if (!(tolerance > 0.0) || !std::isfinite(tolerance))
+        throw std::invalid_argument("approximate_tangents: the tolerance must be positive");
+    // The cubic through the points along their tangents (exact), then its knots taken out while it stays
+    // within the tolerance of that curve (NLib's knot removal, the end tangents kept): its directions
+    // change only as much as its shape may. Measured at the points, and made again with half the
+    // removal tolerance where a point lies farther off.
+    CurveResult through = interpolate_tangents(points, tangents, 3);
+    std::unique_ptr<SmBSplineCurve> exact(static_cast<SmBSplineCurve*>(through.curve));
+    SmTArray<SmPoint3d> P = point_array(points, "approximate_tangents", 2);
+    std::unique_ptr<SmBSplineCurve> best;
+    double best_deviation = std::numeric_limits<double>::infinity();
+    double tol = tolerance;
+    for (int attempt = 0; attempt < 6; attempt++)
+    {
+        std::unique_ptr<SmBSplineCurve> c(new (ctx()) SmBSplineCurve(*exact));
+        check(c->RemoveKnots(tol, TRUE, 1), "SmBSplineCurve::RemoveKnots");
+        const double deviation = max_distance(c.get(), P);
+        if (deviation <= tolerance)
+        {
+            best = std::move(c), best_deviation = deviation;
+            break;
+        }
+        tol *= 0.5;
+    }
+    CurveResult out;
+    if (!best)
+        out.deviation = through.deviation, out.curve = exact.release();  // (no knot could go: the cubic through them)
+    else
+        out.deviation = best_deviation, out.curve = best.release();
+    return out;
+}
+
 Value curve_geometry(const SmCurve* curve, double t)
 {
     if (!curve)
@@ -729,6 +765,13 @@ void bind_curve_ops(py::module_ m)
     }, py::arg("points"), py::arg("tangents"), py::arg("degree") = 3,
           "A B-spline through points (x, y, z flat) with a tangent direction at each "
           "(SmBSplineCurve::CreateInterpolatingCurve): (curve, deviation, nan). The curve is the caller's.");
+    m.def("approximate_tangents", [](const std::vector<double>& points, const std::vector<double>& tangents,
+                                     double tolerance) {
+        return result(smlibpy::approximate_tangents(points, tangents, tolerance));
+    }, py::arg("points"), py::arg("tangents"), py::arg("tolerance"),
+          "A cubic B-spline within tolerance of points (x, y, z flat) along a tangent direction at each: the curve "
+          "through them (interpolate_tangents) with its knots removed within the tolerance: (curve, deviation, nan), "
+          "deviation the largest distance of a point from it. The curve is the caller's.");
     m.def("curve_geometry", [](const SmCurve* curve, double t) {
         return smlibpy::to_python(smlibpy::curve_geometry(curve, t));
     }, py::arg("curve"), py::arg("t"),

@@ -268,8 +268,10 @@ test('sweep along kinked closed 3D paths', () => {
   // sweep, which gave no closed solid (ModelingError; valid before the profile was carried along).
   // Now they are swept as 3D paths, the profile carried along the halves: area x length less the
   // overlap of the ends where they cross at the kink (for the circle about tan(kink) x 2 r^3 / 3,
-  // the first moment of its inner half).
-  const cases = [[20, Rectangle(4, 1), 543.404104], [14, Circle(2), 1499.196379], [14, Rectangle(4, 1), 477.647314]] as const
+  // the first moment of its inner half). Since 0.5.0's close-out the rectangle meets itself where the
+  // loop closes (turned there by the smallest rotation, the turn it gained round the loop spread along
+  // it): it was 543.404104 and 477.647314.
+  const cases = [[20, Rectangle(4, 1), 543.39558], [14, Circle(2), 1499.196379], [14, Rectangle(4, 1), 477.122125]] as const
   for (const [ry, profile, volume] of cases) {
     const pts = Array.from({ length: 8 }, (_, i) => {
       const a = (i * PI) / 4

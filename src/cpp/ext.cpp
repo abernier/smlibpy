@@ -506,6 +506,10 @@ std::vector<long> indices_in(const SmTArray<T*>& all, const std::vector<T*>& wan
 
 }  // namespace
 
+// The kernel patch's setter of the point of a profile its curve sweeps put on the path
+// (third_party/patches/SMLib/src/SmPrimitiveCreation.cpp)
+void smlibpy_SetSweepProfileReference(const double* pdPoint);
+
 namespace smlibpy {
 
 Value curve_data(const SmCurve* curve, bool nurbs) { return make_curve_data(curve, nurbs); }
@@ -1196,8 +1200,39 @@ Value curve_eval(const SmCurve* curve, double t, int derivatives)
     return l;
 }
 
+namespace {
+
+// Gives the kernel's curve sweeps the point of the profile to put on the path for one call (kernel
+// patch in third_party/patches/SMLib/src/SmPrimitiveCreation.cpp).
+class SweepReference
+{
+public:
+    explicit SweepReference(const std::vector<double>& point)
+    {
+        if (point.empty())
+            return;
+        if (point.size() != 3 || !std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2]))
+            throw std::invalid_argument("sweep: the reference point is (x, y, z)");
+        smlibpy_SetSweepProfileReference(point.data());
+        set_ = true;
+    }
+    ~SweepReference()
+    {
+        if (set_)
+            smlibpy_SetSweepProfileReference(nullptr);
+    }
+    SweepReference(const SweepReference&) = delete;
+    SweepReference& operator=(const SweepReference&) = delete;
+
+private:
+    bool set_ = false;
+};
+
+}  // namespace
+
 SmBrep* curve_sweep(const std::vector<SmCurve*>& profile, SmBSplineCurve* path, bool cap_ends, bool center,
-                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve)
+                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve,
+                    const std::vector<double>& reference)
 {
     SmTArray<SmCurve*> curves;
     for (SmCurve* c : profile)
@@ -1209,8 +1244,23 @@ SmBrep* curve_sweep(const std::vector<SmCurve*>& profile, SmBSplineCurve* path, 
     options.bTranslationalSweep = translational ? TRUE : FALSE;
     options.bMoveToProfile = FALSE;
     SmBrep* out = nullptr;
+    SweepReference at(reference);
     check(SmApiCreateCurveSweep(curves, path, scale_reference, scale_curve, &options, out, nullptr, nullptr, nullptr),
           "SmApiCreateCurveSweep");
+    return out;
+}
+
+SmBrep* planar_path_sweep(const std::vector<SmCurve*>& profile, const std::vector<SmCurve*>& path,
+                          const std::vector<double>& reference)
+{
+    SmTArray<SmCurve*> curves, pieces;
+    for (SmCurve* c : profile)
+        curves.Add(c);
+    for (SmCurve* c : path)
+        pieces.Add(c);
+    SmBrep* out = nullptr;
+    SweepReference at(reference);
+    check(SmApiCreateSweepAlongPlanarPath(curves, pieces, TRUE, 3, out), "SmApiCreateSweepAlongPlanarPath");
     return out;
 }
 
@@ -1365,11 +1415,19 @@ void bind_smlibpy_ext(py::module_ m)
 
     m.def("curve_sweep", &smlibpy::curve_sweep, py::arg("profile"), py::arg("path"), py::arg("cap_ends") = true,
           py::arg("center") = true, py::arg("orient") = false, py::arg("translational") = false,
-          py::arg("scale_reference") = nullptr, py::arg("scale_curve") = nullptr, py::return_value_policy::take_ownership,
+          py::arg("scale_reference") = nullptr, py::arg("scale_curve") = nullptr,
+          py::arg("reference") = std::vector<double>{}, py::return_value_policy::take_ownership,
           py::call_guard<smlibpy::NoGil>(),
           "Sweep profile curves along a path with all SmSweepOptions. Profile and path are copied, not consumed. "
-          "With `center` the bounding-box centre of all profile curves travels along the path; otherwise the "
-          "start point of the first curve does.");
+          "With `center` the point `reference` (x, y, z) of the profile travels along the path, without it the "
+          "middle of the box of all profile curves' control points; otherwise the start point of the first "
+          "curve does.");
+    m.def("planar_path_sweep", &smlibpy::planar_path_sweep, py::arg("profile"), py::arg("path"),
+          py::arg("reference") = std::vector<double>{}, py::return_value_policy::take_ownership,
+          py::call_guard<smlibpy::NoGil>(),
+          "Sweep profile curves along a planar path of several curves with mitred corners, capped "
+          "(SmApiCreateSweepAlongPlanarPath): the point `reference` (x, y, z) of the profile on the start of the "
+          "path (without it the middle of the box of the curves' control points). Copies, consumes nothing.");
 
     m.def("curve_kind", &smlibpy::curve_kind);
     m.def("surface_kind", &smlibpy::surface_kind);

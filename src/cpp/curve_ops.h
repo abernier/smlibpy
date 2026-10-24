@@ -50,6 +50,12 @@ CurveResult approximate_points(const std::vector<double>& points, int degree, do
 // distance from a point to the curve.
 CurveResult interpolate_tangents(const std::vector<double>& points, const std::vector<double>& tangents, int degree);
 
+// A cubic B-spline within `tolerance` of the points (x, y, z flat) along a tangent direction at each:
+// the curve through them and their tangents with its knots removed within the tolerance (the end
+// tangents kept); deviation is the largest distance of a point from it.
+CurveResult approximate_tangents(const std::vector<double>& points, const std::vector<double>& tangents,
+                                 double tolerance);
+
 // The curve's geometry at parameter t (SmCurve::EvaluateGeometric): {"point", "derivative" (the
 // first), "curvature" (toward the center of curvature, of length 1/radius; zero where straight),
 // "torsion" (along the binormal, of length the torsion; zero for planar curves)}.

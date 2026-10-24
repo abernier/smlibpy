@@ -1580,7 +1580,10 @@ class Edge(Shape):
         Lines stay lines and arcs stay arcs, exactly. Splines and ellipses are offset by the
         kernel within 1e-6 of their size. Where the edge bends toward that side more tightly than
         the distance (a radius of curvature below it, see :meth:`min_radius`), the offset would
-        fold over itself and :class:`ModelingError` says where.
+        fold over itself and :class:`ModelingError` says where. A closed edge with a corner where
+        it starts and ends (``Spline(*pts, pts[0])``) comes back as one closed edge: rounded at the
+        corner where the offset pulls it apart, cut where its sides cross where it pushes them
+        together (:meth:`Wire.offset` gives sharp and chamfered corners).
 
         ``plane``: the plane the edge lies in, whose normal tells left from right. Default: the
         XY plane for an edge at one height, else the plane the edge lies in, its normal toward
@@ -1592,7 +1595,10 @@ class Edge(Shape):
 
         if _offset_distance(distance, "offset") == 0:
             return self
-        return offset_wire([self], float(distance), "round", plane, "offset")[0]
+        out = offset_wire([self], float(distance), "round", plane, "offset")
+        # (a closed edge with a corner where it starts and ends: the arc that rounds it, and the edge,
+        # joined tangentially into one; the arc alone came back before 0.5.0)
+        return out[0] if len(out) == 1 else Wire._raw(out).to_edge()
 
     def to_arcs(self, tolerance: float = 0.01) -> Wire:
         """The edge as lines and circular arcs within ``tolerance`` of it, end to end along it:
@@ -2834,18 +2840,27 @@ class Face(Shape):
 
             on_face = part.faces().sort_by(Z)[-1].project(Spline((0, 0, 30), (10, 5, 30), (20, 0, 30)))
         """
+        from ._face_curves import across_seams, seam_crossings
+
         size = max(1.0, self.bbox().union(curve.bbox()).diagonal)
         out = ShapeList()
         for e in curve.edges():
-            c = e._copy_curve()
-            try:
-                with kernel_call("Face.project"):
-                    # (the kernel's tolerance bounds the drop; along the surface the curve comes within
-                    # about five times it)
-                    res = ext.normal_project([self._f], c, 1e-8 * size)
-            finally:
-                ext.delete_curve(c)
-            out.extend(Edge._from_curve(cv) for cv, _ in res)
+            # (in pieces that do not cross a seam of the face: the kernel gave nothing for a curve that
+            # crosses one; the pieces it cuts apart there joined again)
+            cuts = seam_crossings(self, e)
+            parts = [e] if not cuts else [e.trim(a, b) for a, b in zip([0.0] + cuts, cuts + [1.0])]
+            got: list[Edge] = []
+            for part in parts:
+                c = part._copy_curve()
+                try:
+                    with kernel_call("Face.project"):
+                        # (the kernel's tolerance bounds the drop; along the surface the curve comes
+                        # within about five times it)
+                        res = ext.normal_project([self._f], c, 1e-8 * size)
+                finally:
+                    ext.delete_curve(c)
+                got.extend(Edge._from_curve(cv) for cv, _ in res)
+            out.extend(across_seams(got, 1e-6 * size) if len(got) > 1 else got)
         return out
 
     def iso(self, *, u: float | None = None, v: float | None = None) -> ShapeList[Edge]:
@@ -3385,6 +3400,14 @@ class _Body(Shape):
             finally:
                 ext.delete_curve(c)
             pieces = [(Edge._from_curve(cv), faces[i]) for cv, i in res]
+            if len(pieces) > 1:
+                # (the pieces a closed face's seam cut apart, joined again: those of one face)
+                from ._face_curves import across_seams
+
+                grouped: dict[int, tuple[Face, list[Edge]]] = {}
+                for p, f in pieces:
+                    grouped.setdefault(id(f), (f, []))[1].append(p)
+                pieces = [(p, f) for f, ps in grouped.values() for p in across_seams(ps, 1e-6 * size)]
             if nearest:
                 from ._face_curves import visible_pieces
 
@@ -6831,6 +6854,24 @@ def _box_distance(box: BoundBox, q: Vector) -> float:
     return math.sqrt(sum(max(box.min[i] - q[i], 0.0, q[i] - box.max[i]) ** 2 for i in range(3)))
 
 
+def _flat_walls(part: Part) -> Part:
+    """The part with its flat B-spline faces as planes (``ext.planar_faces``), where that keeps it valid
+    and of its volume: the walls of the straight edges of an extrusion along a direction across the
+    sketch's normal, which the kernel makes as B-spline surfaces (selections by type missed them, STEP
+    files carried B-splines)."""
+    if not any(f.geom_type == "bspline" for f in part.faces()):
+        return part
+    size = part._extent()
+    with kernel_call("extrude"):
+        b = ext.planar_faces(part._brep, 1e-9 * max(1.0, size))
+    if b is None:
+        return part
+    flat = Part._wrap(b, name=part.name, color=part.color)
+    if not flat.is_valid() or abs(flat.volume - part.volume) > 1e-9 * max(abs(part.volume), 1e-300):
+        return part
+    return flat
+
+
 def _require_solid(part: Part, what: str, hint: str) -> Part:
     """Raise if a feature returned a broken solid (inside out, without volume, open)."""
     problem = part._solid_problem()
@@ -8434,7 +8475,9 @@ class Sketch(Shell):
             direction: Extrude along this direction (an axis or a vector) instead of the normal;
                 ``amount`` is measured along it. A direction in the sketch plane raises
                 ``ValueError``; one less than 0.06 degrees (a sine of 1e-3) off the plane warns, as
-                the solid is then less than ``amount / 1000`` thick.
+                the solid is then less than ``amount / 1000`` thick. With ``taper`` only the normal
+                (either way) is taken: a taper drafts the walls about the normal, so a direction
+                across it raises ``ValueError``.
             corners: With a taper, the corners that the taper pulls apart (convex ones of an
                 outward taper, concave ones of an inward one): ``"sharp"`` (the walls extended
                 until they meet) or ``"round"`` (rounded off, as an offset rounds them).
@@ -8448,6 +8491,15 @@ class Sketch(Shell):
         if direction is not None:
             self._check_direction(d, abs(float(amount)) * (2 if both else 1), not taper)
         if taper:
+            if direction is not None:
+                # (a taper drafts the walls about the normal; the direction was ignored before 0.5.0)
+                along = d.dot(self._plane.z_dir)
+                if abs(along) < 1 - 1e-12:
+                    raise ValueError("extrude: a taper drafts the walls about the sketch normal, so direction= must "
+                                     "run along the normal (either way) with taper=; extrude with the taper along "
+                                     "the normal, or without a taper along the direction")
+                if along < 0:
+                    amount = -amount
             out = self._extrude_taper(amount, taper, both, corners == "round")
             out.name, out.color = self.name, self.color
             return out
@@ -8476,18 +8528,59 @@ class Sketch(Shell):
         (circles, rectangles, hexagons, ellipses and slots in random planes, both directions, one side and
         both) 1 at 6 degrees off the plane, 25 at 0.6 and 0.06 degrees, 192 at 0.006 (the same before
         0.5.0). Turned about the normal through the sketch's origin, extruded and turned back, all but 16
-        at each of those angles come out valid with the exact volume; where none of three turns does,
-        ``ModelingError``."""
-        if part.is_valid():
-            return part
-        axis = Axis(self._plane.origin, self._plane.z_dir)
-        for angle in (113.0, 180.0, 37.0):
-            again = self.rotate(axis, angle)._swept_along(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
-            if again.is_valid():
-                return again
-        raise ModelingError("extrude: the kernel made this extrusion along the direction invalid (inside out or "
-                            "open); extrude along the sketch normal, or along a direction further from the sketch "
-                            "plane")
+        at each of those angles come out valid with the exact volume; those are swept along a line, each
+        curve's wall a translational surface (``ModelingError`` where that fails too). The walls of
+        straight edges, which the kernel makes as flat B-spline surfaces, are planes."""
+        if not part.is_valid():
+            axis = Axis(self._plane.origin, self._plane.z_dir)
+            for angle in (113.0, 180.0, 37.0):
+                again = self.rotate(axis, angle)._swept_along(d.rotate(axis.direction, angle), dist).rotate(axis, -angle)
+                if again.is_valid():
+                    part = again
+                    break
+            else:
+                translated = self._translated(d, dist)
+                if translated is None:
+                    raise ModelingError("extrude: the kernel made this extrusion along the direction invalid (inside "
+                                        "out or open); extrude along the sketch normal, or along a direction further "
+                                        "from the sketch plane")
+                part = translated
+        return _flat_walls(part)
+
+    def _translated(self, d: Vector, dist: float) -> Part | None:
+        """The extrusion along the unit direction ``d`` by ``dist`` as the kernel's translational curve
+        sweep along a line (each curve's wall a translational surface, the ends capped), checked; None
+        where it is not valid or not of its volume."""
+        from .curves import Line
+
+        o = self._plane.origin
+        expected = abs(self.area) * dist * abs(d.dot(self._plane.z_dir))
+        out: Part | None = None
+        for f in self.faces():
+            loops = f.wires()
+            pieces = []
+            for w in loops:
+                curves = w._copy_curves()
+                path = Line(o, o + d * dist)._copy_curve()
+                try:
+                    with kernel_call("extrude"):
+                        pieces.append(Part._wrap(ext.curve_sweep(curves, path, True, True, False, True, None, None,
+                                                                 list(o.to_tuple()))))
+                except KernelError:
+                    return None
+                finally:
+                    ext.delete_curve(path)
+                    for c in curves:
+                        ext.delete_curve(c)
+            if not all(p.is_valid() for p in pieces):  # (thin bodies fail _solid_problem's coarse sign test)
+                return None
+            piece = pieces[0]
+            for hole in pieces[1:]:
+                piece = piece - hole
+            out = piece if out is None else out + piece
+        if out is None or not out.is_valid() or abs(out.volume - expected) > 1e-6 * expected:
+            return None
+        return out
 
     def _check_direction(self, d: Vector, thickness: float, used: bool) -> None:
         """Raise where an extrusion direction lies in the sketch plane, warn where it nearly does (where
@@ -8631,13 +8724,14 @@ class Sketch(Shell):
 
     def sweep(self, path: Edge | Wire, *, sharp_corners: bool | None = None, up: Axis | VectorLike | str | None = None,
               twist: float | Callable[[float], float] = 0.0,
-              scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None
-              ) -> Part:
-        """Sweep the region along a path (see :func:`~smlibpy.sweep`: the center of the region's box
-        goes to the start of the path; ``up`` and ``twist`` set its attitude along it, ``scale`` its size)."""
+              scale: tuple[float, float] | Sequence[tuple[float, float]] | Callable[[float], float] | None = None,
+              anchor: str | VectorLike | Vertex = "center") -> Part:
+        """Sweep the region along a path (see :func:`~smlibpy.sweep`: the center of the region's box, or
+        the point ``anchor`` names, goes to the start of the path; ``up`` and ``twist`` set its attitude
+        along it, ``scale`` its size)."""
         from .operations import sweep
 
-        return sweep(self, path, sharp_corners=sharp_corners, up=up, twist=twist, scale=scale)
+        return sweep(self, path, sharp_corners=sharp_corners, up=up, twist=twist, scale=scale, anchor=anchor)
 
     def swing(self, outline: Sketch | Face | Wire | Edge) -> Part:
         """Swing the region around an outline: a revolve about Z whose circle is the outline (see

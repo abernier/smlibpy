@@ -136,18 +136,28 @@ uintptr_t oriented_sweep(val profile, uintptr_t path, val params, val x_axes, bo
     });
 }
 // [brep, start deviation, end deviation] (radians); curves copied, not consumed; tangents [x, y, z] or []
-val skin(val curves, val counts, unsigned degree, val start_tangent, val end_tangent, bool closed, bool cap_ends)
+val skin(val curves, val counts, unsigned degree, val start_tangent, val end_tangent, bool closed, bool cap_ends,
+         val start_face, val end_face)
 {
     return guard([&] {
         const std::vector<double> c = numbers(counts);
         double deviation[2] = {0.0, 0.0};
         SmBrep* b = smlibpy::skin(pointers<SmCurve>(curves), std::vector<unsigned long>(c.begin(), c.end()), degree,
-                                  numbers(start_tangent), numbers(end_tangent), closed, cap_ends, deviation);
+                                  numbers(start_tangent), numbers(end_tangent), closed, cap_ends, deviation,
+                                  maybe<SmFace>(start_face), maybe<SmFace>(end_face));
         val out = val::array();
         out.call<void>("push", ptr(b));
         out.call<void>("push", deviation[0]);
         out.call<void>("push", deviation[1]);
         return out;
+    });
+}
+
+// The sheet through a network of curves; curves copied, not consumed.
+uintptr_t gordon(val u_curves, val v_params, val v_curves, val u_params)
+{
+    return guard([&] {
+        return ptr(smlibpy::gordon(pointers<SmCurve>(u_curves), numbers(v_params), pointers<SmCurve>(v_curves), numbers(u_params)));
     });
 }
 // The faces of a swung body, not stitched; curves copied, not consumed.
@@ -198,13 +208,24 @@ val face_properties(uintptr_t f, double accuracy) { return guard([&] { return to
 val brep_properties(uintptr_t b, double accuracy, double density) { return guard([&] { return to_js(smlibpy::brep_properties(brep(b), accuracy, density)); }); }
 val curve_eval(uintptr_t c, double t, int derivatives) { return guard([&] { return to_js(smlibpy::curve_eval(smjs::curve(c), t, derivatives)); }); }
 
-// Profile and path are copied, not consumed; scale_reference and scale_curve may be null.
+// Profile and path are copied, not consumed; scale_reference and scale_curve may be null, reference
+// [x, y, z] or empty (null).
 uintptr_t curve_sweep(val profile, uintptr_t path, bool cap_ends, bool center, bool orient, bool translational,
-                      val scale_reference, val scale_curve)
+                      val scale_reference, val scale_curve, val reference)
 {
     return guard([&] {
+        const std::vector<double> at = reference.isNull() || reference.isUndefined() ? std::vector<double>{} : numbers(reference);
         return ptr(smlibpy::curve_sweep(pointers<SmCurve>(profile), as<SmBSplineCurve>(path, "path"), cap_ends, center, orient,
-                                        translational, maybe<SmBSplineCurve>(scale_reference), maybe<SmBSplineCurve>(scale_curve)));
+                                        translational, maybe<SmBSplineCurve>(scale_reference), maybe<SmBSplineCurve>(scale_curve),
+                                        at));
+    });
+}
+
+uintptr_t planar_path_sweep(val profile, val path, val reference)
+{
+    return guard([&] {
+        const std::vector<double> at = reference.isNull() || reference.isUndefined() ? std::vector<double>{} : numbers(reference);
+        return ptr(smlibpy::planar_path_sweep(pointers<SmCurve>(profile), pointers<SmCurve>(path), at));
     });
 }
 
@@ -775,6 +796,7 @@ val face_attr(uintptr_t f) { return guard([&] { return to_js(smlibpy::face_attr(
 val face_attrs(uintptr_t b) { return guard([&] { return to_js(smlibpy::face_attrs(brep(b))); }); }
 // the copy (the caller's) or null
 val recognize_analytics(uintptr_t b, double tolerance) { return guard([&] { return owned_or_null(smlibpy::recognize_analytics(brep(b), tolerance)); }); }
+val planar_faces(uintptr_t b, double tolerance) { return guard([&] { return owned_or_null(smlibpy::planar_faces(brep(b), tolerance)); }); }
 val brep_shells(uintptr_t b) { return guard([&] { return to_js(smlibpy::brep_shells(brep(b))); }); }
 // ---------------------------------------------------------------- face_edit
 val edit_faces(uintptr_t b, val faces, val matrices, val distances, bool grow, double tangency_deg)
@@ -1156,6 +1178,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__analytic_revolutions", &analytic_revolutions);
     function("ext__oriented_sweep", &oriented_sweep);
     function("ext__skin", &skin);
+    function("ext__gordon", &gordon);
     function("ext__swung", &swung);
     function("ext__helix_axis", &helix_axis);
     function("ext__face_from_surface", &face_from_surface);
@@ -1176,6 +1199,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__brep_properties", &brep_properties);
     function("ext__curve_eval", &curve_eval);
     function("ext__curve_sweep", &curve_sweep);
+    function("ext__planar_path_sweep", &planar_path_sweep);
     function("ext__curve_kind", &curve_kind);
     function("ext__surface_kind", &surface_kind);
     function("ext__object_class", &object_class);
@@ -1237,6 +1261,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__face_attr", &face_attr);
     function("ext__face_attrs", &face_attrs);
     function("ext__recognize_analytics", &recognize_analytics);
+    function("ext__planar_faces", &planar_faces);
     function("ext__brep_shells", &brep_shells);
     function("ext__void_shells", &void_shells);
     function("ext__round_edges", &round_edges);

@@ -9,6 +9,7 @@
 
 class SmBrep;
 class SmCurve;
+class SmFace;
 
 namespace smlibpy {
 
@@ -22,8 +23,18 @@ namespace smlibpy {
 // between the skin's direction across its first and last section and the asked-for tangent (0 where
 // none was asked for): the kernel drops the tangents silently where it cannot meet them. The caller
 // owns the result; throws where the kernel cannot skin.
+// `start_face` and `end_face` (or null) make the skin leave the first section, or reach the last,
+// tangent to a face that ends there (continuing it), in place of a direction.
 SmBrep* skin(const std::vector<SmCurve*>& curves, const std::vector<unsigned long>& counts, unsigned degree,
              const std::vector<double>& start_tangent, const std::vector<double>& end_tangent, bool closed,
-             bool cap_ends, double deviation[2]);
+             bool cap_ends, double deviation[2], const SmFace* start_face = nullptr, const SmFace* end_face = nullptr);
+
+// The sheet through a network of curves (NLib's N_CreateGordonSrf): u curve i crosses v curve j at its
+// parameter u_params[j], v curve j crosses u curve i at its parameter v_params[i]; the curves of each set
+// non-rational and compatible (one degree and knot vector), the first and last of each set its
+// borders. (SmBSplineSurface::CreateGordonSurface adjusts the curves itself, and left a rail 0.29 off
+// its surface between sections.) Copies, consumes nothing; the caller owns the result.
+SmBrep* gordon(const std::vector<SmCurve*>& u_curves, const std::vector<double>& v_params,
+               const std::vector<SmCurve*>& v_curves, const std::vector<double>& u_params);
 
 }  // namespace smlibpy

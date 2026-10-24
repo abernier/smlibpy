@@ -42,6 +42,11 @@ val interpolate_tangents(val points, val tangents, int degree)
 {
     return guard([&] { return result(smlibpy::interpolate_tangents(numbers(points), numbers(tangents), degree)); });
 }
+
+val approximate_tangents(val points, val tangents, double tolerance)
+{
+    return guard([&] { return result(smlibpy::approximate_tangents(numbers(points), numbers(tangents), tolerance)); });
+}
 val curve_geometry(uintptr_t c, double t)
 {
     return guard([&] { return to_js(smlibpy::curve_geometry(smjs::curve(c), t)); });
@@ -66,6 +71,7 @@ EMSCRIPTEN_BINDINGS(smlib_curve_ops)
     function("ext__offset_curve", &offset_curve);
     function("ext__approximate_points", &approximate_points);
     function("ext__interpolate_tangents", &interpolate_tangents);
+    function("ext__approximate_tangents", &approximate_tangents);
     function("ext__curve_geometry", &curve_geometry);
     function("ext__curve_properties", &curve_properties);
     function("ext__curve_box", &curve_box);

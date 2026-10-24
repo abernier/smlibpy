@@ -114,9 +114,18 @@ Value brep_properties(const SmBrep* brep, double accuracy, double density);
 Value curve_eval(const SmCurve* curve, double t, int derivatives);
 
 // Profile curves swept along a path with all of the kernel's sweep options. Profile and path are
-// copied, not consumed.
+// copied, not consumed. With `center`, `reference` (x, y, z; or empty) is the point of the profile
+// that goes on the start of the path (else the middle of the box of the curves' control points).
 SmBrep* curve_sweep(const std::vector<SmCurve*>& profile, SmBSplineCurve* path, bool cap_ends, bool center,
-                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve);
+                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve,
+                    const std::vector<double>& reference = {});
+
+// The kernel's sweep along a planar path of several curves with mitred corners
+// (SmApiCreateSweepAlongPlanarPath, capped), the point `reference` (x, y, z; or empty: the middle of
+// the box of the curves' control points) of the profile on the start of the path. Copies, consumes
+// nothing.
+SmBrep* planar_path_sweep(const std::vector<SmCurve*>& profile, const std::vector<SmCurve*>& path,
+                          const std::vector<double>& reference);
 
 std::string curve_kind(const SmCurve* curve);
 std::string surface_kind(const SmSurface* surface);

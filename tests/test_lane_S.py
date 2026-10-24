@@ -119,7 +119,12 @@ def test_fused_sweeps_have_no_faces_without_area():
         assert _sound(ring)
     for i, pts in KINKED.items():
         for profile in (Circle(1.5), Rectangle(3, 1.2), Ellipse(1.5, 1)):
-            assert _sound(_quiet(lambda: sweep(profile, Spline(*pts, pts[0]))))
+            with warnings.catch_warnings():
+                # (where the halves turned to meet where the loop closes do not fuse, the kernel's frame
+                # sweeps them, with a warning: the ellipse along loop 18)
+                warnings.simplefilter("error")
+                warnings.filterwarnings("ignore", message=".*meet itself where the loop closes", category=RuntimeWarning)
+                assert _sound(sweep(profile, Spline(*pts, pts[0])))
 
 
 def _unit(v):
@@ -199,12 +204,16 @@ def test_planar_paths_place_asymmetric_profiles_by_their_own_box():
     body = sweep(tri, Polyline((0, 0, 0), (0, 0, 40), (40, 0, 40)))
     assert body.volume == pytest.approx(738.0)
     assert body.bbox().max.to_tuple() == pytest.approx((40, 1.5, 43), abs=1e-9)
-    # a spline among the edges, the profile turned off the axes: by its box along the path's plane
+    # a spline among the edges, the profile turned off the axes: on its own box too (the kernel is given
+    # the anchor; before, the path's spline could not be offset and the profile sat by its box along
+    # the path's plane, with a warning)
     c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
     wavy = Wire([Line((0, 0, 0), (20 * c, 20 * s, 0)),
                  Spline((20 * c, 20 * s, 0), (30, 25, 0), (50, 30, 0), tangents=((c, s, 0), (1, 0, 0)))])
-    with pytest.warns(RuntimeWarning, match="cannot be offset"):
-        assert sweep(Polygon(*ODD), wavy).is_valid()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        body = sweep(Polygon(*ODD), wavy)
+    assert body.is_valid() and _box_center_off_path(body, wavy, ODD) < 1e-6
 
 
 # -- batch 2: the profile's attitude along the path (S3), analytic revolves (S4), planar paths (S6) --

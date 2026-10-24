@@ -25,11 +25,13 @@
 
 #include "kernel.h"
 #include "analytics.h"
+#include "deform_analytic.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
+#include <SmPlane.h>
 
 #include <algorithm>
 #include <memory>
@@ -193,6 +195,89 @@ SmBrep* recognize_analytics(const SmBrep* brep, double tolerance)
     return changed ? copy.release() : nullptr;
 }
 
+SmBrep* planar_faces(const SmBrep* brep, double tolerance)
+{
+    if (!brep)
+        throw std::invalid_argument("brep is None");
+    if (!(tolerance > 0.0))
+        throw std::invalid_argument("planar_faces: the tolerance must be positive");
+    std::unique_ptr<SmBrep> copy(new (ctx()) SmBrep(*brep, nullptr, nullptr, FALSE, FALSE));
+    SmTArray<SmFace*> faces;
+    copy->GetFaces(faces);
+    std::vector<std::pair<SmFace*, SmSurface*>> swaps;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        const SmSurface* surface = faces[i]->GetSurface();
+        if (!spline(surface))
+            continue;
+        const auto* bs = static_cast<const SmBSplineSurface*>(surface);
+        ULONG nu = 0, nv = 0;
+        SmTArray<SmPoint3d> poles;
+        SmTArray<double> weights;
+        if (bs->GetControlPointNet(nu, nv, poles, weights) != SM_SUCCESS || poles.GetSize() < 3)
+            continue;
+        bool positive = true;  // (a rational surface lies in the hull of its control points where its weights are positive)
+        for (ULONG k = 0; k < weights.GetSize(); ++k)
+            positive = positive && weights[k] > 0.0;
+        if (!positive)
+            continue;
+        // the plane through the control points: the normal of the largest triangle among the first,
+        // the farthest from it and the farthest from the line between those two
+        const SmPoint3d a = poles[0];
+        ULONG ib = 0, ic = 0;
+        double far = -1.0;
+        for (ULONG k = 0; k < poles.GetSize(); ++k)
+            if ((poles[k] - a).Length() > far)
+                far = (poles[k] - a).Length(), ib = k;
+        if (!(far > tolerance))
+            continue;
+        const SmVector3d ab = (poles[ib] - a) / far;
+        far = -1.0;
+        for (ULONG k = 0; k < poles.GetSize(); ++k)
+        {
+            const SmVector3d v = poles[k] - a;
+            const double off = (v - v.Dot(ab) * ab).Length();
+            if (off > far)
+                far = off, ic = k;
+        }
+        if (!(far > tolerance))
+            continue;
+        SmVector3d n = ab * (poles[ic] - a);
+        n = n / n.Length();
+        bool flat = true;
+        for (ULONG k = 0; k < poles.GetSize() && flat; ++k)
+            flat = std::abs((poles[k] - a).Dot(n)) <= tolerance;
+        if (!flat)
+            continue;
+        // facing as the face's surface does
+        const SmExtent2d box = faces[i]->GetUVDomain();
+        SmVector3d sn;
+        if (surface->EvaluateNormal(box.GetMid(), TRUE, TRUE, sn) != SM_SUCCESS)
+            continue;
+        if (sn.Dot(n) < 0.0)
+            n = -n;
+        const SmVector3d x0 = std::abs(n.x) < 0.9 ? SmVector3d(1, 0, 0) * n : SmVector3d(0, 1, 0) * n;
+        const SmVector3d x = x0 / x0.Length();
+        const SmVector3d y = n * x;
+        SmExtent2d dom;
+        double size = 0.0;
+        for (ULONG k = 0; k < poles.GetSize(); ++k)
+        {
+            dom.AddPoint2d(SmPoint2d((poles[k] - a).Dot(x), (poles[k] - a).Dot(y)));
+            size = std::max(size, (poles[k] - a).Length());
+        }
+        dom.ExpandAbsolute(1e-7 * std::max(size, 1.0));
+        swaps.emplace_back(faces[i], new (ctx()) SmPlane(a, x, y, SmVector2d(1.0, 1.0), dom, &ctx()));
+    }
+    if (swaps.empty())
+        return nullptr;
+    if (!analytic::swap_in(*copy, swaps, {}, 10.0 * tolerance, tolerance))
+        return nullptr;
+    ULONG curves = 0, uv_curves = 0;
+    copy->ConvertCurvesToAnalytics(curves, uv_curves);
+    return copy.release();
+}
+
 }  // namespace smlibpy
 
 #ifdef SMLIBPY_PYTHON
@@ -200,6 +285,11 @@ SmBrep* recognize_analytics(const SmBrep* brep, double tolerance)
 
 void bind_analytics(py::module_ m)
 {
+    m.def("planar_faces", &smlibpy::planar_faces, py::arg("brep"), py::arg("tolerance"),
+          py::return_value_policy::take_ownership,
+          "A copy of a Brep whose B-spline faces with all their control points within `tolerance` of a plane are "
+          "planes (their trims built again), and straight B-spline edges lines; None where there is no such face or "
+          "the trims cannot be built. The caller checks the copy (valid, the same volume).");
     m.def("recognize_analytics", &smlibpy::recognize_analytics, py::arg("brep"), py::arg("tolerance"),
           py::return_value_policy::take_ownership,
           "A copy of a Brep with its B-spline faces and edges as planes, cylinders, cones, spheres, surfaces of "
