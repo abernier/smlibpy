@@ -41,6 +41,12 @@
    "8": {
     "cases": 410,
     "divergence": {
+     "csg-8-124 A": "class ok/error",
+     "csg-8-124 D": "class ok/absent",
+     "csg-8-124 E": "class ok/absent",
+     "csg-8-124 I": "class ok/absent",
+     "csg-8-124 M": "class ok/absent",
+     "csg-8-124 U": "class ok/absent",
      "csg-8-157 D": "class ok/silent",
      "csg-8-23 E": "class silent/ok",
      "csg-8-45 E": "class error/ok",
