@@ -206,20 +206,22 @@ build:
   (19.6 kB, now 0); the failed all-edge fillet of the two cones at r 0.6 348 kB, now 16.4 kB (281 kB, now 14.0 kB; the rest is the curve copy of `MergeInterval`, below); a
   circle swept along a mitered path of two lines 12.7 kB, now 0 (10.5 kB, now 0); three raw extended
   shells of filleted boxes, most of which fail, 879 kB, now 128 bytes (437 kB, now 163 bytes); a failed
-  `Face.to_shell()` of the imported body above 118 kB, now 0 (82 kB, now 0).
+  `Face.to_shell()` of the imported body above 118 kB, now 0 (82 kB, now 0); a cone that comes to a
+  point 72 bytes, now 0.
   `tests/test_closeout_K2.py` and `js/test/closeout_K2.test.ts` check each of them, and
-  `tools/sanitize/leaks.txt` no longer lists them, so the sanitizer run counts them again: FILL_SAN.
+  `tools/sanitize/leaks.txt` no longer lists them, so the sanitizer run counts them again: over its default tests (745 passed) it reports no memory
+  error and no leak of the kernel.
 - The memory errors of close-out K2: AddressSanitizer reports nothing for the fillets of the two
   cones at r 0.721755, 0.75, 0.7, 0.6, 0.5 and 0.3 (their three edges and all edges); before, a write
   into freed memory at 0.721755. Extended offsets of imported parts (raw shell and two offsets,
   twice per process, random allocations between them): crescendo part 81 0 of 36 processes (before:
   the null polar box in about half, the freed Vertexuses of `MakeEdgeInFaceWithVU` in 1 or 2 of 12),
-  part 19 0 of 24, part 52 FILL_52A (before: 4 of 24, the Loopuses `DeleteEdge` left naming freed
-  Edgeuses, after 3 of 16 with the half-made Edge and `SqueezeEdge` patched); the offset steps of
+  part 19 0 of 24, part 52 1 of 16 (with the half-made Edge and `SqueezeEdge` patched but not yet
+  `DeleteEdge`, 4 of 24: Loopuses naming the Edgeuses it freed); the offset steps of
   `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail`, 48 processes of 8 rounds,
   report nothing (before: 15 of 48, 5 of them the Edge `FixGaps` kept). Natively (20 to 50 processes
-  each): part 81 crashed in 11 of 20 before and in 4 of 50 after, part 19 in none before or after,
-  part 52 FILL_52N. The extended shells of filleted boxes succeed and fail about as before (21 and 13
+  each): part 81 crashed in 11 of 20 before and in 3 of 30 after, part 19 in none before or after,
+  part 52 in 15 of 20 before and in 1 of 20 after. The extended shells of filleted boxes succeed and fail about as before (21 and 13
   of 108 calls succeed after and before; the mode is unsteady, depending on memory layout).
   `tests/test_closeout_K2.py::test_extended_offsets_that_read_a_squeezed_edge_do_not_crash` runs the
   offset steps in six processes of their own. A workload of Booleans, fillets and a shell (a plate
@@ -236,8 +238,15 @@ Defects that remain in the kernel, and what smlibpy does about them:
   its own), whose result comes back as an exact copy.
 - The extended offset mode still crashes now and then on some imported parts (raw kernel calls,
   shell and two offsets twice per process), in sites AddressSanitizer locates rarely or not at all:
-  FILL_REMAIN `shell`, `offset` and `thicken` run their kernel steps only in a forked copy
-  (smlibwasm: the probe worker), so these raise `ModelingError`.
+  crescendo part 81 in 3 of 30 processes natively, in `SmBrep::GlueVertices` from
+  `GlueCoincidentBrepVertices` on a Vertex already freed (`SmVertex::GetShells` read reused memory;
+  AddressSanitizer reported nothing in 36 processes, and the crash did not come under lldb), and part
+  52 in 1 of 20 natively and 1 of 16 under AddressSanitizer: a Loopuse still names an Edgeuse that
+  `DeleteEdge` freed in `GlueCoincidentBrepVertices`, read by `SmMerge::FixFoundFaceCoincidence`
+  (`SmLoopuse::GetEdges`). The patched `DeleteEdge` moves every Loopuse of the Brep off the Edgeuses it
+  deletes, so the stale name comes another way (an Edgeuse ring that still links a freed Edgeuse, or a
+  Loopuse outside the Brep's Faces): not located. `shell`, `offset` and `thicken` run their kernel
+  steps only in a forked copy (smlibwasm: the probe worker), so these raise `ModelingError`.
 - Booleans in which the seam of a cylinder, cone, sphere or torus runs tangent to a face of the
   other operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the
   site is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
@@ -330,7 +339,9 @@ The first runs of this check (LLVM 21 on macOS arm64) found a heap-buffer-overfl
 merge (the steps of `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail`), and
 leaks in `SmPrimitiveCreation::CreateSweepAlongPlanarPath` (the copies of the profile and path of each
 segment, about 10 kB a mitered sweep) and `SmProtoTopologyManager::CreateProtoEdge`. The leaks are
-patched (close-out K2); the overflow FILL_SQUEEZE. It also found smlibpy's own leak of the curves it
+patched (close-out K2); the overflow was not seen again (48 processes of 8 rounds of those steps with
+random allocations between them, six AddressSanitizer runs of `tests/test_guards.py` and the
+sanitizer job over its default tests), so it is not located and stays in `known.txt`. It also found smlibpy's own leak of the curves it
 handed the kernel's sweeps, skins and offset profiles, which copy them (fixed).
 
 ## Dropping a patch

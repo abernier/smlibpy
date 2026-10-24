@@ -39,13 +39,15 @@ to vary the memory layout; "before" is 5c7666f.
   failed, the segments themselves. A circle swept along a path of two lines: 12.7 kB a sweep, now 0
   (smlibwasm 10.5 kB, now 0). Where the kernel makes no extension of a cutting line the sweep now fails
   instead of going on with a null curve.
-- **Failed extended shells no longer leak (`CreateProtoEdge`, the 4.7 kB).** A shell whose last
-  Boolean (or merge) failed lost the offset body with the caches built on it, the trim curves of a
-  failed extension (`SmOffsetGeometryCreation::ExtendTrimEdges`, about 4.7 kB), a line
+- **Failed extended shells no longer leak (the 4.7 kB; `CreateProtoEdge` in part).** A shell whose
+  last Boolean (or merge) failed lost the offset body with the caches built on it, the trim curves of
+  a failed extension (`SmOffsetGeometryCreation::ExtendTrimEdges`, about 4.7 kB), a line
   `SmMerge::MergeEdge` had copied, and the curves of the EdgeDefinitions `CombineProtoEdge` leaves
-  behind (`SmProtoTopologyManager::CreateProtoEdge`'s copies). Three raw extended shells of filleted
-  boxes, most of which fail: 879 kB, now 128 bytes (smlibwasm 437 kB, now 163 bytes). They succeed and
+  behind (some of `SmProtoTopologyManager::CreateProtoEdge`'s copies; the rest: Blocked). Three raw
+  extended shells of filleted boxes, most of which fail: 879 kB, now 128 bytes (smlibwasm 437 kB, now 163 bytes). They succeed and
   fail about as before (the mode is unsteady: 21 and 13 of 108 calls succeed after and before).
+- **Cones that come to a point no longer leak** (found by the sanitizer job): `CreateCone` made the
+  iso curve of the apex and used it for nothing, 72 bytes and its knots per cone (`SmApiCreateCone`).
 - **Face copies the kernel cannot build are freed, not kept for the life of the process (T2).** A face
   of an imported body whose faces share no edges and whose vertices lie 1e-3 apart cannot be copied
   (`Face.to_shell()`): `CopyFaces` fails, then `RemoveFaces` on a copy of the whole body. `RemoveFaces`
@@ -73,8 +75,9 @@ to vary the memory layout; "before" is 5c7666f.
   kept an Edge it had squeezed away in the relations when only one Brep lost one (the L-shaped shell
   of `test_offsets_that_read_freed_kernel_memory_fail`). Raw kernel calls (shell and two offsets,
   twice per process): part 81 AddressSanitizer 0 of 36 processes (before: the null polar box in half,
-  the freed Vertexuses in 1 or 2 of 12), natively 4 of 50 crash (before 11 of 20; see Blocked); part
-  19 0 of 24 and 0 of 20; part 52 FILL_52. The offset steps of
+  the freed Vertexuses in 1 or 2 of 12), natively 3 of 30 crash (before 11 of 20; see Blocked); part
+  19 0 of 24 and 0 of 20; part 52 natively 1 of 20 (before 15 of 20: the half-made Edge), under
+  AddressSanitizer 1 of 16 (4 of 24 before the `DeleteEdge` change). The offset steps of
   `test_offsets_that_read_freed_kernel_memory_fail`: 0 of 48 perturbed processes of 8 rounds report
   anything (before: 15 of 48). `shell`, `offset` and `thicken` still run these steps in a forked copy
   (smlibwasm: the probe worker).
@@ -90,8 +93,36 @@ to vary the memory layout; "before" is 5c7666f.
 ## Blocked
 
 - **The heap-buffer-overflow in `sm_FixProblemsBySqueezing`** (`SmCurveClassification::FindInterval`,
-  extended offset merge, layout dependent). FILL_SQUEEZE
-- **Extended offsets of imported parts, what remains** (contained by the forked copy). FILL_REMAIN
+  extended offset merge, layout dependent). The first sanitizer job saw it once, in the steps of
+  `tests/test_guards.py::test_offsets_that_read_freed_kernel_memory_fail`. Tried: those steps in 48
+  AddressSanitizer processes of 8 rounds each with random allocations between them (0 reports; on
+  5c7666f the same probe gave 15 reports in 48, all of them other sites: the deleted ProtoEdge of
+  `ResolveOverlappingProtoEdges`, which close-out K1 patches, and the Edge `FixGaps` kept, patched
+  here), six AddressSanitizer runs of `tests/test_guards.py` (0 reports in the test processes), and
+  the sanitizer job over its default tests (745 passed, 0 reports). Never reproduced, so neither located nor
+  confirmed fixed: it stays in `tools/sanitize/known.txt` (with
+  `test_offsets_that_read_freed_kernel_memory_fail` among the tests that reach it), and the steps
+  run in a forked copy.
+- **Extended offsets of imported parts, what remains** (contained by the forked copy). Crescendo
+  part 81 crashes natively in 3 of 30 processes (raw shell and two offsets, twice per process), always
+  in `SmBrep::GlueVertices` from `GlueCoincidentBrepVertices` on a freed Vertex (`SmVertex::GetShells`
+  read reused memory, located with a SIGSEGV backtrace handler); AddressSanitizer reported nothing in
+  36 processes and lldb never saw it crash, so the free is not located. Part 52 crashes in 1 of 20
+  natively and reports in 1 of 16 processes under AddressSanitizer: a Loopuse still names an Edgeuse that
+  `DeleteEdge` freed in `GlueCoincidentBrepVertices`, read by `SmMerge::FixFoundFaceCoincidence`.
+  Tried: moving the first Edgeuse of the Loopuses of the deleted Edgeuses' Faces off them (4 of 16
+  processes still reported), then of every Loopuse of the Brep (the patch kept here); the stale name
+  must come through an Edgeuse ring that still links the freed Edgeuse, or a Loopuse outside the
+  Brep's Faces.
+- **Small leaks left on failure paths** (found while measuring; also on 5c7666f). The copies
+  `SmProtoTopologyManager::CreateProtoEdge` makes for EdgeDefinitions that some Booleans drop without
+  imprinting them (152 bytes each, about 24 in the extended shells of `tests/test_lane_FO.py`): after
+  the `CombineProtoEdge` patch the rest come from elsewhere; freeing the curves no Brep took after the
+  imprint (by their owners) read curves of Edges that `GlueCoincidentBrepVertices` had deleted since
+  (crescendo part 52 crashed in 9 of 20 processes natively), so it was taken out again and the leak
+  stays in `tools/sanitize/leaks.txt`. A fillet that fails in `SmFilletGeom::InsertIntersectionTopology`
+  keeps a curve copy of `SmCurveClassification::MergeInterval` with its cache (about 16 kB; that file
+  is another lane's patch).
 
 ## Later
 
