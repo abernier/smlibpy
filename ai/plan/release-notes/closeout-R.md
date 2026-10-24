@@ -5,7 +5,7 @@ W9's `Sketch.revolve`, printed numbers of the docs, D7's pointer), and what the 
 snippets this phase changed turned up, triaged and closed out. Area R has no entries of its own in
 the release notes' "Not done" (D2's torus and sphere images of bends are area U's). Everything
 applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked; the C++ is shared
-(`src/cpp`). Tests: `tests/test_closeout_R.py` (32) and `js/test/closeout_R.test.ts` (31).
+(`src/cpp`). Tests: `tests/test_closeout_R.py` and `js/test/closeout_R.test.ts` (29 each).
 
 ## Triage
 
@@ -17,7 +17,7 @@ applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked; the 
 | R4: printed numbers of `surfaces/surface.md`, docs/surfaces.md, `surfaces/trim.md`, `features/loft.md`; docs/kernel.md's trace example no longer fails | FINISH |
 | R5 (D7): point local edits to `Part.push` (U7) | FINISH |
 | R6: the code snippets of docs/ and the skill this phase changed: printed numbers against what the code prints, both languages | FINISH |
-| R7: the shell of the deform recipe's twisted vase raises `ModelingError` in about 2 of 5 runs (0 of 12 in 0.4), found by R6 | FINISH |
+| R7: the shell of the deform recipe's twisted vase raises `ModelingError` in 5 of 12 runs at 5c7666f (0 of 12 in 0.4), found by R6 | FINISH |
 | R8: `Text` raises a `ValueError` for a font it cannot read, where the release notes catch `FontError`; `FontError` is not in `smlibpy`, found by R6 | FINISH |
 | R9 (smlibwasm): `section` and the fillet's crash note raise a new `KernelError` without the kernel trace, found by R6 | FINISH |
 | R10: natively, the outline of the flange example seen along (1, 1, 1) misses 61.4 mm of visible lines (smlibwasm draws them), found by R1's survey | BLOCKED |
@@ -39,14 +39,15 @@ applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked; the 
   flange, gear, bottle, bracket and pipe examples) by 6 views (the three planes, front, an
   isometric and an oblique one), with and without `hidden`: 324 calls, 0 errors in both builds
   (5c7666f: 5 natively); the builds agree on 311 exactly and on 5 more but for how a line is split;
-  the rest is R10 and the gear's oblique view (one piece of 0.77 mm).
+  the rest is R10 and the gear's oblique view (one piece of 0.77 mm). The release notes' outline
+  snippet (`Torus(20, 5).outline(Plane.YZ)`, release gate RN-L628) runs again.
 - **A twist keeps a surface of revolution about its own axis (R2, D2).** A twist turns every
   cross-section about its axis, so a cylinder, cone, sphere or torus about that axis maps onto
   itself: such faces, bounded by full circles about the axis (and their seams), stay what they
   were, with their seam and the vertices on it, and the turned ends' trim curves along a kept circle
   are built again from it (`src/cpp/deform.cpp`: the set of faces, edges and vertices a twist
   leaves in place, also before and beyond a range). `twist(Cylinder(5, 40), 90)` is a cylinder and
-  two planes, volume 3141.592654 exact (0.5.0: a B-spline face whose seam was a helix, 1e-9 off),
+  two planes, volume 3141.592654 exact (0.5.0: a B-spline face whose seam was a helix, 3141.5926463),
   and STEP writes `CYLINDRICAL_SURFACE`; a twisted tube, cone (also with its apex), sphere, torus,
   turned shaft (3 cylinders, 2 cones) and a filleted cylinder keep every face; the bore of
   `Box(20, 20, 40) - Cylinder(4, 40)` twisted stays a cylinder of radius 4. Faces off the axis,
@@ -89,7 +90,7 @@ applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked; the 
   the run: the extended mode's result does). The box check of `shell` and `offset` now grants a
   face that reaches out of the box the largest tolerance of its edges and vertices, at most 1e-4 of
   the box's size; a result reaching farther is refused as before. 12 of 12 runs in parallel and 24
-  of 24 repeated in one process (before: 9 of 24 failed there); smlibwasm built it already.
+  of 24 repeated in one process (before: 17 of 24 failed there); smlibwasm built it already.
 - **`FontError` (R8).** `Text` raises `FontError` for a font it cannot read (a `ValueError`;
   smlibwasm: a `RangeError`), as `load_font` and `Font` do, so the release notes' `except
   FontError` catches it, and `FontError` is in `smlibpy` (`from smlibpy import *`), as in
@@ -104,22 +105,26 @@ applies to smlibpy (Python) and smlibwasm (JavaScript) alike unless marked; the 
   smlibwasm 40 edges, 1096.144. The view is symmetric under x <-> y, and the native one has the arc
   of the plate's top rim from (7.42, -39.08, 31.66) to (38.43, -46.43, 8) (42.133) but not its
   mirror, nor two pieces (18.417, 0.816) at the neck's top: they come out hidden (`hidden=True`:
-  visible 1034.777 and hidden 1071.524, smlibwasm 1096.144 and 1010.974). The pieces come from the
-  kernel's hidden curve removal (`SmApiProjectBrepOntoPlane` -> `SmHCR::ComputeGlobalVisibility`).
-  Tried: the body is the same in both builds (faces, areas, volume to 3e-11, edge tolerances,
-  surface and face domains); a copy of the native body gives the same 36 edges, the body written to
-  `.smb` and read back gives 41 and 1096.144 in both builds. A probe against the kernel library
-  (the `.smb` body, `SmBrep::SetTolerance`, then `SmApiProjectBrepOntoPlane`) shows the visibility
-  following the Brep's tolerance, which sets the HCR's approximation tolerance (min(1e-6 x size,
-  0.1 x tolerance)): 1e-5 gives 41 curves and 1096.144, 7e-6 the same, 5e-6 37 and 1141.730 (more
-  than is visible), 3e-6 and 1e-6 39 and 1078.860, 1e-7 and 1e-8 36 and 1066.108, 1e-4 to 1e-3 40
-  and 1096.109. The HCR judges a piece by a ray at one sample point and passes the verdict along to
-  the edges at its vertices (`ComputeEdgeVisibility`), against untrimmed surfaces where a face is not
-  rectangular in its parameters; which of these misfires here is not located. Setting a fixed
-  tolerance for the projection would make the builds agree on this part but not make the result
-  right in general (the table above), so it was not done. In 0.4 the flange's faces were surfaces
-  of revolution and the view was complete; the front, top and side views (`drawing_views`) of the
-  flange are complete and agree between the builds.
+  visible 1034.777 and hidden 1071.524, smlibwasm 1096.144 and 1010.974). They come from the
+  kernel's hidden curve removal (`SmApiProjectBrepOntoPlane` -> `SmHCR::ComputeGlobalVisibility`),
+  already in its raw curves (37, 1034.777). Tried: the body is the same in both builds (face and
+  surface classes, areas, volume to 3e-11, edge tolerances, surface and face domains, loose and
+  tight boxes); a copy, a translation and a turn by 360 degrees of the native body give the same 37
+  curves, but the body mirrored twice, or written to `.smb` and read back, gives 41 and 1096.144 in
+  both builds, so some state of the body as the fillet and chamfer left it (not its geometry, types
+  or tolerances) decides it. A probe against the kernel library (the `.smb` body,
+  `SmBrep::SetTolerance`, then `SmApiProjectBrepOntoPlane`) shows how fragile the visibility is in the
+  HCR's approximation tolerance (min(1e-6 x size, 0.1 x the Brep's tolerance)): 1e-5 and 7e-6 give
+  41 curves and 1096.144, 1e-4 to 1e-3 40 and 1096.109, 5e-6 37 and 1141.730 (more than is
+  visible), 3e-6 and 1e-6 39 and 1078.860, 2e-7 37 and 1034.777, 1e-7 36 and 1066.108; a floor of
+  1e-6 on that tolerance in smlibpy's `hidden_lines` left the native body's view as it was. The HCR
+  judges a piece by a ray at one sample point, passes the verdict along to the edges at its vertices
+  (`ComputeEdgeVisibility`), and shoots against surfaces that are not trimmed where a face is not
+  rectangular in its parameters; which of these misfires here is not located. In 0.4 the flange's
+  faces were surfaces of revolution and the view was complete; its front, top and side views
+  (`drawing_views`) are complete and agree between the builds. Listed as a known kernel limitation
+  in docs/kernel.md and in the skill's `analysis/outline` (tilted views can lose or gain pieces
+  where the HCR misjudges them).
 
 ## Later
 

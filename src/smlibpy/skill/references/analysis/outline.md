@@ -54,6 +54,9 @@ such.
   can show where they face the viewer); with either, smlibpy's (no seams).
 - A view of a part takes 2 to 400 ms (a 64-face valve: 0.2 to 0.4 s per view).
 - A flat sketch seen edge-on becomes one line (a circle on `Plane.XZ` gives a 10 mm line).
+- Tilted views: the kernel's hidden curve removal can misjudge a piece (natively, the flange
+  example seen along (1, 1, 1) lacks one arc of its rim, which smlibwasm draws); the views along
+  the axes were right in every case tested.
 - For the 3D contour curves on the body (not flattened) use `silhouette`. For a drawing with
   several views, laid out and written as DXF or SVG, use `drawing_views`.
 

@@ -170,12 +170,15 @@ def _star_vase():
     return star.extrude(120).twist(90)
 
 
-def test_the_twisted_vase_of_the_deform_recipe_shells():
+def test_the_twisted_vase_of_the_deform_recipe_shells(monkeypatch):
     # skill recipes/deform: the shell of the twisted star vase raised ModelingError in about 2 of 5
     # runs (0.5.0; 0 of 12 in 0.4). The plain mode's body is not closed; the extended mode's walls were
     # refused as reaching 1.3e-3 above the rim: the kernel's tight box of the inner wall took in a point
     # of its surface off the face, 1.4e-3 from a rim vertex of tolerance 1.8e-3, while the edges and the
     # mesh of that face end at the rim.
+    import smlibpy.defeature
+
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 120)  # (a step takes 1 to 3 s; more when loaded)
     vase = _star_vase()
     for _ in range(3):
         shelled = vase.shell(2.5, vase.faces().sort_by(Z)[-1])

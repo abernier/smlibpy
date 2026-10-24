@@ -49,7 +49,7 @@ import {
   unroll,
   type Part,
 } from '../src/index.ts'
-import { BoundBox, CenterArc, surface } from '../src/index.ts'
+import { BoundBox, CenterArc, setGuardSeconds, surface } from '../src/index.ts'
 import { ext } from '../src/kernel.ts'
 import { _offsetProblem } from '../src/shapes.ts'
 import { FontError } from '../src/font.ts'
@@ -274,12 +274,17 @@ test('the twisted vase of the deform recipe shells', () => {
   // above the rim, where the kernel's tight box of the inner wall took in a point of its surface off the
   // face, 1.4e-3 from a rim vertex of tolerance 1.8e-3)
   const vase = starVase()
-  for (let i = 0; i < 2; i++) {
-    const shelled = vase.shell(2.5, vase.faces().sortBy(Z).at(-1))
-    assert.ok(shelled.isValid())
-    assert.equal(shelled.faces().length, 27)
-    approx(shelled.volume, 56361.5, 1e-6)
-    assert.ok(shelled.bbox().max.z < 120 + 2e-3)
+  const guard = setGuardSeconds(120) // (a step takes 2 to 5 s; on a loaded machine longer than 20)
+  try {
+    for (let i = 0; i < 2; i++) {
+      const shelled = vase.shell(2.5, vase.faces().sortBy(Z).at(-1))
+      assert.ok(shelled.isValid())
+      assert.equal(shelled.faces().length, 27)
+      approx(shelled.volume, 56361.5, 1e-6)
+      assert.ok(shelled.bbox().max.z < 120 + 2e-3)
+    }
+  } finally {
+    setGuardSeconds(guard)
   }
 })
 

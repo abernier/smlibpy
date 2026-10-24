@@ -213,6 +213,11 @@ matter here:
   cylinder's seam.
 - Sweeps along helices of more than about 60 turns fail in the kernel's sweep (`Helix` itself
   takes any number).
+- The kernel's hidden curve removal behind `outline` and `drawing_views` (`SmHCR`) can judge a
+  piece of a tilted view wrongly: seen along (1, 1, 1), the flange example as built
+  (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.4
+  mm of 1096.1; smlibwasm, and the same body read back from `.smb`, draw them). Views along the
+  axes were right in every case tested; check a tilted view of a symmetric part for symmetry.
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - A Boolean in which the faces cross along a curve tangent to a seam can still return a valid
   body of the wrong volume where smlibpy cannot turn the seam away: the seam of a part that is
