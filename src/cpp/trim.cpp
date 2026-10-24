@@ -10,8 +10,8 @@
 // curve that runs across several faces split where it passes from one to the next. This finds them: along
 // each curve, the face nearest to sample points (SmTopologySolver::BrepPointSolve), with the passage
 // between two faces found by bisection. Each piece must lie on its face's surface within the
-// tolerance. Samples on an edge or a vertex, or off the faces (a curve that runs on past a face, on
-// its surface), belong to the face of their neighbours.
+// tolerance. Samples on an edge or a vertex belong to the face of their neighbours; where a curve runs
+// off the faces (on past a sheet's border, or across a hole), it is cut where it leaves them.
 #include "kernel.h"
 #include "trim.h"
 #include "ext_shared.h"
@@ -46,20 +46,30 @@ struct BrepDeleter
     void operator()(SmBrep* b) const { delete b; }
 };
 
-// The face the point lies on (within tol), or nullptr: on an edge or a vertex, or farther away.
-SmFace* face_at(const SmBrep* brep, const SmPoint3d& p, double tol)
+// Where a point lies on a body (within tol): on a face (`face`), on an edge or a vertex (`on` without a
+// face), or off it (farther away: past a sheet's border, over a hole).
+struct Where
+{
+    SmFace* face = nullptr;
+    bool on = false;
+};
+
+Where where(const SmBrep* brep, const SmPoint3d& p, double tol)
 {
     SmSolutionArray solutions;
     if (SmTopologySolver::BrepPointSolve(brep, p, SM_SO_MINIMIZE, SM_SR_SINGLE, SM_ZONE_TOL_3D, 1.0e40, nullptr,
                                          solutions) != SM_SUCCESS ||
         solutions.GetSize() < 1)
-        return nullptr;
+        return {};
     const SmSolution& solution = solutions[0];
     SmPoint3d found;
     if (solution.GetPoint(0, found) != SM_SUCCESS || found.DistanceBetween(p) > tol)
-        return nullptr;
-    return SM_CAST_PTR(SmFace, solution.m_apObjects[0]);
+        return {};
+    return {SM_CAST_PTR(SmFace, solution.m_apObjects[0]), true};
 }
+
+// The face the point lies on (within tol), or nullptr: on an edge or a vertex, or farther away.
+SmFace* face_at(const SmBrep* brep, const SmPoint3d& p, double tol) { return where(brep, p, tol).face; }
 
 double surface_gap(const SmSurface* surface, const SmPoint3d& p)
 {
@@ -78,7 +88,10 @@ struct Piece
     double gap;  // the largest distance of the piece from its face's surface, sampled
 };
 
-// The pieces of a curve on the faces of a body.
+// The pieces of a curve on the faces of a body. Where the curve runs off the body (on past a sheet's
+// border, or across a hole), it is cut where it leaves and where it comes back (bisection between
+// samples on and off the body), and only the runs on the body give pieces. Samples on an edge or a
+// vertex are on the body and belong to the face of their neighbours.
 std::vector<Piece> pieces_of(const SmBrep* brep, const SmCurve* curve, double tol)
 {
     const SmExtent1d ivl = curve->GetNaturalInterval();
@@ -88,64 +101,114 @@ std::vector<Piece> pieces_of(const SmBrep* brep, const SmCurve* curve, double to
         return p;
     };
     const int n = 48;
-    std::vector<double> ts;
-    std::vector<SmFace*> faces;
+    std::vector<double> all_t;
+    std::vector<Where> all;
     for (int i = 0; i <= n; ++i)
     {
         const double t = ivl.Evaluate(double(i) / n);
-        if (SmFace* f = face_at(brep, at(t), tol))
-            ts.push_back(t), faces.push_back(f);
+        all_t.push_back(t);
+        all.push_back(where(brep, at(t), tol));
     }
-    if (ts.empty())
-        throw std::invalid_argument("trim_with_curves: a curve does not lie on the faces");
-    std::vector<Piece> out;
-    double start = ivl.GetMin();
-    for (size_t i = 1; i < ts.size(); ++i)
-    {
-        if (faces[i] == faces[i - 1])
-            continue;
-        // where the curve passes from faces[i - 1] to faces[i]
-        double lo = ts[i - 1], hi = ts[i];
-        for (int k = 0; k < 60 && hi - lo > 1e-12 * std::max(1.0, ivl.GetLength()); ++k)
+    const double step = 1e-12 * std::max(1.0, ivl.GetLength());
+    // where the curve comes onto (or leaves) the body between an off and an on sample
+    auto passage = [&](double off, double on) {
+        for (int k = 0; k < 60 && std::abs(on - off) > step; ++k)
         {
-            const double mid = 0.5 * (lo + hi);
-            SmFace* f = face_at(brep, at(mid), tol);
-            if (f == faces[i - 1])
-                lo = mid;
-            else if (f == faces[i])
-                hi = mid;
-            else
+            const double mid = 0.5 * (off + on);
+            (where(brep, at(mid), tol).on ? on : off) = mid;
+        }
+        return on;
+    };
+    std::vector<Piece> out;
+    size_t i = 0;
+    while (i <= static_cast<size_t>(n))
+    {
+        if (!all[i].on)
+        {
+            ++i;
+            continue;
+        }
+        // a run of samples on the body: i .. j
+        size_t j = i;
+        while (j + 1 <= static_cast<size_t>(n) && all[j + 1].on)
+            ++j;
+        const double run0 = i == 0 ? ivl.GetMin() : passage(all_t[i - 1], all_t[i]);
+        const double run1 = j == static_cast<size_t>(n) ? ivl.GetMax() : passage(all_t[j + 1], all_t[j]);
+        // the samples of the run on faces (those on edges and vertices go to their neighbours)
+        std::vector<double> ts;
+        std::vector<SmFace*> faces;
+        for (size_t k = i; k <= j; ++k)
+            if (all[k].face)
+                ts.push_back(all_t[k]), faces.push_back(all[k].face);
+        if (faces.empty())
+        {
+            // a run between samples on edges only (along an edge, or across a corner): the face of a
+            // point between them, if any
+            for (int k = 1; k < 8 && faces.empty(); ++k)
+                if (SmFace* f = face_at(brep, at(run0 + (run1 - run0) * k / 8.0), tol))
+                    ts.push_back(run0 + (run1 - run0) * k / 8.0), faces.push_back(f);
+            if (faces.empty())
             {
-                lo = hi = mid;  // on the edge between them (or a third face): cut here
-                break;
+                i = j + 1;
+                continue;
             }
         }
-        const double cut = 0.5 * (lo + hi);
-        out.push_back({start, cut, faces[i - 1], 0.0});
-        start = cut;
-    }
-    out.push_back({start, ivl.GetMax(), faces.back(), 0.0});
-    // pieces too short to matter (a corner grazed) go to their neighbours
-    std::vector<Piece> kept;
-    for (const Piece& p : out)
-        if (at(p.t0).DistanceBetween(at(p.t1)) > 10.0 * tol || p.t1 - p.t0 > 1e-3 * ivl.GetLength())
-            kept.push_back(p);
-        else if (!kept.empty())
-            kept.back().t1 = p.t1;
-    if (kept.empty())
-        kept.push_back({ivl.GetMin(), ivl.GetMax(), out.front().face, 0.0});
-    else
-        kept.front().t0 = ivl.GetMin(), kept.back().t1 = ivl.GetMax();
-    // each piece on its face's surface
-    for (Piece& p : kept)
-        for (int i = 0; i <= 16; ++i)
+        std::vector<Piece> run;
+        double start = run0;
+        for (size_t k = 1; k < ts.size(); ++k)
         {
-            const double gap = surface_gap(p.face->GetSurface(), at(p.t0 + (p.t1 - p.t0) * i / 16.0));
+            if (faces[k] == faces[k - 1])
+                continue;
+            // where the curve passes from faces[k - 1] to faces[k]
+            double lo = ts[k - 1], hi = ts[k];
+            for (int m = 0; m < 60 && hi - lo > step; ++m)
+            {
+                const double mid = 0.5 * (lo + hi);
+                SmFace* f = face_at(brep, at(mid), tol);
+                if (f == faces[k - 1])
+                    lo = mid;
+                else if (f == faces[k])
+                    hi = mid;
+                else
+                {
+                    lo = hi = mid;  // on the edge between them (or a third face): cut here
+                    break;
+                }
+            }
+            const double cut = 0.5 * (lo + hi);
+            run.push_back({start, cut, faces[k - 1], 0.0});
+            start = cut;
+        }
+        run.push_back({start, run1, faces.back(), 0.0});
+        // pieces too short to matter (a corner grazed) go to their neighbours
+        std::vector<Piece> kept;
+        for (const Piece& p : run)
+            if (at(p.t0).DistanceBetween(at(p.t1)) > 10.0 * tol || p.t1 - p.t0 > 1e-3 * ivl.GetLength())
+                kept.push_back(p);
+            else if (!kept.empty())
+                kept.back().t1 = p.t1;
+        if (kept.empty())
+        {
+            if (at(run0).DistanceBetween(at(run1)) > 10.0 * tol)
+                kept.push_back({run0, run1, run.front().face, 0.0});
+        }
+        else
+            kept.front().t0 = run0, kept.back().t1 = run1;
+        out.insert(out.end(), kept.begin(), kept.end());
+        i = j + 1;
+    }
+    if (out.empty())
+        throw std::invalid_argument("trim_with_curves: a curve does not lie on the faces");
+    // each piece on its face's surface
+    for (Piece& p : out)
+        for (int k = 0; k <= 16; ++k)
+        {
+            const double gap = surface_gap(p.face->GetSurface(), at(p.t0 + (p.t1 - p.t0) * k / 16.0));
             if (gap > tol)
                 throw std::invalid_argument("trim_with_curves: a curve does not lie on the surfaces of the faces it crosses");
             p.gap = std::max(p.gap, gap);
         }
-    return kept;
+    return out;
 }
 
 }  // namespace

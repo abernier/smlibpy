@@ -24,6 +24,13 @@ the nearest ends of the two edges, whichever way the edges run. Its normal follo
 sheet, so the sewn sheet thickens. With `join`: the sheets and the blend in one `Shell`.
 It takes a few ms.
 
+Two closed edges (the round rims of two tubes, closed loops) are bridged all round: each point of
+`edge_a` joins the point of `edge_b` at the same fraction of its length, counted from its point
+nearest `edge_a`'s start and running the same way round. The blend is then two faces sewn along
+two seams (the kernel offsets no face that closes around), smooth across them (to 1e-5 degrees),
+and its rims are the edges to 1e-7 of the size; the sewn sheet thickens. A closed edge and an open
+one cannot be bridged.
+
 ## Measured
 - Two flat sheets 20 wide, 20 apart and 10 up, edges running opposite ways: G1 456.253, G2
   466.054, G3 474.217 (an untwisted S-bridge spans at least 447); the sheets' normals and the
@@ -31,15 +38,18 @@ It takes a few ms.
 - Off a quarter cylinder r 20: G2 and G3 have the cylinder's curvature 1/20 across the edge
   (to 1e-6) and 0 at a flat sheet, at any tension; G1 does not (0.031 there).
 - Arc edges, freeform sheets from `surface`: tangent to 1e-4 degrees.
+- The rims of tubes r 10 and r 6, 20 apart: 1033.631, tangent to 4e-6 degrees, its rims 2.5e-8 off
+  the circles; sewn to both tubes (`join=True`) it thickens by 1 and by -1. To an elliptic loft's
+  rim: tangent across its two seams to 1e-6 degrees.
 
 ## Errors
 - `ValueError: blend: edge_a lies between two faces; take an edge on a sheet's border (used by
   one face)`: an edge of a part, or inside a sheet.
 - `TypeError: blend: edge_a is a curve, not an edge of a sheet; ...`: a `Line`, `Spline`, ...;
   make a sheet with it first (`extrude`, `ruled`).
-- `ValueError: blend: closed edges (a full circle, a closed loop) cannot be blended; split them
-  into two edges first`: the round edge of a tube. Split the sheet (`Part.split` of the tube
-  before taking its face) so the edge has two ends.
+- `ValueError: blend: one edge is closed (a full circle, a closed loop) and the other is not;
+  bridge two closed edges or two open ones`: the round edge of a tube and an edge with two ends.
+  Split the tube (`Part.split` before taking its face) so that its edge has two ends too.
 - `KernelError: blend failed (SM_ERR): the edges may touch or cross, or a sheet may not lead
   toward the other edge`: the edges share a point (the gap is 0 there), or a sheet's surface
   is degenerate at its edge.

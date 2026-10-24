@@ -102,6 +102,7 @@ PYBIND11_MODULE(_core, m)
     bind_cells(m.attr("ext").cast<py::module_>());
     bind_seams(m.attr("ext").cast<py::module_>());
     bind_distance(m.attr("ext").cast<py::module_>());
+    bind_measuring(m.attr("ext").cast<py::module_>());
     bind_history(m.attr("ext").cast<py::module_>());
     bind_check(m.attr("ext").cast<py::module_>());
     bind_slice(m.attr("ext").cast<py::module_>());

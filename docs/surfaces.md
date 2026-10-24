@@ -215,6 +215,21 @@ step = blend(edge_low, edge_high, tension=(0.5, 2), join=True)
 print(len(step.faces()), step.thicken(1).is_valid())   # 3 True
 ```
 
+Two closed edges, such as the rims of two tubes, are bridged all round: each point of the first
+edge is joined to the point of the second at the same fraction of its length, counted from the
+point nearest the first edge's start and running the same way round. The blend comes in two
+faces sewn along two seams (the kernel offsets no face that closes around), as smooth across
+them as elsewhere, so the sewn sheet thickens:
+
+```python
+wide = Cylinder(10, 20).faces().cylinders()[0].to_shell()                      # z -10..10
+narrow = Cylinder(6, 20).translate(0, 0, 40).faces().cylinders()[0].to_shell()  # z 30..50
+top = wide.edges().filter(lambda e: e.center().z > 5).one()
+bottom = narrow.edges().filter(lambda e: e.center().z < 35).one()
+neck = blend(top, bottom, join=True)                   # 4 faces, the two far rims free
+print(neck.thicken(1).is_valid())                      # True
+```
+
 ## Trimming sheets with curves
 
 `trim` cuts a sheet along curves that lie on it, and keeps the side of a point, or with

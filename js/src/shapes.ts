@@ -3124,13 +3124,13 @@ export class Face extends Shape {
   override distanceTo(point: VectorLike | Shape): number {
     if (point instanceof _Body) return point.distanceTo(this)
     const p = point instanceof Vertex ? point.point : _vec(point as VectorLike)
-    return Number(k.face_closest_point(this._f, p.toArray())[1])
+    return Number(kernelCall('distance', () => ext.nearest_point(null, p.toArray(), this._f)).distance)
   }
 
   /** The point of the face nearest to `point` (within its boundary). */
   closestPoint(point: VectorLike): Vector {
     const p = point instanceof Vertex ? point.point : _vec(point)
-    return new Vector(k.face_closest_point(this._f, p.toArray())[0])
+    return new Vector(kernelCall('closest point', () => ext.nearest_point(null, p.toArray(), this._f)).point)
   }
 
   _domain(): [number, number, number, number] {
@@ -3654,7 +3654,9 @@ export class _Body extends Shape {
       throw new TypeError(`distanceTo takes a point, a body, a face, an edge or a wire, not a ${_typeName(other)}`)
     }
     const p = other instanceof Vertex ? other.point : _vec(other)
-    return Number(k.brep_closest_point(this._brep, p.toArray())[1])
+    // (the kernel's closest point, k.brep_closest_point, can stop where a B-spline face folds back
+    // towards the point: ext.nearest_point searches every knot span that could hold a nearer one)
+    return Number(kernelCall('distance', () => ext.nearest_point(this._brep, p.toArray())).distance)
   }
 
   /**
@@ -3674,7 +3676,7 @@ export class _Body extends Shape {
   }
 
   closestPoint(point: VectorLike): Vector {
-    return new Vector(k.brep_closest_point(this._brep, _vec(point).toArray())[0])
+    return new Vector(kernelCall('closest point', () => ext.nearest_point(this._brep, _vec(point).toArray())).point)
   }
 
   /**
@@ -7182,12 +7184,17 @@ export class Part extends _Body {
     }
     const touches = 'the plane only touches the part (along a line or a curve, or at a point), so the section has no area; move the plane into the part'
     let b: number
+    let curves: number[] = []
     try {
-      const curves: number[] = kernelCall('section', () => k.intersect_brep_with_plane(this._brep, pl.origin.toArray(), pl.zDir.toArray()))
+      // (the kernel's plane section, intersect_brep_with_plane, fits its curves within a thousandth
+      // of each face's size: up to 1.5e-2 off a part thickened from a B-spline sheet)
+      curves = kernelCall('section', () =>
+        ext.plane_section(this._brep, pl.origin.toArray(), pl.zDir.toArray(), 1e-7 * Math.max(this._extent(), 1.0)))
       if (!curves.length) throw new RangeError('the plane does not cut the part')
       b = kernelCall('section', () => k.create_planar_faces([...curves]))
     } catch (e) {
       if (!(e instanceof KernelError)) throw e
+      for (const c of curves) ext.delete_curve(c) // (the kernel took them only where it made the faces)
       // A plane tangent to a face meets the part along a line, which bounds no face.
       if (this._onOneSide(pl)) throw new RangeError(touches)
       const error = new KernelError(

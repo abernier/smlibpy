@@ -46,6 +46,7 @@
 
 #include "kernel.h"
 #include "sheet_edit.h"
+#include "distance.h"
 #include "ext_shared.h"
 #include "extend.h"
 #include "shape_edit.h"
@@ -1085,6 +1086,37 @@ std::vector<double> surface_distances(const SmSurface* surface, const std::vecto
         {
             const SmPoint2d uv = foot(*surface, dom, pv, params[near[s]]);
             best = std::min(best, at(*surface, uv).DistanceBetween(p));
+        }
+        // Where the surface folds, a nearer point can lie between the samples: every knot span that
+        // could hold one (by the box of its control points) is sampled, and Newton's method (held to
+        // the domain) starts from its nearest samples (a fit around 330 degrees of a tube: up to 1.12
+        // nearer than the samples and their feet found).
+        const std::vector<double> q = {p.x, p.y, p.z};
+        const std::vector<double> box = {dom.GetUMin(), dom.GetUMax(), dom.GetVMin(), dom.GetVMax()};
+        for (const SurfacePatch& patch : surface_patches(surface, box, q))
+        {
+            if (patch.bound >= best)
+                break;
+            // Newton from the two nearest samples of 5 x 5 over the patch
+            std::pair<double, SmPoint2d> two[2] = {{1e300, SmPoint2d()}, {1e300, SmPoint2d()}};
+            for (int a = 0; a < 5; ++a)
+                for (int c = 0; c < 5; ++c)
+                {
+                    const SmPoint2d uv(patch.u0 + (patch.u1 - patch.u0) * a / 4.0, patch.v0 + (patch.v1 - patch.v0) * c / 4.0);
+                    const double d = at(*surface, uv).DistanceBetween(p);
+                    if (d < two[1].first)
+                    {
+                        two[1] = {d, uv};
+                        if (two[1].first < two[0].first)
+                            std::swap(two[0], two[1]);
+                    }
+                }
+            for (const auto& start : two)
+                if (start.first < 1e300)
+                {
+                    double u = start.second.x, v = start.second.y;
+                    best = std::min({best, start.first, nearest_on_surface(surface, box, q, u, v)});
+                }
         }
         out.push_back(best);
     }

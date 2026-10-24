@@ -452,10 +452,14 @@ function _freeEdges(body: Shell | Part): number {
  *   and returns the one sheet.
  *
  * The blend joins the nearest ends of the two edges (its side edges never cross), and its normal
- * follows `edgeA`'s sheet. Closed edges (a full circle) cannot be bridged: split the sheet so that
- * the edge has two ends.
+ * follows `edgeA`'s sheet. Two closed edges (the rims of two tubes, full circles or closed loops) are
+ * bridged all round: each point of `edgeA` is joined to the point of `edgeB` at the same fraction of
+ * its length, counted from its point nearest `edgeA`'s start and running the same way round. Such a
+ * blend is two faces sewn along two seams (the kernel offsets no face that closes around), as smooth
+ * across them as elsewhere. A closed edge and an open one cannot be bridged.
  *
- * @returns The blend, a sheet of one face (with `join`, the two sheets and the blend sewn into one).
+ * @returns The blend, a sheet of one face, of two between closed edges (with `join`, the two sheets
+ *   and the blend sewn into one).
  */
 export function blend(
   edgeA: Edge,
@@ -501,7 +505,11 @@ export function blend(
   const bBody = edgeB._owner as Shell
   const sheets = aBody === bBody ? [aBody] : [aBody, bBody]
   const joined = stitch(...sheets, sheet)
-  if (_freeEdges(joined) !== sheets.reduce((n, x) => n + _freeEdges(x), 0)) {
+  // sewn along both edges: no free edge of the result left on either (a closed blend comes in two
+  // halves, so the count of free edges says nothing)
+  const tol = 1e-6 * Math.max(1.0, joined._looseBox().diagonal)
+  const loose = joined.edges().filter((e) => e.faces().length === 1)
+  if (loose.some((e) => Math.min(edgeA.distanceTo(e.center()), edgeB.distanceTo(e.center())) <= tol)) {
     throw new ModelingError('blend: the blend could not be sewn to the sheets; join them with stitch(..., { tolerance })')
   }
   return joined as Shell

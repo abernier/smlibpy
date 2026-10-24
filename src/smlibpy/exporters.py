@@ -688,7 +688,8 @@ def save(shapes: Any, path: str | os.PathLike[str], *, ascii: bool = True) -> No
 
     ``.smb`` holds one body without name or color. ``.smp`` (any other extension writes ``.smb``)
     is the kernel's part container: any number of parts, sheets, sketches and faces, each with its
-    name and color, and edges and wires as curves (see :func:`to_smp`). Reading either back gives
+    name and color (and a sheet metal part with the K-factors of its bends), and edges and wires as
+    curves (see :func:`to_smp`). Reading either back gives
     the same geometry; B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces
     of revolution come back as those (``to_nurbs()`` does not survive). ``ascii=False`` writes the
     binary form (bit-exact, about 40 % of the size).
@@ -765,16 +766,18 @@ def _smp(shapes: Any, ascii: bool, what: str) -> bytes:
             s = s.to_shell()
         if isinstance(s, _Body):
             keep.append(s)
-            items.append((s._brep, None, s.name or None, _rgb(s.color), -1))
+            # a part's sheet metal bends with their K-factors (fold, flange), so that it unfolds as folded
+            folds = [float(x) for o, d, r, kf in getattr(s, "_folds", ()) for x in (*o, *d, r, kf)]
+            items.append((s._brep, None, s.name or None, _rgb(s.color), -1, folds or None))
         elif isinstance(s, Edge):
             c = CurveHandle(s._copy_curve())
             keep.append(c)
-            items.append((None, c.curve, None, None, -1))
+            items.append((None, c.curve, None, None, -1, None))
         elif isinstance(s, Wire):
             for curve in s._copy_curves():
                 c = CurveHandle(curve)
                 keep.append(c)
-                items.append((None, c.curve, None, None, wires))
+                items.append((None, c.curve, None, None, wires, None))
             wires += 1
         elif isinstance(s, Mesh):
             raise TypeError(f"{what}: an .smp file holds exact bodies and curves, not a Mesh: write meshes with "
@@ -803,8 +806,11 @@ def to_smp(shapes: Any, *, ascii: bool = True) -> bytes:
     A part file is the kernel's own container: any number of exact bodies (parts with their cells,
     sheets, sketches and faces as sheets), each with its name and color, and curves (an edge as one,
     a wire as its edges). :func:`from_smp` and :func:`load` give them back in the same order, with
-    their names and colors, a wire as a :class:`Wire`. ASCII unless ``ascii`` is False; the binary
-    form is bit-exact, the ASCII form keeps the geometry to 16 decimals.
+    their names and colors, a wire as a :class:`Wire`. A sheet metal part keeps the K-factor each
+    bend was folded with (:func:`~smlibpy.fold`, :func:`~smlibpy.flange`), so that it unfolds as
+    it was folded; ``.smb`` and STEP files do not hold them (pass ``k_factor=`` to ``unfold`` for a
+    part read from those). ASCII unless ``ascii`` is False; the binary form is bit-exact, the ASCII
+    form keeps the geometry to 16 decimals.
     """
     return _smp(shapes, ascii, "to_smp")
 
@@ -816,7 +822,7 @@ def from_smp(data: bytes) -> Any:
     :class:`Edge` and :class:`Wire`; a file of another SMLib program gives its loose surfaces as
     sheets of one face each.
     """
-    from .shapes import Edge, ShapeList, Wire
+    from .shapes import Edge, Part, ShapeList, Wire
 
     if isinstance(data, str):
         data = data.encode("utf-8")
@@ -826,9 +832,14 @@ def from_smp(data: bytes) -> Any:
         found = ext.part_items(bytes(data))
     out: list[Any] = []
     wires: dict[int, list[Any]] = {}
-    for brep, curve, name, color, wire in found:
+    for brep, curve, name, color, wire, folds in found:
         if brep is not None:
-            out.append(_body(brep, name or None, tuple(color) if color else None, "from_smp"))
+            body = _body(brep, name or None, tuple(color) if color else None, "from_smp")
+            if folds and isinstance(body, Part):
+                f = [float(x) for x in folds]
+                body._folds = tuple((tuple(f[i:i + 3]), tuple(f[i + 3:i + 6]), f[i + 6], f[i + 7])
+                                    for i in range(0, len(f), 8))
+            out.append(body)
         elif wire >= 0 and wire in wires:
             wires[wire].append(Edge._from_curve(curve))
         elif wire >= 0:

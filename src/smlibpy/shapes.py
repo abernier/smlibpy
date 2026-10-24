@@ -2739,13 +2739,13 @@ class Face(Shape):
         """Distance to a point, or to a body (see :meth:`Part.distance_to`)."""
         if isinstance(point, _Body):
             return point.distance_to(self)
-        _, d = self._f.closest_point(_vec(point).to_tuple())
-        return float(d)
+        with kernel_call("distance"):
+            return float(ext.nearest_point(None, list(_vec(point).to_tuple()), self._f)["distance"])
 
     def closest_point(self, point: VectorLike) -> Vector:
         """The point of the face nearest to ``point`` (within its boundary)."""
-        q, _ = self._f.closest_point(_vec(point).to_tuple())
-        return Vector(tuple(q))
+        with kernel_call("closest point"):
+            return Vector(*ext.nearest_point(None, list(_vec(point).to_tuple()), self._f)["point"])
 
     def _domain(self) -> tuple[float, float, float, float]:
         (u0, v0), (u1, v1) = self._f.uv_domain()
@@ -3214,8 +3214,10 @@ class _Body(Shape):
             return self.closest_points(other).distance
         if isinstance(other, Shape) and not isinstance(other, Vertex):
             raise TypeError(f"distance_to takes a point, a body, a face, an edge or a wire, not a {type(other).__name__}")
-        _, d = k.brep_closest_point(self._brep, _vec(other).to_tuple())  # type: ignore[arg-type]
-        return float(d)
+        # (the kernel's closest point, k.brep_closest_point, can stop where a B-spline face folds back
+        # towards the point: ext.nearest_point searches every knot span that could hold a nearer one)
+        with kernel_call("distance"):
+            return float(ext.nearest_point(self._brep, list(_vec(other).to_tuple()))["distance"])  # type: ignore[arg-type]
 
     def closest_points(self, other: _Body | Face | Edge | Wire) -> ClosestPoints:
         """The nearest points of this body and another body, a face, an edge or a wire
@@ -3233,8 +3235,8 @@ class _Body(Shape):
         raise TypeError(f"closest_points takes a body, a face, an edge or a wire, not a {type(other).__name__}")
 
     def closest_point(self, point: VectorLike) -> Vector:
-        p, _ = k.brep_closest_point(self._brep, _vec(point).to_tuple())
-        return Vector(p.x, p.y, p.z) if hasattr(p, "x") else Vector(p)
+        with kernel_call("closest point"):
+            return Vector(*ext.nearest_point(self._brep, list(_vec(point).to_tuple()))["point"])
 
     def raycast_many(self, origins: Any, directions: Any) -> list[Hit | None]:
         """The first hit of each of many rays, one per ray (``Hit`` or ``None``), not
@@ -6392,14 +6394,20 @@ class Part(_Body):
                     return Sketch._wrap(ext.combine([sh._brep for sh in sheets]), pl)
         touches = ("the plane only touches the part (along a line or a curve, or at a point), so the section has "
                    "no area; move the plane into the part")
+        curves: list[Any] = []
         try:
+            # (the kernel's plane section, intersect_brep_with_plane, fits its curves within a
+            # thousandth of each face's size: up to 1.5e-2 off a part thickened from a B-spline sheet)
             with kernel_call("section"):
-                curves = k.intersect_brep_with_plane(self._brep, pl.origin.to_tuple(), pl.z_dir.to_tuple())
+                curves = ext.plane_section(self._brep, list(pl.origin.to_tuple()), list(pl.z_dir.to_tuple()),
+                                           1e-7 * max(self._extent(), 1.0))
             if not curves:
                 raise ValueError("the plane does not cut the part")
             with kernel_call("section"):
                 b = k.create_planar_faces(list(curves))
         except KernelError as e:
+            for c in curves:  # (the kernel took them only where it made the faces)
+                ext.delete_curve(c)
             # A plane tangent to a face meets the part along a line, which bounds no face.
             if self._on_one_side(pl):
                 raise ValueError(touches) from e
