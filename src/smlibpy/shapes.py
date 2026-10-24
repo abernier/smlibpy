@@ -3424,8 +3424,8 @@ class _Body(Shape):
         if not _similarity(m):
             # A scale that differs between the axes (or a shear) makes every face and edge a
             # B-spline: the kernel's recognition gives back the planes, cylinders, cones, surfaces of
-            # revolution and lines, before anything measures the copy (a measure stores refitted
-            # trim curves in it, which kept a 6.8e-7 volume error) (kernel plan T6).
+            # revolution, lines and circles, before anything measures the copy (a measure stores
+            # refitted trim curves in it, which kept a 6.8e-7 volume error) (kernel plan T6).
             size = self._loose_box().diagonal * float(np.linalg.norm(m[:3, :3]))
             with kernel_call("transform"):
                 recognized = ext.recognize_analytics(h.brep, 1e-9 * max(1.0, size))

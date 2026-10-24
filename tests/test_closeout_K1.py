@@ -14,7 +14,7 @@ import textwrap
 import pytest
 from pytest import approx
 
-from smlibpy import Y, Box, Circle, Cylinder, ModelingError, Rectangle, Sphere, Torus, X
+from smlibpy import Y, Box, Circle, Cylinder, KernelError, ModelingError, Rectangle, Sphere, Torus, X
 from smlibpy._kernel import k
 
 
@@ -212,3 +212,45 @@ def test_split_along_a_plane_face_that_ends_inside_the_part():
     above, below = box.split(face.to_shell(), "both")
     assert above.volume == approx(4000 - 4 * 20 * 20 / math.cos(math.radians(20)), rel=1e-9)
     assert above.volume + below.volume == approx(8000, rel=1e-9)
+
+
+# -- circular rims after a scale along the axis (T6)
+
+
+def test_rims_of_parts_scaled_along_their_axis_are_circles(tmp_path):
+    # The kernel's recognition after the transform gave back the cylinder, but its rims stayed
+    # B-spline edges: .circles() found none and STEP files got B-spline curves.
+    from smlibpy import Cone, export_step, import_step
+
+    tall = Cylinder(5, 10).scale((1, 1, 2))
+    assert sorted(e.geom_type for e in tall.edges()) == ["circle", "circle"]
+    assert [e.radius for e in tall.edges().circles()] == [approx(5, abs=1e-12)] * 2
+    assert tall.volume == approx(math.pi * 25 * 20, rel=1e-13) and tall.check() == []
+    cone = Cone(5, 2, 10).scale((1, 1, 3))
+    assert sorted(e.radius for e in cone.edges().circles()) == [approx(2, abs=1e-12), approx(5, abs=1e-12)]
+    holed = (Box(20, 20, 10) - Cylinder(3, 20)).scale((1, 1, 1.5))
+    assert len(holed.edges().circles()) == 2 and holed.check() == []
+    assert holed.volume == approx(1.5 * (4000 - math.pi * 90), rel=1e-13)
+    assert holed.fillet(holed.edges().circles(), 1).is_valid()
+    cut = (Box(20, 20, 20) - Sphere(5).translate(0, 0, 10)).scale((1, 1, 2))
+    assert [e.radius for e in cut.edges().circles()] == [approx(5, abs=1e-12)]
+    # elliptic rims (a scale across the axis) stay B-splines
+    assert {e.geom_type for e in Cylinder(5, 10).scale((2, 1, 1)).edges()} == {"bspline"}
+    export_step(tall, tmp_path / "tall.step")
+    text = (tmp_path / "tall.step").read_text()
+    assert "CIRCLE(" in text and "B_SPLINE_CURVE" not in text
+    assert import_step(tmp_path / "tall.step").volume == approx(math.pi * 500, rel=1e-13)
+
+
+# -- a fillet the kernel fails inside names what it could not build (B19 with F8)
+
+
+def test_a_fillet_that_fails_inside_the_kernel_names_the_round_it_could_not_build():
+    # fuzz case fillet-7-161: SM_ERR_NULL_POINTER, with the fillet executive's record of the round
+    part = Torus(8, 1.5) - Sphere(2.5).translate(7, 7, -2.8573)
+    with pytest.raises(KernelError) as e:
+        part.fillet(part.edges(), 0.495553)
+    message = str(e.value)
+    assert e.value.status == "SM_ERR_NULL_POINTER" and "may be too large" not in message
+    assert "the kernel failed inside the fillet" in message and "which says nothing about the radius" in message
+    assert "it could not build the round of the closed edge through (6.18121, 5.0668, -1.49998)" in message

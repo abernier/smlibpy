@@ -5,7 +5,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { Box, Circle, Cylinder, ModelingError, Rectangle, Sphere, Torus, X, Y } from '../src/index.ts'
+import { Box, Circle, Cone, Cylinder, KernelError, ModelingError, Rectangle, Sphere, Torus, X, Y, fromStep, toStep } from '../src/index.ts'
+import type { Part } from '../src/index.ts'
 import { ext } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
@@ -142,4 +143,45 @@ test('split along a plane face that ends inside the part', () => {
   const [above, below] = box.split(face.toShell(), 'both')
   approx(above.volume, 4000 - (4 * 20 * 20) / Math.cos((20 * Math.PI) / 180), 1e-9)
   approx(above.volume + below.volume, 8000, 1e-9)
+})
+
+// -- circular rims after a scale along the axis (T6)
+
+test('rims of parts scaled along their axis are circles', () => {
+  const tall = Cylinder(5, 10).scale([1, 1, 2]) as Part
+  assert.deepEqual(tall.edges().map((e) => e.geomType), ['circle', 'circle'])
+  for (const e of tall.edges().circles()) approx(e.radius, 5, 1e-12)
+  approx(tall.volume, Math.PI * 25 * 20, 1e-13)
+  assert.deepEqual(tall.check(), [])
+  const cone = Cone(5, 2, 10).scale([1, 1, 3]) as Part
+  assert.deepEqual(cone.edges().circles().map((e) => Math.round(e.radius * 1e9) / 1e9).sort(), [2, 5])
+  const holed = Box(20, 20, 10).cut(Cylinder(3, 20)).scale([1, 1, 1.5]) as Part
+  assert.equal(holed.edges().circles().length, 2)
+  assert.deepEqual(holed.check(), [])
+  approx(holed.volume, 1.5 * (4000 - Math.PI * 90), 1e-13)
+  assert.ok(holed.fillet(holed.edges().circles(), 1).isValid())
+  const cut = Box(20, 20, 20).cut(Sphere(5).translate(0, 0, 10)).scale([1, 1, 2]) as Part
+  assert.equal(cut.edges().circles().length, 1)
+  assert.deepEqual([...new Set((Cylinder(5, 10).scale([2, 1, 1]) as Part).edges().map((e) => e.geomType))], ['bspline'])
+  const text = toStep(tall)
+  assert.ok(text.includes('CIRCLE(') && !text.includes('B_SPLINE_CURVE'))
+  approx((fromStep(text) as Part).volume, Math.PI * 500, 1e-13)
+})
+
+// -- a fillet the kernel fails inside names what it could not build (B19 with F8)
+
+test('a fillet that fails inside the kernel names the round it could not build', () => {
+  // fuzz case fillet-7-161: SM_ERR_NULL_POINTER, with the fillet executive's record of the round (the
+  // message left the record out in smlibwasm)
+  const part = Torus(8, 1.5).cut(Sphere(2.5).translate(7, 7, -2.8573))
+  let error: KernelError | undefined
+  try {
+    part.fillet(part.edges(), 0.495553)
+  } catch (e) {
+    error = e as KernelError
+  }
+  assert.ok(error instanceof KernelError && error.status === 'SM_ERR_NULL_POINTER')
+  assert.ok(!error.message.includes('may be too large'))
+  assert.ok(error.message.includes('the kernel failed inside the fillet') && error.message.includes('which says nothing about the radius'))
+  assert.ok(error.message.includes('it could not build the round of the closed edge through (6.18121, 5.0668, -1.49998)'))
 })

@@ -39,9 +39,16 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   parent's lists, so ProtoEdges outside the group listed its members. Kernel patch: a deleted
   ProtoEdge is taken out of every list, and the ProtoEdge that took its EdgeDefinitions listed in its
   place. Instrumented, the guard, fillet and lane BT tests removed 19 stale entries, the fuzz seeds 7
-  and 8 364 (and 2 from the lists of ProtoFaces); AddressSanitizer reports nothing in this code over
-  them (the one report left in the fuzz run is the known one of the fillet executive, fuzz case
-  fillet-7-185, outside this area).
+  and 8 364 (and 2 from the lists of ProtoFaces). With the lists right, a ProtoEdge that
+  `CombineProtoEdge` had kept became a member of an overlapping group and was deleted while its end
+  ProtoVertices still listed it a second time (`CombineProtoEdge` adds it there again, and
+  `AddProtoEdge` adds "even if already there"): `FindProtoEdge` read it (AddressSanitizer: a read of
+  freed memory in `SmProtoEdge::IsSameProtoEdge`, in every run of the extended offset of
+  `Cone(6, 0, 8).rotate(Y, 90) + Cylinder(4, 12).translate(-6.7843, 0, 0)` by 6; 0 on 5c7666f, where
+  that ProtoEdge was never deleted). A deleted ProtoEdge now leaves every list of a ProtoVertex too,
+  as often as it is listed. AddressSanitizer reports nothing in this code over the sanitizer job's
+  tests and the fuzz seeds (the one report left in the fuzz run is the known one of the fillet
+  executive, fuzz case fillet-7-185, outside this area).
 - **`smlibpy._core.boolean_with_curves` no longer hands out freed edges.** usd-brep's binding of
   `SmApiBooleanWithCurves` returned common edges that `BooleanPostProcess` had deleted, and
   pybind11 read them (`Box(10, 10, 10)` + `Box(10, 10, 5).translate(5, 0, -2.5)` killed Python). The
@@ -86,6 +93,23 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   of `Cylinder(30, 8).translate(0, -25, 0)` splits `Box(20, 20, 20)` into 2226.0814 and 5773.9181
   (the integral: 5773.9216).
 
+- **Circular rims after a scale along the axis are circles (T6).** The kernel's recognition after a
+  scale that differs between the axes gave back cylinders, cones and planes, but their rims stayed
+  B-spline edges: `Cylinder(5, 10).scale((1, 1, 2)).edges().circles()` found none, and STEP files got
+  B-spline curves. The recognition now also gives back circles (`SmCurve::CreateAnalyticCurve`, as
+  for mirrored bodies, on edges whose faces are no B-splines; every edge checked against the old one
+  to 1e-9 of the size): `edge.radius` is 5, the STEP file has `CIRCLE`s and no `B_SPLINE_CURVE`, the
+  volume stays exact, and the rims of a hole, a cone or a sphere's cut scaled along the axis are
+  circles too. Elliptic rims (a scale across the axis) stay B-splines.
+- **A fillet the kernel fails inside names the round it could not build in smlibwasm too (B19).**
+  For `SM_ERR_NULL_POINTER` the message says the kernel failed inside the fillet, which says nothing
+  about the radius (it never says "the radius may be too large" there), and where the fillet
+  executive recorded what it could not build it names it (F8). smlibwasm left that place out of the
+  crash message: fuzz case fillet-7-161 (`Torus(8, 1.5) - Sphere(2.5).translate(7, 7, -2.8573)`,
+  its one edge rounded by 0.495553) now names "the round of the closed edge through (6.18121,
+  5.0668, -1.49998)" in both. Over the fuzz seeds 7 and 8 every fillet failure inside the kernel
+  (2 of 43 fillet and chamfer failures) gets this message, and one of them names a place.
+
 ## Blocked
 
 - **A torus' outer equator (B6).** No turn about the torus' axis moves it, and filling and recutting
@@ -115,12 +139,14 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
 - `heal(report=True)` from `SmHealData` (T4): the plan item itself says "later".
 - Face colors and names in `.smb` files (X9's), USD `BrepArray` prims, OBJ and the MCP live view
   (T5): the "Do" asked for STEP and per-face glTF/USD materials, which are done; STL has no colors.
-- Circular rims of non-uniformly scaled cylinders as circles, ellipsoids, recognition of STEP imports
-  (T6): the "Do" asked for the kernel's recognition after the transform (planes, cylinders, lines),
-  which has no circle recognition and no ellipsoid surface; imports keep the file's geometry.
-- A fillet hint naming a degenerate vertex where the kernel names none (B19): F8 names the corner
-  where the fillet executive's record has one; the failures left (`SM_ERR_NULL_POINTER`) carry no
-  vertex. Offset hints beyond the crash note: the "Do" asked for the shell's face, which is done.
+- Ellipsoids, and recognition of STEP imports (T6): the "Do" asked for the kernel's recognition after
+  the transform (planes, lines, cylinders; circles are done above); the kernel has no ellipsoid
+  surface, and recognizing the B-spline faces of files that are read is a new importer option.
+- A fillet hint that names a vertex where the fillet executive recorded nothing (B19): the "Do"'s
+  "degenerate vertex" hint is F8's naming of the corner or edge from the executive's record (above);
+  where there is no record, smlibpy has no evidence of a vertex, and finding one (rounding the edges
+  in groups) is a new search. Offset hints beyond the crash note: the "Do" asked for the shell's
+  face, which is done.
 
 ## Behaviour changes
 
@@ -168,6 +194,18 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   # before: box.split(wall.extend(100), "both") after catching ModelingError
   outside, inside = Box(20, 20, 20).split(wall.to_shell(), "both")
   ```
+- The rims of a part scaled along an axis are `circle` edges where they were `bspline`
+  (`Cylinder(5, 10).scale((1, 1, 2))`, a hole or a cone scaled along its axis). Code that selected
+  them as B-splines selects circles:
+
+  ```python
+  tall = Cylinder(5, 10).scale((1, 1, 2))
+  rims = tall.edges().circles()          # 0.5.0: tall.edges().filter_by(lambda e: e.geom_type == "bspline")
+  ```
+- smlibwasm: the message of a fillet or chamfer that fails inside the kernel names what the fillet
+  executive could not build, as smlibpy's does ("... (it could not build the round of the closed
+  edge through (...)), which says nothing about the radius ..."). Match on the status
+  (`e.status === 'SM_ERR_NULL_POINTER'`), not the whole text.
 - `smlibpy._core.boolean_with_curves` (raw) returns the edges on both operands' surfaces (the
   intersection curves and the rims where one stands on the other) instead of the kernel's list of
   common edges, which could hold deleted ones; merged coplanar edges are not in it. Use

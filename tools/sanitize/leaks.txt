@@ -34,6 +34,11 @@ SmFilletExecutive::CreateSmoothEdgeSequence
 # filleted boxes (tests/test_lane_FO.py).
 SmOffsetGeometryCreation::ExtendTrimEdges
 SmMerge::MergeEdge & SmOffsetExecutive::ShellBrep
+# An imprint of the extended mode's PiecewiseMerge that SmBrep::MakeEdgeInFaceWithVU cannot finish
+# loses a Vertexuse it made for the new edge (240 bytes, 0 to 2 in a process of 24 extended shells of
+# filleted boxes, tests/test_lane_FO.py, depending on the memory layout; also on 5c7666f's build: 4
+# in 6 such processes, where LeakSanitizer's first 200 reports had cut it off before).
+SmBrep::MakeEdgeInFaceWithVU & SmEdgeDefinition::Imprint & SmOffsetExecutive::PiecewiseMerge
 # SmBrep::CopyFaces loses the copied surface of a face it cannot build again (smlibpy's combine then
 # merges the body as it is): 384 bytes in a union of exclusive-or sketches (tests/test_lane_C.py).
 SmBrep::CopyFaces & smlibpy::combine

@@ -19,8 +19,9 @@ factor); areas of sketches by `sx * sy`.
   scaled along its axis stays a `cylinder` (`.cylinders()`, `face.radius` work) or `cone`, a
   sphere or torus stretched along its axis becomes a surface of revolution (`revolution`), an
   elliptic cylinder (`Cylinder(5, 10).scale((2, 1, 1))`) a surface of extrusion (`extrusion`).
-  The circular rims of a scaled cylinder stay `bspline` edges (`.circles()` finds none of them),
-  and a sphere stretched across its axis (an ellipsoid) stays `bspline`. Volumes are exact
+  The circular rims of a cylinder, cone or sphere cut scaled along its axis are `circle` edges
+  again (`.circles()`, `edge.radius` work; elliptic rims stay `bspline`), and a sphere stretched
+  across its axis (an ellipsoid) stays `bspline`. Volumes are exact
   (`Cylinder(5, 10).scale((1, 1, 2)).volume` is pi * 25 * 20) and STEP files get the analytic
   surfaces. Booleans on the result work.
 - A sketch scales together with its plane origin: a sketch at z = 10 scaled by 2 about the

@@ -3889,9 +3889,9 @@ export class _Body extends Shape {
         kernelCall('transform', () => ext.transform_brep(h.brep, columns))
         if (!_similarity(m)) {
           // A scale that differs between the axes (or a shear) makes every face and edge a B-spline:
-          // the kernel's recognition gives back the planes, cylinders, cones, surfaces of revolution
-          // and lines, before anything measures the copy (a measure stores refitted trim curves in it,
-          // which kept a 6.8e-7 volume error) (kernel plan T6).
+          // the kernel's recognition gives back the planes, cylinders, cones, surfaces of revolution,
+          // lines and circles, before anything measures the copy (a measure stores refitted trim
+          // curves in it, which kept a 6.8e-7 volume error) (kernel plan T6).
           const r = _rotation(m)
           const size = this._looseBox().diagonal * Math.sqrt(r.reduce((s, x) => s + x * x, 0))
           const recognized: number | null = kernelCall('transform', () => ext.recognize_analytics(h.brep, 1e-9 * Math.max(1, size)))
@@ -8172,11 +8172,17 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
     if (crash !== null) {
       const failure = e as KernelError
       const size = operation === 'chamfer' ? 'length' : 'radius'
-      const error = new KernelError(
-        failure.operation,
-        failure.detail,
-        failure.status,
-        `${crash}, which says nothing about the ${size} (it fits the faces around the edges): round the edges in smaller groups to find the one it fails at`,
+      // (and what the fillet executive recorded it could not build, as for the other failures)
+      const where: string | undefined = (e as Any)._where
+      const at = where ? ` (it could not build ${where})` : ''
+      const error = _traced(
+        new KernelError(
+          failure.operation,
+          failure.detail,
+          failure.status,
+          `${crash}${at}, which says nothing about the ${size} (it fits the faces around the edges): round the edges in smaller groups to find the one it fails at`,
+        ),
+        failure.trace,
       )
       ;(error as Any).cause = e
       throw error
