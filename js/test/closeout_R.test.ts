@@ -2,8 +2,9 @@
 // (outline raised on the projection's degenerate slivers and took seconds to measure them), D2: a
 // twist leaves a cylinder, cone, sphere or torus about its own axis as it was, W9: the methods that
 // make intermediates free them at once (Sketch.revolve kept 3 handles a call until the garbage
-// collector ran), Text's FontError, and the kernel trace of re-raised errors and of docs/kernel.md's
-// example.
+// collector ran), Text's FontError, the kernel trace of re-raised errors and of docs/kernel.md's
+// example, the box check of shell and offset (a face may reach out by its edges' and vertices'
+// tolerance: the deform recipe's twisted vase), and the printed numbers of the trim and loft references.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -48,6 +49,9 @@ import {
   unroll,
   type Part,
 } from '../src/index.ts'
+import { BoundBox, CenterArc, surface } from '../src/index.ts'
+import { ext } from '../src/kernel.ts'
+import { _offsetProblem } from '../src/shapes.ts'
 import { FontError } from '../src/font.ts'
 import { approx } from './_approx.ts'
 
@@ -253,6 +257,63 @@ test('synchronous revolves keep the kernel memory flat (W9)', () => {
   const after = memoryUsage()
   assert.equal(after.handles, before.handles)
   assert.ok(after.used - before.used < 4 * 1048576, `${(after.used - before.used) / 1048576} MB`) // (it grew by 130 MB)
+})
+
+// ---------------------------------------------------------------------------------- shell and offset
+const starVase = (): Part => {
+  const pts: [number, number][] = []
+  for (let i = 0, a = 0; a < 360; a += 30, i++) {
+    const r = i % 2 === 0 ? 30 : 24
+    pts.push([r * Math.cos((a * PI) / 180), r * Math.sin((a * PI) / 180)])
+  }
+  return twist(Polygon(...pts).extrude(120), 90) as Part
+}
+
+test('the twisted vase of the deform recipe shells', () => {
+  // (natively it raised in about 2 of 5 runs: the extended mode's walls were refused as reaching 1.3e-3
+  // above the rim, where the kernel's tight box of the inner wall took in a point of its surface off the
+  // face, 1.4e-3 from a rim vertex of tolerance 1.8e-3)
+  const vase = starVase()
+  for (let i = 0; i < 2; i++) {
+    const shelled = vase.shell(2.5, vase.faces().sortBy(Z).at(-1))
+    assert.ok(shelled.isValid())
+    assert.equal(shelled.faces().length, 27)
+    approx(shelled.volume, 56361.5, 1e-6)
+    assert.ok(shelled.bbox().max.z < 120 + 2e-3)
+  }
+})
+
+test('a body reaches out of its box only beyond its edges\' tolerance', () => {
+  const body = Box(10, 10, 10)
+  const out = 'a body that reaches out of the box it must fit in'
+  const lower = new BoundBox([-5, -5, -5], [5, 5, 4.999]) // the top face lies 1e-3 above it
+  assert.equal(_offsetProblem(body, lower, 1e-6, 2000, true), out)
+  const real = ext.edge_tolerance
+  try {
+    ext.edge_tolerance = () => 2e-3 // the top's edges are that tolerant
+    assert.equal(_offsetProblem(body, lower, 1e-6, 2000, true), null)
+    ext.edge_tolerance = () => 1 // (at most 1e-4 of the box's size: 1.7e-3 here)
+    assert.equal(_offsetProblem(body, new BoundBox([-5, -5, -5], [5, 5, 4.99]), 1e-6, 2000, true), out)
+  } finally {
+    ext.edge_tolerance = real
+  }
+})
+
+// ---------------------------------------------------------------------------------- documented numbers
+test('the printed numbers of the trim and loft references', () => {
+  const f = (x: number, y: number) => 5 + 0.01 * (x - 20) ** 2 - 0.01 * (y - 15) ** 2
+  const grid: [number, number, number][][] = []
+  for (let x = 0; x <= 40; x += 5) {
+    const row: [number, number, number][] = []
+    for (let y = 0; y <= 30; y += 5) row.push([x, y, f(x, y)])
+    grid.push(row)
+  }
+  const saddle = surface(grid)
+  const outline = saddle.project(CenterArc([20, 15, 50], 5, 0, 360), [0, 0, -1])
+  const panel = saddle.trim(outline, [2, 2, 0])
+  assert.equal(Math.round(panel.area * 1000) / 1000, 1169.871) // (skill surfaces/trim said 1169.877)
+  const cone = loft([Circle(10), Circle(5).translate(0, 0, 20)]) as Part
+  assert.equal(Math.round(cone.volume * 1000) / 1000, 3665.191) // (skill features/loft said 3665.192)
 })
 
 // ---------------------------------------------------------------------------------- errors

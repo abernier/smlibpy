@@ -3807,12 +3807,7 @@ def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smal
     problem = result._solid_problem()
     if problem is not None:
         return f"a body that is {problem}"
-    rb = result.bbox()
-
-    def reaches_out(margin: float) -> bool:
-        return any(rb.min[i] < box.min[i] - margin or rb.max[i] > box.max[i] + margin for i in range(3))
-
-    if reaches_out(tol) and (wider is None or reaches_out(wider())):
+    if _reaches_out(result, box, tol) and (wider is None or _reaches_out(result, box, wider())):
         return "a body that reaches out of the box it must fit in"
     p = result._props(1e-4)
     if not p["gaps"] < _OFFSET_GAPS:
@@ -3826,6 +3821,30 @@ def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smal
     if smaller is None and not abs(after - before) > slack:
         return f"a body of the part's own volume ({after:.10g})"
     return None
+
+
+def _reaches_out(result: _Body, box: BoundBox, margin: float) -> bool:
+    """Whether a body reaches more than ``margin`` out of ``box`` (``_offset_problem``), beyond the
+    tolerance of the edges and vertices of the faces that do (at most 1e-4 of the box's size). The
+    kernel's tight box of a face takes in the points of its surface that it classifies on the face,
+    and a point within the tolerance of one of its vertices or edges classifies on it, also off the
+    face: the extended offset mode's rim vertex of a shelled twisted vase has a tolerance of 1.8e-3,
+    and the inner wall's box reached 1.3e-3 above the rim in about 2 of 5 runs (a point of its surface
+    1.4e-3 from that vertex), where its edges and its mesh end at the rim."""
+    def out(lo: Sequence[float], hi: Sequence[float], m: float) -> bool:
+        return any(lo[i] < box.min[i] - m or hi[i] > box.max[i] + m for i in range(3))
+
+    rb = result.bbox()
+    if not out(rb.min, rb.max, margin):
+        return False
+    cap = 1e-4 * max(box.diagonal, 1.0)
+    for f in result._brep.faces():
+        lo, hi = f.bounding_box(True)
+        if out(lo, hi, margin):
+            tols = [float(ext.edge_tolerance(e)) for e in f.edges()] + [float(ext.vertex_tolerance(v)) for v in f.vertices()]
+            if out(lo, hi, margin + min(max(tols, default=0.0), cap)):
+                return True
+    return False
 
 
 def _surface_points(body: _Body) -> list[tuple[float, float, float]]:

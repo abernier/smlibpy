@@ -11,6 +11,9 @@ found, and D7.
   font reader's own, and ``FontError`` is in ``smlibpy`` (``from smlibpy import *``), as in
   smlibwasm's index.
 - The documented ``KernelError.trace`` example still fails in the kernel (docs/kernel.md).
+- The twisted vase of the deform recipe shells in every run: ``shell`` and ``offset`` grant a face
+  that reaches out of the part's box the tolerance of its edges and vertices.
+- The printed numbers of the surface, trim and loft references.
 """
 
 import math
@@ -158,6 +161,58 @@ def test_a_twisted_sheet_of_revolution():
     top = sorted((round(v.x, 6), round(v.y, 6)) for v in twisted.vertices() if v.z > 0)
     assert top == [(-5, 0), (0, 5)]  # (the top turned by 90 degrees: (0, 5) and (5, 0) before)
     assert twisted.faces()[0].area == approx(half.faces()[0].area, rel=1e-9)
+
+
+# -- shell and offset: what reaches out of the box ---------------------------------------------------
+def _star_vase():
+    star = Polygon(*[(r * math.cos(math.radians(a)), r * math.sin(math.radians(a)))
+                     for i, a in enumerate(range(0, 360, 30)) for r in [30 if i % 2 == 0 else 24]])
+    return star.extrude(120).twist(90)
+
+
+def test_the_twisted_vase_of_the_deform_recipe_shells():
+    # skill recipes/deform: the shell of the twisted star vase raised ModelingError in about 2 of 5
+    # runs (0.5.0; 0 of 12 in 0.4). The plain mode's body is not closed; the extended mode's walls were
+    # refused as reaching 1.3e-3 above the rim: the kernel's tight box of the inner wall took in a point
+    # of its surface off the face, 1.4e-3 from a rim vertex of tolerance 1.8e-3, while the edges and the
+    # mesh of that face end at the rim.
+    vase = _star_vase()
+    for _ in range(3):
+        shelled = vase.shell(2.5, vase.faces().sort_by(Z)[-1])
+        assert shelled.is_valid() and len(shelled.faces()) == 27
+        assert shelled.volume == approx(56361.5, abs=0.05) and shelled.bbox().max.z < 120 + 2e-3
+
+
+def test_a_body_reaches_out_of_its_box_beyond_its_edges_tolerance(monkeypatch):
+    import smlibpy.shapes as S
+
+    body = Box(10, 10, 10)
+    out = "a body that reaches out of the box it must fit in"
+    lower = BoundBox((-5, -5, -5), (5, 5, 4.999))  # the top face lies 1e-3 above it
+    assert S._offset_problem(body, lower, 1e-6, 2000.0, True) == out
+    monkeypatch.setattr(S.ext, "edge_tolerance", lambda e: 2e-3)  # the top's edges are that tolerant
+    assert S._offset_problem(body, lower, 1e-6, 2000.0, True) is None
+    # (at most 1e-4 of the box's size: 1.7e-3 here)
+    monkeypatch.setattr(S.ext, "edge_tolerance", lambda e: 1.0)
+    assert S._offset_problem(body, BoundBox((-5, -5, -5), (5, 5, 4.99)), 1e-6, 2000.0, True) == out
+
+
+# -- documented numbers --------------------------------------------------------------------------------
+def test_the_printed_numbers_of_the_surface_docs():
+    import numpy as np
+
+    rng = np.random.default_rng(1)  # skill surfaces/surface and docs/surfaces.md
+    xy = rng.uniform(-30, 30, (2000, 2))
+    cloud = np.column_stack([xy, 6 * np.exp(-(xy ** 2).sum(axis=1) / 300)])
+    skin = surface(cloud)
+    assert round(max(skin.distance_to(p) for p in cloud), 4) == 0.001  # 0.0010094 (they said < 0.001)
+    f = lambda x, y: 5 + 0.01 * (x - 20) ** 2 - 0.01 * (y - 15) ** 2  # skill surfaces/trim  # noqa: E731
+    saddle = surface([[(x, y, f(x, y)) for y in range(0, 31, 5)] for x in range(0, 41, 5)])
+    outline = saddle.project(CenterArc((20, 15, 50), 5, 0, 360), (0, 0, -1))
+    panel = saddle.trim(outline, keep=(2, 2, 0))
+    assert round(panel.area, 3) == 1169.871 and panel.thicken(1).is_valid()  # (they said 1169.877)
+    cone = loft([Circle(10), Circle(5).translate(0, 0, 20)])  # skill features/loft
+    assert round(cone.volume, 3) == 3665.191 == round(math.pi * 20 / 3 * (100 + 50 + 25), 3)
 
 
 # -- fonts -------------------------------------------------------------------------------------------

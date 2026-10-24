@@ -4335,10 +4335,9 @@ export function _offsetProblem(
 ): string | null {
   const problem = result._solidProblem()
   if (problem !== null) return `a body that is ${problem}`
-  const rb = result.bbox()
-  const [lo, hi, rlo, rhi] = [box.min.toArray(), box.max.toArray(), rb.min.toArray(), rb.max.toArray()]
-  const reachesOut = (margin: number): boolean => [0, 1, 2].some((i) => rlo[i] < lo[i] - margin || rhi[i] > hi[i] + margin)
-  if (reachesOut(tol) && (wider === null || reachesOut(wider()))) return 'a body that reaches out of the box it must fit in'
+  if (_reachesOut(result, box, tol) && (wider === null || _reachesOut(result, box, wider()))) {
+    return 'a body that reaches out of the box it must fit in'
+  }
   const p = result._props(1e-4)
   if (!(p.gaps < _OFFSET_GAPS)) return `a body whose faces do not meet, so that its volume is uncertain by ${_formatE(p.gaps, 1)} of its value`
   const after = Number(p.volume)
@@ -4347,6 +4346,32 @@ export function _offsetProblem(
   if (smaller === false && !(after > before + slack)) return `a body whose volume did not go up (${_formatG(before, 10)} -> ${_formatG(after, 10)})`
   if (smaller === null && !(Math.abs(after - before) > slack)) return `a body of the part's own volume (${_formatG(after, 10)})`
   return null
+}
+
+/** Whether a body reaches more than `margin` out of `box` (`_offsetProblem`), beyond the tolerance of
+ * the edges and vertices of the faces that do (at most 1e-4 of the box's size). The kernel's tight box
+ * of a face takes in the points of its surface that it classifies on the face, and a point within the
+ * tolerance of one of its vertices or edges classifies on it, also off the face: the extended offset
+ * mode's rim vertex of a shelled twisted vase has a tolerance of 1.8e-3, and the inner wall's box
+ * reached 1.3e-3 above the rim in about 2 of 5 native runs (a point of its surface 1.4e-3 from that
+ * vertex), where its edges and its mesh end at the rim. */
+function _reachesOut(result: _Body, box: BoundBox, margin: number): boolean {
+  const [lo, hi] = [box.min.toArray(), box.max.toArray()]
+  const out = (rlo: number[], rhi: number[], m: number): boolean =>
+    [0, 1, 2].some((i) => rlo[i] < lo[i] - m || rhi[i] > hi[i] + m)
+  const rb = result.bbox()
+  if (!out(rb.min.toArray(), rb.max.toArray(), margin)) return false
+  const cap = 1e-4 * Math.max(box.diagonal, 1)
+  for (const f of k.brep_faces(result._brep) as number[]) {
+    const [flo, fhi]: [number[], number[]] = k.face_bounding_box(f, true)
+    if (!out(flo, fhi, margin)) continue
+    const tols = [
+      ...(k.face_edges(f) as number[]).map((e) => Number(ext.edge_tolerance(e))),
+      ...(k.face_vertices(f) as number[]).map((v) => Number(ext.vertex_tolerance(v))),
+    ]
+    if (out(flo, fhi, margin + Math.min(Math.max(0, ...tols), cap))) return true
+  }
+  return false
 }
 
 /** The indices of kernel faces in their body, for the probe worker. */
