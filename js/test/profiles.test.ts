@@ -449,14 +449,12 @@ test('touching faces far from the rest are checked to their own size', () => {
   let squares = Rectangle(1, 1).translate(1000.5, 0.5)
   for (const [i, j] of [[0, 0], [0, 3], [1, 0], [1, 1], [4, 1]]) squares = squares.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
   approx(squares.area, 6)
-  raises(
-    () => {
-      let more = Rectangle(1, 1).translate(1000.5, 0.5)
-      for (const [i, j] of [[0, 2], [3, 2], [3, 3], [4, 1], [4, 3]]) more = more.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
-    },
-    ModelingError,
-    /touch each other at a point/,
-  )
+  // Faces apart from the other operand's go around the kernel (closeout K1): the squares that touch at
+  // corners, which raised, and the far one keep their area.
+  let more = Rectangle(1, 1).translate(1000.5, 0.5)
+  for (const [i, j] of [[0, 2], [3, 2], [3, 3], [4, 1], [4, 3]]) more = more.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
+  approx(more.area, 6)
+  approx(Math.min(...more.faces().map((f) => f.area)), 1)
 })
 
 test('empty results and operand errors', () => {

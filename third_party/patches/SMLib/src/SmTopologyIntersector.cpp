@@ -1,6 +1,6 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmTopologyIntersector.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-21. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-21, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmTopologyIntersector::IntersectTopology fails when SplitIntersectingProtoEdges reports
 //   SM_ERR_BAD_INTERSECTIONS (see the patched SmProtoTopology.cpp): a pair of ProtoEdges whose
 //   curves overlap in ways the split cannot take, as along a seam tangent to the other body.
@@ -10,6 +10,13 @@
 //   Vertex, and the Faces left in it were read later, when the Brep was edited or deleted:
 //   Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504) (an
 //   end cap tangent to the sphere) read the freed Shell (AddressSanitizer) and crashed the process.
+//   SmTopologyIntersector::DeleteFaces deletes the shell Vertices whose Vertexuse names a vertex
+//   Shell that lists another Vertex before the others. Two Vertices of the deleted faces can end
+//   up in one vertex Shell, which DeleteVertex deletes with the Vertex it lists; the other
+//   Vertexuse then named the freed Shell, and deleting its Vertex read it (AddressSanitizer: a
+//   read of freed memory in SmVertexuse::GetShell): (Box(20, 16, 4) - Sphere(6).rotate(X,
+//   90).translate(1.4007, 0, -1.5863)) & Torus(6, 2.5).rotate(Y, 90).translate(7.5, 0, 10.5), a
+//   torus touching the plate at a point, killed the process.
 //   SmTopologyIntersector::ResolveIntersections fails when ResolveOverlappingProtoEdges reports
 //   SM_ERR_BAD_INTERSECTIONS: a group of overlapping ProtoEdges it cannot take out (see the
 //   patched SmProtoTopology.cpp). It ignored the status, and its other errors stay ignored.
@@ -618,6 +625,35 @@ SmBoolean bDebugMe = FALSE;
   // smlibpy patch: the Shells that own Faceuses, found at the first shell Vertex
   std::unordered_set<SmShell*> sFaceShells ;
   SmBoolean bFaceShellsFound = FALSE ;
+
+  // smlibpy patch: delete first the shell Vertices whose Vertexuse names a vertex Shell that
+  // lists another Vertex's Vertexuse. The Boolean can leave two Vertices of the deleted faces in
+  // one vertex Shell (each Vertexuse names the Shell, the Shell lists one of them), and
+  // DeleteVertex deletes the Shell with the Vertex it lists: deleting that one first left the
+  // other's Vertexuse naming the freed Shell, which the next DeleteVertex read (AddressSanitizer:
+  // a read of freed memory in SmVertexuse::GetShell; the process crashed).
+  {
+    SmTArray<SmVertex*> sGuests(16), sOwners(sFacesVertices.GetSize()) ;
+    for ( ii = 0 ; ii < sFacesVertices.GetSize() ; ii++ )
+      {
+        SmVertex * pV = sFacesVertices[ii] ;
+        SmBoolean bGuest = FALSE ;
+        if ( pV->IsShellVertex() )
+          {
+            SmTArray<SmVertexuse*> sVUs ;
+            pV->GetVertexuses( sVUs ) ;
+            SmShell * pS = sVUs.GetSize() > 0 ? sVUs[0]->GetShell() : NULL ;
+            bGuest = pS != NULL && pS->IsVertexShell() && pS->GetVertex() != pV ;
+          }
+        if ( bGuest ) { sGuests.Add( pV ) ; } else { sOwners.Add( pV ) ; }
+      }
+    if ( sGuests.GetSize() > 0 )
+      {
+        sFacesVertices.ReSet() ;
+        for ( ii = 0 ; ii < sGuests.GetSize() ; ii++ ) { sFacesVertices.Add( sGuests[ii] ) ; }
+        for ( ii = 0 ; ii < sOwners.GetSize() ; ii++ ) { sFacesVertices.Add( sOwners[ii] ) ; }
+      }
+  }
 
   // iter every vertex of every deleted face looking for ShellVertices to delete
   for(ii=0; ii<sFacesVertices.GetSize(); ii++)

@@ -44,6 +44,8 @@
      "csg-8-157 D": "class ok/silent",
      "csg-8-23 E": "class silent/ok",
      "csg-8-45 E": "class error/ok",
+     "csg-8-45 I": "class error/ok",
+     "csg-8-45 U": "class error/ok",
      "csg-8-98 E": "class ok/silent",
      "fillet-8-195 F": "volume 2052.12593/2052.12066",
      "offset-8-325 O": "class ok/error",
@@ -63,6 +65,7 @@
      "csg-8-110 D": "silent",
      "csg-8-130 D": "silent",
      "csg-8-157 D": "silent",
+     "csg-8-23 E": "silent",
      "csg-8-85 E": "silent",
      "csg-8-98 E": "silent",
      "offset-8-340 base": "silent"

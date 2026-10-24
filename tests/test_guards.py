@@ -456,8 +456,9 @@ def test_boolean_results_are_checked_when_asked():
     assert not common.is_valid() and "open between its faces" in common._solid_problem()
     with pytest.raises(ModelingError, match="not a valid solid"):
         common.fillet(common.edges(), 0.1)
-    rest = a - b
-    assert not rest.is_valid() and rest._solid_problem() == "without volume"
+    # The difference had no volume and reached out of the part (to x = 16): refused now (closeout K1).
+    with pytest.raises(ModelingError, match="partly outside the part"):
+        a - b
     with pytest.raises(ModelingError, match="partly outside an operand"):
         a & b  # reaches out of the first cylinder
     assert (Box(20, 20, 20) - Cylinder(5, 30)).is_valid()
@@ -604,9 +605,10 @@ for step in steps * 8:
     except RuntimeError:
         print("failed", flush=True)
 """
-    # A crash that depends on the memory layout remains (third_party/patches/README.md, "Defects that
-    # remain": a deleted ProtoEdge read in ResolveOverlappingProtoEdges, about 1 to 3 runs in 100):
-    # one more run then. A crash in both runs is not that one.
+    # The deleted ProtoEdge read in ResolveOverlappingProtoEdges (about 1 to 3 runs in 100) is patched
+    # (closeout K1); AddressSanitizer still reports a read past an array in sm_FixProblemsBySqueezing
+    # in these steps, depending on the memory layout (tools/sanitize/known.txt): one more run then. A
+    # crash in both runs is not that one.
     for _ in range(2):
         run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
         if run.returncode >= 0:

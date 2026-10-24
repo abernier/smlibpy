@@ -22,9 +22,10 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
 ## Along a sheet
 - "Above" is the side `sheet.faces()[0].normal_at()` points to. A face of a part counts with
   its outward normal: `box.split(cylinder_face, "both")` gives (outside the cylinder, inside).
-- The sheet must cut through the part. A sheet of **one free-form face** whose edges end inside
-  the part is extended past them (tangentially, its trim dropped) until it does. Other sheets
-  (several faces, analytic faces) that end inside, and sheets that miss the part, raise
+- The sheet must cut through the part. A sheet of **one face** whose edges end inside the part is
+  extended past them (its trim dropped) until it does: a free-form face tangentially, a plane,
+  cylinder, cone or sphere as itself (`Face.extend`). Sheets of several faces that end inside, and
+  sheets that miss the part, raise
   `ModelingError: split: the surface does not cut through the part ...`: make them reach past
   the part on every side.
 - Both sides are computed and checked: they hold the part's volume together.
@@ -45,6 +46,11 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
   part with the whole part on the kept side returns a copy of the part.
 - A part made by `merge` raises `ModelingError: split: the part is not a valid solid`: split its
   `cells()`.
+- A plane that touches the seam of a closed face at a point (a torus' outer equator, where the
+  kernel's Boolean can go wrong) is split with both sides made and checked to hold the part's
+  volume (half-space boxes of several sizes, then the kernel's slice), which takes a few seconds;
+  where none adds up it raises `ModelingError: split: the kernel's sides of the part do not add up
+  ...`: move or tilt the plane a little.
 - Faces are drafted with `draft`; a split with a tilted plane through a bottom edge also makes
   one drafted wall (example).
 

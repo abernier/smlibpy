@@ -23,8 +23,9 @@ made with `Vertex(x, y, z)`.
 
 ## Vertices of common bodies
 `Box`: the 8 corners. `Cylinder`: 2, where the seam meets the rims, (r, 0, ±h/2). (A tool whose
-seam would run tangent to the other operand of a Boolean goes in turned about its axis: in the
-result its seam, and these vertices, lie elsewhere.)
+seam would run tangent to the other operand of a Boolean goes in turned about its axis, and an
+earlier hole whose seam would goes in with its seam moved on its face: in the result the seam,
+and these vertices, lie elsewhere.)
 `Sphere`: the 2 poles. `Rectangle`: 4 corners. A closed circle edge has one vertex.
 
 ## Gotchas

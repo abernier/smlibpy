@@ -45,7 +45,7 @@ DEFAULT_TESTS = ["tests/test_defeature.py", "tests/test_guards.py", "tests/test_
                  "tests/test_surfaces.py", "tests/test_modeling.py", "tests/test_sheet_metal.py",
                  "tests/test_lane_BT.py", "tests/test_lane_C.py", "tests/test_lane_DA.py", "tests/test_lane_FO.py",
                  "tests/test_lane_IX.py", "tests/test_lane_M.py", "tests/test_lane_S.py", "tests/test_lane_U.py",
-                 "tests/test_lane_WN.py", "tests/test_lane_merge.py"]
+                 "tests/test_lane_WN.py", "tests/test_lane_merge.py", "tests/test_closeout_K1.py"]
 
 #: A frame in the kernel or in smlibpy's own C++: a leak allocated through one is the kernel's.
 OURS = re.compile(r"usd-brep/source/|third_party/patches/|/src/cpp/|smlibpy::|\bin Sm[A-Z]\w*::|\bin smos_|_core\.cpython")

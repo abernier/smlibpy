@@ -13,8 +13,9 @@
 // The kernel recognizes analytic geometry in B-splines when it copies a Brep with bAddAnalytics (the
 // copy constructor; SmBSplineSurface::CopyAndAddAnalytics finds planes, cones and cylinders, spheres,
 // surfaces of revolution and of extrusion), as it does for every .smb file it reads, and
-// SmBrep::ConvertCurvesToAnalytics turns straight B-spline edges into lines. The circles of an
-// axis-aligned scale stay B-splines (the kernel recognizes no circles there).
+// SmBrep::ConvertCurvesToAnalytics turns straight B-spline edges into lines. It leaves the circles of
+// an axis-aligned scale B-splines; SmCurve::CreateAnalyticCurve finds them (restore_analytic_curves,
+// as for mirrored bodies), on edges whose faces are no B-splines.
 //
 // The copy is checked against the Brep: the same counts of faces, edges and vertices, the vertices in
 // place, and every face's new surface within `tolerance` of the old one at points in every knot span
@@ -25,6 +26,7 @@
 
 #include "kernel.h"
 #include "analytics.h"
+#include "analytic.h"
 
 #include <SmApiGeneral.h>
 #include <SmApiQueries.h>
@@ -155,6 +157,9 @@ SmBrep* recognize_analytics(const SmBrep* brep, double tolerance)
     ULONG curves = 0, uv_curves = 0;
     if (copy->ConvertCurvesToAnalytics(curves, uv_curves) != SM_SUCCESS)
         return nullptr;
+    // (and circles, which ConvertCurvesToAnalytics leaves B-splines: the rims of a cylinder, cone or
+    // sphere scaled along its axis, where no face along the edge stays a B-spline)
+    restore_analytic_curves(copy.get(), false);
 
     SmTArray<SmFace*> new_faces;
     SmTArray<SmEdge*> new_edges;

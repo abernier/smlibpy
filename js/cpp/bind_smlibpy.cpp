@@ -121,6 +121,25 @@ val seam_contacts(uintptr_t a, uintptr_t b, double tolerance)
         return out;
     });
 }
+// Per point where a seam of a closed face of a touches a face of b at a point: [edge, face, [x, y, z]].
+val seam_touches(uintptr_t a, uintptr_t b, double tolerance)
+{
+    return guard([&] {
+        val out = val::array();
+        for (const auto& c : smlibpy::seam_touches(brep(a), brep(b), tolerance))
+        {
+            val point = val::array();
+            for (double x : c.point)
+                point.call<void>("push", x);
+            val item = val::array();
+            item.call<void>("push", static_cast<double>(c.edge));
+            item.call<void>("push", static_cast<double>(c.face));
+            item.call<void>("push", point);
+            out.call<void>("push", item);
+        }
+        return out;
+    });
+}
 val edge_angles(uintptr_t b, val edges) { return guard([&] { return to_js(smlibpy::edge_angles(brep(b), pointers<SmEdge>(edges))); }); }
 uintptr_t copy_faces(uintptr_t b, val faces) { return guard([&] { return ptr(smlibpy::copy_faces(brep(b), pointers<SmFace>(faces))); }); }
 uintptr_t remove_slivers(uintptr_t b, val faces, double tolerance) { return guard([&] { return ptr(smlibpy::remove_slivers(brep(b), pointers<SmFace>(faces), tolerance)); }); }
@@ -1194,6 +1213,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__triangulate_poly", &triangulate_poly);
     function("ext__region_shells", &region_shells);
     function("ext__seam_contacts", &seam_contacts);
+    function("ext__seam_touches", &seam_touches);
     function("ext__edge_blend", &edge_blend);
     function("ext__trim_with_curves", &trim_with_curves);
     function("ext__stitch_faces", &stitch_faces);

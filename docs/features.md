@@ -294,7 +294,8 @@ print(cut.area)                                    # 40 * 30 - pi * 8^2
 
 A sheet splits a part along its surface (a curved parting surface, a surface fitted to a scan);
 "above" is the side its normals point to. The sheet must cut through the part; a sheet of one
-free-form face whose edges end inside is extended past them, tangentially, until it does. Both
+face whose edges end inside is extended past them until it does (a free-form face tangentially, a
+plane, cylinder, cone or sphere as itself). Both
 sides are checked to hold the part's volume together:
 
 ```python

@@ -18,6 +18,7 @@ struct SeamContact
     long edge = -1;  // the seam, in the first body's edge order
     long face = -1;  // the face it touches, in the second body's face order
     double point[3] = {0.0, 0.0, 0.0};
+    bool along = false;  // the seam lies on the face's surface on both sides of the point too
 };
 
 // The points where a seam of body a (an edge that one face uses twice: the seam of a cylinder, cone,
@@ -40,5 +41,26 @@ SeamTurns seam_turns(const SmBrep* a, const SmBrep* b, double tolerance, size_t 
 
 // A Brep turned in place about the axis of `turns` by `degrees`.
 void turn_brep(SmBrep* brep, const SeamTurns& turns, double degrees);
+
+// A copy of body a (owned by the caller) in which every seam that touches b as seam_contacts finds
+// them lies elsewhere on its face: for a body that is no body of revolution (a part with a hole),
+// whose seams no turn of the whole moves. The face's surface solid (a cylinder or frustum over the
+// face's extent along its axis, or the sphere) is added and taken away again turned about the
+// axis where it is the wall of a hole, or taken away and added again turned where it is a boss's;
+// the copy must keep a's volume. Null where no seam of a touches b, or one could not be moved so
+// (a torus' seams, a face whose surface solid reaches into other material).
+SmBrep* reseamed(const SmBrep* a, const SmBrep* b, double tolerance);
+
+// Whether a seam of a closed face of body a that is no cylinder, cone, sphere or torus (a B-spline
+// face: a NURBS copy, an imported part) touches a face of b as seam_contacts finds them. Such a seam
+// is moved only on a copy whose faces are recognized as analytic (analytics.h).
+bool freeform_seam_touches(const SmBrep* a, const SmBrep* b, double tolerance);
+
+// The points where a seam of a closed face of body a, of any kind (a cylinder, cone, sphere or torus,
+// or a B-spline face), touches a face of b at a point, as seam_contacts finds them: not where the seam
+// lies on the face's surface on both sides of the point too (a cylinder's seam in a plane through its
+// axis, which gives the kernel no trouble). The places where a Boolean of a and b can come out wrong
+// (kernel plan B6) and smlibpy checks the result.
+std::vector<SeamContact> seam_touches(const SmBrep* a, const SmBrep* b, double tolerance);
 
 }  // namespace smlibpy

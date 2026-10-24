@@ -1,5 +1,5 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmProtoTopology.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-22. Compiled in place
+// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-23. Compiled in place
 // of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmProtoTopologyManager::~SmProtoTopologyManager cuts the links between ProtoVertices and
 //   ProtoEdges before it deletes them. It deleted the ProtoEdges first, and a ProtoVertex that
@@ -29,6 +29,19 @@
 //   crossing holes, such as Cylinder(3, 40).translate(0, 3, 0) +
 //   Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3), read freed memory (AddressSanitizer) and
 //   crashed the process.
+//   SmProtoTopologyManager::SplitIntersectingProtoEdges takes the ProtoEdge it deletes after
+//   CombineProtoEdge out of the overlap lists of all ProtoEdges and the coincidence lists of all
+//   ProtoFaces (sm_ReplaceProtoEdge), listing the ProtoEdge that took its EdgeDefinitions in its
+//   place, and ResolveOverlappingProtoEdges takes each ProtoEdge of a group it deletes out of the
+//   lists of the ProtoEdges outside the group. They kept the deleted ProtoEdge, and
+//   ResolveOverlappingProtoEdges read it when it gathered an overlapping group (AddressSanitizer: a
+//   read of freed memory in SmProtoEdge::GetOverlappingPEGroup; extended offsets, depending on the
+//   memory layout). Both also take it out of the ProtoEdge lists of every ProtoVertex, and
+//   ~SmProtoEdge and ResolveOverlappingProtoEdges remove a ProtoEdge from its end ProtoVertices
+//   every time they list it: CombineProtoEdge lists the ProtoEdge it keeps a second time there, and
+//   the second entry outlived it once the ProtoEdge was deleted as a member of an overlapping group
+//   (AddressSanitizer: a read of freed memory in SmProtoEdge::IsSameProtoEdge from FindProtoEdge;
+//   the extended offset of a cone fused to a cylinder, in every run).
 //   SmEdgeDefinition::Imprint deletes, when SmBrep::MakeEdgeInFace fails, only the curves the
 //   Brep did not take (those without an owner; for Brep 2 also the copy of the curve and the UV
 //   curve it was passed). MakeEdgeInFace can fail after it gave the curve
@@ -2725,9 +2738,14 @@ SmProtoEdge::~SmProtoEdge()
   for(ii=0;ii<lNumEDs;ii++) { if(m_sEdgeDefs[ii]) delete m_sEdgeDefs[ii] ; m_sEdgeDefs[ii] = NULL ; }
 
   // Remove PE from its End PV->PE lists
-  if(    m_pStartPV)              { m_pStartPV->RemoveProtoEdge(this) ; }
+  // smlibpy patch: every time it is listed there. A ProtoVertex can list a ProtoEdge twice
+  // (AddProtoEdge adds "even if already there", and CombineProtoEdge adds this ProtoEdge again to
+  // the start and end ProtoVertices it is listed in already); the second entry outlived the
+  // ProtoEdge, and FindProtoEdge read it (AddressSanitizer: a read of freed memory in
+  // SmProtoEdge::IsSameProtoEdge; an extended offset of a cone fused to a cylinder).
+  if(    m_pStartPV)              { while(m_pStartPV->RemoveProtoEdge(this) == SM_SUCCESS) {} }
   if(    m_pEndPV 
-     && (m_pEndPV != m_pStartPV)) { m_pEndPV->RemoveProtoEdge(this) ; }
+     && (m_pEndPV != m_pStartPV)) { while(m_pEndPV->RemoveProtoEdge(this) == SM_SUCCESS) {} }
 
   // clear contained objects
   m_pXSectInterval.Init() ;
@@ -6768,6 +6786,66 @@ USAGE NOTES----
 
    3. Makes sure that all of the new ProtoTopology is installed in the owning SmProtoTopologyManager.
 ***********************************************************************/
+/*******************************************************************//**
+PURPOSE: smlibpy patch: before pGone is deleted, take it out of the
+         overlapping ProtoEdges of every ProtoEdge and the coincident
+         ProtoEdges of every ProtoFace of the manager, and list pKept in its
+         place where it was listed (unless pKept is NULL).
+
+USAGE NOTES----
+   pKept took pGone's EdgeDefinitions (CombineProtoEdge), so what overlaps
+   or bounds pGone overlaps or bounds pKept. pKept lists neither itself
+   nor pGone afterwards.
+***********************************************************************/
+static void sm_ReplaceProtoEdge
+ (SmProtoTopologyManager * pMgr,  // in : manager of both ProtoEdges
+  SmProtoEdge            * pGone, // in : ProtoEdge about to be deleted
+  SmProtoEdge            * pKept) // in : ProtoEdge that took its place, or NULL
+{
+  ULONG ii, lIdx ;
+  SmTArray<SmProtoEdge *> & rPEs = pMgr->GetProtoEdges() ;
+  for(ii=0;ii<rPEs.GetSize();ii++)
+    {
+      SmProtoEdge * pPE = rPEs[ii] ;
+      if(pPE == NULL || pPE == pGone) { continue ; }
+      SmTArray<SmProtoEdge *> & rOverlapping = pPE->GetOverlappingPEs() ;
+      if(rOverlapping.FindElement(pGone, lIdx) == FALSE) { continue ; }
+      while(rOverlapping.FindElement(pGone, lIdx)) { rOverlapping.RemoveAt(lIdx) ; }
+      if(pKept != NULL && pPE != pKept) { rOverlapping.AddUnique(pKept) ; }
+    }
+  if(pKept != NULL)
+    {
+      SmTArray<SmProtoEdge *> & rKept = pKept->GetOverlappingPEs() ;
+      while(rKept.FindElement(pKept, lIdx)) { rKept.RemoveAt(lIdx) ; }
+      while(rKept.FindElement(pGone, lIdx)) { rKept.RemoveAt(lIdx) ; }
+      SmTArray<SmProtoEdge *> sUnique ;
+      sUnique.AppendUnique(rKept) ;
+      rKept = sUnique ;
+    }
+
+  SmTArray<SmProtoFace *> & rPFs = pMgr->GetProtoFaces() ;
+  for(ii=0;ii<rPFs.GetSize();ii++)
+    {
+      SmProtoFace * pPF = rPFs[ii] ;
+      if(pPF == NULL) { continue ; }
+      SmTArray<SmProtoEdge *> * pCoinPEs = pPF->GetCoincProtoEdges() ;
+      if(pCoinPEs->FindElement(pGone, lIdx) == FALSE) { continue ; }
+      while(pCoinPEs->FindElement(pGone, lIdx)) { pCoinPEs->RemoveAt(lIdx) ; }
+      if(pKept != NULL) { pPF->RelateCoincidentPF(pKept) ; }
+    }
+
+  // and out of the ProtoEdge lists of every ProtoVertex, every time it is listed (a ProtoVertex can
+  // list a ProtoEdge twice, see ~SmProtoEdge, or still list it after the ProtoEdge took other end
+  // ProtoVertices)
+  SmTArray<SmProtoVertex *> & rPVs = pMgr->GetProtoVertices() ;
+  for(ii=0;ii<rPVs.GetSize();ii++)
+    {
+      SmProtoVertex * pPV = rPVs[ii] ;
+      if(pPV == NULL) { continue ; }
+      while(pPV->RemoveProtoEdge(pGone) == SM_SUCCESS) {}
+    }
+} // end sm_ReplaceProtoEdge
+
 SmStatus SmProtoTopologyManager::SplitIntersectingProtoEdges
  (SmProtoEdge * pPE1, // in : 1st Tgt of ProtoEdge/ProtoEdge XSection
   SmProtoEdge * pPE2) // in : 2nd Tgt of ProtoEdge/ProtoEdge XSection
@@ -6955,6 +7033,14 @@ SmBoolean bDebugMe3=FALSE;
           // Seen: nine ranges of pPE1, each on all of pPE2, along a seam tangent to the other
           // body (crossing holes).
           SmBoolean bDeletedInput = (pPE2ToCombine == pPE2 || pPE2ToCombine == pPE1) ;
+
+          // smlibpy patch: the ProtoEdges and ProtoFaces that list pPE2ToCombine as overlapping
+          // or coincident list pPE1ToCombine instead (CombineProtoEdge gave it pPE2ToCombine's
+          // EdgeDefinitions and only its own list). They kept the deleted ProtoEdge, and
+          // ResolveOverlappingProtoEdges read it when it gathered an overlapping group
+          // (AddressSanitizer: a read of freed memory in SmProtoEdge::GetOverlappingPEGroup;
+          // extended offsets and shells, depending on the memory layout).
+          sm_ReplaceProtoEdge(this, pPE2ToCombine, pPE1ToCombine) ;
 
           this->RemoveProtoEdge( pPE2ToCombine) ;
           delete pPE2ToCombine; pPE2ToCombine=NULL;
@@ -7305,8 +7391,9 @@ SmBoolean bDebugMe=FALSE;
             }
 
           // remove PE from End and Start ProtoVertex->PE list 
-          pOverlapPE->GetStartProtoVertex()->RemoveProtoEdge(pOverlapPE) ; 
-          pOverlapPE->GetEndProtoVertex()->RemoveProtoEdge(pOverlapPE) ; 
+          // smlibpy patch: every time it is listed there (see ~SmProtoEdge)
+          while(pOverlapPE->GetStartProtoVertex()->RemoveProtoEdge(pOverlapPE) == SM_SUCCESS) {}
+          while(pOverlapPE->GetEndProtoVertex()->RemoveProtoEdge(pOverlapPE) == SM_SUCCESS) {}
 
           // remove the OverlappingPEs from this PE (don't need to do back pointers because all back pointers belong to PEs in this sOverlappingGroup and they'll be cleaned in subsequent iters)
           pOverlapPE->GetOverlappingPEs().ReSet() ; 
@@ -7317,6 +7404,12 @@ SmBoolean bDebugMe=FALSE;
 
           // remove OverlapPE from ProtoTopoMgr
           RemoveProtoEdge(pOverlapPE) ; 
+
+          // smlibpy patch: and from the lists of the ProtoEdges outside the group. The group is
+          // gathered along the lists one way only, and a ProtoEdge that lists a member without
+          // being listed by one (the upper piece of a split copies the lists of the ProtoEdge it
+          // was split from) kept the deleted ProtoEdge.
+          sm_ReplaceProtoEdge(this, pOverlapPE, NULL) ;
 
           // all done with this pOverlap PE
           if(pOverlapPE) { delete pOverlapPE ; pOverlapPE = NULL ; }
