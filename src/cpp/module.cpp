@@ -137,6 +137,7 @@ PYBIND11_MODULE(_core, m)
     bind_poly_ray_intersection(m);
     bind_kernel_trace(m.attr("ext").cast<py::module_>());
     bind_caches(m.attr("ext").cast<py::module_>());
+    bind_deadline(m.attr("ext").cast<py::module_>());
 
     // Threads: every entry point takes one kernel lock, and the long ones let the GIL go while the
     // kernel works (kernel_lock.cpp; SmPyLib's long calls are bound again for that, nogil.cpp).

@@ -138,6 +138,7 @@ const OWN: Record<string, Signature> = {
   'ext.inverted_faces': ['brep'],
   'ext.loop_areas': ['brep'],
   'ext.drop_caches': ['brep'],
+  'ext.set_deadline': ['seconds'],
   'ext.seam_problems': ['brep', ['fix', false], ['only', null]],
   'ext.poly_face_indices': ['poly', 'brep'],
   'ext.surface_derivatives': ['surface', 'uv'],
@@ -356,8 +357,50 @@ function restoring(m: Any, fn: (...args: Any[]) => Any, name: string): (...args:
 function _crashed(name: string, e: Error): void {
   _crashes.count++
   _crashes.last = e.message
+  _crashedIn = name
+  if (!_crashedNow) {
+    _crashedNow = true
+    queueMicrotask(() => {
+      _crashedNow = false
+    })
+  }
   if (_crashes.count === 1 && _crashes.next !== null) {
     _warn(`the kernel crashed in ${name} (${e.message}), and its memory may be damaged: ${_crashes.next}`)
+  }
+}
+
+/** True from a crash of the kernel to the end of the task it happened in (see `_isCrash`). */
+let _crashedNow = false
+/** The kernel call that crashed last. */
+let _crashedIn = 'kernel'
+
+/**
+ * Whether `e` comes from a crash of the kernel (a trap, or an error caused by one), or the kernel
+ * crashed earlier in this task of the event loop. A step that falls back on another kernel call when
+ * one fails, or tries again, asks this first and passes such an error on (`throw _crashOf(e)`): it
+ * would go on on the memory the crash left (kernel plan W10). So once the kernel crashed, the rest
+ * of the task falls back on nothing: a step that needs a fallback fails, with the error it met.
+ */
+export function _isCrash(e: unknown): boolean {
+  if (_crashedNow) return true
+  let x: unknown = e
+  for (let n = 0; x !== null && typeof x === 'object' && n < 16; n++) {
+    if (_isTrap(x)) return true
+    x = (x as Any).cause
+  }
+  return false
+}
+
+/** `e` as it is passed on: a trap of a kernel call that no `kernelCall` wrapped as the KernelError
+ * that says the kernel crashed (what kernelCall makes of one), anything else as it is. */
+export function _crashOf(e: unknown): unknown {
+  if (!_isTrap(e)) return e
+  try {
+    return kernelCall(_crashedIn, () => {
+      throw e
+    })
+  } catch (error) {
+    return error
   }
 }
 
@@ -492,7 +535,10 @@ function _usage(): { used: number; heap: number; limit: number; failed: boolean 
 /** The hint of a KernelError for memory that is used up. */
 function _outOfMemoryHint(): string {
   const usage = _usage()
-  const numbers = usage === null ? '' : ` (${Math.round(usage.used / MB)} MB in use, at most ${Math.round(usage.limit / MB)} MB)`
+  // (the size the memory has grown to as well as its limit: a browser can refuse to grow it long
+  // before the limit, as can a module whose file says less)
+  const mb = (n: number) => Math.round(n / MB)
+  const numbers = usage === null ? '' : ` (${mb(usage.used)} MB in use, the module's memory at ${mb(usage.heap)} MB of at most ${mb(usage.limit)} MB)`
   return `the kernel ran out of memory${numbers}: dispose() parts you no longer need, or let the event loop run so that the garbage collector frees them`
 }
 

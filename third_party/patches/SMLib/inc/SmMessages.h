@@ -8,6 +8,11 @@
 //   (smos_InvokeErrorCallback, with the file, the line and the function), as debug builds do
 //   through smos_ErrorMessage but without its formatting, so that a failed call can say where the
 //   kernel gave up. Only the failure paths run the extra call.
+//   A deadline for long kernel steps (SMLIBPY_DEADLINE_ER, smlibpy_deadline): smlibpy sets it around
+//   a step that may run too long, and the loops that such steps spend their time in (the surface and
+//   topology intersectors, the drop curve, the feature executive's surface rebuild: the patched copies
+//   of those files, third_party/patches/README.md) give up with SM_ERR_METHOD_FAILURE_QUITING once it
+//   has passed, through the error paths they already have. No deadline by default: nothing changes.
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -836,5 +841,36 @@ debugging changes at run time.
 #define LE_ZERO_ER(a)          { if( !( (a)   >= SM_EFF_ZERO                     ) ) { SER(SM_ERR_INVALID_INPUT); } } /* a >= SM_EFF_ZERO                    */ 
 #define LT_ZERO_ER(a)          { if( !( (a)   >= 0.0                             ) ) { SER(SM_ERR_INVALID_INPUT); } } /* a >= 0.0                            */ 
 #define SAME_PNT_ER(p1,p2)     { if( !( (p1).DistanceBetween((p2)) >= SM_EFF_ZERO) ) { SER(SM_ERR_INVALID_INPUT); } } /* Dist(a,b) >= SM_EFF_ZERO            */ 
+
+// smlibpy patch: a deadline for long kernel steps. The kernel has no way to stop a call from outside
+// (a step that runs for minutes in the surface intersector freezes a browser's main thread, where
+// the WebAssembly kernel cannot run in another thread). smlibpy sets a deadline around such a step
+// (smlibpy._core.ext.set_deadline, src/cpp/deadline.cpp); the long loops of the intersectors test it
+// at the top of each pass (SMLIBPY_DEADLINE_ER) and, once it has passed, return
+// SM_ERR_METHOD_FAILURE_QUITING through the error paths they already have, and so does every later
+// test until the deadline is set again: the step unwinds as a failed step does. Per thread (each
+// thread's kernel calls have their own), header-only (one object per program: inline functions).
+#include <chrono>
+namespace smlibpy_deadline {
+  // Seconds of the steady clock after which the loops give up; 0: no deadline (the default).
+  inline double & At()     { static thread_local double s_dAt = 0.0;       return s_dAt; }
+  // Whether a loop found the deadline passed since it was set.
+  inline bool   & Passed() { static thread_local bool   s_bPassed = false; return s_bPassed; }
+  inline double   Now()
+  {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  // Whether the deadline has passed (it reads the clock only while a deadline is set).
+  inline bool     Check()
+  {
+    if (At() <= 0.0) return false;
+    if (!Passed() && Now() >= At()) Passed() = true;
+    return Passed();
+  }
+}
+#define SMLIBPY_DEADLINE_ER() \
+  { if (smlibpy_deadline::Check()) \
+      { smos_InvokeErrorCallback(SM_ERR_METHOD_FAILURE_QUITING, FILE_NAME, LINE_NUMBER, FUNC_NAME); \
+        return SM_ERR_METHOD_FAILURE_QUITING; } }
                                       
 #endif  // !__SMOS_ERROR_H__

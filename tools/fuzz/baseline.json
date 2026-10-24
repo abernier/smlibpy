@@ -72,5 +72,67 @@
     }
    }
   }
+ },
+ "linux-x86_64": {
+  "crash_signatures": [
+   "fillet/F"
+  ],
+  "rates": {
+   "python": 0.461,
+   "wasm": 0.544
+  },
+  "seeds": {
+   "7": {
+    "cases": 410,
+    "divergence": {
+     "fillet-7-185 F": "class crash/error"
+    },
+    "python_bad": {
+     "csg-7-150 D": "silent",
+     "csg-7-155 A": "silent",
+     "csg-7-20 D": "silent",
+     "fillet-7-168 base": "silent",
+     "fillet-7-185 F": "crash",
+     "offset-7-333 O2": "silent",
+     "offset-7-348 base": "silent",
+     "slice-7-390 above": "silent",
+     "slice-7-402 above": "silent"
+    },
+    "wasm_bad": {
+     "csg-7-150 D": "silent",
+     "csg-7-155 A": "silent",
+     "csg-7-20 D": "silent",
+     "fillet-7-168 base": "silent",
+     "offset-7-333 O2": "silent",
+     "offset-7-348 base": "silent",
+     "slice-7-390 above": "silent",
+     "slice-7-402 above": "silent"
+    }
+   },
+   "8": {
+    "cases": 410,
+    "divergence": {
+     "csg-8-23 E": "class ok/silent",
+     "fillet-8-195 F": "volume 2052.12593/2052.12066"
+    },
+    "python_bad": {
+     "csg-8-110 D": "silent",
+     "csg-8-130 D": "silent",
+     "csg-8-157 D": "silent",
+     "csg-8-85 E": "silent",
+     "csg-8-98 E": "silent",
+     "offset-8-340 base": "silent"
+    },
+    "wasm_bad": {
+     "csg-8-110 D": "silent",
+     "csg-8-130 D": "silent",
+     "csg-8-157 D": "silent",
+     "csg-8-23 E": "silent",
+     "csg-8-85 E": "silent",
+     "csg-8-98 E": "silent",
+     "offset-8-340 base": "silent"
+    }
+   }
+  }
  }
 }

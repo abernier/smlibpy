@@ -4,7 +4,7 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
 import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG, _vec } from './geometry.ts'
 import { solve, spread } from './_linalg.ts'
@@ -1560,7 +1560,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
       try {
         return _mitredSweep(sk, edges, closed, orient && !translational, anchor)
       } catch (err) {
-        if (!(err instanceof ModelingError) || asked) throw err
+        if (!(err instanceof ModelingError) || asked || _isCrash(err)) throw _crashOf(err)
         mitreError = err // (arcs that meet at a corner: the kernel's planar-path sweep gives no solid)
       }
     }
@@ -1597,7 +1597,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
     try {
       out = _carriedSweep(sk, local, edges, axes, own, halved, tangentClosure, translational, hint, law, grow)
     } catch (err) {
-      if (!(err instanceof ModelingError)) throw err
+      if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
       if (mitreError !== null) throw mitreError
       if (law !== null && law.explicit) throw err
       if (law !== null) {
@@ -1618,7 +1618,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
         try {
           back = _carriedSweep(sk, local, edges, axes, own, halved, tangentClosure, translational, hint, null, grow)
         } catch (e) {
-          if (!(e instanceof ModelingError)) throw e
+          if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
           throw err
         }
         if (law.closing) {
@@ -1642,7 +1642,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
         try {
           out = grow !== null ? null : _formerSweep(sk, own, pieces, orient, translational, hint)
         } catch (e) {
-          if (!(e instanceof ModelingError)) throw e
+          if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
         }
         if (out === null && _round(sk, own)) {
           const tries: [Edge[] | number, number][] = SEAM_TURNS.map((angle) => [edges, angle])
@@ -1656,7 +1656,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
               out = _carriedSweep(sk, turned, pieces, axes, own, halved, tangentClosure, translational, hint, null, grow)
               break
             } catch (e) {
-              if (!(e instanceof ModelingError)) throw e
+              if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
             }
           }
         }
@@ -1670,7 +1670,7 @@ export function sweep(profile: Sketch | Face | Wire | Edge | ShapeList<Any>, pat
       try {
         out = _afreshSweep(local, edges, axes, orient, translational, hint, grow)
       } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
+        if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
         throw _bendError(err, local, edges, hint)
       }
       if (!_round(sk, own)) {
@@ -1708,7 +1708,7 @@ function _analyticSweep(sk: Sketch, edge: Edge, turn: boolean, anchor: unknown =
     try {
       placed._checkAxisBeside(axis, false)
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       throw new ModelingError(
         `sweep: the profile reaches across the axis of the arc (radius ${_formatG(edge.radius)}), so it would sweep through itself; use a smaller profile or a larger radius`,
       )
@@ -1719,7 +1719,7 @@ function _analyticSweep(sk: Sketch, edge: Edge, turn: boolean, anchor: unknown =
     if (axis === null) out = placed.extrude(edge.length, { direction: new Vector(t0) })
     else out = placed.revolve(axis, edge.isClosed ? 360 : ((edge.length / edge.radius) * 180) / Math.PI)
   } catch (e) {
-    if (!(e instanceof ModelingError || e instanceof KernelError)) throw e
+    if (!(e instanceof ModelingError || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     return null
   }
   out.name = null
@@ -1753,7 +1753,7 @@ function _bendError(err: ModelingError, local: Sketch, edges: Edge[], hint: stri
     }
     for (const q of local.edges()) for (let i = 0; i <= 16; i++) reach = Math.max(reach, q.pointAt(i / 16).length)
   } catch (ex) {
-    if (!(ex instanceof ModelingError || ex instanceof RangeError)) throw ex
+    if (!(ex instanceof ModelingError || ex instanceof RangeError) || _isCrash(ex)) throw _crashOf(ex)
     return err
   }
   if (!Number.isFinite(r)) return err
@@ -1968,7 +1968,7 @@ function _sound(part: Part, hint: string): Part {
   try {
     slivers = [...part.faces()].filter((f) => !(f.area > SLIVER_AREA * size ** 2))
   } catch (err) {
-    if (!(err instanceof ModelingError)) throw err
+    if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
     throw new ModelingError(`sweep: a face of the fused pieces cannot be measured (${err.message}); ${hint}`)
   }
   if (slivers.length === 0 && regions.length === 1 && regions[0].shells.length === 1) return part
@@ -1984,7 +1984,7 @@ function _sound(part: Part, hint: string): Part {
     if (Math.abs(out.volume - part.volume) > 1e-6 * part.volume) throw new ModelingError('another volume')
     if ([...out.faces()].some((f) => !(f.area > SLIVER_AREA * size ** 2))) throw new ModelingError('faces without area left')
   } catch (err) {
-    if (!(err instanceof ModelingError)) throw err
+    if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
     throw new ModelingError(`sweep: the fused pieces have ${what}, and they cannot be taken out (${err.message}); ${hint}`)
   }
   return out

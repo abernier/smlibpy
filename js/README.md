@@ -76,8 +76,9 @@ Calls are synchronous; on a page's main thread a long one freezes the page.
 (`expose` there, `new KernelWorker(...)` here): bodies, faces, edges, meshes and vectors cross as
 themselves, a call can have a timeout and an AbortSignal, and a call that runs too long ends with
 its worker, which the next call replaces. `removeFillets` and `removeFaces` stop a kernel step that loops
-after `GUARD_SECONDS` in Node and in workers of a cross-origin isolated page, not on a page's
-main thread; there `shell`, `offset` and `thicken` run their kernel steps in a kernel of their own. See [the docs](https://smlibpy.classcad.ch/docs/javascript#running-off-the-main-thread).
+after `GUARD_SECONDS`: in Node and in workers of a cross-origin isolated page in a kernel of their own,
+on a page's main thread by the kernel's deadline, where the step loops in the kernel's surface and
+topology intersections (as those found looping do). See [the docs](https://smlibpy.classcad.ch/docs/javascript#running-off-the-main-thread).
 
 ## Building from source
 

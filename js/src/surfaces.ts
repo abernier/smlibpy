@@ -4,10 +4,10 @@
 // lofting an *open* curve gives a surface (a Shell) instead of a solid. This module adds surfaces
 // through point grids, ruled surfaces and stitching.
 
-import { KernelError, ModelingError, _isRuntimeError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _isRuntimeError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import { Vector, _vec, type VectorLike } from './geometry.ts'
 import { Edge, Face, Part, Shell, Wire, _bodies, _continuity, _curvesOf, _t, _typeName } from './shapes.ts'
-import { _isolatedValue, _smb } from './defeature.ts'
+import { _dropBrep, _isolatedValue, _smb } from './defeature.ts'
 import { _withOptions } from './curves.ts'
 
 export function _shellOfSurface(srf: number): Shell {
@@ -378,7 +378,7 @@ export function surfaceFillet(
           'surfaceFillet',
           () => k.surface_surface_fillet(k.face_surface(ca.faces()[0]._f), k.face_surface(cb.faces()[0]._f), kw),
           () => ({ op: 'surface_fillet', bodies: [_smb(ca), _smb(cb)], options: kw }),
-          { trap: true },
+          { trap: true, drop: (b: number) => _dropBrep(b) },
         ),
       hint,
     )
@@ -409,7 +409,7 @@ function _trimmedFillet(fa: Face, fb: Face, blend: Shell, tol: number): Shell {
     try {
       pieces.push(sheet.trim(rail, m.sub(v.normalized().mul(Math.max(1e-3 * sheet.bbox().diagonal, 10 * tol)))))
     } catch (e) {
-      if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+      if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
       throw new ModelingError(`surfaceFillet: the blend does not cut a face back (its long edges must run across both faces, from border to border): ${e.message}`)
     }
   }
@@ -564,44 +564,46 @@ function _oneFace(x: unknown, name: string): Face {
  *   the sheets.
  */
 export function fill(boundary: Edge | Wire | Iterable<Edge | Wire>, options: { tangent?: boolean } = {}): Shell {
-  _opts('fill', options)
-  const tangent = options.tangent ?? true
-  const edges = _curvesOf(boundary, 'fill')
-  const sides: [Edge, Face | null][] = []
-  for (const e of edges) {
-    const faces = e.faces()
-    if (faces.length > 1 || e._owner instanceof Part) {
-      throw new RangeError('fill: an edge lies between two faces; take edges on the border of a sheet (used by one face), or curves')
+  return scope(() => {
+    _opts('fill', options)
+    const tangent = options.tangent ?? true
+    const edges = _curvesOf(boundary, 'fill')
+    const sides: [Edge, Face | null][] = []
+    for (const e of edges) {
+      const faces = e.faces()
+      if (faces.length > 1 || e._owner instanceof Part) {
+        throw new RangeError('fill: an edge lies between two faces; take edges on the border of a sheet (used by one face), or curves')
+      }
+      sides.push([e, faces.length && tangent ? faces[0] : null])
     }
-    sides.push([e, faces.length && tangent ? faces[0] : null])
-  }
-  const first = sides.length ? sides[0][1] : null
-  if (tangent && first !== null && first.isPlanar && sides.every(([, f]) => f !== null && f.equals(first))) {
-    // The outline of a planar face (a sketch's region): the patch would cover the face it is to be
-    // tangent to, and fold back over it. The curves are taken as they are.
-    const outline = new Set(first.outerWire().edges().map((x) => x._identity()))
-    if (sides.length === outline.size && sides.every(([e]) => outline.has(e._identity()))) {
-      for (const s of sides) s[1] = null
+    const first = sides.length ? sides[0][1] : null
+    if (tangent && first !== null && first.isPlanar && sides.every(([, f]) => f !== null && f.equals(first))) {
+      // The outline of a planar face (a sketch's region): the patch would cover the face it is to be
+      // tangent to, and fold back over it. The curves are taken as they are.
+      const outline = new Set(first.outerWire().edges().map((x) => x._identity()))
+      if (sides.length === outline.size && sides.every(([e]) => outline.has(e._identity()))) {
+        for (const s of sides) s[1] = null
+      }
     }
-  }
-  let box = edges[0].bbox()
-  for (const e of edges.slice(1)) box = box.union(e.bbox())
-  const size = Math.max(box.diagonal, 1e-9)
-  const curves = edges.map((e) => e._copyCurve())
-  let b: number
-  try {
-    b = ext.fill_loop(curves, sides.map(([, f]) => (f !== null ? f._f : 0)), sides.map(([e, f]) => (f !== null ? e._e : 0)), 1e-4 * size)
-  } catch (e) {
-    if (!_isRuntimeError(e) || e instanceof KernelError) throw e
-    if (e.message.startsWith('fill:')) throw new ModelingError(e.message) // (the checks of the patch)
-    throw new KernelError('fill', e.message, null,
-      'tangent sheets must meet each other tangentially where their edges meet; a steep sheet (a wall standing up from the loop) may not leave room for a patch')
-  } finally {
-    for (const c of curves) ext.delete_curve(c)
-  }
-  let patch: Shell | Part = Shell._wrap(b)
-  if (patch.faces().length > 1) patch = stitch(patch, { tolerance: 1e-5 * size })
-  return patch as Shell
+    let box = edges[0].bbox()
+    for (const e of edges.slice(1)) box = box.union(e.bbox())
+    const size = Math.max(box.diagonal, 1e-9)
+    const curves = edges.map((e) => e._copyCurve())
+    let b: number
+    try {
+      b = ext.fill_loop(curves, sides.map(([, f]) => (f !== null ? f._f : 0)), sides.map(([e, f]) => (f !== null ? e._e : 0)), 1e-4 * size)
+    } catch (e) {
+      if (!_isRuntimeError(e) || e instanceof KernelError || _isCrash(e)) throw _crashOf(e)
+      if (e.message.startsWith('fill:')) throw new ModelingError(e.message) // (the checks of the patch)
+      throw new KernelError('fill', e.message, null,
+        'tangent sheets must meet each other tangentially where their edges meet; a steep sheet (a wall standing up from the loop) may not leave room for a patch')
+    } finally {
+      for (const c of curves) ext.delete_curve(c)
+    }
+    let patch: Shell | Part = Shell._wrap(b)
+    if (patch.faces().length > 1) patch = stitch(patch, { tolerance: 1e-5 * size })
+    return patch as Shell
+  })
 }
 
 /**
@@ -641,7 +643,7 @@ export function network(u: Iterable<Edge | Wire>, v: Iterable<Edge | Wire>): She
   try {
     ;[b, deviation] = ext.network_surface(ucs.map(([c]) => c), vcs.map(([c]) => c), 1e-4 * size)
   } catch (e) {
-    if (!_isRuntimeError(e) || e instanceof KernelError) throw e
+    if (!_isRuntimeError(e) || e instanceof KernelError || _isCrash(e)) throw _crashOf(e)
     if (e.message.startsWith('network:')) throw new ModelingError(e.message)
     throw new KernelError('network', e.message, null, 'the curves must cross, each u curve every v curve, once')
   } finally {

@@ -11,7 +11,7 @@ import { Arc2, Complex, Corner, GeometryError, Line2, ONE, assemble, cis, cx, de
 import { Align, _one, alignmentOffset, type AlignLike } from './align.ts'
 import { CenterArc, Line, Polyline, _pts, _withOptions } from './curves.ts'
 import { Location, Plane, Z, type Vector, type VectorLike } from './geometry.ts'
-import { Edge, Sketch, Wire, _transformCurve } from './shapes.ts'
+import { Edge, Sketch, Wire, _transformCurve, type Face, type Vertex } from './shapes.ts'
 import { Frame, build, hull, stroke } from './_regions.ts'
 
 /** Where a new shape sits and how it is turned. */
@@ -378,6 +378,9 @@ export function Stroke(path: Edge | Wire, width: number, options: { ends?: strin
   return stroke(path, Number(width), ends, corners)
 }
 
+/** What `Hull` takes: points, vertices, edges, wires, sketches and faces, or lists of them. */
+export type HullItem = VectorLike | Vertex | Edge | Wire | Sketch | Face | readonly HullItem[]
+
 /**
  * The convex hull of points and shapes: the smallest convex region around them, as if a string
  * were pulled tight around them. Around circles and arcs the outline follows the arcs exactly,
@@ -386,7 +389,7 @@ export function Stroke(path: Edge | Wire, width: number, options: { ends?: strin
  * `items`: points ([x, y], Vectors, Vertices), edges, wires, sketches or faces, or lists of them.
  * `Hull(Circle(10), Pos(60, 0).mul(Circle(6)))` is a lever outline.
  */
-export function Hull(...items: unknown[]): Sketch {
+export function Hull(...items: HullItem[]): Sketch {
   return scope(() => {
     return hull(items)
   })

@@ -1650,7 +1650,9 @@ def _occt_text_check(text: str) -> list[str]:
             return (d[0] + t * d[2], d[1] + t * d[3])
         p, poles, U, rational = d
         n = len(poles) - 1
-        s = max(p, min(n, max(i for i in range(len(U) - 1) if U[i] <= t) if t < U[n + 1] else n))
+        # (a range that starts a rounding error below the first knot, as on Linux x86_64: t = 11.999999999999998
+        # on a curve whose knots start at 12, takes the first span)
+        s = max(p, min(n, max((i for i in range(len(U) - 1) if U[i] <= t), default=p) if t < U[n + 1] else n))
         pts = [list(poles[j]) if rational else [poles[j][0], poles[j][1], 1.0] for j in range(s - p, s + 1)]
         if rational:
             pts = [[x * w, y * w, w] for x, y, w in pts]

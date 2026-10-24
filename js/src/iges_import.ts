@@ -5,7 +5,7 @@
 // and bounded surfaces (144, 143) share nothing: each is built as a face of its own, and the faces
 // are stitched together where their edges meet; what closes up becomes a part, the rest sheets.
 
-import { KernelError, ModelingError, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
 import { _identity } from './geometry.ts'
 import type { BytesLike } from './_bytes.ts'
 import { type Face, Part, Shell, _list, type ShapeList } from './shapes.ts'
@@ -111,7 +111,7 @@ function _stitched(sheets: Shell[], uncertainty: number | null): (Part | Shell)[
         if (!solid) k.stitch_into_shell(whole._brep, Math.max(uncertainty || 0, 1e-4 * size, 1e-9))
       })
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e // (the faces as they are)
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e) // (the faces as they are)
     }
     const pieces: number[] = kernelCall('import IGES', () => (whole.faces().length > 1 ? [...ext.separate_bodies(whole._brep)] : [whole._copyBrep()]))
     const out: (Part | Shell)[] = []
@@ -128,7 +128,7 @@ function _stitched(sheets: Shell[], uncertainty: number | null): (Part | Shell)[
         try {
           kernelCall('import IGES: stitch', () => k.stitch_into_solid(part._brep))
         } catch (e) {
-          if (!(e instanceof KernelError)) throw e
+          if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         }
       }
       if (part._shapeProblem() === null) {
@@ -167,6 +167,7 @@ function _bodies(text: string, heal: boolean, strict: boolean): [(Part | Shell)[
       try {
         out.push(_buildBody(body, _identity(), heal))
       } catch (e) {
+        if (_isCrash(e)) throw _crashOf(e)
         leaveOut(_label(body), e)
       }
     }
@@ -177,6 +178,7 @@ function _bodies(text: string, heal: boolean, strict: boolean): [(Part | Shell)[
         sheets.push(sheet)
         looks.push([model.faceColors[i], model.faceNames[i]])
       } catch (e) {
+        if (_isCrash(e)) throw _crashOf(e)
         leaveOut(label, e)
       }
     })
@@ -185,6 +187,7 @@ function _bodies(text: string, heal: boolean, strict: boolean): [(Part | Shell)[
         sheets.push(kernelCall('import IGES', () => Shell._wrap(ext.surface_face(spec, [...rng]))))
         looks.push([color, name])
       } catch (e) {
+        if (_isCrash(e)) throw _crashOf(e)
         leaveOut(label, e)
       }
     }

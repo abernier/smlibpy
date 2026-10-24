@@ -11,7 +11,10 @@ of several bodies), which only Python's tests read back with OpenCASCADE. This w
 - what smlibpy's writers make of them (``parts.step``, ``parts.usda``, ``sketch.dxf``,
   ``box.obj``, ``box.gltf``, ``box.stl``, ``box.usda``);
 - ``golden.json``: numbers of some modelling steps (volumes, areas, counts, errors), and the known
-  divergences of the builds: what smlibwasm gives there, and why.
+  divergences of the builds: what smlibwasm gives there, and why. ``cases`` holds the steps of 0.4
+  and the first ones of 0.5, ``capabilities`` one or more steps of each capability that phase 1 of
+  the kernel plan added (B11 to X14, their names in :func:`capabilities`), which
+  ``js/test/closeout_W.test.ts`` makes with smlibwasm.
 
 ``js/test/lane_WN.test.ts`` makes the same with smlibwasm and compares: text token by token
 (:func:`same_text`), glTF as JSON, numbers to 1e-7 of their size, counts and errors exactly.
@@ -105,15 +108,21 @@ def models() -> dict[str, Any]:
             "box": Box(30, 20, 10).named("box").colored("steelblue")}
 
 
-def write_files(folder: Path) -> None:
-    """What smlibpy's writers make of the models, into ``folder`` (with the two .smb files)."""
+def write_files(folder: Path, bodies: Path | None = None) -> None:
+    """What smlibpy's writers make of the models, into ``folder`` (with the two .smb files). With
+    ``bodies``, a folder that has the .smb files already (the golden one), the plate and the ball are
+    read from there and not made again, as smlibwasm's test reads them: on a platform other than the
+    golden files' the plate comes out a little different (the arm64 build's contraction of
+    ``a * b + c``, see KNOWN), and so does the text of the files."""
     from smlibpy import export_dxf, export_gltf, export_obj, export_step, export_stl, export_usd, load, save
 
     m = models()
-    save(m["plate"], folder / "plate.smb", ascii=False)
-    save(m["ball"], folder / "ball.smb", ascii=False)
-    plate = load(folder / "plate.smb").named("plate").colored((0.8, 0.3, 0.2))
-    ball = load(folder / "ball.smb").named("ball")
+    if bodies is None:
+        save(m["plate"], folder / "plate.smb", ascii=False)
+        save(m["ball"], folder / "ball.smb", ascii=False)
+        bodies = folder
+    plate = load(bodies / "plate.smb").named("plate").colored((0.8, 0.3, 0.2))
+    ball = load(bodies / "ball.smb").named("ball")
     export_step([plate, ball], folder / "parts.step", name="parts")
     export_usd([plate, ball], folder / "parts.usda", mesh=False)
     export_dxf(m["sketch"], folder / "sketch.dxf")
@@ -184,12 +193,130 @@ def cases() -> dict[str, Callable[[], dict[str, Any]]]:
     return out
 
 
-def numbers() -> dict[str, Any]:
-    """Each case's record, or its error as ``{"error": class, "status": ...}``."""
+def capabilities() -> dict[str, Callable[[], Any]]:
+    """A step or more of each capability phase 1 of the kernel plan added, by its item (B11 ... D3):
+    numbers both builds must give (``js/test/closeout_W.test.ts`` has the same under the same
+    names). Mesh decimation to a tolerance is left out: the kernel orders equal choices by memory,
+    so its count differs from run to run (608 or 628 triangles here, 686 in smlibwasm)."""
+    import math
+
+    from smlibpy import (Z, AnnularSector, Axis, Box, Circle, Cone, ConicArc, Cylinder, Helix, Line, Location, Plane,
+                         Polyline, Rectangle, Sphere, Spiral, Spline, Torus, bend_allowance, blend, drawing_views, fill,
+                         fit_curve, flat_pattern, network, ruled, stitch, surface, sweep, swing, thicken, unroll)
+
+    def sheet():
+        return Rectangle(20, 20).faces()[0].to_shell()
+
+    def pick(record, *keys):
+        return {k: record[k] for k in keys}
+
+    def bump():  # (a sheet across a box, for split)
+        return surface([[(-15 + 10 * i, -15 + 10 * j, 3 * math.sin(i + j)) for j in range(4)] for i in range(4)])
+
+    def rounded():
+        return Box(20, 20, 10).fillet(Box(20, 20, 10).edges().parallel_to(Z), 3)
+
+    def arc():
+        return Spline((0, 0, 0), (5, 3, 0), (10, 0, 0))
+
+    def bridge():  # (two strips, for blend)
+        a = ruled(Line((0, 0, 0), (10, 0, 0)), Line((0, 5, 0), (10, 5, 0)))
+        b = ruled(Line((0, 10, 4), (10, 10, 4)), Line((0, 15, 4), (10, 15, 4)))
+        return blend(a.edges().sort_by(lambda e: e.center().y)[-1], b.edges().sort_by(lambda e: e.center().y)[0])
+
+    def fitted():
+        return surface([(i, j, math.sin(i / 3) * math.cos(j / 4)) for i in range(10) for j in range(10)], report=True)[1]
+
+    holed = lambda: Box(20, 20, 10) - Cylinder(4, 10)  # noqa: E731
+    folded = lambda: Box(100, 50, 2).fold(Axis((0, 0, 1), (0, 1, 0)), 90, radius=2)  # noqa: E731
+    return {
+        # Booleans, cells and splits (B11, B12, B14, B15)
+        "classify": lambda: [Box(10, 10, 10).classify(p)[0] for p in ((0, 0, 0), (5, 0, 0), (5, 5, 0), (5, 5, 5), (9, 0, 0))],
+        "split by a sheet": lambda: {"volumes": [p.volume for p in Box(20, 20, 20).split(bump(), "both")]},
+        "imprint": lambda: pick(_body(Box(20, 20, 10).imprint(Cylinder(4, 30))), "volume", "faces", "edges"),
+        "cell sources": lambda: sorted(["&".join(sorted(s.name for s in c.sources)), round(c.volume, 6)] for c in
+                                       Box(10, 10, 10).named("a").merge(Sphere(6).translate((5, 0, 0)).named("b")).cells()),
+        # fillets and chamfers (F6, F9, F10, F12)
+        "fillet propagate": lambda: _body(rounded().fillet(
+            rounded().edges().filter(lambda e: e.center().z > 4.9).sort_by(lambda e: e.center().x)[:1], 1, propagate=True)),
+        "chamfer length2": lambda: _body(Box(20, 20, 10).chamfer(Box(20, 20, 10).faces().top()[0].edges(), 2, length2=1,
+                                                                 reference=Box(20, 20, 10).faces().top()[0])),
+        "fillet mitre": lambda: _body(Box(20, 20, 10).fillet(Box(20, 20, 10).edges(), 2, corners="mitre")),
+        "cone chamfer": lambda: _body(Cylinder(5, 10).chamfer(
+            Cylinder(5, 10).edges().filter(lambda e: e.geom_type == "circle" and e.center().z > 0), 1)),
+        # shells, offsets and direct editing (O7, O9, O10, O12)
+        "offset round": lambda: _body(Box(10, 10, 10).offset(2, corners="round")),
+        "shell round": lambda: _body(Box(30, 30, 30).shell(-2, Box(30, 30, 30).faces().top(), corners="round")),
+        "sheet offset": lambda: {"area": sheet().offset(2).area, "z": sheet().offset(2).bbox().min.z},
+        "thicken": lambda: _body(thicken(sheet(), 3, both=True)),
+        "move faces": lambda: _body(Box(20, 20, 10).move_faces(Box(20, 20, 10).faces().top(), (0, 0, 5))),
+        "offset faces": lambda: _body(holed().offset_faces(holed().faces().filter(lambda f: f.geom_type == "cylinder"), 1)),
+        # primitives, sweeps and extrusions (S3, S4, S7, S9, S12, S13)
+        "sectors": lambda: [round(x, 9) for x in (Cylinder(5, 10, arc_size=90).volume, Cone(5, 2, 10, arc_size=120).volume,
+                                                  Sphere(5, arc_size3=180).volume, Torus(10, 2, major_angle=90).volume,
+                                                  AnnularSector(5, 10, 4, 90).volume)],
+        "swing": lambda: _body(swing(Rectangle(4, 10).translate((12, 0)).on(Plane.XZ), Rectangle(30, 20, fillet=5))),
+        "sweep twist": lambda: _body(sweep(Rectangle(4, 2), Line((0, 0, 0), (0, 0, 30)), twist=90)),
+        "sweep scale": lambda: _body(sweep(Circle(2), Line((0, 0, 0), (0, 0, 30)), scale=(1, 0.5))),
+        "extrude taper round": lambda: _body(Rectangle(20, 10).extrude(5, taper=10, corners="round")),
+        "revolve analytic": lambda: sorted(f.geom_type for f in
+                                           Rectangle(4, 6).translate((10, 0)).revolve(Axis((0, 0, 0), (0, 1, 0))).faces()),
+        # curves and sketches (C2, C4, C5, C6, C7, C8, C9, C10, C14, C16, A5)
+        "edge trim": lambda: {"len": arc().trim(0.2, 0.7).length, "t": arc().param_at_point((5, 2.5, 0))},
+        "edge extend": lambda: arc().extend(3).length,
+        "intersections": lambda: [list(p.to_tuple()) for p in Circle(5).edges()[0].intersections(Line((-10, 1, 0), (10, 1, 0)))],
+        "edge offset": lambda: arc().offset(1).length,
+        "wire offset": lambda: Polyline((0, 0, 0), (10, 0, 0), (10, 10, 0)).offset(1).length,
+        "fit curve": lambda: fit_curve([(i, math.sin(i / 3), 0) for i in range(20)], tolerance=1e-3).length,
+        "curvature": lambda: {"min": arc().min_radius(), "at": arc().curvature_at(0.3)},
+        "to arcs": lambda: len(Spline((0, 0, 0), (5, 3, 0), (10, 0, 0), (15, -2, 0)).to_arcs(0.01).edges()),
+        "conics": lambda: [ConicArc((0, 0, 0), (5, 5, 0), (10, 0, 0), 0.3).length, Spiral(2, 6, 3, Plane.XY).length],
+        "edge through": lambda: Line((0, 0, 0), (10, 0, 0)).through((5, 2, 0)).length,
+        "helix long": lambda: Helix(5, 400, 2).length,
+        "section properties": lambda: (lambda s: [s.area, *s.centroid.to_tuple(), s.ixx, s.iyy, s.ixy])(
+            (Rectangle(20, 10) - Circle(2).translate((5, 0))).section_properties()),
+        # surfaces (U2, U4, U5, U6, U7, U8, U15)
+        "blend": lambda: bridge().area,
+        "fill": lambda: fill(Polyline((0, 0, 0), (10, 0, 0), (10, 10, 3), (0, 10, 0), (0, 0, 0))).area,
+        "network": lambda: network([Spline((0, 0, 0), (5, 0, 2), (10, 0, 0)), Spline((0, 10, 0), (5, 10, 2), (10, 10, 0))],
+                                   [Spline((0, 0, 0), (0, 5, 1), (0, 10, 0)), Spline((10, 0, 0), (10, 5, 1), (10, 10, 0))]).area,
+        "face extend": lambda: Box(10, 10, 10).faces().top()[0].extend(2).area,
+        "push": lambda: _body(Box(20, 20, 4).push(Box(20, 20, 4).faces().top()[0], (0, 0, 2), by=1)),
+        "warp": lambda: _body(Box(20, 20, 4).warp(Box(20, 20, 4).faces().top()[0], [(-5, -5, 2), (5, -5, 2), (5, 5, 2), (-5, 5, 2)], 1)),
+        "surface report": lambda: [fitted().max_distance, fitted().rms_distance],
+        "stitch": lambda: len(stitch([f.to_shell() for f in Box(10, 10, 10).faces()]).faces()),
+        # measuring (A2, A3, A6, C12, M4, M5)
+        "closest points": lambda: (lambda c: [c.distance, *c.point.to_tuple(), *c.other_point.to_tuple()])(
+            Box(10, 10, 10).closest_points(Sphere(2).translate((10, 10, 10)))),
+        "face curvature": lambda: (lambda c: [c.k1, c.k2])(Sphere(5).faces()[0].curvature_at((5, 0, 0))),
+        "inertia": lambda: [float(x) for x in Box(10, 20, 30).mass_properties().inertia_about((5, 5, 5))[0]],
+        "project": lambda: sum(e.length for e in Box(10, 10, 10).project(Circle(3).moved(Location((0, 0, 20))).edges()[0])),
+        "wrap": lambda: sum(e.length for e in Cylinder(5, 10).faces().filter(lambda f: f.geom_type == "cylinder")[0].wrap(Circle(1))),
+        "outline hidden": lambda: (lambda o: [len(o[0]), len(o[1]), sum(e.length for e in o[0]), sum(e.length for e in o[1])])(
+            holed().outline(Plane.XZ, hidden=True)),
+        "raycast many": lambda: [h.distance if h else None for h in
+                                 Sphere(5).raycast_many([(0, 0, -20), (3, 0, -20), (6, 0, -20)], (0, 0, 1))],
+        # meshes (M6, M7, M8, M10, M11)
+        "mesh decimate": lambda: len(Sphere(5).mesh(0.01).decimate(0.5).triangles),
+        "mesh slices": lambda: [round(sum(w.length for w in s), 6) for s in Sphere(5).mesh(0.01).slices(3)],
+        "mesh to part": lambda: _body(Box(10, 10, 10).mesh().to_part()),
+        "max edge": lambda: len(Box(10, 10, 10).mesh(max_edge=3).triangles),
+        "mesh mass": lambda: [Box(10, 10, 10).mesh().mass_properties(1.0).mass, *Box(10, 10, 10).mesh().centroid.to_tuple()],
+        "drawing views": lambda: [[v.name, len(v.visible), len(v.hidden)] for v in drawing_views(holed())],
+        # sheet metal and deformations (D1, D3)
+        "k factor din": lambda: list(flat_pattern(folded(), k_factor="din6935").size.to_tuple()),
+        "unroll": lambda: _body(unroll(Cylinder(10, 5, arc_size=180) - Cylinder(9, 6), radius=9.5)),
+        "bend allowance 270": lambda: bend_allowance(270, radius=2, thickness=1),
+    }
+
+
+def numbers(steps: Callable[[], dict[str, Callable[[], Any]]] | None = None) -> dict[str, Any]:
+    """Each case's record (of ``steps``, by default :func:`cases`), or its error as ``{"error":
+    class, "status": ...}``."""
     import warnings
 
     out = {}
-    for name, run in cases().items():
+    for name, run in (steps or cases)().items():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
@@ -252,8 +379,12 @@ def same_value(a: Any, b: Any, rel: float = REL, at: str = "") -> str | None:
     return f"{at}: {a!r} against {b!r}"
 
 
+def _platform() -> str:
+    return f"{sys.platform}-{platform.machine().lower()}"
+
+
 def golden() -> dict[str, Any]:
-    return {"platform": f"{sys.platform}-{platform.machine().lower()}", "cases": numbers(), "known": KNOWN}
+    return {"platform": _platform(), "cases": numbers(), "capabilities": numbers(capabilities), "known": KNOWN}
 
 
 def differences() -> list[str]:
@@ -261,16 +392,18 @@ def differences() -> list[str]:
     result on a platform without the contraction)."""
     out = []
     saved = json.loads((GOLDEN / "golden.json").read_text())
-    for name, record in numbers().items():
-        if name not in saved["cases"]:
-            out.append(f"{name}: not in golden.json")
-            continue
-        d = same_value(record, saved["cases"][name], at=name)
-        if d is not None and not (name in KNOWN and KNOWN[name]["fma"] and not FMA
-                                  and same_value(record, KNOWN[name]["wasm"], at=name) is None):
-            out.append(d)
+    for key, steps in (("cases", cases), ("capabilities", capabilities)):
+        for name, record in numbers(steps).items():
+            if name not in saved.get(key, {}):
+                out.append(f"{name}: not in golden.json")
+                continue
+            d = same_value(record, saved[key][name], at=name)
+            if d is not None and not (name in KNOWN and KNOWN[name]["fma"] and not FMA
+                                      and same_value(record, KNOWN[name]["wasm"], at=name) is None):
+                out.append(d)
     with tempfile.TemporaryDirectory() as folder:
-        write_files(Path(folder))
+        # (elsewhere than on the golden files' platform, the writers get the golden bodies)
+        write_files(Path(folder), None if saved["platform"] == _platform() else GOLDEN)
         for name, kind in FILES.items():
             mine, theirs = (Path(folder) / name).read_text(), (GOLDEN / name).read_text()
             d = (same_value(json.loads(normalized(mine)), json.loads(normalized(theirs)), TEXT_ABS) if kind == "json"

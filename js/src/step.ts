@@ -8,7 +8,7 @@
 // supplemental geometry (CONSTRUCTIVE_GEOMETRY_REPRESENTATION). All of it goes into one product,
 // or, as an assembly, each body into a product of its own under a root product.
 
-import { ModelingError, _isRuntimeError, _warn, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _crashOf, _isCrash, _isRuntimeError, _warn, ext, k, kernelCall } from './kernel.ts'
 import { toRgb } from './colors.ts'
 import { Plane, Vector } from './geometry.ts'
 import { Edge, Face, Part, Vertex, Wire, _Body, _cellSources, _sourceLabel, _typeName, type ColorLike } from './shapes.ts'
@@ -515,7 +515,7 @@ class _BodyWriter {
         const [, uvs] = k.surface_closest_point(k.face_surface(kf), p)
         ;[u, v] = uvs[0] as [number, number]
       } catch (e) {
-        if (!_isRuntimeError(e)) throw e
+        if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
         // The kernel finds no point inside the face (it searches the face's parameter domain
         // along 20 lines, and a narrow strip can lie between them). The sense is a property of
         // the whole surface: the middle of the domain will do.
@@ -1005,7 +1005,7 @@ function _cellLabels(body: Part, label: string): [string | null, ColorLike | nul
   try {
     sources = _cellSources(body)
   } catch (e) {
-    if (!(e instanceof ModelingError) && !(e instanceof RangeError)) throw e
+    if (!(e instanceof ModelingError) && !(e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
     return null
   }
   if (!sources || !sources.length) return null

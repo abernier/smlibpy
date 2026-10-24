@@ -15,10 +15,11 @@
 // step first in a forked copy of the process (on Linux and macOS). JavaScript cannot fork; where
 // it can wait for another thread (Node, and Web Workers of a cross-origin isolated page), each
 // step runs first in a probe worker, a kernel of its own, on copies of the bodies (see
-// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does with
-// GUARD_SECONDS = 0: a crash of the kernel there (a trap of the WebAssembly module) ends the
-// operation with a ModelingError, as it would end smlibpy's process, and a step that loops does not
-// come back.
+// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does where it
+// cannot start another process: a crash of the kernel there (a trap of the WebAssembly module) ends
+// the operation with a ModelingError, as it would end smlibpy's process, and the kernel's deadline
+// (`ext.set_deadline`) holds the step to GUARD_SECONDS where it spends its time in the kernel's
+// surface and topology intersections, as the steps that were found running for good do.
 
 import { BrepHandle, ModelingError, _isRuntimeError, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { _formatG } from './geometry.ts'
@@ -41,9 +42,12 @@ export const TANGENCY = 2.0
  * Boolean code can crash or loop on some parts). This kernel never runs the step itself: what the
  * step made comes back as an exact copy (binary `.smb`). The steps are those of `removeFillets`,
  * `removeFaces`, `surfaceFillet`, `shell`, `offset`, `thicken` and `Part.cells()`, fillets and
- * chamfers of parts read from files (STEP, `.smb`, USD) and, with GUARD_BOOLEANS, Booleans. `0`
- * runs the kernel directly, as on a browser's main thread, where a step that loops does not come
- * back. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
+ * chamfers of parts read from files (STEP, `.smb`, USD) and, with GUARD_BOOLEANS, Booleans. Where
+ * no probe worker runs (a browser's main thread), the step runs in this kernel, held to this many
+ * seconds by the kernel's deadline (`ext.set_deadline`): past it, the long loops of the kernel's
+ * surface and topology intersections give up and the step is dropped as one that did not finish (a
+ * step that spends its time elsewhere in the kernel is not stopped). `0` runs the kernel directly,
+ * without a limit. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
  */
 export let GUARD_SECONDS = 20.0
 
@@ -93,6 +97,53 @@ class _KernelFault extends ModelingError {
     this.here = here
     this.timedOut = reason.startsWith('the kernel did not finish')
   }
+}
+
+let _inDeadline = false // (whether a step runs under the kernel's deadline)
+
+/**
+ * `work()` in this kernel, held to `limit` seconds by the kernel's deadline (`ext.set_deadline`,
+ * where no probe worker runs the step): past it, the long loops of the kernel's surface and topology
+ * intersections give up (the step fails as a failed step does), and the step is a _KernelFault, as
+ * one that did not finish in the probe worker. A step that spends its time elsewhere in the kernel is
+ * not stopped. Inside another such step, that step's deadline holds. `drop` frees what `work()`
+ * made, where it returned after the deadline. Python's `smlibpy._guard.here`.
+ */
+export function _underDeadline<R>(what: string, limit: number, work: () => R, drop: ((value: R) => void) | null = null): R {
+  if (!(limit > 0) || _inDeadline) return work()
+  _inDeadline = true
+  ext.set_deadline(limit)
+  try {
+    let result: R
+    try {
+      result = work()
+    } catch (e) {
+      const trap = typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
+      if (!trap && !(e instanceof _KernelFault) && ext.deadline_passed()) throw _timedOut(what, limit)
+      throw e
+    }
+    if (ext.deadline_passed()) {
+      // (made after a loop gave up: the step did not finish as it would; what it made is freed)
+      try {
+        drop?.(result)
+      } finally {
+        throw _timedOut(what, limit)
+      }
+    }
+    return result
+  } finally {
+    ext.set_deadline(0)
+    _inDeadline = false
+  }
+}
+
+/** Frees a kernel Brep a step made (none: 0 or null). */
+export function _dropBrep(brep: number | null | undefined): void {
+  if (brep) ext.delete_brep(brep)
+}
+
+function _timedOut(what: string, limit: number): _KernelFault {
+  return new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
 }
 
 /** The _KernelFault of a trap of this kernel in the step `what`. */
@@ -207,7 +258,7 @@ function _probe(what: string, job: () => _Job, limit: number): void {
  */
 export function _isolated(what: string, work: () => number, job: () => _Job, hint: string | null = null): number {
   try {
-    return _isolatedValue(what, work, job)
+    return _isolatedValue(what, work, job, { drop: _dropBrep })
   } catch (e) {
     if (e instanceof _KernelFault) throw e // (a crash, or a step that did not finish)
     return kernelCall(
@@ -228,15 +279,17 @@ export function _isolated(what: string, work: () => number, job: () => _Job, hin
  * error it fails with there is thrown here (a TypeError or RangeError as itself, a failure of the
  * kernel as an Error with its message, as the kernel's bindings throw it). Python's
  * `smlibpy._guard.isolated`. Without a probe worker (a browser's main thread), or with
- * GUARD_SECONDS = 0, `work()` runs here; with `trap`, a trap there (the kernel crashed) is a
- * _KernelFault whose `here` is true (this kernel's memory may be damaged).
+ * GUARD_SECONDS = 0, `work()` runs here (held to GUARD_SECONDS by the kernel's deadline, see
+ * `_underDeadline`; `drop` frees what it made where it returned after the deadline); with `trap`, a
+ * trap there (the kernel crashed) is a _KernelFault whose `here` is true (this kernel's memory may be
+ * damaged).
  */
-export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, options: { trap?: boolean } = {}): R {
+export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, options: { trap?: boolean; drop?: (value: R) => void } = {}): R {
   const limit = Number(GUARD_SECONDS)
   const supervisor = limit > 0 ? _supervisor(what) : null
   const here = (): R => {
     try {
-      return work()
+      return _underDeadline(what, limit, work, options.drop ?? null)
     } catch (e) {
       if (options.trap && typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) throw _crashHere(what, e)
       throw e
@@ -531,7 +584,7 @@ function _executive(what: string, body: Part, groups: readonly (readonly Face[])
       what,
       () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild),
       () => ({ op: 'defeature', bodies: [_smb(body)], tags: [_carried(body._brep)], groups: groups.map((g) => _indices(body, g)), rebuild }),
-      { trap: true },
+      { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
     )
   } catch (e) {
     if (e instanceof _KernelFault && !e.here) return [null, true]
@@ -585,7 +638,7 @@ function _removePass(
           'removeFillets',
           () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)),
           () => ({ op: 'remove_fillet_faces', bodies: [_smb(body)], tags: [_carried(body._brep)], faces: _indices(body, edge) }),
-          { trap: true },
+          { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
         )
       } catch (e) {
         if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)
@@ -782,7 +835,7 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
         'removeFaces',
         () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild),
         () => ({ op: 'defeature', bodies: [_smb(body)], tags: [_carried(body._brep)], groups: [_indices(body, group)], rebuild }),
-        { trap: true },
+        { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
       )
     } catch (e) {
       if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)

@@ -5,7 +5,7 @@
 // them and can be passed back to operations on that body
 // (`part.fillet(part.edges().parallelTo(Z), 2)`).
 
-import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { BrepHandle, CurveHandle, KernelError, ModelingError, _crashCount, _crashError, _crashOf, _isCrash, _isRuntimeError, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
 import {
   TOLERANCE,
@@ -42,12 +42,13 @@ import { CenterArc, EllipticalArc, Line, ThreePointArc, _arcCurve, _basisDers, _
 import { _circleOf } from './dxf.ts'
 import { Mesh, _levels, _rayTriangles, _rays, _tessellate, _triangleFaces, faceMeshes, tessellate } from './mesh.ts'
 import { type ShowOptions, show } from './viewer.ts'
-import { exportFile } from './exporters.ts'
+import { type FileOptions, exportFile } from './exporters.ts'
 import { CORNER_STYLES, cornerKind, mirrorSketch, offsetRegion, offsetWire, rebuiltBrep, roundCorners } from './_regions.ts'
 import { acrossSeams, seamCrossings, visiblePieces, wrap as _wrap } from './_face_curves.ts'
 import {
   GUARD_BOOLEANS,
   type _Job,
+  _dropBrep,
   _isolated,
   _isolatedValue,
   _smb,
@@ -58,6 +59,7 @@ import {
 } from './defeature.ts'
 import {
   type BendOptions,
+  type Lattice,
   type TaperOptions,
   type TwistOptions,
   type UnrollOptions,
@@ -312,8 +314,9 @@ export abstract class Shape {
     return show(this, options)
   }
 
-  /** Write the shape to a file; the format follows the extension (step, stl, glb, ...). */
-  export(path: string, options: Record<string, unknown> = {}): void {
+  /** Write the shape to a file; the format follows the extension (step, stl, glb, ...), the options
+   * are the format's (see `exportFile`). */
+  export(path: string, options: FileOptions = {}): void {
     exportFile(this, path, options)
   }
 
@@ -626,7 +629,7 @@ export class ShapeList<T = Shape> extends Array<T> {
         }
         if (ok) out.push(s)
       } catch (e) {
-        if (!(e instanceof KernelError || _isValueError(e))) throw e
+        if (!(e instanceof KernelError || _isValueError(e)) || _isCrash(e)) throw _crashOf(e)
       }
     }
     return out
@@ -978,7 +981,7 @@ function _levelOf(s: unknown): string | null {
   try {
     return s.continuity().level
   } catch (e) {
-    if (e instanceof RangeError || e instanceof KernelError) return null
+    if ((e instanceof RangeError || e instanceof KernelError) && !_isCrash(e)) return null
     throw e
   }
 }
@@ -1969,118 +1972,120 @@ export class Edge extends Shape {
    *     const path = Spline([0, 0], [20, 10], [40, 0]).through([20, 15])
    */
   through(point: VectorLike | Vertex, options: { tangent?: VectorLike | null; at?: number | null } = {}): Edge {
-    _opts('Edge.through', options)
-    const { tangent = null, at = null } = options
-    const p = point instanceof Vertex ? point.point : _vec(point)
-    if (![p.x, p.y, p.z].every(Number.isFinite)) throw new RangeError('through: the point must be finite')
-    let t: Vector | null = null
-    if (tangent != null) {
-      t = _vec(tangent)
-      if (!(t.length > 0) || ![t.x, t.y, t.z].every(Number.isFinite)) throw new RangeError('through: the tangent must be a direction (not zero)')
-      t = t.normalized()
-    }
-    if (at != null && !(typeof at === 'number' && at > 0 && at < 1)) {
-      throw new RangeError(`through: at is a fraction of the edge strictly between 0 and 1 (its ends stay), got ${String(at)}`)
-    }
-    const need = t === null ? 1 : 2
-    let q = 3
-    let d: Any
-    let u = 0
-    kernelCall('Edge.through', () => {
-      const base = Edge._fromCurve(this._plainBspline())
-      u = at != null ? base._param(at) : base._closest(p)[1]
-      const [t0, t1] = base._range()
-      if (!(t0 < u && u < t1)) {
-        throw new RangeError('through: the point is nearest to an end of the edge, and the ends stay; pass at to say where along the edge it goes')
+    return scope(() => {
+      _opts('Edge.through', options)
+      const { tangent = null, at = null } = options
+      const p = point instanceof Vertex ? point.point : _vec(point)
+      if (![p.x, p.y, p.z].every(Number.isFinite)) throw new RangeError('through: the point must be finite')
+      let t: Vector | null = null
+      if (tangent != null) {
+        t = _vec(tangent)
+        if (!(t.length > 0) || ![t.x, t.y, t.z].every(Number.isFinite)) throw new RangeError('through: the tangent must be a direction (not zero)')
+        t = t.normalized()
       }
-      d = ext.curve_data(base._curve(), true)
-      const degree = Number(d.degree)
-      q = Math.max(3, degree)
-      // the knots after raising the degree (every knot once more per degree)
-      const knots: number[] = Array.from(d.knots as ArrayLike<number>, Number)
-      const raised: number[] = []
-      for (let i = 0; i < knots.length;) {
-        let j = i
-        while (j < knots.length && knots[j] === knots[i]) j++
-        for (let r = 0; r < j - i + q - degree; r++) raised.push(knots[i])
-        i = j
+      if (at != null && !(typeof at === 'number' && at > 0 && at < 1)) {
+        throw new RangeError(`through: at is a fraction of the edge strictly between 0 and 1 (its ends stay), got ${String(at)}`)
       }
-      // knots in the spans around u until enough control points that are free to move (not the
-      // first two or the last two) act there
-      const inserts: number[] = []
-      let enough = false
-      for (let it = 0; it < 12 && !enough; it++) {
-        const kv = [...raised, ...inserts].sort((a, b) => a - b)
-        const m = kv.length - q - 1
-        const s = _span(kv, q, u)
-        let free = 0
-        for (let i = s - q; i <= s; i++) if (i >= 2 && i <= m - 3) free++
-        if (free >= need + 1) {
-          enough = true
-          break
+      const need = t === null ? 1 : 2
+      let q = 3
+      let d: Any
+      let u = 0
+      kernelCall('Edge.through', () => {
+        const base = Edge._fromCurve(this._plainBspline())
+        u = at != null ? base._param(at) : base._closest(p)[1]
+        const [t0, t1] = base._range()
+        if (!(t0 < u && u < t1)) {
+          throw new RangeError('through: the point is nearest to an end of the edge, and the ends stay; pass at to say where along the edge it goes')
         }
-        const lo = Math.max(q, s - q)
-        const hi = Math.min(m, s + q + 1) // the spans s - q .. s + q
-        const spans = [...new Set(kv.slice(lo, hi + 1))].sort((a, b) => a - b)
-        for (let i = 0; i + 1 < spans.length; i++) if (spans[i + 1] > spans[i]) inserts.push((spans[i] + spans[i + 1]) / 2)
+        d = ext.curve_data(base._curve(), true)
+        const degree = Number(d.degree)
+        q = Math.max(3, degree)
+        // the knots after raising the degree (every knot once more per degree)
+        const knots: number[] = Array.from(d.knots as ArrayLike<number>, Number)
+        const raised: number[] = []
+        for (let i = 0; i < knots.length;) {
+          let j = i
+          while (j < knots.length && knots[j] === knots[i]) j++
+          for (let r = 0; r < j - i + q - degree; r++) raised.push(knots[i])
+          i = j
+        }
+        // knots in the spans around u until enough control points that are free to move (not the
+        // first two or the last two) act there
+        const inserts: number[] = []
+        let enough = false
+        for (let it = 0; it < 12 && !enough; it++) {
+          const kv = [...raised, ...inserts].sort((a, b) => a - b)
+          const m = kv.length - q - 1
+          const s = _span(kv, q, u)
+          let free = 0
+          for (let i = s - q; i <= s; i++) if (i >= 2 && i <= m - 3) free++
+          if (free >= need + 1) {
+            enough = true
+            break
+          }
+          const lo = Math.max(q, s - q)
+          const hi = Math.min(m, s + q + 1) // the spans s - q .. s + q
+          const spans = [...new Set(kv.slice(lo, hi + 1))].sort((a, b) => a - b)
+          for (let i = 0; i + 1 < spans.length; i++) if (spans[i + 1] > spans[i]) inserts.push((spans[i] + spans[i + 1]) / 2)
+        }
+        if (!enough) throw new ModelingError('through: the edge cannot be refined enough to move')
+        const c = ext.refine_curve(base._curve(), q, inserts)
+        try {
+          d = ext.curve_data(c, true)
+        } finally {
+          ext.delete_curve(c)
+        }
+      })
+      const kv: number[] = Array.from(d.knots as ArrayLike<number>, Number)
+      const P: number[][] = (d.poles as number[][]).map((x) => [Number(x[0]), Number(x[1]), Number(x[2])])
+      const w: number[] | null = d.weights == null ? null : Array.from(d.weights as ArrayLike<number>, Number)
+      const m = P.length
+      const s = _span(kv, q, u)
+      const ders = _basisDers(kv, q, s, u, 1)
+      const idx = Array.from({ length: q + 1 }, (_, j) => s - q + j)
+      const N = ders[0]
+      const dN = ders[1]
+      let R = N
+      let dR = dN
+      if (w !== null) { // rational: R = N w / W, linear in the control points for fixed weights
+        const ww = idx.map((i) => w[i])
+        const W = N.reduce((a, x, j) => a + x * ww[j], 0)
+        const dW = dN.reduce((a, x, j) => a + x * ww[j], 0)
+        R = N.map((x, j) => (x * ww[j]) / W)
+        dR = N.map((x, j) => (dN[j] * ww[j] * W - x * ww[j] * dW) / (W * W))
       }
-      if (!enough) throw new ModelingError('through: the edge cannot be refined enough to move')
-      const c = ext.refine_curve(base._curve(), q, inserts)
-      try {
-        d = ext.curve_data(c, true)
-      } finally {
-        ext.delete_curve(c)
+      const combo = (row: number[]) => [0, 1, 2].map((c) => row.reduce((a, x, j) => a + x * P[idx[j]][c], 0))
+      const here = combo(R)
+      const rows = [R]
+      const rhs = [[p.x - here[0], p.y - here[1], p.z - here[2]]]
+      if (t !== null) {
+        const slope = combo(dR)
+        const speed = Math.hypot(slope[0], slope[1], slope[2])
+        rows.push(dR)
+        rhs.push([t.x * speed - slope[0], t.y * speed - slope[1], t.z * speed - slope[2]])
       }
+      const free = idx.map((i, j) => [i, j]).filter(([i]) => i >= 2 && i <= m - 3).map(([, j]) => j)
+      const A = rows.map((row) => free.map((j) => row[j]))
+      const G = A.map((a) => A.map((b) => a.reduce((s2, x, j) => s2 + x * b[j], 0)))
+      const scale = Math.max(1, ...G.flat().map(Math.abs))
+      // the smallest move (least squares, minimum norm): A^T (A A^T)^-1 B
+      let Y: number[][]
+      if (G.length === 1) {
+        if (Math.abs(G[0][0]) <= 1e-14 * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
+        Y = [rhs[0].map((x) => x / G[0][0])]
+      } else {
+        const det = G[0][0] * G[1][1] - G[0][1] * G[1][0]
+        if (Math.abs(det) <= 1e-14 * scale * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
+        Y = [
+          [0, 1, 2].map((c) => (G[1][1] * rhs[0][c] - G[0][1] * rhs[1][c]) / det),
+          [0, 1, 2].map((c) => (-G[1][0] * rhs[0][c] + G[0][0] * rhs[1][c]) / det),
+        ]
+      }
+      free.forEach((j, f) => {
+        for (let c = 0; c < 3; c++) P[idx[j]][c] += A.reduce((s2, row, r) => s2 + row[f] * Y[r][c], 0)
+      })
+      return kernelCall('Edge.through', () => Edge._fromCurve(_canonicalCurve(P, kv, q, w)))
     })
-    const kv: number[] = Array.from(d.knots as ArrayLike<number>, Number)
-    const P: number[][] = (d.poles as number[][]).map((x) => [Number(x[0]), Number(x[1]), Number(x[2])])
-    const w: number[] | null = d.weights == null ? null : Array.from(d.weights as ArrayLike<number>, Number)
-    const m = P.length
-    const s = _span(kv, q, u)
-    const ders = _basisDers(kv, q, s, u, 1)
-    const idx = Array.from({ length: q + 1 }, (_, j) => s - q + j)
-    const N = ders[0]
-    const dN = ders[1]
-    let R = N
-    let dR = dN
-    if (w !== null) { // rational: R = N w / W, linear in the control points for fixed weights
-      const ww = idx.map((i) => w[i])
-      const W = N.reduce((a, x, j) => a + x * ww[j], 0)
-      const dW = dN.reduce((a, x, j) => a + x * ww[j], 0)
-      R = N.map((x, j) => (x * ww[j]) / W)
-      dR = N.map((x, j) => (dN[j] * ww[j] * W - x * ww[j] * dW) / (W * W))
-    }
-    const combo = (row: number[]) => [0, 1, 2].map((c) => row.reduce((a, x, j) => a + x * P[idx[j]][c], 0))
-    const here = combo(R)
-    const rows = [R]
-    const rhs = [[p.x - here[0], p.y - here[1], p.z - here[2]]]
-    if (t !== null) {
-      const slope = combo(dR)
-      const speed = Math.hypot(slope[0], slope[1], slope[2])
-      rows.push(dR)
-      rhs.push([t.x * speed - slope[0], t.y * speed - slope[1], t.z * speed - slope[2]])
-    }
-    const free = idx.map((i, j) => [i, j]).filter(([i]) => i >= 2 && i <= m - 3).map(([, j]) => j)
-    const A = rows.map((row) => free.map((j) => row[j]))
-    const G = A.map((a) => A.map((b) => a.reduce((s2, x, j) => s2 + x * b[j], 0)))
-    const scale = Math.max(1, ...G.flat().map(Math.abs))
-    // the smallest move (least squares, minimum norm): A^T (A A^T)^-1 B
-    let Y: number[][]
-    if (G.length === 1) {
-      if (Math.abs(G[0][0]) <= 1e-14 * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
-      Y = [rhs[0].map((x) => x / G[0][0])]
-    } else {
-      const det = G[0][0] * G[1][1] - G[0][1] * G[1][0]
-      if (Math.abs(det) <= 1e-14 * scale * scale) throw new ModelingError('through: the edge cannot be bent there (its control points do not reach the point)')
-      Y = [
-        [0, 1, 2].map((c) => (G[1][1] * rhs[0][c] - G[0][1] * rhs[1][c]) / det),
-        [0, 1, 2].map((c) => (-G[1][0] * rhs[0][c] + G[0][0] * rhs[1][c]) / det),
-      ]
-    }
-    free.forEach((j, f) => {
-      for (let c = 0; c < 3; c++) P[idx[j]][c] += A.reduce((s2, row, r) => s2 + row[f] * Y[r][c], 0)
-    })
-    return kernelCall('Edge.through', () => Edge._fromCurve(_canonicalCurve(P, kv, q, w)))
   }
 
   /**
@@ -3309,8 +3314,10 @@ export class Face extends Shape {
    *     const label = can.faces().cylinders()[0].wrap(Text('SMLIB', 8), [0, -20, 0], { direction: [1, 0, 0] })
    */
   wrap(shape: Edge | Wire | Sketch | Iterable<Edge>, at: VectorLike | Vertex | null = null, options: { direction?: VectorLike | null } = {}): ShapeList<Edge> {
-    _opts('Face.wrap', options)
-    return _wrap(this, shape, at, options.direction ?? null)
+    return scope(() => {
+      _opts('Face.wrap', options)
+      return _wrap(this, shape, at, options.direction ?? null)
+    })
   }
 
   // -- topology -----------------------------------------------------------------------------
@@ -3379,7 +3386,7 @@ export class Face extends Shape {
   /** A sheet of this face moved by `distance` along its normal (`normalAt`: out of the part it bounds;
    * a negative distance moves it in): the offset surface, trimmed as the face is (see `Shell.offset`). */
   offset(distance: number): Shell {
-    return this.toShell().offset(distance)
+    return scope(() => this.toShell().offset(distance))
   }
 
   /**
@@ -3392,13 +3399,13 @@ export class Face extends Shape {
    * `Part.imprint`; of a sheet, `Shell.trim` with `keep` `'split'`.
    */
   split(curves: Edge | Wire | Iterable<Edge | Wire>): ShapeList<Face> {
-    return this.toShell().trim(curves, 'split').faces()
+    return scope(() => this.toShell().trim(curves, 'split').faces())
   }
 
   /** A copy of this face, turned over: a sheet of one face whose normal points the other way (see
    * `Shell.flipped`). */
   flipped(): Shell {
-    return this.toShell().flipped()
+    return scope(() => this.toShell().flipped())
   }
 
   /**
@@ -3445,8 +3452,7 @@ export class Face extends Shape {
   }
 
   _transformed(m: Matrix): Face {
-    const moved = this.toShell()._transformed(m)
-    return moved.faces()[0]
+    return scope(() => this.toShell()._transformed(m).faces()[0])
   }
 
   _identity(): string {
@@ -3809,7 +3815,7 @@ export class _Body extends Shape {
         ;[curves] = kernelCall('intersection curves', () => k.intersect_breps(this._brep, body._brep))
       } catch (e) {
         // (the kernel's intersection fails where the surfaces do not meet: apart, or nested)
-        if (e instanceof KernelError && _bodyDistance(this, body) > tol) return _list([])
+        if (e instanceof KernelError && !_isCrash(e) && _bodyDistance(this, body) > tol) return _list([])
         throw e
       }
       // Where faces of the two bodies lie in one plane, the kernel hands out curves on their
@@ -3828,11 +3834,13 @@ export class _Body extends Shape {
    * (within 1e-6 of the body's size) otherwise.
    */
   silhouette(direction: Axis | VectorLike = [0, 0, 1]): ShapeList<Edge> {
-    const d = _direction(direction, 'silhouette')
-    const [body, line] = _contour(this, d.neg(), 'silhouette')
-    const edges = line.map((e) => Edge._fromCurve(ext.edge_curve(e._e)))
-    body.dispose()
-    return _list(_joinedArcs(edges, 1e-7 * Math.max(this._looseBox().diagonal, 1)))
+    return scope(() => {
+      const d = _direction(direction, 'silhouette')
+      const [body, line] = _contour(this, d.neg(), 'silhouette')
+      const edges = line.map((e) => Edge._fromCurve(ext.edge_curve(e._e)))
+      body.dispose()
+      return _list(_joinedArcs(edges, 1e-7 * Math.max(this._looseBox().diagonal, 1)))
+    })
   }
 
   /** Project a curve onto the body along `direction` (an axis or a vector); returns the curves on
@@ -4293,7 +4301,7 @@ function _canCover(tools: readonly Part[], part: Part): boolean {
   try {
     if (tools.reduce((sum, t) => sum + t._quickVolume(), 0) < part._quickVolume() * (1 - 1e-3)) return false
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     return false
   }
   let hull = tools[0]._looseBox()
@@ -4547,12 +4555,12 @@ function _surfacePoints(body: _Body): number[][] {
     try {
       inside = k.face_classify_uv(f, u, v) === 'inside'
     } catch (e) {
-      if (!_isRuntimeError(e)) throw e // (on a face whose seam the kernel cannot resolve)
+      if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e) // (on a face whose seam the kernel cannot resolve)
     }
     try {
       points.push(inside ? k.face_point_at_uv(f, u, v) : k.face_interior_point(f))
     } catch (e) {
-      if (!_isRuntimeError(e)) throw e // the kernel cannot place a point on this face: its edges stand in
+      if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e) // the kernel cannot place a point on this face: its edges stand in
     }
   }
   return points.map((p) => Array.from(p))
@@ -4737,7 +4745,7 @@ function _meshOverlap(a: Part, tools: readonly Part[], op: number, scale = 1): n
     }
     return Math.abs(mesh.volume)
   } catch (e) {
-    if (!(e instanceof ModelingError || e instanceof RangeError)) throw e
+    if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
     return null
   }
 }
@@ -4825,7 +4833,7 @@ function _emptyIsRight(a: Part, tools: readonly Part[], op: number): boolean {
     if (fine !== null) return fine <= small || fine < 0.5 * (coarse as number)
     return _classifiedEmpty(a, tools, op)
   } catch (e) {
-    if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+    if (!(e instanceof KernelError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
     return false
   }
 }
@@ -4895,7 +4903,7 @@ function _raycast(
           // The kernel fails where a ray runs parallel to a plane or along a cylinder without
           // meeting it (and on some other faces): there the face's mesh finds the hits, and they
           // are moved onto the exact surface.
-          if (!_isRuntimeError(e)) throw e
+          if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
           found = _meshHits(f, o, d, reach, tol, meshes)
         }
         for (const q of found) {
@@ -5425,7 +5433,7 @@ export class Part extends _Body {
         if (measured != null) volume = Number(measured.volume)
         else if (volume === null) volume = Number(this._kernelProps(1e-3).volume)
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         return 'a body whose volume cannot be integrated'
       }
       const v = volume as number
@@ -5596,14 +5604,16 @@ export class Part extends _Body {
       if (d.regions.filter((r: { infinite: boolean; void: boolean }) => !r.infinite && !r.void).length <= 1) return new ShapeList(this)
       // (in the probe worker: the kernel's stitcher crashed on some merges)
       const regions: number[][] = kernelCall('cells', () =>
-        _isolatedValue('cells', () => ext.region_shells(this._brep) as number[][], () => ({ op: 'region_shells', bodies: [_smb(this)], tags: [_carried(this._brep)] })),
+        _isolatedValue('cells', () => ext.region_shells(this._brep) as number[][], () => ({ op: 'region_shells', bodies: [_smb(this)], tags: [_carried(this._brep)] }), {
+          drop: (shells) => shells.flat().forEach(_dropBrep),
+        }),
       )
       const solids = regions.map((shells) => shells.map((b) => Part._wrap(b, { name: this.name, color: this.color })))
       let sources: Part[][] | null = null
       try {
         sources = _cellSources(this, solids)
       } catch (e) {
-        if (!(e instanceof ModelingError) && !(e instanceof RangeError)) throw e // (the cells still come, named as the merged part)
+        if (!(e instanceof ModelingError) && !(e instanceof RangeError) || _isCrash(e)) throw _crashOf(e) // (the cells still come, named as the merged part)
       }
       const touching = 'an insert that touches the part around it at a point or along a line can do this: move it off the wall or into it'
       const out = new ShapeList<Part>()
@@ -5612,7 +5622,7 @@ export class Part extends _Body {
         try {
           part = cavities.length ? outer.cut(cavities) : outer
         } catch (e) {
-          if (!(e instanceof ModelingError)) throw e
+          if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
           // (the cut's own hint is about tools, which the user did not give)
           const why = e instanceof KernelError ? (e.status ? `the kernel's cut failed (${e.status})` : "the kernel's cut failed") : "the kernel's cut returned no sound solid"
           const gap = 1e-6 * Math.max(outer._extent(), 1)
@@ -5629,7 +5639,7 @@ export class Part extends _Body {
           part._props() // measured for the sum below, so that the check sees the gaps too
           problem = part._solidProblem()
         } catch (e) {
-          if (!(e instanceof KernelError)) throw e
+          if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
           problem = 'a body whose volume cannot be integrated'
         }
         if (problem !== null) throw new ModelingError(`cells: a cell is not a sound solid (${problem})`)
@@ -5738,7 +5748,7 @@ export class Part extends _Body {
         result = this._like(this._runBoolean(parts, op, name))
         problem = this._booleanProblem(result, parts, op)
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         result = null
         failure = e
         problem = null
@@ -5759,7 +5769,7 @@ export class Part extends _Body {
             if (this._booleanProblem(retry, [combined], op) === null) return retry
           }
         } catch (e) {
-          if (!(e instanceof KernelError)) throw e
+          if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         }
         const retry = this._nurbsRetry(parts, op, name) ?? this._seamRetry(parts, op, name)
         if (retry !== null) return retry
@@ -5844,7 +5854,7 @@ export class Part extends _Body {
       if (this._booleanProblem(retry, tools, op) !== null || _volumeProblem(retry, this, tools, op)) return null
       return retry
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       return null
     }
   }
@@ -6060,7 +6070,7 @@ export class Part extends _Body {
           try {
             if (fs[0].normalAt(p).angleTo(fs[1].normalAt(p)) < 0.5) return
           } catch (err) {
-            if (!(err instanceof KernelError || _isValueError(err))) throw err
+            if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
           }
         }
       }
@@ -6073,12 +6083,17 @@ export class Part extends _Body {
   /** Reject rounds that cannot fit: on a face, two edges running alongside each other must be
    * further apart than their setbacks. (The kernel does not always notice and may return an
    * invalid solid.) */
-  _checkRoundSizes(edges: readonly Edge[], setbacks: readonly (number | Map<string, number>)[], what: string, sizeName: string): void {
+  /** Reject rounds that cannot fit: on a face, two edges running alongside each other must be further
+   * apart than their setbacks. Returns how much of the room the setbacks take where they come closest
+   * (0 where no edges run alongside): above `_NEAR_LIMIT` the result's gaps are measured (see
+   * `_checkVolumeChange`). */
+  _checkRoundSizes(edges: readonly Edge[], setbacks: readonly (number | Map<string, number>)[], what: string, sizeName: string): number {
     // (a setback is one for both faces of an edge, or one per face, by the face's identity: an asymmetric chamfer)
     const on = (setback: number | Map<string, number>, f: Face): number =>
       typeof setback === 'number' ? setback : setback.get(f._identity()) ?? Math.max(...setback.values())
     const setbackOf = new Map<string, number | Map<string, number>>()
     edges.forEach((e, i) => setbackOf.set(e._identity(), setbacks[i]))
+    let fill = 0
     edges.forEach((e, i) => {
       const s = setbacks[i]
       const ends = new Set(e.vertices().map((v) => v._identity()))
@@ -6092,11 +6107,13 @@ export class Part extends _Body {
           try {
             dists = samples.map((p) => _distanceToEdge(g, p))
           } catch (e) {
-            if (!_isRuntimeError(e)) throw e
+            if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
             continue // the kernel finds no closest point on the edge: no check here
           }
           const near = Math.min(...dists)
-          if (near >= total - 1e-9 || Math.max(...dists) > 1.5 * Math.max(near, 1e-12)) continue // far enough, or not running alongside
+          if (Math.max(...dists) > 1.5 * Math.max(near, 1e-12)) continue // not running alongside
+          fill = Math.max(fill, total / Math.max(near, 1e-12))
+          if (near >= total - 1e-9) continue // far enough
           const limit = setbackOf.has(g._identity()) ? near / 2 : near
           throw new ModelingError(
             `${what}: the ${sizeName} is too large; the rounds on edges ${_formatG(near, 4)} apart would overlap (largest possible setback here: ${_formatG(limit, 4)})`,
@@ -6104,6 +6121,7 @@ export class Part extends _Body {
         }
       }
     })
+    return fill
   }
 
   /**
@@ -6116,7 +6134,7 @@ export class Part extends _Body {
     try {
       return _roundCall(what, fn, hint)
     } catch (e) {
-      if (!(e instanceof KernelError) || propagate) throw e
+      if (!(e instanceof KernelError) || propagate || _isCrash(e)) throw _crashOf(e)
       const better = _runOnHint(sel, what)
       if (better === null) throw e
       const error = _traced(new KernelError(e.operation, e.detail, e.status, better), e.trace)
@@ -6171,7 +6189,7 @@ export class Part extends _Body {
       try {
         out.push(fs[0].normalAt(p).angleTo(fs[1].normalAt(p)))
       } catch (err) {
-        if (!(err instanceof KernelError || _isValueError(err))) throw err
+        if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
       }
     }
     return out
@@ -6188,12 +6206,17 @@ export class Part extends _Body {
 
   /**
    * Check a fillet or chamfer result: a valid solid whose volume changed in the right direction
-   * and by no more than the rounds can take away or add.
+   * and by no more than the rounds can take away or add (plus `cornerVolume`, what set-back corners
+   * can add).
    *
    * `sizes` are the radii (`shape` "circular" or "blend") or the setbacks (`shape` "chamfer").
    * Near the size limit the kernel can return a valid-looking body with whole regions missing.
+   * With `nearLimit` (rounds that fill most of the room between two edges, see `_checkRoundSizes`)
+   * the gaps between the result's faces are measured too: there SM_API's tolerance can leave its
+   * rounds open (a 20 mm cube rounded by 9.97 came out with gaps of 4e-2 of its volume in smlibpy on
+   * Linux x86_64), which only that measure sees.
    */
-  _checkVolumeChange(result: Part, edges: readonly Edge[], what: string, sizes: readonly number[], shape: string, cornerVolume = 0): void {
+  _checkVolumeChange(result: Part, edges: readonly Edge[], what: string, sizes: readonly number[], shape: string, cornerVolume = 0, nearLimit = false): void {
     const size = new Set(sizes).size === 1 ? sizes[0] : Math.max(...sizes)
     let bound = _roundVolumeBound(edges, sizes, shape)
     if (bound !== null) bound += cornerVolume
@@ -6206,9 +6229,9 @@ export class Part extends _Body {
         before = this._kernelProps(accuracy).volume
         after = result._kernelProps(accuracy).volume
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       }
-      problem = result._solidProblem(after) // integrates once more only if that failed
+      problem = result._solidProblem(after, nearLimit) // integrates once more only if that failed
     }
     if (problem !== null) {
       throw new KernelError(what, `kernel result is ${problem}`, null, `the ${shape !== 'chamfer' ? 'radius' : 'length'} may be too large for the selected edges (it is ${_formatG(size, 4)})`)
@@ -6326,7 +6349,7 @@ export class Part extends _Body {
       constant = given[0] // (a constant law: a constant radius)
     } else if (perEdge) radii = perEdge
     else radii = new Array(sel.length).fill(Number(radius))
-    this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius')
+    const nearLimit = this._checkRoundSizes(sel, sel.map((e, i) => Part._setback(e, radii[i])), 'fillet', 'radius') > _NEAR_LIMIT
     if (mitre) _requireMitredCorners('fillet', sel)
     let setBack = 0
     let cornerVolume = 0
@@ -6402,7 +6425,7 @@ export class Part extends _Body {
       // worker is a Brep of its own, and h frees its copy)
       const result = this._like(out === h.brep ? _take(h) : (h.dispose(), out))
       try {
-        this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend', cornerVolume)
+        this._checkVolumeChange(result, sel, 'fillet', radii, cont === null ? 'circular' : 'blend', cornerVolume, nearLimit)
       } catch (e) {
         if (!setBack || !(e instanceof KernelError)) throw e
         const error = _traced(new KernelError(e.operation, e.detail, e.status, hint), e.trace)
@@ -6574,7 +6597,7 @@ export class Part extends _Body {
         setbacks.push(length)
       }
     }
-    this._checkRoundSizes(sel, setbacks, 'chamfer', 'length')
+    const nearLimit = this._checkRoundSizes(sel, setbacks, 'chamfer', 'length') > _NEAR_LIMIT
     if (mitre) _requireMitredCorners('chamfer', sel)
     const hint = 'the length may be too large for the selected edges'
     // (the volume bound of a bevel is its triangle, half the product of its setbacks)
@@ -6637,13 +6660,15 @@ export class Part extends _Body {
           'chamfer',
           keep.map((i) => sizes[i]),
           'chamfer',
+          0,
+          nearLimit,
         )
         return result
       }
       try {
         return _withFinerRounds(attempt)
       } catch (e) {
-        if (!(e instanceof ModelingError) || backwards === null) throw e // (a KernelError is a ModelingError)
+        if (!(e instanceof ModelingError) || backwards === null || _isCrash(e)) throw _crashOf(e) // (a KernelError is a ModelingError)
         const refuse = (): never => {
           const error = new ModelingError(backwards!)
           ;(error as Any).cause = e
@@ -6661,7 +6686,7 @@ export class Part extends _Body {
         try {
           result = rest.length ? bevel(rest) : this._like(this._copyBrep())
         } catch (err) {
-          if (!(err instanceof ModelingError)) throw err
+          if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
           return refuse()
         }
         for (const i of prisms) {
@@ -6671,7 +6696,7 @@ export class Part extends _Body {
           try {
             after = result.cut(tool)
           } catch (err) {
-            if (!(err instanceof ModelingError)) throw err
+            if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
             return refuse()
           }
           const took = before - Number(after._props(1e-6).volume)
@@ -6813,7 +6838,7 @@ export class Part extends _Body {
           .on(plane)
           .revolve(new Axis(center, axis), 360)
       } catch (err) {
-        if (!(err instanceof ModelingError)) throw err
+        if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
         return
       }
       out.set(i, [tool, volume, kind === 'concave'])
@@ -6835,7 +6860,7 @@ export class Part extends _Body {
       try {
         after = fills ? result.fuse(group.map(([t]) => t)) : result.cut(group.map(([t]) => t))
       } catch (err) {
-        if (!(err instanceof ModelingError)) throw err
+        if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
         return null
       }
       if (after._solidProblem() !== null) return null
@@ -6990,7 +7015,7 @@ export class Part extends _Body {
         n = new Vector(k.face_outward_normal_at_uv(f._f, u, v)).normalized().neg()
         hits = _raycast(faces, p, n, box, true, meshes).filter((h) => h.distance >= near)
       } catch (e) {
-        if (!_isRuntimeError(e)) throw e // a face the kernel cannot place a point on
+        if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e) // a face the kernel cannot place a point on
         continue
       }
       if (hits.length) out.push([p, n, hits[0].distance, openings.includes(hits[0].face._f)])
@@ -7096,7 +7121,7 @@ export class Part extends _Body {
         if (wall.normalAt(q).angleTo(m) > 1e-3) return false
       }
     } catch (e) {
-      if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+      if (!(e instanceof KernelError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
       return false
     }
     return true
@@ -7192,7 +7217,7 @@ export class Part extends _Body {
         p = face.interiorPoint()
         n = face.normalAt(p)
       } catch (e) {
-        if (!_isRuntimeError(e) && !(e instanceof RangeError)) throw e
+        if (!_isRuntimeError(e) && !(e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
         continue
       }
       // the center of the round: on the axis (cylinder), the center (sphere), on the tube's center
@@ -7254,7 +7279,7 @@ export class Part extends _Body {
     try {
       moved = offsetVolume(extended)
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e // (also a KernelError, or a crash in the probe worker)
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e) // (also a KernelError, or a crash in the probe worker)
       return `a hollow body that cannot be checked: the kernel cannot offset the part by ${_formatG(d, 4)} (${e.message})`
     }
     if (d < 0 && !(moved > 0)) {
@@ -7334,7 +7359,7 @@ export class Part extends _Body {
         try {
           c = fs[0].normalAt(p).dot(fs[1].normalAt(p))
         } catch (err) {
-          if (!(err instanceof KernelError || _isValueError(err))) throw err
+          if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
           continue // (the apex of a cone)
         }
         if (1 + c < 1e-12) return Infinity
@@ -7348,7 +7373,7 @@ export class Part extends _Body {
         try {
           n = f.normalAt(v.point)
         } catch (err) {
-          if (!(err instanceof KernelError || _isValueError(err))) throw err
+          if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
           continue
         }
         if (normals.every((m) => n.dot(m) < 1 - 1e-9)) normals.push(n)
@@ -7407,10 +7432,10 @@ export class Part extends _Body {
       try {
         result = attempt()
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError)) throw _crashOf(e)
         // a trap: the kernel crashed here, and its memory may be damaged
         if (typeof WebAssembly !== 'undefined' && (e as Any).cause instanceof WebAssembly.RuntimeError) throw _crashed(e, name)
-        if (_crashCount() > crashes) throw e
+        if (_crashCount() > crashes || _isCrash(e)) throw e
         error = e
         last = [mode, true]
         continue
@@ -7638,7 +7663,7 @@ export class Part extends _Body {
           problem = `of another volume (${_formatG(Number(b.volume), 10)}, the part has ${_formatG(Number(a.volume), 10)})`
         }
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         problem = 'a body whose volume cannot be integrated'
       }
     }
@@ -7722,7 +7747,7 @@ export class Part extends _Body {
           { name: this.name, color: this.color },
         )
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         return null
       }
       if (k.brep_face_count(piece._brep) === 0 || piece._solidProblem() !== null) return null
@@ -7734,7 +7759,7 @@ export class Part extends _Body {
       p = this._props()
       parts = out.map((x) => x._props())
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       return null
     }
     const whole = Number(p.volume)
@@ -7780,7 +7805,7 @@ export class Part extends _Body {
       try {
         cells = this.cells()
       } catch (e) {
-        if (!(e instanceof ModelingError) || e instanceof KernelError) throw e
+        if (!(e instanceof ModelingError) || e instanceof KernelError || _isCrash(e)) throw _crashOf(e)
         throw new ModelingError(`section: ${e.message}`)
       }
       if (cells.length > 1) {
@@ -7816,7 +7841,7 @@ export class Part extends _Body {
       if (!curves.length) throw new RangeError('the plane does not cut the part')
       b = kernelCall('section', () => k.create_planar_faces([...curves]))
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       for (const c of curves) ext.delete_curve(c) // (the kernel took them only where it made the faces)
       // A plane tangent to a face meets the part along a line, which bounds no face.
       if (this._onOneSide(pl)) throw new RangeError(touches)
@@ -7915,7 +7940,7 @@ export class Part extends _Body {
   }
 
   /** Deform with a `Lattice` (same as `lattice.apply(part)`). */
-  deform(lattice: { apply(part: Part, options?: Record<string, unknown>): Part }, options: Record<string, unknown> = {}): Part {
+  deform(lattice: Lattice, options: { tolerance?: number | null } = {}): Part {
     return lattice.apply(this, options)
   }
 
@@ -7945,7 +7970,9 @@ export class Part extends _Body {
   /** The closed lines where the part's surface turns from facing `direction` to facing away from
    * it (see `partingLine`). */
   partingLine(direction: Axis | VectorLike): ShapeList<Wire> {
-    return _partingLine(this, direction)
+    return scope(() => {
+      return _partingLine(this, direction)
+    })
   }
 
   /**
@@ -8132,7 +8159,7 @@ export class Part extends _Body {
       // the volume to the default accuracy: kept with the part for the next query
       vol = `volume=${_formatG(this._props().volume)}`
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       vol = 'not a closed solid'
     }
     const n = k.brep_face_count(this._brep)
@@ -8179,7 +8206,7 @@ export function _analyticRevolve<B extends Part | Shell>(b: number, cls: typeof 
   try {
     c = ext.analytic_revolutions(b)
   } catch (e) {
-    if (!_isRuntimeError(e)) throw e
+    if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
     return before
   }
   if (c === null || c === 0) return before
@@ -8191,7 +8218,7 @@ export function _analyticRevolve<B extends Part | Shell>(b: number, cls: typeof 
       if (after._solidProblem() !== null || !close(after.volume, (before as Part).volume)) return before
     } else if (!close((after as Shell).area, (before as Shell).area)) return before
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     return before
   }
   return after
@@ -8303,7 +8330,7 @@ function _roundVolumeBound(edges: readonly Edge[], sizes: readonly number[], sha
     try {
       theta = _radians(fs[0].normalAt(p).angleTo(fs[1].normalAt(p)))
     } catch (err) {
-      if (!(err instanceof KernelError || _isValueError(err))) throw err
+      if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
       return null
     }
     theta = Math.min(Math.max(theta, 1e-6), Math.PI - 1e-6)
@@ -8372,7 +8399,7 @@ function _continues(e: Edge, g: Edge, v: Vertex): boolean {
     ne = fe.map((f) => f.normalAt(p))
     ng = fg.map((f) => f.normalAt(p))
   } catch (err) {
-    if (err instanceof KernelError || _isValueError(err)) return false
+    if ((err instanceof KernelError || _isValueError(err)) && !_isCrash(err)) return false
     throw err
   }
   const t = _FILLET_TANGENT_DEG
@@ -8584,7 +8611,7 @@ function _islands(part: Part): Part[] {
     if (Number(k.brep_material_census(part._brep).solid_count) <= 1) return [part] // (cheap)
     groups = _solidGroups(part._brep)
   } catch (e) {
-    if (!_isRuntimeError(e)) throw e
+    if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
     return [part]
   }
   if (groups.length <= 1) return [part]
@@ -8601,7 +8628,7 @@ function _islands(part: Part): Part[] {
     part.dispose()
     return bodies
   } catch (e) {
-    if (!(e instanceof ModelingError)) throw e // (also a KernelError)
+    if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e) // (also a KernelError)
     return [part]
   }
 }
@@ -8660,7 +8687,7 @@ function _cellPoints(part: Part, solids: readonly (readonly Part[])[]): (Vector 
         const p = f.interiorPoint()
         return [p, f.normalAt(p)]
       } catch (e) {
-        if (!_isRuntimeError(e) && !(e instanceof RangeError)) throw e
+        if (!_isRuntimeError(e) && !(e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
         return null // a face the kernel cannot place a point on
       }
     }),
@@ -8787,14 +8814,14 @@ export function _mergeProblem(merged: Part, parts: Part[]): string | null {
   try {
     volumes = parts.map((p) => p._props().volume as number)
   } catch (e) {
-    if (e instanceof KernelError) return null // a part whose volume cannot be integrated (not refused before either)
+    if ((e instanceof KernelError) && !_isCrash(e)) return null // a part whose volume cannot be integrated (not refused before either)
     throw e
   }
   let whole: number
   try {
     whole = merged._props().volume
   } catch (e) {
-    if (e instanceof KernelError) return 'whose volume cannot be integrated'
+    if ((e instanceof KernelError) && !_isCrash(e)) return 'whose volume cannot be integrated'
     throw e
   }
   const largest = Math.max(...volumes)
@@ -8878,6 +8905,10 @@ function _roundCall<T>(operation: string, fn: () => T, hint: string): T {
   }
 }
 
+/** How much of the room between two edges that run alongside rounds may fill before their result's
+ * gaps are measured (see Part._checkVolumeChange). */
+const _NEAR_LIMIT = 0.9
+
 /**
  * `attempt(4)`, a fillet or chamfer as SM_API makes it, and where the kernel fails or its body is refused,
  * `attempt(1)`: its rounds' edges four times closer to the faces (in edge tolerances). Rounds close to the
@@ -8890,13 +8921,13 @@ function _withFinerRounds(attempt: (factor: number) => Part): Part {
   try {
     return attempt(4.0)
   } catch (first) {
-    if (!(first instanceof ModelingError)) throw first // (a KernelError is a ModelingError)
+    if (!(first instanceof ModelingError) || _isCrash(first)) throw _crashOf(first) // (a KernelError is a ModelingError)
     if (first instanceof KernelError && first.status === 'SM_ERR_INVALID_INPUT') throw first
     if ((first as Any).timedOut === true) throw first // (stopped after GUARD_SECONDS: the finer one would take as long)
     try {
       return attempt(1.0)
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       throw first
     }
   }
@@ -9052,7 +9083,7 @@ function _straightAround(face: Face, center: Vector, axis: Vector, start: Vector
       try {
         if (face.distanceTo(p) > near || face.normalAt(p).dot(n) < 1 - 1e-9) return false
       } catch (err) {
-        if (!(err instanceof KernelError || _isValueError(err))) throw err
+        if (!(err instanceof KernelError || _isValueError(err)) || _isCrash(err)) throw _crashOf(err)
         return false
       }
     }
@@ -9268,7 +9299,7 @@ function _sweptOnto(body: _Body, edges: readonly Edge[], d: Vector): Edge[] {
       out.push(...body.intersectionCurves(sweep))
     } catch (err) {
       // (the kernel's intersection fails where there is none)
-      if (!(err instanceof KernelError)) throw err
+      if (!(err instanceof KernelError) || _isCrash(err)) throw _crashOf(err)
       if (body.distanceTo(sweep) > 1e-7 * reach) continue
       throw err
     }
@@ -9781,7 +9812,7 @@ export class Sketch extends Shell {
           if (this._boolean2dPlausible(tools, result, op)) return result
         }
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       } finally {
         ha.dispose()
         hb.dispose()
@@ -9880,7 +9911,7 @@ export class Sketch extends Shell {
     try {
       return this._slabBoolean(other, op, name)
     } catch (e) {
-      if (e instanceof ModelingError && e.message.includes('empty')) return this._empty()
+      if ((e instanceof ModelingError && e.message.includes('empty')) && !_isCrash(e)) return this._empty()
       throw e
     }
   }
@@ -9970,7 +10001,7 @@ export class Sketch extends Shell {
       try {
         return fn()
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         throw wrong()
       }
     }
@@ -9997,7 +10028,7 @@ export class Sketch extends Shell {
       try {
         got = minus(measure([result]), want)
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         return false // a face of the result is broken: it does not hold
       }
       return Math.abs(got[0]) <= tol && Math.hypot(got[1], got[2], got[3]) <= tol * box.diagonal
@@ -10008,7 +10039,7 @@ export class Sketch extends Shell {
         try {
           result = way()
         } catch (e) {
-          if (!_isRuntimeError(e)) throw e // a KernelError, ModelingError or a kernel call that failed
+          if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e) // a KernelError, ModelingError or a kernel call that failed
           continue
         }
         if (holds(result, want)) return result
@@ -10028,7 +10059,7 @@ export class Sketch extends Shell {
       try {
         return first([joined], measure(kept))
       } catch (e) {
-        if (!(e instanceof ModelingError)) throw e
+        if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
         return this._combined(kept)
       }
     }
@@ -10165,23 +10196,25 @@ export class Sketch extends Shell {
    * moment), less the slab's own thickness term.
    */
   sectionProperties(): SectionProperties {
-    if (!this.faces().length) throw new RangeError('sectionProperties: the sketch is empty')
-    const pl = this._plane
-    const local = new Plane(pl.origin, pl.xDir, pl.zDir)
-    const flat = this.moved(local.location.inverse()) // the region in the plane's axes, on z = 0
-    const box = flat.bbox()
-    const h = 0.1 * Math.max(box.diagonal, 1e-9) // a slab thin against the region, thick enough to integrate
-    const mp = flat.extrude(h).massProperties()
-    const area = mp.volume / h
-    const c = mp.center
-    const i = mp.inertia
-    const slab = (area * h ** 3) / 12 // the slab's moment about the x and y axes through its middle
-    const ixx = (i[0][0] - slab) / h
-    const iyy = (i[1][1] - slab) / h
-    const ixy = -i[0][1] / h
-    const extent: [number, number, number, number] = [box.min.x - c.x, box.max.x - c.x, box.min.y - c.y, box.max.y - c.y]
-    const centroid = local.fromLocal([c.x, c.y, 0])
-    return new SectionProperties(area, new Plane(centroid, local.xDir, local.zDir), ixx, iyy, ixy, extent)
+    return scope(() => {
+      if (!this.faces().length) throw new RangeError('sectionProperties: the sketch is empty')
+      const pl = this._plane
+      const local = new Plane(pl.origin, pl.xDir, pl.zDir)
+      const flat = this.moved(local.location.inverse()) // the region in the plane's axes, on z = 0
+      const box = flat.bbox()
+      const h = 0.1 * Math.max(box.diagonal, 1e-9) // a slab thin against the region, thick enough to integrate
+      const mp = flat.extrude(h).massProperties()
+      const area = mp.volume / h
+      const c = mp.center
+      const i = mp.inertia
+      const slab = (area * h ** 3) / 12 // the slab's moment about the x and y axes through its middle
+      const ixx = (i[0][0] - slab) / h
+      const iyy = (i[1][1] - slab) / h
+      const ixy = -i[0][1] / h
+      const extent: [number, number, number, number] = [box.min.x - c.x, box.max.x - c.x, box.min.y - c.y, box.max.y - c.y]
+      const centroid = local.fromLocal([c.x, c.y, 0])
+      return new SectionProperties(area, new Plane(centroid, local.xDir, local.zDir), ixx, iyy, ixy, extent)
+    })
   }
 
   // -- 2D operations ------------------------------------------------------------------------
@@ -10239,7 +10272,7 @@ export class Sketch extends Shell {
           'the offset may collapse the region',
         )
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         if (!grow) continue
         throw e
       }
@@ -10445,7 +10478,7 @@ export class Sketch extends Shell {
     try {
       return straight.draft(walls, taper, new Plane(this._plane.origin, null, n))
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       return null
     }
   }
@@ -10604,7 +10637,9 @@ export class Sketch extends Shell {
    * the region drawn as for a lathe in the XZ plane, the outline a closed curve around the Z axis
    * parallel to XY, scaled at each height to pass through the region's outline on the +X side). */
   swing(outline: Sketch | Face | Wire | Edge): Part {
-    return _swing(this, outline) as Part
+    return scope(() => {
+      return _swing(this, outline) as Part
+    })
   }
 
   override toString(): string {

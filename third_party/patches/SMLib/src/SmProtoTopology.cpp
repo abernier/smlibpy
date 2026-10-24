@@ -53,6 +53,10 @@
 //   SmProtoTopologyManager::RemoveCoincidentNoEdgeProtoVertex deletes the ProtoVertex it takes out
 //   of the manager. Both were lost (curves of SmProtoTopologyManager::CreateProtoEdge in failed
 //   extended shells; about 1.5 kB in every mitered sweep along a planar path).
+//   (Close-out W found the same stale ProtoEdge independently: SplitIntersectingProtoEdges' combined
+//   ProtoEdge read in UpdateFaces, AddressSanitizer, the sweep along a closed spline with a kink on
+//   Linux x86_64, and in GetOverlappingPEGroup, the extended offset of a fused cone trapping in the
+//   WebAssembly build; sm_ReplaceProtoEdge above covers both lists, merged on 2026-10-23.)
 // The original notices follow unchanged.
 //
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

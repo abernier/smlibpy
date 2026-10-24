@@ -614,9 +614,10 @@ for step in steps * 8:
         print("failed", flush=True)
 """
     # The deleted ProtoEdge read in ResolveOverlappingProtoEdges (about 1 to 3 runs in 100) is patched
-    # (closeout K1); AddressSanitizer still reports a read past an array in sm_FixProblemsBySqueezing
-    # in these steps, depending on the memory layout (tools/sanitize/known.txt): one more run then. A
-    # crash in both runs is not that one.
+    # (closeout K1); a read that depends on the memory layout remains (third_party/patches/README.md,
+    # "Defects that remain": past a curve classification's points in FindInterval, from
+    # sm_FixProblemsBySqueezing, tools/sanitize/known.txt): one more run then. A crash in both runs is
+    # not that one.
     for _ in range(2):
         run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
         if run.returncode >= 0:

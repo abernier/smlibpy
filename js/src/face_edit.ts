@@ -12,7 +12,7 @@
 // outside and the solids inside its cavities' walls, each with the selected faces it has, and the
 // cavities are cut out of the edited outside again (`_withCavities`, also for drafts).
 
-import { ModelingError, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _crashOf, _isCrash, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
 import { Location, Vector, type VectorLike, _formatG, _isPointLike, _vec } from './geometry.ts'
 import { Face, type Part, _flattenFaces } from './shapes.ts'
 
@@ -269,7 +269,7 @@ function _pointsAndNormals(f: Face): [Vector, Vector][] {
       }
     }
   } catch (e) {
-    if (!(_isRuntimeError(e) || e instanceof RangeError)) throw e // a face the kernel cannot sample: its interior point only
+    if (!(_isRuntimeError(e) || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e) // a face the kernel cannot sample: its interior point only
   }
   const p = f.interiorPoint()
   out.push([p, f.normalAt(p)])

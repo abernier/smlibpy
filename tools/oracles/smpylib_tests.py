@@ -29,6 +29,17 @@ KNOWN = {
     "TestErrors::test_usd_partial_import_nonexistent": "calls sm.usd",
     "TestDiscoverability::test_module_docstring_lists_categories": "smlibpy's module spine has its own docstring",
     "TestDiscoverability::test_submodules_exist": "lists the usd submodule",
+    # (kernel plan C4) smlibpy lifts the spiral fitter's control-point cap (NL_CCPLIM) when it loads: the
+    # 120 turns this test expects to fail at a tolerance of 1e-6 are fitted within it (4.8e-7 off)
+    "TestCurves::test_create_helix_tolerance_is_enforced": "the helix cap is lifted: 120 turns at 1e-6 succeed",
+    # (kernel plan N6) smlibpy keeps the kernel's error reports in a trace of its own (ext.kernel_trace,
+    # KernelError.trace) in place of SmPyLib's trail: a RuntimeError of _core names the status and the
+    # binding, not the kernel's message ("standalone Surface", "positive, uniform scale factors") these
+    # tests look for in it
+    "TestTransforms::test_edge_owned_curve_transform_is_rejected_without_damaging_brep": "SmPyLib's trail",
+    "TestTransforms::test_face_owned_surface_transform_is_rejected_without_damaging_brep": "SmPyLib's trail",
+    "TestTransforms::test_analytic_surface_rejects_unsupported_scale_without_mutation": "SmPyLib's trail",
+    "TestTransforms::test_curve_transform_dispatch_and_analytic_scale_rejection": "SmPyLib's trail",
 }
 
 

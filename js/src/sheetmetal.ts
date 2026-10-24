@@ -17,7 +17,7 @@
 //
 // The kernel does the geometry (SMLib's space bend and unbend); see src/cpp/sheetmetal.cpp.
 
-import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import { Axis, BoundBox, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _mergedLines, _take, _typeName } from './shapes.ts'
 import { CenterArc, Line, ThreePointArc, _mod, _withOptions } from './curves.ts'
@@ -531,7 +531,7 @@ function _zoneMaterial(
   try {
     common = Part._wrap(part._runBoolean([region], k.BooleanOp.INTERSECTION, what))
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     throw _causedBy(
       new ModelingError(`${what}: the material in the bend zone cannot be measured; move the bend line a little (away from edges and features)`),
       e,
@@ -676,7 +676,7 @@ export function fold(part: Part, line: Axis | Edge, angle: number, options: Fold
         hint,
       )
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       if (e.detail.includes('no material')) {
         throw _causedBy(new ModelingError('bend: the bend line does not cross the sheet (there is no material in the bend zone)'), e)
       }
@@ -1209,7 +1209,7 @@ function _deformed(part: Part, spec: _Spec, ratio: [number, number], what: strin
   try {
     return _run(new _Plan(part, spec, ratio), what, part) as Part
   } catch (e) {
-    if (!(e instanceof ModelingError || e instanceof KernelError)) throw e
+    if (!(e instanceof ModelingError || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     throw new ModelingError(`${what}: unrolling a bend failed (${e.message}); ${hint}`)
   }
 }

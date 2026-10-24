@@ -154,12 +154,15 @@ the Python code works around a kernel defect, so does the TypeScript.
   `_triangleColors` (exporters.ts, usd.ts and render.ts color faces with them);
   `dxf.ts`: `_entity`, `_edgePoints`, `_samplesFor` (drawing.ts writes SVG with them);
   `drawing.ts`: `DrawingView` (dxf.ts writes views), `exportSvg` (exporters.ts); `draft.ts`:
-  `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`, `_smb` (surfaces.ts
-  blends surfaces in it), `_smbOf`, `_isolated` and `_isolatedValue` (shapes.ts runs shell,
-  offset, thicken, cells, opt-in Booleans and the fillets of imported parts in them), `_spill`
+  `_contour`, `_joinedArcs` (shapes.ts makes silhouettes with them); `defeature.ts`: `_guarded`,
+  `_dropBrep`, `_underDeadline` (surfaces.ts and shapes.ts free with the one, the tests hold a step
+  with the other), `_smb` (surfaces.ts blends surfaces in it), `_smbOf`, `_isolated` and
+  `_isolatedValue` (shapes.ts runs shell, offset, thicken, cells, opt-in Booleans and the fillets
+  of imported parts in them), `_spill`
   (its test); `shapes.ts`: `_carried` (defeature.ts sends the tags and face attributes of the bodies
   of a step with it); `kernel.ts`: `_reachable` (what `scope` keeps; the tests count with it),
-  `_crashCount` and `_crashError` (`Part._checked` stops at a crash of the kernel); `_errors.ts`:
+  `_crashCount` and `_crashError` (`Part._checked` stops at a crash of the kernel), `_isCrash` and
+  `_crashOf` (every fallback passes a crash on, see "Crashes of the kernel"); `_errors.ts`:
   `_crashes` (the crashes of this thread's kernel, which worker.ts reads without the kernel);
   `_inflate.ts`: `inflate` and `ZlibError` (font.ts reads WOFF tables, _brotli.ts its dictionary),
   `_Bits`, `_prefixCode`, `_single`, `_Output` (_brotli.ts decodes with them); `_brotli.ts`:
@@ -175,7 +178,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   bodies as `.smb`); here `_isolatedValue(what, work, job)` runs it in a probe worker
   (`_defeature_worker.ts`, a kernel of its own) on `.smb` copies, `job` saying which step
   (`op`) with which faces and edges (by index), and waits for it with `Atomics.wait` (Node, and
-  workers of a cross-origin isolated page; on a browser's main thread `work()` runs directly).
+  workers of a cross-origin isolated page; on a browser's main thread `work()` runs directly,
+  held to `GUARD_SECONDS` by the kernel's deadline: `_underDeadline(what, limit, work, drop)`,
+  Python's `smlibpy._guard.here(what, fn, *args)` where no other process runs the step; `drop` frees
+  what `work()` made when it returned after the deadline, which Python leaves to its garbage
+  collector, so each caller of `_isolatedValue` passes the `drop` of its result's bodies).
   The worker hands the step's value back through a SharedArrayBuffer, a piece at a time: JSON in
   which each body is `{ $body: i }`, then the bodies' `.smb` files; or the step's error (its name
   and message). A trap there is the crash of the copy. Neither side ever runs the step twice.
@@ -215,7 +222,13 @@ the Python code works around a kernel defect, so does the TypeScript.
   KernelError says "the kernel crashed". Code that retries on a KernelError stops when the count went
   up during the attempt (`_crashCount()`), and a step run here with `_isolatedValue(..., { trap:
   true })` throws a `_KernelFault` whose `here` is true, which the defeaturing loops pass on rather
-  than drop. Python has nothing to port: a crash ends its process, or the copy of it.
+  than drop. Every other `catch` that falls back on another kernel call, or takes a kernel failure
+  for an answer (`null`, "no hit", the next face), passes a crash on first: `if (!(e instanceof
+  KernelError) || _isCrash(e)) throw _crashOf(e)`. `_isCrash(e)` is true for a trap, an error caused
+  by one, and any error in the rest of the task of the event loop a crash happened in (an error a
+  check turned into another one keeps no link to the trap); `_crashOf` makes the KernelError of a
+  trap that no `kernelCall` wrapped. Python has nothing to port: a crash ends its process, or the
+  copy of it.
 - **Python only.** The kernel lock and the GIL (src/cpp/kernel_lock.cpp, nogil.cpp): every entry
   point of `_core` takes one lock and the long ones let the GIL go, so that other Python threads
   run while the kernel works. The WebAssembly module runs on one thread (a `KernelWorker` has a
@@ -229,8 +242,11 @@ the Python code works around a kernel defect, so does the TypeScript.
   their last reference). They follow the house style but have no smlibpy counterpart and no entry
   in `_options.ts`. The port's own temporaries are freed the same way: the public functions that
   make intermediate bodies or curves (Booleans, `split`, `cells`, the sketch constructors, `Text`,
-  `sweep`, `loft`, `revolve`, `fromDxf`, `stitch`, `flatPattern`, `surfaceFillet`) run their
-  bodies in `scope`, so a call leaves only what it returns, as in Python.
+  `sweep`, `loft`, `revolve`, `fromDxf`, `stitch`, `flatPattern`, `surfaceFillet`, the primitives,
+  `Sketch.revolve`, `Sketch.extrude`, `swing`, `thicken`, `fill`, `fold`, `flange`, `unfold`,
+  `outline`, `silhouette`, `partingLine`, `Face.wrap`, `Face.extrude`/`offset`/`flipped`/`split`,
+  `Edge.through`, `drawingViews`, `sectionProperties`) run their bodies in `scope`, so a call
+  leaves only what it returns, as in Python; js/test/closeout_W.test.ts counts them.
 
 ## Status
 

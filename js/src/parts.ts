@@ -3,7 +3,7 @@
 // Primitives are centered on the origin by default; `align` changes that per axis. Hole tools
 // point down (-Z) from the origin so that `part.cut(Hole(...).on(face))` drills into the face.
 
-import { _opts, k, kernelCall } from './kernel.ts'
+import { _opts, k, kernelCall, scope } from './kernel.ts'
 import { Align, type AlignLike, alignmentOffset } from './align.ts'
 import { Plane, Z, _radians } from './geometry.ts'
 import { Line, ThreePointArc } from './curves.ts'
@@ -33,10 +33,12 @@ function _align(options: { align?: AlignLike }): AlignLike | undefined {
 
 /** A box of `length` (X) by `width` (Y) by `height` (Z). */
 export function Box(length: number, width: number, height: number, options: { align?: AlignLike } = {}): Part {
-  _opts('Box', options, arguments.length)
-  if (Math.min(length, width, height) <= 0) throw new RangeError('box dimensions must be positive')
-  const b = kernelCall('Box', () => k.create_box([-length / 2, -width / 2, -height / 2], Number(length), Number(width), Number(height)))
-  return _aligned(Part._wrap(b), options.align ?? Align.CENTER)
+  return scope(() => {
+    _opts('Box', options, arguments.length)
+    if (Math.min(length, width, height) <= 0) throw new RangeError('box dimensions must be positive')
+    const b = kernelCall('Box', () => k.create_box([-length / 2, -width / 2, -height / 2], Number(length), Number(width), Number(height)))
+    return _aligned(Part._wrap(b), options.align ?? Align.CENTER)
+  })
 }
 
 /**
@@ -48,15 +50,17 @@ export function Box(length: number, width: number, height: number, options: { al
  * centered cylinder).
  */
 export function Cylinder(radius: number, height: number, options: { arcSize?: number; align?: AlignLike } = {}): Part {
-  _opts('Cylinder', options, arguments.length)
-  if (radius <= 0 || height <= 0) throw new RangeError('radius and height must be positive')
-  const a = _arc(options.arcSize ?? 360, 'Cylinder')
-  const b = kernelCall('Cylinder', () =>
-    a === null
-      ? k.create_cylinder([0, 0, -height / 2], Number(radius), Number(height))
-      : k.create_partial_cylinder([0, 0, -height / 2], Number(radius), Number(height), 0, a),
-  )
-  return _aligned(Part._wrap(b), _align(options), a !== null)
+  return scope(() => {
+    _opts('Cylinder', options, arguments.length)
+    if (radius <= 0 || height <= 0) throw new RangeError('radius and height must be positive')
+    const a = _arc(options.arcSize ?? 360, 'Cylinder')
+    const b = kernelCall('Cylinder', () =>
+      a === null
+        ? k.create_cylinder([0, 0, -height / 2], Number(radius), Number(height))
+        : k.create_partial_cylinder([0, 0, -height / 2], Number(radius), Number(height), 0, a),
+    )
+    return _aligned(Part._wrap(b), _align(options), a !== null)
+  })
 }
 
 /** A cone (or frustum) along Z; one of the radii may be zero. `arcSize` makes a sector, as for
@@ -67,15 +71,17 @@ export function Cone(
   height: number,
   options: { arcSize?: number; align?: AlignLike } = {},
 ): Part {
-  _opts('Cone', options, arguments.length)
-  if (height <= 0 || bottomRadius < 0 || topRadius < 0 || (bottomRadius === 0 && topRadius === 0)) throw new RangeError('invalid cone dimensions')
-  const a = _arc(options.arcSize ?? 360, 'Cone')
-  const b = kernelCall('Cone', () =>
-    a === null
-      ? k.create_cone([0, 0, -height / 2], Number(bottomRadius), Number(topRadius), Number(height))
-      : k.create_partial_cone([0, 0, -height / 2], Number(bottomRadius), Number(topRadius), Number(height), 0, a),
-  )
-  return _aligned(Part._wrap(b), _align(options), a !== null)
+  return scope(() => {
+    _opts('Cone', options, arguments.length)
+    if (height <= 0 || bottomRadius < 0 || topRadius < 0 || (bottomRadius === 0 && topRadius === 0)) throw new RangeError('invalid cone dimensions')
+    const a = _arc(options.arcSize ?? 360, 'Cone')
+    const b = kernelCall('Cone', () =>
+      a === null
+        ? k.create_cone([0, 0, -height / 2], Number(bottomRadius), Number(topRadius), Number(height))
+        : k.create_partial_cone([0, 0, -height / 2], Number(bottomRadius), Number(topRadius), Number(height), 0, a),
+    )
+    return _aligned(Part._wrap(b), _align(options), a !== null)
+  })
 }
 
 /**
@@ -91,19 +97,21 @@ export function Sphere(
   radius: number,
   options: { arcSize1?: number; arcSize2?: number; arcSize3?: number; align?: AlignLike } = {},
 ): Part {
-  _opts('Sphere', options, arguments.length)
-  if (radius <= 0) throw new RangeError('radius must be positive')
-  const lo = Number(options.arcSize1 ?? -90)
-  const hi = Number(options.arcSize2 ?? 90)
-  if (!(-90 <= lo && lo < hi && hi <= 90)) {
-    throw new RangeError(`Sphere: need -90 <= arcSize1 < arcSize2 <= 90 (latitudes in degrees), got ${options.arcSize1 ?? -90} and ${options.arcSize2 ?? 90}`)
-  }
-  const a = _arc(options.arcSize3 ?? 360, 'Sphere', 'arcSize3')
-  if (lo > -90 || hi < 90) return _aligned(_zone(Number(radius), lo, hi, a), _align(options), true)
-  const b = kernelCall('Sphere', () =>
-    a === null ? k.create_sphere([0, 0, 0], Number(radius)) : k.create_partial_sphere([0, 0, 0], Number(radius), 0, a),
-  )
-  return _aligned(Part._wrap(b), _align(options), a !== null)
+  return scope(() => {
+    _opts('Sphere', options, arguments.length)
+    if (radius <= 0) throw new RangeError('radius must be positive')
+    const lo = Number(options.arcSize1 ?? -90)
+    const hi = Number(options.arcSize2 ?? 90)
+    if (!(-90 <= lo && lo < hi && hi <= 90)) {
+      throw new RangeError(`Sphere: need -90 <= arcSize1 < arcSize2 <= 90 (latitudes in degrees), got ${options.arcSize1 ?? -90} and ${options.arcSize2 ?? 90}`)
+    }
+    const a = _arc(options.arcSize3 ?? 360, 'Sphere', 'arcSize3')
+    if (lo > -90 || hi < 90) return _aligned(_zone(Number(radius), lo, hi, a), _align(options), true)
+    const b = kernelCall('Sphere', () =>
+      a === null ? k.create_sphere([0, 0, 0], Number(radius)) : k.create_partial_sphere([0, 0, 0], Number(radius), 0, a),
+    )
+    return _aligned(Part._wrap(b), _align(options), a !== null)
+  })
 }
 
 /** The part of a sphere between two latitudes (degrees), over `arc` of longitude (null: all of it):
@@ -142,25 +150,28 @@ export function Torus(
   minorRadius: number,
   options: { minorStartAngle?: number; minorEndAngle?: number; majorAngle?: number; align?: AlignLike } = {},
 ): Part {
-  _opts('Torus', options, arguments.length)
-  if (minorRadius <= 0 || majorRadius <= minorRadius) throw new RangeError('need 0 < minorRadius < majorRadius')
-  const a = _arc(options.majorAngle ?? 360, 'Torus', 'majorAngle')
-  const lo = Number(options.minorStartAngle ?? 0)
-  const hi = Number(options.minorEndAngle ?? 360)
-  if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi - lo > 0 && hi - lo <= 360 + 1e-9)) {
-    throw new RangeError(
-      `Torus: minorEndAngle must lie more than 0 and at most 360 degrees past minorStartAngle, got ${options.minorStartAngle} and ${options.minorEndAngle}`,
-    )
-  }
-  const whole = hi - lo > 360 - WHOLE_TURN
-  if (a !== null || !whole) {
-    // (the kernel's partial torus is a surface of revolution; the revolve gives a torus)
-    const section = whole ? Circle(Number(minorRadius)) : _slice(Number(minorRadius), lo, hi)
-    const part = section.translate(Number(majorRadius), 0).on(Plane.XZ).revolve(Z, a ?? 360)
-    return _aligned(part, _align(options), true)
-  }
-  const b = kernelCall('Torus', () => k.create_torus([0, 0, 0], Number(majorRadius), Number(minorRadius)))
-  return _aligned(Part._wrap(b), _align(options))
+  // (in a scope: the section and sketch of a sector or slice are freed at once, kernel plan W9)
+  return scope(() => {
+    _opts('Torus', options, arguments.length)
+    if (minorRadius <= 0 || majorRadius <= minorRadius) throw new RangeError('need 0 < minorRadius < majorRadius')
+    const a = _arc(options.majorAngle ?? 360, 'Torus', 'majorAngle')
+    const lo = Number(options.minorStartAngle ?? 0)
+    const hi = Number(options.minorEndAngle ?? 360)
+    if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi - lo > 0 && hi - lo <= 360 + 1e-9)) {
+      throw new RangeError(
+        `Torus: minorEndAngle must lie more than 0 and at most 360 degrees past minorStartAngle, got ${options.minorStartAngle} and ${options.minorEndAngle}`,
+      )
+    }
+    const whole = hi - lo > 360 - WHOLE_TURN
+    if (a !== null || !whole) {
+      // (the kernel's partial torus is a surface of revolution; the revolve gives a torus)
+      const section = whole ? Circle(Number(minorRadius)) : _slice(Number(minorRadius), lo, hi)
+      const part = section.translate(Number(majorRadius), 0).on(Plane.XZ).revolve(Z, a ?? 360)
+      return _aligned(part, _align(options), true)
+    }
+    const b = kernelCall('Torus', () => k.create_torus([0, 0, 0], Number(majorRadius), Number(minorRadius)))
+    return _aligned(Part._wrap(b), _align(options))
+  })
 }
 
 /** The slice of a circle about the origin from angle `lo` to `hi` (degrees, counter-clockwise from +X),
@@ -174,28 +185,33 @@ function _slice(radius: number, lo: number, hi: number) {
 /** A pyramid: a `length` (X) by `width` (Y) rectangle at the bottom, its apex `height` (Z) above the
  * rectangle's center; five planes. Centered by its bounding box. */
 export function Pyramid(length: number, width: number, height: number, options: { align?: AlignLike } = {}): Part {
-  _opts('Pyramid', options, arguments.length)
-  if (!(length > 0 && width > 0 && height > 0)) throw new RangeError('pyramid length, width and height must be positive')
-  const b = kernelCall('Pyramid', () => k.create_pyramid([0, 0, -height / 2], Number(length), Number(height)))
-  let part = Part._wrap(b)
-  if (width !== length) part = part.scale([1, Number(width) / Number(length), 1])
-  return _aligned(part, options.align ?? Align.CENTER)
+  // (in a scope: the square pyramid scaled to the width is freed at once, kernel plan W9)
+  return scope(() => {
+    _opts('Pyramid', options, arguments.length)
+    if (!(length > 0 && width > 0 && height > 0)) throw new RangeError('pyramid length, width and height must be positive')
+    const b = kernelCall('Pyramid', () => k.create_pyramid([0, 0, -height / 2], Number(length), Number(height)))
+    let part = Part._wrap(b)
+    if (width !== length) part = part.scale([1, Number(width) / Number(length), 1])
+    return _aligned(part, options.align ?? Align.CENTER)
+  })
 }
 
 /** A ramp: a `length` (X) by `width` (Y) base whose high side, `height` tall, is the face at
  * x = -length/2; the slope runs down towards +X. `topLength` gives a flat top of that length,
  * measured from the -X end. */
 export function Wedge(length: number, width: number, height: number, topLength = 0, options: { align?: AlignLike } = {}): Part {
-  _opts('Wedge', options, arguments.length)
-  if (!(length > 0 && width > 0 && height > 0)) throw new RangeError('wedge length, width and height must be positive')
-  if (!(topLength >= 0 && topLength < length)) throw new RangeError('wedge topLength must be at least 0 and less than the length')
-  const pts: [number, number][] =
-    topLength > 0
-      ? [[-length / 2, 0], [length / 2, 0], [-length / 2 + topLength, height], [-length / 2, height]]
-      : [[-length / 2, 0], [length / 2, 0], [-length / 2, height]]
-  const profile = Polygon(...pts).on(Plane.XZ)
-  const part = profile.extrude(width / 2, { both: true }).translate(0, 0, -height / 2)
-  return _aligned(part, options.align ?? Align.CENTER)
+  return scope(() => {
+    _opts('Wedge', options, arguments.length)
+    if (!(length > 0 && width > 0 && height > 0)) throw new RangeError('wedge length, width and height must be positive')
+    if (!(topLength >= 0 && topLength < length)) throw new RangeError('wedge topLength must be at least 0 and less than the length')
+    const pts: [number, number][] =
+      topLength > 0
+        ? [[-length / 2, 0], [length / 2, 0], [-length / 2 + topLength, height], [-length / 2, height]]
+        : [[-length / 2, 0], [length / 2, 0], [-length / 2, height]]
+    const profile = Polygon(...pts).on(Plane.XZ)
+    const part = profile.extrude(width / 2, { both: true }).translate(0, 0, -height / 2)
+    return _aligned(part, options.align ?? Align.CENTER)
+  })
 }
 
 /** A sector of a tube along Z: between `innerRadius` and `outerRadius` from the Z axis, `height`
@@ -209,32 +225,40 @@ export function AnnularSector(
   arcSize: number,
   options: { align?: AlignLike } = {},
 ): Part {
-  _opts('AnnularSector', options, arguments.length)
-  if (!(innerRadius >= 0 && innerRadius < outerRadius && height > 0)) {
-    throw new RangeError('AnnularSector: need 0 <= innerRadius < outerRadius and a positive height')
-  }
-  const a = _arc(arcSize, 'AnnularSector')
-  if (innerRadius === 0) return Cylinder(outerRadius, height, { arcSize, align: options.align })
-  // The section revolved (cylinders and planes). The kernel's cylindrical box makes the same body, but
-  // does not return for a whole turn, and its cylinders (SmCylinder) go to STEP files as B-splines.
-  const h = height / 2
-  const section = Polygon([innerRadius, -h], [outerRadius, -h], [outerRadius, h], [innerRadius, h]).on(Plane.XZ)
-  return _aligned(section.revolve(Z, a ?? 360), _align(options), a !== null)
+  return scope(() => {
+    _opts('AnnularSector', options, arguments.length)
+    if (!(innerRadius >= 0 && innerRadius < outerRadius && height > 0)) {
+      throw new RangeError('AnnularSector: need 0 <= innerRadius < outerRadius and a positive height')
+    }
+    const a = _arc(arcSize, 'AnnularSector')
+    if (innerRadius === 0) return Cylinder(outerRadius, height, { arcSize, align: options.align })
+    // The section revolved (cylinders and planes). The kernel's cylindrical box makes the same body, but
+    // does not return for a whole turn, and its cylinders (SmCylinder) go to STEP files as B-splines.
+    const h = height / 2
+    const section = Polygon([innerRadius, -h], [outerRadius, -h], [outerRadius, h], [innerRadius, h]).on(Plane.XZ)
+    return _aligned(section.revolve(Z, a ?? 360), _align(options), a !== null)
+  })
 }
 
 /** A drilling tool: a cylinder from the origin down to `-depth`. */
 export function Hole(radius: number, depth: number): Part {
-  return Cylinder(radius, depth, { align: [Align.CENTER, Align.CENTER, Align.MAX] })
+  return scope(() => {
+    return Cylinder(radius, depth, { align: [Align.CENTER, Align.CENTER, Align.MAX] })
+  })
 }
 
 /** A drilling tool with a counterbore at the top. */
 export function CounterBoreHole(radius: number, counterBoreRadius: number, counterBoreDepth: number, depth: number): Part {
-  return Hole(radius, depth).fuse(Hole(counterBoreRadius, counterBoreDepth))
+  return scope(() => {
+    return Hole(radius, depth).fuse(Hole(counterBoreRadius, counterBoreDepth))
+  })
 }
 
 /** A drilling tool with a conical countersink of included `angle` at the top. */
 export function CounterSinkHole(radius: number, counterSinkRadius: number, depth: number, angle = 82): Part {
-  const h = (counterSinkRadius - radius) / Math.tan(_radians(angle / 2))
-  const sink = Cone(radius, counterSinkRadius, h, { align: [Align.CENTER, Align.CENTER, Align.MAX] })
-  return Hole(radius, depth).fuse(sink)
+  return scope(() => {
+    const h = (counterSinkRadius - radius) / Math.tan(_radians(angle / 2))
+    const sink = Cone(radius, counterSinkRadius, h, { align: [Align.CENTER, Align.CENTER, Align.MAX] })
+    return Hole(radius, depth).fuse(sink)
+  })
 }

@@ -20,7 +20,10 @@ Two ways to get the other process (``smlibpy.defeature.GUARD_PROCESS``):
 
 ``"auto"`` (the default) forks where the system can, and uses the helper elsewhere. Where neither
 works (a frozen application, a helper that does not start), and with ``GUARD_SECONDS = 0``, the
-step runs in this process.
+step runs in this process. There, the kernel's deadline (``ext.set_deadline``) still holds a step to
+``GUARD_SECONDS`` where it spends its time in the kernel's surface and topology intersections (as
+the steps that were found running for minutes do): those loops give up, and the step is a
+``_KernelFault`` as one that ran too long in another process. A crash still ends this process.
 """
 
 from __future__ import annotations
@@ -97,7 +100,41 @@ def isolated(what: str, fn: Callable[..., R], *args: Any) -> R:
         helper = _helper()
         if helper is not None:
             return helper.call(what, fn, args, limit)
-    return fn(*args)
+    return here(what, fn, *args)
+
+
+_in_deadline = threading.local()  # (whether this thread runs a step under the kernel's deadline)
+
+
+def here(what: str, fn: Callable[..., R], *args: Any) -> R:
+    """``fn(*args)`` in this process, held to ``GUARD_SECONDS`` by the kernel's deadline
+    (``ext.set_deadline``) where no other process runs it: past it, the long loops of the kernel's
+    surface and topology intersections give up (the step fails as a failed step does), and the step
+    is a _KernelFault, as one that did not finish in another process. A step that spends its time
+    elsewhere in the kernel is not stopped. Inside another such step, that step's deadline holds."""
+    limit = _settings()[0]
+    if not limit > 0 or getattr(_in_deadline, "on", False):
+        return fn(*args)
+    _in_deadline.on = True
+    ext.set_deadline(limit)
+    try:
+        try:
+            result = fn(*args)
+        except BaseException as e:
+            if ext.deadline_passed() and not isinstance(e, (_KernelFault, KeyboardInterrupt)):
+                raise _timed_out(what, limit) from None
+            raise
+        if ext.deadline_passed():  # (made after a loop gave up: the step did not finish as it would)
+            raise _timed_out(what, limit)
+        return result
+    finally:
+        ext.set_deadline(0)
+        _in_deadline.on = False
+
+
+def _timed_out(what: str, limit: float) -> _KernelFault:
+    return _KernelFault(what, f"the kernel did not finish within {limit:g} s",
+                        "smlibpy.defeature.GUARD_SECONDS sets the limit")
 
 
 # =============================================================================

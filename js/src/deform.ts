@@ -37,7 +37,7 @@
 // The maps are the kernel's volume deformations (SmTwistVolume, SmBendVolume, SmUnbendVolume,
 // SmTransform) and a Bezier volume for lattices and tapers.
 
-import { BrepHandle, KernelError, ModelingError, _opts, ext, k, kernelCall, scope } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, ext, k, kernelCall, scope } from './kernel.ts'
 import {
   TOLERANCE,
   Axis,
@@ -434,7 +434,7 @@ export function _run(plan: _Plan<_Input>, what: string, source: _Input): Any {
       try {
         volume = result._quickVolume() // a check with a margin of 1e-3
       } catch (e) {
-        if (!(e instanceof KernelError)) throw e
+        if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
         volume = Number.NaN
       }
       problem = result._solidProblem(volume)
@@ -494,7 +494,7 @@ function _volumeProblem(source: Part, volume: number, ratio: [number, number]): 
   try {
     v0 = source._quickVolume()
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     return null
   }
   const [lo, hi] = ratio
