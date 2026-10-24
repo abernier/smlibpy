@@ -209,6 +209,19 @@ def test_lofts_along_rails_pass_through_them():
         loft(kinked, rails=[Polyline((0, 0, 0), (-2, 0, 10), (0, 0, 20)), Line((10, 0, 0), (10, 0, 20))])
 
 
+def test_lofts_along_rails_that_spread_the_sections_unevenly():
+    # The second rail rises over a hump near its start: along its length it spreads the sections
+    # unevenly where the straight first one spreads them evenly. Every curve is smooth, yet the
+    # curves fitted to cross at common parameters ran along the rails ahead of and behind their
+    # points there (the straight rail by 0.003, all of it a slide along the line), which was taken
+    # for "a corner".
+    z = lambda x: 300 * math.exp(-((x - 200) / 80) ** 2)  # noqa: E731
+    secs = [Spline((x, 0, 0), (x, 100, z(x) / 2 + 30), (x, 200, z(x))) for x in np.linspace(0, 1000, 27)]
+    r1, r2 = Spline(*(s.start for s in secs)), Spline(*(s.end for s in secs))
+    f = loft(secs, rails=[r1, r2]).faces()[0]
+    assert all(_off(f, e) < 1e-5 for e in [r1, r2] + secs[::5])
+
+
 def test_sweeps_along_two_rails_keep_the_profile_on_both():
     left = Spline((0, 0, 0), (2, 15, 1), (0, 30, 0))
     right = Spline((20, 0, 0), (26, 15, 3), (22, 30, 0))

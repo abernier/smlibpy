@@ -391,37 +391,85 @@ _NETWORK_FIT = 1e-8
 _NETWORK_OFF = 1e-6
 
 
+def _sample_spacing(maps: list[Callable[[float], float]], marks: list[list[float]],
+                    targets: list[float]) -> tuple[float, Callable[[float], float]]:
+    """Where to fit curves that run along their edges as ``maps`` say (parameter -> fraction of the
+    length): how many more points than evenly spaced ones that takes, and the parameter at a fraction of
+    them, spaced by the steepest map's slope, so that no edge gets its points further apart along its
+    length than evenly spaced ones would be. (Edges that spread the targets differently along their
+    lengths run faster than evenly in places: even spacing left those parts too few points.)"""
+    if all(m == t for mk in marks for m, t in zip(mk, targets)):
+        return 1.0, lambda u: u
+    g = np.linspace(0.0, 1.0, 1025)
+    slope = np.max([np.gradient(np.array([f(t) for t in g]), g) for f in maps], axis=0)
+    slope = np.maximum(slope, 1e-3)
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (slope[1:] + slope[:-1]) * np.diff(g))])
+    return float(cum[-1]), lambda u: float(np.interp(u, cum / cum[-1], g))
+
+
+def _sample_params(count: int, targets: list[float], at: Callable[[float], float]) -> list[float]:
+    """``count + 1`` parameters from 0 to 1 (``at`` of evenly spaced fractions) with the targets among
+    them, so that the curves fitted through them cross exactly there; one closer to a target than a
+    quarter of its spacing gives way to it."""
+    inner = np.array(sorted(t for t in targets if 0.0 < t < 1.0))
+    ts = [at(i / count) for i in range(count + 1)]
+    keep = [ts[0], ts[-1]]
+    for i in range(1, count):
+        if inner.size:
+            k = int(np.searchsorted(inner, ts[i]))
+            near = min(abs(ts[i] - inner[j]) for j in (k - 1, k) if 0 <= j < inner.size)
+            if near <= 0.25 * min(ts[i] - ts[i - 1], ts[i + 1] - ts[i]):
+                continue
+        keep.append(ts[i])
+    return sorted(set(keep) | {float(t) for t in inner})
+
+
 def _reparametrized(edges: list[Edge], marks: list[list[float]], targets: list[float], size: float,
                     what: str) -> list[Any]:
     """Cubic B-splines (kernel curves, parameters 0 to 1, one knot vector for all) along the edges, each
     at its edge's fraction ``marks[e][k]`` of its length at the parameter ``targets[k]`` (both
     increasing, from 0 to 1), smoothly between (a monotone cubic of the parameter): fitted through
-    points at common parameters, more of them until each is within 1e-8 of ``size`` of its edge
-    (ModelingError where 512 leave one more than 1e-6 of it off: a corner)."""
+    points at common parameters, the targets among them (:func:`_sample_params`) and spaced so that no
+    edge has them further apart along its length than evenly (:func:`_sample_spacing`), more of them
+    until each curve is within 1e-8 of ``size`` of its edge (ModelingError where 512 per edge leave one
+    more than 1e-6 of it off: a corner). Off the edge, not off its point at that parameter: a curve
+    that runs along its edge a little ahead of or behind the map between the targets is not off it
+    (where the edges spread the targets differently, the maps bend, and only that was off)."""
     from .curves import _basis
     from .shapes import _canonical_curve
 
     maps = [_monotone_cubic(list(zip(targets, m))) for m in marks]  # (parameter -> fraction)
+    spread, at = _sample_spacing(maps, marks, targets)
     n = 32
     while True:
-        ts = [i / n for i in range(n + 1)]
+        ts = _sample_params(math.ceil(n * spread - 1e-9), targets, at)
         knots = np.array([0.0] * 4 + [sum(ts[j + 1:j + 4]) / 3 for j in range(len(ts) - 4)] + [1.0] * 4)
         a = np.array([_basis(knots, 3, t) for t in ts])
-        mids = [np.array(_basis(knots, 3, 0.5 * (ts[k_] + ts[k_ + 1]))) for k_ in range(n)]
+        mids = [(0.5 * (ts[k_] + ts[k_ + 1]), np.array(_basis(knots, 3, 0.5 * (ts[k_] + ts[k_ + 1]))))
+                for k_ in range(len(ts) - 1)]
         poles, worst = [], 0.0
         for e, f in zip(edges, maps):
             q = np.array([e.point_at(min(1.0, max(0.0, f(t)))).to_tuple() for t in ts])
             p = np.linalg.solve(a, q)
             poles.append(p)
-            for k_ in range(n):
-                g = min(1.0, max(0.0, f(0.5 * (ts[k_] + ts[k_ + 1]))))
-                worst = max(worst, float(np.linalg.norm(mids[k_] @ p - np.array(e.point_at(g).to_tuple()))))
+            length = None
+            for t, b in mids:
+                g = min(1.0, max(0.0, f(t)))
+                pt = b @ p
+                d = pt - np.array(e.point_at(g).to_tuple())
+                off = float(np.linalg.norm(d))
+                if off > _NETWORK_FIT * size:  # how far off the edge: one step along it, towards the curve
+                    length = e.length if length is None else length
+                    g = min(1.0, max(0.0, g + float(d @ np.array(e.tangent_at(g).to_tuple())) / length))
+                    off = float(np.linalg.norm(pt - np.array(e.point_at(g).to_tuple())))
+                worst = max(worst, off)
         if worst <= _NETWORK_FIT * size or n >= 512:
             break
         n *= 2
     if worst > _NETWORK_OFF * size:
         raise ModelingError(f"{what}: the sections and rails must be smooth curves; a smooth curve stays "
-                            f"{worst:.3g} off one of them (a corner: loft the parts between corners on their own)")
+                            f"{worst:.3g} off one of them (a corner, or a bend too sharp to follow: loft the "
+                            "parts on either side of it on their own)")
     out: list[Any] = []
     with kernel_call(what):
         try:

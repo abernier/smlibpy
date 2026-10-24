@@ -277,6 +277,19 @@ test('lofts along rails pass through them', () => {
   )
 })
 
+test('lofts along rails that spread the sections unevenly', () => {
+  // The second rail rises over a hump near its start: along its length it spreads the sections
+  // unevenly where the straight first one spreads them evenly. Every curve is smooth, yet the curves
+  // fitted to cross at common parameters ran along the rails ahead of and behind their points there
+  // (the straight rail by 0.003, all of it a slide along the line), which was taken for "a corner".
+  const z = (x: number): number => 300 * Math.exp(-(((x - 200) / 80) ** 2))
+  const secs = Array.from({ length: 27 }, (_, i) => (1000 * i) / 26).map((x) => Spline([x, 0, 0], [x, 100, z(x) / 2 + 30], [x, 200, z(x)]))
+  const r1 = Spline(...secs.map((s) => s.start))
+  const r2 = Spline(...secs.map((s) => s.end))
+  const f = (loft(secs, { rails: [r1, r2] }) as Shell).faces()[0]
+  for (const e of [r1, r2, ...secs.filter((_, i) => i % 5 === 0)]) assert.ok(off(f, e) < 1e-5)
+})
+
 test('sweeps along two rails keep the profile on both', () => {
   const left = Spline([0, 0, 0], [2, 15, 1], [0, 30, 0])
   const right = Spline([20, 0, 0], [26, 15, 3], [22, 30, 0])

@@ -1592,7 +1592,11 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   (S10).
 - `loft(sections, rails=...)` for open sections and `sweep(profile, path, rails=rail)` for an open
   profile from the path to a second rail: surfaces through sections and rails exactly (Gordon
-  surfaces, `ext.gordon`; the swept profile within 1e-6 of the size) (S10).
+  surfaces, `ext.gordon`; the swept profile within 1e-6 of the size) (S10). The sections cross the
+  rails at the same parameters exactly, and the rails may spread the sections differently along
+  their lengths (one rising over a hump where the other runs straight, a fender's skirt dropping
+  lower than its inner side); a corner, or a bend too sharp for a smooth curve to follow, is
+  refused.
 - `extrude(..., corners="sharp" | "round")`: tapers with plane walls, or with rounded corners (S9).
 - Revolves give cylinders, cones, spheres and tori (S4); single line and arc sweeps give planes,
   cylinders, cones and tori, and extrusions along a direction across the normal planes for straight

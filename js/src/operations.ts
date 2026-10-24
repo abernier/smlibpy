@@ -406,25 +406,97 @@ function _crossedAt(a: Edge, b: Edge, tol: number, what: string): number {
 const NETWORK_FIT = 1e-8
 const NETWORK_OFF = 1e-6
 
+/** Where to fit curves that run along their edges as `maps` say (parameter -> fraction of the length):
+ * how many more points than evenly spaced ones that takes, and the parameter at a fraction of them,
+ * spaced by the steepest map's slope, so that no edge gets its points further apart along its length
+ * than evenly spaced ones would be. (Edges that spread the targets differently along their lengths run
+ * faster than evenly in places: even spacing left those parts too few points.) */
+function _sampleSpacing(maps: readonly ((s: number) => number)[], marks: readonly (readonly number[])[], targets: readonly number[]): [number, (u: number) => number] {
+  if (marks.every((mk) => mk.every((m, i) => m === targets[i]))) return [1, (u) => u]
+  const N = 1024
+  const g = Array.from({ length: N + 1 }, (_, i) => i / N)
+  const slope = new Array<number>(N + 1).fill(-Infinity)
+  for (const f of maps) {
+    const v = g.map((t) => f(t))
+    for (let i = 0; i <= N; i++) {
+      // (numpy.gradient: one-sided at the ends, central between)
+      const d = i === 0 ? (v[1] - v[0]) / (g[1] - g[0]) : i === N ? (v[N] - v[N - 1]) / (g[N] - g[N - 1]) : (v[i + 1] - v[i - 1]) / (g[i + 1] - g[i - 1])
+      slope[i] = Math.max(slope[i], d)
+    }
+  }
+  for (let i = 0; i <= N; i++) slope[i] = Math.max(slope[i], 1e-3)
+  const cum = [0]
+  for (let i = 1; i <= N; i++) cum.push(cum[i - 1] + 0.5 * (slope[i] + slope[i - 1]) * (g[i] - g[i - 1]))
+  const total = cum[N]
+  const frac = cum.map((c) => c / total)
+  const at = (u: number): number => {
+    // (numpy.interp of u over frac -> g)
+    if (u <= frac[0]) return g[0]
+    if (u >= frac[N]) return g[N]
+    let lo = 0
+    let hi = N
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1
+      if (frac[mid] <= u) lo = mid
+      else hi = mid
+    }
+    return g[lo] + ((u - frac[lo]) / (frac[hi] - frac[lo])) * (g[hi] - g[lo])
+  }
+  return [total, at]
+}
+
+/** `count + 1` parameters from 0 to 1 (`at` of evenly spaced fractions) with the targets among them, so
+ * that the curves fitted through them cross exactly there; one closer to a target than a quarter of its
+ * spacing gives way to it. */
+function _sampleParams(count: number, targets: readonly number[], at: (u: number) => number): number[] {
+  const inner = targets.filter((t) => t > 0 && t < 1).sort((x, y) => x - y)
+  const ts = Array.from({ length: count + 1 }, (_, i) => at(i / count))
+  const keep = [ts[0], ts[count]]
+  for (let i = 1; i < count; i++) {
+    if (inner.length) {
+      let k = 0 // (numpy.searchsorted: the first target not below ts[i])
+      let hi = inner.length
+      while (k < hi) {
+        const mid = (k + hi) >> 1
+        if (inner[mid] < ts[i]) k = mid + 1
+        else hi = mid
+      }
+      let near = Infinity
+      for (const j of [k - 1, k]) if (j >= 0 && j < inner.length) near = Math.min(near, Math.abs(ts[i] - inner[j]))
+      if (near <= 0.25 * Math.min(ts[i] - ts[i - 1], ts[i + 1] - ts[i])) continue
+    }
+    keep.push(ts[i])
+  }
+  return [...new Set([...keep, ...inner])].sort((x, y) => x - y)
+}
+
 /** Cubic B-splines (kernel curves, parameters 0 to 1, one knot vector for all) along the edges, each at
  * its edge's fraction `marks[e][k]` of its length at the parameter `targets[k]` (both increasing, from 0
  * to 1), smoothly between (a monotone cubic of the parameter): fitted through points at common
- * parameters, more of them until each is within 1e-8 of `size` of its edge (ModelingError where 512
- * leave one more than 1e-6 of it off: a corner). */
+ * parameters, the targets among them (`_sampleParams`) and spaced so that no edge has them further apart
+ * along its length than evenly (`_sampleSpacing`), more of them until each curve is within 1e-8 of `size`
+ * of its edge (ModelingError where 512 per edge leave one more than 1e-6 of it off: a corner). Off the
+ * edge, not off its point at that parameter: a curve that runs along its edge a little ahead of or behind
+ * the map between the targets is not off it (where the edges spread the targets differently, the maps
+ * bend, and only that was off). */
 function _reparametrized(edges: readonly Edge[], marks: readonly (readonly number[])[], targets: readonly number[], size: number, what: string): number[] {
   const maps = marks.map((m) => _monotoneCubic(targets.map((t, i) => [t, m[i]] as [number, number])))
   const clamp = (f: number): number => Math.min(1, Math.max(0, f))
+  const [spread, at] = _sampleSpacing(maps, marks, targets)
   let n = 32
   let poles: number[][][] = []
   let knots: number[] = []
   let worst = 0
   for (;;) {
-    const ts = Array.from({ length: n + 1 }, (_, i) => i / n)
+    const ts = _sampleParams(Math.ceil(n * spread - 1e-9), targets, at)
     knots = [0, 0, 0, 0]
     for (let j = 0; j < ts.length - 4; j++) knots.push((ts[j + 1] + ts[j + 2] + ts[j + 3]) / 3)
     knots.push(1, 1, 1, 1)
     const a = ts.map((t) => _basis(knots, 3, t))
-    const mids = Array.from({ length: n }, (_, k) => _basis(knots, 3, 0.5 * (ts[k] + ts[k + 1])))
+    const mids = Array.from({ length: ts.length - 1 }, (_, k) => {
+      const t = 0.5 * (ts[k] + ts[k + 1])
+      return [t, _basis(knots, 3, t)] as [number, number[]]
+    })
     poles = []
     worst = 0
     edges.forEach((e, ei) => {
@@ -432,13 +504,25 @@ function _reparametrized(edges: readonly Edge[], marks: readonly (readonly numbe
       const q = ts.map((t) => e.pointAt(clamp(f(t))).toArray())
       const p = solve(a, q)
       poles.push(p)
-      for (let k = 0; k < n; k++) {
-        const g = e.pointAt(clamp(f(0.5 * (ts[k] + ts[k + 1])))).toArray()
+      let length: number | null = null
+      for (const [t, b] of mids) {
+        let g = clamp(f(t))
         const m = [0, 0, 0]
-        mids[k].forEach((b, j) => {
-          for (let r = 0; r < 3; r++) m[r] += b * p[j][r]
+        b.forEach((bj, j) => {
+          for (let r = 0; r < 3; r++) m[r] += bj * p[j][r]
         })
-        worst = Math.max(worst, Math.hypot(m[0] - g[0], m[1] - g[1], m[2] - g[2]))
+        const c = e.pointAt(g).toArray()
+        const d = [m[0] - c[0], m[1] - c[1], m[2] - c[2]]
+        let off = Math.hypot(d[0], d[1], d[2])
+        if (off > NETWORK_FIT * size) {
+          // how far off the edge: one step along it, towards the curve
+          length ??= e.length
+          const tg = e.tangentAt(g).toArray()
+          g = clamp(g + (d[0] * tg[0] + d[1] * tg[1] + d[2] * tg[2]) / length)
+          const c1 = e.pointAt(g).toArray()
+          off = Math.hypot(m[0] - c1[0], m[1] - c1[1], m[2] - c1[2])
+        }
+        worst = Math.max(worst, off)
       }
     })
     if (worst <= NETWORK_FIT * size || n >= 512) break
@@ -446,7 +530,7 @@ function _reparametrized(edges: readonly Edge[], marks: readonly (readonly numbe
   }
   if (worst > NETWORK_OFF * size) {
     throw new ModelingError(
-      `${what}: the sections and rails must be smooth curves; a smooth curve stays ${_formatG(worst, 3)} off one of them (a corner: loft the parts between corners on their own)`,
+      `${what}: the sections and rails must be smooth curves; a smooth curve stays ${_formatG(worst, 3)} off one of them (a corner, or a bend too sharp to follow: loft the parts on either side of it on their own)`,
     )
   }
   const out: number[] = []
