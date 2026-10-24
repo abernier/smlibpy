@@ -432,9 +432,10 @@ class _Interp:
 
     def offset_curve(self, e: Entity, M: np.ndarray, depth: int) -> dict[str, Any]:
         """An offset curve (130) at one distance: its base curve moved by it along the base's tangent x
-        the normal of the plane it lies in (as STEP's OFFSET_CURVE_3D and OpenCASCADE's offset curves;
-        a mirroring transformation turns the normal round). Lines and circles about the normal stay
-        lines and circles; other curves become the kernel's offset curve, a NURBS."""
+        the normal of the plane it lies in (as OpenCASCADE reads such files, and its own offset curves;
+        STEP's OFFSET_CURVE_3D offsets the other way round; a mirroring transformation turns the normal
+        round). Lines and circles about the normal stay lines and circles; other curves become the
+        kernel's offset curve, a NURBS."""
         base_de, flag = self.ints(e, 0, 2)
         if flag != 1:
             raise NotImplementedError(f"an offset curve whose distance varies (DE {e.de})")

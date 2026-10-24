@@ -212,6 +212,23 @@ Value tolerance_gaps(const SmBrep* brep)
     return d;
 }
 
+Value update_tolerances(SmBrep* brep)
+{
+    if (!brep)
+        throw std::invalid_argument("brep is None");
+    SmBoolean updated = FALSE;
+    double edge_trim = 0.0, vertex_edge = 0.0, vertex_face = 0.0;
+    const SmStatus st = brep->ValidateAndUpdateTolerances(FALSE, updated, edge_trim, vertex_edge, vertex_face);
+    SmPyErrorTrail::clear();
+    if (st != SM_SUCCESS)
+        SmPyRaise(st, "SmBrep::ValidateAndUpdateTolerances", __FILE__, __LINE__);
+    Value d = Value::dict();
+    d.set("updated", val(updated ? true : false));
+    d.set("vertex_edge", val(vertex_edge));
+    d.set("vertex_face", val(vertex_face));
+    return d;
+}
+
 double edge_tolerance(const SmEdge* edge)
 {
     if (!edge)
@@ -244,6 +261,11 @@ void bind_check(py::module_ m)
         return smlibpy::to_python(smlibpy::tolerance_gaps(brep));
     }, py::arg("brep"),
           "The largest gaps between edges, vertices and faces (ValidateAndUpdateTolerances, check only) and where.");
+    m.def("update_tolerances", [](SmBrep* brep) {
+        return smlibpy::to_python(smlibpy::update_tolerances(brep));
+    }, py::arg("brep"),
+          "The gaps between edges, vertices and faces repaired (ValidateAndUpdateTolerances, updating): tolerances grow "
+          "to the gaps; 'updated', and the largest gaps found before.");
     m.def("edge_tolerance", &smlibpy::edge_tolerance, py::arg("edge"), "The tolerance of an edge.");
     m.def("vertex_tolerance", &smlibpy::vertex_tolerance, py::arg("vertex"), "The tolerance of a vertex.");
 }

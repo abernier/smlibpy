@@ -344,16 +344,21 @@ class _BodyWriter:
         for loop in use["loops"]:
             if loop["vertex"] is not None and not loop["edges"]:
                 lp = w.add(f"VERTEX_LOOP('',#{self.vertex(loop['vertex'])})")
+                parts = [lp]
             else:
-                oes = []
-                for eidx, forward in loop["edges"]:
-                    flag = ".T." if forward else ".F."
-                    oe = w.add(f"ORIENTED_EDGE('',*,*,#{self.edge(eidx)},{flag})")
-                    oes.append(f"#{oe}")
-                lp = w.add(f"EDGE_LOOP('',({','.join(oes)}))")
-            kind = "FACE_OUTER_BOUND" if loop["outer"] else "FACE_BOUND"
-            bound = w.add(f"{kind}('',#{lp},.T.)")
-            bounds.append(f"#{bound}")
+                parts = []
+                for items in _simple_loops(loop["edges"], self.dump["edges"]):
+                    oes = []
+                    for eidx, forward in items:
+                        flag = ".T." if forward else ".F."
+                        oe = w.add(f"ORIENTED_EDGE('',*,*,#{self.edge(eidx)},{flag})")
+                        oes.append(f"#{oe}")
+                    parts.append(w.add(f"EDGE_LOOP('',({','.join(oes)}))"))
+            # (a loop split into several: none of them marked as the outer one)
+            kind = "FACE_OUTER_BOUND" if loop["outer"] and len(parts) == 1 else "FACE_BOUND"
+            for lp in parts:
+                bound = w.add(f"{kind}('',#{lp},.T.)")
+                bounds.append(f"#{bound}")
         # The faceuse normal is the kernel's natural normal when the faceuse is SAME.
         same = bool(use["same"]) == agrees
         name = self.face_names[idx]
@@ -458,6 +463,34 @@ class _BodyWriter:
             return []
         shell = self.w.add(f"OPEN_SHELL('',({','.join(f'#{x}' for x in faces)}))")
         return [self.w.add(f"SHELL_BASED_SURFACE_MODEL({_s(name)},(#{shell}))")]
+
+
+def _simple_loops(items: list[Any], edges: list[dict[str, Any]]) -> list[list[Any]]:
+    """The edgeuses of a loop (``(edge, forward)``) as loops that pass no vertex twice: a loop that
+    touches itself at a vertex (a thin hole that reaches the face's border there, as where the pieces of
+    a sweep meet at a corner) is split into the loops between. OpenCASCADE walks such a loop's wire the
+    wrong way at that vertex and takes it for open, the face for invalid. A loop with a closed edge or an
+    edge used twice (a seam) stays as it is."""
+    if len(items) < 3 or len({e for e, _ in items}) != len(items):
+        return [items]
+    starts = []
+    for e, forward in items:
+        v0, v1 = edges[e]["v0"], edges[e]["v1"]
+        if v0 is None or v0 == v1:
+            return [items]
+        starts.append(v0 if forward else v1)
+    if len(set(starts)) == len(starts):
+        return [items]
+    loops: list[list[Any]] = []
+    path: list[tuple[Any, Any]] = []
+    for item, v in zip(items, starts):
+        at = next((i for i, (_, u) in enumerate(path) if u == v), None)
+        if at is not None:  # (back at a vertex: the edgeuses since are a loop of their own)
+            loops.append([x for x, _ in path[at:]])
+            del path[at:]
+        path.append((item, v))
+    loops.append([x for x, _ in path])
+    return loops
 
 
 class _NeedsNurbs(Exception):

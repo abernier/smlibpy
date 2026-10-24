@@ -821,8 +821,9 @@ class _Interp {
       return { kind: 'bspline', degree: 1, poles: pts, knots, weights: null }
     }
     if (t === 'TRIMMED_CURVE') return this.curve(_at(a, 1))
-    // (name, basis_curve, distance, self_intersect, ref_direction)
-    if (t === 'OFFSET_CURVE_3D') return _offsetCurve(this.curve(_at(a, 1)), _float(_at(a, 2)) * this.scale, this.direction(_at(a, 4)), _int(ref))
+    // (name, basis_curve, distance, self_intersect, ref_direction): ISO 10303-42 offsets along ref_direction x
+    // tangent, as OpenCASCADE reads it, the other way round from IGES's 130 and _offsetCurve, so the distance turns round
+    if (t === 'OFFSET_CURVE_3D') return _offsetCurve(this.curve(_at(a, 1)), -_float(_at(a, 2)) * this.scale, this.direction(_at(a, 4)), _int(ref))
     // (name, basis_surface, reference_to_curve): an edge given in a surface's parameters
     if (t === 'PCURVE') return this.pcurve(_at(a, 1), _at(a, 2), _int(ref))
     throw new NotImplementedError(`curve type ${t} (#${_int(ref)})`)
@@ -1409,10 +1410,11 @@ function _kernelNurbs(make: () => number, what: string): Any {
   })
 }
 
-/** An OFFSET_CURVE_3D: each point moved `d` along tangent x `ref` (ISO 10303-42; IGES's offset curve,
- * 130, the same). The offset of a line is a line, of a circle about `ref` a circle; others are the
- * kernel's offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS within
- * 1e-9 of their size. `eid`: the entity, a STEP id or how a message names it (`'DE 7'`). */
+/** An offset curve: each point moved `d` along tangent x `ref` (IGES's offset curve, 130; STEP's
+ * OFFSET_CURVE_3D offsets along `ref` x tangent, ISO 10303-42, so its reader passes the distance turned
+ * round). The offset of a line is a line, of a circle about `ref` a circle; others are the kernel's offset
+ * curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS within 1e-9 of their size.
+ * `eid`: the entity, a STEP id or how a message names it (`'DE 7'`). */
 export function _offsetCurve(basis: Any, d: number, ref: number[], eid: number | string, what = 'read STEP offset curve'): Any {
   eid = typeof eid === 'number' ? `#${eid}` : eid
   const kind = basis.kind

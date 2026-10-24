@@ -18,7 +18,7 @@ import numpy as np
 from ._kernel import BrepHandle, KernelError, ModelingError, _traced, ext, k, kernel_call
 from .geometry import Axis, Plane, Vector, VectorLike, Z, _direction, _vec
 from .shapes import (Edge, Face, Part, Shape, ShapeList, Shell, Sketch, Vertex, Wire, _analytic_revolve, _as_plane,
-                     _flatten_edges, _flatten_faces, _freed, _require_solid, _revolve_axis_angle)
+                     _flatten_edges, _flatten_faces, _freed, _require_solid, _revolve_axis_angle, _take)
 
 __all__ = [
     "extrude",
@@ -1773,7 +1773,8 @@ def _sound(part: Part, hint: str) -> Part:
     of the halves and the surfaces of both tubes meet at a point), in 25 of about 100 random
     loops, and some of them a shell of their own inside the solid, which STEP writes as a void (and
     OpenCASCADE then reads the body inside out). They are taken out and the faces around them
-    stitched together again; where that fails the sweep raises ``ModelingError``."""
+    stitched together again; where that fails the sweep raises ``ModelingError``. Gaps the fuse
+    left beyond the tolerances of what meets there are taken into them (:func:`_tolerant`)."""
     problem = part._solid_problem(gaps=True)
     if problem is not None:
         raise ModelingError(f"sweep: the kernel returned a body that is {problem}; {hint}")
@@ -1785,7 +1786,7 @@ def _sound(part: Part, hint: str) -> Part:
     except KernelError as err:
         raise ModelingError(f"sweep: a face of the fused pieces cannot be measured ({err}); {hint}") from None
     if not slivers and len(regions) == 1 and len(regions[0]["shells"]) == 1:
-        return part
+        return _tolerant(part)
     what = (f"{len(slivers)} face(s) that enclose no area" if slivers else
             f"{sum(len(r['shells']) for r in regions)} shells")
     if not slivers:
@@ -1806,7 +1807,29 @@ def _sound(part: Part, hint: str) -> Part:
     except ModelingError as err:
         raise ModelingError(f"sweep: the fused pieces have {what}, and they cannot be taken out ({err}); "
                             f"{hint}") from None
-    return out
+    return _tolerant(out)
+
+
+def _tolerant(part: Part) -> Part:
+    """A fused sweep with the gaps its fuse left beyond the tolerances of what meets there taken into
+    those tolerances, as the kernel's own check wants them (``is_valid(strict=True)``, ``check()``): where
+    the pieces of a loop with a corner meet as the profile meets itself, a vertex lay 1.1e-5 from the end
+    of its edge, whose tolerance was 5e-6. The geometry does not change. ``part`` itself where no gap is
+    beyond a tolerance, where one is wider than 1e-4 of the body's size (a defect a tolerance should not
+    hide), or where one still is after the update."""
+    try:
+        with kernel_call("sweep"):
+            gaps = ext.tolerance_gaps(part._brep)
+            widest = max(gaps["edge_face"], gaps["vertex_edge"], gaps["vertex_face"])
+            if not gaps["violated"] or not widest <= 1e-4 * part._extent():
+                return part
+            h = BrepHandle(part._copy_brep())
+            ext.update_tolerances(h.brep)
+            if ext.tolerance_gaps(h.brep)["violated"]:
+                return part
+    except KernelError:
+        return part
+    return Part._wrap(_take(h))
 
 
 # -- planar paths with mitered corners -----------------------------------------------------------

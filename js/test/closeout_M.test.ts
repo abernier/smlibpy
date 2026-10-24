@@ -305,13 +305,15 @@ test('STEP offset curves are read', () => {
   // 0.5.0 left a body with an OFFSET_CURVE_3D out ("curve type OFFSET_CURVE_3D, which is not supported")
   const { text, top, z } = cylinderStep()
   const n = nextId(text)
-  // the top circle as the offset of a circle of radius 3 about the axis by 2 (tangent x axis points out)
-  const radius3 = text.replace(
+  // the top circle as the offset of a circle of radius 7 about the axis by 2 (ISO 10303-42 offsets along
+  // ref_direction x tangent: the axis x the tangent points into the circle, as OpenCASCADE reads it)
+  const radius7 = text.replace(
     new RegExp(`#${top}=CIRCLE\\('',(#\\d+),5\\.0\\);`),
-    `#${n}=CIRCLE('',$1,3.0);\n#${top}=OFFSET_CURVE_3D('',#${n},2.0,.F.,#${z});`,
+    `#${n}=CIRCLE('',$1,7.0);\n#${top}=OFFSET_CURVE_3D('',#${n},2.0,.F.,#${z});`,
   )
-  readsAsTheCylinder(radius3, ['circle', 'circle'])
-  // its basis a rational B-spline circle of radius 3: the kernel's offset curve (SmOffsetCurve)
+  readsAsTheCylinder(radius7, ['circle', 'circle'])
+  // its basis a rational B-spline circle of radius 3 offset by -2 (outwards): the kernel's offset curve
+  // (SmOffsetCurve)
   const w = Math.sqrt(0.5)
   const corners = [[3, 0], [3, 3], [0, 3], [-3, 3], [-3, 0], [-3, -3], [0, -3], [3, -3], [3, 0]]
   const lines = corners.map(([x, y], i) => `#${n + i}=CARTESIAN_POINT('',(${x}.,${y}.,5.));`)
@@ -322,9 +324,9 @@ test('STEP offset curves are read', () => {
       `(0.,1.,2.,3.,4.),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE((1.,${w},1.,${w},1.,` +
       `${w},1.,${w},1.)) REPRESENTATION_ITEM(''));`,
   )
-  const spline = withLines(text.replace(new RegExp(`#${top}=CIRCLE\\('',#\\d+,5\\.0\\);`), `#${top}=OFFSET_CURVE_3D('',#${b},2.0,.F.,#${z});`), lines)
+  const spline = withLines(text.replace(new RegExp(`#${top}=CIRCLE\\('',#\\d+,5\\.0\\);`), `#${top}=OFFSET_CURVE_3D('',#${b},-2.0,.F.,#${z});`), lines)
   readsAsTheCylinder(spline, ['circle', 'bspline'])
-  approx((fromStepModel(radius3).bodies[0] as Part).volume, Math.PI * 250, 1e-9)
+  approx((fromStepModel(radius7).bodies[0] as Part).volume, Math.PI * 250, 1e-9)
 })
 
 test('STEP edges given as PCURVEs are read', () => {

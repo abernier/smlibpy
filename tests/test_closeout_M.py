@@ -218,11 +218,13 @@ def test_step_offset_curves_are_read():
     # 0.5.0 left a body with an OFFSET_CURVE_3D out ("curve type OFFSET_CURVE_3D, which is not supported")
     text, top, z, _, _, _ = _cylinder_step()
     n = _next_id(text)
-    # the top circle as the offset of a circle of radius 3 about the axis by 2 (tangent x axis points out)
-    radius3 = re.sub(rf"#{top}=CIRCLE\('',(#\d+),5\.0\);",
-                     rf"#{n}=CIRCLE('',\1,3.0);\n#{top}=OFFSET_CURVE_3D('',#{n},2.0,.F.,#{z});", text)
-    _reads_as_the_cylinder(radius3, ["circle", "circle"])
-    # its basis a rational B-spline circle of radius 3: the kernel's offset curve (SmOffsetCurve)
+    # the top circle as the offset of a circle of radius 7 about the axis by 2 (ISO 10303-42 offsets along
+    # ref_direction x tangent: the axis x the tangent points into the circle, as OpenCASCADE reads it)
+    radius7 = re.sub(rf"#{top}=CIRCLE\('',(#\d+),5\.0\);",
+                     rf"#{n}=CIRCLE('',\1,7.0);\n#{top}=OFFSET_CURVE_3D('',#{n},2.0,.F.,#{z});", text)
+    _reads_as_the_cylinder(radius7, ["circle", "circle"])
+    # its basis a rational B-spline circle of radius 3 offset by -2 (outwards): the kernel's offset curve
+    # (SmOffsetCurve)
     w = math.sqrt(0.5)
     corners = [(3, 0), (3, 3), (0, 3), (-3, 3), (-3, 0), (-3, -3), (0, -3), (3, -3), (3, 0)]
     lines = [f"#{n + i}=CARTESIAN_POINT('',({x}.,{y}.,5.));" for i, (x, y) in enumerate(corners)]
@@ -231,10 +233,10 @@ def test_step_offset_curves_are_read():
     lines.append(f"#{b}=(BOUNDED_CURVE() B_SPLINE_CURVE(2,({refs}),.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS("
                  f"(3,2,2,2,3),(0.,1.,2.,3.,4.),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() "
                  f"RATIONAL_B_SPLINE_CURVE((1.,{w},1.,{w},1.,{w},1.,{w},1.)) REPRESENTATION_ITEM(''));")
-    spline = _with(re.sub(rf"#{top}=CIRCLE\('',#\d+,5\.0\);", f"#{top}=OFFSET_CURVE_3D('',#{b},2.0,.F.,#{z});", text),
+    spline = _with(re.sub(rf"#{top}=CIRCLE\('',#\d+,5\.0\);", f"#{top}=OFFSET_CURVE_3D('',#{b},-2.0,.F.,#{z});", text),
                    lines)
     _reads_as_the_cylinder(spline, ["circle", "bspline"])
-    assert from_step_model(radius3).bodies[0].volume == pytest.approx(math.pi * 250, rel=1e-9)
+    assert from_step_model(radius7).bodies[0].volume == pytest.approx(math.pi * 250, rel=1e-9)
 
 
 def test_step_edges_given_as_pcurves_are_read():

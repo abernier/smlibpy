@@ -805,7 +805,8 @@ wall = twist(Cylinder(5, 40), 90).faces().cylinders()[0]      # 0.4: a B-spline 
 - `Face.interior_point()` and `Edge.distance_to()` raise `KernelError` (a `RuntimeError`) where the
   kernel's raw `RuntimeError` came (I9); the reader's `NotImplementedError` names the entity (`curve
   type CLOTHOID (#203)`).
-- Bodies with offset curves (`OFFSET_CURVE_3D`) and edges given only as curves on surfaces
+- Bodies with offset curves (`OFFSET_CURVE_3D`, moved along the reference direction x the tangent,
+  as ISO 10303-42 defines them and OpenCASCADE reads them) and edges given only as curves on surfaces
   (`PCURVE`), and instances placed by a transformation that mirrors or scales
   (`CARTESIAN_TRANSFORMATION_OPERATOR_3D`), are read (I6, I10): 0.4 raised for the whole file. A
   closed shell of offsets of planes, spheres, cylinders, cones or tori is also built on the surfaces
@@ -839,6 +840,11 @@ importStep('asm.step', { strict: true })
   (T5). The uncertainty is 1e-7 mm in any unit (`1.E-10` in meters, I13).
 - `assembly=True` writes a product per body (I10); the default file is as before.
 - A `StepFrame`'s color is written as a curve style on its `AXIS2_PLACEMENT_3D` (I12).
+- A face whose loop passes a vertex twice (a thin hole that reaches the face's border there, as
+  where the pieces of a sweep round a loop with a corner meet) is written with the loops between,
+  a `FACE_BOUND` each and none of them the `FACE_OUTER_BOUND` (S1); `.brep` files with a wire each.
+  OpenCASCADE walked the one wire the wrong way at that vertex and took the face for invalid.
+  `import_step`, `read_step` and `import_brep` join such loops into one again, as the kernel has it.
 
 ```python
 export_step(vase.to_nurbs(), "vase.step")       # 0.4's output (approximated offsets)
@@ -1198,8 +1204,18 @@ Sweeps, revolves, extrusions and lofts:
   off).
 - Kinked loops fused into bodies with faces of no area and, now and then, a shell of one such face
   (a void without volume, which OpenCASCADE read from STEP as -1707.27); fused sweeps that were open
-  between their faces were returned (S1). Every body returned for 120 random kinked loops and 20
-  closed fillet polylines now reads back into OpenCASCADE as one valid solid of its volume.
+  between their faces were returned (S1). Every body smlibpy returns for 60 random kinked loops and
+  the plan's three (a circle and a rectangle each, 126 bodies) and for 60 open and 60 closed random
+  fillet polylines (240) now reads back into OpenCASCADE as one valid solid of its volume, from STEP
+  and from `.brep` (smlibwasm: all but one, under [known kernel
+  limitations](#known-kernel-limitations)). Where the halves of a loop meet as the profile meets
+  itself, a face's loop can touch itself at a vertex (57 of 63 rectangles), and OpenCASCADE took one
+  such face for invalid (a B-spline face of 173.57, kinked loop 44) until the writers wrote such a
+  loop as the loops between; the `.brep` writer also leaves out an edge that a loop runs along and
+  straight back (a strut a fuse can leave), which OpenCASCADE took for a seam (circles round 3 of 60
+  loops). Fused sweeps take the gaps their fuse leaves beyond the tolerances into them, up to 1e-4
+  of the body's size: a rectangle round the loop through `(20 cos a, 14 sin a, 6 sin 2a)` had a
+  vertex 1.1e-5 from its edge, whose tolerance was 5e-6 (`is_valid(strict=True)` False).
 - A tapered extrusion whose hole widens across the region came out shorter than asked without an
   error (S9: `(Circle(10) - Circle(8)).extrude(10, taper=10)` was 5.67 high).
 - Extrusions along a direction in a tilted plane came out inside out or open for curved profiles
@@ -1364,11 +1380,15 @@ Documentation:
   README and the skill (161 files, 603 printed lines) and the smlibwasm blocks of the READMEs,
   docs/javascript.md and docs/kernel.md were run against their comments. Corrected: the fits of
   docs/surfaces.md and `surfaces/surface.md` (a largest distance of 0.0010094 printed as `< 0.001`
-  True), `surfaces/trim.md` (1169.871), `features/loft.md` (3665.191), docs/features.md's cells,
-  docs/sketches.md's area, the sheet-metal recipe's bend directions, `sketches/Text.md` and the
-  fender of `surfaces/generic.md`; `analysis/outline.md` and `files/drawing_views.md` no longer say
-  every outline edge is a B-spline, and docs/kernel.md's `KernelError.trace` example fails in the
-  kernel again (the crossing cylinders it showed are fixed, B4).
+  True), `surfaces/trim.md` (1169.871 in its example and its measured list), `features/loft.md`
+  (3665.191, and the square-to-circle duct's section 660.7 and 566.2: the section of its loft is
+  660.69997 now, as a split face and a thin slab measure it, where 0.4's `section` gave 660.2),
+  docs/features.md's cells, docs/sketches.md's area, the sheet-metal recipe's bend directions,
+  `sketches/Text.md` and the fender of `surfaces/generic.md`; `analysis/outline.md` and
+  `files/drawing_views.md` no longer say every outline edge is a B-spline, and docs/kernel.md's
+  `KernelError.trace` example fails in the kernel again (the crossing cylinders it showed are fixed,
+  B4), with the kernel's lines as the patched kernel reports them (`SmMerge.cpp:7180`, `:4449`). Tests
+  read these comments and compare them with what the code prints.
 - The docs said more lattice points give more local control; a lattice is a global map, and the
   `Lattice` docstrings and docs/deform.md now point a bump or dent on one face to `Part.push` and
   `Part.warp` (D7).
@@ -1732,8 +1752,9 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   `export_step(..., assembly=True)`: a product per body under a root (I10); `export_step` of edges,
   wires, points and planes, and `StepCurve`, `StepPoint`, `StepFrame` with their colors (I12); offset
   surfaces written exactly, and offsets of planes, spheres, cylinders, cones and tori read as those
-  surfaces where the offset build fails (I11); offset curves, edges given only as `PCURVE`s, and
-  assembly placements that mirror or scale read (I6, I10); face colors and names in and out (T5).
+  surfaces where the offset build fails (I11); offset curves (along the reference direction x the
+  tangent, as OpenCASCADE reads them), edges given only as `PCURVE`s, and assembly placements that
+  mirror or scale read (I6, I10); face colors and names in and out (T5).
 - USD: `import_usd(path, *, units=None, placement=True, check=True, strict=False)` (X2, X6, X7);
   `export_usd(..., materials=True)` (X12); analytic edges (X5); names of any characters (X3).
 
@@ -1777,7 +1798,11 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   code and of smlibpy's C++; pytest's verdict counts), `tools/oracles/` (upstream's `prog_test`
   suites, SmPyLib's tests, 200 `.smb` files, crash loops, NVIDIA's USD validator on a shim) and the
   "Checks" workflow (N2, N4). CI's Linux test job installs `usd-brep[validation]` and runs NVIDIA's
-  validator itself on 40 files of both builds (N4).
+  validator itself on the files of ten bodies (N4; its wheels are for Python 3.12 on Linux and
+  Windows, so the test is skipped on macOS). The close-out ran it once in a linux/amd64 container on
+  40 files of both builds (usd-brep 1.0.1, usd-validation-nvidia 1.22.0): each passes the BrepArray
+  rules, and of the general rules only `UsdAsciiPerformanceChecker` complains (large arrays in a text
+  file). CI's first Linux run is the check of the released sources.
 - `tools/parity.py`: smlibwasm's writers and modelling steps against smlibpy's golden files, and 56
   steps of the capabilities phase 1 added (`capabilities()`), which agree to 1e-7 (N5).
 - New `ext` calls of both builds, among them `classify_points`, `boolean` (it clears the kernel's
@@ -1787,7 +1812,8 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   `intersect_curves`, `offset_curve`, `hidden_lines`, `poly_arrays`, `edge_continuity`,
   `stitch_faces`, `fill_loop`, `push_face`, `kernel_trace`, `drop_caches`, and since the close-out
   `seam_touches`, `plane_section`, `nearest_point`, `exact_circles`, `planar_faces`,
-  `planar_path_sweep`, `gordon`, `approximate_tangents`, `offset_curve_3d` and `set_deadline`;
+  `planar_path_sweep`, `gordon`, `approximate_tangents`, `offset_curve_3d`, `set_deadline` and
+  `update_tolerances`;
   `round_edges` takes `setback`, `chains`, `law_at` and `law_radii`, `skin` start and end faces, and
   `curve_sweep` a profile reference.
 - smlibwasm's option table (`js/src/_options.ts`) is generated from Python's signatures (W5): after
@@ -1875,6 +1901,13 @@ Other differences:
   (MESH-APEX).
 - A round profile along a closed path of several tangent edges is one sweep closed where its ends
   meet: other faces than 0.4's pieces, the same volume (S1).
+- A sweep fused from pieces whose fuse leaves a vertex or edge farther from what it meets than its
+  tolerance gets that tolerance raised to the gap (the kernel's `ValidateAndUpdateTolerances`): the
+  same faces and volume, and `is_valid(strict=True)` and `check()` find nothing there (S1).
+- STEP and `.brep` files of a face whose loop passes a vertex twice hold the loops between, one
+  bound or wire each ([more](#step-export)); smlibpy's readers join them again. A `.brep` file leaves
+  out an edge that a loop runs along and straight back (its face, volume and the edges around it are
+  the same).
 - `shell` tries the kernel's plain mode once, then its extended mode, and that once more only after
   a refused result; `offset` once and once more after a refused result (O6). Failing shells return
   up to 8 times sooner; smlibwasm's shells, offsets and thickenings run in the probe worker's
@@ -1953,7 +1986,8 @@ Slower:
   (S3: an 8-turn spring 71 to 147 ms); extrusions along a direction are checked (S14: a rectangle
   0.6 to 1.2 ms).
 - A fillet or chamfer that fails takes up to twice as long (the finer retry, F7). A failing sweep
-  along a kinked loop makes up to 13 more tries (S1). 2D Booleans of sketches whose faces touch at a
+  along a kinked loop makes up to 13 more tries (S1), and a sweep fused from pieces checks its
+  tolerances (about 6 ms round a kinked loop). 2D Booleans of sketches whose faces touch at a
   point take 2 to 18 ms (C1).
 - Seam detection costs at most 0.42 ms per Boolean (B6); the kernel lock about 20 ns per kernel call
   (N8). Where a seam touches the other operand at a point, the result is checked: 0.02 to 0.15 s per
@@ -2055,6 +2089,16 @@ Sweeps:
   each build and 4 build in one only (2 each way). A native build without fused multiply-adds
   differs on 4 others, so it is not FMA alone. A loop that fails raises; close such paths smoothly
   where you can (`Spline(..., closed=True)`).
+- **A circle round one kinked loop in smlibwasm is no valid solid for OpenCASCADE (S1).** Kinked loop 1
+  of the 60 (`Circle(1.5)`) goes another fallback in smlibwasm than natively (the rounding above):
+  the kernel's fuse leaves an edge whose B-spline repeats a control point inside it (`check()`: "Internal
+  Coincident ControlPoints"; `is_valid()` is True, the volume 887.761225 agrees with the native body's
+  to 1e-8), and the curves OpenCASCADE makes for the edges of one tube face in its parameters cross
+  (`ShapeAnalysis_Wire`: a wire that intersects itself), so it takes that face (591.23) for invalid
+  when it reads the STEP file. Not attempted beyond that diagnosis. The `.brep` file,
+  which carries smlibwasm's own curves on faces, reads as valid; the native body is valid both ways.
+  The other 62 circles and 63 rectangles of both builds read as valid from both files. Of the
+  native circles, 7 have such an edge too and read as valid.
 
 Surfaces:
 

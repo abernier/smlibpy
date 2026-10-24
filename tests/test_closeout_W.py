@@ -123,7 +123,12 @@ def test_the_helix_cap_smlibpy_lifts_gives_a_curve_within_the_tolerance():
         t = T.TestCurves("test_create_helix_tolerance_is_enforced")
         print(t._max_helix_3d_dev(h, (0, 0, 0), 10.0, 2.0, 2.0, 120.0, True))
     """)
-    env = {**__import__("os").environ, "PYTHONPATH": f"{TOOLS / 'oracles' / 'shim'}{__import__('os').pathsep}{ROOT / 'src'}"}
+    # The shim first, then the smlibpy this process imported (the checkout's src/ in place, site-packages for an
+    # installed wheel: the checkout's src/ has no _core there), then whatever PYTHONPATH held.
+    import os
+    import smlibpy
+    paths = [str(TOOLS / "oracles" / "shim"), str(Path(smlibpy.__file__).resolve().parent.parent)]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(paths + [p for p in [os.environ.get("PYTHONPATH")] if p])}
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=env)
     assert run.returncode == 0, run.stderr
     assert float(run.stdout.split()[-1]) < 1e-6

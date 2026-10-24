@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copied from NVIDIA usd-brep (Apache-2.0, release 1.0.0, commit c9c5979), source/OCCT_BREP_IMPORT/inc/OcctFileSource.h.
+// Changed for smlibpy (marked "smlibpy:"): two loops of a face that meet at one vertex joined into one
+// loop that passes it twice.
 
 #ifndef OCCT_BREP_IMPORT_OCCT_FILE_SOURCE_H
 #define OCCT_BREP_IMPORT_OCCT_FILE_SOURCE_H
@@ -144,6 +147,8 @@ private:
     // sequentially. The serialized TShape child list is not always already in that order; repeated
     // seam edges are handled when vertex connectivity makes the next coedge unambiguous.
     void OrderCoedgesIntoConnectedChain(std::vector<Coedge>& rCoedges) const;
+    // smlibpy: two loops of a face that meet at one vertex joined into one loop that passes it twice.
+    void JoinLoopsAtVertices(std::vector<Loop>& rLoops) const;
 
     const SOcctModel& m_rModel;
     double m_dTolerance = 0.0;

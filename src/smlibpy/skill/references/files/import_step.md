@@ -65,7 +65,8 @@ in an assembly is built once; its other instances are copies moved to their plac
   pattern above.
 - Coordinate systems, curves (contours such as a tool's cutting edge line) and points are not
   bodies: `read_step` reads them with the bodies.
-- Read: offset curves (`OFFSET_CURVE_3D`), edges given only in a surface's parameters
+- Read: offset curves (`OFFSET_CURVE_3D`, along the reference direction x the tangent, as
+  OpenCASCADE reads them), edges given only in a surface's parameters
   (`PCURVE`), and assembly placements that mirror or scale a part (the part is mirrored or
   scaled whole). Not read: references to external files, PMI.
 

@@ -30,7 +30,7 @@ result through Booleans.)
 ## Measured
 - Rectangle(40, 40) sheet, `Circle(5)`: keep the center 78.5398, keep a corner 1521.4602 (one
   face, two loops), split 2 faces.
-- Saddle `surface` and a projected circle r 5: kept 78.736, the holed sheet 1169.877 (they add
+- Saddle `surface` and a projected circle r 5: kept 78.736, the holed sheet 1169.871 (they add
   up to the sheet, 1248.607); the holed sheet thickens.
 - Two crossing lines keep a quarter (400); four lines in a hash keep the middle (400) or a
   corner (100); split gives 4 and 9 faces.

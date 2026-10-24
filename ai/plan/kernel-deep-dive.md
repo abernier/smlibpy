@@ -927,6 +927,19 @@ wherever the geometry is analytic.
   and a native build without FMA differs on 4 others. With K1's `SmProtoTopology.cpp` patch the two
   loops that crashed natively now and then (ASan: `UpdateFaces`) are clean, and so is the Linux
   x86_64 crash of the second kinked loop (W). A failing loop raises.
+- Status (verification): since the profile meets itself where a kinked loop closes (S3), the two
+  caps there share the profile's points on the axis of the turn, and the fuse leaves a face whose
+  loop touches itself at such a point in 57 of 63 rectangle sweeps. OpenCASCADE took one of them for
+  invalid (kinked loop 44: `BRepCheck_NotClosed`, its wire explorer turns the wrong way at that
+  vertex), from STEP and from `.brep`; one rectangle had a vertex 1.1e-5 from its edge (tolerance
+  5e-6). The STEP and `.brep` writers write such a loop as the loops between (the readers join them
+  again), the `.brep` writer leaves out an edge a loop runs along and straight back (a strut: the
+  `.brep` files of circles round 3 of 60 loops in each build were invalid), and fused sweeps take
+  gaps up to 1e-4 of their size into their tolerances (`ext.update_tolerances`): all 126 sample
+  bodies (60 kinked loops and the plan's three, with a circle and a rectangle) and the 240 fillet
+  polyline sweeps read into OpenCASCADE as valid solids of their volume from STEP and `.brep` (in
+  smlibwasm all but the STEP file of the circle round loop 1, under known limitations), and the
+  rectangles but one (loop 54, a vertex tolerance the fuse set, as before) pass the strict check.
 - Wrong: each piece is re-oriented by the smallest rotation from the sketch normal to that
   edge's start tangent (`operations.py:209-218, 262, 293-294`), not by carrying the frame
   along the path. A non-round profile turns by up to 90 deg at a joint; the body stays valid
@@ -1587,6 +1600,12 @@ other CAD systems need.
   OFFSET_CURVE_3D and PCURVE-only edges, which no real file at hand holds.
 - Status (close-out): done, M (7bd25a9): `OFFSET_CURVE_3D` (lines and circles exact, others through
   the new `ext.offset_curve_3d` within 1e-9) and `PCURVE` edges are read.
+- Status (verification): the reader offset along the tangent x the reference direction; ISO 10303-42
+  (and OpenCASCADE 8.0) offset along the reference direction x the tangent, so it read a circle of
+  radius 7 offset by 2 about its axis as radius 9 (an invalid body of 961.328, a warning about its
+  mass properties only). Fixed in both builds; five files (circles, a B-spline circle, a line, both
+  signs and both axis senses) read as OpenCASCADE reads them (tests/test_closeout_V.py). IGES 130
+  keeps the tangent x the normal, as OpenCASCADE reads it.
 - Wrong: any exception in one body ends `import_step`/`read_step` with a bare
   NotImplementedError that names neither entity, body nor product.
 - Do: build each body in try/except, warn with name, entity id and reason, return the rest;
@@ -2356,7 +2375,9 @@ Status (phase 1) of the items in the table:
   toUsd output; it found BA.763 (fixed); the docs line corrected. No CI step with the real
   usd-brep[validation].
 - N4 (close-out): done, W (c10f34c): CI's Linux job installs `usd-brep[validation]`, and a test runs
-  NVIDIA's `validate_file` on 40 files of both builds.
+  NVIDIA's `validate_file` on the files of ten bodies (skipped where the package cannot be installed:
+  its wheels are for Python 3.12 on Linux and Windows). Lane W ran it once in a linux/amd64 container
+  on 40 files of both builds: all pass the BrepArray rules.
 - N5: done, 13fb24c (lane WN): `tools/parity.py`, golden files in tests/data/parity, the JS
   comparisons, the docs' js blocks run; 18 modelling steps.
 - N5 (close-out): done, W (c10f34c): 56 capability steps in `tools/parity.py`; smlibwasm agrees to

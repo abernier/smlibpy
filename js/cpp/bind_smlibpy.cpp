@@ -807,6 +807,7 @@ void untag_topology(uintptr_t b) { guard([&] { smlibpy::untag_topology(brep(b));
 
 val check_brep(uintptr_t b, int level) { return guard([&] { return to_js(smlibpy::check_brep(brep(b), level)); }); }
 val tolerance_gaps(uintptr_t b) { return guard([&] { return to_js(smlibpy::tolerance_gaps(brep(b))); }); }
+val update_tolerances(uintptr_t b) { return guard([&] { return to_js(smlibpy::update_tolerances(brep(b))); }); }
 double edge_tolerance(uintptr_t e) { return guard([&] { return smlibpy::edge_tolerance(edge(e)); }); }
 double vertex_tolerance(uintptr_t v) { return guard([&] { return smlibpy::vertex_tolerance(vertex(v)); }); }
 
@@ -1321,6 +1322,7 @@ EMSCRIPTEN_BINDINGS(smlib_smlibpy)
     function("ext__untag_topology", &untag_topology);
     function("ext__check_brep", &check_brep);
     function("ext__tolerance_gaps", &tolerance_gaps);
+    function("ext__update_tolerances", &update_tolerances);
     function("ext__edge_tolerance", &edge_tolerance);
     function("ext__vertex_tolerance", &vertex_tolerance);
     function("ext__slice", &slice);

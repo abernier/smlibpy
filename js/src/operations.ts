@@ -4,7 +4,7 @@
 // functions read naturally when the target is implied by a selection:
 // `fillet(part.edges().parallelTo(Z), 2)` returns the filleted part the edges belong to.
 
-import { KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall, scope } from './kernel.ts'
 import { _traced } from './_errors.ts'
 import { Axis, Plane, Vector, type Matrix, type VectorLike, Z, _direction, _formatG, _vec } from './geometry.ts'
 import { solve, spread } from './_linalg.ts'
@@ -31,6 +31,7 @@ import {
   _freed,
   _requireSolid,
   _revolveAxisAngle,
+  _take,
   _typeName,
   _withCurves,
 } from './shapes.ts'
@@ -1958,7 +1959,8 @@ const _regions = (part: Part): { shells: number[] }[] =>
  * and the surfaces of both tubes meet at a point), in 25 of about 100 random loops, and some of
  * them a shell of their own inside the solid, which STEP writes as a void (and OpenCASCADE then
  * reads the body inside out). They are taken out and the faces around them stitched together
- * again; where that fails the sweep throws `ModelingError`. */
+ * again; where that fails the sweep throws `ModelingError`. Gaps the fuse left beyond the tolerances
+ * of what meets there are taken into them (`_tolerant`). */
 function _sound(part: Part, hint: string): Part {
   const problem = part._solidProblem(null, true)
   if (problem !== null) throw new ModelingError(`sweep: the kernel returned a body that is ${problem}; ${hint}`)
@@ -1971,7 +1973,7 @@ function _sound(part: Part, hint: string): Part {
     if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
     throw new ModelingError(`sweep: a face of the fused pieces cannot be measured (${err.message}); ${hint}`)
   }
-  if (slivers.length === 0 && regions.length === 1 && regions[0].shells.length === 1) return part
+  if (slivers.length === 0 && regions.length === 1 && regions[0].shells.length === 1) return _tolerant(part)
   const what = slivers.length ? `${slivers.length} face(s) that enclose no area` : `${regions.reduce((n, r) => n + r.shells.length, 0)} shells`
   if (slivers.length === 0) throw new ModelingError(`sweep: the fused pieces came out as a body of ${what}; ${hint}`)
   const reach = Math.max(10 * Math.max(...slivers.map((f) => f.bbox().diagonal)), 1e-7 * size)
@@ -1987,7 +1989,37 @@ function _sound(part: Part, hint: string): Part {
     if (!(err instanceof ModelingError) || _isCrash(err)) throw _crashOf(err)
     throw new ModelingError(`sweep: the fused pieces have ${what}, and they cannot be taken out (${err.message}); ${hint}`)
   }
-  return out
+  return _tolerant(out)
+}
+
+/** A fused sweep with the gaps its fuse left beyond the tolerances of what meets there taken into those
+ * tolerances, as the kernel's own check wants them (`isValid({ strict: true })`, `check()`): where the
+ * pieces of a loop with a corner meet as the profile meets itself, a vertex lay 1.1e-5 from the end of
+ * its edge, whose tolerance was 5e-6. The geometry does not change. `part` itself where no gap is beyond
+ * a tolerance, where one is wider than 1e-4 of the body's size (a defect a tolerance should not hide), or
+ * where one still is after the update. */
+function _tolerant(part: Part): Part {
+  try {
+    const gaps = kernelCall('sweep', () => ext.tolerance_gaps(part._brep))
+    const widest = Math.max(gaps.edge_face, gaps.vertex_edge, gaps.vertex_face)
+    if (!gaps.violated || !(widest <= 1e-4 * part._extent())) return part
+  } catch (e) {
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+    return part
+  }
+  const h = new BrepHandle(part._copyBrep())
+  try {
+    const closed = kernelCall('sweep', () => {
+      ext.update_tolerances(h.brep)
+      return !ext.tolerance_gaps(h.brep).violated
+    })
+    return closed ? Part._wrap(_take(h)) : part
+  } catch (e) {
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+    return part
+  } finally {
+    h.dispose() // (nothing left to free once taken)
+  }
 }
 
 // -- planar paths with mitered corners -----------------------------------------------------------

@@ -220,7 +220,11 @@ matter here:
   rounding inside the kernel's fuse of its halves, so a few such loops sweep in one build and
   raise in the other (4 of 60 hard loops, 2 each way; a native build without the contraction of
   `a * b + c` differs on 4 others). None gives a wrong body; close such paths smoothly where you
-  can (`Spline(..., closed=True)`).
+  can (`Spline(..., closed=True)`). Where the fuse leaves an edge whose B-spline repeats a control
+  point inside it (`check()`: "Internal Coincident ControlPoints"), OpenCASCADE can make curves for
+  a face's edges in its parameters that cross, and take the face for invalid when it reads the STEP
+  file: of the 126 sample bodies (60 loops and three more, each with a circle and a rectangle), one
+  circle of smlibwasm's (its `.brep` file reads as valid).
 - The kernel's hidden curve removal behind `outline` and `drawing_views` (`SmHCR`) can judge a
   piece of a tilted view wrongly: seen along (1, 1, 1), the flange example as built
   (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.4
@@ -331,7 +335,7 @@ try:
     Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
 except KernelError as e:
     print(e.status)       # SM_ERR
-    print(e.trace[-3:])   # ('SM_ERR at SmMerge.cpp:7146 (MakeFaceuse)', 'SM_ERR at SmMerge.cpp:4437 (ManifoldBoolean)', 'SM_ERR at SmApiBrep.cpp:233 (SmApiBoolean)')
+    print(e.trace[-3:])   # ('SM_ERR at SmMerge.cpp:7180 (MakeFaceuse)', 'SM_ERR at SmMerge.cpp:4449 (ManifoldBoolean)', 'SM_ERR at SmApiBrep.cpp:233 (SmApiBoolean)')
 ```
 
 smlibwasm's `KernelError` has the same `status` and `trace`:

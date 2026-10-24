@@ -93,7 +93,7 @@ print(round(cone.volume, 3))                            # 3665.191: the exact fr
 
 # square to circle: turn the circle so its seam suits the square (45 for a centered Rectangle)
 duct = loft([Rectangle(30, 30), Circle(12).rotate(Z, 45).translate(0, 0, 25)])
-print(round(duct.section(Plane.XY.offset(12.5)).area, 1))  # 660.2 (unturned circle: 565.9)
+print(round(duct.section(Plane.XY.offset(12.5)).area, 1))  # 660.7 (unturned circle: 566.2)
 
 # square to hexagon: draw the hexagon as a closed Polyline that starts near the square's start
 hexagon = Polyline(*[(10 * math.cos(math.radians(120 + 60 * i)), 10 * math.sin(math.radians(120 + 60 * i)), 20)

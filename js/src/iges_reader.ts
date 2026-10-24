@@ -553,9 +553,10 @@ class _Interp {
   }
 
   /** An offset curve (130) at one distance: its base curve moved by it along the base's tangent x the
-   * normal of the plane it lies in (as STEP's OFFSET_CURVE_3D and OpenCASCADE's offset curves; a
-   * mirroring transformation turns the normal round). Lines and circles about the normal stay lines and
-   * circles; other curves become the kernel's offset curve, a NURBS. */
+   * normal of the plane it lies in (as OpenCASCADE reads such files, and its own offset curves; STEP's
+   * OFFSET_CURVE_3D offsets the other way round; a mirroring transformation turns the normal round).
+   * Lines and circles about the normal stay lines and circles; other curves become the kernel's offset
+   * curve, a NURBS. */
   offsetCurve(e: Entity, M: Matrix, depth: number): Any {
     const [baseDe, flag] = this.ints(e, 0, 2)
     if (flag !== 1) throw new NotImplementedError(`an offset curve whose distance varies (DE ${e.de})`)

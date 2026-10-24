@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copied from NVIDIA usd-brep (Apache-2.0, release 1.0.0, commit c9c5979), source/OCCT_BREP_IMPORT/src/OcctFileSource.cpp.
+// Changed for smlibpy (marked "smlibpy:"): two loops of a face that meet at one vertex joined into one
+// loop that passes it twice.
 
 #include "OcctFileSource.h"
 
@@ -8,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -396,6 +400,8 @@ bool OcctFileSource::BuildFace(const SSubShapeRef& rFaceRef, const pxr::GfMatrix
         rFace.vLoops.push_back(std::move(sLoop));
     }
 
+    JoinLoopsAtVertices(rFace.vLoops);  // smlibpy: (loops that meet at one vertex as one)
+
     // A natural-restriction face legitimately has no wires: the surface's natural parameter range is
     // the boundary. Such faces are driven through the implied-natural-boundary path in OcctStagingDriver.
     if (rFace.vLoops.empty() && !rFace.bNaturalRestriction)
@@ -479,6 +485,77 @@ bool OcctFileSource::BuildLoop(const SSubShapeRef& rWireRef, const pxr::GfMatrix
 
     OrderCoedgesIntoConnectedChain(rLoop.vCoedges);
     return true;
+}
+
+// smlibpy: two loops that meet at one vertex joined into one loop that passes it twice, as the kernel
+// has such a face (it takes loops that share a vertex for invalid: "Face Loops must not share a Vertex");
+// smlibpy's writer, as OpenCASCADE's own, writes a loop that touches itself as the wires between. Loops
+// with a closed edge or an edge used twice (a seam), of other senses in the face, or that meet at more
+// than one vertex stay as they are.
+void OcctFileSource::JoinLoopsAtVertices(std::vector<Loop>& rLoops) const
+{
+    const auto starts = [&](const Loop& rLoop, std::vector<int>& rStarts, std::vector<int>& rEdges)
+    {
+        rStarts.clear();
+        rEdges.clear();
+        for (const Coedge& rCoedge : rLoop.vCoedges)
+        {
+            const EdgeGeometry sEdge = ResolveEdge(rCoedge.iEdgeStorageIndex);
+            // (a degenerate edge at one vertex, a pole's or one bridging two pcurves there, stays where it is)
+            if (sEdge.iStartVertexStorageIndex == 0 || sEdge.iEndVertexStorageIndex == 0
+                || (sEdge.iStartVertexStorageIndex == sEdge.iEndVertexStorageIndex) != sEdge.bDegenerated)
+            {
+                return false;
+            }
+            rStarts.push_back(rCoedge.bSameOrientationWithLoop ? sEdge.iStartVertexStorageIndex : sEdge.iEndVertexStorageIndex);
+            rEdges.push_back(rCoedge.iEdgeStorageIndex);
+        }
+        std::sort(rEdges.begin(), rEdges.end());
+        return !rStarts.empty() && std::adjacent_find(rEdges.begin(), rEdges.end()) == rEdges.end();
+    };
+    std::vector<int> vStartsI, vStartsJ, vEdgesI, vEdgesJ;
+    bool bJoined = true;
+    while (bJoined && rLoops.size() > 1)
+    {
+        bJoined = false;
+        for (size_t i = 0; i < rLoops.size() && !bJoined; ++i)
+        {
+            if (!starts(rLoops[i], vStartsI, vEdgesI))
+            {
+                continue;
+            }
+            for (size_t j = i + 1; j < rLoops.size() && !bJoined; ++j)
+            {
+                if (rLoops[j].bSameOrientationWithSurface != rLoops[i].bSameOrientationWithSurface
+                    || !starts(rLoops[j], vStartsJ, vEdgesJ))
+                {
+                    continue;
+                }
+                std::vector<int> vA(vStartsI), vB(vStartsJ), vShared, vSharedEdges;
+                std::sort(vA.begin(), vA.end());
+                vA.erase(std::unique(vA.begin(), vA.end()), vA.end());
+                std::sort(vB.begin(), vB.end());
+                vB.erase(std::unique(vB.begin(), vB.end()), vB.end());
+                std::set_intersection(vA.begin(), vA.end(), vB.begin(), vB.end(), std::back_inserter(vShared));
+                std::set_intersection(vEdgesI.begin(), vEdgesI.end(), vEdgesJ.begin(), vEdgesJ.end(), std::back_inserter(vSharedEdges));
+                if (vShared.size() != 1 || !vSharedEdges.empty())
+                {
+                    continue;
+                }
+                const auto ia = static_cast<std::ptrdiff_t>(std::find(vStartsI.begin(), vStartsI.end(), vShared[0]) - vStartsI.begin());
+                const auto jb = static_cast<std::ptrdiff_t>(std::find(vStartsJ.begin(), vStartsJ.end(), vShared[0]) - vStartsJ.begin());
+                const std::vector<Coedge>& rI = rLoops[i].vCoedges;
+                const std::vector<Coedge>& rJ = rLoops[j].vCoedges;
+                std::vector<Coedge> vJoined(rI.begin(), rI.begin() + ia);
+                vJoined.insert(vJoined.end(), rJ.begin() + jb, rJ.end());
+                vJoined.insert(vJoined.end(), rJ.begin(), rJ.begin() + jb);
+                vJoined.insert(vJoined.end(), rI.begin() + ia, rI.end());
+                rLoops[i].vCoedges = std::move(vJoined);
+                rLoops.erase(rLoops.begin() + static_cast<std::ptrdiff_t>(j));
+                bJoined = true;
+            }
+        }
+    }
 }
 
 void OcctFileSource::PrepareCoedgesForStaging(std::vector<Coedge>& rCoedges) const

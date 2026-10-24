@@ -31,6 +31,12 @@ Value check_brep(const SmBrep* brep, int level);
 // between) and the body's "tolerance". The indices are in the Brep's order (-1: none).
 Value tolerance_gaps(const SmBrep* brep);
 
+// The same with the gaps repaired (ValidateAndUpdateTolerances, updating): the tolerance of each
+// vertex and edge farther from what it meets than its tolerance grows to the gap (or the edge's trim
+// curve is made again); the geometry does not change. "updated": whether anything changed; the gaps
+// are those found before.
+Value update_tolerances(SmBrep* brep);
+
 // The tolerance of an edge or a vertex: how far its geometry and that of what meets there may
 // lie apart.
 double edge_tolerance(const SmEdge* edge);

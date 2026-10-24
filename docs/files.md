@@ -59,7 +59,11 @@ shells. Part names and colors are kept, in any characters (`"Bügel"`, `"部品"
 10303-21's `\X2\` encoding, which other CAD systems read). The output is checked in the test
 suite by reading it back with OpenCASCADE. A body with a face STEP cannot hold as the kernel
 has it (an offset face that reaches past its basis) is written converted to NURBS, with a
-warning.
+warning. A face whose boundary passes a vertex twice (a thin hole that reaches its border there,
+as where the pieces of a sweep meet at a corner) is written with the loops between, one bound
+each: OpenCASCADE walks such a boundary the wrong way at that vertex. `import_step` joins them
+into one loop again, as the kernel has it (and so does `import_brep`, whose files the writer
+splits the same way).
 
 All bodies go into one product (named `name`, by default after the file), each body a solid
 with its own name. With `assembly=True` each body becomes a product of its own, named as the
@@ -181,7 +185,9 @@ OpenCASCADE but three that OpenCASCADE takes for invalid in their STEP files too
 runs through itself, a solid with 16 cavities, a sheet with gaps of 4 mm), 541 of the 558 it
 measures with its volume within 1e-5 of smlibpy's and the rest within 3.4e-4 (as far as smlibpy
 and OpenCASCADE measure the STEP file itself apart). The test suite checks the files it writes
-for the faults OpenCASCADE's check finds. A body whose edge lies
+for the faults OpenCASCADE's check finds. A face's loop that passes a vertex twice is written as
+the wires between, and an edge that a loop runs along and straight back (a strut a fuse can leave)
+is left out of the wire: OpenCASCADE takes either for a wire that does not close. A body whose edge lies
 farther from its face than 1e-3 of the body's size, or whose face boundary does not close, raises
 `KernelError` that names the face; meshes, curves and points raise `TypeError`.
 
@@ -304,8 +310,9 @@ the file has them rather than a Boolean difference.
 
 The importer is checked against OpenCASCADE on more than 400 files written by NX, CATIA,
 Creo, SolidWorks, Inventor, Onshape, FreeCAD, KiCad and ClassCAD, the CAx-IF test models
-among them. Offset curves (`OFFSET_CURVE_3D`: lines and circles stay lines and circles, others
-become NURBS within 1e-9 of their size) and edges given only as a curve in a surface's
+among them. Offset curves (`OFFSET_CURVE_3D`, moved along the reference direction x the
+tangent, as ISO 10303-42 defines it and OpenCASCADE reads it: lines and circles stay lines and
+circles, others become NURBS within 1e-9 of their size) and edges given only as a curve in a surface's
 parameters (`PCURVE`) are read, and so are assembly placements that mirror or scale a part
 (`CARTESIAN_TRANSFORMATION_OPERATOR_3D`): the part is built where it is defined and mirrored or
 scaled whole, as `mirror` and `scale` do. An offset of a plane, sphere, cylinder, cone or torus

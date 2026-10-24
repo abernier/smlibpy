@@ -5,7 +5,8 @@
 // re-aligned cylinder or cone frame a whole number of periods; where every coedge of a face has a pcurve,
 // degenerate edges where a loop jumps along a pole and the wires of a face whose loops run clockwise in
 // its surface's parameters turned; the faces of an open component that share no edge in shells of their own;
-// the twin vertices where one coedge of a loop ends and the next starts written as one.
+// the twin vertices where one coedge of a loop ends and the next starts written as one; an edge a loop runs
+// along and straight back left out; a loop that passes a vertex twice written as the wires between.
 
 // Build an OCCT SOcctModel from a UsdBrepArrayData.
 //
@@ -32,6 +33,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <vector>
 
@@ -1376,6 +1378,98 @@ bool AppendBrep(const UsdBrepView& brep, SOcctModel& rModel, std::vector<SSubSha
                 sCoedges.push_back(std::move(c));
             }
             sLoops.push_back(std::move(sCoedges));
+        }
+        // smlibpy: an edge that a loop runs along and straight back (a strut into the face, which a fuse can
+        // leave where two tubes meet: both its uses have one pcurve) is left out of the loop: OpenCASCADE
+        // takes it for a seam and the wire for one that does not close (BRepCheck_NotClosed).
+        for (std::vector<Coedge>& rLoop : sLoops)
+        {
+            bool bDropped = true;
+            while (bDropped && rLoop.size() > 2)
+            {
+                bDropped = false;
+                for (size_t k = 0; k < rLoop.size() && !bDropped; ++k)
+                {
+                    const size_t n = (k + 1) % rLoop.size();
+                    const Coedge& a = rLoop[k];
+                    const Coedge& b = rLoop[n];
+                    if (a.edge != b.edge || a.bSame == b.bSame || a.sPoints.empty() || a.sPoints.size() != b.sPoints.size())
+                    {
+                        continue;
+                    }
+                    double dScale = 1.0, dOff = 0.0;
+                    for (size_t i = 0; i < a.sPoints.size(); ++i)
+                    {
+                        const GfVec2d& p = a.sPoints[i];
+                        dScale = std::max({ dScale, std::fabs(p[0]), std::fabs(p[1]) });
+                        dOff = std::max(dOff, (p - b.sPoints[b.sPoints.size() - 1 - i]).GetLength());
+                    }
+                    if (dOff > 1e-9 * dScale)
+                    {
+                        continue;  // (a seam: its two uses lie on two sides of the parameters)
+                    }
+                    rLoop.erase(rLoop.begin() + static_cast<std::ptrdiff_t>(std::max(k, n)));
+                    rLoop.erase(rLoop.begin() + static_cast<std::ptrdiff_t>(std::min(k, n)));
+                    bDropped = true;
+                }
+            }
+        }
+        // smlibpy: a loop that passes a vertex twice (a thin hole that reaches the face's border there, as
+        // where the pieces of a sweep meet at a corner) as the loops between, one wire each: OpenCASCADE
+        // walks such a wire the wrong way at that vertex and takes it for open (BRepCheck_NotClosed). A loop
+        // with a closed edge or an edge used twice (a seam, a pole's degenerate edge) stays as it is.
+        {
+            std::vector<std::vector<Coedge>> sSimple;
+            for (std::vector<Coedge>& rLoop : sLoops)
+            {
+                std::vector<int> sStarts;
+                std::vector<uint32_t> sEdges;
+                bool bSplit = rLoop.size() >= 3;
+                for (const Coedge& c : rLoop)
+                {
+                    const GfVec2i vtx = brep.EdgeLocalVertexIndices(c.edge);
+                    if (!bSplit || vtx[0] < 0 || vtx[1] < 0 || vtx[0] == vtx[1])
+                    {
+                        bSplit = false;
+                        break;
+                    }
+                    sStarts.push_back(c.bSame ? vtx[0] : vtx[1]);
+                    sEdges.push_back(c.edge);
+                }
+                if (bSplit)
+                {
+                    std::vector<uint32_t> sSortedEdges = sEdges;
+                    std::vector<int> sSortedStarts = sStarts;
+                    std::sort(sSortedEdges.begin(), sSortedEdges.end());
+                    std::sort(sSortedStarts.begin(), sSortedStarts.end());
+                    bSplit = std::adjacent_find(sSortedEdges.begin(), sSortedEdges.end()) == sSortedEdges.end()
+                             && std::adjacent_find(sSortedStarts.begin(), sSortedStarts.end()) != sSortedStarts.end();
+                }
+                if (!bSplit)
+                {
+                    sSimple.push_back(std::move(rLoop));
+                    continue;
+                }
+                std::vector<Coedge> sPath;
+                std::vector<int> sPathStarts;
+                for (size_t k = 0; k < rLoop.size(); ++k)
+                {
+                    const auto it = std::find(sPathStarts.begin(), sPathStarts.end(), sStarts[k]);
+                    if (it != sPathStarts.end())
+                    {
+                        // (back at a vertex: the coedges since are a loop of their own)
+                        const size_t at = static_cast<size_t>(it - sPathStarts.begin());
+                        sSimple.emplace_back(std::make_move_iterator(sPath.begin() + static_cast<std::ptrdiff_t>(at)),
+                                             std::make_move_iterator(sPath.end()));
+                        sPath.resize(at);
+                        sPathStarts.resize(at);
+                    }
+                    sPath.push_back(std::move(rLoop[k]));
+                    sPathStarts.push_back(sStarts[k]);
+                }
+                sSimple.push_back(std::move(sPath));
+            }
+            sLoops = std::move(sSimple);
         }
         bAllPCurves = bAllPCurves && !sLoops.empty();
         bool bTurn = false;

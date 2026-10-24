@@ -504,7 +504,9 @@ class _Interp:
         if t == "TRIMMED_CURVE":
             return self.curve(a[1])
         if t == "OFFSET_CURVE_3D":  # (name, basis_curve, distance, self_intersect, ref_direction)
-            return _offset_curve(self.curve(a[1]), float(a[2]) * self.scale, self.direction(a[4]), int(ref))
+            # (ISO 10303-42 offsets along ref_direction x tangent, as OpenCASCADE reads it: the other way
+            # round from IGES's 130 and _offset_curve, so the distance turns round)
+            return _offset_curve(self.curve(a[1]), -float(a[2]) * self.scale, self.direction(a[4]), int(ref))
         if t == "PCURVE":  # (name, basis_surface, reference_to_curve): an edge given in a surface's parameters
             return self.pcurve(a[1], a[2], int(ref))
         raise NotImplementedError(f"curve type {t} (#{int(ref)})")
@@ -747,10 +749,11 @@ def _kernel_nurbs(make: Any, what: str, delete: bool = False) -> dict[str, Any]:
 
 def _offset_curve(basis: dict[str, Any], d: float, ref: np.ndarray, eid: int | str,
                   what: str = "read STEP offset curve") -> dict[str, Any]:
-    """An OFFSET_CURVE_3D: each point moved ``d`` along tangent x ``ref`` (ISO 10303-42; IGES's offset
-    curve, 130, the same). The offset of a line is a line, of a circle about ``ref`` a circle; others are
-    the kernel's offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS
-    within 1e-9 of their size. ``eid``: the entity, a STEP id or how a message names it (``"DE 7"``)."""
+    """An offset curve: each point moved ``d`` along tangent x ``ref`` (IGES's offset curve, 130; STEP's
+    OFFSET_CURVE_3D offsets along ``ref`` x tangent, ISO 10303-42, so its reader passes the distance turned
+    round). The offset of a line is a line, of a circle about ``ref`` a circle; others are the kernel's
+    offset curve (SmOffsetCurve) over the whole basis (its parameters kept), as a NURBS within 1e-9 of
+    their size. ``eid``: the entity, a STEP id or how a message names it (``"DE 7"``)."""
     eid = f"#{eid}" if isinstance(eid, int) else eid
     kind = basis["kind"]
     ref = _unit3(ref)

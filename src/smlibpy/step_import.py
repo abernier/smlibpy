@@ -588,6 +588,9 @@ def _build_body(body: BodyData, m: np.ndarray, heal: bool) -> Any:
     edges = bld.specs
 
     def face_spec(fi: int, f: dict[str, Any], srf: dict[str, Any]) -> dict[str, Any]:
+        joined = _joined_loops(f["loops"], body.edges)
+        if joined is not f["loops"]:
+            f = dict(f, loops=joined)
         loops = []
         for loop in _outer_first(bld, f["loops"]):
             if loop.get("edges"):
@@ -802,6 +805,47 @@ def _unmeshed(body: Any) -> set[int]:
         return {int(f["face_index"]) for f in failures}
     except Exception:
         return set(range(len(body.faces())))
+
+
+def _joined_loops(loops: list[dict[str, Any]], edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A face's loops with two that meet at one vertex joined into one loop that passes it twice (and is
+    the outer loop if either was): the kernel's faces have no loops that share a vertex (its check:
+    "Face Loops must not share a Vertex"), and smlibpy's writer, as OpenCASCADE's, writes such a loop as
+    the loops between. Loops with a closed edge or an edge used twice (a seam), and loops that meet at
+    more than one vertex, stay as they are. ``loops`` itself where nothing is joined."""
+    def starts(loop: dict[str, Any]) -> list[Any] | None:
+        items = loop.get("edges") or []
+        if not items or len({e for e, _ in items}) != len(items):
+            return None
+        out = []
+        for e, forward in items:
+            v0, v1 = edges[e]["v0"], edges[e]["v1"]
+            if v0 is None or v0 == v1:
+                return None
+            out.append(v0 if forward else v1)
+        return out
+
+    if sum(1 for loop in loops if loop.get("edges")) < 2:
+        return loops
+    out = list(loops)
+    joined = True
+    while joined:
+        joined = False
+        for i, j in ((i, j) for i in range(len(out)) for j in range(i + 1, len(out))):
+            si, sj = starts(out[i]), starts(out[j])
+            if si is None or sj is None or len(set(si) & set(sj)) != 1:
+                continue
+            if {e for e, _ in out[i]["edges"]} & {e for e, _ in out[j]["edges"]}:
+                continue
+            v = (set(si) & set(sj)).pop()
+            a, b = si.index(v), sj.index(v)
+            ei, ej = list(out[i]["edges"]), list(out[j]["edges"])
+            out[i] = dict(out[i], edges=ei[:a] + ej[b:] + ej[:b] + ei[a:],
+                          outer=bool(out[i].get("outer") or out[j].get("outer")))
+            del out[j]
+            joined = True
+            break
+    return out if len(out) != len(loops) else loops
 
 
 def _outer_first(bld: _Builder, loops: list[dict[str, Any]]) -> list[dict[str, Any]]:

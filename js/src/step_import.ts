@@ -23,6 +23,7 @@ import {
   interpretExtras,
   parse,
   type BodyData,
+  type EdgeData,
   type FaceData,
   type LoopData,
   type StepFile,
@@ -798,6 +799,8 @@ export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | She
   const edges = bld.specs
   const faceSpec = (fi: number, face: FaceData, srf: Any): Any => {
     let f = face
+    const joined = _joinedLoops(f.loops, body.edges)
+    if (joined !== f.loops) f = { ...f, loops: joined }
     let loops: Any[] = []
     for (const loop of _outerFirst(bld, f.loops)) {
       if (loop.edges?.length) {
@@ -1058,6 +1061,51 @@ function _unmeshed(body: Part | Shell): Set<number> {
   } catch {
     return new Set(Array.from({ length: body.faces().length }, (_, i) => i))
   }
+}
+
+/** A face's loops with two that meet at one vertex joined into one loop that passes it twice (and is the
+ * outer loop if either was): the kernel's faces have no loops that share a vertex (its check: "Face Loops
+ * must not share a Vertex"), and smlibwasm's writer, as OpenCASCADE's, writes such a loop as the loops
+ * between. Loops with a closed edge or an edge used twice (a seam), and loops that meet at more than one
+ * vertex, stay as they are. `loops` itself where nothing is joined. */
+function _joinedLoops(loops: LoopData[], edges: EdgeData[]): LoopData[] {
+  const starts = (loop: LoopData): number[] | null => {
+    const items = loop.edges ?? []
+    if (!items.length || new Set(items.map(([e]) => e)).size !== items.length) return null
+    const out: number[] = []
+    for (const [e, forward] of items) {
+      const { v0, v1 } = edges[e]
+      if (v0 === null || v0 === undefined || v0 === v1) return null
+      out.push(forward ? v0 : v1)
+    }
+    return out
+  }
+  if (loops.filter((loop) => loop.edges?.length).length < 2) return loops
+  const out = [...loops]
+  let joined = true
+  while (joined) {
+    joined = false
+    search: for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const si = starts(out[i])
+        const sj = starts(out[j])
+        if (si === null || sj === null) continue
+        const shared = si.filter((v) => sj.includes(v))
+        if (new Set(shared).size !== 1) continue
+        const ei = out[i].edges as [number, boolean][]
+        const ej = out[j].edges as [number, boolean][]
+        const own = new Set(ei.map(([e]) => e))
+        if (ej.some(([e]) => own.has(e))) continue
+        const a = si.indexOf(shared[0])
+        const b = sj.indexOf(shared[0])
+        out[i] = { ...out[i], edges: [...ei.slice(0, a), ...ej.slice(b), ...ej.slice(0, b), ...ei.slice(a)], outer: Boolean(out[i].outer || out[j].outer) }
+        out.splice(j, 1)
+        joined = true
+        break search
+      }
+    }
+  }
+  return out.length !== loops.length ? out : loops
 }
 
 /** Loops with the outer one first. Files that do not mark the outer bound get the loop with the

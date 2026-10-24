@@ -158,6 +158,7 @@ const OWN: Record<string, Signature> = {
   'ext.untag_topology': ['brep'],
   'ext.check_brep': ['brep', ['level', 2]],
   'ext.tolerance_gaps': ['brep'],
+  'ext.update_tolerances': ['brep'],
   'ext.edge_tolerance': ['edge'],
   'ext.vertex_tolerance': ['vertex'],
   'ext.slice': ['brep', 'sheet', ['below', false]],

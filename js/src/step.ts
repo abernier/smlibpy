@@ -223,6 +223,31 @@ type NormalOf =
   | { kind: 'torus'; o: V3; z: V3; R: number }
   | null
 
+/** The edgeuses of a loop (`[edge, forward]`) as loops that pass no vertex twice: a loop that touches
+ * itself at a vertex (a thin hole that reaches the face's border there, as where the pieces of a sweep
+ * meet at a corner) is split into the loops between. OpenCASCADE walks such a loop's wire the wrong way at
+ * that vertex and takes it for open, the face for invalid. A loop with a closed edge or an edge used twice
+ * (a seam) stays as it is. */
+function _simpleLoops(items: [number, boolean][], edges: Any[]): [number, boolean][][] {
+  if (items.length < 3 || new Set(items.map(([e]) => e)).size !== items.length) return [items]
+  const starts: unknown[] = []
+  for (const [e, forward] of items) {
+    const { v0, v1 } = edges[e]
+    if (v0 === null || v0 === undefined || v0 === v1) return [items]
+    starts.push(forward ? v0 : v1)
+  }
+  if (new Set(starts).size === starts.length) return [items]
+  const loops: [number, boolean][][] = []
+  const path: [[number, boolean], unknown][] = []
+  items.forEach((item, i) => {
+    const at = path.findIndex(([, u]) => u === starts[i])
+    if (at >= 0) loops.push(path.splice(at).map(([x]) => x)) // (back at a vertex: the edgeuses since are a loop of their own)
+    path.push([item, starts[i]])
+  })
+  loops.push(path.map(([x]) => x))
+  return loops
+}
+
 /** A body has faces the writer cannot write exactly (the message says which). */
 class _NeedsNurbs extends Error {}
 
@@ -472,20 +497,25 @@ class _BodyWriter {
     const [srf, agrees] = this.surface(idx)
     const bounds: string[] = []
     for (const loop of use.loops) {
-      let lp: number
-      if (loop.vertex !== null && !loop.edges.length) lp = w.add(`VERTEX_LOOP('',#${this.vertex(loop.vertex)})`)
+      const parts: number[] = []
+      if (loop.vertex !== null && !loop.edges.length) parts.push(w.add(`VERTEX_LOOP('',#${this.vertex(loop.vertex)})`))
       else {
-        const oes: string[] = []
-        for (const [eidx, forward] of loop.edges) {
-          const flag = forward ? '.T.' : '.F.'
-          const oe = w.add(`ORIENTED_EDGE('',*,*,#${this.edge(eidx)},${flag})`)
-          oes.push(`#${oe}`)
+        for (const items of _simpleLoops(loop.edges, this.dump.edges)) {
+          const oes: string[] = []
+          for (const [eidx, forward] of items) {
+            const flag = forward ? '.T.' : '.F.'
+            const oe = w.add(`ORIENTED_EDGE('',*,*,#${this.edge(eidx)},${flag})`)
+            oes.push(`#${oe}`)
+          }
+          parts.push(w.add(`EDGE_LOOP('',(${oes.join(',')}))`))
         }
-        lp = w.add(`EDGE_LOOP('',(${oes.join(',')}))`)
       }
-      const kind = loop.outer ? 'FACE_OUTER_BOUND' : 'FACE_BOUND'
-      const bound = w.add(`${kind}('',#${lp},.T.)`)
-      bounds.push(`#${bound}`)
+      // (a loop split into several: none of them marked as the outer one)
+      const kind = loop.outer && parts.length === 1 ? 'FACE_OUTER_BOUND' : 'FACE_BOUND'
+      for (const lp of parts) {
+        const bound = w.add(`${kind}('',#${lp},.T.)`)
+        bounds.push(`#${bound}`)
+      }
     }
     // The faceuse normal is the kernel's natural normal when the faceuse is SAME.
     const same = Boolean(use.same) === agrees
