@@ -22,6 +22,7 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
 | O10: `move_faces` and `offset_faces` refuse parts with a cavity | FINISH |
 | O10: `draft` of a part with a cavity raises a misleading message | FINISH (such drafts work) |
 | O10: extended rounds come back as surfaces of extrusion | FINISH |
+| O10: `move_faces` and `offset_faces` cannot change which faces meet | LATER |
 | O11: per-face neutral planes for stepped parting lines | LATER |
 
 ## Finished
@@ -47,6 +48,9 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
   corner patches lost the copies of their boundaries' UV curves
   (`SmBSplineSurface::CreateCornerBlend`, patched: `SmBSplineSurfaceNLib.cpp`; LeakSanitizer 20.7 kB
   in the set-back tests before, 0 after); that also concerns corners of five or more rounded edges.
+  `corners="mitre"` found its corners by vertex wrappers whose identity Python can hand to the next
+  vertex once one is dropped, and could skip a corner (a wrong "the selection has none"); both
+  corner styles now go by the vertex's point.
 - **Radius laws along runs of edges (F5, F8).** A `(start, end)` radius runs linearly along each
   run of selected edges that meet tangentially, a single edge or a chain such as the top run of a
   plate rounded at two corners (which `propagate` adds), in proportion to the length along it: the
@@ -169,6 +173,12 @@ closed out. Tests: `tests/test_closeout_F.py` and `js/test/closeout_F.test.ts` (
 - **`Shell.offset(corners=...)` (O9).** O9's Do was `Part.offset(corners=)`, which 0.5.0 has; the
   kernel's rounded mode returns inward offsets of sheets unchanged (an open cup at -1: 33 faces,
   area 1200, the input's), so a sheet option needs checks of its own.
+- **Face edits that change which faces meet (O10).** The Do was push-pull, hole and boss resizes over
+  `SmBrep::LocalOperation`, which moves faces within the part's topology; an edit that makes a face
+  vanish or run into another needs the faces intersected again (a Boolean). Such edits raise
+  `ModelingError` ("the offset faces do not close the part again ...", or "... edges leave its
+  faces ..."): a step's top offset by 7 past the part's top, and by exactly 5 to lie flush with it,
+  are refused; 4.999 gives 5999.8, exact.
 - **Per-face neutral planes for stepped parting lines (O11).** The Do was the recipe for planar
   parting lines (in 0.5.0); stepped ones need a draft call with a neutral plane per face group.
 
