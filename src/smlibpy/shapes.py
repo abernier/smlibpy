@@ -3779,6 +3779,84 @@ def _union_or_cut_problem(result: Part, part: Part, tools: Sequence[Part], op: A
     return None
 
 
+def _seam_zones(part: Part, tools: Sequence[Part]) -> list[tuple[Any, Any]]:
+    """The boxes of the faces where a seam of one operand touches a face of another at a point
+    (``ext.seam_touches``: the seam's own face and the face it touches), between the part and each
+    tool: where the kernel's Boolean can come out wrong (kernel plan B6). Empty where no seam
+    touches."""
+    out: list[tuple[Any, Any]] = []
+    for t in tools:
+        if _disjoint(part._loose_box(), t._loose_box(), 1e-6 * part._extent()):
+            continue
+        for a, b in ((part, t), (t, part)):
+            touches = ext.seam_touches(a._brep, b._brep)
+            if not touches:
+                continue
+            edges, faces = a._brep.edges(), b._brep.faces()
+            for edge, face, _ in touches:
+                out.append(faces[face].bounding_box(False))
+                out.extend(f.bounding_box(False) for f in edges[edge].faces())
+    return out
+
+
+def _seam_problem(result: Part, part: Part, tools: Sequence[Part], op: Any) -> str | None:
+    """What is wrong with a Boolean's result where a seam of one operand touches a face of another
+    at a point, or None. The seam turned or moved on its face first (``ext.boolean``) leaves the
+    kernel right; a seam no turn moves (a torus' outer equator, the seam of a free-form face) can
+    leave a valid body of the wrong volume (kernel plan B6). Points on the result's faces near
+    those faces (16 x 16 in each face's parameter box, on the face) are classified against the
+    operands: on a union's surface none lies inside an operand or outside all of them, on an
+    intersection's none outside an operand, on a difference's none outside the part or inside a
+    tool. A point the kernel cannot classify on its face (a face whose trim it cannot resolve)
+    counts as such a point too. Three such points refuse it. ``(Box(30, 30, 30) - Cylinder(5.997,
+    60).translate(2.016, 2.814, 0)) + Torus(3.546, 1.773).rotate(Y, 90).translate(8.013, 8.133,
+    6.396)`` gave 23610.47, the torus inside the hole left out (right: 23635.96); the intersection
+    of ``Torus(6, 4).rotate(Y, 90)`` and a half-space whose plane touches its outer equator gave
+    11.61 or 52.26 for 5.81, with faces on which no point can be classified."""
+    zones = _seam_zones(part, tools)
+    if not zones:
+        return None
+    operands = [part, *tools]
+    size = max(x._loose_box().diagonal for x in operands)
+    reach, tol = 1e-3 * size, 1e-6 * size + 1e-7
+    points = []
+    wrong: list[tuple[float, float, float]] = []
+    n = 16
+    for f in result._brep.faces():
+        lo, hi = f.bounding_box(False)
+        if not any(all(lo[i] <= zh[i] + reach and zl[i] - reach <= hi[i] for i in range(3)) for zl, zh in zones):
+            continue
+        (u0, v0), (u1, v1) = f.uv_domain()
+        for i in range(n):
+            for j in range(n):
+                u, v = u0 + (i + 0.5) / n * (u1 - u0), v0 + (j + 0.5) / n * (v1 - v0)
+                try:
+                    inside = f.classify_uv(u, v) == "inside"
+                except RuntimeError:  # (a face whose trim the kernel cannot resolve)
+                    try:
+                        wrong.append(Vector(f.point_at_uv(u, v)).to_tuple())
+                    except RuntimeError:
+                        wrong.append(tuple(0.5 * (a + b) for a, b in zip(lo, hi)))
+                    continue
+                if inside:
+                    points.append(Vector(f.point_at_uv(u, v)).to_tuple())
+    where = [[w for w, _, _ in x._classify(points, tol)] for x in operands] if points else []
+    for j, p in enumerate(points):
+        c = [w[j] for w in where]
+        if op == k.BooleanOp.UNION:
+            bad = all(x == "outside" for x in c) or "inside" in c
+        elif op == k.BooleanOp.INTERSECTION:
+            bad = "outside" in c
+        else:
+            bad = c[0] == "outside" or "inside" in c[1:]
+        if bad:
+            wrong.append(p)
+    if len(wrong) < 3:
+        return None
+    return (f"wrong where a seam of one operand touches a face of the other at a point (its faces there do not "
+            f"bound what the operands give, near {_fmt_point(Vector(wrong[0]))})")
+
+
 def _same_vertices(a: _Body, b: _Body, tol: float, among: bool = False) -> bool:
     """Whether two bodies have as many vertices and each vertex of ``a`` lies near one of ``b``
     (within ``tol``, or up to 4 ``tol``: cells of a grid; for the quick test of a body given back
@@ -4898,6 +4976,8 @@ class Part(_Body):
         if len(tools) == 1:
             retry = self._nurbs_retry(tools, op, name)
             if retry is None:
+                retry = self._seam_retry(tools, op, name)
+            if retry is None:
                 retry = self._swapped_retry(tools[0], op, name)
             if retry is not None:
                 return retry
@@ -4916,6 +4996,8 @@ class Part(_Body):
             except KernelError:
                 pass
             retry = self._nurbs_retry(tools, op, name)
+            if retry is None:
+                retry = self._seam_retry(tools, op, name)
             if retry is not None:
                 return retry
         broken = [x for x in (self, *tools) if x._solid_problem() is not None]
@@ -4935,7 +5017,8 @@ class Part(_Body):
         tools of both cuts combined avoid; that a face of a tool lies on a face of the part; that
         several tools were also tried combined; that the operands only touch (no point of the mesh of
         one lies inside the other), or that a round face of a tool touches a face of the part
-        tangentially. With none of these, that none of them shows."""
+        tangentially; that a seam of an operand touches a face of the other at a point (kernel plan
+        B6). With none of these, that none of them shows."""
         clauses = []
         crash = _crash_note(failure, name)
         if crash is not None:
@@ -4961,6 +5044,13 @@ class Part(_Body):
         if coincident is not None:
             clauses.append(f"a face of a tool lies on a face of the part ({coincident}): let the tool reach past "
                            f"that face, or stop short of it")
+        seam = next((p for t in near if isinstance(t, Part) for a, b in ((self, t), (t, self))
+                     for _, _, p in ext.seam_touches(a._brep, b._brep)), None)
+        if seam is not None:
+            clauses.append(f"the seam of a closed face of an operand (where its surface meets itself) touches a face of "
+                           f"the other at a point (near {_fmt_point(Vector(seam))}), where the kernel's Boolean goes "
+                           f"wrong (smlibpy moves such seams where it can, not a torus' outer equator or the seam of a "
+                           f"free-form face): move or turn the tool a little")
         if len(tools) > 1:
             clauses.append("smlibpy also applied the tools combined into one, which failed too: apply them one at a "
                            "time to find the one that fails")
@@ -4981,6 +5071,29 @@ class Part(_Body):
             return None
         try:
             retry = self._like(self._run_boolean([t.to_nurbs() if n else t for t, n in zip(tools, nurbs)], op, name))
+            if self._boolean_problem(retry, tools, op) is not None or _volume_problem(retry, self, tools, op):
+                return None
+        except KernelError:
+            return None
+        return retry
+
+    def _seam_retry(self, tools: Sequence[Part], op: Any, name: str) -> Part | None:
+        """The Boolean again with a NURBS copy of each operand whose seam touches another at a point
+        (``ext.seam_touches``): ``ext.boolean`` moves such a seam on a copy whose faces it recognizes
+        as cylinders, cones, spheres or tori again, which a hole's seam that no turn moves can need
+        (kernel plan B6; the result's faces come back analytic). Checked as the first try, and
+        against the operands' volume bounds. None where no seam touches, or the retry fails or is
+        wrong too."""
+        if not self._brep.is_manifold_solid() or not all(isinstance(t, Part) and t._brep.is_manifold_solid()
+                                                          for t in tools):
+            return None
+        mine = any(ext.seam_touches(self._brep, t._brep) for t in tools)
+        theirs = [bool(ext.seam_touches(t._brep, self._brep)) for t in tools]
+        if not mine and not any(theirs):
+            return None
+        try:
+            part = self.to_nurbs() if mine else self
+            retry = self._like(part._run_boolean([t.to_nurbs() if n else t for t, n in zip(tools, theirs)], op, name))
             if self._boolean_problem(retry, tools, op) is not None or _volume_problem(retry, self, tools, op):
                 return None
         except KernelError:
@@ -5032,6 +5145,8 @@ class Part(_Body):
                     problem = _intersection_problem(result, [self, *tools])
                 else:
                     problem = _union_or_cut_problem(result, self, tools, op)
+                if problem is None:
+                    problem = _seam_problem(result, self, tools, op)
                 if problem is None:
                     result._h.sound = _TRUSTED
                 return problem
@@ -6206,7 +6321,9 @@ class Part(_Body):
         trim is not kept): a free-form face tangentially, a plane, cylinder, cone or sphere as
         itself (:meth:`Face.extend`; around a closed face it cannot grow); sheets of several faces
         raise ``ModelingError`` ("the surface does not cut through the part"). The two sides together hold the part's
-        volume, which is checked. A planar face (or a sketch) stands for its plane.
+        volume, which is checked. A planar face (or a sketch) stands for its plane. A plane that a
+        seam of the part touches at a point (a torus' outer equator, where the kernel's Boolean can
+        go wrong) gives only sides that together hold the part's volume, else ``ModelingError``.
         """
         if isinstance(plane, ShapeList):
             plane = plane.one()
@@ -6226,13 +6343,71 @@ class Part(_Body):
 
         bb = self.bbox()
         size = 4.0 * (bb.diagonal + bb.center.distance_to(pl.origin)) + 1.0
+
+        def halfspace(side: Plane, size: float = size) -> Part:
+            return Box(size, size, size).translate(0, 0, size / 2).moved(
+                Plane(side.project(bb.center), side.x_dir, side.z_dir).location)
+
         side = pl if keep == "above" else pl.flipped()
-        halfspace = Box(size, size, size).translate(0, 0, size / 2).moved(Plane(pl.project(bb.center), side.x_dir, side.z_dir).location)
+        box = halfspace(side)
+        if ext.seam_touches(self._brep, box._brep):
+            # A seam of the part touches the plane at a point (a torus' outer equator, kernel plan
+            # B6): the kernel's Boolean can give sides that do not add up. Both sides are made and
+            # must hold the part's volume; else the kernel's slice along the plane, checked so.
+            return self._split_at_seam(pl, keep, halfspace, size)
         with kernel_call("split"):
-            kept = self & halfspace
+            kept = self & box
         if kept._brep.face_count() == 0:
             raise ModelingError(f"split: nothing of the part lies {keep} the plane")
         return kept
+
+    def _split_at_seam(self, pl: Plane, keep: str, halfspace: Callable[[Plane, float], Part], size: float) -> Part:
+        """:meth:`split` by a plane that a seam of the part touches at a point (kernel plan B6): the
+        side a half-space box keeps where it and the other side, kept by a box of its own, hold the
+        part's volume together (within 1e-6 and the gaps between their faces, which must leave their
+        volumes uncertain by less than 1e-5 of the part's), with boxes of four sizes
+        (the kernel's result depends on where the box's edges lie); else the kernel's slice along the
+        plane where its two sides do; else ``ModelingError``. ``Torus(6, 4).rotate(Y, 90)`` split at
+        z = 10 by a plane tilted by 30 degrees about Y, which touches its outer equator, gave 5.8069
+        above and 1842.7020 below (the torus: 1894.9640; 1889.1572 below)."""
+        side = pl if keep == "above" else pl.flipped()
+        whole = float(self._props()["volume"])
+        kept: list[tuple[Part, float, float]] = []
+        rest: list[tuple[float, float]] = []
+
+        def measured(box: Part) -> tuple[Part, float, float] | None:
+            """The side a box keeps, its volume and how far that is uncertain (its gaps); None where
+            the kernel fails or the faces do not meet (to 1e-5 of the part's volume)."""
+            try:
+                with kernel_call("split"):
+                    piece = self & box
+                if piece._brep.face_count() == 0:
+                    return piece, 0.0, 0.0
+                p = piece._props()
+                v, gaps = float(p["volume"]), float(p["gaps"])
+                return (piece, v, gaps * v) if gaps * v <= 1e-5 * whole else None
+            except (KernelError, ModelingError):
+                return None
+
+        for f in (1.0, 0.73, 1.37, 1.91):
+            a, b = measured(halfspace(side, f * size)), measured(halfspace(side.flipped(), f * size))
+            if a is not None:
+                kept.append(a)
+            if b is not None:
+                rest.append(b[1:])
+            for piece, v, e in kept:
+                if any(abs(v + w - whole) <= 1e-6 * whole + 10 * (e + ew) for w, ew in rest):
+                    if piece._brep.face_count() == 0:
+                        raise ModelingError(f"split: nothing of the part lies {keep} the plane")
+                    return piece
+        from .sketches import Rectangle
+
+        sheet = Shell._wrap(Rectangle(size, size).on(pl)._copy_brep())
+        pieces = self._sliced(sheet)
+        if pieces is None:
+            raise ModelingError("split: the kernel's sides of the part do not add up to the part where a seam of the "
+                                "part touches the plane at a point (kernel plan B6); move or tilt the plane a little")
+        return pieces[0] if keep == "above" else pieces[1]
 
     def imprint(self, tool: Part | Shell | Face | Sketch | Edge | Wire | Iterable[Edge | Wire],
                 direction: Axis | VectorLike | None = None, *, nearest: bool = True) -> Part:

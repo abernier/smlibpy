@@ -4292,6 +4292,91 @@ export function _unionOrCutProblem(result: Part, part: Part, tools: readonly Par
   return null
 }
 
+/** The boxes of the faces where a seam of one operand touches a face of another at a point
+ * (`ext.seam_touches`: the seam's own face and the face it touches), between the part and each tool:
+ * where the kernel's Boolean can come out wrong (kernel plan B6). Empty where no seam touches. */
+function _seamZones(part: Part, tools: readonly Part[]): [number[], number[]][] {
+  const out: [number[], number[]][] = []
+  for (const t of tools) {
+    if (_disjoint(part._looseBox(), t._looseBox(), 1e-6 * part._extent())) continue
+    for (const [a, b] of [
+      [part, t],
+      [t, part],
+    ]) {
+      const touches = ext.seam_touches(a._brep, b._brep) as [number, number, number[]][]
+      if (!touches.length) continue
+      const edges = k.brep_edges(a._brep) as number[]
+      const faces = k.brep_faces(b._brep) as number[]
+      for (const [edge, face] of touches) {
+        out.push(k.face_bounding_box(faces[face], false))
+        for (const f of k.edge_faces(edges[edge]) as number[]) out.push(k.face_bounding_box(f, false))
+      }
+    }
+  }
+  return out
+}
+
+/** What is wrong with a Boolean's result where a seam of one operand touches a face of another at a
+ * point, or null. The seam turned or moved on its face first (`ext.boolean`) leaves the kernel right;
+ * a seam no turn moves (a torus' outer equator, the seam of a free-form face) can leave a valid body
+ * of the wrong volume (kernel plan B6). Points on the result's faces near those faces (16 x 16 in
+ * each face's parameter box, on the face) are classified against the operands: on a union's surface
+ * none lies inside an operand or outside all of them, on an intersection's none outside an operand,
+ * on a difference's none outside the part or inside a tool. A point the kernel cannot classify on
+ * its face (a face whose trim it cannot resolve) counts as such a point too. Three such points refuse
+ * it. `Box(30, 30, 30).cut(Cylinder(5.997, 60).translate(2.016, 2.814, 0)).fuse(Torus(3.546,
+ * 1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396))` gave 23610.47, the torus inside the hole left
+ * out (right: 23635.96); the intersection of `Torus(6, 4).rotate(Y, 90)` and a half-space whose plane
+ * touches its outer equator gave 11.61 or 52.26 for 5.81, with faces on which no point can be
+ * classified. */
+export function _seamProblem(result: Part, part: Part, tools: readonly Part[], op: number): string | null {
+  const zones = _seamZones(part, tools)
+  if (!zones.length) return null
+  const operands = [part, ...tools]
+  const size = Math.max(...operands.map((x) => x._looseBox().diagonal))
+  const reach = 1e-3 * size
+  const tol = 1e-6 * size + 1e-7
+  const points: number[][] = []
+  const wrong: number[][] = []
+  const n = 16
+  for (const f of k.brep_faces(result._brep) as number[]) {
+    const [lo, hi] = k.face_bounding_box(f, false) as number[][]
+    if (!zones.some(([zl, zh]) => [0, 1, 2].every((i) => lo[i] <= zh[i] + reach && zl[i] - reach <= hi[i]))) continue
+    const [[u0, v0], [u1, v1]] = k.face_uv_domain(f)
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const u = u0 + ((i + 0.5) / n) * (u1 - u0)
+        const v = v0 + ((j + 0.5) / n) * (v1 - v0)
+        let inside: boolean
+        try {
+          inside = k.face_classify_uv(f, u, v) === 'inside'
+        } catch (e) {
+          if (!_isRuntimeError(e)) throw e // (a face whose trim the kernel cannot resolve)
+          try {
+            wrong.push(k.face_point_at_uv(f, u, v))
+          } catch (e2) {
+            if (!_isRuntimeError(e2)) throw e2
+            wrong.push([0, 1, 2].map((i) => 0.5 * (lo[i] + hi[i])))
+          }
+          continue
+        }
+        if (inside) points.push(k.face_point_at_uv(f, u, v))
+      }
+    }
+  }
+  const where = points.length ? operands.map((x) => x._classify(points, tol).map(([w]) => w)) : []
+  points.forEach((p, j) => {
+    const c = where.map((w) => w[j])
+    let bad: boolean
+    if (op === k.BooleanOp.UNION) bad = c.every((x) => x === 'outside') || c.includes('inside')
+    else if (op === k.BooleanOp.INTERSECTION) bad = c.includes('outside')
+    else bad = c[0] === 'outside' || c.slice(1).includes('inside')
+    if (bad) wrong.push(p)
+  })
+  if (wrong.length < 3) return null
+  return `wrong where a seam of one operand touches a face of the other at a point (its faces there do not bound what the operands give, near ${_fmtPoint(new Vector(...(wrong[0] as [number, number, number])))})`
+}
+
 /** Whether two bodies have as many vertices and each vertex of `a` lies near one of `b` (within
  * `tol`, or up to 4 `tol`: cells of a grid; for the quick test of a body given back unchanged,
  * where too many is safe). With `among`, `b` may have more vertices. */
@@ -5540,7 +5625,7 @@ export class Part extends _Body {
       }
       if (result !== null && problem === null) return result
       if (parts.length === 1) {
-        const retry = this._nurbsRetry(parts, op, name) ?? this._swappedRetry(parts[0], op, name)
+        const retry = this._nurbsRetry(parts, op, name) ?? this._seamRetry(parts, op, name) ?? this._swappedRetry(parts[0], op, name)
         if (retry !== null) return retry
       } else {
         // Tools that overlap each other (two holes side by side) can fail one after the other where
@@ -5556,7 +5641,7 @@ export class Part extends _Body {
         } catch (e) {
           if (!(e instanceof KernelError)) throw e
         }
-        const retry = this._nurbsRetry(parts, op, name)
+        const retry = this._nurbsRetry(parts, op, name) ?? this._seamRetry(parts, op, name)
         if (retry !== null) return retry
       }
       const broken = [this as Part, ...parts].filter((x) => x._solidProblem() !== null)
@@ -5601,6 +5686,22 @@ export class Part extends _Body {
     }
     const coincident = contacts.find((c) => c.coincident !== null)?.coincident
     if (coincident != null) clauses.push(`a face of a tool lies on a face of the part (${coincident}): let the tool reach past that face, or stop short of it`)
+    let seam: number[] | null = null
+    for (const t of near) {
+      for (const [a, b] of [
+        [this as Part, t],
+        [t, this as Part],
+      ]) {
+        const touches = ext.seam_touches(a._brep, b._brep) as [number, number, number[]][]
+        if (seam === null && touches.length) seam = touches[0][2]
+      }
+    }
+    if (seam !== null) {
+      clauses.push(
+        `the seam of a closed face of an operand (where its surface meets itself) touches a face of the other at a point (near ${_fmtPoint(new Vector(...(seam as [number, number, number])))}), ` +
+          `where the kernel's Boolean goes wrong (smlibwasm moves such seams where it can, not a torus' outer equator or the seam of a free-form face): move or turn the tool a little`,
+      )
+    }
     if (tools.length > 1) clauses.push('smlibwasm also applied the tools combined into one, which failed too: apply them one at a time to find the one that fails')
     if (!clauses.length) {
       clauses.push(
@@ -5620,6 +5721,27 @@ export class Part extends _Body {
     if (!nurbs.some(Boolean)) return null
     try {
       const retry = this._like(this._runBoolean(tools.map((t, i) => (nurbs[i] ? t.toNurbs() : t)), op, name))
+      if (this._booleanProblem(retry, tools, op) !== null || _volumeProblem(retry, this, tools, op)) return null
+      return retry
+    } catch (e) {
+      if (!(e instanceof KernelError)) throw e
+      return null
+    }
+  }
+
+  /** The Boolean again with a NURBS copy of each operand whose seam touches another at a point
+   * (`ext.seam_touches`): `ext.boolean` moves such a seam on a copy whose faces it recognizes as
+   * cylinders, cones, spheres or tori again, which a hole's seam that no turn moves can need (kernel
+   * plan B6; the result's faces come back analytic). Checked as the first try, and against the
+   * operands' volume bounds. Null where no seam touches, or the retry fails or is wrong too. */
+  _seamRetry(tools: readonly Part[], op: number, name: string): Part | null {
+    if (!k.brep_is_manifold_solid(this._brep) || !tools.every((t) => t instanceof Part && k.brep_is_manifold_solid(t._brep))) return null
+    const mine = tools.some((t) => (ext.seam_touches(this._brep, t._brep) as unknown[]).length > 0)
+    const theirs = tools.map((t) => (ext.seam_touches(t._brep, this._brep) as unknown[]).length > 0)
+    if (!mine && !theirs.some(Boolean)) return null
+    try {
+      const part = mine ? this.toNurbs() : this
+      const retry = this._like(part._runBoolean(tools.map((t, i) => (theirs[i] ? t.toNurbs() : t)), op, name))
       if (this._booleanProblem(retry, tools, op) !== null || _volumeProblem(retry, this, tools, op)) return null
       return retry
     } catch (e) {
@@ -5667,7 +5789,9 @@ export class Part extends _Body {
         // Boolean, is not integrated here, so that a chain of Booleans integrates nothing: the next
         // Boolean trusts it. isValid() and the next feature check it (it can be inside out or leave
         // a face out).
-        const found = op === k.BooleanOp.INTERSECTION ? _intersectionProblem(result, [this as Part, ...tools]) : _unionOrCutProblem(result, this as Part, tools, op)
+        const found =
+          (op === k.BooleanOp.INTERSECTION ? _intersectionProblem(result, [this as Part, ...tools]) : _unionOrCutProblem(result, this as Part, tools, op)) ??
+          _seamProblem(result, this as Part, tools, op)
         if (found === null) result._h.sound = _TRUSTED
         return found
       }
@@ -6952,7 +7076,9 @@ export class Part extends _Body {
    * a plane, cylinder, cone or sphere as itself (`Face.extend`; around a closed face it cannot grow);
    * sheets of several faces throw a ModelingError ("the surface does not cut through the part"). The two sides
    * together hold the part's volume, which is checked. A planar face (or a sketch) stands for its
-   * plane.
+   * plane. A plane that a seam of the part touches at a point (a torus' outer equator, where the
+   * kernel's Boolean can go wrong) gives only sides that together hold the part's volume, else a
+   * ModelingError.
    */
   split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'above' | 'below'): Part
   split(plane: Plane | Face | Shell | ShapeList<Face>, keep: 'both'): [Part, Part]
@@ -6971,14 +7097,72 @@ export class Part extends _Body {
       // body open).
       const bb = this.bbox()
       const size = 4 * (bb.diagonal + bb.center.distanceTo(pl.origin)) + 1
+      const halfspace = (side: Plane, edge: number = size): Part =>
+        Box(edge, edge, edge)
+          .translate(0, 0, edge / 2)
+          .moved(new Plane(side.project(bb.center), side.xDir, side.zDir).location)
       const side = keep === 'above' ? pl : pl.flipped()
-      const halfspace = Box(size, size, size)
-        .translate(0, 0, size / 2)
-        .moved(new Plane(pl.project(bb.center), side.xDir, side.zDir).location)
-      const kept = kernelCall('split', () => this.intersect(halfspace))
+      const box = halfspace(side)
+      if ((ext.seam_touches(this._brep, box._brep) as unknown[]).length) {
+        // A seam of the part touches the plane at a point (a torus' outer equator, kernel plan B6):
+        // the kernel's Boolean can give sides that do not add up. Both sides are made and must hold
+        // the part's volume; else the kernel's slice along the plane, checked so.
+        return this._splitAtSeam(pl, keep, halfspace, size)
+      }
+      const kept = kernelCall('split', () => this.intersect(box))
       if (k.brep_face_count(kept._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
       return kept
     })
+  }
+
+  /** `split` by a plane that a seam of the part touches at a point (kernel plan B6): the side a
+   * half-space box keeps where it and the other side, kept by a box of its own, hold the part's volume
+   * together (within 1e-6 and the gaps between their faces, which must leave their volumes uncertain
+   * by less than 1e-5 of the part's), with boxes of four sizes (the kernel's result
+   * depends on where the box's edges lie); else the kernel's slice along the plane where its two sides
+   * do; else ModelingError. `Torus(6, 4).rotate(Y, 90)` split at z = 10 by a plane tilted by 30 degrees
+   * about Y, which touches its outer equator, gave 5.8069 above and 1842.7020 below (the torus:
+   * 1894.9640; 1889.1572 below). */
+  _splitAtSeam(pl: Plane, keep: string, halfspace: (side: Plane, size: number) => Part, size: number): Part {
+    const side = keep === 'above' ? pl : pl.flipped()
+    const whole = Number(this._props().volume)
+    const kept: [Part, number, number][] = []
+    const rest: [number, number][] = []
+    // the side a box keeps, its volume and how far that is uncertain (its gaps); null where the kernel
+    // fails or the faces do not meet (to 1e-5 of the part's volume)
+    const measured = (box: Part): [Part, number, number] | null => {
+      try {
+        const piece = kernelCall('split', () => this.intersect(box))
+        if (k.brep_face_count(piece._brep) === 0) return [piece, 0, 0]
+        const p = piece._props()
+        const v = Number(p.volume)
+        const gaps = Number(p.gaps)
+        return gaps * v <= 1e-5 * whole ? [piece, v, gaps * v] : null
+      } catch (e) {
+        if (!(e instanceof KernelError || e instanceof ModelingError)) throw e
+        return null
+      }
+    }
+    for (const f of [1, 0.73, 1.37, 1.91]) {
+      const a = measured(halfspace(side, f * size))
+      const b = measured(halfspace(side.flipped(), f * size))
+      if (a !== null) kept.push(a)
+      if (b !== null) rest.push([b[1], b[2]])
+      for (const [piece, v, e] of kept) {
+        if (rest.some(([w, ew]) => Math.abs(v + w - whole) <= 1e-6 * whole + 10 * (e + ew))) {
+          if (k.brep_face_count(piece._brep) === 0) throw new ModelingError(`split: nothing of the part lies ${keep} the plane`)
+          return piece
+        }
+      }
+    }
+    const sheet = Shell._wrap(Rectangle(size, size).on(pl)._copyBrep())
+    const pieces = this._sliced(sheet)
+    if (pieces === null) {
+      throw new ModelingError(
+        "split: the kernel's sides of the part do not add up to the part where a seam of the part touches the plane at a point (kernel plan B6); move or tilt the plane a little",
+      )
+    }
+    return keep === 'above' ? pieces[0] : pieces[1]
   }
 
   /**

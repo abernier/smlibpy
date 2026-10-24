@@ -75,9 +75,15 @@ Measured on 10 mm boxes unless noted:
   all planes across one axis or round about it. The seam of an earlier hole (or boss) of the part
   is moved on its face instead: the hole's cylinder, cone or sphere is added and cut again turned.
   B-spline faces that are such shapes (NURBS copies, imported parts) are recognized first. The
-  seam edge then lies elsewhere in the result (select by geometry, not by seam vertices). Not
-  covered: a torus' outer equator (no turn moves it) and seams of free-form faces. Compare such
-  volumes with a formula.
+  seam edge then lies elsewhere in the result (select by geometry, not by seam vertices). A seam
+  no turn moves (a torus' outer equator, the seam of a free-form face) can still make the kernel
+  wrong: there the result's faces are checked against the operands, and a wrong result is done
+  again with a NURBS copy of the operand whose seam touches (the union and intersection of
+  `(Box(30, 30, 30) - Cylinder(5.997, 60).translate(2.016, 2.814, 0))` with `Torus(3.546,
+  1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)`: 23635.9574 and 194.5466) or raises
+  `ModelingError` ("... a seam of one operand touches a face of the other at a point ...": move
+  or turn the tool a little). `split` by a plane that touches a torus' outer equator checks that
+  the two sides hold the part's volume.
 - **Overlapping parallel through cuts**: a single tool that overlaps an earlier parallel hole
   (keyholes, slots made of holes) makes the kernel fail; smlibpy then tries again with a NURBS
   copy of the tool, which works: `Box(40, 40, 10) - Cylinder(6, 30) -

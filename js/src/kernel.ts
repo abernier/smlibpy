@@ -143,6 +143,7 @@ const OWN: Record<string, Signature> = {
   'ext.triangulate_poly': ['poly'],
   'ext.region_shells': ['brep'],
   'ext.seam_contacts': ['a', 'b', ['tolerance', 0.0]],
+  'ext.seam_touches': ['a', 'b', ['tolerance', 0.0]],
   'ext.tag_topology': ['brep', ['fresh', false]],
   'ext.topology_tags': ['brep'],
   'ext.set_topology_tags': ['brep', 'faces', 'edges'],

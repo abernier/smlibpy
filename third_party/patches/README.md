@@ -202,14 +202,17 @@ Defects that remain in the kernel, and what smlibpy does about them:
   these raise `ModelingError`.
 - Booleans in which the seam of a cylinder, cone, sphere or torus runs tangent to a face of the
   other operand return valid bodies of the wrong volume (`ai/plan/kernel-deep-dive.md`, B6); the
-  site is not located, and the gaps of such bodies are about 1e-8, so no check catches them.
+  site is not located, and the gaps of such bodies are about 1e-8, so no check of the gaps
+  catches them.
   smlibpy finds such seams (also against B-spline faces, by the kernel's projection) and turns the
   operand that owns the seam about its axis first where it is a body of revolution, or moves the
   seam on its face where it is not (the face's cylinder, cone or sphere added and taken away again
   turned, kept where the body's volume stays), on copies whose B-spline faces are recognized as
   analytic where a B-spline face's seam touches (`src/cpp/seams.cpp`, in `ext.boolean`). A torus'
   outer equator (no turn moves it, and `SmTorus` has no other place for it) and seams of free-form
-  faces keep the defect.
+  faces keep the defect; where such a seam touches at a point (`seam_touches`), smlibpy checks the
+  result's faces against the operands, does a wrong result again with NURBS copies of the operands
+  or refuses it, and splits by a plane only into sides that hold the part's volume.
 - Found with AddressSanitizer and the fuzz run of the kernel plan, not located or not fixed: the
   all-edge fillet of `Cone(3, 0, 10).rotate(Y, 90) - Cone(1.5, 0, 8).rotate(X, 90).translate(0, 1,
   0)` writes freed memory in `SmLoopuse::CollectEdgeuses` from `SmMerge::BooleanPostProcess`

@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { Box, Circle, Cone, Cylinder, KernelError, ModelingError, Rectangle, Sphere, Torus, X, Y, fromStep, toStep } from '../src/index.ts'
+import { Box, Circle, Cone, Cylinder, KernelError, ModelingError, Plane, Rectangle, Sphere, Torus, X, Y, fromStep, toStep } from '../src/index.ts'
 import type { Part } from '../src/index.ts'
 import { ext } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
@@ -185,3 +185,34 @@ test('a fillet that fails inside the kernel names the round it could not build',
   assert.ok(error.message.includes('the kernel failed inside the fillet') && error.message.includes('which says nothing about the radius'))
   assert.ok(error.message.includes('it could not build the round of the closed edge through (6.18121, 5.0668, -1.49998)'))
 })
+
+// -- seams that no turn moves: a torus' outer equator (B6)
+
+test("a torus whose outer equator touches an earlier hole", () => {
+  // The union and the intersection gave 23610.47 and 220.03 (the torus inside the hole taken for inside
+  // the part); the check of the result's faces refuses them, and the part as a NURBS copy, whose hole's
+  // seam ext.boolean moves, gives them right. The cut throws.
+  const part = Box(30, 30, 30).cut(Cylinder(5.997, 60).translate(2.016, 2.814, 0))
+  const ring = Torus(3.546, 1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)
+  assert.ok((ext.seam_touches(part._brep, ring._brep) as unknown[]).length > 0) // (the hole's seam touches the torus)
+  const union = part.fuse(ring)
+  const common = part.intersect(ring)
+  assert.ok(Math.abs(union.volume - 23635.9574) < 1e-3 && Math.abs(common.volume - 194.5466) < 1e-3)
+  approx(union.volume + common.volume, part.volume + ring.volume, 1e-8)
+  approx(ring.cut(part).volume, ring.volume - common.volume, 1e-5)
+  assert.throws(() => part.cut(ring), (e: unknown) => e instanceof ModelingError && /seam/.test((e as Error).message))
+})
+
+for (const [R, r, at, above] of [
+  [6, 4, 10, 5.80689],
+  [10, 3, 13, 3.27792],
+]) {
+  test(`a split whose plane touches a torus' outer equator (${R}, ${r})`, () => {
+    const torus = Torus(R, r).rotate(Y, 90)
+    const plane = new Plane([0, 0, at], undefined, [Math.tan(Math.PI / 6), 0, 1])
+    const [up, down] = torus.split(plane, 'both')
+    assert.ok(Math.abs(up.volume - above) < 1e-4)
+    approx(up.volume + down.volume, torus.volume, 1e-8)
+    assert.ok(up.isValid() && down.isValid())
+  })
+}

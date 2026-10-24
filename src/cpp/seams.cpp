@@ -717,6 +717,19 @@ bool freeform_seam_touches(const SmBrep* a, const SmBrep* b, double tolerance)
     return false;
 }
 
+std::vector<SeamContact> seam_touches(const SmBrep* a, const SmBrep* b, double tolerance)
+{
+    if (!a || !b)
+        throw std::invalid_argument("brep is None");
+    const double tol = tolerance > 0 ? tolerance : default_tolerance(a, b);
+    std::vector<SeamContact> out;
+    for (bool freeform : {false, true})
+        for (const SeamContact& c : contacts(seams_of(a, freeform), b, tol, Turn(), false))
+            if (!c.along)
+                out.push_back(c);
+    return out;
+}
+
 std::vector<SeamContact> seam_contacts(const SmBrep* a, const SmBrep* b, double tolerance)
 {
     if (!a || !b)
@@ -776,5 +789,15 @@ void bind_seams(py::module_ m)
           "Where a seam of body a touches a face of body b tangentially while the faces cross there: per point "
           "(seam edge index in a, face index in b, (x, y, z)). Tolerance 0: ten times the larger zone tolerance, "
           "at least 1e-4.");
+    m.def("seam_touches", [](const SmBrep* a, const SmBrep* b, double tolerance) {
+        py::list out;
+        for (const auto& c : smlibpy::seam_touches(a, b, tolerance))
+            out.append(py::make_tuple(c.edge, c.face, py::make_tuple(c.point[0], c.point[1], c.point[2])));
+        return out;
+    }, py::arg("a"), py::arg("b"), py::arg("tolerance") = 0.0,
+          "Where a seam of a closed face of body a (a cylinder, cone, sphere, torus or B-spline face) touches a "
+          "face of body b at a point (not where it lies on the face's surface along its length): per point (seam "
+          "edge index in a, face index in b, (x, y, z)), as seam_contacts. Where a Boolean of a and b can come out "
+          "wrong (kernel plan B6).");
 }
 #endif  // SMLIBPY_PYTHON

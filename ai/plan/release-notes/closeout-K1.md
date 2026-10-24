@@ -75,6 +75,28 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
   0.178, 2.221)` 111.1921 (was 6.9039); the groove pin with a NURBS part 24299.2603 (was 24656.1472)
   and with a NURBS pin 24299.2587 (was 24461.4800). Booleans of a 64-face imported B-spline part
   take as long as before (0.11 to 0.16 s for 6 cuts, in both).
+- **Booleans along a seam that no turn moves are checked, done again or refused (B6).** Where a
+  seam of a closed face of either operand (a cylinder, cone, sphere, torus or B-spline face) touches
+  a face of the other at a point (`ext.seam_touches`, new in both builds), points on the result's
+  faces near those faces (16 x 16 a face) are classified against the operands: none may lie inside an
+  operand or outside both on a union's surface, outside an operand on an intersection's, outside the
+  part or inside a tool on a cut's, and points the kernel cannot classify on their face count too.
+  A result that fails is done again with NURBS copies of the operands whose seams touch (whose faces
+  `ext.boolean` recognizes again and whose seams it then moves), checked the same way; else
+  `ModelingError` ("... wrong where a seam of one operand touches a face of the other at a point
+  ...", with a hint to move or turn the tool). `(Box(30, 30, 30) - Cylinder(5.997, 60).translate(2.016,
+  2.814, 0)) + Torus(3.546, 1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)`, the torus' outer
+  equator touching the hole, gave 23610.4720 and the intersection 220.0320 (the whole torus); now
+  23635.9574 and 194.5466 (point classification of the operands: 23635.96 and 194.55), and the cut,
+  which gave 23390.44, raises. A split by a plane that such a seam touches makes both sides and keeps
+  them only where they hold the part's volume (within 1e-6 and their gaps), with half-space boxes of
+  four sizes and then the kernel's slice: `Torus(6, 4).rotate(Y, 90)` split at z = 10 by a plane
+  tilted by 30 degrees (fuzz slice-7-390) gave 5.8069 + 1842.7020 for 1894.9640 and the intersection
+  with a half-space 11.61 or 52.26 by the box's size; now 5.80689 + 1889.15715 in both builds (the cap
+  integrated on a grid: 5.80697), and `Torus(10, 3)` at z = 13 3.27792 + 1773.25087 in both (smlibwasm
+  gave 696.07 above). Over the 160 campaign cases (holes, NURBS parts, torus slices) no result that was
+  right before changes or raises; the fuzz seeds' silent rate of slices fell from 0.93 % to 0 natively.
+  The check costs about 0.02 to 0.15 s per Boolean in which a seam touches, nothing otherwise.
 - **Merges of more than two parts turn and move seams for every part merged in.** A part merged into
   an earlier merge (a body of several cells) goes in turned or with its seams moved, as in a merge of
   two (`part.merge(other).merge(pin)` of the groove pin: cells adding up to the union, the part's
@@ -112,19 +134,20 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
 
 ## Blocked
 
-- **A torus' outer equator (B6).** No turn about the torus' axis moves it, and filling and recutting
-  the face does not either: `SmTorus` starts its second parameter at the outer equator, with no other
-  place for it, and the kernel moves seams only in healing (`SmFace::MoveSeam` takes B-spline
-  surfaces only, and only where edges cross the seam). The tilted split of `Torus(6, 4).rotate(Y,
-  90)` at z = 10 (fuzz slice-7-390) still gives 5.8069 + 1842.7020 for 1894.9640; of the 160
-  campaign cases one union and intersection with a torus whose equator touches (A-25: 23610.47 and
-  220.03, where point classification gives 23635.96 and 194.55) is wrong. Tried: turning (no
-  effect), the fill and recut (the same seam comes back), a NURBS copy and the operands the other
-  way round (the same values), a revolve of the circle from another latitude (normalized to the same
-  torus).
-- **Seams of free-form faces (B6).** A seam of a closed B-spline face that is no cylinder, cone,
-  sphere or torus (a revolved spline, a closed loft) has no other place the kernel can move it to
-  (see above), and no analytic copy to move it on; such Booleans keep the defect.
+- **The kernel's Boolean along a torus' outer equator or the seam of a free-form face (B6).** The
+  wrong results are caught now (above), but the kernel's defect stays, so some of these Booleans
+  raise instead of giving the right body: the cut of the A-25 case above (`ModelingError`; OpenCASCADE
+  is not self-consistent there either), and a split that no box size nor the slice gets to add up.
+  No turn about the torus' axis moves its outer equator, and filling and recutting the face does not
+  either: `SmTorus` starts its second parameter at the outer equator, with no other place for it, and
+  the kernel moves seams only in healing (`SmFace::MoveSeam` takes periodic surfaces whose edges cross
+  the seam, not a seam edge of a closed face). Tried: turning (no effect), the fill and recut (the
+  same seam comes back), a NURBS copy of the torus and the operands the other way round (the same
+  values), a revolve of the circle from another latitude (normalized to the same torus). A seam of a
+  closed B-spline face that is no cylinder, cone, sphere or torus (a revolved spline, a closed loft)
+  has no analytic copy to move it on. A wrong body whose faces near the seam agree with the operands
+  at the 16 x 16 points (none in the campaign beyond 1e-4 of a piece, where OpenCASCADE and an
+  integral differ by as much) would still pass.
 
 ## Later
 
@@ -166,6 +189,21 @@ far-apart faces), triaged: finished, blocked by the kernel, or later. Everything
 - Some Booleans that raised now return parts: a union or intersection of one tool is tried again with
   the operands the other way round (`part & ring` above raised `KernelError`; now 213.1874). Code that
   caught the error to fall back gets the part.
+- Booleans in which a seam touches the other operand at a point that the kernel got wrong come back
+  right (a NURBS copy of the operand whose seam touches, its faces analytic again) or raise
+  `ModelingError` ("... wrong where a seam of one operand touches a face of the other at a point
+  ..."); `split` by a plane that touches a torus' outer equator returns sides that add up, or raises.
+  Code that measured such results gets the right body or an error to handle:
+
+  ```python
+  part = Box(30, 30, 30) - Cylinder(5.997, 60).translate(2.016, 2.814, 0)
+  ring = Torus(3.546, 1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)
+  union = part + ring          # 0.5.0: 23610.4720, the torus inside the hole left out; now 23635.9574
+  try:
+      rest = part - ring       # 0.5.0: 23390.44 without an error
+  except ModelingError:
+      rest = part - ring.translate(0.01, 0, 0)   # move the tool a little: 23415.6468
+  ```
 - A hole whose seam a tool touches goes in with its seam moved on its face: in the result its seam
   edge and the vertices where it meets the rims lie at another angle. Select holes by geometry:
 

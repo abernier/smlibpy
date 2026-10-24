@@ -14,8 +14,8 @@ import textwrap
 import pytest
 from pytest import approx
 
-from smlibpy import Y, Box, Circle, Cylinder, KernelError, ModelingError, Rectangle, Sphere, Torus, X
-from smlibpy._kernel import k
+from smlibpy import Y, Box, Circle, Cylinder, KernelError, ModelingError, Plane, Rectangle, Sphere, Torus, X
+from smlibpy._kernel import ext, k
 
 
 def _run(code: str) -> subprocess.CompletedProcess:
@@ -254,3 +254,35 @@ def test_a_fillet_that_fails_inside_the_kernel_names_the_round_it_could_not_buil
     assert e.value.status == "SM_ERR_NULL_POINTER" and "may be too large" not in message
     assert "the kernel failed inside the fillet" in message and "which says nothing about the radius" in message
     assert "it could not build the round of the closed edge through (6.18121, 5.0668, -1.49998)" in message
+
+
+# -- seams that no turn moves: a torus' outer equator (B6)
+
+
+def test_a_torus_whose_outer_equator_touches_an_earlier_hole():
+    # The torus' outer equator touches the hole's wall at a point: the union and the intersection gave
+    # 23610.47 and 220.03 (the torus inside the hole taken for inside the part); the check of the
+    # result's faces refuses them, and the part as a NURBS copy, whose hole's seam ext.boolean moves,
+    # gives them right (point classification of the operands: 23635.96 and 194.55). The cut raises.
+    part = Box(30, 30, 30) - Cylinder(5.997, 60).translate(2.016, 2.814, 0)
+    ring = Torus(3.546, 1.773).rotate(Y, 90).translate(8.013, 8.133, 6.396)
+    assert ext.seam_touches(part._brep, ring._brep)  # (the hole's seam touches the torus)
+    union, common = part + ring, part & ring
+    assert union.volume == approx(23635.9574, abs=1e-3) and common.volume == approx(194.5466, abs=1e-3)
+    assert union.volume + common.volume == approx(part.volume + ring.volume, rel=1e-8)
+    assert (ring - part).volume == approx(ring.volume - common.volume, rel=1e-5)
+    with pytest.raises(ModelingError, match="seam"):
+        part - ring
+
+
+@pytest.mark.parametrize("R, r, at, above", [(6, 4, 10.0, 5.80689), (10, 3, 13.0, 3.27792)])
+def test_a_split_whose_plane_touches_a_torus_outer_equator(R, r, at, above):
+    # slice-7-390 of the fuzz run: the sides did not add up (5.8069 + 1842.7020 for 1894.9640). The
+    # half-space boxes of four sizes, and the kernel's slice, are tried until both sides hold the
+    # torus' volume. (The cap of R 6, r 4 integrated on a grid: 5.80697.)
+    torus = Torus(R, r).rotate(Y, 90)
+    plane = Plane((0, 0, at), z_dir=(math.tan(math.radians(30)), 0, 1))
+    up, down = torus.split(plane, "both")
+    assert up.volume == approx(above, abs=1e-4)
+    assert up.volume + down.volume == approx(torus.volume, rel=1e-8)
+    assert up.is_valid() and down.is_valid()

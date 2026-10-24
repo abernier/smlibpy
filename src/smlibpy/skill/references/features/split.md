@@ -46,6 +46,11 @@ Splitting by another body is not supported (`TypeError: cannot use Part as a pla
   part with the whole part on the kept side returns a copy of the part.
 - A part made by `merge` raises `ModelingError: split: the part is not a valid solid`: split its
   `cells()`.
+- A plane that touches the seam of a closed face at a point (a torus' outer equator, where the
+  kernel's Boolean can go wrong) is split with both sides made and checked to hold the part's
+  volume (half-space boxes of several sizes, then the kernel's slice), which takes a few seconds;
+  where none adds up it raises `ModelingError: split: the kernel's sides of the part do not add up
+  ...`: move or tilt the plane a little.
 - Faces are drafted with `draft`; a split with a tilted plane through a bottom edge also makes
   one drafted wall (example).
 

@@ -161,7 +161,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | A Boolean that misclassifies the operands can return an empty cut, and the intersection of the same pair, its natural check, then returns the whole part (a tool beside an earlier hole in a sphere, a corner box on an imported pulley) | accepts an empty cut only from tools that hold the part's volume and span its box, and checks points of an intersection that reaches out of an operand's box against the operands |
 | A Boolean can return a closed, manifold body whose faces do not meet (an intersection of two cylinders of 250.2, more than its operand's 150.8) | `is_valid()` integrates a Boolean result once when asked and is False where the gaps between its faces make its volume uncertain by 1e-2 or more; features refuse such bodies |
 | Booleans of crossing holes whose seams lie tangent to the other hole, and a flat end cap tangent to a sphere, read freed memory and killed the process | patched: the kernel's Boolean fails (`SM_ERR_BAD_INTERSECTIONS`); smlibpy turns the hole first (next row) and gets the crossing holes right |
-| A Boolean in which the faces cross along a curve that runs tangent to the seam of a cylinder, cone, sphere or torus returns a valid body of the wrong volume (a groove pin tangent to a bore: 24331.70 instead of 24299.26; the intersection of a cylinder and a sphere larger than the sphere) or fails | finds such seams (along each seam, the distance to the other body's planes, cylinders, cones, spheres and tori) and turns the body whose seam it is about its axis first (in a Boolean or merge of two solids), where that keeps its shape (every face a plane across the axis, or a cylinder, cone, sphere or torus about it): on copies, at up to three angles that clear the seam, passing over results whose volume lies outside the bounds the operands' set, and with the bodies as they are where the kernel fails with each |
+| A Boolean in which the faces cross along a curve that runs tangent to the seam of a cylinder, cone, sphere or torus returns a valid body of the wrong volume (a groove pin tangent to a bore: 24331.70 instead of 24299.26; the intersection of a cylinder and a sphere larger than the sphere) or fails | finds such seams (along each seam, the distance to the other body's planes, cylinders, cones, spheres and tori) and turns the body whose seam it is about its axis first (in a Boolean or merge of two solids), where that keeps its shape (every face a plane across the axis, or a cylinder, cone, sphere or torus about it): on copies, at up to three angles that clear the seam, passing over results whose volume lies outside the bounds the operands' set, and with the bodies as they are where the kernel fails with each. Where a seam touches at a point (`ext.seam_touches`), points on the result's faces near it are classified against the operands, and a result that disagrees is done again with NURBS copies of the operands whose seams touch, or refused; a split by a plane such a seam touches must give sides that hold the part's volume (half-space boxes of four sizes, then the kernel's slice) |
 | A tool beside an earlier parallel hole or boss (their cylinders cross along lines) fails, or in a curved part cuts everything away | tries again with a NURBS copy of the tool, whose faces come back analytic, and checks the result's volume against the operands' |
 | A merge in which a part's seam lies tangent to another part can lose volume, and the stitcher behind `cells()` then crashed on it | `merge` raises when its result holds less than its largest part or more than all parts together, and `cells()` checks that the cells add up to the part |
 | A section of a merged part drops cells, or fails | `section` cuts each cell and puts their regions side by side |
@@ -211,14 +211,17 @@ matter here:
 - Sweeps along helices of more than about 60 turns fail in the kernel's sweep (`Helix` itself
   takes any number).
 - Healing of imported periodic faces (tori, spheres) can go wrong.
-- A Boolean in which the faces cross along a curve tangent to a seam can still return a valid
-  body of the wrong volume where smlibpy cannot move the seam away: the outer equator of a torus
-  (no turn about the axis moves it, and the kernel's torus has no other place for it), and seams
-  of free-form faces that are no cylinder, cone, sphere or torus. Seams of bodies of revolution are
-  turned with the body, seams of other bodies (an earlier hole in a part) are moved on their face
-  (the face's solid added and taken away again turned), and B-spline faces that are cylinders,
-  cones, spheres or tori are recognized as such first. Its faces meet, so no check catches it;
-  compare such volumes with a formula.
+- A Boolean in which the faces cross along a curve tangent to a seam goes wrong in the kernel
+  where smlibpy cannot move the seam away: the outer equator of a torus (no turn about the axis
+  moves it, and the kernel's torus has no other place for it), and seams of free-form faces that
+  are no cylinder, cone, sphere or torus. Seams of bodies of revolution are turned with the body,
+  seams of other bodies (an earlier hole in a part) are moved on their face (the face's solid added
+  and taken away again turned), and B-spline faces that are cylinders, cones, spheres or tori are
+  recognized as such first. Where a seam still touches at a point, the result's faces are checked
+  against the operands (16 x 16 points a face near the seam) and a wrong result is done again with
+  NURBS copies or refused; a wrong body whose faces near the seam agree with the operands at those
+  points can still pass (in 160 random cases of holes and torus slices, none was off by more than
+  1e-4 of a piece, where OpenCASCADE and an integral differ by as much).
 - Rounds where three fillets meet at a corner of mixed convexity can fail; round the
   edges in a different order or with different radii.
 - The corner patch where three rounds meet is tangent continuous (G1) only, also for G2 and G3

@@ -56,4 +56,11 @@ SmBrep* reseamed(const SmBrep* a, const SmBrep* b, double tolerance);
 // is moved only on a copy whose faces are recognized as analytic (analytics.h).
 bool freeform_seam_touches(const SmBrep* a, const SmBrep* b, double tolerance);
 
+// The points where a seam of a closed face of body a, of any kind (a cylinder, cone, sphere or torus,
+// or a B-spline face), touches a face of b at a point, as seam_contacts finds them: not where the seam
+// lies on the face's surface on both sides of the point too (a cylinder's seam in a plane through its
+// axis, which gives the kernel no trouble). The places where a Boolean of a and b can come out wrong
+// (kernel plan B6) and smlibpy checks the result.
+std::vector<SeamContact> seam_touches(const SmBrep* a, const SmBrep* b, double tolerance);
+
 }  // namespace smlibpy
