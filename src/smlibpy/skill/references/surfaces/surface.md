@@ -76,7 +76,7 @@ A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximate
 - Each point is matched to the surface where its projection onto the plane lies (the surface is
   a height field over the plane), so noise does not pull the surface sideways.
 - Fast: 2000 points 3 ms, 20000 points 30 ms. Smooth shapes come close: a bump of 2000 points
-  within 0.001 mm, 20000 points within 4e-5 mm.
+  within about 0.001 mm (0.00101), 20000 points within 4.4e-5 mm.
 - Noisy points (a scan): the surface should stay about as far from the points as the noise
   (on average). Coming much closer means it follows the noise: take fewer control points
   (`controls=12`) or more smoothing (0.1 to 1). With noise of 0.1 mm on 3000 points, the
@@ -127,7 +127,7 @@ rng = np.random.default_rng(1)
 xy = rng.uniform(-30, 30, (2000, 2))
 cloud = np.column_stack([xy, 6 * np.exp(-(xy ** 2).sum(axis=1) / 300)])
 skin = surface(cloud)                                # fitted, not through the points
-print(max(skin.distance_to(p) for p in cloud) < 0.001)               # True
+print(round(max(skin.distance_to(p) for p in cloud), 4))             # 0.001: about 0.001 mm from every point
 print(round(skin.faces()[0].normal_at((0, 0, 6)).z, 3))               # 1.0: the normal points up
 noisy = cloud + rng.normal(0, 0.1, cloud.shape) * [0, 0, 1]          # noise of 0.1 mm
 smooth, fit = surface(noisy, controls=12, report=True)   # fewer control points: the shape, not the noise

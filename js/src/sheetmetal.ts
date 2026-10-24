@@ -599,108 +599,112 @@ export interface FoldOptions {
  */
 export function fold(part: Part, line: Axis | Edge, angle: number, options: FoldOptions): Part {
   _opts('fold', options)
-  let { radius, kFactor = K_FACTOR } = options
-  const { fixed = null, partial = false } = options
-  const what = 'bend'
-  _requirePart(part, what)
-  let [p0, d, seg] = _asLine(line, what)
-  if (partial && seg === null) throw new RangeError('bend: partial: true needs the bend line as an Edge (a segment), not an Axis')
-  const tol = _tol(part)
-  const planes = _planarFaces(part)
-  const [nFace, t, pOn] = _sheetFaceAt(planes, p0, d, tol, 'bend')
-  p0 = pOn
-  d = d.sub(nFace.mul(d.dot(nFace))).normalized()
-  const a = Number(angle)
-  if (a === 0 || !(Math.abs(a) <= 180.0)) {
-    throw new RangeError(`bend: the angle must be between -180 and 180 degrees and not zero (got ${String(angle)})`)
-  }
-  _checkValues(what, Math.abs(a), radius, t, kFactor)
-  radius = Number(radius)
-  kFactor = Number(kFactor)
-  _checkRadius(what, radius, t)
+  // (in a scope: the faces of the zone, the copy the kernel bends and the checks' copies are freed at
+  // once, kernel plan W9)
+  return scope(() => {
+    let { radius, kFactor = K_FACTOR } = options
+    const { fixed = null, partial = false } = options
+    const what = 'bend'
+    _requirePart(part, what)
+    let [p0, d, seg] = _asLine(line, what)
+    if (partial && seg === null) throw new RangeError('bend: partial: true needs the bend line as an Edge (a segment), not an Axis')
+    const tol = _tol(part)
+    const planes = _planarFaces(part)
+    const [nFace, t, pOn] = _sheetFaceAt(planes, p0, d, tol, 'bend')
+    p0 = pOn
+    d = d.sub(nFace.mul(d.dot(nFace))).normalized()
+    const a = Number(angle)
+    if (a === 0 || !(Math.abs(a) <= 180.0)) {
+      throw new RangeError(`bend: the angle must be between -180 and 180 degrees and not zero (got ${String(angle)})`)
+    }
+    _checkValues(what, Math.abs(a), radius, t, kFactor)
+    radius = Number(radius)
+    kFactor = Number(kFactor)
+    _checkRadius(what, radius, t)
 
-  // The inside of the bend: the face with the line for a positive angle, else the opposite face.
-  const nIn = a > 0 ? nFace : nFace.neg()
-  const pIn = a > 0 ? p0 : p0.sub(nFace.mul(t))
-  const across = nFace.cross(d).normalized() // in the sheet, perpendicular to the line
+    // The inside of the bend: the face with the line for a positive angle, else the opposite face.
+    const nIn = a > 0 ? nFace : nFace.neg()
+    const pIn = a > 0 ? p0 : p0.sub(nFace.mul(t))
+    const across = nFace.cross(d).normalized() // in the sheet, perpendicular to the line
 
-  // The side that stays.
-  let stay: Vector
-  if (fixed != null) {
-    const side = _pointOf(fixed).sub(p0).dot(across)
-    if (Math.abs(side) <= tol) throw new RangeError('bend: the fixed point lies on the bend line; give a point on the side that stays')
-    stay = side > 0 ? across : across.neg()
-  } else {
-    const reach = part.vertices().map((v) => v.point.sub(p0).dot(across))
-    stay = Math.max(...reach) >= -Math.min(...reach) ? across : across.neg()
-  }
+    // The side that stays.
+    let stay: Vector
+    if (fixed != null) {
+      const side = _pointOf(fixed).sub(p0).dot(across)
+      if (Math.abs(side) <= tol) throw new RangeError('bend: the fixed point lies on the bend line; give a point on the side that stays')
+      stay = side > 0 ? across : across.neg()
+    } else {
+      const reach = part.vertices().map((v) => v.point.sub(p0).dot(across))
+      stay = Math.max(...reach) >= -Math.min(...reach) ? across : across.neg()
+    }
 
-  // Kernel frame: the side of cross(direction, axis) stays, direction runs from the axis to the sheet.
-  const direction = nIn.neg()
-  const axisDir = direction.cross(d).dot(stay) > 0 ? d : d.neg()
-  const axisLinePoint = pIn.add(nIn.mul(radius))
-  let lo: number
-  let hi: number
-  if (partial) {
-    const s0 = p0.sub(axisLinePoint).dot(axisDir)
-    const s1 = p0
-      .add(d.mul(seg as number))
-      .sub(axisLinePoint)
-      .dot(axisDir)
-    lo = Math.min(s0, s1)
-    hi = Math.max(s0, s1)
-  } else {
-    const [lo3, hi3] = k.brep_bounding_box(part._brep, false)
-    const proj: number[] = []
-    for (const x of [lo3[0], hi3[0]]) {
-      for (const y of [lo3[1], hi3[1]]) {
-        for (const z of [lo3[2], hi3[2]]) proj.push(new Vector(x, y, z).sub(axisLinePoint).dot(axisDir))
+    // Kernel frame: the side of cross(direction, axis) stays, direction runs from the axis to the sheet.
+    const direction = nIn.neg()
+    const axisDir = direction.cross(d).dot(stay) > 0 ? d : d.neg()
+    const axisLinePoint = pIn.add(nIn.mul(radius))
+    let lo: number
+    let hi: number
+    if (partial) {
+      const s0 = p0.sub(axisLinePoint).dot(axisDir)
+      const s1 = p0
+        .add(d.mul(seg as number))
+        .sub(axisLinePoint)
+        .dot(axisDir)
+      lo = Math.min(s0, s1)
+      hi = Math.max(s0, s1)
+    } else {
+      const [lo3, hi3] = k.brep_bounding_box(part._brep, false)
+      const proj: number[] = []
+      for (const x of [lo3[0], hi3[0]]) {
+        for (const y of [lo3[1], hi3[1]]) {
+          for (const z of [lo3[2], hi3[2]]) proj.push(new Vector(x, y, z).sub(axisLinePoint).dot(axisDir))
+        }
       }
+      lo = Math.min(...proj) - 1.0
+      hi = Math.max(...proj) + 1.0
     }
-    lo = Math.min(...proj) - 1.0
-    hi = Math.max(...proj) + 1.0
-  }
-  const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
+    const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
 
-  const strip = _zoneMaterial(part, pIn, across, axisDir, nIn, allowance, lo, hi, t, what)
-  const h = new BrepHandle(part._copyBrep())
-  const hint = `the bend zone must lie inside one flat region of the sheet: move the line away from edges, holes and other bends (at least half the bend allowance, ${_formatG(allowance / 2, 4)})`
-  try {
-    kernelCall(
-      'bend',
-      () =>
-        k.sheetmetal.bend(h.brep, Math.abs(a), radius, kFactor, t, axisLinePoint.add(axisDir.mul(lo)).toArray(), axisDir.toArray(), direction.toArray(), hi - lo),
-      hint,
-    )
-  } catch (e) {
-    if (!(e instanceof KernelError)) throw e
-    if (e.detail.includes('no material')) {
-      throw _causedBy(new ModelingError('bend: the bend line does not cross the sheet (there is no material in the bend zone)'), e)
-    }
-    if (e.detail.includes('does not cut the body in two')) {
-      if (partial) {
+    const strip = _zoneMaterial(part, pIn, across, axisDir, nIn, allowance, lo, hi, t, what)
+    const h = new BrepHandle(part._copyBrep())
+    const hint = `the bend zone must lie inside one flat region of the sheet: move the line away from edges, holes and other bends (at least half the bend allowance, ${_formatG(allowance / 2, 4)})`
+    try {
+      kernelCall(
+        'bend',
+        () =>
+          k.sheetmetal.bend(h.brep, Math.abs(a), radius, kFactor, t, axisLinePoint.add(axisDir.mul(lo)).toArray(), axisDir.toArray(), direction.toArray(), hi - lo),
+        hint,
+      )
+    } catch (e) {
+      if (!(e instanceof KernelError)) throw e
+      if (e.detail.includes('no material')) {
+        throw _causedBy(new ModelingError('bend: the bend line does not cross the sheet (there is no material in the bend zone)'), e)
+      }
+      if (e.detail.includes('does not cut the body in two')) {
+        if (partial) {
+          throw _causedBy(
+            new ModelingError(
+              `bend: the sheet beside the partial bend is not cut free: cut reliefs (slots) from the edge along both ends of the bend line, at least half the bend allowance (${_formatG(allowance / 2, 4)}) past it, so that only the bent strip joins the two sides`,
+            ),
+            e,
+          )
+        }
         throw _causedBy(
           new ModelingError(
-            `bend: the sheet beside the partial bend is not cut free: cut reliefs (slots) from the edge along both ends of the bend line, at least half the bend allowance (${_formatG(allowance / 2, 4)}) past it, so that only the bent strip joins the two sides`,
+            `bend: the bend zone does not cut the sheet in two: it reaches past an edge of the sheet or the sheet goes around it; keep the line at least half the bend allowance (${_formatG(allowance / 2, 4)}) away from edges parallel to it (a strip cut free from the rest bends with partial: true)`,
           ),
           e,
         )
       }
-      throw _causedBy(
-        new ModelingError(
-          `bend: the bend zone does not cut the sheet in two: it reaches past an edge of the sheet or the sheet goes around it; keep the line at least half the bend allowance (${_formatG(allowance / 2, 4)}) away from edges parallel to it (a strip cut free from the rest bends with partial: true)`,
-        ),
-        e,
-      )
+      throw e
     }
-    throw e
-  }
-  const result = part._like(_take(h))
-  // the before side stays: the bend's axis ends up over the zone's edge on that side
-  const axis = new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir)
-  _checkBendResult(result, part, what, strip, radius, t, kFactor, axis, Boolean(partial), hint)
-  result._folds = [...part._folds, [axis.origin.toArray(), axis.direction.toArray(), radius, kFactor] as const]
-  return result
+    const result = part._like(_take(h))
+    // the before side stays: the bend's axis ends up over the zone's edge on that side
+    const axis = new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir)
+    _checkBendResult(result, part, what, strip, radius, t, kFactor, axis, Boolean(partial), hint)
+    result._folds = [...part._folds, [axis.origin.toArray(), axis.direction.toArray(), radius, kFactor] as const]
+    return result
+  })
 }
 
 function _checkBendResult(
@@ -768,63 +772,67 @@ export interface FlangeOptions {
  */
 export function flange(part: Part, edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part {
   _opts('flange', options)
-  const { angle = 90.0, kFactor = K_FACTOR } = options
-  let { radius } = options
-  const what = 'flange'
-  _requirePart(part, what)
-  if (!(edge instanceof Edge || edge instanceof ShapeList)) throw new TypeError(`flange: expected an edge of the part, got ${_typeName(edge)}`)
-  const kedges = part._ownEdges(edge)
-  if (kedges.length !== 1) throw new RangeError(`flange: give one edge of the part (got ${kedges.length}); flange edges one at a time`)
-  const e = Edge._of(part, kedges[0])
-  if (!e._isStraight()) throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
-  const a = Number(angle)
-  if (a === 0 || !(Math.abs(a) < 180.0)) {
-    throw new RangeError(`flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got ${String(angle)})`)
-  }
-  const tol = _tol(part)
-  const planes = _planarFaces(part)
-  const faces = e.faces().filter((f) => f.geomType === 'plane')
-  if (faces.length !== 2) throw new ModelingError('flange: the edge must lie between two planar faces (a face of the sheet and a side face)')
-  const all: [number | null, Face, Vector][] = []
-  for (const f of faces) {
-    const n = f.normalAt()
-    all.push([_thicknessBehind(planes, e.center(), n, tol), f, n])
-  }
-  const info = all.filter((x): x is [number, Face, Vector] => x[0] !== null)
-  if (!info.length) throw new ModelingError('flange: no face opposite the faces at the edge; the part is not a sheet')
-  const [t, sheetFace, nFace] = _minBy(info, (x) => x[0])
-  const side = faces.filter((f) => f !== sheetFace)[0]
-  const out = side.normalAt()
-  const d = e.direction
-  if (Math.abs(out.dot(nFace)) > 1e-7 || Math.abs(out.dot(d)) > 1e-7) {
-    throw new ModelingError('flange: the side face at the edge must be square to the sheet (a straight cut edge)')
-  }
-  _checkValues(what, Math.abs(a), radius, t, kFactor)
-  radius = Number(radius)
-  _checkRadius(what, radius, t)
-  const setback = (radius + t) * Math.tan(_radians(Math.abs(a)) / 2)
-  const leg = Number(length) - setback
-  if (!(leg > tol)) {
-    throw new ModelingError(
-      `flange: the length must be more than the bend's outside setback (radius + thickness) * tan(angle / 2) = ${_formatG(setback)}; got ${String(length)}`,
-    )
-  }
-  const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
-  const reach = allowance + leg
-  const w = e.length
-  const center = e
-    .center()
-    .add(out.mul(reach / 2))
-    .sub(nFace.mul(t / 2))
-  const strip = Box(reach, w, t).moved(new Plane(center, out, nFace).location)
-  const extended = part.fuse(strip)
-  const expected = _volume(part) + reach * w * t
-  if (Math.abs(_volume(extended) - expected) > 1e-6 * expected) {
-    throw new ModelingError('flange: the strip for the flange overlaps the part; the edge must be an outer edge with nothing beyond it')
-  }
-  const lineStart = e.start.add(out.mul(allowance / 2))
-  const line = Line(lineStart, lineStart.add(d.mul(w)))
-  return fold(extended, line, a, { radius, kFactor, fixed: e.center(), partial: true })
+  // (in a scope: the flange's plate, the copies the kernel bends and the checks' copies are freed at
+  // once, kernel plan W9)
+  return scope(() => {
+    const { angle = 90.0, kFactor = K_FACTOR } = options
+    let { radius } = options
+    const what = 'flange'
+    _requirePart(part, what)
+    if (!(edge instanceof Edge || edge instanceof ShapeList)) throw new TypeError(`flange: expected an edge of the part, got ${_typeName(edge)}`)
+    const kedges = part._ownEdges(edge)
+    if (kedges.length !== 1) throw new RangeError(`flange: give one edge of the part (got ${kedges.length}); flange edges one at a time`)
+    const e = Edge._of(part, kedges[0])
+    if (!e._isStraight()) throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
+    const a = Number(angle)
+    if (a === 0 || !(Math.abs(a) < 180.0)) {
+      throw new RangeError(`flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got ${String(angle)})`)
+    }
+    const tol = _tol(part)
+    const planes = _planarFaces(part)
+    const faces = e.faces().filter((f) => f.geomType === 'plane')
+    if (faces.length !== 2) throw new ModelingError('flange: the edge must lie between two planar faces (a face of the sheet and a side face)')
+    const all: [number | null, Face, Vector][] = []
+    for (const f of faces) {
+      const n = f.normalAt()
+      all.push([_thicknessBehind(planes, e.center(), n, tol), f, n])
+    }
+    const info = all.filter((x): x is [number, Face, Vector] => x[0] !== null)
+    if (!info.length) throw new ModelingError('flange: no face opposite the faces at the edge; the part is not a sheet')
+    const [t, sheetFace, nFace] = _minBy(info, (x) => x[0])
+    const side = faces.filter((f) => f !== sheetFace)[0]
+    const out = side.normalAt()
+    const d = e.direction
+    if (Math.abs(out.dot(nFace)) > 1e-7 || Math.abs(out.dot(d)) > 1e-7) {
+      throw new ModelingError('flange: the side face at the edge must be square to the sheet (a straight cut edge)')
+    }
+    _checkValues(what, Math.abs(a), radius, t, kFactor)
+    radius = Number(radius)
+    _checkRadius(what, radius, t)
+    const setback = (radius + t) * Math.tan(_radians(Math.abs(a)) / 2)
+    const leg = Number(length) - setback
+    if (!(leg > tol)) {
+      throw new ModelingError(
+        `flange: the length must be more than the bend's outside setback (radius + thickness) * tan(angle / 2) = ${_formatG(setback)}; got ${String(length)}`,
+      )
+    }
+    const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
+    const reach = allowance + leg
+    const w = e.length
+    const center = e
+      .center()
+      .add(out.mul(reach / 2))
+      .sub(nFace.mul(t / 2))
+    const strip = Box(reach, w, t).moved(new Plane(center, out, nFace).location)
+    const extended = part.fuse(strip)
+    const expected = _volume(part) + reach * w * t
+    if (Math.abs(_volume(extended) - expected) > 1e-6 * expected) {
+      throw new ModelingError('flange: the strip for the flange overlaps the part; the edge must be an outer edge with nothing beyond it')
+    }
+    const lineStart = e.start.add(out.mul(allowance / 2))
+    const line = Line(lineStart, lineStart.add(d.mul(w)))
+    return fold(extended, line, a, { radius, kFactor, fixed: e.center(), partial: true })
+  })
 }
 
 // =============================================================================== finding bends
@@ -1666,7 +1674,8 @@ export interface UnfoldOptions {
 export function unfold(part: Part, options: UnfoldOptions = {}): Part {
   _opts('unfold', options)
   const { kFactor = null, fixed = null } = options
-  return _unfold(part, kFactor, fixed, 'unfold').part
+  // (in a scope: the bends' records, the unbent copies and the base face are freed at once)
+  return scope(() => _unfold(part, kFactor, fixed, 'unfold').part)
 }
 
 /**

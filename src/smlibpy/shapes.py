@@ -3415,7 +3415,7 @@ class _Body(Shape):
             curves = k.project_brep_onto_plane(self._brep, plane.origin.to_tuple(), plane.z_dir.to_tuple())
         # The kernel can hand out the same projected curve twice (on Linux on ARM a cylinder's
         # circles seen edge-on come with a copy each); a drawing view needs each line once.
-        return _drawn(_distinct_curves(curves, tol), tol)
+        return _drawn(_distinct_curves(curves, tol, 10 * tol), tol)
 
     def _transformed(self, m: np.ndarray) -> Any:
         h = BrepHandle(self._copy_brep())  # freed if the kernel fails
@@ -3528,35 +3528,81 @@ class _Body(Shape):
 def _drawn(edges: Iterable[Edge], tol: float) -> ShapeList[Edge]:
     """Projected edges as a drawing has them: the B-splines that are lines or circular arcs exactly
     (the kernel's projections fit every curve) as lines and arcs, and the arcs of one circle that
-    meet end to end joined, so that ``circles()`` and ``radius`` find a view's holes."""
+    meet end to end joined, so that ``circles()`` and ``radius`` find a view's holes.
+
+    Pieces within a box ``10 * tol`` across are left out (:func:`_speck`): the kernel's
+    projection gives such slivers where an edge or a seam is seen end-on (a torus from the side),
+    points rather than lines of the view. So are lines that lie on a longer line of the view (a
+    hole's rim seen edge-on, on the part's outline): each line comes once. A piece that cannot be
+    rebuilt (a straight one that runs back on itself) stays as the kernel gave it."""
     from .curves import CenterArc, Line, ThreePointArc
     from .draft import _joined_arcs
     from .dxf import _circle_of
 
     out: list[Edge] = []
     for e in edges:
+        if _speck(e, 10 * tol):
+            continue
         if e.geom_type == "bspline":
-            if e._is_straight():
-                e = Line(e.start, e.end)
-            else:
-                circle = _circle_of(e)
-                if circle is not None:
-                    center, axis = Vector(*circle[0]), Vector(*circle[2])
-                    if e.is_closed:
-                        plane = Plane(center, x_dir=(e.start - center).normalized(), z_dir=axis)
-                        e = CenterArc((0, 0), float(circle[1]), 0.0, 360.0, plane)
-                    else:
-                        e = ThreePointArc(e.start, e.point_at(0.5), e.end)
+            try:
+                if e._is_straight():
+                    if abs(e.start.distance_to(e.end) - e.length) <= tol:
+                        e = Line(e.start, e.end)
+                else:
+                    circle = _circle_of(e)
+                    if circle is not None:
+                        center, axis = Vector(*circle[0]), Vector(*circle[2])
+                        if e.is_closed:
+                            plane = Plane(center, x_dir=(e.start - center).normalized(), z_dir=axis)
+                            e = CenterArc((0, 0), float(circle[1]), 0.0, 360.0, plane)
+                        else:
+                            e = ThreePointArc(e.start, e.point_at(0.5), e.end)
+            except ValueError:
+                pass  # (ends or points that coincide: the piece as projected)
         out.append(e)
-    return ShapeList(_joined_arcs(out, tol))
+    return ShapeList(_joined_arcs(_uncovered_lines(out, 10 * tol), tol))
 
 
-def _distinct_curves(curves: Iterable[Any], tol: float) -> ShapeList[Edge]:
+def _uncovered_lines(edges: list[Edge], tol: float) -> list[Edge]:
+    """The edges without the lines that lie within ``tol`` of a longer (or equal) line among them,
+    in their order."""
+    def on(x: np.ndarray, p: np.ndarray, q: np.ndarray) -> bool:
+        d = q - p
+        t = min(max(float((x - p) @ d) / float(d @ d), 0.0), 1.0)
+        return float(np.linalg.norm(p + t * d - x)) <= tol
+
+    lines = sorted((e for e in edges if e.geom_type == "line"), key=lambda e: -e.length)
+    kept: list[tuple[np.ndarray, np.ndarray]] = []
+    covered: set[int] = set()
+    for e in lines:
+        a, b = np.array(e.start.to_tuple()), np.array(e.end.to_tuple())
+        if any(on(a, p, q) and on(b, p, q) for p, q in kept):
+            covered.add(id(e))
+        else:
+            kept.append((a, b))
+    return [e for e in edges if id(e) not in covered]
+
+
+def _speck(e: Edge, size: float) -> bool:
+    """Whether an edge lies within a box ``size`` across: a point of a drawing view, not a line.
+    For a B-spline from the box of its control points (the curve lies in their hull): measuring
+    the length or the middle of the kernel's degenerate slivers takes a second each."""
+    if e.geom_type == "bspline":
+        p = np.array(ext.curve_data(e._curve())["poles"], dtype=float)
+        if float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) <= size:
+            return True
+    return e.bbox().diagonal <= size
+
+
+def _distinct_curves(curves: Iterable[Any], tol: float, speck: float = 0.0) -> ShapeList[Edge]:
     """Edges of new kernel curves, each curve once: one whose ends and midpoint lie within
-    ``tol`` of those of a curve kept already (either way round) is left out."""
+    ``tol`` of those of a curve kept already (either way round) is left out, and with ``speck``
+    so is one within a box ``speck`` across (see :func:`_speck`)."""
     kept: list[tuple[Edge, np.ndarray, np.ndarray, np.ndarray]] = []
     for c in curves:
         e = Edge._from_curve(c)
+        if speck > 0.0 and _speck(e, speck):
+            continue
         a, b, m = (np.array(p.to_tuple()) for p in (e.start, e.end, e.point_at(0.5)))
         if any(np.linalg.norm(m - km) <= tol
                and min(np.linalg.norm(a - ka) + np.linalg.norm(b - kb), np.linalg.norm(a - kb) + np.linalg.norm(b - ka)) <= tol
@@ -3761,12 +3807,7 @@ def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smal
     problem = result._solid_problem()
     if problem is not None:
         return f"a body that is {problem}"
-    rb = result.bbox()
-
-    def reaches_out(margin: float) -> bool:
-        return any(rb.min[i] < box.min[i] - margin or rb.max[i] > box.max[i] + margin for i in range(3))
-
-    if reaches_out(tol) and (wider is None or reaches_out(wider())):
+    if _reaches_out(result, box, tol) and (wider is None or _reaches_out(result, box, wider())):
         return "a body that reaches out of the box it must fit in"
     p = result._props(1e-4)
     if not p["gaps"] < _OFFSET_GAPS:
@@ -3780,6 +3821,30 @@ def _offset_problem(result: Part, box: BoundBox, tol: float, before: float, smal
     if smaller is None and not abs(after - before) > slack:
         return f"a body of the part's own volume ({after:.10g})"
     return None
+
+
+def _reaches_out(result: _Body, box: BoundBox, margin: float) -> bool:
+    """Whether a body reaches more than ``margin`` out of ``box`` (``_offset_problem``), beyond the
+    tolerance of the edges and vertices of the faces that do (at most 1e-4 of the box's size). The
+    kernel's tight box of a face takes in the points of its surface that it classifies on the face,
+    and a point within the tolerance of one of its vertices or edges classifies on it, also off the
+    face: the extended offset mode's rim vertex of a shelled twisted vase has a tolerance of 1.8e-3,
+    and the inner wall's box reached 1.3e-3 above the rim in about 2 of 5 runs (a point of its surface
+    1.4e-3 from that vertex), where its edges and its mesh end at the rim."""
+    def out(lo: Sequence[float], hi: Sequence[float], m: float) -> bool:
+        return any(lo[i] < box.min[i] - m or hi[i] > box.max[i] + m for i in range(3))
+
+    rb = result.bbox()
+    if not out(rb.min, rb.max, margin):
+        return False
+    cap = 1e-4 * max(box.diagonal, 1.0)
+    for f in result._brep.faces():
+        lo, hi = f.bounding_box(True)
+        if out(lo, hi, margin):
+            tols = [float(ext.edge_tolerance(e)) for e in f.edges()] + [float(ext.vertex_tolerance(v)) for v in f.vertices()]
+            if out(lo, hi, margin + min(max(tols, default=0.0), cap)):
+                return True
+    return False
 
 
 def _surface_points(body: _Body) -> list[tuple[float, float, float]]:

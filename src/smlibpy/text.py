@@ -68,7 +68,8 @@ def Text(
 
     Raises:
         ValueError: An empty text, a size that is not positive, a character the font does not
-            have, a font file that cannot be read, or a path the text does not fit on.
+            have, or a path the text does not fit on. A font file that cannot be read raises
+            ``smlibpy.font.FontError``, a ``ValueError``.
     """
     if not isinstance(text, str):
         raise TypeError(f"Text: the text must be a string, not {type(text).__name__}")
@@ -79,7 +80,7 @@ def Text(
     try:
         f = font if isinstance(font, Font) else load_font(font)
     except FontError as e:
-        raise ValueError(f"Text: {e}") from None
+        raise FontError(f"Text: {e}") from None  # (a ValueError: except FontError and except ValueError catch it)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     bad = sorted({c for c in text if (ord(c) < 32 and c not in "\r\n") or 0x7F <= ord(c) < 0xA0})
     if bad:

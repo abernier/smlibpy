@@ -53,7 +53,8 @@ export interface TextOptions {
  * on-curve points.
  *
  * Throws a RangeError for an empty text, a size that is not positive, a character the font does
- * not have, a font that cannot be read, or a path the text does not fit on.
+ * not have, or a path the text does not fit on; a font that cannot be read throws a `FontError` (a
+ * RangeError).
  */
 export function Text(text: string, size: number, options: TextOptions = {}): Sketch {
   return scope(() => {
@@ -75,7 +76,7 @@ export function Text(text: string, size: number, options: TextOptions = {}): Ske
     try {
       f = font instanceof Font ? font : loadFont(font)
     } catch (e) {
-      if (e instanceof FontError) throw new RangeError(`Text: ${e.message}`)
+      if (e instanceof FontError) throw new FontError(`Text: ${e.message}`) // (a RangeError)
       throw e
     }
     const lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n')

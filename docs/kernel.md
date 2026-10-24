@@ -169,6 +169,7 @@ Some kernel behaviour is wrapped so that it is predictable:
 | The offset code behind shell, offset and thicken reads memory it has freed (in its extended mode, depending on memory layout): it glued a Vertex it had deleted, kept a deleted ProtoEdge in the lists of other ProtoFaces, handed out an extended surface after deleting it, deleted the curve of an Edge it had made when the imprint failed later (issue #2's filleted boxes) and kept boundary curves it had deleted, and the process crashed now and then | patches the five sites (`third_party/patches`), and runs the kernel steps in a forked copy of the process, whose body comes back as an exact copy |
 | shell and offset return bodies whose faces do not meet, a shell without its cavity, or the part itself, and their wall check missed turned parts | refuses results whose faces leave gaps of 1e-3 of the volume, checks a closed shell against the part less its offset and the cavity where no wall reaches, and measures walls across the faces of a part with openings |
 | The extended (sharp) offset moves an edge whose faces meet at an angle `a` by `d / sin(a / 2)`, more than `d`, and cannot extend the faces of an acute wedge or around a hole that closes; its plain mode rolls a ball instead and builds those, exactly | `offset` bounds a sharp result by the first-order reach of the part's edges and corners (it refused a cone's correct offset as reaching beyond `d`), and offers the plain mode as `corners="round"` |
+| The tight box of a face (`SmFace::CalculateTightBoundingBox`) takes in the extremes of its surface that it classifies on the face, and a point within the tolerance of one of the face's vertices or edges classifies on it, also off the face: the inner wall of a shelled twisted vase (the deform recipe) reached 1.3e-3 above the rim in about 2 of 5 runs (a point of its surface 1.4e-3 from a rim vertex of tolerance 1.8e-3), where its edges and its mesh end at the rim, and the shell was refused as reaching out of the part | the box check of `shell` and `offset` grants a face that reaches out of the box the tolerance of its edges and vertices, at most 1e-4 of the box's size |
 | Release builds compile the kernel's error reports out (`SER` and the other failure macros of `SmMessages.h` only return), so every failure said only `SM_ERR at <binding>` | patched (`SmMessages.h`): each failure is reported to the error callback, which keeps the last 48; `KernelError.trace` (see "Where the kernel gave up" below) |
 | usd-brep's conversion writes the UV curves of a loop that runs up and down a sphere's seam (no edges at its poles), which do not close (usd-brep's validator: BA.763) | writes such loops without UV curves, which a reader rebuilds from the 3D curves |
 | usd-brep's conversion writes cones the omniSolid schema does not allow (a semi-angle of 0 or below) and writes a line edge as a B-spline over SMLib's unbounded line (2.5 km long), and trusts the arrays and values of a file it reads (a malformed array, a sphere whose refDirection is its axis or a weight of 0 crashes it; a cylinder axis of length 0 gives a wrong body) | writes such cones as cylinders or turned around and line edges as long as the edges; checks every array, reference and value (the rules of usd-brep's validator) before converting, and checks each body from other software with the kernel (`SmBrep::AssertValid`) before anything measures it |
@@ -212,6 +213,11 @@ matter here:
   cylinder's seam.
 - Sweeps along helices of more than about 60 turns fail in the kernel's sweep (`Helix` itself
   takes any number).
+- The kernel's hidden curve removal behind `outline` and `drawing_views` (`SmHCR`) can judge a
+  piece of a tilted view wrongly: seen along (1, 1, 1), the flange example as built
+  (`examples/flange.py`) lacks an arc of its plate's rim and two pieces at its neck natively (61.4
+  mm of 1096.1; smlibwasm, and the same body read back from `.smb`, draw them). Views along the
+  axes were right in every case tested; check a tilted view of a symmetric part for symmetry.
 - Healing of imported periodic faces (tori, spheres) can go wrong.
 - A Boolean in which the faces cross along a curve tangent to a seam can still return a valid
   body of the wrong volume where smlibpy cannot turn the seam away: the seam of a part that is
@@ -270,17 +276,28 @@ tried another way). Steps in another process bring theirs back.
 
 ```python
 try:
-    Cylinder(3, 40).translate(0, 3, 0) + Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3)
+    Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
 except KernelError as e:
-    print(e.status)       # SM_ERR_BAD_INTERSECTIONS
-    print(e.trace[-3:])   # (... (IntersectTopology)', '... SmMerge.cpp:2698 (ManifoldBoolean)', '... (SmApiBoolean)')
+    print(e.status)       # SM_ERR
+    print(e.trace[-3:])   # ('SM_ERR at SmMerge.cpp:7146 (MakeFaceuse)', 'SM_ERR at SmMerge.cpp:4437 (ManifoldBoolean)', 'SM_ERR at SmApiBrep.cpp:233 (SmApiBoolean)')
+```
+
+smlibwasm's `KernelError` has the same `status` and `trace`:
+
+```js
+try {
+  Box(20, 20, 20).cut(Cylinder(3, 40).rotate(Z, 45)).cut(Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0))
+} catch (e) {
+  if (e instanceof KernelError) console.log(e.status, e.trace.slice(-3))   // the same as above
+}
 ```
 
 The trace is for bug reports and for maintainers: it changes with the kernel, and the builds can
-give up in different places (smlibwasm gives up on the holes above in `SmMerge::MakeFaceuse`,
-with `SM_ERR`). The raw layer reads it with `ext.kernel_trace()` (the entries and how many there
-were since `ext.clear_kernel_trace()`). Reporting a failure costs a function call on the kernel's
-error paths only; the test suites take as long as before.
+give up in different places (both give up on the holes above in `SmMerge::MakeFaceuse`; on
+others one build fails where the other does not). The raw layer reads it with
+`ext.kernel_trace()` (the entries and how many there were since `ext.clear_kernel_trace()`).
+Reporting a failure costs a function call on the kernel's error paths only; the test suites take
+as long as before.
 
 ## Steps in another process
 

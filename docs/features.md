@@ -370,7 +370,7 @@ both = a.merge(b)
 print(both.volume, len(both.cells()))              # 12000.0 3: a alone, b alone, the overlap
 
 block_with_insert = merge(Box(40, 40, 20), Cylinder(6, 30))
-print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 2262.0, 565.5, 565.5]
+print([round(c.volume, 1) for c in block_with_insert.cells()])   # [29738.1, 2261.9, 565.5, 565.5]
 ```
 
 Each cell is named and colored after the parts it lies in, its `sources`: a cell where a steel

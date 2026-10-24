@@ -45,6 +45,7 @@ from .sketches import (ArcSlot, Circle, Ellipse, Hull, Polygon, Rectangle, Regul
                        Stroke, Trapezoid, Triangle, make_face)
 from .text import Text
 from ._kernel import KernelError, ModelingError
+from .font import FontError
 from .exporters import (export, export_glb, export_gltf, export_obj, export_step, export_stl, from_file, from_smb,
                         from_smp, from_stl, import_stl, load, save, to_file, to_glb, to_gltf, to_obj, to_smb, to_smp,
                         to_step, to_stl)
@@ -106,5 +107,5 @@ __all__ = [
     "drawing_views", "DrawingView", "export_svg",
     "show", "render", "diff_images",
     # errors
-    "ModelingError", "KernelError",
+    "ModelingError", "KernelError", "FontError",
 ]

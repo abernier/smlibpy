@@ -61,7 +61,7 @@ f = lambda x, y: 5 + 0.01 * (x - 20) ** 2 - 0.01 * (y - 15) ** 2
 saddle = surface([[(x, y, f(x, y)) for y in range(0, 31, 5)] for x in range(0, 41, 5)])
 outline = saddle.project(CenterArc((20, 15, 50), 5, 0, 360), (0, 0, -1))
 panel = saddle.trim(outline, keep=(2, 2, 0))             # a hole through the curved panel
-print(round(panel.area, 3), panel.thicken(1).is_valid())  # 1169.877 True
+print(round(panel.area, 3), panel.thicken(1).is_valid())  # 1169.871 True
 
 halves = Rectangle(40, 40).faces()[0].split(Line((-20, -20), (20, 20)))
 print([round(h.area, 6) for h in halves])                # [800.0, 800.0]

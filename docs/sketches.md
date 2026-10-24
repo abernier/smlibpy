@@ -373,7 +373,7 @@ glyph: ligatures, right-to-left scripts and combining accents are not handled.
 
 ```python
 s = Rectangle(40, 20, fillet=4) - Circle(5)
-s.area                       # 707.725652
+s.area                       # 707.725666
 s.perimeter                  # 144.548668: outline and hole
 s.center()                   # area centroid
 s.bbox()
