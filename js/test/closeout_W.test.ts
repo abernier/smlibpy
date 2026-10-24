@@ -6,9 +6,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 import {
@@ -33,15 +34,18 @@ import {
   Sphere,
   Spiral,
   Spline,
+  Text,
   Torus,
   Wedge,
   Z,
   bendAllowance,
   blend,
   drawingViews,
+  extrude,
   fill,
   fitCurve,
   flatPattern,
+  fromUsd,
   memoryUsage,
   network,
   ruled,
@@ -51,10 +55,11 @@ import {
   sweep,
   swing,
   thicken,
+  toUsd,
   unroll,
 } from '../src/index.ts'
 import type { Edge, Face, Shell } from '../src/index.ts'
-import { _reachable, ext, k } from '../src/kernel.ts'
+import { _reachable, ext, k, setWarningHandler } from '../src/kernel.ts'
 import { _underDeadline } from '../src/defeature.ts'
 
 // biome-ignore lint: internal fields, for the checks
@@ -586,4 +591,73 @@ test('the enclosure round that loops returns at the deadline on a page\'s main t
   assert.equal(out.refused, true)
   assert.equal(out.kept, true)
   assert.ok(out.seconds >= 2 && out.seconds < 60, String(out.seconds))
+})
+
+// ================================================================================ N4
+/** tools/oracles/usd_validator.py --nvidia (NVIDIA's validate_file, with OpenUSD) on `files`, by file
+ *  name; null where no Python here has the validator. The Python is SMLIBPY_PYTHON, python3 or
+ *  python, with the environment of this process (PYTHONPATH too). */
+function nvidia(files: string[]): Record<string, Any> | null {
+  const tool = fileURLToPath(new URL('../../tools/oracles/usd_validator.py', import.meta.url))
+  for (const exe of [process.env.SMLIBPY_PYTHON, 'python3', 'python'].filter(Boolean) as string[]) {
+    const out = spawnSync(exe, [tool, '--nvidia', '--json', ...files], { encoding: 'utf8', timeout: 1_800_000 })
+    if (out.error || (out.status !== 0 && out.status !== 1)) continue // (no such Python, or no validator in it: 2)
+    assert.ok(out.stdout.trim(), out.stderr)
+    const found = JSON.parse(out.stdout.trim().split('\n').at(-1) as string) as Record<string, Any>
+    return Object.fromEntries(Object.entries(found).map(([f, r]) => [f.split(/[\\/]/).at(-1), r]))
+  }
+  return null
+}
+
+/** The asset validator's messages but UsdAsciiPerformanceChecker's (large arrays in a text file). */
+const general = (r: Any): string[] => r.asset.filter((m: string) => !m.includes('UsdAsciiPerformanceChecker'))
+
+test("toUsd's files pass NVIDIA's own validator (N4)", (t) => {
+  // lane_WN.test.ts runs the validator's rules on a shim of OpenUSD; this runs NVIDIA's validate_file
+  // itself, where a Python has it (pip install "usd-validation-nvidia[usd]" on any platform, with the
+  // submodule's BrepArray rules; or "usd-brep[validation]"). With SMLIBPY_REQUIRE_USD_VALIDATOR set (CI)
+  // a missing validator fails the test. Every file passes the BrepArray rules, and of the general rules
+  // only UsdAsciiPerformanceChecker complains; bodies read from other software and written again keep
+  // what their files break of BA.465 (control points in the body's box), which the plan exempts.
+  const dir = mkdtempSync(join(tmpdir(), 'smlibwasm-nvidia-'))
+  const rounded = Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 3)
+  const bodies: Record<string, Part | Shell> = {
+    box: Box(10, 20, 30), ball: Sphere(5), ring: Torus(10, 3), cone: Cone(5, 2, 10), rounded, void: Box(10, 10, 10).cut(Sphere(2)),
+    cells: Box(10, 10, 10).merge(Sphere(4).translate(0, 0, 5)), text: extrude(Text('Ab', 10), 2),
+    sectors: Cylinder(5, 10, { arcSize: 90 }), names: Box(5, 5, 5), nurbs: rounded.toNurbs(),
+  }
+  for (const [name, body] of Object.entries(bodies)) {
+    writeFileSync(join(dir, `${name}.usda`), toUsd(body.named(name === 'names' ? 'Grüße 1/2' : name), { mesh: false }))
+  }
+  writeFileSync(join(dir, 'two.usda'), toUsd([Box(10, 10, 10).named('a'), Sphere(3).translate(20, 0, 0).named('b')])) // (meshes)
+  const lines = toUsd(Box(10, 10, 10), { mesh: false }) // (the schema's line edges, read and written again)
+  writeFileSync(join(dir, 'lines.usda'), lines)
+  writeFileSync(join(dir, 'lines_again.usda'), toUsd(fromUsd(lines) as Part, { mesh: false }))
+  const samples = new URL('../../third_party/usd-brep/TestFiles/brep_validator/', import.meta.url)
+  const foreign = ['Cube', 'cubeWithVoid', 'nonManifoldCubes', 'Cone_SmConnect_Brep', 'mouse']
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    for (const name of foreign) {
+      const body = fromUsd(readFileSync(new URL(`${name}.usda`, samples), 'utf8')) as Part
+      writeFileSync(join(dir, `re_${name}.usda`), toUsd(body, { mesh: false }))
+    }
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+  assert.ok(said.every((m) => m.includes('"/World/mouse"')), said.join('\n')) // (mouse.usda: gaps of 2e-3)
+  const found = nvidia(readdirSync(dir).map((f) => join(dir, f)))
+  if (found === null) {
+    const why = 'NVIDIA\'s validator is not installed (pip install "usd-validation-nvidia[usd]" or "usd-brep[validation]")'
+    if (process.env.SMLIBPY_REQUIRE_USD_VALIDATOR) assert.fail(`${why}, and SMLIBPY_REQUIRE_USD_VALIDATOR asks for it`)
+    return t.skip(why)
+  }
+  const names = [...Object.keys(bodies), 'two', 'lines', 'lines_again', ...foreign.map((n) => `re_${n}`)]
+  assert.deepEqual(Object.keys(found).sort(), names.map((n) => `${n}.usda`).sort())
+  for (const [name, r] of Object.entries(found)) {
+    assert.equal(r.breps, name === 'two.usda' ? 2 : 1, name)
+    const codes = Object.fromEntries(Object.entries(r.codes).filter(([c]) => !(name.startsWith('re_') && c === 'BA.465')))
+    assert.deepEqual([codes, general(r)], [{}, []], `${name}: ${r.messages.join('; ')}`)
+  }
+  assert.deepEqual([found['re_Cone_SmConnect_Brep.usda'].codes, found['re_mouse.usda'].codes], [{ 'BA.465': 1 }, { 'BA.465': 1 }])
 })

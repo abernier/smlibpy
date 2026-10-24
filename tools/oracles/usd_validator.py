@@ -7,22 +7,35 @@ It checks the BrepArray prims (the schema rules); the asset validator's general 
 ``brep_validator.validate_file`` adds with OpenUSD, are not run. Calibrated on upstream's own files
 (tests/test_lane_WN.py): each ``Test_BA_xxx`` file is flagged with its rule, the good ones pass.
 
-usage: python tools/oracles/usd_validator.py [--json] FILE.usda ...
+``--nvidia`` runs NVIDIA's validator itself instead: ``brep_validator.validate_file`` with OpenUSD and
+the asset validator (``usd_validation_nvidia``), once with the BrepArray rules only and once with the
+general USD rules too. Where it comes from (``nvidia_validator()``): ``pip install
+"usd-brep[validation]"`` (usd-brep's wheels: Python 3.12 on Linux and Windows) brings all of it; with
+only ``pip install "usd-validation-nvidia[usd]"`` (OpenUSD and the asset validator, any platform)
+the BrepArray rules and the omniSolid schema are the submodule's (third_party/usd-brep, its
+tools/brep_validator and source/schema/omniSolid/resources).
+
+usage: python tools/oracles/usd_validator.py [--json] [--nvidia] FILE.usda ...
 Prints each file's BrepArray count and the rules it fails (``FAIL {'BA.365': 2}``), or PASS; exits
 with 1 when a file fails. ``--json``: {file: {"breps": n, "issues": [[code, message], ...]}}.
-"""
+With ``--nvidia``: the validator's verdict (``passed``, the general rules included), the codes and
+messages of the BrepArray rules and the general rules' messages (``asset``); ``--json``: {file:
+{"validator": "usd-brep" or "submodule", "breps": n, "passed": bool, "codes": {code: count},
+"messages": [...], "asset": [...]}}. Exits with 2 where NVIDIA's validator is not installed."""
 
 from __future__ import annotations
 
 import collections
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIM = Path(__file__).resolve().parent / "usd_shim"
 VALIDATOR = ROOT / "third_party" / "usd-brep" / "tools" / "brep_validator" / "brep_validator.py"
+SCHEMA = ROOT / "third_party" / "usd-brep" / "source" / "schema" / "omniSolid" / "resources"
 
 
 def _validator():
@@ -62,9 +75,68 @@ def check(paths: list[str | Path]) -> dict[str, dict]:
     return out
 
 
+def nvidia_validator() -> str | None:
+    """Where NVIDIA's validator itself comes from in this Python, or None: ``"usd-brep"`` (the
+    ``brep_validator`` and omniSolid schema of usd-brep's wheel, ``pip install "usd-brep[validation]"``)
+    or ``"submodule"`` (OpenUSD and ``usd_validation_nvidia`` installed, ``pip install
+    "usd-validation-nvidia[usd]"``; the BrepArray rules and the schema of third_party/usd-brep).
+    Imports nothing."""
+    find = importlib.util.find_spec
+    if find("pxr") is None or find("usd_validation_nvidia") is None:
+        return None
+    if find("brep_validator") is not None:
+        return "usd-brep"
+    if (VALIDATOR.parent / "__init__.py").is_file() and (SCHEMA / "plugInfo.json").is_file():
+        return "submodule"
+    return None
+
+
+def check_nvidia(paths: list[str | Path]) -> dict[str, dict]:
+    """NVIDIA's ``validate_file`` on each file (in a process without the shim: this one imports
+    OpenUSD's ``pxr``): see ``--nvidia`` above."""
+    which = nvidia_validator()
+    if which is None:
+        raise RuntimeError('NVIDIA\'s validator is not installed: pip install "usd-validation-nvidia[usd]" '
+                           '(or "usd-brep[validation]" on Linux and Windows with Python 3.12)')
+    schema = None
+    if which == "submodule":
+        sys.dont_write_bytecode = True  # (no __pycache__ in the submodule, here and in its worker processes)
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+        sys.path.insert(0, str(VALIDATOR.parent.parent))
+        schema = str(SCHEMA)
+        os.environ["OMNISOLID_PLUGIN_PATH"] = schema  # (for the rule checkers, which register it themselves)
+    from brep_validator import validate_file
+
+    out = {}
+    for path in paths:
+        brep = validate_file(str(path), omnisolid_plugin_path=schema, workers=1, brep_only=True)
+        full = validate_file(str(path), omnisolid_plugin_path=schema, workers=1)
+        asset = list(full.messages)
+        for message in brep.messages:  # (the general rules' messages: the full run's but the BrepArray rules')
+            if message in asset:
+                asset.remove(message)
+        out[str(path)] = {"validator": which, "breps": brep.brep_array_count, "passed": full.passed,
+                          "codes": dict(brep.issue_summary), "messages": list(brep.messages), "asset": asset}
+    return out
+
+
 def main(argv: list[str]) -> int:
     as_json = "--json" in argv
-    files = [a for a in argv if a != "--json"]
+    nvidia = "--nvidia" in argv
+    files = [a for a in argv if a not in ("--json", "--nvidia")]
+    if nvidia:
+        if nvidia_validator() is None:
+            print('NVIDIA\'s validator is not installed: pip install "usd-validation-nvidia[usd]"', file=sys.stderr)
+            return 2
+        results = check_nvidia(files)
+        if as_json:
+            print(json.dumps(results))
+        else:
+            for name, r in results.items():
+                print(Path(name).name, r["breps"], f"FAIL {r['codes']}" if r["codes"] else "PASS")
+                for message in r["asset"]:  # (the general rules')
+                    print("  " + message)
+        return 0 if all(r["passed"] for r in results.values()) else 1
     results = check(files)
     if as_json:
         print(json.dumps(results))

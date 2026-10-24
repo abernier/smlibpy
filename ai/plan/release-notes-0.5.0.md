@@ -1797,12 +1797,24 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
 - `tools/sanitize/run.py` (AddressSanitizer and LeakSanitizer over the tests of the patched kernel
   code and of smlibpy's C++; pytest's verdict counts), `tools/oracles/` (upstream's `prog_test`
   suites, SmPyLib's tests, 200 `.smb` files, crash loops, NVIDIA's USD validator on a shim) and the
-  "Checks" workflow (N2, N4). CI's Linux test job installs `usd-brep[validation]` and runs NVIDIA's
-  validator itself on the files of ten bodies (N4; its wheels are for Python 3.12 on Linux and
-  Windows, so the test is skipped on macOS). The close-out ran it once in a linux/amd64 container on
-  40 files of both builds (usd-brep 1.0.1, usd-validation-nvidia 1.22.0): each passes the BrepArray
-  rules, and of the general rules only `UsdAsciiPerformanceChecker` complains (large arrays in a text
-  file). CI's first Linux run is the check of the released sources.
+  "Checks" workflow (N2, N4).
+- NVIDIA's validator itself (`brep_validator.validate_file`, with OpenUSD and the asset validator):
+  `tools/oracles/usd_validator.py --nvidia FILE.usda ...`, and tests of both suites on what
+  `export_usd` and `toUsd` write (19 files: eleven bodies, among them a non-ASCII name, cells, text
+  and NURBS faces; two bodies with meshes; line edges read and written again; five of usd-brep's own
+  files read and written again, BA.465 exempt for those); the Python suite's also on a box with a
+  vertex moved out of its box, which must fail (BA.310), as upstream's file for BA.000 must (N4). It
+  runs on any platform: `pip install "usd-validation-nvidia[usd]"` brings OpenUSD and the asset
+  validator, and the tool takes the BrepArray rules and the omniSolid schema from the submodule;
+  usd-brep's wheel (`usd-brep[validation]`, Python 3.12 on Linux and Windows) brings all of it. CI's
+  Linux job (Python 3.12) installs `usd-brep[validation]`, its macOS job and the JavaScript job
+  `usd-validation-nvidia[usd]`, none of them with continue-on-error, and sets
+  `SMLIBPY_REQUIRE_USD_VALIDATOR`, which fails these tests instead of skipping them where the
+  validator is missing: a green run of those jobs is a run of the validator. On macOS (usd-core
+  26.8, usd-validation-nvidia 1.22.0, the submodule's rules at usd-brep 1.0.0) the 40 files of the
+  close-out's linux/amd64 container run (usd-brep 1.0.1) get the same verdict each: every file
+  passes the BrepArray rules, and of the general rules only `UsdAsciiPerformanceChecker` complains
+  (large arrays in a text file).
 - `tools/parity.py`: smlibwasm's writers and modelling steps against smlibpy's golden files, and 56
   steps of the capabilities phase 1 added (`capabilities()`), which agree to 1e-7 (N5).
 - New `ext` calls of both builds, among them `classify_points`, `boolean` (it clears the kernel's
@@ -1932,7 +1944,10 @@ Other differences:
 - Tools: `tools/parity.py`'s `golden.json` has a `capabilities` key, and `differences()` writes the
   files from the golden bodies elsewhere than on darwin-arm64; `tools/oracles/smpylib_tests.py`
   leaves 5 more upstream tests out (listed with the reason); `tools/fuzz/baseline.json` has
-  `linux-x86_64`; CI's Linux job installs `usd-brep[validation]` (was `usd-brep`).
+  `linux-x86_64`; CI's Linux job installs `usd-brep[validation]` (was `usd-brep`), and its macOS and
+  JavaScript jobs `usd-validation-nvidia[usd]`, without continue-on-error; with
+  `SMLIBPY_REQUIRE_USD_VALIDATOR` set, the tests of NVIDIA's validator fail instead of skipping
+  where it is not installed (N4).
 - `bbox()` of a part bent with `bend` grows by about 1e-5 across the bend, where the exact cylinders
   replace the fitted faces (D2: the bent bar of deform/bend reads y +-5.00001, it read +-5.0).
 - A USD round trip keeps volumes to 1e-11, not 1e-12 (a cone: 2.8e-12 off), now that edges are
@@ -2148,10 +2163,11 @@ Outside the kernel:
   workers nested three deep (reproduced with Vite 4.5.14 on three files that only start each other),
   and a worker that imports the package is three (the app's worker, the package's supervisor, its
   probe worker). Vite 5 and webpack 5 build it; with Vite 4 use the package on the main thread.
-- **CI on Linux and Windows (N2, N3, N4).** The suites, the fuzz job and NVIDIA's validator run on
-  Linux, and the helper process on Windows, in CI's jobs at the first push; they could not run here
-  (macOS only). Three Linux-only defects found earlier in an emulated container are fixed, and the
-  Linux fuzz baseline comes from that container: CI confirms or replaces it.
+- **CI on Linux and Windows (N2, N3).** The suites and the fuzz job run on Linux, and the helper
+  process on Windows, in CI's jobs at the first push; they could not run here (macOS only). Three
+  Linux-only defects found earlier in an emulated container are fixed, and the Linux fuzz baseline
+  comes from that container: CI confirms or replaces it. (NVIDIA's validator, N4, runs here too
+  now, with `usd-validation-nvidia[usd]`; usd-brep's Linux wheel ran it in that container.)
 
 ## Later
 

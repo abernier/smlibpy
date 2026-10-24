@@ -463,6 +463,7 @@ the day's date as a seed). Each one runs locally the same way:
 | Upstream's 200 `.smb` test files | `python tools/oracles/smb_files.py` | a file whose kind, face count, volume, validity or mesh differs from `tools/oracles/smb_files.json` |
 | Crash loops: the calls that crashed the kernel (O1, O4 of the kernel plan), again and again in fresh processes with the guard off | `python tools/oracles/crash_loops.py --runs 20` | a crash of a case not marked known (two still crash now and then, contained by the guard: their rates are printed) |
 | NVIDIA's BrepArray validator (usd-brep's `brep_validator`, 191 rules) on USD files, without OpenUSD: upstream's rule checker on a shim of the `pxr` calls it makes (`tools/oracles/usd_shim`). The test suites run it on what `export_usd` and `toUsd` write | `python tools/oracles/usd_validator.py FILE.usda ...` | a rule a file fails (the tests leave out BA.465, control points in the body's box, for bodies read from other software: upstream's own files fail it) |
+| NVIDIA's validator itself (`brep_validator.validate_file`, with OpenUSD): the BrepArray rules and the asset validator's general USD rules. `pip install "usd-validation-nvidia[usd]"` brings OpenUSD and the asset validator on any platform, and the tool takes the BrepArray rules and the omniSolid schema from the submodule; `usd-brep[validation]` (Python 3.12 on Linux and Windows) brings all of it. The test suites run it on what `export_usd` and `toUsd` write and on a file broken on purpose; CI's Linux (Python 3.12), macOS and JavaScript jobs install it, and `SMLIBPY_REQUIRE_USD_VALIDATOR` fails these tests there instead of skipping them | `python tools/oracles/usd_validator.py --nvidia FILE.usda ...` | a BrepArray rule a file fails (BA.465 left out as above), or a general rule other than `UsdAsciiPerformanceChecker`, which asks for large arrays in binary (crate) files |
 | smlibwasm against smlibpy: the text of the writers smlibwasm has its own copy of (STEP, USD, DXF, OBJ, glTF, STL) for the same bodies, and the numbers of some modelling steps, with the known differences of the builds (`KNOWN`) | `python tools/parity.py [--update]` writes or checks `tests/data/parity`; `js/test/lane_WN.test.ts` compares smlibwasm with it | text that differs but for numbers to 1e-9, a number off by more than 1e-7 of it, a count or an error that differs, a known difference that went away |
 
 The fuzz run's invariants: every result is a valid body within its box's volume;
@@ -494,9 +495,10 @@ the fuzz run against both baselines and the sanitizers. Three things held on mac
 fixed: a round close to the largest radius that fits came back open (now measured, see
 [Robustness work in smlibpy](#robustness-work-in-smlibpy)), a sweep along a closed spline with a kink
 crashed the kernel (a ProtoEdge left in the lists of its ProtoFaces, `third_party/patches`), and
-`tools/parity.py` compared files written from bodies the platform made. CI's Linux job also runs
-NVIDIA's validator itself (`pip install "usd-brep[validation]"`, `validate_file`) on what
-`export_usd` writes: every file passes the BrepArray rules; of the asset validator's general rules
+`tools/parity.py` compared files written from bodies the platform made. NVIDIA's validator itself
+(`validate_file`) ran there on 40 files of both builds from usd-brep's wheel, and runs on macOS
+with `usd-validation-nvidia[usd]` and the submodule's BrepArray rules, with the same verdict for
+each of those files: every file passes the BrepArray rules; of the asset validator's general rules
 only `UsdAsciiPerformanceChecker` complains, which asks for large arrays in binary (crate) files.
 The helper process for guarded steps (`GUARD_PROCESS = "helper"`, Windows' default) is tested on
 macOS and Linux by choosing it; it has not run on Windows itself.

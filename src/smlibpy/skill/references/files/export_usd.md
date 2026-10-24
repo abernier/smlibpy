@@ -37,11 +37,14 @@ writing a file.
 - A `Mesh` prim per body (unless `mesh=False`): triangles, a normal per point (points on sharp
   edges are written once per face), the body's color.
 - A `Mesh` (from `tessellate` or `import_stl`) becomes a `Mesh` prim, not a `BrepArray`.
-- The files pass the BrepArray rules of NVIDIA's validator (the test suite runs usd-brep's
-  `brep_validator` on them). A body read from another program's file and written again keeps
-  what that file broke of the containment rule BA.465 (rational NURBS whose control points lie
-  outside the body's box; usd-brep's own files do). Loops whose UV curves do not close (a sphere's
-  face running up and down its seam) are written without UV curves; readers rebuild them.
+- The files pass the BrepArray rules of NVIDIA's validator (the test suites run usd-brep's
+  `brep_validator` on them, and NVIDIA's `validate_file` itself, `pip install
+  "usd-validation-nvidia[usd]"`); of its general USD rules only `UsdAsciiPerformanceChecker`
+  complains, which asks for large arrays in binary (crate) files. A body read from another
+  program's file and written again keeps what that file broke of the containment rule BA.465
+  (rational NURBS whose control points lie outside the body's box; usd-brep's own files do). Loops
+  whose UV curves do not close (a sphere's face running up and down its seam) are written without
+  UV curves; readers rebuild them.
 
 ## Gotchas
 - **Text only.** `.usdc` and `.usdz` raise `ValueError: export_usd writes text USD (.usda,

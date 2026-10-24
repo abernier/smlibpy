@@ -125,7 +125,11 @@ solids. Other USD viewers draw only meshes, so each body also gets a `Mesh` prim
 (`<name>_mesh`); `mesh=False` leaves it out, for the tools that draw the B-rep themselves and
 would show the body twice. The test suite checks the files with the BrepArray rules of NVIDIA's
 validator (usd-brep's `brep_validator`, through `tools/oracles/usd_validator.py`) and with OpenUSD,
-and where `usd-brep[validation]` is installed (CI's Linux job) with the validator itself.
+and with the validator itself (`validate_file`: the BrepArray rules and the asset validator's
+general USD rules) where it is installed: `pip install "usd-validation-nvidia[usd]"` on any
+platform, or `usd-brep[validation]`. CI's Linux, macOS and JavaScript jobs install it and fail
+without it. Every file passes the BrepArray rules; of the general rules only
+`UsdAsciiPerformanceChecker` complains, which asks for large arrays in binary (crate) files.
 A prim's name is the body's name with every character but ASCII letters, digits and `_` as
 `_` (`"Größe"` is the prim `Gr__e`); the name itself is the prim's `displayName`, which
 viewers show and `import_usd` gives back. Faces and edges keep their types: planes, cylinders,

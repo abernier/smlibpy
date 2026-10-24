@@ -2378,6 +2378,13 @@ Status (phase 1) of the items in the table:
   NVIDIA's `validate_file` on the files of ten bodies (skipped where the package cannot be installed:
   its wheels are for Python 3.12 on Linux and Windows). Lane W ran it once in a linux/amd64 container
   on 40 files of both builds: all pass the BrepArray rules.
+- N4 (verification): done: `tools/oracles/usd_validator.py --nvidia` runs `validate_file` from
+  usd-brep's wheel or, on any platform, from `usd-validation-nvidia[usd]` with the submodule's
+  BrepArray rules and schema. Tests of both suites (export_usd and toUsd: 19 files with a non-ASCII
+  name, line-edge and foreign re-exports, BA.465 exempt for those; a file broken on purpose must
+  fail) pass on macOS, where lane W's 40 files get the container run's verdicts. CI's Linux (3.12),
+  macOS and JavaScript jobs install it without continue-on-error and set
+  `SMLIBPY_REQUIRE_USD_VALIDATOR`, so the tests fail there instead of skipping without it.
 - N5: done, 13fb24c (lane WN): `tools/parity.py`, golden files in tests/data/parity, the JS
   comparisons, the docs' js blocks run; 18 modelling steps.
 - N5 (close-out): done, W (c10f34c): 56 capability steps in `tools/parity.py`; smlibwasm agrees to
