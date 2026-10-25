@@ -19,6 +19,10 @@
 //   its first Edgeuse (it set only the four Loopuses of the Edgeuses, to the next Edgeuse, which can
 //   be one of the four or of another Loopuse): GlueCoincidentBrepVertices' next DeleteEdge and the
 //   Boolean's CollectFaces read the freed Edgeuse (extended shells of an imported part).
+//   SmBrep::DeleteEdge turns the two Loopuses of the surviving loop into the loop vertex when the
+//   closed Edge it deletes alone bounds two Faces whose loops are both outer loops. The
+//   orientations chose one Loopuse of each loop; the surviving one kept the freed Edgeuse, which
+//   SmBrep::ShrinkGeometry read (extended shells of filleted boxes, on Linux).
 //   SmBrep::MakeEdgeInFaceWithVU finds the partner of a stale LoopVertexuse anywhere in its
 //   Vertex's list (it looked at the two neighbours only), and fails before it deletes either pair
 //   when one has none. It deleted the start Vertex's pair and then failed on the end Vertex's,
@@ -6462,8 +6466,17 @@ SmBoolean bDebugMe488 = FALSE;
           pVU->m_tVertexuseType = SmLoopuse_TYPE;
 
           // Turn vertex into loop vertices.
+          // smlibpy patch: the loop vertex goes to the two Loopuses of the loop that survives the
+          // merge below (pSurvLU and its mate). The orientations decided it, which put it on pLURad
+          // and pLUMate, one Loopuse of each loop, when both loops are outer loops (the Edge alone
+          // bounds both Faces: two caps of spheres closed by one circle). pLU's loop survived then
+          // with pLU naming the freed Edgeuse, and SmBrep::ShrinkGeometry read it (a read of freed
+          // memory in SmLoopuse::GetEdgeuses: extended shells of filleted boxes).
+          //   if(   bSingleClosedLoopIsolated
+          //        && pLU->GetOrientation() == SM_OT_SAME // Outer Loop
+          //      )
           if(   bSingleClosedLoopIsolated
-               && pLU->GetOrientation() == SM_OT_SAME // Outer Loop
+               && (bMergeFace ? pSurvLU == pLURad : pLU->GetOrientation() == SM_OT_SAME) // Outer Loop
              )
             {
               // The edge is an entire loop and no other edges come into the
@@ -6487,8 +6500,12 @@ SmBoolean bDebugMe488 = FALSE;
           SmVertexuse *pVURadMate      = pEURadMate->GetVertexuse(); NER(pVURadMate);
           pVURadMate->m_tVertexuseType = SmLoopuse_TYPE;
 
+          // smlibpy patch: the mate of the Loopuse above (see there).
+          //   if(  bSingleClosedLoopIsolated
+          //       && pLURadMate->GetOrientation() == SM_OT_SAME
+          //      )
           if(  bSingleClosedLoopIsolated
-              && pLURadMate->GetOrientation() == SM_OT_SAME
+              && (bMergeFace ? pSurvLU == pLU : pLURadMate->GetOrientation() == SM_OT_SAME)
              )
             {
               // The 'inside' of an isolated single closed loop.

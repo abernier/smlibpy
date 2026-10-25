@@ -1431,6 +1431,11 @@ Documentation:
   polar box (parts 81 and 19), and left loops naming the edgeuses and vertexuses it had deleted: all
   patched (part 52 now 1 of 20, part 81 3 of 30, part 19 none; the rest is under [Known kernel
   limitations](#known-kernel-limitations), contained by the other process).
+- The extended shells of filleted boxes read freed memory and crashed the kernel step on Linux (2 of
+  8 runs under valgrind): deleting a closed edge that was the only edge of two faces (two caps of
+  spheres closed by one circle) left the surviving face's loop naming the edgeuse it had freed
+  (kernel patch, `DeleteEdge`). With the allocations moved at random, 6 of 200 processes left such a
+  loop before, none now.
 - A ProtoEdge the Boolean deletes when it combines two stayed in the overlap lists of other
   ProtoEdges, the coincidence lists of ProtoFaces and, listed twice, its ProtoVertices' lists (kernel
   patch, `SmProtoTopology.cpp`), and was read where the memory layout let it: the extended offsets of
