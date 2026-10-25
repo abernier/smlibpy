@@ -914,32 +914,46 @@ def test_step_import_makes_one_vertex_per_file_vertex(tmp_path):
     assert broken == 0
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="reads the process's memory with ps")
+@pytest.mark.skipif(sys.platform not in ("darwin", "linux"), reason="reads the C allocator's statistics")
 def test_seam_checks_on_import_free_their_curves(tmp_path):
     # The kernel's seam check (SmFace::HasSeamProblem), which every STEP import runs on every body,
     # copied the seam curve it made and lost the original: 3.4 KB per cylinder, 12.7 KB per torus,
     # each call (also in the healer). In a process of its own, so that what other tests left does
-    # not count.
+    # not count; in the C allocator's bytes in use, not the process's resident memory (which grew by
+    # 5.1 MB on Linux in CI without the leak).
     export_step(Box(20, 10, 10) - Cylinder(3, 20), tmp_path / "hole.step")
     code = f"""
-import gc, os
+import ctypes, gc, sys
 from smlibpy import *
 from smlibpy._kernel import ext
-def rss():
-    return int(os.popen(f"ps -o rss= -p {{os.getpid()}}").read()) / 1024
+def heap():
+    if sys.platform == "darwin":
+        class Stats(ctypes.Structure):
+            _fields_ = [("blocks_in_use", ctypes.c_uint), ("size_in_use", ctypes.c_size_t),
+                        ("max_size_in_use", ctypes.c_size_t), ("size_allocated", ctypes.c_size_t)]
+        stats = Stats()
+        ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_statistics(None, ctypes.byref(stats))
+        return stats.size_in_use / 1048576
+    class Info(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_size_t) for name in ("arena", "ordblks", "smblks", "hblks", "hblkhd",
+                                                         "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
+    libc = ctypes.CDLL(None)
+    libc.mallinfo2.restype = Info
+    info = libc.mallinfo2()
+    return (info.uordblks + info.hblkhd) / 1048576
 ring = Torus(10, 2) + Cylinder(3, 30)
 for _ in range(50):
     ext.seam_problems(ring._brep)
 gc.collect()
-before = rss()
+before = heap()
 for _ in range(1000):
     ext.seam_problems(ring._brep)
 for _ in range(100):
     import_step({str(tmp_path / "hole.step")!r})
 gc.collect()
-print(rss() - before)
+print(heap() - before)
 """
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr
-    grown = float(run.stdout.strip())
-    assert grown < 5, f"1000 seam checks and 100 imports took {grown:.1f} MB"  # was 16 MB
+    kept = float(run.stdout.strip())
+    assert kept < 2, f"1000 seam checks and 100 imports kept {kept:.1f} MB"  # was 16 MB

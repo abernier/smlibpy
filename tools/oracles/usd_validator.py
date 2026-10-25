@@ -111,10 +111,9 @@ def check_nvidia(paths: list[str | Path]) -> dict[str, dict]:
     for path in paths:
         brep = validate_file(str(path), omnisolid_plugin_path=schema, workers=1, brep_only=True)
         full = validate_file(str(path), omnisolid_plugin_path=schema, workers=1)
-        asset = list(full.messages)
-        for message in brep.messages:  # (the general rules' messages: the full run's but the BrepArray rules')
-            if message in asset:
-                asset.remove(message)
+        # (the general rules' messages: the full run's but the BrepArray rules', which it can say twice:
+        # usd-brep's wheel also registers its BrepValidator with the asset validator)
+        asset = [m for m in full.messages if m not in brep.messages and "brep_validator.BrepValidator" not in m]
         out[str(path)] = {"validator": which, "breps": brep.brep_array_count, "passed": full.passed,
                           "codes": dict(brep.issue_summary), "messages": list(brep.messages), "asset": asset}
     return out

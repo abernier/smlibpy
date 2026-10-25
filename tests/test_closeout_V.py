@@ -234,11 +234,41 @@ def _comment(path: Path, code: str) -> str:
     return line.split("#", 1)[1].strip()
 
 
+def _statement(file: str, line: int) -> range:
+    """The lines of the kernel's error macro (``SE``, ``SER``, ``SERN``, ``SERZ``) that ends on or holds
+    ``line``: the macros record ``__LINE__``, which is the last line of a call written over several with
+    clang and its first with GCC and MSVC (SmMerge.cpp's ``SER(MakeFaceuse(...))``: 4449 on macOS, 4445
+    on Linux)."""
+    path = next(p for d in ("patches/SMLib/src", "patches/SM_API/src", "usd-brep/source/SMLib/src",
+                            "usd-brep/source/SM_API/src") if (p := ROOT / "third_party" / d / file).is_file())
+    code = [x.split("//")[0] for x in path.read_text(errors="replace").splitlines()]
+    for start in range(line, max(0, line - 12), -1):
+        call = re.search(r"\bSE(?:R[NZ]?)?\s*\(", code[start - 1])
+        if not call:
+            continue
+        depth, end = 0, start
+        for i in range(start - 1, len(code)):  # (to the parenthesis that closes the call)
+            for ch in code[i][call.end() - 1 if i == start - 1 else 0:]:
+                depth += {"(": 1, ")": -1}.get(ch, 0)
+                if depth == 0:
+                    break
+            if depth == 0:
+                end = i + 1
+                break
+        if start <= line <= end:
+            return range(start, end + 1)
+    return range(line, line + 1)
+
+
 def test_the_kernel_trace_example_prints_what_docs_kernel_md_says():
     said = ast.literal_eval(_comment(ROOT / "docs" / "kernel.md", "print(e.trace[-3:])"))
     with pytest.raises(KernelError) as e:
         Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
-    assert e.value.trace[-3:] == said  # (it said SmMerge.cpp:7146 and :4437; the kernel's patches moved them)
+    got = e.value.trace[-3:]
+    assert len(got) == len(said), got
+    for g, s in zip(got, said):  # (it said SmMerge.cpp:7146 and :4437; the kernel's patches moved them)
+        (gf, gl, gfn), (sf, sl, sfn) = (re.fullmatch(r"SM_ERR at (\S+):(\d+) \((\w+)\)", x).groups() for x in (g, s))
+        assert (gf, gfn) == (sf, sfn) and int(gl) in _statement(sf, int(sl)), (got, said)
 
 
 def test_the_loft_reference_prints_its_sections():

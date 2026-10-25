@@ -328,7 +328,9 @@ the kernel the call failed: the failures the kernel reported during the call, ol
 last 48 of them, as `"SM_ERR at SmFilletExecutive.cpp:1603 (DoFillet)"` (the status, the kernel's
 file and line, its function). It ends with the chain from the deepest function that failed to
 the kernel's API function; what comes before are errors the kernel recovered from (a step it
-tried another way). Steps in another process bring theirs back.
+tried another way). Steps in another process bring theirs back. Where the kernel's call runs over
+several lines, the line is its last as clang builds it (macOS, smlibwasm) and its first as GCC and
+MSVC do (Linux, Windows): `SmMerge.cpp:4445` below on Linux.
 
 ```python
 try:
