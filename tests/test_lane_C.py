@@ -19,6 +19,7 @@ from pytest import approx
 
 from smlibpy import *
 from smlibpy._kernel import k
+from smlibpy._regions import seg_of_edge, wire_frame
 
 
 # -- C1: 2D unions of exclusive-or sketches whose faces touch at points ---------------------------
@@ -325,11 +326,15 @@ def test_spline_offsets_are_parallel_within_their_size():
 
 
 def test_offsets_of_paths_with_curves_match_the_exact_path():
+    # (the kernel offsets the fitted curve within 1e-6 of the path's size, 4e-5 here: 1e-4 for the
+    # length. Before 0.5.0's fit_curve, the fitted arc happened to pass seg_of_edge's test for a
+    # circle and was offset as an exact arc, not by the kernel.)
     exact, fitted = _arc_like_path(False), _arc_like_path(True)
+    assert seg_of_edge(fitted.edges()[1], wire_frame(fitted.edges(), None, "test")).__class__.__name__ == "Curve2"
     for d in (1.5, -1.5):
         for corners in ("round", "sharp", "chamfer"):
             a, b = exact.offset(d, corners=corners), fitted.offset(d, corners=corners)
-            assert b.length == approx(a.length, abs=1e-5), (d, corners)
+            assert b.length == approx(a.length, abs=1e-4), (d, corners)
             assert b.start.distance_to(a.start) < 1e-9 and b.end.distance_to(a.end) < 1e-9
             assert all(x.end.distance_to(y.start) < 1e-9 for x, y in zip(b.edges(), b.edges()[1:]))
 
@@ -356,10 +361,11 @@ def test_strokes_follow_splines():
     ring = Spline((0, 0), (10, 5), (20, 0), (10, -5), closed=True)
     assert Stroke(ring, 1).area == approx(ring.length, abs=2 * ring.length * 1e-6 * ring.bbox().diagonal)
     exact, fitted = _arc_like_path(False), _arc_like_path(True)
+    band = 2 * fitted.length * 1e-6 * fitted.bbox().diagonal  # (the fitted arc's sides: the kernel's offsets)
     for corners in ("round", "sharp", "chamfer"):
         for ends in ("round", "flat"):
             assert Stroke(fitted, 3, ends=ends, corners=corners).area == approx(
-                Stroke(exact, 3, ends=ends, corners=corners).area, rel=1e-6), (corners, ends)
+                Stroke(exact, 3, ends=ends, corners=corners).area, abs=band), (corners, ends)
     # a spline that crosses itself: the band overlaps itself there and keeps the hole it encloses
     loop = Spline((0, 0), (20, 0), (20, 10), (10, 10), (10, -10))
     band = Stroke(loop, 1)
@@ -390,6 +396,26 @@ def test_fit_curve_keeps_within_the_tolerance_with_few_control_points():
         fit_curve(pts, degree=1)
     with pytest.raises(ValueError, match="closed curve takes no end tangents"):
         fit_curve(ring, closed=True, tangents=((1, 0), None))
+
+
+def test_fit_curve_smooths_noisy_points():
+    # 80 points round a ring in space with noise (sigma 0.15, the worst 0.50 off): a least-squares
+    # fit within 0.6 of every point with 15 control points, smooth all round. The kernel's
+    # approximation (SmBSplineCurve::ApproximatePoints) needed 31 and followed the noise.
+    import numpy as np
+
+    t = np.linspace(0, 2 * np.pi, 80, endpoint=False)
+    ring = np.column_stack([30 * np.cos(t), 18 * np.sin(t), 6 * np.sin(3 * t)])
+    pts = ring + np.random.default_rng(3).normal(0, 0.15, ring.shape)
+    c = fit_curve(pts, tolerance=0.6, closed=True)
+    assert max(c.distance_to(tuple(p)) for p in pts) <= 0.6 and len(c.nurbs().points) <= 20
+    assert c.is_closed and c.start.distance_to(tuple(pts[0])) <= 0.6  # (near the first point)
+    assert c.tangent_at(0).angle_to(c.tangent_at(1)) < 1e-9
+    # a fitted quarter circle (tight tolerance) leaves its ends along the circle
+    arc = CenterArc((10, 10), 10, -90, 90)
+    f = fit_curve([arc.point_at(i / 200) for i in range(201)], tolerance=1e-6)
+    assert len(f.nurbs().points) < 30
+    assert all(f.tangent_at(u).angle_to(arc.tangent_at(u)) < 1e-6 for u in (0, 1))
 
 
 def test_splines_take_a_tangent_at_every_point():

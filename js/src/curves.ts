@@ -3,7 +3,8 @@
 // All return an Edge (one curve) or a Wire (a chain). Points may be given as [x, y] (z = 0),
 // [x, y, z] or Vectors.
 
-import { KernelError, ModelingError, _crashOf, _isCrash, _opts, ext, k, kernelCall } from './kernel.ts'
+import { ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
+import { solve } from './_linalg.ts'
 import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
 import { type Complex, Corner, GeometryError, type Seg, assemble, describe, fmt, isSmooth } from './_planar.ts'
@@ -562,22 +563,277 @@ function _throughTangents(pts: Vector[], tangents: (VectorLike | null)[], closed
   return Edge._fromCurve(r[0])
 }
 
+/** For each parameter of `us`: the knot span k it lies in (within the domain) and the values and first
+ * derivatives of the p + 1 basis functions that are not zero there (those of control points k - p to
+ * k). */
+function _spans(knots: readonly number[], p: number, us: readonly number[]): { k: number[]; n: number[][]; d: number[][] } {
+  const count = knots.length - p - 1
+  const out = { k: [] as number[], n: [] as number[][], d: [] as number[][] }
+  for (const u of us) {
+    let lo = 0 // (numpy.searchsorted(knots, u, 'right'))
+    let hi = knots.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (knots[mid] <= u) lo = mid + 1
+      else hi = mid
+    }
+    const k = Math.min(Math.max(lo - 1, p), count - 1)
+    const left = new Array<number>(p + 1).fill(0)
+    const right = new Array<number>(p + 1).fill(0)
+    const n = new Array<number>(p + 1).fill(0)
+    n[0] = 1
+    let lower = [1]
+    for (let j = 1; j <= p; j++) {
+      left[j] = u - knots[k + 1 - j]
+      right[j] = knots[k + j] - u
+      let saved = 0
+      for (let r = 0; r < j; r++) {
+        const temp = n[r] / (right[r + 1] + left[j - r])
+        n[r] = saved + right[r + 1] * temp
+        saved = left[j - r] * temp
+      }
+      n[j] = saved
+      if (j === p - 1) lower = n.slice(0, p) // (the basis of degree p - 1: of control points k - p + 1 to k)
+    }
+    const d = new Array<number>(p + 1).fill(0)
+    for (let r = 0; r <= p; r++) {
+      const i = k - p + r
+      if (r >= 1) {
+        const w = knots[i + p] - knots[i]
+        if (w > 0) d[r] += (p * lower[r - 1]) / w
+      }
+      if (r <= p - 1) {
+        const w = knots[i + p + 1] - knots[i + 1]
+        if (w > 0) d[r] -= (p * lower[r]) / w
+      }
+    }
+    out.k.push(k)
+    out.n.push(n)
+    out.d.push(d)
+  }
+  return out
+}
+
+/** The control points and the curve's points at the parameters `us` (each a combination of p + 1
+ * control points). */
+function _curvePoints(ctrl: readonly number[][], s: { k: number[]; n: number[][] }, p: number, count: number): number[][] {
+  return s.k.map((k, i) => {
+    const pt = [0, 0, 0]
+    s.n[i].forEach((b, r) => {
+      const c = ctrl[(k - p + r) % count]
+      for (let x = 0; x < 3; x++) pt[x] += b * c[x]
+    })
+    return pt
+  })
+}
+
+/** The least-squares B-spline of degree p near the points q (m x 3) with the fewest control points
+ * that keep every point within `tol` (a fifth more of them each time until they do): open, through the
+ * first and the last point (along the unit directions t0 and t1 there, where given, or the points' own
+ * where they run smoothly), its knots spread so that every span holds points; closed, periodic (as
+ * smooth at its start as elsewhere), starting at its point for the first point (held to no point: a
+ * noisy one would bend it). Between the fits each point's parameter moves to the nearest point of the
+ * curve, so that the curve is measured by its distance from the points. Returns [control points, knots, the largest distance of a point]; a closed curve's control
+ * points and knots are periodic: the first p control points again at the end, the knots unclamped. */
+function _fitPoints(q: number[][], tol: number, p: number, t0: number[] | null, t1: number[] | null, closed: boolean): [number[][], number[], number] {
+  const m = q.length
+  if (!closed) {
+    // (an end without a direction given: the points' own, where they are smooth there)
+    t0 ??= _endDirection(q, p, tol)
+    if (t1 == null) {
+      const e = _endDirection([...q].reverse(), p, tol)
+      if (e != null) t1 = e.map((x) => -x)
+    }
+  }
+  const run = closed ? [...q, q[0]] : q
+  const cum = [0]
+  for (let i = 1; i < run.length; i++) cum.push(cum[i - 1] + Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1], run[i][2] - run[i - 1][2]))
+  const u0 = cum.slice(0, m).map((c) => c / cum[cum.length - 1]) // (chord length; a closed curve's first point again at 1)
+  let count = Math.max(p + 1, t0 != null && t1 != null ? 4 : 3)
+  let best: [number[][], number[], number] | null = null
+  for (;;) {
+    const knots: number[] = []
+    if (closed) {
+      // (at evenly spaced points, every span holding as many; periodic beyond 0 and 1)
+      const tau = Array.from({ length: count }, (_, j) => u0[Math.floor((j * m) / count)])
+      for (let j = -p; j <= count + p; j++) knots.push(tau[((j % count) + count) % count] + Math.floor(j / count))
+    } else {
+      const d = m / (count - p) // (Piegl and Tiller's spacing: every span holds points)
+      knots.push(...new Array<number>(p + 1).fill(0))
+      for (let j = 1; j < count - p; j++) {
+        const i = Math.floor(j * d)
+        const a = j * d - i
+        knots.push((1 - a) * u0[i - 1] + a * u0[i])
+      }
+      knots.push(...new Array<number>(p + 1).fill(1))
+    }
+    let us = [...u0] // (afresh: parameters moved for a coarser curve hold a finer one back)
+    let dev = Infinity
+    let now = Infinity
+    for (let it = 0; it < 6; it++) {
+      // (fit, move the parameters to the nearest points, again while it helps)
+      const ctrl = _fitSolve(q, us, knots, p, count, t0, t1, closed)
+      us = _nearest(q, us, u0, ctrl, knots, p, count, closed)
+      const on = _curvePoints(ctrl, _spans(knots, p, us), p, count)
+      now = Math.max(...on.map((c, i) => Math.hypot(q[i][0] - c[0], q[i][1] - c[1], q[i][2] - c[2])))
+      if (best == null || now < best[2]) best = [closed ? [...ctrl, ...ctrl.slice(0, p)] : ctrl, knots, now]
+      if (now <= tol || now > 0.99 * dev) break
+      dev = now
+    }
+    dev = Math.min(dev, now)
+    if (dev <= tol || count >= m) return best as [number[][], number[], number]
+    count = Math.min(m, count + Math.max(1, Math.floor(count / 5)))
+  }
+}
+
+/** The direction a smooth curve leaves q[0] in: the derivative there of the polynomial of degree 5 (or
+ * less) fitted to the first 2p + 2 points (by their distances along them). null where those points
+ * stray from it by more than 1/100 of `tol`: not smooth enough at this tolerance for a direction to hold
+ * the curve to. (Least squares alone leaves the curve's end direction loose: 5e-4 rad off a quarter
+ * circle fitted within 1e-6, enough to move an offset's corner.) */
+function _endDirection(q: readonly number[][], p: number, tol: number): number[] | null {
+  const k = Math.min(q.length, 2 * p + 2)
+  if (k < 4) return null
+  const s = [0]
+  for (let i = 1; i < k; i++) s.push(s[i - 1] + Math.hypot(q[i][0] - q[i - 1][0], q[i][1] - q[i - 1][1], q[i][2] - q[i - 1][2]))
+  const deg = Math.min(5, k - 2)
+  const v = s.map((x) => Array.from({ length: deg + 1 }, (_, j) => ((2 * x) / s[k - 1] - 1) ** j)) // (from -1 to 1: well conditioned)
+  const vtv = Array.from({ length: deg + 1 }, (_, a) => Array.from({ length: deg + 1 }, (_, b) => v.reduce((acc, row) => acc + row[a] * row[b], 0)))
+  const vtq = Array.from({ length: deg + 1 }, (_, a) => [0, 1, 2].map((c) => v.reduce((acc, row, i) => acc + row[a] * q[i][c], 0)))
+  const coef = solve(vtv, vtq)
+  for (let i = 0; i < k; i++) {
+    const f = [0, 1, 2].map((c) => v[i].reduce((acc, b, j) => acc + b * coef[j][c], 0))
+    if (Math.hypot(f[0] - q[i][0], f[1] - q[i][1], f[2] - q[i][2]) > tol / 100) return null
+  }
+  const t = [0, 1, 2].map((c) => coef.reduce((acc, row, j) => acc + (j >= 1 ? j * row[c] * (-1) ** (j - 1) : 0), 0)) // (the derivative at -1)
+  const d = Math.hypot(t[0], t[1], t[2])
+  return d > 0 ? t.map((x) => x / d) : null
+}
+
+/** `_fitPoints`' control points for the points' parameters `us`: least squares, with a small penalty on
+ * the control points' second differences (it keeps the system solvable where a span holds few
+ * points). */
+function _fitSolve(q: readonly number[][], us: readonly number[], knots: readonly number[], p: number, count: number,
+  t0: number[] | null, t1: number[] | null, closed: boolean): number[][] {
+  const { k, n } = _spans(knots, p, us)
+  const zeros = (rows: number, cols: number): number[][] => Array.from({ length: rows }, () => new Array<number>(cols).fill(0))
+  const g = zeros(count, count)
+  let rhs = zeros(count, 3)
+  q.forEach((pt, i) => {
+    const cols = Array.from({ length: p + 1 }, (_, r) => (k[i] - p + r) % count)
+    for (let r = 0; r <= p; r++) {
+      for (let s = 0; s <= p; s++) g[cols[r]][cols[s]] += n[i][r] * n[i][s]
+      for (let c = 0; c < 3; c++) rhs[cols[r]][c] += n[i][r] * pt[c]
+    }
+  })
+  const h = zeros(count, count)
+  for (let j = closed ? 0 : 1; j < (closed ? count : count - 1); j++) {
+    const idx = [(j - 1 + count) % count, j, (j + 1) % count]
+    const w = [1, -2, 1]
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) h[idx[a]][idx[b]] += w[a] * w[b]
+  }
+  let trace = 0
+  for (let i = 0; i < count; i++) trace += g[i][i]
+  const lam = (1e-6 * trace) / count
+  const a = g.map((row, i) => row.map((x, j) => x + lam * h[i][j]))
+  if (closed) return solve(a, rhs) // (all control points free: held to no point, the seam no different from the rest)
+  const fixed = zeros(count, 3)
+  fixed[0] = [...q[0]]
+  fixed[count - 1] = [...q[q.length - 1]]
+  let lo = 1
+  let hi = count - 1
+  const tans: [number, number[]][] = []
+  if (t0 != null) {
+    fixed[1] = [...q[0]]
+    lo = 2
+    tans.push([1, t0])
+  }
+  if (t1 != null) {
+    fixed[count - 2] = [...q[q.length - 1]]
+    hi = count - 2
+    tans.push([count - 2, t1])
+  }
+  rhs = rhs.map((row, i) => row.map((x, c) => x - a[i].reduce((acc, aij, j) => acc + aij * fixed[j][c], 0)))
+  const ctrl = fixed.map((row) => [...row])
+  const nf = hi - lo
+  if (!tans.length) {
+    const sol = solve(a.slice(lo, hi).map((row) => row.slice(lo, hi)), rhs.slice(lo, hi))
+    sol.forEach((row, i) => (ctrl[lo + i] = row))
+    return ctrl
+  }
+  // the free control points' coordinates and a length along each end tangent, together
+  const size = 3 * nf + tans.length
+  const mat = zeros(size, size)
+  const y = new Array<number>(size).fill(0)
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < nf; i++) {
+      for (let j = 0; j < nf; j++) mat[c * nf + i][c * nf + j] = a[lo + i][lo + j]
+      y[c * nf + i] = rhs[lo + i][c]
+    }
+  }
+  tans.forEach(([j, t], ti) => {
+    const row = 3 * nf + ti
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < nf; i++) {
+        mat[c * nf + i][row] = a[lo + i][j] * t[c]
+        mat[row][c * nf + i] = a[j][lo + i] * t[c]
+      }
+    }
+    y[row] = t[0] * rhs[j][0] + t[1] * rhs[j][1] + t[2] * rhs[j][2]
+    tans.forEach(([j2, t2], ti2) => (mat[row][3 * nf + ti2] = a[j][j2] * (t[0] * t2[0] + t[1] * t2[1] + t[2] * t2[2])))
+  })
+  const z = solve(mat, y.map((x) => [x])).map((row) => row[0])
+  for (let c = 0; c < 3; c++) for (let i = 0; i < nf; i++) ctrl[lo + i][c] = z[c * nf + i]
+  tans.forEach(([j, t], ti) => {
+    for (let c = 0; c < 3; c++) ctrl[j][c] += z[3 * nf + ti] * t[c]
+  })
+  return ctrl
+}
+
+/** The points' parameters moved to the nearest points of the curve (a Newton step, kept between the
+ * midpoints to the neighbours' first parameters `u0`, so that the points stay in order and a closed
+ * curve's last point does not slide onto its first): all but the first (the curve's start) and an open
+ * curve's last (its end). */
+function _nearest(q: readonly number[][], us: readonly number[], u0: readonly number[], ctrl: readonly number[][], knots: readonly number[],
+  p: number, count: number, closed: boolean): number[] {
+  const s = _spans(knots, p, us)
+  const on = _curvePoints(ctrl, s, p, count)
+  const tangent = _curvePoints(ctrl, { k: s.k, n: s.d }, p, count)
+  const m = us.length
+  const out = us.map((u, i) => {
+    const t = tangent[i]
+    const step = ((q[i][0] - on[i][0]) * t[0] + (q[i][1] - on[i][1]) * t[1] + (q[i][2] - on[i][2]) * t[2]) / Math.max(t[0] * t[0] + t[1] * t[1] + t[2] * t[2], 1e-300)
+    const before = i > 0 ? u0[i - 1] : closed ? u0[m - 1] - 1 : 0
+    const after = i < m - 1 ? u0[i + 1] : 1
+    return Math.min(Math.max(u + step, (before + u0[i]) / 2), (u0[i] + after) / 2)
+  })
+  out[0] = 0
+  if (!closed) out[m - 1] = 1
+  return out
+}
+
 /**
  * A smooth curve near many points, with as few control points as keep it within `tolerance` of
  * every one: for scanned or digitized outlines, sampled curves and long polylines, where `Spline`
  * passes through every point, follows every wiggle and needs a control point per point.
  *
+ * A least-squares B-spline: it averages noise smaller than the tolerance out instead of following it,
+ * and takes more control points (spread evenly over the points) until every point is within the
+ * tolerance, measured to the nearest point of the curve. An open curve runs from the first point to
+ * the last; where the points run smoothly there and no tangent is given, it leaves them in the points'
+ * own direction. A tolerance below the points' noise makes the curve go through them all.
+ *
  * `points`: the points in order along the curve (2D points lie at z = 0). Options: `tolerance`, the
  * largest distance from any point to the curve (default: 1/1000 of the size of the points);
- * `degree`, the highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
- * needs); `tangents`, optional `[start, end]` directions, either may be null, or a direction at every
- * point (as many as there are points, none null; a cubic curve then: the curve leaves each point near
- * that direction, as the curve through the points along them, `Spline(...points, { tangents })`, does,
- * simplified within the tolerance), not for closed curves; `closed`, a closed curve through the first
- * point again and tangent there.
+ * `degree`, the degree of the curve, 2 to 9; `tangents`, optional `[start, end]` directions, either may
+ * be null, or a direction at every point (as many as there are points, none null; a cubic curve then:
+ * the curve leaves each point near that direction, as the curve through the points along them,
+ * `Spline(...points, { tangents })`, does, simplified within the tolerance), not for closed curves;
+ * `closed`, a closed curve starting and ending near the first point (within the tolerance), as smooth
+ * there as elsewhere.
  *
- * Few points (fewer than about six) give the curve through them (`Spline`). Where no fit keeps
- * within the tolerance, a ModelingError gives the distance it reached.
+ * Few points (fewer than six) give the curve through them (`Spline`). Where no fit keeps within the
+ * tolerance, a ModelingError gives the distance it reached.
  *
  *     const outline = fitCurve(scanPoints, { tolerance: 0.02 })
  */
@@ -631,23 +887,22 @@ export function fitCurve(
   }
   if (closed && tangents != null) throw new RangeError('fitCurve: a closed curve takes no end tangents, nor a direction at every point')
   if (every) return _fitTangents(pts, kept.map((i) => (tangents as readonly (VectorLike | null)[])[i]), tol)
-  const t0 = tangents != null && tangents[0] != null ? _vec(tangents[0]).toArray() : []
-  const t1 = tangents != null && tangents[1] != null ? _vec(tangents[1]).toArray() : []
-  let r: Any
-  try {
-    r = kernelCall('fitCurve', () => ext.approximate_points(pts.flatMap((p) => p.toArray()), degree, tol, t0, t1, closed))
-  } catch (e) {
-    // too few points for an approximation: the curve through them
-    if (!(e instanceof KernelError) || pts.length > 6 || _isCrash(e)) throw _crashOf(e)
-    return Spline(...pts, { tangents, closed })
+  if (pts.length < 6) return Spline(...pts, { tangents, closed }) // (too few to fit: the curve through them)
+  const direction = (t: VectorLike | null | undefined, end: string): number[] | null => {
+    if (t == null) return null
+    const v = _vec(t)
+    if (!(v.length > 0)) throw new RangeError(`fitCurve: the ${end} tangent has no length`)
+    return v.normalized().toArray()
   }
-  const edge = Edge._fromCurve(r[0])
-  const dev = Number(r[1])
+  const t0 = tangents != null ? direction(tangents[0], 'start') : null
+  const t1 = tangents != null ? direction(tangents[1], 'end') : null
+  const p = Math.min(degree, pts.length - 1)
+  const [ctrl, knots, dev] = _fitPoints(pts.map((q) => q.toArray()), tol, p, t0, t1, closed)
   if (dev > tol) {
     throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; ` +
-      'use a larger tolerance or a higher degree')
+      'use a larger tolerance')
   }
-  return edge
+  return kernelCall('fitCurve', () => Edge._fromCurve(_canonicalCurve(ctrl, knots, p, null)))
 }
 
 /** `fitCurve` with a direction at every point (`ext.approximate_tangents`). */

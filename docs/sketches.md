@@ -264,7 +264,7 @@ for every point.
 ```python
 import math
 scan_points = [(x / 10, 8 * math.sin(x / 90) + 0.01 * math.sin(37.3 * x)) for x in range(600)]
-outline = fit_curve(scan_points, tolerance=0.05)  # 14 control points (Spline: 602)
+outline = fit_curve(scan_points, tolerance=0.05)  # 12 control points (Spline: 602)
 s = Spline((0, 0), (10, 0), (20, 10), tangents=[(1, 0), (1, 1), (0, 1)])
 ```
 

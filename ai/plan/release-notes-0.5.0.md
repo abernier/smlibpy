@@ -1616,7 +1616,11 @@ Names are smlibpy's; smlibwasm has each one in camelCase, with keywords as optio
   with a corner where it starts one closed edge; `Stroke` along splines and ellipses (C7).
 - `fit_curve(points, *, tolerance=None, degree=3, tangents=None, closed=False)`: a B-spline within a
   tolerance of every point, along a direction at every point where `tangents` has one per point;
-  `Spline(..., tangents=[...])` with a direction per point (C8).
+  `Spline(..., tangents=[...])` with a direction per point (C8). A least-squares fit of smlibpy's own:
+  it averages noise below the tolerance out (80 noisy points round a ring within 0.6: 15 control
+  points, where the kernel's approximation took 31 and followed the noise; a quarter circle within
+  1e-6: 22, the kernel 47), takes the points' own direction at the ends of an open curve where they
+  run smoothly there, and a closed curve is periodic (as smooth at its first point as elsewhere).
 - `Edge.curvature_at(t)`, `Edge.radius_at(t)`, `Edge.min_radius()` and `Edge.min_radius_at()` (a
   float and its fraction, as `Face.min_radius()` is a float), `Edge.inflections()`,
   `Wire.min_radius()`, `Wire.min_radius_at()`, `Edge.continuity()`, `Wire.continuity()` (C9, A4).

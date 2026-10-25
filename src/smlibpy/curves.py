@@ -11,7 +11,7 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from ._kernel import KernelError, ext, k, kernel_call
+from ._kernel import ext, k, kernel_call
 from .geometry import Axis, Location, Plane, Vector, VectorLike, _direction, _vec
 from .shapes import Edge, Shape, Vertex, Wire, _canonical_curve, _transform_curve
 
@@ -568,6 +568,186 @@ def _through_tangents(pts: list[Vector], tangents: list[VectorLike | None], clos
     return Edge._from_curve(curve)
 
 
+def _spans(knots: np.ndarray, p: int, us: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """For each parameter of ``us``: the knot span k it lies in (within the domain) and the values and
+    first derivatives of the p + 1 basis functions that are not zero there (those of control points
+    k - p to k)."""
+    count = len(knots) - p - 1
+    k = np.clip(np.searchsorted(knots, us, side="right") - 1, p, count - 1)
+    m = len(us)
+    left, right = np.zeros((m, p + 1)), np.zeros((m, p + 1))
+    n = np.zeros((m, p + 1))
+    n[:, 0] = 1.0
+    lower = n[:, :1].copy()
+    for j in range(1, p + 1):
+        left[:, j] = us - knots[k + 1 - j]
+        right[:, j] = knots[k + j] - us
+        saved = np.zeros(m)
+        for r in range(j):
+            temp = n[:, r] / (right[:, r + 1] + left[:, j - r])
+            n[:, r] = saved + right[:, r + 1] * temp
+            saved = left[:, j - r] * temp
+        n[:, j] = saved
+        if j == p - 1:
+            lower = n[:, :p].copy()  # (the basis of degree p - 1: of control points k - p + 1 to k)
+    d = np.zeros((m, p + 1))
+    for r in range(p + 1):
+        i = k - p + r
+        if r >= 1:
+            w = knots[i + p] - knots[i]
+            d[:, r] += np.where(w > 0, p * lower[:, r - 1] / np.where(w > 0, w, 1.0), 0.0)
+        if r <= p - 1:
+            w = knots[i + p + 1] - knots[i + 1]
+            d[:, r] -= np.where(w > 0, p * lower[:, r] / np.where(w > 0, w, 1.0), 0.0)
+    return k, n, d
+
+
+def _fit_points(q: np.ndarray, tol: float, p: int, t0: np.ndarray | None, t1: np.ndarray | None,
+                closed: bool) -> tuple[np.ndarray, np.ndarray, float]:
+    """The least-squares B-spline of degree p near the points q (m x 3) with the fewest control points
+    that keep every point within ``tol`` (a fifth more of them each time until they do): open, through
+    the first and the last point (along the unit directions t0 and t1 there, where given), its knots
+    spread so that every span holds points; closed, periodic (as smooth at its start as elsewhere),
+    starting at its point for the first point (held to no point: a noisy one would bend it). Between
+    the fits each point's parameter moves to the nearest point of the curve, so that the curve is
+    measured by its distance from the points.
+    Returns (control points, knots, the largest distance of a point); a closed curve's control points
+    and knots are periodic: the first p control points again at the end, the knots unclamped."""
+    m = len(q)
+    if not closed:  # (an end without a direction given: the points' own, where they are smooth there)
+        t0 = _end_direction(q, p, tol) if t0 is None else t0
+        t1 = -_end_direction(q[::-1], p, tol) if t1 is None and _end_direction(q[::-1], p, tol) is not None else t1
+    seg = np.linalg.norm(np.diff(np.vstack([q, q[:1]]) if closed else q, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    u0 = cum[:m] / cum[-1]  # (chord length; a closed curve's first point again at 1)
+    count = max(p + 1, 4 if t0 is not None and t1 is not None else 3)
+    best: tuple[np.ndarray, np.ndarray, float] | None = None
+    while True:
+        if closed:  # (at evenly spaced points, every span holding as many; periodic beyond 0 and 1)
+            tau = [float(u0[(j * m) // count]) for j in range(count)]
+            knots = np.array([tau[j % count] + j // count for j in range(-p, count + p + 1)])
+        else:
+            d = m / (count - p)  # (Piegl and Tiller's spacing: every span holds points)
+            inner = [(1 - (j * d - int(j * d))) * u0[int(j * d) - 1] + (j * d - int(j * d)) * u0[int(j * d)]
+                     for j in range(1, count - p)]
+            knots = np.array([0.0] * (p + 1) + inner + [1.0] * (p + 1))
+        us = u0.copy()  # (afresh: parameters moved for a coarser curve hold a finer one back)
+        dev = math.inf
+        for _ in range(6):  # (fit, move the parameters to the nearest points, again while it helps)
+            ctrl = _fit_solve(q, us, knots, p, count, t0, t1, closed)
+            us = _nearest(q, us, u0, ctrl, knots, p, count, closed)
+            k, n, _ = _spans(knots, p, us)
+            cols = (k[:, None] - p + np.arange(p + 1)) % count
+            now = float(np.max(np.linalg.norm(q - np.einsum("mr,mrc->mc", n, ctrl[cols]), axis=1)))
+            if best is None or now < best[2]:
+                best = (np.vstack([ctrl, ctrl[:p]]) if closed else ctrl, knots, now)
+            if now <= tol or now > 0.99 * dev:
+                break
+            dev = now
+        dev = min(dev, now)
+        if dev <= tol or count >= m:
+            return best
+        count = min(m, count + max(1, count // 5))
+
+
+def _end_direction(q: np.ndarray, p: int, tol: float) -> np.ndarray | None:
+    """The direction a smooth curve leaves q[0] in: the derivative there of the polynomial of degree 5
+    (or less) fitted to the first 2p + 2 points (by their distances along them). None where those
+    points stray from it by more than 1/100 of ``tol``: not smooth enough at this tolerance for a
+    direction to hold the curve to. (Least squares alone leaves the curve's end direction loose: 5e-4
+    rad off a quarter circle fitted within 1e-6, enough to move an offset's corner.)"""
+    k = min(len(q), 2 * p + 2)
+    if k < 4:
+        return None
+    s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(q[:k], axis=0), axis=1))])
+    deg = min(5, k - 2)
+    v = np.vander(2 * s / s[-1] - 1, deg + 1, increasing=True)  # (from -1 to 1: well conditioned)
+    coef = np.linalg.solve(v.T @ v, v.T @ q[:k])
+    if np.max(np.linalg.norm(v @ coef - q[:k], axis=1)) > tol / 100:
+        return None
+    t = sum(j * coef[j] * (-1.0) ** (j - 1) for j in range(1, deg + 1))  # (the derivative at -1)
+    d = float(np.linalg.norm(t))
+    return t / d if d > 0 else None
+
+
+def _fit_solve(q: np.ndarray, us: np.ndarray, knots: np.ndarray, p: int, count: int, t0: np.ndarray | None,
+               t1: np.ndarray | None, closed: bool) -> np.ndarray:
+    """:func:`_fit_points`' control points for the points' parameters ``us``: least squares, with a
+    small penalty on the control points' second differences (it keeps the system solvable where a
+    span holds few points)."""
+    k, n, _ = _spans(knots, p, us)
+    cols = (k[:, None] - p + np.arange(p + 1)) % count
+    g, rhs = np.zeros((count, count)), np.zeros((count, 3))
+    for r in range(p + 1):
+        for s in range(p + 1):
+            np.add.at(g, (cols[:, r], cols[:, s]), n[:, r] * n[:, s])
+        np.add.at(rhs, cols[:, r], n[:, r, None] * q)
+    h = np.zeros((count, count))
+    for j in range(count) if closed else range(1, count - 1):
+        idx = [(j - 1) % count, j, (j + 1) % count]
+        h[np.ix_(idx, idx)] += np.outer([1.0, -2.0, 1.0], [1.0, -2.0, 1.0])
+    a = g + 1e-6 * np.trace(g) / count * h
+    if closed:  # (all control points free: held to no point, the seam no different from the rest)
+        return np.linalg.solve(a, rhs)
+    fixed = np.zeros((count, 3))
+    fixed[0], fixed[-1] = q[0], q[-1]
+    lo, hi, tans = 1, count - 1, []
+    if t0 is not None:
+        fixed[1], lo = q[0], 2
+        tans.append((1, t0))
+    if t1 is not None:
+        fixed[count - 2], hi = q[-1], count - 2
+        tans.append((count - 2, t1))
+    rhs = rhs - a @ fixed
+    ctrl = fixed.copy()
+    nf = hi - lo
+    if not tans:
+        ctrl[lo:hi] = np.linalg.solve(a[lo:hi, lo:hi], rhs[lo:hi])
+        return ctrl
+    # the free control points' coordinates and a length along each end tangent, together
+    size = 3 * nf + len(tans)
+    mat, y = np.zeros((size, size)), np.zeros(size)
+    for c in range(3):
+        sl = slice(c * nf, (c + 1) * nf)
+        mat[sl, sl] = a[lo:hi, lo:hi]
+        y[sl] = rhs[lo:hi, c]
+    for i, (j, t) in enumerate(tans):
+        row = 3 * nf + i
+        for c in range(3):
+            sl = slice(c * nf, (c + 1) * nf)
+            mat[sl, row] = a[lo:hi, j] * t[c]
+            mat[row, sl] = a[j, lo:hi] * t[c]
+        y[row] = float(t @ rhs[j])
+        for i2, (j2, t2) in enumerate(tans):
+            mat[row, 3 * nf + i2] = a[j, j2] * float(t @ t2)
+    z = np.linalg.solve(mat, y)
+    for c in range(3):
+        ctrl[lo:hi, c] = z[c * nf:(c + 1) * nf]
+    for i, (j, t) in enumerate(tans):
+        ctrl[j] = ctrl[j] + z[3 * nf + i] * t
+    return ctrl
+
+
+def _nearest(q: np.ndarray, us: np.ndarray, u0: np.ndarray, ctrl: np.ndarray, knots: np.ndarray, p: int,
+             count: int, closed: bool) -> np.ndarray:
+    """The points' parameters moved to the nearest points of the curve (a Newton step, kept between
+    the midpoints to the neighbours' first parameters ``u0``, so that the points stay in order and a
+    closed curve's last point does not slide onto its first): all but the first (the curve's start)
+    and an open curve's last (its end)."""
+    k, n, d = _spans(knots, p, us)
+    cols = (k[:, None] - p + np.arange(p + 1)) % count
+    on = np.einsum("mr,mrc->mc", n, ctrl[cols])
+    tangent = np.einsum("mr,mrc->mc", d, ctrl[cols])
+    step = np.einsum("mc,mc->m", q - on, tangent) / np.maximum(np.einsum("mc,mc->m", tangent, tangent), 1e-300)
+    before = np.concatenate([[u0[-1] - 1.0 if closed else 0.0], u0[:-1]])
+    after = np.concatenate([u0[1:], [1.0]])
+    out = np.clip(us + step, (before + u0) / 2, (u0 + after) / 2)
+    out[0] = 0.0
+    if not closed:
+        out[-1] = 1.0
+    return out
+
+
 def _fit_tangents(pts: list[Vector], tangents: Sequence[Any], tol: float) -> Edge:
     """:func:`fit_curve` with a direction at every point (``ext.approximate_tangents``)."""
     from ._kernel import ModelingError
@@ -602,21 +782,28 @@ def fit_curve(
     polylines, where :func:`Spline` passes through every point, follows every wiggle and needs a
     control point per point.
 
+    A least-squares B-spline: it averages noise smaller than the tolerance out instead of following
+    it, and takes more control points (spread evenly over the points) until every point is within
+    the tolerance, measured to the nearest point of the curve. An open curve runs from the first
+    point to the last; where the points run smoothly there and no tangent is given, it leaves them
+    in the points' own direction. A tolerance below the points' noise makes the curve go through
+    them all.
+
     Args:
         points: The points in order along the curve: a list of points or an (n, 2) or (n, 3) array
             (2D points lie at z = 0).
         tolerance: The largest distance from any point to the curve. Default: 1/1000 of the size
             of the points.
-        degree: The highest degree of the curve, 2 to 9 (the fit starts at 2 and raises it as it
-            needs).
+        degree: The degree of the curve, 2 to 9.
         tangents: Optional ``(start, end)`` directions; either may be None. Or a direction at every
             point (as many as there are points, none None; a cubic curve then): the curve leaves
             each point near that direction, as the curve through the points along them
             (``Spline(*points, tangents=[...])``) does, simplified within the tolerance. Not for
             closed curves.
-        closed: A closed curve, through the first point again and tangent there.
+        closed: A closed curve, starting and ending near the first point (within the tolerance),
+            as smooth there as elsewhere.
 
-    Few points (fewer than about six) give the curve through them (:func:`Spline`). Where no fit
+    Few points (fewer than six) give the curve through them (:func:`Spline`). Where no fit
     keeps within the tolerance, :class:`ModelingError` gives the distance it reached. ::
 
         outline = fit_curve(scan_points, tolerance=0.02)
@@ -662,22 +849,26 @@ def fit_curve(
         raise ValueError("fit_curve: a closed curve takes no end tangents, nor a direction at every point")
     if every:
         return _fit_tangents(pts, [tangents[i] for i in kept], tol)
-    t0 = list(_vec(tangents[0])) if tangents is not None and tangents[0] is not None else []
-    t1 = list(_vec(tangents[1])) if tangents is not None and tangents[1] is not None else []
-    try:
-        with kernel_call("fit_curve"):
-            curve, dev, _ = ext.approximate_points([c for p in pts for c in p], int(degree), float(tol), t0, t1,
-                                                   bool(closed))
-    except KernelError:
-        # too few points for an approximation: the curve through them
-        if len(pts) > 6:
-            raise
+    if len(pts) < 6:  # (too few to fit: the curve through them)
         return Spline(*pts, tangents=tangents, closed=closed)
-    edge = Edge._from_curve(curve)
+
+    def direction(t: Any, end: str) -> np.ndarray | None:
+        if t is None:
+            return None
+        v = _vec(t)
+        if not v.length > 0:
+            raise ValueError(f"fit_curve: the {end} tangent has no length")
+        return np.array(v.normalized().to_tuple())
+
+    t0 = direction(tangents[0], "start") if tangents is not None else None
+    t1 = direction(tangents[1], "end") if tangents is not None else None
+    p = min(int(degree), len(pts) - 1)
+    ctrl, knots, dev = _fit_points(np.array([q.to_tuple() for q in pts]), float(tol), p, t0, t1, bool(closed))
     if dev > tol:
         raise ModelingError(f"fit_curve: the closest fit found passes {dev:.3g} from a point, more than the tolerance "
-                            f"{tol:g}; use a larger tolerance or a higher degree")
-    return edge
+                            f"{tol:g}; use a larger tolerance")
+    with kernel_call("fit_curve"):
+        return Edge._from_curve(_canonical_curve(ctrl, list(knots), p, None))
 
 
 def Bezier(*control_points: VectorLike, weights: Sequence[float] | None = None) -> Edge:

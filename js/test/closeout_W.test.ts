@@ -176,12 +176,12 @@ test('a synchronous loop of Sketch.revolve whose results are disposed stays flat
 const TRAP = 'k.brep_face_count(0xf0000000)'
 
 test('a step that falls back on other kernel calls stops at a crash of the kernel (W10)', () => {
-  // A raycast that the kernel fails on a face asks the face's mesh instead, fitCurve takes the
-  // curve through the points where the kernel's approximation fails, and decimate halves its step
-  // where a trial fails. After a crash each went on on the memory the crash left (the warning was
-  // the only sign); now the crash ends the step with its KernelError.
+  // A raycast that the kernel fails on a face asks the face's mesh instead, and decimate halves its
+  // step where a trial fails. After a crash each went on on the memory the crash left (the warning was
+  // the only sign); now the crash ends the step with its KernelError. (fitCurve took the curve through
+  // the points where the kernel's approximation failed; since 0.5.0 it fits the points itself.)
   const out = run(`
-    import { Box, KernelError, fitCurve, memoryUsage, setWarningHandler } from ${JSON.stringify(new URL('index.ts', SRC).href)}
+    import { Box, KernelError, memoryUsage, setWarningHandler } from ${JSON.stringify(new URL('index.ts', SRC).href)}
     import { k } from ${JSON.stringify(new URL('kernel.ts', SRC).href)}
     setWarningHandler(() => {})
     const tick = () => new Promise((r) => setTimeout(r, 0))
@@ -190,7 +190,6 @@ test('a step that falls back on other kernel calls stops at a crash of the kerne
     const mesh = box.mesh(0.01)
     const cases = [
       ['raycast', k, 'intersect_curve_face', () => box.raycast([0, 0, -20], [0, 0, 1])],
-      ['fitCurve', k.ext, 'approximate_points', () => fitCurve([[0, 0, 0], [5, 3, 0], [10, 0, 0], [15, 2, 0]])],
       ['decimate', k.ext, 'decimate_triangles', () => mesh.decimate(null, { tolerance: 0.1 })],
     ]
     for (const [name, owner, fn, step] of cases) {
@@ -212,11 +211,9 @@ test('a step that falls back on other kernel calls stops at a crash of the kerne
   const crash = 'the kernel crashed (memory access out of bounds)'
   // one call, one crash: the step ended there (before: the fallback ran, and the step gave a result)
   assert.deepEqual(out.raycast, [true, crash, 1, 1])
-  assert.deepEqual(out.fitCurve, [true, crash, 1, 1])
   assert.deepEqual(out.decimate, [true, crash, 1, 1])
   assert.equal(out['raycast fine'], 2)
   assert.equal(out['raycast again'], 2)
-  assert.equal(out['fitCurve again'], 'Edge')
   assert.equal(out['decimate again'], 'Mesh')
 })
 
