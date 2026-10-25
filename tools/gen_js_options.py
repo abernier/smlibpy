@@ -11,6 +11,7 @@ after changing a public signature; tests/test_js_options.py fails while the file
 
 from __future__ import annotations
 
+import enum
 import inspect
 import pathlib
 import re
@@ -130,8 +131,8 @@ def table() -> dict[str, tuple[int, list[str]]]:
     out: dict[str, tuple[int, list[str]]] = {}
     for name in exports():
         obj = python_object(name)
-        if obj is None:
-            continue
+        if obj is None or isinstance(obj, enum.EnumMeta):  # (Python 3.10 gives an enum the signature of
+            continue                                      # Enum's functional API: module, qualname, ...)
         if not inspect.isclass(obj):
             e = entry(obj)
             if e is not None:

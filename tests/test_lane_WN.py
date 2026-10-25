@@ -8,6 +8,7 @@ import _thread
 import math
 import os
 import signal
+import sys
 import threading
 import time
 import warnings
@@ -535,6 +536,7 @@ def test_steps_stopped_after_the_time_limit_say_so(monkeypatch, tmp_path):
 
 
 # ================================================================================ W11, W12
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="typing.get_overloads is new in Python 3.11")
 def test_free_functions_say_what_a_sketch_or_face_gives():
     """W11: what the TypeScript overloads say, Python's say too: a sketch or face gives a Part, a
     curve a Part or a Shell; vertices give a Sketch; split(..., "both") two Parts."""
