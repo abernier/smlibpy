@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>smlibpy-three</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #eef0f3;
+        font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+        color: #20242c;
+      }
+      canvas {
+        display: block;
+      }
+      #info {
+        position: fixed;
+        left: 16px;
+        bottom: 16px;
+        padding: 8px 12px;
+        background: rgb(255 255 255 / 0.85);
+        border-radius: 6px;
+        pointer-events: none;
+        white-space: pre;
+      }
+      #hint {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        color: #5b6270;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hint">hover a face or an edge · click an edge to round it</div>
+    <div id="info">loading the kernel…</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
