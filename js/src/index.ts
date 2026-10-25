@@ -37,7 +37,7 @@ export {
 export { Align, type AlignLike } from './align.ts'
 // shapes
 export { ACCURACY, Edge, Face, MassProperties, Part, Problem, SectionProperties, Shape, ShapeList, Shell, Sketch, Vertex, Wire } from './shapes.ts'
-export { Mesh, RepairReport, tessellate } from './mesh.ts'
+export { Mesh, RepairReport, faceMeshes, tessellate } from './mesh.ts'
 // curves
 export {
   Bezier,
