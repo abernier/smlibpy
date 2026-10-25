@@ -56,12 +56,13 @@ FILES = {"parts.step": "text", "parts.usda": "text", "sketch.dxf": "text", "box.
 #: How close numbers must be: of the modelling steps, and in the files.
 REL, ABS = 1e-7, 1e-9
 TEXT_ABS = 1e-9
-FMA = platform.machine().lower() in ("arm64", "aarch64")
+#: (only clang's arm64 build contracts: GCC builds have ``-ffp-contract=off``, CMakeLists.txt)
+FMA = sys.platform == "darwin" and platform.machine().lower() in ("arm64", "aarch64")
 
 #: Where smlibwasm gives another result than smlibpy (on darwin-arm64, where the golden files are
-#: made), what it gives, and why. ``fma``: the cause is the native arm64 build's contraction of
-#: ``a * b + c`` (a native build with ``-ffp-contract=off`` gives smlibwasm's result); x86_64
-#: builds, which do not contract, are expected to give smlibwasm's result too.
+#: made), what it gives, and why. ``fma``: the cause is the macOS arm64 build's contraction of
+#: ``a * b + c`` (a native build with ``-ffp-contract=off`` gives smlibwasm's result, as the Linux
+#: arm64 build does); x86_64 builds, which do not contract, are expected to give smlibwasm's result too.
 KNOWN: dict[str, dict[str, Any]] = {
     "vase1 fillet": {
         "fma": True,
