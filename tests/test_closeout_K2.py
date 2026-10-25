@@ -292,7 +292,9 @@ def test_extended_offsets_that_read_a_squeezed_edge_do_not_crash():
     runs = [(seed, start(seed)) for seed in range(6)]
     for seed, run in runs:
         out, err = run.communicate(timeout=300)
-        if run.returncode < 0:  # (one more run, with another layout: a crash in both is not that one)
+        # (one more run, with another layout: a crash in both is not that one. A crash is a signal on POSIX,
+        # an NTSTATUS such as 0xC0000005 on Windows)
+        if run.returncode < 0 or run.returncode >= 0xC0000000:
             run = start(seed + 100)
             out, err = run.communicate(timeout=300)
         assert run.returncode == 0, f"exit {run.returncode} after {len(out.split())} steps: {err[-500:]}"

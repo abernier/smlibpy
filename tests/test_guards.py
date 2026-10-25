@@ -620,7 +620,7 @@ for step in steps * 8:
     # not that one.
     for _ in range(2):
         run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
-        if run.returncode >= 0:
+        if 0 <= run.returncode < 0xC0000000:  # (no crash: a crash is a signal on POSIX, an NTSTATUS on Windows)
             break
     assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} steps"
     assert len(run.stdout.split()) == 24
