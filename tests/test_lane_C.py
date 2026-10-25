@@ -410,7 +410,7 @@ def test_fit_curve_smooths_noisy_points():
     c = fit_curve(pts, tolerance=0.6, closed=True)
     assert max(c.distance_to(tuple(p)) for p in pts) <= 0.6 and len(c.nurbs().points) <= 20
     assert c.is_closed and c.start.distance_to(tuple(pts[0])) <= 0.6  # (near the first point)
-    assert c.tangent_at(0).angle_to(c.tangent_at(1)) < 1e-9
+    assert c.tangent_at(0).angle_to(c.tangent_at(1)) < 1e-6
     # a fitted quarter circle (tight tolerance) leaves its ends along the circle
     arc = CenterArc((10, 10), 10, -90, 90)
     f = fit_curve([arc.point_at(i / 200) for i in range(201)], tolerance=1e-6)

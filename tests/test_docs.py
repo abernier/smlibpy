@@ -20,7 +20,7 @@ BLOCK = re.compile(r"```python\n(.*?)```", re.S)
 def test_code_blocks_run(path, tmp_path, monkeypatch):
     import smlibpy
 
-    blocks = [b for b in BLOCK.findall(path.read_text()) if not b.startswith("# not run")]
+    blocks = [b for b in BLOCK.findall(path.read_text(encoding="utf-8")) if not b.startswith("# not run")]
     if not blocks:
         pytest.skip("no code")
     monkeypatch.chdir(tmp_path)
@@ -49,7 +49,7 @@ def test_skill_reference_examples_run(path, tmp_path, monkeypatch):
 
     import smlibpy
 
-    blocks = [b for b in BLOCK.findall(path.read_text()) if not b.startswith("# not run")]
+    blocks = [b for b in BLOCK.findall(path.read_text(encoding="utf-8")) if not b.startswith("# not run")]
     if not blocks:
         pytest.skip("no code")
     monkeypatch.chdir(tmp_path)

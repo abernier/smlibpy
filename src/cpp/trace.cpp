@@ -56,6 +56,24 @@ const C* basename(const C* path)
     return name;
 }
 
+// The function without its class: MSVC's __FUNCTION__ is "SmMerge::MakeFaceuse", clang's and
+// GCC's "MakeFaceuse". (A message, which has spaces, stays as it is.)
+template <typename C>
+const C* unqualified(const C* function)
+{
+    if (!function)
+        return function;
+    const C* name = function;
+    for (const C* p = function; *p; ++p)
+    {
+        if (*p == ' ')
+            return function;
+        if (p[0] == ':' && p[1] == ':')
+            name = p + 2;
+    }
+    return name;
+}
+
 void record(SmStatus status, const TCHAR* const file, ULONG line, const TCHAR* const message)
 {
     // (warnings and messages are no failures)
@@ -66,7 +84,7 @@ void record(SmStatus status, const TCHAR* const file, ULONG line, const TCHAR* c
     e.status = status;
     e.line = line;
     copy(e.file, sizeof e.file, basename(file));
-    copy(e.where, sizeof e.where, message);
+    copy(e.where, sizeof e.where, unqualified(message));
 }
 
 }  // namespace

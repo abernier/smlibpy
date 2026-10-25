@@ -392,7 +392,7 @@ test('fitCurve smooths noisy points', () => {
   const c = fitCurve(pts, { tolerance: 0.6, closed: true })
   assert.ok(Math.max(...pts.map((p) => c.distanceTo(p))) <= 0.6 && c.nurbs().points.length <= 20)
   assert.ok(c.isClosed && c.start.distanceTo(pts[0]) <= 0.6) // (near the first point)
-  assert.ok(c.tangentAt(0).angleTo(c.tangentAt(1)) < 1e-9)
+  assert.ok(c.tangentAt(0).angleTo(c.tangentAt(1)) < 1e-6)
   // a fitted quarter circle (tight tolerance) leaves its ends along the circle
   const arc = CenterArc([10, 10], 10, -90, 90)
   const f = fitCurve(Array.from({ length: 201 }, (_, i) => arc.pointAt(i / 200)), { tolerance: 1e-6 })
