@@ -168,8 +168,10 @@ target_link_libraries(_core PRIVATE sm_api smlib)
 # behind SMLIBPY_PYTHON.
 target_compile_definitions(_core PRIVATE SMLIBPY_PYTHON)
 if(MSVC)
-  # (M_PI and the other constants of math.h: MSVC defines them only on request)
-  target_compile_definitions(_core PRIVATE _USE_MATH_DEFINES)
+  # (M_PI and the other constants of math.h: MSVC defines them only on request. The usd-brep
+  # classes of src/cpp/occt are compiled into this module: their USD_BREP_EXPORT is dllexport here,
+  # not dllimport, which looked for them in a usd-brep DLL and left 18 symbols unresolved.)
+  target_compile_definitions(_core PRIVATE _USE_MATH_DEFINES USD_BREP_ENABLE_EXPORTS)
   target_compile_options(_core PRIVATE /utf-8 /bigobj /wd4244 /wd4305 /wd4267)
   if(CMAKE_GENERATOR MATCHES "Visual Studio")
     target_compile_options(_core PRIVATE /MP)
