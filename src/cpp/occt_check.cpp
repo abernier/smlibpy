@@ -435,7 +435,7 @@ void occt_tolerances(SOcctModel& m, double least)
     std::vector<char> unmeasured(shapes, 0);  // (edges a face or a curve on it is not evaluated for: kept as written)
     // (the curves on faces pass through points of their edges at even steps of the parameter: the samples lie
     // between those, at the ends, and 97 more off any even step)
-    const int samples = 98;
+    static constexpr int samples = 98;  // (static: MSVC will not use a local constant in a lambda that captures nothing)
     auto step = [](int i) { return i == 0 ? 0.0 : i == samples ? 1.0 : (i - 0.5 + 0.2360679774997897 * ((i * 7) % 5 - 2) / 2.0) / (samples - 1); };
     auto vertex_at = [&](const SShapeRecord& edge, bool last) -> SShapeRecord* {
         // (an edge's vertex oriented forward is at the start of its curve, the reversed one at the end)
