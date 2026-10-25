@@ -15,14 +15,14 @@ namespace smlibpy {
 
 // The nearest point of a mesh to each of `points` (x, y, z each): the index of its triangle (-1
 // for none: a mesh without triangles), the distance and the point (x, y, z each).
-struct NearestPoints
+struct MeshNearest
 {
     std::vector<int32_t> triangles;
     std::vector<double> distances;
     std::vector<double> points;
 };
 
-NearestPoints mesh_nearest_points(const std::vector<double>& vertices, const std::vector<int64_t>& triangles,
+MeshNearest mesh_nearest_points(const std::vector<double>& vertices, const std::vector<int64_t>& triangles,
                              const std::vector<double>& points);
 
 // Corner normals (x, y, z for each corner, nine per triangle): at each corner the average of the

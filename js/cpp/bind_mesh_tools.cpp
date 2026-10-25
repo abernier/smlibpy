@@ -26,7 +26,7 @@ val int32_of(const std::vector<int64_t>& v)
 // {triangles (Int32Array, -1 for none), distances, points (Float64Arrays)}
 val mesh_nearest_points(val vertices, val triangles, val points)
 {
-    const smlibpy::NearestPoints r = smjs::guard([&] {
+    const smlibpy::MeshNearest r = smjs::guard([&] {
         return smlibpy::mesh_nearest_points(smjs::numbers(vertices), indices(triangles), smjs::numbers(points));
     });
     val out = val::object();

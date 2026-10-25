@@ -1272,14 +1272,14 @@ std::vector<long> welded_triangles(const std::vector<int64_t>& triangles, const 
 
 namespace smlibpy {
 
-NearestPoints mesh_nearest_points(const std::vector<double>& vertices, const std::vector<int64_t>& triangles,
+MeshNearest mesh_nearest_points(const std::vector<double>& vertices, const std::vector<int64_t>& triangles,
                              const std::vector<double>& points)
 {
     check_mesh(vertices, triangles, "mesh_nearest_points");
     check_points(points, "mesh_nearest_points: the points");
     const TriangleTree tree(vertices, triangles);
     const size_t n = points.size() / 3;
-    NearestPoints out;
+    MeshNearest out;
     out.triangles.resize(n);
     out.distances.resize(n);
     out.points.resize(3 * n, std::numeric_limits<double>::quiet_NaN());
@@ -1646,7 +1646,7 @@ void bind_mesh_tools(py::module_ m)
     m.def(
         "mesh_nearest_points",
         [](const Doubles& vertices, const Integers& triangles, const Doubles& points) {
-            const smlibpy::NearestPoints r = smlibpy::mesh_nearest_points(flat(vertices), flat(triangles), flat(points));
+            const smlibpy::MeshNearest r = smlibpy::mesh_nearest_points(flat(vertices), flat(triangles), flat(points));
             py::dict out;
             out["triangles"] = column(r.triangles);
             out["distances"] = column(r.distances);
