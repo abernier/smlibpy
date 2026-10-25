@@ -157,25 +157,35 @@ def test_mitered_sweeps_free_their_curves():
 def test_failed_extended_shells_free_the_offset_body():
     # A shell whose last Boolean fails keeps both operands; the offset body was the kernel's own and
     # was lost with the caches built on it (1.9 MB for these three calls, two of which fail), and
-    # so were the trim curves of a failed extension and a line copied by the merge.
-    from smlibpy._kernel import ext, k
-
-    steps = []
-    for size, r, t in (((20, 20, 20), 2, 1), ((40, 30, 10), 1, 0.5), ((40, 30, 10), 2, 1)):
-        b = Box(*size)
-        b = b.fillet(b.edges(), r)
-        steps.append((b, [f._f for f in b.faces().top()], t))
-    failed = 0
-
-    def shells():
-        nonlocal failed
-        for b, top, t in steps:
-            try:
-                ext.delete_brep(k.shell_brep(b._brep, -t, extended_offset=True, faces_to_shell=top))
-            except RuntimeError:
-                failed += 1
-
-    per_call = _per_call(shells, calls=10)
+    # so were the trim curves of a failed extension and a line copied by the merge. In a process of
+    # its own: the kernel's extended offset, called here without smlibpy's guard, still crashes now
+    # and then in the Linux builds (tests/test_lane_FO.py), and a crash would end the whole run.
+    if _heap() is None:
+        pytest.skip("no allocator statistics here")
+    code = f"""
+import sys
+sys.path.insert(0, {str(Path(__file__).parent)!r})
+from test_closeout_K2 import _per_call
+from smlibpy import Box
+from smlibpy._kernel import ext, k
+steps = []
+for size, r, t in (((20, 20, 20), 2, 1), ((40, 30, 10), 1, 0.5), ((40, 30, 10), 2, 1)):
+    b = Box(*size)
+    b = b.fillet(b.edges(), r)
+    steps.append((b, [f._f for f in b.faces().top()], t))
+failed = 0
+def shells():
+    global failed
+    for b, top, t in steps:
+        try:
+            ext.delete_brep(k.shell_brep(b._brep, -t, extended_offset=True, faces_to_shell=top))
+        except RuntimeError:
+            failed += 1
+print(_per_call(shells, calls=10), failed)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    assert run.returncode == 0, f"exit {run.returncode}: {run.stderr[-2000:]}"
+    per_call, failed = (float(x) for x in run.stdout.split()[-2:])
     assert failed > 0  # (else the test measures no failure)
     assert per_call < 16 * 1024, f"{per_call:.0f} bytes for three shells"
 

@@ -284,8 +284,6 @@ def test_sweeps_free_the_curves_they_hand_the_kernel(name):
     # The kernel's sweeps, skins and offset profiles copy the curves they are given ("Pure" in
     # SmPyLib): the copies smlibpy made for them were never freed (a revolve of a rectangle left its
     # four lines, 600 bytes, each call). Found by the leak check (tools/sanitize/run.py).
-    import gc
-
     if _heap() is None:
         pytest.skip("no allocator statistics here")
     from smlibpy import extrude, loft, revolve, sweep
@@ -299,14 +297,7 @@ def test_sweeps_free_the_curves_they_hand_the_kernel(name):
         "open revolve": lambda: revolve(Line((5, 0, 0), (5, 0, 10))),
         "mitered sweep": lambda: sweep(Circle(1).on(Plane.YZ), Polyline((0, 0, 0), (20, 0, 0), (20, 20, 0))),
     }[name]
-    for _ in range(5):
-        make()
-    gc.collect()
-    before = _heap()
-    for _ in range(100):
-        make()
-    gc.collect()
-    per_call = (_heap() - before) / 100
+    per_call = _per_call(make, calls=100)  # (the less of two runs: CI's macOS kept 993 bytes a taper in one)
     # (the kernel's own sweep along a mitered path keeps its copies of the profile and the path,
     # about 10 kB a call: tools/sanitize/leaks.txt)
     limit = 16000 if name == "mitered sweep" else 64
