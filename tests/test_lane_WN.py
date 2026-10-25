@@ -313,17 +313,23 @@ def test_sweeps_free_the_curves_they_hand_the_kernel(name):
 
 
 def _per_call(make, calls: int = 50) -> float:
-    """Bytes the C allocator keeps per call of ``make`` (after five calls to warm up)."""
+    """Bytes the C allocator keeps per call of ``make``: the less of two runs of ``calls`` calls, after
+    five calls to warm up. A leak keeps as much in each run; what fills once and then stays (numpy's
+    cache of small buffers, the allocator's own pools, which fill at another pace on CI's macOS than
+    here) keeps it in the first run only."""
     import gc
 
     for _ in range(5):
         make()
     gc.collect()
-    before = _heap()
-    for _ in range(calls):
-        make()
-    gc.collect()
-    return (_heap() - before) / calls
+    kept = []
+    for _ in range(2):
+        before = _heap()
+        for _ in range(calls):
+            make()
+        gc.collect()
+        kept.append((_heap() - before) / calls)
+    return min(kept)
 
 
 def test_failed_sliver_removals_free_their_copies():
@@ -1081,9 +1087,11 @@ def test_long_kernel_calls_let_other_threads_run():
     assert len(mesh.triangles) > 50000
     for t0, t1, faces, dt in calls + [(t0, t1, 150, t1 - t0)]:
         during = [t for t in ticks if t0 <= t <= t1]
-        gaps = [b - a for a, b in zip(during, during[1:])]
+        gaps = [b - a for a, b in zip([t0, *during], [*during, t1])]  # (from the call's start to its end)
         assert faces == 150 and dt > 0.05
-        assert len(during) > 20 and max(gaps) < dt / 3, (len(during), max(gaps, default=None), dt)
+        # the other thread ran all through the call: no gap a third of it long (not a count of ticks:
+        # CI's virtual Macs wake a 2 ms sleep every 10 to 30 ms, 20 ticks in a 0.39 s call)
+        assert max(gaps) < dt / 3, (len(during), max(gaps), dt)
 
 
 def test_every_entry_point_of_the_kernel_takes_its_lock():

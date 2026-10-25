@@ -31,6 +31,7 @@
 #include <SmApiBrep.h>
 #include <SmApiQueries.h>
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>

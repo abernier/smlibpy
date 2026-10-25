@@ -63,17 +63,23 @@ def _heap() -> int | None:
 
 
 def _per_call(make, calls: int = 20) -> float:
-    """Bytes the C allocator keeps per call of ``make`` (after three calls to warm up)."""
+    """Bytes the C allocator keeps per call of ``make``: the less of two runs of ``calls`` calls, after
+    three calls to warm up. A leak keeps as much in each run; what fills once and then stays (numpy's
+    cache of small buffers, the allocator's own pools, which fill at another pace on CI's macOS than
+    here) keeps it in the first run only."""
     if _heap() is None:
         pytest.skip("no allocator statistics here")
     for _ in range(3):
         make()
     gc.collect()
-    before = _heap()
-    for _ in range(calls):
-        make()
-    gc.collect()
-    return (_heap() - before) / calls
+    kept = []
+    for _ in range(2):
+        before = _heap()
+        for _ in range(calls):
+            make()
+        gc.collect()
+        kept.append((_heap() - before) / calls)
+    return min(kept)
 
 
 def _three_arcs():

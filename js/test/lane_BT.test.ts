@@ -221,10 +221,13 @@ test('the NURBS retry only for parallel rounds', () => {
 
 test('Booleans that turn a seam free their copies', () => {
   // A turned Boolean runs on copies of the operands and deletes the operands it was given; 100 groove
-  // pins grow the process by as little as cuts that turn nothing. In a process of its own.
+  // pins leave the kernel's heap as they found it. In a process of its own; measured in the heap's
+  // bytes in use (memoryUsage().used), not in the process's resident memory, which also counts V8's
+  // and the WebAssembly memory's own growth, and that differs by platform (23 MB on Linux in CI where
+  // macOS grew by 2).
   const src = new URL('../src/', import.meta.url).href
   const code = `
-    import { Box, Cylinder, Y } from '${src}index.ts'
+    import { Box, Cylinder, Y, memoryUsage } from '${src}index.ts'
     const bored = Box(30, 30, 30).cut(Cylinder(5, 60))
     const pin = Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0)
     const settle = async () => {
@@ -240,18 +243,18 @@ test('Booleans that turn a seam free their copies', () => {
       if (i % 10 === 9) await settle()
     }
     await settle()
-    const before = process.memoryUsage().rss
+    const before = memoryUsage().used
     for (let i = 0; i < 100; i++) {
       bored.cut(pin).volume
       if (i % 10 === 9) await settle()
     }
     await settle()
-    console.log(Math.round((process.memoryUsage().rss - before) / 1048576))
+    console.log((memoryUsage().used - before) / 1048576)
   `
   const run = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 300_000 })
   assert.equal(run.status, 0, run.stderr)
-  const grown = Number(run.stdout.trim())
-  assert.ok(grown < 10, `100 turned cuts took ${grown} MB`) // 0.4 MB each if the operands stayed
+  const kept = Number(run.stdout.trim())
+  assert.ok(kept < 4, `100 turned cuts kept ${kept.toFixed(1)} MB`) // 0.4 MB each if the operands stayed
 })
 
 
