@@ -9372,7 +9372,9 @@ export class Shell extends _Body {
    * side of the sheet.
    *
    * The kernel step runs in the probe worker, so that a crash of its offset code throws a
-   * ModelingError, and is stopped after `GUARD_SECONDS` (20 s), as for `Part.shell`. */
+   * ModelingError, and is stopped after `GUARD_SECONDS` (20 s), as for `Part.shell`. Where the
+   * kernel's extended offset mode fails on a sheet whose faces meet tangentially at every edge, its
+   * other mode, which builds the same solid there, is tried. */
   thicken(thickness: number, options: { both?: boolean } = {}): Part {
     _opts('Shell.thicken', options)
     const d = Number(thickness)
@@ -9383,12 +9385,36 @@ export class Shell extends _Body {
       // one side, then the other, fused: the two halves share the sheet (freed at once)
       return scope(() => this.thicken(d / 2).fuse(this.thicken(-d / 2)))
     }
-    const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, { create_solid: true }), hint)
-    // (the kernel's extended offset mode, which depends on memory layout and can crash: it runs in the
-    // probe worker, smlibpy: in a copy of its process)
-    const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: { create_solid: true }, faces: [] })
-    const b = _isolated('thicken', work, job, hint)
-    return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
+    const attempt = (extended: boolean): Part => {
+      const opts = { create_solid: true, extended_offset: extended }
+      const work = (): number => kernelCall('thicken', () => k.shell_brep(this._brep, d, opts), hint)
+      // (the kernel's offset code, which can crash, mostly in its extended mode, which depends on
+      // memory layout: it runs in the probe worker, smlibpy: in a copy of its process)
+      const job = (): _Job => ({ op: 'shell_brep', bodies: [_smb(this)], tags: [_carried(this._brep)], distance: d, options: opts, faces: [] })
+      const b = _isolated('thicken', work, job, hint)
+      return _requireSolid(Part._wrap(b, { name: this.name, color: this.color }), 'thicken', hint)
+    }
+    try {
+      return attempt(true)
+    } catch (first) {
+      if (!(first instanceof ModelingError)) throw first
+      // The extended mode failed the joined blends of js/test/closeout_U.test.ts now and then
+      // (smlibpy: on Linux, and in Windows' CI runs). Where the faces meet tangentially at every
+      // edge, the plain mode builds the same solid; at a sharp edge it would round the wall, so
+      // there the extended mode's error stands.
+      const shared = this.edges().filter((e) => e.faces().length === 2)
+      if (_convexities(shared).some((kind) => kind !== 'smooth')) throw first
+      let part: Part
+      try {
+        part = attempt(false)
+      } catch (e) {
+        throw e instanceof ModelingError ? first : e
+      }
+      // (measured, as isValid() does: the sign of the kernel's coarse volume let through a closed
+      // grid surface's "solid" of no volume, -0.018 for 1790.7)
+      if (part._solidProblem(null, true) !== null) throw first
+      return part
+    }
   }
 
   /**

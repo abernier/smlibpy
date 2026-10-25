@@ -7907,9 +7907,9 @@ def _shell_step(hint: str, brep: Any, d: float, extended: bool, faces: list[Any]
         return k.shell_brep(brep, d, extended_offset=extended, faces_to_shell=faces)
 
 
-def _thicken_step(hint: str, brep: Any, d: float) -> Any:
+def _thicken_step(hint: str, brep: Any, d: float, extended: bool = True) -> Any:
     with kernel_call("thicken", hint):
-        return k.shell_brep(brep, d, create_solid=True)
+        return k.shell_brep(brep, d, create_solid=True, extended_offset=extended)
 
 
 def _region_shells_step(brep: Any) -> Any:
@@ -8428,7 +8428,9 @@ class Shell(_Body):
 
         The kernel step runs in another process (a forked copy on Linux and macOS, a helper
         process on Windows), so that a crash of its offset code raises :class:`ModelingError`, and
-        is stopped after ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`Part.shell`."""
+        is stopped after ``smlibpy.defeature.GUARD_SECONDS`` (20 s), as for :meth:`Part.shell`.
+        Where the kernel's extended offset mode fails on a sheet whose faces meet tangentially at
+        every edge, its other mode, which builds the same solid there, is tried."""
         d = float(thickness)
         if d == 0:
             raise ValueError("thicken: the thickness must not be zero")
@@ -8440,10 +8442,30 @@ class Shell(_Body):
             return self.thicken(d / 2) + self.thicken(-d / 2)
         from ._guard import isolated
 
-        # (the kernel's extended offset mode, which depends on memory layout and can crash: it runs
-        # in another process)
-        b = isolated("thicken", _thicken_step, hint, self._brep, d)
-        part = _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+        def attempt(extended: bool) -> Part:
+            # (the kernel's offset code, which can crash, mostly in its extended mode, which depends
+            # on memory layout: it runs in another process)
+            b = isolated("thicken", _thicken_step, hint, self._brep, d, extended)
+            return _require_solid(Part._wrap(b, name=self.name, color=self.color), "thicken", hint)
+
+        try:
+            part = attempt(True)
+        except ModelingError as first:
+            # The extended mode failed the joined blends of tests/test_closeout_U.py now and then
+            # on Linux, and in Windows' CI runs. Where the faces meet tangentially at every edge,
+            # the plain mode builds the same solid; at a sharp edge it would round the wall, so
+            # there the extended mode's error stands.
+            shared = [e for e in self.edges() if len(e.faces()) == 2]
+            if any(kind != "smooth" for kind in _convexities(shared)):
+                raise
+            try:
+                part = attempt(False)
+            except ModelingError:
+                raise first from None
+            # (measured, as is_valid() does: the sign of the kernel's coarse volume let through a
+            # closed grid surface's "solid" of no volume, -0.018 for 1790.7)
+            if part._solid_problem(gaps=True) is not None:
+                raise first from None
         part._h.imported = self._h.imported
         return part
 

@@ -1435,7 +1435,7 @@ Documentation:
   8 runs under valgrind): deleting a closed edge that was the only edge of two faces (two caps of
   spheres closed by one circle) left the surviving face's loop naming the edgeuse it had freed
   (kernel patch, `DeleteEdge`). With the allocations moved at random, 6 of 200 processes left such a
-  loop before, none now.
+  loop before on macOS and 70 of 200 on Linux (46 of them crashed), none of 400 now.
 - A ProtoEdge the Boolean deletes when it combines two stayed in the overlap lists of other
   ProtoEdges, the coincidence lists of ProtoFaces and, listed twice, its ProtoVertices' lists (kernel
   patch, `SmProtoTopology.cpp`), and was read where the memory layout let it: the extended offsets of
@@ -1866,7 +1866,10 @@ construction gets the result:
 - Shells and offsets: planar openings whose rim meets its neighbours tangentially, also next to an
   ordinary opening (O3), sharp
   offsets of parts with acute edges (O8: `Cone(5, 2, 10).offset(1)` is 819.1342), offsets of sheets,
-  faces, wires and edges (O7, C7).
+  faces, wires and edges (O7, C7). `thicken` of a sheet whose faces meet tangentially at every edge
+  (a blend joined to the tubes it blends) tries the kernel's plain offset mode, which builds the same
+  solid there, where the extended mode fails: it failed such sheets now and then on Linux (memory
+  layout), and in Windows' CI runs.
 - Sweeps: loops closed with a kink and circles along closed 3D fillet polylines (S1), mitered planar
   paths in planes that are not horizontal (S2), chains of helices with an even number of turns (S6),
   planar paths whose corners cannot be mitered (S6: piece by piece, with a warning), circles and

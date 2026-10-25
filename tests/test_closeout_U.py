@@ -10,8 +10,9 @@ import math
 import numpy as np
 import pytest
 
-from smlibpy import (Align, Axis, Box, Cone, Cylinder, Edge, Ellipse, Location, Plane, Rectangle, Shell, Sphere, Spline,
-                     Torus, Vector, blend, flat_pattern, fold, from_smp, loft, surface, to_smp)
+from smlibpy import (Align, Axis, Box, Cone, Cylinder, Edge, Ellipse, KernelError, Location, Plane, Polyline, Rectangle,
+                     Shell, Sphere, Spline, Torus, Vector, blend, extrude, flat_pattern, fold, from_smp, loft, surface,
+                     to_smp)
 from smlibpy._kernel import ext, k
 
 # ------------------------------------------------------------------------------------ measuring
@@ -235,6 +236,34 @@ def test_blend_of_closed_edges_running_opposite_ways_and_off_axis():
         assert s.check() == [] and _crease(s) < 1e-4
         assert s.thicken(0.5).is_valid()
     assert blend(top, low, join=True).thicken(0.5).is_valid()
+
+
+def test_thicken_tries_the_plain_offset_on_smooth_sheets(monkeypatch):
+    # The kernel's extended offset mode depends on memory layout: it failed the joined blends above
+    # now and then on Linux, and in Windows' CI runs. On a sheet whose faces meet tangentially,
+    # thicken then tries the plain mode, which builds the same solid; at a sharp edge (where the
+    # plain mode would round the wall) the extended mode's error stands.
+    import smlibpy.defeature
+    import smlibpy.shapes as shapes
+
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)  # (here, where the stand-in below runs)
+    real, modes = shapes._thicken_step, []
+
+    def extended_fails(hint, brep, d, extended=True):
+        modes.append(extended)
+        if extended:
+            raise KernelError("thicken", "SM_ERR at nogil.cpp", "SM_ERR", hint)
+        return real(hint, brep, d, extended)
+
+    monkeypatch.setattr(shapes, "_thicken_step", extended_fails)
+    _, _, top, bottom = _tubes()
+    solid = blend(top, bottom, join=True).thicken(1)
+    assert modes == [True, False] and solid.is_valid() and solid.volume == pytest.approx(3236.6, abs=1)
+    modes.clear()
+    corner = extrude(Polyline((0, 0, 0), (10, 0, 0), (10, 10, 0)), 5)  # (a sheet with a sharp edge)
+    with pytest.raises(KernelError, match="thicken failed"):
+        corner.thicken(1)
+    assert modes == [True]
 
 
 def test_blend_of_a_closed_and_an_open_edge_is_refused():

@@ -15,9 +15,11 @@ import {
   Cylinder,
   Edge,
   Ellipse,
+  KernelError,
   Location,
   Part,
   Plane,
+  Polyline,
   Rectangle,
   Shell,
   Sphere,
@@ -39,6 +41,7 @@ import {
 } from '../src/index.ts'
 import { bends } from '../src/sheetmetal.ts'
 import { fromSmp, toSmp } from '../src/exporters.ts'
+import { GUARD_SECONDS, setGuardSeconds } from '../src/defeature.ts'
 import { ext, k } from '../src/kernel.ts'
 import { approx } from './_approx.ts'
 
@@ -310,6 +313,37 @@ test('blend of closed edges running opposite ways and off axis', () => {
     assert.ok(s.thicken(0.5).isValid())
   }
   assert.ok(blend(top, low, { join: true }).thicken(0.5).isValid())
+})
+
+test('thicken tries the plain offset on smooth sheets', () => {
+  // The kernel's extended offset mode depends on memory layout: it failed the joined blends above now
+  // and then (smlibpy: on Linux, and in Windows' CI runs). On a sheet whose faces meet tangentially,
+  // thicken then tries the plain mode, which builds the same solid; at a sharp edge (where the plain
+  // mode would round the wall) the extended mode's error stands.
+  const guard = GUARD_SECONDS
+  setGuardSeconds(0) // (here, where the stand-in below runs)
+  const real = k.shell_brep
+  const modes: boolean[] = []
+  k.shell_brep = (brep: Any, d: number, opts: Any = {}) => {
+    const extended = opts.extended_offset ?? true
+    modes.push(extended)
+    if (extended) throw new KernelError('thicken', 'SM_ERR at nogil.cpp', 'SM_ERR')
+    return real(brep, d, opts)
+  }
+  try {
+    const [, , top, bottom] = tubes()
+    const solid = blend(top, bottom, { join: true }).thicken(1)
+    assert.deepEqual(modes, [true, false])
+    assert.ok(solid.isValid())
+    near(solid.volume, 3236.6, 1)
+    modes.length = 0
+    const corner = extrude(Polyline([0, 0, 0], [10, 0, 0], [10, 10, 0]), 5) as Shell // (a sheet with a sharp edge)
+    assert.throws(() => corner.thicken(1), /thicken failed/)
+    assert.deepEqual(modes, [true])
+  } finally {
+    k.shell_brep = real
+    setGuardSeconds(guard)
+  }
 })
 
 test('blend of a closed and an open edge is refused', () => {
