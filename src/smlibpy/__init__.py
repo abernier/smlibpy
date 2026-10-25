@@ -63,7 +63,7 @@ from .surfaces import (FitReport, StitchReport, blend, fill, network, nurbs_surf
 from .sheetmetal import (Bend, FlatPattern, bend_allowance, bend_deduction, developed_length, flange,
                          flat_pattern, fold, unfold)
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # geometry
