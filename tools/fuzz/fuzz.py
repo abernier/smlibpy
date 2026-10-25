@@ -21,6 +21,10 @@ with ``--repeat N`` from N runs, whose failures it unites (a few Booleans and of
 come out differently from run to run, depending on where the kernel's objects lie in memory), and
 with ``--unite`` it adds them to the platform's baseline rather than replacing it. A new failure
 counts only if the case fails the same way when run twice more, each time in a fresh process.
+smlibpy's results on CI's Linux runners also differ from one runner to another on a few borderline
+cases (the same image on other hardware: the offset of offset-8-325 came back valid on one runner and
+refused on another, while smlibwasm's results, the same everywhere, did not change): such a divergence
+is added to the linux-x86_64 baseline by hand, from the run's summary.json.
 
 usage: python tools/fuzz/fuzz.py [--seed N ...] [--cases N] [--wasm] [--budget SECONDS]
        [--out DIR] [--update-baseline [--repeat N] [--unite]]

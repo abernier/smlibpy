@@ -119,7 +119,8 @@
     "cases": 410,
     "divergence": {
      "csg-8-23 E": "class ok/silent",
-     "fillet-8-195 F": "volume 2052.12593/2052.12066"
+     "fillet-8-195 F": "volume 2052.12593/2052.12066",
+     "offset-8-325 O": "class ok/error"
     },
     "python_bad": {
      "csg-8-110 D": "silent",

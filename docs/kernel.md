@@ -487,7 +487,11 @@ smlibpy still runs both steps in another process.
 
 `baseline.json` has two platforms: darwin-arm64 (an M-series Mac) and linux-x86_64, which CI's
 `ubuntu-latest` runs. The Linux baseline was made in a `linux/amd64` container (Python 3.12, Node
-24), whose x86_64 arithmetic is the CI runners'; gdb cannot trace a process under that emulation,
+24), whose x86_64 arithmetic is the CI runners'. The runners themselves differ, though: the same
+image runs on other hardware, and smlibpy's results on a few borderline cases differ with it (two runs
+of one commit gave the offset of case `offset-8-325` as a valid body on one runner and refused it on
+the other; smlibwasm's results were the same in both, every case of them). Such a divergence goes into
+the Linux baseline by hand, from the run's `summary.json`. gdb cannot trace a process under that emulation,
 so the crashes of its seeds 7 and 8 are known by case (the all-edge fillet of two cones, case
 `fillet-7-185`, kills the process on Linux x86_64 where macOS raises), not by their kernel functions.
 
