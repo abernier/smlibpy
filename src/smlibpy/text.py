@@ -29,7 +29,7 @@ def Text(
     text: str,
     size: float,
     *,
-    font: str | os.PathLike[str] | None = None,
+    font: str | os.PathLike[str] | bytes | Font | None = None,
     align: AlignLike = Align.CENTER,
     spacing: float = 0.0,
     line_spacing: float = 1.6,
@@ -43,8 +43,10 @@ def Text(
         size: Height of the capital letters (H, E, T) in mm, the nominal height of technical
             lettering: ``Text("H", 10)`` is 10 mm tall. Round letters overshoot it by a few
             percent; descenders go below the baseline.
-        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``).
-            Default: the bundled Lato Regular.
+        font: Path of a TrueType or OpenType font (``.ttf``, ``.otf``, ``.ttc``, ``.woff``,
+            ``.woff2``), the bytes of such a file (an upload, a font from a package's data), or a
+            :class:`~smlibpy.font.Font` that ``load_font`` read. Default: the
+            bundled Lato Regular.
         align: Placement of the text's layout box (from the start to the end of the longest line,
             and from the baseline of the last line to the cap height of the first). ``CENTER``
             centers it on the origin; ``MIN`` starts the text at x = 0 with the last baseline on
@@ -66,7 +68,8 @@ def Text(
 
     Raises:
         ValueError: An empty text, a size that is not positive, a character the font does not
-            have, a font file that cannot be read, or a path the text does not fit on.
+            have, or a path the text does not fit on. A font file that cannot be read raises
+            ``smlibpy.font.FontError``, a ``ValueError``.
     """
     if not isinstance(text, str):
         raise TypeError(f"Text: the text must be a string, not {type(text).__name__}")
@@ -75,9 +78,9 @@ def Text(
     if not (math.isfinite(line_spacing) and line_spacing > 0):
         raise ValueError(f"Text: line_spacing must be positive (a multiple of size), got {line_spacing!r}")
     try:
-        f = load_font(font)
+        f = font if isinstance(font, Font) else load_font(font)
     except FontError as e:
-        raise ValueError(f"Text: {e}") from None
+        raise FontError(f"Text: {e}") from None  # (a ValueError: except FontError and except ValueError catch it)
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     bad = sorted({c for c in text if (ord(c) < 32 and c not in "\r\n") or 0x7F <= ord(c) < 0xA0})
     if bad:

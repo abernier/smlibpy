@@ -38,6 +38,8 @@
 - **Workaround:** none for `.plane`; build the plane by hand: `Plane(f.center(), z_dir=f.normal_at())`.
 
 ### 3. `Edge.intersections` raises when the edges do not meet
+- **Fixed:** an empty list; the tolerance is 1e-6 or 1e-9 of the size (it was 0.001 absolute), overlaps give both
+  ends, and faces, bodies and wires are taken too (kernel plan C5).
 - **Session:** `2026-10-12_21-32-59_selection-face-edge-vertex`, script `05-edge-methods.py`
 - **What happens:** parallel lines, skew lines, lines whose extensions would cross, a circle and a far
   line: `KernelError: edge intersections failed (SM_ERR)`.
@@ -122,6 +124,7 @@
 - **Workaround:** `sl.sort_by(lambda s: s.distance_to(p)).first`.
 
 ### 11. `Edge.intersections` reports the start point of a closed curve twice
+- **Fixed:** points within the tolerance of each other count once (kernel plan C5).
 - **Session:** `2026-10-12_21-32-59_selection-face-edge-vertex`, script `05-edge-methods.py`
 - **What happens:** `Circle(5).edges().one().intersections(Line((-10, 0, 0), (10, 0, 0)))` →
   `[(-5,0,0), (5,0,0), (5,0,0)]`.

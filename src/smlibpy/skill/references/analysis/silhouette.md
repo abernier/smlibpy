@@ -1,11 +1,12 @@
 # silhouette
 
-The contour curves of a body as seen from a direction: where its surface turns away from the
-viewer. Use it for outlines of curved parts and to find where a surface is tangent to a view.
+The contour of a body seen from a direction: where its surface turns away from the viewer, and
+the edges between faces that face the viewer and faces that face away. Use it for the outline of
+a curved part, to find where a surface is tangent to a view, and for the contour of a sheet.
 
 ## Signature
 
-`body.silhouette(direction=(0, 0, 1)) -> ShapeList[Edge]`
+`body.silhouette(direction=(0, 0, 1)) -> ShapeList[Edge]` on `Part`, `Shell` and `Sketch`.
 
 `direction` points from the model towards the viewer (like `view=` of `snapshot`): an Axis
 (`Z`) or a vector. Its length does not matter; `(0, 0, 0)` raises
@@ -14,53 +15,62 @@ The result does not depend on where the body is: a moved sphere gives the same c
 
 ## Returns
 
-A `ShapeList` of standalone 3D `Edge`s on the body (not projected to a plane), in no order:
+A `ShapeList` of standalone 3D `Edge`s on the body (not projected to a plane), in no order. All
+of the contour, the side the viewer sees and the side behind:
 
-- On curved faces: contour generators, where the surface normal is perpendicular to the
-  direction. They come as `bspline` edges, even for a sphere or a cylinder.
-- Face boundary edges on the outline: the rim of the face that looks at the viewer when
-  its neighbours are seen edge-on. A box from +Z returns the 4 top edges (z = 5), from -Z the
-  4 bottom edges.
-- Only the visible side. A torus from +X returns 157.08 mm of curve, half of the full set of
-  contour points (314.16 mm): the front halves of its top and bottom circles and the outer
-  halves of its two side circles.
+- On curved faces: the contour generators, where the surface normal is perpendicular to the
+  direction. Exact for spheres, cylinders and tori around the direction (`circle`, `line`
+  pieces), traced as `bspline` otherwise. Arcs of one circle come joined: a sphere seen from
+  above gives one `circle`.
+- Edges where faces that face the viewer meet faces that face away: a box seen along (1, 1, 1)
+  gives its 6 outline edges (120 mm), the same edges as `parting_line`.
+- Faces seen edge-on go with the faces behind them, so their near edges are the contour: a box
+  from +Z gives its 4 top edges (z = 5), from -Z its 4 bottom edges; a cylinder from the side
+  its two contour lines and the near halves of its rims.
+- A torus from +X: 314.16 mm (its two circles of radius 20 and the two tube circles of radius
+  5), seen and hidden.
+- A sheet (`Shell`): the curves where it turns away from the viewer, and its creases; its free
+  edges are not part of the contour.
 
 ## Accuracy
 
-The contour curves are fits. Sphere: length 2.5e-7 short (seen along an axis) to 9e-7 (along
-(1, 1, 1)), normal perpendicular to the direction to 1e-13. Torus from the side: the normal is
-perpendicular to 3.6e-5. Planar outlines and cylinder contour lines are exact (length 20.0).
+Traced contours are fitted within 1e-6 of the body's size; the surface normal along them is
+perpendicular to the direction to about 1e-5. Planar outlines, cylinder lines and the circles of
+spheres and tori are exact.
+
+## Errors
+
+`ModelingError: silhouette: the kernel could not find where ... face(s) turn away from the
+direction; try a direction a little off this one, or heal() an imported part first`.
 
 ## Gotchas
 
-- The result mixes contour curves and boundary edges. Filter by `geom_type`, position or
-  length. A cylinder seen from the side returns its two contour lines plus 7 quarter arcs of
-  its rims, from both the front and the back half; which rim pieces come back is not
-  consistent when faces are seen exactly edge-on.
-- Slivers: the torus from the side also returns 3 pieces of 1e-5 to 2.5e-4 mm. Drop edges
-  shorter than about 1e-3.
-- Closed contours come in one piece or several (a sphere: 1 piece; a torus from above: one
-  `circle` and one `bspline`).
-- For a full 2D drawing view (all edges projected onto a plane) use `outline`.
+- Changed in 0.5.0: it returned the *visible* curves of the kernel's hidden-line pass, a mix of
+  contour pieces and boundary edges (a box along (1, 1, 1): its 9 visible edges; a torus from
+  the side: half its contour). For the visible lines of a view use `outline`; for visible and
+  hidden lines `outline(plane, hidden=True)`.
+- For a 2D drawing (all edges projected onto a plane) use `outline` or `drawing_views`.
 
 ## Example
 
 ```python
 ball = Sphere(10)
 rim = ball.silhouette((0, 0, 1))                  # seen from above (camera at +Z)
-print(len(rim), rim[0].geom_type, round(rim[0].length, 5))   # 1 bspline 62.83184 (2*pi*10)
+print(len(rim), rim[0].geom_type, round(rim[0].length, 5))   # 1 circle 62.83185 (2*pi*10)
 
 ring = Torus(20, 5)
-side = ring.silhouette((1, 0, 0))                 # camera at +X: only the visible contour
-side = [e for e in side if e.length > 1e-3]       # drop slivers
-print(len(side), round(sum(e.length for e in side), 3))      # 8 157.078 (half of the full set)
+side = ring.silhouette((1, 0, 0))                 # camera at +X: the whole contour
+print(round(sum(e.length for e in side), 3))      # 314.159
+
+box = Box(20, 20, 20)
+print(len(box.silhouette((1, 1, 1))), round(sum(e.length for e in box.silhouette((1, 1, 1))), 3))  # 6 120.0
 
 cyl = Cylinder(5, 20)
 cs = cyl.silhouette((1, 0, 0))
-lines = [e for e in cs if e.geom_type != "circle"]           # the two contour lines at y = +-5
-print([(round(e.point_at(0.5).y, 6), round(e.length, 6)) for e in lines])   # [(-5.0, 20.0), (5.0, 20.0)]
+print(sorted((e.geom_type, round(e.length, 4)) for e in cs))
+# [('bspline', 20.0), ('bspline', 20.0), ('circle', 15.708), ('circle', 15.708)]: lines and near rims
 ```
 
 ## Related
 
-`outline`, `project`, `intersection_curves`
+`outline`, `drawing_views`, `parting_line`, `project`, `intersection_curves`

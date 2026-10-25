@@ -3,10 +3,15 @@
 // All return an Edge (one curve) or a Wire (a chain). Points may be given as [x, y] (z = 0),
 // [x, y, z] or Vectors.
 
-import { ext, k, kernelCall } from './kernel.ts'
-import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
+import { ModelingError, _opts, ext, k, kernelCall } from './kernel.ts'
 import { solve } from './_linalg.ts'
+import { type Axis, Location, Plane, Vector, type VectorLike, _degrees, _direction, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Shape, Vertex, Wire, _canonicalCurve, _transformCurve, _typeName } from './shapes.ts'
+import { type Complex, Corner, GeometryError, type Seg, assemble, describe, fmt, isSmooth } from './_planar.ts'
+import { CurveCorners, type Frame, curveOf, realSize, segOfEdge, wireFrame } from './_regions.ts'
+
+// biome-ignore lint: kernel results are what their bindings return
+type Any = any
 
 /** Python's float modulo: the result has the sign of the divisor. */
 export function _mod(a: number, b: number): number {
@@ -41,6 +46,7 @@ export function PolarLine(start: VectorLike, length: number, angle: number, plan
  * `Polyline([0, 0], [10, 0], [10, 5], { close: true })`. */
 export function Polyline(...args: (VectorLike | readonly VectorLike[] | { close?: boolean })[]): Wire {
   const { items, options } = _withOptions<{ close?: boolean }>(args)
+  _opts('Polyline', options)
   const pts = _pts(items)
   if (pts.length < 2) throw new RangeError('a polyline needs at least two points')
   if (options.close && !pts[0].isClose(pts[pts.length - 1])) pts.push(pts[0])
@@ -202,54 +208,203 @@ export function EllipticalArc(center: VectorLike, xRadius: number, yRadius: numb
   return Edge._fromCurve(_transformCurve(curve, plane.location.mul(new Location(_vec(center)))._m))
 }
 
+// ------------------------------------------------------------------------------- conics
+/** The rational quadratic Bezier p0, p1, p2 (plane coordinates) with middle weight w, placed on the
+ * plane. */
+function _conic(p0: Vector, p1: Vector, p2: Vector, w: number, plane: Plane, what: string): Edge {
+  const curve = kernelCall(what, () => _canonicalCurve([p0.toArray(), p1.toArray(), p2.toArray()], [0, 0, 0, 1, 1, 1], 2, w === 1 ? null : [1, w, 1]))
+  return _placed(curve, plane)
+}
+
+function _placed(curve: number, plane: Plane): Edge {
+  return Edge._fromCurve(_transformCurve(curve, plane.location._m))
+}
+
+function _finite(what: string, values: Record<string, unknown>): void {
+  for (const [name, v] of Object.entries(values)) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new RangeError(`${what}: ${name} must be a finite number, got ${String(v)}`)
+  }
+}
+
+/**
+ * A piece of the parabola `y = x² / (4 focalLength)`: its vertex at `vertex` (in plane
+ * coordinates), opening along the plane's Y axis, from `x = start` to `x = end` (measured from the
+ * vertex along the plane's X axis). Exact: a quadratic B-spline. For reflectors, horns and nozzle
+ * contours; a negative focal length opens it along -Y.
+ *
+ * `ParabolicArc([0, 0], 10, -20, 20)` runs from (-20, 10) through (0, 0) to (20, 10); its focus is
+ * at (0, 10).
+ */
+export function ParabolicArc(vertex: VectorLike, focalLength: number, start: number, end: number, plane: Plane = Plane.XY): Edge {
+  _finite('ParabolicArc', { focalLength, start, end })
+  if (focalLength === 0) throw new RangeError('ParabolicArc: the focal length must not be zero')
+  if (start === end) throw new RangeError('ParabolicArc: start and end must differ')
+  const v = _vec(vertex)
+  const f = Number(focalLength)
+  const [x0, x1] = [Number(start), Number(end)]
+  return _conic(v.add([x0, (x0 * x0) / (4 * f), 0]), v.add([(x0 + x1) / 2, (x0 * x1) / (4 * f), 0]),
+    v.add([x1, (x1 * x1) / (4 * f), 0]), 1, plane, 'ParabolicArc')
+}
+
+/**
+ * A piece of the hyperbola `x²/xRadius² - y²/yRadius² = 1`, the branch on the +X side of `center`
+ * (in plane coordinates), from `y = start` to `y = end` (measured from the center along the plane's
+ * Y axis). Exact: a rational quadratic B-spline. Its vertex is at `(xRadius, 0)` from the center and
+ * its asymptotes have the slopes `±yRadius / xRadius`.
+ *
+ * `HyperbolicArc([0, 0], 10, 20, -30, 30)` revolved about the Y axis is a cooling tower with a
+ * waist of radius 10.
+ */
+export function HyperbolicArc(center: VectorLike, xRadius: number, yRadius: number, start: number, end: number, plane: Plane = Plane.XY): Edge {
+  _finite('HyperbolicArc', { xRadius, yRadius, start, end })
+  if (xRadius <= 0 || yRadius <= 0) throw new RangeError('HyperbolicArc: xRadius and yRadius must be positive')
+  if (start === end) throw new RangeError('HyperbolicArc: start and end must differ')
+  const [a, b] = [Number(xRadius), Number(yRadius)]
+  const t0 = Math.asinh(Number(start) / b)
+  const t1 = Math.asinh(Number(end) / b)
+  const m = (t0 + t1) / 2
+  const d = (t1 - t0) / 2
+  const c = _vec(center)
+  // the tangents at the ends meet at the middle control point; the weight cosh of half the span
+  return _conic(c.add([a * Math.cosh(t0), b * Math.sinh(t0), 0]),
+    c.add([(a * Math.cosh(m)) / Math.cosh(d), (b * Math.sinh(m)) / Math.cosh(d), 0]),
+    c.add([a * Math.cosh(t1), b * Math.sinh(t1), 0]), Math.cosh(d), plane, 'HyperbolicArc')
+}
+
+/**
+ * A conic arc from `start` to `end`, tangent there to the lines toward `apex` (the point where the
+ * end tangents meet), with the fullness `rho` (0 < rho < 1): the arc passes `rho` of the way from
+ * the middle of the chord to the apex. 0.5 is a parabola, less an ellipse (flatter), more a
+ * hyperbola (closer to the apex). The rho conic of styling: a corner blend whose shape a single
+ * number sets. Exact: a rational quadratic B-spline.
+ *
+ * `ConicArc([0, 0], [10, 0], [10, 10], 0.4142)` is nearly the quarter circle of radius 10 (exactly
+ * for rho = sqrt(2) - 1).
+ */
+export function ConicArc(start: VectorLike, apex: VectorLike, end: VectorLike, rho = 0.5): Edge {
+  _finite('ConicArc', { rho })
+  if (!(rho > 0 && rho < 1)) throw new RangeError(`ConicArc: rho is between 0 and 1 (0.5: a parabola), got ${String(rho)}`)
+  const a = _vec(start)
+  const p = _vec(apex)
+  const b = _vec(end)
+  if (a.isClose(b, 1e-12) || p.sub(a).cross(b.sub(a)).length <= 1e-12 * Math.max(1, p.sub(a).length * b.sub(a).length)) {
+    throw new RangeError('ConicArc: start, apex and end must not lie on one line')
+  }
+  const w = Number(rho) / (1 - Number(rho))
+  return kernelCall('ConicArc', () => Edge._fromCurve(_canonicalCurve([a.toArray(), p.toArray(), b.toArray()], [0, 0, 0, 1, 1, 1], 2, [1, w, 1])))
+}
+
 // ------------------------------------------------------------------------------- NURBS curves
-/** Values (or derivatives) of all B-spline basis functions of degree `p` at `u`. */
-export function _basis(knots: readonly number[], p: number, u: number, deriv = 0): number[] {
+/** The index of the knot span that holds `u` (the last span for the end of the range). */
+export function _span(knots: readonly number[], p: number, u: number): number {
   const n = knots.length - p - 1
-  let span: number
-  if (u >= knots[n]) span = n - 1
-  else {
-    let right = 0 // numpy's searchsorted(knots, u, side="right")
-    while (right < knots.length && knots[right] <= u) right++
-    span = Math.max(p, Math.min(right - 1, n - 1))
+  if (u >= knots[n]) return n - 1
+  let lo = p
+  let hi = n
+  while (hi - lo > 1) { // knots[lo] <= u < knots[hi]
+    const mid = (lo + hi) >> 1
+    if (u < knots[mid]) hi = mid
+    else lo = mid
   }
-  let N = new Array<number>(knots.length - 1).fill(0)
-  N[span] = 1
-  let out: number[] | null = null
-  for (let d = 1; d <= p; d++) {
-    const nn = new Array<number>(knots.length - 1 - d).fill(0)
-    for (let i = 0; i < nn.length; i++) {
-      let a = 0
-      let den = knots[i + d] - knots[i]
-      if (den > 0) a += (deriv && d === p ? d / den : (u - knots[i]) / den) * N[i]
-      den = knots[i + d + 1] - knots[i + 1]
-      if (den > 0) a += (deriv && d === p ? -d / den : (knots[i + d + 1] - u) / den) * N[i + 1]
-      nn[i] = a
+  return lo
+}
+
+/** The p + 1 B-spline basis functions of degree `p` that are not zero in `span` and their
+ * derivatives up to the `nd`-th at `u`: `ders[k][j]` is the k-th derivative of the basis function of
+ * control point `span - p + j` (Piegl and Tiller, The NURBS Book, A2.3). */
+export function _basisDers(knots: readonly number[], p: number, span: number, u: number, nd: number): number[][] {
+  const ndu = Array.from({ length: p + 1 }, () => new Array<number>(p + 1).fill(0))
+  ndu[0][0] = 1
+  const left = new Array<number>(p + 1).fill(0)
+  const right = new Array<number>(p + 1).fill(0)
+  for (let j = 1; j <= p; j++) {
+    left[j] = u - knots[span + 1 - j]
+    right[j] = knots[span + j] - u
+    let saved = 0
+    for (let r = 0; r < j; r++) {
+      ndu[j][r] = right[r + 1] + left[j - r]
+      const temp = ndu[r][j - 1] / ndu[j][r]
+      ndu[r][j] = saved + right[r + 1] * temp
+      saved = left[j - r] * temp
     }
-    N = nn
-    out = N
+    ndu[j][j] = saved
   }
-  if (out === null) throw new Error('degree 0 basis')
-  return out.slice(0, n)
+  const ders = Array.from({ length: nd + 1 }, () => new Array<number>(p + 1).fill(0))
+  for (let j = 0; j <= p; j++) ders[0][j] = ndu[j][p]
+  for (let r = 0; r <= p; r++) {
+    const a = [new Array<number>(p + 1).fill(0), new Array<number>(p + 1).fill(0)]
+    let s1 = 0
+    let s2 = 1
+    a[0][0] = 1
+    for (let k = 1; k <= nd; k++) {
+      let d = 0
+      const rk = r - k
+      const pk = p - k
+      if (r >= k) {
+        a[s2][0] = a[s1][0] / ndu[pk + 1][rk]
+        d = a[s2][0] * ndu[rk][pk]
+      }
+      const j1 = rk >= -1 ? 1 : -rk
+      const j2 = r - 1 <= pk ? k - 1 : p - r
+      for (let j = j1; j <= j2; j++) {
+        a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j]
+        d += a[s2][j] * ndu[rk + j][pk]
+      }
+      if (r <= pk) {
+        a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r]
+        d += a[s2][k] * ndu[r][pk]
+      }
+      ders[k][r] = d
+      ;[s1, s2] = [s2, s1]
+    }
+  }
+  let f = p
+  for (let k = 1; k <= nd; k++) {
+    for (let j = 0; j <= p; j++) ders[k][j] *= f
+    f *= p - k
+  }
+  return ders
+}
+
+/** Values (or `deriv`-th derivatives) of all B-spline basis functions of degree `p` at `u`, one per
+ * control point: a dense row of a collocation matrix (`_basisDers` gives the p + 1 that are not zero). */
+export function _basis(knots: readonly number[], p: number, u: number, deriv = 0): number[] {
+  const span = _span(knots, p, u)
+  const out = new Array<number>(knots.length - p - 1).fill(0)
+  const d = _basisDers(knots, p, span, u, deriv)[deriv]
+  for (let j = 0; j <= p; j++) out[span - p + j] = d[j]
+  return out
+}
+
+/** The solution of a tridiagonal system (row i: sub[i] x[i-1] + diag[i] x[i] + sup[i] x[i+1] =
+ * rhs[i], each rhs a row of numbers). Without pivoting: B-spline collocation matrices are totally
+ * positive (de Boor), so elimination in order is stable. */
+export function _thomas(sub: readonly number[], diag: readonly number[], sup: readonly number[], rhs: readonly (readonly number[])[]): number[][] {
+  const n = diag.length
+  const c = new Array<number>(n).fill(0)
+  const d = rhs.map((r) => [...r])
+  const w = n ? d[0].length : 0
+  for (let i = 0; i < n; i++) {
+    const m = diag[i] - (i ? sub[i] * c[i - 1] : 0)
+    c[i] = i + 1 < n ? sup[i] / m : 0
+    for (let q = 0; q < w; q++) d[i][q] = (d[i][q] - (i ? sub[i] * d[i - 1][q] : 0)) / m
+  }
+  for (let i = n - 2; i >= 0; i--) for (let q = 0; q < w; q++) d[i][q] -= c[i] * d[i + 1][q]
+  return d
 }
 
 type V3 = [number, number, number]
 
-const add3 = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-const sub3 = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-const mul3 = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s]
-
-/** Cubic interpolation through `points` with end tangent conditions. */
-function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, closed: boolean): Edge {
+/** Cubic interpolation through `points`: with end tangent conditions, or, for a closed curve without
+ * tangents, periodic (curvature continuous at the seam as everywhere else). Only the basis functions
+ * that are not zero at each point are evaluated, and the system is tridiagonal (one row and column
+ * more for a closed curve): linear in the number of points. */
+export function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, closed: boolean): Edge {
   const Q: V3[] = points.map((p) => p.toArray())
-  if (closed) {
-    if (!points[0].isClose(points[points.length - 1])) Q.push(Q[0])
-    if (t0 === null && t1 === null) {
-      const d = sub3(Q[1], Q[Q.length - 2])
-      t0 = t1 = new Vector(d)
-    }
-  }
-  const chords = Q.slice(1).map((q, i) => Math.hypot(...sub3(q, Q[i])))
+  if (closed && !points[0].isClose(points[points.length - 1])) Q.push([...Q[0]])
+  const periodic = closed && t0 === null && t1 === null
+  if (periodic && Q.length < 4) throw new RangeError('a closed spline needs at least three points')
+  const chords = Q.slice(1).map((q, i) => Math.hypot(q[0] - Q[i][0], q[1] - Q[i][1], q[2] - Q[i][2]))
   if (chords.some((c) => c < 1e-12)) throw new RangeError('spline points must be distinct')
   const total = chords.reduce((s, c) => s + c, 0)
   // centripetal parameters reduce overshoot on uneven spacing
@@ -257,78 +412,526 @@ function _interpolate(points: Vector[], t0: Vector | null, t1: Vector | null, cl
   const wsum = w.reduce((s, x) => s + x, 0)
   const u = [0]
   let acc = 0
-  for (const x of w) {
+  for (const x of w.slice(0, -1)) {
     acc += x
     u.push(acc / wsum)
   }
+  u.push(1)
   const n = Q.length - 1
-
-  // derivative at u[at] of the parabola through three points
-  const bessel = (i0: number, i1: number, i2: number, at: number): V3 => {
-    const [ua, ub, uc] = [u[i0], u[i1], u[i2]]
-    const [A, B, C] = [Q[i0], Q[i1], Q[i2]]
-    const x = u[at]
-    return add3(
-      add3(mul3(A, (2 * x - ub - uc) / ((ua - ub) * (ua - uc))), mul3(B, (2 * x - ua - uc) / ((ub - ua) * (ub - uc)))),
-      mul3(C, (2 * x - ua - ub) / ((uc - ua) * (uc - ub))),
-    )
-  }
-
-  let D0: V3
-  let D1: V3
-  if (n === 1) {
-    D0 = t0 === null ? sub3(Q[1], Q[0]) : mul3(t0.normalized().toArray(), total)
-    D1 = t1 === null ? sub3(Q[1], Q[0]) : mul3(t1.normalized().toArray(), total)
-  } else {
-    D0 = t0 === null ? bessel(0, 1, 2, 0) : mul3(t0.normalized().toArray(), total)
-    D1 = t1 === null ? bessel(n - 2, n - 1, n, n) : mul3(t1.normalized().toArray(), total)
-  }
   const p = 3
   const knots = [0, 0, 0, 0, ...u.slice(1, -1), 1, 1, 1, 1]
-  const A: number[][] = []
-  const B: number[][] = []
-  A.push(_basis(knots, p, 0))
-  B.push(Q[0])
-  A.push(_basis(knots, p, 0, 1))
-  B.push(D0)
-  for (let i = 1; i < n; i++) {
-    A.push(_basis(knots, p, u[i]))
-    B.push(Q[i])
+  const m = n + 3 // control points
+  const P: (number[] | null)[] = new Array(m).fill(null)
+  const end0 = _basisDers(knots, p, p, 0, 2) // control points 0..3
+  const end1 = _basisDers(knots, p, m - 1, 1, 2) // control points m-4..m-1
+  const rows: number[][] = [] // row i: control points i..i+3
+  for (let i = 1; i < n; i++) rows.push(_basisDers(knots, p, i + 3, u[i], 0)[0])
+  P[0] = Q[0]
+  P[m - 1] = Q[n]
+
+  if (!periodic) {
+    // derivative at u[at] of the parabola through three points
+    const bessel = (i0: number, i1: number, i2: number, at: number): number[] => {
+      const [ua, ub, uc] = [u[i0], u[i1], u[i2]]
+      const x = u[at]
+      const fa = (2 * x - ub - uc) / ((ua - ub) * (ua - uc))
+      const fb = (2 * x - ua - uc) / ((ub - ua) * (ub - uc))
+      const fc = (2 * x - ua - ub) / ((uc - ua) * (uc - ub))
+      return [0, 1, 2].map((q) => Q[i0][q] * fa + Q[i1][q] * fb + Q[i2][q] * fc)
+    }
+    const given = (t: Vector): number[] => t.normalized().toArray().map((c) => c * total)
+    const chord = [0, 1, 2].map((q) => Q[1][q] - Q[0][q])
+    let D0: number[]
+    let D1: number[]
+    if (n === 1) {
+      D0 = t0 === null ? chord : given(t0)
+      D1 = t1 === null ? chord : given(t1)
+    } else {
+      D0 = t0 === null ? bessel(0, 1, 2, 0) : given(t0)
+      D1 = t1 === null ? bessel(n - 2, n - 1, n, n) : given(t1)
+    }
+    // the end derivatives give the second and the second last control points
+    const P1 = [0, 1, 2].map((q) => (D0[q] - end0[1][0] * Q[0][q]) / end0[1][1])
+    const Pm2 = [0, 1, 2].map((q) => (D1[q] - end1[1][3] * Q[n][q]) / end1[1][2])
+    P[1] = P1
+    P[m - 2] = Pm2
+    // control points 2 .. m-3 from the points 1 .. n-1
+    const sub: number[] = []
+    const diag: number[] = []
+    const sup: number[] = []
+    const rhs: number[][] = []
+    for (let i = 1; i < n; i++) {
+      const N = rows[i - 1]
+      let r: number[] = [...Q[i]]
+      if (i === 1) r = [0, 1, 2].map((q) => r[q] - N[0] * P1[q])
+      if (i === n - 1) r = [0, 1, 2].map((q) => r[q] - N[2] * Pm2[q])
+      sub.push(i > 1 ? N[0] : 0)
+      diag.push(N[1])
+      sup.push(i < n - 1 ? N[2] : 0)
+      rhs.push(r)
+    }
+    if (rhs.length) _thomas(sub, diag, sup, rhs).forEach((x, j) => { P[2 + j] = x })
+  } else {
+    // Unknowns: control points 1 .. m-2 (y[0] .. y[k]); the first and last are the seam point.
+    // Rows: the first and second derivatives equal at both ends of the seam, and the points
+    // 1 .. n-1. Ordered as below the matrix is tridiagonal but for corners; the last unknown is
+    // eliminated (Schur complement) and the rest solved by two tridiagonal solves.
+    const k = m - 3
+    const seam = (order: number): [Map<number, number>, number[]] => {
+      const row = new Map<number, number>()
+      let rhs = [0, 0, 0]
+      const terms: [number, number][] = [...[0, 1, 2, 3].map((j): [number, number] => [j, end0[order][j]]),
+        ...[0, 1, 2, 3].map((j): [number, number] => [m - 4 + j, -end1[order][j]])]
+      for (const [j, cf] of terms) {
+        if (j === 0 || j === m - 1) rhs = [0, 1, 2].map((q) => rhs[q] - cf * Q[0][q])
+        else if (cf) row.set(j - 1, (row.get(j - 1) ?? 0) + cf)
+      }
+      return [row, rhs]
+    }
+    const [first, rFirst] = seam(1) // y[0] and y[k]
+    const [last, rLast] = seam(2) // y[0], y[1], y[k-1], y[k]
+    const sub = [0]
+    const diag = [first.get(0) ?? 0]
+    const sup = [0]
+    const rhs: number[][] = [rFirst]
+    const col = [first.get(k) ?? 0]
+    for (let i = 1; i < n; i++) { // row i: y[i-1], y[i], y[i+1]
+      const N = rows[i - 1]
+      sub.push(N[0])
+      diag.push(N[1])
+      sup.push(i + 1 < k ? N[2] : 0)
+      col.push(i + 1 === k ? N[2] : 0)
+      rhs.push([...Q[i]])
+    }
+    const X = _thomas(sub, diag, sup, rhs)
+    const Z = _thomas(sub, diag, sup, col.map((c) => [c]))
+    let aBB = last.get(k) ?? 0
+    for (const [j, cf] of last) if (j < k) aBB -= cf * Z[j][0]
+    if (Math.abs(aBB) < 1e-300) throw new RangeError('Spline: the closed curve through these points cannot be made')
+    const yk = [0, 1, 2].map((q) => {
+      let r = rLast[q]
+      for (const [j, cf] of last) if (j < k) r -= cf * X[j][q]
+      return r / aBB
+    })
+    for (let j = 0; j < k; j++) P[1 + j] = [0, 1, 2].map((q) => X[j][q] - Z[j][0] * yk[q])
+    P[m - 2] = yk
   }
-  A.push(_basis(knots, p, 1, 1))
-  B.push(D1)
-  A.push(_basis(knots, p, 1))
-  B.push(Q[n])
-  const P = solve(A, B)
-  return kernelCall('Spline', () => Edge._fromCurve(_canonicalCurve(P, knots, p, null)))
+  return kernelCall('Spline', () => Edge._fromCurve(_canonicalCurve(P as number[][], knots, p, null)))
 }
 
 /**
  * A smooth cubic curve through the points: `Spline([0, 0], [10, 5], [20, 0])`.
  *
- * Options: `tangents`, the `[start, end]` tangent directions (either may be null); `closed`
- * makes a closed loop (smooth at the join).
+ * Options: `tangents`, the `[start, end]` tangent directions (either may be null), or one direction
+ * for every point (an array as long as the points: the curve passes through each point in its
+ * direction); `closed` makes a closed loop (smooth at the join).
  */
 export function Spline(
-  ...args: (VectorLike | readonly VectorLike[] | { tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean })[]
+  ...args: (VectorLike | readonly VectorLike[] | { tangents?: readonly (VectorLike | null)[] | null; closed?: boolean })[]
 ): Edge {
-  const { items, options } = _withOptions<{ tangents?: readonly [VectorLike | null, VectorLike | null] | null; closed?: boolean }>(args)
+  const { items, options } = _withOptions<{ tangents?: readonly (VectorLike | null)[] | null; closed?: boolean }>(args)
+  _opts('Spline', options)
   const pts = _pts(items)
   const closed = options.closed ?? false
   if (pts.length < 2) throw new RangeError('a spline needs at least two points')
   let t0: Vector | null = null
   let t1: Vector | null = null
-  if (options.tangents != null) {
-    t0 = options.tangents[0] != null ? _vec(options.tangents[0]) : null
-    t1 = options.tangents[1] != null ? _vec(options.tangents[1]) : null
+  const tangents = options.tangents
+  if (tangents != null && tangents.length === pts.length && pts.length > 2) return _throughTangents(pts, [...tangents], closed)
+  if (tangents != null) {
+    if (tangents.length !== 2) throw new RangeError(`Spline: tangents are (start, end) or one per point (${pts.length}), got ${tangents.length}`)
+    t0 = tangents[0] != null ? _vec(tangents[0]) : null
+    t1 = tangents[1] != null ? _vec(tangents[1]) : null
   }
   if (pts.length === 2 && t0 === null && t1 === null && !closed) return Line(pts[0], pts[1])
   return _interpolate(pts, t0, t1, closed)
 }
 
+/** A cubic B-spline through the points in the direction given at each. */
+function _throughTangents(pts: Vector[], tangents: (VectorLike | null)[], closed: boolean): Edge {
+  if (tangents.some((x) => x == null)) throw new RangeError('Spline: with a tangent for every point, none of them may be null')
+  let dirs = tangents.map((x) => _vec(x as VectorLike))
+  dirs.forEach((d, i) => {
+    if (!(d.length > 0)) throw new RangeError(`Spline: tangent ${i + 1} has no direction`)
+  })
+  if (closed && !pts[0].isClose(pts[pts.length - 1])) {
+    pts = [...pts, pts[0]]
+    dirs = [...dirs, dirs[0]]
+  }
+  const r = kernelCall('Spline', () => ext.interpolate_tangents(pts.flatMap((p) => p.toArray()), dirs.flatMap((d) => d.toArray()), 3),
+    'the points must be distinct')
+  return Edge._fromCurve(r[0])
+}
+
+/** For each parameter of `us`: the knot span k it lies in (within the domain) and the values and first
+ * derivatives of the p + 1 basis functions that are not zero there (those of control points k - p to
+ * k). */
+function _spans(knots: readonly number[], p: number, us: readonly number[]): { k: number[]; n: number[][]; d: number[][] } {
+  const count = knots.length - p - 1
+  const out = { k: [] as number[], n: [] as number[][], d: [] as number[][] }
+  for (const u of us) {
+    let lo = 0 // (numpy.searchsorted(knots, u, 'right'))
+    let hi = knots.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (knots[mid] <= u) lo = mid + 1
+      else hi = mid
+    }
+    const k = Math.min(Math.max(lo - 1, p), count - 1)
+    const left = new Array<number>(p + 1).fill(0)
+    const right = new Array<number>(p + 1).fill(0)
+    const n = new Array<number>(p + 1).fill(0)
+    n[0] = 1
+    let lower = [1]
+    for (let j = 1; j <= p; j++) {
+      left[j] = u - knots[k + 1 - j]
+      right[j] = knots[k + j] - u
+      let saved = 0
+      for (let r = 0; r < j; r++) {
+        const temp = n[r] / (right[r + 1] + left[j - r])
+        n[r] = saved + right[r + 1] * temp
+        saved = left[j - r] * temp
+      }
+      n[j] = saved
+      if (j === p - 1) lower = n.slice(0, p) // (the basis of degree p - 1: of control points k - p + 1 to k)
+    }
+    const d = new Array<number>(p + 1).fill(0)
+    for (let r = 0; r <= p; r++) {
+      const i = k - p + r
+      if (r >= 1) {
+        const w = knots[i + p] - knots[i]
+        if (w > 0) d[r] += (p * lower[r - 1]) / w
+      }
+      if (r <= p - 1) {
+        const w = knots[i + p + 1] - knots[i + 1]
+        if (w > 0) d[r] -= (p * lower[r]) / w
+      }
+    }
+    out.k.push(k)
+    out.n.push(n)
+    out.d.push(d)
+  }
+  return out
+}
+
+/** The control points and the curve's points at the parameters `us` (each a combination of p + 1
+ * control points). */
+function _curvePoints(ctrl: readonly number[][], s: { k: number[]; n: number[][] }, p: number, count: number): number[][] {
+  return s.k.map((k, i) => {
+    const pt = [0, 0, 0]
+    s.n[i].forEach((b, r) => {
+      const c = ctrl[(k - p + r) % count]
+      for (let x = 0; x < 3; x++) pt[x] += b * c[x]
+    })
+    return pt
+  })
+}
+
+/** The least-squares B-spline of degree p near the points q (m x 3) with the fewest control points
+ * that keep every point within `tol` (a fifth more of them each time until they do): open, through the
+ * first and the last point (along the unit directions t0 and t1 there, where given, or the points' own
+ * where they run smoothly), its knots spread so that every span holds points; closed, periodic (as
+ * smooth at its start as elsewhere), starting at its point for the first point (held to no point: a
+ * noisy one would bend it). Between the fits each point's parameter moves to the nearest point of the
+ * curve, so that the curve is measured by its distance from the points. Returns [control points, knots, the largest distance of a point]; a closed curve's control
+ * points and knots are periodic: the first p control points again at the end, the knots unclamped. */
+function _fitPoints(q: number[][], tol: number, p: number, t0: number[] | null, t1: number[] | null, closed: boolean): [number[][], number[], number] {
+  const m = q.length
+  if (!closed) {
+    // (an end without a direction given: the points' own, where they are smooth there)
+    t0 ??= _endDirection(q, p, tol)
+    if (t1 == null) {
+      const e = _endDirection([...q].reverse(), p, tol)
+      if (e != null) t1 = e.map((x) => -x)
+    }
+  }
+  const run = closed ? [...q, q[0]] : q
+  const cum = [0]
+  for (let i = 1; i < run.length; i++) cum.push(cum[i - 1] + Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1], run[i][2] - run[i - 1][2]))
+  const u0 = cum.slice(0, m).map((c) => c / cum[cum.length - 1]) // (chord length; a closed curve's first point again at 1)
+  let count = Math.max(p + 1, t0 != null && t1 != null ? 4 : 3)
+  let best: [number[][], number[], number] | null = null
+  for (;;) {
+    const knots: number[] = []
+    if (closed) {
+      // (at evenly spaced points, every span holding as many; periodic beyond 0 and 1)
+      const tau = Array.from({ length: count }, (_, j) => u0[Math.floor((j * m) / count)])
+      for (let j = -p; j <= count + p; j++) knots.push(tau[((j % count) + count) % count] + Math.floor(j / count))
+    } else {
+      const d = m / (count - p) // (Piegl and Tiller's spacing: every span holds points)
+      knots.push(...new Array<number>(p + 1).fill(0))
+      for (let j = 1; j < count - p; j++) {
+        const i = Math.floor(j * d)
+        const a = j * d - i
+        knots.push((1 - a) * u0[i - 1] + a * u0[i])
+      }
+      knots.push(...new Array<number>(p + 1).fill(1))
+    }
+    let us = [...u0] // (afresh: parameters moved for a coarser curve hold a finer one back)
+    let dev = Infinity
+    let now = Infinity
+    for (let it = 0; it < 6; it++) {
+      // (fit, move the parameters to the nearest points, again while it helps)
+      const ctrl = _fitSolve(q, us, knots, p, count, t0, t1, closed)
+      us = _nearest(q, us, u0, ctrl, knots, p, count, closed)
+      const on = _curvePoints(ctrl, _spans(knots, p, us), p, count)
+      now = Math.max(...on.map((c, i) => Math.hypot(q[i][0] - c[0], q[i][1] - c[1], q[i][2] - c[2])))
+      if (best == null || now < best[2]) best = [closed ? [...ctrl, ...ctrl.slice(0, p)] : ctrl, knots, now]
+      if (now <= tol || now > 0.99 * dev) break
+      dev = now
+    }
+    dev = Math.min(dev, now)
+    if (dev <= tol || count >= m) return best as [number[][], number[], number]
+    count = Math.min(m, count + Math.max(1, Math.floor(count / 5)))
+  }
+}
+
+/** The direction a smooth curve leaves q[0] in: the derivative there of the polynomial of degree 5 (or
+ * less) fitted to the first 2p + 2 points (by their distances along them). null where those points
+ * stray from it by more than 1/100 of `tol`: not smooth enough at this tolerance for a direction to hold
+ * the curve to. (Least squares alone leaves the curve's end direction loose: 5e-4 rad off a quarter
+ * circle fitted within 1e-6, enough to move an offset's corner.) */
+function _endDirection(q: readonly number[][], p: number, tol: number): number[] | null {
+  const k = Math.min(q.length, 2 * p + 2)
+  if (k < 4) return null
+  const s = [0]
+  for (let i = 1; i < k; i++) s.push(s[i - 1] + Math.hypot(q[i][0] - q[i - 1][0], q[i][1] - q[i - 1][1], q[i][2] - q[i - 1][2]))
+  const deg = Math.min(5, k - 2)
+  const v = s.map((x) => Array.from({ length: deg + 1 }, (_, j) => ((2 * x) / s[k - 1] - 1) ** j)) // (from -1 to 1: well conditioned)
+  const vtv = Array.from({ length: deg + 1 }, (_, a) => Array.from({ length: deg + 1 }, (_, b) => v.reduce((acc, row) => acc + row[a] * row[b], 0)))
+  const vtq = Array.from({ length: deg + 1 }, (_, a) => [0, 1, 2].map((c) => v.reduce((acc, row, i) => acc + row[a] * q[i][c], 0)))
+  const coef = solve(vtv, vtq)
+  for (let i = 0; i < k; i++) {
+    const f = [0, 1, 2].map((c) => v[i].reduce((acc, b, j) => acc + b * coef[j][c], 0))
+    if (Math.hypot(f[0] - q[i][0], f[1] - q[i][1], f[2] - q[i][2]) > tol / 100) return null
+  }
+  const t = [0, 1, 2].map((c) => coef.reduce((acc, row, j) => acc + (j >= 1 ? j * row[c] * (-1) ** (j - 1) : 0), 0)) // (the derivative at -1)
+  const d = Math.hypot(t[0], t[1], t[2])
+  return d > 0 ? t.map((x) => x / d) : null
+}
+
+/** `_fitPoints`' control points for the points' parameters `us`: least squares, with a small penalty on
+ * the control points' second differences (it keeps the system solvable where a span holds few
+ * points). */
+function _fitSolve(q: readonly number[][], us: readonly number[], knots: readonly number[], p: number, count: number,
+  t0: number[] | null, t1: number[] | null, closed: boolean): number[][] {
+  const { k, n } = _spans(knots, p, us)
+  const zeros = (rows: number, cols: number): number[][] => Array.from({ length: rows }, () => new Array<number>(cols).fill(0))
+  const g = zeros(count, count)
+  let rhs = zeros(count, 3)
+  q.forEach((pt, i) => {
+    const cols = Array.from({ length: p + 1 }, (_, r) => (k[i] - p + r) % count)
+    for (let r = 0; r <= p; r++) {
+      for (let s = 0; s <= p; s++) g[cols[r]][cols[s]] += n[i][r] * n[i][s]
+      for (let c = 0; c < 3; c++) rhs[cols[r]][c] += n[i][r] * pt[c]
+    }
+  })
+  const h = zeros(count, count)
+  for (let j = closed ? 0 : 1; j < (closed ? count : count - 1); j++) {
+    const idx = [(j - 1 + count) % count, j, (j + 1) % count]
+    const w = [1, -2, 1]
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) h[idx[a]][idx[b]] += w[a] * w[b]
+  }
+  let trace = 0
+  for (let i = 0; i < count; i++) trace += g[i][i]
+  const lam = (1e-6 * trace) / count
+  const a = g.map((row, i) => row.map((x, j) => x + lam * h[i][j]))
+  if (closed) return solve(a, rhs) // (all control points free: held to no point, the seam no different from the rest)
+  const fixed = zeros(count, 3)
+  fixed[0] = [...q[0]]
+  fixed[count - 1] = [...q[q.length - 1]]
+  let lo = 1
+  let hi = count - 1
+  const tans: [number, number[]][] = []
+  if (t0 != null) {
+    fixed[1] = [...q[0]]
+    lo = 2
+    tans.push([1, t0])
+  }
+  if (t1 != null) {
+    fixed[count - 2] = [...q[q.length - 1]]
+    hi = count - 2
+    tans.push([count - 2, t1])
+  }
+  rhs = rhs.map((row, i) => row.map((x, c) => x - a[i].reduce((acc, aij, j) => acc + aij * fixed[j][c], 0)))
+  const ctrl = fixed.map((row) => [...row])
+  const nf = hi - lo
+  if (!tans.length) {
+    const sol = solve(a.slice(lo, hi).map((row) => row.slice(lo, hi)), rhs.slice(lo, hi))
+    sol.forEach((row, i) => (ctrl[lo + i] = row))
+    return ctrl
+  }
+  // the free control points' coordinates and a length along each end tangent, together
+  const size = 3 * nf + tans.length
+  const mat = zeros(size, size)
+  const y = new Array<number>(size).fill(0)
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < nf; i++) {
+      for (let j = 0; j < nf; j++) mat[c * nf + i][c * nf + j] = a[lo + i][lo + j]
+      y[c * nf + i] = rhs[lo + i][c]
+    }
+  }
+  tans.forEach(([j, t], ti) => {
+    const row = 3 * nf + ti
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < nf; i++) {
+        mat[c * nf + i][row] = a[lo + i][j] * t[c]
+        mat[row][c * nf + i] = a[j][lo + i] * t[c]
+      }
+    }
+    y[row] = t[0] * rhs[j][0] + t[1] * rhs[j][1] + t[2] * rhs[j][2]
+    tans.forEach(([j2, t2], ti2) => (mat[row][3 * nf + ti2] = a[j][j2] * (t[0] * t2[0] + t[1] * t2[1] + t[2] * t2[2])))
+  })
+  const z = solve(mat, y.map((x) => [x])).map((row) => row[0])
+  for (let c = 0; c < 3; c++) for (let i = 0; i < nf; i++) ctrl[lo + i][c] = z[c * nf + i]
+  tans.forEach(([j, t], ti) => {
+    for (let c = 0; c < 3; c++) ctrl[j][c] += z[3 * nf + ti] * t[c]
+  })
+  return ctrl
+}
+
+/** The points' parameters moved to the nearest points of the curve (a Newton step, kept between the
+ * midpoints to the neighbours' first parameters `u0`, so that the points stay in order and a closed
+ * curve's last point does not slide onto its first): all but the first (the curve's start) and an open
+ * curve's last (its end). */
+function _nearest(q: readonly number[][], us: readonly number[], u0: readonly number[], ctrl: readonly number[][], knots: readonly number[],
+  p: number, count: number, closed: boolean): number[] {
+  const s = _spans(knots, p, us)
+  const on = _curvePoints(ctrl, s, p, count)
+  const tangent = _curvePoints(ctrl, { k: s.k, n: s.d }, p, count)
+  const m = us.length
+  const out = us.map((u, i) => {
+    const t = tangent[i]
+    const step = ((q[i][0] - on[i][0]) * t[0] + (q[i][1] - on[i][1]) * t[1] + (q[i][2] - on[i][2]) * t[2]) / Math.max(t[0] * t[0] + t[1] * t[1] + t[2] * t[2], 1e-300)
+    const before = i > 0 ? u0[i - 1] : closed ? u0[m - 1] - 1 : 0
+    const after = i < m - 1 ? u0[i + 1] : 1
+    return Math.min(Math.max(u + step, (before + u0[i]) / 2), (u0[i] + after) / 2)
+  })
+  out[0] = 0
+  if (!closed) out[m - 1] = 1
+  return out
+}
+
+/**
+ * A smooth curve near many points, with as few control points as keep it within `tolerance` of
+ * every one: for scanned or digitized outlines, sampled curves and long polylines, where `Spline`
+ * passes through every point, follows every wiggle and needs a control point per point.
+ *
+ * A least-squares B-spline: it averages noise smaller than the tolerance out instead of following it,
+ * and takes more control points (spread evenly over the points) until every point is within the
+ * tolerance, measured to the nearest point of the curve. An open curve runs from the first point to
+ * the last; where the points run smoothly there and no tangent is given, it leaves them in the points'
+ * own direction. A tolerance below the points' noise makes the curve go through them all.
+ *
+ * `points`: the points in order along the curve (2D points lie at z = 0). Options: `tolerance`, the
+ * largest distance from any point to the curve (default: 1/1000 of the size of the points);
+ * `degree`, the degree of the curve, 2 to 9; `tangents`, optional `[start, end]` directions, either may
+ * be null, or a direction at every point (as many as there are points, none null; a cubic curve then:
+ * the curve leaves each point near that direction, as the curve through the points along them,
+ * `Spline(...points, { tangents })`, does, simplified within the tolerance), not for closed curves;
+ * `closed`, a closed curve starting and ending near the first point (within the tolerance), as smooth
+ * there as elsewhere.
+ *
+ * Few points (fewer than six) give the curve through them (`Spline`). Where no fit keeps within the
+ * tolerance, a ModelingError gives the distance it reached.
+ *
+ *     const outline = fitCurve(scanPoints, { tolerance: 0.02 })
+ */
+export function fitCurve(
+  points: Iterable<VectorLike>,
+  options: {
+    tolerance?: number | null
+    degree?: number
+    tangents?: readonly [VectorLike | null, VectorLike | null] | readonly VectorLike[] | null
+    closed?: boolean
+  } = {},
+): Edge {
+  _opts('fitCurve', options)
+  const { tolerance = null, degree = 3, tangents = null, closed = false } = options
+  let pts = [...points].map((p) => _vec(p))
+  if (pts.length < 2) throw new RangeError('fitCurve needs at least two points')
+  if (!pts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z))) {
+    throw new RangeError('fitCurve: the points must be finite numbers')
+  }
+  const lo = [Infinity, Infinity, Infinity]
+  const hi = [-Infinity, -Infinity, -Infinity]
+  for (const p of pts) {
+    const a = p.toArray()
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i], a[i])
+      hi[i] = Math.max(hi[i], a[i])
+    }
+  }
+  const size = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+  if (size === 0) throw new RangeError('fitCurve: the points all coincide')
+  const count = pts.length
+  const every = tangents != null && tangents.length === count && count > 2 // (a direction at every point)
+  const keep = [pts[0]]
+  const kept = [0]
+  pts.slice(1).forEach((p, i) => {
+    if (p.distanceTo(keep[keep.length - 1]) > 1e-12 * size) {
+      keep.push(p)
+      kept.push(i + 1)
+    }
+  })
+  if (closed && keep.length > 2 && keep[keep.length - 1].distanceTo(keep[0]) <= 1e-12 * size) {
+    keep.pop()
+    kept.pop()
+  }
+  pts = keep
+  const tol = tolerance == null ? 1e-3 * size : tolerance
+  if (!(typeof tol === 'number' && Number.isFinite(tol) && tol > 0)) throw new RangeError(`fitCurve: the tolerance must be positive, got ${String(tolerance)}`)
+  if (!(Number.isInteger(degree) && degree >= 2 && degree <= 9)) throw new RangeError(`fitCurve: the degree is 2 to 9, got ${String(degree)}`)
+  if (tangents != null && tangents.length !== 2 && !every) {
+    throw new RangeError(`fitCurve: tangents are [start, end], or a direction at each of the ${count} points, got ${tangents.length}`)
+  }
+  if (closed && tangents != null) throw new RangeError('fitCurve: a closed curve takes no end tangents, nor a direction at every point')
+  if (every) return _fitTangents(pts, kept.map((i) => (tangents as readonly (VectorLike | null)[])[i]), tol)
+  if (pts.length < 6) return Spline(...pts, { tangents, closed }) // (too few to fit: the curve through them)
+  const direction = (t: VectorLike | null | undefined, end: string): number[] | null => {
+    if (t == null) return null
+    const v = _vec(t)
+    if (!(v.length > 0)) throw new RangeError(`fitCurve: the ${end} tangent has no length`)
+    return v.normalized().toArray()
+  }
+  const t0 = tangents != null ? direction(tangents[0], 'start') : null
+  const t1 = tangents != null ? direction(tangents[1], 'end') : null
+  const p = Math.min(degree, pts.length - 1)
+  const [ctrl, knots, dev] = _fitPoints(pts.map((q) => q.toArray()), tol, p, t0, t1, closed)
+  if (dev > tol) {
+    throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; ` +
+      'use a larger tolerance')
+  }
+  return kernelCall('fitCurve', () => Edge._fromCurve(_canonicalCurve(ctrl, knots, p, null)))
+}
+
+/** `fitCurve` with a direction at every point (`ext.approximate_tangents`). */
+function _fitTangents(pts: Vector[], tangents: readonly (VectorLike | null)[], tol: number): Edge {
+  const dirs = tangents.map((t, i) => {
+    if (t == null) throw new RangeError(`fitCurve: with a direction at every point, tangent ${i + 1} is null`)
+    const v = _vec(t)
+    if (!(v.length > 0)) throw new RangeError(`fitCurve: tangent ${i + 1} has no direction`)
+    return v.normalized()
+  })
+  const r: Any = kernelCall('fitCurve', () =>
+    ext.approximate_tangents(
+      pts.flatMap((p) => p.toArray()),
+      dirs.flatMap((d) => d.toArray()),
+      tol,
+    ),
+  )
+  const edge = Edge._fromCurve(r[0])
+  const dev = Number(r[1])
+  if (dev > tol) {
+    throw new ModelingError(`fitCurve: the closest fit found passes ${_formatG(dev, 3)} from a point, more than the tolerance ${_formatG(tol)}; use a larger tolerance`)
+  }
+  return edge
+}
+
 /** A Bézier curve (rational if `weights` are given) from its control points. */
 export function Bezier(...args: (VectorLike | readonly VectorLike[] | { weights?: readonly number[] | null })[]): Edge {
   const { items, options } = _withOptions<{ weights?: readonly number[] | null }>(args)
+  _opts('Bezier', options)
   const pts = _pts(items)
   if (pts.length < 2) throw new RangeError('a Bézier curve needs at least two control points')
   const p = pts.length - 1
@@ -342,7 +945,8 @@ export function Bezier(...args: (VectorLike | readonly VectorLike[] | { weights?
  * A helix around `direction` through `center`.
  *
  * `direction` is a vector or an axis (only its direction counts; `center` places the helix).
- * `endRadius` makes a conical helix; `pitch` is the rise per turn.
+ * `endRadius` makes a conical helix; `pitch` is the rise per turn. Any number of turns: beyond 120
+ * the helix is fitted in pieces of whole turns, joined into one curve.
  */
 export function Helix(
   pitch: number,
@@ -350,49 +954,189 @@ export function Helix(
   radius: number,
   options: { center?: VectorLike; direction?: Axis | VectorLike; endRadius?: number | null; leftHanded?: boolean } = {},
 ): Edge {
+  _opts('Helix', options, arguments.length)
   const { center = [0, 0, 0], direction = [0, 0, 1], endRadius = null, leftHanded = false } = options
   if (pitch <= 0 || height <= 0 || radius <= 0) throw new RangeError('pitch, height and radius must be positive')
   const turns = height / pitch
-  const curve = kernelCall('Helix', () =>
-    k.create_helix([0, 0, 0], Number(height), Number(radius), Number(endRadius ?? radius), Number(turns), { right_handed: !leftHanded }),
-  )
+  const r1 = Number(endRadius ?? radius)
+  const curve = kernelCall('Helix', () => _helixCurve(Number(pitch), Number(height), Number(radius), r1, Number(turns), !leftHanded))
   const plane = new Plane(_vec(center), null, _direction(direction, 'Helix'))
   return Edge._fromCurve(_transformCurve(curve, plane.location._m))
+}
+
+/**
+ * A flat (Archimedean) spiral around the plane's origin: its radius grows (or shrinks) evenly with
+ * the angle from `startRadius` to `endRadius` over `turns` turns. It starts on the plane's X axis and
+ * turns counterclockwise seen from the plane's normal (`clockwise: true`: the other way). Either
+ * radius may be 0 (a spiral from or to the center). For spiral springs, scroll grooves and coils; a
+ * B-spline within 1e-4 of the exact spiral, as `Helix`, of any number of turns.
+ *
+ * `Spiral(2, 20, 5)` runs from (2, 0) to (20, 0) in five turns, 9/5 = 3.6 apart.
+ */
+export function Spiral(startRadius: number, endRadius: number, turns: number, plane: Plane = Plane.XY, options: { clockwise?: boolean } = {}): Edge {
+  _opts('Spiral', options, arguments.length)
+  const { clockwise = false } = options
+  _finite('Spiral', { startRadius, endRadius, turns })
+  if (startRadius < 0 || endRadius < 0) throw new RangeError('Spiral: the radii must not be negative')
+  if (startRadius === endRadius) {
+    throw new RangeError('Spiral: startRadius and endRadius must differ (equal ones go round one circle again and again; use CenterArc)')
+  }
+  if (turns <= 0) throw new RangeError('Spiral: turns must be positive')
+  // The kernel's helix of a tiny height (at least 1e-7 a piece) flattened onto the plane: its
+  // control points moved to z = 0, the exact projection of a curve within the tolerance of the helix,
+  // whose projection is the spiral. The kernel takes radii from 1e-7: a spiral from or to the center
+  // starts or ends at its first or last control point, moved there.
+  const [r0, r1, n] = [Number(startRadius), Number(endRadius), Number(turns)]
+  const height = 2e-7 * Math.max(1, n)
+  const flat = kernelCall('Spiral', () => {
+    const curve = _helixCurve(height / n, height, Math.max(r0, 1e-7), Math.max(r1, 1e-7), n, !clockwise)
+    const d = ext.curve_data(curve)
+    ext.delete_curve(curve)
+    const poles: number[][] = d.poles.map((q: number[]) => [q[0], q[1], 0])
+    if (r0 === 0) poles[0] = [0, 0, 0]
+    if (r1 === 0) poles[poles.length - 1] = [0, 0, 0]
+    return _canonicalCurve(poles, d.knots, d.degree, d.weights)
+  })
+  return _placed(flat, plane)
+}
+
+const _HELIX_PIECE_TURNS = 100 // (the kernel fits at most 124.25 turns in one go)
+
+/** The kernel's helix along +Z from the origin; above 120 turns, pieces of whole turns (each starts
+ * where the one before ends, on +X) joined into one B-spline. The caller owns the curve. */
+function _helixCurve(pitch: number, height: number, r0: number, r1: number, turns: number, rightHanded: boolean): number {
+  if (turns <= 120) return k.create_helix([0, 0, 0], height, r0, r1, turns, { right_handed: rightHanded })
+  const counts: number[] = new Array(Math.floor(turns / _HELIX_PIECE_TURNS)).fill(_HELIX_PIECE_TURNS)
+  const rest = turns - _HELIX_PIECE_TURNS * counts.length
+  if (rest >= 1) counts.push(rest)
+  else counts[counts.length - 1] += rest // (no sliver of a turn at the end)
+  const pieces: number[] = []
+  try {
+    let z = 0
+    counts.forEach((n, i) => {
+      const h = i === counts.length - 1 ? height - z : n * pitch // (the last one ends at the height exactly)
+      const ra = r0 + ((r1 - r0) * z) / height
+      const rb = r0 + ((r1 - r0) * (z + h)) / height
+      pieces.push(k.create_helix([0, 0, z], h, ra, rb, n, { right_handed: rightHanded }))
+      z += h
+    })
+    return ext.join_curves(pieces)
+  } finally {
+    for (const c of pieces) ext.delete_curve(c)
+  }
 }
 
 /** A polyline whose corners are rounded with `radius`:
  * `FilletPolyline([0, 0], [10, 0], [10, 10], { radius: 2 })`. */
 export function FilletPolyline(...args: (VectorLike | readonly VectorLike[] | { radius: number; close?: boolean })[]): Wire {
   const { items, options } = _withOptions<{ radius: number; close?: boolean }>(args)
+  _opts('FilletPolyline', options)
   if (options.radius == null) throw new TypeError("FilletPolyline: missing the option 'radius'")
   return Polyline(...(items as VectorLike[]), { close: options.close ?? false }).fillet(options.radius)
 }
 
 // ------------------------------------------------------------------------------- corner rounding
+function _fp(v: Vector): string {
+  return Math.abs(v.z) < 1e-9 ? `(${fmt(v.x)}, ${fmt(v.y)})` : `(${fmt(v.x)}, ${fmt(v.y)}, ${fmt(v.z)})`
+}
+
+/** Round the corners of a wire (Wire.fillet): a planar wire's corners between lines and arcs exactly
+ * in its plane (as Sketch.fillet), a wire that is not planar its corners between lines. Corners that
+ * cannot be rounded throw, named or not; points that are not corners throw. */
 export function _filletWire(wire: Wire, radius: number, vertices: Iterable<VectorLike | Vertex> | null): Wire {
   if (!(radius > 0)) throw new RangeError('fillet: the radius must be positive')
   const edges = [...wire.edges()]
   const n = edges.length
   const closed = wire.isClosed
-  const targets = vertices != null ? [...vertices].map((v) => (v instanceof Vertex ? v.point : _vec(v))) : null
+  let size = 1
+  for (const e of edges) for (const q of [e.start, e.end]) size = Math.max(size, Math.abs(q.x), Math.abs(q.y), Math.abs(q.z))
+  const vtol = 1e-6 * size
+  const joints = Array.from({ length: closed ? n : n - 1 }, (_, i) => i) // corner i: where edges[i] ends and edges[i + 1] starts
+  let chosen = new Set(joints)
+  if (vertices != null) {
+    const targets = [...vertices].map((v) => (v instanceof Vertex ? v.point : _vec(v)))
+    if (!targets.length) throw new RangeError('fillet: no corners given (the selection is empty)')
+    chosen = new Set()
+    const missing: Vector[] = []
+    for (const t of targets) {
+      const hits = joints.filter((i) => edges[i].end.distanceTo(t) <= vtol)
+      if (!hits.length) missing.push(t)
+      for (const i of hits) chosen.add(i)
+    }
+    if (missing.length) {
+      const ends = closed ? [] : [wire.start, wire.end].filter((e) => missing.some((t) => e.distanceTo(t) <= vtol))
+      if (ends.length) throw new ModelingError(`fillet: ${_fp(ends[0])} is an end of the open wire, not a corner`)
+      const cornersAt = joints.map((i) => _fp(edges[i].end))
+      const more = cornersAt.length > 12 ? ', ...' : ''
+      const listed = cornersAt.length ? `its corners are at ${cornersAt.slice(0, 12).join(', ')}${more}` : 'it has no corners'
+      throw new ModelingError(`fillet: ${missing.map(_fp).join(', ')} ${missing.length === 1 ? 'is' : 'are'} not a corner of the wire; ${listed}`)
+    }
+  }
+  const named = vertices != null
+  const hint = named ? '' : `; name the corners to round: wire.fillet(${fmt(radius)}, [corner points])`
+  let fr: Frame | null
+  try {
+    fr = wireFrame(edges, null, 'fillet')
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e
+    fr = null // not planar (or straight)
+  }
 
-  const corners: [number, number][] = [] // (index of incoming edge, index of outgoing edge)
-  for (let i = 0; i < (closed ? n : n - 1); i++) {
+  if (fr !== null) {
+    const f = fr
+    const fp = (z: Complex) => f.fp(z)
+    const segs = edges.map((e) => segOfEdge(e, f))
+    const tol = 1e-9 * Math.max(1, realSize(segs))
+    const corners = new Map<number, Corner>()
+    for (const i of [...chosen].sort((x, y) => x - y)) {
+      const j = (i + 1) % n
+      const s1 = segs[i]
+      const s2 = segs[j]
+      if (n === 1 || isSmooth(s1, s2)) {
+        if (named) throw new ModelingError(`fillet: the corner at ${f.fp(s2.start)} is smooth (its edges meet tangentially), so there is nothing to round; leave it out`)
+        continue
+      }
+      corners.set(j, new Corner('fillet', radius, `radius ${fmt(radius)}`))
+    }
+    if (!corners.size) return Wire._raw(edges)
+    let created: Seg[]
+    try {
+      ;[created] = assemble(segs, new Array<string>(n).fill(''), corners, closed, tol, (j) => describe(segs[j], fp), fp, new CurveCorners(f, realSize(segs)))
+    } catch (e) {
+      if (!(e instanceof GeometryError)) throw e
+      throw new RangeError(`fillet: ${e.message}`)
+    }
+    const kept = new Map<Seg, Edge>(segs.map((sg, i) => [sg, edges[i]]))
+    let out = created.map((sg) => kept.get(sg) ?? Edge._fromCurve(curveOf(sg, f)))
+    if (closed && corners.has(0)) out = [...out.slice(1), ...out.slice(0, 1)] // (the wire starts where it did: the arc of the corner at its start goes last)
+    return Wire._raw(out)
+  }
+
+  // A wire that is not planar: corners between lines, each in the plane of its two lines.
+  const cornerList: [number, number][] = [] // (index of incoming edge, index of outgoing edge)
+  for (const i of [...chosen].sort((x, y) => x - y)) {
     const j = (i + 1) % n
     const a = edges[i]
     const b = edges[j]
-    if (!a._isStraight() || !b._isStraight()) continue
-    const corner = a.end
-    if (targets !== null && !targets.some((t) => corner.isClose(t, 1e-6))) continue
-    if (a.direction.isParallel(b.direction)) continue
-    corners.push([i, j])
+    const u = a.tangentAt(1)
+    const w = b.tangentAt(0)
+    if (u.cross(w).length < 1e-9 && u.dot(w) > 0) {
+      if (named) throw new ModelingError(`fillet: the corner at ${_fp(a.end)} is smooth (its edges meet tangentially), so there is nothing to round; leave it out`)
+      continue
+    }
+    if (!a._isStraight() || !b._isStraight()) {
+      const other = !a._isStraight() ? a : b
+      throw new ModelingError(`fillet: the corner at ${_fp(a.end)} joins a ${other.geomType} edge of a wire that is not planar; fillet rounds the corners of such wires between lines only${hint}`)
+    }
+    if (u.isParallel(w)) throw new ModelingError(`fillet: the wire turns back on itself at ${_fp(a.end)}, so there is no corner to round`)
+    cornerList.push([i, j])
   }
 
   // Each rounded corner moves the end of its incoming and the start of its outgoing line.
   const setbackEnd = new Array<number>(n).fill(0)
   const setbackStart = new Array<number>(n).fill(0)
   const arcs = new Map<number, Edge>()
-  for (const [i, j] of corners) {
+  for (const [i, j] of cornerList) {
     const u = edges[i].direction
     const w = edges[j].direction
     const phi = _radians(u.angleTo(w))

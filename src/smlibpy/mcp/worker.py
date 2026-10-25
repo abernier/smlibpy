@@ -311,6 +311,8 @@ class _Worker:
             d["bbox"] = {"min": [_r(c, size) for c in bb.min.to_tuple()],
                          "max": [_r(c, size) for c in bb.max.to_tuple()]}
             if isinstance(obj, Part):
+                with contextlib.suppress(Exception):
+                    obj._props()  # the volume's integration first: is_valid() then reuses it
                 d["valid"] = bool(obj.is_valid())
                 d["volume"] = _r(obj.volume)
             if isinstance(obj, (Part, Shell, Sketch, Face)):
@@ -348,9 +350,11 @@ class _Worker:
         if not items:
             return {"ok": False, "error": "nothing to save: no part or shell yet, and show(...) chose nothing"}
         ext = {"step": ".step", "stp": ".step", "stl": ".stl", "glb": ".glb", "gltf": ".gltf", "obj": ".obj",
-               "usd": ".usda", "usda": ".usda", "smb": ".smb", "png": ".png", "dxf": ".dxf"}.get(format.lower())
+               "usd": ".usda", "usda": ".usda", "smb": ".smb", "smp": ".smp", "png": ".png",
+               "dxf": ".dxf", "brep": ".brep"}.get(format.lower())
         if ext is None:
-            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, usd, smb, png or dxf"}
+            return {"ok": False, "error": f"unknown format {format!r}: step, stl, glb, gltf, obj, usd, brep, smb, smp, "
+                                          "png or dxf"}
         if path is None:
             base = items[0][0] if len(items) == 1 else "model"
             path = os.path.join(tempfile.gettempdir(), "smlibpy-files", base + ext)
@@ -363,7 +367,8 @@ class _Worker:
             render(*shapes, path=path, size=(1200, 900))
         elif ext == ".smb":
             if len(shapes) != 1:
-                return {"ok": False, "error": "an .smb file holds one body: name it with names=[...]"}
+                return {"ok": False, "error": "an .smb file holds one body: name it with names=[...], or save to smp "
+                                              "(several bodies with their names and colors)"}
             self.sm.save(shapes[0], path)
         elif ext == ".dxf":
             flat = [s for s in shapes if not isinstance(s, self.sm.Part)]

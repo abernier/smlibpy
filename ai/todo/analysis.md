@@ -4,6 +4,7 @@
 
 ### 1. `Part.distance_to(body)`: wrong when the nearest points form a line (parallel cylinders)
 - **Fixed:** distance_to between bodies is computed by smlibpy: mesh vertices nearest to the other body seed alternating exact closest-point projections; parallel cylinders give 12.0.
+- **Fixed again (kernel plan A1):** between nearly parallel faces the alternating projections stopped short: cylinders 2 mm apart and skew by 1, 5 and 10 degrees gave 2.1197, 2.4853 and 2.0162. `ext.nearest_points` finishes each seed with damped Newton on the faces' parameters: 2.0 for all three, and none of 101 random pairs off OpenCASCADE by more than 1e-15 of the distance; a warning comes where the points do not settle.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `05-distance-cylinders.py`, `06-distance-survey.py`, `07-distance-workaround.py`
 - **What happens:** two parallel cylinders give a distance that is too small by 1.7 to 3.6 mm,
   silently, at the origin. A cylinder beside a box face parallel to its axis: 7.22 instead of
@@ -40,6 +41,7 @@
 
 ### 3. `Part.is_valid()`: True for a body with zero volume and for a self-overlapping sweep
 - **Fixed:** is_valid() requires a positive volume and revolve raises for an axis through the region; self-overlapping sweeps are still not detected.
+- **Reopened, fixed again (kernel plan B2):** Boolean results were marked sound when they were made, so `is_valid()` never integrated them: an intersection of two cylinders larger than its operand (250.206 against 150.796) was valid. `is_valid()` now integrates every result once when asked, and is also False where the gaps between the faces make the volume uncertain by 1e-2 or more; that intersection now raises in the Boolean itself (B3).
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, scripts `13-is-valid-info.py`, `14-validity-detection.py`
 - **What happens:** a rectangle revolved about an axis through its middle returns a Part with
   `is_valid() == True` and volume -1.8e-21 (it looks like a cylinder). A circle r4 swept along
@@ -93,6 +95,10 @@
 - **Workaround:** `mass_properties(accuracy=1e-10)` for swept bodies (seconds).
 
 ### 6. `intersection_curves` and `project` raise when nothing is hit
+- **Fixed for `project` (kernel plan C12):** a curve that misses the body gives an empty list (`intersection_curves`
+  still raises).
+- **Fixed for `intersection_curves` too (kernel plan U14):** bodies apart or nested give an empty
+  list, and a `Plane` or a `Face` is accepted.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `10-intersection-curves.py`, `18-project.py`
 - **What happens:** disjoint or nested bodies raise `KernelError: intersection curves failed
   (SM_ERR)`; a curve that misses the body raises `KernelError: project failed (SM_ERR)`. The
@@ -119,6 +125,8 @@
 - **Reproduce:** `Sphere(10).mass_properties(accuracy=1e-12)`
 
 ### 8. `Edge.bbox()` of a standalone curve is sampled and too small
+- **Fixed (kernel plan C9):** the box of a free curve is exact (its ends, corners and the points
+  where its tangent is perpendicular to an axis): -3.0290090 for the spline above.
 - **Session:** `2026-10-12_21-26-12_analysis-measures`, script `15-bbox-accuracy.py`
 - **What happens:** for an edge not taken from a body, `bbox()` uses 33 points. A wavy spline
   gives y min -2.9599 instead of -3.0290. The same curve extruded into a part has the exact box.
@@ -132,6 +140,8 @@
 
 ### 9. `distance_to` argument types: confusing errors; no `closest_point` on Face and Edge
 - **Fixed:** distance_to raises TypeError "takes a point or a body" for edges, faces and wires (no closest_point on Face/Edge yet).
+- **Fixed (kernel plan A2):** `distance_to` takes edges, wires and faces, `Edge`, `Wire` and `Face`
+  take a body, and `closest_point` / `closest_points` give the points.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `01-distance-basic.py`, `02-distance-curved.py`
 - **What happens:** `part.distance_to(edge)` -> `TypeError: 'Edge' object is not iterable`;
   `edge.distance_to(part)` / `face.distance_to(part)` -> `TypeError: 'Part' object is not
@@ -141,6 +151,8 @@
   for edges and faces.
 
 ### 10. Docstrings of the queries say too little
+- **Fixed for `project` (kernel plan C12):** its docstring says that every face gets its pieces (and `nearest=True`
+  keeps what the curve sees) and how close the fits are (now 1e-7 of the size).
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `14`..`16`, `18`, `21`, `22`
 - **What happens:** `Part.closest_point` has no docstring. `outline` says "the body's edges
   projected onto a plane", but it removes hidden lines, adds contours of curved faces, merges
@@ -152,6 +164,9 @@
   points inside and nested bodies give the distance to the surface.
 
 ### 11. `silhouette`: slivers and inconsistent rim pieces
+- **Partly fixed (kernel plan M4):** `silhouette` returns the contour generators, seen and hidden,
+  by one rule for every face (a cylinder from +X: its two lines and two half rims). The torus from
+  +X still has one piece of 1.5e-4 among its 13 (it had three slivers).
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, scripts `15-silhouette-pieces.py`, `16-silhouette-torus-side.py`
 - **What happens:** `Torus(20, 5).silhouette((1, 0, 0))` returns 3 pieces of 9e-6, 1.8e-5 and
   2.5e-4 mm besides the real ones. `Cylinder(5, 20).silhouette((1, 0, 0))` returns the two
@@ -160,6 +175,8 @@
 - **Expected:** no degenerate pieces; a consistent rule for faces seen edge-on.
 
 ### 12. `intersection_curves` with coincident faces
+- **Fixed (checked 2026-10-22):** two boxes sharing a face give 4 pieces of 80 in all, a box with
+  itself its 12 edges once (240); 0.4.0 gives the same.
 - **Session:** `2026-10-12_21-35-12_analysis-queries`, script `10-intersection-curves.py`
 - **What happens:** two 20 mm boxes sharing a face return 6 pieces of total length 120 (the
   shared face has perimeter 80), mixed `line` and `bspline`; a body with itself returns each

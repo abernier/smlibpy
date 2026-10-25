@@ -3,6 +3,8 @@
 // These are plain value types: they never touch the kernel, are immutable and cheap to create.
 // Angles are in degrees everywhere.
 
+import type { Face } from './shapes.ts'
+
 /** Geometric tolerance used for comparisons (model units). */
 export const TOLERANCE = 1e-6
 
@@ -622,7 +624,7 @@ export class Plane {
   /** The plane normal. */
   readonly zDir: Vector
 
-  constructor(origin: VectorLike | Plane | Location | HasFacePlane = [0, 0, 0], xDir?: VectorLike | null, zDir: VectorLike = [0, 0, 1]) {
+  constructor(origin: VectorLike | Plane | Location | Face = [0, 0, 0], xDir?: VectorLike | null, zDir: VectorLike = [0, 0, 1]) {
     let p: Plane | null = null
     if (origin instanceof Plane) p = origin
     else if (origin instanceof Location) p = origin.plane
@@ -789,14 +791,15 @@ Plane.left = new Plane([0, 0, 0], [0, -1, 0], [-1, 0, 0])
  * - `face`: the face that was hit (shapes), or `null`.
  * - `triangle`: the index of the triangle that was hit (meshes), or `null`.
  */
-export class Hit {
+export class Hit<F extends Face | null = Face | null> {
   readonly point: Vector
   readonly distance: number
   readonly normal: Vector
-  readonly face: any // (a Face of shapes.ts, or null: typed loosely here, where shapes are not known)
+  /** The face hit (null for a mesh's triangle: `Hit<null>`; a body's hits are `Hit<Face>`). */
+  readonly face: F
   readonly triangle: number | null
 
-  constructor(point: Vector, distance: number, normal: Vector, face: any = null, triangle: number | null = null) {
+  constructor(point: Vector, distance: number, normal: Vector, face: F = null as F, triangle: number | null = null) {
     this.point = point
     this.distance = distance
     this.normal = normal
@@ -821,6 +824,116 @@ export class Nurbs {
     this.knots = knots
     this.points = points
     this.weights = weights
+  }
+}
+
+/**
+ * A surface as a NURBS (see `Face.nurbs`): the degrees `[u, v]`, the knot vectors `[uKnots,
+ * vKnots]` (every knot as often as its multiplicity), the control points in rows by u
+ * (`points[i][j]` is the point `i` along u and `j` along v) and the weights in the same rows (`null`
+ * for a non-rational surface).
+ */
+export class NurbsSurface {
+  readonly degrees: [number, number]
+  readonly knots: [number[], number[]]
+  readonly points: Vector[][]
+  readonly weights: number[][] | null
+
+  constructor(degrees: [number, number], knots: [number[], number[]], points: Vector[][], weights: number[][] | null = null) {
+    this.degrees = degrees
+    this.knots = knots
+    this.points = points
+    this.weights = weights
+  }
+}
+
+/**
+ * The curvature of a face at a point (see `Face.curvatureAt`).
+ *
+ * - `k1`: the larger principal curvature (1/mm): positive where the face bends away from its
+ *   outward normal (convex, a ball seen from outside), negative where it bends towards it (a bore).
+ * - `k2`: the smaller principal curvature.
+ * - `dir1`: the unit direction of `k1`, tangent to the face; `dir2` the one of `k2`, square to it.
+ * - `normal`: the outward unit normal; `point`: the point on the face.
+ */
+export class Curvature {
+  readonly k1: number
+  readonly k2: number
+  readonly dir1: Vector
+  readonly dir2: Vector
+  readonly normal: Vector
+  readonly point: Vector
+
+  constructor(k1: number, k2: number, dir1: Vector, dir2: Vector, normal: Vector, point: Vector) {
+    this.k1 = k1
+    this.k2 = k2
+    this.dir1 = dir1
+    this.dir2 = dir2
+    this.normal = normal
+    this.point = point
+  }
+
+  /** The mean curvature `(k1 + k2) / 2`. */
+  get mean(): number {
+    return (this.k1 + this.k2) / 2
+  }
+
+  /** The Gaussian curvature `k1 * k2` (positive on a ball, zero on a cylinder, negative at a saddle). */
+  get gaussian(): number {
+    return this.k1 * this.k2
+  }
+}
+
+/**
+ * How two faces meet at an edge, or two edges at the joints of a wire (see `Edge.continuity`,
+ * `Wire.continuity`).
+ *
+ * - `level`: "G2" (curvature continuous), "G1" (tangent), "G0" (they meet at an angle) or `null`
+ *   (they do not meet: a gap above the tolerance).
+ * - `gap`: the largest distance between the two sides.
+ * - `angle`: the largest angle between the two sides' normals (faces) or tangents (wires), degrees.
+ * - `curvatureJump`: the largest difference of the curvatures on the two sides (1/mm): across the
+ *   edge for faces, of the curvature vectors for wires. NaN where it cannot be had.
+ * - `point`: where the sides differ most in what decides the level: the largest gap for `null`, the
+ *   largest angle for "G0", the largest curvature jump for "G1" and "G2".
+ */
+export class Continuity {
+  readonly level: string | null
+  readonly gap: number
+  readonly angle: number
+  readonly curvatureJump: number
+  readonly point: Vector
+
+  constructor(level: string | null, gap: number, angle: number, curvatureJump: number, point: Vector) {
+    this.level = level
+    this.gap = gap
+    this.angle = angle
+    this.curvatureJump = curvatureJump
+    this.point = point
+  }
+}
+
+/**
+ * The nearest points of two shapes (see `Part.closestPoints`).
+ *
+ * - `point`: the point on the body the method was called on; `otherPoint`: the point on the other.
+ * - `distance`: their distance.
+ * - `face`: the face of the body the point lies on (at an edge or a corner, one of the faces there).
+ * - `otherFace`: the face of the other shape, or `null` when it is an edge or a wire.
+ */
+export class ClosestPoints {
+  readonly point: Vector
+  readonly otherPoint: Vector
+  readonly distance: number
+  readonly face: Face | null
+  readonly otherFace: Face | null
+
+  constructor(point: Vector, otherPoint: Vector, distance: number, face: Face | null = null, otherFace: Face | null = null) {
+    this.point = point
+    this.otherPoint = otherPoint
+    this.distance = distance
+    this.face = face
+    this.otherFace = otherFace
   }
 }
 

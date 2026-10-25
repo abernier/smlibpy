@@ -21,6 +21,9 @@ steps); they belong upstream.
 - **Expected:** a separate output list (or the faces once).
 
 ### 3. `SmBendVolume::MakeExactBSpline1stOutSurface` puts bend cylinders at the axis point
+- **Not used for deformations (kernel plan D2):** `bend`, `taper` and the other deformations
+  recognize analytic images by sampling the exact map (src/cpp/deform_analytic.cpp), which has
+  neither this defect nor #7.
 - **What happens:** it computes `sCylinderOrigin = sBendOrigin + min * sBendAxis` but passes
   `sBendOrigin` to the `SmCylinder` constructor: the cylinder covers [0, length] from the axis
   point instead of the face (a plate bent along an axis point at its middle got faces 20 mm off,
@@ -50,6 +53,7 @@ steps); they belong upstream.
   the parameterization.
 
 ### 7. The exact bend surface samples the surface's UV box, not the face
+- **Not used for deformations (kernel plan D2):** see #3.
 - `MakeExactBSpline1stOutSurface` samples the whole UV box of the (shrunk) surface; for a strip
   cut obliquely by the outline the box reaches outside the bend's primary period and no cylinder
   is made (the face stays a volume surface or a NURBS). **Workaround:** the region's planar faces

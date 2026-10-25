@@ -21,9 +21,9 @@ Default: the full ellipse, closed, starting at (center + x_radius, 0).
 `EllipticalArc((0, 0), 20, 10, 0, 90)`: (20, 0) -> (0, 10).
 
 ## Gotchas
-- **An ellipse cannot be a sweep path**: `sweep(profile, EllipticalArc(...))` raises
-  `TypeError: curve_sweep(): incompatible function arguments`. Converting it to an exact
-  B-spline works: `e.mirror(Plane.XZ).mirror(Plane.XZ)` (deviation ~1e-12), then sweep.
+- An ellipse is a path like any edge: `sweep(Circle(2), EllipticalArc((0, 0), 30, 20, 0, 90))`
+  has volume 498.4275 (π·4 times the arc length), and `project`, `ruled` and open-profile
+  surface sweeps take ellipse edges too, also ellipse edges taken from bodies.
 - `start_angle == end_angle` (or a 360 span starting elsewhere) gives the full ellipse
   starting at angle 0; the start angle is ignored.
 - No clockwise variant; use `.reversed()`.

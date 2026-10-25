@@ -162,7 +162,7 @@ def _example(name):
     return mod.model()
 
 
-@pytest.mark.parametrize("name,volume", [("spring", 2170.0811), ("flange", 157979.623)])
+@pytest.mark.parametrize("name,volume", [("spring", 2170.0811), ("flange", 157979.6668)])
 def test_examples_against_a_tight_integration(name, volume):
     # the kernel's integration was 2.9e-5 (spring) and 8e-7 (flange) off at the default
     part = _example(name)
@@ -328,6 +328,48 @@ def test_hit_by_selects_what_a_ray_meets():
         box.edges().hit_by((0, 0, 50), (0, 0, -1))
     with pytest.raises(TypeError, match="axis"):
         box.faces().hit_by((0, 0, 0))
+
+
+# -- points ----------------------------------------------------------------------
+def test_classify_points_exactly():
+    part = Box(40, 30, 20) - Cylinder(5, 30)
+    assert part.classify((10, 8, 0)) == ("inside", None)
+    assert part.classify((0, 0, 0)) == ("outside", None)  # in the hole
+    where, face = part.classify((20, 0, 0))
+    assert where == "on" and face.geom_type == "plane" and face.center().x == pytest.approx(20)
+    assert part.classify((20, 15, 0))[1].geom_type == "line"  # an edge, not its faces
+    assert part.classify((20, 15, 10))[1] == Vertex(20, 15, 10)  # a vertex, not its edges
+    assert part.contains((10, 8, 0)) and part.contains((20, 0, 0)) and not part.contains((0, 0, 0))
+    assert part.classify((20.001, 0, 0))[0] == "outside" and part.classify((20.001, 0, 0), 0.01)[0] == "on"
+    with pytest.raises(ValueError, match="positive"):
+        part.classify((0, 0, 0), -1)
+    # where the parity of ray hits is wrong: a ray that grazes the cylinder hits once (odd:
+    # "inside"); one tangent to a hole's wall from a point in the material hits twice ("outside")
+    cylinder = Cylinder(5, 20)
+    assert len(cylinder.raycast((-10, 5, 0), X)) == 1 and not cylinder.contains((-10, 5, 0))
+    holed = Box(40, 30, 20) - Cylinder(5, 40).rotate(X, 90)
+    assert len(holed.raycast((5, 0, -8), Z)) == 2 and holed.contains((5, 0, -8))
+    hollow = Box(20, 20, 20) - Box(6, 6, 6)
+    assert not hollow.contains((0, 0, 0)) and hollow.contains((8, 0, 0))  # a cavity is outside
+
+
+def test_classify_does_not_trust_one_ray():
+    # The kernel takes the region from one ray along +X. After a tight bounding box it found no face
+    # along that ray from inside this fused cylinder and torus, and said "outside".
+    part = Cylinder(2.5, 6).rotate(X, 90) + Torus(8, 4).translate(9.5, 0, -0.5913)
+    part.bbox()
+    for p in [(-2.1123, 2.7923, 1.2387), (-2, 2.9, 1), (-2, -2.9, 1)]:
+        assert part.contains(p) and len(part.raycast(p, (0.31, 0.52, 0.79))) % 2 == 1
+
+
+def test_cell_at_names_the_cell_of_a_merged_part():
+    cells = Box(20, 20, 20).merge(Cylinder(4, 30))
+    assert cells.cell_at((0, 0, 0)).volume == pytest.approx(PI * 16 * 20)
+    assert cells.cell_at((8, 8, 0)).volume == pytest.approx(8000 - PI * 16 * 20)
+    assert cells.cell_at((0, 0, 14)).volume == pytest.approx(PI * 16 * 5)
+    assert cells.cell_at((0, 0, 30)) is None and cells.cell_at((4, 0, 0)) is None  # outside, on a face
+    box = Box(10, 10, 10)
+    assert box.cell_at((0, 0, 0)) is box and box.cell_at((20, 0, 0)) is None
 
 
 def test_raycast_on_faces_and_meshes():

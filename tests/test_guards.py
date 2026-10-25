@@ -1,12 +1,16 @@
 """Regression tests: features refuse broken input and do not return broken bodies."""
 
 import math
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 from pytest import approx
 
 from smlibpy import *
+from smlibpy import shapes
 from smlibpy._kernel import k
 from smlibpy.shapes import Part
 
@@ -21,6 +25,8 @@ def test_is_valid_needs_a_positive_volume():
     # a profile across the axis, revolved by the kernel directly: a "manifold" body of volume 0
     curves = Rectangle(10, 10).on(Plane.front).faces()[0].outer_wire()._copy_curves()
     inside_out = Part._wrap(k.rotational_sweep(curves, (0, 0, 0), (0, 0, 1), 360.0, cap_ends=True))
+    for c in curves:  # (the sweep copies them)
+        k.ext.delete_curve(c)
     with pytest.warns(RuntimeWarning, match="do not meet exactly"):  # its faces overlap: no volume to speak of
         assert inside_out._brep.is_manifold_solid() and inside_out.volume <= 1e-6
     assert not inside_out.is_valid()
@@ -62,6 +68,98 @@ def test_shell_walls_that_do_not_fit_are_refused():
     assert box.shell(10, box.faces().top() + box.faces().bottom()).volume == approx(40 * 30 * 10 - 20 * 10 * 10)
 
 
+def test_shell_walls_are_measured_across_the_part():
+    # The check measured the walls along the world axes only: the plate turned by 10 or 45 degrees
+    # got two 6 mm walls in its 10 mm (valid, 10992.0), and 10 mm walls gave the plate back (10 faces).
+    # A closed shell is checked on its result: where the walls meet, there is no cavity.
+    for angle in (10, 45):
+        plate = Box(40, 30, 10).rotate(X, angle)
+        for t in (6, 10):
+            with pytest.raises(ModelingError, match="do not fit|it built a body with a cavity where its walls meet"):
+                plate.shell(t)
+        assert plate.shell(4.9).volume == approx(40 * 30 * 10 - 30.2 * 20.2 * 0.2)
+    plate = Box(40, 30, 10).rotate(X, 45)
+    with pytest.raises(ModelingError, match="a wall of 10 does not fit into the part, which is 10 deep from the face"):
+        plate.shell(10, plate.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1])
+    # an L-shaped body whose leg is thinner than two walls (the kernel crashed in 1 run of 4)
+    body = Box(6, 20, 12) + Box(4, 10, 6).translate(1, -5, -6)
+    with pytest.raises(ModelingError, match="two walls of 2.94 do not fit into the part, which is 4 thick across"):
+        body.shell(2.94, body.faces().filter(lambda f: abs(f.center().z + 9) < 1e-6))
+    # a plate with a hole: shell(4) gave the plate back (3717.2567, 7 faces, valid)
+    holed = Box(20, 20, 10) - Cylinder(3, 20)
+    with pytest.raises(ModelingError, match="shell: the kernel could not build a valid result"):
+        holed.shell(4)
+    assert holed.shell(3).volume == approx(3385.646, rel=1e-6)
+
+
+def test_shell_and_offset_results_are_checked(monkeypatch):
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    # (the kernel calls replaced below run in this process: a helper process would not see them)
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)
+    box = Box(40, 30, 20)
+    shell_brep = k.shell_brep
+    # the kernel giving the part back unchanged (it did, for walls that left no cavity)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", lambda brep, d, **kw: brep.copy())
+    with pytest.raises(ModelingError, match=r"it built a body whose volume did not go down"):
+        box.shell(2, box.faces().top())
+    # ... or with a corner cut off: less volume, but no cavity
+    notch = Box(2, 2, 2).translate(19, 14, 9)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep",
+                        lambda brep, d, **kw: (Part._wrap(brep.copy()) - notch)._copy_brep())
+    with pytest.raises(ModelingError, match=r"it built a body without its cavity: \(.*\), which no wall reaches"):
+        box.shell(2, box.faces().top())
+    # ... or walls of another thickness, closed: not the part less its offset
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", lambda brep, d, **kw: shell_brep(brep, d / 2, **kw))
+    with pytest.raises(ModelingError, match="of volume 4848, where the part less its offset by -2 has 9024"):
+        box.shell(2)
+    monkeypatch.undo()
+    # faces that do not meet: refused from 1e-3 of the volume (is_valid() from 1e-2)
+    result = Box(40, 30, 19)
+    result._props(1e-4)["gaps"] = 2e-3
+    assert smlibpy.shapes._offset_problem(result, box.bbox(), 1e-6, 24000.0, True).startswith(
+        "a body whose faces do not meet, so that its volume is uncertain by 2.0e-03")
+    # offset(0) is an equal copy, without the kernel
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", None)
+    copy = box.offset(0)
+    assert copy.volume == approx(24000) and copy._brep is not box._brep
+
+
+def test_shell_and_offset_do_not_repeat_what_fails(monkeypatch):
+    # Shell tried the kernel eight times (twice in its plain mode, six times in its extended mode)
+    # and offset eight times; over 420 runs on imported parts no repeat helped, and a failure cost
+    # up to 115 s. Now: the plain mode once, the extended mode once, and once more only after a
+    # result that was refused; offset once, and once more after a refused result.
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0)  # (counted in this process)
+    calls = []
+
+    def failing(brep, d, extended_offset=True, **kw):
+        calls.append(extended_offset)
+        raise RuntimeError("SmApiShellBrepFull failed: SM_ERR (1001)")
+
+    def unchanged(brep, d, extended_offset=True, **kw):
+        calls.append(extended_offset)
+        return brep.copy()
+
+    box = Box(40, 30, 20)
+    for kernel, expect in ((failing, [False, True]), (unchanged, [False, True, True])):
+        calls.clear()
+        monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", kernel)
+        with pytest.raises(ModelingError):
+            box.shell(2, box.faces().top())
+        assert calls == expect
+    for kernel, expect in ((failing, [True]), (unchanged, [True, True])):
+        calls.clear()
+        monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", kernel)
+        with pytest.raises(ModelingError):
+            box.offset(1)
+        assert calls == expect
+
+
 # -- fillet and chamfer -------------------------------------------------------------------
 def _rounded_cube(s, r):
     a = s - 2 * r
@@ -77,8 +175,11 @@ def test_fillet_close_to_the_limit_is_refused():
     for r in (4, 4.97):
         p = cube.fillet(cube.edges(), r)
         assert p.is_valid() and p.volume == approx(_rounded_cube(10, r), rel=1e-6)
-    with pytest.raises(ModelingError):
-        Box(20, 20, 20).fillet(Box(20, 20, 20).edges(), 9.98)
+    # closer to the limit the kernel's rounds come out open with SM_API's approximation tolerance;
+    # smlibpy tries again with a finer one (0.5.0: these raised)
+    for s, r in ((10, 4.98), (20, 9.98)):
+        p = Box(s, s, s).fillet(Box(s, s, s).edges(), r)
+        assert p.is_valid() and p.volume == approx(_rounded_cube(s, r), rel=1e-6)
 
 
 def test_round_sizes_must_be_positive():
@@ -98,19 +199,104 @@ def test_rounds_on_circular_edges_pass_the_volume_check():
 
 def test_rounds_that_run_on_past_their_edge_pass_the_volume_check():
     # The kernel extends a round past an end where the edge runs on into one that is not
-    # rounded (tangentially, or at a kink); these were refused as "wrong bodies".
+    # rounded (tangentially, or at a kink); these were refused as "wrong bodies". (Tangential
+    # run-ons only without propagate: with it the round follows the run.)
     p = Box(80, 50, 10) + Box(10, 50, 60).translate(-35, 0, 35)
     p = p - Cylinder(6, 100).rotate(Y, 90).translate(0, 0, 45)
     p = p.fillet(p.edges().filter_by(Y), 2)
-    bracket = p.chamfer(p.edges().group_by(Z)[-1], 1)  # into the arcs of the rounds below
+    bracket = p.chamfer(p.edges().group_by(Z)[-1], 1, propagate=False)  # into the arcs of the rounds below
     assert bracket.is_valid() and bracket.volume == approx(68689.3316, rel=1e-6)
     b = Box(40, 20, 10)
     b = b.fillet(b.edges().filter_by(Z), 4)
-    block = b.fillet(b.edges().group_by(Z)[-1].lines().sort_by(X)[-1], 1)  # into the corner arcs
+    block = b.fillet(b.edges().group_by(Z)[-1].lines().sort_by(X)[-1], 1, propagate=False)  # into the corner arcs
     assert block.is_valid() and block.volume == approx(7859.5722, rel=1e-6)
     prism = RegularPolygon(20, 24).extrude(10)
     kinked = prism.fillet(prism.edges().group_by(Z)[-1].sort_by(X)[-1], 1)  # 15 degree kinks
     assert kinked.is_valid() and kinked.volume == approx(12421.835947, rel=1e-6)
+
+
+def test_rounds_that_crashed_the_kernel_raise():
+    # In a process of its own, so that a crash fails the test rather than the run.
+    # A chamfer of edges at different angles (a hexagonal prism: 90 and 120 degrees) bevelled one
+    # edge per kernel call, with edges taken before the first call replaced it: exit 139.
+    # The two halves of a box edge that a cone touches tangentially: the kernel has no corner for
+    # where they meet, went on, and called corner methods on what it held in the corner's place
+    # (exit 139 at any radius). The same for all edges of upstream's revolution_mold.smb, where the
+    # submodule's test files are checked out.
+    mold = Path(__file__).resolve().parent.parent / "third_party/usd-brep/TestFiles/pt_TestFiles/Solids/revolution_mold.smb"
+    code = f"""
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+p = RegularPolygon(10, 6).extrude(10)
+print(len(p.chamfer(p.edges(), 1).faces()), flush=True)
+p = Box(10, 5, 20) - Cone(4, 5, 20)
+halves = p.edges().filter(lambda e: abs(e.center().x - 5) < 1e-6 and abs(e.center().z - 10) < 1e-6)
+makes = [lambda: p.fillet(halves, 0.1), lambda: p.fillet(halves, 0.02)]
+if {mold.is_file()!r}:
+    mold = load({str(mold)!r})
+    makes.append(lambda: mold.fillet(mold.edges(), 0.2))
+for make in makes:
+    try:
+        make()
+        print("ok", flush=True)
+    except KernelError as e:
+        print(e.status, flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode} after {run.stdout.split()}"
+    assert run.stdout.split() == ["38"] + ["SM_ERR_INVALID_INPUT"] * (3 if mold.is_file() else 2)
+    p = RegularPolygon(10, 6).extrude(10)
+    hexagon = p.chamfer(p.edges(), 1)
+    assert hexagon.is_valid() and hexagon.volume == approx(2516.827500047, rel=1e-9)  # OpenCASCADE
+    # the setbacks: 1 along both faces, 0.5 and 0.7071 from the old edges at 120 and 90 degrees
+    assert sorted({round(hexagon.distance_to(e.center()), 9) for e in p.edges()}) == [0.5, 0.707106781]
+    p = Box(10, 5, 20) - Cone(4, 5, 20)
+    halves = p.edges().filter(lambda e: abs(e.center().x - 5) < 1e-6 and abs(e.center().z - 10) < 1e-6)
+    with pytest.raises(KernelError, match="cannot round the selection as given, at any size"):
+        p.fillet(halves, 0.1)
+
+
+def test_a_variable_radius_runs_along_each_edge_on_its_own():
+    box = Box(40, 30, 20)
+    edge = box.edges().parallel_to(Z)[0]
+    assert box.volume - box.fillet(edge, (2, 6)).volume == approx(74.399926, rel=1e-6)
+    for continuity in ("G1", "G2", "G3"):  # gave the ruled chamfer (173.3333 removed), not a blend
+        with pytest.raises(ValueError, match="circular rounds only"):
+            box.fillet(edge, (2, 6), continuity=continuity)
+    # a constant one makes the blend, as the plain radius does
+    vertical = box.edges().parallel_to(Z)
+    blend = box.fillet(vertical, 2, continuity="G2").volume
+    assert box.fillet(vertical, (2, 2), continuity="G2").volume == approx(blend, rel=1e-9)
+    # A closed edge: the radius rose to 2.9 and fell back to 1 at the seam.
+    cylinder = Cylinder(10, 20)
+    rim = cylinder.edges().circles().sort_by(Z)[-1]
+    with pytest.raises(ValueError, match="closed edge"):
+        cylinder.fillet(rim, (1, 3))
+    assert cylinder.fillet(rim, (2, 2)).volume == approx(cylinder.fillet(rim, 2).volume, rel=1e-9)
+    # Edges that run into each other tangentially: the kernel gave the rounds one radius where they
+    # meet, so (1, 3) ran 2.46 -> 1.04 along one edge and 1.65 -> 1.99 -> 1.07 along the arcs. Since
+    # 0.5.0 the radius runs along the whole run (tests/test_closeout_F.py).
+    plate = Box(40, 30, 10)
+    plate = plate.fillet(plate.edges().parallel_to(Z).filter(lambda e: e.center().x > 0), 5)
+    chain = plate.edges().filter(lambda e: e.center().z > 4.9 and e.center().x > -19.9)
+    assert plate.fillet(chain, (1, 3)).is_valid()
+    assert plate.fillet(chain, 2).is_valid()
+
+
+def test_a_chamfer_needs_one_angle_along_its_edge():
+    # A cylinder tilted by 30 degrees on a plate: the faces meet at 60 to 120 degrees along the
+    # ellipse, and the bevel of length 1 reached 1 to 3 into the plate.
+    plate = Box(60, 60, 10, align=(Align.CENTER, Align.CENTER, Align.MAX))
+    above = Box(60, 60, 30, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    tilted = plate + (Cylinder(5, 60).rotate(Y, 30) & above)
+    foot = tilted.edges().filter(lambda e: abs(e.center().z) < 1e-6 and e.geom_type == "ellipse")
+    with pytest.raises(ModelingError, match="60 to 120 degrees apart.*reach 1 to 3 from the edge instead of 1"):
+        tilted.chamfer(foot, 1)
+    upright = plate + (Cylinder(5, 60) & above)
+    ring = upright.edges().filter(lambda e: abs(e.center().z) < 1e-6 and e.geom_type == "circle")
+    bevel = upright.chamfer(ring, 1)  # a concave ring: adds the triangle 1 x 1 / 2 around radius 5 1/3
+    assert bevel.is_valid() and bevel.volume - upright.volume == approx(math.pi * 2 * (5 + 1 / 3) * 0.5, rel=1e-3)
 
 
 # -- revolve ------------------------------------------------------------------------------
@@ -199,7 +385,10 @@ def test_overlapping_parallel_holes_in_one_cut():
     assert plate.is_valid()
 
 
-def test_boolean_errors_say_what_to_do():
+def test_boolean_errors_say_what_to_do(monkeypatch):
+    # (a tool beside an earlier hole: the retry with a NURBS copy of the tool gets it right, kernel
+    # plan B10; the hint is for where that fails too)
+    monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
     with pytest.raises(KernelError, match="combine the tools first"):
         Box(40, 40, 10) - Cylinder(6, 30) - Cylinder(3, 30).translate(8, 0, 0)
     with pytest.raises(ModelingError, match="touch only along an edge"):
@@ -221,6 +410,299 @@ def test_empty_boolean_results_where_they_are_right():
     assert len((Box(10, 10, 10) - Box(20, 20, 20)).faces()) == 0
     assert len((Box(10, 10, 10) - Box(10, 10, 10)).faces()) == 0
     assert len((Box(10, 10, 10) & Box(10, 10, 10).translate(30, 0, 0)).faces()) == 0
+    assert len((Sphere(5) - [Box(10, 10, 5).translate(0, 0, 2.5), Box(10, 10, 5).translate(0, 0, -2.5)]).faces()) == 0
+
+
+def test_an_empty_cut_needs_tools_that_can_cover_the_part(monkeypatch):
+    # A tool beside an earlier hole in a sphere: the kernel's cut was empty, and its intersection of
+    # the same pair, which confirmed the empty cut, the whole part. Both were accepted. (The retry
+    # with a NURBS copy of the tool, kernel plan B10, gets both right: 28160.608 and 929.188.) Since
+    # the kernel's seams are evaluated right (third_party/patches SmEllipse.cpp), its own cut and
+    # intersection of the pair fail instead; the guards are checked on the answers it gave.
+    monkeypatch.setattr(Part, "_nurbs_retry", lambda self, *a: None)
+    holed = Sphere(20) - Cylinder(6, 60)
+    tool = Cylinder(3, 60).translate(8, 0, 0)
+    with pytest.raises(ModelingError):
+        holed - tool
+    with pytest.raises(ModelingError):
+        holed & tool
+    empty = Box(10, 10, 10) - Box(20, 20, 20)
+    assert holed._boolean_problem(empty, [tool], k.BooleanOp.DIFFERENCE) == "empty"  # was Part(0 faces), no error
+    assert holed._boolean_problem(empty, [Box(100, 100, 100)], k.BooleanOp.DIFFERENCE) is None
+    whole = Part._wrap(holed._copy_brep())  # was the whole part, 29089.8 (right: 929.188)
+    assert "partly outside an operand" in holed._boolean_problem(whole, [tool], k.BooleanOp.INTERSECTION)
+    assert (Sphere(20) - [Cylinder(6, 60), Cylinder(3, 60).translate(8, 0, 0)]).volume == approx(28160.608174, rel=1e-8)
+
+
+def test_an_intersection_may_give_an_operand_back_when_the_other_contains_it(monkeypatch):
+    box = Box(10, 10, 10)
+    assert (box & Box(20, 20, 20)).volume == approx(1000)
+    assert (box & Box(10, 10, 20)).volume == approx(1000)  # faces shared
+    assert (Sphere(5) & Box(20, 20, 20)).volume == approx(4 / 3 * math.pi * 125)
+    assert (Box(30, 30, 30) & Sphere(20)).volume == approx((Sphere(20) & Box(30, 30, 30)).volume)
+    # A body given back unchanged is classified against the other operand: a box whose corners lie
+    # outside a sphere, though inside its box.
+    sphere, cube = Sphere(10), Box(14, 14, 14)
+    assert shapes._intersection_problem(Part._wrap(cube._copy_brep()), [cube, sphere]) is not None
+    # A split keeps the part's face count and loose box, but not its vertices: not classified.
+    classified = []
+    classify = Part._classify
+    monkeypatch.setattr(Part, "_classify", lambda self, *a: classified.append(1) or classify(self, *a))
+    coil = sweep(Circle(1.2), Helix(pitch=6, height=48, radius=10))
+    kept = coil.split(Plane.XY.offset(1.2))
+    assert kept.volume == approx(coil.volume - (coil - kept).volume)
+    assert classified == []
+
+
+def test_boolean_results_are_checked_when_asked():
+    # Closed, manifold results of sound operands were marked valid unchecked. Two cylinders whose
+    # lowest lines touch: the kernel's intersection leaves a face out (volume 250.206, more than its
+    # operand's 150.796; its faces leave gaps of 0.25), and the difference has no volume.
+    a = Cylinder(2, 12)
+    b = Cylinder(1.5, 30).rotate(Y, 90).translate(1, -0.5, 2.4787)
+    common = Part._wrap(k.boolean(a._copy_brep(), b._copy_brep(), operation=k.BooleanOp.INTERSECTION))
+    assert not common.is_valid() and "open between its faces" in common._solid_problem()
+    with pytest.raises(ModelingError, match="not a valid solid"):
+        common.fillet(common.edges(), 0.1)
+    # The difference had no volume and reached out of the part (to x = 16): refused now (closeout K1).
+    with pytest.raises(ModelingError, match="partly outside the part"):
+        a - b
+    with pytest.raises(ModelingError, match="partly outside an operand"):
+        a & b  # reaches out of the first cylinder
+    assert (Box(20, 20, 20) - Cylinder(5, 30)).is_valid()
+
+
+def test_chains_of_booleans_integrate_nothing(monkeypatch):
+    # A Boolean of sound operands is trusted by the next Boolean; is_valid() integrates when asked.
+    # When each result was integrated (with its gaps) as the next operand, 100 cuts took 5 times as
+    # long.
+    measured = []
+    measure = shapes.ext.brep_measure
+    monkeypatch.setattr(shapes.ext, "brep_measure", lambda *a: measured.append(1) or measure(*a))
+    p = Box(200, 200, 10)
+    for i in range(60):
+        p = p - Cylinder(2, 20).translate(-90 + 20 * (i % 10), -90 + 20 * (i // 10), 0)
+    p = p + Box(10, 10, 10).translate(0, 0, 10)
+    assert measured == []
+    assert p.is_valid() and len(measured) == 1
+    assert p.volume == approx(200 * 200 * 10 - 60 * math.pi * 4 * 10 + 1000, rel=1e-9) and len(measured) == 2
+
+
+@pytest.mark.parametrize("cut, exact", [
+    (lambda: (Box(30, 30, 30) - Cylinder(5, 60)) - Cylinder(2, 60).rotate(Y, 90).translate(0, 5, 0), 24299.258668),
+    (lambda: Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 90).translate(0, 3, 0) - Cylinder(3, 40).rotate(Y, 90).translate(0, 0, 3),
+     6931.747603),
+], ids=["groove pin", "cross holes"])
+def test_holes_tangent_to_a_seam(cut, exact):
+    # The seam of the second hole lies in a plane tangent to the first (kernel plan B6): the kernel
+    # gave valid bodies of 24331.7029 and 7057.1895. That hole is turned about its axis first now.
+    assert cut().volume == approx(exact, rel=1e-7)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="reads the process's memory with ps")
+def test_failed_booleans_free_their_operands():
+    # The kernel keeps both operands when a Boolean fails; their copies were never freed: 0.6 MB
+    # per failed cut. In a process of its own, so that what other tests left does not count. (A
+    # cross hole touching the first one inside at a point; the cut beside an earlier parallel hole
+    # used here before is right now, kernel plan B10.) Measured over the second hundred failures:
+    # the first raise the process's high-water mark (by 15 to 36 MB, with the hint's tessellations
+    # and classified points, kernel plan B19), which then stays; a leak grows by about 60 MB each.
+    code = """
+import gc, os
+from smlibpy import *
+def rss():
+    return int(os.popen(f"ps -o rss= -p {os.getpid()}").read()) / 1024
+def fail():
+    try:
+        Box(20, 20, 20) - Cylinder(3, 40).rotate(Z, 45) - Cylinder(2, 40).rotate(Z, 45).rotate(X, 90).translate(1, 0, 0)
+    except KernelError:
+        return
+    raise SystemExit("the cut did not fail")
+for _ in range(100):
+    fail()
+gc.collect()
+before = rss()
+for _ in range(100):
+    fail()
+gc.collect()
+print(rss() - before)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr
+    grown = float(run.stdout.strip())
+    assert grown < 25, f"100 failed cuts took {grown:.1f} MB"  # was 53 MB
+
+
+def test_booleans_that_read_freed_kernel_memory_raise():
+    # Each of these read freed memory in the kernel and killed the process (exit 139); in a
+    # process of their own, so that a crash fails the test rather than the run.
+    # Crossing holes whose seams lie tangent to the other hole: SplitIntersectingProtoEdges split a
+    # ProtoEdge it had just deleted (now: SM_ERR_BAD_INTERSECTIONS from the kernel's own Boolean).
+    # smlibpy turns the hole whose seam that is about its axis first (kernel plan B6), and gets them
+    # right: the cut 6931.7476, the union 2199.2258 and the intersection 62.721 (by integration
+    # 62.720958; OpenCASCADE 62.7209). A flat end cap tangent to a sphere: the Boolean deleted a
+    # Shell that Faces still used (DeleteFaces), and BooleanPostProcess read it. The extended shell
+    # of a rotated box: BooleanPostProcess read a deleted Vertex, in about one call of a hundred; the
+    # kernel's shell itself, 100 times (shell() measures the walls first and runs the kernel in a
+    # copy of the process, so it would not reach or show this).
+    code = """
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+from smlibpy._kernel import k
+h1 = Cylinder(3, 40).translate(0, 3, 0)
+cases = []
+for z in (3, 3.1):
+    h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+    cases += [lambda h2=h2: Box(20, 20, 20) - h1 - h2, lambda h2=h2: Box(20, 20, 20) - [h1, h2],
+              lambda h2=h2: h1 + h2, lambda h2=h2: h1 & h2, lambda h2=h2: h1.merge(h2)]
+for z in (3, 3.1):  # the kernel's own Boolean, seams as they are
+    h2 = Cylinder(3, 40).rotate(Y, 90).translate(0, 0, z)
+    for a, op in ((Box(20, 20, 20) - h1, k.BooleanOp.DIFFERENCE), (h1, k.BooleanOp.UNION), (h1, k.BooleanOp.INTERSECTION)):
+        cases.append(lambda a=a, h2=h2, op=op: k.boolean(a._copy_brep(), h2._copy_brep(), operation=op))
+cases.append(lambda: Sphere(1.5).rotate(Y, 90) - Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504))
+box = Box(40, 30, 10).rotate(X, 45)
+opening = box.faces().sort_by(Axis((0, 0, 0), (0, -1, 1)))[-1]
+cases += [lambda: k.shell_brep(box._brep, -10, extended_offset=True, faces_to_shell=[opening._f])] * 100
+for case in cases:
+    try:
+        r = case()
+        print(f"ok:{r.volume:.3f}" if isinstance(r, Part) else "ok", flush=True)
+    except KernelError:
+        print("KernelError", flush=True)
+    except ModelingError:
+        print("ModelingError", flush=True)
+    except RuntimeError:  # (the kernel's own calls)
+        print("failed", flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} cases"
+    out = run.stdout.split()
+    holes = ["ok:6931.748", "ok:6931.748", "ok:2199.226", "ok:62.721", "ok:2199.226"]
+    assert out[:10] == holes * 2  # were KernelError (and exit 139 before that)
+    assert out[10:16] == ["failed"] * 6  # the kernel's own Boolean of the same holes
+    assert out[16] == "KernelError"  # the end cap
+    assert len(out) == 117 and set(out[17:]) <= {"ok", "failed"}  # the shells: some fail, none crash
+    assert (Sphere(1.5).rotate(Y, 90) & Cylinder(4, 10).rotate(X, 90).translate(0, -3.5, -2.504)).volume == approx(
+        14.137072, rel=1e-6)  # the same pair's intersection works
+
+
+def test_offsets_that_read_freed_kernel_memory_fail():
+    # The kernel's offset code read memory it had freed, and the process died now and then (an
+    # L-shaped body in 1 run of 4, a fused cone offset by 6 and a shell of two cones in every run):
+    # GlueCoincidentBrepVertices glued a Vertex it had deleted, a ProtoEdge it deleted stayed in
+    # the lists of other ProtoFaces, and an extended surface was handed out after it was deleted.
+    # The kernel steps themselves, in their extended mode, in a process of their own.
+    code = """
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+from smlibpy._kernel import k
+lbox = Box(6, 20, 12) + Box(4, 10, 6).translate(1, -5, -6)
+foot = [f._f for f in lbox.faces() if abs(f.center().z + 9) < 1e-6]
+cone = Cone(6, 0, 8).rotate(Y, 90) + Cylinder(4, 12).translate(-6.7843, 0, 0)
+cones = Cone(3, 4, 6).rotate(Y, 90) + Cone(6, 2, 16).translate(-2, 2.5147, -4)
+end = [min(cones.faces(), key=lambda f: abs(f.center().x - 3))._f]
+steps = [lambda: k.shell_brep(lbox._brep, -2.94, extended_offset=True, faces_to_shell=foot),
+         lambda: k.offset_brep(cone._brep, 6),
+         lambda: k.shell_brep(cones._brep, -2.4, extended_offset=True, faces_to_shell=end)]
+for step in steps * 8:
+    try:
+        step()
+        print("ok", flush=True)
+    except RuntimeError:
+        print("failed", flush=True)
+"""
+    # The deleted ProtoEdge read in ResolveOverlappingProtoEdges (about 1 to 3 runs in 100) is patched
+    # (closeout K1); a read that depends on the memory layout remains (third_party/patches/README.md,
+    # "Defects that remain": past a curve classification's points in FindInterval, from
+    # sm_FixProblemsBySqueezing, tools/sanitize/known.txt): one more run then. A crash in both runs is
+    # not that one.
+    for _ in range(2):
+        run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+        if run.returncode >= 0:
+            break
+    assert run.returncode == 0, f"exit {run.returncode} after {len(run.stdout.split())} steps"
+    assert len(run.stdout.split()) == 24
+
+
+def test_shell_offset_and_thicken_run_the_kernel_in_a_copy_of_the_process(monkeypatch):
+    # They ran the kernel's offset code in this process, where its crashes killed it: now in a forked
+    # copy, whose body comes back as an exact (.smb) copy. A crash there costs only the copy.
+    import os
+    import signal
+    import time
+
+    import smlibpy.defeature
+    import smlibpy.shapes
+
+    if not hasattr(os, "fork"):
+        pytest.skip("no fork: the kernel runs in a helper process (tests/test_lane_WN.py)")
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_PROCESS", "fork")  # (the copy sees the kernel calls replaced)
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 20.0)  # (also where the run turns the guard off)
+    box = Box(20, 20, 20)
+    shelled = box.shell(2, box.faces().top())
+    assert shelled.volume == approx(8000 - 16 * 16 * 18) and shelled.is_valid()
+    assert box.offset(2).volume == approx(24 ** 3) and Rectangle(10, 10).thicken(1).volume == approx(100)
+    with pytest.raises(KernelError, match=r"offset failed \(SM_ERR"):
+        (Box(40, 40, 10) - Cylinder(5, 20)).offset(5)  # an error there is raised here
+
+    def crash(*args, **kwargs):
+        import faulthandler
+
+        faulthandler.disable()  # (no report of the copy's crash)
+        os.kill(os.getpid(), signal.SIGSEGV)
+
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", crash)
+    monkeypatch.setattr(smlibpy.shapes.k, "shell_brep", crash)
+    for call, name in ((lambda: box.offset(1), "offset"), (lambda: box.shell(1, box.faces().top()), "shell"),
+                       (lambda: Rectangle(10, 10).thicken(1), "thicken")):
+        crashed = fr"{name}: the kernel crashed \(signal \d+, in a copy of this process\)"  # (6 under ASan)
+        with pytest.raises(ModelingError, match=crashed):
+            call()
+    monkeypatch.setattr(smlibpy.shapes.k, "offset_brep", lambda *a, **kw: time.sleep(10))
+    monkeypatch.setattr(smlibpy.defeature, "GUARD_SECONDS", 0.5)
+    start = time.monotonic()
+    with pytest.raises(ModelingError, match="offset: the kernel did not finish within 0.5 s"):
+        box.offset(1)
+    assert time.monotonic() - start < 5
+
+
+def test_a_merge_that_loses_volume_raises():
+    # A sphere whose seam lies tangent to the cylinder: the kernel's merge came out smaller than the
+    # cut cylinder (518.314 against 566.559; right: 586.443), and cells() of it crashed the process.
+    # merge() turns the sphere about its axis first now (kernel plan B6) and gets it right; the
+    # kernel's own merge, seams as they are, is still wrong, and the check refuses it.
+    pin = Cylinder(2.5, 30).rotate(Y, 90) - Cone(2.5, 6, 6).rotate(Y, 90).translate(15, 0.6687, -3.5)
+    sphere = Sphere(2).rotate(X, 90).translate(0, -0.5, 2.5)
+    raw = Part._wrap(k.non_manifold_boolean(pin._copy_brep(), sphere._copy_brep(), operation=k.BooleanOp.MERGE))
+    assert "less than that of the largest part" in shapes._merge_problem(raw, [pin, sphere])
+    merged = pin.merge(sphere)
+    assert merged.volume == approx(586.443229, rel=1e-6)  # OpenCASCADE
+    assert sum(c.volume for c in merged.cells()) == approx(586.443229, rel=1e-6)
+    right = pin.merge(Sphere(2).translate(0, -0.5, 2.5))  # the sphere not turned
+    assert right.volume == approx(586.443229, rel=1e-6)
+    assert sum(c.volume for c in right.cells()) == approx(586.443229, rel=1e-6)
+
+
+# -- moved bodies -------------------------------------------------------------------------
+def test_moved_bodies_keep_their_tolerances():
+    # Moving a body reset its tolerances from the box of its vertices: a torus (one vertex) got 0,
+    # and the Booleans of the moved torus went wrong.
+    groove = Cylinder(10, 40) - Torus(10, 1.5).translate(0, 0, 10)
+    assert groove.volume == approx(12358.441682, rel=1e-8)  # was 12566.37: the groove was ignored
+    corner = (Torus(8, 1.5) & Box(4, 4, 4).translate(8, 0, 0)).volume
+    assert corner == approx(28.586308, rel=1e-6)
+    moves = [lambda p: p.translate(0, 0, 5),  # was 355.31, the whole torus
+             lambda p: p.rotate(Z, 30), lambda p: p.mirror(Plane.YZ), lambda p: p.scale(-1),
+             lambda p: p.moved(Location((5, 6, 7), (10, 20, 30)))]
+    for move in moves:
+        assert (move(Torus(8, 1.5)) & move(Box(4, 4, 4).translate(8, 0, 0))).volume == approx(corner, rel=1e-6)
+    assert (Torus(8, 1.5).scale(2) & Box(8, 8, 8).translate(16, 0, 0)).volume == approx(8 * corner, rel=1e-6)
+    assert (Torus(8, 1.5).scale((1, 1, 2)) & Box(4, 4, 8).translate(8, 0, 0)).volume == approx(2 * corner, rel=1e-6)
+    # a part over 500 across went from tolerance 1e-5 to 1e-4: a step of 5e-5 was absorbed
+    step = Box(1000, 1000, 100).translate(1, 0, 0) + Box(10, 10, 100.00005).translate(1, 0, 2.5e-5)
+    assert len(step.faces()) == 11  # was 6
 
 
 # -- distance -----------------------------------------------------------------------------
@@ -238,15 +720,21 @@ def test_empty_boolean_results_where_they_are_right():
     (Box(10, 10, 10), Box(10, 10, 10).translate(5, 0, 0), 0.0),
     (Box(10, 10, 10), Box(10, 10, 10).translate(10, 0, 0), 0.0),
     (Sphere(10), Sphere(10).translate(15, 3, 0), 0.0),
+    # nearly parallel faces: closest points in turn settled slowly and stopped too far apart
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 1).translate(12, 0, 0), 2.0),  # was 2.1197
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 5).translate(12, 0, 0), 2.0),  # was 2.4853
+    (Cylinder(5, 200), Cylinder(5, 200).rotate(X, 10).translate(12, 0, 0), 2.0),  # was 2.0162
 ])
 def test_distance_between_bodies(a, b, expected):
     assert a.distance_to(b) == approx(expected, rel=1e-9, abs=1e-9)
     assert b.distance_to(a) == approx(expected, rel=1e-9, abs=1e-9)
 
 
-def test_distance_to_takes_points_and_bodies():
-    with pytest.raises(TypeError, match="point or a body"):
-        Box(1, 1, 1).distance_to(Box(1, 1, 1).edges()[0])
+def test_distance_to_takes_points_bodies_and_curves():
+    # (edges, wires and faces raised a TypeError before 0.5.0)
+    box = Box(1, 1, 1)
+    assert box.distance_to(box.edges()[0]) == 0.0
+    assert box.distance_to(Line((3, -5, 0), (3, 5, 0))) == approx(2.5)
     assert Box(2, 2, 2).distance_to((5, 0, 0)) == approx(4)
 
 

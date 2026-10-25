@@ -18,21 +18,33 @@ One `Part` that holds every cell:
   not 12).
 - `cells()`: the cells as valid parts. Two overlapping boxes give 3 cells (each box alone and
   the overlap); a box with a cylinder through it gives the box with a hole, the piece of the
-  cylinder inside, and the two ends that stick out.
+  cylinder inside, and the two ends that stick out. Each cell is named and colored after the
+  parts it lies in (`cell.sources`): "block", "block&insert", "insert".
 
 ## Gotchas
 - A merged part is **not a manifold solid**: `is_valid()` is False, and Booleans, `fillet`,
-  `shell` and the other features raise `ModelingError: ... the part is not a valid solid`. Model
-  the parts first, merge last; or work on `cells()`.
+  `shell`, `split` and the other features raise `ModelingError: ... the part is not a valid
+  solid`. Model the parts first, merge last; or work on `cells()`. `section()` works: a region per
+  cell the plane cuts.
 - Parts that do not touch stay apart: two cells, two `solids()`.
-- Files: STEP writes each cell as a solid of its own (they come back as a `ShapeList`). USD
-  (`export_usd`) keeps the merged body with its shared faces: `import_usd` gives the merged part.
-- Fast: a plate with nine pins through it (28 cells) takes 15 ms.
+- `merge` checks the kernel's result: its volume lies between that of the largest part and that
+  of all parts together, or it raises (below).
+- Files: STEP writes each cell as a solid of its own, with the cell's name and color (they come
+  back as a `ShapeList` of named, colored parts). USD (`export_usd`) keeps the merged body with
+  its shared faces: `import_usd` gives the merged part. For glTF, STL or OBJ per cell, export
+  `part.cells()`.
+- Fast: a plate with nine pins through it (28 cells) takes about 25 ms, with the check of the
+  volume; its `cells()` about 80 ms (35 of them to find the parts each cell lies in).
 
 ## Errors
 - `TypeError: merge takes parts, not a Sketch` (also for sheets: only solids are merged).
 - `ValueError: merge needs two or more parts, got 1` (`merge(...)`), `ValueError: merge needs
   another part` (`part.merge()`).
+- `ModelingError: merge: the kernel returned a result of volume ..., less than that of the largest
+  part (...)`: the kernel merged wrongly, as where a seam of a part lies tangent to another part
+  and cannot be turned away. `merge` turns a cylinder, cone or sphere about its axis itself where
+  its seam would touch the other part, but only while it merges two solids (the first two parts):
+  merge such a part first, or move it a little.
 
 ## Example
 ```python

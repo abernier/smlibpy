@@ -43,11 +43,19 @@ jobs:
       - name: OpenUSD for the USD cross-checks
         continue-on-error: true
         run: pip install usd-core
-      - name: NVIDIA's usd-brep for the USD round trips (its wheels are for Python 3.12 on Linux and Windows)
+      # NVIDIA's validator itself (tests/test_closeout_W.py, N4): usd-brep's wheel brings it where it has
+      # wheels; on macOS OpenUSD and the asset validator from PyPI, with the submodule's BrepArray rules.
+      # No continue-on-error, and SMLIBPY_REQUIRE_USD_VALIDATOR below fails its tests instead of skipping
+      # them: a green run of these jobs is a run of the validator.
+      - name: NVIDIA's usd-brep for the USD round trips, with its validator (its wheels are for Python 3.12 on Linux and Windows)
         if: runner.os == 'Linux' && matrix.python == '3.12'
-        continue-on-error: true
-        run: pip install usd-brep
+        run: pip install "usd-brep[validation]"
+      - name: NVIDIA's USD validator (OpenUSD and the asset validator; the BrepArray rules are the submodule's)
+        if: runner.os == 'macOS'
+        run: pip install "usd-validation-nvidia[usd]"
       - name: Test
+        env:
+          SMLIBPY_REQUIRE_USD_VALIDATOR: ${{ (runner.os == 'macOS' || (runner.os == 'Linux' && matrix.python == '3.12')) && '1' || '' }}
         run: pytest -q
 
   js:
@@ -85,8 +93,17 @@ jobs:
       - name: Build the package
         working-directory: js
         run: npm run build
+      # NVIDIA's validator itself on toUsd's files (js/test/closeout_W.test.ts, N4), which fails rather
+      # than skips without it; the BrepArray rules are the submodule's
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: NVIDIA's USD validator (OpenUSD and the asset validator)
+        run: pip install "usd-validation-nvidia[usd]"
       - name: Test
         working-directory: js
+        env:
+          SMLIBPY_REQUIRE_USD_VALIDATOR: "1"
         run: npm test
 
   docs:

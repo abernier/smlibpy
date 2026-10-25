@@ -35,6 +35,9 @@
   `(GridLocations(...) * Box(...)).translate(0, 0, 10)`.
 
 ### 3. Non-uniform `scale` turns every face into a bspline, flat faces included
+- **Fixed (kernel plan T6):** after a scale that differs between the axes, planes, cylinders, cones,
+  surfaces of revolution and extrusion, and lines are recognized again (2000 exactly for the box);
+  circular rims stay B-splines.
 - **Session:** `2026-10-12_21-32-20_geometry-placement`, scripts `07-scale.py`, `22-scaled-selection.py`
 - **What happens:** `Box(10, 10, 10).scale((2, 1, 1))` has only `bspline` faces;
   `.faces().planar()` is empty, `face.is_planar` is False, `Circle(1).on(face)` raises
@@ -67,6 +70,7 @@
 - **Workaround:** put the unmirrored sketch first in the union, or mirror the extruded part.
 
 ### 6. `bbox()` of standalone curves is sampled and can be too small
+- **Fixed (kernel plan C9):** exact, see curves #16.
 - **Session:** `2026-10-12_21-32-20_geometry-placement`, scripts `01-bbox.py`, `02-bbox-tight.py`
 - **What happens:** `Edge.bbox()` without a kernel edge samples 33 points.
   `CenterArc((0, 0), 10, 10, 90).bbox().max.y` = 9.99762 (true 10);

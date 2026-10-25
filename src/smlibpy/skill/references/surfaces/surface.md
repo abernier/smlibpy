@@ -4,7 +4,7 @@ A freeform NURBS face through (or controlled by) a grid of points, or fitted to 
 points such as a scan. Returns a `Shell` with one face.
 
 ## Signature
-`surface(points, *, interpolate=True, controls=None, smoothing=1e-2)`
+`surface(points, *, interpolate=True, controls=None, smoothing=1e-2, report=False)`
 
 - `points`: a grid: rows of 3D points, `points[i][j]`, all rows the same length (lists of
   tuples, `Vector`s or a numpy array of shape (rows, cols, 3); 2D points `(x, y)` get z = 0).
@@ -14,10 +14,16 @@ points such as a scan. Returns a `Shell` with one face.
 - `interpolate=False`: the points are control points. Only the four corners lie on the
   surface; the rest is pulled towards the points but stays away from them (0.3 to 1 mm on a
   ±5 mm bump with 10 mm spacing). It is a smoothing, not a fit.
+- `report=True`: returns `(sheet, report)`, a `FitReport`: `max_distance`, `rms_distance` and
+  `distances` (a numpy array, one per point in the order given; a grid's rows one after the
+  other): how far each point lies from the surface, to its closest point on it. 1500 points
+  take about 10 ms (`distance_to` per point: 0.1 s, and it can miss the nearest point on a
+  folded surface).
 
 ## Returns
 A `Shell`: 1 face of type `"bspline"`, always bicubic (degree 3 x 3), 4 edges and 4 vertices
-(the corner points). Rows are the u direction, columns the v direction.
+(the corner points). Rows are the u direction, columns the v direction. With `report=True`, the
+pair `(Shell, FitReport)`. For other degrees, knots or weights: `nurbs_surface`.
 
 ## Normal direction
 normal = (direction from one row to the next) × (direction along a row).
@@ -62,11 +68,15 @@ A flat list of points (or an `(n, 3)` array) is a cloud: the surface approximate
   material along it.
 - The cloud must be a **height field over its best-fit plane**: no overhangs, nothing folded
   over. A hemisphere seen from the side or a tube gives a surface that misses the points by
-  millimetres, without an error: check `max(s.distance_to(p) for p in points)`.
+  millimetres, without an error: check with `report=True`. 1500 points on a half tube r 10:
+  `max_distance` 0.89; on 288 degrees of it: 7.37 (rms 2.3). The fit's own residuals (at the
+  parameters it gave the points) overstate this (19.4), and a check at 3 x rms would refuse
+  ordinary noisy scans (their worst point lies about 4 x rms off): compare `max_distance` with
+  the noise you expect.
 - Each point is matched to the surface where its projection onto the plane lies (the surface is
   a height field over the plane), so noise does not pull the surface sideways.
 - Fast: 2000 points 3 ms, 20000 points 30 ms. Smooth shapes come close: a bump of 2000 points
-  within 0.001 mm, 20000 points within 4e-5 mm.
+  within about 0.001 mm (0.00101), 20000 points within 4.4e-5 mm.
 - Noisy points (a scan): the surface should stay about as far from the points as the noise
   (on average). Coming much closer means it follows the noise: take fewer control points
   (`controls=12`) or more smoothing (0.1 to 1). With noise of 0.1 mm on 3000 points, the
@@ -117,13 +127,19 @@ rng = np.random.default_rng(1)
 xy = rng.uniform(-30, 30, (2000, 2))
 cloud = np.column_stack([xy, 6 * np.exp(-(xy ** 2).sum(axis=1) / 300)])
 skin = surface(cloud)                                # fitted, not through the points
-print(max(skin.distance_to(p) for p in cloud) < 0.001)               # True
+print(round(max(skin.distance_to(p) for p in cloud), 4))             # 0.001: about 0.001 mm from every point
 print(round(skin.faces()[0].normal_at((0, 0, 6)).z, 3))               # 1.0: the normal points up
 noisy = cloud + rng.normal(0, 0.1, cloud.shape) * [0, 0, 1]          # noise of 0.1 mm
-smooth = surface(noisy, controls=12)                 # fewer control points: the shape, not the noise
-print(round(np.mean([smooth.distance_to(p) for p in noisy]), 2))     # about the noise: 0.08
+smooth, fit = surface(noisy, controls=12, report=True)   # fewer control points: the shape, not the noise
+print(round(float(np.mean(fit.distances)), 2), round(fit.rms_distance, 2))   # about the noise: 0.08 0.09
+
+# a cloud that is not a height field: the report shows it
+a = rng.uniform(-2.5, 2.5, 1500)
+tube = np.column_stack([10 * np.sin(a), 10 * np.cos(a), rng.uniform(0, 40, 1500)])
+_, bad = surface(tube, report=True)
+print(bad.max_distance > 5)                          # True: split the cloud, or fit it in pieces
 ```
 
 ## Related
-`ruled`, `loft` (surface through curves), `surface_fillet`, `Shell`, `Shell.thicken`, `stitch`,
-`generic`
+`nurbs_surface` (from control points, knots and weights), `ruled`, `loft` (surface through
+curves), `surface_fillet`, `Shell`, `Shell.thicken`, `stitch`, `generic`

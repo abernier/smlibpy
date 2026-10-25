@@ -587,7 +587,7 @@ void triangulate_poly(SmPolyBrep* poly)
 void bind_fit(py::module_ m)
 {
     m.def("fit_surface", [](const std::vector<double>& points, int nu, int nv, double smoothing) {
-        const smlibpy::SurfaceFit r = smlibpy::fit_surface(points, nu, nv, smoothing);
+        const smlibpy::SurfaceFit r = smlibpy::without_gil([&] { return smlibpy::fit_surface(points, nu, nv, smoothing); });
         return py::make_tuple(py::cast(r.surface, py::return_value_policy::reference), r.max_error, r.rms_error, r.nu,
                               r.nv);
     }, py::arg("points"), py::arg("nu") = 0, py::arg("nv") = 0, py::arg("smoothing") = 1e-2,
@@ -595,11 +595,11 @@ void bind_fit(py::module_ m)
        "0: about one per 8 points): (surface, max_error, rms_error, nu, nv). The surface is the caller's "
        "(ext.delete_surface).");
     m.def("poly_from_triangles", [](const std::vector<double>& vertices, const std::vector<long>& triangles) {
-        return smlibpy::poly_from_triangles(vertices, triangles);
+        return smlibpy::without_gil([&] { return smlibpy::poly_from_triangles(vertices, triangles); });
     }, py::arg("vertices"), py::arg("triangles"), py::return_value_policy::reference,
        "A kernel mesh (PolyBrep) of an indexed triangle mesh, stitched along shared edges. The caller's "
        "(ext.delete_polybrep).");
-    m.def("triangulate_poly", &smlibpy::triangulate_poly, py::arg("poly"),
+    m.def("triangulate_poly", &smlibpy::triangulate_poly, py::arg("poly"), py::call_guard<smlibpy::NoGil>(),
           "Split every polygon of a kernel mesh that is not a triangle (polygons with holes too) into triangles, "
           "in place.");
 }

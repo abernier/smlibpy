@@ -429,7 +429,8 @@ void bind_draft(py::module_& root)
 
     m.def("split_at_silhouettes", [](const SmBrep* brep, const std::vector<double>& direction, double tolerance,
                                      const std::vector<SmFace*>& faces) {
-        const smlibpy::SilhouetteSplit r = smlibpy::split_at_silhouettes(brep, direction, tolerance, faces);
+        const smlibpy::SilhouetteSplit r =
+            smlibpy::without_gil([&] { return smlibpy::split_at_silhouettes(brep, direction, tolerance, faces); });
         py::list edges, failed;
         for (SmEdge* e : r.edges)
             edges.append(py::cast(e, py::return_value_policy::reference));

@@ -9,6 +9,9 @@
 
 #include "SmPyCommon.h"
 #include "ext.h"
+#include "curve_tools.h"
+#include "kernel_lock.h"
+#include "trace.h"
 
 #include <SmApiGeneral.h>
 
@@ -36,6 +39,8 @@ PYBIND11_MODULE(_core, m)
 
     SmApiCreateContext();
     install_sm_error_callback();
+    smlibpy::init_kernel_limits();
+    smlibpy::install_kernel_trace();  // (in place of SmPyLib's trail: KernelError.trace)
 
     // The upstream bindings look themselves up by their own module name (for example to
     // raise TessellationError), so make that name resolve to this module.
@@ -43,6 +48,7 @@ PYBIND11_MODULE(_core, m)
 
     bind_enums(m);
     bind_types(m);
+    bind_curve_types(m);
     bind_polybrep(m);
 
     auto sub = [&](const char* name, const char* doc) { return BoundModule{m, m.def_submodule(name, doc)}; };
@@ -90,8 +96,52 @@ PYBIND11_MODULE(_core, m)
     bind_defeature(m);
     bind_draft(m);
     bind_face_draft(m);
+    bind_face_edit(m);
     bind_measure(m.attr("ext").cast<py::module_>());
     bind_fit(m.attr("ext").cast<py::module_>());
     bind_cells(m.attr("ext").cast<py::module_>());
+    bind_seams(m.attr("ext").cast<py::module_>());
+    bind_distance(m.attr("ext").cast<py::module_>());
+    bind_measuring(m.attr("ext").cast<py::module_>());
+    bind_history(m.attr("ext").cast<py::module_>());
+    bind_check(m.attr("ext").cast<py::module_>());
+    bind_slice(m.attr("ext").cast<py::module_>());
+    bind_face_attrs(m.attr("ext").cast<py::module_>());
+    bind_analytics(m.attr("ext").cast<py::module_>());
+    bind_shells(m.attr("ext").cast<py::module_>());
+    bind_face_analysis(m.attr("ext").cast<py::module_>());
     bind_usd_files(m.attr("ext").cast<py::module_>());
+    bind_fillet(m.attr("ext").cast<py::module_>());
+    bind_slivers(m.attr("ext").cast<py::module_>());
+    bind_oriented_sweep(m.attr("ext").cast<py::module_>());
+    bind_revolutions(m.attr("ext").cast<py::module_>());
+    bind_skins(m.attr("ext").cast<py::module_>());
+    bind_swing(m.attr("ext").cast<py::module_>());
+    bind_curve_tools(m.attr("ext").cast<py::module_>());
+    bind_curve_ops(m.attr("ext").cast<py::module_>());
+    bind_curve_edit(m.attr("ext").cast<py::module_>());
+    bind_curve_project(m.attr("ext").cast<py::module_>());
+    bind_blend(m.attr("ext").cast<py::module_>());
+    bind_trim(m.attr("ext").cast<py::module_>());
+    bind_stitch(m.attr("ext").cast<py::module_>());
+    bind_extend(m.attr("ext").cast<py::module_>());
+    bind_fill(m.attr("ext").cast<py::module_>());
+    bind_shape_edit(m.attr("ext").cast<py::module_>());
+    bind_sheet_edit(m.attr("ext").cast<py::module_>());
+    bind_part_files(m.attr("ext").cast<py::module_>());
+    bind_occt_files(m.attr("ext").cast<py::module_>());
+    bind_poly_arrays(m.attr("ext").cast<py::module_>());
+    bind_rays(m.attr("ext").cast<py::module_>());
+    bind_hidden_lines(m.attr("ext").cast<py::module_>());
+    bind_mesh_tools(m.attr("ext").cast<py::module_>());
+    bind_poly_ray_intersection(m);
+    bind_kernel_trace(m.attr("ext").cast<py::module_>());
+    bind_caches(m.attr("ext").cast<py::module_>());
+    bind_deadline(m.attr("ext").cast<py::module_>());
+
+    // Threads: every entry point takes one kernel lock, and the long ones let the GIL go while the
+    // kernel works (kernel_lock.cpp; SmPyLib's long calls are bound again for that, nogil.cpp).
+    bind_nogil(m);
+    smlibpy::lock_kernel_entries(m);
+    smlibpy::bind_kernel_lock(m.attr("ext").cast<py::module_>());
 }

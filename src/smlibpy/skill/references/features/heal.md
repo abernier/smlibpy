@@ -6,9 +6,12 @@ Runs the kernel's B-rep healer on a copy of a part or shell.
 `part.heal()` (also `Shell.heal()`, `Sketch.heal()`). No parameters.
 
 ## Returns
-A new body of the same type. What the healer does: adjusts tolerances to measured gaps,
-merges coincident vertices, removes degenerate pieces, repairs periodic seams. It does not
-close real gaps, refit curves or rebuild faces.
+A new body of the same type; a `Shell` whose faces close around a volume once healed comes back
+as a `Part` (a box of faces moved apart by 0.1 and stitched within 0.5: a Shell, healed a valid
+Part). What the healer does: adjusts tolerances to measured gaps,
+removes degenerate pieces, repairs periodic seams. It does not merge vertices that lie on top of
+each other (`import_step` makes one vertex per vertex of the file), close real gaps, refit curves
+or rebuild faces.
 
 ## When to call it
 - On data from outside: an imported STEP whose `is_valid()` is False, or that fails in a later
@@ -26,4 +29,5 @@ print(fixed.is_valid(), round(fixed.volume, 3))         # True 19978.761
 ```
 
 ## Related
-`import_step`, `is_valid`, `to_nurbs`, `stitch` (faces to a solid).
+`import_step`, `is_valid`, `analysis/check` (what is still wrong, and where), `to_nurbs`,
+`stitch` (faces to a solid).

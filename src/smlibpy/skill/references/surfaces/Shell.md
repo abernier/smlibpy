@@ -20,17 +20,31 @@ solid from a sheet, test `isinstance(x, Part)`.
 - `center()`: area centroid.
 - `thicken(thickness)` → `Part` (see below). The module function `thicken(shell_or_face, t)` is
   the same and also takes a `Face`.
-- `heal()` → Shell: repairs tolerances and topology of a sewn shell (it turned a sewn but
-  non-manifold stitch result into a manifold one). It does **not** sew separate faces; use
-  `stitch` for that.
+- `trim(curves, keep)` → Shell: cut along curves that lie on the sheet, keep the side of a point
+  or (`"split"`) both sides as faces (see `trim`).
+- `flipped()` → Shell: the sheet turned over, every face's normal reversed (a Sketch's plane too).
+  A sheet that encloses a volume (a whole sphere's face) raises `ValueError`: its faces point out
+  whichever way.
+- `extend(distance, sides=None, continuity="natural")` → Shell: a sheet of one face grown past its
+  sides (see `extend`).
+- `match_edge(edge, target, extent=0.25)` → Shell: an edge moved onto a curve, its face bending
+  to follow near the edge only (see `match_edge`): close a gap before `stitch`.
+- `merge_faces(a, b)` → Shell: two faces that share a whole side made one face on one surface
+  (see `merge_faces`).
+- `heal()` → Shell, or a `Part` where the healed faces close around a volume: repairs
+  tolerances and topology of a sewn shell (it turned a sewn but non-manifold stitch result into
+  a manifold one). It does **not** sew separate faces; use `stitch` for that.
+- `check()`: what the kernel's validity checks find wrong (see `analysis/check`).
 - `to_nurbs()`, `translate`, `rotate`, `mirror`, `scale`, `moved`, `on`, `named`, `colored`:
   return a Shell.
-- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body)`,
+- `distance_to(point_or_body)`, `closest_point(p)`, `intersection_curves(body, face or plane)`,
   `project(curve, direction)`, `silhouette`, `outline`: work on sheets.
 - `show(path=..., open_browser=False)` writes the HTML viewer; `export("x.step" / ".stl" /
   ".glb")`, `mesh()`, `save`/`load` all take Shells; `import_step` of a sheet gives a Shell.
 - `a + b` (Shell + Shell): Boolean union of sheets. Overlapping coplanar sheets merge into one
   face; crossing sheets are split along the crossing.
+
+- `sheet - part` and `sheet & part`: the sheet trimmed by parts (below).
 
 Missing on purpose: `volume`, `is_valid`, `solids`, `mass_properties`, `fillet`, `shell`.
 `shell - shell` and `shell & shell` raise `TypeError`.
@@ -40,8 +54,8 @@ Missing on purpose: `volume`, `is_valid`, `solids`, `mass_properties`, `fillet`,
 
 - `t > 0` adds material on the normal side, `t < 0` on the other side. Check the normal first:
   `shell.faces()[0].normal_at(point)`. The normal rule of each source is in `surface`, `ruled`;
-  `stitch` makes normals outward only when it closes into a Part (an open stitched Shell keeps
-  the input normals); `mirror` flips them.
+  `stitch` makes normals outward when it closes into a Part, and makes an open result's normals
+  agree with its first piece's; `flipped()` turns a sheet over.
 - All faces of a multi-face Shell must agree: a floor (normal +Z) and a wall whose normal points
   away from the floor raise `ModelingError: thicken: the kernel returned a body that is not a
   closed, manifold solid; ...`.
@@ -62,9 +76,16 @@ about 0 that `is_valid()` accepts. Close such shapes with caps (`stitch(tube, ca
 them with `revolve`/`loft`.
 
 ## Part and Shell Booleans
-`part & shell`, `part - shell` and `part + shell` do not raise; they return invalid "Parts"
-(volume 0, or the box with the sheet imprinted). The one useful case: `stitch(part & shell)`
-returns the piece of the sheet inside the solid as a `Shell` (trimming a sheet with a solid).
+- `sheet - part`: the sheet less the pieces inside the part (a Shell). `sheet & part` and
+  `part & sheet`: the pieces inside the part (a Shell). Several parts: `sheet - [p1, p2]`. Checked:
+  every face of the result lies on the sheet and the area is no more than the sheet's; the two
+  add up to the sheet (857.29 + 86.43 of a wave sheet and a cylinder). A part that misses the
+  sheet gives the whole sheet (`-`) or an empty Shell (`&`).
+- `part + sheet` and `part - sheet` raise `TypeError` (they returned invalid "Parts"): to split
+  the part along the sheet use `part.split(sheet)`, to cut the sheet's lines into the part's
+  faces `part.imprint(sheet)`.
+- The tools must be parts: `sheet - Rectangle(4, 4)` raises `TypeError`. To trim with curves that
+  lie on the sheet (where another sheet crosses it, a projected outline), use `trim`.
 
 ## Example
 ```python
@@ -77,9 +98,11 @@ print(wall.is_valid(), round(wall.volume, 3), wall.bbox().size)   # True 1844.0 
 
 f = lambda x, y: 5 + 0.01 * (x - 20) ** 2 - 0.01 * (y - 15) ** 2
 saddle = surface([[(x, y, f(x, y)) for y in range(0, 31, 5)] for x in range(0, 41, 5)])
-disc = stitch(Cylinder(8, 30).translate(20, 15, 0) & saddle)     # trim the sheet with a solid
+disc = saddle & Cylinder(8, 30).translate(20, 15, 0)             # trim the sheet with a solid
 print(type(disc).__name__, round(disc.area, 3))                  # Shell 202.344
+rest = saddle - Cylinder(8, 30).translate(20, 15, 0)             # the sheet with a hole
+print(round(rest.area + disc.area - saddle.area, 6))             # 0.0
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves
+`surface`, `nurbs_surface`, `ruled`, `stitch`, `trim`, `blend`, `fill`, `network`, `extend`, `match_edge`, `merge_faces`, `generic`, `Face.to_shell`, `extrude`/`loft`/`sweep` of open curves

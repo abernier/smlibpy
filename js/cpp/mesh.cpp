@@ -6,6 +6,8 @@
 // points, normals, polygon stream and face normals, so both bindings make the same meshes.
 
 #include "common.h"
+#include "poly_arrays.h"
+#include "rays.h"
 
 #include <SmApiPolygons.h>
 
@@ -167,6 +169,63 @@ val poly_mesh(uintptr_t p, bool face_varying_normals)
     return out;
 }
 
+// smlibpy's extraction (src/cpp/poly_arrays.cpp), Python's ext.poly_arrays: {points (a
+// Float64Array), normals, faces, face_normals}; with face_varying_normals, corners where the
+// surface of their face of `brep` (0: none) has no normal get the surface's normal next to them.
+val poly_arrays(uintptr_t p, bool face_varying_normals, val brep)
+{
+    const smlibpy::PolyArrays data = smjs::guard([&] {
+        return smlibpy::poly_arrays(smjs::poly(p), face_varying_normals, smjs::maybe<SmBrep>(brep));
+    });
+    val out = val::object();
+    out.set("points", smjs::float64(data.points));
+    out.set("normals", smjs::float32(data.normals));
+    out.set("faces", smjs::int32(data.faces));
+    out.set("face_normals", smjs::float32(data.face_normals));
+    return out;
+}
+
+// Python's ext.mesh_first_hits: arrays of numbers in (vertices, origins and directions x, y, z
+// each; triangles three vertex indices each); {t, points, normals (Float64Arrays), triangles (an
+// Int32Array, -1 for a miss)}.
+std::vector<int64_t> indices(const val& a)
+{
+    const std::vector<double> v = smjs::numbers(a);
+    return std::vector<int64_t>(v.begin(), v.end());
+}
+
+val mesh_first_hits(val vertices, val triangles, val origins, val directions)
+{
+    const smlibpy::FirstHits r = smjs::guard([&] {
+        return smlibpy::mesh_first_hits(smjs::numbers(vertices), indices(triangles), smjs::numbers(origins),
+                                        smjs::numbers(directions));
+    });
+    val out = val::object();
+    out.set("t", smjs::float64(r.t));
+    out.set("points", smjs::float64(r.points));
+    out.set("normals", smjs::float64(r.normals));
+    out.set("triangles", smjs::int32(r.triangles));
+    return out;
+}
+
+// Python's ext.body_first_hits: {found (a Uint8Array: 0 a miss, 1 the hit, 2 cast at the body
+// itself), t, points, normals (Float64Arrays), faces (an Int32Array, -1 for a miss)}.
+val body_first_hits(uintptr_t b, val vertices, val triangles, val owners, val origins, val directions, double tolerance,
+                    double mesh_tolerance)
+{
+    const smlibpy::BodyHits r = smjs::guard([&] {
+        return smlibpy::body_first_hits(smjs::brep(b), smjs::numbers(vertices), indices(triangles), indices(owners),
+                                        smjs::numbers(origins), smjs::numbers(directions), tolerance, mesh_tolerance);
+    });
+    val out = val::object();
+    out.set("found", val::global("Uint8Array").new_(emscripten::typed_memory_view(r.found.size(), r.found.data())));
+    out.set("t", smjs::float64(r.t));
+    out.set("points", smjs::float64(r.points));
+    out.set("normals", smjs::float64(r.normals));
+    out.set("faces", smjs::int32(r.faces));
+    return out;
+}
+
 // A deep copy, the caller's (the kernel's mesh Booleans consume their operands).
 uintptr_t poly_copy(uintptr_t p)
 {
@@ -181,4 +240,7 @@ EMSCRIPTEN_BINDINGS(smlib_mesh)
 {
     function("poly_mesh", &poly_mesh);
     function("poly_copy", &poly_copy);
+    function("ext__poly_arrays", &poly_arrays);
+    function("ext__mesh_first_hits", &mesh_first_hits);
+    function("ext__body_first_hits", &body_first_hits);
 }

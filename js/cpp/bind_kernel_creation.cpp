@@ -54,6 +54,30 @@ uintptr_t create_torus(val origin, double radius_major, double radius_minor)
     return ptr(r);
 }
 
+// Sectors from start_angle_deg to end_angle_deg (in the XY plane from +X, about +Z).
+uintptr_t create_partial_cylinder(val origin, double radius, double height, double start_angle_deg, double end_angle_deg)
+{
+    SmBrep* r = nullptr;
+    SMJS_CHECK(SmApiCreatePartialCylinder(vec(origin), radius, height, start_angle_deg, end_angle_deg, r));
+    return ptr(r);
+}
+
+uintptr_t create_partial_cone(val origin, double radius_base, double radius_top, double height, double start_angle_deg,
+                              double end_angle_deg)
+{
+    SmBrep* r = nullptr;
+    SMJS_CHECK(SmApiCreatePartialCone(vec(origin), radius_base, radius_top, height, start_angle_deg, end_angle_deg, r));
+    return ptr(r);
+}
+
+// An azimuthal sector (a lune) of a sphere.
+uintptr_t create_partial_sphere(val origin, double radius, double start_angle_deg, double end_angle_deg)
+{
+    SmBrep* r = nullptr;
+    SMJS_CHECK(SmApiCreatePartialSphere(vec(origin), radius, start_angle_deg, end_angle_deg, r));
+    return ptr(r);
+}
+
 // Loft through profiles (curves concatenated, curves_per_profile of each); the curves stay the
 // caller's. Python defaults: degree 1, cap_ends true.
 uintptr_t create_skin_primitive(val curves_per_profile, val curves, unsigned long degree, bool cap_ends)
@@ -75,6 +99,9 @@ EMSCRIPTEN_BINDINGS(smlib_kernel_primitives)
     function("create_cone", &create_cone);
     function("create_cylinder", &create_cylinder);
     function("create_torus", &create_torus);
+    function("create_partial_cylinder", &create_partial_cylinder);
+    function("create_partial_cone", &create_partial_cone);
+    function("create_partial_sphere", &create_partial_sphere);
     function("create_skin_primitive", &create_skin_primitive);
 }
 

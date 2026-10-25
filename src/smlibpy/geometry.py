@@ -26,6 +26,10 @@ __all__ = [
     "BoundBox",
     "Hit",
     "Nurbs",
+    "NurbsSurface",
+    "Curvature",
+    "Continuity",
+    "ClosestPoints",
     "X",
     "Y",
     "Z",
@@ -705,6 +709,99 @@ class Nurbs(NamedTuple):
     knots: list[float]
     points: list["Vector"]
     weights: list[float] | None
+
+
+class NurbsSurface(NamedTuple):
+    """A surface as a NURBS (see :meth:`Face.nurbs`).
+
+    Attributes:
+        degrees: The degrees ``(u, v)``.
+        knots: The knot vectors ``(u_knots, v_knots)``, every knot as often as its multiplicity.
+        points: The control points, one row per u index: ``points[i][j]`` is the point ``i`` along
+            u and ``j`` along v.
+        weights: The weights in the same rows, or ``None`` for a non-rational surface.
+    """
+
+    degrees: tuple[int, int]
+    knots: tuple[list[float], list[float]]
+    points: list[list["Vector"]]
+    weights: list[list[float]] | None
+
+
+class Curvature(NamedTuple):
+    """The curvature of a face at a point (see :meth:`Face.curvature_at`).
+
+    Attributes:
+        k1: The larger principal curvature (1/mm): positive where the face bends away from its
+            outward normal (convex, a ball seen from outside), negative where it bends towards it
+            (a bore).
+        k2: The smaller principal curvature.
+        dir1: The unit direction of ``k1``, tangent to the face.
+        dir2: The unit direction of ``k2``, square to ``dir1``.
+        normal: The outward unit normal.
+        point: The point on the face.
+    """
+
+    k1: float
+    k2: float
+    dir1: "Vector"
+    dir2: "Vector"
+    normal: "Vector"
+    point: "Vector"
+
+    @property
+    def mean(self) -> float:
+        """The mean curvature ``(k1 + k2) / 2``."""
+        return (self.k1 + self.k2) / 2
+
+    @property
+    def gaussian(self) -> float:
+        """The Gaussian curvature ``k1 * k2`` (positive on a ball, zero on a cylinder, negative at a
+        saddle)."""
+        return self.k1 * self.k2
+
+
+class Continuity(NamedTuple):
+    """How two faces meet at an edge, or two edges at the joints of a wire (see
+    :meth:`Edge.continuity`, :meth:`Wire.continuity`).
+
+    Attributes:
+        level: ``"G2"`` (curvature continuous), ``"G1"`` (tangent), ``"G0"`` (they meet at an
+            angle) or ``None`` (they do not meet: a gap above the tolerance).
+        gap: The largest distance between the two sides.
+        angle: The largest angle between the two sides' normals (faces) or tangents (wires), in
+            degrees.
+        curvature_jump: The largest difference of the curvatures on the two sides (1/mm): across
+            the edge for faces, of the curvature vectors for wires. NaN where it cannot be had.
+        point: Where the sides differ most in what decides the level: the largest gap for
+            ``None``, the largest angle for ``"G0"``, the largest curvature jump for ``"G1"`` and
+            ``"G2"``.
+    """
+
+    level: str | None
+    gap: float
+    angle: float
+    curvature_jump: float
+    point: "Vector"
+
+
+class ClosestPoints(NamedTuple):
+    """The nearest points of two shapes (see :meth:`Part.closest_points`).
+
+    Attributes:
+        point: The point on the body the method was called on.
+        other_point: The point on the other shape.
+        distance: Their distance.
+        face: The face of the body the point lies on (at an edge or a corner, one of the faces
+            there).
+        other_face: The face of the other shape, or ``None`` when it is an edge or a wire.
+    """
+
+    point: "Vector"
+    other_point: "Vector"
+    distance: float
+    face: Any = None
+    other_face: Any = None
 
 
 class BoundBox:

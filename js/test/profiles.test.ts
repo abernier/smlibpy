@@ -401,13 +401,69 @@ test('many tools in one Boolean', () => {
   approx(r.area, 200 * 120 - (4 - PI) * 100 - 180 * 9 * PI)
 })
 
+test('Booleans of faces that touch at a point', () => {
+  // The faces of an exclusive or of circles touch each other at points. There the kernel's planar
+  // Boolean misclassified whole faces without an error, in either operand: abc & t was 54.9061 and
+  // abc - t 55.6337 (Python 86.6355 and 23.9044), abc ^ t 67.09 (Python 702.18). The values below
+  // are OpenCASCADE's.
+  const abc = Circle(5).xor(Circle(5).translate(4, 0)).xor(Circle(5).translate(2, 4))
+  const t = Polygon([-20, -20], [20, -20], [0, 20])
+  const a = 110.5398163
+  approx(abc.area, a)
+  for (const r of [abc.intersect(t), t.intersect(abc)]) {
+    assert.equal(r.faces().length, 4)
+    approx(r.area, a)
+    assert.ok(r.center().distanceTo(new Vector(2, 1.5261489, 0)) < 1e-6)
+  }
+  assert.equal(abc.cut(t).faces().length, 0)
+  for (const r of [t.cut(abc), abc.xor(t), t.xor(abc)]) {
+    approx(r.area, 800 - a)
+    assert.ok(r.center().distanceTo(new Vector(-0.3206561, -7.9802049, 0)) < 1e-6)
+  }
+  approx(abc.fuse(t).area, 800)
+  assert.equal(abc.fuse(t).faces().length, 1)
+  // The result is built as the kernel builds such regions: its faces share their vertices.
+  approx(abc.intersect(t).extrude(5).volume, 5 * a)
+
+  // two such sketches; OpenCASCADE: & 35.067874, - 103.018076, + 213.322849, ^ 178.254975
+  const xor3 = (...centers: [number, number][]) => {
+    const c = centers.map(([x, y]) => Circle(5).translate(x, y))
+    return c[0].xor(c[1]).xor(c[2])
+  }
+  const p = xor3([-0.285723, 0.358634], [6.545264, -0.2061], [2.047048, 4.524309])
+  const q = xor3([-1.892038, 0.071452], [4.779296, 1.757861], [-0.435259, 2.820408]).translate(-4.911954, 3.715734)
+  const i = p.intersect(q).area
+  approx(i, 35.067874, 0, 1e-5)
+  approx(p.cut(q).area, p.area - i)
+  approx(q.cut(p).area, q.area - i)
+  approx(p.fuse(q).area, p.area + q.area - i)
+  approx(p.xor(q).area, p.area + q.area - 2 * i)
+  approx(p.xor(q).area, 178.254975, 0, 1e-5)
+})
+
+test('touching faces far from the rest are checked to their own size', () => {
+  // Unit squares that touch at corners, and one 1000 away: the check of the face-by-face route took
+  // its tolerance from the loose box of the faces' planes (an area of 4.8), and passed a union whose
+  // square had become a sliver of 0.2778 by the far one (4.2778 for 5). A face that could not be
+  // measured escaped as a plain Error.
+  let squares = Rectangle(1, 1).translate(1000.5, 0.5)
+  for (const [i, j] of [[0, 0], [0, 3], [1, 0], [1, 1], [4, 1]]) squares = squares.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
+  approx(squares.area, 6)
+  // Faces apart from the other operand's go around the kernel (closeout K1): the squares that touch at
+  // corners, which raised, and the far one keep their area.
+  let more = Rectangle(1, 1).translate(1000.5, 0.5)
+  for (const [i, j] of [[0, 2], [3, 2], [3, 3], [4, 1], [4, 3]]) more = more.fuse(Rectangle(1, 1).translate(i + 0.5, j + 0.5))
+  approx(more.area, 6)
+  approx(Math.min(...more.faces().map((f) => f.area)), 1)
+})
+
 test('empty results and operand errors', () => {
   const empty = Rectangle(10, 10).cut(Rectangle(20, 20))
   assert.equal(empty.faces().length, 0)
   assert.equal(Rectangle(10, 10).intersect(Pos(30, 0).mul(Rectangle(10, 10))).faces().length, 0)
   raises(() => empty.extrude(5), ModelingError, /the sketch is empty/)
   raises(() => empty.center(), RangeError, /the sketch is empty/)
-  raises(() => Rectangle(10, 10).fuse(Line([0, 0], [20, 0])), TypeError, /makeFace\(\.\.\.\) or new Profile\(\.\.\.\)\.close\(\)/)
+  raises(() => Rectangle(10, 10).fuse(Line([0, 0], [20, 0]) as never), TypeError, /makeFace\(\.\.\.\) or new Profile\(\.\.\.\)\.close\(\)/)
 })
 
 // -- offset -------------------------------------------------------------------------------
@@ -489,9 +545,9 @@ const cornerErrors: [string, () => unknown, abstract new (...args: never[]) => E
   ['a smooth corner', () => Slot(30, 10).fillet(1, [[10, 5]]), ModelingError, /is smooth/],
   [
     'a corner of a spline',
-    () => makeFace(Spline([0, 0], [10, 5], [20, 0], { tangents: [[0, 1], [0, -1]] }).add(Line([20, 0], [0, 0]))).fillet(1),
+    () => makeFace(Spline([0, 0], [10, 5], [20, 0], { tangents: [[0, 1], [0, -1]] }).add(Line([20, 0], [0, 0]))).fillet(3),
     ModelingError,
-    /works on corners between lines and arcs/,
+    /no arc of radius 3 touches both segments/, // (OpenCASCADE finds none either; 2.5 fits)
   ],
   ['a zero radius', () => Rectangle(10, 10).fillet(0), RangeError, /must be positive/],
   ['edges for corners', () => Rectangle(10, 10).fillet(1, Rectangle(10, 10).edges() as unknown as Vertex[]), TypeError, /not as an Edge/],

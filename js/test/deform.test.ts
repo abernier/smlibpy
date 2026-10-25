@@ -19,8 +19,7 @@ import { approx } from './_approx.ts'
 type Any = any
 
 function volume(p: Part): number {
-  // the kernel's default accuracy is not enough for bent B-spline bodies (see the deform guide)
-  return p.massProperties(1, 1e-10).volume
+  return p.volume // smlibpy's own integration (measure.cpp): exact on deformed parts too
 }
 
 function surfaces(p: Part): Any[] {
@@ -103,10 +102,9 @@ test('twist is exact where it can be and within tolerance elsewhere', () => {
   const bar = box.twist(90)
   assert.ok(deviation(plan, bar) < 1e-6)
   const data = surfaces(bar)
-  assert.ok(data.every((d) => d.kind === 'bspline'))
-  const degrees = data.map((d) => [d.u_degree, d.v_degree] as [number, number])
-  // top and bottom only turn: still planes of degree 1; the sides keep their straight rulings
-  assert.equal(degrees.filter(([u, v]) => u === 1 && v === 1).length, 2)
+  // top and bottom only turn: planes again; the sides are B-splines that keep their straight rulings
+  assert.deepEqual(data.map((d) => d.kind).sort(), ['bspline', 'bspline', 'bspline', 'bspline', 'plane', 'plane'])
+  const degrees = data.filter((d) => d.kind === 'bspline').map((d) => [d.u_degree, d.v_degree] as [number, number])
   assert.ok(degrees.every((dd) => dd.includes(1)))
 })
 

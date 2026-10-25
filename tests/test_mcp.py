@@ -116,7 +116,8 @@ def test_discovery_finds_api_and_guides():
     ("ray", "analysis/raycast"),
     ("select faces with a ray", "ShapeList.hit_by"),
     ("which face does the ray hit first", "selection/hit_by"),
-    ("inside outside test", "analysis/raycast"),
+    ("inside outside test", "analysis/classify"),
+    ("is a point inside the part", "analysis/classify"),
     ("point cloud", "surfaces/surface"),
     ("fit a surface to points", "surfaces/surface"),
     ("blend two surfaces", "surfaces/surface_fillet"),
@@ -133,7 +134,7 @@ def test_search_finds_the_kernel_tools(query, expected):
     assert expected in [e.key for _, e in discovery.search(query, 5)]
 
 
-KERNEL_TOOL_GUIDES = ["analysis/raycast", "selection/hit_by", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
+KERNEL_TOOL_GUIDES = ["analysis/raycast", "analysis/classify", "selection/hit_by", "surfaces/surface", "surfaces/surface_fillet", "features/merge",
                       "features/cells", "curves/nurbs", "curves/make_compatible", "curves/remove_knots",
                       "files/export_usd", "files/import_usd", "files/Mesh"]
 
@@ -474,3 +475,16 @@ def test_viewer_shows_a_read_step_file_and_imported_assemblies(session, tmp_path
     assert s["index"][line["id"]]["expr"].startswith("tool.curves[")
     assert max(c["properties"]["max"][2] for c in s["graphic"]["containers"]) <= 120 + 1e-6
     assert session.call("snapshot", size=(300, 200))["ok"]
+
+
+@pytest.mark.parametrize("name", ["ShapeList.new", "ShapeList.derived_from", "ShapeList.shared", "ShapeList.g1",
+                                  "ShapeList.g2", "Part.voids", "Part.shells", "Part.sources", "Part.from_mesh",
+                                  "Part.raycast_many", "Sketch.flipped", "Face.cells", "to_step", "from_step", "to_file",
+                                  "from_file", "Edge.min_radius_at", "Edge.param_at_point", "Shell.from_nurbs"])
+def test_describe_method_finds_a_guide_for_names_without_one_of_their_own(name):
+    # The guides are found by file name: the methods a guide of another name describes (history,
+    # shells, files in memory, ...) came without one in describe_method.
+    entry = discovery.find_method(name)
+    assert entry is not None, name
+    guide = discovery.guide_for(entry)
+    assert guide is not None and name.split(".")[-1] in guide.text, (name, guide and guide.key)

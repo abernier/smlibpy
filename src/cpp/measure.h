@@ -28,6 +28,7 @@ struct BrepMeasure
     double relative_error = 0.0, size = 0.0;
     bool converged = false;
     long panels = 0, evaluations = 0;
+    long exhausted = -1;  // a face (index) the integration ran out of its evaluation budget on, -1 if none
 };
 
 struct FaceMeasure
@@ -37,6 +38,7 @@ struct FaceMeasure
     double error = 0.0, relative_error = 0.0;
     bool converged = false;
     long panels = 0, evaluations = 0;
+    bool exhausted = false;  // the integration ran out of the face's evaluation budget
 };
 
 BrepMeasure brep_measure(const SmBrep* brep, double tolerance);

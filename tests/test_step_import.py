@@ -1,5 +1,7 @@
 import math
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -777,3 +779,181 @@ def test_read_step_reads_coordinate_systems_curves_and_points(tmp_path):
     assert (crp.name, crp.point.to_tuple()) == ("CRP", pytest.approx((1, 2, 103)))
     # import_step reads the same file for its body alone
     assert import_step(path).volume == pytest.approx(body.volume)
+
+
+# -- edges off their faces, faces that share nothing, shared vertices, seam checks -------------------
+def _planes_moved(text: str, shift: float) -> str:
+    """A STEP text with the origin of every PLANE moved by `shift` along x, y and z, its edges and
+    vertices left where they are: edges that lie off their faces, as low-precision writers leave them."""
+    axes = set(re.findall(r"=PLANE\('',#(\d+)\)", text))
+    origins = {m.group(2) for m in re.finditer(r"#(\d+)=AXIS2_PLACEMENT_3D\('',#(\d+),", text) if m.group(1) in axes}
+
+    def move(m):
+        if m.group(1) not in origins:
+            return m.group(0)
+        return f"#{m.group(1)}=CARTESIAN_POINT('',({','.join(repr(float(x) + shift) for x in m.group(2).split(','))}));"
+
+    return re.sub(r"#(\d+)=CARTESIAN_POINT\('',\(([^)]*)\)\);", move, text)
+
+
+def test_step_edges_off_their_faces_keep_their_convexity(tmp_path):
+    # The edges of an L-shaped block whose planes lie 6e-4 off its edges (the valve body's edges lie
+    # 6.6e-4 off theirs): the convexity was read from two steps of 1e-4 x the length into a face,
+    # which the gap swamped, and 9 of its 21 edges came out the wrong way. The kernel's outer angle
+    # (SmEdge::CalcOuterAngle) does not look at the faces' distances.
+    block = Box(20, 20, 20) - Box(20, 20, 20).translate(10, 10, 10)
+    export_step(block, tmp_path / "block.step")
+    (tmp_path / "moved.step").write_text(_planes_moved((tmp_path / "block.step").read_text(), 6e-4))
+    moved = import_step(tmp_path / "moved.step")
+    assert moved.is_valid()
+    want = {tuple(round(c, 2) for c in e.center()): e.convexity for e in block.edges()}
+    got = {tuple(round(c, 2) for c in e.center()): e.convexity for e in moved.edges()}
+    assert sorted(got.values()) == sorted(want.values())
+    assert len(moved.edges().concave()) == 3 and len(moved.edges().convex()) == 18
+    assert sorted(round(e.dihedral_angle, 6) for e in moved.edges().concave()) == [270.0] * 3
+    # a box: 90 degrees through the material; a rounded edge's borders meet tangentially
+    box = Box(10, 10, 10)
+    assert {round(e.dihedral_angle, 9) for e in box.edges()} == {90.0}
+    rounded = box.fillet(box.edges().parallel_to(Z), 2)
+    assert len(rounded.edges().smooth()) == 8
+    assert all(abs(e.dihedral_angle - 180) < 1e-6 for e in rounded.edges().smooth())
+    # where the kernel cannot tell (both sides of the edge the same kind of region): as before
+    merged = Box(10, 10, 10).merge(Box(10, 10, 10).translate(10, 0, 0))
+    assert len(merged.edges().convex()) == len(merged.edges())
+    sheet = box.faces().top()[0].to_shell()
+    assert [e.convexity for e in sheet.edges()] == ["convex"] * 4
+    with pytest.raises(ValueError, match="does not lie between two faces"):
+        sheet.edges()[0].dihedral_angle
+
+
+def _unshared(text: str, gap: float) -> str:
+    """A STEP text in which no two faces share an edge or a vertex: each ORIENTED_EDGE gets an
+    EDGE_CURVE and VERTEX_POINTs of its own, the points moved by up to `gap`."""
+    head, data = text.split("DATA;\n", 1)
+    data, tail = data.split("ENDSEC;", 1)
+    ents = dict(re.findall(r"#(\d+)=(.*?);\n", data, re.S))
+    order = list(ents)
+    new: list[tuple[int, str]] = []
+    nxt = max(int(i) for i in order) + 1
+    count = 0
+
+    def add(s: str) -> int:
+        nonlocal nxt
+        new.append((nxt, s))
+        nxt += 1
+        return nxt - 1
+
+    def copied(v: str) -> int:
+        nonlocal count
+        p = re.match(r"VERTEX_POINT\('',#(\d+)\)", ents[v]).group(1)
+        xyz = [float(c) for c in re.match(r"CARTESIAN_POINT\('.*?',\((.*)\)\)", ents[p]).group(1).split(",")]
+        xyz = [c + gap * ((count * 7 + j * 3) % 5 - 2) / 2 for j, c in enumerate(xyz)]
+        count += 1
+        return add("VERTEX_POINT('',#%d)" % add("CARTESIAN_POINT('',(%s))" % ",".join(f"{c:.12E}" for c in xyz)))
+
+    for i in order:
+        m = re.match(r"ORIENTED_EDGE\('',\*,\*,#(\d+),(\.[TF]\.)\)", ents[i])
+        if not m:
+            continue
+        v1, v2, c, sense = re.match(r"EDGE_CURVE\('',#(\d+),#(\d+),#(\d+),(\.[TF]\.)\)", ents[m.group(1)]).groups()
+        a = copied(v1)
+        b = a if v1 == v2 else copied(v2)
+        ents[i] = "ORIENTED_EDGE('',*,*,#%d,%s)" % (add(f"EDGE_CURVE('',#{a},#{b},#{c},{sense})"), m.group(2))
+    body = "".join(f"#{i}={ents[i]};\n" for i in order) + "".join(f"#{i}={s};\n" for i, s in new)
+    return head + "DATA;\n" + body + "ENDSEC;" + tail
+
+
+def test_faces_of_an_import_whose_faces_share_nothing_raise(tmp_path):
+    # Faces that share no edges, with vertex points up to 1e-3 off (low-precision writers): copying
+    # one out of the body (to_shell, moving a face, to_sketch, extrude) fell back to copying the
+    # body and removing the other faces, the removal failed, and deleting the copy then crashed the
+    # process (SmBrep::~SmBrep, a null pointer). Now such a copy is kept, never freed, and the call
+    # raises KernelError. In a process of its own, so that a crash fails the test, not the run.
+    # (heal=False: healing stitches such faces together, see test_lane_IX.py)
+    export_step(Box(20, 10, 10) - Cylinder(3, 20), tmp_path / "block.step")
+    (tmp_path / "unshared.step").write_text(_unshared((tmp_path / "block.step").read_text(), 1e-3))
+    code = f"""
+import warnings
+warnings.simplefilter("ignore")
+from smlibpy import *
+part = import_step({str(tmp_path / "unshared.step")!r}, heal=False)
+print(type(part).__name__, part.is_valid(), flush=True)
+for f in part.faces():
+    try:
+        f.to_shell()
+        print("copied", flush=True)
+    except KernelError as e:
+        print("KernelError", e, flush=True)
+print(round((Box(10, 10, 10) - Cylinder(2, 20)).volume, 3), flush=True)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = run.stdout.split("\n")
+    assert lines[0] == "Part False"
+    assert all(line.startswith("KernelError copy face failed") for line in lines[1:8])
+    assert lines[8] == f"{1000 - math.pi * 4 * 10:.3f}"  # the kernel still works
+
+
+def test_step_import_makes_one_vertex_per_file_vertex(tmp_path):
+    # The builder started each new edge without the file's vertices, and the kernel made a vertex
+    # for every vertexuse a loop had not linked yet: a rounded box came back with 48 vertices for
+    # the file's 24, its corners each twice, and 48 links in its loops between edges that end and
+    # start at different vertices (7 of 9 imported parts whose all-edge fillets crashed had such).
+    box = Box(40, 30, 20)
+    rounded = box.fillet(box.edges(), 3)
+    export_step(rounded, tmp_path / "rounded.step")
+    assert (tmp_path / "rounded.step").read_text().count("VERTEX_POINT(") == 24
+    back = import_step(tmp_path / "rounded.step")
+    assert len(back.vertices()) == 24 and back.is_valid()
+    assert back.volume == pytest.approx(rounded.volume, rel=1e-12)
+    broken = 0
+    for f in back.faces():
+        for loop in f._f.boundary_loops():
+            for (e, fwd), (e2, fwd2) in zip(loop, loop[1:] + loop[:1]):
+                broken += (e.end_vertex() if fwd else e.start_vertex()) is not (e2.start_vertex() if fwd2 else e2.end_vertex())
+    assert broken == 0
+
+
+@pytest.mark.skipif(sys.platform not in ("darwin", "linux"), reason="reads the C allocator's statistics")
+def test_seam_checks_on_import_free_their_curves(tmp_path):
+    # The kernel's seam check (SmFace::HasSeamProblem), which every STEP import runs on every body,
+    # copied the seam curve it made and lost the original: 3.4 KB per cylinder, 12.7 KB per torus,
+    # each call (also in the healer). In a process of its own, so that what other tests left does
+    # not count; in the C allocator's bytes in use, not the process's resident memory (which grew by
+    # 5.1 MB on Linux in CI without the leak).
+    export_step(Box(20, 10, 10) - Cylinder(3, 20), tmp_path / "hole.step")
+    code = f"""
+import ctypes, gc, sys
+from smlibpy import *
+from smlibpy._kernel import ext
+def heap():
+    if sys.platform == "darwin":
+        class Stats(ctypes.Structure):
+            _fields_ = [("blocks_in_use", ctypes.c_uint), ("size_in_use", ctypes.c_size_t),
+                        ("max_size_in_use", ctypes.c_size_t), ("size_allocated", ctypes.c_size_t)]
+        stats = Stats()
+        ctypes.CDLL("/usr/lib/libSystem.B.dylib").malloc_zone_statistics(None, ctypes.byref(stats))
+        return stats.size_in_use / 1048576
+    class Info(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_size_t) for name in ("arena", "ordblks", "smblks", "hblks", "hblkhd",
+                                                         "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
+    libc = ctypes.CDLL(None)
+    libc.mallinfo2.restype = Info
+    info = libc.mallinfo2()
+    return (info.uordblks + info.hblkhd) / 1048576
+ring = Torus(10, 2) + Cylinder(3, 30)
+for _ in range(50):
+    ext.seam_problems(ring._brep)
+gc.collect()
+before = heap()
+for _ in range(1000):
+    ext.seam_problems(ring._brep)
+for _ in range(100):
+    import_step({str(tmp_path / "hole.step")!r})
+gc.collect()
+print(heap() - before)
+"""
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, run.stderr
+    kept = float(run.stdout.strip())
+    assert kept < 2, f"1000 seam checks and 100 imports kept {kept:.1f} MB"  # was 16 MB

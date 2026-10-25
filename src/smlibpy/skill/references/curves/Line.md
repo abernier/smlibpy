@@ -16,9 +16,10 @@ An `Edge` with `geom_type == "line"`, running from `start` to `end`.
 - `direction` is the unit vector start -> end; `reversed()` flips it.
 - Lines are not limited to a plane: `Line((1, 2, 3), (4, 6, 3))` is fine.
 - `Line(...).on(Plane.XZ)` keeps a line along X on world X; local Y becomes world Z.
-- `mirror()`, `scale()`, `rotate`, `translate` and `.on()` keep it a `line`. Straight `bspline`
-  edges (from a per-axis scale of a body, or a kernel offset of a spline sketch) still count as
-  lines: `direction`, `lines()`, `parallel_to` and fillets treat them as straight.
+- `mirror()`, `scale()`, `rotate`, `translate` and `.on()` keep it a `line` (the straight edges of
+  a body scaled per axis are recognized as lines again). Straight `bspline` edges (a standalone
+  edge scaled per axis, a kernel offset of a spline sketch) still count as lines: `direction`,
+  `lines()`, `parallel_to` and fillets treat them as straight.
 - Two lines with the same points are not `==`; compare `start` and `end` with `is_close`.
 - A line of 1e-9 mm is accepted. Avoid such slivers; they come from rounding errors in point
   lists.

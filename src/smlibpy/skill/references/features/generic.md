@@ -1,11 +1,11 @@
 # Features: what they share
 
-Features make solids from profiles (`extrude`, `revolve`, `loft`, `sweep`, `thicken`) and change
+Features make solids from profiles (`extrude`, `revolve`, `swing`, `loft`, `sweep`, `thicken`) and change
 solids (`fillet`, `chamfer`, `shell`, `offset`, `split`, `mirror`). `merge` combines parts into
 one part made of cells (`cells()`). Each returns a new shape.
 
 ## `is_valid()` is not enough
-Features check their result: revolve, sweep, loft, extrude with taper and thicken raise
+Features check their result: revolve, swing, sweep, loft, extrude with taper or a direction and thicken raise
 `ModelingError` instead of returning an inside-out or volume-less body; fillet and chamfer
 check the volume change; shell checks that the walls fit. A few wrong results still pass
 `is_valid()`. Check the volume against a formula after every feature, and
@@ -14,7 +14,6 @@ check the volume change; shell checks that the walls fit. A few wrong results st
 | Input | Result |
 |---|---|
 | `loft` of sections that start in different places | twisted, pinched |
-| `sweep` of a non-round profile along a helix | the profile rolls ~30° per turn |
 | `sweep` with a profile larger than the bend / pitch | self-overlapping, volume too large |
 
 Each feature doc says how to avoid its case. Fillet, chamfer, shell and offset refuse an
@@ -39,8 +38,15 @@ check `is_valid()` after each step and fix the step that broke it.
 ## Errors
 `ModelingError` means smlibpy rejected the input or the result (it names the limit where it
 can). `KernelError` (a `ModelingError`) carries the kernel status (`SM_ERR`, `SM_ERR_INVALID_INPUT`,
-`SM_ERR_AXIS_INSIDE_FACE`) and a hint; the hint is a guess. `ValueError`/`TypeError` mean a
-wrong argument (a radius or length that is not positive, a zero thickness or angle).
+`SM_ERR_AXIS_INSIDE_FACE`, `SM_ERR_BAD_INTERSECTIONS`) and a hint; the hint is a guess, except
+that `SM_ERR_INVALID_INPUT` from a fillet or chamfer means no size works for that selection.
+Its `trace` says where the kernel gave up, for a bug report: the kernel's failures during the call,
+the last ones last (`'SM_ERR_INVALID_INPUT at SmFilletExecutive.cpp:1909 (CreateFilletCorners)'`, ...,
+`'... (SmApiFilletEdges)'`); do not branch on it, it changes with the kernel.
+`ValueError`/`TypeError` mean a wrong argument (a radius or length that is not positive, a zero
+thickness or angle, a `(start, end)` radius where it cannot hold). Shell, offset and thicken run
+the kernel in a forked copy of the process (Linux, macOS): a crash there is a `ModelingError`
+("the kernel crashed ... in a copy of this process"), and this process goes on.
 
 ## Order
 Main body → additions → subtractions → fillets and chamfers → shell (or shell earlier when

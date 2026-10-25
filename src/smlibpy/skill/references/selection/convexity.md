@@ -16,12 +16,22 @@ sketch by the angle of the region there.
 - `concave`: inside corner, material angle above 180°. The inner corner of an L, the floor edges
   and vertical corners of a pocket, the base circle where a boss meets a plate, the inner edges of
   a shelled box.
-- `smooth`: the two face normals at the edge midpoint differ by less than 0.5°. The borders of a
+- `smooth`: the angle between the two faces differs from 180° by less than 0.5°. The borders of a
   fillet; a kink of 0.4° counts as smooth, 0.6° does not.
 - Edges with fewer or more than two faces count as `convex`: sketch edges, sheet borders, free
   edges (`Line(...)`).
+- `edge.dihedral_angle`: the angle between the two faces through the material, in degrees: 90 at
+  the edges of a box, 270 at the inside corner of an L, 180 where they meet tangentially
+  (`ValueError` for an edge that does not lie between two faces).
 
-The test is made at the edge midpoint only.
+The test is made at the edge midpoint with the kernel's angle between the faces (the sector of
+the edge outside the body), which holds on imported parts whose edges lie off their faces within
+the file's tolerance. An edge that is tangent there is `smooth` only if it is at 5 points along
+it; else it takes the kind where its faces turn most (since 0.5.0; before, the midpoint alone
+decided). Where the kernel cannot tell, at the edges of a sheet and the inner edges of a merged
+part, the faces' normals decide, the same way. For G1 against G2 (a circular fillet's border
+against a curvature-continuous blend's), use `g1()`, `g2()` and `Edge.continuity` (analysis
+domain).
 
 | Body | convex | concave | smooth |
 |---|---|---|---|

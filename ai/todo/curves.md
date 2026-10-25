@@ -100,6 +100,8 @@
 - **Reproduce:** `print(CenterArc((0, 0), 10, 0, 0).length)`
 
 ### 12. `EllipticalArc`: arcs that pass through angle 0 raise KernelError
+- **Fixed (checked 2026-10-22):** `EllipticalArc((0, 0), 20, 10, -90, 90)` is the arc through angle
+  0 (48.442 long); 0.4.0 gives the same.
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, scripts `07-ellipticalarc.py`, `08-ellipse-across-zero.py`
 - **What happens:** `EllipticalArc((0,0), 20, 10, -90, 90)`, `(350, 10)`, `(270, 450)`,
   `(359, 1)` raise `KernelError: EllipticalArc failed (SM_ERR)`. The code adds a full
@@ -110,6 +112,8 @@
   `EllipticalArc(c, rx, ry, 90, 270).rotate(Z, 180)`.
 
 ### 13. `EllipticalArc` cannot be a sweep path (TypeError from the binding)
+- **Fixed:** the bindings register the kernel's ellipse (and parabola, hyperbola) curves as B-spline curves, so
+  sweep, `project`, `ruled` and the open-profile surface sweeps take ellipse edges, also those of bodies (kernel plan C3).
 - **Session:** `2026-10-12_21-31-43_curves-arcs`, scripts `11-closed-path.py`, `13-ellipse-path-workaround.py`
 - **What happens:** `sweep(Circle(2), EllipticalArc((0, 0), 30, 20, 0, 90))` raises
   `TypeError: curve_sweep(): incompatible function arguments` (the path must be a
@@ -126,6 +130,8 @@
 - **Reproduce:** `print(TangentArc((0, 0), (10, 0), (-1, 0)).tangent_at(0))   # (1, 0, 0)`
 
 ### 15. `Helix` fails beyond roughly 26 to 79 turns
+- **Fixed:** NLib's cap on the spiral fit (NL_CCPLIM) is raised at start, and helices over 120 turns are fitted in
+  pieces of whole turns joined into one edge: any number of turns (kernel plan C4).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, scripts `10-helix-limits.py`, `13-helix-turn-limit-sizes.py`
 - **What happens:** `KernelError: Helix failed (SM_ERR_NOT_WITHIN_TOLERANCE)` (around 200 turns
   `SM_ERR_INVALID_INPUT`). Max whole turns: r 50: 26, r 20: 32, r 5: 46, r 2: 58, r 0.5: 79,
@@ -137,6 +143,8 @@
   whole turns per piece; sweep handles it (one valid solid).
 
 ### 16. `Edge.bbox()` of a constructed curve samples 33 points and misses extremes
+- **Fixed:** the box of a free curve is exact: its ends, its corners and the points where its tangent is
+  perpendicular to an axis (`ext.curve_box`); max y 1.0069069109, as OpenCASCADE (kernel plan C9).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, script `02-spline-bbox.py`
 - **What happens:** `Spline((0,0),(1,1),(2,0),(30,0)).bbox().max.y` is 0.7998; the curve passes
   through (1,1) and reaches 1.0069. Silent.
@@ -175,6 +183,8 @@
 - **Expected:** "got tuple" or "points are not edges".
 
 ### 17. Confusing "cannot normalize a zero-length vector" errors
+- **Partly fixed (kernel plan C13):** `Spline(a, b, closed=True)` raises `a closed spline needs at least three
+  points`.
 - **Sessions:** arcs `04-radiusarc.py`, `05-sagittaarc.py`, `06-tangentarc.py`; lines-wires
   `08-wire-fillet.py`; freeform `03-spline-tangents.py`, `04-spline-closed.py`, `08-helix.py`
 - **What happens:** `RadiusArc(a, a, 5)`, `SagittaArc(a, a, 2)`, `RadiusArc` with a chord along
@@ -206,12 +216,16 @@
 - **Expected:** `ValueError` for both, naming the cause.
 
 ### 21. `Spline(tangents=...)`: malformed input gives IndexError / TypeError
+- **Partly fixed (kernel plan C8):** a list whose length is neither 2 nor the number of points
+  raises `ValueError` ("tangents are (start, end) or one per point"); `tangents=(1, 0)` still raises
+  `TypeError`.
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, script `03-spline-tangents.py`
 - **What happens:** `tangents=((1, 0),)` -> `IndexError: tuple index out of range`;
   `tangents=(1, 0)` -> `TypeError: 'int' object is not iterable`.
 - **Expected:** `ValueError: tangents must be a pair (start, end)`.
 
 ### 22. `Part.bbox()` of a body swept along a helix is about 0.1 mm too large (analysis domain)
+- **Fixed (0.5.0, checked 2026-10-22):** `max.x` is 8.5004 (0.4.0: 9.116).
 - **Session:** `2026-10-12_21-36-18_curves-freeform`, scripts `14-helix-profile-orientation.py`, `15-helix-start-cap.py`
 - **What happens:** `sweep(Rectangle(1, 2), Helix(4, 12, 8)).bbox().max.x` is 9.116; the
   radial extent is 8.5 (start cap vertices at x 7.5 and 8.5). Probably the kernel's loose

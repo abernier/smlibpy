@@ -495,3 +495,36 @@ test('bend and unfold as the example does', () => {
   const bad = raises(() => fold(blank, new Axis([49, 0, 2], [0, 1, 0]), 90, { radius: 2 }), ModelingError, /./)
   assert.equal(bad.name, 'ModelingError')
 })
+
+
+// -- review of 0.5.0: mirrored parts and fold records of tools ----------------------------------------
+import * as RV from '../src/index.ts'
+
+function twoFolds(): Part {
+  const blank = RV.Box(200, 40, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const part = fold(blank, new Axis([-60, 0, 2], [0, 1, 0]), 90, { radius: 1, kFactor: 0.33 })
+  return fold(part, new Axis([60, 0, 2], [0, 1, 0]), 90, { radius: 6, kFactor: 0.45 })
+}
+
+test('mirrored sheet metal unfolds (bend ends of straight B-spline edges)', () => {
+  for (const plane of [Plane.YZ, Plane.XY, Plane.XZ]) {
+    const part = twoFolds().mirror(plane)
+    assert.ok(part.edges().lines().length > 0)
+    assert.deepEqual(sheetmetal.bends(part).map((b) => b.kFactor), [0.33, 0.45])
+    approx(flatPattern(part).size.x, 200, 1e-8)
+    approx(flatPattern(part, { kFactor: 0.44 }).size.x, 200.314159, 1e-6)
+  }
+  const plate = RV.Box(100, 60, 2, { align: [Align.CENTER, Align.CENTER, Align.MIN] })
+  const edge = plate.edges().filterBy(Y).top().sortBy(X).at(-1)!
+  const part = flange(plate, edge, 20, { radius: 2, kFactor: 0.3 })
+  const back = RV.fromStep(RV.toStep(part.mirror(Plane.YZ))) as Part
+  approx(flatPattern(back).size.x, 120.524, 1e-5)
+})
+
+test('unions take the fold records of every operand', () => {
+  const part = twoFolds()
+  const tab = RV.Box(10, 10, 2).translate(0, 0, 1)
+  for (const joined of [part.fuse(tab), tab.fuse(part), RV.Box(300, 100, 100).intersect(part.fuse(tab))]) {
+    approx(flatPattern(joined).size.x, 200, 1e-8)
+  }
+})

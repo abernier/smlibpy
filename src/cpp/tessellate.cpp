@@ -6,6 +6,10 @@
 //   tessellation_algorithm(brep, ...)   "grid" or "halving" for the given tolerances
 //   grid_deviation(face, ...)                how far the facets of the grid would be off a face
 //
+//   (and in tessellate: the grid of a free-form face checked against its surface at its control
+//   points, see grid_misses_surface; edges of surfaces of revolution split onto the surface where
+//   their middle is off by more than the chord height, see split_far_edges)
+//
 // The kernel's tessellator (SmTess) knows two ways to divide a B-spline face (any other surface
 // is approximated by Bezier patches, which are always halved):
 //
@@ -52,6 +56,7 @@
 #include "tessellate.h"
 
 #include <SmApiBrep.h>
+#include <SmApiQueries.h>
 #include <SmApiTessellationParams.h>
 #include <SmBSplineSurface.h>
 #include <SmCopyBrepMap.h>
@@ -62,8 +67,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -541,6 +548,222 @@ const char* algorithm_name(SmTessAlgorithmType algorithm)
     return algorithm == SM_TA_FEWER_POLYGONS ? "halving" : "grid";
 }
 
+// The normal a facet corner has for a face of the body (the vertex lists one per face it is on).
+bool corner_normal(SmPolyVertex* vertex, const SmFace* face, SmVector3d& normal)
+{
+    const auto& faces = vertex->GetFacesRef();
+    const auto& normals = vertex->GetNormalsRef();
+    for (ULONG i = 0; i < faces.GetSize() && i < normals.GetSize(); ++i)
+        if (faces[i] == static_cast<const SmTopology*>(face))
+            return normal = normals[i], true;
+    return false;
+}
+
+// The point of a face's surface nearest to p, and the surface normal there.
+bool onto_surface(const SmFace* face, const SmPoint3d& p, SmPoint3d& q, SmVector3d& normal)
+{
+    const SmSurface* surface = face->GetSurface();
+    SmSolutionArray solutions;
+    if (surface->GlobalPointSolve(face->GetUVDomain(), SM_SO_MINIMIZE, p, SmTol::GetZoneTol3d(face), nullptr,
+                                  SM_SR_SINGLE, solutions) != SM_SUCCESS || solutions.GetSize() < 1)
+        return false;
+    const SmPoint2d uv(solutions[0].m_vStart[0], solutions[0].m_vStart[1]);
+    return surface->EvaluatePoint(uv, q) == SM_SUCCESS && surface->EvaluateNormal(uv, TRUE, TRUE, normal) == SM_SUCCESS;
+}
+
+// The distance from p to the triangle abc.
+double to_triangle(const SmPoint3d& p, const SmPoint3d& a, const SmPoint3d& b, const SmPoint3d& c)
+{
+    // the closest point by the regions of the triangle (Ericson, Real-Time Collision Detection 5.1.5)
+    const SmVector3d ab = b - a, ac = c - a, ap = p - a;
+    const double d1 = ab.Dot(ap), d2 = ac.Dot(ap);
+    if (d1 <= 0 && d2 <= 0)
+        return p.DistanceBetween(a);
+    const SmVector3d bp = p - b;
+    const double d3 = ab.Dot(bp), d4 = ac.Dot(bp);
+    if (d3 >= 0 && d4 <= d3)
+        return p.DistanceBetween(b);
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0)
+        return p.DistanceBetween(a + ab * (d1 / (d1 - d3)));
+    const SmVector3d cp = p - c;
+    const double d5 = ab.Dot(cp), d6 = ac.Dot(cp);
+    if (d6 >= 0 && d5 <= d6)
+        return p.DistanceBetween(c);
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0)
+        return p.DistanceBetween(a + ac * (d2 / (d2 - d6)));
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
+        return p.DistanceBetween(b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    const double denominator = 1.0 / (va + vb + vc);
+    return p.DistanceBetween(a + ab * (vb * denominator) + ac * (vc * denominator));
+}
+
+// Whether the grid's facets of a free-form face (a B-spline surface that can be twisted, see
+// can_be_twisted) miss its surface by more than twice the chord height. The grid places its lines
+// by the curves along the borders of the face, so a bump inside a face with straight borders falls
+// between them: an interpolated 21 x 21 sheet with one point raised by 5 was meshed flat (its
+// highest corner at 0.16 for a chord height of 0.01). The surface is tested at the Greville points
+// of its control net, where each control point pulls it most (up to 64 of them each way), against
+// the facets of its face.
+bool grid_misses_surface(SmPolyBrep* poly, double chord_height)
+{
+    SmTArray<SmPolyFace*> poly_faces;
+    poly->GetPolyFaces(poly_faces);
+    std::unordered_map<const SmFace*, std::vector<SmPoint3d>> corners;  // three per facet
+    for (ULONG i = 0; i < poly_faces.GetSize(); ++i)
+    {
+        const SmFace* face = poly_faces[i]->GetOriginalFace();
+        SmPolyLoop* loop = poly_faces[i]->GetOuterPolyLoop();
+        if (!face || !loop || !can_be_twisted(face->GetSurface()))
+            continue;
+        SmTArray<SmPolyEdge*> edges;
+        loop->GetPolyEdges(edges);
+        auto& list = corners[face];
+        for (ULONG k = 1; k + 1 < edges.GetSize(); ++k)  // (a fan from the first corner)
+            list.insert(list.end(), {edges[0]->GetStartPoint(), edges[k]->GetStartPoint(), edges[k + 1]->GetStartPoint()});
+    }
+    for (const auto& [face, list] : corners)
+    {
+        const auto* surface = static_cast<const SmBSplineSurface*>(face->GetSurface());
+        const ULONG nu = surface->GetNumberControlPoints(SM_SP_U), nv = surface->GetNumberControlPoints(SM_SP_V);
+        const ULONG su = std::max<ULONG>(1, (nu + 63) / 64), sv = std::max<ULONG>(1, (nv + 63) / 64);
+        for (ULONG iu = 0; iu < nu; iu += su)
+            for (ULONG iv = 0; iv < nv; iv += sv)
+            {
+                const SmPoint2d uv(surface->GetGrevilleAbscissa(SM_SP_U, iu), surface->GetGrevilleAbscissa(SM_SP_V, iv));
+                int where = SM_PC_UNKNOWN;
+                SmPoint3d p;
+                if (SmApiFaceClassifyUV(face, uv, where) != SM_SUCCESS || where != SM_PC_FACE ||
+                    surface->EvaluatePoint(uv, p) != SM_SUCCESS)
+                    continue;
+                double nearest = std::numeric_limits<double>::infinity();
+                for (size_t k = 0; k + 2 < list.size() && nearest > 2.0 * chord_height; k += 3)
+                    nearest = std::min(nearest, to_triangle(p, list[k], list[k + 1], list[k + 2]));
+                if (nearest > 2.0 * chord_height)
+                    return true;
+            }
+    }
+    return false;
+}
+
+// The corner of a triangle facet opposite its edge `edge`: the edge that starts there.
+SmPolyEdge* opposite(SmPolyEdge* edge)
+{
+    return edge->GetCCWPolyEdge() ? edge->GetCCWPolyEdge()->GetCCWPolyEdge() : nullptr;
+}
+
+// The kernel's facets of a surface of revolution can be far off it: the grid puts a fan of long
+// slivers along the seam near both poles of a sphere, 0.68 off for a chord height of 0.01 (68
+// times). Here an edge inside such a face (both its facets on that face) whose middle lies further
+// than the chord height from the surface is split there, on the surface, and the two triangles
+// beside it become four, until no such edge is left: the mesh stays closed, and the new corner gets
+// the surface normal. An edge is tested only where its length and the angle between its corner
+// normals say it may bend off by more than half the chord height (a circle of the radius they give
+// bends off its chord by length * angle / 8). Free-form faces are not split (a bump between the
+// grid's lines leaves no trace in the normals; see grid_misses_surface), nor polygons that are not
+// triangles.
+void split_far_edges(SmPolyBrep* poly, double chord_height)
+{
+    if (!poly || !(chord_height > 0.0))
+        return;
+    for (int pass = 0; pass < 24; ++pass)
+    {
+        struct Split
+        {
+            SmPolyEdge* edge;
+            const SmFace* face;
+            SmPoint3d point;
+            SmVector3d normal;
+            double off;
+        };
+        std::vector<Split> splits;
+        SmTArray<SmPolyEdge*> edges;
+        poly->GetPolyEdges(edges);
+        for (ULONG i = 0; i < edges.GetSize(); ++i)
+        {
+            SmPolyEdge* edge = edges[i];
+            SmPolyEdge* mate = edge->GetRadial();
+            if (!mate || mate == edge || mate->GetRadial() != edge || edge > mate)
+                continue;  // (not between two facets, or seen from the other side)
+            SmPolyFace* f1 = edge->GetPolyFace();
+            SmPolyFace* f2 = mate->GetPolyFace();
+            const SmFace* face = f1 ? f1->GetOriginalFace() : nullptr;
+            if (!face || !f2 || f2->GetOriginalFace() != face || !face->GetSurface()->IsKindOf(SmSurfOfRevolution_TYPE))
+                continue;
+            if (opposite(edge) == nullptr || opposite(edge)->GetCCWPolyEdge() != edge || opposite(mate) == nullptr ||
+                opposite(mate)->GetCCWPolyEdge() != mate)
+                continue;  // (not two triangles)
+            SmVector3d na, nb;
+            SmPolyVertex* a = edge->GetStartPolyVertex();
+            SmPolyVertex* b = edge->GetEndPolyVertex();
+            if (!corner_normal(a, face, na) || !corner_normal(b, face, nb))
+                continue;
+            double angle = 0.0;
+            na.AngleBetween(nb, angle);
+            const double length = edge->GetLength();
+            if (!(length * angle / 8.0 > 0.5 * chord_height))
+                continue;
+            const SmPoint3d middle = (a->GetPoint() + b->GetPoint()) * 0.5;
+            SmPoint3d q;
+            SmVector3d n;
+            if (!onto_surface(face, middle, q, n))
+                continue;
+            const double off = q.DistanceBetween(middle);
+            if (!(off > chord_height))
+                continue;
+            if (n.Dot(na + nb) < 0)
+                n = -n;  // (the face's side)
+            splits.push_back({edge, face, q, n, off});
+        }
+        if (splits.empty())
+            return;
+        std::sort(splits.begin(), splits.end(), [](const Split& x, const Split& y) { return x.off > y.off; });
+        std::unordered_set<const SmPolyFace*> changed;
+        for (const Split& s : splits)
+        {
+            SmPolyEdge* mate = s.edge->GetRadial();
+            SmPolyFace* f1 = s.edge->GetPolyFace();
+            SmPolyFace* f2 = mate->GetPolyFace();
+            if (changed.count(f1) || changed.count(f2))
+                continue;  // (split in this pass already: tested again in the next)
+            SmPolyEdge* far1 = opposite(s.edge);  // the edges that start at the corners across
+            SmPolyEdge* far2 = opposite(mate);
+            SmPolyEdge* added = nullptr;
+            SmPolyVertex* corner = nullptr;
+            if (f1->MakeVertexSplitPolyEdge(s.edge, s.point, added, corner) != SM_SUCCESS || !corner)
+                return;
+            corner->AddFaceToList(const_cast<SmFace*>(s.face));
+            corner->AddFaceNormal(s.normal);
+            // each facet is a quad now, with the new corner where the edge was: connect it to the
+            // corner across
+            for (SmPolyFace* f : {f1, f2})
+            {
+                SmPolyEdge* from = nullptr;
+                SmTArray<SmPolyEdge*> loop;
+                f->GetOuterPolyLoop()->GetPolyEdges(loop);
+                for (ULONG k = 0; k < loop.GetSize(); ++k)
+                    if (loop[k]->GetStartPolyVertex() == corner)
+                        from = loop[k];
+                SmPolyEdge* to = f == f1 ? far1 : far2;
+                SmPolyEdge* edge = nullptr;
+                SmPolyLoop* new_loop = nullptr;
+                SmPolyFace* new_face = nullptr;
+                if (!from || f->MakeManifoldEdge(from, to, edge, new_loop, new_face) != SM_SUCCESS)
+                    return;
+                changed.insert(f);
+                if (new_face)
+                {
+                    if (new_face->GetOriginalFace() != s.face)
+                        new_face->SetOriginalFace(const_cast<SmFace*>(s.face), TRUE);
+                    changed.insert(new_face);
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 namespace smlibpy {
@@ -572,6 +795,19 @@ Tessellation tessellate(SmBrep* brep, const TessellateOptions& o)
     t.status = chosen == SM_TA_FASTER_TESSELLATION
                    ? SmApiTessellate(brep, t.mesh, params, o.allow_partial, nullptr, &t.report)
                    : tessellate_by_halving(brep, t.mesh, params, o.allow_partial, t.report);
+    if (t.status == SM_SUCCESS && t.mesh && o.algorithm == "auto" && chosen == SM_TA_FASTER_TESSELLATION &&
+        o.chord_height_tolerance > 0.0 && o.max_edge_length == 0.0 && o.max_aspect_ratio == 0.0 &&
+        grid_misses_surface(t.mesh, o.chord_height_tolerance))
+    {
+        t.mesh->SetOKBackPtrs(FALSE);
+        delete t.mesh;
+        t.mesh = nullptr;
+        t.report = SmTessellationReport();
+        t.algorithm = algorithm_name(SM_TA_FEWER_POLYGONS);
+        t.status = tessellate_by_halving(brep, t.mesh, params, o.allow_partial, t.report);
+    }
+    if (t.status == SM_SUCCESS && t.mesh)
+        split_far_edges(t.mesh, o.chord_height_tolerance);
     return t;
 }
 
@@ -652,7 +888,7 @@ py::object tessellate_py(SmBrep* brep, double chord_height_tol, double curve_ang
     o.max_aspect_ratio = max_aspect_ratio;
     o.algorithm = algorithm;
     o.allow_partial = allow_partial;
-    smlibpy::Tessellation t = smlibpy::tessellate(brep, o);
+    smlibpy::Tessellation t = smlibpy::without_gil([&] { return smlibpy::tessellate(brep, o); });
     if (t.status != SM_SUCCESS)
     {
         try
@@ -696,10 +932,12 @@ void bind_tessellate(py::module_ m)
           "twisted along it far coarser than the chord height; 'halving' halves the faces until each part is flat "
           "within the chord height (more facets, slower; no max_edge_length or max_aspect_ratio); 'auto' (default) "
           "halves a body with a face whose grid would be off by more than twice the chord height (see "
-          "grid_deviation) unless a max edge length or aspect ratio is given, and takes the grid otherwise. The "
+          "grid_deviation), or whose grid misses the surface of a free-form face by that much at one of its control "
+          "points, unless a max edge length or aspect ratio is given, and takes the grid otherwise. On surfaces of "
+          "revolution, edges whose middle is off the face by more than the chord height are split onto it. The "
           "report (return_report=True) names the algorithm used.");
     m.def("poly_face_indices", [](SmPolyBrep* poly, SmBrep* brep) {
-        const std::vector<int32_t> out = smlibpy::poly_face_indices(poly, brep);
+        const std::vector<int32_t> out = smlibpy::without_gil([&] { return smlibpy::poly_face_indices(poly, brep); });
         return py::array_t<int32_t>(static_cast<py::ssize_t>(out.size()), out.data());
     }, py::arg("poly"), py::arg("brep"),
           "For each polygon of poly.to_numpy_arrays(), the index of the face of brep (in brep.get_faces() order) "
@@ -710,7 +948,8 @@ void bind_tessellate(py::module_ m)
         py::arg("max_edge_length") = SmTessellationDefaults::kMaxEdgeLength,
         py::arg("max_aspect_ratio") = SmTessellationDefaults::kMaxAspectRatio,
         "'halving' if tessellate(algorithm='auto') halves the faces of the Brep for these tolerances, 'grid' "
-        "otherwise.");
+        "otherwise; tessellate can still halve after the grid, where the grid misses the surface of a free-form "
+        "face (its report names the algorithm it used).");
     m.def("grid_deviation", &smlibpy::grid_deviation, py::arg("face"), py::kw_only(), py::arg("chord_height_tolerance"),
           py::arg("surface_angle_tolerance_deg") = SmTessellationDefaults::kSurfaceAngleTolDeg,
           py::arg("max_edge_length") = SmTessellationDefaults::kMaxEdgeLength,
