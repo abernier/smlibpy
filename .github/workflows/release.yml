@@ -73,8 +73,10 @@ jobs:
           name: dist-sdist
           path: dist/*.tar.gz
 
+  # A job for each system and Python, side by side: one after the other on one runner, the ten
+  # wheels of macOS (each tested, x86_64 under Rosetta) took about three hours
   wheels:
-    name: wheels ${{ matrix.os }}
+    name: wheels ${{ matrix.os }} ${{ matrix.python }}
     if: github.event_name == 'release' || inputs.only == 'all'
     needs: app
     runs-on: ${{ matrix.os }}
@@ -83,6 +85,8 @@ jobs:
       matrix:
         # macos-latest builds arm64 and, cross-compiled, x86_64 (see pyproject.toml)
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        # (the Pythons of tool.cibuildwheel.build in pyproject.toml)
+        python: [cp310, cp311, cp312, cp313, cp314]
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -92,18 +96,26 @@ jobs:
           name: app
           path: src/smlibpy/mcp/app
       - uses: pypa/cibuildwheel@v4.2.1
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-*
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: dist-wheels-${{ matrix.os }}
+          name: dist-wheels-${{ matrix.os }}-${{ matrix.python }}
           path: wheelhouse/*.whl
 
   # Windows compiles the kernel far slower than the others; its wheels follow on their own,
-  # into the same release, so the rest need not wait for them
+  # into the same release, so the rest need not wait for them. A job for each Python, as for the
+  # others: on one runner the tests' second run (cp311, after cp310's) ran eleven times slower from
+  # its middle on, and three time limits failed; no first run on a runner has slowed down
   wheels-windows:
-    name: wheels windows-latest
+    name: wheels windows-latest ${{ matrix.python }}
     if: github.event_name == 'release' || inputs.only != 'npm'
     needs: app
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [cp310, cp311, cp312, cp313, cp314]
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -122,18 +134,19 @@ jobs:
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }
-      # MSVC needs about 55 minutes for the kernel here, and ccache finds nothing to reuse
-      # between the wheels. So the kernel is compiled once, and every wheel links it.
-      - name: The kernel, compiled once for every Python
+      # MSVC needs about 55 minutes for the kernel here, and ccache finds nothing to reuse. So the
+      # kernel is compiled on its own, and the wheel links it.
+      - name: The kernel, compiled once
         run: |
           cmake -S . -B C:/smlibpy-kernel -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DSMLIBPY_KERNEL_ONLY=ON
           cmake --build C:/smlibpy-kernel
       - uses: pypa/cibuildwheel@v4.2.1
         env:
           CIBW_ENVIRONMENT_WINDOWS: CMAKE_GENERATOR=Ninja CXX=cl SMLIBPY_KERNEL_DIR=C:/smlibpy-kernel
+          CIBW_BUILD: ${{ matrix.python }}-win_amd64
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: windows-wheels
+          name: windows-wheels-${{ matrix.python }}
           path: wheelhouse/*.whl
 
   publish:
@@ -242,8 +255,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8.0.1
         with:
-          name: windows-wheels
+          pattern: windows-wheels-*
           path: dist
+          merge-multiple: true
       - name: Only wheels get uploaded
         run: |
           ls -l dist
