@@ -606,10 +606,13 @@ class Corner:
 
 def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corner], closed: bool,
              tol: float, what: Callable[[int], str] | None = None,
-             fp: Callable[[complex], str] = fmt_pt) -> tuple[list[Seg], list[str]]:
+             fp: Callable[[complex], str] = fmt_pt, curves: Any = None) -> tuple[list[Seg], list[str]]:
     """Apply corner fillets and chamfers. ``corners[i]`` rounds the corner where ``segs[i - 1]``
     ends and ``segs[i]`` starts (``i = 0``: the corner between the last and the first segment
-    of a closed loop). ``what(i)`` names segment ``i`` and ``fp`` formats points in messages."""
+    of a closed loop). ``what(i)`` names segment ``i`` and ``fp`` formats points in messages.
+    ``curves`` handles corners and pieces of :class:`Curve2` segments (``curves.corner(kind, s1,
+    s2, size)`` as :func:`fillet_corner`, ``curves.piece(seg, s0, s1)``; ``_regions.CurveCorners``);
+    without it they raise."""
     n = len(segs)
     name = what or (lambda i: f"segment {i + 1} ({labels[i]})")
     cut_start = [0.0] * n
@@ -624,7 +627,9 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
         s1, s2 = segs[i - 1], segs[i % n]
         smaller = "use a smaller radius" if cn.kind == "fillet" else "use a shorter length"
         try:
-            if cn.kind == "fillet":
+            if curves is not None and (isinstance(s1, Curve2) or isinstance(s2, Curve2)):
+                back, ahead, piece = curves.corner(cn.kind, s1, s2, cn.size)
+            elif cn.kind == "fillet":
                 back, ahead, piece = fillet_corner(s1, s2, cn.size)
             else:
                 back, ahead, piece = chamfer_corner(s1, s2, cn.size)
@@ -657,8 +662,11 @@ def assemble(segs: Sequence[Seg], labels: Sequence[str], corners: dict[int, Corn
         if cut_start[j] or cut_end[j]:
             if seg.length - cut_start[j] - cut_end[j] > tol:
                 if isinstance(seg, Curve2):
-                    raise GeometryError(f"cannot shorten {name(j)}: it is not a line or an arc")
-                out.append(seg.piece(cut_start[j], seg.length - cut_end[j]))
+                    if curves is None:
+                        raise GeometryError(f"cannot shorten {name(j)}: it is not a line or an arc")
+                    out.append(curves.piece(seg, cut_start[j], seg.length - cut_end[j]))
+                else:
+                    out.append(seg.piece(cut_start[j], seg.length - cut_end[j]))
                 labs.append(labels[j])
         else:
             out.append(seg)

@@ -52,6 +52,33 @@ CopyMap copy_with_map(const SmBrep* brep, const std::vector<SmFace*>& faces, con
 
 // A row-major 4x4 matrix applied to a Brep in place (rigid, scaling and mirroring).
 void transform_brep(SmBrep* brep, const std::vector<double>& matrix);
+// A Boolean (SmApiBoolean, SmApiNonManifoldBoolean with `non_manifold`, or with `imprinting` an
+// imprint: SmApiBooleanWithOptions, which splits brep1's faces where brep2 crosses them) that leaves
+// the kernel as it was when it fails: SmMerge marks the shared context as doing a Boolean and clears
+// the mark only on its way out of a success (while it is set, the kernel builds no surface caches).
+// As k.boolean: on success the result is brep1, changed, and brep2 is deleted; on failure both stay
+// the caller's. Where the faces of the two cross along a curve tangent to a seam of a body of
+// revolution (seams.h), that body is turned about its axis first, on copies: then the result is a
+// Brep of its own, and brep1 and brep2 are deleted. `operation`: SM_BO_UNION, SM_BO_DIFFERENCE,
+// SM_BO_INTERSECTION or SM_BO_MERGE.
+SmBrep* boolean(SmBrep* brep1, SmBrep* brep2, int operation, bool non_manifold, bool imprinting = false);
+// A Boolean as boolean() (both operands taken on success) and the edges of the result that lie on
+// the surfaces of both operands (where they meet: the intersection curves, and the rims where one
+// stands on the other), tested at three points along each edge. In place of SmApiBooleanWithCurves,
+// which hands out edges that its post-processing deleted.
+std::pair<SmBrep*, std::vector<SmEdge*>> boolean_with_curves(SmBrep* brep1, SmBrep* brep2, int operation);
+// Where each point (x, y, z, x, y, z, ...) lies relative to a body, within `tolerance` (0: the
+// body's own; SmBrep::Point3DClassify): per point (where, index, cell). `where` is "inside",
+// "outside", "face", "edge" or "vertex"; `index` the face, edge or vertex in the Brep's own lists
+// (-1 off the boundary); `cell` the closed region that is not a cavity holding the point,
+// numbered as region_shells numbers them (-1 outside, in a cavity and on the boundary).
+Value classify_points(const SmBrep* brep, const std::vector<double>& points, double tolerance);
+// The outer angle of each edge in degrees (SmEdge::CalcOuterAngle at the middle of its interval):
+// the angle between its two faces through the region outside the body, above 180 at a convex edge,
+// below at a concave one, 180 where the faces meet tangentially. None where the kernel cannot tell:
+// an edge that does not lie between two faces of a solid (a seam, an edge of a sheet, an inner edge
+// of a merged part).
+Value edge_angles(const SmBrep* brep, const std::vector<SmEdge*>& edges);
 // Faces of a Brep copied into a new Brep (no merge, no stitching).
 SmBrep* copy_faces(const SmBrep* brep, const std::vector<SmFace*>& faces);
 // A sheet Brep with one face covering the whole (copied) surface.
@@ -79,6 +106,12 @@ SmCurve* edge_curve(const SmEdge* edge);
 std::pair<double, double> reverse_curve(SmCurve* curve);
 // A NURBS approximation of any curve that keeps its parameterisation.
 SmBSplineCurve* approximate_curve(const SmCurve* curve, double tolerance);
+// The curve at `distance` from `curve` along its tangent x `normal` (STEP's OFFSET_CURVE_3D, IGES's offset
+// curve), over the curve's whole range, as a NURBS within `tolerance`.
+SmBSplineCurve* offset_curve_3d(const SmCurve* curve, double distance, const std::vector<double>& normal, double tolerance);
+// Curves that each start where the one before ends, as one B-spline curve
+// (SmBSplineCurve::CreateByJoining); one that is not a B-spline (an ellipse) is approximated.
+SmBSplineCurve* join_curves(const std::vector<SmCurve*>& curves);
 
 // The kernel's precise integration: {area, origin, first_moments, signed_area} of a face;
 // {area, volume, mass, origin, moments} of a Brep.
@@ -89,9 +122,18 @@ Value brep_properties(const SmBrep* brep, double accuracy, double density);
 Value curve_eval(const SmCurve* curve, double t, int derivatives);
 
 // Profile curves swept along a path with all of the kernel's sweep options. Profile and path are
-// copied, not consumed.
+// copied, not consumed. With `center`, `reference` (x, y, z; or empty) is the point of the profile
+// that goes on the start of the path (else the middle of the box of the curves' control points).
 SmBrep* curve_sweep(const std::vector<SmCurve*>& profile, SmBSplineCurve* path, bool cap_ends, bool center,
-                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve);
+                    bool orient, bool translational, SmBSplineCurve* scale_reference, SmBSplineCurve* scale_curve,
+                    const std::vector<double>& reference = {});
+
+// The kernel's sweep along a planar path of several curves with mitred corners
+// (SmApiCreateSweepAlongPlanarPath, capped), the point `reference` (x, y, z; or empty: the middle of
+// the box of the curves' control points) of the profile on the start of the path. Copies, consumes
+// nothing.
+SmBrep* planar_path_sweep(const std::vector<SmCurve*>& profile, const std::vector<SmCurve*>& path,
+                          const std::vector<double>& reference);
 
 std::string curve_kind(const SmCurve* curve);
 std::string surface_kind(const SmSurface* surface);

@@ -10,13 +10,27 @@ file(GLOB SMLIBWASM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*
 # smlibpy's own C++, shared with the Python extension (its Python bindings sit behind
 # SMLIBPY_PYTHON, which is not defined here), and the kernel's error messages from SmPyLib
 file(GLOB SMLIBPY_SHARED_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/cpp/*.cpp" "${CMAKE_SOURCE_DIR}/src/cpp/usd/*.cpp")
+# (usd-brep's bridge to OpenCASCADE's .brep files: vendor code, built quietly as the kernel)
+file(GLOB SMLIBPY_OCCT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/cpp/occt/*.cpp")
+set_source_files_properties(${SMLIBPY_OCCT_SOURCES} PROPERTIES COMPILE_OPTIONS -w)
+list(APPEND SMLIBPY_SHARED_SOURCES ${SMLIBPY_OCCT_SOURCES})
 list(FILTER SMLIBPY_SHARED_SOURCES EXCLUDE REGEX ".*/module\\.cpp$")
 set(SMPY_DIR "${USD_BREP_DIR}/source/SmPyLib/src")
 
 add_executable(smlibwasm ${SMLIBWASM_SOURCES} ${SMLIBPY_SHARED_SOURCES} "${SMPY_DIR}/SmPyError.cpp")
 target_include_directories(smlibwasm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/cpp" "${CMAKE_SOURCE_DIR}/src/cpp"
-                           "${CMAKE_SOURCE_DIR}/src/cpp/usd" "${SMPY_DIR}")
+                           "${CMAKE_SOURCE_DIR}/src/cpp/usd" "${CMAKE_SOURCE_DIR}/src/cpp/occt" "${SMPY_DIR}")
 target_link_libraries(smlibwasm PRIVATE sm_api smlib)
+# SmPyLib's own bindings of the kernel, compiled as they are against the stand-in for pybind11
+# (cpp/pyshim; cpp/smpylib.cpp registers them): all of its binders but USD's and the check of
+# borrowed geometry, which looks into Python itself
+set(SMPYLIB_BINDERS Booleans BrepOps Curves CutProjectTrim Enums FileIo Fillets Heal Intersectors Offset PolyBrep
+    PolyOps Primitives Queries Stitching Surfaces Sweeps Tessellation Transforms Types)
+list(TRANSFORM SMPYLIB_BINDERS PREPEND "${SMPY_DIR}/SmPy")
+list(TRANSFORM SMPYLIB_BINDERS APPEND ".cpp")
+target_sources(smlibwasm PRIVATE ${SMPYLIB_BINDERS})
+set_source_files_properties(${SMPYLIB_BINDERS} "${CMAKE_CURRENT_SOURCE_DIR}/cpp/smpylib.cpp" PROPERTIES
+  INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/cpp/pyshim" COMPILE_OPTIONS "-Os")
 # (a second build, in its own build directory, can write its module elsewhere)
 set(SMLIBWASM_OUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/wasm" CACHE PATH "Where the module (smlibwasm.mjs, smlibwasm.wasm) is written")
 set_target_properties(smlibwasm PROPERTIES
@@ -24,6 +38,11 @@ set_target_properties(smlibwasm PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${SMLIBWASM_OUT_DIR}")
 
 # (WebAssembly exceptions: set on the kernel targets by the parent, see there)
+#
+# The stack: a call that throws (a kernel error becomes a JavaScript exception) or traps leaves
+# the stack pointer where it was inside the call, so js/src/kernel.ts saves it before every call
+# and restores it when the call throws (stackSave, stackRestore). The stack lies below the static
+# data (--stack-first), so that an overflow traps instead of overwriting that data.
 target_link_options(smlibwasm PRIVATE
   -lembind
   -fwasm-exceptions
@@ -35,5 +54,11 @@ target_link_options(smlibwasm PRIVATE
   -sINITIAL_MEMORY=64MB
   -sMAXIMUM_MEMORY=4GB
   -sSTACK_SIZE=4MB
+  -Wl,--stack-first
   -sFILESYSTEM=1
-  -sEXPORTED_RUNTIME_METHODS=FS)
+  -sEXPORTED_RUNTIME_METHODS=FS,stackSave,stackRestore)
+
+# The loader bundles for the browser (webpack 5, esbuild, Vite): see scripts/patch-loader.cmake.
+add_custom_command(TARGET smlibwasm POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" "-DLOADER=$<TARGET_FILE:smlibwasm>" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch-loader.cmake"
+  VERBATIM)

@@ -34,22 +34,34 @@ edges are picked by their geometry, for example `part.faces().top()` or
 ## Features
 
 **Modeling** ([parts](https://smlibpy.classcad.ch/docs/parts), [features](https://smlibpy.classcad.ch/docs/features))
-- Primitives: `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`
+- Primitives: `Box`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Wedge`, sectors of them (`arc_size=`)
+  and `AnnularSector`
 - Holes: `Hole`, `CounterBoreHole`, `CounterSinkHole`, placed with `Locations`, `GridLocations`,
   `PolarLocations`, `HexLocations`
 - Booleans: `fuse`, `cut`, `intersect`, which can also be written `+`, `-`, `&`; `merge` makes one
-  part of several cells (as for several materials), `cells()` gives them back
-- Operations: `extrude` (also tapered), `revolve`, `loft`, `sweep` (also along helices), `shell`,
-  `offset`, `thicken`, `draft`, `mirror`, `split`, `section`
-- Fillets: circular, variable radius, and curvature-continuous (G2/G3); chamfers
+  part of several cells (as for several materials), `cells()` gives them back, named after the
+  parts they lie in; `imprint` splits faces where a tool crosses them; `split` by planes and sheets
+- Operations: `extrude` (also tapered, with plane walls), `revolve`, `swing` (a revolve around any
+  outline), `loft` (also with end tangents, or closed), `sweep` (the profile's attitude, a twist and
+  a scale along the path; along helices without rolling), `shell` (walls of their own thickness,
+  round or sharp corners), `offset` (sharp or round), `thicken`, `draft`, `mirror`, `split`,
+  `section`
+- Direct editing: `move_faces` and `offset_faces` move and push-pull faces, resize holes and
+  bosses, and rebuild the part around them exactly
+- Fillets: circular, variable radius, and curvature-continuous (G2/G3), along tangent runs, with
+  mitred corners; chamfers with one or two setbacks or an angle, exact cones on round edges
 
 **[Sheet metal](https://smlibpy.classcad.ch/docs/sheet-metal)**
-- `fold` and `flange` with exact bends (radius and K-factor)
-- `unfold`, and `flat_pattern` with bend lines
+- `fold` and `flange` with exact bends (radius and K-factor, kept per bend; K-factor rules such as
+  DIN 6935)
+- `unfold`, and `flat_pattern` with bend lines and an outline of lines and arcs; rolled parts,
+  curls and bends over 180 degrees too
 - `bends()`, `bend_allowance`, `bend_deduction`, `developed_length`
 
 **[Deformation](https://smlibpy.classcad.ch/docs/deform)**
-- `twist`, `taper` and `bend` work on finished parts. A tapered cylinder becomes an exact cone.
+- `twist`, `taper` and `bend` work on finished parts, and on edges, wires and points. A tapered
+  cylinder becomes an exact cone, a bent plate exact cylinders (sheet metal you can unfold).
+- `unroll` lays a part wrapped around an axis out flat
 - Free-form deformation with a `Lattice`
 
 **Simplifying:** `remove_fillets` and `remove_faces` take out fillets, holes and bosses, also on
@@ -65,40 +77,62 @@ undercut. `parting_line` finds the parting line.
 - Shapes: `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Polygon`, `RegularPolygon`,
   `Triangle`, `Trapezoid`, `Slot`, `ArcSlot`, `Hull`, and `Stroke` (a band along a path). The
   polygon shapes take `fillet=` and `chamfer=`.
-- Exact 2D Booleans, offsets, and corner fillets and chamfers. Sketches can be extruded,
-  revolved and swept.
+- Exact 2D Booleans, offsets, and corner fillets and chamfers (also at splines and ellipses).
+  Sketches can be extruded, revolved, swung and swept, and know their section properties.
 - `Text` with exact font outlines (the Lato font is included)
 
 **[Curves and surfaces](https://smlibpy.classcad.ch/docs/surfaces)**
 - Curves: `Line`, `Polyline`, `PolarLine`, `CenterArc`, `ThreePointArc`, `RadiusArc`,
-  `SagittaArc`, `TangentArc`, `EllipticalArc`, `Spline`, `Bezier`, `Helix`, `FilletPolyline`;
-  their NURBS data (`nurbs()`), `make_compatible`, `remove_knots`
-- Surfaces: `surface` through a grid of points or fitted to a cloud of points (a scan), `ruled`,
-  `surface_fillet` (a round blend between two sheets), `stitch` (faces into a solid), `to_nurbs`
+  `SagittaArc`, `TangentArc`, `EllipticalArc`, `ParabolicArc`, `HyperbolicArc`, `ConicArc`,
+  `Spline`, `Bezier`, `Helix` (any number of turns), `Spiral`, `FilletPolyline`, `fit_curve`
+  (through noisy points within a tolerance); trim, split, extend, join, offset, `to_arcs` (lines
+  and arcs for CNC), curvature and inflections, `through` and `match` to bend an edge; their NURBS
+  data (`nurbs()`, `Edge.from_nurbs`), `make_compatible`, `remove_knots`
+- Surfaces: `surface` through a grid of points or fitted to a cloud of points (a scan, with a
+  report of the distances), `nurbs_surface`, `ruled`, `surface_fillet` (a round or chamfer between
+  two sheets), `blend` (a G1/G2/G3 bridge between sheet edges), `fill` and `network` (patches in
+  loops of curves, surfaces through curve networks), `trim`, `extended`, `push`, `warp` and
+  `flatten` (local edits of a face), `match_edge`, `merge_faces`, `stitch` (faces into a solid,
+  within a tolerance, with a report), `to_nurbs`; curves on faces (`Face.project`, `wrap`, `iso`)
 
 **[Selection](https://smlibpy.classcad.ch/docs/selecting)**
 - By position (`top()`, `bottom()`, `nearest()`, …), by size (`largest()`, `smallest()`), and
   by geometry (`lines()`, `circles()`, `planar()`, `cylinders()`, `parallel_to()`, `facing()`,
   `convex()`, `concave()`, `fillets()`, …)
 - `filter_by`, `sort_by`, `group_by`, set operators between lists, and `neighbors()` of a face
+- By history: `new()`, `derived_from()` (the faces and edges an operation made, or that come from
+  a body), `joining()` (where two bodies meet), `tangent_chain()`; continuity (`g1()`, `g2()`)
+- Colors and names of single faces; shells, cavities (`voids()`) and the cells a face bounds
 - `hit_by()`: the faces a ray meets, nearest first
 
 **[Measuring and checks](https://smlibpy.classcad.ch/docs/analysis)**
 - `volume`, `area`, `center` and `mass_properties` (inertia, principal axes), computed from the
   exact surfaces to seven significant digits, with an error estimate
-- `distance_to`, `closest_point`, `raycast`, `intersection_curves`, `silhouette`, `project`,
-  `outline`, edge radius and convexity
-- `is_valid` and `heal()`. Every kernel result is checked, and a fillet or shell that can't
-  work raises an error that says what would fit.
+- `distance_to` and `closest_points` between bodies, faces and curves, `classify` (inside, outside
+  or on), `raycast` and `raycast_many`, `intersection_curves`, `silhouette`, `project`, `outline`
+  with hidden lines, curvature of faces and edges, continuity across edges, edge radius and
+  convexity, section properties of sketches
+- `is_valid`, `check()` (what the kernel's own check finds, by face, edge or vertex) and `heal()`.
+  Every kernel result is checked, and a fillet or shell that can't work raises an error that says
+  what would fit, and where.
 
 **[Files](https://smlibpy.classcad.ch/docs/files)**
-- STEP in and out: exact geometry, assemblies, units, names and colors (`named()`, `colored()`);
-  `read_step` also reads coordinate systems, curves and points
+- STEP in and out: exact geometry, assemblies (a product per body), units, names and colors, also
+  of single faces (`named()`, `colored()`); coordinate systems, curves and points in and out
+- IGES in: solids and trimmed surfaces (stitched into solids), exact surfaces and curves, units,
+  names and colors
 - USD in and out: exact bodies as the `BrepArray` prims of NVIDIA's usd-brep (Omniverse), with
-  names and colors, meshes for plain viewers
-- DXF in and out with exact arcs and splines; STL in and out; glTF/GLB and OBJ out; Booleans of
-  meshes (`+`, `-`, `&`), also of STL files
-- SMLib's own format (`save`, `load`)
+  names, colors and materials, placed as the stage places them; meshes for plain viewers
+- OpenCASCADE `.brep` in and out (build123d, CadQuery, FreeCAD): exact bodies
+- DXF in and out with exact arcs and splines (or lines and arcs only); SVG out; STL in and out;
+  glTF/GLB and OBJ out
+- SMLib's own formats (`save`, `load`): `.smb` for one body, `.smp` part files for several bodies
+  and curves with names and colors
+- Every format also to and from memory (`to_step`, `from_step`, ...)
+
+**[Meshes](https://smlibpy.classcad.ch/docs/analysis)**
+- Booleans of meshes (`+`, `-`, `&`), also of STL files; `decimate`, sections and slices,
+  `fill_holes` and `repaired`, faceted parts from closed meshes, mass properties, many rays at once
 
 **[Pictures](https://smlibpy.classcad.ch/docs/files)**
 - `render()` needs no GPU or browser:
@@ -107,6 +141,8 @@ undercut. `parting_line` finds the parting line.
     hidden lines and center lines
   - sections, x-ray, highlights, markers, a measurement overlay, zebra stripes and curvature
     maps
+- `drawing_views` lays out the views of a part with exact visible and hidden lines, for SVG and
+  DXF (layers VISIBLE and HIDDEN).
 - `diff_images` compares two renders.
 - `show()` opens a 3D viewer in the browser or a notebook.
 
@@ -182,8 +218,9 @@ const step = toStep(plate) // the STEP file as text
 ```
 
 Names are camelCase, keyword arguments become an options object, and operators become methods
-(`a.cut(b)` for `a - b`). A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel
-(`smlibwasm.wasm`, 6.5 MB uncompressed) and 0.3 MB for the library and its font. The
+(`a.cut(b)` for `a - b`). `@classcad/smlibwasm/worker` runs models in a Web Worker with timeouts. A
+browser loads about 2.8 MB with brotli: 2.2 MB for the kernel (`smlibwasm.wasm`, 9.2 MB
+uncompressed) and 0.6 MB for the library, its font and the dictionary of WOFF2 fonts. The
 [JavaScript docs](https://smlibpy.classcad.ch/docs/javascript) have the sizes, examples for the browser and the whole API in
 TypeScript; the source is in [`js/`](js).
 
@@ -249,7 +286,7 @@ mp.mass, mp.center, mp.inertia
 
 ### [Files](https://smlibpy.classcad.ch/docs/files)
 
-STEP, USD, DXF, STL, glTF/GLB, OBJ and SMLib's own exact format.
+STEP, IGES (read), USD, OpenCASCADE `.brep`, DXF, SVG, STL, glTF/GLB, OBJ and SMLib's own exact formats.
 
 ```python
 export_step([flange, panel.named("panel")], "parts.step")
@@ -276,8 +313,9 @@ The documentation is on [smlibpy.classcad.ch](https://smlibpy.classcad.ch/docs/)
 ## Status
 
 smlibpy is new (version 0.3). It covers solid and surface modeling, text, and reads and writes
-STEP, USD and DXF with the exact geometry; smlibwasm has all of it in JavaScript. Assemblies with product structure and dimensioned 2D
-drawings are not there yet.
+STEP, USD, OpenCASCADE `.brep` and DXF with the exact geometry (IGES it reads); smlibwasm has all of
+it in JavaScript. Assembly trees beyond a product per body, and dimensions on 2D drawings, are not
+there yet.
 
 ## License
 

@@ -5,7 +5,7 @@
 // rounded or beveled. `close()` turns the outline into a Sketch, `wire()` gives the open path as a
 // Wire. Every call returns a new Profile, so one drawing can branch into variants.
 
-import { ModelingError } from './kernel.ts'
+import { ModelingError, _opts } from './kernel.ts'
 import {
   Arc2,
   type Complex,
@@ -107,6 +107,7 @@ export class Profile {
       options = start as { heading?: number }
       start = [0, 0]
     }
+    _opts('Profile', options)
     const { heading = 0.0 } = options
     this._start = _pt2(start, 'Profile')
     this._segs = []
@@ -175,6 +176,7 @@ export class Profile {
    * the other one: `lineTo({ x: 30 })` (horizontal), `lineTo({ y: 5 })` (vertical). */
   lineTo(...args: (number | VectorLike | Coordinates)[]): Profile {
     const { items: point, options } = _withOptions<Coordinates>(args)
+    _opts('Profile.lineTo', options)
     const x = options.x ?? null
     const y = options.y ?? null
     const cur = this._cur
@@ -219,6 +221,7 @@ export class Profile {
       options = length as Coordinates
       length = null
     }
+    _opts('Profile.forward', options)
     const len = length as number | null
     const x = options.x ?? null
     const y = options.y ?? null
@@ -276,6 +279,7 @@ export class Profile {
    * (`arcTo(20, 10, { through: [15, 12] })`, which need not be tangent). */
   arcTo(...args: (number | VectorLike | { through?: VectorLike | null })[]): Profile {
     const { items: point, options } = _withOptions<{ through?: VectorLike | null }>(args)
+    _opts('Profile.arcTo', options)
     const through = options.through ?? null
     const end = Profile._point(point, 'arcTo')
     const cur = this._cur
@@ -490,6 +494,7 @@ export class Profile {
    * the pen is not there. `align` moves the result (null, the default, leaves the outline where it
    * was drawn). */
   close(options: { align?: AlignLike } = {}): Sketch {
+    _opts('Profile.close', options)
     const align = options.align ?? null
     const loop = this._resolve(true)
     let s = build([[loop, []]], new Frame(Plane.XY), null, 'Profile')

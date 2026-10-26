@@ -4,12 +4,12 @@ Turns a surface (a `Shell`, a `Sketch`, or one face) into a solid of constant th
 
 ## Signature
 `shell.thicken(thickness, *, both=False)` (also on a `Sketch`, which is a sheet)
-`thicken(surface, thickness)` (a `Shell`, `Sketch` or `Face`; a part's face is copied first)
+`thicken(surface, thickness, *, both=False)` (a `Shell`, `Sketch` or `Face`; a part's face is copied first)
 
 - `thickness`: along the face normal; negative goes to the other side. Not zero.
-- `both=True` (method only): the total thickness centered on the sheet:
-  `Rectangle(20, 10).thicken(2, both=True)` spans z -1..1 (volume 400). The `thicken()`
-  function has no `both`.
+- `both=True`: the total thickness centered on the sheet:
+  `Rectangle(20, 10).thicken(2, both=True)` spans z -1..1 (volume 400); the function takes it too
+  (`thicken(face, 2, both=True)`).
 
 ## Returns
 A `Part`. Planar: exact `area * t`. Curved: exact offset volume (a half-cylinder sheet r10,
@@ -34,6 +34,9 @@ The side is the face normal, so check it before you thicken:
   returned a body that is ...; the kernel cannot offset this sheet (closed grid surfaces and
   surfaces with a pole fail; build closed shapes with revolve, loft or extrude, or thicken less
   than the smallest concave radius)`.
+- The kernel runs in another process (a forked copy on Linux and macOS, a helper process on
+  Windows; see `parts/guards`): a crash or a step longer than `smlibpy.defeature.GUARD_SECONDS`
+  (20 s) raises `ModelingError` there, and this process goes on.
 - A `Part` has no `thicken`: `thicken(part, 1)` raises `TypeError: thicken takes a face or a
   sheet (Shell, Sketch), not a Part; use shell() or offset() for parts`.
 - `thickness=0`: `ValueError: thicken: the thickness must not be zero`.
@@ -54,4 +57,5 @@ print(round(wall.volume, 2))                            # 1382.3 = pi*(12^2 - 10
 ```
 
 ## Related
-`surface`, `ruled`, `stitch`, `extrude` (open curves make sheets), `offset`, `shell`.
+`surface`, `ruled`, `stitch`, `extrude` (open curves make sheets), `offset` (a sheet moved along
+its normals stays a sheet: `sheet.offset(d)`), `shell`.

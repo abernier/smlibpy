@@ -14,11 +14,11 @@
 // Images are flat typed arrays, row by row from the top left, three numbers (red, green, blue)
 // per pixel; points and segments are flat arrays of x, y, z.
 
-import { ext, k as kernel } from './kernel.ts'
-import { BoundBox, Plane, Vector, _formatG } from './geometry.ts'
+import { _opts, ext, k as kernel } from './kernel.ts'
+import { BoundBox, Plane, Vector, type VectorLike, _formatG } from './geometry.ts'
 import { toRgb } from './colors.ts'
-import { Mesh, _triangulate, tessellate } from './mesh.ts'
-import { Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
+import { Mesh, _coloredMesh, _tessellate, _triangleColors, _triangulate, tessellate } from './mesh.ts'
+import { type ColorLike, Edge, Face, Part, Shape, Sketch, Vertex, Wire, _Body as Solidish, _typeName } from './shapes.ts'
 import { _withOptions } from './curves.ts'
 import { _DEFAULT_COLORS, _curvePoints, _edgePolylines, _flattenAll, _fs } from './exporters.ts'
 import { StepModel } from './step_import.ts'
@@ -302,6 +302,40 @@ export class ImageDiff {
 }
 
 // -------------------------------------------------------------------------------- public functions
+/** What `render` draws: parts, sketches, sheets, faces, edges, wires and vertices, meshes, a read
+ * STEP file (`readStep`), or lists of them (an array, a ShapeList, a Set; also nested). */
+export type Renderable = Shape | Mesh | StepModel | (Iterable<Renderable> & object)
+
+/** A camera of `render` (see `RenderOptions.view`): a view's name, `{ azimuth, elevation }` in
+ * degrees, `{ direction, up }`, or the direction from the model towards the camera. (Any string
+ * type-checks, as names come from variables too; the names are checked when it renders.) */
+export type RenderView =
+  | 'iso'
+  | 'front'
+  | 'back'
+  | 'left'
+  | 'right'
+  | 'top'
+  | 'bottom'
+  | (string & {})
+  | VectorLike
+  | { azimuth?: number; elevation?: number }
+  | { direction: VectorLike; up?: VectorLike | null }
+
+/** A point of `render`'s options: a Vector, `[x, y, z]`, or the center of a shape or box. */
+export type RenderPoint = VectorLike | Shape | BoundBox
+
+/** A marker of `render` (see `RenderOptions.markers`): a point, `[point, label]`,
+ * `[point, label, color]` or `{ position, label, color }`. */
+export type RenderMarker =
+  | RenderPoint
+  | readonly [RenderPoint, string]
+  | readonly [RenderPoint, string, ColorLike | null]
+  | { position: RenderPoint; label?: string; color?: ColorLike | null }
+
+/** The kinds of curvature `render` maps (see `RenderOptions.curvature`). */
+export type CurvatureKind = 'mean' | 'gaussian' | 'max' | 'min' | (string & {})
+
 /** The options of `render`. */
 export interface RenderOptions {
   /** Also write the PNG to this file (Node). */
@@ -321,7 +355,7 @@ export interface RenderOptions {
    *
    * Views are never mirrored.
    */
-  view?: unknown
+  view?: RenderView | 'sheet'
   /** Width and height in pixels (default [800, 600]). */
   size?: readonly [number, number]
   /** Draw the edges of faces in the shaded view (hidden edges stay hidden). */
@@ -333,7 +367,7 @@ export interface RenderOptions {
   /** Factor on the scale that fits the shapes (2 shows half as much). */
   zoom?: number
   /** A point that lands in the middle of the picture. */
-  lookAt?: unknown
+  lookAt?: RenderPoint | null
   /** The frame of an earlier render of the same view and size (its `Picture.frame`, or the
    * picture itself): scale and middle stay the same, so pictures of a changed model compare
    * pixel by pixel (`diffImages`). Overrides `zoom` and `lookAt`. */
@@ -353,27 +387,34 @@ export interface RenderOptions {
    * the top view above the front view, the view from the right to its right.
    * `{ projection, side: "left" | "right", iso: boolean }` picks the side view or leaves the
    * corner empty. */
-  drawing?: unknown
+  drawing?: boolean | 'first-angle' | 'third-angle' | (string & {}) | { projection?: string; side?: string; iso?: boolean } | null
   /** Several shaded views in one picture: `true` (top, iso, front, right), a list of 4 views
    * (2 x 2) or of 2 views side by side. Named ortho views share one scale; the others fit
    * themselves. `drawing` wins over `sheet`. */
-  sheet?: unknown
+  sheet?: boolean | readonly (RenderView | null)[] | null
   /** Cut at a plane and leave out what is on the positive side of its normal: a `Plane`, a
    * planar face, `[origin, normal]` or `{ origin, normal, cap }`. The picture keeps the framing
    * of the whole model. */
-  section?: unknown
+  section?:
+    | Plane
+    | Face
+    | readonly [Face]
+    | readonly [RenderPoint, VectorLike]
+    | { origin: RenderPoint; normal: VectorLike; cap?: boolean }
+    | false
+    | null
   /** Fill the cut faces of closed bodies, hatched at 45 degrees (neighbouring bodies alternate
    * the direction); bores and pockets stay open. `false` leaves the cut open and shows the
    * inside walls shaded darker. */
   cap?: boolean
   /** Shapes drawn in signal colors: faces and bodies orange, edges red. Faces, edges, wires,
    * parts, vertices or selections (`part.edges().concave()`). */
-  highlight?: unknown
+  highlight?: Shape | Mesh | readonly (Shape | Mesh | readonly (Shape | Mesh)[])[] | null
   /** Points; the face closest to each point is highlighted. */
-  highlightAt?: unknown
+  highlightAt?: VectorLike | Iterable<RenderPoint> | null
   /** Crosshairs with labels, drawn on top: points `[x, y, z]`, `[point, label]` (or
    * `[point, label, color]`), or `{ position, label, color }`. */
-  markers?: unknown
+  markers?: VectorLike | { position: RenderPoint; label?: string; color?: ColorLike | null } | Iterable<RenderMarker> | null
   /** Measurement overlay: the size of the bounding box (`"60 X 54 X 34"`), the axes as seen in
    * the view (an axis pointing into the screen is left out) and a scale bar of a round length. */
   annotate?: boolean
@@ -388,13 +429,13 @@ export interface RenderOptions {
    * stripes around the light, the black share of each, and the direction of the light lines
    * (`"vertical"` or `"horizontal"` on the screen, or a world direction). Surfaces that curve
    * along the light lines show none; turn the direction for them. */
-  zebra?: unknown
+  zebra?: boolean | { stripes?: number; width?: number; direction?: 'vertical' | 'horizontal' | (string & {}) | VectorLike } | null
   /** A curvature map of the exact surfaces: `"mean"`, `"gaussian"`, `"max"` or `"min"` (the
    * principal curvatures). Blue is concave, white flat, red convex (a sphere of radius R has 1/R
    * everywhere); a legend gives the range in 1/mm (1/mm^2 for Gaussian).
    * `{ kind: "mean", range: 0.2 }` (or `[lo, hi]`) fixes the range; by default it spans the
    * values on the shapes. */
-  curvature?: unknown
+  curvature?: CurvatureKind | { kind?: CurvatureKind; range?: number | readonly [number, number] | null } | false | null
 }
 
 /**
@@ -408,8 +449,11 @@ export interface RenderOptions {
  *   bodies and curves, and marks its coordinate systems and named points.
  * @returns A `Picture`: the PNG file contents (`data`), with `pixels` and `frame`.
  */
+export function render(...shapes: Renderable[]): Picture
+export function render(...args: [...shapes: Renderable[], options: RenderOptions]): Picture
 export function render(...args: unknown[]): Picture {
   const { items, options } = _withOptions<RenderOptions>(args)
+  _opts('render', options)
   const {
     path = null,
     view = 'iso',
@@ -463,17 +507,20 @@ export function render(...args: unknown[]): Picture {
     legend: true,
   }
   const scene = new _Scene(shapes, tolerance, colors, Boolean(stripes || curv))
-  scene.addHighlights(highlight, highlightAt)
-  if (curv !== null) opts.curvature = [curv[0], ...scene.curvatureRange(curv[0], curv[1])]
-
   let used: Frame | null = null
   let img: _Img
-  if (drawing != null && drawing !== false) img = _drawing(scene, w, h, opts, drawing)
-  else if (sheet != null && sheet !== false) img = _sheet(scene, _sheetViews(sheet), w, h, opts)
-  else {
-    const cam = _Camera.of(view)
-    used = _frame(frame) ?? _fit(scene, cam, w, h, zoom, lookAt)
-    img = _view(scene, cam, w, h, opts, used)
+  try {
+    scene.addHighlights(highlight, highlightAt)
+    if (curv !== null) opts.curvature = [curv[0], ...scene.curvatureRange(curv[0], curv[1])]
+    if (drawing != null && drawing !== false) img = _drawing(scene, w, h, opts, drawing)
+    else if (sheet != null && sheet !== false) img = _sheet(scene, _sheetViews(sheet), w, h, opts)
+    else {
+      const cam = _Camera.of(view)
+      used = _frame(frame) ?? _fit(scene, cam, w, h, zoom, lookAt)
+      img = _view(scene, cam, w, h, opts, used)
+    }
+  } finally {
+    scene.dispose()
   }
   const pixels = _toBytes(img)
   const pic = new Picture(_png(pixels, w, h), { pixels, width: w, height: h }, used ? { ...used } : null)
@@ -494,7 +541,7 @@ export function render(...args: unknown[]): Picture {
  * @returns An `ImageDiff`: the number, share and bounding box of the changed pixels, and a picture
  *   of the difference (changed pixels red on a faded gray of `b`).
  */
-export function diffImages(a: unknown, b: unknown, tolerance = 0): ImageDiff {
+export function diffImages(a: Picture | ImageLike | Uint8Array | ArrayBuffer | string, b: Picture | ImageLike | Uint8Array | ArrayBuffer | string, tolerance = 0): ImageDiff {
   const pa = _pixelsOf(a)
   const pb = _pixelsOf(b)
   if (pa.width !== pb.width || pa.height !== pb.height) {
@@ -858,10 +905,20 @@ class _Body {
   readonly segs: Float64Array
   readonly mesh: Mesh | null
   readonly source: unknown // keeps the Brep alive that the mesh points into
+  readonly faceRgb: Float64Array | null // per triangle, where faces have colors of their own (kernel plan T5)
   _adjacent: [Int32Array, Int32Array, Float64Array] | null = null
   _principal: [Float64Array, Float64Array] | null = null
 
-  constructor(tris: Float64Array, norms: Float64Array, rgb: RGB, closed: boolean, segs: Float64Array, mesh: Mesh | null = null, source: unknown = null) {
+  constructor(
+    tris: Float64Array,
+    norms: Float64Array,
+    rgb: RGB,
+    closed: boolean,
+    segs: Float64Array,
+    mesh: Mesh | null = null,
+    source: unknown = null,
+    faceRgb: Float64Array | null = null,
+  ) {
     this.tris = tris
     this.norms = norms
     this.rgb = rgb
@@ -869,6 +926,7 @@ class _Body {
     this.segs = segs
     this.mesh = mesh
     this.source = source
+    this.faceRgb = faceRgb
   }
 
   get count(): number {
@@ -1023,6 +1081,8 @@ export class _Scene {
   readonly hlPoints: Vec3[] = []
   readonly tolerance: number | null
   _axes: _AxisLine[] | null = null
+  /** What the scene made in the kernel: kept meshes, copies of faces (see `dispose`). */
+  readonly _made: { dispose(): void }[] = []
   readonly points: Float64Array
   readonly lo: Vec3
   readonly hi: Vec3
@@ -1052,7 +1112,7 @@ export class _Scene {
       else if (item instanceof Part) {
         pieces = [...item.solids()]
         if (!pieces.length) pieces = [item]
-        closed = item.isValid()
+        closed = item._solidProblem() === null
       } else if (item instanceof Solidish || item instanceof Face) [pieces, closed] = [[item], false]
       else return
       this.items.push(item)
@@ -1060,7 +1120,20 @@ export class _Scene {
         const rgb = colors === 'distinct' ? palette[this.bodies.length % palette.length] : native
         // zebra stripes and curvature maps follow the normals closely: finer triangles
         const source = piece instanceof Face && fine ? piece.toShell() : piece
-        const mesh: Mesh = piece instanceof Mesh ? piece : tessellate(source, tolerance, fine ? 5.0 : 15.0)
+        if (source !== piece) this._made.push(source)
+        // (curvature maps need the tessellation's own mesh)
+        let mesh: Mesh
+        let faceRgb: Float64Array | null = null
+        if (piece instanceof Mesh) mesh = piece
+        else if (fine) {
+          mesh = _tessellate(source, tolerance, 5.0, true)
+          if (source instanceof Solidish && colors !== 'distinct') faceRgb = _triangleColors(source, mesh)
+        } else {
+          ;[mesh, faceRgb] = _coloredMesh(source as Shape, tolerance, 15.0)
+          if (colors === 'distinct') faceRgb = null
+        }
+        if (faceRgb !== null) for (let i = 0; i < faceRgb.length; i++) if (Number.isNaN(faceRgb[i])) faceRgb[i] = rgb[i % 3] // faces without a color of their own: the body's
+        if (mesh !== piece) this._made.push(mesh)
         let segs: Float64Array
         if (piece instanceof Mesh) segs = new Float64Array(0)
         else if (piece instanceof Face) segs = _segments(_curvePoints(piece))
@@ -1070,7 +1143,7 @@ export class _Scene {
           continue
         }
         const [v, n] = _meshArrays(mesh)
-        this.bodies.push(new _Body(v, n, rgb, closed, segs, mesh, piece instanceof Mesh ? null : source))
+        this.bodies.push(new _Body(v, n, rgb, closed, segs, mesh, piece instanceof Mesh ? null : source, faceRgb))
       }
     })
     const pts = [...this.bodies.map((b) => b.tris), ...this.bodies.map((b) => b.segs), ...this.overlays.map(([s]) => s)]
@@ -1083,6 +1156,11 @@ export class _Scene {
     const plo = _boxOf(allp, Math.min)
     const phi = _boxOf(allp, Math.max)
     this.diagonal = _norm3([phi[0] - plo[0], phi[1] - plo[1], phi[2] - plo[2]]) || 1.0
+  }
+
+  /** Frees what the scene made in the kernel (the garbage collector would, much later). */
+  dispose(): void {
+    for (const m of this._made.splice(0).reverse()) m.dispose()
   }
 
   /** The range of a curvature map: the given one, or the values on the bodies; it always holds
@@ -1261,7 +1339,7 @@ function _cornerCurvatures(mesh: Mesh | null, source: unknown, count: number): [
   const poly = mesh?._poly?.poly ?? 0
   if (!poly || source == null) return [missing, missing]
   const r = ext.poly_curvatures(poly)
-  const faces = kernel.poly_mesh(poly, true).faces as Int32Array
+  const faces = ext.poly_arrays(poly, false).faces as Int32Array
   const [tris, corner] = _triangulate(faces)
   const k1 = r.k1 as Float64Array
   const k2 = r.k2 as Float64Array
@@ -1395,7 +1473,14 @@ function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, f
   const caps: [Float64Array, RGB, number][] = [] // cut outline, body color, body index
   const outlines: Float64Array[] = []
   scene.bodies.forEach((body, bi) => {
-    let piece: _Part = { tris: body.tris, norms: body.norms, values: o.curvature !== null ? body.curvature(o.curvature[0]) : null, rgb: body.rgb, factor: null }
+    let piece: _Part = {
+      tris: body.tris,
+      norms: body.norms,
+      values: o.curvature !== null ? body.curvature(o.curvature[0]) : null,
+      rgb: body.rgb,
+      factor: null,
+      colors: body.faceRgb,
+    }
     if (cut !== null) {
       if (body.closed) {
         const outline = _crossings(body.tris, cut)
@@ -1433,6 +1518,11 @@ function _view(scene: _Scene, cam: _Camera, w: number, h: number, o: _Options, f
   const rgb = new Float64Array(factor.length * 3)
   let at = 0
   for (const p of parts) {
+    if (p.colors) {
+      rgb.set(p.colors, at)
+      at += p.colors.length
+      continue
+    }
     const [r, g, b] = p.rgb
     for (let i = 0; i < p.tris.length / 9; i++, at += 3) {
       rgb[at] = r
@@ -1502,6 +1592,8 @@ interface _Part {
   values: Float64Array | null
   rgb: RGB
   factor: Float64Array | null
+  /** a color per triangle (three numbers), where faces have colors of their own */
+  colors?: Float64Array | null
 }
 
 function _repeat(color: RGB, n: number): Float64Array {
@@ -1544,13 +1636,15 @@ function _select(p: _Part, value: Float64Array, test: (v: number) => boolean): _
   const norms = new Float64Array(keep.length * 9)
   const values = p.values ? new Float64Array(keep.length * 3) : null
   const factor = p.factor ? new Float64Array(keep.length) : null
+  const colors = p.colors ? new Float64Array(keep.length * 3) : null
   keep.forEach((t, i) => {
     tris.set(p.tris.subarray(t * 9, t * 9 + 9), i * 9)
     norms.set(p.norms.subarray(t * 9, t * 9 + 9), i * 9)
     if (values) values.set(p.values!.subarray(t * 3, t * 3 + 3), i * 3)
     if (factor) factor[i] = p.factor![t]
+    if (colors) colors.set(p.colors!.subarray(t * 3, t * 3 + 3), i * 3)
   })
-  return { tris, norms, values, rgb: p.rgb, factor }
+  return { tris, norms, values, rgb: p.rgb, factor, colors }
 }
 
 /** Triangles on the screen with what the fill and the shading need: the maps from a pixel to
@@ -1998,12 +2092,20 @@ function _clip(p: _Part, cut: _Cut): _Part {
   const outT: number[] = []
   const outN: number[] = []
   const outV: number[] = []
+  const outC: number[] = [] // (the colors of the triangles' faces, where they have their own)
+  const colorOf = (t: number) => {
+    if (p.colors) for (let c = 0; c < 3; c++) outC.push(p.colors[t * 3 + c])
+  }
   const pushCorner = (src: Float64Array, srcN: Float64Array, srcV: Float64Array | null, at: number, vat: number) => {
     for (let c = 0; c < 3; c++) outT.push(src[at + c])
     for (let c = 0; c < 3; c++) outN.push(srcN[at + c])
     if (srcV) outV.push(srcV[vat])
   }
-  for (let t = 0; t < n; t++) if (npos[t] === 0) for (let c = 0; c < 3; c++) pushCorner(tris, norms, values, t * 9 + c * 3, t * 3 + c)
+  for (let t = 0; t < n; t++) {
+    if (npos[t] !== 0) continue
+    for (let c = 0; c < 3; c++) pushCorner(tris, norms, values, t * 9 + c * 3, t * 3 + c)
+    colorOf(t)
+  }
   for (const count of [1, 2]) {
     const sel: number[] = []
     for (let t = 0; t < n; t++) if (npos[t] === count) sel.push(t)
@@ -2020,7 +2122,7 @@ function _clip(p: _Part, cut: _Cut): _Part {
       const dd = idx.map((c) => d[t * 3 + c])
       const p01 = _crossPoint(v[0], v[1], nn[0], nn[1], vv ? vv[0] : 0, vv ? vv[1] : 0, dd[0], dd[1])
       const p02 = _crossPoint(v[0], v[2], nn[0], nn[2], vv ? vv[0] : 0, vv ? vv[2] : 0, dd[0], dd[2])
-      return { v, nn, vv, p01, p02 }
+      return { t, v, nn, vv, p01, p02 }
     })
     const corner = (point: ArrayLike<number>, normal: ArrayLike<number>, value: number) => {
       for (let c = 0; c < 3; c++) outT.push(point[c])
@@ -2029,26 +2131,36 @@ function _clip(p: _Part, cut: _Cut): _Part {
     }
     if (count === 1) {
       // the first corner is cut away: the quad p01, v1, v2, p02 stays
-      for (const { v, nn, vv, p01 } of pieces) {
+      for (const { t, v, nn, vv, p01 } of pieces) {
         corner(p01[0], p01[1], p01[2])
         corner(v[1], nn[1], vv ? vv[1] : 0)
         corner(v[2], nn[2], vv ? vv[2] : 0)
+        colorOf(t)
       }
-      for (const { v, nn, vv, p01, p02 } of pieces) {
+      for (const { t, v, nn, vv, p01, p02 } of pieces) {
         corner(p01[0], p01[1], p01[2])
         corner(v[2], nn[2], vv ? vv[2] : 0)
         corner(p02[0], p02[1], p02[2])
+        colorOf(t)
       }
     } else {
       // only the first corner stays
-      for (const { v, nn, vv, p01, p02 } of pieces) {
+      for (const { t, v, nn, vv, p01, p02 } of pieces) {
         corner(v[0], nn[0], vv ? vv[0] : 0)
         corner(p01[0], p01[1], p01[2])
         corner(p02[0], p02[1], p02[2])
+        colorOf(t)
       }
     }
   }
-  return { tris: Float64Array.from(outT), norms: Float64Array.from(outN), values: values ? Float64Array.from(outV) : null, rgb: p.rgb, factor: null }
+  return {
+    tris: Float64Array.from(outT),
+    norms: Float64Array.from(outN),
+    values: values ? Float64Array.from(outV) : null,
+    rgb: p.rgb,
+    factor: null,
+    colors: p.colors ? Float64Array.from(outC) : null,
+  }
 }
 
 /** Where the segment a-b crosses the plane, and the normal and the value there. Interpolated

@@ -184,6 +184,37 @@ def test_remove_faces_closes_holes_and_drops_bosses(box, name):
     assert same(exact_volume(back), 24000.0, 1e-12)
 
 
+def test_remove_faces_keeps_the_face_its_rounds_enclose(box):
+    # The top of a box whose top edges are rounded has only rounds around it, so remove_faces of
+    # the rounds took the top along, and the kernel closed the gap at the rounds' lower edges: the
+    # box came back 2 lower (3200.0, valid). Likewise the top of a boss with a rounded rim.
+    rounded = Box(20, 20, 10)
+    rounded = rounded.fillet(rounded.edges().top(), 2)
+    back = rounded.remove_faces(rounded.faces().fillets())
+    assert len(back.faces()) == 6 and same(back.volume, 4000.0) and same(back.bbox().max.z, 5.0)
+    boss = box + Cylinder(5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN)).translate(0, 0, 10)
+    boss = boss.fillet(boss.edges().filter(lambda e: e.geom_type == "circle" and abs(e.center().z - 20) < 1e-9), 1)
+    back = boss.remove_faces(boss.faces().filter(lambda f: f.geom_type not in ("plane", "cylinder")))
+    assert same(back.volume, 24000.0 + 250 * math.pi, 1e-8) and same(back.bbox().max.z, 20.0)  # was 1 lower
+    # the floor of a pocket inside its rounds still goes with the pocket's walls (a sharp rim)
+    pocket = box - Box(20, 20, 10, align=(Align.CENTER, Align.CENTER, Align.MAX)).translate(0, 0, 10)
+    pocket = pocket.fillet(pocket.edges().within(BoundBox((-10.1, -10.1, -0.1), (10.1, 10.1, 0.1))), 2)  # its floor
+    inside = pocket.faces().within(BoundBox((-10.1, -10.1, -0.1), (10.1, 10.1, 10.1)))
+    walls = inside.filter(lambda f: not (f.is_planar and abs(f.center().z) < 1e-9))  # all but the floor
+    assert len(inside) == 9 and len(walls) == 8
+    back = pocket.remove_faces(walls)
+    assert len(back.faces()) == 6 and same(back.volume, 24000.0, 1e-12)
+
+
+def test_a_feature_without_a_direction_may_not_shrink_the_part(box):
+    from smlibpy.defeature import _spill
+
+    lower = Box(40, 30, 16).translate(0, 0, -2)
+    assert _spill(box, lower, 24000.0, 1e9).startswith("a part that shrank along Z (-10..10 -> -10..6)")
+    assert _spill(box, lower, 24000.0, 100.0).startswith("a volume change of 4800, more than the faces span (100)")
+    assert _spill(box, box, 24000.0, 100.0) is None
+
+
 def test_remove_faces_errors(box):
     holed = box - Cylinder(5, 40)
     with pytest.raises(ValueError):

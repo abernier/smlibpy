@@ -52,9 +52,10 @@ Use `partial=True` on imported parts and check `result.faces().fillets()` for wh
 
 ## Crashes and hangs
 SMLib's patching and Boolean code crashes or loops on some parts (both seen on the example
-enclosure and bottle). On Linux and macOS each kernel step first runs in a forked copy of the
-process; a crash there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only
-drops that step, and this process goes on. On Windows the kernel runs directly. A crash in the
+enclosure and bottle). Each kernel step runs in another process (a forked copy on Linux and
+macOS, a helper process on Windows; see `parts/guards`), and its result comes back; a crash
+there, or a step longer than `smlibpy.defeature.GUARD_SECONDS` (20 s), only drops that step,
+and this process goes on. A crash in the
 copy costs little, a hang the 20 s: on the example enclosure (20 fillet faces) 12 go and 8 stay,
 and with the stopped steps `remove_fillets(partial=True)` takes about 95 s. A set of fillets the
 kernel crashed or hung on is not tried again in the same call.

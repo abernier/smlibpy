@@ -10,6 +10,9 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   create_cone: ['origin', 'radius_base', 'radius_top', 'height'],
   create_cylinder: ['origin', 'radius', 'height'],
   create_torus: ['origin', 'radius_major', 'radius_minor'],
+  create_partial_cylinder: ['origin', 'radius', 'height', 'start_angle_deg', 'end_angle_deg'],
+  create_partial_cone: ['origin', 'radius_base', 'radius_top', 'height', 'start_angle_deg', 'end_angle_deg'],
+  create_partial_sphere: ['origin', 'radius', 'start_angle_deg', 'end_angle_deg'],
   create_skin_primitive: ['curves_per_profile', 'curves', ['degree', 1], ['cap_ends', true]],
 
   // curves (SmPyCurves.cpp)
@@ -72,6 +75,7 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   fillet_edges: ['brep', 'edges', 'radius', ['xsect_type', 1], ['continuity', 1], ['thumbweight', 1.0]],
   variable_radius_fillet: ['brep', 'edges', 'start_radius', 'end_radius', ['xsect_type', 1], ['continuity', 1]],
   fillet_edges_per_edge: ['brep', 'edges', 'radii', 'xsect_types', ['continuity', 1], ['thumbweight', 1.0]],
+  fillet_preview: ['brep', 'edges', 'radius'],
   remove_fillet: ['brep'],
   surface_surface_fillet: [
     'surface1',
@@ -109,6 +113,14 @@ export const SIGNATURES: Record<string, readonly (string | readonly [string, unk
   turn_to_nurbs: ['brep'],
   stitch_into_solid: ['brep'],
   stitch_into_shell: ['brep', ['max_stitching_ratio', 1.0], ['shell_is_well_formed', false]],
+  stitch_advanced: [
+    'brep',
+    'tolerance_3d',
+    ['squeeze_small_edges', true],
+    ['split_edges_with_vertices', true],
+    ['making_manifold_solid', true],
+    ['remove_laminar_slivers', false],
+  ],
   heal_brep: ['brep'],
 
   // transforms (SmPyTransforms.cpp; Axis2Placement's constructor in SmPyTypes.cpp)

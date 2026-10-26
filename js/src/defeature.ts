@@ -12,14 +12,20 @@
 // fillets or holes were taken out, down for concave fillets and bosses).
 //
 // SMLib's patching and Boolean code can crash or loop on some parts. smlibpy runs each kernel
-// step first in a forked copy of the process (on Linux and macOS, see its GUARD_SECONDS), which
-// JavaScript cannot: the kernel runs directly, as smlibpy's does on Windows. A crash of the kernel
-// (a trap of the WebAssembly module, which stays usable) drops that step, as a crash in smlibpy's
-// copy does; a step that loops does not come back.
+// step first in a forked copy of the process (on Linux and macOS). JavaScript cannot fork; where
+// it can wait for another thread (Node, and Web Workers of a cross-origin isolated page), each
+// step runs first in a probe worker, a kernel of its own, on copies of the bodies (see
+// GUARD_SECONDS). On a browser's main thread the kernel runs directly, as smlibpy's does where it
+// cannot start another process: a crash of the kernel there (a trap of the WebAssembly module) ends
+// the operation with a ModelingError, as it would end smlibpy's process, and the kernel's deadline
+// (`ext.set_deadline`) holds the step to GUARD_SECONDS where it spends its time in the kernel's
+// surface and topology intersections, as the steps that were found running for good do.
 
-import { BrepHandle, ModelingError, k } from './kernel.ts'
+import { BrepHandle, ModelingError, _isRuntimeError, _warn, ext, k, kernelCall, module } from './kernel.ts'
 import { _formatG } from './geometry.ts'
-import { Face, type Part, ShapeList, _flattenFaces } from './shapes.ts'
+import { type Edge, Face, type Part, ShapeList, type _Body, _carried, _flattenFaces, _putFaceAttrs } from './shapes.ts'
+import { toSmb } from './exporters.ts'
+import { _giveUp, _noProbe, _probeMissing, _probeSupervisor } from './_guard.ts'
 
 // biome-ignore lint: the kernel's results are what their bindings return
 type Any = any
@@ -28,33 +34,369 @@ type Any = any
  * tangentially: the edge is a rail of a fillet. */
 export const TANGENCY = 2.0
 
+/**
+ * Seconds the kernel may take for one step that can crash or loop. Where JavaScript can wait for
+ * another thread (Node, and Web Workers of a cross-origin isolated page), such steps run in a probe
+ * worker, a kernel of its own, on copies of the bodies: if the kernel crashes there or takes longer
+ * than this, a ModelingError says so and this kernel is left alone (SMLib's patching, offset and
+ * Boolean code can crash or loop on some parts). This kernel never runs the step itself: what the
+ * step made comes back as an exact copy (binary `.smb`). The steps are those of `removeFillets`,
+ * `removeFaces`, `surfaceFillet`, `shell`, `offset`, `thicken` and `Part.cells()`, fillets and
+ * chamfers of parts read from files (STEP, `.smb`, USD) and, with GUARD_BOOLEANS, Booleans. Where
+ * no probe worker runs (a browser's main thread), the step runs in this kernel, held to this many
+ * seconds by the kernel's deadline (`ext.set_deadline`): past it, the long loops of the kernel's
+ * surface and topology intersections give up and the step is dropped as one that did not finish (a
+ * step that spends its time elsewhere in the kernel is not stopped). `0` runs the kernel directly,
+ * without a limit. Python's `GUARD_SECONDS`; `setGuardSeconds` sets it.
+ */
+export let GUARD_SECONDS = 20.0
+
+/**
+ * Whether every Boolean (`fuse`, `cut`, `intersect`, `merge`) runs in the probe worker too, as the
+ * steps of GUARD_SECONDS (off by default: the bodies go there and back as `.smb`). For long batch
+ * runs over unknown inputs, where a crash of the kernel must not end the run. Python's
+ * `GUARD_BOOLEANS`; `setGuardBooleans` sets it.
+ */
+export let GUARD_BOOLEANS = false
+
+/** Sets GUARD_BOOLEANS (Python's `smlibpy.defeature.GUARD_BOOLEANS = on`); returns the value it
+ * had. */
+export function setGuardBooleans(on: boolean): boolean {
+  if (typeof on !== 'boolean') throw new TypeError(`setGuardBooleans: on must be true or false, got ${typeof on}`)
+  const old = GUARD_BOOLEANS
+  GUARD_BOOLEANS = on
+  return old
+}
+
+/** Sets GUARD_SECONDS (Python's `smlibpy.defeature.GUARD_SECONDS = seconds`); returns the value it
+ * had. */
+export function setGuardSeconds(seconds: number): number {
+  if (!(Number(seconds) >= 0)) throw new RangeError(`setGuardSeconds: the seconds must be 0 or more, got ${seconds}`)
+  const old = GUARD_SECONDS
+  GUARD_SECONDS = Number(seconds)
+  return old
+}
+
 const _D = k.defeature
 const _VOLUMES = new WeakMap<BrepHandle, number>() // a body's handle -> its volume
 
-/** The kernel crashed in a step; `reason` says how. */
+/** The kernel crashed in a step, or did not finish; `reason` says how. `here`: it crashed in this
+ * kernel (no probe worker), whose memory may be damaged now: the operation ends there, where a crash
+ * in the probe worker only drops the step. */
 class _KernelFault extends ModelingError {
   readonly reason: string
+  readonly here: boolean
+  /** Stopped after GUARD_SECONDS: such a fault keeps its own message through kernelCall (the
+   * operation's hint, "the radius may be too large", is no reason for a step that took too long). */
+  readonly timedOut: boolean
 
-  constructor(what: string, reason: string, hint: string) {
+  constructor(what: string, reason: string, hint: string, here = false) {
     super(`${what}: ${reason}; ${hint}`)
     this.name = '_KernelFault'
     this.reason = reason
+    this.here = here
+    this.timedOut = reason.startsWith('the kernel did not finish')
   }
 }
 
-/** `work()`. JavaScript cannot run it first in a forked copy of the process as smlibpy does on
- * Linux and macOS; a trap of the WebAssembly module (the kernel crashed) becomes a _KernelFault,
- * so that the step is dropped as smlibpy drops a step that crashed in its copy. */
-export function _guarded<R>(what: string, work: () => R): R {
+let _inDeadline = false // (whether a step runs under the kernel's deadline)
+
+/**
+ * `work()` in this kernel, held to `limit` seconds by the kernel's deadline (`ext.set_deadline`,
+ * where no probe worker runs the step): past it, the long loops of the kernel's surface and topology
+ * intersections give up (the step fails as a failed step does), and the step is a _KernelFault, as
+ * one that did not finish in the probe worker. A step that spends its time elsewhere in the kernel is
+ * not stopped. Inside another such step, that step's deadline holds. `drop` frees what `work()`
+ * made, where it returned after the deadline. Python's `smlibpy._guard.here`.
+ */
+export function _underDeadline<R>(what: string, limit: number, work: () => R, drop: ((value: R) => void) | null = null): R {
+  if (!(limit > 0) || _inDeadline) return work()
+  _inDeadline = true
+  ext.set_deadline(limit)
+  try {
+    let result: R
+    try {
+      result = work()
+    } catch (e) {
+      const trap = typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError
+      if (!trap && !(e instanceof _KernelFault) && ext.deadline_passed()) throw _timedOut(what, limit)
+      throw e
+    }
+    if (ext.deadline_passed()) {
+      // (made after a loop gave up: the step did not finish as it would; what it made is freed)
+      try {
+        drop?.(result)
+      } finally {
+        throw _timedOut(what, limit)
+      }
+    }
+    return result
+  } finally {
+    ext.set_deadline(0)
+    _inDeadline = false
+  }
+}
+
+/** Frees a kernel Brep a step made (none: 0 or null). */
+export function _dropBrep(brep: number | null | undefined): void {
+  if (brep) ext.delete_brep(brep)
+}
+
+function _timedOut(what: string, limit: number): _KernelFault {
+  return new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
+}
+
+/** The _KernelFault of a trap of this kernel in the step `what`. */
+function _crashHere(what: string, e: Error): _KernelFault {
+  const hint = 'its memory may be damaged: load the module again before relying on its results, or run the step in a KernelWorker, which starts a new kernel after a crash'
+  return new _KernelFault(what, `the kernel crashed (${e.message})`, hint, true)
+}
+
+/** A kernel step for the probe worker (see _defeature_worker.ts): the step, the bodies it works on
+ * as the contents of .smb files, and its arguments, faces as their indices in their body. */
+export type _Job = { op: string; bodies: Uint8Array[]; [argument: string]: unknown }
+
+/**
+ * `work()`, after a probe worker has done the same kernel step (`job`) to the end (see
+ * GUARD_SECONDS). The kernel is deterministic and the worker works on exact copies, so it does what
+ * this kernel will do; a step that takes too long or crashes there becomes a _KernelFault, and the
+ * step is dropped as smlibpy drops one in its forked copy. Without a probe worker (a browser's
+ * main thread) a trap of the WebAssembly module here (the kernel crashed) becomes a _KernelFault
+ * whose `here` is true: this kernel's memory may be damaged.
+ * Superseded by `_isolatedValue`, which brings the worker's result back instead of doing the step
+ * again here.
+ */
+export function _guarded<R>(what: string, work: () => R, job: (() => _Job) | null = null): R {
+  const limit = Number(GUARD_SECONDS)
+  if (limit > 0 && job !== null) _probe(what, job, limit)
   try {
     return work()
   } catch (e) {
-    if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) {
-      throw new _KernelFault(what, `the kernel crashed (${e.message})`, 'the module stays usable')
-    }
+    if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) throw _crashHere(what, e)
     throw e
   }
 }
+
+/** The contents of an .smb file of a body, for the probe worker (binary: exact). */
+export function _smb(body: _Body): Uint8Array {
+  return toSmb(body, { ascii: false })
+}
+
+/** The contents of an .smb file of a kernel Brep (binary: exact). */
+export function _smbOf(brep: number): Uint8Array {
+  const name = `/tmp/smlibwasm-job-${++_results}.smb`
+  try {
+    kernelCall('save', () => k.brep_write_to_file(brep, name, false))
+    return module.FS.readFile(name) as Uint8Array
+  } finally {
+    try {
+      module.FS.unlink(name)
+    } catch {
+      // (not written)
+    }
+  }
+}
+
+/** The indices of faces in their body, for the probe worker. */
+export function _indices(body: _Body, faces: readonly Face[]): number[] {
+  return Array.from(ext.face_indices(body._brep, faces.map((f) => f._f)) as ArrayLike<number>, Number)
+}
+
+// The states of a job, as _defeature_worker.ts sets them (see there).
+const _QUEUED = 0
+const _RUNNING = 1
+const _CRASHED = 3
+const _PIECE = 4
+const _FAILED = 5
+/** Bytes of a result that the probe worker hands over at a time. */
+const _PIECE_BYTES = 1 << 20
+/** Seconds a new probe worker may take to load its kernel and start the first step. */
+const _START_SECONDS = 30.0
+
+let _toldMissing = false
+
+/** The probe worker's supervisor (see `_probeSupervisor`); says once when its files are missing. */
+function _supervisor(what: string): Any {
+  const supervisor = _probeSupervisor()
+  if (supervisor === null && _probeMissing() && !_toldMissing) {
+    _toldMissing = true
+    _warn(`${what}: ${_noProbe()}; the kernel steps that can crash (of removeFillets, removeFaces, surfaceFillet, shell, offset, thicken and cells) run in this kernel, without a time limit`)
+  }
+  return supervisor
+}
+
+/** Runs the job in the probe worker; throws a _KernelFault if it takes longer than `limit` seconds
+ * or crashes the kernel there. Returns at once where there is no probe worker. */
+function _probe(what: string, job: () => _Job, limit: number): void {
+  const supervisor = _supervisor(what)
+  if (supervisor === null) return
+  const j = job()
+  const state = new Int32Array(new SharedArrayBuffer(4))
+  supervisor.postMessage({ ...j, state: state.buffer }, j.bodies.map((b) => b.buffer))
+  // (a new probe worker loads its kernel first)
+  Atomics.wait(state, 0, _QUEUED, _START_SECONDS * 1000)
+  if (Atomics.load(state, 0) === _QUEUED) {
+    _giveUp(`the probe worker did not start within ${_formatG(_START_SECONDS)} s`)
+    _warn(`${what}: ${_noProbe()}; the kernel steps of removeFillets, removeFaces and surfaceFillet run without a time limit from now on`)
+    return
+  }
+  Atomics.wait(state, 0, _RUNNING, limit * 1000)
+  const outcome = Atomics.load(state, 0)
+  if (outcome === _RUNNING) {
+    supervisor.postMessage({ kill: true })
+    throw new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
+  }
+  if (outcome === _CRASHED) {
+    supervisor.postMessage({ kill: true }) // (its kernel may be damaged)
+    throw new _KernelFault(what, 'the kernel crashed (in a probe worker, a kernel of its own)', 'this kernel is fine')
+  }
+}
+
+/**
+ * The body (a kernel Brep) `work()` makes, made by the probe worker from `job` (see `_isolatedValue`);
+ * the kernel error it fails with there is thrown here as a KernelError of `what` with `hint`.
+ */
+export function _isolated(what: string, work: () => number, job: () => _Job, hint: string | null = null): number {
+  try {
+    return _isolatedValue(what, work, job, { drop: _dropBrep })
+  } catch (e) {
+    if (e instanceof _KernelFault) throw e // (a crash, or a step that did not finish)
+    return kernelCall(
+      what,
+      () => {
+        throw e
+      },
+      hint,
+    )
+  }
+}
+
+/**
+ * What `work()` returns, made by the probe worker (a kernel of its own, see GUARD_SECONDS) from
+ * exact copies of the bodies (`job`): its value, whose bodies (kernel Breps, also in arrays and
+ * objects) come back as exact copies (binary .smb files), owned by the caller. This kernel never
+ * runs the step: one that crashes the kernel there or does not finish is a _KernelFault, and the
+ * error it fails with there is thrown here (a TypeError or RangeError as itself, a failure of the
+ * kernel as an Error with its message, as the kernel's bindings throw it). Python's
+ * `smlibpy._guard.isolated`. Without a probe worker (a browser's main thread), or with
+ * GUARD_SECONDS = 0, `work()` runs here (held to GUARD_SECONDS by the kernel's deadline, see
+ * `_underDeadline`; `drop` frees what it made where it returned after the deadline); with `trap`, a
+ * trap there (the kernel crashed) is a _KernelFault whose `here` is true (this kernel's memory may be
+ * damaged).
+ */
+export function _isolatedValue<R>(what: string, work: () => R, job: () => _Job, options: { trap?: boolean; drop?: (value: R) => void } = {}): R {
+  const limit = Number(GUARD_SECONDS)
+  const supervisor = limit > 0 ? _supervisor(what) : null
+  const here = (): R => {
+    try {
+      return _underDeadline(what, limit, work, options.drop ?? null)
+    } catch (e) {
+      if (options.trap && typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) throw _crashHere(what, e)
+      throw e
+    }
+  }
+  if (supervisor === null) return here()
+  const j = job()
+  const state = new Int32Array(new SharedArrayBuffer(8))
+  const data = new Uint8Array(new SharedArrayBuffer(_PIECE_BYTES))
+  supervisor.postMessage({ ...j, state: state.buffer, data: data.buffer }, j.bodies.map((b) => b.buffer))
+  // (a new probe worker loads its kernel first)
+  Atomics.wait(state, 0, _QUEUED, _START_SECONDS * 1000)
+  if (Atomics.load(state, 0) === _QUEUED) {
+    _giveUp(`the probe worker did not start within ${_formatG(_START_SECONDS)} s`)
+    _warn(`${what}: ${_noProbe()}; the kernel steps that can crash run in this kernel from now on`)
+    return here()
+  }
+  const deadline = Date.now() + limit * 1000
+  const pieces: Uint8Array[] = []
+  for (;;) {
+    // (once the first piece came, the step is done, and the rest comes at once)
+    Atomics.wait(state, 0, _RUNNING, pieces.length ? _START_SECONDS * 1000 : Math.max(deadline - Date.now(), 0))
+    const outcome = Atomics.load(state, 0)
+    if (outcome === _PIECE) {
+      pieces.push(data.slice(0, Atomics.load(state, 1)))
+      Atomics.store(state, 0, _RUNNING)
+      Atomics.notify(state, 0)
+      continue
+    }
+    if (outcome === _RUNNING) {
+      supervisor.postMessage({ kill: true })
+      throw new _KernelFault(what, `the kernel did not finish within ${_formatG(limit)} s`, 'setGuardSeconds(seconds) sets the limit')
+    }
+    if (outcome === _CRASHED) {
+      supervisor.postMessage({ kill: true }) // (its kernel may be damaged)
+      throw new _KernelFault(what, 'the kernel crashed (in a probe worker, a kernel of its own)', 'this kernel is fine')
+    }
+    const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0))
+    pieces.reduce((at, p) => (bytes.set(p, at), at + p.length), 0)
+    if (outcome === _FAILED) {
+      const { name, message, trace } = JSON.parse(new TextDecoder().decode(bytes))
+      if (name === 'TypeError') throw new TypeError(message)
+      if (name === 'RangeError') throw new RangeError(message)
+      const error = new Error(String(message))
+      if (Array.isArray(trace)) (error as Any)._kernelTrace = trace // (kernelCall makes it the KernelError's trace)
+      throw error
+    }
+    return _decoded(bytes) as R
+  }
+}
+
+/** The value of a step's result (see `make` in _defeature_worker.ts), its bodies read back (and
+ * freed again if that fails). */
+function _decoded(bytes: Uint8Array): unknown {
+  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true)
+  const { value, sizes, marks } = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as {
+    value: unknown
+    sizes: number[]
+    marks?: Any[][]
+  }
+  const starts: number[] = []
+  sizes.reduce((at, n) => (starts.push(at), at + n), 4 + length)
+  const loaded = new Map<number, number>()
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk)
+    if (v !== null && typeof v === 'object') {
+      const i = (v as { $body?: number }).$body
+      if (typeof i === 'number') {
+        if (!loaded.has(i)) {
+          const made = _loaded(bytes.subarray(starts[i], starts[i] + sizes[i]))
+          loaded.set(i, made)
+          // the tags of its faces and edges and its faces' colors and names (.smb files hold none)
+          const mark = marks?.[i]
+          if (mark) {
+            try {
+              ext.set_topology_tags(made, mark[0], mark[1])
+              if (mark[2]) _putFaceAttrs(made, mark[2][0], mark[2][1])
+            } catch (e) {
+              if (!_isRuntimeError(e)) throw e // (its faces and edges then count as new, uncolored)
+            }
+          }
+        }
+        return loaded.get(i)
+      }
+      return Object.fromEntries(Object.entries(v).map(([key, x]) => [key, walk(x)]))
+    }
+    return v
+  }
+  try {
+    return walk(value)
+  } catch (e) {
+    for (const brep of loaded.values()) ext.delete_brep(brep)
+    throw e
+  }
+}
+
+/** The Brep of an .smb file's contents. */
+function _loaded(bytes: Uint8Array): number {
+  const name = `/tmp/smlibwasm-result-${++_results}.smb`
+  module.FS.writeFile(name, bytes)
+  try {
+    return kernelCall('load', () => k.read_brep_from_file(name, null, false))
+  } finally {
+    module.FS.unlink(name)
+  }
+}
+let _results = 0
 
 // ============================================================================= recognising fillets
 /** Cached blend data of faces (kernel face -> object or null). */
@@ -234,13 +576,18 @@ function _filletBound(b: _Blends, faces: readonly Face[]): number {
 }
 
 /** The executive's patched copy of `body` without `groups` (null if it failed), and whether the
- * kernel crashed. */
+ * kernel crashed in the probe worker (a crash in this kernel ends the operation). */
 function _executive(what: string, body: Part, groups: readonly (readonly Face[])[], rebuild: string): [Part | null, boolean] {
   let res: Any
   try {
-    res = _guarded(what, () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild))
+    res = _isolatedValue(
+      what,
+      () => _D.defeature(body._brep, groups.map((g) => g.map((f) => f._f)), rebuild),
+      () => ({ op: 'defeature', bodies: [_smb(body)], tags: [_carried(body._brep)], groups: groups.map((g) => _indices(body, g)), rebuild }),
+      { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
+    )
   } catch (e) {
-    if (e instanceof _KernelFault) return [null, true]
+    if (e instanceof _KernelFault && !e.here) return [null, true]
     throw e
   }
   return [res.brep === null ? null : body._like(res.brep), false]
@@ -287,9 +634,14 @@ function _removePass(
       triedA.add(key(edge))
       let res: Any
       try {
-        res = _guarded('removeFillets', () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)))
+        res = _isolatedValue(
+          'removeFillets',
+          () => _D.remove_fillet_faces(body._brep, edge.map((f) => f._f)),
+          () => ({ op: 'remove_fillet_faces', bodies: [_smb(body)], tags: [_carried(body._brep)], faces: _indices(body, edge) }),
+          { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
+        )
       } catch (e) {
-        if (!(e instanceof _KernelFault)) throw e
+        if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)
         faulted.add(key(edge))
         res = { brep: null }
       }
@@ -408,25 +760,41 @@ export function removeFillets(part: Part, faces: unknown = null, options: { maxR
 }
 
 /** The selection with the faces it encloses: a face all of whose neighbours are selected (the
- * floor of a blind hole, the top of a boss) goes with them. */
+ * floor of a blind hole, the top of a boss) goes with them. Not a face that the selection only
+ * rounds off: one that meets all its neighbours tangentially where the selection, too, meets the
+ * faces around it tangentially (the top of a box whose top edges are rounded, with those rounds
+ * selected). Such a face is the part, not a feature's floor; a pocket's floor inside its rounds
+ * goes with the pocket's walls, whose rim is sharp. */
 function _complete(faces: readonly Face[]): Face[] {
   const out = [...faces]
   let changed = true
   while (changed) {
     changed = false
     const ids = new Set(out.map((f) => f._identity()))
+    const enclosed: Face[] = []
     for (const f of [...out]) {
       for (const g of f.neighbors()) {
-        if (ids.has(g._identity())) continue
-        if (g.neighbors().every((n) => ids.has(n._identity()))) {
-          out.push(g)
-          ids.add(g._identity())
-          changed = true
-        }
+        if (ids.has(g._identity()) || _has(enclosed, g)) continue
+        if (g.neighbors().every((n) => ids.has(n._identity()))) enclosed.push(g)
+      }
+    }
+    const inside = new Set([...ids, ...enclosed.map((g) => g._identity())])
+    const rimSharp = out.some((f) => f.edges().some((e) => e.faces().some((x) => !inside.has(x._identity())) && _sharp(e)))
+    for (const g of enclosed) {
+      if (rimSharp || g.edges().some((e) => _sharp(e))) {
+        out.push(g)
+        ids.add(g._identity())
+        changed = true
       }
     }
   }
   return out
+}
+
+/** Whether an edge between two faces is a corner (its faces do not meet tangentially). */
+function _sharp(e: Edge): boolean {
+  const fs = e.faces()
+  return fs.length === 2 && !fs[0].equals(fs[1]) && e.convexity !== 'smooth'
 }
 
 /** +1 for a depression (hole, pocket: its rim edges are convex), -1 for a protrusion (boss:
@@ -446,17 +814,31 @@ function _featureKind(group: readonly Face[]): number {
   return 0
 }
 
-/** `body` without one connected set of faces, the gap closed and checked; or null and why. */
+/** `body` without one connected set of faces, the gap closed and checked; or null and why. Where
+ * the faces' rim says nothing about the direction (tangent or mixed edges), the volume may change
+ * by no more than the faces span (their area times the size of their box), and the part's box may
+ * not shrink: closing the gap there must not take away the part around it. */
 function _close(body: Part, group: readonly Face[]): [Part | null, string] {
   const expect = _featureKind(group)
   const before = _volume(body)
+  let bound: number | null = null
+  if (expect === 0) {
+    let span = group[0].bbox()
+    for (const f of group.slice(1)) span = span.union(f.bbox())
+    bound = group.reduce((a, f) => a + f.area, 0) * span.diagonal
+  }
   let why = ''
   for (const rebuild of ['extend', 'planar_cap']) {
     let res: Any
     try {
-      res = _guarded('removeFaces', () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild))
+      res = _isolatedValue(
+        'removeFaces',
+        () => _D.defeature(body._brep, [group.map((f) => f._f)], rebuild),
+        () => ({ op: 'defeature', bodies: [_smb(body)], tags: [_carried(body._brep)], groups: [_indices(body, group)], rebuild }),
+        { trap: true, drop: (r: Any) => _dropBrep(r?.brep) },
+      )
     } catch (e) {
-      if (!(e instanceof _KernelFault)) throw e
+      if (!(e instanceof _KernelFault) || e.here) throw e // (a crash here: this kernel may be damaged)
       why = why || e.reason
       continue
     }
@@ -469,18 +851,37 @@ function _close(body: Part, group: readonly Face[]): [Part | null, string] {
       continue
     }
     const candidate = body._like(res.brep)
-    const problem = _problem(before, candidate, expect, null)
+    const problem = _problem(before, candidate, expect, null) ?? (bound !== null ? _spill(body, candidate, before, bound) : null)
     if (problem === null) return [candidate, '']
     why = why || `the kernel returned ${problem}`
   }
   return [null, why]
 }
 
+/** What is wrong with a result whose volume may change either way: a change beyond `bound`, or a
+ * box that shrank (the gap was closed by taking the part around it away). */
+export function _spill(body: Part, result: Part, before: number, bound: number): string | null {
+  const change = Math.abs(_volume(result) - before)
+  if (change > bound) return `a volume change of ${_formatG(change)}, more than the faces span (${_formatG(bound)})`
+  const a = body.bbox()
+  const b = result.bbox()
+  const tol = 1e-6 * Math.max(1, a.diagonal)
+  const [alo, ahi, blo, bhi] = [a.min.toArray(), a.max.toArray(), b.min.toArray(), b.max.toArray()]
+  for (let i = 0; i < 3; i++) {
+    if (blo[i] > alo[i] + tol || bhi[i] < ahi[i] - tol) {
+      return `a part that shrank along ${'XYZ'[i]} (${_formatG(alo[i])}..${_formatG(ahi[i])} -> ${_formatG(blo[i])}..${_formatG(bhi[i])})`
+    }
+  }
+  return null
+}
+
 /** See `Part.removeFaces`. */
 export function removeFaces(part: Part, faces: unknown, options: { partial?: boolean } = {}): Part {
   const partial = options.partial ?? false
   part._requireValid('removeFaces')
-  const sel = _complete(_facesOf(part, faces, 'removeFaces'))
+  const given = _facesOf(part, faces, 'removeFaces')
+  if (filletFaces(given).length === given.length) return removeFillets(part, given, { partial }) // rounds only: taken out by what takes out rounds
+  const sel = _complete(given)
   if (sel.length === part.faces().length) throw new ModelingError('removeFaces: that is every face of the part; nothing would be left')
   let body = part
   const failed: [Face[], string][] = []

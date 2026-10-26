@@ -12,8 +12,7 @@ from smlibpy._kernel import ext, k
 
 
 def volume(p: Part) -> float:
-    # the kernel's default accuracy is not enough for bent B-spline bodies (see the deform guide)
-    return p.mass_properties(accuracy=1e-10).volume
+    return p.volume  # smlibpy's own integration (measure.cpp): exact on deformed parts too
 
 
 def surfaces(p) -> list[dict]:
@@ -58,10 +57,9 @@ def test_twist_is_exact_where_it_can_be_and_within_tolerance_elsewhere():
     bar = box.twist(90)
     assert deviation(plan, bar) < 1e-6
     data = surfaces(bar)
-    assert all(d["kind"] == "bspline" for d in data)
-    degrees = sorted((d["u_degree"], d["v_degree"]) for d in data)
-    # top and bottom only turn: still planes of degree 1; the sides keep their straight rulings
-    assert degrees.count((1, 1)) == 2
+    # top and bottom only turn: planes again; the sides are B-splines that keep their straight rulings
+    assert sorted(d["kind"] for d in data) == ["bspline"] * 4 + ["plane"] * 2
+    degrees = sorted((d["u_degree"], d["v_degree"]) for d in data if d["kind"] == "bspline")
     assert all(1 in dd for dd in degrees)
 
 
@@ -321,7 +319,7 @@ def test_mcp_session_deforms_and_finds_the_guides():
     finally:
         s.close()
     for query, key in [("twist a bar", "twist"), ("bend a tube into a U", "bend"), ("taper the grip", "taper"),
-                       ("free-form deformation with a cage", "Lattice"), ("warp the part", "Lattice"),
+                       ("free-form deformation with a cage", "Lattice"), ("warp the part", "warp"),
                        ("morph a shape", "Lattice")]:
         assert key in [e.key.split("/")[-1].split(".")[-1] for _, e in discovery.search(query, 6)], query
     assert discovery.guide("deform/generic") is not None and discovery.guide("recipes/deform") is not None

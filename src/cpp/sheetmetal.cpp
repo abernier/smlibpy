@@ -7,7 +7,7 @@
 // Everything in the bend region (a strip of the bend allowance's width in the flat, a cylinder
 // sector when bent) is mapped through an exact bend volume; everything before and after it is
 // moved rigidly. Planes parallel to the sheet become exact cylinders, lines exact lines and
-// circles; other geometry crossing the region becomes NURBS within 1e-4.
+// circles; other geometry crossing the region becomes NURBS: faces within 1e-4, edges within 1e-7.
 //
 // The orchestration of the kernel (SmSpaceBend::DoSpaceBend, SmSpaceUnbend::DoSpaceUnbend) is
 // redone here with the kernel's own steps, because in usd-brep 1.0.0
@@ -31,23 +31,30 @@
 // and surface at once. Callers make sure the region holds nothing but flat sheet (bend) or one
 // bend (unbend); a region that does not cut the body in two is refused here.
 
+#include "deform.h"
 #include "kernel.h"
 #include "sheetmetal.h"
 
 #include <SmApiGeneral.h>
 #include <SmBendVolume.h>
+#include <SmCrvInVolume.h>
 #include <SmCylinder.h>
+#include <SmEdgeuse.h>
+#include <SmLoopuse.h>
 #include <SmMerge.h>
 #include <SmPlane.h>
+#include <SmSrfInVolume.h>
 #include <SmSpaceBend.h>
 #include <SmSpaceUnbend.h>
 #include <SmTopologyTraverser.h>
 #include <SmUnbendVolume.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -285,14 +292,125 @@ void move_cylinder_onto_face(SmBSplineSurface* cylinder, SmFace* face)
     cylinder->Transform(shift);
 }
 
+// Whether the iso-curves at the two ends of a surface's domain in direction `d` (0: u, 1: v) are one
+// curve: the surface closes around in that direction (the wall of a hole, whose face may have no seam).
+bool closes_around(const SmSurface* surface, int d)
+{
+    const SmExtent2d dom = surface->GetNaturalUVDomain();
+    SmExtent3d box;
+    std::vector<std::pair<SmPoint3d, SmPoint3d>> ends;
+    for (int k = 0; k <= 8; ++k)
+    {
+        const double t = k / 8.0;
+        const SmPoint2d a = d == 0 ? dom.Evaluate(0.0, t) : dom.Evaluate(t, 0.0);
+        const SmPoint2d b = d == 0 ? dom.Evaluate(1.0, t) : dom.Evaluate(t, 1.0);
+        SmPoint3d pa, pb;
+        if (surface->EvaluatePoint(a, pa) != SM_SUCCESS || surface->EvaluatePoint(b, pb) != SM_SUCCESS)
+            return false;
+        box.AddPoint3d(pa);
+        box.AddPoint3d(pb);
+        ends.emplace_back(pa, pb);
+    }
+    const double tol = 1e-9 * (1.0 + box.GetMaxDimension());
+    for (const auto& e : ends)
+        if (e.first.DistanceBetween(e.second) > tol)
+            return false;
+    return true;
+}
+
+// The kernel's surface fit (SmSurface::ApproximateSurface) of a mapped B-spline face grows the
+// domain by a sixteenth on every side, and its parameters drift from the original's. A face that
+// closes around its surface (the wall of a hole wholly inside a bend: two circles and a seam) then
+// lies on a surface that overlaps itself, its trim curves were dropped onto the wrong end of the
+// domain, and the face's area came out as 2.6 instead of 113 (the unfolded part not `is_valid()`).
+// Such a face is fitted here keeping the parameters of the original over its domain (deform.cpp's
+// fit), so that the fit closes around where the original did and the face's trim curves stay.
+bool overshoots(const SmSurface* fit, const SmExtent2d& domain, const bool closed[2])
+{
+    const SmExtent2d now = fit->GetNaturalUVDomain();
+    const double slack = 1e-9 * (1.0 + domain.GetMaxDimension());
+    return (closed[0] && (now.GetUMin() < domain.GetUMin() - slack || now.GetUMax() > domain.GetUMax() + slack)) ||
+           (closed[1] && (now.GetVMin() < domain.GetVMin() - slack || now.GetVMax() > domain.GetVMax() + slack));
+}
+
+// Build a face's trim curves now, once the edges have their final curves (SmBrep::ReplaceCurve drops
+// them): for a face that closes around its surface, built later on a copy of the body, the curves
+// of its seam and rims could be dropped onto the wrong end of the domain.
+void build_trim_curves(SmFace* face)
+{
+    SmTArray<SmLoopuse*> loops;
+    face->GetUpwardLoopuses(loops);
+    for (ULONG i = 0; i < loops.GetSize(); ++i)
+    {
+        SmTArray<SmEdgeuse*> uses;
+        loops[i]->GetEdgeuses(uses);
+        for (ULONG j = 0; j < uses.GetSize(); ++j)
+        {
+            SmBSplineCurve* uv = nullptr;
+            uses[j]->GetOrCreateUVTrimCurve(uv);
+        }
+    }
+}
+
+// The edges of the bend region are fitted within kCurveTolerance of the exact bend (deform.cpp's
+// parameter-keeping fit, else the kernel's curve approximation), its faces within kSurfaceTolerance
+// (deform.cpp's parameter-keeping surface fit, on the original's knots, exact where it can be),
+// else within the kernel's tolerance (GetApproxTol, which it clamps to 1e-4). The fits cost nothing:
+// a hole across a bend comes back from a fold and an unfold round to 5e-13 instead of 1.8e-5, so the
+// flat pattern's outline gets it back as one circle, and the slanted walls of a square hole in the
+// bend zone come back to 3e-14 instead of 1.6e-6 (the kernel's surface fits at 1e-6 cost up to
+// twenty times as long: 7 s instead of 0.3 s to unfold an R20 bend with two holes in it). Where a
+// fit fails, the kernel's tolerance is the fallback.
+constexpr double kCurveTolerance = 1e-7;
+constexpr double kSurfaceTolerance = 1e-6;
+
 // Step 4: map the region, move the rest, then replace the mapped (volume) geometry by exact
-// analytic geometry where the kernel can make it, else by NURBS within `tolerance`.
+// analytic geometry where the kernel can make it, else by NURBS within `tolerance` (faces) and
+// kCurveTolerance (edges; `tolerance` where that fails).
 template <class MapRegion, class MoveRegion>
 SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion map_region, MoveRegion move,
                       double tolerance)
 {
+    const double tight = std::min(kCurveTolerance, tolerance);
+    // a mapped (volume) curve as a B-spline within `tol` of it, keeping its parameters: deform.cpp's
+    // fit on the knots of the original (quintic, 20 to 30 control points for a hole's arc across a
+    // bend), else the kernel's (cubic, 193 control points at 1e-7)
+    auto fit_curve = [&brep](SmEdge* edge, double tol) {
+        SmCurve* curve = edge->GetCurve();
+        if (!curve || curve->IsKindOf(SmBSplineCurve_TYPE))
+            return true;
+        const SmExtent1d ivl = edge->GetInterval();
+        const SmCurve* base = curve->IsKindOf(SmCrvInVolume_TYPE) ? static_cast<SmCrvInVolume*>(curve)->GetCurve() : nullptr;
+        if (SmBSplineCurve* fit = smlibpy::fit_curve_keeping_parameters(curve, base, ivl.GetMin(), ivl.GetMax(), tol))
+        {
+            brep.ReplaceCurve(edge, fit);
+            return true;
+        }
+        SmTArray<double> breaks;
+        const SmExtent1d nat = curve->GetNaturalInterval();
+        breaks.Add(nat.GetMin());
+        breaks.Add(nat.GetMax());
+        double gap = 0.0;
+        SmBSplineCurve* approx = nullptr;
+        if (curve->ApproximateCurve(*brep.GetContext(), breaks, tol / 2.0, gap, approx, FALSE, TRUE) == SM_SUCCESS &&
+            approx && gap <= tol)
+        {
+            brep.ReplaceCurve(edge, approx);
+            return true;
+        }
+        delete approx;
+        return false;
+    };
+    std::vector<SmExtent2d> domains;
+    std::vector<std::array<bool, 2>> closed;
+    std::vector<bool> refit(p.in_faces.GetSize(), false);  // fitted keeping the parameters
     for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
+    {
         p.in_faces[i]->ShrinkGeometry();
+        const SmSurface* surface = p.in_faces[i]->GetSurface();
+        domains.push_back(surface ? surface->GetNaturalUVDomain() : SmExtent2d());
+        closed.push_back({surface && closes_around(surface, 0), surface && closes_around(surface, 1)});
+    }
     SmStatus st = map_region(p.in_faces, p.in_edges, p.in_vertices);
     if (st == SM_SUCCESS)
         st = move(t.before, p.before_faces, p.before_edges, p.before_vertices);
@@ -320,12 +438,51 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             if (brep.ReplaceSurface(face, exact, FALSE, nullptr, FALSE) != SM_SUCCESS)
                 result = SM_ERR;
         }
-        else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
-            result = SM_ERR;
+        else
+        {
+            // the exact image fitted keeping the original's parameters over the domain the face had
+            // (deform.cpp's fit, within kSurfaceTolerance: its trims stay as they were), else the
+            // kernel's fit within its tolerance (see overshoots for faces that close around)
+            const SmSurface* base =
+                surface->IsKindOf(SmSrfInVolume_TYPE) ? static_cast<SmSrfInVolume*>(surface)->GetSurface() : nullptr;
+            const SmExtent2d& dom = domains[i];
+            SmBSplineSurface* fit = smlibpy::fit_surface_keeping_parameters(
+                surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(), dom.GetVMax(), std::min(kSurfaceTolerance, tolerance));
+            if (!fit && (closed[i][0] || closed[i][1]))
+                fit = smlibpy::fit_surface_keeping_parameters(surface, base, dom.GetUMin(), dom.GetUMax(), dom.GetVMin(),
+                                                              dom.GetVMax(), tolerance);
+            if (fit)
+            {
+                if (brep.ReplaceSurface(face, fit, FALSE, nullptr, FALSE) != SM_SUCCESS)
+                {
+                    if (fit->GetOwner() == nullptr)
+                        delete fit;
+                    result = SM_ERR;
+                }
+                refit[i] = true;
+            }
+            else if (face->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS ||
+                     ((closed[i][0] || closed[i][1]) && overshoots(face->GetSurface(), dom, closed[i].data())))
+                result = SM_ERR;
+        }
     }
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
-        if (p.in_edges[i]->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
+        // an exact line or arc where the kernel can make one (as SmEdge::ApproximateWithBSpline does
+        // first), else the exact image fitted within kCurveTolerance (the kernel's constrained
+        // approximation follows the fitted faces: 1.2e-6 off a line across a bend), else the kernel's
+        SmEdge* edge = p.in_edges[i];
+        SmCurve* curve = edge->GetCurve();
+        if (!curve || curve->IsKindOf(SmBSplineCurve_TYPE))
+            continue;
+        SmBSplineCurve* exact = nullptr;
+        curve->MakeExactBSplineIfPossible(exact);
+        if (exact)
+        {
+            if (brep.ReplaceCurve(edge, exact) != SM_SUCCESS)
+                result = SM_ERR;
+        }
+        else if (!fit_curve(edge, tight) && edge->ApproximateWithBSpline(tolerance / 2.0, achieved) != SM_SUCCESS)
             result = SM_ERR;
     }
     if (result != SM_SUCCESS)
@@ -339,22 +496,9 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
     for (ULONG i = 0; i < p.in_edges.GetSize(); ++i)
     {
         SmEdge* edge = p.in_edges[i];
+        if (!fit_curve(edge, tight))
+            fit_curve(edge, tolerance);
         SmCurve* curve = edge->GetCurve();
-        if (curve && !curve->IsKindOf(SmBSplineCurve_TYPE))
-        {
-            SmTArray<double> breaks;
-            SmExtent1d ivl = curve->GetNaturalInterval();
-            breaks.Add(ivl.GetMin());
-            breaks.Add(ivl.GetMax());
-            double gap = 0.0;
-            SmBSplineCurve* approx = nullptr;
-            if (curve->ApproximateCurve(*brep.GetContext(), breaks, tolerance / 2.0, gap, approx, FALSE, TRUE) ==
-                    SM_SUCCESS && approx && gap <= tolerance)
-                brep.ReplaceCurve(edge, approx);
-            else
-                delete approx;
-            curve = edge->GetCurve();
-        }
         if (curve && curve->IsKindOf(SmBSplineCurve_TYPE) &&
             !static_cast<SmBSplineCurve*>(curve)->GetOrCreateGwNurbPointer())
             return SM_ERR_NOT_WITHIN_TOLERANCE;
@@ -366,6 +510,9 @@ SmStatus map_and_move(SmBrep& brep, Partition& p, const Transforms& t, MapRegion
             !static_cast<SmBSplineSurface*>(surface)->GetOrCreateGwNurbPointer())
             return SM_ERR_NOT_WITHIN_TOLERANCE;
     }
+    for (ULONG i = 0; i < p.in_faces.GetSize(); ++i)
+        if (refit[i] || closed[i][0] || closed[i][1])
+            build_trim_curves(p.in_faces[i]);
     return SM_SUCCESS;
 }
 
@@ -479,8 +626,9 @@ void bind_sheetmetal(py::module_ m)
     m.def("bend", [](SmBrep* brep, double angle, double radius, double k_factor, double thickness,
                      const std::vector<double>& axis_point, const std::vector<double>& axis,
                      const std::vector<double>& direction, double length) {
-        const smlibpy::BendFaces f =
-            smlibpy::sheet_bend(brep, angle, radius, k_factor, thickness, axis_point, axis, direction, length);
+        const smlibpy::BendFaces f = smlibpy::without_gil([&] {
+            return smlibpy::sheet_bend(brep, angle, radius, k_factor, thickness, axis_point, axis, direction, length);
+        });
         return py::make_tuple(f.in, f.before, f.after);
     }, py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"),
@@ -489,7 +637,7 @@ void bind_sheetmetal(py::module_ m)
        "[0, length] along the axis from `axis_point`. The part on the side of cross(direction, axis) stays in "
        "place. Returns the numbers of faces in, before and after the region.");
 
-    m.def("unbend", &smlibpy::sheet_unbend,
+    m.def("unbend", &smlibpy::sheet_unbend, py::call_guard<smlibpy::NoGil>(),
        py::arg("brep"), py::arg("angle"), py::arg("radius"), py::arg("k_factor"), py::arg("thickness"),
        py::arg("axis_point"), py::arg("axis"), py::arg("direction"), py::arg("length"), py::arg("anchor") = nullptr,
        "Unbend a Brep in place: the inverse of `bend`, with `direction` pointing from the axis to the middle "

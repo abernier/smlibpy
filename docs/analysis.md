@@ -11,7 +11,7 @@ part.volume              # 24000 - pi * 36 * 20
 part.area                # total surface area
 part.center()            # center of mass
 part.bbox()              # BoundBox: .min, .max, .size, .center
-part.is_valid()          # a closed, manifold solid with a positive volume?
+part.is_valid()          # a closed, manifold solid with a positive volume, faces that meet?
 part.info()              # counts and bounding box in one dict
 
 face = part.faces().top().one()
@@ -46,6 +46,10 @@ mp.principal_moments
 mp.principal_axes
 
 precise = part.mass_properties(density=7.85e-3, accuracy=1e-10)
+
+mp.inertia_about((20, 15, 10))             # the tensor about another point (parallel axes)
+mp.moment_about(Axis((0, 0, 0), (0, 0, 1)))  # about an axis: a shaft's, a pivot's
+mp.radii_of_gyration                       # sqrt(principal moment / mass), per principal axis
 ```
 
 `accuracy` (1e-10 to 1e-2) sets the bound above for one call. It costs little: the spring
@@ -53,16 +57,47 @@ takes 55 ms at 1e-7 and at 1e-10, 23 ms at 1e-4. A coarse accuracy saves little 
 free-form faces, though: every knot span gets at least 7 x 7 points, and the thickened surface
 above takes 0.6 s at any accuracy.
 
+## Section properties
+
+The second moments of area of a profile, for beams, frames and extrusions, come from its
+sketch. They are about the centroid, in the axes of the sketch plane (`sp.plane`, the plane
+moved to the centroid):
+
+```python
+sp = (Rectangle(40, 20) - Circle(5)).section_properties()
+sp.area                   # 721.46
+sp.ixx, sp.iyy, sp.ixy    # 26175.79, 106175.79, 0: integral of y², x², x y over the area
+sp.polar                  # ixx + iyy
+sp.section_moduli         # (2617.58, 5308.79): ixx / c_y and iyy / c_x, c to the farthest fiber
+sp.radii_of_gyration      # (6.023, 12.131)
+
+angle = Rectangle(30, 5, align=Align.MIN) + Rectangle(5, 40, align=Align.MIN)
+sa = angle.section_properties()
+sa.centroid               # Vector(8.26923, 13.2692, 0)
+sa.principal_moments      # (13276.7, 61442.9): ascending
+sa.principal_axes         # their directions, in the plane
+```
+
+They are integrated as the mass properties of a thin slab of the region (to the same 1e-7),
+less the slab's own thickness term.
+
 ## How exact a body is
 
 The numbers are as exact as the body. Where the kernel fits a surface or an intersection
-curve (B-spline chamfers and variable fillets, the offset faces of a shell, the cut ends of a
-sweep, two cylinders crossing), neighbouring faces meet only to within about 1e-6 to 2e-5 mm,
-and the volume of the body is defined only to that: measured turned by 90 degrees, the flange
-of `examples/flange.py` differs by 2.6e-7, two crossing cylinders of the same radius by 3e-7,
-the shelled bottle by 3.6e-6. Bodies whose edges are lines and circles close up exactly and
+curve (fitted chamfers, G2 and G3 blends and variable fillets, the offset faces of a shell, the
+cut ends of a sweep, two cylinders crossing), neighbouring faces meet only to within about 1e-6 to
+2e-5 mm, and the volume of the body is defined only to that: measured turned by 90 degrees, a pin
+with G2 blends on its rims (`Cylinder(3, 10)`, 1) differs by 3.4e-6, two crossing cylinders of the
+same radius by 3e-7, the shelled bottle by 3.6e-6. (Chamfers of full circles between coaxial faces
+are exact cones: the flange of `examples/flange.py` differs by 2e-14.) Bodies whose edges are lines and circles close up exactly and
 agree with their formulas to 1e-10 and better. Compare against formulas with a relative
 tolerance of 1e-6, or 1e-5 for sweeps, shells and offsets of curved faces.
+
+A face the integration cannot converge on stops it after a budget of surface points (far more
+than a sound face of as many knot spans takes): one that crosses the seam of its own surface, a
+broken body that no public operation makes, raises `KernelError` ("face 0 of the body crosses
+the seam of its surface ...") in under a second, where it ran for minutes. Any other face that
+runs out gives its result with the warning that the accuracy was not reached.
 
 The integration measures the gaps as well: it integrates the volume with three fields, the
 kernel's (0, 0, z) and (x, 0, 0) and (0, y, 0), which give the same volume only for faces that
@@ -71,7 +106,30 @@ close up. Where they differ by more than 1e-5 (or the accuracy asked for, if tha
 of the uncertainty, and give the volume of the faces as they are. A sheet unfolded across a hole
 in a bend zone, whose NURBS faces as trimmed do not quite meet their neighbours, gets 8e-5 (its
 volume is 6e-5 off). A warning that the integration did not reach the accuracy asked for looks
-the same; each comes once per part.
+the same; each comes once per part. From 1e-2 the faces do not bound one solid (a Boolean
+result that left a face out: 0.25), and `is_valid()` is False.
+
+## What is wrong with a body
+
+`is_valid()` says whether a part is a closed solid with a positive volume whose faces meet;
+`check()` runs the kernel's own checks of every face, edge and vertex and names what is wrong,
+and where: each `Problem` has the face, edge or vertex (`shape`), a `message`, the `value`
+measured and the `tolerance` it was held against. For imported, stitched and healed bodies:
+
+```python
+sides = Box(20, 20, 20).faces()
+lifted = stitch([f.to_shell().translate(0, 0, 0.002 if f.normal_at().z > 0.5 else 0) for f in sides],
+                tolerance=0.01)                    # the top face sewn on 0.002 above the walls
+print(lifted.is_valid(), lifted.is_valid(strict=True))   # True False
+for problem in lifted.check():
+    print(problem.test, problem.shape, round(problem.value, 6))   # Bad Vertex Gap Vertex(..., 10) 0.002
+print(round(max(e.tolerance for e in lifted.edges()), 6))         # 0.004
+```
+
+`is_valid(strict=True)` also requires an empty `check()`. `check(level)` runs the structure tests
+(0), also the geometry (1) or all (2, the default); some milliseconds on generated parts. The
+tests do not see a body that runs through itself. `edge.tolerance` and `vertex.tolerance` are
+the kernel's tolerances (1e-5 on parts smlibpy makes).
 
 ## Distances
 
@@ -81,14 +139,93 @@ b = Sphere(3).translate(20, 0, 0)
 a.distance_to(b)                 # 12.0
 a.distance_to((0, 0, 30))        # to a point
 a.closest_point((0, 0, 30))      # Vector(0, 0, 5)
+
+cp = a.closest_points(b)         # the nearest points themselves, and the faces they lie on
+cp.point, cp.other_point         # Vector(5, 0, 0), Vector(17, 0, 0)
+cp.distance, cp.face, cp.other_face
+
+a.distance_to(Line((20, -50, 3), (20, 50, 3)))   # 15.0: to an edge (a wire, a face) as well
 ```
+
+The distance between bodies is exact, also between faces that are nearly parallel: the closest
+points are refined on the faces' own parameters until they settle, and `distance_to` warns if
+they do not. Edges and wires go the same way: from the curve's nearest samples, Newton's method
+on the curve's parameter and the face's. A face counts as the sheet it is; an edge, a wire or a
+face also measures to a body (`edge.distance_to(part)`).
+
+Faces, edges and wires have their closest points, and the parameters there:
+
+```python
+top = part.faces().top().one()
+top.closest_point((0, 0, 30))    # Vector(6, 0, 10): on the face, not in its hole
+u, v = top.uv_at((5, 5, 30))     # its parameters as fractions of the face's parameter box
+top.position_at(u, v)            # the point there; position_at(0.5, 0.5) is the box's middle
+edge = part.edges().circles().first
+edge.closest_point((10, 0, 0))   # Vector(6, 0, -10)
+edge.param_at_point((0, 10, 10)) # 0.25: the fraction of the length, as point_at takes it
+```
+
+## Curvature
+
+```python
+bore = part.faces().cylinders().one()
+c = bore.curvature_at()          # at a point inside the face, or the one nearest to a point given
+c.k1, c.k2                       # 0, -1/6: principal curvatures, negative where the face is hollow
+c.dir1, c.dir2, c.normal         # their directions and the outward normal
+c.mean, c.gaussian
+Torus(20, 5).faces()[0].min_radius()   # 5: the smallest radius of curvature on the face
+edge.curvature_at(0.5)           # 1/6: 1 / radius of a curve
+```
+
+Curvatures come from the exact surface, signed by the face's outward normal: a ball is positive,
+a bore negative, a plane 0. `min_radius()` is exact for planes (`inf`), cylinders and spheres;
+other faces are sampled on a 24 x 24 grid of their parameters and refined from the sharpest
+points; points within 1e-2 of a pole (by the ratio of the tangents) are left out, where the
+derivatives do not give the curvature to all its digits. Compare it with a wall thickness
+(`thicken` inward) or a cutter's radius.
+
+A face's surface itself: its NURBS data (the whole surface, untrimmed; exact for every kind,
+rational for circles), and its curves of constant parameter, clipped to the face:
+
+```python
+n = Cylinder(5, 20).faces().cylinders()[0].nurbs()
+n.degrees, len(n.knots[0]), len(n.points), len(n.points[0])   # (2, 1), 12, 9 x 2 control points
+top.iso(u=0.5)                   # two lines: the hole is in the way
+bore.iso(v=0.5)[0].length        # 37.699: the circle around the bore
+torus_face = Torus(20, 5).faces()[0]
+torus_face.major_radius, torus_face.radius   # 20, 5
+Cone(10, 4, 20).faces().filter_by(lambda f: f.geom_type == "cone")[0].cone_angle  # 16.7: half the opening
+```
+
+## Continuity
+
+How two faces meet along an edge: `"G0"` at a crease, `"G1"` where they meet tangentially (a
+circular fillet's border), `"G2"` where their curvature across the edge agrees too (a fillet
+with `continuity="G2"`), `None` where they leave a gap. The edge is checked at 16 points (or
+`samples=`) for the largest gap, angle between the normals and jump of the curvature across it:
+
+```python
+box = Box(30, 30, 30)
+edge = box.edges().filter_by(Z).sort_by(X).last
+round_part = box.fillet(edge, 5)
+blend = box.fillet(edge, 5, continuity="G2")
+c = round_part.edges().g1().first.continuity()
+c.level, c.angle, c.curvature_jump     # 'G1', 0.0, 0.2: tangent, but 1/5 against 0
+len(blend.edges().g2())                # 2: both borders of the G2 blend
+Polyline((0, 0), (10, 0), (10, 10)).continuity().level   # 'G0': the joints of a wire
+```
+
+`g1()` selects the edges that are at least tangent, `g2()` the curvature-continuous ones. The
+defaults: G1 within 0.5 degrees (the kernel's own tolerance, also `smooth()`'s), G2 within 1% of
+the larger curvature (or `1e-3 / length`, where both are nearly flat); `angle_tol=` and
+`curvature_tol=` take others. `smooth()` and `convexity` look along the whole edge as well: an
+edge whose faces meet tangentially only at its middle is not smooth.
 
 ## Rays
 
 `raycast` gives the exact points where a ray meets a body (or a face, or a mesh), nearest
 first, each with its distance, the face and the outward normal there. What a line of sight
-sees first, wall thicknesses along a direction, or whether a point is inside (an odd number of
-hits) all come from it:
+sees first and wall thicknesses along a direction come from it:
 
 ```python
 part = Box(40, 30, 20) - Cylinder(5, 30)
@@ -97,11 +234,41 @@ print([round(h.distance, 6) for h in hits])        # [30.0, 45.0, 55.0, 70.0]: i
 print(hits[1].face.geom_type, hits[1].normal)      # cylinder Vector(1, 0, 0): into the hole
 top = part.raycast(Axis((10, 8, 50), (0, 0, -1)))[0]
 print(top.point)                                   # Vector(10, 8, 10)
-print(len(part.raycast((10, 8, 0), Z)) % 2 == 1)   # True: the point is inside the material
 ```
 
 To select faces with a ray instead, and chain on, use `part.faces().hit_by(origin, direction)`
 (see [Selecting](selecting.md#by-position)).
+
+Many rays at once (height maps, depth images, visibility, sampling) go through `raycast_many`:
+the first hit of each ray, or `None`. It traces the rays through a mesh of the part with the
+kernel's ray tracer and moves each hit onto the exact face, 20 to 50 times faster than one
+`raycast` per ray on a plate with holes; on a mesh it is the tracer alone:
+
+```python
+import numpy as np
+
+xs, ys = np.meshgrid(np.linspace(-20, 20, 41), np.linspace(-15, 15, 31))
+origins = np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, 50.0)])
+hits = part.raycast_many(origins, (0, 0, -1))       # one direction for all rays
+print(sum(h is None for h in hits))                 # 69: the rays through the hole
+first = part.mesh().raycast_many(origins, (0, 0, -1))  # on the triangles
+```
+
+## Inside or outside
+
+`classify` says where a point lies: in the material, outside (a cavity is outside), or on the
+surface, with the vertex, edge or face it lies on. `contains` is True inside and on the surface.
+They are exact; the parity of `raycast` hits is not where a ray grazes a face or passes through
+an edge (a ray tangent to a cylinder hits it once):
+
+```python
+part = Box(40, 30, 20) - Cylinder(5, 30)
+print(part.classify((10, 8, 0)))                   # ('inside', None)
+print(part.classify((20, 0, 0))[0])                # on: the right side
+print(part.contains((10, 8, 0)), part.contains((0, 0, 0)))   # True False: in the hole
+cells = Box(20, 20, 20).merge(Cylinder(4, 30))
+print(round(cells.cell_at((0, 0, 0)).volume, 3))   # 1005.31: the cell of a merged part there
+```
 
 ## Intersections and projections
 
@@ -110,11 +277,60 @@ box = Box(20, 20, 20)
 pipe = Cylinder(4, 40).rotate(X, 30)
 
 box.intersection_curves(pipe)               # where the surfaces cross, as edges
-Sphere(10).silhouette((0, 0, 1))            # outline seen along a direction
+box.intersection_curves(Plane.XY.offset(5)) # where a plane cuts the faces ([] where nothing meets)
+Sphere(10).silhouette((0, 0, 1))            # the contour seen along a direction: one circle
 box.project(CenterArc((0, 0, 30), 5, 0, 360), (0, 0, -1))   # curve onto the faces below
-box.outline(Plane.XZ)                       # edges projected to a plane
+box.outline(Plane.XZ)                       # the visible edges projected to a plane
+seen, hidden = (box - pipe).outline(Plane.XZ, hidden=True)  # and the hidden ones
 Line((0, 0), (10, 10)).intersections(Line((0, 10), (10, 0)))  # [Vector(5, 5, 0)]
+Line((0, 0, -20), (0, 0, 20)).intersections(box)              # where it enters and leaves the box
+Line((0, 0, -20), (0, 0, 20)).intersection_params(box)        # [0.25, 0.75] along the line
 ```
+
+`project` fits its curves within 1e-7 of the size of the body and the curve. It gives pieces on
+every face the direction meets, the far side and faces seen edge-on too; `nearest=True` keeps
+what the curve sees along the direction, cut where another part of the body hides it. A curve
+that misses the body gives an empty list. On a single face, `Face.project` projects along the
+face's normals (each point to its nearest point of the surface), `Face.iso` gives the curves of
+constant surface parameter, and `Face.wrap` lays a flat drawing onto the face keeping its lengths
+along the face's parameter lines, as a label on a can. A curve across a closed face's seam comes
+back as one edge from all three:
+
+```python
+Sphere(10).project(CenterArc((0, 0, 30), 5, 0, 360), nearest=True)   # the top piece only
+side = Cylinder(10, 40).faces().cylinders()[0]
+side.project(Line((-30, -15, 5), (30, -15, -5)))        # onto the cylinder along its normals
+side.iso(v=0.5)                                          # the circle half way up
+side.wrap(Text("SMLIB", 6), (0, -10, 0), direction=(1, 0, 0))   # lettering around the cylinder
+```
+
+`intersections` of an edge or a wire takes edges, wires, faces and bodies, gives the points in
+order along the edge, and an empty list where there are none. A point counts when it lies within
+`tolerance` of the other shape: 1e-6 by default, or 1e-9 of the size of the two where that is
+larger, so lines that miss each other by 0.0005 do not cross. Where two curves overlap, the
+overlap's two ends count; where an edge lies on a face, the points where it starts and stops
+lying on the face. `self_intersections()` gives the points where an edge crosses itself.
+`closest_point(p)` and `param_at_point(p)` give the nearest point of an edge and its fraction along it.
+
+## Curvature of edges
+
+```python
+s = Spline((0, 0), (10, 5), (20, -3), (30, 4))
+s.curvature_at(0.5), s.radius_at(0.5)       # 1/radius and radius at a fraction of the length
+r, t = s.min_radius(), s.min_radius_at()    # 3.9975 at t 0.677: (20.78, -3.17, 0)
+s.inflections()                             # [0.484]: where it changes the side it bends to
+w = Wire([Line((0, 0), (10, 0)), Spline((10, 0), (20, 5), (30, 0))])
+w.min_radius()                              # a wire: over its edges (corners do not count)
+Spline((0, 0), (1, 1), (2, 0), (30, 0)).bbox().max.y   # 1.0069: exact boxes of free curves
+```
+
+`min_radius()` is the smallest radius of curvature (a float, as a face's `min_radius()`), and
+`min_radius_at()` where it is, found by the kernel's global solver, not by sampling (it agrees
+with OpenCASCADE to 1e-15): a sweep profile that reaches farther from the path than this, or an
+offset larger than it on the inner side, folds over itself. A line gives `inf`, an arc its radius. Sweep errors about the path's curvature
+give the path's smallest radius, where it is and how far the profile reaches. The box of a free
+curve (one not taken from a body) is exact: its ends, its corners and the points where its
+tangent is perpendicular to an axis.
 
 ## Draft and parting lines
 
@@ -162,6 +378,10 @@ loft between different sections, the walls of a thickened free-form sheet) is di
 all its faces are flat within the tolerance. Its mesh is right, but it takes many more
 triangles: 2076 for `Box(20, 20, 100).twist(90)`, where the box has 12.
 
+The points of a mesh are double precision, and its corner normals are those of the exact
+surface (at the apex of a cone, where each line of the cone has a normal of its own, the normal
+beside the corner).
+
 Closed meshes from anywhere (`tessellate`, `import_stl`, `Mesh(...)`) take `+`, `-` and `&`,
 for meshes that have no exact part behind them, such as scans. Every result is checked (closed,
 a volume the operation can give), and where the kernel fails, which still happens for some
@@ -173,4 +393,78 @@ corners = Box(20, 20, 20).mesh() - Sphere(12).mesh()       # a mesh Boolean
 print(corners.is_closed(), round(corners.volume, 2))       # True 1631.68
 blob = (Box(20, 20, 20) - Sphere(12)).mesh(tolerance=0.01) # exact first: closer to 1616.28
 print(round(blob.volume, 2))
+```
+
+A mesh Boolean's triangles take the normals of the operand triangles they lie on (turned on the
+inside of a cut), so its result shades as its operands do; meshes without normals give a result
+without.
+
+`max_edge` bounds the length of the triangles' edges, for evenly sized triangles (simulation
+meshes, deformation, sampling) where the tolerance alone leaves a flat face two long triangles.
+`tessellate`, `mesh` and the mesh exports (`export_stl`, `export_obj`, `export_glb`,
+`export_gltf`, `export_usd`) take it:
+
+```python
+plate = Box(100, 100, 2) - Cylinder(5, 10)
+print(len(plate.mesh(0.1)), len(plate.mesh(0.1, max_edge=10)))   # 144 706: edges of 100, under 13
+```
+
+With `max_edge` every face is meshed by the kernel's grid; a part with a twisted face, which the
+grid meshes too far off (see above), gets a `RuntimeWarning` saying how far, and a smaller
+`max_edge` brings the grid nearer.
+
+### Measuring and cutting meshes
+
+Meshes of scans and STL files have no exact part behind them; they are measured and cut on their
+triangles. `mass_properties` gives the mass, center and inertia of what a closed mesh encloses,
+exact for its triangles (the same `MassProperties` as a part's); `centroid` is its center of mass
+(`center()` is the middle of the bounding box):
+
+```python
+scan = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)
+mp = scan.mass_properties(density=7.85e-3)      # steel, g/mm³
+print(round(mp.mass, 2), scan.centroid)         # 170.66 Vector(0, 0, 0)
+```
+
+`section(plane)` cuts a mesh: the wires where its triangles cross the plane, chained into loops
+(outer loops counterclockwise seen from the plane's normal, holes clockwise, as the faces of a
+part's section). `slices(step)` cuts it into layers, a section in the middle of each, and
+`Part.slices` does the same for exact parts (a `Sketch` per layer):
+
+```python
+loops = scan.section(Plane.XY)
+print([round(w.length, 3) for w in loops])                      # [140.0, 37.69]
+region = make_face(loops[0]) - make_face(loops[1])
+print(round(region.area, 2))                                    # 1087.01 (exact: 1086.9)
+print(len(scan.slices(5)), len((Box(40, 30, 20) - Cylinder(6, 40)).slices(5)))   # 4 4
+```
+
+A plane through a flat part of a mesh (the top face of a box's mesh) cuts it just beside that,
+on the side where the cut encloses more.
+
+### Fewer triangles, closed meshes, faceted parts
+
+`decimate` thins a mesh out with the kernel's quadric decimation, which keeps a closed mesh
+closed: give the share of the triangles to remove, about how many to leave, or how far the result
+may be from the mesh (`tolerance=`, measured by smlibpy at the points of both meshes; the kernel's
+own "maximum error" is not a distance). Edges sharper than `feature_angle` (30 degrees) are kept
+longest and stay sharp in the normals; no triangle is left folded over its neighbours. `fill_holes` closes the holes of an open mesh;
+`repaired` also merges points that lie on each other, leaves out triangles without an area or
+repeated, turns triangles that face the wrong way, and says what it did. `to_part` (or
+`Part.from_mesh`) makes a faceted part of a closed mesh, for exact Booleans and STEP files:
+neighbouring triangles in one plane become one face, and a mesh that would give more than
+`max_faces` faces (5000) raises, since Booleans on many faces get slow:
+
+```python
+ball = Sphere(10).mesh(0.001)
+print(len(ball), len(ball.decimate(0.9)))           # 136872 13674 (about; the kernel varies a little)
+print(len(ball.decimate(tolerance=0.01)) < 15000)   # True: within 0.01 of the fine mesh
+
+holed = Mesh(scan.vertices, scan.triangles[1:])      # a triangle missing
+fixed, report = holed.repaired()
+print(fixed.is_closed(), report.filled_holes)       # True 1
+
+block = scan.to_part()                               # faceted: 102 faces, the bore's facets and 6
+print(block.is_valid(), round(block.volume, 3))      # True 21740.176 (the mesh's volume)
+print(round((block - Box(10, 10, 40).translate(20, 15, 0)).volume, 3))   # 21240.176
 ```

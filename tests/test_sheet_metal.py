@@ -389,3 +389,45 @@ def test_bend_and_unfold_through_the_mcp_session():
     assert "bend_allowance" in names("k-factor bend allowance", 3)
     assert "flange" in names("fold up an edge", 5)
     assert discovery.guide("sheetmetal/generic") is not None and discovery.guide("recipes/sheet-metal") is not None
+
+
+
+# -- review of 0.5.0: mirrored parts and fold records of tools ----------------------------------------
+def _two_folds():
+    blank = Box(200, 40, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    part = fold(blank, Axis((-60, 0, 2), (0, 1, 0)), 90, radius=1, k_factor=0.33)
+    return fold(part, Axis((60, 0, 2), (0, 1, 0)), 90, radius=6, k_factor=0.45)
+
+
+@pytest.mark.parametrize("plane", [Plane.YZ, Plane.XY, Plane.XZ], ids=["YZ", "XY", "XZ"])
+def test_mirrored_sheet_metal_unfolds(plane):
+    # The bend ends (the flats beside a bend) were taken from edges whose geom_type is "line"; a
+    # mirror gave every edge a B-spline (so do STEP files), the bends had no flat on either side, and
+    # flat_pattern raised "unrolling a bend failed (... volume 1560.92 ...)" (0.4 unfolded them).
+    part = _two_folds().mirror(plane)
+    assert part.edges().lines()  # (lines again after a mirror)
+    assert [b.k_factor for b in sheetmetal.bends(part)] == [0.33, 0.45]
+    assert part.flat_pattern().size.x == pytest.approx(200, abs=1e-6)
+    assert part.flat_pattern(k_factor=0.44).size.x == pytest.approx(200.314159, abs=1e-6)
+
+
+def test_mirrored_flanges_and_their_step_files_unfold(tmp_path):
+    plate = Box(100, 60, 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    edge = plate.edges().filter_by(Y).top().sort_by(X)[-1]
+    part = flange(plate, edge, 20, radius=2, k_factor=0.3)
+    mirrored = part.mirror(Plane.YZ)
+    assert mirrored.flat_pattern().size == pytest.approx(part.flat_pattern().size, abs=1e-6)
+    export_step(mirrored, tmp_path / "flange.step")
+    back = import_step(tmp_path / "flange.step")  # (B-spline edges as the file has them; no K records)
+    assert back.flat_pattern().size.x == pytest.approx(120.524, abs=1e-3)
+    other = plate.mirror(Plane.YZ)
+    side = other.edges().filter_by(Y).top().sort_by(X)[-1]
+    assert flange(other, side, 20, radius=2, k_factor=0.3).volume == pytest.approx(part.volume, rel=1e-9)
+
+
+def test_unions_take_the_fold_records_of_every_operand():
+    # The K-factor records went with the first operand only: tab + part unfolded at 0.44.
+    part = _two_folds()
+    tab = Box(10, 10, 2).translate(0, 0, 1)
+    for joined in (part + tab, tab + part, tab.fuse(part), Box(300, 100, 100) & (part + tab)):
+        assert joined.flat_pattern().size.x == pytest.approx(200, abs=1e-6)

@@ -1,0 +1,29 @@
+# Leaks of the kernel that tools/sanitize/run.py does not count: a text that the leak's report
+# (its allocation stack) contains, one per line after its reason; texts joined by " & " must all
+# be in it. Remove a line when the leak is fixed.
+
+# SmProtoTopologyManager::CreateProtoEdge copies the curve of a ProtoEdge whose EdgeDefinition some
+# Booleans drop without imprinting it: 152 bytes each, about 24 in the extended shells of
+# tests/test_lane_FO.py. (Close-out K2 patched the EdgeDefinitions CombineProtoEdge leaves behind;
+# freeing the curves no Brep took after the imprint read curves of Edges deleted since, crescendo
+# part 52 natively: third_party/patches/README.md, "Small leaks on failure paths".)
+SmProtoTopologyManager::CreateProtoEdge
+
+# Leaks on failure paths that the sanitizer run found once the tests of the 0.5.0 lanes ran in it
+# (also in 0.4; third_party/patches/README.md, "Small leaks on failure paths").
+# An imprint of the extended mode's PiecewiseMerge that SmBrep::MakeEdgeInFaceWithVU cannot finish
+# loses a Vertexuse it made for the new edge (240 bytes, 0 to 2 in a process of 24 extended shells of
+# filleted boxes, tests/test_lane_FO.py, depending on the memory layout; also on 5c7666f's build: 4
+# in 6 such processes, where LeakSanitizer's first 200 reports had cut it off before).
+SmBrep::MakeEdgeInFaceWithVU & SmEdgeDefinition::Imprint & SmOffsetExecutive::PiecewiseMerge
+# The fillet executive's circular cross-section solver loses a skinned surface it made (144 bytes,
+# now and then), and a loft (sm_CreateSkinPrimitiveInternal) the composite curve it joined from a
+# composite profile (1 kB). (Those of the mitered sweep, the N-sided fill, the fillet corners,
+# ExtendTrimEdges, MergeEdge and CopyFaces were listed here: patched, close-out K2.)
+SmCircularCrossSectionFSG::CreateSurfaceFromCurves & SmBSplineSurface::CreateSkinnedSurface
+sm_CreateSkinPrimitiveInternal & SmCompositeCurve::MakeCompositeNurb
+
+# SmBrepData::FromBrep (the .smb writer, SmBrep::WriteToFile, and usd-brep's export,
+# BrepAppend_SMLibToUsdBrep) loses the attribute index arrays of its edges (sm_ExtractAttributes):
+# 8 bytes an edge that carries attributes, in every body written.
+sm_ExtractAttributes & SmBrepData::FromBrep

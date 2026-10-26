@@ -16,12 +16,29 @@ namespace smlibpy {
 // faces: [{"surface": spec, "same_sense": bool, "free_seam": bool, "loops": [{"edges": [(edge_id, forward)]} |
 // {"vertex": point}]}] ("free_seam": the face, on a B-spline surface closed on itself, has no seam edge of its own
 // and may lie across the surface's seam, which is then moved off it)
-// edges: {edge_id: curve spec running from the edge's start to its end vertex}
+// edges: {edge_id: curve spec running from the edge's start to its end vertex, with "v0" and "v1" the ids of those
+// vertices in the file, where it has them: edges that name the same vertex share it}
 // voids: [(faces, reversed)]: cavities of a solid (STEP BREP_WITH_VOIDS), each a void region inside the solid's
 // region ("reversed" as for the solid's faces); none or empty for none.
 // The caller owns the result.
 SmBrep* build_brep(const Value& faces, const Value& edges, bool solid, bool reversed, bool mirrored,
                    const Value& voids = Value());
+
+// The model-space curve of a curve in a surface's parameters (a surface spec as build_brep's faces have
+// them; a B-spline spec of poles (u, v, 0), with "range" [t0, t1] to take a piece of it), approximated
+// within tolerance: the curve_data of the B-spline, with "gap", the largest distance seen from the curve
+// on the surface.
+Value curve_on_surface(const Value& surface, const Value& uv, double tolerance);
+
+// A Brep of one face that is the whole of a surface (a surface spec as build_brep's faces have them),
+// within domain (u0, u1, v0, v1; none: all of it) where that lies inside the surface's. The caller owns
+// the result.
+SmBrep* surface_face(const Value& surface, const Value& domain);
+
+// Per face {"loops": the signed area each of its loops encloses in the face's parameter plane, as the
+// face uses it (counterclockwise positive), or none for a loop that does not close there (a band around a
+// periodic surface without its seam); "domain": [du, dv], the size of the face's parameter domain}.
+Value loop_areas(SmBrep* brep);
 
 // Indices of faces whose loops run the wrong way round for their orientation: their oriented trim curves
 // enclose a negative area in the parameter plane. A STEP face whose same_sense flag disagrees with the

@@ -588,9 +588,10 @@ class _Body:
     """The triangles of one body (corner normals, one color) and its edges, in world space."""
 
     def __init__(self, tris: np.ndarray, norms: np.ndarray, rgb: np.ndarray, closed: bool, segs: np.ndarray,
-                 mesh: Any = None, source: Any = None):
+                 mesh: Any = None, source: Any = None, face_rgb: np.ndarray | None = None):
         self.tris, self.norms, self.rgb, self.closed, self.segs = tris, norms, rgb, closed, segs
         self.mesh, self.source = mesh, source  # the source keeps the Brep alive that the mesh points into
+        self.face_rgb = face_rgb  # per triangle, where faces have colors of their own (kernel plan T5)
         self._adjacent: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._principal: tuple[np.ndarray, np.ndarray] | None = None
 
@@ -633,7 +634,7 @@ class _Scene:
     def __init__(self, shapes: Any, tolerance: float | None, colors: str, fine: bool = False):
         from .colors import to_rgb
         from .exporters import _DEFAULT_COLORS, _curve_points, _edge_polylines, _flatten_all
-        from .mesh import Mesh, tessellate
+        from .mesh import Mesh, _colored_mesh, _tessellate, _triangle_colors
         from .shapes import Edge, Face, Part, Sketch, Wire, _Body as Solidish
 
         self.bodies: list[_Body] = []
@@ -662,7 +663,7 @@ class _Scene:
                 pieces, closed = [item], item.is_closed()
             elif isinstance(item, Part):
                 pieces = list(item.solids()) or [item]
-                closed = item.is_valid()
+                closed = item._solid_problem() is None
             elif isinstance(item, (Solidish, Face)):
                 pieces, closed = [item], False
             else:
@@ -672,7 +673,20 @@ class _Scene:
                 rgb = palette[len(self.bodies) % len(palette)] if colors == "distinct" else native
                 # zebra stripes and curvature maps follow the normals closely: finer triangles
                 source = piece.to_shell() if isinstance(piece, Face) and fine else piece
-                mesh = piece if isinstance(piece, Mesh) else tessellate(source, tolerance, 5.0 if fine else 15.0)
+                # (curvature maps need the tessellation's own mesh)
+                face_rgb = None
+                if isinstance(piece, Mesh):
+                    mesh = piece
+                elif fine:
+                    mesh = _tessellate(source, tolerance, 5.0, True)
+                    if isinstance(source, Solidish) and colors != "distinct":
+                        face_rgb = _triangle_colors(source, mesh)
+                else:
+                    mesh, face_rgb = _colored_mesh(source, tolerance, 15.0)
+                    if colors == "distinct":
+                        face_rgb = None
+                if face_rgb is not None:  # faces without a color of their own: the body's
+                    face_rgb = np.where(np.isnan(face_rgb), rgb[None], face_rgb)
                 if isinstance(piece, Mesh):
                     segs = np.zeros((0, 2, 3))
                 elif isinstance(piece, Face):
@@ -686,7 +700,7 @@ class _Scene:
                 v = mesh.vertices[mesh.triangles]
                 n = mesh.normals if mesh.normals is not None else np.repeat(mesh.triangle_normals[:, None], 3, axis=1)
                 self.bodies.append(_Body(v, np.asarray(n, dtype=np.float64), rgb, closed, segs, mesh,
-                                         None if isinstance(piece, Mesh) else source))
+                                         None if isinstance(piece, Mesh) else source, face_rgb))
         pts = [b.tris.reshape(-1, 3) for b in self.bodies] + [b.segs.reshape(-1, 3) for b in self.bodies]
         pts += [s.reshape(-1, 3) for s, _ in self.overlays]
         allp = np.concatenate(pts) if pts else np.zeros((0, 3))
@@ -815,7 +829,7 @@ def _corner_curvatures(mesh: Any, source: Any, count: int) -> tuple[np.ndarray, 
     if poly is None or source is None:
         return missing, missing
     r = ext.poly_curvatures(poly)
-    faces = np.asarray(poly.to_numpy_arrays(face_varying_normals=True)["faces"], dtype=np.int64)
+    faces = np.asarray(ext.poly_arrays(poly, False)["faces"], dtype=np.int64)
     tris, corner = _triangulate(faces)
     k1, k2 = np.asarray(r["k1"]), np.asarray(r["k2"])
     if len(tris) != count or len(k1) != corner.max(initial=-1) + 1:
@@ -884,6 +898,9 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
         tris, norms = body.tris, body.norms
         if o.curvature is not None:  # the curvature rides along with the normals, through the clipping
             norms = np.concatenate([norms, body.curvature(o.curvature[0])[..., None]], axis=2)
+        colored = body.face_rgb is not None
+        if colored:  # so do the faces' own colors, in the last three columns
+            norms = np.concatenate([norms, np.repeat(body.face_rgb[:, None, :], 3, axis=1)], axis=2)
         if cut is not None:
             if body.closed:
                 outline = _crossings(tris, cut)
@@ -901,7 +918,11 @@ def _view(scene: _Scene, cam: _Camera, w: int, h: int, o: _Options, frame: dict[
                 tris, norms, factor = tris[keep], norms[keep], factor[keep]
             else:
                 factor[facing < 0] = 0.72  # inside walls the cut lays open
-        parts.append((tris, norms, np.repeat(body.rgb[None], len(tris), axis=0), factor))
+        if colored:
+            tri_rgb, norms = norms[:, 0, -3:], norms[..., :-3]
+        else:
+            tri_rgb = np.repeat(body.rgb[None], len(tris), axis=0)
+        parts.append((tris, norms, tri_rgb, factor))
     n_body = sum(len(p[0]) for p in parts)
     for tris, norms in scene.hl_tris:
         if o.curvature is not None:

@@ -49,6 +49,13 @@ right side may be a list or a pattern; `sum(list_of_sketches)` unites a list.
   of small sketches takes about 1.4 ms.
 - Disjoint pieces stay one `Sketch` with several faces. A bar cut through gives 2 faces.
   Squares touching at one corner stay 2 faces; squares sharing an edge fuse to 1 face of 4 edges.
+- Faces that touch each other at a single point (the faces of `^`, squares touching at a
+  corner) are combined face by face, and the result is checked against the overlaps of the
+  faces (area and center): `abc = Circle(5) ^ Circle(5).translate(4, 0) ^ Circle(5).translate(2,
+  4)` and `r = Rectangle(6, 6).translate(2, 1)` give `abc & r` 23.8168 and `abc - r` 86.723,
+  which add up to `abc`'s 110.5398. Such a Boolean takes 2 to 18 ms. Where no way holds it
+  raises `ModelingError: ...: the sketches have faces that touch each other at a point, as at
+  (x, y), ...`: move one of the shapes a little.
 - `extrude` of a sketch with several faces gives one `Part` with several solids.
 - The result keeps the **left** operand's plane (origin and normal).
 - Both sketches must be in the same plane. A flipped normal on the same plane is accepted.

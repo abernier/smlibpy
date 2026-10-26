@@ -10,7 +10,9 @@
 //    carries (SMJS_CHECK, as SmPyLib's CHECK_STATUS: the call, the status and the kernel's trace).
 //  * A C++ exception from the shared code becomes a JavaScript error with its message (guard):
 //    a RangeError where Python gets a ValueError (std::invalid_argument and the like), an Error
-//    otherwise.
+//    saying SM_ERR_OUT_OF_MEMORY when the memory is used up (std::bad_alloc, Python's
+//    MemoryError), an Error otherwise. The kernel's bindings do not catch theirs: js/src/kernel.ts
+//    turns them into the same errors (bind_runtime.cpp).
 //  * Points and vectors are arrays [x, y, z]; lists of numbers come back as Float64Arrays,
 //    lists of kernel objects as arrays of numbers.
 
@@ -23,6 +25,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -67,16 +70,27 @@ inline void raise_status(SmStatus status, const char* what, const char* file, in
     __builtin_unreachable();
 }
 
+// The error for memory that is used up (std::bad_alloc): made without allocating in the module.
+[[noreturn]] inline void throw_out_of_memory()
+{
+    val::global("Error").new_(val("SM_ERR_OUT_OF_MEMORY: the kernel ran out of memory (std::bad_alloc)")).throw_();
+    __builtin_unreachable();
+}
+
 // Runs f; a C++ exception becomes a JavaScript error with its message: a RangeError where
 // pybind11 makes it a ValueError, IndexError or OverflowError (invalid_argument, domain_error,
-// length_error, out_of_range, range_error, overflow_error), an Error (Python's RuntimeError)
-// otherwise.
+// length_error, out_of_range, range_error, overflow_error), the out-of-memory Error for
+// bad_alloc (Python's MemoryError), an Error (Python's RuntimeError) otherwise.
 template <typename F>
 auto guard(F&& f) -> decltype(f())
 {
     try
     {
         return f();
+    }
+    catch (const std::bad_alloc&)
+    {
+        throw_out_of_memory();
     }
     catch (const std::invalid_argument& e)
     {

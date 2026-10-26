@@ -10,8 +10,11 @@ that are engraved into a part or stand out of it.
 - `size`: the height of the capital letters in mm (the nominal height of technical lettering):
   `Text("H", 10)` is exactly 10 tall. Not the font's em size (13.96 mm at size 10 for the
   default font).
-- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font) or `.woff` file. Default: Lato
-  Regular, bundled (263 characters: Latin-1, Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`).
+- `font`: path of a `.ttf`, `.otf`, `.ttc` (its first font), `.woff` or `.woff2` file, the
+  `bytes` of one (an upload, a font from a package's data; read once per contents), or a `Font`
+  from `load_font(path)` (read once). Default: Lato Regular, bundled (263 characters: Latin-1,
+  Polish, `€ ± ° µ Ø ≤ ≥ ≈ ≠ ∞ Ω π`). No other package is needed: WOFF2 web fonts, CFF accents
+  built with seac, and variable CFF2 fonts (their default instance) are read too.
 - `align`: where the *layout box* sits: from the start to the end of the longest line (advance
   widths, not ink) and from the baseline of the last line to the cap height of the first.
   One `Align` (or string) for x and y, or one per axis.
@@ -87,7 +90,10 @@ cylinder, cut the text prism together with a skin of the wall:
 - `ValueError: Text: size must be a positive number (the height of capital letters in mm), got 0`.
 - `ValueError: Text: nothing to draw: the text is empty or only spaces`.
 - `ValueError: Text: control characters cannot be drawn: U+0009`.
-- `ValueError: Text: .../README.md: not a TrueType or OpenType font`; `FileNotFoundError: no font file '...'`.
+- `FontError: Text: .../README.md: not a TrueType or OpenType font`; `FileNotFoundError: no font file '...'`.
+- `FontError: Text: .../font.woff2: a damaged WOFF2 file (the compressed data runs past the end of the file)` (a cut-off download).
+  `FontError` (in `smlibpy`) is a `ValueError`: `except FontError` catches a font that cannot be
+  read, `except ValueError` all of these.
 - `ValueError: Text: the text is 98.7969 mm long but the path only 7.85398 mm; use a smaller size or a longer path`.
 - `ValueError: Text: the path must lie in the XY plane; draw it there and place the text with .on()`.
 - `ValueError: Text: a text along a path has one line; leave out the line breaks`.
@@ -98,7 +104,7 @@ plate = Box(70, 24, 5)
 label = Text("SMLIB 42", 8)
 embossed = plate + label.on(plate.faces().top()).extrude(0.8)   # raised 0.8
 engraved = plate - label.on(plate.faces().top()).extrude(-0.5)  # cut 0.5 deep
-print(round(embossed.volume - plate.volume, 4), round(plate.volume - engraved.volume, 4))  # 94.9612 59.3506
+print(round(embossed.volume - plate.volume, 4), round(plate.volume - engraved.volume, 4))  # 94.961 59.3506
 
 two_lines = Text("SMLIB\nNURBS", 5, align=Align.MIN)            # last baseline on y = 0
 ring = Text("TEXT ON AN ARC", 4, path=CenterArc((0, 0), 30, 170, -160))

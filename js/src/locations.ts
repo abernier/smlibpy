@@ -5,7 +5,8 @@
 //     part = part.cut(GridLocations(40, 30, 2, 2).mul(Hole(3, 10)).on(topFace))
 
 import { Location, Plane, Pos, Rot, type Vector, _isPointLike, _radians, _vec, type VectorLike } from './geometry.ts'
-import { Face, Shape, ShapeList, Vertex, _asPlane } from './shapes.ts'
+import { Face, Shape, ShapeList, type Sketch, Vertex, _asPlane } from './shapes.ts'
+import { _opts } from './kernel.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -13,13 +14,17 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
  * A list of locations. `new Locations([0, 0], [10, 5], ...)` takes points, locations, planes,
  * faces (their center planes) or vertices.
  */
+/** What a pattern of locations is made of (`new Locations(...)`): locations, planes, faces (their
+ * center planes), vertices and points (positions), other patterns, and lists of faces. */
+export type LocationLike = Location | Plane | Locations | Face | Vertex | VectorLike | ShapeList<Face>
+
 export class Locations extends Array<Location> {
   // (map, filter and slice give plain arrays)
   static override get [Symbol.species](): ArrayConstructor {
     return Array
   }
 
-  constructor(...items: unknown[]) {
+  constructor(...items: LocationLike[]) {
     super()
     for (const it of items) {
       if (it instanceof Location) this.push(it)
@@ -55,7 +60,7 @@ export class Locations extends Array<Location> {
   }
 
   /** The pattern placed onto a plane or face. */
-  on(target: unknown): Locations {
+  on(target: Plane | Face | Location | ShapeList<Face> | Sketch): Locations {
     return this.moved(_asPlane(target).location)
   }
 
@@ -77,6 +82,7 @@ type Any = any
 
 /** A rectangular grid in the XY plane, centered on the origin unless `centered: false`. */
 export function GridLocations(xSpacing: number, ySpacing: number, xCount: number, yCount: number, options: { centered?: boolean } = {}): Locations {
+  _opts('GridLocations', options, arguments.length)
   const centered = options.centered ?? true
   if (xCount < 1 || yCount < 1) throw new RangeError('counts must be at least 1')
   const x0 = centered ? (-xSpacing * (xCount - 1)) / 2 : 0
@@ -97,6 +103,7 @@ export function PolarLocations(
   count: number,
   options: { startAngle?: number; angularRange?: number; rotate?: boolean } = {},
 ): Locations {
+  _opts('PolarLocations', options, arguments.length)
   const { startAngle = 0, angularRange = 360, rotate = true } = options
   if (count < 1) throw new RangeError('count must be at least 1')
   const full = Math.abs(Math.abs(angularRange) - 360) < 1e-9
@@ -112,6 +119,7 @@ export function PolarLocations(
 
 /** A honeycomb pattern: rows `spacing` apart along X, every other row shifted by half. */
 export function HexLocations(spacing: number, xCount: number, yCount: number, options: { centered?: boolean } = {}): Locations {
+  _opts('HexLocations', options, arguments.length)
   const centered = options.centered ?? true
   const dy = (spacing * Math.sqrt(3)) / 2
   let pts: [number, number][] = []

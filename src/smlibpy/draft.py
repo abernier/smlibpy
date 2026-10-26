@@ -205,10 +205,97 @@ def _loops(body: Any, edges: list[Any]) -> list[list[Any]]:
 
 def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
     """See :meth:`Part.parting_line`."""
-    from .shapes import Edge, Part as _Part, ShapeList, Wire
+    from .shapes import Edge, ShapeList, Wire
 
     d = _direction(direction, "parting_line")
     part._require_valid("parting_line")
+    body, line = _contour(part, d, "parting_line")
+    wires = []
+    for chain in _loops(body, line):
+        curves = [Edge._from_curve(ext.edge_curve(e._e)) for e in chain]
+        wires.append(Wire(curves))
+    del body
+    return ShapeList(sorted(wires, key=lambda w: -w.length))
+
+
+def _joined_arcs(edges: list[Any], tol: float) -> list[Any]:
+    """The edges, with the arcs of one circle that meet end to end joined into one arc (a full
+    circle where they go round): the pieces a contour is split into where it crosses edges or
+    seams of the faces (a sphere's rim at its seam)."""
+    from .curves import CenterArc
+
+    groups: list[tuple[Vector, float, Vector, list[Any]]] = []
+    out = []
+    for e in edges:
+        if e.geom_type != "circle":
+            out.append(e)
+            continue
+        c, r, n = e.arc_center, e.radius, e.normal
+        for gc, gr, gn, members in groups:
+            if (gc - c).length <= tol and abs(gr - r) <= tol and gn.cross(n).length <= 1e-9:
+                members.append(e)
+                break
+        else:
+            groups.append((c, r, n, [e]))
+    for c, r, n, members in groups:
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        x = (members[0].start - c).normalized()
+        plane = Plane(c, x_dir=x, z_dir=n)
+
+        def angle(p: Vector) -> float:
+            q = plane.to_local(p)
+            return math.degrees(math.atan2(q.y, q.x)) % 360.0
+
+        spans = []  # counterclockwise about n: (start, size)
+        for e in members:
+            a0, am, a1 = angle(e.start), angle(e.point_at(0.5)), angle(e.end)
+            if e.is_closed:
+                spans.append((0.0, 360.0))
+                continue
+            ccw = (am - a0) % 360.0 < (a1 - a0) % 360.0 or (a1 - a0) % 360.0 == 0
+            spans.append((a0, (a1 - a0) % 360.0) if ccw else (a1, (a0 - a1) % 360.0))
+        eps = math.degrees(tol / r)
+        merged: list[list[float]] = []
+        for a, size in sorted(spans):
+            if merged and a <= merged[-1][0] + merged[-1][1] + eps:
+                merged[-1][1] = max(merged[-1][1], a + size - merged[-1][0])
+            else:
+                merged.append([a, size])
+        if len(merged) > 1 and merged[-1][0] + merged[-1][1] >= merged[0][0] + 360.0 - eps:
+            first = merged.pop(0)  # (across angle 0)
+            merged[-1][1] = first[0] + 360.0 + first[1] - merged[-1][0]
+        if len(merged) == len(members):
+            out.extend(members)
+            continue
+        for a, size in merged:
+            out.append(CenterArc((0, 0), r, 0.0 if size >= 360.0 - eps else a, min(size, 360.0), plane))
+    return out
+
+
+def _contour(part: Any, d: Vector, what: str) -> tuple[Any, list[Any]]:
+    """A copy of the body (a part, a sheet or a sketch) split along its silhouettes for the unit
+    direction ``d``, and its edges between the half that faces along ``d`` and the half that
+    faces away (faces parallel to ``d`` go with the half that faces along it, unless they touch
+    only faces of the other half). The copy holds the edges: keep it while they are used."""
+    try:
+        return _split_halves(part, d, d, what)
+    except ModelingError:
+        # The kernel traces the silhouettes of a face differently for -d (the same curves): a torus
+        # split for -X kept a face that faces both ways, split for +X it splits cleanly.
+        try:
+            return _split_halves(part, d, -d, what)
+        except ModelingError:
+            pass
+        raise
+
+
+def _split_halves(part: Any, d: Vector, split: Vector, what: str) -> tuple[Any, list[Any]]:
+    """:func:`_contour` with the faces split along the silhouettes traced for ``split`` (``d`` or
+    ``-d``)."""
+    from .shapes import Part, Shell
+
     size = max(part.bbox().diagonal, 1e-9)
     tolerance = 1e-6 * size  # fit tolerance of traced silhouettes
     eps = _SIGN
@@ -217,12 +304,12 @@ def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
         lo, hi = _range(f, d)
         if _side(lo, hi, eps) is None:
             straddling.append(f)
-    with kernel_call("parting_line", "the kernel could not split the faces along their silhouettes"):
-        res = _DR.split_at_silhouettes(part._brep, list(d.to_tuple()), tolerance, [f._f for f in straddling])
-    body = _Part._wrap(res["brep"])  # keeps the split copy alive while its edges are read
+    with kernel_call(what, "the kernel could not split the faces along their silhouettes"):
+        res = _DR.split_at_silhouettes(part._brep, list(split.to_tuple()), tolerance, [f._f for f in straddling])
+    body = (Part if isinstance(part, Part) else Shell)._wrap(res["brep"])  # keeps the split copy alive
     if res["failed"]:
         kinds = sorted({straddling[i].geom_type for i in res["failed"]})
-        raise ModelingError(f"parting_line: the kernel could not find where {len(res['failed'])} "
+        raise ModelingError(f"{what}: the kernel could not find where {len(res['failed'])} "
                             f"{'/'.join(kinds)} face(s) turn away from the direction; try a direction a little "
                             f"off this one, or heal() an imported part first")
     # Sides of the faces of the split copy. A face split along a traced silhouette can turn
@@ -235,7 +322,7 @@ def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
         s = _side(lo, hi, eps)
         if s is None:
             if min(-lo, hi) > _STRAY:
-                raise ModelingError("parting_line: a face still faces both ways after the split; heal() the part, "
+                raise ModelingError(f"{what}: a face still faces both ways after the split; heal() the part, "
                                     "or try a direction a little off this one")
             s = 1 if hi >= -lo else -1
         side[g._identity()] = s
@@ -265,12 +352,7 @@ def parting_line(part: Part, direction: Axis | VectorLike) -> ShapeList[Wire]:
         fs = e.faces()
         if len(fs) == 2 and side[fs[0]._identity()] != side[fs[1]._identity()]:
             line.append(e)
-    wires = []
-    for chain in _loops(body, line):
-        curves = [Edge._from_curve(ext.edge_curve(e._e)) for e in chain]
-        wires.append(Wire(curves))
-    del body
-    return ShapeList(sorted(wires, key=lambda w: -w.length))
+    return body, line
 
 
 # =============================================================================
@@ -375,6 +457,16 @@ def draft_faces(part: Part, faces: Any, angle: float, neutral_plane: Plane | Fac
     for kf in part._own_faces(faces):
         if all(kf is not f._f for f in sel):
             sel.append(Face(part, kf))
+    from .face_edit import _with_cavities
+
+    # (a part with cavities: the solid inside its outside and those inside its cavities' walls, each drafted on
+    # its own, the cavities' faces the other way round, since they face the other way; see face_edit)
+    return _with_cavities(part, "draft", "drafted", sel,
+                          lambda body, faces, inside: _drafted(body, faces, -a if inside else a, plane))
+
+
+def _drafted(part: Part, sel: list[Face], a: float, plane: Plane) -> Part:
+    """The kernel's draft of the faces ``sel`` of a part without cavities, checked (see :func:`draft_faces`)."""
     d = plane.z_dir.normalized()
     with kernel_call("draft"):
         res = _FD.draft_faces(part._brep, [f._f for f in sel], list(plane.origin.to_tuple()), list(d.to_tuple()),

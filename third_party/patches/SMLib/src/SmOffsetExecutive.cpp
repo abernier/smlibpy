@@ -1,12 +1,22 @@
 // smlibpy patch -- modified copy of usd-brep 1.0.0 (c9c5979) source/SMLib/src/SmOffsetExecutive.cpp,
-// changed for smlibpy by AWV Informatik AG on 2026-10-13. Compiled in place of the original
-// (see third_party/patches/README.md). Every change is marked "smlibpy patch":
+// changed for smlibpy by AWV Informatik AG on 2026-10-13, last on 2026-10-23. Compiled in place
+// of the original (see third_party/patches/README.md). Every change is marked "smlibpy patch":
 //   SmOffsetExecutive::RemoveExcessFaces forgets the faces it removes, and their edgeuses, in the
 //   executive's relations (m_vEUToEU, m_vFUToF, m_vEToF, m_vVToF, m_vBlendToFaces). RemoveFaces
 //   deletes them, and what DoExtendedOffset does afterwards read them from the relations after they
 //   were freed: the side walls of lamina edges (BuildSideWallOfEdgeuse) and the merge
 //   (PiecewiseMerge). A sheet whose offset collapses (a half cylinder of radius 10 thickened by
 //   -12) read freed memory natively and trapped in WebAssembly. Found with AddressSanitizer.
+//   SmOffsetExecutive::DoExtendedOffset fails when two faces it extends use one surface, or a face
+//   uses a surface that belongs to another face, which its extension of the faces' surfaces cannot
+//   handle: an extension it deleted was handed out again and read (AddressSanitizer: shells of two
+//   cones fused at an angle crashed in every run).
+//   SmOffsetExecutive::ShellBrep deletes the offset body when ReplaceImplicitOffsets fails, and
+//   when the Boolean of the offset body with the input or the merge of the two fails (a failed
+//   Boolean keeps both operands, and the caller keeps only the input): it was lost with every
+//   failed shell, from 10 kB to 1 MB with the caches built on it.
+// The original notices follow unchanged.
+//
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -275,7 +285,10 @@ SmStatus SmOffsetExecutive::ShellBrep
   double dAngleTol = 20.0*SM_PI/180.0;
 
   // Replace all SmOffsetSurfaces with approximate SmBSplineSurfaces
-  SER( ReplaceImplicitOffsets( pBrepShell, dTolerance ));
+  // smlibpy patch: delete the offset body when this fails (it was kept, a leak), as the
+  // stitching below does.
+  //   SER( ReplaceImplicitOffsets( pBrepShell, dTolerance ));
+  SER_DELETE( ReplaceImplicitOffsets( pBrepShell, dTolerance ), pBrepShell );
   // Changed tolerance arg from 10.0*dTolerance to improve downstream tolerance consistency [B577]
 #ifdef SM_DEBUG_CODE
   SmBoolean bDebugMe = FALSE;
@@ -306,7 +319,7 @@ SmStatus SmOffsetExecutive::ShellBrep
 #endif // SM_DEBUG_CODE
 
       // combine topology without any intersection or coincidence checking
-      SER(pBrepShell->MergeBrep(*pBrepToShell));
+      SER_DELETE(pBrepShell->MergeBrep(*pBrepToShell), pBrepShell);  // smlibpy patch: deletes it on failure
       SM_ASSERT(pBrepToShell != NULL) ; delete pBrepToShell ; pBrepToShell = NULL ;
       rbInputOwnershipTransferred = TRUE;
 
@@ -340,8 +353,11 @@ SmStatus SmOffsetExecutive::ShellBrep
       SmBrep *pResult = NULL;
       SmMerge sMerge(crContext,pBrepToShell,pBrepShell,dTolerance,dAngleTol);
       SmStatus eStat = sMerge.ManifoldBoolean(SM_BO_DIFFERENCE, pResult);
+      // smlibpy patch: a failed Boolean keeps both operands; pBrepShell is this function's (the
+      // caller keeps pBrepToShell). It was lost with every failed shell, with the caches built on
+      // it: from 10 kB to 1 MB (extended shells of filleted boxes).
       if (eStat != SM_SUCCESS)
-        { SER(eStat); }
+        { SER_DELETE(eStat, pBrepShell); }
       rbInputOwnershipTransferred = TRUE;
       rpShellBrep = pResult;
     }
@@ -351,7 +367,7 @@ SmStatus SmOffsetExecutive::ShellBrep
       SmMerge sMerge(crContext,pBrepShell,pBrepToShell,dTolerance,dAngleTol);
       SmStatus eStat = sMerge.ManifoldBoolean(SM_BO_DIFFERENCE, pResult);
       if (eStat != SM_SUCCESS)
-        { SER(eStat); }
+        { SER_DELETE(eStat, pBrepShell); }  // smlibpy patch: as above
       rbInputOwnershipTransferred = TRUE;
       rpShellBrep = pResult;
     }
@@ -1623,6 +1639,25 @@ SmBoolean bDebugMe2 = FALSE;
   // See what we need to do with each face in terms of extensions.
   SmTArray<SmFace*> sOffsetFaces;
   m_pOffsetBrep->GetFaces(sOffsetFaces);
+
+  // smlibpy patch: the loop below cannot extend a surface that two of its faces use, or that
+  // belongs to another face. ReplaceSurface() gives the surface's owner face the new surface, not
+  // the face it is called for, and the extension deleted for the one face was handed out again,
+  // from m_vSurfExtSurf, for the other (AddressSanitizer: a read of freed memory in
+  // GetCreateExtendedSurface; a shell of two cones fused at an angle crashed in every run).
+  // Fail instead.
+  {
+    std::unordered_set<SmSurface*> sSurfaces;
+    for (ii=0; ii<sOffsetFaces.GetSize(); ii++)
+      {
+        SmFace *pF = sOffsetFaces[ii];
+        if (pF->IsMarked(eMarkType) || m_sClosingFaces.IsIn( pF )) { continue; }
+        SmSurface *pSurf = pF->GetSurface();
+        if (pSurf == NULL || pSurf->GetFace() != pF || !sSurfaces.insert(pSurf).second)
+          { SER(SM_ERR); }
+      }
+  }
+
   for (ii=0; ii<sOffsetFaces.GetSize(); ii++) 
     {
        SmFace *pF = sOffsetFaces[ii];

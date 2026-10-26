@@ -26,6 +26,16 @@ CLASS_DOMAINS = {"Part": "features", "Sketch": "sketches", "Profile": "sketches"
                  "Location": "geometry", "BoundBox": "geometry", "Mesh": "files", "MassProperties": "analysis",
                  "FlatPattern": "sheetmetal", "Bend": "sheetmetal", "Lattice": "deform", "StepModel": "files"}
 CLASS_GUIDES = ("Profile",)
+#: Methods and functions whose guide has another name: the guide that describes them. ``to_*`` and
+#: ``from_*`` without a guide of their own go to files/in_memory (see :func:`guide_for`).
+GUIDE_NAMES = {
+    "new": "selection/history", "derived_from": "selection/history",
+    "shells": "selection/shells", "voids": "selection/shells", "shared": "selection/shells", "Face.cells": "selection/shells",
+    "sources": "features/cells", "g1": "analysis/continuity", "g2": "analysis/continuity",
+    "from_mesh": "files/to_part", "raycast_many": "analysis/raycast", "Sketch.flipped": "surfaces/Shell",
+    "min_radius_at": "curves/min_radius", "param_at_point": "curves/split", "from_nurbs": "curves/from_nurbs",
+    "Shell.from_nurbs": "surfaces/nurbs_surface", "Face.min_radius": "analysis/curvature_at",
+}
 
 #: Words people use for a thing, and the words the API uses.
 SYNONYMS = {
@@ -47,8 +57,14 @@ SYNONYMS = {
     "measure": ["mass_properties", "volume", "area", "distance_to"], "weight": ["mass_properties"],
     "mass": ["mass_properties"], "inertia": ["mass_properties"], "centroid": ["center", "mass_properties"],
     "size": ["bbox"], "bounds": ["bbox", "BoundBox"], "distance": ["distance_to", "closest_point"],
-    "check": ["is_valid", "heal"], "repair": ["heal"], "fix": ["heal"], "export": ["export", "export_step", "save"],
-    "import": ["load", "import_step", "read_step", "import_stl"], "open": ["load"], "file": ["export", "load"],
+    "check": ["is_valid", "check", "heal"], "repair": ["heal"], "fix": ["heal"],
+    "problem": ["check"], "problems": ["check"], "diagnose": ["check"], "gap": ["check", "tolerance"],
+    "history": ["new", "derived_from"], "joint": ["joining"], "joints": ["joining"],
+    "cavity": ["voids", "shells"], "cavities": ["voids", "shells"], "interface": ["shared", "cells"],
+    "interfaces": ["shared", "cells"], "paint": ["colored", "face_colors"], "label": ["named", "face_colors"], "provenance": ["derived_from", "new"], "descendant": ["derived_from"],
+    "imprint": ["imprint"], "trim": ["split", "Shell"], "export": ["export", "export_step", "save"],
+    "import": ["load", "import_step", "read_step", "import_iges", "import_stl"], "open": ["load"],
+    "file": ["export", "load"],
     "picture": ["render"], "image": ["render"], "png": ["render"], "screenshot": ["render"], "view": ["render", "show"],
     "drawing": ["render"], "technical": ["render"], "projection": ["render"], "highlight": ["render"], "xray": ["render"], "compare": ["diff_images"],
     "diff": ["diff_images"], "before": ["diff_images"],
@@ -58,7 +74,7 @@ SYNONYMS = {
     "g": ["continuity", "zebra", "verification"],  # G1, G2, G3 split into "g" and the digit
     "blend": ["loft", "fillet", "surface_fillet"], "quality": ["verification", "zebra", "curvature"],
     "mesh": ["tessellate", "Mesh"], "triangles": ["tessellate", "Mesh"], "stl": ["export_stl", "import_stl"],
-    "step": ["export_step", "import_step", "read_step"], "csys": ["read_step", "Plane"],
+    "step": ["export_step", "import_step", "read_step"], "iges": ["import_iges", "load"], "igs": ["import_iges", "load"], "csys": ["read_step", "Plane"],
     "coordinate": ["read_step", "Plane"], "wireframe": ["read_step", "import_dxf_wires"], "mcs": ["read_step"], "cut": ["cut", "split", "section"], "slice": ["section", "split"],
     "cross": ["section"], "draft": ["draft", "tilt", "tilts"], "taper": ["taper", "draft", "extrude"], "offset": ["offset"],
     "tilt": ["draft"], "tilted": ["draft"], "tilting": ["draft"], "incline": ["draft"], "inclined": ["draft"],
@@ -88,6 +104,7 @@ SYNONYMS = {
     "twist": ["twist"], "twisted": ["twist"], "tapered": ["taper"],
     "curl": ["bend"], "wrap": ["bend"], "warp": ["Lattice", "bend", "twist"], "free": ["Lattice"],
     "lattice": ["Lattice"], "morph": ["Lattice"], "cage": ["Lattice"], "ffd": ["Lattice"], "sculpt": ["Lattice"],
+    "dent": ["push"], "dimple": ["push"], "bump": ["push", "warp"], "bulge": ["push", "warp"], "recess": ["warp"],
     "defeature": ["remove_fillets", "remove_faces"], "defeaturing": ["remove_fillets", "remove_faces"],
     "simplify": ["remove_fillets", "remove_faces"], "suppress": ["remove_faces", "remove_fillets"],
     "fillets": ["fillets", "remove_fillets"], "unfillet": ["remove_fillets"], "sharp": ["remove_fillets"],
@@ -100,7 +117,7 @@ SYNONYMS = {
 # Rays, clouds of points, cells, curve data, USD.
 SYNONYMS.update({
     "ray": ["raycast"], "rays": ["raycast"], "hit": ["raycast", "hit_by"], "hits": ["raycast", "hit_by"],
-    "shoot": ["raycast"], "sight": ["raycast", "hit_by"], "inside": ["raycast"], "outside": ["raycast"],
+    "shoot": ["raycast"], "sight": ["raycast", "hit_by"], "inside": ["contains", "classify"], "outside": ["contains", "classify"],
     "pierce": ["raycast", "hit_by"], "sees": ["hit_by"], "visible": ["hit_by"],
     "cloud": ["surface"], "scan": ["surface", "import_stl"], "scanned": ["surface", "import_stl"],
     "scanner": ["surface"], "fit": ["surface"], "fitting": ["surface"], "approximate": ["surface"],
@@ -112,6 +129,9 @@ SYNONYMS.update({
     "degree": ["nurbs"], "morph": ["make_compatible", "Lattice"],
     "usd": ["export_usd", "import_usd"], "usda": ["export_usd", "import_usd"], "openusd": ["export_usd", "import_usd"],
     "omniverse": ["export_usd", "import_usd"], "pixar": ["export_usd"],
+    "brep": ["export_brep", "import_brep"], "occt": ["export_brep", "import_brep"],
+    "opencascade": ["export_brep", "import_brep", "export_step"], "build123d": ["export_brep", "import_brep"],
+    "cadquery": ["export_brep", "import_brep"], "freecad": ["export_brep", "import_brep", "export_step"],
 })
 
 # Sheet metal.
@@ -125,6 +145,21 @@ SYNONYMS.update({
     "developed": ["developed_length"], "blank": ["flat_pattern", "developed_length"], "laser": ["flat_pattern"],
     "cutter": ["flat_pattern"], "nesting": ["flat_pattern"], "allowance": ["bend_allowance"],
     "deduction": ["bend_deduction"], "factor": ["bend_allowance"], "neutral": ["bend_allowance", "draft"],
+})
+
+# Direct editing: faces moved and offset.
+SYNONYMS.update({
+    "resize": ["offset_faces"], "enlarge": ["offset_faces"], "widen": ["offset_faces"],
+    "thicker": ["offset_faces", "shell"],
+    "push": ["move_faces", "offset_faces"], "pushpull": ["move_faces", "offset_faces"], "relocate": ["move_faces"],
+    "reposition": ["move_faces"],
+    "direct": ["move_faces", "offset_faces"], "editing": ["move_faces", "offset_faces"],
+})
+
+# Fillet laws and previews.
+SYNONYMS.update({
+    "preview": ["fillet_preview"], "variable": ["fillet"], "law": ["fillet"], "varying": ["fillet"],
+    "setback": ["fillet", "chamfer"], "softer": ["fillet"],
 })
 
 _CONSTANTS = {
@@ -311,6 +346,10 @@ def guide_for(entry: Entry) -> Entry | None:
     in the domain of the method's class first (``Sketch.fillet`` -> sketches/fillet), then any
     of that name, then the guide of the class itself (``Wire.fillet`` -> curves/Wire)."""
     names = {entry.key.lower(), entry.key.split(".")[-1].lower(), entry.key.replace(".", "-").lower()}
+    by_key = {g.key: g for g in guides()}
+    for name in (entry.key, entry.key.split(".")[-1]):
+        if name in GUIDE_NAMES and GUIDE_NAMES[name] in by_key:
+            return by_key[GUIDE_NAMES[name]]
     matches = [g for g in guides() if g.key.split("/")[-1].lower() in names]
     cls = entry.key.split(".", 1)[0] if "." in entry.key else None
     own = [g for g in guides() if cls and g.key.split("/")[-1] == cls]
@@ -325,7 +364,12 @@ def guide_for(entry: Entry) -> Entry | None:
             return g
     if matches:
         return matches[0]
-    return own[0] if own else None
+    if own:
+        return own[0]
+    tail = entry.key.split(".")[-1]
+    if (tail.startswith("to_") or tail.startswith("from_")) and "files/in_memory" in by_key:
+        return by_key["files/in_memory"]  # (the files in memory)
+    return None
 
 
 def method_index() -> str:

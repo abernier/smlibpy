@@ -16,11 +16,11 @@ import math
 from typing import Any, Iterable, Sequence
 
 from ._kernel import KernelError, ModelingError, ext, k, kernel_call
-from ._planar import (SMOOTH, TAU, Arc2, Corner, Curve2, GeometryError, Line2, NeedBooleans, Piece, Seg, _Site, assemble,
-                      band_piece, convex_hull, corner_piece, cross, describe, disk, distance, extent, first_crossing, fmt,
-                      hull_sites, is_smooth, offset_chain, orient_ccw, overlap, segment_intersections, signed_area,
-                      simplify, sweep_piece, turn, unit)
-from .geometry import Axis, Location, Plane, Vector, _vec
+from ._planar import (SMOOTH, TAU, Arc2, Corner, Curve2, GeometryError, Line2, NeedBooleans, Piece, Seg, _line_line, _Site,
+                      assemble, band_piece, convex_hull, corner_piece, cross, describe, disk, distance, extent,
+                      first_crossing, fmt, hull_sites, is_smooth, offset_chain, orient_ccw, overlap, polygon,
+                      segment_intersections, signed_area, simplify, sweep_piece, turn, unit)
+from .geometry import Axis, BoundBox, Location, Plane, Vector, _vec
 from .shapes import Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _as_plane
 
 Loops = list[tuple[list[Seg], list[list[Seg]]]]  # per face: outer loop, holes
@@ -103,6 +103,88 @@ def seg_of_edge(e: Edge, fr: Frame) -> Seg:
                 return _arc_from(c, r, p0, p1, fr.direction(e.tangent_at(0.0)), closed)
     pts = tuple(fr.local(e.point_at(i / 32)) for i in range(33))
     return Curve2(e, p0, p1, unit(fr.direction(e.tangent_at(0.0))), unit(fr.direction(e.tangent_at(1.0))), e.length, pts)
+
+
+class CurveCorners:
+    """Fillets and chamfers at corners with curves (splines, ellipses) for ``_planar.assemble``,
+    through the kernel: a fillet's center is where the offsets of the two curves toward the inside
+    of the corner meet (``Edge.offset``), its ends the nearest points of the curves to it; a chamfer
+    cuts back the length along each curve. (SMLib's own ``SmCurveFilletExecutive`` is unused and
+    untested in the kernel and picks its side wrongly.)"""
+
+    def __init__(self, fr: Frame, size: float):
+        self.fr = fr
+        self.size = max(1.0, size)
+
+    def _edge(self, s: Seg) -> Edge:
+        return s.edge if isinstance(s, Curve2) else Edge._from_curve(curve_of(s, self.fr))
+
+    def piece(self, seg: Curve2, s0: float, s1: float) -> Seg:
+        """The part of a curve segment between two lengths from its start."""
+        if s0 <= 0 and s1 >= seg.length:
+            return seg
+        return seg_of_edge(seg.edge.trim(max(s0, 0.0) / seg.length, min(s1 / seg.length, 1.0)), self.fr)
+
+    def _offset(self, e: Edge, d: float, at_end: bool) -> Edge | None:
+        """The edge's offset toward the corner: of the whole edge, or of its part next to the corner
+        where the edge bends too tightly farther away."""
+        piece = e
+        for i in range(8):
+            try:
+                return piece.offset(d, plane=self.fr.plane)
+            except (ModelingError, ValueError):
+                f = 0.5 ** (i + 1)
+                piece = e.trim(1.0 - f, 1.0) if at_end else e.trim(0.0, f)
+        return None
+
+    def corner(self, kind: str, s1: Seg, s2: Seg, size: float) -> tuple[float, float, Seg]:
+        sn, cs = turn(s1, s2)
+        if abs(sn) < SMOOTH:
+            raise GeometryError("the segments meet tangentially there, so there is no corner"
+                                if cs > 0 else "the outline turns back on itself there")
+        e1, e2 = self._edge(s1), self._edge(s2)
+        l1, l2 = e1.length, e2.length
+        fr = self.fr
+        if kind == "chamfer":  # (a length beyond a segment: assemble reports that it does not fit)
+            return size, size, Line2(fr.local(e1.point_at(max(0.0, 1.0 - size / l1))),
+                                     fr.local(e2.point_at(min(1.0, size / l2))))
+        side = 1.0 if sn > 0 else -1.0
+        o1, o2 = self._offset(e1, side * size, True), self._offset(e2, side * size, False)
+        best = None
+        if o1 is not None and o2 is not None:
+            for c in o1.intersections(o2):
+                f1, f2 = e1.closest_point(c), e2.closest_point(c)
+                if max(abs(f1.distance_to(c) - size), abs(f2.distance_to(c) - size)) > 1e-6 * self.size:
+                    continue  # (a point of an end, not where the arc touches)
+                back, ahead = (1.0 - e1.param_at_point(f1)) * l1, e2.param_at_point(f2) * l2
+                if best is None or back + ahead < best[0] + best[1]:
+                    best = (back, ahead, c, f1, f2)
+        if best is None:
+            raise GeometryError(f"no arc of radius {fmt(size)} touches both segments")
+        _, _, c, f1, f2 = best
+        # Newton on the center: its distances to the two curves become the radius (the offsets are
+        # fitted within 1e-6 of the size; the curves' nearest points are exact)
+        cl = fr.local(c)
+        for _ in range(8):
+            p1, p2 = fr.local(f1), fr.local(f2)
+            d1, d2 = abs(cl - p1), abs(cl - p2)
+            if max(abs(d1 - size), abs(d2 - size)) <= 1e-13 * self.size or d1 == 0 or d2 == 0:
+                break
+            n1, n2 = (cl - p1) / d1, (cl - p2) / d2
+            det = cross(n1, n2)
+            if abs(det) < 1e-12:
+                break
+            r1, r2 = size - d1, size - d2
+            cl += complex((r1 * n2.imag - r2 * n1.imag) / det, (n1.real * r2 - n2.real * r1) / det)
+            f1, f2 = e1.closest_point(fr.world(cl)), e2.closest_point(fr.world(cl))
+        back, ahead = (1.0 - e1.param_at_point(f1)) * l1, e2.param_at_point(f2) * l2
+        v1, v2 = fr.local(f1) - cl, fr.local(f2) - cl
+        delta = cmath.phase(v2 / v1)
+        if side > 0 and delta < 0:
+            delta += TAU
+        if side < 0 and delta > 0:
+            delta -= TAU
+        return back, ahead, Arc2(cl, size, cmath.phase(v1), delta)
 
 
 def curve_of(s: Seg, fr: Frame) -> Any:
@@ -269,19 +351,11 @@ def round_corners(sk: Sketch, size: float, vertices: Any, kind: str) -> Sketch:
                                             f"so there is nothing to {'round' if kind == 'fillet' else 'bevel'}; leave it "
                                             f"out (select corners with .vertices().convex() or .concave())")
                     continue
-                for s in (s1, s2):
-                    if isinstance(s, Curve2):
-                        if targets is None:
-                            raise ModelingError(f"{what}: the corner at {fr.fp(v)} joins {describe(s, fr.fp)}; {what} "
-                                                f"works on corners between lines and arcs. Pass the corners to change: "
-                                                f"sketch.{what}({fmt(size)}, sketch.vertices().filter(...))")
-                        raise ModelingError(f"{what}: the corner at {fr.fp(v)} joins {describe(s, fr.fp)}; {what} works "
-                                            f"on corners between lines and arcs")
                 corners[i] = Corner(kind, size, f"{unit_name} {fmt(size)}")
                 count += 1
             try:
                 new, labels = assemble(lp, [""] * n, corners, True, tol, what=lambda j, lp=lp: describe(lp[j], fr.fp),
-                                       fp=fr.fp)
+                                       fp=fr.fp, curves=CurveCorners(fr, tol * 1e9))
             except GeometryError as e:
                 raise ModelingError(f"{what}: {e}") from None
             new, _ = simplify(new, labels, True, tol)
@@ -507,10 +581,6 @@ def path_segments(path: Any, what: str) -> tuple[Frame, list[Seg]]:
         raise TypeError(f"{what}: the path is an Edge or a Wire, not a {type(path).__name__}{hint}")
     fr = path_frame(edges)
     segs = [seg_of_edge(e, fr) for e in edges]
-    for i, s in enumerate(segs):
-        if isinstance(s, Curve2):
-            raise ModelingError(f"{what}: edge {i + 1} of the path is a {s.edge.geom_type}; {what} works on paths "
-                                f"of lines and arcs")
     size = extent(segs)
     for i in range(1, len(segs)):
         gap = abs(segs[i].start - segs[i - 1].end)
@@ -542,6 +612,8 @@ def stroke(path: Any, width: float, ends: str, corners: str) -> Sketch:
         except ModelingError:
             return outer
         return outer - inner
+    if any(isinstance(s, Curve2) for s in segs):
+        return _stroke_curves(segs, fr, h, ends, corners)
     try:
         right = offset_chain(segs, -h, corners, False, tol)
         left = offset_chain(segs, h, corners, False, tol)
@@ -569,6 +641,374 @@ def stroke(path: Any, width: float, ends: str, corners: str) -> Sketch:
     if ends == "round":
         pieces += [(disk(segs[0].start, h), []), (disk(segs[-1].end, h), [])]
     return union_all([build([pc], fr, name="Stroke") for pc in pieces])
+
+
+def _stroke_curves(segs: list[Seg], fr: Frame, h: float, ends: str, corners: str) -> Sketch:
+    """Stroke along an open path with splines or ellipses: the band between the path's offsets
+    to both sides and the end caps; where that band runs into itself, the union of a band per
+    edge, the wedges at the corners and the round ends."""
+    size = real_size(segs)
+    try:
+        right = offset_curves(segs, fr, -h, corners, False, size, "Stroke", h, crossing=False)
+        left = offset_curves(segs, fr, h, corners, False, size, "Stroke", h, crossing=False)
+        p0, p1 = segs[0].start, segs[-1].end
+        if ends == "round":
+            cap_end = edges_of([Arc2(p1, h, cmath.phase(-1j * segs[-1].t1), math.pi)], fr)
+            cap_start = edges_of([Arc2(p0, h, cmath.phase(1j * segs[0].t0), math.pi)], fr)
+        else:
+            cap_end = edges_of([Line2(fr.local(right[-1].end), fr.local(left[-1].end))], fr)
+            cap_start = edges_of([Line2(fr.local(left[0].start), fr.local(right[0].start))], fr)
+        loop = [*right, *cap_end, *[e.reversed() for e in reversed(left)], *cap_start]
+        hit = chain_crossing(loop, True, size)
+        if hit is None:
+            return build([(orient_ccw([seg_of_edge(e, fr) for e in loop]), [])], fr, name="Stroke")
+        problem = ModelingError(f"Stroke: the band runs into itself near {fr.fp(fr.local(hit))}")
+    except (ModelingError, ValueError) as e:
+        problem = e  # type: ignore[assignment]
+    try:
+        sketches: list[Sketch] = []
+        for i, s in enumerate(segs):
+            if i:
+                for e in (h, -h):
+                    sketches += [build([pc], fr, name="Stroke") for pc in _corner_wedge(segs[i - 1], s, e, corners)]
+            if isinstance(s, Curve2):
+                sketches += _curve_bands(s.edge, h, fr, size, i)
+            else:
+                sketches += [build([pc], fr, name="Stroke") for pc in band_piece(s, h)]
+        if ends == "round":
+            sketches += [build([(disk(segs[0].start, h), [])], fr, name="Stroke"),
+                         build([(disk(segs[-1].end, h), [])], fr, name="Stroke")]
+        return union_all(sketches)
+    except (ModelingError, ValueError):
+        raise problem from None
+
+
+def _curve_bands(edge: Edge, h: float, fr: Frame, size: float, index: int, depth: int = 0) -> list[Sketch]:
+    """The band within ``h`` of a curve, ends cut square: one band where it does not run into
+    itself, else the bands of pieces (the curve cut where it crosses itself, then in halves)."""
+    r = offset_curve_edge(edge, -h, fr, 1e-6 * size, "Stroke", index)
+    lft = offset_curve_edge(edge, h, fr, 1e-6 * size, "Stroke", index)
+    ends = edges_of([Line2(fr.local(r.end), fr.local(lft.end)), Line2(fr.local(lft.start), fr.local(r.start))], fr)
+    loop = [r, ends[0], lft.reversed(), ends[1]]
+    if chain_crossing(loop, True, size) is None:
+        return [build([(orient_ccw([seg_of_edge(x, fr) for x in loop]), [])], fr, name="Stroke")]
+    if depth >= 6:
+        raise ModelingError(f"Stroke: the band along edge {index + 1} of the path runs into itself")
+    pieces = _uncrossed(edge, 1e-9 * size) if depth == 0 else [edge]
+    if len(pieces) == 1:
+        pieces = list(edge.split(0.5))
+    return [b for piece in pieces for b in _curve_bands(piece, h, fr, size, index, depth + 1)]
+
+
+def _uncrossed(edge: Edge, tol: float) -> list[Edge]:
+    """The edge cut where it crosses itself, into pieces that do not."""
+    t0, t1 = edge._range()
+    with kernel_call("Stroke"):
+        sols = ext.self_intersections(edge._curve(), t0, t1, tol)
+    cuts = sorted({edge._fraction(u) for s in sols for u in s["t"]})
+    cuts = [f for f in cuts if 1e-9 < f < 1.0 - 1e-9]
+    bounds = [0.0, *cuts, 1.0]
+    return [edge.trim(a, b) for a, b in zip(bounds, bounds[1:]) if b - a > 1e-9] if cuts else [edge]
+
+
+def _corner_wedge(s1: Seg, s2: Seg, e: float, corners: str) -> list[Piece]:
+    """:func:`corner_piece` for corners at splines and ellipses: the offsets' ends are the corner
+    moved ``e`` along the normals of the two tangents there."""
+    if not (isinstance(s1, Curve2) or isinstance(s2, Curve2)):
+        return corner_piece(s1, s2, e, corners)
+    sn, cs = turn(s1, s2)
+    if abs(sn) < SMOOTH and cs > 0:
+        return []
+    if sn * e >= 0 and abs(sn) >= SMOOTH:
+        return []
+    v = s1.end
+    if abs(sn) < SMOOTH:
+        return [(disk(v, abs(e)), [])]
+    pe, qs = v + e * 1j * s1.t1, v + e * 1j * s2.t0
+    if corners == "chamfer":
+        return [(polygon(v, pe, qs), [])]
+    if corners == "sharp":
+        hits = _line_line(pe, s1.t1, qs, s2.t0)
+        return [(polygon(v, pe, hits[0], qs), [])] if hits else [(disk(v, abs(e)), [])]
+    d1, d2 = pe - v, qs - v
+    sweep = cmath.phase(d2 / d1)
+    if sn > 0 and sweep < 0:
+        sweep += TAU
+    if sn < 0 and sweep > 0:
+        sweep -= TAU
+    return [(orient_ccw([Line2(v, pe), Arc2(v, abs(e), cmath.phase(d1), sweep), Line2(qs, v)]), [])]
+
+
+# -----------------------------------------------------------------------------
+# offsets of wires and edges (Wire.offset, Edge.offset)
+# -----------------------------------------------------------------------------
+_OFFSET_REASONS = {
+    "an arc collapses": "an arc collapses (the distance reaches past its center)",
+    "the chain turns back": "the wire turns back on itself",
+    "a segment vanishes": "an edge vanishes (the corners beside it cut it away)",
+    "an arc vanishes": "an arc vanishes (the corners beside it cut it away)",
+    "the offsets do not meet near the corner": "the edges at a corner no longer meet (an edge there is shorter than "
+                                               "the distance)",
+    "parallel tangents": "the sides of a corner run parallel and never meet",
+}
+
+
+def _offset_problem(what: str, distance: float, reason: str, closed: bool, where: str = "") -> str:
+    region = ("; the offset of the region it bounds (Sketch.offset) merges and drops parts instead" if closed else "")
+    at = f" at {where}" if where else ""
+    return f"{what}: moved by {fmt(abs(distance))}, {_OFFSET_REASONS.get(reason, reason)}{at}; use a smaller distance{region}"
+
+
+def wire_frame(edges: Sequence[Edge], plane: Any, what: str) -> Frame:
+    """The plane of a planar wire, its normal telling left from right: ``plane`` (the wire must lie
+    in a plane parallel to it), else XY at the wire's height for a level wire, else the plane the
+    wire lies in with its normal toward +Z (+Y, then +X, for vertical planes)."""
+    pts = [p for e in edges for p in (e.start, e.end, *(e.point_at(i / 8) for i in range(1, 8)))]
+    size = max(1.0, max(abs(c) for p in pts for c in p))
+    if plane is not None:
+        pl = _as_plane(plane)
+        hs = [pl.to_local(p).z for p in pts]
+        if max(hs) - min(hs) > 1e-7 * size:
+            raise ValueError(f"{what}: the wire does not lie in a plane parallel to the plane given (it reaches "
+                             f"{fmt(max(hs) - min(hs))} along the plane's normal)")
+        return Frame(pl.offset(hs[0]))
+    zs = [p.z for p in pts]
+    if max(zs) - min(zs) <= 1e-9 * size:
+        return Frame(Plane((0, 0, zs[0])))
+    a = pts[0]
+    far = max(pts, key=lambda q: q.distance_to(a))
+    u = (far - a).normalized()
+    if all((q - a - u * (q - a).dot(u)).length <= 1e-9 * size for q in pts):
+        raise ValueError(f"{what}: the wire is straight and not level, so it does not say which plane it moves in; "
+                         f"pass plane=")
+    from .shapes import _fit_plane
+
+    pl = _fit_plane(pts, closed=False)
+    if any(abs(pl.to_local(q).z) > 1e-7 * size for q in pts):
+        raise ValueError(f"{what}: the wire does not lie in a plane")
+    nz = pl.z_dir
+    if nz.z < -1e-9 or (abs(nz.z) <= 1e-9 and (nz.y < -1e-9 or (abs(nz.y) <= 1e-9 and nz.x < 0))):
+        pl = pl.flipped()
+    return Frame(pl)
+
+
+def real_size(segs: Sequence[Seg]) -> float:
+    """The diagonal of the box around segments (in their plane)."""
+    pts = [p for s in segs for p in s.sample(8)]
+    xs, ys = [p.real for p in pts], [p.imag for p in pts]
+    return max(math.hypot(max(xs) - min(xs), max(ys) - min(ys)), 1e-300)
+
+
+def offset_wire(edges: list[Edge], distance: float, corners: str, plane: Any, what: str) -> list[Edge]:
+    """The edges of a planar wire, end to end, moved ``distance`` sideways: an open wire to its
+    left (seen from the normal of its plane), a closed one outward (see :meth:`Wire.offset`)."""
+    fr = wire_frame(edges, plane, what)
+    segs = [seg_of_edge(e, fr) for e in edges]
+    size = real_size(segs)
+    for i in range(1, len(segs)):
+        gap = abs(segs[i].start - segs[i - 1].end)
+        if gap > 1e-6 * max(1.0, size):
+            raise ModelingError(f"{what}: the wire has a gap of {fmt(gap)} between edge {i} and edge {i + 1}")
+    closed = abs(segs[-1].end - segs[0].start) <= 1e-6 * max(1.0, size)
+    e = distance
+    if closed:
+        area = signed_area(segs)
+        if abs(area) <= 1e-12 * size * size:
+            raise ModelingError(f"{what}: the closed wire encloses no area, so it has no outside to move to")
+        e = -distance if area > 0 else distance  # outward: to the right of a counterclockwise loop
+    if any(isinstance(s, Curve2) for s in segs):
+        return offset_curves(segs, fr, e, corners, closed, size, what, distance)
+    tol = 1e-9 * max(1.0, size)
+    try:
+        out = offset_chain(segs, e, corners, closed, tol)
+    except NeedBooleans as ex:
+        raise ModelingError(_offset_problem(what, distance, str(ex), closed)) from None
+    hit = first_crossing(out, closed, tol)
+    if hit is not None and first_crossing(segs, closed, tol) is None:  # (a wire that crosses itself: its offset may)
+        raise ModelingError(_crossing_problem(what, distance, fr.fp(hit[2]), closed))
+    return edges_of(out, fr)
+
+
+def _crossing_problem(what: str, distance: float, where: str, closed: bool) -> str:
+    region = ("; the offset of the region it bounds (Sketch.offset) merges parts instead" if closed else "")
+    return (f"{what}: moved by {fmt(abs(distance))}, the wire runs into itself near {where} (parts of it lie closer "
+            f"together than the distance allows); use a smaller distance{region}")
+
+
+def offset_curve_edge(edge: Edge, e: float, fr: Frame, tol: float, what: str, index: int | None) -> Edge:
+    """An edge (a spline or an ellipse) moved ``e`` to its left in the frame's plane, by the
+    kernel within ``tol``."""
+    c = edge._copy_curve()
+    try:
+        with kernel_call(what, "the curve may have a corner inside; split it there first"):
+            curve, dev, tight = ext.offset_curve(c, list(fr.plane.z_dir.to_tuple()), float(e), float(tol))
+        point = Vector(c.evaluate(tight)) if curve is None else None
+    finally:
+        ext.delete_curve(c)
+    name = f"edge {index + 1} ({edge.geom_type})" if index is not None else f"the {edge.geom_type}"
+    if curve is None:
+        assert point is not None
+        r = edge.min_radius()
+        raise ModelingError(f"{what}: {name} bends more tightly than the distance {fmt(abs(e))} near "
+                            f"{fr.fp(fr.local(point))} on the side it moves to (its smallest radius of curvature is "
+                            f"{fmt(r)}), so its offset would fold over itself there; use a smaller distance")
+    moved = Edge._from_curve(curve)
+    if not dev <= 10.0 * tol:
+        raise ModelingError(f"{what}: the kernel's offset of {name} is {dev:.3g} off the distance (asked within "
+                            f"{tol:.3g})")
+    return moved
+
+
+def offset_curves(segs: list[Seg], fr: Frame, e: float, corners: str, closed: bool, size: float, what: str,
+                  distance: float, crossing: bool = True) -> list[Edge]:
+    """:func:`offset_wire` for wires with splines or ellipses: lines and arcs moved exactly, the
+    curves by the kernel; the corners that open filled (``corners``), those that close cut where
+    the moved edges cross. With ``crossing``, checked not to run into itself (unless the wire
+    itself does)."""
+    approx = 1e-6 * size
+    n = len(segs)
+    moved: list[Edge] = []
+    for i, s in enumerate(segs):
+        if isinstance(s, (Line2, Arc2)):
+            o = s.offset(e)
+            if o is None:
+                raise ModelingError(_offset_problem(what, distance, "an arc collapses", closed, fr.fp(s.at(s.length / 2))))
+            moved.append(Edge._from_curve(curve_of(o, fr)))
+        else:
+            assert isinstance(s, Curve2)
+            moved.append(offset_curve_edge(s.edge, e, fr, approx, what, i if n > 1 else None))
+    lo, hi = [0.0] * n, [1.0] * n
+    start_at: list[complex | None] = [None] * n
+    end_at: list[complex | None] = [None] * n
+    joins: dict[int, list[Edge]] = {}
+    for i in range(n) if closed else range(1, n):
+        s1, s2 = segs[i - 1], segs[i]
+        sn, cs = turn(s1, s2)
+        if abs(sn) < SMOOTH and cs > 0:
+            continue
+        v = s1.end
+        if abs(sn) < SMOOTH:
+            raise ModelingError(_offset_problem(what, distance, "the chain turns back", closed, fr.fp(v)))
+        m1, m2 = moved[i - 1], moved[i]
+        p, q = fr.local(m1.end), fr.local(m2.start)
+        if sn * e < 0:  # the corner opens: fill it
+            if corners == "round":
+                d1, d2 = p - v, q - v
+                sweep = cmath.phase(d2 / d1)
+                if sn > 0 and sweep < 0:
+                    sweep += TAU
+                if sn < 0 and sweep > 0:
+                    sweep -= TAU
+                joins[i] = edges_of([Arc2(v, abs(e), cmath.phase(d1), sweep)], fr)
+            elif corners == "chamfer":
+                joins[i] = edges_of([Line2(p, q)], fr)
+            else:  # sharp: the sides go on along their tangents until they meet
+                hits = _line_line(p, s1.t1, q, s2.t0)
+                if not hits:
+                    raise ModelingError(_offset_problem(what, distance, "parallel tangents", closed, fr.fp(v)))
+                mpt = hits[0]
+                extra: list[Seg] = []
+                if m1.geom_type == "line":
+                    end_at[i - 1] = mpt
+                else:
+                    extra.append(Line2(p, mpt))
+                if m2.geom_type == "line":
+                    start_at[i % n] = mpt
+                else:
+                    extra.append(Line2(mpt, q))
+                joins[i] = edges_of(extra, fr)
+        else:  # the corner closes: cut both where they cross, nearest the corner
+            a0, a1 = m1._range()
+            b0, b1 = m2._range()
+            other = m2._curve()
+            if n == 1:
+                # (a closed edge with a corner where it starts and ends: its end half crosses its start
+                # half near the corner; the kernel finds no crossing of a curve with itself)
+                a0, b1 = m1._param(0.5), m2._param(0.5)
+                other = ext.copy_curve(other)
+            try:
+                with kernel_call(what):
+                    sols = ext.intersect_curves(m1._curve(), a0, a1, other, b0, b1, approx)
+            finally:
+                if n == 1:
+                    ext.delete_curve(other)
+            wv = fr.world(v)
+            best: tuple[float, float, float] | None = None
+            for sol in sols:
+                for u1, u2 in [sol["t"]] + ([sol["end"]] if sol["end"] is not None else []):
+                    f1, f2 = m1._fraction(u1), m2._fraction(u2)
+                    if f1 <= lo[i - 1] or f2 >= hi[i % n]:
+                        continue
+                    d = Vector(m1._curve().evaluate(u1)).distance_to(wv)
+                    if best is None or d < best[0]:
+                        best = (d, f1, f2)
+            if best is None:
+                raise ModelingError(_offset_problem(what, distance, "the offsets do not meet near the corner", closed,
+                                                    fr.fp(v)))
+            hi[i - 1], lo[i % n] = best[1], best[2]
+    from .curves import Line
+
+    out: list[Edge] = []
+    for i in range(n):
+        out.extend(joins.get(i, []))
+        m = moved[i]
+        if hi[i] - lo[i] <= 1e-9:
+            raise ModelingError(_offset_problem(what, distance, "a segment vanishes", closed, fr.fp(segs[i].start)))
+        sa, ea = start_at[i], end_at[i]
+        if m.geom_type == "line" and (sa is not None or ea is not None):
+            a = fr.world(sa) if sa is not None else m.point_at(lo[i])
+            b = fr.world(ea) if ea is not None else m.point_at(hi[i])
+            if (b - a).dot(m.end - m.start) <= 0:
+                raise ModelingError(_offset_problem(what, distance, "a segment vanishes", closed, fr.fp(segs[i].start)))
+            out.append(Line(a, b))
+        elif lo[i] > 0.0 or hi[i] < 1.0:
+            out.append(m.trim(lo[i], hi[i]))
+        else:
+            out.append(m)
+    if crossing:
+        hit = chain_crossing(out, closed, size)
+        if hit is not None and chain_crossing(edges_of(segs, fr), closed, size) is None:
+            raise ModelingError(_crossing_problem(what, distance, fr.fp(fr.local(hit)), closed))
+    return out
+
+
+def chain_crossing(edges: list[Edge], closed: bool, size: float) -> Vector | None:
+    """A point where a chain of edges (end to end) runs into itself, or None. Next to the point
+    where two edges meet, 1e-4 of each is left out (tangent joints touch along a stretch)."""
+    tol = 1e-9 * max(size, 1e-300)
+    n = len(edges)
+    boxes = [e.bbox() for e in edges]
+    pad = 10 * tol
+
+    def apart(a: BoundBox, b: BoundBox) -> bool:
+        return any(a.max[k] + pad < b.min[k] or b.max[k] + pad < a.min[k] for k in range(3))
+
+    def meet(a: Edge, fa: tuple[float, float], b: Edge, fb: tuple[float, float]) -> list[Vector]:
+        u0, u1 = sorted((a._param(fa[0]), a._param(fa[1])))
+        w0, w1 = sorted((b._param(fb[0]), b._param(fb[1])))
+        if not (u1 > u0 and w1 > w0):
+            return []
+        with kernel_call("offset"):
+            return [Vector(s["point"]) for s in ext.intersect_curves(a._curve(), u0, u1, b._curve(), w0, w1, tol)]
+
+    cut = 1e-4
+    for i in range(n):
+        if edges[i].geom_type not in ("line", "circle"):
+            pts = edges[i].self_intersections(tolerance=tol)
+            if pts:
+                return pts[0]
+        for j in range(i + 1, n):
+            if apart(boxes[i], boxes[j]):
+                continue
+            fa, fb = (0.0, 1.0), (0.0, 1.0)
+            if j == i + 1:
+                fa, fb = (0.0, 1.0 - cut), (cut, 1.0)
+            if closed and i == 0 and j == n - 1:
+                fa, fb = (fa[0] + cut, fa[1]), (fb[0], fb[1] - cut)
+            pts = meet(edges[i], fa, edges[j], fb)
+            if pts:
+                return pts[0]
+    return None
 
 
 # -----------------------------------------------------------------------------

@@ -29,6 +29,9 @@ import {
 } from '../src/index.ts'
 import { approx } from './_approx.ts'
 
+// biome-ignore lint: calls JavaScript allows and TypeScript does not
+type Any = any
+
 test('straight B-spline edges count as lines', () => {
   const box = Box(20, 20, 10)
   const c = box.chamfer(box.edges().parallelTo(Z), 2)
@@ -129,4 +132,37 @@ test('surface rejects NaN', () => {
     () => surface([0, 1, 2, 3].map((y) => [0, 1, 2, 3].map((x) => [x, y, x === 1 && y === 1 ? Number.NaN : 0]))),
     (e: Error) => e instanceof RangeError && /finite/.test(e.message),
   )
+})
+
+// -- smlibwasm's own: what JavaScript adds (Array's at, dispose) -----------------------------------
+test('ShapeList.at takes an index; a point is atPoint (smlibwasm)', () => {
+  const faces = Box(10, 20, 30).faces()
+  // Python's faces().at(point) selects by a point; Array's at made the point the index 0
+  assert.throws(() => (faces as Any).at([0, 0, 15]), { name: 'TypeError', message: /atPoint\(point\)/ })
+  assert.equal(faces.atPoint([0, 0, 15]).one().center().z, 15)
+  assert.equal(faces.at(-1), faces[faces.length - 1])
+  // Python's list[-1] is undefined in JavaScript: the operation says what to use
+  const b = Box(10, 20, 30)
+  assert.throws(() => b.fillet((b.edges().groupBy(Z) as Any)[-1], 2), { name: 'TypeError', message: /list\.at\(-1\) or list\.last/ })
+})
+
+test('faces, edges and vertices of a disposed body say so (smlibwasm)', () => {
+  const p = Box(10, 20, 30)
+  const [faces, edges, vertices] = [p.faces(), p.edges(), p.vertices()]
+  p.dispose()
+  for (let i = 0; i < 5; i++) Box(1, 2, 3) // (they take the freed memory)
+  // they answered with the new boxes' geometry, or crashed the module
+  for (const use of [() => faces[0].center(), () => faces[0].edges(), () => faces[0].area, () => edges[0].length, () => vertices[0].edges()]) {
+    assert.throws(use, { name: 'TypeError', message: /body was disposed/ })
+  }
+  assert.throws(() => Box(10, 10, 10).fillet(edges, 1), { name: 'TypeError', message: /body was disposed/ })
+  assert.throws(() => p.volume, { name: 'TypeError', message: /body was disposed/ }) // (not 'is the part a closed solid?')
+  // standalone edges and wires free their curves
+  const line = Line([0, 0, 0], [10, 0, 0])
+  const wire = new Wire([Line([0, 0, 0], [1, 0, 0]), Line([1, 0, 0], [1, 1, 0])])
+  line.dispose()
+  wire[Symbol.dispose]()
+  assert.throws(() => line.length, { name: 'TypeError', message: /curve was disposed/ })
+  assert.throws(() => wire.length, { name: 'TypeError', message: /curve was disposed/ })
+  assert.equal(Box(10, 20, 30).edges()[0].length > 0, true) // (an edge of a live body is fine)
 })

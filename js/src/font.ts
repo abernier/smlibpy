@@ -1,29 +1,32 @@
 // Reading TrueType and OpenType fonts: characters, metrics, kerning and exact glyph outlines.
 //
 // A compact reader without dependencies. It reads sfnt files (TTF, OTF), font collections (TTC,
-// the first font) and WOFF files, and from them the tables a text layout needs:
+// the first font), WOFF and WOFF2 files (the font of a collection, the first), and from them the
+// tables a text layout needs:
 //
 // - cmap (formats 0, 4, 6, 12 and 13), head, hhea, hmtx, maxp, OS/2, name;
-// - outlines: glyf/loca (simple and composite glyphs, every transform form, point matching) and
-//   "CFF " (Type 2 charstrings with local and global subroutines, flex, hint masks, CID-keyed
-//   fonts);
+// - outlines: glyf/loca (simple and composite glyphs, every transform form, point matching),
+//   "CFF " (Type 2 charstrings with local and global subroutines, flex, hint masks, accents built
+//   with seac, CID-keyed fonts) and CFF2 (variable fonts: the default instance);
 // - kerning: GPOS pair adjustment (formats 1 and 2, extension lookups) and the kern table
 //   (format 0, Microsoft and Apple headers).
 //
-// smlibpy hands what this reader does not do to fontTools when it is installed: WOFF2 files,
-// variable CFF2 outlines and CFF accents built with seac. JavaScript has no fontTools, so those
-// fonts throw a FontError here. Compressed WOFF tables are inflated with node:zlib as Python's
-// zlib does; outside Node (a browser) there is no synchronous inflate, and such a font throws a
-// FontError: convert it to TTF or OTF.
+// WOFF tables are zlib-compressed (_inflate.ts), WOFF2 files Brotli-compressed (_brotli.ts), and
+// a WOFF2 file's glyf, loca and hmtx tables may be transformed; they are read back to the tables of
+// the font, synchronously, in Node and in browsers alike. smlibpy's font.py is the same reader.
 //
-// A font comes as bytes (a Uint8Array) everywhere, or as a file path in Node. The default font,
-// Lato Regular, is built in (_fonts.ts), so text needs no file access.
+// A font comes as bytes (a Uint8Array, another view of an ArrayBuffer, or an ArrayBuffer)
+// everywhere, or as a file path in Node. The default font, Lato Regular, is built in (_fonts.ts),
+// so text needs no file access.
 //
 // Outlines come in font units, y up, as contours: arrays of segments, each an array of 2 points
 // (a line), 3 (a quadratic Bézier) or 4 (a cubic Bézier); a contour is closed, so the last
 // segment ends where the first starts.
 
+import { decompress as _brotliDecompress } from './_brotli.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 import { LATO_REGULAR } from './_fonts.ts'
+import { ZlibError, inflate } from './_inflate.ts'
 
 // biome-ignore lint: node's modules, reached without a static import
 type Any = any
@@ -74,26 +77,31 @@ export class FontError extends RangeError {
  */
 export const DEFAULT_FONT: Uint8Array = _fromBase64(LATO_REGULAR)
 
-const _byBytes = new WeakMap<Uint8Array, Font>()
+const _byBytes = new WeakMap<object, Font>()
 const _byPath = new Map<string, Font>() // the last 16 font files, as Python's lru_cache(16)
 
 /**
- * The font `source`, read once and kept: the bytes of a font file (a Uint8Array), or a font
- * file's path (Node). Without one, the built-in default (`DEFAULT_FONT`).
+ * The font `source`, read once and kept: the bytes of a font file (a Uint8Array, another view of
+ * an ArrayBuffer, or an ArrayBuffer, such as `await (await fetch(url)).arrayBuffer()`), or a font
+ * file's path (Node). Without one, the built-in default (`DEFAULT_FONT`). TrueType and OpenType
+ * fonts (.ttf, .otf, .ttc) and web fonts (.woff, .woff2) are read.
  *
  * A path that is no file throws an Error with `code` "ENOENT" (Python's FileNotFoundError).
  */
-export function loadFont(source: string | Uint8Array | null = null): Font {
+export function loadFont(source: string | BytesLike | null = null): Font {
   if (source == null) source = DEFAULT_FONT
-  if (source instanceof Uint8Array) {
-    let f = _byBytes.get(source)
+  const bytes = _asBytes(source)
+  if (bytes !== null) {
+    let f = _byBytes.get(source as object)
     if (f === undefined) {
-      f = new Font(source)
-      _byBytes.set(source, f)
+      f = new Font(bytes)
+      _byBytes.set(source as object, f)
     }
     return f
   }
-  if (typeof source !== 'string') throw new TypeError(`a font is a file path or the file's bytes (a Uint8Array), not ${_typeName(source)}`)
+  if (typeof source !== 'string') {
+    throw new TypeError(`a font is a file path or the file's bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(source)}`)
+  }
   const fs = _fs('reading a font file')
   const p = _expandUser(source)
   const st = fs.statSync(p, { bigint: true, throwIfNoEntry: false })
@@ -193,21 +201,23 @@ export class Font {
   _tables: Map<string, Uint8Array>
   _longLoca: boolean
   _numHmetrics: number
-  _outlines: _TrueTypeOutlines | _CFFOutlines
+  _outlines: _TrueTypeOutlines | _CFFOutlines | _CFF2Outlines
   _cmap: Map<number, number>
   _kern: _Kerning | null = null
 
-  /** A font from the bytes of its file, or from a file path (Node). */
-  constructor(source: string | Uint8Array) {
+  /** A font from the bytes of its file (a Uint8Array, another view of an ArrayBuffer, or an
+   * ArrayBuffer), or from a file path (Node). */
+  constructor(source: string | BytesLike) {
     let data: Uint8Array
+    const bytes = _asBytes(source)
     if (typeof source === 'string') {
       this.path = source
       data = _fs('reading a font file').readFileSync(source)
-    } else if (source instanceof Uint8Array) {
+    } else if (bytes !== null) {
       this.path = null
-      data = source
+      data = bytes
     } else {
-      throw new TypeError(`a font is a file path or the file's bytes (a Uint8Array), not ${_typeName(source)}`)
+      throw new TypeError(`a font is a file path or the file's bytes (a Uint8Array or an ArrayBuffer), not ${_typeName(source)}`)
     }
     const label = this.path ?? 'font data'
     this._tables = _readTables(data, label)
@@ -229,10 +239,10 @@ export class Font {
       this._outlines = new _TrueTypeOutlines(glyf, loca, this._longLoca, this.numGlyphs)
     } else if (cff !== undefined) {
       this._outlines = new _CFFOutlines(cff, this.unitsPerEm)
+    } else if (this._tables.has('CFF2')) {
+      this._outlines = new _CFF2Outlines(this._tables.get('CFF2') as Uint8Array, this.unitsPerEm)
     } else {
-      // (smlibpy draws these through fontTools)
-      const kind = this._tables.has('CFF2') ? 'CFF2 (variable OpenType)' : 'this kind of'
-      throw new FontError(`${label}: ${kind} outlines are not supported; use a TrueType or CFF font`)
+      throw new FontError(`${label}: a font without outlines (no glyf, CFF or CFF2 table)`)
     }
     this._cmap = _readCmap(this._tables.get('cmap') as Uint8Array)
     this.capHeight = cap > 0 ? cap : this._measuredCapHeight()
@@ -285,8 +295,6 @@ export class Font {
   // -- outlines ---------------------------------------------------------------
   /** The contours of a glyph in font units (empty for a space). */
   outline(glyph: number): Contour[] {
-    // (smlibpy falls back to fontTools for glyphs this reader cannot draw, CFF accents built
-    // with seac; here they throw the FontError)
     return this._outlines.contours(glyph)
   }
 
@@ -311,13 +319,21 @@ export class Font {
 }
 
 // =============================================================================
-// Containers: sfnt, TTC, WOFF (WOFF2 needs fontTools, which only smlibpy has)
+// Containers: sfnt, TTC, WOFF, WOFF2
 // =============================================================================
 function _readTables(data: Uint8Array, label: string): Map<string, Uint8Array> {
   if (data.length < 12) throw new FontError(`${label}: not a font file`)
   let tag = _tag(data, 0)
   if (tag === 'wOFF') return _woffTables(data, label)
-  if (tag === 'wOF2') throw new FontError(`${label}: WOFF2 fonts are not supported; convert the font to TTF or OTF`)
+  if (tag === 'wOF2') {
+    try {
+      return _woff2Tables(data)
+    } catch (e) {
+      // (out-of-range reads, invalid Brotli data; Python's IndexError, struct.error and ValueError)
+      if (e instanceof RangeError) throw new FontError(`${label}: a damaged WOFF2 file (${e.message})`)
+      throw e
+    }
+  }
   let offset = 0
   if (tag === 'ttcf') {
     if (_u32(data, 8) < 1) throw new FontError(`${label}: an empty font collection`)
@@ -334,9 +350,6 @@ function _readTables(data: Uint8Array, label: string): Map<string, Uint8Array> {
     const length = _u32(data, rec + 12)
     tables.set(t, data.subarray(off, off + length))
   }
-  if (tables.has('CFF2') && !tables.has('glyf') && !tables.has('CFF ')) {
-    throw new FontError(`${label}: CFF2 (variable OpenType) outlines are not supported; convert the font to TTF or OTF`)
-  }
   return tables
 }
 
@@ -350,18 +363,443 @@ function _woffTables(data: Uint8Array, label: string): Map<string, Uint8Array> {
     const comp = _u32(data, rec + 8)
     const orig = _u32(data, rec + 12)
     const raw = data.subarray(off, off + comp)
-    const table = comp < orig ? _inflate(raw, label) : raw
+    let table = raw
+    if (comp < orig) {
+      try {
+        table = inflate(raw)
+      } catch (e) {
+        if (e instanceof ZlibError) throw new FontError(`${label}: damaged WOFF table ${_repr(t)} (${e.message})`)
+        throw e
+      }
+    }
     tables.set(t, table)
     if (table.length !== orig) throw new FontError(`${label}: damaged WOFF table ${_repr(t)}`)
   }
   return tables
 }
 
-/** zlib's decompress (node:zlib); outside Node there is no synchronous inflate. */
-function _inflate(raw: Uint8Array, label: string): Uint8Array {
-  const zlib = _builtin('node:zlib')
-  if (!zlib) throw new FontError(`${label}: a WOFF font with compressed tables needs node:zlib, which only Node has; convert the font to TTF or OTF`)
-  return new Uint8Array(zlib.inflateSync(raw))
+/** The tables WOFF2 names by number. */
+const _WOFF2_TAGS: string[] = (() => {
+  const all =
+    'cmapheadhheahmtxmaxpnameOS/2postcvt fpgmglyflocaprepCFF VORGEBDTEBLCgasphdmxkernLTSHPCLTVDMXvheavmtxBASEGDEF' +
+    'GPOSGSUBEBSCJSTFMATHCBDTCBLCCOLRCPALSVG sbixacntavarbdatblocbslncvarfdscfeatfmtxfvargvarhstyjustlcarmortmorx' +
+    'opbdproptrakZapfSilfGlatGlocFeatSill'
+  const out: string[] = []
+  for (let i = 0; i < 252; i += 4) out.push(all.slice(i, i + 4))
+  return out
+})()
+
+/** Whether a WOFF2 table's transform version is a transform (for glyf and loca, 3 is none). */
+function _transformed(tag: string, version: number): boolean {
+  return tag === 'glyf' || tag === 'loca' ? version !== 3 : version !== 0
+}
+
+/** The tables of a WOFF2 file (of a collection, the first font's), with the transformed glyf, loca
+ * and hmtx tables made back into the font's. Damaged files throw RangeErrors. */
+function _woff2Tables(data: Uint8Array): Map<string, Uint8Array> {
+  if (data.length < 48) throw new RangeError('no WOFF2 header')
+  const numTables = _u16(data, 12)
+  const compressed = _u32(data, 20)
+  let pos = 48
+  // tag, length in the font, transform version, length stored
+  const entries: [string, number, number, number][] = []
+  for (let k = 0; k < numTables; k++) {
+    const flags = _u8(data, pos)
+    pos += 1
+    let tag: string
+    if ((flags & 63) === 63) {
+      if (pos + 4 > data.length) throw new RangeError('index out of range')
+      tag = _tag(data, pos)
+      pos += 4
+    } else {
+      tag = _WOFF2_TAGS[flags & 63]
+    }
+    const version = flags >> 6
+    let orig: number
+    ;[orig, pos] = _base128(data, pos)
+    let stored = orig
+    if (_transformed(tag, version)) {
+      ;[stored, pos] = _base128(data, pos)
+      if (tag === 'loca' && stored !== 0) throw new RangeError('a transformed loca table with data')
+    }
+    entries.push([tag, orig, version, stored])
+  }
+  let chosen: number[] = entries.map((_, i) => i)
+  if (_tag(data, 4) === 'ttcf') {
+    // a collection: the tables of each font
+    pos += 4
+    let numFonts: number
+    ;[numFonts, pos] = _uint255(data, pos)
+    if (numFonts < 1) throw new RangeError('an empty font collection')
+    for (let k = 0; k < numFonts; k++) {
+      let n: number
+      ;[n, pos] = _uint255(data, pos)
+      pos += 4 // (the font's flavor)
+      const indices: number[] = []
+      for (let j = 0; j < n; j++) {
+        let i: number
+        ;[i, pos] = _uint255(data, pos)
+        if (i >= numTables) throw new RangeError('a font of the collection names a table it does not have')
+        indices.push(i)
+      }
+      if (k === 0) chosen = indices
+    }
+  }
+  if (pos + compressed > data.length) throw new RangeError('the compressed data runs past the end of the file')
+  const stream = _brotliDecompress(data.subarray(pos, pos + compressed))
+  const starts = [0]
+  for (const e of entries) starts.push(starts[starts.length - 1] + e[3])
+  if (stream.length !== starts[starts.length - 1]) throw new RangeError('the compressed data does not hold the tables')
+  const tables = new Map<string, Uint8Array>()
+  const transformed = new Map<string, [Uint8Array, number, number]>()
+  for (const i of chosen) {
+    const [tag, orig, version, stored] = entries[i]
+    const blob = stream.subarray(starts[i], starts[i] + stored)
+    if (_transformed(tag, version)) transformed.set(tag, [blob, orig, version])
+    else tables.set(tag, blob)
+  }
+  let xMins: number[] | null = null
+  const glyf = transformed.get('glyf')
+  const loca = transformed.get('loca')
+  if (glyf !== undefined || loca !== undefined) {
+    if (glyf === undefined || loca === undefined || glyf[2] !== 0) throw new RangeError('a glyf or loca table transformed in an unknown way')
+    const numGlyphs = _u16(glyf[0], 4)
+    const indexFormat = _u16(glyf[0], 6)
+    if (loca[1] !== (numGlyphs + 1) * (indexFormat ? 4 : 2)) throw new RangeError('the loca table does not have its length')
+    transformed.delete('glyf')
+    transformed.delete('loca')
+    const [g, l, mins, longLoca] = _woff2Glyf(glyf[0])
+    tables.set('glyf', g)
+    tables.set('loca', l)
+    xMins = mins
+    const head = tables.get('head')
+    if (head !== undefined && head.length >= 54) {
+      // (the index format the loca table has)
+      const copy = head.slice()
+      copy[50] = 0
+      copy[51] = longLoca ? 1 : 0
+      tables.set('head', copy)
+    }
+  }
+  for (const [tag, [blob, , version]] of transformed) {
+    if (tag !== 'hmtx' || version !== 1) throw new RangeError(`the ${_repr(tag)} table is transformed in an unknown way`)
+    if (xMins === null) xMins = _glyphXMins(tables)
+    tables.set('hmtx', _woff2Hmtx(blob, xMins, _u16(_table(tables, 'hhea'), 34)))
+  }
+  return tables
+}
+
+function _table(tables: Map<string, Uint8Array>, tag: string): Uint8Array {
+  const t = tables.get(tag)
+  if (t === undefined) throw new RangeError(`no ${_repr(tag)} table`)
+  return t
+}
+
+/** WOFF2's UIntBase128 at `o` and the offset after it: up to five bytes of 7 bits, the first not 0x80. */
+function _base128(b: Uint8Array, o: number): [number, number] {
+  let v = 0
+  for (let i = 0; i < 5; i++) {
+    const c = _u8(b, o + i)
+    if (i === 0 && c === 0x80) throw new RangeError('a number with leading zeros')
+    if (v >= 0x2000000) throw new RangeError('a number that overflows')
+    v = v * 128 + (c & 0x7f)
+    if (!(c & 0x80)) return [v, o + i + 1]
+  }
+  throw new RangeError('a number longer than five bytes')
+}
+
+/** WOFF2's 255UInt16 at `o` and the offset after it. */
+function _uint255(b: Uint8Array, o: number): [number, number] {
+  const c = _u8(b, o)
+  if (c === 253) return [_u16(b, o + 1), o + 3]
+  if (c === 254) return [506 + _u8(b, o + 1), o + 2]
+  if (c === 255) return [253 + _u8(b, o + 1), o + 2]
+  return [c, o + 1]
+}
+
+/** Big-endian bytes, written one after the other. */
+class _Writer {
+  buf = new Uint8Array(1024)
+  length = 0
+
+  _room(n: number): void {
+    if (this.length + n <= this.buf.length) return
+    let size = this.buf.length * 2
+    while (size < this.length + n) size *= 2
+    const b = new Uint8Array(size)
+    b.set(this.buf.subarray(0, this.length))
+    this.buf = b
+  }
+
+  u8(v: number): void {
+    this._room(1)
+    this.buf[this.length++] = v & 0xff
+  }
+
+  u16(v: number): void {
+    this._room(2)
+    this.buf[this.length++] = (v >> 8) & 0xff
+    this.buf[this.length++] = v & 0xff
+  }
+
+  /** A signed 16-bit number; out of range throws (Python's struct.error). */
+  i16(v: number): void {
+    if (!(v >= -0x8000 && v <= 0x7fff)) throw new RangeError(`${v} is out of the range of a 16-bit number`)
+    this.u16(v & 0xffff)
+  }
+
+  u32(v: number): void {
+    this.u16(Math.floor(v / 0x10000))
+    this.u16(v % 0x10000)
+  }
+
+  bytes(b: Uint8Array): void {
+    this._room(b.length)
+    this.buf.set(b, this.length)
+    this.length += b.length
+  }
+
+  done(): Uint8Array {
+    return this.buf.slice(0, this.length)
+  }
+}
+
+/** The glyf and loca tables of a transformed glyf table, each glyph's xMin, and whether the loca
+ * table is in the long format. */
+function _woff2Glyf(t: Uint8Array): [Uint8Array, Uint8Array, number[], boolean] {
+  const optionFlags = _u16(t, 2)
+  const numGlyphs = _u16(t, 4)
+  const indexFormat = _u16(t, 6)
+  const starts = [36]
+  for (let k = 0; k < 7; k++) starts.push(starts[k] + _u32(t, 8 + 4 * k))
+  const overlap = optionFlags & 1 ? starts[7] : -1
+  if (starts[7] + (optionFlags & 1 ? (numGlyphs + 7) >> 3 : 0) !== t.length) throw new RangeError('the streams of the glyf table do not fill it')
+  let [nContours, nPoints, flagS, glyphS, compS, bboxS, instrS] = starts
+  const bboxBitmap = bboxS
+  bboxS += 4 * ((numGlyphs + 31) >> 5)
+  const out = new _Writer()
+  const offsets: number[] = []
+  const xMins: number[] = []
+  for (let g = 0; g < numGlyphs; g++) {
+    offsets.push(out.length)
+    const nc = _i16(t, nContours + 2 * g)
+    const explicit = _u8(t, bboxBitmap + (g >> 3)) & (0x80 >> (g & 7))
+    if (nc === 0) {
+      if (explicit) throw new RangeError(`glyph ${g} is empty and has a bounding box`)
+      xMins.push(0)
+      continue
+    }
+    if (nc > 0) {
+      // simple
+      const ends: number[] = []
+      let total = 0
+      for (let k = 0; k < nc; k++) {
+        let count: number
+        ;[count, nPoints] = _uint255(t, nPoints)
+        total += count
+        ends.push(total - 1)
+      }
+      if (flagS + total > t.length) throw new RangeError('index out of range')
+      const flags = t.subarray(flagS, flagS + total)
+      flagS += total
+      let dxs: number[]
+      let dys: number[]
+      ;[dxs, dys, glyphS] = _woff2Triplets(t, glyphS, flags)
+      let ilen: number
+      ;[ilen, glyphS] = _uint255(t, glyphS)
+      if (instrS + ilen > t.length) throw new RangeError('index out of range')
+      const instructions = t.subarray(instrS, instrS + ilen)
+      instrS += ilen
+      let box: number[]
+      if (explicit) {
+        box = [_i16(t, bboxS), _i16(t, bboxS + 2), _i16(t, bboxS + 4), _i16(t, bboxS + 6)]
+        bboxS += 8
+      } else {
+        box = [Infinity, Infinity, -Infinity, -Infinity]
+        let x = 0
+        let y = 0
+        for (let k = 0; k < total; k++) {
+          x += dxs[k]
+          y += dys[k]
+          box = [Math.min(box[0], x), Math.min(box[1], y), Math.max(box[2], x), Math.max(box[3], y)]
+        }
+      }
+      out.i16(nc)
+      for (const v of box) out.i16(v)
+      for (const e of ends) out.u16(e)
+      out.u16(ilen)
+      out.bytes(instructions)
+      const overlaps = overlap >= 0 && _u8(t, overlap + (g >> 3)) & (0x80 >> (g & 7))
+      _simplePoints(out, flags, dxs, dys, Boolean(overlaps))
+      xMins.push(box[0])
+    } else if (nc === -1) {
+      // composite: its components as they are, then its instructions
+      if (!explicit) throw new RangeError(`composite glyph ${g} has no bounding box`)
+      const start = compS
+      let instructed = false
+      for (;;) {
+        const flags = _u16(t, compS)
+        compS += 4 + (flags & _ARG_WORDS ? 4 : 2)
+        compS += flags & _SCALE ? 2 : flags & _XY_SCALE ? 4 : flags & _TWO_BY_TWO ? 8 : 0
+        instructed = instructed || Boolean(flags & 0x100)
+        if (!(flags & _MORE)) break
+      }
+      if (compS > t.length || bboxS + 8 > t.length) throw new RangeError('index out of range')
+      out.i16(-1)
+      out.bytes(t.subarray(bboxS, bboxS + 8))
+      xMins.push(_i16(t, bboxS))
+      bboxS += 8
+      out.bytes(t.subarray(start, compS))
+      if (instructed) {
+        let ilen: number
+        ;[ilen, glyphS] = _uint255(t, glyphS)
+        if (instrS + ilen > t.length) throw new RangeError('index out of range')
+        out.u16(ilen)
+        out.bytes(t.subarray(instrS, instrS + ilen))
+        instrS += ilen
+      }
+    } else {
+      throw new RangeError(`glyph ${g} has ${nc} contours`)
+    }
+    while (out.length % 4) out.u8(0)
+  }
+  offsets.push(out.length)
+  const ends = [nPoints, flagS, glyphS, compS, bboxS, instrS]
+  if (ends.some((v, k) => v > starts[k + 2])) throw new RangeError('a stream of the glyf table runs into the next one')
+  const longLoca = indexFormat !== 0 || out.length > 0x1fffe // (the glyphs as written here may need it)
+  const loca = new _Writer()
+  for (const o of offsets) {
+    if (longLoca) loca.u32(o)
+    else loca.u16(o / 2)
+  }
+  return [out.done(), loca.done(), xMins, longLoca]
+}
+
+/** The flags and coordinates of a simple TrueType glyph: steps of up to 255 in a byte, of 0 in none. */
+function _simplePoints(out: _Writer, flags: Uint8Array, dxs: number[], dys: number[], overlap: boolean): void {
+  const xs = new _Writer()
+  const ys = new _Writer()
+  for (let i = 0; i < flags.length; i++) {
+    let flag = flags[i] & 0x80 ? 0 : _ON_CURVE
+    if (i === 0 && overlap) flag |= 0x40 // (OVERLAP_SIMPLE)
+    const axes: [number, number, number, _Writer][] = [
+      [dxs[i], _X_SHORT, _X_SAME, xs],
+      [dys[i], _Y_SHORT, _Y_SAME, ys],
+    ]
+    for (const [d, short, same, buf] of axes) {
+      if (d === 0) {
+        flag |= same
+      } else if (d >= -255 && d <= 255) {
+        flag |= short | (d > 0 ? same : 0)
+        buf.u8(Math.abs(d))
+      } else {
+        buf.i16(d)
+      }
+    }
+    out.u8(flag)
+  }
+  out.bytes(xs.done())
+  out.bytes(ys.done())
+}
+
+/** The x and y steps of a glyph's points, each from a flag and 1 to 4 bytes, and the offset after
+ * them. The flag's bit 0 is the sign of the step (of x, when both move), bit 1 the sign of the y
+ * step. */
+function _woff2Triplets(t: Uint8Array, p: number, flags: Uint8Array): [number[], number[], number] {
+  const dxs: number[] = []
+  const dys: number[] = []
+  for (const flag of flags) {
+    const f = flag & 0x7f
+    let dx: number
+    let dy: number
+    if (f < 10) {
+      dy = ((f & 14) << 7) + _u8(t, p)
+      dxs.push(0)
+      dys.push(f & 1 ? dy : -dy)
+      p += 1
+      continue
+    }
+    if (f < 20) {
+      dx = (((f - 10) & 14) << 7) + _u8(t, p)
+      dxs.push(f & 1 ? dx : -dx)
+      dys.push(0)
+      p += 1
+      continue
+    }
+    if (f < 84) {
+      const b0 = f - 20
+      const b1 = _u8(t, p)
+      dx = 1 + (b0 & 0x30) + (b1 >> 4)
+      dy = 1 + ((b0 & 0x0c) << 2) + (b1 & 0x0f)
+      p += 1
+    } else if (f < 120) {
+      const b0 = f - 84
+      dx = 1 + (Math.floor(b0 / 12) << 8) + _u8(t, p)
+      dy = 1 + (((b0 % 12) >> 2) << 8) + _u8(t, p + 1)
+      p += 2
+    } else if (f < 124) {
+      const b2 = _u8(t, p + 1)
+      dx = (_u8(t, p) << 4) + (b2 >> 4)
+      dy = ((b2 & 0x0f) << 8) + _u8(t, p + 2)
+      p += 3
+    } else {
+      dx = (_u8(t, p) << 8) + _u8(t, p + 1)
+      dy = (_u8(t, p + 2) << 8) + _u8(t, p + 3)
+      p += 4
+    }
+    dxs.push(f & 1 ? dx : -dx)
+    dys.push(f & 2 ? dy : -dy)
+  }
+  return [dxs, dys, p]
+}
+
+/** Each glyph's xMin from an untransformed glyf table (0 for an empty glyph). */
+function _glyphXMins(tables: Map<string, Uint8Array>): number[] {
+  const glyf = _table(tables, 'glyf')
+  const loca = _table(tables, 'loca')
+  const n = _u16(_table(tables, 'maxp'), 4)
+  const long = _i16(_table(tables, 'head'), 50) === 1
+  const offsets: number[] = []
+  for (let g = 0; g <= n; g++) offsets.push(long ? _u32(loca, 4 * g) : 2 * _u16(loca, 2 * g))
+  const out: number[] = []
+  for (let g = 0; g < n; g++) out.push(offsets[g + 1] > offsets[g] ? _i16(glyf, offsets[g] + 2) : 0)
+  return out
+}
+
+/** The hmtx table of a transformed one: the left side bearings left out are the glyphs' xMin. */
+function _woff2Hmtx(t: Uint8Array, xMins: number[], numHmetrics: number): Uint8Array {
+  const flags = _u8(t, 0)
+  if (flags & 0xfc || !(flags & 3)) throw new RangeError('a transformed hmtx table with invalid flags')
+  const numGlyphs = xMins.length
+  const nh = Math.min(numHmetrics, numGlyphs)
+  let p = 1
+  const advances: number[] = []
+  for (let i = 0; i < nh; i++) advances.push(_u16(t, p + 2 * i))
+  p += 2 * nh
+  let lsbs: number[]
+  if (flags & 1) {
+    lsbs = xMins.slice(0, nh)
+  } else {
+    lsbs = []
+    for (let i = 0; i < nh; i++) lsbs.push(_i16(t, p + 2 * i))
+    p += 2 * nh
+  }
+  let rest: number[]
+  if (flags & 2) {
+    rest = xMins.slice(nh)
+  } else {
+    rest = []
+    for (let i = 0; i < numGlyphs - nh; i++) rest.push(_i16(t, p + 2 * i))
+    p += 2 * (numGlyphs - nh)
+  }
+  if (p !== t.length) throw new RangeError('a transformed hmtx table of the wrong length')
+  const out = new _Writer()
+  for (let i = 0; i < nh; i++) {
+    out.u16(advances[i])
+    out.i16(lsbs[i])
+  }
+  for (const v of rest) out.i16(v)
+  return out.done()
 }
 
 function _fontName(table: Uint8Array | undefined): string | null {
@@ -751,15 +1189,16 @@ function _mid(a: Point, b: Point): Point {
 }
 
 // =============================================================================
-// CFF outlines (Type 2 charstrings)
+// CFF and CFF2 outlines (Type 2 charstrings)
 // =============================================================================
-/** The items of a CFF INDEX at `o` and the offset after it. */
-function _cffIndex(b: Uint8Array, o: number): [Uint8Array[], number] {
-  const count = _u16(b, o)
-  if (count === 0) return [[], o + 2]
-  const size = _u8(b, o + 2)
+/** The items of a CFF INDEX at `o` and the offset after it (CFF2 counts them in 4 bytes). */
+function _cffIndex(b: Uint8Array, o: number, cff2 = false): [Uint8Array[], number] {
+  const count = cff2 ? _u32(b, o) : _u16(b, o)
+  o += cff2 ? 4 : 2
+  if (count === 0) return [[], o]
+  const size = _u8(b, o)
   const offs: number[] = []
-  let p = o + 3
+  let p = o + 1
   for (let i = 0; i < count + 1; i++) {
     let v = 0
     for (let k = 0; k < size; k++) v = v * 256 + _u8(b, p + k)
@@ -772,13 +1211,25 @@ function _cffIndex(b: Uint8Array, o: number): [Uint8Array[], number] {
   return [items, base + offs[count]]
 }
 
-function _cffDict(d: Uint8Array): Map<number, number[]> {
+/** A CFF DICT: its operators' operands. A CFF2 one (`regions`: the number of regions of an item
+ * variation data) can have vsindex (22), which picks the data, and blend, whose values here are
+ * the default ones. */
+function _cffDict(d: Uint8Array, regions: ((vsindex: number) => number) | null = null): Map<number, number[]> {
   const out = new Map<number, number[]>()
   let ops: number[] = []
+  let vsindex = 0
   let i = 0
   while (i < d.length) {
     const b0 = d[i]
-    if (b0 <= 21) {
+    if (regions !== null && b0 === 23) {
+      // blend: k defaults, k x regions deltas, k
+      const k = ops.length ? Math.trunc(ops.pop() as number) : -1
+      const base = ops.length - k * (regions(vsindex) + 1)
+      if (k < 0 || base < 0) throw new FontError('a blend without its operands')
+      ops.length = base + k
+      i += 1
+    } else if (b0 <= 24) {
+      // (22, 23 and 24 are CFF2's vsindex, blend and vstore)
       let key: number
       if (b0 === 12) {
         key = 1200 + _u8(d, i + 1)
@@ -787,6 +1238,7 @@ function _cffDict(d: Uint8Array): Map<number, number[]> {
         key = b0
         i += 1
       }
+      if (key === 22) vsindex = ops.length ? Math.trunc(ops[ops.length - 1]) : 0
       out.set(key, ops)
       ops = []
     } else if (b0 === 28) {
@@ -841,12 +1293,40 @@ function _subrBias(n: number): number {
   return n < 1240 ? 107 : n < 33900 ? 1131 : 32768
 }
 
+// CFF's standard strings 1 to 149: the names of the characters of StandardEncoding, which an accent
+// built with seac names by code (the codes of the strings in order).
+const _STANDARD_NAMES = (
+  'space exclam quotedbl numbersign dollar percent ampersand quoteright parenleft parenright asterisk plus comma ' +
+  'hyphen period slash zero one two three four five six seven eight nine colon semicolon less equal greater ' +
+  'question at A B C D E F G H I J K L M N O P Q R S T U V W X Y Z bracketleft backslash bracketright ' +
+  'asciicircum underscore quoteleft a b c d e f g h i j k l m n o p q r s t u v w x y z braceleft bar ' +
+  'braceright asciitilde exclamdown cent sterling fraction yen florin section currency quotesingle ' +
+  'quotedblleft guillemotleft guilsinglleft guilsinglright fi fl endash dagger daggerdbl periodcentered ' +
+  'paragraph bullet quotesinglbase quotedblbase quotedblright guillemotright ellipsis perthousand ' +
+  'questiondown grave acute circumflex tilde macron breve dotaccent dieresis ring cedilla hungarumlaut ogonek ' +
+  'caron emdash AE ordfeminine Lslash Oslash OE ordmasculine ae dotlessi lslash oslash oe germandbls'
+).split(' ')
+/** Code -> string id of StandardEncoding. */
+const _STANDARD_ENCODING: Map<number, number> = (() => {
+  const ranges = [
+    [32, 126], [161, 175], [177, 180], [182, 189], [191, 191], [193, 200], [202, 203], [205, 208], [225, 225],
+    [227, 227], [232, 235], [241, 241], [245, 245], [248, 251],
+  ]
+  const out = new Map<number, number>()
+  for (const [lo, hi] of ranges) for (let c = lo; c <= hi; c++) out.set(c, out.size + 1)
+  return out
+})()
+
 class _CFFOutlines {
   readonly gsubrs: Uint8Array[]
   readonly charstrings: Uint8Array[]
+  readonly strings: Uint8Array[]
   readonly scale: number
   readonly lsubrs: Uint8Array[][]
   readonly fdOf: number[] | null
+  readonly cff: Uint8Array
+  readonly charset: number
+  _bySid: Map<number, number> | null = null
   readonly _cache = new Map<number, Contour[]>()
 
   constructor(cff: Uint8Array, unitsPerEm: number) {
@@ -854,7 +1334,7 @@ class _CFFOutlines {
     ;[, o] = _cffIndex(cff, o) // names
     let tops: Uint8Array[]
     ;[tops, o] = _cffIndex(cff, o)
-    ;[, o] = _cffIndex(cff, o) // strings
+    ;[this.strings, o] = _cffIndex(cff, o)
     ;[this.gsubrs] = _cffIndex(cff, o)
     const top = _cffDict(_item(tops, 0))
     if (!top.has(17)) throw new FontError('the CFF table has no charstrings')
@@ -864,6 +1344,8 @@ class _CFFOutlines {
     const matrix = top.get(1207) ?? [0.001, 0, 0, 0.001, 0, 0]
     const ratio = Number(matrix[0]) * unitsPerEm
     this.scale = !matrix[0] || Math.abs(ratio - 1.0) < 1e-3 ? 1.0 : ratio
+    this.cff = cff
+    this.charset = top.has(15) ? _operands(top, 15)[0] : 0
     if (top.has(1236)) {
       // CID-keyed: one private dict (and local subroutines) per font dict
       const [fds] = _cffIndex(cff, _operands(top, 1236)[0])
@@ -885,29 +1367,172 @@ class _CFFOutlines {
   }
 
   contours(glyph: number): Contour[] {
+    return _cached(this._cache, glyph, 4096, () => _scaled(this._contours(glyph, 0), this.scale))
+  }
+
+  _contours(glyph: number, depth: number): Contour[] {
+    if (glyph < 0 || glyph >= this.charstrings.length) throw new FontError(`glyph ${glyph} is not in the font`)
+    const local = this.lsubrs.length ? _item(this.lsubrs, this.fdOf !== null ? _item(this.fdOf, glyph) : 0) : []
+    const t = new _Type2(this.gsubrs, local)
+    let contours = t.run(this.charstrings[glyph])
+    if (t.seac !== null) {
+      // an accented character: its base and accent glyphs, the accent moved
+      if (this.fdOf !== null || depth > 2) throw new FontError('an accent built with seac where seac is not allowed')
+      const [adx, ady, base, accent] = t.seac
+      const moved = this._contours(this._standardGlyph(accent), depth + 1).map((c) =>
+        c.map((seg) => seg.map(([x, y]) => [x + adx, y + ady] as Point)),
+      )
+      contours = [...contours, ...this._contours(this._standardGlyph(base), depth + 1), ...moved]
+    }
+    return contours
+  }
+
+  /** The glyph of a character code of StandardEncoding (seac's base and accent): the glyph whose
+   * name, by the font's charset, is the character's. */
+  _standardGlyph(code: number): number {
+    const sid = _STANDARD_ENCODING.get(code)
+    if (sid === undefined) throw new FontError(`an accent built with seac names code ${code}, which StandardEncoding does not have`)
+    if (this._bySid === null) {
+      this._bySid = new Map()
+      const charset = this._charset()
+      for (let g = 0; g < charset.length; g++) {
+        let s = charset[g]
+        if (s >= 391 && s - 391 < this.strings.length) {
+          // a name of the font's own
+          const name = String.fromCharCode(...this.strings[s - 391])
+          const k = _STANDARD_NAMES.indexOf(name)
+          if (k >= 0) s = k + 1
+        }
+        if (!this._bySid.has(s)) this._bySid.set(s, g)
+      }
+    }
+    const g = this._bySid.get(sid)
+    if (g === undefined) {
+      throw new FontError(`an accent built with seac needs glyph ${_repr(_STANDARD_NAMES[sid - 1])}, which the font does not have`)
+    }
+    return g
+  }
+
+  /** The string id of each glyph's name. */
+  _charset(): number[] {
+    const n = this.charstrings.length
+    if (this.charset === 0) return Array.from({ length: n }, (_, i) => i) // ISOAdobe: the standard strings in order
+    if (this.charset === 1 || this.charset === 2) return [] // the expert charsets: none of their names is StandardEncoding's
+    const cff = this.cff
+    const o = this.charset
+    const fmt = _u8(cff, o)
+    const out = [0]
+    if (fmt === 0) {
+      for (let g = 1; g < n; g++) out.push(_u16(cff, o + 1 + 2 * (g - 1)))
+    } else if (fmt === 1 || fmt === 2) {
+      let p = o + 1
+      while (out.length < n) {
+        const first = _u16(cff, p)
+        const left = fmt === 1 ? _u8(cff, p + 2) : _u16(cff, p + 2)
+        p += fmt === 1 ? 3 : 4
+        for (let s = first; s <= first + left; s++) out.push(s)
+      }
+    } else {
+      throw new FontError(`unknown charset format ${fmt}`)
+    }
+    return out.slice(0, n)
+  }
+}
+
+/** Contours scaled by `s` (a font matrix for another em size). */
+function _scaled(contours: Contour[], s: number): Contour[] {
+  if (s === 1.0) return contours
+  return contours.map((c) => c.map((seg) => seg.map(([x, y]) => [x * s, y * s] as Point)))
+}
+
+/** Outlines of a CFF2 table: those of a variable font's default instance. */
+class _CFF2Outlines {
+  readonly gsubrs: Uint8Array[]
+  readonly charstrings: Uint8Array[]
+  readonly scale: number
+  readonly regionCounts: number[]
+  readonly lsubrs: Uint8Array[][] = []
+  readonly vsindex: number[] = []
+  readonly fdOf: number[] | null
+  readonly _cache = new Map<number, Contour[]>()
+
+  constructor(cff: Uint8Array, unitsPerEm: number) {
+    const o = _u8(cff, 2) // header size
+    const size = _u16(cff, 3)
+    if (o + size > cff.length) throw new RangeError('index out of range')
+    const top = _cffDict(cff.subarray(o, o + size))
+    ;[this.gsubrs] = _cffIndex(cff, o + size, true)
+    if (!top.has(17)) throw new FontError('the CFF2 table has no charstrings')
+    ;[this.charstrings] = _cffIndex(cff, _operands(top, 17)[0], true)
+    const matrix = top.get(1207) ?? [0.001, 0, 0, 0.001, 0, 0]
+    const ratio = Number(matrix[0]) * unitsPerEm
+    this.scale = !matrix[0] || Math.abs(ratio - 1.0) < 1e-3 ? 1.0 : ratio
+    this.regionCounts = top.has(24) ? _variationRegions(cff, _operands(top, 24)[0]) : []
+    const regions = (vsindex: number) => this.regions(vsindex)
+    const [fds] = top.has(1236) ? _cffIndex(cff, _operands(top, 1236)[0], true) : [[]]
+    for (const fd of fds) {
+      const d = _cffDict(fd, regions)
+      let subrs: Uint8Array[] = []
+      let vsindex = 0
+      if (d.has(18)) {
+        const [psize, off] = _operands(d, 18, 2)
+        const priv = _cffDict(cff.subarray(off, off + psize), regions)
+        vsindex = priv.has(22) ? _operands(priv, 22)[0] : 0
+        if (priv.has(19)) [subrs] = _cffIndex(cff, off + _operands(priv, 19)[0], true)
+      }
+      this.lsubrs.push(subrs)
+      this.vsindex.push(vsindex)
+    }
+    this.fdOf = top.has(1237) ? _fdSelect(cff, _operands(top, 1237)[0], this.charstrings.length) : null
+  }
+
+  /** The number of regions of item variation data `vsindex`: the deltas of each blended value. */
+  regions(vsindex: number): number {
+    if (!(vsindex >= 0 && vsindex < this.regionCounts.length)) {
+      throw new FontError(`a charstring blends with item variation data ${vsindex}, which the font does not have`)
+    }
+    return this.regionCounts[vsindex]
+  }
+
+  contours(glyph: number): Contour[] {
     return _cached(this._cache, glyph, 4096, () => {
       if (glyph < 0 || glyph >= this.charstrings.length) throw new FontError(`glyph ${glyph} is not in the font`)
-      const local = this.lsubrs.length ? _item(this.lsubrs, this.fdOf !== null ? _item(this.fdOf, glyph) : 0) : []
-      let contours = new _Type2(this.gsubrs, local).run(this.charstrings[glyph])
-      if (this.scale !== 1.0) {
-        const s = this.scale
-        contours = contours.map((c) => c.map((seg) => seg.map(([x, y]) => [x * s, y * s] as Point)))
-      }
-      return contours
+      const fd = this.fdOf !== null ? _item(this.fdOf, glyph) : 0
+      if (fd >= this.lsubrs.length && this.lsubrs.length) throw new FontError(`glyph ${glyph} has a font dict the font does not have`)
+      const local = this.lsubrs.length ? this.lsubrs[fd] : []
+      const vsindex = this.lsubrs.length ? this.vsindex[fd] : 0
+      const t = new _Type2(this.gsubrs, local, (v) => this.regions(v), vsindex)
+      return _scaled(t.run(this.charstrings[glyph]), this.scale)
     })
   }
+}
+
+/** The number of regions of each item variation data of a CFF2 VariationStore at `o`. */
+function _variationRegions(cff: Uint8Array, o: number): number[] {
+  o += 2 // (the length of the store)
+  if (_u16(cff, o) !== 1) throw new FontError(`unknown item variation store format ${_u16(cff, o)}`)
+  const out: number[] = []
+  const count = _u16(cff, o + 6)
+  for (let i = 0; i < count; i++) out.push(_u16(cff, o + _u32(cff, o + 8 + 4 * i) + 4))
+  return out
 }
 
 function _fdSelect(cff: Uint8Array, o: number, n: number): number[] {
   const fmt = _u8(cff, o)
   if (fmt === 0) return Array.from(cff.subarray(o + 1, o + 1 + n))
-  if (fmt === 3) {
-    const ranges = _u16(cff, o + 1)
+  if (fmt === 3 || fmt === 4) {
+    // ranges: the first glyph and the font dict (format 4: 32-bit glyphs, 16-bit dicts)
+    const gSize = fmt === 3 ? 2 : 4
+    const fdSize = fmt === 3 ? 1 : 2
+    const count = fmt === 3 ? _u16(cff, o + 1) : _u32(cff, o + 1)
+    const p = o + 1 + gSize
+    const rec = gSize + fdSize
+    const num = (at: number, size: number) => (size === 1 ? _u8(cff, at) : size === 2 ? _u16(cff, at) : _u32(cff, at))
     const out = new Array<number>(n).fill(0)
-    for (let i = 0; i < ranges; i++) {
-      const first = _u16(cff, o + 3 + 3 * i)
-      const fd = _u8(cff, o + 5 + 3 * i)
-      const last = _u16(cff, o + 3 + 3 * (i + 1))
+    for (let i = 0; i < count; i++) {
+      const first = num(p + rec * i, gSize)
+      const fd = num(p + rec * i + gSize, fdSize)
+      const last = num(p + rec * (i + 1), gSize)
       for (let g = first; g < Math.min(last, n); g++) out[g] = fd
     }
     return out
@@ -915,12 +1540,17 @@ function _fdSelect(cff: Uint8Array, o: number, n: number): number[] {
   throw new FontError(`unknown FDSelect format ${fmt}`)
 }
 
-/** Interpreter of Type 2 charstrings: returns the contours, ignoring hints. */
+/** Interpreter of Type 2 charstrings: returns the contours, ignoring hints. With `regions` (the
+ * number of regions of an item variation data) the charstrings are CFF2's: no widths, and blend
+ * keeps the default values (vsindex picks the data). An accent built with seac leaves its offset
+ * and character codes in `seac`. */
 class _Type2 {
   readonly gsubrs: Uint8Array[]
   readonly lsubrs: Uint8Array[]
   readonly gbias: number
   readonly lbias: number
+  readonly regions: ((vsindex: number) => number) | null
+  vsindex: number
   readonly stack: number[] = []
   readonly contours: Contour[] = []
   current: Contour = []
@@ -928,14 +1558,18 @@ class _Type2 {
   y = 0.0
   start: Point = [0.0, 0.0]
   stems = 0
-  widthDone = false
+  widthDone: boolean
   ended = false
+  seac: [number, number, number, number] | null = null
 
-  constructor(gsubrs: Uint8Array[], lsubrs: Uint8Array[]) {
+  constructor(gsubrs: Uint8Array[], lsubrs: Uint8Array[], regions: ((vsindex: number) => number) | null = null, vsindex = 0) {
     this.gsubrs = gsubrs
     this.lsubrs = lsubrs
     this.gbias = _subrBias(gsubrs.length)
     this.lbias = _subrBias(lsubrs.length)
+    this.regions = regions
+    this.vsindex = vsindex
+    this.widthDone = regions !== null // (CFF2 charstrings have no widths)
   }
 
   run(code: Uint8Array): Contour[] {
@@ -1141,10 +1775,22 @@ class _Type2 {
       } else if (b0 === 14) {
         // endchar
         this._width(s.length === 1 || s.length === 5)
-        // (smlibpy draws these with fontTools)
-        if (s.length >= 4) throw new FontError('accented glyphs built with seac are not supported')
+        if (s.length >= 4) {
+          // seac: the accent's offset, the base's and the accent's codes
+          this.seac = [_at(s, -4), _at(s, -3), Math.trunc(_at(s, -2)), Math.trunc(_at(s, -1))]
+        }
         s.length = 0
         this.ended = true
+      } else if (b0 === 16 && this.regions !== null) {
+        // blend: k defaults, k x regions deltas, k
+        const k = s.length ? Math.trunc(_pop(s)) : -1
+        const base = s.length - k * (this.regions(this.vsindex) + 1)
+        if (k < 0 || base < 0) throw new FontError('a blend without its operands')
+        s.length = base + k
+      } else if (b0 === 15 && this.regions !== null) {
+        // vsindex
+        this.vsindex = s.length ? Math.trunc(_pop(s)) : 0
+        s.length = 0
       } else if (b0 === 12) {
         const b1 = _u8(code, i)
         i += 1

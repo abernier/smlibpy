@@ -20,6 +20,46 @@ def test_open_curves_make_surfaces():
     assert patch.area == pytest.approx(10 * math.hypot(10, 5), rel=1e-6)
 
 
+def test_loft_of_open_curves_takes_ruled_and_smooth():
+    # Lofts of single open curves ignored both: three lines, z = 0, 10 (8 higher in y) and 20,
+    # passed y = 6.0 at z = 5 with ruled=True, as by default (area 800.2232).
+    lines = [Line((0, 0, 0), (30, 0, 0)), Line((0, 8, 10), (30, 8, 10)), Line((0, 0, 20), (30, 0, 20))]
+
+    def y_at(s, z):
+        return s.raycast((15, -50, z), (0, 1, 0))[0].point.y
+
+    default = loft(lines)
+    assert default.area == pytest.approx(800.2232, abs=1e-4) and y_at(default, 5) == pytest.approx(6.0)
+    ruled = loft(lines, ruled=True)
+    assert len(ruled.faces()) == 2 and y_at(ruled, 5) == pytest.approx(4.0)
+    assert ruled.area == pytest.approx(2 * 30 * math.hypot(8, 10))
+    four = lines + [Line((0, 8, 30), (30, 8, 30))]
+    assert y_at(loft(four), 5) == pytest.approx(8.0)  # cubic, as before
+    assert y_at(loft(four, smooth=False), 5) == pytest.approx(20 / 3)  # quadratic
+
+
+def test_bspline_faces_with_a_bump_stay_curved(tmp_path):
+    # A cubic sheet parameterized like a plane (control points at 60 times their Greville
+    # abscissae) with one control point raised between the 13 parameters the kernel's plane test
+    # looked at: every copy that adds analytic surfaces made it a plane (kernel patch K7).
+    n = 21
+    t = np.r_[[0.0] * 4, np.arange(1, n - 3) / (n - 3), [1.0] * 4]
+    g = np.array([t[i + 1:i + 4].mean() for i in range(n)])
+    grid = [[(60 * g[i], 60 * g[j], 5.0 if (i, j) == (16, 9) else 0.0) for i in range(n)] for j in range(n)]
+    sheet = surface(grid, interpolate=False)
+    assert sheet.area == pytest.approx(3607.471, abs=1e-3) and sheet.bbox().max.z == pytest.approx(2.2222, abs=1e-4)
+    copy = sheet.faces()[0].to_shell()  # was a plane of 3600.0
+    assert copy.faces()[0].geom_type == "bspline" and copy.area == pytest.approx(sheet.area, rel=1e-9)
+    sheet.export(tmp_path / "bump.smb")
+    back = load(tmp_path / "bump.smb")  # was flat, zmax 0.0
+    assert back.bbox().max.z == pytest.approx(2.2222, abs=1e-4)
+    assert sheet.thicken(2).volume == pytest.approx(7212.841, abs=1e-2)  # was 7200.0
+    assert np.asarray(sheet.mesh(0.01).vertices)[:, 2].max() > 2.2  # was 0.0
+    # B-spline faces that are planes still come back from .smb as planes
+    Box(10, 20, 30).to_nurbs().export(tmp_path / "box.smb")
+    assert {f.geom_type for f in load(tmp_path / "box.smb").faces()} == {"plane"}
+
+
 def test_surface_through_points_and_thicken():
     pts = [[(x * 10, y * 10, 3 * math.sin(x / 2) * math.cos(y / 2)) for x in range(6)] for y in range(5)]
     s = surface(pts)
@@ -188,3 +228,31 @@ def test_surface_fillet_checks():
         surface_fillet(Box(1, 1, 1), floor, 1)
     with pytest.raises(ModelingError, match="meet"):  # parallel planes: nowhere to roll
         surface_fillet(floor, Rectangle(40, 40).translate((0, 0, 50)).faces()[0], 1)
+
+
+
+def test_surfaces_from_nurbs_data_in_their_order():
+    # Edge.from_nurbs takes a curve's data in Nurbs' order; surfaces had nurbs_surface(points, knots,
+    # degrees, weights) only, and nurbs_surface(*face.nurbs()) raised "the control points are rows".
+    sheet = surface([[(x, y, math.sin(x / 10)) for y in range(0, 25, 5)] for x in range(0, 35, 5)])
+    data = sheet.faces()[0].nurbs()
+    for again in (Shell.from_nurbs(data), Shell.from_nurbs(tuple(data)), nurbs_surface(data)):
+        assert isinstance(again, Shell) and again.area == pytest.approx(sheet.area, rel=1e-9)
+    rows = [list(row) for row in data.points]
+    rows[2][2] = Vector(rows[2][2]) + (0, 0, 3)
+    bumped = Shell.from_nurbs(data._replace(points=rows))
+    assert bumped.bbox().max.z > sheet.bbox().max.z + 0.5
+    with pytest.raises(TypeError, match="give a NurbsSurface whole"):
+        nurbs_surface(*data)
+    with pytest.raises(TypeError, match="expected a NurbsSurface"):
+        Shell.from_nurbs(3)
+
+
+def test_fills_of_a_sketch_s_outline_run_through_the_curves():
+    # With tangent=True (the default) the patch was made tangent to the sketch's own region, which it
+    # covers, and raised "the patch folds back over the sheets".
+    assert fill(Circle(5).edges()).area == pytest.approx(math.pi * 25, rel=1e-6)
+    assert fill(Rectangle(10, 10).edges()).area == pytest.approx(100, rel=1e-9)
+    holed = Rectangle(20, 20) - Circle(4)
+    hole = [e for e in holed.edges() if e.geom_type == "circle"]
+    assert fill(hole).area == pytest.approx(math.pi * 16, rel=1e-6)  # (a hole: tangent to the region around it)

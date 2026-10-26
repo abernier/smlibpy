@@ -28,10 +28,12 @@ The package is an ES module with type declarations. Importing it loads the kerne
 file next to the module, so the first import takes a moment and everything after it is synchronous.
 The module finds the file with `new URL('smlibwasm.wasm', import.meta.url)`, which Vite and webpack 5
 resolve on their own; with Vite's dev server, add `optimizeDeps: { exclude: ['@classcad/smlibwasm'] }`
-to the config. Node needs version 22.18 or later.
+to the config. esbuild and Bun leave the file out of their bundles: copy it, or say where it is with
+`init` from `@classcad/smlibwasm/init`, which also takes the kernel's bytes or a compiled module.
+Node needs version 22.18 or later.
 
-A browser loads about 1.9 MB with brotli: 1.6 MB for the kernel (6.5 MB uncompressed) and 0.3 MB for
-the library and its font. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
+A browser loads about 2.8 MB with brotli: 2.2 MB for the kernel (9.2 MB uncompressed) and 0.6 MB for
+the library, its font and the dictionary of WOFF2 fonts. The [docs](https://smlibpy.classcad.ch/docs/javascript#size) have the details.
 
 ## From smlibpy to smlibwasm
 
@@ -41,9 +43,13 @@ The functions, classes, checks and error messages are smlibpy's, so
 - **Names** are camelCase: `parallel_to` is `parallelTo`, `mass_properties` is `massProperties`.
   Classes keep their names (`Box`, `Part`, `ShapeList`).
 - **Keyword arguments** become an options object at the end:
-  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`.
+  `Rectangle(40, 20, { fillet: 2 })`, `sketch.extrude(10, { both: true })`. An unknown key is a
+  `TypeError` that names the right one (`k_factor` copied from Python: `kFactor`).
 - **Operators** become methods: `a.fuse(b)`, `a.cut(b)`, `a.intersect(b)` for Python's `+`, `-`
   and `&`; `Pos(10, 0, 0).mul(Box(1, 1, 1))` for `*`; `vector.add(other)`.
+- **Lists**: Python's `faces().at(point)` is `atPoint(point)` (`at` takes an index), and
+  Python's `list[-1]` is `list.at(-1)` or `list.last`; `edges().new(since=part)` is
+  `edges().newSince(part)`.
 - **Errors**: Python's `ValueError` is a `RangeError`; `ModelingError` and `KernelError` are
   exported.
 - **Files**: `toStep`, `toStl`, `toGlb`, `toDxf`, `toUsd` give the file's contents and `fromStep`,
@@ -54,8 +60,25 @@ The functions, classes, checks and error messages are smlibpy's, so
 ## Memory
 
 Every body lives in the kernel's memory, which the JavaScript garbage collector does not see. A
-body's kernel object is freed when the body is garbage collected; `part.dispose()` (or
-`using part = ...`) frees it at once, which keeps memory flat in long loops.
+body's kernel object is freed when the body is garbage collected, which happens only between tasks
+of the event loop; `part.dispose()` (or `using part = ...`) frees it at once. The faces, edges and
+vertices of a disposed body go with it. In a loop that does not return to the event loop, run each
+step in `scope(() => ...)`: it frees every kernel object the step made that its result does not
+hold, also the unnamed operands of a chain such as `Box(...).cut(Cylinder(...))`, which keeps the
+loop's memory flat. A mesh is its arrays: the kernel's mesh is freed once they are copied out. The
+kernel's memory can grow to 4 GB; `memoryUsage()` tells how much it holds, and a call that finds it
+used up fails with a `KernelError` of status `SM_ERR_OUT_OF_MEMORY`.
+
+## Running off the main thread
+
+Calls are synchronous; on a page's main thread a long one freezes the page.
+`@classcad/smlibwasm/worker` runs your functions in a worker with a kernel of its own
+(`expose` there, `new KernelWorker(...)` here): bodies, faces, edges, meshes and vectors cross as
+themselves, a call can have a timeout and an AbortSignal, and a call that runs too long ends with
+its worker, which the next call replaces. `removeFillets` and `removeFaces` stop a kernel step that loops
+after `GUARD_SECONDS`: in Node and in workers of a cross-origin isolated page in a kernel of their own,
+on a page's main thread by the kernel's deadline, where the step loops in the kernel's surface and
+topology intersections (as those found looping do). See [the docs](https://smlibpy.classcad.ch/docs/javascript#running-off-the-main-thread).
 
 ## Building from source
 

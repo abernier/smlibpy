@@ -66,6 +66,11 @@
   `test_a_byte_order_mark_is_no_part_of_the_drawing`.
 
 ### 3. `tessellate`: tolerance not kept near the poles of a sphere
+- **Fixed:** on spheres, tori, cones and cylinders, `tessellate` splits the edges whose middle is more than the
+  tolerance off the face onto it (kernel plan M2, `split_far_edges` in `src/cpp/tessellate.cpp`):
+  `tessellate(Sphere(10), 0.01)` is within 0.0096 (15004 triangles instead of 14080), 0.001 within 0.0010
+  (was 0.0014), the default within 0.026 (was 0.103). Free-form faces whose surface the grid misses at a control
+  point are halved (a raised point of an interpolated sheet came out flat) (2026-10-22).
 - **Session:** `2026-10-12_21-32-28_files-mesh`, scripts `03-sphere-deviation.py`, `04-sphere-slivers.py`
 - **What happens:** `tessellate(Sphere(10), 0.01, 15)` (also with angle 45) has a largest
   deviation of 0.678 mm, 68 times the tolerance. It comes from long sliver triangles (edges up to
@@ -115,6 +120,14 @@
   for a missing file.
 
 ### 8. Unhelpful errors for shapes a format cannot hold
+- **Partly fixed:** `export_step` writes edges, wires, vertices and planes (as wireframe curves,
+  points and coordinate systems; kernel plan I12) and says `TypeError: cannot write a Location to
+  STEP` for what it cannot write. `save`, `export_stl`, `export_obj` and `export_usd` say what they
+  write and what writes the rest (`TypeError: export_usd writes parts, sheets, faces and meshes, not
+  an Edge: export_step and export_dxf write curves, and so does save to an .smp file`; `save(mesh)`:
+  `TypeError: an .smb file holds an exact body, not a Mesh`), and `export_stl([])` says `export_stl:
+  nothing to write` (kernel plan X13, 2026-10-22). Still open: `export_glb([])` and `export_obj([])`
+  write empty files.
 - **Session:** `files-exact` scripts `04`, `08`, `10`; `files-mesh` script `12`
 - **What happens:** `save(mesh)` and `mesh.export("x.smb")` raise
   `AttributeError: 'Mesh' object has no attribute '_brep'`. `export_step(edge)`,
@@ -162,23 +175,36 @@
 - **Expected:** `ValueError` with the valid views; reject a zero direction and a zero size.
 
 ### 14. `Mesh.center()` is the bbox center, `Shape.center()` the centroid
+- **Partly (kernel plan M11):** `Mesh.centroid` (and `Mesh.mass_properties`) give the centroid of
+  what a closed mesh encloses; `Mesh.center()` stays the box center.
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `16-mesh-measures.py`
 - **What happens:** `Cone(10, 0, 20).center()` z = -5 (the centroid), and
   `Cone(10, 0, 20).mesh().center()` z = 0 (the bbox center).
 - **Expected:** the same meaning for both, or another name (`bbox().center`).
 
 ### 15. `.smb` drops name and color; `docs/files.md` calls it "exact and lossless"
+- **Fixed (kernel plan X9, 2026-10-22):** SMLib part files (`save(shapes, "x.smp")`, `load`,
+  `to_smp`/`from_smp`) keep any number of bodies and curves with their names and colors (the
+  kernel's part container with `SM_AI_COLOR` and a name attribute). `.smb` itself still has no slot
+  for a name, and the docs say so.
+- **Docs fixed (kernel plan U1):** `docs/files.md`, the file guides and the docstrings no longer say "lossless": the geometry is exact, but B-spline faces that are exactly planes, cylinders, cones, spheres or surfaces of revolution come back as those. Name and color are still dropped. Merged parts now come back with their cells (kernel plan X8).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `08-smb-save-load.py`
 - **What happens:** `load(save(...))` of a named, colored part gives `name None`, `color None`.
   The geometry is bit-exact.
 - **Expected:** keep them (the kernel has attributes), or say "geometry only" in the docs.
 
 ### 16. STEP export replaces non-ASCII characters in names with `?`
+- **Fixed:** names are written in ISO 10303-21's `\X2\` encoding (`\X4\` beyond 16 bits) and
+  backslashes doubled; `named("Bügel")` comes back as `Bügel`, also in OpenCASCADE (kernel plan
+  I10, 2026-10-22).
 - **Session:** `2026-10-12_21-26-31_files-exact`, script `03-step-names-colors.py`
 - **What happens:** `named("Bügel")` comes back as `B?gel`.
 - **Expected:** STEP's `\X2\...\X0\` encoding (ISO 10303-21), which other CAD systems read.
 
 ### 17. Mesh Boolean error on merged meshes names the wrong cause
+- **Fixed:** mesh Booleans build the kernel's mesh from the arrays (kernel plan W3, M1), so merged meshes
+  and STL imports work: `tessellate(ShapeList([Box(10, 10, 10), Box(4, 4, 4).translate(20, 0, 0)])) -
+  Box(2, 2, 20).mesh()` gives 1024.0 (2026-10-22).
 - **Session:** `2026-10-12_21-32-28_files-mesh`, script `16-mesh-measures.py`
 - **What happens:** `tessellate(ShapeList([...])) - m` raises `TypeError: mesh Booleans need meshes
   produced by tessellate()`, although the mesh was made by `tessellate()`. A merged mesh has no

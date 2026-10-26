@@ -1,6 +1,6 @@
 {
   "name": "@classcad/smlibwasm",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "CAD in JavaScript on the SMLib NURBS kernel, compiled to WebAssembly: smlibpy's API for the web and Node",
   "license": "MIT AND Apache-2.0 AND OFL-1.1",
   "homepage": "https://smlibpy.classcad.ch/docs/javascript",
@@ -28,6 +28,18 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    },
+    "./init": {
+      "types": "./dist/init.d.ts",
+      "default": "./dist/init.js"
+    },
+    "./kernel": {
+      "types": "./dist/kernel.d.ts",
+      "default": "./dist/kernel.js"
+    },
     "./wasm/smlibwasm.wasm": "./wasm/smlibwasm.wasm",
     "./package.json": "./package.json"
   },
@@ -41,7 +53,7 @@
   ],
   "scripts": {
     "wasm": "sh scripts/build-wasm.sh",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/declarations.mjs",
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "fonts": "node scripts/fonts.mjs",

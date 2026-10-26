@@ -3,24 +3,33 @@
 // Each face is rebuilt on an exact kernel surface, each edge as an exact curve spanning exactly that
 // edge (lines, circular arcs, ellipses and NURBS keep their types). The topology of the file is
 // kept: faces share their edges as they do in the file, so no stitching is needed. Bodies that
-// still come out invalid are healed.
+// still come out invalid are healed, and stitched where their faces do not share their edges. A
+// body that cannot be read is left out with a warning; the instances of a product in an assembly
+// are built once and placed.
 
-import { KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
-import { type Location, type Matrix, Plane, Vector } from './geometry.ts'
-import { det3 } from './_linalg.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, _warn, ext, k, kernelCall } from './kernel.ts'
+import { type Location, type Matrix, Plane, Vector, _matmul } from './geometry.ts'
+import { solve } from './_linalg.ts'
 import { CenterArc, EllipticalArc, Line } from './curves.ts'
-import { Edge, Part, Shell, Wire, _canonicalCurve, _list, type ShapeList } from './shapes.ts'
+import { Edge, Part, Shell, Wire, _canonicalCurve, _list, _putFaceAttrs, _take, type ShapeList } from './shapes.ts'
 import {
   NotImplementedError,
+  _bodyError,
+  _bodyLabel,
+  _failure,
   _repr,
+  analyticOffset,
   interpret,
   interpretExtras,
   parse,
   type BodyData,
+  type EdgeData,
   type FaceData,
   type LoopData,
+  type StepFile,
 } from './step_reader.ts'
 import { _fs } from './exporters.ts'
+import { type BytesLike, _asBytes } from './_bytes.ts'
 
 const inspect = Symbol.for('nodejs.util.inspect.custom')
 
@@ -175,8 +184,14 @@ class _Builder {
   }
 
   // -- edges --------------------------------------------------------------------------------
-  /** The exact curve of edge `ei` from its start to its end vertex. */
+  /** The exact curve of edge `ei` from its start to its end vertex, with the ids of those vertices
+   * (`v0`, `v1`: build_brep makes one kernel vertex per file vertex). */
   edgeSpec(ei: number): Any {
+    const e = this.b.edges[ei]
+    return { ...this._edgeCurve(ei), v0: Math.trunc(e.v0), v1: Math.trunc(e.v1) }
+  }
+
+  _edgeCurve(ei: number): Any {
     const e = this.b.edges[ei]
     const c = this.b.curves[e.curve]
     const p0 = this.P(this.b.vertices[e.v0])
@@ -296,7 +311,7 @@ class _Builder {
         const seam = this.tubeSeam(face, tubeAngle)
         if (seam !== null || (pts.length && !loops.some((l) => _winding(l, tubeAngle)))) {
           const v0 = _degrees(seam !== null ? seam : _largestGapOf(pts.map(tubeAngle).sort((a, b) => a - b)))
-          spec.v_start = v0 > 0 ? v0 - 360.0 : v0
+          spec.v_start = _tubeWindowStart(v0)
         }
       }
       return spec
@@ -541,6 +556,15 @@ function _conicArc(c: Any, o: V, z: V, x: V, p0: V, p1: V): Any {
 
 /** The direction about the axis in the middle of the largest angular gap between the points
  * (where a face without a seam edge does not reach). */
+/** Where a torus' window around the tube starts (degrees, in [-360, 0]) for a seam at `v0`
+ * (degrees, from atan2). A seam on the outer equator comes out of atan2 as a rounding error either
+ * side of 0 (OpenCASCADE's O-rings: +6e-15), and 6e-15 - 360 is a window the kernel refuses: that
+ * seam starts the window at 0. */
+function _tubeWindowStart(v0: number): number {
+  if (Math.abs(v0) < 1e-9) return 0.0
+  return v0 > 0 ? v0 - 360.0 : v0
+}
+
 function _largestGap(o: V, z: V, x: V, pts: V[]): V {
   const mid = _largestGapOf(pts.map((p) => _angleIn(o, z, x, p)).sort((a, b) => a - b))
   return _unit(_add(_mul(x, Math.cos(mid)), _mul(_cross(z, x), Math.sin(mid))))
@@ -613,9 +637,13 @@ function _addSeams(bld: _Builder, f: FaceData, srf: Any, seamId: number): [LoopD
   const specs = bld.specs
   const circles: [number, boolean][] = []
   const points: V[] = []
+  const pointIds: number[] = []
   for (const loop of f.loops) {
     if (!loop.edges?.length) {
-      if ('vertex' in loop) points.push(bld.P(bld.b.vertices[loop.vertex as number]))
+      if ('vertex' in loop) {
+        points.push(bld.P(bld.b.vertices[loop.vertex as number]))
+        pointIds.push(Math.trunc(loop.vertex as number))
+      }
       continue
     }
     if (loop.edges.length !== 1) return null
@@ -676,6 +704,10 @@ function _addSeams(bld: _Builder, f: FaceData, srf: Any, seamId: number): [LoopD
   let seam: Any
   if (kind === 'cylinder' || kind === 'cone') seam = { kind: 'line', p0: pa, p1: pb }
   else seam = _arcSpec(kind === 'sphere' ? o : _add(o, _mul(sdir, srf.major)), pa, pb, into)
+  // the seam runs between the vertices of the circles (or the apex or pole) it joins
+  seam.v0 = Math.trunc(bld.b.edges[ea].v0)
+  if (circles.length === 2) seam.v1 = Math.trunc(bld.b.edges[circles[1][0]].v0)
+  else if (points.length) seam.v1 = pointIds[0]
   for (const [ei, c] of moved) specs.set(ei, c)
   specs.set(seamId, seam)
   for (const [ei] of circles) bld.pinned.add(ei)
@@ -731,14 +763,44 @@ function _edgeObject(specs: Map<number, Any>): Record<string, Any> {
   return out
 }
 
-function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
+/** What the builder's messages call the import it builds for: "STEP", or "IGES" (iges_import.ts
+ * builds its solids with it). */
+let _source = 'STEP'
+
+/** Runs `fn` with the builder's messages naming `source` (a format). */
+export function _reading<T>(source: string, fn: () => T): T {
+  const saved = _source
+  _source = source
+  try {
+    return fn()
+  } finally {
+    _source = saved
+  }
+}
+
+/** The operation a message of the builder names: `import STEP`, `import IGES: stitch`. */
+function _op(rest = ''): string {
+  return `import ${_source}${rest}`
+}
+
+/** How a message of the builder names a body (an IGES body by its directory entry). */
+export function _label(body: BodyData): string {
+  if (_source === 'IGES') {
+    const kind = body.kind === 'solid' ? 'solid' : 'shell'
+    return body.name ? `${kind} ${_repr(body.name)} (DE ${body.entity})` : `${kind} DE ${body.entity}`
+  }
+  return _bodyLabel(body.entity, body.name, body.product)
+}
+
+export function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
   const bld = new _Builder(body, m)
-  const mirrored = det3([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]) < 0
-  if (mirrored) throw new ModelingError('mirrored assembly placements are not supported yet')
+  // (_bodies builds such a body unplaced and moves it whole)
+  if (!_rigid(m)) throw new ModelingError('a placement that mirrors or scales cannot be built into a body')
   const edges = bld.specs
-  const faces: Any[] = []
-  _agreeingLoops(body).forEach((face, fi) => {
+  const faceSpec = (fi: number, face: FaceData, srf: Any): Any => {
     let f = face
+    const joined = _joinedLoops(f.loops, body.edges)
+    if (joined !== f.loops) f = { ...f, loops: joined }
     let loops: Any[] = []
     for (const loop of _outerFirst(bld, f.loops)) {
       if (loop.edges?.length) {
@@ -746,7 +808,6 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
         loops.push({ edges: loop.edges.map(([ei, fwd]) => [Math.trunc(ei), Boolean(fwd)]) })
       } else if ('vertex' in loop) loops.push({ vertex: bld.P(body.vertices[loop.vertex as number]) })
     }
-    const srf = body.surfaces[f.surface]
     const seamed = _addSeams(bld, f, srf, -1_000_000 - fi)
     if (seamed !== null) {
       const [newLoops, frame] = seamed
@@ -774,58 +835,102 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     // a face on a closed B-spline surface without a seam edge of its own may lie across the
     // surface's seam; build_brep moves the seam off it
     const freeSeam = srf.kind === 'bspline' && !loops.some((l) => l.edges?.length && _isSeamLoop(l))
-    faces.push({ surface: bld.surfaceSpec(f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam })
-  })
+    return { surface: bld._surfaceFrom(srf, f), same_sense: Boolean(f.same_sense), loops, free_seam: freeSeam, color: f.color ?? null, name: f.name || null }
+  }
+  const agreed = _agreeingLoops(body)
+  const faces: Any[] = agreed.map((f, fi) => faceSpec(fi, f, body.surfaces[f.surface]))
   const solid = body.kind === 'solid'
   const parts: (Part | Shell)[] = []
   const built: [Any[], boolean][] = [] // the faces and orientation each shell was built with in the end
+  const broken: string[] = [] // what is wrong with the closed shells heal and stitching could not repair
   const hint = 'the file may hold faces the kernel cannot rebuild'
-  body.shells.forEach((sh, si) => {
-    const closed = solid && Boolean(sh.closed ?? true)
-    const shellFaces = sh.faces.map((i) => faces[i])
-    // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
-    let reversed = Boolean(sh.reversed) && !(solid && si > 0)
+  const buildShell = (shellFaces: Any[], closed: boolean, given: boolean): [Part | Shell, number | null, boolean] => {
+    let reversed = given
     const brep = kernelCall(
-      'import STEP',
+      _op(),
       () => {
-        let b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+        let b = _attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces)
         // A few writers flip a face's same_sense flag against its loops (which agree with the
         // loops of its neighbours): the loops decide.
         // (Faces that lack their seam have loops that do not close in the parameter plane, and no
         // sense to read.)
         let inverted = [...(ext.inverted_faces(b) as Iterable<number>)]
         if (inverted.length) {
-          const unseamed = new Set((ext.seam_problems(b) as { face: number }[]).map((d) => d.face))
+          const unseamed = new Set((ext.seam_problems(b, { only: inverted }) as { face: number }[]).map((d) => d.face))
           inverted = inverted.filter((i) => !unseamed.has(i))
         }
         if (inverted.length && 2 * inverted.length < shellFaces.length) {
           for (const i of inverted) shellFaces[i] = { ...shellFaces[i], same_sense: !shellFaces[i].same_sense }
           ext.delete_brep(b)
-          b = ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false)
+          b = _attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces)
         }
         return b
       },
       hint,
     )
-    let part: Part | Shell = _withSeams(closed ? Part._wrap(brep) : Shell._wrap(brep))
-    if (closed && !_positive(part as Part)) {
-      reversed = !reversed
-      const turned = kernelCall('import STEP', () => _withSeams(Part._wrap(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false))))
-      part.dispose()
-      part = turned
+    let [part, volume] = _withSeams<Part | Shell>(closed ? Part._wrap(brep) : Shell._wrap(brep))
+    if (closed) {
+      // (the kernel's coarse volume, integrated once per shell: its sign says which way round the
+      // shell was built, and the checks below take it)
+      if (volume === null) volume = _kernelVolume(part as Part)
+      if (!(volume !== null && volume > 0)) {
+        reversed = !reversed
+        const [turned, v] = kernelCall(_op(), () =>
+          _withSeams(Part._wrap(_attributed(ext.build_brep(shellFaces, _edgeObject(edges), closed, reversed, false), shellFaces))),
+        )
+        part.dispose()
+        part = turned
+        volume = v
+      }
+    }
+    return [part, volume, reversed]
+  }
+  body.shells.forEach((sh, si) => {
+    const closed = solid && Boolean(sh.closed ?? true)
+    let shellFaces = sh.faces.map((i) => faces[i])
+    // Cavities of a BREP_WITH_VOIDS are built as ordinary solids and subtracted later.
+    const given = Boolean(sh.reversed) && !(solid && si > 0)
+    let [part, volume, reversed] = buildShell(shellFaces, closed, given)
+    // An offset of a plane, sphere, cylinder, cone or torus is a surface of that kind: where the kernel
+    // cannot close a solid with such faces as offsets (an offset of a whole sphere, whose face has the
+    // sphere's seam and poles: no solid, or one of another volume, 0 natively and a quarter in smlibwasm),
+    // they are built on the surface they are.
+    const plain = closed ? sh.faces.map((i) => analyticOffset(body.surfaces[agreed[i].surface])) : []
+    if (plain.some((s) => s !== null)) {
+      const retry = sh.faces.map((i, k) => (plain[k] !== null ? faceSpec(i, agreed[i], plain[k]) : { ...faces[i] }))
+      let again: [Part | Shell, number | null, boolean] | null = null
+      try {
+        again = buildShell(retry, closed, given)
+      } catch (e) {
+        if (!(e instanceof KernelError || e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
+      }
+      let taken = false
+      if (again !== null && _sound(again[0] as Part, again[1])) {
+        const v = again[1] ?? _kernelVolume(again[0] as Part)
+        const mine = volume ?? _kernelVolume(part as Part)
+        // (the kernel's volumes to 1e-4: the same solid both ways agrees to far better than 1e-3)
+        if (!_sound(part as Part, mine) || mine === null || v === null || Math.abs(mine - v) > 1e-3 * Math.abs(v)) {
+          part.dispose()
+          part = again[0]
+          volume = v
+          reversed = again[2]
+          shellFaces = retry
+          taken = true
+        }
+      }
+      if (!taken) again?.[0].dispose()
     }
     built.push([shellFaces, reversed])
-    if (heal && closed && !_sound(part as Part)) {
-      // Only heal what came out broken: the kernel's healer can damage good bodies.
-      try {
-        const healed = part.heal()
-        if (_sound(healed as Part)) {
-          part.dispose()
-          part = healed
-        } else healed.dispose()
-      } catch (e) {
-        if (!(e instanceof KernelError)) throw e
-      }
+    if (heal && closed && !_sound(part as Part, volume)) {
+      // Only repair what came out broken: the kernel's healer can damage good bodies.
+      const [repaired, problem] = _repaired(part as Part, body)
+      if (repaired !== part) part.dispose()
+      part = repaired
+      if (problem !== null) broken.push(problem)
+    } else if (heal && !closed && _apart(body, sh.faces)) {
+      const sewn = _sewn(part as Shell, body)
+      if (sewn !== part) part.dispose()
+      part = sewn
     }
     parts.push(part)
   })
@@ -836,18 +941,40 @@ function _buildBody(body: BodyData, m: Matrix, heal: boolean): Part | Shell {
     result = _withCavities(result as Part, parts.slice(1) as Part[], built, edges)
   } else if (parts.length > 1) {
     // a surface model of several shells stays a surface
-    result = kernelCall('import STEP', () => Shell._wrap(ext.combine(parts.map((p) => p._brep))))
+    result = kernelCall(_op(), () => Shell._wrap(ext.combine(parts.map((p) => p._brep))))
   }
+  if (broken.length)
+    _warn(`${_op()}: ${_label(body)} is not a valid solid (${broken[0]}); heal and stitching could not repair it`)
   if (body.name) result.name = body.name
   if (body.color !== null) result.color = body.color
+  result._h.imported = true // (read from a file: its fillets run in the probe worker)
   return result
+}
+
+/** The Brep `ext.build_brep` built from `faces`, with their colors and names (the faces of the file,
+ * in its order; kernel plan T5): the kernel carries them on through healing and seams. */
+function _attributed(brep: number, faces: readonly Any[]): number {
+  _putFaceAttrs(
+    brep,
+    faces.map((f) => f.color ?? null),
+    faces.map((f) => f.name ?? null),
+  )
+  return brep
 }
 
 /** A solid with cavities (BREP_WITH_VOIDS), each built as a void region inside the solid, as the
  * file has it. The Boolean difference is the fallback; it fails where a cavity's faces come close
- * to the solid's. */
+ * to the solid's (a ModelingError: the import names the body). */
 function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][], edges: Map<number, Any>): Part {
-  const expected = outer.volume - cavities.reduce((sum, c) => sum + c.volume, 0)
+  // The volumes as smlibwasm integrates them, with the gaps between their faces: where faces do not
+  // meet exactly (a cavity of two faces 1e-5 mm3 large, gaps of 1e-2 of a volume) the void region's
+  // volume differs from the solid's less its cavities' by up to the gaps.
+  const pieces = [outer._props(), ...cavities.map((c) => c._props())]
+  const expected = pieces[0].volume - pieces.slice(1).reduce((sum, p) => sum + p.volume, 0)
+  const tol = Math.max(1e-6 * Math.max(Math.abs(pieces[0].volume), 1.0), 2 * pieces.reduce((sum, p) => sum + p.gaps * Math.abs(p.volume), 0))
+  // A cavity turned the wrong way adds its volume instead: a build is the right one when it is
+  // within the tolerance and closer to the right volume than to that.
+  const apart = pieces.slice(1).reduce((sum, p) => sum + Math.abs(p.volume), 0)
   const [faces, rev] = built[0]
   // The cavity's faces as when it was built as a solid of its own; the constructor's comments say
   // the other way round, so that is tried as well. The volume decides.
@@ -855,15 +982,25 @@ function _withCavities(outer: Part, cavities: Part[], built: [Any[], boolean][],
     const voids = built.slice(1).map(([f, r]) => [f, r !== flip])
     let part: Part | null = null
     try {
-      part = kernelCall('import STEP: cavities', () => _withSeams(Part._wrap(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids))))
-      if (part.isValid() && Math.abs(part.volume - expected) <= 1e-6 * Math.max(Math.abs(outer.volume), 1.0)) return part
+      part = kernelCall(_op(': cavities'), () =>
+        _withSeams(Part._wrap(_attributed(ext.build_brep(faces, _edgeObject(edges), true, rev, false, voids), [...faces, ...voids.flatMap(([f]) => f as Any[])])))[0],
+      )
+      if (part._solidProblem() === null) {
+        const off = Math.abs(part._props().volume - expected)
+        if (off <= tol && off < apart) return part
+      }
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e // (a KernelError is one)
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e) // (a KernelError is one)
     }
     part?.dispose()
   }
   let result = outer
-  for (const cavity of cavities) result = result.cut(cavity)
+  try {
+    for (const cavity of cavities) result = result.cut(cavity)
+  } catch (e) {
+    if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
+    throw new ModelingError(`its cavities could not be built, neither as void regions nor by subtracting them (${e.message})`)
+  }
   return result
 }
 
@@ -875,8 +1012,10 @@ const _SWEPT = ['cylinder', 'cone', 'sphere', 'torus', 'revolution', 'extrusion'
  * outline of its flat at the other) needs an edge along the surface's seam: without it the kernel
  * can neither mesh nor integrate the face. The kernel adds them; a solid that would come out
  * broken keeps its faces as they are. (The body given is disposed when the one returned is new.)
+ * Returns the body and the kernel's coarse volume where that was integrated to check it (else
+ * null).
  */
-function _withSeams<B extends Part | Shell>(body: B): B {
+function _withSeams<B extends Part | Shell>(body: B): [B, number | null] {
   const faces = body.faces()
   const problems = ext.seam_problems(body._brep) as { face: number; missing: string }[]
   const lacking = problems.filter((d) => _SWEPT.includes(faces[d.face].geomType)).map((d) => d.face)
@@ -889,22 +1028,27 @@ function _withSeams<B extends Part | Shell>(body: B): B {
     const unmeshed = _unmeshed(body)
     lacking.push(...[...new Set(spline)].filter((i) => unmeshed.has(i)).sort((a, b) => a - b))
   }
-  if (!lacking.length) return body
+  if (!lacking.length) return [body, null]
   let fixed: B | null = null
   try {
     const copy = body._like(body._copyBrep()) as B
     fixed = copy
-    kernelCall('import STEP: seams', () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
+    kernelCall(_op(': seams'), () => ext.seam_problems(copy._brep, { fix: true, only: lacking }))
     // (a sheet cannot be checked for closure: it takes the kernel's seams)
-    if (!(copy instanceof Part) || (copy.isValid() && _positive(copy))) {
+    if (!(copy instanceof Part)) {
       body.dispose()
-      return copy
+      return [copy, null]
+    }
+    const volume = _kernelVolume(copy)
+    if (volume !== null && volume > 0 && copy._solidProblem(volume) === null) {
+      body.dispose()
+      return [copy, volume]
     }
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
   }
   fixed?.dispose()
-  return body
+  return [body, null]
 }
 
 /** Indices of the faces the kernel's tessellation fails on (all of them if it fails as a whole). */
@@ -917,6 +1061,51 @@ function _unmeshed(body: Part | Shell): Set<number> {
   } catch {
     return new Set(Array.from({ length: body.faces().length }, (_, i) => i))
   }
+}
+
+/** A face's loops with two that meet at one vertex joined into one loop that passes it twice (and is the
+ * outer loop if either was): the kernel's faces have no loops that share a vertex (its check: "Face Loops
+ * must not share a Vertex"), and smlibwasm's writer, as OpenCASCADE's, writes such a loop as the loops
+ * between. Loops with a closed edge or an edge used twice (a seam), and loops that meet at more than one
+ * vertex, stay as they are. `loops` itself where nothing is joined. */
+function _joinedLoops(loops: LoopData[], edges: EdgeData[]): LoopData[] {
+  const starts = (loop: LoopData): number[] | null => {
+    const items = loop.edges ?? []
+    if (!items.length || new Set(items.map(([e]) => e)).size !== items.length) return null
+    const out: number[] = []
+    for (const [e, forward] of items) {
+      const { v0, v1 } = edges[e]
+      if (v0 === null || v0 === undefined || v0 === v1) return null
+      out.push(forward ? v0 : v1)
+    }
+    return out
+  }
+  if (loops.filter((loop) => loop.edges?.length).length < 2) return loops
+  const out = [...loops]
+  let joined = true
+  while (joined) {
+    joined = false
+    search: for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const si = starts(out[i])
+        const sj = starts(out[j])
+        if (si === null || sj === null) continue
+        const shared = si.filter((v) => sj.includes(v))
+        if (new Set(shared).size !== 1) continue
+        const ei = out[i].edges as [number, boolean][]
+        const ej = out[j].edges as [number, boolean][]
+        const own = new Set(ei.map(([e]) => e))
+        if (ej.some(([e]) => own.has(e))) continue
+        const a = si.indexOf(shared[0])
+        const b = sj.indexOf(shared[0])
+        out[i] = { ...out[i], edges: [...ei.slice(0, a), ...ej.slice(b), ...ej.slice(0, b), ...ei.slice(a)], outer: Boolean(out[i].outer || out[j].outer) }
+        out.splice(j, 1)
+        joined = true
+        break search
+      }
+    }
+  }
+  return out.length !== loops.length ? out : loops
 }
 
 /** Loops with the outer one first. Files that do not mark the outer bound get the loop with the
@@ -1015,22 +1204,244 @@ function _turned(links: Map<number, [number, boolean][]>): number[] | null {
   return out
 }
 
-function _sound(part: Part): boolean {
+/** The kernel's coarse volume of a built shell (1e-4), null where it cannot be integrated.
+ * (Integrated once per shell: on a part of 2079 faces each integration takes 0.3 s, and the checks
+ * of a shell asked for it three or four times.) */
+export function _kernelVolume(part: Part): number | null {
   try {
-    return Boolean(part.isValid()) && part._kernelProps(1e-4).volume > 0
+    return Number(part._kernelProps(1e-4).volume)
   } catch (e) {
-    if (e instanceof KernelError) return false
+    if ((e instanceof KernelError) && !_isCrash(e)) return null
     throw e
   }
 }
 
-function _positive(part: Part): boolean {
+/** A closed, manifold solid of positive volume (`volume`: its kernel volume, if known). */
+function _sound(part: Part, volume: number | null = null): boolean {
   try {
-    return part._kernelProps(1e-4).volume > 0
+    if (part._shapeProblem() !== null) return false
+    const v = volume ?? _kernelVolume(part)
+    // (an integration over broken faces can come out a hair above 0: 1e-10 for an offset of a whole sphere
+    // of radius 10 in smlibwasm)
+    return v !== null && v > 1e-12 * part._looseBox().diagonal ** 3 && part._solidProblem(v) === null
   } catch (e) {
-    if (e instanceof KernelError) return false
+    if ((e instanceof KernelError) && !_isCrash(e)) return false
     throw e
   }
+}
+
+/** A broken solid repaired: healed, else stitched (faces that do not share their edges, edges
+ * with gaps between them), each kept only if it gives a sound solid. Returns the part (the one
+ * given if nothing helped) and what is still wrong with it (null: nothing). */
+function _repaired(part: Part, body: BodyData): [Part, string | null] {
+  try {
+    const healed = part.heal()
+    if (_sound(healed)) return [healed, null]
+    healed.dispose()
+  } catch (e) {
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+  }
+  const stitched = _stitched(part, body)
+  if (stitched !== null) {
+    const [fixed, gap] = stitched
+    _warn(
+      `${_op()}: the faces of ${_label(body)} did not share their edges; stitched them, closing gaps of up to ${_g2(gap)} mm`,
+    )
+    return [fixed, null]
+  }
+  try {
+    return [part, part._solidProblem() ?? 'not a sound solid']
+  } catch (e) {
+    if ((e instanceof KernelError) && !_isCrash(e)) return [part, 'a body whose volume cannot be integrated']
+    throw e
+  }
+}
+
+/** Python's `:.2g`. */
+function _g2(x: number): string {
+  if (x === 0) return '0'
+  const e = Math.floor(Math.log10(Math.abs(Number(x.toPrecision(2)))))
+  if (e < -4 || e >= 2) {
+    const [m, p] = x.toExponential(1).split('e')
+    const exp = Number(p)
+    return `${Number(m)}e${exp < 0 ? '-' : '+'}${String(Math.abs(exp)).padStart(2, '0')}`
+  }
+  return String(Number(x.toPrecision(2)))
+}
+
+/** A broken closed shell sewn into a valid solid, with the largest gap closed; null if no stitch
+ * gives one. The kernel's stitch first (it widens its own tolerance); then explicit tolerances,
+ * doubling from the larger of the file's declared uncertainty and the gaps the kernel measured, up
+ * to 1e-3 of the body's size. (The declared uncertainty alone is no guide: smlibwasm writes 1e-7
+ * into files whose gaps reach 1e-3.) Each stitched body is healed where it needs to be (a seam the
+ * stitch joined from two edges of the file lacks its face's seam), and kept only if it is a valid
+ * solid, its faces' gaps measured too. */
+function _stitched(part: Part, body: BodyData): [Part, number] | null {
+  let measured = 0.0
+  const attempt = (stitch: (brep: number) => void): Part | null => {
+    const h = new BrepHandle(part._copyBrep())
+    try {
+      kernelCall(_op(': stitch'), () => stitch(h.brep))
+      return _validOrHealed(Part._wrap(_take(h)))
+    } catch (e) {
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+      return null
+    } finally {
+      h.dispose() // (nothing left to free once taken)
+    }
+  }
+  const first = attempt((brep) => {
+    const [, , , vgap, egap] = k.stitch_into_solid(brep)
+    measured = Math.max(Number(vgap), Number(egap))
+  })
+  if (first !== null) return [first, measured]
+  let tol = Math.max(body.uncertainty ?? 0.0, measured, 1e-7)
+  const cap = 1e-3 * part._extent()
+  while (tol <= cap) {
+    const t = tol
+    const candidate = attempt((brep) => k.stitch_advanced(brep, t))
+    if (candidate !== null) return [candidate, tol]
+    tol *= 2
+  }
+  return null
+}
+
+/** The part if it is a valid solid (`isValid()`: its faces' gaps measured too), else it healed if
+ * that is one, else null. (A part not returned is disposed.) */
+function _validOrHealed(part: Part): Part | null {
+  const valid = (p: Part): boolean => _sound(p) && p._solidProblem(null, true) === null
+  if (valid(part)) return part
+  if (part._shapeProblem() === null) {
+    // closed: the healer may mend its seams and gaps
+    try {
+      const healed = part.heal()
+      if (valid(healed)) {
+        part.dispose()
+        return healed
+      }
+      healed.dispose()
+    } catch (e) {
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+    }
+  }
+  part.dispose()
+  return null
+}
+
+/** Whether some faces of a shell share no edge with the others (in the file): the shell falls
+ * apart into pieces that only stitching joins. */
+function _apart(body: BodyData, faces: number[]): boolean {
+  if (faces.length < 2) return false
+  const group = new Map<number, number>(faces.map((fi) => [fi, fi]))
+  const root = (f: number): number => {
+    while (group.get(f) !== f) {
+      group.set(f, group.get(group.get(f) as number) as number)
+      f = group.get(f) as number
+    }
+    return f
+  }
+  const first = new Map<number, number>() // edge -> a face using it
+  for (const fi of faces)
+    for (const loop of body.faces[fi].loops)
+      for (const [ei] of loop.edges ?? []) {
+        if (first.has(ei)) group.set(root(fi), root(first.get(ei) as number))
+        else first.set(ei, fi)
+      }
+  return new Set(faces.map(root)).size > 1
+}
+
+/** A sheet whose faces share no edges with each other in the file, sewn along the edges that meet
+ * within 1e-3 of its size (kept if anything was sewn). */
+function _sewn(sheet: Shell, body: BodyData): Shell {
+  const h = new BrepHandle(sheet._copyBrep())
+  try {
+    const tol = Math.max(body.uncertainty ?? 0.0, 1e-3 * sheet._looseBox().diagonal)
+    const [, , stitched, vgap, egap] = kernelCall(_op(': stitch'), () => k.stitch_into_shell(h.brep, tol))
+    if (Math.trunc(Number(stitched)) > 0) {
+      _warn(
+        `${_op()}: the faces of ${_label(body)} did not share their edges; stitched ${Math.trunc(Number(stitched))} edges, closing gaps of up to ${_g2(Math.max(Number(vgap), Number(egap)))} mm`,
+      )
+      return Shell._wrap(_take(h))
+    }
+  } catch (e) {
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+  } finally {
+    h.dispose()
+  }
+  return sheet
+}
+
+/** Whether a placement only turns and moves (no mirror, no scale). */
+function _rigid(m: Matrix): boolean {
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++) {
+      let d = 0
+      for (let k = 0; k < 3; k++) d += m[k * 4 + i] * m[k * 4 + j]
+      if (Math.abs(d - (i === j ? 1 : 0)) > 1e-9) return false
+    }
+  const det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8])
+  return det > 0
+}
+
+function _identity4(): Matrix {
+  return Float64Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+}
+
+/** numpy's linalg.inv of a 4 x 4 matrix. */
+function _inv4(m: Matrix): Matrix {
+  const rows = [0, 1, 2, 3].map((r) => [0, 1, 2, 3].map((c) => m[r * 4 + c]))
+  const eye = [0, 1, 2, 3].map((r) => [0, 1, 2, 3].map((c) => (r === c ? 1 : 0)))
+  return Float64Array.from(solve(rows, eye).flat())
+}
+
+
+/**
+ * The bodies of a parsed file in file order, and what was left out (one message per body that
+ * could not be read, with the number of its instances). `strict` throws a ModelingError for the
+ * first body that cannot be read instead.
+ *
+ * An assembly lists a product once per instance, all with the same data: each is built once, at
+ * its first placement, and its other instances are placed copies of it (a robot of 1472 instances
+ * of 714 bodies built 135,856 faces for 53,293).
+ */
+function _bodies(sf: StepFile, heal: boolean, strict: boolean): [(Part | Shell)[], string[]] {
+  const skipped: Any[] = []
+  const found = interpret(sf, { skipped })
+  if (strict && skipped.length) throw new ModelingError(`import STEP: ${skipped[0].message}`)
+  const out: (Part | Shell)[] = []
+  const built = new Map<BodyData, [Part | Shell, Matrix]>() // body -> (body, the placement it was built at)
+  const failed = new Map<BodyData, [string, number]>() // body -> [message, instances]
+  for (const [body, m] of found) {
+    const fail = failed.get(body)
+    if (fail !== undefined) {
+      fail[1] += 1
+      continue
+    }
+    try {
+      let first = built.get(body)
+      if (first === undefined) {
+        // (a placement that mirrors or scales: the body is built where it is defined and moved there
+        // whole, as Shape.mirror and Shape.scale move a body)
+        const at = _rigid(m) ? m : _identity4()
+        first = [_buildBody(body, at, heal), at]
+        built.set(body, first)
+        if (at === m) {
+          out.push(first[0])
+          continue
+        }
+      }
+      out.push(first[0]._transformed(_matmul(m, _inv4(first[1]))) as Part | Shell)
+    } catch (e) {
+      if (!_bodyError(e) || _isCrash(e)) throw _crashOf(e)
+      const message = `${_bodyLabel(body.entity, body.name, body.product)}: ${_failure(e)}`
+      if (strict) throw new ModelingError(`import STEP: ${message}`)
+      failed.set(body, [message, 1])
+    }
+  }
+  const notes = skipped.map((s) => String(s.message))
+  for (const [message, n] of failed.values()) notes.push(message + (n > 1 ? ` (${n} instances)` : ''))
+  for (const note of notes) _warn(`import STEP: left out ${note}`)
+  return [out, notes]
 }
 
 // -------------------------------------------------------------------------------- readStep
@@ -1156,18 +1567,28 @@ export class StepPoint {
 }
 
 /** Everything `readStep` reads from a STEP file: the bodies (what `importStep` returns, always as
- * a list), and the coordinate systems, curves and points that belong to no body. */
+ * a list), and the coordinate systems, curves and points that belong to no body. `skipped` says
+ * which bodies could not be read, and why (`"body 'b' (#99): curve type CLOTHOID (#203),
+ * which is not supported"`). */
 export class StepModel {
   readonly bodies: ShapeList<Part | Shell>
   readonly frames: StepFrame[]
   readonly curves: StepCurve[]
   readonly points: StepPoint[]
+  readonly skipped: string[]
 
-  constructor(bodies: ShapeList<Part | Shell>, frames: StepFrame[] = [], curves: StepCurve[] = [], points: StepPoint[] = []) {
+  constructor(
+    bodies: ShapeList<Part | Shell>,
+    frames: StepFrame[] = [],
+    curves: StepCurve[] = [],
+    points: StepPoint[] = [],
+    skipped: string[] = [],
+  ) {
     this.bodies = bodies
     this.frames = frames
     this.curves = curves
     this.points = points
+    this.skipped = skipped
     Object.freeze(this)
   }
 
@@ -1196,12 +1617,15 @@ export class StepModel {
       _same(this.bodies, other.bodies) &&
       _same(this.frames, other.frames) &&
       _same(this.curves, other.curves) &&
-      _same(this.points, other.points)
+      _same(this.points, other.points) &&
+      _same(this.skipped, other.skipped)
     )
   }
 
   toString(): string {
-    return `StepModel(${this.bodies.length} bodies, ${this.frames.length} frames, ${this.curves.length} curves, ${this.points.length} points)`
+    return `StepModel(${this.bodies.length} bodies, ${this.frames.length} frames, ${this.curves.length} curves, ${this.points.length} points${
+      this.skipped.length ? `, ${this.skipped.length} skipped` : ''
+    })`
   }
 
   [inspect](): string {
@@ -1215,10 +1639,12 @@ export class StepModel {
  *
  * `readStep` for the contents in memory (in the browser too); see `readStep`.
  */
-export function fromStepModel(data: string | Uint8Array, options: { heal?: boolean } = {}): StepModel {
-  const { heal = true } = options
+export function fromStepModel(data: string | BytesLike, options: { heal?: boolean; strict?: boolean } = {}): StepModel {
+  _opts('fromStepModel', options)
+  const { heal = true, strict = false } = options
   const sf = parse(_text(data, 'fromStepModel'))
-  const bodies = _list(interpret(sf).map(([b, m]) => _buildBody(b, m, heal)))
+  const [found, skipped] = _bodies(sf, heal, strict)
+  const bodies = _list(found)
   const frames: StepFrame[] = []
   const curves: StepCurve[] = []
   const points: StepPoint[] = []
@@ -1231,13 +1657,13 @@ export function fromStepModel(data: string | Uint8Array, options: { heal?: boole
       try {
         shape = _curveShape(item.curve)
       } catch (e) {
-        if (!(e instanceof KernelError || e instanceof RangeError)) throw e
+        if (!(e instanceof KernelError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
         shape = null
       }
       if (shape !== null) curves.push(new StepCurve(name, shape, product, color))
     }
   }
-  return new StepModel(bodies, frames, curves, points)
+  return new StepModel(bodies, frames, curves, points, skipped)
 }
 
 /**
@@ -1250,9 +1676,11 @@ export function fromStepModel(data: string | Uint8Array, options: { heal?: boole
  * the wireframe geometry (contours such as a tool's cutting edge line, curve sets, reference
  * points). Each carries its name and the product it belongs to, at its place in the assembly, in
  * millimeters. Items on hidden layers are left out. A file with no bodies gives an empty
- * `bodies`. `heal` as for `importStep` (default true).
+ * `bodies`. `heal` as for `importStep` (default true). A body that cannot be read is left out with
+ * a warning and listed in `skipped` (`strict: true` throws instead), as `importStep` does.
  */
-export function readStep(path: string, options: { heal?: boolean } = {}): StepModel {
+export function readStep(path: string, options: { heal?: boolean; strict?: boolean } = {}): StepModel {
+  _opts('readStep', options)
   return fromStepModel(_fs().readFileSync(String(path)), options)
 }
 
@@ -1350,14 +1778,14 @@ function _trimmedEdge(basis: Any, trims: Any[], sense: boolean): Edge | null {
 // -------------------------------------------------------------------------------- importStep
 /** The text of STEP file contents: bytes are Latin-1, as Python reads the file, and line ends
  * become "\n" (Python's universal newlines). */
-function _text(data: string | Uint8Array, caller = 'fromStep'): string {
+export function _text(data: string | BytesLike, caller = 'fromStep'): string {
   let text: string
+  const bytes = _asBytes(data)
   if (typeof data === 'string') text = data
-  else if (ArrayBuffer.isView(data) || (data as unknown) instanceof ArrayBuffer) {
-    const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data as ArrayBuffer)
+  else if (bytes !== null) {
     text = ''
     for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  } else throw new TypeError(`${caller} takes the file's contents: a string or a Uint8Array`)
+  } else throw new TypeError(`${caller} takes the file's contents: a string or bytes (a Uint8Array or an ArrayBuffer)`)
   return text.replace(/\r\n?/g, '\n')
 }
 
@@ -1367,14 +1795,26 @@ function _text(data: string | Uint8Array, caller = 'fromStep'): string {
  *
  * Returns a single `Part` (or `Shell`) when the file holds one body, otherwise a `ShapeList` of
  * them. Lengths are converted to millimeters; assembly placements are applied; names and colors
- * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true).
+ * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default
+ * true): the kernel's healer, then stitching where faces do not share their edges,
+ * each with a warning when it changed the body or could not repair it.
+ *
+ * A body that cannot be read (an entity smlibwasm does not read, one the kernel cannot build) is
+ * left out with a warning that names it, its entity and the reason; the other bodies are read.
+ * `strict: true` throws a `ModelingError` for it instead. A file none of whose bodies can be read
+ * throws.
  */
-export function fromStep(data: string | Uint8Array, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
-  const { heal = true } = options
+export function fromStep(data: string | BytesLike, options: { heal?: boolean; strict?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('fromStep', options)
+  const { heal = true, strict = false } = options
   const sf = parse(_text(data))
-  const bodies = interpret(sf)
-  if (!bodies.length) throw new ModelingError('the STEP file holds no B-rep solids or surfaces')
-  const out = _list(bodies.map(([b, m]) => _buildBody(b, m, heal)))
+  const [found, skipped] = _bodies(sf, heal, strict)
+  if (!found.length) {
+    if (skipped.length)
+      throw new ModelingError(`import STEP: no body of the file could be read: ${skipped.slice(0, 3).join('; ')}${skipped.length > 3 ? '; ...' : ''}`)
+    throw new ModelingError('the STEP file holds no B-rep solids or surfaces')
+  }
+  const out = _list(found)
   return out.length === 1 ? out[0] : out
 }
 
@@ -1383,8 +1823,10 @@ export function fromStep(data: string | Uint8Array, options: { heal?: boolean } 
  *
  * Returns a single `Part` (or `Shell`) when the file holds one body, otherwise a `ShapeList` of
  * them. Lengths are converted to millimeters; assembly placements are applied; names and colors
- * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true).
+ * are kept. `heal` repairs bodies that come out invalid (valid ones are left alone; default true);
+ * `strict` as for `fromStep`.
  */
-export function importStep(path: string, options: { heal?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+export function importStep(path: string, options: { heal?: boolean; strict?: boolean } = {}): Part | Shell | ShapeList<Part | Shell> {
+  _opts('importStep', options)
   return fromStep(_fs().readFileSync(String(path)), options)
 }

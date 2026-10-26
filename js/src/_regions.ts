@@ -8,9 +8,9 @@
 // Also here: the operands of the 2D Booleans, rebuilt from their curves (the kernel's planar
 // Boolean is unreliable on bodies that were moved, see ai/plan/2d.md).
 
-import { KernelError, ModelingError, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Location, Plane, Vector, _isPointLike, _vec, type VectorLike } from './geometry.ts'
-import { _arcCurve } from './curves.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, _isRuntimeError, ext, k, kernelCall } from './kernel.ts'
+import { Axis, BoundBox, Location, Plane, Vector, _formatG, _isPointLike, _vec, type VectorLike } from './geometry.ts'
+import { Line, _arcCurve } from './curves.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _asPlane, _fitPlane, _typeName } from './shapes.ts'
 import {
   Arc2,
@@ -27,6 +27,7 @@ import {
   TAU,
   ZERO,
   _Site,
+  _lineLine,
   assemble,
   bandPiece,
   convexHull,
@@ -45,6 +46,7 @@ import {
   offsetChain,
   orientCcw,
   overlap,
+  polygon,
   pymod,
   pysum,
   segmentIntersections,
@@ -56,6 +58,9 @@ import {
   type Piece,
   type Seg,
 } from './_planar.ts'
+
+// biome-ignore lint: kernel results are what their bindings return
+type Any = any
 
 /** Per face: the outer loop and the holes. */
 export type Loops = [Seg[], Seg[][]][]
@@ -142,6 +147,106 @@ export function segOfEdge(e: Edge, fr: Frame): Seg {
   const pts: Complex[] = []
   for (let i = 0; i < 33; i++) pts.push(fr.local(e.pointAt(i / 32)))
   return new Curve2<Edge>(e, p0, p1, unit(fr.direction(e.tangentAt(0.0))), unit(fr.direction(e.tangentAt(1.0))), e.length, pts)
+}
+
+/** Fillets and chamfers at corners with curves (splines, ellipses) for `_planar.assemble`, through the
+ * kernel: a fillet's center is where the offsets of the two curves toward the inside of the corner
+ * meet (`Edge.offset`), its ends the nearest points of the curves to it; a chamfer cuts back the
+ * length along each curve. (SMLib's own `SmCurveFilletExecutive` is unused and untested in the
+ * kernel and picks its side wrongly.) */
+export class CurveCorners {
+  readonly fr: Frame
+  readonly size: number
+
+  constructor(fr: Frame, size: number) {
+    this.fr = fr
+    this.size = Math.max(1, size)
+  }
+
+  _edge(s: Seg): Edge {
+    return s instanceof Curve2 ? (s.edge as unknown as Edge) : Edge._fromCurve(curveOf(s, this.fr))
+  }
+
+  /** The part of a curve segment between two lengths from its start. */
+  piece(seg: Curve2, s0: number, s1: number): Seg {
+    if (s0 <= 0 && s1 >= seg.length) return seg
+    return segOfEdge((seg.edge as unknown as Edge).trim(Math.max(s0, 0) / seg.length, Math.min(s1 / seg.length, 1)), this.fr)
+  }
+
+  /** The edge's offset toward the corner: of the whole edge, or of its part next to the corner where
+   * the edge bends too tightly farther away. */
+  _offset(e: Edge, d: number, atEnd: boolean): Edge | null {
+    let piece = e
+    for (let i = 0; i < 8; i++) {
+      try {
+        return piece.offset(d, { plane: this.fr.plane })
+      } catch (x) {
+        if (!(x instanceof ModelingError || x instanceof RangeError) || _isCrash(x)) throw _crashOf(x)
+        const f = 0.5 ** (i + 1)
+        piece = atEnd ? e.trim(1 - f, 1) : e.trim(0, f)
+      }
+    }
+    return null
+  }
+
+  corner(kind: string, s1: Seg, s2: Seg, size: number): [number, number, Seg] {
+    const [sn, cs] = turn(s1, s2)
+    if (Math.abs(sn) < SMOOTH) {
+      throw new GeometryError(cs > 0 ? 'the segments meet tangentially there, so there is no corner' : 'the outline turns back on itself there')
+    }
+    const e1 = this._edge(s1)
+    const e2 = this._edge(s2)
+    const l1 = e1.length
+    const l2 = e2.length
+    const fr = this.fr
+    if (kind === 'chamfer') { // (a length beyond a segment: assemble reports that it does not fit)
+      return [size, size, new Line2(fr.local(e1.pointAt(Math.max(0, 1 - size / l1))), fr.local(e2.pointAt(Math.min(1, size / l2))))]
+    }
+    const side = sn > 0 ? 1 : -1
+    const o1 = this._offset(e1, side * size, true)
+    const o2 = this._offset(e2, side * size, false)
+    let best: [number, number, Vector, Vector, Vector] | null = null
+    if (o1 !== null && o2 !== null) {
+      for (const c of o1.intersections(o2)) {
+        const f1 = e1.closestPoint(c)
+        const f2 = e2.closestPoint(c)
+        if (Math.max(Math.abs(f1.distanceTo(c) - size), Math.abs(f2.distanceTo(c) - size)) > 1e-6 * this.size) continue // (a point of an end, not where the arc touches)
+        const back = (1 - e1.paramAtPoint(f1)) * l1
+        const ahead = e2.paramAtPoint(f2) * l2
+        if (best === null || back + ahead < best[0] + best[1]) best = [back, ahead, c, f1, f2]
+      }
+    }
+    if (best === null) throw new GeometryError(`no arc of radius ${fmt(size)} touches both segments`)
+    let [, , c, f1, f2] = best
+    // Newton on the center: its distances to the two curves become the radius (the offsets are
+    // fitted within 1e-6 of the size; the curves' nearest points are exact)
+    let cl = fr.local(c)
+    for (let it = 0; it < 8; it++) {
+      const p1 = fr.local(f1)
+      const p2 = fr.local(f2)
+      const d1 = cl.sub(p1).abs()
+      const d2 = cl.sub(p2).abs()
+      if (Math.max(Math.abs(d1 - size), Math.abs(d2 - size)) <= 1e-13 * this.size || d1 === 0 || d2 === 0) break
+      const n1 = cl.sub(p1).divs(d1)
+      const n2 = cl.sub(p2).divs(d2)
+      const det = cross(n1, n2)
+      if (Math.abs(det) < 1e-12) break
+      const r1 = size - d1
+      const r2 = size - d2
+      cl = cl.add(cx((r1 * n2.im - r2 * n1.im) / det, (n1.re * r2 - n2.re * r1) / det))
+      c = fr.world(cl)
+      f1 = e1.closestPoint(c)
+      f2 = e2.closestPoint(c)
+    }
+    const back = (1 - e1.paramAtPoint(f1)) * l1
+    const ahead = e2.paramAtPoint(f2) * l2
+    const v1 = fr.local(f1).sub(cl)
+    const v2 = fr.local(f2).sub(cl)
+    let delta = v2.div(v1).phase()
+    if (side > 0 && delta < 0) delta += TAU
+    if (side < 0 && delta > 0) delta -= TAU
+    return [back, ahead, new Arc2(cl, size, v1.phase(), delta)]
+  }
 }
 
 /** A new kernel curve for a segment (the caller owns it). */
@@ -314,23 +419,13 @@ export function roundCorners(sk: Sketch, size: number, vertices: unknown, kind: 
           }
           continue
         }
-        for (const s of [s1, s2]) {
-          if (s instanceof Curve2) {
-            if (targets === null) {
-              throw new ModelingError(
-                `${what}: the corner at ${fr.fp(v)} joins ${describe(s, fp)}; ${what} works on corners between lines and arcs. Pass the corners to change: sketch.${what}(${fmt(size)}, sketch.vertices().filter(...))`,
-              )
-            }
-            throw new ModelingError(`${what}: the corner at ${fr.fp(v)} joins ${describe(s, fp)}; ${what} works on corners between lines and arcs`)
-          }
-        }
         corners.set(i, new Corner(kind, size, `${unitName} ${fmt(size)}`))
         count += 1
       }
       let created: Seg[]
       let labels: string[]
       try {
-        ;[created, labels] = assemble(lp, new Array<string>(n).fill(''), corners, true, tol, (j) => describe(lp[j], fp), fp)
+        ;[created, labels] = assemble(lp, new Array<string>(n).fill(''), corners, true, tol, (j) => describe(lp[j], fp), fp, new CurveCorners(fr, tol * 1e9))
       } catch (e) {
         if (!(e instanceof GeometryError)) throw e
         throw new ModelingError(`${what}: ${e.message}`)
@@ -409,7 +504,7 @@ export function offsetRegion(sk: Sketch, distance: number, corners: string): Ske
     const result = build(newFaces, fr, sk, 'offset')
     if (_offsetValid(result, sk, faces, d, corners)) return result
   } catch (e) {
-    if (!(e instanceof NeedBooleans || e instanceof KernelError)) throw e
+    if (!(e instanceof NeedBooleans || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     // built from pieces below
   }
   const pieces: Piece[] = []
@@ -563,11 +658,6 @@ export function pathSegments(path: unknown, what: string): [Frame, Seg[]] {
   }
   const fr = pathFrame(edges)
   const segs = edges.map((e) => segOfEdge(e, fr))
-  segs.forEach((s, i) => {
-    if (s instanceof Curve2) {
-      throw new ModelingError(`${what}: edge ${i + 1} of the path is a ${(s.edge as Edge).geomType}; ${what} works on paths of lines and arcs`)
-    }
-  })
   const size = extent(segs)
   for (let i = 1; i < segs.length; i++) {
     const gap = segs[i].start.sub(segs[i - 1].end).abs()
@@ -594,11 +684,12 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
     try {
       inner = base.offset(-h, { corners })
     } catch (e) {
-      if (!(e instanceof ModelingError)) throw e
+      if (!(e instanceof ModelingError) || _isCrash(e)) throw _crashOf(e)
       return outer
     }
     return outer.cut(inner)
   }
+  if (segs.some((s) => s instanceof Curve2)) return _strokeCurves(segs, fr, h, ends, corners)
   try {
     const right = offsetChain(segs, -h, corners, false, tol)
     const left = offsetChain(segs, h, corners, false, tol)
@@ -620,7 +711,7 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
     ;[loop] = simplify(loop, new Array<string>(loop.length).fill(''), true, tol)
     return build([[loop, []]], fr, null, 'Stroke')
   } catch (e) {
-    if (!(e instanceof NeedBooleans || e instanceof KernelError)) throw e
+    if (!(e instanceof NeedBooleans || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     // built from pieces below
   }
   const pieces: Piece[] = []
@@ -630,6 +721,389 @@ export function stroke(path: unknown, width: number, ends: string, corners: stri
   })
   if (ends === 'round') pieces.push([disk(segs[0].start, h), []], [disk(segs[segs.length - 1].end, h), []])
   return unionAll(pieces.map((pc) => build([pc], fr, null, 'Stroke')))
+}
+
+/** Stroke along an open path with splines or ellipses: the band between the path's offsets to both
+ * sides and the end caps; where that band runs into itself, the union of a band per edge, the
+ * wedges at the corners and the round ends. */
+function _strokeCurves(segs: Seg[], fr: Frame, h: number, ends: string, corners: string): Sketch {
+  const size = realSize(segs)
+  let problem: unknown
+  try {
+    const right = offsetCurves(segs, fr, -h, corners, false, size, 'Stroke', h, false)
+    const left = offsetCurves(segs, fr, h, corners, false, size, 'Stroke', h, false)
+    const p0 = segs[0].start
+    const p1 = segs[segs.length - 1].end
+    let capEnd: Edge[]
+    let capStart: Edge[]
+    if (ends === 'round') {
+      capEnd = edgesOf([new Arc2(p1, h, NEG_J.mul(segs[segs.length - 1].t1).phase(), Math.PI)], fr)
+      capStart = edgesOf([new Arc2(p0, h, J.mul(segs[0].t0).phase(), Math.PI)], fr)
+    } else {
+      capEnd = edgesOf([new Line2(fr.local(right[right.length - 1].end), fr.local(left[left.length - 1].end))], fr)
+      capStart = edgesOf([new Line2(fr.local(left[0].start), fr.local(right[0].start))], fr)
+    }
+    const loop = [...right, ...capEnd, ...[...left].reverse().map((e) => e.reversed()), ...capStart]
+    const hit = chainCrossing(loop, true, size)
+    if (hit === null) return build([[orientCcw(loop.map((e) => segOfEdge(e, fr))), []]], fr, null, 'Stroke')
+    problem = new ModelingError(`Stroke: the band runs into itself near ${fr.fp(fr.local(hit))}`)
+  } catch (e) {
+    if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
+    problem = e
+  }
+  try {
+    const sketches: Sketch[] = []
+    segs.forEach((s, i) => {
+      if (i) for (const e of [h, -h]) for (const pc of _cornerWedge(segs[i - 1], s, e, corners)) sketches.push(build([pc], fr, null, 'Stroke'))
+      if (s instanceof Curve2) sketches.push(..._curveBands(s.edge as Edge, h, fr, size, i))
+      else for (const pc of bandPiece(s, h)) sketches.push(build([pc], fr, null, 'Stroke'))
+    })
+    if (ends === 'round') {
+      sketches.push(build([[disk(segs[0].start, h), []]], fr, null, 'Stroke'), build([[disk(segs[segs.length - 1].end, h), []]], fr, null, 'Stroke'))
+    }
+    return unionAll(sketches)
+  } catch (e) {
+    if (!(e instanceof ModelingError || e instanceof RangeError) || _isCrash(e)) throw _crashOf(e)
+    throw problem
+  }
+}
+
+/** The band within `h` of a curve, ends cut square: one band where it does not run into itself, else
+ * the bands of pieces (the curve cut where it crosses itself, then in halves). */
+function _curveBands(edge: Edge, h: number, fr: Frame, size: number, index: number, depth = 0): Sketch[] {
+  const r = offsetCurveEdge(edge, -h, fr, 1e-6 * size, 'Stroke', index)
+  const lft = offsetCurveEdge(edge, h, fr, 1e-6 * size, 'Stroke', index)
+  const ends = edgesOf([new Line2(fr.local(r.end), fr.local(lft.end)), new Line2(fr.local(lft.start), fr.local(r.start))], fr)
+  const loop = [r, ends[0], lft.reversed(), ends[1]]
+  if (chainCrossing(loop, true, size) === null) return [build([[orientCcw(loop.map((x) => segOfEdge(x, fr))), []]], fr, null, 'Stroke')]
+  if (depth >= 6) throw new ModelingError(`Stroke: the band along edge ${index + 1} of the path runs into itself`)
+  let pieces = depth === 0 ? _uncrossed(edge, 1e-9 * size) : [edge]
+  if (pieces.length === 1) pieces = [...edge.split(0.5)]
+  return pieces.flatMap((piece) => _curveBands(piece, h, fr, size, index, depth + 1))
+}
+
+/** The edge cut where it crosses itself, into pieces that do not. */
+function _uncrossed(edge: Edge, tol: number): Edge[] {
+  const [t0, t1] = edge._range()
+  const sols = kernelCall('Stroke', () => ext.self_intersections(edge._curve(), t0, t1, tol))
+  const all = new Set<number>()
+  for (const s of sols) for (const u of s.t) all.add(edge._fraction(Number(u)))
+  const cuts = [...all].sort((a, b) => a - b).filter((f) => 1e-9 < f && f < 1.0 - 1e-9)
+  if (!cuts.length) return [edge]
+  const bounds = [0.0, ...cuts, 1.0]
+  const out: Edge[] = []
+  for (let i = 0; i + 1 < bounds.length; i++) if (bounds[i + 1] - bounds[i] > 1e-9) out.push(edge.trim(bounds[i], bounds[i + 1]))
+  return out
+}
+
+/** `cornerPiece` for corners at splines and ellipses: the offsets' ends are the corner moved `e`
+ * along the normals of the two tangents there. */
+function _cornerWedge(s1: Seg, s2: Seg, e: number, corners: string): Piece[] {
+  if (!(s1 instanceof Curve2 || s2 instanceof Curve2)) return cornerPiece(s1, s2, e, corners)
+  const [sn, cs] = turn(s1, s2)
+  if (Math.abs(sn) < SMOOTH && cs > 0) return []
+  if (sn * e >= 0 && Math.abs(sn) >= SMOOTH) return []
+  const v = s1.end
+  if (Math.abs(sn) < SMOOTH) return [[disk(v, Math.abs(e)), []]]
+  const pe = v.add(J.mul(s1.t1).scale(e))
+  const qs = v.add(J.mul(s2.t0).scale(e))
+  if (corners === 'chamfer') return [[polygon(v, pe, qs), []]]
+  if (corners === 'sharp') {
+    const hits = _lineLine(pe, s1.t1, qs, s2.t0)
+    return hits.length ? [[polygon(v, pe, hits[0], qs), []]] : [[disk(v, Math.abs(e)), []]]
+  }
+  const d1 = pe.sub(v)
+  const d2 = qs.sub(v)
+  let sweep = d2.div(d1).phase()
+  if (sn > 0 && sweep < 0) sweep += TAU
+  if (sn < 0 && sweep > 0) sweep -= TAU
+  return [[orientCcw([new Line2(v, pe), new Arc2(v, Math.abs(e), d1.phase(), sweep), new Line2(qs, v)]), []]]
+}
+
+// =============================================================================== offsets of wires and edges
+const _OFFSET_REASONS: Record<string, string> = {
+  'an arc collapses': 'an arc collapses (the distance reaches past its center)',
+  'the chain turns back': 'the wire turns back on itself',
+  'a segment vanishes': 'an edge vanishes (the corners beside it cut it away)',
+  'an arc vanishes': 'an arc vanishes (the corners beside it cut it away)',
+  'the offsets do not meet near the corner': 'the edges at a corner no longer meet (an edge there is shorter than the distance)',
+  'parallel tangents': 'the sides of a corner run parallel and never meet',
+}
+
+function _offsetProblem(what: string, distance: number, reason: string, closed: boolean, where = ''): string {
+  const region = closed ? '; the offset of the region it bounds (Sketch.offset) merges and drops parts instead' : ''
+  const at = where ? ` at ${where}` : ''
+  return `${what}: moved by ${fmt(Math.abs(distance))}, ${_OFFSET_REASONS[reason] ?? reason}${at}; use a smaller distance${region}`
+}
+
+/** The plane of a planar wire, its normal telling left from right: `plane` (the wire must lie in a
+ * plane parallel to it), else XY at the wire's height for a level wire, else the plane the wire lies
+ * in with its normal toward +Z (+Y, then +X, for vertical planes). */
+export function wireFrame(edges: readonly Edge[], plane: unknown, what: string): Frame {
+  const pts: Vector[] = []
+  for (const e of edges) {
+    pts.push(e.start, e.end)
+    for (let i = 1; i < 8; i++) pts.push(e.pointAt(i / 8))
+  }
+  let size = 1.0
+  for (const p of pts) for (const c of p) size = Math.max(size, Math.abs(c))
+  if (plane != null) {
+    const pl = _asPlane(plane)
+    const hs = pts.map((p) => pl.toLocal(p).z)
+    const depth = Math.max(...hs) - Math.min(...hs)
+    if (depth > 1e-7 * size) {
+      throw new RangeError(`${what}: the wire does not lie in a plane parallel to the plane given (it reaches ${fmt(depth)} along the plane's normal)`)
+    }
+    return new Frame(pl.offset(hs[0]))
+  }
+  const zs = pts.map((p) => p.z)
+  if (Math.max(...zs) - Math.min(...zs) <= 1e-9 * size) return new Frame(new Plane([0, 0, zs[0]]))
+  const a = pts[0]
+  let far = pts[0]
+  for (const q of pts) if (q.distanceTo(a) > far.distanceTo(a)) far = q
+  const u = far.sub(a).normalized()
+  if (pts.every((q) => q.sub(a).sub(u.mul(q.sub(a).dot(u))).length <= 1e-9 * size)) {
+    throw new RangeError(`${what}: the wire is straight and not level, so it does not say which plane it moves in; pass plane=`)
+  }
+  let pl = _fitPlane(pts, false)
+  if (pts.some((q) => Math.abs(pl.toLocal(q).z) > 1e-7 * size)) throw new RangeError(`${what}: the wire does not lie in a plane`)
+  const nz = pl.zDir
+  if (nz.z < -1e-9 || (Math.abs(nz.z) <= 1e-9 && (nz.y < -1e-9 || (Math.abs(nz.y) <= 1e-9 && nz.x < 0)))) pl = pl.flipped()
+  return new Frame(pl)
+}
+
+/** The diagonal of the box around segments (in their plane). */
+export function realSize(segs: readonly Seg[]): number {
+  const pts = segs.flatMap((s) => s.sample(8))
+  const xs = pts.map((p) => p.re)
+  const ys = pts.map((p) => p.im)
+  return Math.max(Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)), 1e-300)
+}
+
+/** The edges of a planar wire, end to end, moved `distance` sideways: an open wire to its left (seen
+ * from the normal of its plane), a closed one outward (see `Wire.offset`). */
+export function offsetWire(edges: Edge[], distance: number, corners: string, plane: unknown, what: string): Edge[] {
+  const fr = wireFrame(edges, plane, what)
+  const segs = edges.map((e) => segOfEdge(e, fr))
+  const size = realSize(segs)
+  for (let i = 1; i < segs.length; i++) {
+    const gap = segs[i].start.sub(segs[i - 1].end).abs()
+    if (gap > 1e-6 * Math.max(1.0, size)) throw new ModelingError(`${what}: the wire has a gap of ${fmt(gap)} between edge ${i} and edge ${i + 1}`)
+  }
+  const closed = segs[segs.length - 1].end.sub(segs[0].start).abs() <= 1e-6 * Math.max(1.0, size)
+  let e = distance
+  if (closed) {
+    const area = signedArea(segs)
+    if (Math.abs(area) <= 1e-12 * size * size) throw new ModelingError(`${what}: the closed wire encloses no area, so it has no outside to move to`)
+    e = area > 0 ? -distance : distance // outward: to the right of a counterclockwise loop
+  }
+  if (segs.some((s) => s instanceof Curve2)) return offsetCurves(segs, fr, e, corners, closed, size, what, distance)
+  const tol = 1e-9 * Math.max(1.0, size)
+  let out: Seg[]
+  try {
+    out = offsetChain(segs, e, corners, closed, tol)
+  } catch (ex) {
+    if (!(ex instanceof NeedBooleans)) throw ex
+    throw new ModelingError(_offsetProblem(what, distance, ex.message, closed))
+  }
+  const hit = firstCrossing(out, closed, tol)
+  // (a wire that crosses itself: its offset may)
+  if (hit !== null && firstCrossing(segs, closed, tol) === null) throw new ModelingError(_crossingProblem(what, distance, fr.fp(hit[2]), closed))
+  return edgesOf(out, fr)
+}
+
+function _crossingProblem(what: string, distance: number, where: string, closed: boolean): string {
+  const region = closed ? '; the offset of the region it bounds (Sketch.offset) merges parts instead' : ''
+  return `${what}: moved by ${fmt(Math.abs(distance))}, the wire runs into itself near ${where} (parts of it lie closer together than the ` +
+    `distance allows); use a smaller distance${region}`
+}
+
+/** An edge (a spline or an ellipse) moved `e` to its left in the frame's plane, by the kernel within
+ * `tol`. */
+export function offsetCurveEdge(edge: Edge, e: number, fr: Frame, tol: number, what: string, index: number | null): Edge {
+  const c = edge._copyCurve()
+  let res: Any
+  let point: Vector | null = null
+  try {
+    res = kernelCall(what, () => ext.offset_curve(c, fr.plane.zDir.toArray(), e, tol), 'the curve may have a corner inside; split it there first')
+    if (!res[0]) point = new Vector(k.curve_evaluate(c, Number(res[2])))
+  } finally {
+    ext.delete_curve(c)
+  }
+  const [curve, dev] = [res[0] as number, Number(res[1])]
+  const name = index !== null ? `edge ${index + 1} (${edge.geomType})` : `the ${edge.geomType}`
+  if (!curve) {
+    const r = edge.minRadius()
+    throw new ModelingError(`${what}: ${name} bends more tightly than the distance ${fmt(Math.abs(e))} near ${fr.fp(fr.local(point!))} on the ` +
+      `side it moves to (its smallest radius of curvature is ${fmt(r)}), so its offset would fold over itself there; use a smaller distance`)
+  }
+  const moved = Edge._fromCurve(curve)
+  if (!(dev <= 10.0 * tol)) {
+    throw new ModelingError(`${what}: the kernel's offset of ${name} is ${_formatG(dev, 3)} off the distance (asked within ${_formatG(tol, 3)})`)
+  }
+  return moved
+}
+
+/** `offsetWire` for wires with splines or ellipses: lines and arcs moved exactly, the curves by the
+ * kernel; the corners that open filled (`corners`), those that close cut where the moved edges
+ * cross. With `crossing`, checked not to run into itself (unless the wire itself does). */
+export function offsetCurves(segs: Seg[], fr: Frame, e: number, corners: string, closed: boolean, size: number, what: string,
+  distance: number, crossing = true): Edge[] {
+  const approx = 1e-6 * size
+  const n = segs.length
+  const moved: Edge[] = segs.map((s, i) => {
+    if (s instanceof Line2 || s instanceof Arc2) {
+      const o = s.offset(e)
+      if (o === null) throw new ModelingError(_offsetProblem(what, distance, 'an arc collapses', closed, fr.fp(s.at(s.length / 2))))
+      return Edge._fromCurve(curveOf(o, fr))
+    }
+    return offsetCurveEdge((s as Curve2).edge as Edge, e, fr, approx, what, n > 1 ? i : null)
+  })
+  const lo = new Array<number>(n).fill(0.0)
+  const hi = new Array<number>(n).fill(1.0)
+  const startAt: (Complex | null)[] = new Array(n).fill(null)
+  const endAt: (Complex | null)[] = new Array(n).fill(null)
+  const joins = new Map<number, Edge[]>()
+  for (let i = closed ? 0 : 1; i < n; i++) {
+    const s1 = segs[(i - 1 + n) % n]
+    const s2 = segs[i]
+    const [sn, cs] = turn(s1, s2)
+    if (Math.abs(sn) < SMOOTH && cs > 0) continue
+    const v = s1.end
+    if (Math.abs(sn) < SMOOTH) throw new ModelingError(_offsetProblem(what, distance, 'the chain turns back', closed, fr.fp(v)))
+    const m1 = moved[(i - 1 + n) % n]
+    const m2 = moved[i]
+    const p = fr.local(m1.end)
+    const q = fr.local(m2.start)
+    if (sn * e < 0) {
+      // the corner opens: fill it
+      if (corners === 'round') {
+        const d1 = p.sub(v)
+        const d2 = q.sub(v)
+        let sweep = d2.div(d1).phase()
+        if (sn > 0 && sweep < 0) sweep += TAU
+        if (sn < 0 && sweep > 0) sweep -= TAU
+        joins.set(i, edgesOf([new Arc2(v, Math.abs(e), d1.phase(), sweep)], fr))
+      } else if (corners === 'chamfer') {
+        joins.set(i, edgesOf([new Line2(p, q)], fr))
+      } else {
+        // sharp: the sides go on along their tangents until they meet
+        const hits = _lineLine(p, s1.t1, q, s2.t0)
+        if (!hits.length) throw new ModelingError(_offsetProblem(what, distance, 'parallel tangents', closed, fr.fp(v)))
+        const mpt = hits[0]
+        const extra: Seg[] = []
+        if (m1.geomType === 'line') endAt[(i - 1 + n) % n] = mpt
+        else extra.push(new Line2(p, mpt))
+        if (m2.geomType === 'line') startAt[i] = mpt
+        else extra.push(new Line2(mpt, q))
+        joins.set(i, edgesOf(extra, fr))
+      }
+    } else {
+      // the corner closes: cut both where they cross, nearest the corner
+      let [a0, a1] = m1._range()
+      let [b0, b1] = m2._range()
+      let other = m2._curve()
+      if (n === 1) {
+        // (a closed edge with a corner where it starts and ends: its end half crosses its start half
+        // near the corner; the kernel finds no crossing of a curve with itself)
+        a0 = m1._param(0.5)
+        b1 = m2._param(0.5)
+        other = ext.copy_curve(other)
+      }
+      let sols: Any
+      try {
+        sols = kernelCall(what, () => ext.intersect_curves(m1._curve(), a0, a1, other, b0, b1, approx))
+      } finally {
+        if (n === 1) ext.delete_curve(other)
+      }
+      const wv = fr.world(v)
+      let best: [number, number, number] | null = null
+      const prev = (i - 1 + n) % n
+      for (const sol of sols) {
+        for (const [u1, u2] of sol.end != null ? [sol.t, sol.end] : [sol.t]) {
+          const f1 = m1._fraction(Number(u1))
+          const f2 = m2._fraction(Number(u2))
+          if (f1 <= lo[prev] || f2 >= hi[i]) continue
+          const d = new Vector(k.curve_evaluate(m1._curve(), Number(u1))).distanceTo(wv)
+          if (best === null || d < best[0]) best = [d, f1, f2]
+        }
+      }
+      if (best === null) throw new ModelingError(_offsetProblem(what, distance, 'the offsets do not meet near the corner', closed, fr.fp(v)))
+      hi[prev] = best[1]
+      lo[i] = best[2]
+    }
+  }
+  const out: Edge[] = []
+  for (let i = 0; i < n; i++) {
+    out.push(...(joins.get(i) ?? []))
+    const m = moved[i]
+    if (hi[i] - lo[i] <= 1e-9) throw new ModelingError(_offsetProblem(what, distance, 'a segment vanishes', closed, fr.fp(segs[i].start)))
+    const sa = startAt[i]
+    const ea = endAt[i]
+    if (m.geomType === 'line' && (sa !== null || ea !== null)) {
+      const a = sa !== null ? fr.world(sa) : m.pointAt(lo[i])
+      const b = ea !== null ? fr.world(ea) : m.pointAt(hi[i])
+      if (b.sub(a).dot(m.end.sub(m.start)) <= 0) throw new ModelingError(_offsetProblem(what, distance, 'a segment vanishes', closed, fr.fp(segs[i].start)))
+      out.push(Line(a, b))
+    } else if (lo[i] > 0.0 || hi[i] < 1.0) {
+      out.push(m.trim(lo[i], hi[i]))
+    } else {
+      out.push(m)
+    }
+  }
+  if (crossing) {
+    const hit = chainCrossing(out, closed, size)
+    if (hit !== null && chainCrossing(edgesOf(segs, fr), closed, size) === null) {
+      throw new ModelingError(_crossingProblem(what, distance, fr.fp(fr.local(hit)), closed))
+    }
+  }
+  return out
+}
+
+/** A point where a chain of edges (end to end) runs into itself, or null. Next to the point where two
+ * edges meet, 1e-4 of each is left out (tangent joints touch along a stretch). */
+export function chainCrossing(edges: Edge[], closed: boolean, size: number): Vector | null {
+  const tol = 1e-9 * Math.max(size, 1e-300)
+  const n = edges.length
+  const boxes = edges.map((e) => e.bbox())
+  const pad = 10 * tol
+  const apart = (a: BoundBox, b: BoundBox): boolean => {
+    const amin = a.min.toArray()
+    const amax = a.max.toArray()
+    const bmin = b.min.toArray()
+    const bmax = b.max.toArray()
+    return [0, 1, 2].some((i) => amax[i] + pad < bmin[i] || bmax[i] + pad < amin[i])
+  }
+  const meet = (a: Edge, fa: [number, number], b: Edge, fb: [number, number]): Vector[] => {
+    const [u0, u1] = [a._param(fa[0]), a._param(fa[1])].sort((x, y) => x - y)
+    const [w0, w1] = [b._param(fb[0]), b._param(fb[1])].sort((x, y) => x - y)
+    if (!(u1 > u0 && w1 > w0)) return []
+    const sols = kernelCall('offset', () => ext.intersect_curves(a._curve(), u0, u1, b._curve(), w0, w1, tol))
+    return sols.map((s: Any) => new Vector(s.point))
+  }
+  const cut = 1e-4
+  for (let i = 0; i < n; i++) {
+    if (edges[i].geomType !== 'line' && edges[i].geomType !== 'circle') {
+      const pts = edges[i].selfIntersections({ tolerance: tol })
+      if (pts.length) return pts[0]
+    }
+    for (let j = i + 1; j < n; j++) {
+      if (apart(boxes[i], boxes[j])) continue
+      let fa: [number, number] = [0.0, 1.0]
+      let fb: [number, number] = [0.0, 1.0]
+      if (j === i + 1) {
+        fa = [0.0, 1.0 - cut]
+        fb = [cut, 1.0]
+      }
+      if (closed && i === 0 && j === n - 1) {
+        fa = [fa[0] + cut, fa[1]]
+        fb = [fb[0], fb[1] - cut]
+      }
+      const pts = meet(edges[i], fa, edges[j], fb)
+      if (pts.length) return pts[0]
+    }
+  }
+  return null
 }
 
 // =============================================================================== hull
@@ -705,7 +1179,7 @@ export function rebuiltBrep(sk: Sketch): number | null {
         for (const w of f.wires()) curves.push(...w._copyCurves())
         pieces.push(k.create_planar_faces(curves))
       } catch (e) {
-        if (!_isRuntimeError(e)) throw e
+        if (!_isRuntimeError(e) || _isCrash(e)) throw _crashOf(e)
         for (const c of curves) ext.delete_curve(c)
         return null
       }

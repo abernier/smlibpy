@@ -22,11 +22,20 @@ normal and x direction). Holes come back as inner loops; separate pieces as sepa
 
 ## Gotchas
 - A plane that misses the part: `ValueError: the plane does not cut the part`.
+- A plane that only touches the part (tangent to the side of a cylinder, through an edge of a
+  turned box, around the top of a torus): `ValueError: the plane only touches the part (along a
+  line or a curve, or at a point), so the section has no area; move the plane into the part`. (It
+  raised a bare `KernelError`, and the torus gave a disc that is not in the part.)
 - A plane lying on a face of the part returns that face's area.
+- A part made by `merge`: the sections of the cells the plane cuts, a region per cell
+  (`merge(Box(40, 40, 20), Cylinder(6, 30)).section(Plane.XY)`: 2 faces, the block's 1486.903
+  around the insert's 113.097). A face between two cells that lies in the plane comes once.
 - The section's edges are B-splines, also where the part has arcs (a rounded box gives
   `geom_type == "bspline"` edges): `edges().circles()` finds nothing on a section.
-- The kernel can fail on a plane that passes exactly through a vertex or the end of a sweep
-  (`KernelError: section failed (SM_ERR)`); shift the plane slightly.
+- The kernel can fail on a plane that passes exactly through a vertex or the end of a sweep, or
+  that is tangent to a face inside the part (along the wall of a hole): `KernelError: section
+  failed (SM_ERR): the kernel could not make faces of the curves where the plane meets the part;
+  ...`; shift the plane slightly.
 
 ## Example
 ```python
@@ -44,4 +53,5 @@ except ValueError as e:
 ```
 
 ## Related
-`split` (keep a side as a solid), `Part.outline`, `Part.silhouette`, `extrude`.
+`slices` (sections a step apart), `Mesh.section` (`Mesh-section`), `split` (keep a side as a
+solid), `Part.outline`, `Part.silhouette`, `extrude`.

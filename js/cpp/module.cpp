@@ -8,6 +8,8 @@
 //   mesh.cpp           meshes as arrays
 
 #include "common.h"
+#include "curve_tools.h"
+#include "trace.h"
 
 #include <SmApiGeneral.h>
 
@@ -19,7 +21,9 @@ static void init()
     if (!done)
     {
         SmApiCreateContext();
-        install_sm_error_callback();  // the kernel's messages go to the trail errors report
+        install_sm_error_callback();       // SmPyLib's trail, which the next line takes the place of:
+        smlibpy::install_kernel_trace();  // the kernel's failures (KernelError.trace)
+        smlibpy::init_kernel_limits();    // (NLib's cap on the control points of a helix fit)
         done = true;
     }
 }

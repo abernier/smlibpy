@@ -24,7 +24,12 @@ A `MassProperties` with plain attributes:
 | `inertia` | 3x3 numpy array about the center of mass, axes parallel to the world axes |
 | `principal_moments` | the eigenvalues of `inertia`, ascending |
 | `principal_axes` | unit `Vector`s, in the order of `principal_moments` |
+| `radii_of_gyration` | `sqrt(principal moment / mass)`, in the same order |
 | `density` | the density passed in |
+
+and two methods: `inertia_about(point)`, the tensor about another point (axes parallel to the
+world's: the parallel-axis theorem), and `moment_about(axis)`, the moment about an `Axis` (a
+shaft's, a pivot's).
 
 `inertia` is the standard tensor: the diagonal holds Ixx, Iyy, Izz; the off-diagonals hold the
 **negated** products of inertia (`inertia[0][1] = -∫(x-cx)(y-cy) dm`). An L-shaped part with
@@ -48,9 +53,9 @@ to 1e-11.
 A coarse `accuracy` saves little on dense free-form faces: every knot span gets at least 7 x 7
 points.
 
-A body whose faces the kernel fits (B-spline chamfers, shells and offsets of curved faces,
-sweeps cut by planes) is itself defined only to 1e-7 to 4e-6 in volume: its faces meet to
-within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`. Beyond 1e-5 (or a
+A body whose faces the kernel fits (fitted chamfers and blends, shells and offsets of curved
+faces, sweeps cut by planes) is itself defined only to 1e-7 to 1e-5 in volume (more on small
+parts): its faces meet to within 1e-6 to 2e-5 mm. Compare it with a formula to 1e-5; see `generic`. Beyond 1e-5 (or a
 coarser `accuracy`) the result comes with a `RuntimeWarning`, once per part, which gives the
 volume of the faces as they are and how uncertain it is; the integration measures that by
 integrating the volume with three fields that agree only on a closed surface:
@@ -74,6 +79,11 @@ could not be integrated to `accuracy` gets "the integration reached a relative a
 
 ## Errors
 
+- `KernelError: mass properties failed: face 0 of the body crosses the seam of its surface ...`:
+  a broken body (no public operation makes one) whose face the integration cannot converge on;
+  it stops after a budget of surface points instead of running for minutes. `is_valid()` is
+  False.
+
 - `ValueError: mass_properties: the density must be positive` for `density <= 0`.
 - `ValueError: mass_properties: accuracy must be between 1e-10 and 1e-2` for any other
   accuracy (`0` included).
@@ -94,13 +104,37 @@ precise = shaft.mass_properties(accuracy=1e-10)
 print(precise.volume)                           # 31415.92653589793
 ```
 
-Inertia about another point `p` (parallel axis theorem, checked on a box corner):
+Inertia about another point, and about an axis (checked on a box corner and edge):
 
 ```python
-d = p - np.array(mp.center.to_tuple())
-I_p = mp.inertia + mp.mass * (d.dot(d) * np.eye(3) - np.outer(d, d))
+I_end = mp.inertia_about((0, 0, 50))             # about the end face's center
+print(abs(I_end[0][0] - m * (3 * 10**2 + 4 * 100**2) / 12) / I_end[0][0] < 1e-9)   # True
+side = mp.moment_about(Axis((10, 0, 0), (0, 0, 1)))  # about a line on the side
+print(abs(side - 1.5 * m * 10**2) / side < 1e-9)  # True
+print(round(mp.radii_of_gyration[0], 6))         # 7.071068: 10 / sqrt(2) about the axis
+```
+
+## Meshes
+
+`mesh.mass_properties(density=1.0) -> MassProperties` and `mesh.centroid` give the same for
+what a closed mesh encloses (a scan, an STL file), exact for its triangles: each spans a
+tetrahedron with a point near the mesh, and their integrals add up. No `accuracy`: the mesh is
+what it is. The numbers are those of the mesh, not of the surface it was made from (a box with a
+bore meshed at 0.01: volume 21740.18, exact 21738.05).
+
+- An open mesh raises `ModelingError: mass_properties: the mesh is open (3 open edges), so it
+  encloses no volume; close it first: mesh.fill_holes() or mesh.repaired()`.
+- A mesh that faces inward (negative volume) raises `ModelingError`; `repaired()` turns it.
+- An empty mesh raises `ValueError: an empty mesh has no mass properties`.
+- `mesh.center()` is the middle of the bounding box, `mesh.centroid` the center of mass.
+
+```python
+scan = (Box(40, 30, 20) - Cylinder(6, 40)).mesh(0.01)   # or import_stl("part.stl")
+mp = scan.mass_properties(density=7.85e-3)
+print(round(mp.mass, 2), scan.centroid)                  # 170.66 Vector(0, 0, 0)
+print(np.round(np.diag(mp.inertia), 1))                  # [19659.2 30649.2 38931. ]
 ```
 
 ## Related
 
-`measures` (volume, area, center), `generic` (accuracy), `is_valid`
+`measures` (volume, area, center), `generic` (accuracy), `is_valid`, `files/Mesh`

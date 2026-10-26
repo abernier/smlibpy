@@ -18,9 +18,11 @@ show(plate)
 Parts are B-reps with exact surfaces. You combine shapes with `+`, `-` and `&`, and every
 feature returns a new part. Faces and edges are picked by their geometry, for example
 `part.edges().parallel_to(Z).concave()`. Fillets can be circular, variable or G2/G3, and there
-are shells, lofts, sweeps, freeform surfaces (also fitted to point clouds), blends between
-surfaces, parts of several cells, stitching, intersections, rays and mass properties. STEP, USD
-and DXF files are read and written with the exact geometry; meshes go to glTF and STL.
+are shells, lofts, sweeps, direct edits of faces, freeform surfaces (also fitted to point clouds),
+blends and bridges between surfaces, fills of holes and curve networks, parts of several cells,
+sheet metal, deformations, stitching, intersections, rays and mass properties. STEP, USD,
+OpenCASCADE `.brep` and DXF files are read and written with the exact geometry, IGES files read;
+meshes go to glTF, OBJ and STL, and drawings with hidden lines to SVG and DXF.
 Text comes from TrueType and OpenType fonts as exact outlines, ready to engrave or emboss.
 
 <div class="grid cards" markdown>

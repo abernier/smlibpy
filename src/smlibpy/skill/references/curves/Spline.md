@@ -7,10 +7,13 @@ A smooth cubic curve exactly through the given points.
 
 - `points`: two or more distinct points, as separate arguments (2-tuples or 3-tuples, world
   coordinates). 3D works.
-- `tangents`: `(start_tangent, end_tangent)`, a tuple of two; either may be `None`. Only the
-  direction counts; the length of the vectors is ignored.
-- `closed=True`: closes the curve back to the first point, tangent-continuous at the join.
-  Do not repeat the first point (repeating it is harmless).
+- `tangents`: `(start_tangent, end_tangent)`, a tuple of two; either may be `None`. Or one
+  direction for **every** point (a list as long as the points, none of them `None`): the curve
+  passes through each point in that direction. Only the direction counts; the length of the
+  vectors is ignored.
+- `closed=True`: closes the curve back to the first point, as smooth at the join as everywhere
+  else (periodic: the same tangent and curvature on both sides). At least three points. Do not
+  repeat the first point (repeating it is harmless).
 
 ## Returns
 An `Edge` with `geom_type == "bspline"` that passes through every point (deviation ~1e-14).
@@ -18,16 +21,16 @@ Without `tangents`, each end tangent comes from the parabola through the three e
 `Spline(a, b)` with two points and no tangents returns a `Line`.
 
 ## Gotchas
-- **No `periodic` option.** `closed=True` matches position and tangent at the join, not
-  curvature exactly. Fine for outlines and sweeps; not class-A.
-- `closed=True` with two different tangents makes a kink at the join without an error.
+- `closed=True` without tangents is periodic (curvature continuous at the join). With
+  `tangents=(t, t)` the join has that tangent and is only tangent continuous; with two different
+  tangents it makes a kink without an error.
+- Thousands of points take milliseconds (1600 points: 5 ms).
 - Repeating the first point without `closed=True` closes the curve with a kink.
 - **Pass points as separate arguments.** `Spline([p1, p2, p3])` (one list of 2 or 3 points)
   raises TypeError; use `Spline(*pts)`.
 - Uneven spacing can overshoot between points. Add points where the shape matters.
-- `edge.bbox()` of a spline samples 33 points and can be too small: for
-  `Spline((0, 0), (1, 1), (2, 0), (30, 0))` it reports max y 0.80 although the curve passes
-  through (1, 1). Sample `point_at` densely when you need extents.
+- Many points (a scan, a sampled curve): `fit_curve(points, tolerance=...)` gives a curve within
+  the tolerance with few control points instead of one per point.
 - To continue another edge smoothly, pass its end tangent:
   `tangents=(line.tangent_at(1), None)`.
 - A closed spline as a **sweep path** is split into two halves automatically and gives one
@@ -39,7 +42,7 @@ Without `tangents`, each end tangent comes from the parabola through the three e
 - `ValueError: spline points must be distinct` for consecutive duplicates.
 - `ValueError: cannot normalize a zero-length vector` for a zero tangent, or two points with
   `closed=True`.
-- `IndexError` for `tangents=((1, 0),)`: always pass a pair.
+- `ValueError: Spline: tangents are (start, end) or one per point (4), got 1` for `tangents=((1, 0),)`.
 
 ## Example
 ```python
@@ -53,5 +56,5 @@ cam = make_face(Wire([Line((0, 0), (40, 0)), Line((40, 0), (40, 10)), top, Line(
 ```
 
 ## Related
-`Bezier` (control points instead of through points), `TangentArc`, `features/sweep`,
-`features/loft`.
+`Bezier` (control points instead of through points), `fit_curve` (near many points),
+`TangentArc`, `features/sweep`, `features/loft`.

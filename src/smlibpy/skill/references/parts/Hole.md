@@ -53,8 +53,9 @@ flat (no drill point).
 - A tilted planar face works: the hole follows the face normal.
 - Overlapping holes: cut them in one call. `part - (Locations((0, 0), (5, 0)) *
   Hole(4, 12)).on(top)` on a 60×40×10 plate gives the right part (volume 23125.2). A single
-  hole that overlaps an earlier parallel hole, cut on its own, raises `KernelError`: cut both
-  at once (`part - [h1, h2]`). See `booleans`.
+  hole that overlaps an earlier parallel hole, cut on its own, makes the kernel fail; smlibpy
+  then cuts a NURBS copy of it, which works (within about 1e-8; both at once, `part - [h1, h2]`,
+  is exact). See `booleans`.
 - Tools that miss the part cut nothing and raise nothing. Check the face count or the volume
   after the cut: each through hole adds 1 face, a blind hole 2.
 - Measure hole positions with the cylinder face's `axis`: `axis.origin` is the bottom of the

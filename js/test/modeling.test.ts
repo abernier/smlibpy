@@ -8,7 +8,9 @@ import {
   Circle,
   Cone,
   Cylinder,
+  Ellipse,
   EllipticalArc,
+  FilletPolyline,
   GridLocations,
   Helix,
   Line,
@@ -19,6 +21,7 @@ import {
   Rectangle,
   RegularPolygon,
   RoundedRectangle,
+  Shell,
   Slot,
   Sphere,
   Spline,
@@ -37,6 +40,8 @@ import {
 } from '../src/index.ts'
 import { approx, leggauss, same } from './_approx.ts'
 import { Box as _Box, Rectangle as _Rectangle, Sphere as _Sphere, merge as _merge } from '../src/index.ts'
+import { ext, setWarningHandler } from '../src/kernel.ts'
+import { setGuardSeconds } from '../src/defeature.ts'
 
 const PI = Math.PI
 
@@ -185,6 +190,120 @@ test('loft and sweep', () => {
   approx((sweep(Circle(2), elbow) as Part).volume, PI * 4 * elbow.length, 1e-6)
   const helix = Helix(10, 40, 20)
   approx((sweep(Rectangle(4, 2), helix) as Part).volume, 8 * helix.length, 1e-5)
+})
+
+test('sweep puts the center of the profile on the path', () => {
+  // The kernel anchored the profile by the box along the world axes of the profile already turned to
+  // the path: a triangle along (1, 1, 1) started 1.6667 before the path (along (1, 2, 0.3): 0.8025
+  // off). The center of the triangle's own box is 2.357 from its centroid, in its plane.
+  const tri = Polygon([0, 0], [10, 0], [0, 10])
+  for (const d0 of [[0, 0, 1], [1, 0, 0], [1, 1, 1], [1, 2, 0.3]]) {
+    const l = Math.hypot(d0[0], d0[1], d0[2])
+    const d = d0.map((v) => v / l)
+    const along = (v: Vector) => v.x * d[0] + v.y * d[1] + v.z * d[2]
+    const part = sweep(tri, Line([0, 0, 0], d.map((v) => 10 * v))) as Part
+    assert.ok(part.isValid())
+    approx(part.volume, 500)
+    const caps = part.faces().filter((f) => f.geomType === 'plane' && Math.abs(along(f.normalAt())) > 1 - 1e-9)
+    const start = caps.reduce((a, b) => (Math.abs(along(a.center())) < Math.abs(along(b.center())) ? a : b))
+    approx(along(start.center()), 0, 0, 1e-9)
+    approx(start.center().length, Math.sqrt(50) / 3)
+  }
+})
+
+test('sweep carries the profile along a 3D path', () => {
+  // Each piece of a 3D path was turned afresh from the sketch: the rectangle turned by 90 degrees at
+  // the last joint of this path (its end 4 wide in x and 2 high), and a section through that joint
+  // failed (SM_ERR). Tangent edges are swept in one go now.
+  const path = FilletPolyline([0, 0, 0], [0, 0, 40], [40, 0, 40], [40, 40, 40], { radius: 8 })
+  const bar = sweep(Rectangle(4, 2), path) as Part
+  assert.ok(bar.isValid())
+  approx(bar.volume, 8 * path.length, 1e-6)
+  const size = (b: { min: Vector; max: Vector }) => [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z]
+  const end = bar.faces().find((f) => f.geomType === 'plane' && f.normalAt().y > 1 - 1e-9 && f.center().y > 39)!
+  size(end.bbox()).forEach((v, i) => approx(v, [2, 0, 4][i], 0, 1e-6))
+  size(bar.section(new Plane([40, 8, 40], null, [0, 1, 0])).bbox()).forEach((v, i) => approx(v, [2, 0, 4][i], 0, 1e-6))
+  // at a corner the profile turns by the smallest rotation from one leg to the next: the long side
+  // ends along (-1 / sqrt(5), -0.4, 0.8), where it ended along X before
+  const legs = Polyline([0, 0, 0], [0, 0, 20], [20, 0, 20], [20, 20, 30])
+  const part = sweep(Rectangle(4, 1), legs) as Part
+  const t = new Vector(0, 2, 1).normalized()
+  const last = part.faces().find((f) => f.geomType === 'plane' && Math.abs(f.normalAt().dot(t)) > 1 - 1e-9 && f.center().distanceTo([20, 20, 30]) < 1)!
+  const side = last.edges().reduce((a, b) => (a.length >= b.length ? a : b))
+  approx(side.length, 4)
+  approx(Math.abs(side.end.sub(side.start).normalized().dot(new Vector(-1 / Math.sqrt(5), -0.4, 0.8))), 1)
+  // a closed path that is not planar: in one go, without a turn where the halves met
+  const loop = Spline(
+    ...Array.from({ length: 8 }, (_, i) => {
+      const a = (i * PI) / 4
+      return [20 * Math.cos(a), 14 * Math.sin(a), 6 * Math.sin(2 * a) + 3 * Math.cos(a)]
+    }),
+    { closed: true },
+  )
+  const ring = sweep(Rectangle(4, 1), loop) as Part
+  assert.ok(ring.isValid() && ring.faces().length === 4)
+  approx(ring.volume, 4 * loop.length, 1e-4)
+  approx((sweep(Circle(2), loop) as Part).volume, 4 * PI * loop.length, 1e-7) // (in two halves, as before)
+  // an open profile along a closed edge sweeps into a surface in one go (it was split into halves and
+  // refused: "surface sweeps need a single-edge path")
+  const band = sweep(Line([0, 0, 0], [4, 0, 0]), Circle(20).edges().at(0)!)
+  assert.ok(band instanceof Shell)
+  approx(band.area, 2 * PI * 20 * 4, 1e-6)
+})
+
+/** Runs fn and gives back the warnings it made. */
+function warned<T>(fn: () => T): [T, string[]] {
+  const said: string[] = []
+  setWarningHandler((m) => said.push(m))
+  try {
+    return [fn(), said]
+  } finally {
+    setWarningHandler((m) => console.warn(m))
+  }
+}
+
+test('sweep along kinked closed 3D paths', () => {
+  // Loops closed with a kink, Spline(...pts, pts[0]), through these symmetric points lie in a plane
+  // at 0, 1/4, 1/2 and 3/4 of their length: taken for planar, their halves went to the planar-path
+  // sweep, which gave no closed solid (ModelingError; valid before the profile was carried along).
+  // Now they are swept as 3D paths, the profile carried along the halves: area x length less the
+  // overlap of the ends where they cross at the kink (for the circle about tan(kink) x 2 r^3 / 3,
+  // the first moment of its inner half). Since 0.5.0's close-out the rectangle meets itself where the
+  // loop closes (turned there by the smallest rotation, the turn it gained round the loop spread along
+  // it): it was 543.404104 and 477.647314.
+  const cases = [[20, Rectangle(4, 1), 543.39558], [14, Circle(2), 1499.196379], [14, Rectangle(4, 1), 477.122125]] as const
+  for (const [ry, profile, volume] of cases) {
+    const pts = Array.from({ length: 8 }, (_, i) => {
+      const a = (i * PI) / 4
+      return [20 * Math.cos(a), ry * Math.sin(a), 6 * Math.sin(2 * a)]
+    })
+    const path = Spline(...pts, pts[0])
+    const [body, said] = warned(() => sweep(profile, path) as Part)
+    assert.deepEqual(said, [])
+    assert.ok(body.isValid())
+    approx(body.volume, volume, 1e-6)
+    const overlap = profile.area * path.length - body.volume
+    const kink = (path.tangentAt(0).angleTo(path.tangentAt(1)) * PI) / 180
+    if (profile.edges().at(0)!.geomType === 'circle') approx(overlap, (Math.tan(kink) * 2 * 2 ** 3) / 3, 0.03)
+    else assert.ok(overlap > 0 && overlap < (Math.tan(kink) * 1 * 4 ** 2) / 8) // at most with the long side in the bend
+  }
+})
+
+test('sweep edge by edge where the joined path fails', () => {
+  // The edges of this 3D fillet polyline are joined into one curve and swept in one go; the kernel
+  // cannot sweep a circle or an ellipse of this size along it (SM_ERR; the rectangle goes), which
+  // raised (a valid body before the profile was carried along). The edges are swept on their own
+  // then, each turned to its own start: a profile that is not round turns where they meet, and a
+  // warning says so.
+  const path = FilletPolyline([0, 0, 0], [13.2, 22.83, -20.78], [38.33, 52.89, -20.73], [38.66, 70.52, -34.06], { radius: 5 })
+  const [tube, quiet] = warned(() => sweep(Circle(2), path) as Part)
+  assert.deepEqual(quiet, [])
+  assert.ok(tube.isValid())
+  approx(tube.volume, 4 * PI * path.length, 1e-6)
+  const [oval, said] = warned(() => sweep(Ellipse(2, 1.5), path) as Part)
+  assert.ok(said.length === 1 && said[0].includes('could not be carried along the path'))
+  assert.ok(oval.isValid())
+  approx(oval.volume, 3 * PI * path.length, 1e-6)
 })
 
 test('a disjoint sketch union', () => {
@@ -337,3 +456,124 @@ test('cells with cavities', () => {
   assert.throws(() => _merge(_Box(1, 1, 1)), /two or more/)
 })
 
+test('cells of inserts that touch the part around them', () => {
+  // An insert that touches the box's wall at a point joins its shell to the box's: the outer cell
+  // kept the insert's volume (8000 + 268.083 in a box of 8000).
+  const box = _Box(20, 20, 20)
+  const ball = _Sphere(4)
+  for (const where of [[6, 0, 0], [6, 6, 0]] as const) {
+    // touching a face, and an edge
+    const cells = box.merge(ball.translate(where)).cells().map((c) => c.volume).sort((x, y) => x - y)
+    assert.equal(cells.length, 2)
+    approx(cells[0], ball.volume)
+    approx(cells[1], 8000 - ball.volume)
+  }
+  const two = box.merge(ball.translate([6, 0, 0]), ball.translate([-6, 0, 0])).cells().map((c) => c.volume).sort((x, y) => x - y)
+  assert.equal(two.length, 3)
+  approx(two[0], ball.volume)
+  approx(two[1], ball.volume)
+  approx(two[2], 8000 - 2 * ball.volume)
+  // Along a line the cavity cannot be cut out (the kernel's cut of a tangent cylinder fails): the
+  // outer cell was 8502.655, more than the box.
+  assert.throws(() => box.merge(Cylinder(4, 10).translate([6, 0, 0])).cells(), (e: Error) => e instanceof ModelingError && /cells: the cells inside a cell could not be cut out/.test(e.message))
+})
+
+test('cells must fill the part', () => {
+  // The cells add up to the merged part, or cells() throws: here region_shells leaves the cavity out.
+  const m = _Box(10, 10, 10).merge(_Box(2, 2, 2))
+  const shells = ext.region_shells
+  ext.region_shells = (b: number) => shells(b).map((s: number[]) => {
+    for (const x of s.slice(1)) ext.delete_brep(x)
+    return s.slice(0, 1)
+  })
+  const guard = setGuardSeconds(0) // (in this kernel, which has the call replaced, not in the probe worker)
+  try {
+    assert.throws(() => m.cells(), (e: Error) => e instanceof ModelingError && /cells: the cells add up to a volume of 1008, the part has 1000/.test(e.message))
+  } finally {
+    ext.region_shells = shells
+    setGuardSeconds(guard)
+  }
+})
+
+test('cells of parts whose faces meet within a tolerance', () => {
+  // A pin with fitted rounds in a block: the faces leave gaps of about 2e-6 of the volume, so the
+  // part and its cells integrate differently by about as much (456.57590 against 456.57678). cells()
+  // threw that they did not add up, and section() and cellAt() with it. (The pin's chamfers did this
+  // until 0.5.0; they are exact cones now.)
+  const pin = Cylinder(3, 10)
+  const m = Box(8, 8, 5).merge(pin.fillet(pin.edges(), 1, { continuity: 'G2' }))
+  const cells = m.cells()
+  assert.equal(cells.length, 4)
+  approx(cells.reduce((sum, c) => sum + c.volume, 0), 456.57678, 1e-7)
+  approx(m.cellAt([0, 0, 0])!.volume, 45 * PI)
+  const xy = m.section(Plane.XY)
+  assert.equal(xy.faces().length, 2)
+  approx(xy.area, 64)
+  const wide = Cylinder(10, 20)
+  assert.equal(Box(30, 30, 10).merge(wide.fillet(wide.edges(), 3, { continuity: 'G2' })).cells().length, 4)
+})
+
+test('section of a merged part has every cell', () => {
+  const m = _merge(_Box(40, 40, 20), Cylinder(6, 30))
+  const xy = m.section(Plane.XY) // was 1 face, 1486.903: the insert's disc was dropped
+  const areas = xy.faces().map((f) => f.area).sort((x, y) => x - y)
+  assert.equal(areas.length, 2)
+  approx(areas[0], 36 * PI)
+  approx(areas[1], 1600 - 36 * PI)
+  const xz = m.section(Plane.XZ) // was KernelError: section failed (SM_ERR)
+  assert.equal(xz.faces().length, 5)
+  approx(xz.area, 40 * 20 + 12 * 10)
+  approx(m.section(Plane.XY.offset(12)).area, 36 * PI) // the pin end alone
+  assert.throws(() => m.section(Plane.XY.offset(40)), /does not cut/)
+  // a plane through the face between two cells: that face once
+  const stack = _merge(_Box(40, 40, 20), _Box(40, 40, 20).translate([0, 0, 20]))
+  const mid = stack.section(Plane.XY.offset(10)).faces()
+  assert.equal(mid.length, 1)
+  approx(mid[0].area, 1600)
+  assert.throws(() => m.split(Plane.XZ), (e: Error) => e instanceof ModelingError && /split: the part is not a valid solid/.test(e.message)) // was KernelError: split failed
+  // an insert that touches the part along a line has no cells (a wrong sketch of 370 for 400 before)
+  const touching = _Box(20, 20, 20).merge(Cylinder(3, 10).rotate(X, 90).translate(7, 0, 0))
+  assert.throws(() => touching.section(Plane.XY), (e: Error) => e instanceof ModelingError && /^section: cells: /.test(e.message))
+})
+
+
+// -- review of 0.5.0: mirrors ------------------------------------------------------------------------
+import * as RV from '../src/index.ts'
+
+test('mirrored bodies keep the sides of their faces', () => {
+  for (const plane of [RV.Plane.YZ, RV.Plane.XZ, RV.Plane.XY]) {
+    const m = RV.Box(20, 20, 20).cut(RV.Box(10, 10, 10)).mirror(plane)
+    approx(m.volume, 7000, 1e-9)
+    approx(m.mesh(0.01).volume, 7000, 1e-9)
+    assert.equal(m.edges().concave().length, 12)
+    assert.deepEqual(m.check(), [])
+    const cavity = m.faces().filter((f) => f.center().length < 6)
+    for (const f of cavity) assert.ok(f.normalAt().dot(f.center()) < 0) // (into the cavity, away from the material)
+  }
+  const box = RV.Box(60, 40, 20)
+  approx(box.mirror(RV.Plane.YZ).shell(2).mesh(0.01).volume, 15744, 1e-9)
+  const rounded = box.fillet(box.edges(), 5)
+  const mr = rounded.mirror(RV.Plane.YZ)
+  approx(mr.shell(2, mr.faces().top()).volume, rounded.shell(2, rounded.faces().top()).volume, 1e-9)
+  const pin = RV.Cylinder(2, 5).mirror(RV.Plane.YZ)
+  assert.equal(pin.edges().circles().length, 2)
+  approx(pin.chamfer(pin.edges(), 1.94).volume, RV.Cylinder(2, 5).chamfer(RV.Cylinder(2, 5).edges(), 1.94).volume, 1e-12)
+})
+
+test('bumped cylinder sheets stay bumped (the kernel took them for cylinders)', () => {
+  const w = Math.SQRT1_2
+  const circle = [[5, 0], [5, 5], [0, 5], [-5, 5], [-5, 0], [-5, -5], [0, -5], [5, -5], [5, 0]]
+  const sheet = (bump: number): RV.Shell => {
+    const s = 1 + bump / (5 * Math.SQRT2)
+    const rows = circle.map(([x, y], i) => [0, 10].map((z) => (i === 1 ? [x * s, y * s, z] : [x, y, z]) as [number, number, number]))
+    const weights = circle.map((_, i) => [i % 2 ? w : 1, i % 2 ? w : 1])
+    return RV.nurbsSurface(rows, [[0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], [0, 0, 1, 1]], [2, 1], weights)
+  }
+  const bumped = sheet(0.5)
+  approx(bumped.area, 316.2716, 1e-5)
+  const stretched = bumped.scale([1, 1, 2])
+  assert.equal(stretched.faces()[0].geomType, 'bspline')
+  approx(stretched.area, 632.543, 1e-5)
+  assert.equal(RV.fromSmb(RV.toSmb(bumped)).faces()[0].geomType, 'bspline')
+  assert.equal(sheet(0).scale([1, 1, 2]).faces()[0].geomType, 'cylinder')
+})

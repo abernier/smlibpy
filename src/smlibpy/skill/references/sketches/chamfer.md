@@ -15,7 +15,8 @@ A new `Sketch`; the cut is a `line` edge.
 - `Rectangle(40, 20).chamfer(3)`: 8 lines, area 800 - 4 * 3*3/2 = 782.
 - A 90° corner loses `length**2 / 2`: the L with the five outer corners chamfered by 1 loses 2.5.
 - Corners between lines and arcs work too: a rectangle fused with a circle, its two line-arc
-  corners chamfered by 1, has area 657.5163.
+  corners chamfered by 1, has area 657.5163. So do corners next to splines and ellipses (the
+  length measured along the curve; the curve is cut there).
 
 ## Gotchas
 - Symmetric only (the same length on both edges). An asymmetric bevel: draw it with `Profile`
@@ -27,7 +28,7 @@ A new `Sketch`; the cut is a `line` edge.
 - `ModelingError: chamfer: length 6 at (-5, 5) and length 6 at (-5, -5) overlap on the line
   (-5, 5) -> (-5, -5): they need 6 + 6 of its 10; use smaller corners`
 - `ValueError: chamfer: the length must be positive`.
-- Points that are no corner, smooth corners, spline corners: as for `fillet`.
+- Points that are no corner, smooth corners: as for `fillet`.
 
 ## Example
 ```python

@@ -35,6 +35,11 @@
 
 ### 18. Overlapping parallel through cuts: empty part or KernelError
 - **Fixed:** several tools that fail one after the other are combined and applied at once (the hole pattern now gives 23125.2); a single tool overlapping an earlier cut raises KernelError with the hint to combine the tools.
+- **Reopened (kernel plan B3, B10):** on curved bodies a single tool still went wrong silently: `(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0, 0)` gave an empty Part and `&` the whole part (29089.8; right: 929.188). Both raise ModelingError now; the result itself needs the tools combined (28160.6) until the NURBS retry of B10.
+- **Fixed again (kernel plan B10):** a single tool beside an earlier parallel hole or boss is
+  retried as a NURBS copy: `(Sphere(20) - Cylinder(6, 60)) - Cylinder(3, 60).translate(8, 0, 0)` is
+  28160.6083 and its `&` 929.1883; `(Box(40, 40, 10) - Cylinder(6, 30)) - Cylinder(3,
+  30).translate(8, 0, 0)` is 14612.2528.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `11-many-tools.py`, `12-overlapping-tools.py`,
   `13-overlap-scope.py`, `14-overlap-workaround.py`, `17-overlapping-holes.py`, `18-overlap-empty-repro.py`, `19-overlap-variants.py`
 - **What happens:** cutting a second parallel cylinder that overlaps an existing through hole:
@@ -68,6 +73,7 @@
 
 ### 6. `Part.is_valid()` is True for a self-intersecting body with negative volume
 - **Fixed:** is_valid() also requires a positive volume (coarse integration); the revolve raises before that anyway.
+- **Reopened, fixed again (kernel plan B1, B2):** Boolean results skipped the check (they were marked sound when made): `Box(10, 10, 10) - Torus(10, 3).translate(-10, 5, 0)` had volume -776.529 and was valid. `is_valid()` now integrates every result when asked; the moved torus also keeps its tolerance now (B1), and the cut is a valid 716.84.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, script `16-part-metadata-validity.py`
 - **What happens:** `Rectangle(10, 10).on(Plane.front).revolve()` (profile crosses the axis)
   gives `Part(6 faces, volume=-785.404)` and `is_valid()` → True.
@@ -118,6 +124,8 @@
 ## LOW
 
 ### 2. `Part.solids()` does not separate a body that sits inside a cavity
+- **Fixed:** `solids()` splits the regions that share no face (kernel plan B16): 7000 and 64; the
+  touching cells of a merged part stay one solid.
 - **Session:** `2026-10-12_21-26-09_parts-primitives`, scripts `02-several-bodies.py`, `03-island-in-cavity.py`
 - **What happens:** `(Box(20, 20, 20) - Box(10, 10, 10)) + Box(4, 4, 4)` → `solids()` returns 1
   part with volume 7064 and 18 faces; the inner cube is 3 mm from the walls.
@@ -209,6 +217,10 @@
 
 ### 21. Booleans with an empty result return an empty Part silently
 - **Fixed:** empty results stay where they are right (tool encloses the part, identical bodies, disjoint intersections); a wrong empty result (overlapping tools) is retried or raises.
+- **Reopened (kernel plan B3):** the check confirmed an empty cut with the kernel's intersection of the same pair, which fails the same way on curved bodies and imported pulleys (crescendo parts 19 and 40). An empty cut is accepted now only from tools that hold the part's volume and span its box.
+- **Fixed again (kernel plan B3, B10, B13):** the cases above are right, a wrong empty result
+  raises, and right empty results are judged by meshes and classified points instead of the kernel's
+  `brep_relationship`.
 - **Session:** `2026-10-12_21-38-20_parts-booleans`, scripts `03-contact-cases.py`, `07-empty-part-crash.py`
 - **What happens:** `a - Box(big)`, `a & disjoint`, `a & [t1, t2]` with disjoint tools: `Part(0 faces,
   volume=0)`, `is_valid()` False, `solids()` empty. `export_step` then raises `ValueError: nothing to write`.

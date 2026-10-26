@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import math
 import os
-import time
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Iterable, TypeVar
 
-from ._kernel import ModelingError, k
+from ._guard import _KernelFault, _how, _wait, here, isolated
+from ._kernel import KernelError, ModelingError, k
 
 if TYPE_CHECKING:  # pragma: no cover
     from .shapes import Face, Part, ShapeList
@@ -31,30 +31,45 @@ __all__ = ["fillet_faces", "remove_fillets", "remove_faces"]
 #: tangentially: the edge is a rail of a fillet.
 TANGENCY = 2.0
 
-#: Seconds the kernel may take. On Linux and macOS the kernel first does the work in a forked
-#: copy of the process: if it crashes there or takes longer than this, a ``ModelingError`` says
-#: so and this process is left alone (SMLib's patching and Boolean code can crash or loop on
-#: some parts). ``0`` runs the kernel directly, as on Windows.
+#: Seconds the kernel may take for one step that can crash or loop. Such steps run in another
+#: process (see GUARD_PROCESS): if the kernel crashes there or takes longer than this, a
+#: ``ModelingError`` says so and this process is left alone (SMLib's patching, offset and
+#: Boolean code can crash or loop on some parts). This process never runs the step itself: what
+#: the step made comes back as an exact copy (the kernel's binary ``.smb``). Ctrl-C stops such a
+#: step at once; a kernel call that runs in this process can be stopped only by ending the
+#: process. The steps are those of :func:`remove_fillets`, :func:`remove_faces`,
+#: ``surface_fillet``, ``shell``, ``offset``, ``thicken`` and ``Part.cells()``, fillets and
+#: chamfers of parts read from files (STEP, ``.smb``, USD) and, with GUARD_BOOLEANS, Booleans.
+#: Where no other process can run a step (see GUARD_PROCESS), it runs in this process, held to this
+#: many seconds by the kernel's deadline: past it, the loops of the kernel's surface and topology
+#: intersections give up and the step fails as one that did not finish (a step that spends its time
+#: elsewhere in the kernel is not stopped). ``0`` runs the kernel in this process, without a limit.
 GUARD_SECONDS = 20.0
+
+#: Where the guarded steps run: ``"fork"``, a forked copy of this process per step (Linux,
+#: macOS); ``"helper"``, one helper process for the session that gets the bodies as ``.smb``
+#: files (for Windows, and for processes that must not fork); ``"auto"``, a fork where the
+#: system can fork and the helper elsewhere. Without either (a frozen application) the steps run
+#: in this process, held to GUARD_SECONDS by the kernel's deadline.
+GUARD_PROCESS = "auto"
+
+#: Run every Boolean (``+``, ``-``, ``&``, ``merge``) in another process too, as the steps above
+#: (off by default: a fork costs about 1.5 ms, the helper process copies the bodies). For long
+#: batch runs over unknown inputs, where a crash of the kernel must not end the run.
+GUARD_BOOLEANS = False
 
 _D = k.defeature
 R = TypeVar("R")
 _VOLUMES: dict[int, tuple[Any, float]] = {}  # id of a body's handle -> (handle, volume)
 
 
-class _KernelFault(ModelingError):
-    """The kernel crashed or did not finish in the forked copy; ``reason`` says which."""
-
-    def __init__(self, what: str, reason: str, hint: str):
-        self.reason = reason
-        super().__init__(f"{what}: {reason}; {hint}")
-
-
 def _guarded(what: str, work: Callable[[], R]) -> R:
     """``work()``, after a forked copy of the process has run it to the end (see GUARD_SECONDS).
     The kernel is deterministic, and the copy starts from the same memory, so it does what
     this process will do; not always where the kernel reads memory it has freed, since the two
-    processes reuse freed memory differently (ai/todo/features.md, 37)."""
+    processes reuse freed memory differently (ai/todo/features.md, 37). Superseded by
+    ``smlibpy._guard.isolated``, which brings the copy's result back instead of running the step
+    again here."""
     limit = float(GUARD_SECONDS)
     if not limit > 0 or not hasattr(os, "fork"):
         return work()
@@ -62,29 +77,39 @@ def _guarded(what: str, work: Callable[[], R]) -> R:
         warnings.simplefilter("ignore", DeprecationWarning)  # forking a process with threads
         pid = os.fork()
     if pid == 0:  # pragma: no cover - the child
+        from ._guard import _quiet_crashes
+
+        _quiet_crashes()
         code = 0
         try:
             work()
         except BaseException:  # the parent raises it again when it does the work
             code = 3
         os._exit(code)
-    deadline = time.monotonic() + limit
-    pause = 0.001
-    while True:
-        done, status = os.waitpid(pid, os.WNOHANG)
-        if done:
-            break
-        if time.monotonic() > deadline:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-            raise _KernelFault(what, f"the kernel did not finish within {limit:g} s",
-                               "smlibpy.defeature.GUARD_SECONDS sets the limit")
-        time.sleep(pause)
-        pause = min(pause * 2, 0.05)
-    if os.WIFSIGNALED(status):
-        raise _KernelFault(what, f"the kernel crashed (signal {os.WTERMSIG(status)}, in a copy of this process)",
-                           "this process is fine")
+    _wait(what, pid, limit)
     return work()
+
+
+def _isolated(what: str, work: Callable[[], Any]) -> Any:
+    """The body (a kernel Brep) ``work()`` makes, made in another process and read back from an
+    exact copy (``smlibpy._guard.isolated``). ``work`` may be a closure: where the steps run in the
+    helper process, which takes functions of modules only, it runs here."""
+    if _how(GUARD_PROCESS) == "helper" and "<" in getattr(work, "__qualname__", "<"):
+        return here(what, work)
+    b = isolated(what, work)
+    if b is None:
+        raise KernelError(what, "the kernel returned no body")
+    return b
+
+
+def _defeature_step(brep: Any, groups: list[list[Any]], rebuild: str) -> dict[str, Any]:
+    """The feature executive's step (isolated)."""
+    return _D.defeature(brep, groups, rebuild)  # type: ignore[no-any-return]
+
+
+def _fillet_removal_step(brep: Any, faces: list[Any]) -> dict[str, Any]:
+    """The fillet removal's step (isolated)."""
+    return _D.remove_fillet_faces(brep, faces)  # type: ignore[no-any-return]
 
 
 # =============================================================================
@@ -269,7 +294,7 @@ def _executive(what: str, body: Part, groups: list[list[Face]], rebuild: str) ->
     """The executive's patched copy of ``body`` without ``groups`` (None if it failed), and
     whether the kernel crashed or hung."""
     try:
-        res = _guarded(what, lambda: _D.defeature(body._brep, [[f._f for f in g] for g in groups], rebuild))
+        res = isolated(what, _defeature_step, body._brep, [[f._f for f in g] for g in groups], rebuild)
     except _KernelFault:
         return None, True
     return (None if res["brep"] is None else body._like(res["brep"])), False
@@ -301,7 +326,7 @@ def _remove_pass(part: Part, faces: list[Face], origin: dict[Any, Face], b: _Ble
         if edge and key(edge) not in tried_a and key(edge) not in faulted:
             tried_a.add(key(edge))
             try:
-                res = _guarded("remove_fillets", lambda: _D.remove_fillet_faces(body._brep, [f._f for f in edge]))
+                res = isolated("remove_fillets", _fillet_removal_step, body._brep, [f._f for f in edge])
             except _KernelFault:
                 faulted.add(key(edge))
                 res = {"brep": None}
@@ -402,21 +427,38 @@ def remove_fillets(part: Part, faces: Any = None, *, max_radius: float | None = 
 
 def _complete(faces: list[Face]) -> list[Face]:
     """The selection with the faces it encloses: a face all of whose neighbours are selected
-    (the floor of a blind hole, the top of a boss) goes with them."""
+    (the floor of a blind hole, the top of a boss) goes with them. Not a face that the selection
+    only rounds off: one that meets all its neighbours tangentially where the selection, too,
+    meets the faces around it tangentially (the top of a box whose top edges are rounded, with
+    those rounds selected). Such a face is the part, not a feature's floor; a pocket's floor
+    inside its rounds goes with the pocket's walls, whose rim is sharp."""
     out = list(faces)
     changed = True
     while changed:
         changed = False
         ids = {f._identity() for f in out}
+        enclosed = []
         for f in list(out):
             for g in f.neighbors():
-                if g._identity() in ids:
+                if g._identity() in ids or any(g == x for x in enclosed):
                     continue
                 if all(n._identity() in ids for n in g.neighbors()):
-                    out.append(g)
-                    ids.add(g._identity())
-                    changed = True
+                    enclosed.append(g)
+        inside = ids | {g._identity() for g in enclosed}
+        rim_sharp = any(_sharp(e) for f in out for e in f.edges()
+                        if any(x._identity() not in inside for x in e.faces()))
+        for g in enclosed:
+            if rim_sharp or any(_sharp(e) for e in g.edges()):
+                out.append(g)
+                ids.add(g._identity())
+                changed = True
     return out
+
+
+def _sharp(e: Any) -> bool:
+    """Whether an edge between two faces is a corner (its faces do not meet tangentially)."""
+    fs = e.faces()
+    return len(fs) == 2 and fs[0] != fs[1] and e.convexity != "smooth"
 
 
 def _feature_kind(group: list[Face]) -> int:
@@ -438,13 +480,22 @@ def _feature_kind(group: list[Face]) -> int:
 
 
 def _close(body: Part, group: list[Face]) -> tuple[Part | None, str]:
-    """``body`` without one connected set of faces, the gap closed and checked; or None and why."""
+    """``body`` without one connected set of faces, the gap closed and checked; or None and why.
+    Where the faces' rim says nothing about the direction (tangent or mixed edges), the volume may
+    change by no more than the faces span (their area times the size of their box), and the
+    part's box may not shrink: closing the gap there must not take away the part around it."""
     expect = _feature_kind(group)
     before = _volume(body)
+    bound = None
+    if expect == 0:
+        span = group[0].bbox()
+        for f in group[1:]:
+            span = span.union(f.bbox())
+        bound = sum(f.area for f in group) * span.diagonal
     why = ""
     for rebuild in ("extend", "planar_cap"):
         try:
-            res = _guarded("remove_faces", lambda: _D.defeature(body._brep, [[f._f for f in group]], rebuild))
+            res = isolated("remove_faces", _defeature_step, body._brep, [[f._f for f in group]], rebuild)
         except _KernelFault as e:
             why = why or e.reason
             continue
@@ -453,17 +504,36 @@ def _close(body: Part, group: list[Face]) -> tuple[Part | None, str]:
                           "the kernel did not take the faces as a feature (it must be bounded by closed loops of edges)")
             continue
         candidate = body._like(res["brep"])
-        problem = _problem(before, candidate, expect, None)
+        problem = _problem(before, candidate, expect, None) or (_spill(body, candidate, before, bound)
+                                                                 if bound is not None else None)
         if problem is None:
             return candidate, ""
         why = why or f"the kernel returned {problem}"
     return None, why
 
 
+def _spill(body: Part, result: Part, before: float, bound: float) -> str | None:
+    """What is wrong with a result whose volume may change either way: a change beyond ``bound``,
+    or a box that shrank (the gap was closed by taking the part around it away)."""
+    change = abs(_volume(result) - before)
+    if change > bound:
+        return f"a volume change of {change:.6g}, more than the faces span ({bound:.6g})"
+    a, b = body.bbox(), result.bbox()
+    tol = 1e-6 * max(1.0, a.diagonal)
+    for i, axis in enumerate("XYZ"):
+        if b.min[i] > a.min[i] + tol or b.max[i] < a.max[i] - tol:
+            return (f"a part that shrank along {axis} ({a.min[i]:.6g}..{a.max[i]:.6g} -> "
+                    f"{b.min[i]:.6g}..{b.max[i]:.6g})")
+    return None
+
+
 def remove_faces(part: Part, faces: Any, *, partial: bool = False) -> Part:
     """See :meth:`Part.remove_faces`."""
     part._require_valid("remove_faces")
-    sel = _complete(_faces_of(part, faces, "remove_faces"))
+    given = _faces_of(part, faces, "remove_faces")
+    if len(fillet_faces(given)) == len(given):  # rounds only: taken out by what takes out rounds
+        return remove_fillets(part, given, partial=partial)
+    sel = _complete(given)
     if len(sel) == len(part.faces()):
         raise ModelingError("remove_faces: that is every face of the part; nothing would be left")
     body = part

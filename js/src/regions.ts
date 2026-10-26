@@ -16,7 +16,7 @@
 // A polygon is an array of [x, y] points (numpy's n x 2 array as rows), closed, without repeating
 // the first point.
 
-import { KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
+import { KernelError, ModelingError, _crashOf, _isCrash, ext, k, kernelCall } from './kernel.ts'
 import type { Plane } from './geometry.ts'
 import { Sketch } from './shapes.ts'
 
@@ -253,7 +253,7 @@ export function build(
     try {
       return faces(p.keep)
     } catch (e) {
-      if (!(e instanceof KernelError)) throw e
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
       if (p.keep.length === 1) throw e
       // loops that touch upset the kernel's nesting: build each loop and combine them
       return _combined(p.keep.map((i) => faces([i])))

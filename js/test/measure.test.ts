@@ -32,7 +32,7 @@ import { ext } from '../src/kernel.ts'
 import { model as flange } from '../examples/flange.ts'
 import { model as spring } from '../examples/spring.ts'
 import { approx, leggauss } from './_approx.ts'
-import { Axis as _Axis, Box as _Box, Cylinder as _Cylinder, Sphere as _Sphere, Vector as _Vector } from '../src/index.ts'
+import { Axis as _Axis, Box as _Box, Cylinder as _Cylinder, Sphere as _Sphere, Vector as _Vector, Vertex as _Vertex, X } from '../src/index.ts'
 import { _list } from '../src/shapes.ts'
 
 const PI = Math.PI
@@ -223,7 +223,7 @@ for (const text of ['@&8', 'Qq%', '(', 'SMLIB 42']) {
 
 for (const [name, make, volume] of [
   ['spring', spring, 2170.0811],
-  ['flange', flange, 157979.623],
+  ['flange', flange, 157979.6668],
 ] as const) {
   test(`the ${name} example against a tight integration`, () => {
     // the kernel's integration was 2.9e-5 (spring) and 8e-7 (flange) off at the default
@@ -409,6 +409,51 @@ test('hitBy selects what a ray meets', () => {
   assert.equal(parts.hitBy([100, 50, 0], [-1, 0, 0]).length, 0)
   assert.throws(() => box.edges().hitBy([0, 0, 50], [0, 0, -1]), /faces and bodies/)
   assert.throws(() => box.faces().hitBy([0, 0, 0]), /axis/)
+})
+
+// -- points -----------------------------------------------------------------------------------
+test('classify points exactly', () => {
+  const part = _Box(40, 30, 20).cut(_Cylinder(5, 30))
+  assert.deepEqual(part.classify([10, 8, 0]), ['inside', null])
+  assert.deepEqual(part.classify([0, 0, 0]), ['outside', null]) // in the hole
+  const [where, face] = part.classify([20, 0, 0]) as [string, Face]
+  assert.equal(where, 'on')
+  assert.equal(face.geomType, 'plane')
+  approx(face.center().x, 20)
+  assert.equal((part.classify([20, 15, 0])[1] as any).geomType, 'line') // an edge, not its faces
+  assert.ok((part.classify([20, 15, 10])[1] as any).equals(new _Vertex(20, 15, 10))) // a vertex, not its edges
+  assert.ok(part.contains([10, 8, 0]) && part.contains([20, 0, 0]) && !part.contains([0, 0, 0]))
+  assert.equal(part.classify([20.001, 0, 0])[0], 'outside')
+  assert.equal(part.classify([20.001, 0, 0], 0.01)[0], 'on')
+  assert.throws(() => part.classify([0, 0, 0], -1), /positive/)
+  // where the parity of ray hits is wrong: a ray that grazes the cylinder hits once (odd: "inside");
+  // one tangent to a hole's wall from a point in the material hits twice ("outside")
+  const cylinder = _Cylinder(5, 20)
+  assert.ok(cylinder.raycast([-10, 5, 0], [1, 0, 0]).length === 1 && !cylinder.contains([-10, 5, 0]))
+  const holed = _Box(40, 30, 20).cut(_Cylinder(5, 40).rotate(X, 90))
+  assert.ok(holed.raycast([5, 0, -8], Z).length === 2 && holed.contains([5, 0, -8]))
+  const hollow = _Box(20, 20, 20).cut(_Box(6, 6, 6))
+  assert.ok(!hollow.contains([0, 0, 0]) && hollow.contains([8, 0, 0])) // a cavity is outside
+})
+
+test('classify does not trust one ray', () => {
+  // The kernel takes the region from one ray along +X. After a tight bounding box it found no face
+  // along that ray from inside this fused cylinder and torus, and said "outside".
+  const part = _Cylinder(2.5, 6).rotate(X, 90).fuse(Torus(8, 4).translate(9.5, 0, -0.5913))
+  part.bbox()
+  for (const p of [[-2.1123, 2.7923, 1.2387], [-2, 2.9, 1], [-2, -2.9, 1]]) {
+    assert.ok(part.contains(p) && part.raycast(p, [0.31, 0.52, 0.79]).length % 2 === 1)
+  }
+})
+
+test('cellAt names the cell of a merged part', () => {
+  const cells = _Box(20, 20, 20).merge(_Cylinder(4, 30))
+  approx(cells.cellAt([0, 0, 0])!.volume, PI * 16 * 20)
+  approx(cells.cellAt([8, 8, 0])!.volume, 8000 - PI * 16 * 20)
+  approx(cells.cellAt([0, 0, 14])!.volume, PI * 16 * 5)
+  assert.ok(cells.cellAt([0, 0, 30]) === null && cells.cellAt([4, 0, 0]) === null) // outside, on a face
+  const box = _Box(10, 10, 10)
+  assert.ok(box.cellAt([0, 0, 0]) === box && box.cellAt([20, 0, 0]) === null)
 })
 
 test('raycast on faces and meshes', () => {

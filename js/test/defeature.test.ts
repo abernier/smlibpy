@@ -2,10 +2,12 @@
 // Part.removeFaces.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ModelingError, k } from '../src/kernel.ts'
+import { _spill, setGuardSeconds } from '../src/defeature.ts'
 import { BoundBox, Z } from '../src/geometry.ts'
 import { Align } from '../src/align.ts'
 import { type Face, Part, type ShapeList } from '../src/shapes.ts'
@@ -211,6 +213,35 @@ for (const name of ['through hole', 'blind hole', 'boss', 'pocket', 'counterbore
   })
 }
 
+test('removeFaces keeps the face its rounds enclose', () => {
+  // The top of a box whose top edges are rounded has only rounds around it, so removeFaces of the
+  // rounds took the top along, and the kernel closed the gap at the rounds' lower edges: the box came
+  // back 2 lower (3200.0, valid). Likewise the top of a boss with a rounded rim.
+  let rounded = Box(20, 20, 10)
+  rounded = rounded.fillet(rounded.edges().top(), 2)
+  let back = rounded.removeFaces(rounded.faces().fillets())
+  assert.ok(back.faces().length === 6 && same(back.volume, 4000.0) && same(back.bbox().max.z, 5.0))
+  let boss = box.fuse(Cylinder(5, 10, { align: [Align.CENTER, Align.CENTER, Align.MIN] }).translate(0, 0, 10))
+  boss = boss.fillet(boss.edges().filter((e) => e.geomType === 'circle' && Math.abs(e.center().z - 20) < 1e-9), 1)
+  back = boss.removeFaces(boss.faces().filter((f) => !['plane', 'cylinder'].includes(f.geomType)))
+  assert.ok(same(back.volume, 24000.0 + 250 * Math.PI, 1e-8) && same(back.bbox().max.z, 20.0)) // was 1 lower
+  // the floor of a pocket inside its rounds still goes with the pocket's walls (a sharp rim)
+  let pocket = box.cut(Box(20, 20, 10, { align: [Align.CENTER, Align.CENTER, Align.MAX] }).translate(0, 0, 10))
+  pocket = pocket.fillet(pocket.edges().within(new BoundBox([-10.1, -10.1, -0.1], [10.1, 10.1, 0.1])), 2) // its floor
+  const inside = pocket.faces().within(new BoundBox([-10.1, -10.1, -0.1], [10.1, 10.1, 10.1]))
+  const walls = inside.filter((f) => !(f.isPlanar && Math.abs(f.center().z) < 1e-9)) // all but the floor
+  assert.ok(inside.length === 9 && walls.length === 8)
+  back = pocket.removeFaces(walls)
+  assert.ok(back.faces().length === 6 && same(back.volume, 24000.0, 1e-12))
+})
+
+test('a feature without a direction may not shrink the part', () => {
+  const lower = Box(40, 30, 16).translate(0, 0, -2)
+  assert.ok(_spill(box, lower, 24000.0, 1e9)!.startsWith('a part that shrank along Z (-10..10 -> -10..6)'))
+  assert.ok(_spill(box, lower, 24000.0, 100.0)!.startsWith('a volume change of 4800, more than the faces span (100)'))
+  assert.equal(_spill(box, box, 24000.0, 100.0), null)
+})
+
 test('removeFaces errors', () => {
   const holed = box.cut(Cylinder(5, 40))
   raises(() => holed.removeFaces([]), RangeError)
@@ -228,4 +259,43 @@ test('rounds and a hole taken out, a plane face refused', () => {
   const plain = holed.removeFaces(holed.faces().cylinders())
   approx(plain.volume, 24000, 1e-9)
   raises(() => rounded.removeFillets(rounded.faces().top()), ModelingError, /no fillets/)
+})
+
+// -- the guard: a probe worker with a time limit (smlibwasm; smlibpy forks its process) ---------
+test('a kernel step that does not finish is stopped after GUARD_SECONDS and dropped (smlibwasm)', () => {
+  // The kernel's fillet removal loops on the outer bottom round of the enclosure example (it ran
+  // for good, at full load, before the guard): in a process of its own, so that a hang fails the
+  // test instead of stopping the suite.
+  const src = new URL('../src/', import.meta.url).href
+  const examples = new URL('../examples/', import.meta.url).href
+  const code = `
+    import { setGuardSeconds } from '${src}defeature.ts'
+    import { model } from '${examples}enclosure.ts'
+    const box = model()[0]
+    setGuardSeconds(1) // (after the model: its shell takes most of a second where the suite runs in parallel)
+    const round = box.faces().fillets().filter((f) => f.center().z < 2 && f.geomType === 'cylinder').slice(0, 1)
+    try {
+      box.removeFillets(round)
+      console.log('removed')
+    } catch (e) {
+      console.log(e.name + ': ' + e.message)
+    }
+    console.log('kept', box.removeFillets(round, { partial: true }).volume === box.volume)
+  `
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(run.signal, null, 'the step was not stopped')
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /ModelingError: removeFillets: the kernel could not take out 1 of the 1 fillet faces/)
+  assert.match(run.stdout, /kept true/)
+})
+
+test('without the guard the kernel steps run directly (smlibwasm)', () => {
+  const old = setGuardSeconds(0)
+  try {
+    const rounded = box.fillet(box.edges(), 3)
+    approx(rounded.removeFillets().volume, 24000, 1e-9)
+  } finally {
+    setGuardSeconds(old)
+  }
+  raises(() => setGuardSeconds(-1), RangeError)
 })

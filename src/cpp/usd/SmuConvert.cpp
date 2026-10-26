@@ -4,8 +4,10 @@
 // Changed for smlibpy: only the conversions between Breps and UsdBrepArrayData (lines 1-1390, 1600-2461 and
 // 2777-4242 of the original); the ones that read or write USD prims and stages (BrepAppend_SMLibToUsd,
 // BrepMove_UsdToSMLib*, CreateSm*_FromUsd*) left out; includes of OpenUSD replaced by pxr_lite.h. Cones of
-// semi-angle 0 are written as cylinders, and cones of negative semi-angle about the reversed axis (both
-// marked "smlibpy:"), so that what is written is in the schema's ranges.
+// semi-angle 0 are written as cylinders, and cones of negative semi-angle about the reversed axis, so that
+// what is written is in the schema's ranges; edges on lines, and on curves that are approximated, are
+// written with their curve trimmed to the edge; lines, circles and ellipses are written as the schema's
+// analytic curves; loops whose UV curves do not close are written without them (all marked "smlibpy:").
 
 /******************************************************************//**
 * FILE NAME --- SmuConvert.cpp
@@ -1339,6 +1341,164 @@ static SmStatus smu_AddSmBSplineSurface_ToBrepArrayData
 
 } // end smu_AddSmBSplineSurface_ToBrepArrayData
 
+/*******************************************************************//**
+PURPOSE: smlibpy: the edge curve of an SMLib line, circle or ellipse as the
+         schema's analytic curve (BrepCurve3dLineAPI, BrepCurve3dCircleAPI,
+         BrepCurve3dEllipseAPI), so that a body read back has the same edge
+         types (usd-brep wrote every edge curve as a B-spline).
+
+ NOTES: 
+ 1. The curve is written as the edge has it: from its start (the edge's interval
+    min) to its end. A line gets a unit direction and its range in length, a
+    circle or ellipse the frame in which the edge runs counterclockwise, its x
+    axis the refDirection, and its range in radians within [-2 pi, 2 pi].
+ 2. A line keeps its parameters up to an affine map, which the reader applies to
+    the edgeuses' UV curves too. A circle's or ellipse's angle is not affine in
+    its NURBS parameter: with bConicsAllowed false (a UV curve is written for the
+    edge) it stays a B-spline.
+ 3. Returns false (nothing appended) for other curves, or when the curve is not
+    what its type says within 1e-9 of its size.
+ ***********************************************************************/
+static bool smu_AddAnalyticCurve3d_ToBrepArrayData
+ (const SmCurve     * pCurve,          // in : the edge's curve
+  const SmExtent1d  & crInterval,      // in : the edge's interval on it
+  bool                bClosed,         // in : the edge starts and ends at one vertex
+  bool                bConicsAllowed,  // in : circles and ellipses may be written (no UV curve depends on their parameters)
+  bool                bWire,           // in : a wire edge (else an edge of faces)
+  UsdBrepArrayData  & rArrays,         // i/o: Tgt UsdBrepArrayData to be appended with curve data
+  TfToken           & rCurveType,      // out: the curve's type
+  double            & rdRangeMin,      // out: the edge's range on it
+  double            & rdRangeMax)      // out:
+{
+    if (pCurve == NULL)
+        return false;
+    const double t0 = crInterval.GetMin(), t1 = crInterval.GetMax();
+    if (!(t1 > t0) || !std::isfinite(t0) || !std::isfinite(t1))
+        return false;
+    auto at = [&](double t, SmPoint3d& p) { return pCurve->EvaluatePoint(t, p) == SM_SUCCESS; };
+    auto dot = [](const SmVector3d& a, const SmVector3d& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+    auto cross = [](const SmVector3d& a, const SmVector3d& b) {
+        return SmVector3d(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+    };
+    SmPoint3d p0, p1;
+    if (!at(t0, p0) || !at(t1, p1))
+        return false;
+
+    if (pCurve->GetType() == SmLine_TYPE)
+      {
+        SmVector3d span = p1 - p0;
+        const double len = std::sqrt(dot(span, span));
+        if (!(len > 0.0))
+            return false;
+        const SmVector3d dir(span.x / len, span.y / len, span.z / len);
+        // (the parameter runs at constant speed along the line)
+        for (int ii = 1; ii < 4; ++ii)
+          {
+            SmPoint3d p;
+            const double f = ii / 4.0;
+            if (!at(t0 + f * (t1 - t0), p))
+                return false;
+            const SmVector3d off = p - (p0 + SmVector3d(span.x * f, span.y * f, span.z * f));
+            if (std::sqrt(dot(off, off)) > 1e-9 * (1.0 + len))
+                return false;
+          }
+        double speed = len / (t1 - t0);
+        if (std::fabs(speed - 1.0) <= 1e-12)
+            speed = 1.0;
+        rdRangeMin = speed * t0;
+        rdRangeMax = speed * t1;
+        const SmPoint3d origin = p0 - SmVector3d(dir.x * rdRangeMin, dir.y * rdRangeMin, dir.z * rdRangeMin);
+        (bWire ? rArrays.m_sWireEdge_CurveLine_OriginArray : rArrays.m_sEdge_CurveLine_OriginArray)
+            .emplace_back(GfVec3d(origin.x, origin.y, origin.z));
+        (bWire ? rArrays.m_sWireEdge_CurveLine_DirectionArray : rArrays.m_sEdge_CurveLine_DirectionArray)
+            .emplace_back(GfVec3d(dir.x, dir.y, dir.z));
+        rCurveType = UsdBrepCurveTokens->brepCurve3dLineAPI;
+        return true;
+      }
+
+    if (!bConicsAllowed || !pCurve->IsKindOf(SmEllipse_TYPE))
+        return false;
+    const SmEllipse * pEllipse = static_cast<const SmEllipse*>(pCurve);
+    const SmAxis2Placement & crFrame = pEllipse->GetPosition();
+    const SmPoint3d center = crFrame.GetOriginRef();
+    SmVector3d xAxis = crFrame.GetXAxisRef(), yAxis = crFrame.GetYAxisRef();
+    const double xLen = std::sqrt(dot(xAxis, xAxis)), yLen = std::sqrt(dot(yAxis, yAxis));
+    const double r1 = pEllipse->GetXRadius(), r2 = pEllipse->GetYRadius();
+    if (!(xLen > 0.0) || !(yLen > 0.0) || !(r1 > 0.0) || !(r2 > 0.0) || std::fabs(dot(xAxis, yAxis)) > 1e-12 * xLen * yLen)
+        return false;
+    xAxis = SmVector3d(xAxis.x / xLen, xAxis.y / xLen, xAxis.z / xLen);
+    yAxis = SmVector3d(yAxis.x / yLen, yAxis.y / yLen, yAxis.z / yLen);
+    const double size = std::max(r1, r2);
+    const double twoPi = 2.0 * SM_PI;
+    // the angle of a point (the ellipse's parameter, x along r1), checked to lie on the ellipse
+    auto angle = [&](const SmPoint3d& p, double& a) {
+        const SmVector3d d = p - center;
+        const double x = dot(d, xAxis), y = dot(d, yAxis);
+        const SmVector3d off(d.x - xAxis.x * x - yAxis.x * y, d.y - xAxis.y * x - yAxis.y * y, d.z - xAxis.z * x - yAxis.z * y);
+        const double rx = x / r1, ry = y / r2;
+        if (std::sqrt(dot(off, off)) > 1e-9 * size || std::fabs(std::sqrt(rx * rx + ry * ry) - 1.0) > 1e-9)
+            return false;
+        a = std::atan2(ry, rx);
+        return true;
+    };
+    auto turn = [&](double a) { a = std::fmod(a, twoPi); return a < 0.0 ? a + twoPi : a; };  // into [0, 2 pi)
+    double a0 = 0.0, a1 = 0.0, aq = 0.0;
+    SmPoint3d pq;
+    if (!at(t0 + 0.25 * (t1 - t0), pq) || !angle(p0, a0) || !angle(p1, a1) || !angle(pq, aq))
+        return false;
+    const double d1 = turn(a1 - a0), dq = turn(aq - a0);
+    const bool ccw = bClosed ? dq < SM_PI : dq < d1;
+    const double sweep = bClosed ? twoPi : (ccw ? d1 : twoPi - d1);
+    if (!(sweep > 1e-12) || (!bClosed && sweep > twoPi - 1e-12))
+        return false;
+    SmVector3d zAxis = cross(xAxis, yAxis);
+    if (!ccw)  // (the frame turned over about x: the edge runs counterclockwise in it)
+      {
+        yAxis = SmVector3d(-yAxis.x, -yAxis.y, -yAxis.z);
+        zAxis = SmVector3d(-zAxis.x, -zAxis.y, -zAxis.z);
+        a0 = -a0;
+      }
+    // (the parameter runs one way round between the ends)
+    double last = 0.0;
+    for (int ii = 1; ii < 8; ++ii)
+      {
+        SmPoint3d p;
+        double a = 0.0;
+        if (!at(t0 + ii / 8.0 * (t1 - t0), p) || !angle(p, a))
+            return false;
+        const double off = turn((ccw ? a : -a) - a0);
+        if (off + 1e-9 < last || off > sweep + 1e-9)
+            return false;
+        last = off;
+      }
+    a0 = turn(a0 + SM_PI) - SM_PI;  // into [-pi, pi)
+    rdRangeMin = a0;
+    rdRangeMax = a0 + sweep;
+    if (rdRangeMax > twoPi)
+      {
+        rdRangeMin -= twoPi;
+        rdRangeMax -= twoPi;
+      }
+    const GfVec3d c(center.x, center.y, center.z), z(zAxis.x, zAxis.y, zAxis.z), x(xAxis.x, xAxis.y, xAxis.z);
+    if (std::fabs(r1 - r2) <= 1e-12 * size)
+      {
+        (bWire ? rArrays.m_sWireEdge_CurveCircle_CenterArray : rArrays.m_sEdge_CurveCircle_CenterArray).emplace_back(c);
+        (bWire ? rArrays.m_sWireEdge_CurveCircle_AxisArray : rArrays.m_sEdge_CurveCircle_AxisArray).emplace_back(z);
+        (bWire ? rArrays.m_sWireEdge_CurveCircle_RefDirectionArray : rArrays.m_sEdge_CurveCircle_RefDirectionArray).emplace_back(x);
+        (bWire ? rArrays.m_sWireEdge_CurveCircle_RadiusArray : rArrays.m_sEdge_CurveCircle_RadiusArray).emplace_back(r1);
+        rCurveType = UsdBrepCurveTokens->brepCurve3dCircleAPI;
+        return true;
+      }
+    (bWire ? rArrays.m_sWireEdge_CurveEllipse_CenterArray : rArrays.m_sEdge_CurveEllipse_CenterArray).emplace_back(c);
+    (bWire ? rArrays.m_sWireEdge_CurveEllipse_AxisArray : rArrays.m_sEdge_CurveEllipse_AxisArray).emplace_back(z);
+    (bWire ? rArrays.m_sWireEdge_CurveEllipse_RefDirectionArray : rArrays.m_sEdge_CurveEllipse_RefDirectionArray).emplace_back(x);
+    (bWire ? rArrays.m_sWireEdge_CurveEllipse_XRadiusArray : rArrays.m_sEdge_CurveEllipse_XRadiusArray).emplace_back(r1);
+    (bWire ? rArrays.m_sWireEdge_CurveEllipse_YRadiusArray : rArrays.m_sEdge_CurveEllipse_YRadiusArray).emplace_back(r2);
+    rCurveType = UsdBrepCurveTokens->brepCurve3dEllipseAPI;
+    return true;
+
+} // end smu_AddAnalyticCurve3d_ToBrepArrayData
+
 /*******************************************************************/ /**
  PURPOSE: Return UsdBrepArrayData compacted local index given
           a SmBrepData local index and the array of 
@@ -1624,6 +1784,13 @@ SmStatus BrepAppend_SMLibToUsdBrep
                                                                                                       : UsdBrepSolidTokens->none ;
                     double dWireEdgeParamMin = pWireEdgeData->m_vInterval.GetMin() ;  
                     double dWireEdgeParamMax = pWireEdgeData->m_vInterval.GetMax() ;  
+                    // smlibpy: lines, circles and ellipses are written as the schema's analytic curves
+                    const bool bAnalyticWireEdge =
+                           pWireEdge != NULL
+                        && smu_AddAnalyticCurve3d_ToBrepArrayData(pWireEdge->GetCurve(), pWireEdgeData->m_vInterval,
+                                                                  pWireEdgeData->m_lStartVertex == pWireEdgeData->m_lEndVertex,
+                                                                  true, true, rArrays, tWireEdgeCurveType,
+                                                                  dWireEdgeParamMin, dWireEdgeParamMax) ;
 
                     // note: WireEdge VertexIndices are not compacted here - that happens in the next block after sSmBrep_VertexShell_VertexIndices is built.
                     GfVec2i sWireEdgeVertices(rArrays.MapLocalToGlobal(pWireEdgeData->m_lStartVertex, sSpans.m_lVertexStartIndex),
@@ -1635,6 +1802,9 @@ SmStatus BrepAppend_SMLibToUsdBrep
                     rArrays.m_sWireEdgeRangeArray        .emplace_back(dWireEdgeParamMax);          // {CrvEndParam},     2nd of 2 per BrepArray WireEdge, sized:[2*TotalWireEdgeCnt]
                     rArrays.m_sWireEdgeVertexIndicesArray.emplace_back(sWireEdgeVertices);          // {Global StartVtxIndex, Global EndVtxIndex}, one entry per BrepArray WireEdge, sized:[TotalWireEdgeCnt]
                                                     
+                    if (bAnalyticWireEdge)
+                      { continue ; }
+
                     // wireEdge curve
                     SmCurve        * pWireEdgeCurve      = pWireEdge->GetCurve() ;
                     SmBSplineCurve * pBSplineCurve       = NULL ;
@@ -1713,6 +1883,46 @@ SmStatus BrepAppend_SMLibToUsdBrep
                 rArrays.m_sFaceuseOrientationTypeArray.emplace_back( (rFaceuseData.m_bOrientation  == TRUE) ? UsdBrepSolidTokens->same        // gwc: rFaceuseData.m_bOrientation uses UNSURE for notSet.
                                                                                                             : UsdBrepSolidTokens->opposite);  //      usd faceuse:orientationType has no notSet value. defaults to opposite
               }  // end Faceuses
+
+            // smlibpy: the loops whose UV curves do not meet head to tail as they are written (each
+            // whole, reversed where the edgeuse runs against its edge), such as the loop of a sphere's
+            // face that runs up and down its seam and leaves the poles out. usd-brep's validator wants
+            // them closed (BA.763, to 1e-6); such a loop is written without UV curves, which the reader
+            // rebuilds from the 3D curves. (SMLib's own bodies carry no UV curves; a body read from a
+            // file and checked carries those of SmBrep::AssertValid.)
+            std::vector<bool> sLoopUVOpen(lNumLoops, false);
+            for (uint32_t jj = 0; jj < lNumLoops; ++jj)
+              {
+                const SmLoopData & rLoopData = pBrepData_ii->m_vLoops[jj] ;
+                if (rLoopData.m_lLoopType != 0 || rLoopData.m_lNumEU == 0
+                    || rLoopData.m_lStartEU + rLoopData.m_lNumEU > lNumEdgeuses)
+                  { continue; }
+                std::vector<std::pair<SmPoint3d, SmPoint3d>> sEnds;
+                bool bAllCurves = true;
+                for (ULONG ee = rLoopData.m_lStartEU; ee < rLoopData.m_lStartEU + rLoopData.m_lNumEU; ++ee)
+                  {
+                    const SmEUData & rEUData = pBrepData_ii->m_vEdgeuses[ee] ;
+                    if (rEUData.m_lEUType != 0)
+                      { continue; }
+                    SmCurve * pUVCurve = rEUData.m_lUVCurve < pBrepData_ii->m_vUVCurves.GetSize()
+                                             ? pBrepData_ii->m_vUVCurves[rEUData.m_lUVCurve] : NULL ;
+                    if (SM_CAST_PTR(SmBSplineCurve, pUVCurve) == NULL)
+                      { bAllCurves = false; break; }  // (a loop with a curve missing is not checked)
+                    SmPoint3d sStart, sEnd;
+                    pUVCurve->GetEnds(sStart, sEnd);
+                    sEnds.emplace_back(rEUData.m_bOrientation == TRUE ? std::make_pair(sStart, sEnd)
+                                                                      : std::make_pair(sEnd, sStart));
+                  }
+                if (!bAllCurves)
+                  { continue; }
+                for (size_t ee = 0; ee < sEnds.size(); ++ee)
+                  {
+                    const SmPoint3d & rEnd  = sEnds[ee].second;
+                    const SmPoint3d & rNext = sEnds[(ee + 1) % sEnds.size()].first;
+                    if (std::hypot(rEnd.x - rNext.x, rEnd.y - rNext.y) > 1e-6)
+                      { sLoopUVOpen[jj] = true; break; }
+                  }
+              }
 
             // Faces and Face->Surfaces
             for (uint32_t jj = 0; jj < lNumFaces; ++jj)
@@ -1800,7 +2010,8 @@ SmStatus BrepAppend_SMLibToUsdBrep
                              SM_ERR,
                              _T("BrepAppend_SMLibToUsdBrep: face loop index is out of bounds"));
                     sLoopExportsUVCurves[lLoopIndex] =
-                        tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceNurbAPI;
+                        tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceNurbAPI
+                        && !sLoopUVOpen[lLoopIndex];  // smlibpy: (see sLoopUVOpen)
                   }
 
                 // face range - must match the UV conventions declared by each surface API's schema:
@@ -2142,6 +2353,20 @@ SmStatus BrepAppend_SMLibToUsdBrep
                   } // end iter every wireEdge comapcting the wireEdge->Vertex list
               } // end WireEdge existence check
 
+            // smlibpy: the edges a UV curve is written for (their circles and ellipses stay B-splines)
+            std::vector<bool> sEdgeHasUVCurve(lNumEdges, false);
+            if (bExportUVCurves)
+              {
+                for (uint32_t jj = 0; jj < pBrepData_ii->m_vEdgeuses.GetSize(); ++jj)
+                  {
+                    const SmEUData & rEU = pBrepData_ii->m_vEdgeuses[jj] ;
+                    if (   rEU.m_lEUType == 0 && rEU.m_lUVCurve != SM_NO_OBJECT
+                        && rEU.m_lLoop < sLoopExportsUVCurves.size() && sLoopExportsUVCurves[rEU.m_lLoop]
+                        && rEU.m_lEdge < lNumEdges)
+                      { sEdgeHasUVCurve[rEU.m_lEdge] = true ; }
+                  }
+              }
+
             // Edges - get divided between USd FaceEdges and WireEdges - only do FaceEdges here, WireEdges are done in the Shell block
             for (uint32_t jj = 0; jj < lNumEdges; ++jj)
               {
@@ -2157,6 +2382,14 @@ SmStatus BrepAppend_SMLibToUsdBrep
                                                                                       : UsdBrepSolidTokens->none ;
                 double dEdgeParamMin = rEdgeData.m_vInterval.GetMin() ;  
                 double dEdgeParamMax = rEdgeData.m_vInterval.GetMax() ;  
+                // smlibpy: lines, circles and ellipses are written as the schema's analytic curves (circles and
+                // ellipses only where no UV curve is written for the edge, see smu_AddAnalyticCurve3d_ToBrepArrayData)
+                const bool bAnalyticEdge =
+                       pEdge != NULL
+                    && smu_AddAnalyticCurve3d_ToBrepArrayData(pEdge->GetCurve(), rEdgeData.m_vInterval,
+                                                              rEdgeData.m_lStartVertex == rEdgeData.m_lEndVertex,
+                                                              jj >= sEdgeHasUVCurve.size() || !sEdgeHasUVCurve[jj],
+                                                              false, rArrays, tEdgeCurveType, dEdgeParamMin, dEdgeParamMax) ;
                 // since sSmBrep_VertexShell_VertexIndices is built, store global, compacted Edge->Vertex indices
                 GfVec2i sEdgeVertices(rArrays.MapLocalToGlobal(smu_CompactLocalIndex(rEdgeData.m_lStartVertex, sSmBrep_VertexShell_VertexIndices), 
                                                        sSpans.m_lVertexStartIndex), 
@@ -2170,9 +2403,30 @@ SmStatus BrepAppend_SMLibToUsdBrep
                 rArrays.m_sEdgeRangeArray        .emplace_back(dEdgeParamMax);             // {CrvEndParam},     2nd of 2 per BrepArray Edge, sized:[2*TotalEdgeCnt]
                 rArrays.m_sEdgeVertexIndicesArray.emplace_back(sEdgeVertices);             // {Global StartVtxIndex, Global EndVtxIndex}, one per BrepArray Edge, sized:[TotalEdgeCnt]
           
+                if (bAnalyticEdge)
+                  { continue ; }
+
                 // edge curve
                 SmCurve        * pEdgeCurve    = pEdge->GetCurve() ;
                 SmBSplineCurve * pBSplineCurve = NULL ;
+                // smlibpy: a line, or a curve that is approximated below, that runs past the edge is written
+                // trimmed to it. SMLib's lines (B-splines in SMLib, written as they are) run over an
+                // unbounded interval (+-1234567): each line edge of a body read from a file with analytic
+                // lines was written as a B-spline 2.5 km long (BA.365), and a body read back from that had a
+                // tight box of 1.2e6. (Trimming keeps a line's parameters, and the approximation is made to
+                // keep them.)
+                SmCurve        * pTrimmedCurve = NULL ;
+                SmObjDelete      sCleanTrimmedCurve ;
+                const SmExtent1d sNaturalInterval = pEdgeCurve->GetNaturalInterval() ;
+                if(   (pEdgeCurve->GetType() == SmLine_TYPE || !pEdgeCurve->IsKindOf(SmBSplineCurve_TYPE))
+                   && (   sNaturalInterval.GetMin() < rEdgeData.m_vInterval.GetMin()
+                       || sNaturalInterval.GetMax() > rEdgeData.m_vInterval.GetMax())
+                   && pEdgeCurve->Copy(*(pEdgeCurve->GetContext()), pTrimmedCurve) == SM_SUCCESS && pTrimmedCurve)
+                  {
+                    sCleanTrimmedCurve.SetObj(pTrimmedCurve) ;
+                    if(pTrimmedCurve->Trim(rEdgeData.m_vInterval) == SM_SUCCESS)
+                      { pEdgeCurve = pTrimmedCurve ; }
+                  }
                 SmObjDelete      sCleanBSplineCurve; // when pBSplineCurve is a approximation or copy of pEdgeCurve, clean up memory when done
           
                 // for now - force every curve to be a BSplineCurve for USD - later may add support for other curve types

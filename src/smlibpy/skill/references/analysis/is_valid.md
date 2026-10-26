@@ -1,11 +1,16 @@
 # is_valid, info
 
-`part.is_valid()` tells whether a `Part` is a closed, manifold solid with a positive volume.
+`part.is_valid()` tells whether a `Part` is a closed, manifold solid with a positive volume
+whose faces meet.
 `body.info()` returns its counts and bounding box in one dictionary.
 
 ## Signature
 
-`part.is_valid() -> bool` (only on `Part`)
+`part.is_valid(strict=False) -> bool` (only on `Part`)
+
+With `strict=True`, the kernel's own checks of every face, edge and vertex (`check`) must find
+nothing too: a stitched or imported body can be closed and enclose its volume while its vertices
+lie farther from its faces than their tolerances allow (see `check`).
 
 `body.info() -> dict` (on `Part`, `Shell`, `Sketch`)
 
@@ -19,13 +24,16 @@
 
 ## What valid means
 
-Every edge has exactly two faces, the faces close up, the bounding box is finite, and the
-enclosed volume is positive. The volume is a quick, coarse integration (or the measured one,
-if the part was measured before): it decides the sign, it is no measure. Inside-out bodies
-and bodies without volume are not valid. It does **not** check the geometry beyond that:
-"close up" is the topology. Faces that the kernel fitted meet only to within about 1e-6 to
-2e-5 mm (B-spline chamfers, shells of curved faces); such a body is valid, and its volume is
-defined only to 1e-7 to 4e-6 of its value (see `generic`).
+Every edge has exactly two faces, the faces close up, the bounding box is finite, the
+enclosed volume is positive, and the faces meet. `is_valid()` integrates the volume coarsely
+(or takes the measured one, if the part was measured before): it decides the sign, it is no
+measure. The same integration measures the gaps between the faces: it integrates the volume
+with three fields, which agree only for faces that meet. Inside-out bodies, bodies without
+volume and bodies whose faces leave gaps that make the volume uncertain by 1e-2 of its value
+or more (a Boolean result that left a face out: 0.25) are not valid. Faces that the kernel
+fitted meet only to within about 1e-6 to 2e-5 mm (fitted chamfers and blends, shells of curved
+faces); such a body is valid, and its volume is defined only to 1e-7 to 1e-5 of its value (the
+smaller the part, the more; see `generic`).
 
 | Body | `is_valid()` | Volume |
 |---|---|---|
@@ -35,15 +43,23 @@ defined only to 1e-7 to 4e-6 of its value (see `generic`).
 | empty Part (a cut that removes everything) | **False** | 0 |
 | spring whose profile overlaps the next turn | **True** | overlap counted twice |
 
-Booleans, revolve, sweep, loft, extrude with taper and thicken check their result and raise
-`ModelingError` instead of returning an inside-out or volume-less body; fillet, chamfer,
-shell and offset refuse an invalid input part. A fuse of two boxes touching along an edge
-raises.
+Booleans raise `ModelingError` for a result that is not closed, for an empty result the
+operands cannot explain (a cut whose tools hold less volume than the part, or do not span its
+box) and for an intersection that reaches out of an operand (the kernel can return the whole
+part). The volume of a Boolean result costs up to twice the Boolean and is integrated only
+when `is_valid()` is called; a chain of Booleans integrates nothing. Revolve, sweep, loft,
+extrude with taper and thicken check their result and raise instead of returning an
+inside-out or volume-less body; fillet, chamfer, shell and offset refuse an input part that is
+inside out or without volume by the kernel's quick integration (and one whose faces leave gaps,
+once it was measured: the gap measure costs 3 to 6 times as much on curved parts, so only
+`is_valid()` and `volume` pay for it). A fuse of two boxes touching along an edge raises.
 
 So `is_valid()` is necessary but not enough. Also check:
 
 - `volume` close to a formula: catches self-overlapping sweeps. No Boolean repairs a
   self-overlapping body (fuse, cut and intersect keep the doubled volume and stay "valid").
+  It also catches a Boolean whose operand's seam line touches the other operand (a pin
+  tangent to a bore: material left in the bore, valid).
 - `len(part.solids()) == 1` when you meant one body.
 - the picture (`snapshot(view="sheet")`).
 
@@ -75,4 +91,5 @@ print(corner.is_valid(), corner.volume)                        # True 2000.0: to
 
 ## Related
 
-`generic` (what to check after each step), `mass_properties`, `Part.solids`, `heal`
+`check` (what is wrong, and where), `generic` (what to check after each step),
+`mass_properties`, `Part.solids`, `heal`

@@ -2,7 +2,9 @@
 // defaults and keywords, kernel failures as KernelError, handles that free their objects.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BrepHandle, KernelError, ext, k, kernelCall } from '../src/kernel.ts'
+import { BrepHandle, KernelError, ext, k, kernelCall, module } from '../src/kernel.ts'
+import { Box, Cylinder } from '../src/parts.ts'
+import { approx } from './_approx.ts'
 
 test('kernel calls, smlibpy submodules and enums sit where Python has them', () => {
   assert.equal(typeof k.create_box, 'function')
@@ -87,4 +89,28 @@ test('a mesh comes out as arrays', () => {
   assert.equal(m.face_normals.length / 3, 12)
   ext.delete_polybrep(mesh)
   ext.delete_brep(box)
+})
+
+test('failed kernel calls leave the stack where they found it (smlibwasm)', () => {
+  // A kernel error leaves the module as a JavaScript exception, which did not release the stack
+  // the call had taken: 144 bytes for each of these, and 40,000 of them used the 4 MB stack up.
+  const sp = module.stackSave()
+  let failed = 0
+  for (let i = 0; i < 40000; i++) {
+    try {
+      ext.curve_data(0)
+    } catch {
+      failed++
+    }
+  }
+  assert.equal(failed, 40000)
+  assert.equal(module.stackSave(), sp)
+  // a raycast that misses the side of a cylinder fails on that face and finds it on its mesh
+  const c = Cylinder(5, 20)
+  for (let i = 0; i < 50; i++) assert.equal(c.raycast([4.9, 4.9, -30], [0, 0, 1]).length, 0)
+  assert.equal(module.stackSave(), sp)
+  approx(Box(30, 20, 10).cut(Cylinder(4, 20)).volume, 5497.3452, 1e-7)
+  // the stack lies below the static data (--stack-first), so that an overflow traps instead of
+  // overwriting that data
+  assert.ok(sp <= 4 * 1024 * 1024, `the stack ends at ${sp}`)
 })

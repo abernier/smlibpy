@@ -17,12 +17,13 @@
 //
 // The kernel does the geometry (SMLib's space bend and unbend); see src/cpp/sheetmetal.cpp.
 
-import { BrepHandle, KernelError, ModelingError, ext, k, kernelCall } from './kernel.ts'
-import { Axis, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
+import { BrepHandle, KernelError, ModelingError, _crashOf, _isCrash, _opts, ext, k, kernelCall, scope } from './kernel.ts'
+import { Axis, BoundBox, Location, Plane, Vector, type VectorLike, _degrees, _formatG, _radians, _vec } from './geometry.ts'
 import { Edge, Face, Part, Shape, ShapeList, Sketch, Vertex, Wire, _list, _mergedLines, _take, _typeName } from './shapes.ts'
-import { Line, _mod, _withOptions } from './curves.ts'
+import { CenterArc, Line, ThreePointArc, _mod, _withOptions } from './curves.ts'
 import { tessellate } from './mesh.ts'
 import { Box } from './parts.ts'
+import { type _Spec, _Plan, _imprint, _run } from './deform.ts'
 
 // biome-ignore lint: kernel results are what their bindings return
 type Any = any
@@ -31,6 +32,21 @@ const inspect = Symbol.for('nodejs.util.inspect.custom')
 
 /** Default K-factor: the neutral fiber at 0.44 of the thickness from the inside surface. */
 export const K_FACTOR = 0.44
+
+/**
+ * What `kFactor` of `unfold`, `flatPattern` and `bends` takes: one K-factor for every bend; a
+ * function `(radius, thickness, angle) => k`; a mapping from inside radius to K-factor (a `Map`, or
+ * an object such as `{ 1: 0.33, 6: 0.45 }`); `[r / t, k]` pairs, interpolated; `'din6935'`; or
+ * `null`/left out, the K-factor each bend was folded with (`fold`, `flange`), else `K_FACTOR`.
+ */
+export type KFactor =
+  | number
+  | string
+  | ((radius: number, thickness: number, angle: number) => number)
+  | ReadonlyMap<number, number>
+  | Readonly<Record<string, number>>
+  | readonly (readonly [number, number])[]
+  | null
 
 // =============================================================================== formulas
 /** The bend of `bendAllowance` and `bendDeduction`. */
@@ -50,7 +66,11 @@ export interface DevelopedLengthOptions extends BendAllowanceOptions {
 }
 
 function _checkValues(what: string, angle: number, radius: number, thickness: number, kFactor: number, maxAngle = 180.0): void {
-  if (!(0.0 < Number(angle) && Number(angle) <= maxAngle)) {
+  if (maxAngle >= 360.0) {
+    if (!(0.0 < Number(angle) && Number(angle) < 360.0)) {
+      throw new RangeError(`${what}: the angle must be above 0 and below 360 degrees (got ${String(angle)})`)
+    }
+  } else if (!(0.0 < Number(angle) && Number(angle) <= maxAngle)) {
     throw new RangeError(`${what}: the angle must be above 0 and at most ${_formatG(maxAngle)} degrees (got ${String(angle)})`)
   }
   if (!(Number(radius) > 0.0)) throw new RangeError(`${what}: the radius must be positive (got ${String(radius)})`)
@@ -63,6 +83,116 @@ function _checkValues(what: string, angle: number, radius: number, thickness: nu
 /** Smallest inside radius: the kernel's bend region reaches 0.1 past the sheet on both sides, so
  * unfolding needs a radius above 0.1. */
 export const MIN_RADIUS = 0.11
+
+/**
+ * The K-factor of DIN 6935 for a bend of inside `radius` in a sheet of `thickness`: the standard
+ * puts the neutral fiber at `k * t / 2` from the inside with the correction factor
+ * `k = 0.65 + 0.5 * log10(r / t)`, which reaches 1 (the middle of the sheet) at `r / t = 5`. As a
+ * K-factor: `k / 2`, from 0 to 0.5.
+ */
+export function din6935(radius: number, thickness: number): number {
+  if (!(radius > 0) || !(thickness > 0)) throw new RangeError('din6935: the radius and the thickness must be positive')
+  return Math.min(0.5, Math.max(0.0, (0.65 + 0.5 * Math.log10(radius / thickness)) / 2))
+}
+
+type _Rule = (r: number, t: number, a: number) => number
+
+/** `kFactor` as a function (radius, thickness, angle) => K-factor; null for null (each bend's own).
+ * Checks what it can before any bend is seen. */
+function _kRule(kFactor: KFactor | undefined, what: string): _Rule | null {
+  if (kFactor == null) return null
+  if (typeof kFactor === 'boolean') throw new TypeError(`${what}: kFactor must be a number, a function, a table or 'din6935', not a boolean`)
+  if (typeof kFactor === 'number') {
+    if (!(0.0 <= kFactor && kFactor <= 1.0)) throw new RangeError(`${what}: the K-factor must be between 0 and 1 (got ${String(kFactor)})`)
+    return () => kFactor
+  }
+  if (typeof kFactor === 'string') {
+    if (['din6935', 'din-6935'].includes(kFactor.toLowerCase().replaceAll(' ', ''))) return (r, t) => din6935(r, t)
+    throw new RangeError(`${what}: the only K-factor rule by name is 'din6935', not '${kFactor}'`)
+  }
+  if (typeof kFactor === 'function') return (r, t, a) => Number(kFactor(r, t, a))
+  if (Array.isArray(kFactor)) {
+    const pairs = (kFactor as readonly (readonly number[])[]).map((p) => {
+      if (!Array.isArray(p) || p.length !== 2) {
+        throw new TypeError(`${what}: kFactor must be a number, a function (radius, thickness, angle) => k, a mapping from inside radius to k, [r / t, k] pairs or 'din6935'`)
+      }
+      return [Number(p[0]), Number(p[1])] as [number, number]
+    }).sort((x, y) => x[0] - y[0] || x[1] - y[1])
+    if (!pairs.length) throw new RangeError(`${what}: the K-factor table is empty`)
+    for (const [rt, kf] of pairs) {
+      if (!(rt >= 0) || !(0.0 <= kf && kf <= 1.0)) {
+        throw new RangeError(`${what}: the (r / t, k) pairs need ratios of 0 or more and K-factors from 0 to 1; got (${_formatG(rt)}, ${_formatG(kf)})`)
+      }
+    }
+    return (r, t) => {
+      const x = r / t
+      if (x <= pairs[0][0]) return pairs[0][1]
+      for (let i = 0; i + 1 < pairs.length; i++) {
+        const [x0, k0] = pairs[i]
+        const [x1, k1] = pairs[i + 1]
+        if (x <= x1) return x1 > x0 ? k0 + ((k1 - k0) * (x - x0)) / (x1 - x0) : k1
+      }
+      return pairs[pairs.length - 1][1]
+    }
+  }
+  const entries: [number, number][] = (kFactor instanceof Map ? [...kFactor.entries()] : Object.entries(kFactor as Record<string, number>))
+    .map(([r, kf]) => [Number(r), Number(kf)] as [number, number])
+    .sort((x, y) => x[0] - y[0] || x[1] - y[1])
+  if (!entries.length) throw new RangeError(`${what}: the K-factor table is empty`)
+  for (const [r, kf] of entries) {
+    if (!(r > 0) || !(0.0 <= kf && kf <= 1.0)) {
+      throw new RangeError(`${what}: the K-factor table maps inside radii (positive) to K-factors (0 to 1); got ${_formatG(r)}: ${_formatG(kf)}`)
+    }
+  }
+  return (r) => {
+    for (const [radius, kf] of entries) if (Math.abs(radius - r) <= 1e-6 * Math.max(1.0, r)) return kf
+    throw new RangeError(`${what}: the K-factor table has no entry for the inside radius ${_formatG(r)} (it has ${entries.map(([x]) => _formatG(x)).join(', ')})`)
+  }
+}
+
+function _resolveK(rule: _Rule, radius: number, thickness: number, angle: number, what: string): number {
+  const kf = rule(radius, thickness, angle)
+  if (!(0.0 <= kf && kf <= 1.0)) {
+    throw new RangeError(`${what}: the K-factor for the bend of radius ${_formatG(radius)} and ${_formatG(angle)} degrees is ${String(kf)}; it must be between 0 and 1`)
+  }
+  return kf
+}
+
+/** The K-factor a bend of the part was folded with: of the bends fold() and flange() recorded on the
+ * part, the one on the bend's axis with its radius; else the one K-factor of the recorded bends of
+ * that radius (the bend may have moved with a later fold). null without a record. */
+function _recordedK(part: Part, g: _BendGeom, what: string): number | null {
+  const records = part._folds
+  if (!records.length) return null
+  const tol = _tol(part)
+  const same: number[] = []
+  for (const [origin, direction, radius, kf] of records) {
+    if (Math.abs(radius - g.radius) > tol) continue
+    same.push(kf)
+    const d = new Vector(direction)
+    if (d.isParallel(g.axis, 1e-7) && g.origin.sub(new Vector(origin)).cross(d).length <= tol) return kf
+  }
+  const kinds = [...new Set(same)].sort((x, y) => x - y)
+  if (kinds.length > 1) {
+    throw new ModelingError(
+      `${what}: the part has bends of inside radius ${_formatG(g.radius)} folded with different K-factors (${kinds.map((x) => _formatG(x)).join(', ')}), and one of them moved with a later fold; give kFactor (a number, a function or a table)`,
+    )
+  }
+  return kinds.length ? kinds[0] : null
+}
+
+/** The K-factor of a bend: by the rule given, else as it was folded, else K_FACTOR. */
+function _bendK(part: Part, g: _BendGeom, thickness: number, rule: _Rule | null, what: string): number {
+  if (rule !== null) return _resolveK(rule, g.radius, thickness, g.angle, what)
+  return _recordedK(part, g, what) ?? K_FACTOR
+}
+
+/** The one K-factor of all bends, or null where they differ; without bends, the number given
+ * (else K_FACTOR). */
+function _commonK(ks: readonly number[], kFactor: KFactor | undefined): number | null {
+  if (!ks.length) return typeof kFactor === 'number' ? kFactor : K_FACTOR
+  return ks.every((x) => x === ks[0]) ? ks[0] : null
+}
 
 function _checkRadius(what: string, radius: number, _thickness: number): void {
   if (radius < MIN_RADIUS - 1e-12) {
@@ -78,8 +208,9 @@ function _checkRadius(what: string, radius: number, _thickness: number): void {
  * `angle` is the bend angle in degrees (90 for an L), `radius` the inside radius.
  */
 export function bendAllowance(angle: number, options: BendAllowanceOptions): number {
+  _opts('bendAllowance', options)
   const { radius, thickness, kFactor = K_FACTOR } = options
-  _checkValues('bendAllowance', angle, radius, thickness, kFactor)
+  _checkValues('bendAllowance', angle, radius, thickness, kFactor, 360.0)
   return _radians(angle) * (radius + kFactor * thickness)
 }
 
@@ -89,6 +220,7 @@ export function bendAllowance(angle: number, options: BendAllowanceOptions): num
  * faces of the two legs meet (below 180 degrees).
  */
 export function bendDeduction(angle: number, options: BendAllowanceOptions): number {
+  _opts('bendDeduction', options)
   const { radius, thickness, kFactor = K_FACTOR } = options
   if (!(0.0 < Number(angle) && Number(angle) < 180.0)) {
     throw new RangeError(`bendDeduction: the angle must be above 0 and below 180 degrees (got ${String(angle)})`)
@@ -109,6 +241,7 @@ export function bendDeduction(angle: number, options: BendAllowanceOptions): num
  */
 export function developedLength(...args: [...legs: number[], options: DevelopedLengthOptions]): number {
   const { items: legs, options } = _withOptions<DevelopedLengthOptions>(args)
+  _opts('developedLength', options)
   const { angle = 90.0, radius, thickness, kFactor = K_FACTOR } = options
   if (legs.length < 2) throw new RangeError('developedLength: give at least two legs')
   const angles = typeof angle === 'number' ? new Array<number>(legs.length - 1).fill(Number(angle)) : Array.from(angle, Number)
@@ -186,7 +319,7 @@ export class Bend {
 
   toString(): string {
     const extra = this.direction ? `, ${this.direction}` : ''
-    return `Bend(angle=${_formatG(this.angle)}, radius=${_formatG(this.radius)}, thickness=${_formatG(this.thickness)}, length=${_formatG(this.length)}, allowance=${_formatG(this.allowance)}${extra})`
+    return `Bend(angle=${_formatG(this.angle)}, radius=${_formatG(this.radius)}, thickness=${_formatG(this.thickness)}, kFactor=${_formatG(this.kFactor)}, length=${_formatG(this.length)}, allowance=${_formatG(this.allowance)}${extra})`
   }
 
   [inspect](): string {
@@ -200,16 +333,17 @@ export class Bend {
  * the origin.
  *
  * `outline` is the cut contour (outer boundary and holes) as a sketch at z = 0; `bends` carry the
- * bend lines (at z = 0) with angle, radius, direction and allowance.
+ * bend lines (at z = 0) with angle, radius, direction, K-factor and allowance. `kFactor` is the
+ * K-factor of every bend, or `null` where the bends have different ones (each `Bend` has its own).
  */
 export class FlatPattern {
   readonly part: Part
   readonly outline: Sketch
   readonly bends: Bend[]
   readonly thickness: number
-  readonly kFactor: number
+  readonly kFactor: number | null
 
-  constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number) {
+  constructor(part: Part, outline: Sketch, bends: Bend[], thickness: number, kFactor: number | null) {
     this.part = part
     this.outline = outline
     this.bends = bends
@@ -222,9 +356,9 @@ export class FlatPattern {
     return _list(this.bends.filter((b) => b.line !== null).map((b) => b.line as Edge))
   }
 
-  /** Size of the blank: (length along X, width along Y, thickness). */
+  /** Size of the blank: (length along X, width along Y, thickness), measured on its edges. */
   get size(): Vector {
-    return this.part.bbox().size
+    return _edgeBox(this.part).size
   }
 
   /** Equal fields (Python's dataclass `==`). */
@@ -242,7 +376,8 @@ export class FlatPattern {
 
   toString(): string {
     const s = this.size
-    return `FlatPattern(${_formatG(s.x)} x ${_formatG(s.y)}, thickness=${_formatG(this.thickness)}, ${this.bends.length} bends, kFactor=${_formatG(this.kFactor)})`
+    const kf = this.kFactor === null ? 'per bend' : _formatG(this.kFactor)
+    return `FlatPattern(${_formatG(s.x)} x ${_formatG(s.y)}, thickness=${_formatG(this.thickness)}, ${this.bends.length} bends, kFactor=${kf})`
   }
 
   [inspect](): string {
@@ -394,9 +529,9 @@ function _zoneMaterial(
   const region = Box(width, hi - lo + 2 * margin, thickness + 2 * margin).moved(new Plane(center, across, nIn).location)
   let common: Part
   try {
-    common = kernelCall(what, () => Part._wrap(k.boolean(part._copyBrep(), region._copyBrep(), { operation: k.BooleanOp.INTERSECTION })))
+    common = Part._wrap(part._runBoolean([region], k.BooleanOp.INTERSECTION, what))
   } catch (e) {
-    if (!(e instanceof KernelError)) throw e
+    if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
     throw _causedBy(
       new ModelingError(`${what}: the material in the bend zone cannot be measured; move the bend line a little (away from edges and features)`),
       e,
@@ -434,7 +569,8 @@ function _zoneMaterial(
 export interface FoldOptions {
   /** Inside bend radius. */
   radius: number
-  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. */
+  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. The part keeps
+   * it with the bend: `unfold` and `flatPattern` take it by default. */
   kFactor?: number
   /** A point (or a face, edge or vertex) on the side of the line that stays in place; by default
    * the side that reaches farther from the line stays. */
@@ -462,106 +598,113 @@ export interface FoldOptions {
  * @returns The bent part: the bend faces are exact cylinders of `radius` and `radius + thickness`.
  */
 export function fold(part: Part, line: Axis | Edge, angle: number, options: FoldOptions): Part {
-  let { radius, kFactor = K_FACTOR } = options
-  const { fixed = null, partial = false } = options
-  const what = 'bend'
-  _requirePart(part, what)
-  let [p0, d, seg] = _asLine(line, what)
-  if (partial && seg === null) throw new RangeError('bend: partial: true needs the bend line as an Edge (a segment), not an Axis')
-  const tol = _tol(part)
-  const planes = _planarFaces(part)
-  const [nFace, t, pOn] = _sheetFaceAt(planes, p0, d, tol, 'bend')
-  p0 = pOn
-  d = d.sub(nFace.mul(d.dot(nFace))).normalized()
-  const a = Number(angle)
-  if (a === 0 || !(Math.abs(a) <= 180.0)) {
-    throw new RangeError(`bend: the angle must be between -180 and 180 degrees and not zero (got ${String(angle)})`)
-  }
-  _checkValues(what, Math.abs(a), radius, t, kFactor)
-  radius = Number(radius)
-  kFactor = Number(kFactor)
-  _checkRadius(what, radius, t)
+  _opts('fold', options)
+  // (in a scope: the faces of the zone, the copy the kernel bends and the checks' copies are freed at
+  // once, kernel plan W9)
+  return scope(() => {
+    let { radius, kFactor = K_FACTOR } = options
+    const { fixed = null, partial = false } = options
+    const what = 'bend'
+    _requirePart(part, what)
+    let [p0, d, seg] = _asLine(line, what)
+    if (partial && seg === null) throw new RangeError('bend: partial: true needs the bend line as an Edge (a segment), not an Axis')
+    const tol = _tol(part)
+    const planes = _planarFaces(part)
+    const [nFace, t, pOn] = _sheetFaceAt(planes, p0, d, tol, 'bend')
+    p0 = pOn
+    d = d.sub(nFace.mul(d.dot(nFace))).normalized()
+    const a = Number(angle)
+    if (a === 0 || !(Math.abs(a) <= 180.0)) {
+      throw new RangeError(`bend: the angle must be between -180 and 180 degrees and not zero (got ${String(angle)})`)
+    }
+    _checkValues(what, Math.abs(a), radius, t, kFactor)
+    radius = Number(radius)
+    kFactor = Number(kFactor)
+    _checkRadius(what, radius, t)
 
-  // The inside of the bend: the face with the line for a positive angle, else the opposite face.
-  const nIn = a > 0 ? nFace : nFace.neg()
-  const pIn = a > 0 ? p0 : p0.sub(nFace.mul(t))
-  const across = nFace.cross(d).normalized() // in the sheet, perpendicular to the line
+    // The inside of the bend: the face with the line for a positive angle, else the opposite face.
+    const nIn = a > 0 ? nFace : nFace.neg()
+    const pIn = a > 0 ? p0 : p0.sub(nFace.mul(t))
+    const across = nFace.cross(d).normalized() // in the sheet, perpendicular to the line
 
-  // The side that stays.
-  let stay: Vector
-  if (fixed != null) {
-    const side = _pointOf(fixed).sub(p0).dot(across)
-    if (Math.abs(side) <= tol) throw new RangeError('bend: the fixed point lies on the bend line; give a point on the side that stays')
-    stay = side > 0 ? across : across.neg()
-  } else {
-    const reach = part.vertices().map((v) => v.point.sub(p0).dot(across))
-    stay = Math.max(...reach) >= -Math.min(...reach) ? across : across.neg()
-  }
+    // The side that stays.
+    let stay: Vector
+    if (fixed != null) {
+      const side = _pointOf(fixed).sub(p0).dot(across)
+      if (Math.abs(side) <= tol) throw new RangeError('bend: the fixed point lies on the bend line; give a point on the side that stays')
+      stay = side > 0 ? across : across.neg()
+    } else {
+      const reach = part.vertices().map((v) => v.point.sub(p0).dot(across))
+      stay = Math.max(...reach) >= -Math.min(...reach) ? across : across.neg()
+    }
 
-  // Kernel frame: the side of cross(direction, axis) stays, direction runs from the axis to the sheet.
-  const direction = nIn.neg()
-  const axisDir = direction.cross(d).dot(stay) > 0 ? d : d.neg()
-  const axisLinePoint = pIn.add(nIn.mul(radius))
-  let lo: number
-  let hi: number
-  if (partial) {
-    const s0 = p0.sub(axisLinePoint).dot(axisDir)
-    const s1 = p0
-      .add(d.mul(seg as number))
-      .sub(axisLinePoint)
-      .dot(axisDir)
-    lo = Math.min(s0, s1)
-    hi = Math.max(s0, s1)
-  } else {
-    const [lo3, hi3] = k.brep_bounding_box(part._brep, false)
-    const proj: number[] = []
-    for (const x of [lo3[0], hi3[0]]) {
-      for (const y of [lo3[1], hi3[1]]) {
-        for (const z of [lo3[2], hi3[2]]) proj.push(new Vector(x, y, z).sub(axisLinePoint).dot(axisDir))
+    // Kernel frame: the side of cross(direction, axis) stays, direction runs from the axis to the sheet.
+    const direction = nIn.neg()
+    const axisDir = direction.cross(d).dot(stay) > 0 ? d : d.neg()
+    const axisLinePoint = pIn.add(nIn.mul(radius))
+    let lo: number
+    let hi: number
+    if (partial) {
+      const s0 = p0.sub(axisLinePoint).dot(axisDir)
+      const s1 = p0
+        .add(d.mul(seg as number))
+        .sub(axisLinePoint)
+        .dot(axisDir)
+      lo = Math.min(s0, s1)
+      hi = Math.max(s0, s1)
+    } else {
+      const [lo3, hi3] = k.brep_bounding_box(part._brep, false)
+      const proj: number[] = []
+      for (const x of [lo3[0], hi3[0]]) {
+        for (const y of [lo3[1], hi3[1]]) {
+          for (const z of [lo3[2], hi3[2]]) proj.push(new Vector(x, y, z).sub(axisLinePoint).dot(axisDir))
+        }
       }
+      lo = Math.min(...proj) - 1.0
+      hi = Math.max(...proj) + 1.0
     }
-    lo = Math.min(...proj) - 1.0
-    hi = Math.max(...proj) + 1.0
-  }
-  const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
+    const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
 
-  const strip = _zoneMaterial(part, pIn, across, axisDir, nIn, allowance, lo, hi, t, what)
-  const h = new BrepHandle(part._copyBrep())
-  const hint = `the bend zone must lie inside one flat region of the sheet: move the line away from edges, holes and other bends (at least half the bend allowance, ${_formatG(allowance / 2, 4)})`
-  try {
-    kernelCall(
-      'bend',
-      () =>
-        k.sheetmetal.bend(h.brep, Math.abs(a), radius, kFactor, t, axisLinePoint.add(axisDir.mul(lo)).toArray(), axisDir.toArray(), direction.toArray(), hi - lo),
-      hint,
-    )
-  } catch (e) {
-    if (!(e instanceof KernelError)) throw e
-    if (e.detail.includes('no material')) {
-      throw _causedBy(new ModelingError('bend: the bend line does not cross the sheet (there is no material in the bend zone)'), e)
-    }
-    if (e.detail.includes('does not cut the body in two')) {
-      if (partial) {
+    const strip = _zoneMaterial(part, pIn, across, axisDir, nIn, allowance, lo, hi, t, what)
+    const h = new BrepHandle(part._copyBrep())
+    const hint = `the bend zone must lie inside one flat region of the sheet: move the line away from edges, holes and other bends (at least half the bend allowance, ${_formatG(allowance / 2, 4)})`
+    try {
+      kernelCall(
+        'bend',
+        () =>
+          k.sheetmetal.bend(h.brep, Math.abs(a), radius, kFactor, t, axisLinePoint.add(axisDir.mul(lo)).toArray(), axisDir.toArray(), direction.toArray(), hi - lo),
+        hint,
+      )
+    } catch (e) {
+      if (!(e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+      if (e.detail.includes('no material')) {
+        throw _causedBy(new ModelingError('bend: the bend line does not cross the sheet (there is no material in the bend zone)'), e)
+      }
+      if (e.detail.includes('does not cut the body in two')) {
+        if (partial) {
+          throw _causedBy(
+            new ModelingError(
+              `bend: the sheet beside the partial bend is not cut free: cut reliefs (slots) from the edge along both ends of the bend line, at least half the bend allowance (${_formatG(allowance / 2, 4)}) past it, so that only the bent strip joins the two sides`,
+            ),
+            e,
+          )
+        }
         throw _causedBy(
           new ModelingError(
-            `bend: the sheet beside the partial bend is not cut free: cut reliefs (slots) from the edge along both ends of the bend line, at least half the bend allowance (${_formatG(allowance / 2, 4)}) past it, so that only the bent strip joins the two sides`,
+            `bend: the bend zone does not cut the sheet in two: it reaches past an edge of the sheet or the sheet goes around it; keep the line at least half the bend allowance (${_formatG(allowance / 2, 4)}) away from edges parallel to it (a strip cut free from the rest bends with partial: true)`,
           ),
           e,
         )
       }
-      throw _causedBy(
-        new ModelingError(
-          `bend: the bend zone does not cut the sheet in two: it reaches past an edge of the sheet or the sheet goes around it; keep the line at least half the bend allowance (${_formatG(allowance / 2, 4)}) away from edges parallel to it (a strip cut free from the rest bends with partial: true)`,
-        ),
-        e,
-      )
+      throw e
     }
-    throw e
-  }
-  const result = part._like(_take(h))
-  // the before side stays: the bend's axis ends up over the zone's edge on that side
-  _checkBendResult(result, part, what, strip, radius, t, kFactor, new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir), Boolean(partial), hint)
-  return result
+    const result = part._like(_take(h))
+    // the before side stays: the bend's axis ends up over the zone's edge on that side
+    const axis = new Axis(axisLinePoint.add(stay.mul(allowance / 2)), axisDir)
+    _checkBendResult(result, part, what, strip, radius, t, kFactor, axis, Boolean(partial), hint)
+    result._folds = [...part._folds, [axis.origin.toArray(), axis.direction.toArray(), radius, kFactor] as const]
+    return result
+  })
 }
 
 function _checkBendResult(
@@ -628,63 +771,68 @@ export interface FlangeOptions {
  *   to 1 outside).
  */
 export function flange(part: Part, edge: Edge | ShapeList<Edge>, length: number, options: FlangeOptions): Part {
-  const { angle = 90.0, kFactor = K_FACTOR } = options
-  let { radius } = options
-  const what = 'flange'
-  _requirePart(part, what)
-  if (!(edge instanceof Edge || edge instanceof ShapeList)) throw new TypeError(`flange: expected an edge of the part, got ${_typeName(edge)}`)
-  const kedges = part._ownEdges(edge)
-  if (kedges.length !== 1) throw new RangeError(`flange: give one edge of the part (got ${kedges.length}); flange edges one at a time`)
-  const e = Edge._of(part, kedges[0])
-  if (e.geomType !== 'line') throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
-  const a = Number(angle)
-  if (a === 0 || !(Math.abs(a) < 180.0)) {
-    throw new RangeError(`flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got ${String(angle)})`)
-  }
-  const tol = _tol(part)
-  const planes = _planarFaces(part)
-  const faces = e.faces().filter((f) => f.geomType === 'plane')
-  if (faces.length !== 2) throw new ModelingError('flange: the edge must lie between two planar faces (a face of the sheet and a side face)')
-  const all: [number | null, Face, Vector][] = []
-  for (const f of faces) {
-    const n = f.normalAt()
-    all.push([_thicknessBehind(planes, e.center(), n, tol), f, n])
-  }
-  const info = all.filter((x): x is [number, Face, Vector] => x[0] !== null)
-  if (!info.length) throw new ModelingError('flange: no face opposite the faces at the edge; the part is not a sheet')
-  const [t, sheetFace, nFace] = _minBy(info, (x) => x[0])
-  const side = faces.filter((f) => f !== sheetFace)[0]
-  const out = side.normalAt()
-  const d = e.direction
-  if (Math.abs(out.dot(nFace)) > 1e-7 || Math.abs(out.dot(d)) > 1e-7) {
-    throw new ModelingError('flange: the side face at the edge must be square to the sheet (a straight cut edge)')
-  }
-  _checkValues(what, Math.abs(a), radius, t, kFactor)
-  radius = Number(radius)
-  _checkRadius(what, radius, t)
-  const setback = (radius + t) * Math.tan(_radians(Math.abs(a)) / 2)
-  const leg = Number(length) - setback
-  if (!(leg > tol)) {
-    throw new ModelingError(
-      `flange: the length must be more than the bend's outside setback (radius + thickness) * tan(angle / 2) = ${_formatG(setback)}; got ${String(length)}`,
-    )
-  }
-  const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
-  const reach = allowance + leg
-  const w = e.length
-  const center = e
-    .center()
-    .add(out.mul(reach / 2))
-    .sub(nFace.mul(t / 2))
-  const strip = Box(reach, w, t).moved(new Plane(center, out, nFace).location)
-  const extended = part.fuse(strip)
-  const expected = _volume(part) + reach * w * t
-  if (Math.abs(_volume(extended) - expected) > 1e-6 * expected) {
-    throw new ModelingError('flange: the strip for the flange overlaps the part; the edge must be an outer edge with nothing beyond it')
-  }
-  const lineStart = e.start.add(out.mul(allowance / 2))
-  const line = Line(lineStart, lineStart.add(d.mul(w)))
-  return fold(extended, line, a, { radius, kFactor, fixed: e.center(), partial: true })
+  _opts('flange', options)
+  // (in a scope: the flange's plate, the copies the kernel bends and the checks' copies are freed at
+  // once, kernel plan W9)
+  return scope(() => {
+    const { angle = 90.0, kFactor = K_FACTOR } = options
+    let { radius } = options
+    const what = 'flange'
+    _requirePart(part, what)
+    if (!(edge instanceof Edge || edge instanceof ShapeList)) throw new TypeError(`flange: expected an edge of the part, got ${_typeName(edge)}`)
+    const kedges = part._ownEdges(edge)
+    if (kedges.length !== 1) throw new RangeError(`flange: give one edge of the part (got ${kedges.length}); flange edges one at a time`)
+    const e = Edge._of(part, kedges[0])
+    if (!e._isStraight()) throw new RangeError(`flange: the edge must be straight, not a ${e.geomType}`)
+    const a = Number(angle)
+    if (a === 0 || !(Math.abs(a) < 180.0)) {
+      throw new RangeError(`flange: the angle must be between -180 and 180 degrees (exclusive) and not zero (got ${String(angle)})`)
+    }
+    const tol = _tol(part)
+    const planes = _planarFaces(part)
+    const faces = e.faces().filter((f) => f.geomType === 'plane')
+    if (faces.length !== 2) throw new ModelingError('flange: the edge must lie between two planar faces (a face of the sheet and a side face)')
+    const all: [number | null, Face, Vector][] = []
+    for (const f of faces) {
+      const n = f.normalAt()
+      all.push([_thicknessBehind(planes, e.center(), n, tol), f, n])
+    }
+    const info = all.filter((x): x is [number, Face, Vector] => x[0] !== null)
+    if (!info.length) throw new ModelingError('flange: no face opposite the faces at the edge; the part is not a sheet')
+    const [t, sheetFace, nFace] = _minBy(info, (x) => x[0])
+    const side = faces.filter((f) => f !== sheetFace)[0]
+    const out = side.normalAt()
+    const d = e.direction
+    if (Math.abs(out.dot(nFace)) > 1e-7 || Math.abs(out.dot(d)) > 1e-7) {
+      throw new ModelingError('flange: the side face at the edge must be square to the sheet (a straight cut edge)')
+    }
+    _checkValues(what, Math.abs(a), radius, t, kFactor)
+    radius = Number(radius)
+    _checkRadius(what, radius, t)
+    const setback = (radius + t) * Math.tan(_radians(Math.abs(a)) / 2)
+    const leg = Number(length) - setback
+    if (!(leg > tol)) {
+      throw new ModelingError(
+        `flange: the length must be more than the bend's outside setback (radius + thickness) * tan(angle / 2) = ${_formatG(setback)}; got ${String(length)}`,
+      )
+    }
+    const allowance = bendAllowance(Math.abs(a), { radius, thickness: t, kFactor })
+    const reach = allowance + leg
+    const w = e.length
+    const center = e
+      .center()
+      .add(out.mul(reach / 2))
+      .sub(nFace.mul(t / 2))
+    const strip = Box(reach, w, t).moved(new Plane(center, out, nFace).location)
+    const extended = part.fuse(strip)
+    const expected = _volume(part) + reach * w * t
+    if (Math.abs(_volume(extended) - expected) > 1e-6 * expected) {
+      throw new ModelingError('flange: the strip for the flange overlaps the part; the edge must be an outer edge with nothing beyond it')
+    }
+    const lineStart = e.start.add(out.mul(allowance / 2))
+    const line = Line(lineStart, lineStart.add(d.mul(w)))
+    return fold(extended, line, a, { radius, kFactor, fixed: e.center(), partial: true })
+  })
 }
 
 // =============================================================================== finding bends
@@ -802,32 +950,66 @@ function _findBends(part: Part): [_BendGeom[], number | null] {
       along.push(...s)
     }
     const [start, span] = _arcSpan(angles)
-    if (span > Math.PI + 1e-6) {
-      throw new ModelingError(`a bend of the part turns ${_formatG(_degrees(span))} degrees; bends up to 180 degrees can be unfolded`)
-    }
     const midAngle = start + span / 2
     const mid = x.mul(Math.cos(midAngle)).add(y.mul(Math.sin(midAngle)))
     const s0 = Math.min(...along)
     const s1 = Math.max(...along)
     const inner = faces.filter((f) => Math.abs(f.radius - rIn) <= tol)
     const outer = faces.filter((f) => Math.abs(f.radius - rOut) <= tol)
-    found.push(new _BendGeom(inner, outer, o.add(z.mul(s0)), z, mid, rIn, t, Math.min(_degrees(span), 180.0), s1 - s0))
+    let angle = _degrees(span)
+    if (Math.abs(angle - 180.0) <= 1e-6) angle = 180.0 // (a U bend, measured to the rounding of its points)
+    found.push(new _BendGeom(inner, outer, o.add(z.mul(s0)), z, mid, rIn, t, angle, s1 - s0))
   }
   return [found, thickness]
+}
+
+/** The flat sheet at the two ends of a bend (its start, half the angle before `mid`, and its end):
+ * the planar faces tangent to its cylinders along their straight boundary lines there. A free end
+ * (an end face across the sheet) has none. */
+function _bendEnds(part: Part, g: _BendGeom): [Face[], Face[]] {
+  const tol = _tol(part)
+  const half = _radians(g.angle) / 2
+  const x = g.mid
+  const y = g.axis.cross(g.mid)
+  const own = new Set(g.faces().map((f) => f._identity()))
+  const ends: [Face[], Face[]] = [[], []]
+  const seen = new Set<string>()
+  for (const f of g.faces()) {
+    for (const e of f.edges()) {
+      // (straight B-splines too: mirrored parts and STEP files have them)
+      if (!e._isStraight() || !e.end.sub(e.start).isParallel(g.axis, 1e-7)) continue
+      const q = e.center().sub(g.origin)
+      const a = Math.atan2(q.dot(y), q.dot(x))
+      const radius = Math.hypot(q.dot(x), q.dot(y))
+      const side = Math.abs(a + half) * radius <= 10 * tol ? 0 : Math.abs(a - half) * radius <= 10 * tol ? 1 : null
+      if (side === null) continue
+      const radial = x.mul(Math.cos(a)).add(y.mul(Math.sin(a)))
+      for (const nb of e.faces()) {
+        const key = nb._identity()
+        if (own.has(key) || seen.has(key) || nb.geomType !== 'plane') continue
+        if (Math.abs(Math.abs(nb.normalAt().dot(radial)) - 1.0) <= 1e-7) {
+          seen.add(key)
+          ends[side].push(nb)
+        }
+      }
+    }
+  }
+  return ends
 }
 
 /**
  * The bends of a sheet metal part: angle, inside radius, thickness, length and axis of each.
  *
- * A bend is a pair of coaxial cylinder faces one sheet thickness apart (as `fold` and `flange`
- * make them, or as imported from a sheet metal part). Cylinders without such a partner (holes,
- * rounds) are not bends. `kFactor` is only used for the allowances.
+ * A bend is a pair of coaxial cylinder faces one sheet thickness apart (as `fold`, `flange` and
+ * `bend` make them, or as imported from a sheet metal part), up to below a full turn. Cylinders
+ * without such a partner (holes, rounds) are not bends. `kFactor` is only used for the allowances.
  */
-export function bends(part: Part, options: { kFactor?: number } = {}): Bend[] {
-  const { kFactor = K_FACTOR } = options
+export function bends(part: Part, options: { kFactor?: KFactor } = {}): Bend[] {
+  const { kFactor = null } = options
   if (!(part instanceof Part)) throw new TypeError(`bends: expected a Part, got ${_typeName(part)}`)
+  const rule = _kRule(kFactor, 'bends')
   const [found] = _findBends(part)
-  return found.map((g) => new Bend(_r(g.angle), _r(g.radius), _r(g.thickness), Number(kFactor), _r(g.length), new Axis(g.origin, g.axis)))
+  return found.map((g) => new Bend(_r(g.angle), _r(g.radius), _r(g.thickness), _bendK(part, g, g.thickness, rule, 'bends'), _r(g.length), new Axis(g.origin, g.axis)))
 }
 
 /** A measured value without the noise far below the modeling tolerance (90.00000000000051):
@@ -895,38 +1077,57 @@ interface _Unfolded {
   part: Part
   /** The face that stayed. */
   base: Face
-  /** Bend, line start, line direction, inside normal. */
-  bends: [_BendGeom, Vector, Vector, Vector][]
+  /** Bend, line start, line direction, inside normal, K-factor. */
+  bends: [_BendGeom, Vector, Vector, Vector, number][]
   thickness: number | null
-  kFactor: number
+  /** Of every bend (null: they differ). */
+  kFactor: number | null
 }
 
-function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string): _Unfolded {
+function _unfold(part: Part, kFactor: KFactor | undefined, fixed: Face | null, what: string): _Unfolded {
   _requirePart(part, what)
-  if (!(0.0 <= Number(kFactor) && Number(kFactor) <= 1.0)) {
-    throw new RangeError(`${what}: the K-factor must be between 0 and 1 (got ${String(kFactor)})`)
-  }
-  kFactor = Number(kFactor)
+  const rule = _kRule(kFactor, what)
   const planes = _planarFaces(part)
-  let base: Face
   if (fixed != null) {
     if (!(fixed instanceof Face) || fixed.owner !== part || fixed.geomType !== 'plane') {
       throw new RangeError(`${what}: fixed must be a planar face of the part`)
     }
-    base = fixed
-  } else {
-    base = _baseFace(part, planes)
   }
   const [found, foundThickness] = _findBends(part)
-  let thickness = foundThickness
+  const thickness = foundThickness
   for (const g of found) _checkRadius(what, g.radius, g.thickness)
-  const [copy, mapped] = ext.copy_with_map(part._brep, [base._f], [], [])
-  const work = Part._wrap(copy, { name: part.name, color: part.color })
-  const anchor: number = mapped[0]
-  const done: [_BendGeom, Vector, Vector, Vector][] = []
+  // each bend's K-factor, from the part as it is; an inner face of each, followed into the copy,
+  // tells which bend is which as the unbends move them
+  const ks = found.map((g) => _bendK(part, g, g.thickness, rule, what))
   const volume = _volume(part)
   let expected = volume
   const hint = 'the part must be a sheet of constant thickness whose bends are separated by flat regions'
+  const done: [_BendGeom, Vector, Vector, Vector, number][] = []
+  if (found.length === 1 && !_bendEnds(part, found[0]).some((e) => e.length > 0)) {
+    // a rolled part: one bend and no flat sheet; it unrolls about the middle of the bend
+    if (fixed != null) {
+      throw new RangeError(`${what}: the part is rolled (one bend, no flat sheet to keep in place); it unrolls about the middle of its bend: leave fixed out`)
+    }
+    const g = found[0]
+    const kf = ks[0]
+    const nr = g.radius + kf * g.thickness
+    expected -= (_strip(g, nr) * g.thickness * g.thickness * (0.5 - kf)) / nr
+    const spec: _Spec = {
+      axis: null,
+      tolerance: 1e-6,
+      pieces: [{ kind: 'unbend', center: g.origin.toArray(), axis: g.axis.toArray(), mid: g.mid.toArray(), neutral: nr }],
+    }
+    const work = _deformed(part, spec, [Math.min(1.0, nr / (g.radius + g.thickness)), Math.max(1.0, nr / g.radius)], what, hint)
+    const anchor: number = _baseFace(work, _planarFaces(work))._f
+    done.push([g, g.origin.add(g.mid.mul(nr)), g.axis, g.mid.neg(), kf])
+    return _finish(work, anchor, done, thickness, expected, volume, kFactor, what, hint)
+  }
+  const base = fixed != null ? fixed : _baseFace(part, planes)
+  const [copy, mapped] = ext.copy_with_map(part._brep, [base._f, ...found.map((g) => g.inner[0]._f)], [], [])
+  let work = Part._wrap(copy, { name: part.name, color: part.color })
+  let anchor: number = mapped[0]
+  const tracked: number[] = mapped.slice(1)
+  const left = found.map((_, i) => i)
   for (let n = 0; n < found.length; n++) {
     const [current] = _findBends(work)
     if (!current.length) break
@@ -943,17 +1144,38 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
     }
     const g = _minBy(current, (c) => index.get(c) as number)
     const sheet = thickness as number // (the part has bends, so their thickness is known)
-    const nr = g.radius + kFactor * sheet
-    let inside = 0
-    for (const f of g.inner) inside += f.area
-    const strip = (inside * nr) / g.radius
-    expected -= (strip * sheet * sheet * (0.5 - kFactor)) / nr
+    let mine = left.filter((i) => g.inner.some((f) => f._f === tracked[i]))
+    if (!mine.length) {
+      // (its faces were replaced): the bend of the part with its radius, angle and length
+      mine = left.filter((i) => Math.abs(found[i].radius - g.radius) <= _tol(part) && Math.abs(found[i].angle - g.angle) <= 1e-6 &&
+        Math.abs(found[i].length - g.length) <= _tol(part))
+    }
+    let kHere: number
+    if (mine.length) {
+      left.splice(left.indexOf(mine[0]), 1)
+      kHere = ks[mine[0]]
+    } else {
+      kHere = _bendK(part, g, sheet, rule, what)
+    }
+    const nr = g.radius + kHere * sheet
+    expected -= (_strip(g, nr) * sheet * sheet * (0.5 - kHere)) / nr
+    const ends = _bendEnds(work, g)
+    if (!(ends[0].length && ends[1].length && g.angle <= 180.0 + 1e-9)) {
+      // a bend at a free end of the sheet, or over 180 degrees: unrolled with the unbend
+      // deformation (the kernel's unbend needs flat sheet on both sides and turns up to 180)
+      const [unrolled, kept, start, inside] = _unrollBend(work, g, nr, anchor, ends, what, hint)
+      work = unrolled
+      anchor = kept
+      tracked.fill(-1) // (a new body: the bends left are found by their sizes)
+      done.push([g, start, g.axis, inside, kHere])
+      continue
+    }
     const stayed: number = kernelCall(
       what,
-      () => k.sheetmetal.unbend(work._brep, g.angle, g.radius, kFactor, sheet, g.origin.toArray(), g.axis.toArray(), g.mid.toArray(), g.length, anchor),
+      () => k.sheetmetal.unbend(work._brep, g.angle, g.radius, kHere, sheet, g.origin.toArray(), g.axis.toArray(), g.mid.toArray(), g.length, anchor),
       hint,
     )
-    work._h.sound = false
+    work._h.sound = 0 // changed in place: checked again below
     if (stayed === 0) throw new ModelingError(`${what}: the fixed face is not on either side of a bend; ${hint}`)
     // Where the bend's strip lies now: from the neutral fiber at the end that stayed, half the
     // allowance into the strip. Later unbends (farther from the fixed face) do not move it.
@@ -970,8 +1192,164 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
     }
     const allowance = _radians(g.angle) * nr
     const start = g.origin.add(end.mul(nr)).add(into.mul(allowance / 2))
-    done.push([g, start, g.axis, end.neg()])
+    done.push([g, start, g.axis, end.neg(), kHere])
   }
+  return _finish(work, anchor, done, thickness, expected, volume, kFactor, what, hint)
+}
+
+/** Area of a bend's strip in the flat (its neutral fiber's length times its length). */
+function _strip(g: _BendGeom, nr: number): number {
+  let inside = 0
+  for (const f of g.inner) inside += f.area
+  return (inside * nr) / g.radius
+}
+
+/** `part` sent through a deformation (deform.ts), with this module's hint on failure. */
+function _deformed(part: Part, spec: _Spec, ratio: [number, number], what: string, hint: string): Part {
+  try {
+    return _run(new _Plan(part, spec, ratio), what, part) as Part
+  } catch (e) {
+    if (!(e instanceof ModelingError || e instanceof KernelError) || _isCrash(e)) throw _crashOf(e)
+    throw new ModelingError(`${what}: unrolling a bend failed (${e.message}); ${hint}`)
+  }
+}
+
+/** A 3 x 4 row-major matrix [rotation | translation]. */
+function _rigid(rotation: readonly (readonly number[])[], translation: readonly number[]): number[] {
+  const out: number[] = []
+  for (let i = 0; i < 3; i++) out.push(rotation[i][0], rotation[i][1], rotation[i][2], translation[i])
+  return out
+}
+
+/** Rotation matrix (rows) and translation of the turn by `angle` radians about the line through
+ * `origin` along `axis`. */
+function _turn(origin: Vector, axis: Vector, angle: number): [number[][], number[]] {
+  const m = Location.about(new Axis(origin, axis), _degrees(angle))._m
+  return [
+    [
+      [m[0], m[1], m[2]],
+      [m[4], m[5], m[6]],
+      [m[8], m[9], m[10]],
+    ],
+    [m[3], m[7], m[11]],
+  ]
+}
+
+/**
+ * Unroll one bend with the unbend deformation: the end of the bend toward the fixed face stays
+ * where it is, the strip unrolls at the neutral radius `nr`, and the sheet beyond the other end
+ * (if any) moves with it rigidly. The faces go to these three pieces by where they lie (the bend's
+ * sector and thickness) and by what they connect to (the fixed side). Returns the unrolled part,
+ * its fixed face, and the bend line's start and inside normal.
+ */
+function _unrollBend(work: Part, g: _BendGeom, nr: number, anchor: number, ends: [Face[], Face[]], what: string, hint: string): [Part, number, Vector, Vector] {
+  const half = _radians(g.angle) / 2
+  const m = g.mid
+  const z = g.axis
+  const b = z.cross(m)
+  const radial = (a: number) => m.mul(Math.cos(a)).add(b.mul(Math.sin(a)))
+  const tangent = (a: number) => z.cross(radial(a))
+  let fe: number
+  if (ends[0].length && ends[1].length) {
+    // the end toward the fixed face stays
+    const dist = _faceDistances(work, anchor)
+    const reach = (faces: Face[]) => {
+      const ids: number[] = ext.face_indices(work._brep, faces.map((f) => f._f))
+      return Math.min(...ids.map((i) => dist.get(i) ?? 1 << 30))
+    }
+    fe = reach(ends[0]) <= reach(ends[1]) ? -half : half
+  } else if (ends[0].length || ends[1].length) {
+    fe = ends[0].length ? -half : half
+  } else {
+    throw new ModelingError(`${what}: a bend has flat sheet on neither side, and the part has more than one bend; ${hint}`)
+  }
+  const ff = -fe
+  const keep = new Face(work, anchor)
+  const keepPoint = keep.interiorPoint()
+  const keepNormal = keep.normalAt()
+  // faces across the bend's ends (the sheet's side faces) are split there
+  let shape: Part = work
+  for (const a of [fe, ff]) shape = _imprint(shape, g.origin.toArray(), tangent(a).toArray()) as Part
+  const faces = [...shape.faces()]
+  const index: number[] = ext.face_indices(shape._brep, faces.map((f) => f._f))
+  const foundFace = (part: Part): Face => {
+    const cands = part.faces().filter((f) => f.geomType === 'plane' && f.normalAt().dot(keepNormal) > 1 - 1e-9)
+    if (!cands.length) throw new ModelingError(`${what}: the fixed face got lost unrolling a bend; ${hint}`)
+    return _minBy([...cands], (f) => f.distanceTo(keepPoint))
+  }
+  const startFace = foundFace(shape)
+  const tol = _tol(shape)
+  const piece: number[] = faces.map(() => -1)
+  faces.forEach((f, n) => {
+    const q = f.interiorPoint().sub(g.origin)
+    const a = Math.atan2(q.dot(b), q.dot(m))
+    const rho = Math.hypot(q.dot(m), q.dot(b))
+    // the bend: within its sector and its thickness
+    if (Math.abs(a) <= half + 1e-7 && g.radius - 10 * tol <= rho && rho <= g.radius + g.thickness + 10 * tol) piece[index[n]] = 1
+  })
+  // the fixed side: faces connected to the fixed face without crossing the bend
+  const neighbors = new Map<number, number[]>()
+  faces.forEach((f, n) => {
+    neighbors.set(index[n], ext.face_indices(shape._brep, [...f.neighbors()].map((x) => x._f)))
+  })
+  const first: number = ext.face_indices(shape._brep, [startFace._f])[0]
+  if (piece[first] === 1) throw new ModelingError(`${what}: the fixed face lies in a bend; ${hint}`)
+  piece[first] = 0
+  let queue = [first]
+  while (queue.length) {
+    const next: number[] = []
+    for (const i of queue) {
+      for (const j of neighbors.get(i) ?? []) {
+        if (piece[j] === -1) {
+          piece[j] = 0
+          next.push(j)
+        }
+      }
+    }
+    queue = next
+  }
+  const pieces = piece.map((p) => (p === -1 ? 2 : p)) // beyond the bend
+  // the strip: unbent about the bend's middle, then turned and moved so that its end at fe stays
+  const [r1, t1] = _turn(g.origin, z, fe)
+  const shift = b.mul(nr * fe).toArray()
+  const strip = {
+    kind: 'unbend',
+    center: g.origin.toArray(),
+    axis: z.toArray(),
+    mid: m.toArray(),
+    neutral: nr,
+    matrix: _rigid(r1, [0, 1, 2].map((i) => t1[i] - (r1[i][0] * shift[0] + r1[i][1] * shift[1] + r1[i][2] * shift[2]))),
+  }
+  // beyond the other end: turned back by the angle between the ends, moved along the strip
+  const [r2, t2] = _turn(g.origin, z, fe - ff)
+  const along = tangent(fe)
+    .mul(nr * (ff - fe))
+    .toArray()
+  const beyond = { kind: 'rigid', matrix: _rigid(r2, [0, 1, 2].map((i) => t2[i] + along[i])) }
+  const spec: _Spec = { axis: null, tolerance: 1e-6, faces: pieces, pieces: [{ kind: 'identity' }, strip, beyond] }
+  const ratio: [number, number] = [Math.min(1.0, nr / (g.radius + g.thickness)), Math.max(1.0, nr / g.radius)]
+  const result = _deformed(shape, spec, ratio, what, hint)
+  const kept = foundFace(result)._f
+  // the bend line: from the neutral fiber at the end that stayed, half the strip into it
+  const into = tangent(fe).mul(ff > fe ? 1.0 : -1.0)
+  const start = g.origin.add(radial(fe).mul(nr)).add(into.mul((_radians(g.angle) * nr) / 2))
+  return [result, kept, start, radial(fe).neg()]
+}
+
+/** The checks of an unfolded part: no bends left, a sound solid one sheet thick, the volume the
+ * unbends give. */
+function _finish(
+  work: Part,
+  anchor: number,
+  done: [_BendGeom, Vector, Vector, Vector, number][],
+  thicknessFound: number | null,
+  expected: number,
+  volume: number,
+  kFactor: KFactor | undefined,
+  what: string,
+  hint: string,
+): _Unfolded {
+  let thickness = thicknessFound
   if (_findBends(work)[0].length) throw new ModelingError(`${what}: not every bend could be unfolded; ${hint}`)
   const problem = work._solidProblem()
   if (problem !== null) throw new ModelingError(`${what}: the unfolded part is not a valid solid (${problem}); ${hint}`)
@@ -980,8 +1358,7 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
     thickness = _thicknessBehind(_planarFaces(work), baseFace.interiorPoint(), baseFace.normalAt(), _tol(work))
   }
   if (thickness !== null) {
-    const pl = baseFace.plane
-    const depth = work.moved(new Plane(pl.origin, null, pl.zDir).location.inverse()).bbox().size.z
+    const depth = _depth(work, baseFace.plane)
     if (Math.abs(depth - thickness) > _tol(work)) {
       throw new ModelingError(
         `${what}: the unfolded part is ${_formatG(depth)} deep across the fixed face, the sheet is ${_formatG(thickness)} thick: some of it is not a bend (only pairs of coaxial cylinder faces one thickness apart unfold); ${hint}`,
@@ -991,8 +1368,22 @@ function _unfold(part: Part, kFactor: number, fixed: Face | null, what: string):
   if (!_volumeAgrees(work, expected, volume)) {
     throw new ModelingError(`${what}: the unfolded part has the volume ${_formatG(_volume(work), 9)}, expected ${_formatG(expected, 9)}; ${hint}`)
   }
-  work._h.sound = true
-  return { part: work, base: baseFace, bends: done, thickness, kFactor }
+  work._folds = [] // flat: no bends left
+  return { part: work, base: baseFace, bends: done, thickness, kFactor: _commonK(done.map((d) => d[4]), kFactor) }
+}
+
+/** The box around a flat sheet's edges. (Its own box can be larger: the surface of a fitted face,
+ * such as the wall of a hole that crossed a bend, may reach past the face's edges, and the kernel's
+ * tight box samples the surface: 0.19 mm too deep for an R20 bend's hole.) */
+function _edgeBox(part: Part): BoundBox {
+  let box: BoundBox | null = null
+  for (const e of part.edges()) box = box === null ? e.bbox() : box.union(e.bbox())
+  return box === null ? part.bbox() : box
+}
+
+/** How deep a flat part is across a plane: the extent of its edges along the plane's normal. */
+function _depth(part: Part, plane: Plane): number {
+  return _edgeBox(part.moved(new Plane(plane.origin, null, plane.zDir).location.inverse())).size.z
 }
 
 /** Split boundary edges into closed loops, each ordered head to tail. */
@@ -1023,8 +1414,158 @@ function _loops(edges: readonly Edge[], tol: number): Edge[][] {
   return loops
 }
 
+/** How far a fitted piece of the cut contour may be from a line or an arc to become one (mm; 1e-9
+ * of the part's size for parts over 1 m). The edges of bend zones are fitted within 1e-7
+ * (sheetmetal.cpp), so a hole across a bend comes back from fold and unfold within this of its
+ * circle. */
+const _CONTOUR_TOLERANCE = 1e-6
+
+/** The angle (radians, signed: counterclockwise positive) an edge in the XY plane turns about
+ * `center`, and the largest step between its samples; null if it turns back. */
+function _turnAbout(e: Edge, center: Vector, n = 32): [number, number] | null {
+  let total = 0.0
+  let step = 0.0
+  let last: number | null = null
+  let sign = 0.0
+  for (let i = 0; i <= n; i++) {
+    const p = e.pointAt(i / n)
+    const a = Math.atan2(p.y - center.y, p.x - center.x)
+    if (last !== null) {
+      const d = _mod(a - last + Math.PI, 2 * Math.PI) - Math.PI
+      if (d * sign < 0) return null
+      if (d) sign = Math.sign(d)
+      total += d
+      step = Math.max(step, Math.abs(d))
+    }
+    last = a
+  }
+  return [total, step]
+}
+
+/** Whether an edge of the contour (in the XY plane) lies on the circle (center, radius). */
+function _onCircle(e: Edge, center: Vector, radius: number, tol: number, n = 32): boolean {
+  for (let i = 0; i <= n; i++) {
+    const p = e.pointAt(i / n)
+    if (!(Math.abs(Math.hypot(p.x - center.x, p.y - center.y) - radius) <= tol)) return false
+  }
+  return true
+}
+
+/** The arc of the circle (center, radius) parallel to the XY plane (at the height of `start`) from
+ * `start` turning by `turn` radians to `end`: through both ends exactly, or the whole circle from
+ * `start`. */
+function _arcOf(center: Vector, radius: number, start: Vector, end: Vector, turn: number, closed: boolean): Edge {
+  const a0 = Math.atan2(start.y - center.y, start.x - center.x)
+  if (closed) return CenterArc([center.x, center.y, start.z], radius, _degrees(a0), turn < 0 ? -360.0 : 360.0)
+  const am = a0 + turn / 2
+  const mid = new Vector(center.x + radius * Math.cos(am), center.y + radius * Math.sin(am), (start.z + end.z) / 2)
+  return ThreePointArc(start, mid, end)
+}
+
+/** A fitted (B-spline) piece of the cut contour as the line or arc it is within `tol`: on one of
+ * `circles` (those of the loop's exact arcs) first, else on the circle through three of its
+ * points. */
+function _asLineOrArc(e: Edge, circles: readonly [Vector, number][], tol: number): Edge {
+  if (e.geomType !== 'bspline' || e.length <= 10 * tol) return e
+  let a = e.start
+  let b = e.end
+  const chord = b.sub(a)
+  const pts: Vector[] = []
+  for (let i = 0; i <= 32; i++) pts.push(e.pointAt(i / 32))
+  if (chord.length > tol) {
+    const u = chord.normalized()
+    const along = pts.map((p) => p.sub(a).dot(u))
+    const straight = pts.every((p, i) => p.sub(a).sub(u.mul(along[i])).length <= tol)
+    const forward = along.every((t, i) => i === 0 || t >= along[i - 1] - tol)
+    if (straight && forward) return Line(a, b)
+  }
+  const candidates: [Vector, number][] = [...circles]
+  const closed = a.isClose(b, tol)
+  let m: Vector
+  if (closed) {
+    // the circle through three points spread along it
+    a = e.pointAt(1 / 3)
+    m = e.pointAt(2 / 3)
+    b = e.start
+  } else {
+    m = e.pointAt(0.5)
+  }
+  const ab = b.sub(a)
+  const am = m.sub(a)
+  const nz = ab.x * am.y - ab.y * am.x
+  if (Math.abs(nz) > tol * Math.max(ab.length, am.length, 1.0)) {
+    // the circle through start, middle and end (2D)
+    const ab2 = ab.x * ab.x + ab.y * ab.y
+    const am2 = am.x * am.x + am.y * am.y
+    const cx = a.x + (am.y * ab2 - ab.y * am2) / (2 * nz)
+    const cy = a.y + (ab.x * am2 - am.x * ab2) / (2 * nz)
+    candidates.push([new Vector(cx, cy, a.z), Math.hypot(a.x - cx, a.y - cy)])
+  }
+  for (const [center, radius] of candidates) {
+    if (!_onCircle(e, center, radius, tol)) continue
+    const turned = _turnAbout(e, center)
+    if (turned === null || !(Math.abs(turned[0]) > 1e-9) || turned[1] > Math.PI / 4) continue
+    return _arcOf(center, radius, e.start, e.end, turned[0], closed)
+  }
+  return e
+}
+
+/** A closed loop of the contour with arcs of one circle that follow each other merged into one arc
+ * (the whole loop into one circle). */
+function _mergedArcs(loop: readonly Edge[], tol: number): Edge[] {
+  const n = loop.length
+  if (n < 2) return [...loop]
+  const cs: ([Vector, number] | null)[] = loop.map((e) => (e.geomType === 'circle' ? [e.arcCenter, e.radius] : null))
+  const turns = loop.map((e, i) => {
+    const c = cs[i]
+    const turned = c !== null ? _turnAbout(e, c[0]) : null
+    return turned !== null ? turned[0] : 0.0
+  })
+  const same = (c1: [Vector, number] | null, c2: [Vector, number] | null): boolean =>
+    c1 !== null && c2 !== null && c1[0].isClose(c2[0], tol) && Math.abs(c1[1] - c2[1]) <= tol
+  // edge i and edge i + 1 are arcs of one circle turning the same way
+  const joins = (i: number): boolean => {
+    const j = (i + 1) % n
+    return same(cs[i], cs[j]) && turns[i] * turns[j] > 0
+  }
+  if (loop.every((_, i) => joins(i))) {
+    const [center, radius] = cs[0] as [Vector, number]
+    return [_arcOf(center, radius, loop[0].start, loop[0].start, turns.reduce((x, y) => x + y, 0), true)]
+  }
+  let first = 0
+  while (joins(first)) first++
+  first += 1 // a run starts here
+  const out: Edge[] = []
+  let run: number[] = []
+  for (let i = 0; i < n; i++) {
+    const idx = (first + i) % n
+    run.push(idx)
+    if (!joins(idx)) {
+      if (run.length === 1) out.push(loop[idx])
+      else {
+        const [center, radius] = cs[run[0]] as [Vector, number]
+        const turn = run.reduce((x, r) => x + turns[r], 0)
+        out.push(_arcOf(center, radius, loop[run[0]].start, loop[run[run.length - 1]].end, turn, false))
+      }
+      run = []
+    }
+  }
+  return out
+}
+
+/** A loop of the cut contour with its fitted pieces made the lines and arcs they are and arcs of one
+ * circle merged (a hole that crossed a bend: 3 arcs and 2 B-splines -> one circle). */
+function _cleanLoop(loop: readonly Edge[], tol: number): Edge[] {
+  const circles: [Vector, number][] = loop.filter((e) => e.geomType === 'circle').map((e) => [e.arcCenter, e.radius])
+  return _mergedArcs(
+    loop.map((e) => _asLineOrArc(e, circles, tol)),
+    tol,
+  )
+}
+
 /** The cutting contour at z = 0: the edges that only one bottom face of the flat uses (the others
- * are the edges of the bend zones), joined into loops, collinear pieces merged. */
+ * are the edges of the bend zones), joined into loops; fitted pieces that are lines or arcs within
+ * `_CONTOUR_TOLERANCE` made lines and arcs, arcs of one circle and collinear lines merged. */
 function _cutContour(laid: Part, tol: number): Sketch {
   const count = new Map<string, Edge[]>()
   for (const f of laid.faces()) {
@@ -1038,7 +1579,8 @@ function _cutContour(laid: Part, tol: number): Sketch {
     }
   }
   const boundary = [...count.values()].filter((es) => es.length === 1).map((es) => es[0])
-  const wires = _loops(boundary, tol).map((loop) => _mergedLines(Wire._raw(loop)))
+  const fit = Math.max(_CONTOUR_TOLERANCE, 1e-9 * laid._extent())
+  const wires = _loops(boundary, tol).map((loop) => _mergedLines(Wire._raw(_cleanLoop(loop, fit))))
   return kernelCall('flatPattern', () => Sketch._fromWires(wires, Plane.XY), 'the outline of the flat part could not be made into a sketch')
 }
 
@@ -1107,8 +1649,8 @@ function _convexHull(points: readonly [number, number][]): [number, number][] {
 
 /** Options of `unfold` and `flatPattern`. */
 export interface UnfoldOptions {
-  /** Position of the neutral fiber, 0 (inside) to 1 (outside); default `K_FACTOR`. */
-  kFactor?: number
+  /** The K-factor of each bend (see `KFactor`); default: the one each bend was folded with, else `K_FACTOR`. */
+  kFactor?: KFactor
   /** The planar face of the part that stays in place (default: the largest planar face). */
   fixed?: Face | null
 }
@@ -1118,50 +1660,64 @@ export interface UnfoldOptions {
  *
  * The face `fixed` (default: the largest planar face) stays where it is; the rest of the sheet
  * unfolds into its plane. With the K-factor the part was bent with, the result is the blank it
- * was bent from. For the flat pattern on the XY plane, with outline and bend lines, use
+ * was bent from: by default each bend takes the K-factor `fold` or `flange` made it with (else
+ * `K_FACTOR`, 0.44, as for an imported part). `kFactor` gives other ones: one number for every
+ * bend, a function `(radius, thickness, angle) => k`, a mapping from inside radius to K-factor
+ * (`{ 1: 0.33, 6: 0.45 }`), `[r / t, k]` pairs to interpolate (a shop's table), or `'din6935'`
+ * (see `KFactor`). For the flat pattern on the XY plane, with outline and bend lines, use
  * `flatPattern`.
+ *
+ * Rolled parts (one bend, no flat sheet: a ring segment), bends at a free end of the sheet (a
+ * curl) and bends over 180 degrees unroll at the neutral radius `radius + kFactor * thickness`; a
+ * rolled part about the middle of its bend (`fixed` is refused there).
  */
 export function unfold(part: Part, options: UnfoldOptions = {}): Part {
-  const { kFactor = K_FACTOR, fixed = null } = options
-  return _unfold(part, kFactor, fixed, 'unfold').part
+  _opts('unfold', options)
+  const { kFactor = null, fixed = null } = options
+  // (in a scope: the bends' records, the unbent copies and the base face are freed at once)
+  return scope(() => _unfold(part, kFactor, fixed, 'unfold').part)
 }
 
 /**
  * The flat pattern of a sheet metal part, laid on the XY plane (see `FlatPattern`).
  *
+ * `kFactor` as for `unfold`: by default each bend's own (from `fold` and `flange`), else `K_FACTOR`.
  * The part is unfolded with `fixed` (default: the largest planar face) staying in place; that
  * face is the bottom of the flat (z = 0) and bends are "up" when the far side of the sheet folds
  * towards +Z. The longer side of the smallest rectangle around the blank runs along X, and the
  * bounding box starts at the origin.
  */
 export function flatPattern(part: Part, options: UnfoldOptions = {}): FlatPattern {
-  const { kFactor = K_FACTOR, fixed = null } = options
-  const u = _unfold(part, kFactor, fixed, 'flatPattern')
-  const flat = u.part
-  const thickness = u.thickness
-  const basePlane = u.base.plane
-  const nBase = basePlane.zDir
-  if (thickness === null) throw new ModelingError('flatPattern: the part is not a sheet (no face opposite the largest face)')
-  const frame = new Plane(basePlane.origin, _longSide(flat, new Plane(basePlane.origin, null, nBase)), nBase.neg())
-  const toXy = frame.location.inverse()
-  let laid = flat.moved(toXy)
-  const shift = new Location(laid.bbox().min.neg())
-  laid = laid.moved(shift)
-  const place = shift.mul(toXy)
-  const t = Number(thickness)
-  const outline = _cutContour(laid, _tol(laid))
-  if (Math.abs(outline.area * t - _volume(laid)) > 1e-6 * _volume(laid)) {
-    throw new ModelingError(
-      `flatPattern: the outline encloses ${_formatG(outline.area, 9)}, the flat part is ${_formatG(_volume(laid) / t, 9)} in area; the part is not a flat sheet`,
-    )
-  }
-  const patternBends: Bend[] = []
-  for (const [g, start, direction, inside] of u.bends) {
-    const p0 = place.mul(start)
-    const p1 = place.mul(start.add(direction.mul(g.length)))
-    const up = place.rotateVector(inside).z > 0
-    const line = Line(new Vector(p0.x, p0.y, 0.0), new Vector(p1.x, p1.y, 0.0))
-    patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), u.kFactor, _r(g.length), null, line, up ? 'up' : 'down'))
-  }
-  return new FlatPattern(laid, outline, patternBends, _r(t), u.kFactor)
+  return scope(() => {
+    _opts('flatPattern', options)
+    const { kFactor = null, fixed = null } = options
+    const u = _unfold(part, kFactor, fixed, 'flatPattern')
+    const flat = u.part
+    const thickness = u.thickness
+    const basePlane = u.base.plane
+    const nBase = basePlane.zDir
+    if (thickness === null) throw new ModelingError('flatPattern: the part is not a sheet (no face opposite the largest face)')
+    const frame = new Plane(basePlane.origin, _longSide(flat, new Plane(basePlane.origin, null, nBase)), nBase.neg())
+    const toXy = frame.location.inverse()
+    let laid = flat.moved(toXy)
+    const shift = new Location(_edgeBox(laid).min.neg())
+    laid = laid.moved(shift)
+    const place = shift.mul(toXy)
+    const t = Number(thickness)
+    const outline = _cutContour(laid, _tol(laid))
+    if (Math.abs(outline.area * t - _volume(laid)) > 1e-6 * _volume(laid)) {
+      throw new ModelingError(
+        `flatPattern: the outline encloses ${_formatG(outline.area, 9)}, the flat part is ${_formatG(_volume(laid) / t, 9)} in area; the part is not a flat sheet`,
+      )
+    }
+    const patternBends: Bend[] = []
+    for (const [g, start, direction, inside, kf] of u.bends) {
+      const p0 = place.mul(start)
+      const p1 = place.mul(start.add(direction.mul(g.length)))
+      const up = place.rotateVector(inside).z > 0
+      const line = Line(new Vector(p0.x, p0.y, 0.0), new Vector(p1.x, p1.y, 0.0))
+      patternBends.push(new Bend(_r(g.angle), _r(g.radius), _r(t), kf, _r(g.length), null, line, up ? 'up' : 'down'))
+    }
+    return new FlatPattern(laid, outline, patternBends, _r(t), u.kFactor)
+  })
 }

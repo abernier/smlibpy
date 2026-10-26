@@ -4,10 +4,13 @@ A cone or frustum with its axis along Z.
 
 ## Signature
 
-`Cone(bottom_radius, top_radius, height, *, align=Align.CENTER)`
+`Cone(bottom_radius, top_radius, height, *, arc_size=360.0, align=Align.CENTER)`
 
 - `bottom_radius` at the low end (−Z), `top_radius` at the high end (+Z). One of them may be 0
   for a pointed cone. Equal radii give a cylinder (the side face is then a `cylinder` face).
+- `arc_size`: degrees, at most 360: a sector from the +X axis counter-clockwise about +Z, as for
+  `Cylinder` (one `cone` face and planes; centered by its own box, `align=None` keeps the axis on
+  Z).
 - `align`: per axis, as for `Box` (bounding-box based).
 
 ## Returns
@@ -37,6 +40,8 @@ frustum = Cone(10, 4, 15)                                                # r 10 
 tip = Cone(10, 0, 15, align=(Align.CENTER, Align.CENTER, Align.MIN))     # apex at (0, 0, 15)
 apex_down = Cone(10, 0, 15).rotate(X, 180)                               # apex at (0, 0, -7.5)
 print(frustum.bbox(), [v.point for v in tip.vertices()], [v.point for v in apex_down.vertices()])
+wedge = Cone(10, 4, 15, arc_size=120, align=None)                        # a third, axis on Z
+print(round(wedge.volume, 3), sorted(f.geom_type for f in wedge.faces()))  # 816.814 ['cone', 'plane', ...]
 ```
 
 ## Related

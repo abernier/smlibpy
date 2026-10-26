@@ -9,7 +9,10 @@ meshing) and for getting a base shape back from an imported part.
 
 - `faces`: faces of this part (a selection, one face), or of an earlier version of it (matched
   by position). Faces the selection encloses go with it: the floor of a blind hole with its
-  wall, the top of a boss with its side. Each connected set of faces is one feature.
+  wall, the top of a boss with its side. Not a face that the selection only rounds off: the top
+  of a box with its rounded top edges selected stays (`remove_faces(faces().fillets())` gives the
+  sharp box back, 4000.0 for `Box(20, 20, 10)` with r2 top rounds). Each connected set of faces
+  is one feature. A selection of rounds only goes to `remove_fillets`.
 - `partial`: keep the features the kernel cannot close and take out the others. Default: raise.
 
 ## Returns
@@ -26,7 +29,9 @@ merge with the faces they extend, so a filled hole leaves no trace:
 | hole with a rounded rim (all its faces) | 8 → 6 | 24000.000000000 |
 
 Each feature is checked: a valid solid, and a volume that went up for a depression (a hole or
-pocket, whose rim edges are convex) and down for a protrusion (a boss, concave rim).
+pocket, whose rim edges are convex) and down for a protrusion (a boss, concave rim). Where the
+rim says neither (tangent or mixed edges), the volume may change by no more than the faces span,
+and the part's box may not shrink.
 
 ## Gotchas
 - Select the whole feature. Faces enclosed by the selection are added, but a wall without the
