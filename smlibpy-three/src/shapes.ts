@@ -40,7 +40,7 @@ import {
   vector3,
   type SmBody,
 } from './kernel.ts'
-import { edgeAt, faceAt, faceOf, lineGeometry, polyline, tessellate, type Tessellation } from './tessellation.ts'
+import { BODY_COLOR, edgeAt, faceAt, faceColors, faceOf, lineGeometry, polyline, tessellate, type Tessellation } from './tessellation.ts'
 import {
   DraftAnalysis,
   MassProperties,
@@ -722,6 +722,12 @@ function same<T extends Body>(body: Body, op: (value: never) => SmBody): T {
   return adopt(wrap(call(() => op(value as never))) as unknown as T, body)
 }
 
+/** `body` with its own material (one that draws its faces' colors), not the one it took over. */
+function ownMaterial<T extends Body>(body: T): T {
+  state(body).material = null
+  return body
+}
+
 /** The faces of `body` given to a method (as kernel faces), which must be the body's (or a clone's). */
 function ownFaces(body: Body, faces: FacesLike, what: string): sm.Face[] {
   const value = kernelOf(body)
@@ -851,8 +857,12 @@ function releaseOwnGeometry(o: THREE.Object3D): void {
 
 function bodyMaterial(body: Body): THREE.Material {
   const open = !(body instanceof Part)
+  // (faces with colors of their own: the geometry carries the colors, faces without one the body color)
+  const held = state(body).held
+  const colored = held !== null && faceColors(held.value) !== null
   return new THREE.MeshStandardMaterial({
-    color: 0xc7ccd4,
+    color: colored ? 0xffffff : BODY_COLOR,
+    vertexColors: colored,
     roughness: 0.55,
     metalness: 0.05,
     side: open ? THREE.DoubleSide : THREE.FrontSide,
@@ -1262,7 +1272,7 @@ export class Part extends Body {
    * files keep it); null takes it off. */
   colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Part {
     const f = ownFaces(this, faces, 'colorFaces')
-    return same<Part>(this, (v: sm.Part) => v.colored(color === null ? null : srgb(color), { faces: f }))
+    return ownMaterial(same<Part>(this, (v: sm.Part) => v.colored(color === null ? null : srgb(color), { faces: f })))
   }
 
   /** The part with these faces named (the name stays with them through later operations). */
@@ -1396,7 +1406,7 @@ export class Shell extends Body {
   /** The sheet with these faces colored (files keep it); null takes it off. */
   colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Shell {
     const f = ownFaces(this, faces, 'colorFaces')
-    return same<Shell>(this, (v: sm.Shell) => v.colored(color === null ? null : srgb(color), { faces: f }))
+    return ownMaterial(same<Shell>(this, (v: sm.Shell) => v.colored(color === null ? null : srgb(color), { faces: f })))
   }
 
   /** The sheet with these faces named. */
@@ -1601,7 +1611,7 @@ export class Sketch extends Shell {
   /** The region with these faces colored. */
   override colorFaces(faces: FacesLike, color: THREE.ColorRepresentation | null): Sketch {
     const f = ownFaces(this, faces, 'colorFaces')
-    return same<Sketch>(this, (v: sm.Sketch) => v.colored(color === null ? null : srgb(color), { faces: f }))
+    return ownMaterial(same<Sketch>(this, (v: sm.Sketch) => v.colored(color === null ? null : srgb(color), { faces: f })))
   }
 
   /** The region with these faces named. */

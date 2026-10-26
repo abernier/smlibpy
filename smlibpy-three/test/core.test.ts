@@ -458,3 +458,21 @@ test('constants', () => {
   assert.ok(TOLERANCE > 0 && TOLERANCE < 1e-3)
   close(new Box(10, 10, 10).fuse(new Box(10, 10, 10)).volume, 1000, TOLERANCE)
 })
+
+test("faces' own colors are drawn: vertex colors, and a material that shows them", () => {
+  const part = PLATE()
+  const colored = part.colorFaces(part.faces().top(), '#ff0000')
+  const color = colored.geometry.getAttribute('color')
+  assert.ok(color !== undefined)
+  assert.ok((colored.material as THREE.MeshStandardMaterial).vertexColors)
+  // the top face's vertices red (in three's working space), the others the body color
+  const top = colored.faces().top().one()
+  const c = new THREE.Color()
+  const position = colored.geometry.getAttribute('position')
+  for (let i = 0; i < position.count; i++) {
+    c.fromBufferAttribute(color, i)
+    const onTop = Math.abs(position.getY(i) - 5) < 1e-6 && Math.abs(top.normalAt().y - 1) < 1e-9
+    if (onTop && c.getHexString() === 'ff0000') return
+  }
+  assert.fail('no red vertex on the top face')
+})

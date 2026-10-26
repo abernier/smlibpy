@@ -37,6 +37,8 @@ export function tessellate(body: SmBody, edges: readonly sm.Edge[], tolerance: n
   const tol = tolerance ?? Math.max(diagonal * 1e-3, 1e-6)
   const meshes = sm.faceMeshes(body, tol, (angle * 180) / Math.PI)
   const { geometry, faceVertexStart, faceTriangleStart } = faceGeometry(meshes)
+  const colors = faceColors(body)
+  if (colors !== null) geometry.setAttribute('color', vertexColors(colors, faceVertexStart))
   const edgePoints = edges.map((e) => polyline(e, tol, edgeAngle))
   const { geometry: lines, edgeSegmentStart } = segments(edgePoints)
   return { faces: geometry, faceVertexStart, faceTriangleStart, edges: lines, edgeSegmentStart, edgePoints, refs: 0 }
@@ -115,6 +117,27 @@ function faceGeometry(meshes: readonly sm.Mesh[]): { geometry: THREE.BufferGeome
   geometry.computeBoundingBox()
   geometry.computeBoundingSphere()
   return { geometry, faceVertexStart, faceTriangleStart }
+}
+
+/** The color the default material gives faces without one of their own. */
+export const BODY_COLOR = 0xc7ccd4
+
+/** The faces' own colors (sRGB, 0 to 1), null where no face has one. */
+export function faceColors(body: SmBody): ([number, number, number] | null)[] | null {
+  const colors = [...body.faces()].map((f) => f.color)
+  return colors.some((c) => c !== null) ? colors : null
+}
+
+/** A color per vertex, each face's own (three's working space) or the body color. */
+function vertexColors(colors: readonly ([number, number, number] | null)[], faceVertexStart: Uint32Array): THREE.BufferAttribute {
+  const out = new Float32Array(faceVertexStart[colors.length] * 3)
+  const c = new THREE.Color()
+  colors.forEach((rgb, f) => {
+    if (rgb === null) c.set(BODY_COLOR)
+    else c.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace)
+    for (let v = faceVertexStart[f]; v < faceVertexStart[f + 1]; v++) c.toArray(out, v * 3)
+  })
+  return new THREE.BufferAttribute(out, 3)
 }
 
 /** Polylines as one geometry of line segments, and where each polyline's segments start. */
